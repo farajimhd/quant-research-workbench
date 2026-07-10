@@ -355,7 +355,7 @@ function ServiceDetail({ pageError, service }: { pageError: string; service: Ser
           <ServiceDependenciesPanel service={service} />
         </Modal>
       ) : null}
-      {service.registry.id === "news" ? <NewsServiceWorkAndRows service={service} /> : <ServiceWorkPlanPanel service={service} />}
+      {service.registry.id === "news" ? <NewsServiceWorkAndRows service={service} /> : <ServiceWorkAndActivity service={service} />}
       <ServiceErrorLogPanel pageError={pageError} service={service} />
     </>
   );
@@ -400,6 +400,30 @@ type NewsPollHistoryRow = {
   uniqueRows: number;
   wallSeconds: number;
   writtenRows: number;
+};
+
+type ServiceActivityRow = {
+  detail: string;
+  kind: string;
+  raw: Record<string, unknown>;
+  rows: string;
+  status: string;
+  subject: string;
+  time: string;
+  timeMs?: number;
+};
+
+type ServiceActivitySummaryItem = {
+  label: string;
+  tone?: "bad" | "good" | "warn";
+  value: string;
+};
+
+type ServiceActivitySpec = {
+  description: string;
+  status: string;
+  summary: ServiceActivitySummaryItem[];
+  title: string;
 };
 
 type NewsPublishHistoryRow = {
@@ -596,6 +620,126 @@ function NewsServiceWorkAndRows({ service }: { service: ServiceStatusPayload }) 
       <ServiceWorkPlanPanel service={service} />
       <NewsTodayRowsPanel onSortChange={setTodaySort} state={todayNews} />
     </section>
+  );
+}
+
+function ServiceWorkAndActivity({ service }: { service: ServiceStatusPayload }) {
+  return (
+    <section className={`service-work-and-activity-grid service-work-and-activity-${service.registry.id}`}>
+      <ServiceWorkPlanPanel service={service} />
+      <ServiceActivityPanel service={service} />
+    </section>
+  );
+}
+
+function ServiceActivityPanel({ service }: { service: ServiceStatusPayload }) {
+  const [selectedRow, setSelectedRow] = useState<ServiceActivityRow | null>(null);
+  const spec = serviceActivitySpec(service);
+  const rows = serviceActivityRows(service);
+  const visibleRows = rows.length ? rows : [{
+    detail: `No recent ${service.registry.label.toLowerCase()} activity rows have been reported by the service endpoint yet.`,
+    kind: "service",
+    raw: { service: service.registry.id, recent: service.recent || null },
+    rows: "-",
+    status: service.online ? "waiting" : "not started",
+    subject: "No recent activity",
+    time: service.checked_at_utc ? formatLogTime(service.checked_at_utc) : "-",
+    timeMs: service.checked_at_utc ? Date.parse(service.checked_at_utc) : undefined,
+  }];
+  return (
+    <Panel className={`service-activity-panel service-activity-panel-${service.registry.id}`} title={spec.title}>
+      <div className="service-activity-header">
+        <p>{spec.description}</p>
+        <span className={`service-work-status ${workStatusClass(spec.status)}`}>{displayName(spec.status)}</span>
+      </div>
+      <div className="service-activity-summary">
+        {spec.summary.map((item) => (
+          <span className={item.tone ? `metric-${item.tone}` : ""} key={item.label}>
+            <small>{item.label}</small>
+            <strong>{item.value}</strong>
+          </span>
+        ))}
+      </div>
+      <div className="service-activity-table-wrap">
+        <table className="service-activity-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Status</th>
+              <th>Subject</th>
+              <th>Rows</th>
+              <th>Detail</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibleRows.map((row, index) => (
+              <tr
+                className={workStatusClass(row.status)}
+                key={`${row.kind}-${row.subject}-${row.time}-${index}`}
+                onClick={() => setSelectedRow(row)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setSelectedRow(row);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+              >
+                <td title={row.time}>{row.time || "-"}</td>
+                <td><span className={`service-work-status ${workStatusClass(row.status)}`}>{displayName(row.status || "waiting")}</span></td>
+                <td title={row.subject}><strong>{row.subject}</strong><span>{displayName(row.kind)}</span></td>
+                <td>{row.rows || "-"}</td>
+                <td title={row.detail}>{row.detail || "-"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {selectedRow ? (
+        <Modal className="service-activity-detail-modal-panel" onClose={() => setSelectedRow(null)} title={`${service.registry.label} Activity Detail`}>
+          <ServiceActivityDetailModal row={selectedRow} service={service} />
+        </Modal>
+      ) : null}
+    </Panel>
+  );
+}
+
+function ServiceActivityDetailModal({ row, service }: { row: ServiceActivityRow; service: ServiceStatusPayload }) {
+  const statusClass = workStatusClass(row.status);
+  return (
+    <div className="service-activity-detail">
+      <div className={`service-activity-detail-status ${statusClass}`}>
+        <div>
+          <span>{displayName(service.registry.kind)}</span>
+          <strong>{row.subject}</strong>
+        </div>
+        <span className={`service-work-status ${statusClass}`}>{displayName(row.status)}</span>
+      </div>
+      <dl className="service-log-detail-grid">
+        <div>
+          <dt>Time</dt>
+          <dd>{row.time || "-"}</dd>
+        </div>
+        <div>
+          <dt>Kind</dt>
+          <dd>{displayName(row.kind)}</dd>
+        </div>
+        <div>
+          <dt>Status</dt>
+          <dd>{displayName(row.status)}</dd>
+        </div>
+        <div>
+          <dt>Rows</dt>
+          <dd>{row.rows || "-"}</dd>
+        </div>
+        <div className="wide">
+          <dt>Detail</dt>
+          <dd>{row.detail || "-"}</dd>
+        </div>
+      </dl>
+      <DebugObjectBlock title="Raw Service Activity Row" value={row.raw} />
+    </div>
   );
 }
 
@@ -2877,6 +3021,265 @@ function serviceWorkPlanSummary(groups: ServiceWorkGroup[]) {
   );
 }
 
+function serviceActivitySpec(service: ServiceStatusPayload): ServiceActivitySpec {
+  const metrics = serviceMetricsRecord(service);
+  const status = stringMetric(metrics, ["activity_status", "run_status", "status"]) || service.status || "unknown";
+  if (service.registry.id === "qmd") {
+    return {
+      description: "Recent scanner primitives, market-state signals, live event throughput, and persistence activity.",
+      status,
+      summary: [
+        metricSummary(metrics, "Events", ["total_events", "ingest_events", "events"]),
+        metricSummary(metrics, "Trades/sec", ["trades_per_sec", "trades/sec", "trade_rate"]),
+        metricSummary(metrics, "Quotes/sec", ["quotes_per_sec", "quotes/sec", "quote_rate"]),
+        metricSummary(metrics, "Bars", ["bar_events", "bars_written", "bars"]),
+        metricSummary(metrics, "Gaps", ["gap_count", "gaps", "coverage_gaps"], "warn"),
+      ],
+      title: "Scanner And Market Event Activity",
+    };
+  }
+  if (service.registry.id === "sec") {
+    return {
+      description: "Recent SEC feed filings, duplicate skips, filing text/XBRL extraction, and write status.",
+      status,
+      summary: [
+        metricSummary(metrics, "Polls", ["poll_runs"]),
+        metricSummary(metrics, "Feed Items", ["feed_items", "provider_rows"]),
+        metricSummary(metrics, "Written", ["written_filings", "written_rows"], "good"),
+        metricSummary(metrics, "Skipped", ["skipped_existing", "skips"], "warn"),
+        metricSummary(metrics, "XBRL Facts", ["xbrl_facts", "facts_written"]),
+      ],
+      title: "Latest SEC Filing Activity",
+    };
+  }
+  if (service.registry.id === "text-embed") {
+    return {
+      description: "Recent source discovery, tokenization, embedding inference, write batches, and failed work.",
+      status,
+      summary: [
+        metricSummary(metrics, "Pending", ["pending_rows", "pending_items", "queue_depth"], "warn"),
+        metricSummary(metrics, "Tokens", ["token_rows_written", "tokens_written", "tokens"]),
+        metricSummary(metrics, "Embeddings", ["embedding_rows_written", "embeddings_written", "vectors_written"], "good"),
+        metricSummary(metrics, "Batches", ["completed_batches", "batches", "batch_count"]),
+        metricSummary(metrics, "Failed", ["failed_rows", "failed_batches", "failures"], "bad"),
+      ],
+      title: "Embedding Work Queue",
+    };
+  }
+  if (service.registry.id === "reference") {
+    return {
+      description: "Recent provider source sync, issue resolution, publication maintenance, and tradability guardrails.",
+      status,
+      summary: [
+        metricSummary(metrics, "Sources", ["source_candidates", "sources_synced", "source_rows"]),
+        metricSummary(metrics, "Issues", ["issue_writes", "open_issues", "issues"], "warn"),
+        metricSummary(metrics, "Alerts", ["alert_writes", "alerts"]),
+        metricSummary(metrics, "Blocks", ["tradability_blocks", "blocked_rows"], "bad"),
+        metricSummary(metrics, "Audit", ["audit_failures", "audit_warning_count"], "warn"),
+      ],
+      title: "Reference Sync Activity",
+    };
+  }
+  return {
+    description: "Client Portal health, authentication, account checks, keepalive, contract lookup, and routing readiness.",
+    status,
+    summary: [
+      metricSummary(metrics, "Gateway", ["gateway_status", "client_portal_status", "run_status"]),
+      metricSummary(metrics, "Auth", ["authenticated", "auth_status"]),
+      metricSummary(metrics, "Keepalive", ["keepalive_count", "tickle_count", "tickles"]),
+      metricSummary(metrics, "Accounts", ["account_count", "accounts"]),
+      metricSummary(metrics, "Failures", ["failure_count", "failures", "errors"], "bad"),
+    ],
+    title: "Broker Session Activity",
+  };
+}
+
+function serviceActivityRows(service: ServiceStatusPayload): ServiceActivityRow[] {
+  const sourceRows = serviceActivitySourceRows(service);
+  const logRows = runtimeLogRows(service.logs).slice(0, 12).map((row) => ({
+    detail: row.detail,
+    event: row.event,
+    level: row.status,
+    source: row.source,
+    status: row.status === "active" ? "failed" : row.status === "retrying" ? "warning" : row.status,
+    title: row.title,
+    ts_utc: row.time,
+  }));
+  const rows = [...sourceRows, ...logRows]
+    .map((row, index) => serviceActivityRow(service, row, index))
+    .sort((left, right) => (right.timeMs ?? 0) - (left.timeMs ?? 0))
+    .slice(0, 36);
+  return rows;
+}
+
+function serviceActivitySourceRows(service: ServiceStatusPayload): Record<string, unknown>[] {
+  const snapshot = service.snapshot ?? {};
+  const rows: Record<string, unknown>[] = [];
+  rows.push(...rowsFromPayload(service.recent));
+  rows.push(...rowsFromPayload(snapshot.recent_items));
+  rows.push(...rowsFromPayload(snapshot.recent));
+  rows.push(...rowsFromPayload(snapshot.feed_items));
+  rows.push(...rowsFromPayload(snapshot.scanner));
+  rows.push(...rowsFromPayload(snapshot.source_reports));
+  rows.push(...rowsFromPayload(snapshot.sources_sinks));
+  rows.push(...rowsFromPayload(snapshot.task_table_progress));
+  rows.push(...rowsFromPayload(snapshot.queues));
+  return dedupeActivityRows(rows).slice(0, 40);
+}
+
+function rowsFromPayload(value: unknown): Record<string, unknown>[] {
+  if (Array.isArray(value)) return value.filter(isRecord);
+  if (!isRecord(value)) return [];
+  const rowKeys = ["rows", "items", "events", "recent", "recent_items", "feed_items", "primitives", "data"];
+  for (const key of rowKeys) {
+    const rows = value[key];
+    if (Array.isArray(rows)) return rows.filter(isRecord);
+  }
+  return Object.keys(value).length ? [value] : [];
+}
+
+function dedupeActivityRows(rows: Record<string, unknown>[]) {
+  const seen = new Set<string>();
+  const output: Record<string, unknown>[] = [];
+  for (const row of rows) {
+    const key = [
+      firstString(row, ["accession_number", "canonical_news_id", "ticker", "symbol", "event", "title", "source"]),
+      firstString(row, ["updated_at_utc", "ts_utc", "time_utc", "time", "poll_at_utc"]),
+      firstString(row, ["status", "state", "stage", "phase"]),
+    ].join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(row);
+  }
+  return output;
+}
+
+function serviceActivityRow(service: ServiceStatusPayload, row: Record<string, unknown>, index: number): ServiceActivityRow {
+  const timestamp = firstTimestamp(row);
+  const status = serviceActivityStatus(service, row);
+  return {
+    detail: serviceActivityDetail(service, row),
+    kind: serviceActivityKind(service, row),
+    raw: row,
+    rows: serviceActivityRowsValue(service, row),
+    status,
+    subject: serviceActivitySubject(service, row, index),
+    time: timestamp.label,
+    timeMs: timestamp.value,
+  };
+}
+
+function serviceActivitySubject(service: ServiceStatusPayload, row: Record<string, unknown>, index: number) {
+  if (service.registry.id === "qmd") {
+    const ticker = firstString(row, ["ticker", "symbol", "primary_symbol"]);
+    const primitive = firstString(row, ["primitive_key", "condition", "state", "event_type", "type"]);
+    return [ticker, primitive].filter(Boolean).join(" / ") || `Market activity ${index + 1}`;
+  }
+  if (service.registry.id === "sec") {
+    const form = firstString(row, ["form_type", "form", "type"]);
+    const accession = firstString(row, ["accession_number", "accession"]);
+    const title = firstString(row, ["title", "company_name", "issuer_name"]);
+    return [form, accession || title].filter(Boolean).join(" / ") || `SEC filing ${index + 1}`;
+  }
+  if (service.registry.id === "text-embed") {
+    const source = firstString(row, ["source", "source_table", "source_kind"]);
+    const stage = firstString(row, ["stage", "mode", "task", "event"]);
+    return [source, stage].filter(Boolean).join(" / ") || `Embedding work ${index + 1}`;
+  }
+  if (service.registry.id === "reference") {
+    const source = firstString(row, ["source", "provider", "endpoint", "event"]);
+    const item = firstString(row, ["ticker", "symbol", "table", "title", "task", "issue_type"]);
+    return [source, item].filter(Boolean).join(" / ") || `Reference activity ${index + 1}`;
+  }
+  const event = firstString(row, ["event", "title", "task", "name"]);
+  const account = firstString(row, ["account", "account_id", "acctId", "endpoint"]);
+  return [event, account].filter(Boolean).join(" / ") || `IBKR activity ${index + 1}`;
+}
+
+function serviceActivityKind(service: ServiceStatusPayload, row: Record<string, unknown>) {
+  const explicit = firstString(row, ["kind", "type", "category", "source", "event"]);
+  if (explicit) return explicit;
+  if (service.registry.id === "qmd") return "scanner primitive";
+  if (service.registry.id === "sec") return "filing feed";
+  if (service.registry.id === "text-embed") return "embedding work";
+  if (service.registry.id === "reference") return "reference sync";
+  return "broker event";
+}
+
+function serviceActivityStatus(service: ServiceStatusPayload, row: Record<string, unknown>) {
+  const explicit = firstString(row, ["status", "state", "phase", "result", "level"]);
+  if (explicit) return explicit;
+  if (firstString(row, ["error", "failure", "exception"])) return "failed";
+  if (service.registry.id === "qmd" && firstString(row, ["reject_reason"])) return "rejected";
+  if (service.registry.id === "qmd") return "active";
+  return "observed";
+}
+
+function serviceActivityRowsValue(service: ServiceStatusPayload, row: Record<string, unknown>) {
+  const direct = firstString(row, ["rows", "row_count", "processed_rows", "written_rows", "inserted_rows", "feed_items", "documents", "texts", "xbrl_facts", "embedding_rows_written", "tokens_written", "done", "completed", "count"]);
+  if (direct) return direct;
+  if (service.registry.id === "qmd") {
+    const score = firstString(row, ["score"]);
+    if (score) return `score ${score}`;
+    const volume = firstString(row, ["volume", "dollar_volume"]);
+    if (volume) return volume;
+  }
+  return "-";
+}
+
+function serviceActivityDetail(service: ServiceStatusPayload, row: Record<string, unknown>) {
+  const detail = firstString(row, ["detail", "details", "message", "description", "notes", "trigger_reason", "reject_reason", "title"]);
+  const extras: string[] = [];
+  if (service.registry.id === "qmd") {
+    extras.push(compactPair(row, "side_bias", "Side"));
+    extras.push(compactPair(row, "close", "Close"));
+    extras.push(compactPair(row, "vwap", "VWAP"));
+    extras.push(compactPair(row, "spread_bps", "Spread bps"));
+    extras.push(compactPair(row, "liquidity_score", "Liquidity"));
+  } else if (service.registry.id === "sec") {
+    extras.push(compactPair(row, "documents", "Docs"));
+    extras.push(compactPair(row, "texts", "Texts"));
+    extras.push(compactPair(row, "xbrl_facts", "XBRL"));
+    extras.push(compactPair(row, "skips", "Skips"));
+  } else if (service.registry.id === "text-embed") {
+    extras.push(compactPair(row, "mode", "Mode"));
+    extras.push(compactPair(row, "stage", "Stage"));
+    extras.push(compactPair(row, "seconds", "Seconds"));
+  } else if (service.registry.id === "reference") {
+    extras.push(compactPair(row, "provider", "Provider"));
+    extras.push(compactPair(row, "issue_type", "Issue"));
+    extras.push(compactPair(row, "action", "Action"));
+  } else {
+    extras.push(compactPair(row, "endpoint", "Endpoint"));
+    extras.push(compactPair(row, "authenticated", "Auth"));
+    extras.push(compactPair(row, "connected", "Connected"));
+  }
+  const readable = [detail, ...extras.filter(Boolean)].filter(Boolean).join("; ");
+  return humanizeWorkDetail(readable || compactWorkDetail(row));
+}
+
+function compactPair(row: Record<string, unknown>, key: string, label: string) {
+  const value = row[key];
+  if (value === undefined || value === null || value === "") return "";
+  return `${label}=${formatValue(key, value)}`;
+}
+
+function metricSummary(record: Record<string, unknown>, label: string, keys: string[], tone?: ServiceActivitySummaryItem["tone"]): ServiceActivitySummaryItem {
+  const { value, numeric } = metricDisplayValue(record, keys);
+  const resolvedTone = tone && value !== "-" && (numeric === undefined || numeric > 0) ? tone : undefined;
+  return { label, tone: resolvedTone, value };
+}
+
+function metricDisplayValue(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = record[key];
+    if (value === undefined || value === null || value === "") continue;
+    const numeric = typeof value === "number" ? value : Number(value);
+    return { numeric: Number.isFinite(numeric) ? numeric : undefined, value: formatValue(key, value) };
+  }
+  return { numeric: undefined, value: "-" };
+}
+
 function newsPollHistoryRow(service: ServiceStatusPayload): NewsPollHistoryRow | null {
   const metrics = serviceMetricsRecord(service);
   const pollRun = numericMetric(metrics, ["poll_runs"]);
@@ -4323,7 +4726,7 @@ function workStatusClass(status: string): ServiceStatusTone {
   if (/failed|error|blocked|critical|offline|not_started|unreachable/.test(normalized)) return "error";
   if (/warn|degraded|retry|queued|pending|waiting|attention/.test(normalized)) return "warn";
   if (/running|working|active|loading|polling|publishing|processing|ingesting|syncing|repairing|catching_up|preflight|starting/.test(normalized)) return "active";
-  if (/complete|completed|ok|ready|success|healthy/.test(normalized)) return "ok";
+  if (/complete|completed|ok|ready|success|healthy|observed/.test(normalized)) return "ok";
   if (/idle|noop|no_op|not_reported/.test(normalized)) return "idle";
   return "waiting";
 }

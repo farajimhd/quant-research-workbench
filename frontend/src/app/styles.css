@@ -1171,30 +1171,293 @@ button {
   grid-template-columns: minmax(380px, 40%) minmax(0, 1fr);
 }
 
+.service-work-and-activity-grid {
+  align-items: stretch;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(380px, 40%) minmax(0, 1fr);
+}
+
 .news-service-work-and-rows-grid .service-work-plan-panel,
-.news-service-work-and-rows-grid .news-today-panel {
+.news-service-work-and-rows-grid .news-today-panel,
+.service-work-and-activity-grid .service-work-plan-panel,
+.service-work-and-activity-grid .service-activity-panel {
   height: 100%;
   min-width: 0;
 }
 
-.news-service-work-and-rows-grid .news-today-panel {
+.news-service-work-and-rows-grid .news-today-panel,
+.service-work-and-activity-grid .service-activity-panel {
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
 }
 
-.news-service-work-and-rows-grid .service-work-plan-summary {
+.news-service-work-and-rows-grid .service-work-plan-summary,
+.service-work-and-activity-grid .service-work-plan-summary {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.news-service-work-and-rows-grid .service-work-plan-layout {
+.news-service-work-and-rows-grid .service-work-plan-layout,
+.service-work-and-activity-grid .service-work-plan-layout {
   grid-template-columns: minmax(0, 1fr);
   padding: 10px;
 }
 
-.news-service-work-and-rows-grid .service-work-responsibility-grid {
+.news-service-work-and-rows-grid .service-work-responsibility-grid,
+.service-work-and-activity-grid .service-work-responsibility-grid {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.service-activity-header {
+  align-items: flex-start;
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 10px 12px 8px;
+}
+
+.service-activity-header p {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.service-activity-summary {
+  background: color-mix(in oklab, var(--surface-alt) 55%, var(--surface));
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.service-activity-summary span {
+  border-right: 1px solid var(--border);
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 10px;
+}
+
+.service-activity-summary span:last-child {
+  border-right: 0;
+}
+
+.service-activity-summary span.metric-good {
+  background: color-mix(in oklab, var(--badge-success-bg) 56%, var(--surface));
+}
+
+.service-activity-summary span.metric-good strong {
+  color: var(--badge-success-fg);
+}
+
+.service-activity-summary span.metric-warn {
+  background: color-mix(in oklab, var(--badge-warning-bg) 58%, var(--surface));
+}
+
+.service-activity-summary span.metric-warn strong {
+  color: var(--badge-warning-fg);
+}
+
+.service-activity-summary span.metric-bad {
+  background: color-mix(in oklab, var(--badge-danger-bg) 62%, var(--surface));
+}
+
+.service-activity-summary span.metric-bad strong {
+  color: var(--badge-danger-fg);
+}
+
+.service-activity-summary small {
+  color: var(--muted-foreground);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.035em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.service-activity-summary strong {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 610;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.service-activity-table-wrap {
+  flex: 1 1 auto;
+  min-height: 290px;
+  min-width: 0;
+  overflow: auto;
+}
+
+.service-activity-table {
+  border-collapse: collapse;
+  font-size: 11.5px;
+  line-height: 1.28;
+  min-width: 860px;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.service-activity-table th,
+.service-activity-table td {
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  padding: 7px 8px;
+  text-align: left;
+  text-overflow: ellipsis;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.service-activity-table th {
+  background: color-mix(in oklab, var(--surface-alt) 78%, var(--surface));
+  color: var(--muted-foreground);
+  font-size: 9.5px;
+  font-weight: 680;
+  letter-spacing: 0.04em;
+  position: sticky;
+  text-transform: uppercase;
+  top: 0;
+  z-index: 1;
+}
+
+.service-activity-table tbody tr {
+  cursor: pointer;
+}
+
+.service-activity-table tbody tr:hover {
+  background: color-mix(in oklab, var(--accent) 8%, var(--surface));
+}
+
+.service-activity-table tbody tr:focus {
+  outline: 2px solid color-mix(in oklab, var(--accent) 45%, transparent);
+  outline-offset: -2px;
+}
+
+.service-activity-table tr.active,
+.service-activity-table tr.ok {
+  background: color-mix(in oklab, var(--badge-success-bg) 14%, transparent);
+}
+
+.service-activity-table tr.warn,
+.service-activity-table tr.waiting {
+  background: color-mix(in oklab, var(--badge-warning-bg) 11%, transparent);
+}
+
+.service-activity-table tr.error {
+  background: color-mix(in oklab, var(--badge-danger-bg) 12%, transparent);
+}
+
+.service-activity-table tr.idle {
+  background: color-mix(in oklab, var(--badge-muted-bg) 14%, transparent);
+}
+
+.service-activity-table th:nth-child(1),
+.service-activity-table td:nth-child(1) {
+  width: 128px;
+}
+
+.service-activity-table th:nth-child(2),
+.service-activity-table td:nth-child(2) {
+  width: 118px;
+}
+
+.service-activity-table th:nth-child(3),
+.service-activity-table td:nth-child(3) {
+  width: 250px;
+}
+
+.service-activity-table th:nth-child(4),
+.service-activity-table td:nth-child(4) {
+  text-align: right;
+  width: 88px;
+}
+
+.service-activity-table th:nth-child(5),
+.service-activity-table td:nth-child(5) {
+  width: auto;
+}
+
+.service-activity-table td:nth-child(3) strong {
+  color: var(--foreground);
+  display: block;
+  font-size: 12px;
+  font-weight: 610;
+  margin-bottom: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.service-activity-table td:nth-child(3) span {
+  color: var(--muted-foreground);
+  display: block;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.modal-panel.service-activity-detail-modal-panel {
+  max-height: min(780px, calc(100vh - 56px));
+  max-width: min(1020px, calc(100vw - 72px));
+  width: min(1020px, calc(100vw - 72px));
+}
+
+.service-activity-detail {
+  display: grid;
+  gap: 14px;
+  padding: 12px;
+}
+
+.service-activity-detail-status {
+  align-items: flex-start;
+  background: color-mix(in oklab, var(--surface-alt) 60%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 12px;
+}
+
+.service-activity-detail-status.active,
+.service-activity-detail-status.ok {
+  background: color-mix(in oklab, var(--badge-success-bg) 70%, var(--surface));
+  border-color: var(--badge-success-border);
+}
+
+.service-activity-detail-status.warn,
+.service-activity-detail-status.waiting {
+  background: color-mix(in oklab, var(--badge-warning-bg) 72%, var(--surface));
+  border-color: var(--badge-warning-border);
+}
+
+.service-activity-detail-status.error {
+  background: color-mix(in oklab, var(--badge-danger-bg) 76%, var(--surface));
+  border-color: var(--badge-danger-border);
+}
+
+.service-activity-detail-status span:first-child {
+  color: var(--muted-foreground);
+  display: block;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+}
+
+.service-activity-detail-status strong {
+  color: var(--foreground);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.25;
 }
 
 .news-today-searchbar {
@@ -4085,11 +4348,13 @@ button {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .news-service-work-and-rows-grid {
+  .news-service-work-and-rows-grid,
+  .service-work-and-activity-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .news-live-summary {
+  .news-live-summary,
+  .service-activity-summary {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
@@ -4110,13 +4375,15 @@ button {
   .service-config-summary,
   .service-config-items,
   .news-service-work-and-rows-grid,
+  .service-work-and-activity-grid,
   .service-work-plan-layout,
   .service-work-responsibility-grid,
   .service-two-column {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .news-live-summary {
+  .news-live-summary,
+  .service-activity-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -4131,6 +4398,11 @@ button {
   }
 
   .modal-panel.service-log-detail-modal-panel {
+    max-width: calc(100vw - 32px);
+    width: calc(100vw - 32px);
+  }
+
+  .modal-panel.service-activity-detail-modal-panel {
     max-width: calc(100vw - 32px);
     width: calc(100vw - 32px);
   }
