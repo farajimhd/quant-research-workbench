@@ -3643,6 +3643,9 @@ button {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   overflow: hidden;
+  position: sticky;
+  top: 0;
+  z-index: 4;
 }
 
 .sec-filing-hero-main {
