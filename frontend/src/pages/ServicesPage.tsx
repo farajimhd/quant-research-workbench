@@ -1314,6 +1314,32 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
   const primaryDocumentUrl = stringMetric(filingRow, ["primary_document_url"]) || row.primaryDocumentUrl;
   const filingDetailUrl = stringMetric(filingRow, ["filing_detail_url"]) || row.filingDetailUrl;
   const primaryDocument = stringMetric(filingRow, ["primary_document"]) || row.primaryDocument;
+  const primaryTextRow = secPrimaryTextRow(textRows);
+  const primaryText = primaryTextRow ? secTextValue(primaryTextRow) : "";
+  const primaryTextBlocks = secReadableTextBlocks(primaryText);
+  const primaryTextKind = primaryTextRow ? displayName(stringMetric(primaryTextRow, ["text_kind", "kind", "source_kind"]) || "extracted filing text") : "No extracted text";
+  const primaryTextChars = primaryTextRow ? secTextCharCount(primaryTextRow) || primaryText.length : 0;
+  const documentTypeSample = uniqueStringSample(
+    [
+      ...row.documentTypeSample,
+      ...documentRows.map((item) => stringMetric(item, ["document_type", "type", "description"])),
+    ],
+    8,
+  );
+  const xbrlFactTags = uniqueStringSample(
+    [
+      ...row.xbrlFactTagSample,
+      ...companyFactRows.map((item) => stringMetric(item, ["tag", "concept", "name"])),
+    ],
+    10,
+  );
+  const xbrlFrameTags = uniqueStringSample(
+    [
+      ...row.xbrlFrameTagSample,
+      ...frameRows.map((item) => stringMetric(item, ["tag", "concept", "name"])),
+    ],
+    10,
+  );
   const relationStats = [
     { label: "Documents", value: documentRows.length || row.documentRows },
     { label: "Text rows", value: textRows.length || row.textRows },
@@ -1332,10 +1358,22 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
     { label: "Primary document", value: primaryDocument || "-" },
     { label: "Source file", value: stringMetric(filingRow, ["source_file_name"]) || row.sourceFileName || "-" },
   ];
+  const contextFacts = [
+    { label: "Company", value: companyName },
+    { label: "CIK", value: stringMetric(filingRow, ["cik"]) || row.cik },
+    { label: "Issuer ID", value: stringMetric(filingRow, ["issuer_id"]) || row.issuerId || "-" },
+    { label: "Accession", value: accession },
+    { label: "Form", value: formType },
+    { label: "Filing date", value: stringMetric(filingRow, ["filing_date"]) || row.filingDate || "-" },
+    { label: "Report date", value: stringMetric(filingRow, ["report_date"]) || row.reportDate || "-" },
+    { label: "Accepted source", value: stringMetric(filingRow, ["accepted_at_source"]) || "-" },
+    { label: "Raw acceptance", value: stringMetric(filingRow, ["acceptance_datetime_raw"]) || row.acceptanceDatetimeRaw || "-" },
+    { label: "Text status", value: stringMetric(filingRow, ["text_status"]) || row.textStatus || "-" },
+  ];
   return (
     <div className="sec-filing-detail">
-      <article className="sec-filing-article-card">
-        <header className="sec-filing-article-header">
+      <article className="sec-filing-hero-card">
+        <div className="sec-filing-hero-main">
           <div className="sec-filing-meta-line">
             <span className="sec-provider-pill">SEC</span>
             <span>{formType}</span>
@@ -1344,8 +1382,12 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
           </div>
           <h3>{companyName}</h3>
           <p>{accession} / {primaryDocument || row.sourceFileName || "filing parent"}</p>
-        </header>
-        <div className="news-full-time-grid">
+        </div>
+        <div className="sec-filing-hero-actions">
+          {primaryDocumentUrl ? <a href={primaryDocumentUrl} rel="noreferrer" target="_blank">Primary document</a> : null}
+          {filingDetailUrl ? <a href={filingDetailUrl} rel="noreferrer" target="_blank">SEC filing page</a> : null}
+        </div>
+        <div className="news-full-time-grid sec-filing-time-grid">
           <NewsTimeCard label="Market time" timeZone={EXCHANGE_TIME_ZONE} value={acceptedAt} />
           <NewsTimeCard label="Vancouver" timeZone={VANCOUVER_TIME_ZONE} value={acceptedAt} />
           <NewsTimeCard label="UTC" timeZone="UTC" value={acceptedAt} />
@@ -1358,59 +1400,122 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
             </div>
           ))}
         </div>
-        <dl className="sec-filing-fact-grid">
-          {filingFacts.map((item) => (
-            <div key={item.label}>
-              <dt>{item.label}</dt>
-              <dd>{item.value}</dd>
-            </div>
-          ))}
-        </dl>
-        <div className="sec-filing-link-row">
-          {primaryDocumentUrl ? <a href={primaryDocumentUrl} rel="noreferrer" target="_blank">Open primary document</a> : null}
-          {filingDetailUrl ? <a href={filingDetailUrl} rel="noreferrer" target="_blank">Open SEC filing detail</a> : null}
-        </div>
       </article>
       {loading ? <div className="news-full-detail-notice">Loading complete SEC filing row from ClickHouse...</div> : null}
       {error ? <div className="news-full-detail-notice error">{error}</div> : null}
-      <div className="sec-filing-detail-grid">
-        <section className="sec-filing-detail-section">
-          <h4>Filing Documents</h4>
-          <DataTable empty="No document rows returned for this filing." fitToContent rows={documentRows.map(normalizeRow)} />
-        </section>
-        <section className="sec-filing-detail-section">
-          <h4>Extracted Filing Text</h4>
-          {textRows.length ? (
-            <div className="sec-filing-text-list">
-              {textRows.slice(0, 6).map((textRow, index) => (
-                <details key={`${stringMetric(textRow, ["document_id"])}-${index}`} open={index === 0}>
-                  <summary>
-                    <span>{displayName(stringMetric(textRow, ["text_kind"]) || "text")}</span>
-                    <strong>{formatCompactNumber(numericMetric(textRow, ["text_char_count"]))} chars</strong>
-                  </summary>
-                  <pre>{stringMetric(textRow, ["text_preview"]) || "No text preview returned."}</pre>
-                </details>
-              ))}
+      <section className="sec-filing-reader-layout">
+        <article className="sec-filing-reader-card">
+          <header>
+            <div>
+              <span>Readable filing text</span>
+              <h4>{primaryTextKind}</h4>
             </div>
-          ) : (
-            <p className="sec-filing-empty-note">No filing text rows were returned for this filing.</p>
-          )}
-        </section>
-        <section className="sec-filing-detail-section">
-          <h4>XBRL Company Facts</h4>
-          <DataTable empty="No XBRL company fact rows returned for this filing." fitToContent rows={companyFactRows.map(normalizeRow)} />
-        </section>
-        <section className="sec-filing-detail-section">
-          <h4>XBRL Frame Observations</h4>
-          <DataTable empty="No XBRL frame rows returned for this filing." fitToContent rows={frameRows.map(normalizeRow)} />
-        </section>
-        <section className="sec-filing-detail-section wide">
-          <h4>Filing Parent Row</h4>
+            <strong>{primaryTextChars ? `${formatCompactNumber(primaryTextChars)} chars` : "No text"}</strong>
+          </header>
+          <div className="sec-filing-readable-body">
+            {primaryTextBlocks.length ? (
+              primaryTextBlocks.map((block, index) => <p key={`${index}-${block.slice(0, 24)}`}>{block}</p>)
+            ) : (
+              <p className="sec-filing-empty-note">No filing text was returned for this filing yet.</p>
+            )}
+          </div>
+        </article>
+        <aside className="sec-filing-context-rail">
+          <section className="sec-filing-side-card">
+            <h4>Filing Context</h4>
+            <dl className="sec-filing-context-list">
+              {contextFacts.map((item) => (
+                <div key={item.label}>
+                  <dt>{item.label}</dt>
+                  <dd>{item.value}</dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+          <section className="sec-filing-side-card">
+            <h4>Document Signals</h4>
+            <div className="sec-filing-chip-cloud">
+              {documentTypeSample.length ? documentTypeSample.map((item) => <span key={item}>{item}</span>) : <em>No document type sample.</em>}
+            </div>
+          </section>
+          <section className="sec-filing-side-card">
+            <h4>XBRL Tags</h4>
+            <div className="sec-filing-chip-cloud">
+              {[...xbrlFactTags, ...xbrlFrameTags].length ? [...xbrlFactTags, ...xbrlFrameTags].map((item) => <span key={item}>{item}</span>) : <em>No XBRL tags linked.</em>}
+            </div>
+          </section>
+          <section className="sec-filing-side-card">
+            <h4>Text Rows</h4>
+            <div className="sec-filing-text-row-list">
+              {textRows.length ? textRows.map((textRow, index) => (
+                <div key={`${stringMetric(textRow, ["document_id", "filing_text_id"])}-${index}`}>
+                  <strong>{displayName(stringMetric(textRow, ["text_kind", "kind"]) || `Text row ${index + 1}`)}</strong>
+                  <span>{formatCompactNumber(secTextCharCount(textRow))} chars</span>
+                  <small>{stringMetric(textRow, ["document_id", "filing_document_id", "source_file_name"]) || "-"}</small>
+                </div>
+              )) : <p>No text rows returned.</p>}
+            </div>
+          </section>
+        </aside>
+      </section>
+      <section className="sec-filing-data-sections">
+        <details open>
+          <summary><span>Filing Documents</span><strong>{formatCompactNumber(documentRows.length)}</strong></summary>
+          <div className="sec-filing-data-table-wrap">
+            <DataTable empty="No document rows returned for this filing." fitToContent rows={documentRows.map(normalizeRow)} />
+          </div>
+        </details>
+        <details open={companyFactRows.length > 0}>
+          <summary><span>XBRL Company Facts</span><strong>{formatCompactNumber(companyFactRows.length)}</strong></summary>
+          <div className="sec-filing-data-table-wrap">
+            <DataTable empty="No XBRL company fact rows returned for this filing." fitToContent rows={companyFactRows.map(normalizeRow)} />
+          </div>
+        </details>
+        <details open={frameRows.length > 0}>
+          <summary><span>XBRL Frame Observations</span><strong>{formatCompactNumber(frameRows.length)}</strong></summary>
+          <div className="sec-filing-data-table-wrap">
+            <DataTable empty="No XBRL frame rows returned for this filing." fitToContent rows={frameRows.map(normalizeRow)} />
+          </div>
+        </details>
+        <details>
+          <summary><span>Filing Parent Row</span><strong>{formatCompactNumber(filingFacts.length)}</strong></summary>
           <NewsMetadataTable rows={Object.entries(filingRow).map(([key, value]) => ({ key, value: formatValue(key, value) }))} />
-        </section>
-      </div>
+        </details>
+      </section>
     </div>
   );
+}
+
+function secPrimaryTextRow(rows: Record<string, unknown>[]) {
+  if (!rows.length) return null;
+  return [...rows].sort((left, right) => {
+    const leftPrimary = /primary|main|document/.test(stringMetric(left, ["text_kind", "kind"]).toLowerCase()) ? 1 : 0;
+    const rightPrimary = /primary|main|document/.test(stringMetric(right, ["text_kind", "kind"]).toLowerCase()) ? 1 : 0;
+    return rightPrimary - leftPrimary || secTextCharCount(right) - secTextCharCount(left);
+  })[0] ?? null;
+}
+
+function secTextValue(row: Record<string, unknown>) {
+  return stringMetric(row, ["text_preview", "text", "clean_text", "normalized_text", "body_text", "content"]);
+}
+
+function secTextCharCount(row: Record<string, unknown>) {
+  return numericMetric(row, ["text_char_count", "char_count", "text_chars", "content_chars"]) || secTextValue(row).length;
+}
+
+function secReadableTextBlocks(value: string) {
+  const normalized = value
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{4,}/g, "\n\n\n")
+    .trim();
+  if (!normalized) return [];
+  const blocks = normalized
+    .split(/\n{2,}/)
+    .map((block) => block.replace(/[ \t]{2,}/g, " ").trim())
+    .filter(Boolean);
+  return (blocks.length ? blocks : [normalized]).slice(0, 160);
 }
 
 function newsDetailTickers(dbRow: Record<string, unknown>, tickerRows: Record<string, unknown>[], row: NewsTodayRow) {

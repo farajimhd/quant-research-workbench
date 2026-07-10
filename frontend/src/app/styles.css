@@ -3381,35 +3381,63 @@ button {
 }
 
 .modal-panel.sec-filing-detail-modal-panel {
-  width: min(1480px, calc(100vw - 72px));
-  max-height: min(920px, calc(100vh - 56px));
+  background: var(--surface);
+  width: min(1540px, calc(100vw - 72px));
+  max-height: min(900px, calc(100vh - 56px));
 }
 
 .modal-panel.sec-filing-detail-modal-panel .modal-body {
   overflow: hidden;
+  padding: 0;
 }
 
 .sec-filing-detail {
   display: grid;
-  gap: 12px;
-  max-height: calc(100vh - 150px);
+  gap: 14px;
+  max-height: calc(100vh - 142px);
   min-height: 0;
   overflow: auto;
-  padding: 12px;
+  padding: 14px;
+  scrollbar-gutter: stable;
 }
 
-.sec-filing-article-card {
-  background: linear-gradient(180deg, color-mix(in oklab, var(--surface) 96%, #2563eb 4%), var(--surface));
+.sec-filing-hero-card {
+  background: var(--surface);
   border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
   border-radius: 10px;
-  box-shadow: inset 0 1px 0 color-mix(in oklab, white 35%, transparent);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   overflow: hidden;
 }
 
-.sec-filing-article-header {
+.sec-filing-hero-main {
   display: grid;
   gap: 8px;
   padding: 22px 24px 18px;
+}
+
+.sec-filing-hero-actions {
+  align-content: start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  padding: 22px 24px 0 12px;
+}
+
+.sec-filing-hero-actions a {
+  background: color-mix(in oklab, var(--accent) 7%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--accent) 32%, var(--border));
+  border-radius: 8px;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 680;
+  padding: 8px 10px;
+  text-decoration: none;
+}
+
+.sec-filing-hero-actions a:hover {
+  background: color-mix(in oklab, var(--accent) 12%, var(--surface));
 }
 
 .sec-filing-meta-line {
@@ -3437,17 +3465,17 @@ button {
   color: #1d4ed8;
 }
 
-.sec-filing-article-header h3 {
+.sec-filing-hero-main h3 {
   color: var(--foreground);
   font-family: "Segoe UI", Arial, sans-serif;
-  font-size: clamp(28px, 4vw, 46px);
-  font-weight: 560;
+  font-size: clamp(26px, 3.6vw, 42px);
+  font-weight: 540;
   letter-spacing: 0;
-  line-height: 1.05;
+  line-height: 1.08;
   margin: 0;
 }
 
-.sec-filing-article-header p {
+.sec-filing-hero-main p {
   color: var(--muted-foreground);
   font-size: 14px;
   line-height: 1.45;
@@ -3455,9 +3483,15 @@ button {
   overflow-wrap: anywhere;
 }
 
+.sec-filing-time-grid {
+  border-top: 1px solid var(--border);
+  grid-column: 1 / -1;
+}
+
 .sec-filing-stat-grid {
   border-top: 1px solid var(--border);
   display: grid;
+  grid-column: 1 / -1;
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
@@ -3472,7 +3506,7 @@ button {
 }
 
 .sec-filing-stat-grid span,
-.sec-filing-fact-grid dt {
+.sec-filing-context-list dt {
   color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 720;
@@ -3487,144 +3521,257 @@ button {
   font-weight: 720;
 }
 
-.sec-filing-fact-grid {
-  border-top: 1px solid var(--border);
+.sec-filing-reader-layout {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 14px;
+  grid-template-columns: minmax(0, 1.65fr) minmax(330px, 0.7fr);
+  min-height: 540px;
+}
+
+.sec-filing-reader-card,
+.sec-filing-side-card,
+.sec-filing-data-sections details {
+  background: var(--surface);
+  border: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+  border-radius: 10px;
+}
+
+.sec-filing-reader-card {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sec-filing-reader-card header {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface-alt) 76%, var(--surface));
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 4px;
+  justify-content: space-between;
+  padding: 13px 16px;
+}
+
+.sec-filing-reader-card header span,
+.sec-filing-side-card h4,
+.sec-filing-data-sections summary span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 720;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sec-filing-reader-card header h4 {
+  color: var(--foreground);
+  font-size: 16px;
+  font-weight: 680;
+  margin: 3px 0 0;
+}
+
+.sec-filing-reader-card header strong {
+  background: var(--badge-info-bg);
+  border: 1px solid var(--badge-info-border);
+  border-radius: 999px;
+  color: var(--badge-info-fg);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 9px;
+}
+
+.sec-filing-readable-body {
+  color: var(--foreground);
+  font-family: "Segoe UI", Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.68;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px 30px 32px;
+  scrollbar-gutter: stable;
+}
+
+.sec-filing-readable-body p {
+  margin: 0 0 1.05em;
+  max-width: 94ch;
+  white-space: pre-wrap;
+}
+
+.sec-filing-context-rail {
+  align-content: start;
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+}
+
+.sec-filing-side-card {
+  display: grid;
+  gap: 10px;
+  min-height: 0;
+  padding: 14px;
+}
+
+.sec-filing-side-card h4 {
   margin: 0;
 }
 
-.sec-filing-fact-grid div {
-  border-bottom: 1px solid color-mix(in oklab, var(--border) 68%, transparent);
+.sec-filing-context-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+}
+
+.sec-filing-context-list div {
+  border-top: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
   display: grid;
   gap: 4px;
-  min-width: 0;
-  padding: 11px 16px;
+  padding: 10px 0;
 }
 
-.sec-filing-fact-grid dd {
+.sec-filing-context-list div:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.sec-filing-context-list dd {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 620;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.sec-filing-chip-cloud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sec-filing-chip-cloud span {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--foreground);
+  font-size: 11px;
+  font-weight: 650;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 5px 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sec-filing-chip-cloud em,
+.sec-filing-text-row-list p {
+  color: var(--muted-foreground);
+  font-size: 13px;
+  font-style: normal;
+  margin: 0;
+}
+
+.sec-filing-text-row-list {
+  display: grid;
+  gap: 8px;
+  max-height: 190px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.sec-filing-text-row-list div {
+  background: color-mix(in oklab, var(--surface-alt) 65%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--border) 76%, transparent);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 9px 10px;
+}
+
+.sec-filing-text-row-list strong {
   color: var(--foreground);
   font-size: 12px;
-  font-weight: 600;
-  margin: 0;
+  font-weight: 700;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.sec-filing-link-row {
-  align-items: center;
-  background: color-mix(in oklab, var(--surface-alt) 58%, var(--surface));
-  display: flex;
-  gap: 8px;
-  justify-content: center;
-  padding: 10px 14px;
-}
-
-.sec-filing-link-row a {
-  border: 1px solid color-mix(in oklab, var(--accent) 32%, var(--border));
-  border-radius: 8px;
-  color: var(--accent-strong);
-  font-size: 12px;
-  font-weight: 680;
-  padding: 7px 10px;
-  text-decoration: none;
-}
-
-.sec-filing-link-row a:hover {
-  background: color-mix(in oklab, var(--accent) 8%, transparent);
-}
-
-.sec-filing-detail-grid {
-  display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  min-height: 0;
-}
-
-.sec-filing-detail-section {
-  background: var(--surface);
-  border: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
-  border-radius: 10px;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  max-height: 360px;
-  min-height: 220px;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.sec-filing-detail-section.wide {
-  grid-column: 1 / -1;
-  max-height: 420px;
-}
-
-.sec-filing-detail-section h4 {
-  background: color-mix(in oklab, var(--surface-alt) 74%, var(--surface));
-  border-bottom: 1px solid var(--border);
-  color: var(--foreground);
-  font-size: 13px;
-  font-weight: 720;
-  margin: 0;
-  padding: 10px 12px;
-}
-
-.sec-filing-text-list {
-  min-height: 0;
-  overflow: auto;
-  padding: 10px;
-}
-
-.sec-filing-text-list details {
-  border: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.sec-filing-text-list details + details {
-  margin-top: 8px;
-}
-
-.sec-filing-text-list summary {
-  align-items: center;
-  background: color-mix(in oklab, var(--surface-alt) 70%, var(--surface));
-  cursor: pointer;
-  display: flex;
-  gap: 10px;
-  justify-content: space-between;
-  padding: 8px 10px;
-}
-
-.sec-filing-text-list summary span {
-  color: var(--foreground);
+.sec-filing-text-row-list span {
+  color: var(--muted-foreground);
   font-size: 12px;
   font-weight: 700;
 }
 
-.sec-filing-text-list summary strong {
+.sec-filing-text-row-list small {
   color: var(--muted-foreground);
   font-size: 11px;
-  font-weight: 650;
+  grid-column: 1 / -1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.sec-filing-text-list pre {
+.sec-filing-data-sections {
+  display: grid;
+  gap: 10px;
+}
+
+.sec-filing-data-sections details {
+  overflow: hidden;
+}
+
+.sec-filing-data-sections summary {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface-alt) 76%, var(--surface));
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  list-style: none;
+  padding: 11px 14px;
+}
+
+.sec-filing-data-sections summary::-webkit-details-marker {
+  display: none;
+}
+
+.sec-filing-data-sections summary strong {
   color: var(--foreground);
-  font-family: "Segoe UI", Arial, sans-serif;
   font-size: 13px;
-  line-height: 1.5;
-  margin: 0;
-  max-height: 240px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sec-filing-data-table-wrap {
+  max-height: 330px;
+  min-height: 180px;
   overflow: auto;
-  padding: 12px;
-  white-space: pre-wrap;
 }
 
 .sec-filing-empty-note {
   color: var(--muted-foreground);
-  font-size: 13px;
+  font-size: 14px;
   margin: 0;
-  padding: 14px;
+}
+
+@media (max-width: 1100px) {
+  .sec-filing-hero-card,
+  .sec-filing-reader-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .sec-filing-hero-actions {
+    justify-content: flex-start;
+    padding: 0 24px 18px;
+  }
+
+  .sec-filing-reader-layout {
+    min-height: auto;
+  }
+
+  .sec-filing-readable-body {
+    max-height: 520px;
+  }
 }
 
 .news-enrichment-debug-list {
