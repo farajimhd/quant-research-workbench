@@ -866,7 +866,7 @@ function ServiceActivityPanel({ service }: { service: ServiceStatusPayload }) {
           <tbody>
             {visibleRows.map((row, index) => (
               <tr
-                className={`${workStatusClass(row.status)} ${tableRowRecencyClass(row.timeMs)}`}
+                className={`${workStatusClass(row.status)} ${serviceActivityRecencyClass(service, row)}`.trim()}
                 key={`${row.kind}-${row.subject}-${row.time}-${index}`}
                 onClick={() => setSelectedRow(row)}
                 onKeyDown={(event) => {
@@ -2232,7 +2232,7 @@ function NewsPollHistoryTable({ rows }: { rows: NewsPollHistoryRow[] }) {
         </thead>
         <tbody>
           {(rows.length ? rows : [null]).map((row, index) => row ? (
-            <tr className={`${workStatusClass(row.status)} ${tableRowRecencyClass(row.pollAt)}`} key={row.signature}>
+            <tr className={workStatusClass(row.status)} key={row.signature}>
               <td>{formatCompactNumber(row.pollRun)}</td>
               <ServiceTableTimeCell compact value={row.pollAt} />
               <td>{formatCompactNumber(row.providerRows)}</td>
@@ -2271,7 +2271,7 @@ function SecLiveFeedTable({ rows }: { rows: SecLiveFeedRow[] }) {
         </thead>
         <tbody>
           {(rows.length ? rows : [null]).map((row, index) => row ? (
-            <tr className={`${workStatusClass(row.status)} ${tableRowRecencyClass(row.timeMs)}`} key={`${row.accession}-${row.time}-${index}`}>
+            <tr className={workStatusClass(row.status)} key={`${row.accession}-${row.time}-${index}`}>
               <ServiceTableTimeCell compact timeMs={row.timeMs} value={row.time} />
               <td title={row.cik}>{row.cik || "-"}</td>
               <td>{row.form || "-"}</td>
@@ -2312,7 +2312,7 @@ function NewsPublishHistoryTable({ rows }: { rows: NewsPublishHistoryRow[] }) {
           <tbody>
             {(rows.length ? rows : [null]).map((row, index) => row ? (
               <tr
-                className={`${workStatusClass(row.status)} ${tableRowRecencyClass(row.time)}`}
+                className={workStatusClass(row.status)}
                 key={`${row.event}-${row.pollId}-${row.time}-${index}`}
                 onClick={() => setSelectedRow(row)}
                 tabIndex={0}
@@ -2369,7 +2369,7 @@ function NewsEnrichmentHistoryTable({ rows }: { rows: NewsEnrichmentHistoryRow[]
           <tbody>
             {(rows.length ? rows : [null]).map((row, index) => row ? (
               <tr
-                className={`${workStatusClass(row.status)} ${tableRowRecencyClass(row.time)}`}
+                className={workStatusClass(row.status)}
                 key={`${row.event}-${row.pollId}-${row.time}-${index}`}
                 onClick={() => setSelectedRow(row)}
                 tabIndex={0}
@@ -2426,7 +2426,7 @@ function NewsCoverageHistoryTable({ rows }: { rows: NewsCoverageHistoryRow[] }) 
           <tbody>
             {(rows.length ? rows : [null]).map((row, index) => row ? (
               <tr
-                className={`${workStatusClass(row.status)} ${tableRowRecencyClass(row.time)}`}
+                className={workStatusClass(row.status)}
                 key={`${row.event}-${row.time}-${index}`}
                 onClick={() => setSelectedRow(row)}
                 tabIndex={0}
@@ -4328,6 +4328,12 @@ function serviceActivitySpec(service: ServiceStatusPayload): ServiceActivitySpec
     ],
     title: "Broker Session Activity",
   };
+}
+
+function serviceActivityRecencyClass(service: ServiceStatusPayload, row: ServiceActivityRow) {
+  return service.registry.id === "text-embed" || service.registry.id === "reference"
+    ? tableRowRecencyClass(row.timeMs)
+    : "";
 }
 
 function serviceActivityRows(service: ServiceStatusPayload): ServiceActivityRow[] {

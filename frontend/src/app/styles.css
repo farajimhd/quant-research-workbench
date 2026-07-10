@@ -1444,63 +1444,54 @@ button {
   line-height: 1.05;
 }
 
-.service-activity-table tbody tr.row-age-now,
-.news-today-table tbody tr.row-age-now,
-.news-poll-history-table tbody tr.row-age-now,
-.news-publish-history-table tbody tr.row-age-now {
+.service-activity-panel-text-embed .service-activity-table tbody tr.row-age-now,
+.service-activity-panel-reference .service-activity-table tbody tr.row-age-now,
+.news-today-table tbody tr.row-age-now {
   --row-recency-tint: color-mix(in oklab, #22c55e 18%, var(--surface));
 }
 
-.service-activity-table tbody tr.row-age-1m,
-.news-today-table tbody tr.row-age-1m,
-.news-poll-history-table tbody tr.row-age-1m,
-.news-publish-history-table tbody tr.row-age-1m {
+.service-activity-panel-text-embed .service-activity-table tbody tr.row-age-1m,
+.service-activity-panel-reference .service-activity-table tbody tr.row-age-1m,
+.news-today-table tbody tr.row-age-1m {
   --row-recency-tint: color-mix(in oklab, #16a34a 12%, var(--surface));
 }
 
-.service-activity-table tbody tr.row-age-5m,
-.news-today-table tbody tr.row-age-5m,
-.news-poll-history-table tbody tr.row-age-5m,
-.news-publish-history-table tbody tr.row-age-5m {
+.service-activity-panel-text-embed .service-activity-table tbody tr.row-age-5m,
+.service-activity-panel-reference .service-activity-table tbody tr.row-age-5m,
+.news-today-table tbody tr.row-age-5m {
   --row-recency-tint: color-mix(in oklab, #06b6d4 12%, var(--surface));
 }
 
-.service-activity-table tbody tr.row-age-10m,
-.news-today-table tbody tr.row-age-10m,
-.news-poll-history-table tbody tr.row-age-10m,
-.news-publish-history-table tbody tr.row-age-10m {
+.service-activity-panel-text-embed .service-activity-table tbody tr.row-age-10m,
+.service-activity-panel-reference .service-activity-table tbody tr.row-age-10m,
+.news-today-table tbody tr.row-age-10m {
   --row-recency-tint: color-mix(in oklab, #3b82f6 10%, var(--surface));
 }
 
-.service-activity-table tbody tr.row-age-15m,
-.news-today-table tbody tr.row-age-15m,
-.news-poll-history-table tbody tr.row-age-15m,
-.news-publish-history-table tbody tr.row-age-15m {
+.service-activity-panel-text-embed .service-activity-table tbody tr.row-age-15m,
+.service-activity-panel-reference .service-activity-table tbody tr.row-age-15m,
+.news-today-table tbody tr.row-age-15m {
   --row-recency-tint: color-mix(in oklab, #f59e0b 12%, var(--surface));
 }
 
-.service-activity-table tbody tr.row-age-30m,
-.news-today-table tbody tr.row-age-30m,
-.news-poll-history-table tbody tr.row-age-30m,
-.news-publish-history-table tbody tr.row-age-30m {
+.service-activity-panel-text-embed .service-activity-table tbody tr.row-age-30m,
+.service-activity-panel-reference .service-activity-table tbody tr.row-age-30m,
+.news-today-table tbody tr.row-age-30m {
   --row-recency-tint: color-mix(in oklab, var(--muted-foreground) 8%, var(--surface));
 }
 
-.service-activity-table tbody tr.row-age-old,
+.service-activity-panel-text-embed .service-activity-table tbody tr.row-age-old,
+.service-activity-panel-reference .service-activity-table tbody tr.row-age-old,
 .news-today-table tbody tr.row-age-old,
-.news-poll-history-table tbody tr.row-age-old,
-.news-publish-history-table tbody tr.row-age-old,
-.service-activity-table tbody tr.row-age-unknown,
-.news-today-table tbody tr.row-age-unknown,
-.news-poll-history-table tbody tr.row-age-unknown,
-.news-publish-history-table tbody tr.row-age-unknown {
+.service-activity-panel-text-embed .service-activity-table tbody tr.row-age-unknown,
+.service-activity-panel-reference .service-activity-table tbody tr.row-age-unknown,
+.news-today-table tbody tr.row-age-unknown {
   --row-recency-tint: color-mix(in oklab, var(--muted-foreground) 4%, var(--surface));
 }
 
-.service-activity-table tbody tr.row-age-future,
-.news-today-table tbody tr.row-age-future,
-.news-poll-history-table tbody tr.row-age-future,
-.news-publish-history-table tbody tr.row-age-future {
+.service-activity-panel-text-embed .service-activity-table tbody tr.row-age-future,
+.service-activity-panel-reference .service-activity-table tbody tr.row-age-future,
+.news-today-table tbody tr.row-age-future {
   --row-recency-tint: color-mix(in oklab, #a855f7 10%, var(--surface));
 }
 
