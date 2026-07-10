@@ -3757,10 +3757,25 @@ button {
   align-items: start;
   display: grid;
   gap: 12px;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 360px);
+  grid-template-columns: minmax(0, 1fr);
   height: clamp(430px, 52vh, 620px);
   min-height: 430px;
   overflow: hidden;
+}
+
+.sec-filing-context-overview,
+.sec-filing-context-grid {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.sec-filing-context-grid {
+  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.75fr) minmax(280px, 0.75fr);
+}
+
+.sec-filing-context-grid .sec-filing-side-card:first-child {
+  grid-row: span 2;
 }
 
 .sec-filing-reader-card,
@@ -3833,22 +3848,15 @@ button {
   white-space: pre-wrap;
 }
 
-.sec-filing-context-rail {
-  align-content: start;
-  display: grid;
-  gap: 10px;
-  height: 100%;
-  min-height: 0;
-  overflow: auto;
-  padding-right: 4px;
-  scrollbar-gutter: stable;
-}
-
 .sec-filing-side-card {
   display: grid;
   gap: 8px;
   min-height: 0;
   padding: 12px;
+}
+
+.sec-filing-market-identity-card {
+  background: color-mix(in oklab, var(--surface) 94%, #eff6ff);
 }
 
 .sec-filing-side-card h4 {
@@ -3859,6 +3867,11 @@ button {
   display: grid;
   gap: 0;
   margin: 0;
+}
+
+.sec-filing-context-list-grid {
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
 }
 
 .sec-filing-context-list div {
@@ -3873,11 +3886,21 @@ button {
   padding-top: 0;
 }
 
+.sec-filing-context-list-grid div,
+.sec-filing-context-list-grid div:first-child {
+  background: color-mix(in oklab, var(--surface-alt) 55%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--border) 76%, transparent);
+  border-radius: 8px;
+  min-width: 0;
+  padding: 9px 10px;
+}
+
 .sec-filing-context-list dd {
   color: var(--foreground);
   font-size: 13px;
   font-weight: 620;
   margin: 0;
+  min-width: 0;
   overflow-wrap: anywhere;
 }
 
@@ -4033,7 +4056,8 @@ button {
 
 @media (max-width: 1100px) {
   .sec-filing-hero-card,
-  .sec-filing-reader-layout {
+  .sec-filing-reader-layout,
+  .sec-filing-context-grid {
     grid-template-columns: 1fr;
   }
 
@@ -4052,9 +4076,8 @@ button {
     max-height: 520px;
   }
 
-  .sec-filing-context-rail {
-    height: auto;
-    max-height: 520px;
+  .sec-filing-context-grid .sec-filing-side-card:first-child {
+    grid-row: auto;
   }
 }
 
