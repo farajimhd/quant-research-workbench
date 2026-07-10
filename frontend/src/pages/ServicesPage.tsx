@@ -3051,7 +3051,9 @@ function serviceWorkPlanSummaryItems(groups: ServiceWorkGroup[]): WorkPlanSummar
 
 function newsWorkPlanSummaryItems(service: ServiceStatusPayload): WorkPlanSummaryMetric[] {
   const metrics = serviceMetricsRecord(service);
-  const liveReceived = numericMetric(metrics, ["provider_rows", "raw_saved"]);
+  const processedRows = numericMetric(metrics, ["processed_rows", "provider_rows", "raw_saved"]);
+  const duplicateRows = numericMetric(metrics, ["duplicate_news_rows"]);
+  const newsReceived = numericMetric(metrics, ["unique_news_rows"]) || Math.max(0, processedRows - duplicateRows);
   const enrichedUrls = numericMetric(metrics, ["background_enriched_urls"]);
   const requiredDownloads = numericMetric(metrics, ["background_fetch_tasks"]);
   const insertedRows = numericMetric(metrics, ["written_rows"]);
@@ -3061,10 +3063,10 @@ function newsWorkPlanSummaryItems(service: ServiceStatusPayload): WorkPlanSummar
   const coverageJobs = coverageRows.length;
   return [
     {
-      label: "Live Received",
-      title: "Total Benzinga rows received by the live polling path in this service run.",
-      tone: liveReceived > 0 ? "active" : undefined,
-      value: formatCompactNumber(liveReceived),
+      label: "News Received",
+      title: "Distinct Benzinga news items received by the live path in this service run. Repeated lookback rows from polling are excluded.",
+      tone: newsReceived > 0 ? "active" : undefined,
+      value: formatCompactNumber(newsReceived),
     },
     {
       label: "Enriched / Required",
