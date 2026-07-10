@@ -3657,6 +3657,7 @@ button {
   border-radius: 10px;
   box-shadow: 0 12px 32px color-mix(in oklab, #0f172a 8%, transparent);
   display: grid;
+  flex: 0 0 auto;
   grid-template-columns: minmax(0, 1fr) auto;
   overflow: hidden;
   position: relative;
@@ -3665,8 +3666,8 @@ button {
 
 .sec-filing-hero-main {
   display: grid;
-  gap: 8px;
-  padding: 20px 22px 18px;
+  gap: 7px;
+  padding: 16px 18px 14px;
 }
 
 .sec-filing-hero-actions {
@@ -3676,7 +3677,7 @@ button {
   gap: 8px;
   justify-content: flex-end;
   min-width: 250px;
-  padding: 20px 22px 0 12px;
+  padding: 16px 18px 0 10px;
 }
 
 .sec-filing-hero-actions a {
@@ -3722,10 +3723,10 @@ button {
 .sec-filing-hero-main h3 {
   color: var(--foreground);
   font-family: "Segoe UI", Arial, sans-serif;
-  font-size: clamp(28px, 3.2vw, 42px);
+  font-size: clamp(24px, 2.4vw, 34px);
   font-weight: 560;
   letter-spacing: 0;
-  line-height: 1.04;
+  line-height: 1.08;
   margin: 0;
   max-width: 860px;
 }
@@ -3744,7 +3745,7 @@ button {
   display: grid;
   gap: 10px;
   grid-template-columns: minmax(150px, 0.22fr) minmax(0, 1fr);
-  margin-top: 8px;
+  margin-top: 6px;
   max-width: 980px;
 }
 
@@ -3785,7 +3786,7 @@ button {
 .sec-filing-hero-identity-list {
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
   margin: 0;
   min-width: 0;
 }
@@ -3825,7 +3826,7 @@ button {
 .sec-filing-stat-grid div {
   display: grid;
   gap: 3px;
-  padding: 12px 18px;
+  padding: 10px 16px;
 }
 
 .sec-filing-stat-grid div + div {

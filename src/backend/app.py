@@ -2245,16 +2245,22 @@ def service_sec_detail(cik: str, accession_number: str) -> dict[str, Any]:
     frame_table = "sec_xbrl_frame_observation_v1"
     cik_sql = sql_string(normalized_cik)
     accession_sql = sql_string(accession)
-    where_key = f"toString(cik) = {cik_sql} AND accession_number = {accession_sql}"
-    filing_rows = clickhouse_json_each_row(
-        f"""
-        SELECT *
-        FROM {quote_ident(database)}.{quote_ident(filing_table)} FINAL
-        WHERE {where_key}
-        LIMIT 1
-        FORMAT JSONEachRow
-        """
-    )
+    where_key = f"cik = {cik_sql} AND accession_number = {accession_sql}"
+    try:
+        filing_rows = clickhouse_json_each_row(
+            f"""
+            SELECT *
+            FROM {quote_ident(database)}.{quote_ident(filing_table)}
+            WHERE {where_key}
+            ORDER BY inserted_at DESC
+            LIMIT 1
+            FORMAT JSONEachRow
+            """
+        )
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="SEC filing parent lookup timed out") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"SEC filing parent lookup failed: {exc}") from exc
     if not filing_rows:
         raise HTTPException(status_code=404, detail="SEC filing row not found")
 
@@ -2271,9 +2277,9 @@ def service_sec_detail(cik: str, accession_number: str) -> dict[str, Any]:
         "document_rows",
         f"""
         SELECT *
-        FROM {quote_ident(database)}.{quote_ident(document_table)} FINAL
+        FROM {quote_ident(database)}.{quote_ident(document_table)}
         WHERE {where_key}
-        ORDER BY sequence_number ASC, document_name ASC
+        ORDER BY sequence_number ASC, inserted_at DESC, document_name ASC
         LIMIT 250
         FORMAT JSONEachRow
         """,
@@ -2301,9 +2307,9 @@ def service_sec_detail(cik: str, accession_number: str) -> dict[str, Any]:
             source_run_id,
             inserted_at,
             text_char_count > 30000 AS text_truncated
-        FROM {quote_ident(database)}.{quote_ident(text_table)} FINAL
+        FROM {quote_ident(database)}.{quote_ident(text_table)}
         WHERE {where_key}
-        ORDER BY text_kind ASC, document_id ASC
+        ORDER BY text_kind ASC, document_id ASC, inserted_at DESC
         LIMIT 50
         FORMAT JSONEachRow
         """,
