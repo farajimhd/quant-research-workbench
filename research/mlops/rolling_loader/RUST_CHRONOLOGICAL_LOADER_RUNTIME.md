@@ -95,7 +95,12 @@ There are two profilers:
 - `run_profile_rust_native_cache_loader.py` is the native parquet-reader smoke
   profile. It opens real daily-index cache parquet files from Rust, validates
   raw event stream continuity with saved context rows, and touches all required
-  modality artifact types. It does not yet return trainer batches.
+  modality artifact types. It does not yet return trainer batches. The
+  no-argument native profile is intentionally a single practical experiment:
+  one 1024-sample batch, `read_workers=cpu_count`, and `ticker_limit` resolved
+  to the worker count unless explicitly overridden. Context artifacts are
+  touched only for ticker packages that actually contribute accepted origins to
+  that one batch.
 
 Build and profile from Python:
 

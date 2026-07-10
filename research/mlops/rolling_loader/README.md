@@ -107,6 +107,11 @@ Use `run_profile_rust_native_cache_loader.py` to validate direct Rust parquet
 reads and manifest-driven cache integrity before moving more trainer work into
 Rust-owned buffers.
 
+The native cache profile defaults to one practical experiment for live-training
+feasibility: one 1024-sample batch, `read_workers=0` meaning CPU-count workers,
+and `ticker_limit=0` meaning the resolved worker count. Override those only when
+you intentionally want a broader stress test.
+
 The active v3 chronological loader now exposes these cache-first controls:
 
 | Argument | Default | Meaning |

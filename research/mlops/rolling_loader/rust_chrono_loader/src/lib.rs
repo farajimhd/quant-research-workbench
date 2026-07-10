@@ -1429,7 +1429,6 @@ fn process_native_package(
             return stats;
         }
     };
-    touch_native_context_files(cache_root, month, &manifest, &mut stats);
     let Some(parts) = manifest.get("parts").and_then(|value| value.as_array()) else {
         stats.status = -4;
         stats.schema_errors += 1;
@@ -1461,6 +1460,7 @@ fn process_native_package(
         )
     });
     let mut all_event_ordinals: Vec<u64> = Vec::new();
+    let mut package_samples = 0_u64;
     for part in event_parts {
         if global_samples.load(Ordering::Acquire) >= target_samples {
             break;
@@ -1564,6 +1564,7 @@ fn process_native_package(
             global_samples,
             &mut stats,
         );
+        package_samples += part_samples;
         if part_samples > 0 {
             touch_native_part_day_context(
                 cache_root,
@@ -1575,6 +1576,9 @@ fn process_native_package(
             );
         }
         stats.parts_processed += 1;
+    }
+    if package_samples > 0 {
+        touch_native_context_files(cache_root, month, &manifest, &mut stats);
     }
     stats
 }
@@ -1629,13 +1633,33 @@ fn validate_native_event_windows(
             stats.invalid_event_windows += 1;
             continue;
         }
+        if !try_reserve_native_sample(global_samples, target_samples) {
+            break;
+        }
         accepted += 1;
-        global_samples.fetch_add(1, Ordering::AcqRel);
         stats.checksum_bits ^= origin_ordinals[row].rotate_left((row % 63) as u32)
             ^ origin_timestamps[row].rotate_left(((row + 7) % 63) as u32)
             ^ event_ordinals[start].rotate_left(((row + 13) % 63) as u32);
     }
     accepted
+}
+
+fn try_reserve_native_sample(global_samples: &AtomicU64, target_samples: u64) -> bool {
+    let mut current = global_samples.load(Ordering::Acquire);
+    loop {
+        if current >= target_samples {
+            return false;
+        }
+        match global_samples.compare_exchange_weak(
+            current,
+            current.saturating_add(1),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return true,
+            Err(next) => current = next,
+        }
+    }
 }
 
 fn touch_native_context_files(

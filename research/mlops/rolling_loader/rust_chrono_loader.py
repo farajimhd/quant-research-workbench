@@ -352,11 +352,11 @@ class RustTensorAssemblyResult:
 class RustNativeCacheProfileConfig:
     cache_root: Path
     month: str = "2019-02"
-    ticker_limit: int = 64
+    ticker_limit: int = 0
     batch_size: int = 1024
-    max_batches: int = 8
+    max_batches: int = 1
     event_stream_len: int = 1024
-    read_workers: int = 8
+    read_workers: int = 0
     strict: bool = True
 
 
@@ -665,14 +665,20 @@ def profile_rust_native_cache(
 ) -> RustNativeCacheProfileStats:
     cache_root = str(Path(config.cache_root)).encode("utf-8")
     month = str(config.month).encode("utf-8")
+    read_workers = int(config.read_workers)
+    if read_workers <= 0:
+        read_workers = int(os.cpu_count() or 1)
+    ticker_limit = int(config.ticker_limit)
+    if ticker_limit <= 0:
+        ticker_limit = read_workers
     ffi_config = _FfiNativeCacheProfileConfig(
         cache_root=ctypes.c_char_p(cache_root),
         month=ctypes.c_char_p(month),
-        ticker_limit=max(0, int(config.ticker_limit)),
+        ticker_limit=max(1, ticker_limit),
         batch_size=max(1, int(config.batch_size)),
         max_batches=max(1, int(config.max_batches)),
         event_stream_len=max(1, int(config.event_stream_len)),
-        read_workers=max(1, int(config.read_workers)),
+        read_workers=max(1, read_workers),
         strict=1 if bool(config.strict) else 0,
     )
     ffi_stats = _FfiNativeCacheProfileStats()

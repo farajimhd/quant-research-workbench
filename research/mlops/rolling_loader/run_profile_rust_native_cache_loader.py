@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from dataclasses import asdict
@@ -24,6 +25,8 @@ from research.mlops.rolling_loader.rust_chrono_loader import (
 
 DEFAULT_CACHE_ROOT = DEFAULT_DAILY_INDEX_CACHE_ROOT / "events_daily_index_2019-02"
 DEFAULT_OUTPUT_ROOT = Path("D:/TradingML/runtimes/rolling_loader/rust_native_cache_loader_profiles")
+DEFAULT_BATCH_SIZE = 1024
+DEFAULT_BATCHES = 1
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,11 +39,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--cache-root", type=Path, default=DEFAULT_CACHE_ROOT)
     parser.add_argument("--month", default="2019-02")
-    parser.add_argument("--ticker-limit", type=int, default=64)
-    parser.add_argument("--batch-size", type=int, default=1024)
-    parser.add_argument("--batches", type=int, default=8)
+    parser.add_argument(
+        "--ticker-limit",
+        type=int,
+        default=0,
+        help="Ticker packages to consider. 0 uses the resolved worker count for the one-experiment profile.",
+    )
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    parser.add_argument("--batches", type=int, default=DEFAULT_BATCHES)
     parser.add_argument("--event-stream-len", type=int, default=1024)
-    parser.add_argument("--read-workers", type=int, default=8)
+    parser.add_argument("--read-workers", type=int, default=0, help="Rust package-reader workers. 0 uses os.cpu_count().")
     parser.add_argument("--strict", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--no-build", action="store_true")
@@ -57,23 +65,28 @@ def main() -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     jsonl_path = run_dir / "rust_native_cache_loader_profile.jsonl"
     summary_path = run_dir / "rust_native_cache_loader_summary.json"
+    resolved_read_workers = _resolve_read_workers(int(args.read_workers))
+    resolved_ticker_limit = _resolve_ticker_limit(int(args.ticker_limit), resolved_read_workers)
     config = RustNativeCacheProfileConfig(
         cache_root=Path(args.cache_root),
         month=str(args.month),
-        ticker_limit=int(args.ticker_limit),
+        ticker_limit=resolved_ticker_limit,
         batch_size=int(args.batch_size),
         max_batches=int(args.batches),
         event_stream_len=int(args.event_stream_len),
-        read_workers=int(args.read_workers),
+        read_workers=resolved_read_workers,
         strict=bool(args.strict),
     )
     header = {
+        "profile_goal": "single_experiment_batch_size_1024",
         "cache_root": str(config.cache_root),
         "month": str(config.month),
+        "ticker_limit_requested": int(args.ticker_limit),
         "ticker_limit": int(config.ticker_limit),
         "batch_size": int(config.batch_size),
         "batches": int(config.max_batches),
         "event_stream_len": int(config.event_stream_len),
+        "read_workers_requested": int(args.read_workers),
         "read_workers": int(config.read_workers),
         "strict": bool(config.strict),
         "library": str(rust_library_path(release=release)),
@@ -123,6 +136,18 @@ def _now_iso() -> str:
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _resolve_read_workers(value: int) -> int:
+    if value > 0:
+        return value
+    return max(1, int(os.cpu_count() or 1))
+
+
+def _resolve_ticker_limit(value: int, read_workers: int) -> int:
+    if value > 0:
+        return value
+    return max(1, int(read_workers))
 
 
 if __name__ == "__main__":
