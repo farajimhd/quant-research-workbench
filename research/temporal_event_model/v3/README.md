@@ -92,7 +92,7 @@ batch_size: 1024
 read_workers: 16
 materialize_workers: 32
 loaded_parts_per_group: 256
-materialize_chunk_size: 256
+materialize_chunk_size: 1024
 prefetch_batches: 64
 time_window_seconds: 60.0
 frontier_max_origins_per_window: 0
@@ -118,7 +118,8 @@ batch_size: 512
 read_workers: 4
 materialize_workers: 4
 loaded_parts_per_group: 2
-materialize_chunk_size: 128
+materialize_chunk_size: 512
+prefetch_batches: 64
 scanner_index_cache_entries: 4
 scanner_prefetch_workers: 2
 ```
@@ -191,7 +192,7 @@ warmup_batches: 1
 measured_batches: 4
 time_window_seconds_grid: 15,60
 frontier_max_origins_grid: 0,16384,65536
-materialize_chunk_size_grid: 256
+materialize_chunk_size_grid: 1024
 worker_grid: 16x32
 loaded_parts_per_group_grid: 256
 origin_cursor_chunk_rows_grid: 1024
@@ -220,7 +221,7 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\research\temporal_e
   --preset custom `
   --time-window-seconds-grid 15,30,60 `
   --frontier-max-origins-grid 0,32768,65536 `
-  --materialize-chunk-size-grid 256,512 `
+  --materialize-chunk-size-grid 512,1024 `
   --worker-grid 16x32,16x48
 ```
 

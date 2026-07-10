@@ -446,14 +446,14 @@ def _grid_from_args(args: argparse.Namespace) -> list["GridItem"]:
     if preset == "quick":
         time_windows = [15.0, 60.0]
         caps = [0, 16_384, 65_536]
-        chunks = [256]
+        chunks = [1024]
         workers = [(16, 32)]
         loaded_parts = [256]
         cursor_rows = [1024]
     elif preset == "balanced":
         time_windows = [5.0, 15.0, 30.0, 60.0]
         caps = [0, 8_192, 16_384, 32_768, 65_536]
-        chunks = [256]
+        chunks = [512, 1024]
         workers = [(16, 32)]
         loaded_parts = [256]
         cursor_rows = [1024]
@@ -467,7 +467,7 @@ def _grid_from_args(args: argparse.Namespace) -> list["GridItem"]:
     else:
         time_windows = [60.0]
         caps = [0]
-        chunks = [256]
+        chunks = [1024]
         workers = [(16, 32)]
         loaded_parts = [256]
         cursor_rows = [1024]

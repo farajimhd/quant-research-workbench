@@ -2848,7 +2848,7 @@ class AsyncDailyIndexBatchLoader:
                     window_start = int(day_window_start)
                 day_total_refs = int(sum(max(0, int(plan.origin_count)) for plan in day_plans))
                 emitted_from_day = 0
-                materialize_size = int(self.config.materialize_chunk_size) or min(int(self.config.batch_size), 256)
+                materialize_size = int(self.config.materialize_chunk_size) or int(self.config.batch_size)
                 self._update_telemetry(
                     loader_phase="day_planned",
                     current_source_date=str(source_date),
@@ -4220,6 +4220,9 @@ class _ReadyBatchBuffer:
 
     def add(self, batch: DailyIndexTrainingBatch) -> Iterator[DailyIndexTrainingBatch]:
         if batch.sample_count <= 0:
+            return
+        if not self._chunks and int(batch.sample_count) == int(self.batch_size):
+            yield batch
             return
         self._chunks.append(batch)
         self._samples += int(batch.sample_count)
