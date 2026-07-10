@@ -1035,7 +1035,7 @@ function SecTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: NewsT
           <Search size={14} />
           <input
             onChange={(event) => setSearchQuery(event.target.value)}
-            placeholder="Search CIK, company, form, accession, document, text status, or XBRL tag"
+            placeholder="Search CIK, company, SEC form, accession, document, text status, or XBRL tag"
             type="search"
             value={searchQuery}
           />
@@ -1068,7 +1068,7 @@ function SecTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: NewsT
                 </button>
               </th>
               <th>CIK</th>
-              <th>Form</th>
+              <th title="SEC filing form type, such as 10-K, 8-K, 424B2, or FWP. This is not the ticker.">SEC Form</th>
               <th>Filing</th>
               <th>Docs / Text</th>
               <th>XBRL</th>
