@@ -65,10 +65,21 @@ workstation environment without fetching PyO3/Arrow crates.
 
 ## Profiling
 
+There are two profilers:
+
+- `run_profile_rust_chrono_loader.py` is synthetic. It stress-tests queues,
+  priority stealing, and cache append mechanics but does not represent training
+  throughput.
+- `run_profile_rust_real_cache_loader.py` is the realistic event-cache profile.
+  It reads actual daily-index `events/*.parquet` and `origins/*.parquet`, packs
+  the real event columns, passes them to Rust through `ctypes`, and has Rust
+  build rolling event streams from real `event_row_offset` and ordinal pairs.
+
 Build and profile from Python:
 
 ```powershell
 python research\mlops\rolling_loader\run_profile_rust_chrono_loader.py
+python research\mlops\rolling_loader\run_profile_rust_real_cache_loader.py
 ```
 
 The no-argument profile runs the default workstation grid:

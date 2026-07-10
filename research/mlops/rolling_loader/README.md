@@ -14,6 +14,7 @@ Older materialized-cache, indexed-daily, replay, and ticker-month builder trials
 | `daily_index_dataset.py` | Reads daily-index cache packages and materializes trainer batches. |
 | `rust_chrono_loader.py` | Python `ctypes` API wrapper for the Rust chronological loader runtime. |
 | `run_profile_rust_chrono_loader.py` | Standalone profiler for the Rust queue/cache hot path. |
+| `run_profile_rust_real_cache_loader.py` | Reads real daily-index parquet event/origin parts, builds the real Rust rolling event cache, and profiles realistic cache throughput. |
 | `DAILY_INDEX_STREAMING_CACHE_DESIGN.md` | Design contract for the builder, cache layout, concurrency, and terminal reporting. |
 | `CACHE_FIRST_CHRONOLOGICAL_LOADER_DESIGN.md` | Active cache-first chronological loader contract with ticker cache capacity, rolling context state, hybrid frontier origins, and detailed profiling requirements. |
 | `RUST_CHRONOLOGICAL_LOADER_RUNTIME.md` | Rust implementation contract for the four-pool realtime/prefetch runtime and current profiling boundary. |
@@ -85,6 +86,10 @@ profiler: it implements the four worker pools, realtime-priority queue stealing,
 shared-buffer read-to-process handoff, per-ticker event cache update, and ready
 batch accounting. It does not yet replace `AsyncDailyIndexBatchLoader` for full
 trainer batches.
+
+Use `run_profile_rust_real_cache_loader.py` for realistic throughput. The older
+`run_profile_rust_chrono_loader.py` synthetic profiler is only a concurrency
+smoke/stress test and intentionally does not read real cache files.
 
 The active v3 chronological loader now exposes these cache-first controls:
 

@@ -6,7 +6,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const VERSION: &str = "rolling_loader_rust/0.1.0";
+const VERSION: &str = "rolling_loader_rust/0.2.0";
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -68,6 +68,55 @@ pub struct RustQueueProfileStats {
     pub event_cache_appends: u64,
     pub event_cache_reused: u64,
     pub bytes_allocated: u64,
+    pub checksum_bits: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RustRealCacheProfileConfig {
+    pub part_count: u32,
+    pub event_stream_len: u32,
+    pub batch_size: u32,
+    pub realtime_process_workers: u32,
+    pub prefetch_process_workers: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RustRealCachePart {
+    pub ticker_id: u64,
+    pub event_rows: u64,
+    pub origin_count: u64,
+    pub feature_count: u32,
+    pub priority: u32,
+    pub ordinals: *const u64,
+    pub features: *const f32,
+    pub origin_offsets: *const i64,
+    pub origin_ordinals: *const u64,
+}
+
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+pub struct RustRealCacheProfileStats {
+    pub status: i32,
+    pub elapsed_ns: u64,
+    pub process_jobs_enqueued: u64,
+    pub process_jobs_finished: u64,
+    pub realtime_process_jobs: u64,
+    pub prefetch_process_jobs: u64,
+    pub process_priority_steals: u64,
+    pub process_worker_ns: u64,
+    pub parts: u64,
+    pub event_rows: u64,
+    pub origins_seen: u64,
+    pub samples: u64,
+    pub batches: u64,
+    pub invalid_origins: u64,
+    pub ordinal_mismatches: u64,
+    pub event_cache_rebuilds: u64,
+    pub event_cache_appends: u64,
+    pub event_cache_reused: u64,
+    pub bytes_input: u64,
     pub checksum_bits: u64,
 }
 
@@ -537,6 +586,345 @@ fn run_profile(cfg: RustQueueProfileConfig) -> RustQueueProfileStats {
     collect_stats(&shared, started.elapsed().as_nanos() as u64, 0)
 }
 
+#[derive(Clone, Copy)]
+struct RealPartView {
+    ticker_id: u64,
+    event_rows: usize,
+    origin_count: usize,
+    feature_count: usize,
+    priority: Priority,
+    ordinals: *const u64,
+    features: *const f32,
+    origin_offsets: *const i64,
+    origin_ordinals: *const u64,
+}
+
+unsafe impl Send for RealPartView {}
+unsafe impl Sync for RealPartView {}
+
+struct RealProcessJob {
+    part_index: usize,
+}
+
+struct RealRuntimeShared {
+    cfg: RustRealCacheProfileConfig,
+    parts: Arc<Vec<RealPartView>>,
+    process_queues: QueuePair<RealProcessJob>,
+    shutdown: AtomicBool,
+    process_jobs_enqueued: AtomicU64,
+    process_jobs_finished: AtomicU64,
+    realtime_process_jobs: AtomicU64,
+    prefetch_process_jobs: AtomicU64,
+    process_priority_steals: AtomicU64,
+    process_worker_ns: AtomicU64,
+    origins_seen: AtomicU64,
+    samples: AtomicU64,
+    invalid_origins: AtomicU64,
+    ordinal_mismatches: AtomicU64,
+    event_cache_rebuilds: AtomicU64,
+    event_cache_appends: AtomicU64,
+    event_cache_reused: AtomicU64,
+    checksum_bits: AtomicU64,
+}
+
+impl RealRuntimeShared {
+    fn new(cfg: RustRealCacheProfileConfig, parts: Vec<RealPartView>) -> Arc<Self> {
+        Arc::new(Self {
+            cfg,
+            parts: Arc::new(parts),
+            process_queues: QueuePair::new(),
+            shutdown: AtomicBool::new(false),
+            process_jobs_enqueued: AtomicU64::new(0),
+            process_jobs_finished: AtomicU64::new(0),
+            realtime_process_jobs: AtomicU64::new(0),
+            prefetch_process_jobs: AtomicU64::new(0),
+            process_priority_steals: AtomicU64::new(0),
+            process_worker_ns: AtomicU64::new(0),
+            origins_seen: AtomicU64::new(0),
+            samples: AtomicU64::new(0),
+            invalid_origins: AtomicU64::new(0),
+            ordinal_mismatches: AtomicU64::new(0),
+            event_cache_rebuilds: AtomicU64::new(0),
+            event_cache_appends: AtomicU64::new(0),
+            event_cache_reused: AtomicU64::new(0),
+            checksum_bits: AtomicU64::new(0),
+        })
+    }
+}
+
+struct RealPartCounters {
+    origins_seen: u64,
+    samples: u64,
+    invalid_origins: u64,
+    ordinal_mismatches: u64,
+    rebuilds: u64,
+    appends: u64,
+    reused: u64,
+    checksum_bits: u64,
+}
+
+impl RealPartCounters {
+    fn new() -> Self {
+        Self {
+            origins_seen: 0,
+            samples: 0,
+            invalid_origins: 0,
+            ordinal_mismatches: 0,
+            rebuilds: 0,
+            appends: 0,
+            reused: 0,
+            checksum_bits: 0,
+        }
+    }
+}
+
+struct RealEventCacheState {
+    stream: Vec<f32>,
+    last_offset: usize,
+}
+
+fn enqueue_real_process(shared: &RealRuntimeShared, job: RealProcessJob, priority: Priority) {
+    shared.process_jobs_enqueued.fetch_add(1, Ordering::Relaxed);
+    match priority {
+        Priority::Realtime => shared.process_queues.realtime.push(job),
+        Priority::Prefetch => shared.process_queues.prefetch.push(job),
+    }
+}
+
+fn real_process_worker(shared: Arc<RealRuntimeShared>, worker_is_prefetch: bool) {
+    loop {
+        if shared.shutdown.load(Ordering::Acquire) && shared.process_queues.is_empty() {
+            return;
+        }
+        let Some(job) = pop_with_priority(
+            &shared.process_queues,
+            worker_is_prefetch,
+            &shared.process_priority_steals,
+        ) else {
+            thread::sleep(Duration::from_micros(200));
+            continue;
+        };
+        let Some(part) = shared.parts.get(job.part_index).copied() else {
+            shared.invalid_origins.fetch_add(1, Ordering::Relaxed);
+            shared.process_jobs_finished.fetch_add(1, Ordering::Release);
+            continue;
+        };
+        match part.priority {
+            Priority::Realtime => shared.realtime_process_jobs.fetch_add(1, Ordering::Relaxed),
+            Priority::Prefetch => shared.prefetch_process_jobs.fetch_add(1, Ordering::Relaxed),
+        };
+        let started = Instant::now();
+        let counters = process_real_cache_part(&shared.cfg, part);
+        shared
+            .process_worker_ns
+            .fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        shared
+            .origins_seen
+            .fetch_add(counters.origins_seen, Ordering::Relaxed);
+        shared
+            .samples
+            .fetch_add(counters.samples, Ordering::Relaxed);
+        shared
+            .invalid_origins
+            .fetch_add(counters.invalid_origins, Ordering::Relaxed);
+        shared
+            .ordinal_mismatches
+            .fetch_add(counters.ordinal_mismatches, Ordering::Relaxed);
+        shared
+            .event_cache_rebuilds
+            .fetch_add(counters.rebuilds, Ordering::Relaxed);
+        shared
+            .event_cache_appends
+            .fetch_add(counters.appends, Ordering::Relaxed);
+        shared
+            .event_cache_reused
+            .fetch_add(counters.reused, Ordering::Relaxed);
+        shared
+            .checksum_bits
+            .fetch_xor(counters.checksum_bits, Ordering::Relaxed);
+        shared.process_jobs_finished.fetch_add(1, Ordering::Release);
+    }
+}
+
+fn process_real_cache_part(
+    cfg: &RustRealCacheProfileConfig,
+    part: RealPartView,
+) -> RealPartCounters {
+    let mut counters = RealPartCounters::new();
+    counters.checksum_bits ^= part.ticker_id.rotate_left(11);
+    let stream_len = cfg.event_stream_len.max(1) as usize;
+    let features = part.feature_count.max(1);
+    if part.event_rows < stream_len || part.origin_count == 0 {
+        counters.invalid_origins = part.origin_count as u64;
+        counters.origins_seen = part.origin_count as u64;
+        return counters;
+    }
+    let mut state: Option<RealEventCacheState> = None;
+    let mut scratch = vec![0.0_f32; stream_len * features];
+    for origin_index in 0..part.origin_count {
+        counters.origins_seen += 1;
+        let offset = unsafe { *part.origin_offsets.add(origin_index) };
+        if offset < 0 {
+            counters.invalid_origins += 1;
+            continue;
+        }
+        let offset = offset as usize;
+        if offset >= part.event_rows || offset + 1 < stream_len {
+            counters.invalid_origins += 1;
+            continue;
+        }
+        let event_ordinal = unsafe { *part.ordinals.add(offset) };
+        let origin_ordinal = unsafe { *part.origin_ordinals.add(origin_index) };
+        if event_ordinal != origin_ordinal {
+            counters.ordinal_mismatches += 1;
+            continue;
+        }
+        if state
+            .as_ref()
+            .map(|cache| offset < cache.last_offset)
+            .unwrap_or(true)
+        {
+            let mut stream = vec![0.0_f32; stream_len * features];
+            copy_real_window(&mut stream, part, offset + 1 - stream_len, offset + 1);
+            state = Some(RealEventCacheState {
+                stream,
+                last_offset: offset,
+            });
+            counters.rebuilds += 1;
+        } else if let Some(cache) = state.as_mut() {
+            if offset > cache.last_offset {
+                let appended = append_real_rows(cache, part, offset, stream_len, features);
+                counters.appends += appended as u64;
+            } else {
+                counters.reused += 1;
+            }
+        }
+        if let Some(cache) = state.as_ref() {
+            scratch.copy_from_slice(&cache.stream);
+            counters.checksum_bits ^= sample_checksum_bits(&scratch, features);
+            counters.samples += 1;
+        }
+    }
+    counters
+}
+
+fn copy_real_window(dst: &mut [f32], part: RealPartView, start: usize, end: usize) {
+    let features = part.feature_count.max(1);
+    let len = (end - start) * features;
+    let src = unsafe { std::slice::from_raw_parts(part.features.add(start * features), len) };
+    dst.copy_from_slice(src);
+}
+
+fn append_real_rows(
+    cache: &mut RealEventCacheState,
+    part: RealPartView,
+    target_offset: usize,
+    stream_len: usize,
+    features: usize,
+) -> usize {
+    let count = target_offset.saturating_sub(cache.last_offset);
+    if count == 0 {
+        return 0;
+    }
+    if count >= stream_len {
+        copy_real_window(
+            &mut cache.stream,
+            part,
+            target_offset + 1 - stream_len,
+            target_offset + 1,
+        );
+        cache.last_offset = target_offset;
+        return count;
+    }
+    cache
+        .stream
+        .copy_within(count * features..stream_len * features, 0);
+    let target_tail_start = (stream_len - count) * features;
+    let source_start = (target_offset + 1 - count) * features;
+    let source_len = count * features;
+    let source = unsafe { std::slice::from_raw_parts(part.features.add(source_start), source_len) };
+    cache.stream[target_tail_start..].copy_from_slice(source);
+    cache.last_offset = target_offset;
+    count
+}
+
+fn run_real_cache_profile(
+    cfg: RustRealCacheProfileConfig,
+    parts: Vec<RealPartView>,
+) -> RustRealCacheProfileStats {
+    let cfg = RustRealCacheProfileConfig {
+        part_count: cfg.part_count,
+        event_stream_len: cfg.event_stream_len.max(1),
+        batch_size: cfg.batch_size.max(1),
+        realtime_process_workers: cfg.realtime_process_workers.max(1),
+        prefetch_process_workers: cfg.prefetch_process_workers.max(1),
+    };
+    let event_rows = parts.iter().map(|part| part.event_rows as u64).sum::<u64>();
+    let bytes_input = parts
+        .iter()
+        .map(|part| {
+            (part.event_rows as u64 * part.feature_count as u64 * std::mem::size_of::<f32>() as u64)
+                + (part.event_rows as u64 * std::mem::size_of::<u64>() as u64)
+                + (part.origin_count as u64 * std::mem::size_of::<i64>() as u64)
+                + (part.origin_count as u64 * std::mem::size_of::<u64>() as u64)
+        })
+        .sum::<u64>();
+    let shared = RealRuntimeShared::new(cfg, parts);
+    let started = Instant::now();
+    let mut handles = Vec::new();
+    for _ in 0..cfg.realtime_process_workers {
+        let worker_shared = Arc::clone(&shared);
+        handles.push(thread::spawn(move || {
+            real_process_worker(worker_shared, false)
+        }));
+    }
+    for _ in 0..cfg.prefetch_process_workers {
+        let worker_shared = Arc::clone(&shared);
+        handles.push(thread::spawn(move || {
+            real_process_worker(worker_shared, true)
+        }));
+    }
+    for part_index in 0..shared.parts.len() {
+        let priority = shared.parts[part_index].priority;
+        enqueue_real_process(&shared, RealProcessJob { part_index }, priority);
+    }
+    let total_jobs = shared.parts.len() as u64;
+    loop {
+        let done = shared.process_jobs_finished.load(Ordering::Acquire);
+        if done >= total_jobs {
+            break;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    shared.shutdown.store(true, Ordering::Release);
+    for handle in handles {
+        let _ = handle.join();
+    }
+    let samples = shared.samples.load(Ordering::Relaxed);
+    RustRealCacheProfileStats {
+        status: 0,
+        elapsed_ns: started.elapsed().as_nanos() as u64,
+        process_jobs_enqueued: shared.process_jobs_enqueued.load(Ordering::Relaxed),
+        process_jobs_finished: shared.process_jobs_finished.load(Ordering::Relaxed),
+        realtime_process_jobs: shared.realtime_process_jobs.load(Ordering::Relaxed),
+        prefetch_process_jobs: shared.prefetch_process_jobs.load(Ordering::Relaxed),
+        process_priority_steals: shared.process_priority_steals.load(Ordering::Relaxed),
+        process_worker_ns: shared.process_worker_ns.load(Ordering::Relaxed),
+        parts: shared.parts.len() as u64,
+        event_rows,
+        origins_seen: shared.origins_seen.load(Ordering::Relaxed),
+        samples,
+        batches: samples / cfg.batch_size.max(1) as u64,
+        invalid_origins: shared.invalid_origins.load(Ordering::Relaxed),
+        ordinal_mismatches: shared.ordinal_mismatches.load(Ordering::Relaxed),
+        event_cache_rebuilds: shared.event_cache_rebuilds.load(Ordering::Relaxed),
+        event_cache_appends: shared.event_cache_appends.load(Ordering::Relaxed),
+        event_cache_reused: shared.event_cache_reused.load(Ordering::Relaxed),
+        bytes_input,
+        checksum_bits: shared.checksum_bits.load(Ordering::Relaxed),
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn rolling_loader_rust_profile(
     config: *const RustQueueProfileConfig,
@@ -551,6 +939,64 @@ pub extern "C" fn rolling_loader_rust_profile(
         unsafe { *config }
     };
     let result = run_profile(cfg);
+    unsafe {
+        ptr::write(stats, result);
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn rolling_loader_rust_profile_real_cache(
+    config: *const RustRealCacheProfileConfig,
+    parts: *const RustRealCachePart,
+    stats: *mut RustRealCacheProfileStats,
+) -> i32 {
+    if stats.is_null() || config.is_null() || parts.is_null() {
+        return -1;
+    }
+    let cfg = unsafe { *config };
+    if cfg.part_count == 0 {
+        unsafe {
+            ptr::write(
+                stats,
+                RustRealCacheProfileStats {
+                    status: 0,
+                    ..RustRealCacheProfileStats::default()
+                },
+            );
+        }
+        return 0;
+    }
+    let raw_parts = unsafe { std::slice::from_raw_parts(parts, cfg.part_count as usize) };
+    let mut views = Vec::with_capacity(raw_parts.len());
+    for raw in raw_parts {
+        if raw.ordinals.is_null()
+            || raw.features.is_null()
+            || raw.origin_offsets.is_null()
+            || raw.origin_ordinals.is_null()
+            || raw.event_rows == 0
+            || raw.origin_count == 0
+            || raw.feature_count == 0
+        {
+            return -2;
+        }
+        views.push(RealPartView {
+            ticker_id: raw.ticker_id,
+            event_rows: raw.event_rows as usize,
+            origin_count: raw.origin_count as usize,
+            feature_count: raw.feature_count as usize,
+            priority: if raw.priority == 0 {
+                Priority::Realtime
+            } else {
+                Priority::Prefetch
+            },
+            ordinals: raw.ordinals,
+            features: raw.features,
+            origin_offsets: raw.origin_offsets,
+            origin_ordinals: raw.origin_ordinals,
+        });
+    }
+    let result = run_real_cache_profile(cfg, views);
     unsafe {
         ptr::write(stats, result);
     }
