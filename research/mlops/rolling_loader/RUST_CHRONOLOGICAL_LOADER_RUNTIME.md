@@ -34,7 +34,8 @@ between queues.  The Python wrapper calls the Rust `cdylib` through `ctypes`.
 ## Implemented Now
 
 The first Rust crate is dependency-free and implements the queue/concurrency
-runtime plus the event-stream cache hot path:
+runtime plus the event-stream cache hot path and the final tensor assembly
+primitive:
 
 - four worker pools;
 - realtime and prefetch queues;
@@ -44,6 +45,9 @@ runtime plus the event-stream cache hot path:
 - ordinal append/update logic;
 - 1024-row event-stream snapshot copying to emulate final batch output;
 - ready batch accounting and profiling counters.
+- generic numeric/bool tensor assembly with either contiguous copy or row gather
+  into output buffers;
+- Rust-side byte/row/tensor counters for full trainer-batch payload volume.
 
 This validates the most important implementation risk: whether the proposed
 concurrency shape can keep shared cache state hot without Python object copying.
@@ -54,10 +58,11 @@ The current Rust profile does not yet read parquet directly and does not yet
 emit full trainer batches.  Full integration still needs:
 
 - Rust-side parquet/Arrow readers or Python-fed zero-copy Arrow buffers;
-- sparse context cache tensors for news, SEC, XBRL, corporate actions, bars, and
+- native Rust as-of selection for news, SEC, XBRL, corporate actions, bars, and
   scanner;
-- label index/cache state;
-- Python batch wrapper returning NumPy/DLPack-compatible tensors;
+- native Rust label index/cache state;
+- Python batch wrapper returning NumPy/DLPack-compatible tensors from Rust-owned
+  buffers;
 - v3 trainer switch from `AsyncDailyIndexBatchLoader` to the Rust loader.
 
 The current crate is intentionally dependency-free so it can build in the
@@ -74,12 +79,19 @@ There are two profilers:
   It reads actual daily-index `events/*.parquet` and `origins/*.parquet`, packs
   the real event columns, passes them to Rust through `ctypes`, and has Rust
   build rolling event streams from real `event_row_offset` and ordinal pairs.
+- `run_profile_rust_full_batch_assembly.py` is the real-batch tensor assembly
+  profile. It asks the supported Python daily-index loader for complete real
+  batches, then passes every numeric/bool tensor in `x`, `y`, and identity
+  payloads to the Rust assembler. It verifies equality by default. This measures
+  the full final tensor assembly/copy boundary, but it still relies on Python
+  for parquet reads and per-modality as-of materialization.
 
 Build and profile from Python:
 
 ```powershell
 python research\mlops\rolling_loader\run_profile_rust_chrono_loader.py
 python research\mlops\rolling_loader\run_profile_rust_real_cache_loader.py
+python research\mlops\rolling_loader\run_profile_rust_full_batch_assembly.py
 ```
 
 The no-argument profile runs the default workstation grid:

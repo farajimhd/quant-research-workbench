@@ -167,6 +167,13 @@ def load_rust_library(path: str | os.PathLike[str] | None = None, *, build_if_mi
             ctypes.POINTER(_FfiRealCacheStats),
         ]
         lib.rolling_loader_rust_profile_real_cache.restype = ctypes.c_int32
+    if hasattr(lib, "rolling_loader_rust_assemble_tensors"):
+        lib.rolling_loader_rust_assemble_tensors.argtypes = [
+            ctypes.POINTER(_FfiTensorAssemblyConfig),
+            ctypes.POINTER(_FfiTensorAssemblySpec),
+            ctypes.POINTER(_FfiTensorAssemblyStats),
+        ]
+        lib.rolling_loader_rust_assemble_tensors.restype = ctypes.c_int32
     lib.rolling_loader_rust_version.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
     lib.rolling_loader_rust_version.restype = ctypes.c_size_t
     return lib
@@ -279,6 +286,62 @@ class RustRealCachePart:
     label: str = ""
 
 
+@dataclass(slots=True)
+class RustTensorAssemblyConfig:
+    tensor_count: int = 0
+    realtime_workers: int = 32
+    prefetch_workers: int = 16
+
+
+@dataclass(slots=True)
+class RustTensorAssemblyStats:
+    status: int
+    elapsed_ns: int
+    jobs_enqueued: int
+    jobs_finished: int
+    realtime_jobs: int
+    prefetch_jobs: int
+    priority_steals: int
+    worker_ns: int
+    tensors: int
+    rows_copied: int
+    bytes_copied: int
+    contiguous_tensors: int
+    gathered_tensors: int
+    invalid_specs: int
+    checksum_bits: int
+
+    @property
+    def elapsed_seconds(self) -> float:
+        return float(self.elapsed_ns) / 1_000_000_000.0
+
+    @property
+    def worker_seconds(self) -> float:
+        return float(self.worker_ns) / 1_000_000_000.0
+
+    @property
+    def gib_copied(self) -> float:
+        return float(self.bytes_copied) / float(1024**3)
+
+    @property
+    def gib_per_second(self) -> float:
+        return self.gib_copied / self.elapsed_seconds if self.elapsed_seconds > 0 else 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        out = asdict(self)
+        out["elapsed_seconds"] = self.elapsed_seconds
+        out["worker_seconds"] = self.worker_seconds
+        out["gib_copied"] = self.gib_copied
+        out["gib_per_second"] = self.gib_per_second
+        return out
+
+
+@dataclass(slots=True)
+class RustTensorAssemblyResult:
+    stats: RustTensorAssemblyStats
+    outputs: dict[str, Any]
+
+
 class _FfiRealCacheConfig(ctypes.Structure):
     _fields_ = [
         ("part_count", ctypes.c_uint32),
@@ -324,6 +387,46 @@ class _FfiRealCacheStats(ctypes.Structure):
         ("event_cache_appends", ctypes.c_uint64),
         ("event_cache_reused", ctypes.c_uint64),
         ("bytes_input", ctypes.c_uint64),
+        ("checksum_bits", ctypes.c_uint64),
+    ]
+
+
+class _FfiTensorAssemblyConfig(ctypes.Structure):
+    _fields_ = [
+        ("tensor_count", ctypes.c_uint32),
+        ("realtime_workers", ctypes.c_uint32),
+        ("prefetch_workers", ctypes.c_uint32),
+    ]
+
+
+class _FfiTensorAssemblySpec(ctypes.Structure):
+    _fields_ = [
+        ("source", ctypes.c_void_p),
+        ("dest", ctypes.c_void_p),
+        ("row_indices", ctypes.c_void_p),
+        ("rows", ctypes.c_uint64),
+        ("source_rows", ctypes.c_uint64),
+        ("row_width_bytes", ctypes.c_uint64),
+        ("priority", ctypes.c_uint32),
+    ]
+
+
+class _FfiTensorAssemblyStats(ctypes.Structure):
+    _fields_ = [
+        ("status", ctypes.c_int32),
+        ("elapsed_ns", ctypes.c_uint64),
+        ("jobs_enqueued", ctypes.c_uint64),
+        ("jobs_finished", ctypes.c_uint64),
+        ("realtime_jobs", ctypes.c_uint64),
+        ("prefetch_jobs", ctypes.c_uint64),
+        ("priority_steals", ctypes.c_uint64),
+        ("worker_ns", ctypes.c_uint64),
+        ("tensors", ctypes.c_uint64),
+        ("rows_copied", ctypes.c_uint64),
+        ("bytes_copied", ctypes.c_uint64),
+        ("contiguous_tensors", ctypes.c_uint64),
+        ("gathered_tensors", ctypes.c_uint64),
+        ("invalid_specs", ctypes.c_uint64),
         ("checksum_bits", ctypes.c_uint64),
     ]
 
@@ -409,3 +512,137 @@ def profile_rust_real_cache_parts(
     _ = kept_alive
     payload = {name: int(getattr(ffi_stats, name)) for name, _ctype in _FfiRealCacheStats._fields_}
     return RustRealCacheRuntimeStats(**payload)
+
+
+def assemble_tensors_with_rust(
+    values: dict[str, Any],
+    config: RustTensorAssemblyConfig | None = None,
+    *,
+    row_indices: Any | None = None,
+    library_path: str | os.PathLike[str] | None = None,
+    build_if_missing: bool = True,
+    release: bool = True,
+    verify: bool = False,
+) -> RustTensorAssemblyResult:
+    """Assemble a nested numeric tensor tree through the Rust copy/gather runtime.
+
+    `values` may contain nested dictionaries of NumPy arrays. Object arrays and
+    metadata fields are copied on the Python side because they are not model
+    tensors. Numeric and boolean arrays are passed to Rust as raw contiguous byte
+    rows. If `row_indices` is provided, Rust gathers source rows into the output
+    rows; otherwise it copies each tensor contiguously.
+    """
+
+    import numpy as np
+
+    prepared: list[tuple[str, Any, Any, Any | None]] = []
+    outputs: dict[str, Any] = {}
+    index_array = None
+    if row_indices is not None:
+        index_array = _as_contiguous_numpy(row_indices, dtype="<u8")
+        if index_array.ndim != 1:
+            raise ValueError("row_indices must be a 1D array when provided.")
+    _prepare_tensor_tree(values, outputs, prepared, row_indices=index_array)
+    if not prepared:
+        return RustTensorAssemblyResult(
+            stats=RustTensorAssemblyStats(
+                status=0,
+                elapsed_ns=0,
+                jobs_enqueued=0,
+                jobs_finished=0,
+                realtime_jobs=0,
+                prefetch_jobs=0,
+                priority_steals=0,
+                worker_ns=0,
+                tensors=0,
+                rows_copied=0,
+                bytes_copied=0,
+                contiguous_tensors=0,
+                gathered_tensors=0,
+                invalid_specs=0,
+                checksum_bits=0,
+            ),
+            outputs=outputs,
+        )
+    cfg = config or RustTensorAssemblyConfig()
+    cfg.tensor_count = int(len(prepared))
+    ffi_config = _FfiTensorAssemblyConfig(**asdict(cfg))
+    ffi_specs = (_FfiTensorAssemblySpec * len(prepared))()
+    keep_alive: list[Any] = []
+    for index, (_path, source, dest, indices) in enumerate(prepared):
+        rows = int(dest.shape[0]) if dest.ndim > 0 else 1
+        source_rows = int(source.shape[0]) if source.ndim > 0 else 1
+        if source.ndim == 0:
+            row_width_bytes = int(source.dtype.itemsize)
+        else:
+            row_width_bytes = int(source.dtype.itemsize * max(1, int(source.size) // max(1, source_rows)))
+        keep_alive.append((source, dest, indices))
+        ffi_specs[index] = _FfiTensorAssemblySpec(
+            source=ctypes.c_void_p(int(source.ctypes.data)),
+            dest=ctypes.c_void_p(int(dest.ctypes.data)),
+            row_indices=ctypes.c_void_p(0 if indices is None else int(indices.ctypes.data)),
+            rows=int(rows),
+            source_rows=int(source_rows),
+            row_width_bytes=int(row_width_bytes),
+            priority=0,
+        )
+    lib = load_rust_library(library_path, build_if_missing=build_if_missing, release=release)
+    if not hasattr(lib, "rolling_loader_rust_assemble_tensors"):
+        raise RuntimeError("Loaded Rust library does not expose rolling_loader_rust_assemble_tensors; rebuild the DLL.")
+    ffi_stats = _FfiTensorAssemblyStats()
+    status = int(lib.rolling_loader_rust_assemble_tensors(ctypes.byref(ffi_config), ffi_specs, ctypes.byref(ffi_stats)))
+    if status != 0:
+        raise RuntimeError(f"rolling_loader_rust_assemble_tensors failed with status={status}")
+    stats_payload = {name: int(getattr(ffi_stats, name)) for name, _ctype in _FfiTensorAssemblyStats._fields_}
+    if verify:
+        _verify_tensor_tree(values, outputs, row_indices=index_array)
+    _ = keep_alive
+    del np
+    return RustTensorAssemblyResult(stats=RustTensorAssemblyStats(**stats_payload), outputs=outputs)
+
+
+def _prepare_tensor_tree(source_tree: dict[str, Any], output_tree: dict[str, Any], prepared: list[tuple[str, Any, Any, Any | None]], *, row_indices: Any | None, prefix: str = "") -> None:
+    import numpy as np
+
+    for key, value in source_tree.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict):
+            nested: dict[str, Any] = {}
+            output_tree[str(key)] = nested
+            _prepare_tensor_tree(value, nested, prepared, row_indices=row_indices, prefix=path)
+            continue
+        if not isinstance(value, np.ndarray) or value.dtype == object:
+            output_tree[str(key)] = value.copy() if hasattr(value, "copy") else value
+            continue
+        source = np.ascontiguousarray(value)
+        if source.ndim == 0:
+            dest_shape = source.shape
+            indices = None
+        elif row_indices is not None:
+            max_index = int(row_indices.max()) if int(row_indices.shape[0]) else -1
+            if max_index >= int(source.shape[0]):
+                raise ValueError(f"row_indices references row {max_index} but {path} has only {source.shape[0]} rows.")
+            dest_shape = (int(row_indices.shape[0]), *source.shape[1:])
+            indices = row_indices
+        else:
+            dest_shape = source.shape
+            indices = None
+        dest = np.empty(dest_shape, dtype=source.dtype)
+        output_tree[str(key)] = dest
+        prepared.append((path, source, dest, indices))
+
+
+def _verify_tensor_tree(source_tree: dict[str, Any], output_tree: dict[str, Any], *, row_indices: Any | None, prefix: str = "") -> None:
+    import numpy as np
+
+    for key, value in source_tree.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        out = output_tree[str(key)]
+        if isinstance(value, dict):
+            _verify_tensor_tree(value, out, row_indices=row_indices, prefix=path)
+            continue
+        if not isinstance(value, np.ndarray) or value.dtype == object:
+            continue
+        expected = value[row_indices] if row_indices is not None and value.ndim > 0 else value
+        if not np.array_equal(np.asarray(expected), np.asarray(out)):
+            raise RuntimeError(f"Rust tensor assembly verification failed for {path}.")

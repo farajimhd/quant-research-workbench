@@ -6,7 +6,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const VERSION: &str = "rolling_loader_rust/0.2.0";
+const VERSION: &str = "rolling_loader_rust/0.3.0";
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -117,6 +117,46 @@ pub struct RustRealCacheProfileStats {
     pub event_cache_appends: u64,
     pub event_cache_reused: u64,
     pub bytes_input: u64,
+    pub checksum_bits: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RustTensorAssemblyConfig {
+    pub tensor_count: u32,
+    pub realtime_workers: u32,
+    pub prefetch_workers: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RustTensorAssemblySpec {
+    pub source: *const u8,
+    pub dest: *mut u8,
+    pub row_indices: *const u64,
+    pub rows: u64,
+    pub source_rows: u64,
+    pub row_width_bytes: u64,
+    pub priority: u32,
+}
+
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+pub struct RustTensorAssemblyStats {
+    pub status: i32,
+    pub elapsed_ns: u64,
+    pub jobs_enqueued: u64,
+    pub jobs_finished: u64,
+    pub realtime_jobs: u64,
+    pub prefetch_jobs: u64,
+    pub priority_steals: u64,
+    pub worker_ns: u64,
+    pub tensors: u64,
+    pub rows_copied: u64,
+    pub bytes_copied: u64,
+    pub contiguous_tensors: u64,
+    pub gathered_tensors: u64,
+    pub invalid_specs: u64,
     pub checksum_bits: u64,
 }
 
@@ -925,6 +965,277 @@ fn run_real_cache_profile(
     }
 }
 
+#[derive(Clone, Copy)]
+struct TensorAssemblyView {
+    source: *const u8,
+    dest: *mut u8,
+    row_indices: *const u64,
+    rows: usize,
+    source_rows: usize,
+    row_width_bytes: usize,
+    priority: Priority,
+}
+
+unsafe impl Send for TensorAssemblyView {}
+unsafe impl Sync for TensorAssemblyView {}
+
+struct TensorAssemblyJob {
+    tensor_index: usize,
+}
+
+struct TensorAssemblyShared {
+    tensors: Arc<Vec<TensorAssemblyView>>,
+    queues: QueuePair<TensorAssemblyJob>,
+    shutdown: AtomicBool,
+    jobs_enqueued: AtomicU64,
+    jobs_finished: AtomicU64,
+    realtime_jobs: AtomicU64,
+    prefetch_jobs: AtomicU64,
+    priority_steals: AtomicU64,
+    worker_ns: AtomicU64,
+    rows_copied: AtomicU64,
+    bytes_copied: AtomicU64,
+    contiguous_tensors: AtomicU64,
+    gathered_tensors: AtomicU64,
+    invalid_specs: AtomicU64,
+    checksum_bits: AtomicU64,
+}
+
+impl TensorAssemblyShared {
+    fn new(tensors: Vec<TensorAssemblyView>) -> Arc<Self> {
+        Arc::new(Self {
+            tensors: Arc::new(tensors),
+            queues: QueuePair::new(),
+            shutdown: AtomicBool::new(false),
+            jobs_enqueued: AtomicU64::new(0),
+            jobs_finished: AtomicU64::new(0),
+            realtime_jobs: AtomicU64::new(0),
+            prefetch_jobs: AtomicU64::new(0),
+            priority_steals: AtomicU64::new(0),
+            worker_ns: AtomicU64::new(0),
+            rows_copied: AtomicU64::new(0),
+            bytes_copied: AtomicU64::new(0),
+            contiguous_tensors: AtomicU64::new(0),
+            gathered_tensors: AtomicU64::new(0),
+            invalid_specs: AtomicU64::new(0),
+            checksum_bits: AtomicU64::new(0),
+        })
+    }
+}
+
+struct TensorAssemblyCounters {
+    rows_copied: u64,
+    bytes_copied: u64,
+    contiguous_tensors: u64,
+    gathered_tensors: u64,
+    invalid_specs: u64,
+    checksum_bits: u64,
+}
+
+impl TensorAssemblyCounters {
+    fn invalid() -> Self {
+        Self {
+            rows_copied: 0,
+            bytes_copied: 0,
+            contiguous_tensors: 0,
+            gathered_tensors: 0,
+            invalid_specs: 1,
+            checksum_bits: 0,
+        }
+    }
+}
+
+fn enqueue_tensor_assembly(
+    shared: &TensorAssemblyShared,
+    job: TensorAssemblyJob,
+    priority: Priority,
+) {
+    shared.jobs_enqueued.fetch_add(1, Ordering::Relaxed);
+    match priority {
+        Priority::Realtime => shared.queues.realtime.push(job),
+        Priority::Prefetch => shared.queues.prefetch.push(job),
+    }
+}
+
+fn tensor_assembly_worker(shared: Arc<TensorAssemblyShared>, worker_is_prefetch: bool) {
+    loop {
+        if shared.shutdown.load(Ordering::Acquire) && shared.queues.is_empty() {
+            return;
+        }
+        let Some(job) =
+            pop_with_priority(&shared.queues, worker_is_prefetch, &shared.priority_steals)
+        else {
+            thread::sleep(Duration::from_micros(200));
+            continue;
+        };
+        let Some(tensor) = shared.tensors.get(job.tensor_index).copied() else {
+            shared.invalid_specs.fetch_add(1, Ordering::Relaxed);
+            shared.jobs_finished.fetch_add(1, Ordering::Release);
+            continue;
+        };
+        match tensor.priority {
+            Priority::Realtime => shared.realtime_jobs.fetch_add(1, Ordering::Relaxed),
+            Priority::Prefetch => shared.prefetch_jobs.fetch_add(1, Ordering::Relaxed),
+        };
+        let started = Instant::now();
+        let counters = assemble_tensor(tensor);
+        shared
+            .worker_ns
+            .fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        shared
+            .rows_copied
+            .fetch_add(counters.rows_copied, Ordering::Relaxed);
+        shared
+            .bytes_copied
+            .fetch_add(counters.bytes_copied, Ordering::Relaxed);
+        shared
+            .contiguous_tensors
+            .fetch_add(counters.contiguous_tensors, Ordering::Relaxed);
+        shared
+            .gathered_tensors
+            .fetch_add(counters.gathered_tensors, Ordering::Relaxed);
+        shared
+            .invalid_specs
+            .fetch_add(counters.invalid_specs, Ordering::Relaxed);
+        shared
+            .checksum_bits
+            .fetch_xor(counters.checksum_bits, Ordering::Relaxed);
+        shared.jobs_finished.fetch_add(1, Ordering::Release);
+    }
+}
+
+fn assemble_tensor(tensor: TensorAssemblyView) -> TensorAssemblyCounters {
+    if tensor.source.is_null()
+        || tensor.dest.is_null()
+        || tensor.rows == 0
+        || tensor.source_rows == 0
+        || tensor.row_width_bytes == 0
+    {
+        return TensorAssemblyCounters::invalid();
+    }
+    let bytes = tensor.rows.saturating_mul(tensor.row_width_bytes);
+    let mut checksum = tensor.row_width_bytes as u64 ^ (tensor.rows as u64).rotate_left(17);
+    if tensor.row_indices.is_null() {
+        let source_bytes = tensor.source_rows.saturating_mul(tensor.row_width_bytes);
+        if bytes > source_bytes {
+            return TensorAssemblyCounters::invalid();
+        }
+        unsafe {
+            ptr::copy_nonoverlapping(tensor.source, tensor.dest, bytes);
+        }
+        checksum ^= checksum_bytes(tensor.dest as *const u8, bytes);
+        return TensorAssemblyCounters {
+            rows_copied: tensor.rows as u64,
+            bytes_copied: bytes as u64,
+            contiguous_tensors: 1,
+            gathered_tensors: 0,
+            invalid_specs: 0,
+            checksum_bits: checksum,
+        };
+    }
+    for row in 0..tensor.rows {
+        let source_row = unsafe { *tensor.row_indices.add(row) } as usize;
+        if source_row >= tensor.source_rows {
+            return TensorAssemblyCounters::invalid();
+        }
+        let src = unsafe { tensor.source.add(source_row * tensor.row_width_bytes) };
+        let dst = unsafe { tensor.dest.add(row * tensor.row_width_bytes) };
+        unsafe {
+            ptr::copy_nonoverlapping(src, dst, tensor.row_width_bytes);
+        }
+        if row < 32 || row + 32 >= tensor.rows || row % 256 == 0 {
+            checksum ^= checksum_bytes(dst as *const u8, tensor.row_width_bytes)
+                .rotate_left((row % 63) as u32);
+        }
+    }
+    TensorAssemblyCounters {
+        rows_copied: tensor.rows as u64,
+        bytes_copied: bytes as u64,
+        contiguous_tensors: 0,
+        gathered_tensors: 1,
+        invalid_specs: 0,
+        checksum_bits: checksum,
+    }
+}
+
+fn checksum_bytes(ptr: *const u8, len: usize) -> u64 {
+    if ptr.is_null() || len == 0 {
+        return 0;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let mut acc = len as u64;
+    let step = (len / 32).max(1);
+    let mut index = 0_usize;
+    while index < len {
+        acc ^= bytes[index] as u64;
+        acc = acc.rotate_left(5).wrapping_mul(0x9E37_79B1_85EB_CA87);
+        index = index.saturating_add(step);
+    }
+    if len > 1 {
+        acc ^= bytes[len - 1] as u64;
+    }
+    acc
+}
+
+fn run_tensor_assembly(
+    cfg: RustTensorAssemblyConfig,
+    tensors: Vec<TensorAssemblyView>,
+) -> RustTensorAssemblyStats {
+    let cfg = RustTensorAssemblyConfig {
+        tensor_count: tensors.len() as u32,
+        realtime_workers: cfg.realtime_workers.max(1),
+        prefetch_workers: cfg.prefetch_workers.max(1),
+    };
+    let shared = TensorAssemblyShared::new(tensors);
+    let started = Instant::now();
+    let mut handles = Vec::new();
+    for _ in 0..cfg.realtime_workers {
+        let worker_shared = Arc::clone(&shared);
+        handles.push(thread::spawn(move || {
+            tensor_assembly_worker(worker_shared, false)
+        }));
+    }
+    for _ in 0..cfg.prefetch_workers {
+        let worker_shared = Arc::clone(&shared);
+        handles.push(thread::spawn(move || {
+            tensor_assembly_worker(worker_shared, true)
+        }));
+    }
+    for tensor_index in 0..shared.tensors.len() {
+        let priority = shared.tensors[tensor_index].priority;
+        enqueue_tensor_assembly(&shared, TensorAssemblyJob { tensor_index }, priority);
+    }
+    let total_jobs = shared.tensors.len() as u64;
+    loop {
+        let done = shared.jobs_finished.load(Ordering::Acquire);
+        if done >= total_jobs {
+            break;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    shared.shutdown.store(true, Ordering::Release);
+    for handle in handles {
+        let _ = handle.join();
+    }
+    RustTensorAssemblyStats {
+        status: 0,
+        elapsed_ns: started.elapsed().as_nanos() as u64,
+        jobs_enqueued: shared.jobs_enqueued.load(Ordering::Relaxed),
+        jobs_finished: shared.jobs_finished.load(Ordering::Relaxed),
+        realtime_jobs: shared.realtime_jobs.load(Ordering::Relaxed),
+        prefetch_jobs: shared.prefetch_jobs.load(Ordering::Relaxed),
+        priority_steals: shared.priority_steals.load(Ordering::Relaxed),
+        worker_ns: shared.worker_ns.load(Ordering::Relaxed),
+        tensors: shared.tensors.len() as u64,
+        rows_copied: shared.rows_copied.load(Ordering::Relaxed),
+        bytes_copied: shared.bytes_copied.load(Ordering::Relaxed),
+        contiguous_tensors: shared.contiguous_tensors.load(Ordering::Relaxed),
+        gathered_tensors: shared.gathered_tensors.load(Ordering::Relaxed),
+        invalid_specs: shared.invalid_specs.load(Ordering::Relaxed),
+        checksum_bits: shared.checksum_bits.load(Ordering::Relaxed),
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn rolling_loader_rust_profile(
     config: *const RustQueueProfileConfig,
@@ -997,6 +1308,70 @@ pub extern "C" fn rolling_loader_rust_profile_real_cache(
         });
     }
     let result = run_real_cache_profile(cfg, views);
+    unsafe {
+        ptr::write(stats, result);
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn rolling_loader_rust_assemble_tensors(
+    config: *const RustTensorAssemblyConfig,
+    tensors: *const RustTensorAssemblySpec,
+    stats: *mut RustTensorAssemblyStats,
+) -> i32 {
+    if stats.is_null() || config.is_null() || tensors.is_null() {
+        return -1;
+    }
+    let cfg = unsafe { *config };
+    if cfg.tensor_count == 0 {
+        unsafe {
+            ptr::write(
+                stats,
+                RustTensorAssemblyStats {
+                    status: 0,
+                    ..RustTensorAssemblyStats::default()
+                },
+            );
+        }
+        return 0;
+    }
+    let raw_tensors = unsafe { std::slice::from_raw_parts(tensors, cfg.tensor_count as usize) };
+    let mut views = Vec::with_capacity(raw_tensors.len());
+    for raw in raw_tensors {
+        if raw.source.is_null()
+            || raw.dest.is_null()
+            || raw.rows == 0
+            || raw.source_rows == 0
+            || raw.row_width_bytes == 0
+        {
+            unsafe {
+                ptr::write(
+                    stats,
+                    RustTensorAssemblyStats {
+                        status: -2,
+                        invalid_specs: 1,
+                        ..RustTensorAssemblyStats::default()
+                    },
+                );
+            }
+            return -2;
+        }
+        views.push(TensorAssemblyView {
+            source: raw.source,
+            dest: raw.dest,
+            row_indices: raw.row_indices,
+            rows: raw.rows as usize,
+            source_rows: raw.source_rows as usize,
+            row_width_bytes: raw.row_width_bytes as usize,
+            priority: if raw.priority == 0 {
+                Priority::Realtime
+            } else {
+                Priority::Prefetch
+            },
+        });
+    }
+    let result = run_tensor_assembly(cfg, views);
     unsafe {
         ptr::write(stats, result);
     }
