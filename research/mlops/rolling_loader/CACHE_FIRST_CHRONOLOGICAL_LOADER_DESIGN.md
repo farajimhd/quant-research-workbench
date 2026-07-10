@@ -327,26 +327,33 @@ Current implementation note:
 - Origin rows are loaded through per-ticker cursors in small chunks and popped
   into `1s`/`5s` chronological windows. The loader no longer rescans every
   active origin parquet for every window.
-- Non-event context now flows through a rolling context snapshot cache in the
-  chronological replay path. Text embeddings, XBRL, corporate actions,
-  daily/global bars, intraday context bars, and scanner context are materialized
-  in ordered replay before worker submission, then passed to materializer
-  workers as immutable context overrides. This prevents each materializer worker
-  from independently rebuilding the same context path.
-- Sparse ticker/global contexts carry forward across chronological origins.
+- Non-event context now flows through the chronological context override
+  boundary before worker submission. This prevents materializer workers from
+  independently rebuilding the same context path.
+- Sparse ticker/global contexts are true rolling tensor caches in final batch
+  format. Ticker news, market news, SEC filings, XBRL, and corporate actions
+  are warmed at the first origin, keyed by ticker/global modality, and restored
+  directly into later batches when no newly available source row exists.
   If ticker news, market news, SEC filings, XBRL, or corporate-action context
   has no newly available row for the current origin, the loader restores the
   last cached tensor state and refreshes relative time/age features against the
   current origin timestamp. Masked zeros are emitted only when no valid prior
   context exists.
 - Daily/global bars, intraday bars, and scanner context are routed through the
-  same context override boundary. Scanner remains artifact-based and must be
-  available for the source day unless the config permits fully masked scanner
-  fallback.
+  same context override boundary and remain vectorized/audited snapshot
+  materializations. They are not yet restored from persisted final tensor rows,
+  because their relative start/end time features must be recomputed exactly for
+  each origin. Scanner remains artifact-based and must be available for the
+  source day unless the config permits fully masked scanner fallback.
 - Implementation nuance: the cache still reuses the existing vectorized/audited
-  as-of selectors to create each ordered context snapshot. The state boundary
-  and carried sparse tensors now match the production-style cache contract,
-  while the selector math remains centralized for correctness and auditability.
+  as-of selectors to create cache misses and stale sparse rows. The state
+  boundary and carried sparse tensors now match the production-style cache
+  contract, while selector math remains centralized for correctness and
+  auditability.
+- Training telemetry reports `loader/cache/text_hits`,
+  `loader/cache/text_misses`, `loader/cache/text_stale`,
+  `loader/cache/xbrl_*`, and `loader/cache/corporate_action_*` so runs can
+  verify whether the cache-first path is being used.
 
 ## Back-of-Envelope Memory Target
 

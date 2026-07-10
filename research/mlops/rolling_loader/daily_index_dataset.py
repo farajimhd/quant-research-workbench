@@ -736,6 +736,7 @@ class DailyIndexPartReader:
         self.include_external_context = bool(include_external_context)
         self._global_context_cache: dict[tuple[Path, str], Any] = {}
         self._global_context_cache_order: deque[tuple[Path, str]] = deque()
+        self._global_context_cache_lock = threading.Lock()
         self._scanner_context_cache_limit = 2
 
     def load(self, plan: DailyIndexPartPlan) -> LoadedDailyIndexPart:
@@ -747,20 +748,28 @@ class DailyIndexPartReader:
         loaded.origins = pl.read_parquet(_plan_file_path(plan, plan.files["origins"]))
         return loaded
 
-    def load_payload(self, loaded: LoadedDailyIndexPart) -> LoadedDailyIndexPart:
+    def load_payload(
+        self,
+        loaded: LoadedDailyIndexPart,
+        *,
+        load_events: bool | None = None,
+        load_labels: bool | None = None,
+        load_intraday_bars: bool | None = None,
+        load_corporate_labels: bool | None = None,
+    ) -> LoadedDailyIndexPart:
         pl = _polars()
         plan = loaded.plan
-        need_events = bool({"events", "event_windows", "encoded_events"}.intersection(self.data_groups))
-        need_labels = "intraday_labels" in self.data_groups or "labels" in self.data_groups
-        need_intraday_bars = "intraday_bars" in self.data_groups
-        need_corporate_labels = bool(CORPORATE_ACTION_LABEL_GROUPS.intersection(self.data_groups))
+        need_events = bool({"events", "event_windows", "encoded_events"}.intersection(self.data_groups)) if load_events is None else bool(load_events)
+        need_labels = ("intraday_labels" in self.data_groups or "labels" in self.data_groups) if load_labels is None else bool(load_labels)
+        need_intraday_bars = "intraday_bars" in self.data_groups if load_intraday_bars is None else bool(load_intraday_bars)
+        need_corporate_labels = bool(CORPORATE_ACTION_LABEL_GROUPS.intersection(self.data_groups)) if load_corporate_labels is None else bool(load_corporate_labels)
         if need_events:
             loaded.events = pl.read_parquet(_plan_file_path(plan, plan.files["events"]))
         if need_events and "event_window_index" in plan.files:
             loaded.windows = pl.read_parquet(_plan_file_path(plan, plan.files["event_window_index"]))
         if need_labels and "intraday_forward_labels" in plan.files:
             loaded.labels = pl.read_parquet(_plan_file_path(plan, plan.files["intraday_forward_labels"]))
-        if need_labels:
+        if need_labels or need_intraday_bars:
             compact_files = {**_package_context_files(plan.package_dir), **dict(plan.files)}
             for key in ("intraday_base_bars", "intraday_condition_events", "ticker_news_embeddings", "sec_filing_embeddings"):
                 filename = compact_files.get(key)
@@ -784,29 +793,33 @@ class DailyIndexPartReader:
             if "market_news_embeddings" in self.data_groups:
                 global_path = _global_context_file(_month_global_dir(plan.package_dir), "market_news_embeddings")
                 cache_key = (global_path, "market_news_embeddings")
-                if cache_key not in self._global_context_cache:
-                    self._global_context_cache[cache_key] = pl.read_parquet(global_path) if global_path.exists() else pl.DataFrame()
-                loaded.context["market_news_embeddings"] = self._global_context_cache[cache_key]
+                with self._global_context_cache_lock:
+                    if cache_key not in self._global_context_cache:
+                        self._global_context_cache[cache_key] = pl.read_parquet(global_path) if global_path.exists() else pl.DataFrame()
+                    loaded.context["market_news_embeddings"] = self._global_context_cache[cache_key]
             if "global_daily_bars" in self.data_groups:
                 global_path = _global_context_file(_month_global_dir(plan.package_dir), "global_daily_bars")
                 cache_key = (global_path, "global_daily_bars")
-                if cache_key not in self._global_context_cache:
-                    self._global_context_cache[cache_key] = pl.read_parquet(global_path) if global_path.exists() else pl.DataFrame()
-                loaded.context["global_daily_bars"] = self._global_context_cache[cache_key]
+                with self._global_context_cache_lock:
+                    if cache_key not in self._global_context_cache:
+                        self._global_context_cache[cache_key] = pl.read_parquet(global_path) if global_path.exists() else pl.DataFrame()
+                    loaded.context["global_daily_bars"] = self._global_context_cache[cache_key]
             if "scanner_context" in self.data_groups:
                 scanner_path = _scanner_context_file(_month_global_dir(plan.package_dir), str(plan.source_date))
                 cache_key = (scanner_path, "scanner_context")
-                if cache_key not in self._global_context_cache:
-                    self._global_context_cache[cache_key] = pl.read_parquet(scanner_path) if scanner_path.exists() else pl.DataFrame()
-                    self._remember_global_context_cache_key(cache_key)
-                loaded.context["scanner_context"] = self._global_context_cache[cache_key]
+                with self._global_context_cache_lock:
+                    if cache_key not in self._global_context_cache:
+                        self._global_context_cache[cache_key] = pl.read_parquet(scanner_path) if scanner_path.exists() else pl.DataFrame()
+                        self._remember_global_context_cache_key(cache_key)
+                    loaded.context["scanner_context"] = self._global_context_cache[cache_key]
                 loaded.context_paths["scanner_context"] = scanner_path
             if "xbrl" in self.data_groups:
                 global_path = _month_global_dir(plan.package_dir) / "category_references.parquet"
                 cache_key = (global_path, "category_references")
-                if cache_key not in self._global_context_cache:
-                    self._global_context_cache[cache_key] = pl.read_parquet(global_path) if global_path.exists() else pl.DataFrame()
-                loaded.context["category_references"] = self._global_context_cache[cache_key]
+                with self._global_context_cache_lock:
+                    if cache_key not in self._global_context_cache:
+                        self._global_context_cache[cache_key] = pl.read_parquet(global_path) if global_path.exists() else pl.DataFrame()
+                    loaded.context["category_references"] = self._global_context_cache[cache_key]
         return loaded
 
     def _remember_global_context_cache_key(self, cache_key: tuple[Path, str]) -> None:
@@ -2867,6 +2880,28 @@ class AsyncDailyIndexBatchLoader:
                         **warm_profile,
                         **event_cache.telemetry_snapshot(),
                     )
+                    if _has_runtime_context_groups(self.config):
+                        self._update_telemetry(
+                            loader_phase="cache_warm_context",
+                            context_cache_warm_payload_tickers=0,
+                            context_cache_warm_payload_total_tickers=int(len(cursors)),
+                        )
+                        context_day_warm_profile = _warm_context_cache_for_day(
+                            read_pool=read_pool,
+                            reader=self.reader,
+                            materializer=self.materializer,
+                            context_cache=context_cache,
+                            cursors=cursors,
+                            first_timestamp_us=int(window_start),
+                            stop_event=self._stop_event,
+                            telemetry_callback=self._update_telemetry,
+                        )
+                        day_warm_profile.update(context_day_warm_profile)
+                        self._update_telemetry(
+                            loader_phase="cache_warmed_context_day",
+                            **context_day_warm_profile,
+                            **context_cache.telemetry_snapshot(),
+                        )
                 while window_start < int(day_window_end):
                     if self._stop_event.is_set():
                         return
@@ -4437,6 +4472,44 @@ def _snapshot_batch_row(value: Any, row: int, sample_count: int) -> Any:
     return value
 
 
+def _empty_batch_payload_like(value: Any, sample_count: int, field_name: str = "") -> Any:
+    sample_count = max(0, int(sample_count))
+    if field_name in METADATA_PAYLOAD_FIELDS:
+        return value
+    if isinstance(value, np.ndarray):
+        if value.dtype != object:
+            return np.zeros((sample_count, *value.shape), dtype=value.dtype)
+        return value
+    if isinstance(value, Mapping):
+        return {key: _empty_batch_payload_like(item, sample_count, str(key)) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_empty_batch_payload_like(item, sample_count, field_name) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_empty_batch_payload_like(item, sample_count, field_name) for item in value)
+    return value
+
+
+def _empty_batch_payload_from_batch(value: Any, sample_count: int, source_sample_count: int, field_name: str = "") -> Any:
+    sample_count = max(0, int(sample_count))
+    source_sample_count = max(0, int(source_sample_count))
+    if field_name in METADATA_PAYLOAD_FIELDS:
+        return value
+    if isinstance(value, np.ndarray):
+        if value.dtype != object and value.shape[:1] and int(value.shape[0]) == int(source_sample_count):
+            return np.zeros((sample_count, *value.shape[1:]), dtype=value.dtype)
+        return value
+    if isinstance(value, Mapping):
+        return {
+            key: _empty_batch_payload_from_batch(item, sample_count, source_sample_count, str(key))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_empty_batch_payload_from_batch(item, sample_count, source_sample_count, field_name) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_empty_batch_payload_from_batch(item, sample_count, source_sample_count, field_name) for item in value)
+    return value
+
+
 def _restore_batch_row(target: Any, snapshot: Any, row: int, sample_count: int) -> None:
     if isinstance(target, np.ndarray):
         if target.dtype != object and target.shape[:1] and int(target.shape[0]) == int(sample_count):
@@ -4450,6 +4523,64 @@ def _restore_batch_row(target: Any, snapshot: Any, row: int, sample_count: int) 
     if isinstance(target, list) and isinstance(snapshot, list):
         for item, saved in zip(target, snapshot):
             _restore_batch_row(item, saved, row, sample_count)
+
+
+def _copy_batch_row(target: Any, source: Any, *, target_row: int, source_row: int, source_sample_count: int) -> None:
+    snapshot = _snapshot_batch_row(source, int(source_row), int(source_sample_count))
+    target_sample_count = _payload_sample_count(target)
+    if target_sample_count <= 0:
+        return
+    if isinstance(target, np.ndarray):
+        if target.dtype != object and target.shape[:1]:
+            target[int(target_row)] = snapshot
+        return
+    if isinstance(target, Mapping) and isinstance(snapshot, Mapping):
+        for key, item in target.items():
+            if key in snapshot and key not in METADATA_PAYLOAD_FIELDS:
+                _restore_batch_row(item, snapshot[key], int(target_row), target_sample_count)
+        return
+    _restore_batch_row(target, snapshot, int(target_row), target_sample_count)
+
+
+def _payload_sample_count(value: Any) -> int:
+    if isinstance(value, np.ndarray) and value.dtype != object and value.shape[:1]:
+        return int(value.shape[0])
+    if isinstance(value, Mapping):
+        for item in value.values():
+            count = _payload_sample_count(item)
+            if count > 0:
+                return int(count)
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            count = _payload_sample_count(item)
+            if count > 0:
+                return int(count)
+    return 0
+
+
+def _context_source_timestamps_us(frame: Any, source_name: str) -> np.ndarray:
+    if frame is None or int(getattr(frame, "height", 0) or 0) <= 0:
+        return np.zeros((0,), dtype=np.int64)
+    columns = set(getattr(frame, "columns", ()))
+    candidates_by_source = {
+        "ticker_news_embeddings": ("published_timestamp_us", "timestamp_us", "available_timestamp_us"),
+        "market_news_embeddings": ("published_timestamp_us", "timestamp_us", "available_timestamp_us"),
+        "sec_filing_embeddings": ("accepted_timestamp_us", "timestamp_us", "available_timestamp_us"),
+        "xbrl": ("timestamp_us", "available_timestamp_us", "accepted_timestamp_us"),
+        "corporate_actions": ("available_timestamp_us", "timestamp_us", "effective_timestamp_us"),
+    }
+    candidates = candidates_by_source.get(str(source_name), ("timestamp_us", "available_timestamp_us"))
+    for column in candidates:
+        if column in columns:
+            values = frame.get_column(column).to_numpy()
+            try:
+                out = np.asarray(values, dtype=np.int64)
+            except (TypeError, ValueError):
+                continue
+            out = out[out > 0]
+            if out.size:
+                return np.sort(out)
+    return np.zeros((0,), dtype=np.int64)
 
 
 def _refresh_text_payload_time_features(payload: Mapping[str, Any], row: int, origin_timestamp_us: int) -> None:
@@ -4912,6 +5043,7 @@ class _RollingContextTensorCache:
         self.capacity = max(1, int(config.ticker_cache_capacity))
         self._state_by_key: dict[tuple[str, str], _RollingContextState] = {}
         self._global_state_by_key: dict[str, _RollingContextState] = {}
+        self._source_timestamp_cache: dict[tuple[int, str], np.ndarray] = {}
         self._evictions = 0
         self._last_evicted_key = ""
         self._last_window_refs = 0
@@ -4923,6 +5055,7 @@ class _RollingContextTensorCache:
     def clear(self) -> None:
         self._state_by_key.clear()
         self._global_state_by_key.clear()
+        self._source_timestamp_cache.clear()
         self._last_evicted_key = ""
         self._last_window_refs = 0
         self._last_window_tickers = 0
@@ -4998,17 +5131,17 @@ class _RollingContextTensorCache:
 
         if TEXT_CONTEXT_GROUPS.intersection(set(self.config.data_groups)):
             section_start = time.perf_counter()
-            text_inputs, text_profile = materializer._materialize_text_inputs(parts, refs)
+            text_inputs, text_profile = self._materialize_text_inputs_with_cache(materializer, parts, refs)
             profile.update({f"rolling_{key}": value for key, value in text_profile.items()})
             profile["rolling_text_seconds"] = time.perf_counter() - section_start
         if "xbrl" in self.config.data_groups:
             section_start = time.perf_counter()
-            xbrl_inputs, xbrl_profile = materializer._materialize_xbrl_inputs(parts, refs)
+            xbrl_inputs, xbrl_profile = self._materialize_xbrl_inputs_with_cache(materializer, parts, refs)
             profile.update({f"rolling_{key}": value for key, value in xbrl_profile.items()})
             profile["rolling_xbrl_seconds"] = time.perf_counter() - section_start
         if "corporate_actions" in self.config.data_groups:
             section_start = time.perf_counter()
-            corporate_inputs, corporate_profile = materializer._materialize_corporate_action_inputs(parts, refs)
+            corporate_inputs, corporate_profile = self._materialize_corporate_action_inputs_with_cache(materializer, parts, refs)
             profile.update({f"rolling_{key}": value for key, value in corporate_profile.items()})
             profile["rolling_corporate_action_seconds"] = time.perf_counter() - section_start
         if BAR_CONTEXT_GROUPS.union(INTRADAY_BAR_CONTEXT_GROUPS).intersection(set(self.config.data_groups)):
@@ -5025,16 +5158,7 @@ class _RollingContextTensorCache:
             profile.update({f"rolling_{key}": value for key, value in scanner_profile.items()})
             profile["rolling_scanner_seconds"] = time.perf_counter() - section_start
 
-        carry_start = time.perf_counter()
-        carry_profile = self._apply_sparse_carryover(
-            parts,
-            refs,
-            text_inputs=text_inputs,
-            xbrl_inputs=xbrl_inputs,
-            corporate_action_inputs=corporate_inputs,
-        )
-        profile.update(carry_profile)
-        profile["rolling_sparse_carryover_seconds"] = time.perf_counter() - carry_start
+        profile["rolling_sparse_carryover_seconds"] = 0.0
 
         context_bytes = _nested_array_nbytes(text_inputs)
         context_bytes += _nested_array_nbytes(xbrl_inputs)
@@ -5069,6 +5193,233 @@ class _RollingContextTensorCache:
             scanner_inputs=scanner_inputs,
             profile=profile,
         )
+
+    def _materialize_text_inputs_with_cache(
+        self,
+        materializer: DailyIndexBatchMaterializer,
+        parts: Sequence[LoadedDailyIndexPart],
+        refs: Sequence[DailyIndexSampleRef],
+    ) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, float | int]]:
+        requested = [group for group in ("ticker_news_embeddings", "market_news_embeddings", "sec_filing_embeddings") if group in self.config.data_groups]
+        if not requested:
+            return {}, {}
+        return self._materialize_sparse_with_cache(
+            materializer,
+            parts,
+            refs,
+            materialize_fn=materializer._materialize_text_inputs,
+            requested_payloads=tuple(TEXT_INPUT_GROUP_TO_KEY[group] for group in requested),
+            payload_to_group={
+                "ticker_news": "ticker_news",
+                "market_news": "market_news",
+                "sec_filings": "sec_filings",
+            },
+            payload_to_source={
+                "ticker_news": "ticker_news_embeddings",
+                "market_news": "market_news_embeddings",
+                "sec_filings": "sec_filing_embeddings",
+            },
+            global_payloads={"market_news"},
+            refresh_fn=_refresh_text_payload_time_features,
+            profile_prefix="text_cache",
+        )
+
+    def _materialize_xbrl_inputs_with_cache(
+        self,
+        materializer: DailyIndexBatchMaterializer,
+        parts: Sequence[LoadedDailyIndexPart],
+        refs: Sequence[DailyIndexSampleRef],
+    ) -> tuple[dict[str, np.ndarray], dict[str, float | int]]:
+        if "xbrl" not in self.config.data_groups:
+            return {}, {}
+        return self._materialize_single_sparse_with_cache(
+            materializer,
+            parts,
+            refs,
+            materialize_fn=materializer._materialize_xbrl_inputs,
+            payload_group="xbrl",
+            payload_source="xbrl",
+            refresh_fn=_refresh_xbrl_payload_time_features,
+            profile_prefix="xbrl_cache",
+        )
+
+    def _materialize_corporate_action_inputs_with_cache(
+        self,
+        materializer: DailyIndexBatchMaterializer,
+        parts: Sequence[LoadedDailyIndexPart],
+        refs: Sequence[DailyIndexSampleRef],
+    ) -> tuple[dict[str, np.ndarray], dict[str, float | int]]:
+        if "corporate_actions" not in self.config.data_groups:
+            return {}, {}
+        return self._materialize_single_sparse_with_cache(
+            materializer,
+            parts,
+            refs,
+            materialize_fn=materializer._materialize_corporate_action_inputs,
+            payload_group="corporate_actions",
+            payload_source="corporate_actions",
+            refresh_fn=_refresh_corporate_action_payload_time_features,
+            profile_prefix="corporate_action_cache",
+        )
+
+    def _materialize_single_sparse_with_cache(
+        self,
+        materializer: DailyIndexBatchMaterializer,
+        parts: Sequence[LoadedDailyIndexPart],
+        refs: Sequence[DailyIndexSampleRef],
+        *,
+        materialize_fn: Callable[[Sequence[LoadedDailyIndexPart], Sequence[DailyIndexSampleRef]], tuple[dict[str, np.ndarray], dict[str, float | int]]],
+        payload_group: str,
+        payload_source: str,
+        refresh_fn: Callable[[Mapping[str, Any], int, int], None],
+        profile_prefix: str,
+    ) -> tuple[dict[str, np.ndarray], dict[str, float | int]]:
+        def wrapped_fn(
+            subset_parts: Sequence[LoadedDailyIndexPart],
+            subset_refs: Sequence[DailyIndexSampleRef],
+        ) -> tuple[dict[str, Any], dict[str, float | int]]:
+            payload, profile = materialize_fn(subset_parts, subset_refs)
+            return {str(payload_group): payload}, profile
+
+        payloads, profile = self._materialize_sparse_with_cache(
+            materializer,
+            parts,
+            refs,
+            materialize_fn=wrapped_fn,
+            requested_payloads=(str(payload_group),),
+            payload_to_group={str(payload_group): str(payload_group)},
+            payload_to_source={str(payload_group): str(payload_source)},
+            global_payloads=set(),
+            refresh_fn=refresh_fn,
+            profile_prefix=profile_prefix,
+        )
+        return payloads.get(str(payload_group), {}), profile
+
+    def _materialize_sparse_with_cache(
+        self,
+        materializer: DailyIndexBatchMaterializer,
+        parts: Sequence[LoadedDailyIndexPart],
+        refs: Sequence[DailyIndexSampleRef],
+        *,
+        materialize_fn: Callable[[Sequence[LoadedDailyIndexPart], Sequence[DailyIndexSampleRef]], tuple[dict[str, Any], dict[str, float | int]]],
+        requested_payloads: Sequence[str],
+        payload_to_group: Mapping[str, str],
+        payload_to_source: Mapping[str, str],
+        global_payloads: set[str],
+        refresh_fn: Callable[[Mapping[str, Any], int, int], None],
+        profile_prefix: str,
+    ) -> tuple[dict[str, Any], dict[str, float | int]]:
+        if not refs:
+            payloads, profile = materialize_fn(parts, refs)
+            profile[f"{profile_prefix}_hits"] = 0
+            profile[f"{profile_prefix}_misses"] = 0
+            profile[f"{profile_prefix}_stale"] = 0
+            return payloads, profile
+        sample_count = int(len(refs))
+        tickers, _ordinals, timestamps = _identity_arrays(parts, refs)
+        output_by_payload: dict[str, Any] = {}
+        missing_rows_by_payload: dict[str, list[int]] = {str(payload): [] for payload in requested_payloads}
+        stale = 0
+        hits = 0
+        misses = 0
+        for row, ref in enumerate(refs):
+            part = parts[int(ref.part_index)]
+            ticker = str(tickers[int(row)])
+            origin_ts = int(timestamps[int(row)])
+            for payload_name in requested_payloads:
+                payload_name = str(payload_name)
+                group = str(payload_to_group[payload_name])
+                source = str(payload_to_source[payload_name])
+                state_key = ("__global__", group) if payload_name in global_payloads else (ticker, group)
+                is_global = payload_name in global_payloads
+                if self._cached_payload_is_fresh(state_key, part, source, origin_ts, global_state=is_global):
+                    state = self._state_for_key(state_key, global_state=is_global)
+                    if state is not None and state.payload is not None:
+                        if payload_name not in output_by_payload:
+                            output_by_payload[payload_name] = _empty_batch_payload_like(state.payload, sample_count)
+                        _restore_batch_row(output_by_payload[payload_name], state.payload, int(row), sample_count)
+                        refresh_fn(output_by_payload[payload_name], int(row), origin_ts)
+                        hits += 1
+                        continue
+                if self._state_for_key(state_key, global_state=is_global) is not None:
+                    stale += 1
+                missing_rows_by_payload[payload_name].append(int(row))
+                misses += 1
+        all_missing_rows = sorted({row for rows in missing_rows_by_payload.values() for row in rows})
+        base_profile: dict[str, float | int] = {}
+        materialized_by_payload: dict[str, Any] = {}
+        if all_missing_rows:
+            subset_refs = [refs[row] for row in all_missing_rows]
+            materialized_by_payload, base_profile = materialize_fn(parts, subset_refs)
+        for payload_name in requested_payloads:
+            payload_name = str(payload_name)
+            if payload_name in materialized_by_payload:
+                source_payload = materialized_by_payload[payload_name]
+                if payload_name not in output_by_payload:
+                    output_by_payload[payload_name] = _empty_batch_payload_from_batch(source_payload, sample_count, len(all_missing_rows))
+                source_positions = {row: index for index, row in enumerate(all_missing_rows)}
+                for target_row in missing_rows_by_payload[payload_name]:
+                    source_row = source_positions[int(target_row)]
+                    _copy_batch_row(output_by_payload[payload_name], source_payload, target_row=int(target_row), source_row=int(source_row), source_sample_count=len(all_missing_rows))
+                    group = str(payload_to_group[payload_name])
+                    ticker = str(tickers[int(target_row)])
+                    state_key = ("__global__", group) if payload_name in global_payloads else (ticker, group)
+                    is_global = payload_name in global_payloads
+                    self._store_payload_state(
+                        state_key,
+                        group=group,
+                        payload=_snapshot_batch_row(source_payload, int(source_row), len(all_missing_rows)),
+                        global_state=is_global,
+                        source_date="global" if is_global else str(parts[int(refs[int(target_row)].part_index)].plan.source_date),
+                        timestamp_us=int(timestamps[int(target_row)]),
+                    )
+            elif payload_name not in output_by_payload:
+                output_by_payload[payload_name] = {}
+        base_profile[f"{profile_prefix}_hits"] = int(hits)
+        base_profile[f"{profile_prefix}_misses"] = int(misses)
+        base_profile[f"{profile_prefix}_stale"] = int(stale)
+        base_profile[f"{profile_prefix}_payloads"] = int(len(requested_payloads))
+        return output_by_payload, base_profile
+
+    def _cached_payload_is_fresh(
+        self,
+        state_key: tuple[str, str],
+        part: LoadedDailyIndexPart,
+        source_name: str,
+        origin_timestamp_us: int,
+        *,
+        global_state: bool,
+    ) -> bool:
+        state = self._state_for_key(state_key, global_state=global_state)
+        if state is None or state.payload is None:
+            return False
+        last_origin_ts = int(state.timestamp_us)
+        origin_ts = int(origin_timestamp_us)
+        if origin_ts < last_origin_ts:
+            return False
+        frame = part.context.get(str(source_name))
+        if frame is None or int(getattr(frame, "height", 0) or 0) <= 0:
+            return True
+        timestamps = self._context_source_timestamps_us(frame, str(source_name))
+        if timestamps.size <= 0:
+            return True
+        left = np.searchsorted(timestamps, last_origin_ts, side="right")
+        right = np.searchsorted(timestamps, origin_ts, side="right")
+        return int(right) <= int(left)
+
+    def _state_for_key(self, state_key: tuple[str, str], *, global_state: bool) -> _RollingContextState | None:
+        if global_state:
+            return self._global_state_by_key.get(str(state_key[1]))
+        return self._state_by_key.get((str(state_key[0]), str(state_key[1])))
+
+    def _context_source_timestamps_us(self, frame: Any, source_name: str) -> np.ndarray:
+        key = (id(frame), str(source_name))
+        cached = self._source_timestamp_cache.get(key)
+        if cached is not None:
+            return cached
+        timestamps = _context_source_timestamps_us(frame, str(source_name))
+        self._source_timestamp_cache[key] = timestamps
+        return timestamps
 
     def _commit_states(
         self,
@@ -5202,6 +5553,8 @@ class _RollingContextTensorCache:
         group: str,
         payload: Any,
         global_state: bool = False,
+        source_date: str = "",
+        timestamp_us: int = 0,
     ) -> None:
         if global_state:
             state = self._global_state_by_key.get(str(state_key[1]))
@@ -5209,13 +5562,15 @@ class _RollingContextTensorCache:
                 self._global_state_by_key[str(state_key[1])] = _RollingContextState(
                     key=str(state_key[1]),
                     group=str(group),
-                    source_date="global",
-                    timestamp_us=0,
+                    source_date=str(source_date or "global"),
+                    timestamp_us=int(timestamp_us),
                     estimated_bytes=int(_nested_array_nbytes(payload)),
                     payload=payload,
                 )
                 return
             state.payload = payload
+            state.source_date = str(source_date or state.source_date or "global")
+            state.timestamp_us = int(timestamp_us)
             state.estimated_bytes = max(int(state.estimated_bytes), int(_nested_array_nbytes(payload)))
             return
         state = self._state_by_key.get((str(state_key[0]), str(state_key[1])))
@@ -5223,13 +5578,15 @@ class _RollingContextTensorCache:
             self._state_by_key[(str(state_key[0]), str(state_key[1]))] = _RollingContextState(
                 key=f"{state_key[0]}:{state_key[1]}",
                 group=str(group),
-                source_date="",
-                timestamp_us=0,
+                source_date=str(source_date),
+                timestamp_us=int(timestamp_us),
                 estimated_bytes=int(_nested_array_nbytes(payload)),
                 payload=payload,
             )
             return
         state.payload = payload
+        state.source_date = str(source_date or state.source_date)
+        state.timestamp_us = int(timestamp_us)
         state.estimated_bytes = max(int(state.estimated_bytes), int(_nested_array_nbytes(payload)))
 
     def _restore_payload_state(
@@ -5442,58 +5799,61 @@ class _RollingEventStreamCache:
     ) -> tuple[np.ndarray, tuple[str, ...], dict[str, float | int]]:
         start = time.perf_counter()
         out = np.empty((len(refs), self.stream_length, len(self.columns)), dtype=np.float32)
-        offsets = np.arange(int(self.stream_length), dtype=np.int64)
         rebuilt = 0
         appended = 0
+        reused = 0
+        copy_start = time.perf_counter()
         protected_tickers = {str(parts[int(ref.part_index)].plan.ticker) for ref in refs}
         grouped_rows = _rows_by_part(refs)
         for part_index, rows in grouped_rows.items():
             part = parts[int(part_index)]
             origin_rows = _origin_rows_for_refs(refs, rows)
-            event_offsets = part.origin_array("event_row_offset").astype(np.int64, copy=False)[origin_rows]
             origin_ordinals = part.origin_array("origin_ordinal").astype(np.int64, copy=False)[origin_rows]
             origin_timestamps = part.origin_array("origin_timestamp_us").astype(np.int64, copy=False)[origin_rows]
-            starts = event_offsets - int(self.stream_length) + 1
-            if np.any(starts < 0):
-                raise RuntimeError(f"Chronological event cache lacks lookback rows for {_part_key(part.plan)}.")
-            ordinals = part.event_array("ordinal").astype(np.int64, copy=False)
-            ends = starts + int(self.stream_length) - 1
-            if np.any(ends >= int(ordinals.shape[0])):
-                raise RuntimeError(f"Chronological event cache stream exceeds loaded event rows for {_part_key(part.plan)}.")
-            gather_indices = starts[:, None] + offsets[None, :]
-            window_ordinals = ordinals[gather_indices]
-            if not bool(np.all(window_ordinals[:, -1] == origin_ordinals)):
-                raise RuntimeError(f"Chronological event cache gathered windows do not end at origins for {_part_key(part.plan)}.")
-            if int(self.stream_length) > 1 and not bool(np.all(np.diff(window_ordinals, axis=1) == 1)):
-                raise RuntimeError(f"Chronological event cache crosses an ordinal gap for {_part_key(part.plan)}.")
+            event_offsets = part.origin_array("event_row_offset").astype(np.int64, copy=False)[origin_rows]
             matrix = part.event_matrix(self.columns)
-            out[rows] = matrix[gather_indices]
-
-            latest_local = int(np.argmax(origin_ordinals))
+            ordinals = part.event_array("ordinal").astype(np.int64, copy=False)
             ticker = str(part.plan.ticker)
-            previous = self._state_by_ticker.get(ticker)
-            latest_ordinal = int(origin_ordinals[latest_local])
-            if previous is None or not previous.can_append(latest_ordinal):
-                rebuilt += 1
-            else:
-                appended += max(0, latest_ordinal - int(previous.last_ordinal))
-            self._state_by_ticker[ticker] = _RollingEventTickerState(
-                ticker=ticker,
-                stream=np.asarray(out[int(rows[latest_local])], dtype=np.float32).copy(),
-                ordinals=window_ordinals[latest_local].astype(np.int64, copy=True),
-                last_ordinal=latest_ordinal,
-                last_used_source_date=str(part.plan.source_date),
-                last_used_timestamp_us=int(origin_timestamps[latest_local]),
-            )
+            for local_index, output_row in enumerate(rows):
+                origin_ordinal = int(origin_ordinals[int(local_index)])
+                origin_timestamp = int(origin_timestamps[int(local_index)])
+                event_offset = int(event_offsets[int(local_index)])
+                state = self._state_by_ticker.get(ticker)
+                if state is None or not state.can_append(origin_ordinal):
+                    state = _RollingEventTickerState.from_part(
+                        ticker=ticker,
+                        stream_length=int(self.stream_length),
+                        matrix=matrix,
+                        ordinals=ordinals,
+                        event_offset=event_offset,
+                        part_key=_part_key(part.plan),
+                        source_date=str(part.plan.source_date),
+                        timestamp_us=origin_timestamp,
+                    )
+                    self._state_by_ticker[ticker] = state
+                    rebuilt += 1
+                else:
+                    appended_rows = state.append_until(matrix=matrix, ordinals=ordinals, event_offset=event_offset, part_key=_part_key(part.plan))
+                    if appended_rows > 0:
+                        appended += int(appended_rows)
+                    else:
+                        reused += 1
+                    state.touch(source_date=str(part.plan.source_date), timestamp_us=origin_timestamp)
+                if int(state.last_ordinal) != origin_ordinal:
+                    raise RuntimeError(f"Chronological event cache state did not advance to origin {origin_ordinal:,} for {_part_key(part.plan)}.")
+                out[int(output_row)] = state.snapshot()
+        copy_seconds = time.perf_counter() - copy_start
         evicted = self._trim_capacity(protected_tickers=protected_tickers)
         return out, self.columns, {
             "raw_stream_rolling_seconds": time.perf_counter() - start,
             "raw_stream_rolling_rebuilds": int(rebuilt),
             "raw_stream_rolling_appends": int(appended),
+            "raw_stream_rolling_reused": int(reused),
             "raw_stream_rolling_ticker_states": int(len(self._state_by_ticker)),
             "raw_stream_rolling_evictions": int(evicted),
             "event_cache_protected_tickers": int(len(protected_tickers)),
-            "raw_stream_rolling_vectorized": int(1),
+            "raw_stream_rolling_state_copy_seconds": float(copy_seconds),
+            "raw_stream_rolling_stateful": int(1),
         }
 
     def _ensure_state(
@@ -5917,6 +6277,30 @@ def _load_event_seed_part(plan: DailyIndexPartPlan, origin_frame: Any, stream_le
     return loaded
 
 
+def _load_context_seed_part(reader: DailyIndexPartReader, plan: DailyIndexPartPlan, origin_frame: Any) -> LoadedDailyIndexPart:
+    loaded = LoadedDailyIndexPart(plan=plan)
+    loaded.origins = origin_frame
+    return reader.load_payload(
+        loaded,
+        load_events=False,
+        load_labels=False,
+        load_intraday_bars="intraday_bars" in reader.data_groups,
+        load_corporate_labels=False,
+    )
+
+
+def _has_runtime_context_groups(config: DailyIndexLoaderConfig) -> bool:
+    groups = set(config.data_groups)
+    return bool(
+        TEXT_CONTEXT_GROUPS.union(BAR_CONTEXT_GROUPS)
+        .union(INTRADAY_BAR_CONTEXT_GROUPS)
+        .union(XBRL_CONTEXT_GROUPS)
+        .union(CORPORATE_ACTION_CONTEXT_GROUPS)
+        .union(SCANNER_CONTEXT_GROUPS)
+        .intersection(groups)
+    )
+
+
 def _warm_event_cache_for_day(
     *,
     read_pool: ThreadPoolExecutor,
@@ -6004,6 +6388,136 @@ def _warm_event_cache_for_day(
         "event_cache_warm_rss_before_mib": float(rss_before),
         "event_cache_warm_rss_after_mib": float(rss_after),
         "event_cache_warm_rss_delta_mib": float(rss_after - rss_before),
+    }
+
+
+def _warm_context_cache_for_day(
+    *,
+    read_pool: ThreadPoolExecutor,
+    reader: DailyIndexPartReader,
+    materializer: DailyIndexBatchMaterializer,
+    context_cache: "_RollingContextTensorCache",
+    cursors: Sequence[_OriginTickerCursor],
+    first_timestamp_us: int,
+    stop_event: threading.Event | None,
+    telemetry_callback: Callable[..., None] | None = None,
+) -> dict[str, float | int]:
+    start = time.perf_counter()
+    if not _has_runtime_context_groups(context_cache.config):
+        return {
+            "cache_first_day_context_warm_seconds": 0.0,
+            "context_cache_warm_payload_tickers": 0,
+            "context_cache_warm_payload_rows": 0,
+        }
+    rss_before = _process_rss_mib()
+    seed_items: list[tuple[DailyIndexPartPlan, Any]] = []
+    for cursor in cursors:
+        seed = cursor.seed_origin(int(first_timestamp_us), min_event_offset=0)
+        if seed is not None and int(getattr(seed, "height", 0) or 0) > 0:
+            seed_items.append((cursor.plan, seed))
+    total = int(len(seed_items))
+    if total <= 0:
+        return {
+            "cache_first_day_context_warm_seconds": time.perf_counter() - start,
+            "context_cache_warm_payload_tickers": 0,
+            "context_cache_warm_payload_total_tickers": 0,
+            "context_cache_warm_payload_rows": 0,
+        }
+    max_pending = max(1, int(getattr(read_pool, "_max_workers", 1)) * 2)
+    materialize_chunk = max(1, min(128, int(getattr(read_pool, "_max_workers", 1)) * 4))
+    pending: set[Future[LoadedDailyIndexPart]] = set()
+    pending_all: set[Future[LoadedDailyIndexPart]] = set()
+    loaded_chunk: list[LoadedDailyIndexPart] = []
+    next_index = 0
+    warmed = 0
+    context_rows = 0
+    context_bytes = 0
+    materialize_seconds = 0.0
+
+    def submit_until_full() -> None:
+        nonlocal next_index
+        while next_index < total and len(pending) < max_pending:
+            plan, origin_frame = seed_items[next_index]
+            future = read_pool.submit(_load_context_seed_part, reader, plan, origin_frame)
+            pending.add(future)
+            pending_all.add(future)
+            next_index += 1
+
+    def clear_loaded(loaded: LoadedDailyIndexPart) -> None:
+        loaded.events = None
+        loaded.origins = None
+        loaded.windows = None
+        loaded.labels = None
+        loaded.context.clear()
+        loaded.context_paths.clear()
+        loaded._event_arrays.clear()
+        loaded._event_matrices.clear()
+        loaded._origin_arrays.clear()
+        loaded._label_arrays.clear()
+        loaded._context_arrays.clear()
+
+    def flush_loaded_chunk() -> None:
+        nonlocal warmed, context_rows, context_bytes, materialize_seconds
+        if not loaded_chunk:
+            return
+        refs = [DailyIndexSampleRef(part_index=index, origin_row=0) for index in range(len(loaded_chunk))]
+        chunk_start = time.perf_counter()
+        context_batch = context_cache.materialize(materializer, loaded_chunk, refs)
+        materialize_seconds += time.perf_counter() - chunk_start
+        warmed += int(len(loaded_chunk))
+        context_rows += int(context_batch.profile.get("rolling_context_rows", 0) or 0)
+        context_bytes += int(context_batch.profile.get("rolling_context_estimated_bytes", 0) or 0)
+        for loaded in loaded_chunk:
+            clear_loaded(loaded)
+        loaded_chunk.clear()
+
+    try:
+        submit_until_full()
+        while pending:
+            if stop_event is not None and stop_event.is_set():
+                raise KeyboardInterrupt()
+            done, pending = wait(pending, timeout=0.2, return_when=FIRST_COMPLETED)
+            if not done:
+                if telemetry_callback is not None:
+                    telemetry_callback(
+                        loader_phase="cache_warm_context",
+                        context_cache_warm_payload_tickers=int(warmed),
+                        context_cache_warm_payload_total_tickers=int(total),
+                    )
+                continue
+            for future in done:
+                pending_all.discard(future)
+                loaded_chunk.append(future.result())
+                if len(loaded_chunk) >= materialize_chunk:
+                    flush_loaded_chunk()
+            if telemetry_callback is not None:
+                telemetry_callback(
+                    loader_phase="cache_warm_context",
+                    context_cache_warm_payload_tickers=int(warmed),
+                    context_cache_warm_payload_total_tickers=int(total),
+                )
+            submit_until_full()
+        flush_loaded_chunk()
+    except BaseException:
+        if stop_event is not None:
+            stop_event.set()
+        for future in pending_all:
+            future.cancel()
+        for loaded in loaded_chunk:
+            clear_loaded(loaded)
+        raise
+    rss_after = _process_rss_mib()
+    return {
+        "cache_first_day_context_warm_seconds": time.perf_counter() - start,
+        "context_cache_warm_payload_tickers": int(warmed),
+        "context_cache_warm_payload_total_tickers": int(total),
+        "context_cache_warm_payload_rows": int(context_rows),
+        "context_cache_warm_payload_bytes": int(context_bytes),
+        "context_cache_warm_payload_materialize_seconds": float(materialize_seconds),
+        "context_cache_warm_payload_rss_before_mib": float(rss_before),
+        "context_cache_warm_payload_rss_after_mib": float(rss_after),
+        "context_cache_warm_payload_rss_delta_mib": float(rss_after - rss_before),
+        **context_cache.telemetry_snapshot(),
     }
 
 
