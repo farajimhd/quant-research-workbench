@@ -71,6 +71,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scanner-prefetch-workers", type=int, default=8)
     parser.add_argument("--max-origins-per-epoch", type=int, default=200_000)
     parser.add_argument("--time-window-seconds", type=float, default=60.0)
+    parser.add_argument("--frontier-max-origins-per-window", type=int, default=0)
     parser.add_argument("--ticker-cache-capacity", type=int, default=15_000)
     parser.add_argument("--origin-cursor-chunk-rows", type=int, default=1024)
     parser.add_argument("--chronological-replay", action=argparse.BooleanOptionalAction, default=True)
@@ -238,6 +239,7 @@ def _load_cached_batches(*, args: argparse.Namespace, max_batch_size: int, devic
         prefetch_batches=int(args.prefetch_batches),
         chronological_replay=bool(args.chronological_replay),
         time_window_seconds=float(args.time_window_seconds),
+        frontier_max_origins_per_window=int(args.frontier_max_origins_per_window),
         ticker_cache_capacity=int(args.ticker_cache_capacity),
         origin_cursor_chunk_rows=int(args.origin_cursor_chunk_rows),
         warm_all_ticker_caches=bool(args.warm_all_ticker_caches),

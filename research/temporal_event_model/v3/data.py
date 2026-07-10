@@ -182,6 +182,7 @@ def loader_config_from_v3(config: LoaderConfig) -> Any:
         materialize_chunk_size=config.materialize_chunk_size,
         chronological_replay=config.chronological_replay,
         time_window_seconds=config.time_window_seconds,
+        frontier_max_origins_per_window=config.frontier_max_origins_per_window,
         ticker_cache_capacity=config.ticker_cache_capacity,
         origin_cursor_chunk_rows=config.origin_cursor_chunk_rows,
         warm_all_ticker_caches=config.warm_all_ticker_caches,

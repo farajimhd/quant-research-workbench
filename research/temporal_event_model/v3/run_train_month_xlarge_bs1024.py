@@ -30,6 +30,7 @@ DEFAULT_ARGS: dict[str, str | int | float | bool] = {
     "prefetch-batches": 64,
     "chronological-replay": True,
     "time-window-seconds": 60.0,
+    "frontier-max-origins-per-window": 0,
     "ticker-cache-capacity": 15_000,
     "origin-cursor-chunk-rows": 1024,
     "warm-all-ticker-caches": True,

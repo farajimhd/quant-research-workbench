@@ -142,6 +142,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prefetch-batches", type=int, default=default_loader.prefetch_batches, help="Raw CPU batches to keep prefetched ahead of GPU training. 0 disables training prefetch.")
     parser.add_argument("--chronological-replay", action=argparse.BooleanOptionalAction, default=default_loader.chronological_replay)
     parser.add_argument("--time-window-seconds", type=float, default=default_loader.time_window_seconds)
+    parser.add_argument("--frontier-max-origins-per-window", type=int, default=default_loader.frontier_max_origins_per_window, help="Maximum origins selected by one chronological frontier slice. 0 uses an automatic memory-bounded cap.")
     parser.add_argument("--ticker-cache-capacity", type=int, default=default_loader.ticker_cache_capacity)
     parser.add_argument("--origin-cursor-chunk-rows", type=int, default=default_loader.origin_cursor_chunk_rows)
     parser.add_argument("--warm-all-ticker-caches", action=argparse.BooleanOptionalAction, default=default_loader.warm_all_ticker_caches)
@@ -678,6 +679,8 @@ def _loader_state_metrics(*, summary: Mapping[str, Any], batch_profile: Mapping[
         "loader/state/origin_cursor": float(summary.get("origin_cursor", 0) or 0),
         "loader/state/chronological_day_position": float(summary.get("chronological_day_position", 0) or 0),
         "loader/state/chronological_origin_cursor": float(summary.get("chronological_origin_cursor", 0) or 0),
+        "loader/state/chronological_frontier_after_timestamp_us": float(summary.get("chronological_frontier_after_timestamp_us", 0) or 0),
+        "loader/state/chronological_frontier_after_ordinal": float(summary.get("chronological_frontier_after_ordinal", 0) or 0),
         "loader/state/emitted_batches": float(summary.get("emitted_batches", 0) or 0),
         "loader/state/emitted_samples": float(summary.get("emitted_samples", 0) or 0),
         "loader/state/seen_origins_total": float(summary.get("seen_origins_total", 0) or 0),
@@ -690,6 +693,7 @@ def _loader_state_metrics(*, summary: Mapping[str, Any], batch_profile: Mapping[
     summary_config = summary.get("config") if isinstance(summary.get("config"), Mapping) else {}
     if isinstance(summary_config, Mapping):
         metrics["loader/window/seconds"] = float(summary_config.get("time_window_seconds", 0.0) or 0.0)
+        metrics["loader/frontier/max_origins_per_window"] = float(summary_config.get("frontier_max_origins_per_window", 0) or 0)
     mapping = {
         "event_cache_ticker_states": "loader/cache/event_ticker_states",
         "event_cache_capacity": "loader/cache/event_ticker_capacity",
@@ -783,6 +787,16 @@ def _loader_state_metrics(*, summary: Mapping[str, Any], batch_profile: Mapping[
         "window_active_tickers": "loader/window/active_tickers",
         "window_start_timestamp_us": "loader/window/start_timestamp_us",
         "window_end_timestamp_us": "loader/window/end_timestamp_us",
+        "origin_frontier_selected_refs": "loader/frontier/selected_refs",
+        "origin_frontier_selected_parts": "loader/frontier/selected_parts",
+        "origin_frontier_selected_tickers": "loader/frontier/selected_tickers",
+        "origin_frontier_cap_origins": "loader/frontier/cap_origins",
+        "origin_frontier_cap_reached": "loader/frontier/cap_reached",
+        "origin_frontier_heap_remaining": "loader/frontier/heap_remaining",
+        "origin_frontier_initialized_cursors": "loader/frontier/initialized_cursors",
+        "origin_frontier_first_timestamp_us": "loader/frontier/first_timestamp_us",
+        "origin_frontier_last_timestamp_us": "loader/frontier/last_timestamp_us",
+        "origin_frontier_cursor_seconds": "loader/frontier/cursor_seconds",
         "day_package_count": "loader/window/day_package_count",
         "day_ticker_count": "loader/window/day_ticker_count",
         "day_refs_total": "loader/window/day_refs_total",
@@ -882,6 +896,13 @@ def _cache_state_metrics(metrics: Mapping[str, Any]) -> dict[str, Any]:
         "loader/cache/origin_window_cursor_seconds": "cache/state/origin_window_cursor_seconds",
         "loader/cache/origin_window_sort_seconds": "cache/state/origin_window_sort_seconds",
         "loader/cache/origin_window_rss_delta_mib": "cache/state/origin_window_rss_delta_mib",
+        "loader/frontier/selected_refs": "cache/state/frontier_selected_refs",
+        "loader/frontier/selected_parts": "cache/state/frontier_selected_parts",
+        "loader/frontier/selected_tickers": "cache/state/frontier_selected_tickers",
+        "loader/frontier/cap_origins": "cache/state/frontier_cap_origins",
+        "loader/frontier/cap_reached": "cache/state/frontier_cap_reached",
+        "loader/frontier/heap_remaining": "cache/state/frontier_heap_remaining",
+        "loader/frontier/cursor_seconds": "cache/state/frontier_cursor_seconds",
         "loader/cache/payload_parts": "cache/state/payload_parts",
         "loader/cache/payload_limit": "cache/state/payload_limit",
         "loader/cache/ready_batches": "cache/state/ready_batches",
@@ -1006,6 +1027,7 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         prefetch_batches=int(args.prefetch_batches),
         chronological_replay=bool(args.chronological_replay),
         time_window_seconds=float(args.time_window_seconds),
+        frontier_max_origins_per_window=int(args.frontier_max_origins_per_window),
         ticker_cache_capacity=int(args.ticker_cache_capacity),
         origin_cursor_chunk_rows=int(args.origin_cursor_chunk_rows),
         warm_all_ticker_caches=bool(args.warm_all_ticker_caches),

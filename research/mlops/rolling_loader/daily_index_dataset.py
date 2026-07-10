@@ -2,6 +2,7 @@
 
 import datetime as dt
 import gc
+import heapq
 import hashlib
 import json
 import math
@@ -302,6 +303,7 @@ class DailyIndexLoaderConfig:
     days: tuple[str, ...] = ()
     chronological_replay: bool = False
     time_window_seconds: float = 60.0
+    frontier_max_origins_per_window: int = 0
     ticker_cache_capacity: int = 15_000
     origin_cursor_chunk_rows: int = 1024
     warm_all_ticker_caches: bool = True
@@ -571,6 +573,9 @@ class DailyIndexLoaderState:
     chronological_day_position: int = 0
     chronological_origin_cursor: int = 0
     chronological_window_start_us: int = 0
+    chronological_frontier_after_timestamp_us: int = 0
+    chronological_frontier_after_ticker: str = ""
+    chronological_frontier_after_ordinal: int = 0
     seen_by_month: dict[str, int] = field(default_factory=dict)
     seen_by_part: dict[str, int] = field(default_factory=dict)
 
@@ -594,6 +599,9 @@ class DailyIndexLoaderState:
             "chronological_day_position": int(self.chronological_day_position),
             "chronological_origin_cursor": int(self.chronological_origin_cursor),
             "chronological_window_start_us": int(self.chronological_window_start_us),
+            "chronological_frontier_after_timestamp_us": int(self.chronological_frontier_after_timestamp_us),
+            "chronological_frontier_after_ticker": str(self.chronological_frontier_after_ticker),
+            "chronological_frontier_after_ordinal": int(self.chronological_frontier_after_ordinal),
             "seen_by_month": dict(self.seen_by_month),
             "seen_by_part": dict(self.seen_by_part),
         }
@@ -618,11 +626,14 @@ class DailyIndexLoaderState:
             "chronological_day_position",
             "chronological_origin_cursor",
             "chronological_window_start_us",
+            "chronological_frontier_after_timestamp_us",
+            "chronological_frontier_after_ordinal",
         ):
             if key in value:
                 setattr(state, key, int(value[key] or 0))
         state.dataset_plan_id = str(value.get("dataset_plan_id") or "")
         state.cache_manifest_fingerprint = str(value.get("cache_manifest_fingerprint") or "")
+        state.chronological_frontier_after_ticker = str(value.get("chronological_frontier_after_ticker") or "")
         state.seen_by_month = {str(k): int(v or 0) for k, v in dict(value.get("seen_by_month") or {}).items()}
         state.seen_by_part = {str(k): int(v or 0) for k, v in dict(value.get("seen_by_part") or {}).items()}
         return state
@@ -2902,61 +2913,49 @@ class AsyncDailyIndexBatchLoader:
                             **context_day_warm_profile,
                             **context_cache.telemetry_snapshot(),
                         )
+                frontier_ref_cap = _chronological_frontier_ref_cap(self.config, materialize_size=int(materialize_size))
                 while window_start < int(day_window_end):
                     if self._stop_event.is_set():
                         return
                     window_end = min(int(window_start) + int(window_us), int(day_window_end))
                     self.state.chronological_window_start_us = int(window_start)
+                    after_key = self._frontier_after_key()
                     self._update_telemetry(
-                        loader_phase="window_plan",
+                        loader_phase="frontier_plan",
                         current_source_date=str(source_date),
                         window_start_timestamp_us=int(window_start),
                         window_end_timestamp_us=int(window_end),
+                        origin_frontier_cap_origins=int(frontier_ref_cap),
+                        origin_frontier_after_timestamp_us=int(after_key[0]) if after_key is not None else 0,
+                        origin_frontier_after_ordinal=int(after_key[2]) if after_key is not None else 0,
                         day_refs_remaining_before_window=int(max(0, int(day_total_refs) - int(emitted_from_day))),
                     )
                     self._update_telemetry(
-                        loader_phase="origin_read",
+                        loader_phase="frontier_read",
                         origin_cursor_count=int(len(cursors)),
                     )
                     origin_window_start = time.perf_counter()
-                    loaded_origins, cursor_window_profile = _load_window_origins_from_cursors(
+                    loaded_origins, window_refs, cursor_window_profile = _load_frontier_origins_from_cursors(
                         cursors=cursors,
                         start_us=int(window_start),
                         end_us=int(window_end),
-                        stop_event=self._stop_event,
-                    )
-                    origin_window_load_seconds = time.perf_counter() - origin_window_start
-                    origin_rows = int(sum(int(part.origins.height) for part in loaded_origins if part.origins is not None))
-                    self._update_telemetry(
-                        loader_phase="origin_ready",
-                        origin_window_load_seconds=float(origin_window_load_seconds),
-                        **cursor_window_profile,
-                    )
-                    if not loaded_origins:
-                        self.state.chronological_origin_cursor = 0
-                        self._update_telemetry(loader_phase="window_empty", window_active_parts=0, window_active_tickers=0)
-                        window_start = int(window_end)
-                        continue
-                    self._update_telemetry(loader_phase="sample_refs")
-                    window_refs = _sample_refs_for_loaded_parts(
-                        loaded_origins,
+                        after_key=after_key,
+                        max_refs=int(frontier_ref_cap),
                         config=self.config,
                         seed=int(self.state.seed),
                         dataset_plan_id=self.dataset_plan_id,
-                        start_us=int(window_start),
-                        end_us=int(window_end),
+                        stop_event=self._stop_event,
                     )
-                    if window_refs:
-                        sort_start = time.perf_counter()
-                        window_refs.sort(key=lambda ref: _ref_sort_key(loaded_origins, ref))
-                        origin_window_sort_seconds = time.perf_counter() - sort_start
-                    else:
-                        origin_window_sort_seconds = 0.0
-                    if int(self.state.chronological_origin_cursor) > 0:
-                        window_refs = window_refs[int(self.state.chronological_origin_cursor) :]
-                    if not window_refs:
+                    origin_window_load_seconds = time.perf_counter() - origin_window_start
+                    self._update_telemetry(
+                        loader_phase="frontier_ready",
+                        origin_window_load_seconds=float(origin_window_load_seconds),
+                        **cursor_window_profile,
+                    )
+                    if not loaded_origins or not window_refs:
                         self.state.chronological_origin_cursor = 0
-                        self._update_telemetry(loader_phase="window_no_refs", window_active_refs=0)
+                        self._clear_frontier_after()
+                        self._update_telemetry(loader_phase="frontier_empty", window_active_parts=0, window_active_tickers=0)
                         window_start = int(window_end)
                         continue
                     first_ts = int(_ref_origin_timestamp(loaded_origins, window_refs[0]))
@@ -3027,7 +3026,7 @@ class AsyncDailyIndexBatchLoader:
                             "origin_cache_limit": int(len(cursors)),
                             "payload_cache_parts": int(len(payload_cache)),
                             "payload_cache_limit": int(payload_cache_limit),
-                            "origin_window_sort_seconds": float(origin_window_sort_seconds),
+                            "origin_window_sort_seconds": float(cursor_window_profile.get("origin_window_sort_seconds", 0.0)),
                             **day_warm_profile,
                             **cursor_window_profile,
                             **event_cache.telemetry_snapshot(),
@@ -3059,20 +3058,33 @@ class AsyncDailyIndexBatchLoader:
                                 return
                             emitted_from_day += int(batch.sample_count)
                             self.state.chronological_origin_cursor += int(batch.sample_count)
+                            self._set_frontier_after_from_batch(batch)
                             self._record_emitted_batch(batch)
                             yield batch
                             if int(self.config.max_batches) > 0 and int(self.state.emitted_batches) >= int(self.config.max_batches):
                                 return
                             if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
                                 return
-                    self.state.chronological_origin_cursor = 0
-                    window_start = int(window_end)
+                    if int(cursor_window_profile.get("origin_frontier_cap_reached", 0) or 0):
+                        self._update_telemetry(
+                            loader_phase="frontier_cap_continue",
+                            window_start_timestamp_us=int(window_start),
+                            window_end_timestamp_us=int(window_end),
+                            chronological_origin_cursor=int(self.state.chronological_origin_cursor),
+                            origin_frontier_cap_origins=int(frontier_ref_cap),
+                        )
+                    else:
+                        self.state.chronological_origin_cursor = 0
+                        self._clear_frontier_after()
+                        window_start = int(window_end)
                 self.state.chronological_origin_cursor = 0
                 self.state.chronological_window_start_us = 0
+                self._clear_frontier_after()
             for batch in ready.flush():
                 batch = self._apply_epoch_sample_cap(batch)
                 if batch.sample_count == 0:
                     return
+                self._set_frontier_after_from_batch(batch)
                 self._record_emitted_batch(batch)
                 yield batch
                 if int(self.config.max_batches) > 0 and int(self.state.emitted_batches) >= int(self.config.max_batches):
@@ -3084,10 +3096,30 @@ class AsyncDailyIndexBatchLoader:
             self.state.chronological_day_position = 0
             self.state.chronological_origin_cursor = 0
             self.state.chronological_window_start_us = 0
+            self._clear_frontier_after()
             self.state.seen_origins_this_epoch = 0
         finally:
             read_pool.shutdown(wait=False, cancel_futures=True)
             mat_pool.shutdown(wait=False, cancel_futures=True)
+
+    def _frontier_after_key(self) -> tuple[int, str, int] | None:
+        timestamp_us = int(self.state.chronological_frontier_after_timestamp_us)
+        if timestamp_us <= 0:
+            return None
+        return timestamp_us, str(self.state.chronological_frontier_after_ticker), int(self.state.chronological_frontier_after_ordinal)
+
+    def _set_frontier_after_from_batch(self, batch: DailyIndexTrainingBatch) -> None:
+        if int(batch.sample_count) <= 0:
+            return
+        row = int(batch.sample_count) - 1
+        self.state.chronological_frontier_after_timestamp_us = int(batch.origin_timestamp_us[row])
+        self.state.chronological_frontier_after_ticker = str(batch.ticker[row])
+        self.state.chronological_frontier_after_ordinal = int(batch.origin_ordinal[row])
+
+    def _clear_frontier_after(self) -> None:
+        self.state.chronological_frontier_after_timestamp_us = 0
+        self.state.chronological_frontier_after_ticker = ""
+        self.state.chronological_frontier_after_ordinal = 0
 
     def _chronological_day_plans(self) -> list[tuple[str, list[DailyIndexPartPlan]]]:
         plans = sorted(self.index.parts, key=lambda plan: (str(plan.source_date), str(plan.month), str(plan.ticker), int(plan.part_id)))
@@ -3314,6 +3346,7 @@ class AsyncDailyIndexBatchLoader:
             "randomize_seed": bool(self.config.randomize_seed),
             "chronological_replay": bool(self.config.chronological_replay),
             "time_window_seconds": float(self.config.time_window_seconds),
+            "frontier_max_origins_per_window": int(self.config.frontier_max_origins_per_window),
             "ticker_cache_capacity": int(self.config.ticker_cache_capacity),
             "origin_cursor_chunk_rows": int(self.config.origin_cursor_chunk_rows),
             "warm_all_ticker_caches": bool(self.config.warm_all_ticker_caches),
@@ -3430,6 +3463,7 @@ def normalize_loader_config(config: DailyIndexLoaderConfig) -> DailyIndexLoaderC
         days=tuple(str(day)[:10] for day in config.days if str(day).strip()),
         chronological_replay=bool(config.chronological_replay),
         time_window_seconds=max(0.001, float(config.time_window_seconds)),
+        frontier_max_origins_per_window=max(0, int(config.frontier_max_origins_per_window)),
         ticker_cache_capacity=max(1, int(config.ticker_cache_capacity)),
         origin_cursor_chunk_rows=max(1, int(config.origin_cursor_chunk_rows)),
         warm_all_ticker_caches=bool(config.warm_all_ticker_caches),
@@ -6627,6 +6661,9 @@ class _OriginTickerCursor:
     exhausted: bool = False
     chunks_loaded: int = 0
     rows_loaded: int = 0
+    _timestamp_values: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=np.int64), repr=False)
+    _ordinal_values: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=np.int64), repr=False)
+    _event_offset_values: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=np.int64), repr=False)
 
     def load_next_chunk(self) -> int:
         if self.exhausted:
@@ -6640,6 +6677,14 @@ class _OriginTickerCursor:
         )
         rows = int(frame.height)
         self.chunk = frame
+        if rows > 0:
+            self._timestamp_values = frame.get_column("origin_timestamp_us").to_numpy().astype(np.int64, copy=False)
+            self._ordinal_values = frame.get_column("origin_ordinal").to_numpy().astype(np.int64, copy=False)
+            self._event_offset_values = frame.get_column("event_row_offset").to_numpy().astype(np.int64, copy=False)
+        else:
+            self._timestamp_values = np.asarray([], dtype=np.int64)
+            self._ordinal_values = np.asarray([], dtype=np.int64)
+            self._event_offset_values = np.asarray([], dtype=np.int64)
         self.row_pos = 0
         self.next_file_row += rows
         self.chunks_loaded += int(rows > 0)
@@ -6660,7 +6705,34 @@ class _OriginTickerCursor:
     def _timestamp_array(self) -> np.ndarray:
         if self.chunk is None:
             return np.asarray([], dtype=np.int64)
-        return self.chunk.get_column("origin_timestamp_us").to_numpy().astype(np.int64, copy=False)
+        return self._timestamp_values
+
+    def current_sort_key(self) -> tuple[int, str, int] | None:
+        if not self._ensure_chunk() or self.chunk is None:
+            return None
+        if int(self.row_pos) >= int(self.chunk.height):
+            return None
+        timestamp_us = int(self._timestamp_values[int(self.row_pos)])
+        ordinal = int(self._ordinal_values[int(self.row_pos)])
+        return timestamp_us, str(self.plan.ticker), ordinal
+
+    def current_event_offset(self) -> int:
+        if self.chunk is None or int(self.row_pos) >= int(self.chunk.height):
+            return -1
+        return int(self._event_offset_values[int(self.row_pos)])
+
+    def current_origin_frame(self) -> Any | None:
+        if not self._ensure_chunk() or self.chunk is None:
+            return None
+        if int(self.row_pos) >= int(self.chunk.height):
+            return None
+        return self.chunk.slice(int(self.row_pos), 1)
+
+    def advance_one(self) -> bool:
+        if not self._ensure_chunk():
+            return False
+        self.row_pos += 1
+        return self._ensure_chunk()
 
     def advance_to(self, timestamp_us: int) -> bool:
         target = int(timestamp_us)
@@ -6689,30 +6761,6 @@ class _OriginTickerCursor:
             if int(self.row_pos) < int(offsets.shape[0]):
                 return self.chunk.slice(int(self.row_pos), 1)
         return None
-
-    def pop_window(self, *, start_us: int, end_us: int) -> Any | None:
-        pl = _polars()
-        frames: list[Any] = []
-        if not self.advance_to(int(start_us)):
-            return None
-        while self._ensure_chunk():
-            ts = self._timestamp_array()
-            if int(self.row_pos) >= int(ts.shape[0]):
-                continue
-            current_ts = int(ts[int(self.row_pos)])
-            if current_ts >= int(end_us):
-                break
-            start = int(self.row_pos)
-            local_end = int(np.searchsorted(ts[start:], int(end_us), side="left"))
-            stop = start + local_end
-            if stop > start:
-                frames.append(self.chunk.slice(start, stop - start))
-                self.row_pos = stop
-            if stop < int(ts.shape[0]):
-                break
-        if not frames:
-            return None
-        return frames[0] if len(frames) == 1 else pl.concat(frames, how="vertical")
 
     def telemetry(self) -> dict[str, int]:
         current_rows = int(self.chunk.height) if self.chunk is not None else 0
@@ -6769,32 +6817,209 @@ def _load_origin_cursor_initial_chunks(
     }
 
 
-def _load_window_origins_from_cursors(
+def _chronological_frontier_ref_cap(config: DailyIndexLoaderConfig, *, materialize_size: int) -> int:
+    explicit = int(config.frontier_max_origins_per_window)
+    if explicit > 0:
+        return max(1, explicit)
+    batch_size = max(1, int(config.batch_size))
+    chunk_size = max(1, int(materialize_size))
+    workers = max(1, int(config.materialize_workers))
+    payload_scale = max(1, int(config.loaded_parts_per_group)) * 64
+    auto = max(batch_size * 16, chunk_size * workers * 4, payload_scale, 4_096)
+    return int(min(max(auto, batch_size), 65_536))
+
+
+def _frontier_key_after(candidate: tuple[int, str, int], after_key: tuple[int, str, int] | None) -> bool:
+    if after_key is None:
+        return True
+    return (int(candidate[0]), str(candidate[1]), int(candidate[2])) > (int(after_key[0]), str(after_key[1]), int(after_key[2]))
+
+
+def _cursor_origin_is_candidate(
+    cursor: _OriginTickerCursor,
+    *,
+    config: DailyIndexLoaderConfig,
+    seed: int,
+    dataset_plan_id: str,
+) -> bool:
+    key = cursor.current_sort_key()
+    if key is None:
+        return False
+    timestamp_us, _ticker, ordinal = key
+    if config.event_output_mode == "raw_stream" and int(cursor.current_event_offset()) < (int(config.event_stream_length) - 1):
+        return False
+    if _uses_dataset_hash_filter(config):
+        return _sample_selected(
+            cursor.plan,
+            int(ordinal),
+            int(timestamp_us),
+            config=config,
+            seed=int(seed),
+            dataset_plan_id=str(dataset_plan_id),
+        )
+    return True
+
+
+def _advance_cursor_to_frontier_candidate(
+    cursor: _OriginTickerCursor,
+    *,
+    start_us: int,
+    end_us: int,
+    after_key: tuple[int, str, int] | None,
+    config: DailyIndexLoaderConfig,
+    seed: int,
+    dataset_plan_id: str,
+) -> tuple[int, str, int] | None:
+    if not cursor.advance_to(int(start_us)):
+        return None
+    while True:
+        key = cursor.current_sort_key()
+        if key is None:
+            return None
+        if int(key[0]) >= int(end_us):
+            return None
+        if _frontier_key_after(key, after_key) and _cursor_origin_is_candidate(
+            cursor,
+            config=config,
+            seed=seed,
+            dataset_plan_id=dataset_plan_id,
+        ):
+            return key
+        if not cursor.advance_one():
+            return None
+
+
+def _load_frontier_origins_from_cursors(
     *,
     cursors: Sequence[_OriginTickerCursor],
     start_us: int,
     end_us: int,
+    after_key: tuple[int, str, int] | None,
+    max_refs: int,
+    config: DailyIndexLoaderConfig,
+    seed: int,
+    dataset_plan_id: str,
     stop_event: threading.Event | None,
-) -> tuple[list[LoadedDailyIndexPart], dict[str, float | int]]:
+) -> tuple[list[LoadedDailyIndexPart], list[DailyIndexSampleRef], dict[str, float | int]]:
+    pl = _polars()
     start = time.perf_counter()
     rss_before = _process_rss_mib()
-    loaded_parts: list[LoadedDailyIndexPart] = []
     cursor_rows_loaded_before = int(sum(cursor.rows_loaded for cursor in cursors))
-    for cursor in cursors:
+    heap: list[tuple[int, str, int, int]] = []
+    initialized = 0
+    skipped_before_after_key = 0
+    for index, cursor in enumerate(cursors):
         if stop_event is not None and stop_event.is_set():
             raise KeyboardInterrupt()
-        frame = cursor.pop_window(start_us=int(start_us), end_us=int(end_us))
-        if frame is None or int(getattr(frame, "height", 0) or 0) <= 0:
+        key = _advance_cursor_to_frontier_candidate(
+            cursor,
+            start_us=int(start_us),
+            end_us=int(end_us),
+            after_key=after_key,
+            config=config,
+            seed=seed,
+            dataset_plan_id=dataset_plan_id,
+        )
+        if key is None:
             continue
-        loaded = LoadedDailyIndexPart(plan=cursor.plan)
-        loaded.origins = frame
+        initialized += 1
+        heapq.heappush(heap, (int(key[0]), str(key[1]), int(key[2]), int(index)))
+
+    selected_frames: list[list[Any]] = []
+    selected_counts: list[int] = []
+    selected_cursor_to_part: dict[int, int] = {}
+    refs: list[DailyIndexSampleRef] = []
+    selected_last_key: tuple[int, str, int] | None = None
+    cap = max(1, int(max_refs))
+    stale_heap_entries = 0
+    while heap and len(refs) < cap:
+        if stop_event is not None and stop_event.is_set():
+            raise KeyboardInterrupt()
+        timestamp_us, ticker, ordinal, cursor_index = heapq.heappop(heap)
+        cursor = cursors[int(cursor_index)]
+        key = cursor.current_sort_key()
+        if key is None:
+            stale_heap_entries += 1
+            continue
+        if (int(key[0]), str(key[1]), int(key[2])) != (int(timestamp_us), str(ticker), int(ordinal)):
+            stale_heap_entries += 1
+            if int(key[0]) < int(end_us):
+                heapq.heappush(heap, (int(key[0]), str(key[1]), int(key[2]), int(cursor_index)))
+            continue
+        if int(key[0]) >= int(end_us):
+            continue
+        if not _frontier_key_after(key, after_key):
+            skipped_before_after_key += 1
+            if cursor.advance_one():
+                next_key = _advance_cursor_to_frontier_candidate(
+                    cursor,
+                    start_us=int(start_us),
+                    end_us=int(end_us),
+                    after_key=after_key,
+                    config=config,
+                    seed=seed,
+                    dataset_plan_id=dataset_plan_id,
+                )
+                if next_key is not None:
+                    heapq.heappush(heap, (int(next_key[0]), str(next_key[1]), int(next_key[2]), int(cursor_index)))
+            continue
+        frame = cursor.current_origin_frame()
+        if frame is not None and int(getattr(frame, "height", 0) or 0) > 0:
+            part_index = selected_cursor_to_part.get(int(cursor_index))
+            if part_index is None:
+                part_index = len(selected_frames)
+                selected_cursor_to_part[int(cursor_index)] = int(part_index)
+                selected_frames.append([])
+                selected_counts.append(0)
+            refs.append(DailyIndexSampleRef(part_index=int(part_index), origin_row=int(selected_counts[int(part_index)])))
+            selected_frames[int(part_index)].append(frame)
+            selected_counts[int(part_index)] += 1
+            selected_last_key = key
+        cursor.advance_one()
+        next_key = _advance_cursor_to_frontier_candidate(
+            cursor,
+            start_us=int(start_us),
+            end_us=int(end_us),
+            after_key=after_key,
+            config=config,
+            seed=seed,
+            dataset_plan_id=dataset_plan_id,
+        )
+        if next_key is not None:
+            heapq.heappush(heap, (int(next_key[0]), str(next_key[1]), int(next_key[2]), int(cursor_index)))
+
+    loaded_parts: list[LoadedDailyIndexPart] = []
+    cursor_by_part = {part_index: cursor_index for cursor_index, part_index in selected_cursor_to_part.items()}
+    for part_index, frames in enumerate(selected_frames):
+        cursor_index = int(cursor_by_part[int(part_index)])
+        loaded = LoadedDailyIndexPart(plan=cursors[cursor_index].plan)
+        loaded.origins = frames[0] if len(frames) == 1 else pl.concat(frames, how="vertical")
         loaded_parts.append(loaded)
+
     rows = int(sum(int(part.origins.height) for part in loaded_parts if part.origins is not None))
     cursor_rows_loaded_after = int(sum(cursor.rows_loaded for cursor in cursors))
     rss_after = _process_rss_mib()
-    return loaded_parts, {
+    cap_reached = int(len(refs) >= cap and bool(heap))
+    first_key = _ref_sort_key(loaded_parts, refs[0]) if refs else None
+    last_key = _ref_sort_key(loaded_parts, refs[-1]) if refs else selected_last_key
+    profile: dict[str, float | int] = {
         "origin_window_cursor_seconds": time.perf_counter() - start,
+        "origin_frontier_cursor_seconds": time.perf_counter() - start,
+        "origin_frontier_mode": int(1),
+        "origin_frontier_initialized_cursors": int(initialized),
+        "origin_frontier_heap_remaining": int(len(heap)),
+        "origin_frontier_cap_origins": int(cap),
+        "origin_frontier_cap_reached": int(cap_reached),
+        "origin_frontier_skipped_before_after_key": int(skipped_before_after_key),
+        "origin_frontier_stale_heap_entries": int(stale_heap_entries),
+        "origin_frontier_selected_refs": int(len(refs)),
+        "origin_frontier_selected_parts": int(len(loaded_parts)),
+        "origin_frontier_selected_tickers": int(len({part.plan.ticker for part in loaded_parts})),
+        "origin_frontier_first_timestamp_us": int(first_key[0]) if first_key is not None else 0,
+        "origin_frontier_last_timestamp_us": int(last_key[0]) if last_key is not None else 0,
+        "origin_window_sort_seconds": 0.0,
         "origin_cache_parts": int(len(loaded_parts)),
+        "origin_parts": int(len(loaded_parts)),
         "origin_rows": int(rows),
         "origin_cursor_count": int(len(cursors)),
         "origin_cursor_rows_loaded": int(cursor_rows_loaded_after),
@@ -6803,6 +7028,7 @@ def _load_window_origins_from_cursors(
         "origin_window_rss_after_mib": float(rss_after),
         "origin_window_rss_delta_mib": float(rss_after - rss_before),
     }
+    return loaded_parts, refs, profile
 
 
 def _load_event_seed_part(plan: DailyIndexPartPlan, origin_frame: Any, stream_length: int) -> LoadedDailyIndexPart:
@@ -7124,30 +7350,6 @@ def _ref_sort_key(parts: Sequence[LoadedDailyIndexPart], ref: DailyIndexSampleRe
     timestamp_us = int(part.origin_array("origin_timestamp_us").astype(np.int64, copy=False)[row])
     ordinal = int(part.origin_array("origin_ordinal").astype(np.int64, copy=False)[row])
     return timestamp_us, str(part.plan.ticker), ordinal
-
-
-def _windowed_refs_by_time(
-    parts: Sequence[LoadedDailyIndexPart],
-    refs: Sequence[DailyIndexSampleRef],
-    *,
-    time_window_seconds: float,
-) -> Iterator[list[DailyIndexSampleRef]]:
-    if not refs:
-        return
-    window_us = max(1, int(float(time_window_seconds) * 1_000_000.0))
-    current: list[DailyIndexSampleRef] = []
-    window_start = int(_ref_origin_timestamp(parts, refs[0]))
-    window_end = window_start + window_us
-    for ref in refs:
-        ts = int(_ref_origin_timestamp(parts, ref))
-        if current and ts >= window_end:
-            yield current
-            current = []
-            window_start = ts
-            window_end = window_start + window_us
-        current.append(ref)
-    if current:
-        yield current
 
 
 def _load_active_payloads(

@@ -91,6 +91,7 @@ loaded_parts_per_group: 256
 materialize_chunk_size: 256
 prefetch_batches: 64
 time_window_seconds: 60.0
+frontier_max_origins_per_window: 0
 origin_cursor_chunk_rows: 1024
 scanner_prefetch_workers: 8
 learning_rate: 1e-3
@@ -371,11 +372,17 @@ before that origin is emitted.
 
 Origin rows are not materialized as one full-day table. The loader keeps
 per-ticker origin cursors, loads `origin_cursor_chunk_rows` rows per ticker, and
-pops only the current `time_window_seconds` rows into a sorted replay window.
-The default window is intentionally large enough to produce multiple batches per
-window, so the raw batch prefetch queue can fill instead of rebuilding payload
-state for sub-batch windows. This avoids repeatedly scanning all origin parquet
-files and avoids retaining a full day of origins in memory.
+uses a k-way frontier merge over the current `time_window_seconds` period. Each
+ticker contributes its next eligible origin; after that origin is consumed, only
+that ticker advances. The frontier is already sorted by
+`origin_timestamp_us`, `ticker`, and `origin_ordinal`, and it is capped by
+`frontier_max_origins_per_window` so dense periods cannot fill memory. A value
+of `0` uses the automatic cap derived from batch size, materialization workers,
+chunk size, and payload settings. The default period is intentionally large
+enough to produce multiple batches per frontier slice, so the raw batch prefetch
+queue can fill instead of rebuilding payload state for sub-batch periods. This
+avoids repeatedly scanning all origin parquet files and avoids retaining a full
+day of origins in memory.
 
 Sparse contexts follow the same production contract conceptually: ticker news,
 market news, SEC embeddings, XBRL, corporate actions, daily/global bars, and
@@ -386,7 +393,7 @@ zero with mask false.
 
 Scanner artifacts are consumed through day-level indexes. The current source
 date is warmed before first batch emission for that day, and the next source
-date is prefetched in the background. Each 1s/5s replay window then gathers by
+date is prefetched in the background. Each frontier period then gathers by
 scanner bucket from the already-warmed day index.
 
 ### Loader Telemetry

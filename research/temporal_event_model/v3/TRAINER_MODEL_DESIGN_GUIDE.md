@@ -572,9 +572,16 @@ Sizing rule:
 Loader replay rule:
 
 - v3 training uses chronological replay by default with
-  `time_window_seconds=60.0`. The larger replay window still preserves
-  timestamp ordering, but it gives the loader enough origins to produce several
-  batches per window and keep the trainer-side prefetch queue warm.
+  `time_window_seconds=60.0`. The larger frontier period still preserves
+  timestamp ordering, but origins are selected by a hybrid per-ticker frontier
+  merge rather than by loading the whole day or blindly materializing every
+  origin in the period. Each ticker contributes its next eligible origin; the
+  loader pops the global earliest `(origin_timestamp_us, ticker,
+  origin_ordinal)`, advances that ticker, and continues until the period ends
+  or `frontier_max_origins_per_window` is reached. The cap defaults to `0`,
+  which means an automatic memory-bounded value. This gives the loader enough
+  origins to produce several batches per frontier slice and keep the
+  trainer-side prefetch queue warm.
 - Event input is a production-style rolling ticker cache. At the first origin
   the loader fills `[B,1024,F]` from saved lookback context plus the origin
   event. Later origins append only newly arrived events to the ticker cache and
@@ -595,7 +602,7 @@ Loader scanner rule:
   source date emits its first batch, the loader synchronously warms the scanner
   index for that source date from `global/scanner/scanner_YYYY-MM-DD.parquet`.
 - While the current day is training, the loader asynchronously prefetches the
-  next chronological source date scanner index. Each 1s/5s replay window then
+  next chronological source date scanner index. Each frontier period then
   gathers by scanner bucket from the already-warmed day index.
 - The loader should not do a blocking month-wide scanner load for chronological
   training. `scanner_index_cache_entries` bounds retained scanner day indexes;

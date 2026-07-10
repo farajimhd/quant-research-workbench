@@ -21,16 +21,17 @@ cache_first_chronological_loader
 Long form:
 
 ```text
-Cache-First, Windowed-Origin Chronological Rolling Loader
+Cache-First, Hybrid-Frontier Chronological Rolling Loader
 ```
 
 ## Core Principles
 
 1. Warm modality caches before replaying origins.
 2. Do not materialize the full day origin table.
-3. Keep origins in small time windows, normally `1s` to `5s`.
-4. Sort each origin window by `origin_timestamp_us`, `ticker_id`, and
-   `origin_ordinal`.
+3. Keep origins in bounded frontier periods, normally `1s` to `60s` depending
+   on throughput and memory.
+4. Merge per-ticker origin cursors by `(origin_timestamp_us, ticker,
+   origin_ordinal)` instead of loading a full-day origin table.
 5. Advance caches in timestamp order, exactly like production.
 6. Emit samples from current cache state, not by rebuilding context for each
    sample.
@@ -78,8 +79,9 @@ CLI/config controls:
 | Setting | Default | Meaning |
 | --- | ---: | --- |
 | `ticker_cache_capacity` / `--ticker-cache-capacity` | `15_000` | Maximum resident rolling event ticker states. |
-| `origin_cursor_chunk_rows` / `--origin-cursor-chunk-rows` | `4_096` | Per-ticker origin rows loaded into the moving cursor at a time. |
-| `warm_all_ticker_caches` / `--warm-all-ticker-caches` | `true` | Warm each day ticker's rolling event cache before replaying origin windows. |
+| `frontier_max_origins_per_window` / `--frontier-max-origins-per-window` | `0` | Maximum eligible origins selected from one frontier period. `0` means automatic cap from batch size, materializer workers, and payload settings. |
+| `origin_cursor_chunk_rows` / `--origin-cursor-chunk-rows` | `1_024` | Per-ticker origin rows loaded into the moving cursor at a time. |
+| `warm_all_ticker_caches` / `--warm-all-ticker-caches` | `true` | Warm each day ticker's rolling event cache before replaying frontier periods. |
 
 Each `TickerState` must track:
 
@@ -106,7 +108,7 @@ Protected tickers cannot be evicted:
 
 | Protected set | Reason |
 | --- | --- |
-| current origin window tickers | They are about to produce samples or cache updates. |
+| current frontier tickers | They are about to produce samples or cache updates. |
 | pending materialization tickers | Their samples are already queued for batch assembly. |
 | validation fixed-sample tickers | Validation must be deterministic during the run. |
 | explicitly pinned tickers | Optional debugging/benchmarking override. |
@@ -182,34 +184,58 @@ If a sparse modality has fewer rows than its configured context length, the top
 of the cache contains available rows and the remaining older slots are masked
 zeros. Zero value plus false mask means missing/padded, not a real zero.
 
-### 3. Replay Windowed Origins
+### 3. Replay Hybrid Frontier Origins
 
-Origins are loaded in small moving time windows:
+Origins are replayed through a k-way frontier merge over per-ticker origin
+cursors. The period is time bounded, and the selected origin count is capped so
+memory cannot grow with a dense market burst:
 
 ```text
-origin_window_seconds = 1.0  # default starting point
+frontier_period_seconds = time_window_seconds
+frontier_max_origins = frontier_max_origins_per_window or auto_cap
 ```
 
-The loader may use `5.0` seconds for throughput tests if memory and latency are
-acceptable.
+The automatic cap should be large enough to form many batches but small enough
+to bound active payload memory. The current implementation derives it from
+batch size, materialize chunk size, materializer workers, and payload-cache
+settings, then caps it at 65,536 origins.
 
-For each window:
+For each frontier period:
 
-1. Load only origin rows where
-   `window_start_us <= origin_timestamp_us < window_end_us`.
-2. Sort by `origin_timestamp_us`, `ticker_id`, `origin_ordinal`.
-3. Prefetch the next origin window while the current window is being consumed.
-4. For each origin in sorted order:
+1. Ensure each ticker cursor points at its next eligible origin at or after
+   `frontier_start_us`.
+2. Push one next origin per ticker into a min-heap keyed by
+   `(origin_timestamp_us, ticker, origin_ordinal)`.
+3. Pop the earliest origin, append that origin to the selected frontier slice,
+   advance only that ticker cursor, then push that ticker's next eligible
+   origin if it is still inside the period.
+4. Stop the slice when the period ends, the origin cap is reached, or no ticker
+   has another origin in the period.
+5. Materialize the selected refs in the already sorted heap-pop order. No
+   additional sort is required.
+6. For each origin in sorted order:
    - load the compact event row for that origin from the ticker event cursor;
    - append/update the ticker event rolling cache before emitting the sample;
    - update sparse caches if new context rows became available by this origin;
    - gather scanner rows as-of the origin timestamp;
    - create a sample view from the current cache state;
    - append the sample view to the ready-sample buffer.
-5. Form training batches from ready samples.
+7. Form training batches from ready samples.
 
-The origin window is the moving stream. The full day origin table should never
-be resident as one large DataFrame.
+The frontier period is the moving stream. The full day origin table should
+never be resident as one large DataFrame. If a dense period hits the origin cap,
+the loader keeps the same `frontier_start_us` and resumes after the last emitted
+origin key. The checkpoint state stores:
+
+```text
+chronological_window_start_us
+chronological_frontier_after_timestamp_us
+chronological_frontier_after_ticker
+chronological_frontier_after_ordinal
+```
+
+This prevents duplicate or skipped origins at identical timestamps after a
+restart.
 
 ### 4. Carry State Across Adjacent Days
 
@@ -232,12 +258,12 @@ The loader must enforce these invariants:
 | Invariant | Required behavior |
 | --- | --- |
 | Event order | Per ticker, event cache ordinals are strictly increasing with no gaps inside the retained rolling window unless the cache artifact explicitly marks dropped invalid source rows. |
-| Origin order | Emitted samples follow sorted `(origin_timestamp_us, ticker_id, origin_ordinal)` within each replay window. |
+| Origin order | Emitted samples follow sorted `(origin_timestamp_us, ticker, origin_ordinal)` within each frontier period. |
 | No lookahead in X | Sparse context rows must have availability/accepted/effective timestamps `<= origin_timestamp_us` unless they are labels. |
 | Future labels | Intraday and corporate-action labels are read only from label payloads and never fed into X tensors. |
 | Mask semantics | Padded/missing rows must carry false masks. The model must not interpret zero values as real data when mask is false. |
 | Determinism | Given the same cache, config, seed, day list, and checkpoint, replay produces the same sample sequence and validation set. |
-| Resume | Checkpoints restore epoch, day position, window start, origin cursor, RNG state, sample counters, and enough cache metadata to rebuild or continue safely. |
+| Resume | Checkpoints restore epoch, day position, frontier period start, after-key, RNG state, sample counters, and enough cache metadata to rebuild or continue safely. |
 
 ## Concurrency
 
@@ -250,7 +276,7 @@ Recommended lanes:
 | --- | --- | --- |
 | day-plan | Reads manifests and daily indexes. | Metadata only; low concurrency. |
 | cache-warm | Loads event prior context and sparse context payloads into `TickerState`. | Parallel by ticker; bounded by memory budget and file handles. |
-| origin-prefetch | Loads the next `1s` or `5s` origin window. | Produces compact arrays, not a full-day DataFrame. |
+| origin-prefetch | Maintains per-ticker origin cursors and selects the next hybrid frontier slice. | Produces compact arrays, not a full-day DataFrame. |
 | cache-update | Applies sorted origin rows to ticker states. | CPU vectorization where possible; ordered commit to preserve chronology. |
 | batch-assembly | Converts ready sample views into model tensors. | Runs ahead of GPU up to `prefetch_batches`. |
 | gpu-consumer | Trainer consumes batches. | Loader should keep ready batches > 0 after warm-up. |
@@ -267,8 +293,8 @@ run_id
 split
 epoch
 source_date
-window_start_us
-window_end_us
+frontier_start_us
+frontier_end_us
 stage
 seconds
 rss_before_mib
@@ -299,9 +325,8 @@ Stages to profile:
 | `warm_event_cache` | tickers, rows loaded, valid cache rows, missing context rows, seconds, RSS delta. |
 | `warm_sparse_cache` | modality, tickers, rows loaded, padded rows, seconds, RSS delta. |
 | `load_scanner_index` | scanner rows, index rows, seconds, RSS delta. |
-| `load_origin_window` | window seconds, origin rows, tickers, bytes, seconds. |
-| `sort_origin_window` | origin rows, seconds. |
-| `apply_origin_window` | origins applied, cache updates, sparse updates, seconds. |
+| `load_origin_frontier` | period seconds, selected origins, cap hit, active tickers, bytes, seconds. |
+| `apply_origin_frontier` | origins applied, cache updates, sparse updates, seconds. |
 | `assemble_batch` | samples, tensor bytes, seconds, RSS delta. |
 | `prefetch_wait` | time trainer waited for loader. |
 | `evict_ticker_cache` | evicted tickers, freed estimated bytes, seconds. |
@@ -323,10 +348,14 @@ Current implementation note:
 
 - The event stream path is cache-first and capacity-bound. It warms day ticker
   event caches from saved prior context, then reuses or single-ticker rebuilds
-  when a new/evicted ticker appears in a replay window.
-- Origin rows are loaded through per-ticker cursors in small chunks and popped
-  into `1s`/`5s` chronological windows. The loader no longer rescans every
-  active origin parquet for every window.
+  when a new/evicted ticker appears in a frontier period.
+- Origin rows are loaded through per-ticker cursors in small chunks and merged
+  through a hybrid frontier. Each ticker contributes only its next eligible
+  origin to the heap; when that origin is consumed, only that ticker advances.
+  The selected frontier slice is time-bounded and origin-capped, already sorted
+  by `(origin_timestamp_us, ticker, origin_ordinal)`, and checkpoint-resumable
+  by its after-key. The loader no longer rescans every active origin parquet for
+  every window.
 - Non-event context now flows through the chronological context cache boundary
   before worker submission. This prevents materializer workers from
   independently rebuilding the same context path.
@@ -382,7 +411,7 @@ Expected practical loader CPU RAM:
 | event rolling cache | 1.5-2.5 GB |
 | sparse context caches | 4-12 GB |
 | scanner/day indexes | 0.5-2 GB |
-| origin prefetch windows | <0.5 GB normally |
+| origin frontier slices | <0.5 GB normally |
 | ready batch queue | depends on batch size; usually 1-4 GB |
 | Python/Polars/Arrow overhead | 5-10 GB |
 
@@ -395,7 +424,7 @@ safe cap: 40-50 GB
 
 If memory exceeds this range for one active day and one prefetched day, the
 implementation is probably loading full-day origins or full-day decoded event
-payloads instead of using rolling caches and windowed origins.
+payloads instead of using rolling caches and hybrid frontier origins.
 
 ## Back-of-Envelope Timing Target
 
@@ -405,13 +434,14 @@ For a February 2019 scale day:
 | --- | ---: |
 | cold day plan + cache warm | 1-3 minutes |
 | adjacent day transition | 20-90 seconds, mostly hidden by prefetch |
-| `1s` origin window load/sort/apply | sub-second to a few seconds |
-| first batch after cold day warm | immediately after enough samples exist in the first origin window |
+| origin frontier load/apply | sub-second to a few seconds |
+| first batch after cold day warm | immediately after enough samples exist in the first frontier slice |
 | steady-state loader wait | near zero when GPU batch time is longer than loader window work |
 
 If the first batch waits several minutes after cache warm-up, the loader is
-still doing repeated origin scanning, rebuilding context per sample, or filling
-too much materializer backlog before yielding.
+still doing repeated origin scanning, rebuilding context per sample, selecting
+too small a frontier slice, or filling too much materializer backlog before
+yielding.
 
 ## Implementation Acceptance Checks
 

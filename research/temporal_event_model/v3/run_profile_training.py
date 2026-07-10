@@ -61,6 +61,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--materialize-chunk-size", type=int, default=0)
     parser.add_argument("--chronological-replay", action=argparse.BooleanOptionalAction, default=default_loader.chronological_replay)
     parser.add_argument("--time-window-seconds", type=float, default=default_loader.time_window_seconds)
+    parser.add_argument("--frontier-max-origins-per-window", type=int, default=default_loader.frontier_max_origins_per_window)
     parser.add_argument("--ticker-cache-capacity", type=int, default=default_loader.ticker_cache_capacity)
     parser.add_argument("--origin-cursor-chunk-rows", type=int, default=default_loader.origin_cursor_chunk_rows)
     parser.add_argument("--warm-all-ticker-caches", action=argparse.BooleanOptionalAction, default=default_loader.warm_all_ticker_caches)
@@ -496,6 +497,7 @@ def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         materialize_chunk_size=int(args.materialize_chunk_size),
         chronological_replay=bool(args.chronological_replay),
         time_window_seconds=float(args.time_window_seconds),
+        frontier_max_origins_per_window=int(args.frontier_max_origins_per_window),
         ticker_cache_capacity=int(args.ticker_cache_capacity),
         origin_cursor_chunk_rows=int(args.origin_cursor_chunk_rows),
         warm_all_ticker_caches=bool(args.warm_all_ticker_caches),

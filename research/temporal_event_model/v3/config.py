@@ -257,6 +257,7 @@ class LoaderConfig:
     prefetch_batches: int = 64
     chronological_replay: bool = True
     time_window_seconds: float = 60.0
+    frontier_max_origins_per_window: int = 0
     ticker_cache_capacity: int = 15_000
     origin_cursor_chunk_rows: int = 1024
     warm_all_ticker_caches: bool = True

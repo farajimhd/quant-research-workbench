@@ -13,7 +13,7 @@ Older materialized-cache, indexed-daily, replay, and ticker-month builder trials
 | `daily_index_context.py` | Daily-index context queries and vectorized intraday bar/condition extraction used by the builder. |
 | `daily_index_dataset.py` | Reads daily-index cache packages and materializes trainer batches. |
 | `DAILY_INDEX_STREAMING_CACHE_DESIGN.md` | Design contract for the builder, cache layout, concurrency, and terminal reporting. |
-| `CACHE_FIRST_CHRONOLOGICAL_LOADER_DESIGN.md` | Active cache-first chronological loader contract with ticker cache capacity, rolling context state, windowed origins, and detailed profiling requirements. |
+| `CACHE_FIRST_CHRONOLOGICAL_LOADER_DESIGN.md` | Active cache-first chronological loader contract with ticker cache capacity, rolling context state, hybrid frontier origins, and detailed profiling requirements. |
 
 ## Cache Layout
 
@@ -72,24 +72,29 @@ The builder uses separate fetch, process, and write worker pools for each modali
 The active chronological loader is specified in
 `CACHE_FIRST_CHRONOLOGICAL_LOADER_DESIGN.md`. It keeps warmed production-like
 ticker caches capped at 15,000 resident tickers, loads only small chronological
-origin windows, carries event and sparse context state across adjacent days, and
-profiles cache, origin-window, and batch-assembly stages by time and memory.
+frontier periods, carries event and sparse context state across adjacent days,
+and profiles cache, origin-frontier, and batch-assembly stages by time and
+memory.
 
 The active v3 chronological loader now exposes these cache-first controls:
 
 | Argument | Default | Meaning |
 | --- | ---: | --- |
 | `--ticker-cache-capacity` | `15000` | Maximum resident rolling event/context ticker states. |
-| `--origin-cursor-chunk-rows` | `4096` | Per-ticker origin rows loaded per cursor chunk. |
-| `--warm-all-ticker-caches` | on | Warm each day's ticker event caches before replaying origin windows. Use `--no-warm-all-ticker-caches` only for targeted smoke tests. |
+| `--origin-cursor-chunk-rows` | `1024` | Per-ticker origin rows loaded per cursor chunk. |
+| `--frontier-max-origins-per-window` | `0` | Maximum origins selected in one frontier period. `0` uses the automatic memory-bounded cap. |
+| `--warm-all-ticker-caches` | on | Warm each day's ticker event caches before replaying frontier periods. Use `--no-warm-all-ticker-caches` only for targeted smoke tests. |
 
 In chronological replay it:
 
-1. Builds per-ticker origin cursors and loads only the current time window.
+1. Builds per-ticker origin cursors and selects the current hybrid frontier
+   period with a k-way merge sorted by `(origin_timestamp_us, ticker,
+   origin_ordinal)`.
 2. Warms rolling event cache state from saved prior context rows.
 3. Warms rolling context state for requested text, XBRL, corporate-action,
    bar, and scanner modalities.
-4. Advances event and context caches in timestamp order for each window.
+4. Advances event and context caches in timestamp order for each frontier
+   period.
 5. Emits raw event streams from the rolling event cache.
 6. Emits text, XBRL, and corporate-action tensors from rolling final-tensor
    caches. Sparse ticker/global contexts carry forward when no new row is
