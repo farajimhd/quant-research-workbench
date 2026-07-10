@@ -79,6 +79,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-database", default=os.environ.get("QLIVE_MIGRATION_TARGET_DATABASE", DEFAULT_TARGET_DATABASE))
     parser.add_argument("--output-root-win", default=os.environ.get("QLIVE_MIGRATION_STEP_06_OUTPUT_ROOT_WIN", str(DEFAULT_OUTPUT_ROOT_WIN)))
     parser.add_argument("--feature-date", default=os.environ.get("QLIVE_MIGRATION_FEATURE_DATE", date.today().isoformat()))
+    parser.add_argument(
+        "--specs",
+        default=os.environ.get("QLIVE_MIGRATION_STEP_06_SPECS", "all"),
+        help="Comma-separated build specs to run, or all. Choices: sec_market_bridge, tradable_universe, scanner_static.",
+    )
     parser.add_argument("--execute", action="store_true", help="Execute inserts. Without this flag, the script is dry-run only.")
     parser.add_argument("--validate-only", action="store_true", help="Validate current target rows without inserting.")
     parser.add_argument("--allow-non-empty-targets", action="store_true", help="Permit appending/upserting into non-empty target tables.")
@@ -97,7 +102,7 @@ def main() -> None:
     inserted_at = clickhouse_now64()
     paths = StepPaths.create(Path(args.output_root_win), run_id)
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
-    specs = build_specs(args.target_database, build_run_id, inserted_at, feature_date)
+    specs = select_specs(build_specs(args.target_database, build_run_id, inserted_at, feature_date), args.specs)
 
     print_header(args, paths, loaded_env, build_run_id, specs, feature_date)
     preflight = run_preflight(client, args, specs)
@@ -451,6 +456,21 @@ WHERE u.universe_date = toDate({literal_feature_date})
 """,
         ),
     ]
+
+
+def select_specs(specs: list[BuildSpec], spec_text: str) -> list[BuildSpec]:
+    text = (spec_text or "all").strip()
+    if not text or text.lower() == "all":
+        return specs
+    requested = [item.strip() for item in text.split(",") if item.strip()]
+    known = {spec.name: spec for spec in specs}
+    unknown = sorted(set(requested) - set(known))
+    if unknown:
+        raise SystemExit(f"Unknown --specs value(s): {', '.join(unknown)}. Known specs: {', '.join(sorted(known))}")
+    selected = [known[name] for name in requested]
+    if not selected:
+        raise SystemExit("--specs did not select any build specs.")
+    return selected
 
 
 def run_preflight(client: ClickHouseHttpClient, args: argparse.Namespace, specs: list[BuildSpec]) -> list[dict[str, Any]]:

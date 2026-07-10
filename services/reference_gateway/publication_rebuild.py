@@ -24,7 +24,21 @@ class PublicationRebuildResult:
     stderr_tail: str
 
 
+def rebuild_sec_market_bridge(config: ReferenceGatewayConfig, *, reason: str, feature_date: date | None = None) -> PublicationRebuildResult:
+    return _run_step_06_specs(config, reason=reason, feature_date=feature_date, specs=("sec_market_bridge",))
+
+
 def rebuild_tradable_publications(config: ReferenceGatewayConfig, *, reason: str, feature_date: date | None = None) -> PublicationRebuildResult:
+    return _run_step_06_specs(config, reason=reason, feature_date=feature_date, specs=("tradable_universe", "scanner_static"))
+
+
+def _run_step_06_specs(
+    config: ReferenceGatewayConfig,
+    *,
+    reason: str,
+    feature_date: date | None,
+    specs: tuple[str, ...],
+) -> PublicationRebuildResult:
     if not config.execute:
         return PublicationRebuildResult("skipped", "execute_false", [], 0, "", "")
     if config.test_write_mode and not config.rebuild_tradable_in_test_mode:
@@ -37,7 +51,8 @@ def rebuild_tradable_publications(config: ReferenceGatewayConfig, *, reason: str
             "",
         )
     feature_date = feature_date or datetime.now(UTC).date()
-    output_root = config.prepared_root_win / "reference_gateway" / "tradable_rebuilds"
+    output_name = "sec_bridge_syncs" if specs == ("sec_market_bridge",) else "tradable_rebuilds"
+    output_root = config.prepared_root_win / "reference_gateway" / output_name
     command = [
         sys.executable,
         str(STEP_06_SCRIPT),
@@ -49,6 +64,8 @@ def rebuild_tradable_publications(config: ReferenceGatewayConfig, *, reason: str
         feature_date.isoformat(),
         "--output-root-win",
         str(output_root),
+        "--specs",
+        ",".join(specs),
     ]
     completed = subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True, check=False)
     result = PublicationRebuildResult(
@@ -60,7 +77,7 @@ def rebuild_tradable_publications(config: ReferenceGatewayConfig, *, reason: str
         stderr_tail=tail(completed.stderr),
     )
     if completed.returncode != 0:
-        raise RuntimeError("Tradable publication rebuild failed: " + json.dumps(asdict(result), sort_keys=True))
+        raise RuntimeError("Reference publication build failed: " + json.dumps(asdict(result), sort_keys=True))
     return result
 
 

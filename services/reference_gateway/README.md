@@ -143,13 +143,14 @@ During market hours:
 - deterministic issue resolution can run
 - new issue rows can be written
 - immediate `is_tradable=0` replacement rows can be written
+- SEC CIK-to-market bridge sync can run on its DB-backed source schedule
 - canonical graph promotion and heavy publication work are deferred in
   `Maintenance=Auto`
 
 After hours:
 
 - clean canonical graph promotions can run
-- SEC bridge plus tradable/scanner publications can be rebuilt
+- tradable/scanner publications can be rebuilt
 - coverage-aware market publication gap fill can run from the configured deep
   backfill start date
 - schema upkeep can run
@@ -167,6 +168,7 @@ Operational source sync always runs, but expensive provider jobs are gated by
 - `massive_ticker_details`
 - `ibkr_borrow_availability`
 - `country_assertions`
+- `sec_market_bridge`
 - `market_publication_gap_fill`
 
 The schedule table is DB-backed so daemon restarts do not lose cadence state.
@@ -177,6 +179,7 @@ REFERENCE_GATEWAY_ACTIVE_TICKER_SYNC_FREQUENCY_SECONDS=43200
 REFERENCE_GATEWAY_CURRENT_TICKER_DETAIL_FREQUENCY_SECONDS=86400
 REFERENCE_GATEWAY_IBKR_BORROW_FREQUENCY_SECONDS=1800
 REFERENCE_GATEWAY_COUNTRY_ASSERTION_FREQUENCY_SECONDS=86400
+REFERENCE_GATEWAY_SEC_BRIDGE_SYNC_FREQUENCY_SECONDS=900
 REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_FREQUENCY_SECONDS=3600
 ```
 

@@ -14,10 +14,11 @@ publication data coherent. It is not a high-frequency ingest service.
    tickers first, writes accepted canonical graph rows, refreshes current
    Massive snapshot/float rows for newly accepted tickers, then takes a current
    IBKR borrow/shortability snapshot for active US stock listings with valid
-   conids. If the observation cannot be inserted safely, source sync writes an
-   open issue and keeps the instrument non-tradable. Expensive provider jobs are
-   gated by the DB-backed `market_reference_source_schedule_v1` table so daemon
-   restarts do not lose cadence state.
+   conids, and refreshes the SEC CIK-to-market bridge on its routine cadence.
+   If the observation cannot be inserted safely, source sync writes an open
+   issue and keeps the instrument non-tradable. Expensive provider and derived
+   sync jobs are gated by the DB-backed `market_reference_source_schedule_v1`
+   table so daemon restarts do not lose cadence state.
 
 2. Integrity guardrail
 
@@ -28,11 +29,11 @@ publication data coherent. It is not a high-frequency ingest service.
 
 3. Maintenance
 
-   Run heavier work: schema upkeep, canonical graph promotion, SEC market bridge
-   rebuilds, full tradable publication rebuilds, scanner static rebuilds, and
-   coverage-aware market publication gap fill. Maintenance also resolves issues
-   opened by source sync when they become deterministic. In `Auto`, this work is
-   deferred during active market hours.
+   Run heavier work: schema upkeep, canonical graph promotion, full tradable
+   publication rebuilds, scanner static rebuilds, and coverage-aware market
+   publication gap fill. Maintenance also resolves issues opened by source sync
+   when they become deterministic. In `Auto`, this work is deferred during
+   active market hours.
 
 4. Observability and control
 
@@ -149,6 +150,7 @@ Allowed during market hours:
 - IBKR borrow/shortability snapshot writes to `market_security_borrow_v1`
 - country assertion writes to `market_security_country_v1` from canonical
   listing/exchange evidence
+- SEC CIK-to-market bridge sync to `id_sec_market_bridge_v1`
 - writing new mapping issues
 - immediate latest-universe replacement rows with `is_tradable = 0`
 
@@ -156,7 +158,7 @@ Deferred in `Maintenance=Auto` during market hours:
 
 - schema changes
 - deterministic issue resolution
-- full SEC bridge plus tradable/scanner publication rebuild
+- full tradable/scanner publication rebuild
 - coverage-aware market-publication gap fill from the configured deep backfill
   start date
 

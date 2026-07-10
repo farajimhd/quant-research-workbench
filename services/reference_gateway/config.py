@@ -74,6 +74,7 @@ class ReferenceGatewayConfig:
     current_ticker_detail_frequency_seconds: int
     ibkr_borrow_frequency_seconds: int
     country_assertion_frequency_seconds: int
+    sec_bridge_sync_frequency_seconds: int
     market_publication_gap_fill_frequency_seconds: int
     current_ticker_detail_insert_batch_size: int
     current_ticker_detail_request_min_interval_seconds: float
@@ -173,6 +174,7 @@ class ReferenceGatewayConfig:
             current_ticker_detail_frequency_seconds=env_int("REFERENCE_GATEWAY_CURRENT_TICKER_DETAIL_FREQUENCY_SECONDS", 86400),
             ibkr_borrow_frequency_seconds=env_int("REFERENCE_GATEWAY_IBKR_BORROW_FREQUENCY_SECONDS", 1800),
             country_assertion_frequency_seconds=env_int("REFERENCE_GATEWAY_COUNTRY_ASSERTION_FREQUENCY_SECONDS", 86400),
+            sec_bridge_sync_frequency_seconds=env_int("REFERENCE_GATEWAY_SEC_BRIDGE_SYNC_FREQUENCY_SECONDS", 900),
             market_publication_gap_fill_frequency_seconds=env_int("REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_FREQUENCY_SECONDS", 3600),
             current_ticker_detail_insert_batch_size=env_int("REFERENCE_GATEWAY_CURRENT_TICKER_DETAIL_INSERT_BATCH_SIZE", 50_000),
             current_ticker_detail_request_min_interval_seconds=env_float("REFERENCE_GATEWAY_CURRENT_TICKER_DETAIL_REQUEST_MIN_INTERVAL_SECONDS", 0.12),
@@ -249,6 +251,7 @@ class ReferenceGatewayConfig:
                 "presentation_asset_root_win": str(self.presentation_asset_root_win),
                 "ibkr_borrow_frequency_seconds": self.ibkr_borrow_frequency_seconds,
                 "country_assertion_frequency_seconds": self.country_assertion_frequency_seconds,
+                "sec_bridge_sync_frequency_seconds": self.sec_bridge_sync_frequency_seconds,
                 "ibkr_borrow_snapshot_batch_size": self.ibkr_borrow_snapshot_batch_size,
                 "ibkr_borrow_insert_batch_size": self.ibkr_borrow_insert_batch_size,
                 "ibkr_borrow_request_min_interval_seconds": self.ibkr_borrow_request_min_interval_seconds,

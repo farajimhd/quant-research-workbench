@@ -39,7 +39,7 @@ from services.reference_gateway.policy import evaluate_write_policy
 from services.reference_gateway.preflight import run_preflight
 from services.reference_gateway.publication_bootstrap import bootstrap_existing_publication_coverage
 from services.reference_gateway.publication_maintenance import run_recent_publication_gap_fill
-from services.reference_gateway.publication_rebuild import rebuild_tradable_publications
+from services.reference_gateway.publication_rebuild import rebuild_sec_market_bridge, rebuild_tradable_publications
 from services.reference_gateway.runtime_log import RuntimeLogger
 from services.reference_gateway.source_schedule import ensure_source_schedule_schema, record_source_schedule, schedule_decision
 from services.reference_gateway.state import collect_reference_state
@@ -58,6 +58,7 @@ SOURCE_SYNC_OPERATION_NAMES = {
     "ibkr_conids": "Source: IBKR /iserver/secdef/search",
     "ibkr_borrow_availability": "Source: IBKR /iserver/marketdata/snapshot",
     "country_assertions": "Source: country assertions",
+    "sec_market_bridge": "Source: SEC market bridge",
     "ticker_reconciliation": "Source: ticker reconciliation",
 }
 
@@ -617,6 +618,56 @@ def main() -> None:
                 seconds=0.0,
             )
             country_result = None
+
+        bridge_started = time.perf_counter()
+        graph_inserted_rows = int(getattr(graph_write, "inserted_rows", 0) or 0)
+        bridge_force = config.maintenance_mode == "force" or graph_inserted_rows > 0
+        bridge_schedule = schedule_decision(
+            schedule_client,
+            config,
+            source_name="sec_market_bridge",
+            frequency_seconds=config.sec_bridge_sync_frequency_seconds,
+            force=bridge_force,
+        )
+        if bridge_schedule.should_run:
+            update_latest_operation(
+                SOURCE_SYNC_OPERATION_NAMES["sec_market_bridge"],
+                "running",
+                f"Rebuilding SEC CIK-to-market bridge; schedule={bridge_schedule.reason}.",
+                seconds=0.0,
+            )
+            bridge_rebuild = rebuild_sec_market_bridge(config, reason="source_sync")
+            bridge_status = "completed" if bridge_rebuild.status in {"completed", "skipped"} else bridge_rebuild.status
+            record_source_schedule(
+                schedule_client,
+                config,
+                source_name="sec_market_bridge",
+                status=bridge_rebuild.status,
+                rows_written=0,
+                details=asdict(bridge_rebuild) | {
+                    "schedule_reason": bridge_schedule.reason,
+                    "forced_by_graph_inserted_rows": graph_inserted_rows,
+                },
+                frequency_seconds=config.sec_bridge_sync_frequency_seconds,
+            )
+            update_latest_operation(
+                SOURCE_SYNC_OPERATION_NAMES["sec_market_bridge"],
+                bridge_status,
+                f"{bridge_rebuild.reason}; status={bridge_rebuild.status}; returncode={bridge_rebuild.returncode}",
+                rows=0,
+                seconds=time.perf_counter() - bridge_started,
+            )
+            emit("sec_market_bridge_sync=" + json.dumps(asdict(bridge_rebuild), sort_keys=True))
+        else:
+            bridge_rebuild = None
+            bridge_status = "completed"
+            update_latest_operation(
+                SOURCE_SYNC_OPERATION_NAMES["sec_market_bridge"],
+                "skipped",
+                f"{bridge_schedule.reason}; next_due={bridge_schedule.next_due_at_utc or '-'}",
+                rows=0,
+                seconds=0.0,
+            )
         logger.event(
             "source_sync_completed",
             provider_rows=plan.provider_rows,
@@ -641,6 +692,8 @@ def main() -> None:
             ibkr_borrow_failed=borrow_sync.failed,
             country_assertion_status=getattr(country_result, "status", "skipped"),
             country_assertion_written=getattr(country_result, "rows_written", 0),
+            sec_bridge_status=getattr(bridge_rebuild, "status", "skipped"),
+            sec_bridge_schedule_reason=bridge_schedule.reason,
             wall_seconds=time.perf_counter() - source_sync_started,
             report_path=str(plan_path or ""),
         )
@@ -654,7 +707,7 @@ def main() -> None:
             wall_seconds=borrow_sync.wall_seconds,
             details=borrow_sync.details,
         )
-        source_sync_status = "completed" if borrow_status == "completed" and current_details_status == "completed" else "warning"
+        source_sync_status = "completed" if borrow_status == "completed" and current_details_status == "completed" and bridge_status == "completed" else "warning"
         write_alert_batch(build_source_sync_alerts(plan), "source_sync")
         fill_reference_facts("after_source_sync")
         add_operation(
@@ -666,7 +719,8 @@ def main() -> None:
                 f"overview={plan.overview_fetched:,} ibkr={plan.ibkr_searched:,} "
                 f"current_detail_written={current_details.written:,} current_detail_failed={current_details.failed:,} "
                 f"borrow_written={borrow_sync.written:,} borrow_failed={borrow_sync.failed:,} "
-                f"country_written={getattr(country_result, 'rows_written', 0):,}"
+                f"country_written={getattr(country_result, 'rows_written', 0):,} "
+                f"sec_bridge={getattr(bridge_rebuild, 'status', 'skipped')}"
             ),
             rows=plan.missing_tickers,
             seconds=time.perf_counter() - source_sync_started,
@@ -679,6 +733,7 @@ def main() -> None:
             f"current_detail_written={current_details.written:,} current_detail_failed={current_details.failed:,} "
             f"borrow_written={borrow_sync.written:,} borrow_failed={borrow_sync.failed:,} "
             f"country_written={getattr(country_result, 'rows_written', 0):,} "
+            f"sec_bridge={getattr(bridge_rebuild, 'status', 'skipped')} "
             f"saturated={plan.provider_saturated} wall_seconds={time.perf_counter() - source_sync_started:.2f}"
         )
         refresh_reference_state("after_source_sync_writes")
@@ -694,7 +749,7 @@ def main() -> None:
         if config.rebuild_tradable_on_execute:
             started = time.perf_counter()
             rebuild = rebuild_tradable_publications(config, reason="maintenance_cycle")
-            add_operation("Rebuild SEC bridge and tradable publications", rebuild.status, rebuild.reason, seconds=time.perf_counter() - started)
+            add_operation("Rebuild tradable/scanner publications", rebuild.status, rebuild.reason, seconds=time.perf_counter() - started)
             emit("tradable_publication_rebuild=" + json.dumps(asdict(rebuild), sort_keys=True))
             audit_started = time.perf_counter()
             report = run_reference_audit(config)
@@ -712,7 +767,7 @@ def main() -> None:
         if config.execute and config.resolve_stale_issues:
             add_operation("Resolve issues", "skipped", maintenance_skip_reason)
         if config.execute and config.rebuild_tradable_on_execute:
-            add_operation("Rebuild SEC bridge and tradable publications", "skipped", maintenance_skip_reason)
+            add_operation("Rebuild tradable/scanner publications", "skipped", maintenance_skip_reason)
 
     if maintenance_allowed and config.market_publication_gap_fill_enabled and (not config.test_write_mode or config.maintenance_mode == "force"):
         started = time.perf_counter()
