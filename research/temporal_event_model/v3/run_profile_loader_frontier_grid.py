@@ -128,7 +128,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-groups", default=",".join(DEFAULT_DATA_GROUPS))
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--global-warmup-batches", type=int, default=1, help="Once-per-run preflight batches used to warm filesystem/page caches before the grid. These are not scored.")
-    parser.add_argument("--warmup-batches", type=int, default=1, help="Warmup batches per grid item. This is the loader's real cache warm path for that parameter set and is excluded from hot throughput.")
+    parser.add_argument("--warmup-batches", type=int, default=0, help="Warmup batches per grid item after the once-per-run global warmup. Default 0 keeps the profiler to one full warmup.")
     parser.add_argument("--batches", type=int, default=64, help="Measured hot batches per grid item.")
     parser.add_argument("--max-origins-per-epoch", type=int, default=10_000_000)
     parser.add_argument("--seed", type=int, default=17)
@@ -144,6 +144,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scanner-prefetch-workers", type=int, default=8)
     parser.add_argument("--prefetch-scanner-indexes", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--warm-all-ticker-caches", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--grid-warm-all-ticker-caches", action=argparse.BooleanOptionalAction, default=False, help="Repeat full all-ticker cache warmup inside every grid item. Default false because the global warmup already measures that cost once.")
     parser.add_argument("--shuffle-grid", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--max-runs", type=int, default=0)
     parser.add_argument("--target-rss-gib", type=float, default=96.0)
@@ -188,7 +189,7 @@ def main() -> int:
         },
     )
     print(f"LOADER FRONTIER GRID PROFILE {run_dir}", flush=True)
-    print(json.dumps({"grid_count": len(grid), "batch_size": int(args.batch_size), "global_warmup_batches": int(args.global_warmup_batches), "warmup_batches": int(args.warmup_batches), "batches": int(args.batches), "preset": str(args.preset)}, sort_keys=True), flush=True)
+    print(json.dumps({"grid_count": len(grid), "batch_size": int(args.batch_size), "global_warmup_batches": int(args.global_warmup_batches), "grid_warm_all_ticker_caches": bool(args.grid_warm_all_ticker_caches), "warmup_batches": int(args.warmup_batches), "batches": int(args.batches), "preset": str(args.preset)}, sort_keys=True), flush=True)
 
     results: list[dict[str, Any]] = []
     started_all = time.perf_counter()
@@ -201,6 +202,7 @@ def main() -> int:
             warmup_args = argparse.Namespace(**vars(args))
             warmup_args.warmup_batches = 0
             warmup_args.batches = int(args.global_warmup_batches)
+            warmup_args.active_warm_all_ticker_caches = bool(args.warm_all_ticker_caches)
             print(f"[warmup] START once-per-run filesystem/cache warmup {_grid_label(warmup_item)} batches={int(args.global_warmup_batches)}", flush=True)
             global_warmup_result = _profile_one_grid_item(
                 args=warmup_args,
@@ -264,6 +266,7 @@ def main() -> int:
 def _profile_one_grid_item(*, args: argparse.Namespace, grid_item: "GridItem", run_index: int, run_dir: Path, batches_path: Path) -> dict[str, Any]:
     total_requested = max(0, int(args.warmup_batches)) + max(1, int(args.batches))
     max_origins = max(int(args.max_origins_per_epoch), total_requested * int(args.batch_size) * 2)
+    active_warm_all_ticker_caches = bool(getattr(args, "active_warm_all_ticker_caches", bool(args.grid_warm_all_ticker_caches)))
     loader_config = LoaderConfig(
         cache_root=Path(args.cache_root),
         split="train",
@@ -284,7 +287,7 @@ def _profile_one_grid_item(*, args: argparse.Namespace, grid_item: "GridItem", r
         frontier_max_origins_per_window=int(grid_item.frontier_max_origins_per_window),
         ticker_cache_capacity=int(args.ticker_cache_capacity),
         origin_cursor_chunk_rows=int(grid_item.origin_cursor_chunk_rows),
-        warm_all_ticker_caches=bool(args.warm_all_ticker_caches),
+        warm_all_ticker_caches=bool(active_warm_all_ticker_caches),
         scanner_index_cache_entries=int(args.scanner_index_cache_entries),
         prefetch_scanner_indexes=bool(args.prefetch_scanner_indexes),
         scanner_prefetch_workers=int(args.scanner_prefetch_workers),
@@ -360,6 +363,7 @@ def _profile_one_grid_item(*, args: argparse.Namespace, grid_item: "GridItem", r
         **asdict(grid_item),
         **summary,
     }
+    result["warm_all_ticker_caches"] = int(bool(active_warm_all_ticker_caches))
     result["score"] = _balanced_score(result, args=args)
     return result
 
@@ -430,6 +434,7 @@ def _recommendation_payload(row: Mapping[str, Any]) -> dict[str, Any]:
         "materialize_workers",
         "loaded_parts_per_group",
         "origin_cursor_chunk_rows",
+        "warm_all_ticker_caches",
         "measured_samples_per_sec",
         "first_batch_seconds",
         "max_rss_mib",
@@ -459,6 +464,7 @@ def _print_result_line(run_index: int, total: int, result: Mapping[str, Any]) ->
         f"cap={int(result.get('frontier_max_origins_per_window', 0) or 0):d} "
         f"chunk={int(result.get('materialize_chunk_size', 0) or 0):d} "
         f"workers={int(result.get('read_workers', 0) or 0):d}x{int(result.get('materialize_workers', 0) or 0):d} "
+        f"warm_all={int(result.get('warm_all_ticker_caches', 0) or 0):d} "
         f"sps={float(result.get('measured_samples_per_sec', 0.0) or 0.0):,.1f} "
         f"first={float(result.get('first_batch_seconds', 0.0) or 0.0):.1f}s "
         f"rss={float(result.get('max_rss_mib', 0.0) or 0.0) / 1024.0:.1f}GiB "
@@ -672,6 +678,7 @@ def _write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "materialize_workers",
         "loaded_parts_per_group",
         "origin_cursor_chunk_rows",
+        "warm_all_ticker_caches",
         "measured_samples_per_sec",
         "overall_samples_per_sec",
         "first_batch_seconds",

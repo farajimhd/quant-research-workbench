@@ -189,22 +189,23 @@ The no-arg run uses `preset=quick`:
 ```text
 batch_size: 1024
 global_warmup_batches: 1
-warmup_batches_per_grid_item: 1
+warmup_batches_per_grid_item: 0
 measured_batches_per_grid_item: 64
 max_origins_per_epoch: 10000000
 time_window_seconds_grid: 60,120
 frontier_max_origins_grid: 0,131072
 materialize_chunk_size_grid: 1024
 worker_grid: 16x32,32x64,64x64
+grid_warm_all_ticker_caches: false
 loaded_parts_per_group_grid: 256
 origin_cursor_chunk_rows_grid: 1024
 ```
 
 The once-per-run global warmup is a preflight read that warms the filesystem and
-page cache before the grid. It is saved separately and not scored. Each grid
-item still gets one real loader warmup batch because the event/context caches
-are owned by that loader instance and cannot be safely shared across different
-worker-pool sizes without changing the loader contract.
+page cache before the grid. It is saved separately and not scored. Grid rows do
+not repeat the full all-ticker event/context cache warmup by default; that cost
+is measured once in the global warmup. Pass `--grid-warm-all-ticker-caches` only
+when intentionally measuring cold full-loader startup for every worker setting.
 
 It writes:
 
