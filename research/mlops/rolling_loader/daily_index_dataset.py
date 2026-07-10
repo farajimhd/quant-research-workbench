@@ -191,9 +191,14 @@ METADATA_PAYLOAD_FIELDS = {
     "feature_names",
     "numeric_feature_names",
     "time_feature_names",
+    "start_time_feature_names",
+    "end_time_feature_names",
     "item_time_feature_names",
     "period_end_time_feature_names",
     "effective_time_feature_names",
+    "trade_feature_names",
+    "quote_bid_feature_names",
+    "quote_ask_feature_names",
     "offsets",
     "symbols",
     "group_names",
@@ -4492,17 +4497,19 @@ def _nested_array_nbytes(value: Any) -> int:
     return 0
 
 
-def _snapshot_batch_row(value: Any, row: int, sample_count: int) -> Any:
+def _snapshot_batch_row(value: Any, row: int, sample_count: int, field_name: str = "") -> Any:
+    if field_name in METADATA_PAYLOAD_FIELDS:
+        return value
     if isinstance(value, np.ndarray):
         if value.dtype != object and value.shape[:1] and int(value.shape[0]) == int(sample_count):
             return value[int(row)].copy()
         return value
     if isinstance(value, Mapping):
-        return {key: _snapshot_batch_row(item, row, sample_count) for key, item in value.items()}
+        return {key: _snapshot_batch_row(item, row, sample_count, str(key)) for key, item in value.items()}
     if isinstance(value, list):
-        return [_snapshot_batch_row(item, row, sample_count) for item in value]
+        return [_snapshot_batch_row(item, row, sample_count, field_name) for item in value]
     if isinstance(value, tuple):
-        return tuple(_snapshot_batch_row(item, row, sample_count) for item in value)
+        return tuple(_snapshot_batch_row(item, row, sample_count, field_name) for item in value)
     return value
 
 
@@ -4544,7 +4551,9 @@ def _empty_batch_payload_from_batch(value: Any, sample_count: int, source_sample
     return value
 
 
-def _restore_batch_row(target: Any, snapshot: Any, row: int, sample_count: int) -> None:
+def _restore_batch_row(target: Any, snapshot: Any, row: int, sample_count: int, field_name: str = "") -> None:
+    if field_name in METADATA_PAYLOAD_FIELDS:
+        return
     if isinstance(target, np.ndarray):
         if target.dtype != object and target.shape[:1] and int(target.shape[0]) == int(sample_count):
             target[int(row)] = snapshot
@@ -4552,11 +4561,11 @@ def _restore_batch_row(target: Any, snapshot: Any, row: int, sample_count: int) 
     if isinstance(target, Mapping) and isinstance(snapshot, Mapping):
         for key, item in target.items():
             if key in snapshot:
-                _restore_batch_row(item, snapshot[key], row, sample_count)
+                _restore_batch_row(item, snapshot[key], row, sample_count, str(key))
         return
     if isinstance(target, list) and isinstance(snapshot, list):
         for item, saved in zip(target, snapshot):
-            _restore_batch_row(item, saved, row, sample_count)
+            _restore_batch_row(item, saved, row, sample_count, field_name)
 
 
 def _copy_batch_row(target: Any, source: Any, *, target_row: int, source_row: int, source_sample_count: int) -> None:
@@ -7290,7 +7299,6 @@ def _warm_context_cache_for_day(
         "context_cache_warm_payload_rss_before_mib": float(rss_before),
         "context_cache_warm_payload_rss_after_mib": float(rss_after),
         "context_cache_warm_payload_rss_delta_mib": float(rss_after - rss_before),
-        **context_cache.telemetry_snapshot(),
     }
 
 
