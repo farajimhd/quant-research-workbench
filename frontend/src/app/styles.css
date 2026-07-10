@@ -1826,6 +1826,77 @@ button {
   font-weight: 560;
 }
 
+.sec-today-panel {
+  min-width: 0;
+}
+
+.sec-today-table th:nth-child(1),
+.sec-today-table td:nth-child(1) {
+  width: 132px;
+}
+
+.sec-today-table th:nth-child(2),
+.sec-today-table td:nth-child(2) {
+  width: 128px;
+}
+
+.sec-today-table th:nth-child(3),
+.sec-today-table td:nth-child(3) {
+  width: 86px;
+}
+
+.sec-today-table th:nth-child(4),
+.sec-today-table td:nth-child(4) {
+  width: auto;
+}
+
+.sec-today-table th:nth-child(5),
+.sec-today-table td:nth-child(5) {
+  width: 142px;
+}
+
+.sec-today-table th:nth-child(6),
+.sec-today-table td:nth-child(6) {
+  width: 118px;
+}
+
+.sec-today-table th:nth-child(7),
+.sec-today-table td:nth-child(7) {
+  width: 112px;
+}
+
+.sec-today-table tbody tr.sec-row-xbrl {
+  --news-row-tint: color-mix(in oklab, #7c3aed 8%, var(--surface));
+}
+
+.sec-today-table tbody tr.sec-row-text {
+  --news-row-tint: color-mix(in oklab, #16a34a 8%, var(--surface));
+}
+
+.sec-today-table tbody tr.sec-row-filing {
+  --news-row-tint: color-mix(in oklab, #2563eb 5%, var(--surface));
+}
+
+.sec-today-table tbody tr.sec-row-warn {
+  --news-row-tint: color-mix(in oklab, #f59e0b 9%, var(--surface));
+}
+
+.sec-form-chip {
+  align-items: center;
+  background: color-mix(in oklab, var(--badge-info-bg) 50%, var(--surface));
+  border: 1px solid var(--badge-info-border);
+  border-radius: 999px;
+  color: var(--badge-info-fg);
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 720;
+  line-height: 1;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 4px 7px;
+  text-overflow: ellipsis;
+}
+
 .service-work-live-section {
   border: 1px solid var(--surface-border);
   border-radius: 8px;
@@ -3307,6 +3378,253 @@ button {
   margin: 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.modal-panel.sec-filing-detail-modal-panel {
+  width: min(1480px, calc(100vw - 72px));
+  max-height: min(920px, calc(100vh - 56px));
+}
+
+.modal-panel.sec-filing-detail-modal-panel .modal-body {
+  overflow: hidden;
+}
+
+.sec-filing-detail {
+  display: grid;
+  gap: 12px;
+  max-height: calc(100vh - 150px);
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+}
+
+.sec-filing-article-card {
+  background: linear-gradient(180deg, color-mix(in oklab, var(--surface) 96%, #2563eb 4%), var(--surface));
+  border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+  border-radius: 10px;
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 35%, transparent);
+  overflow: hidden;
+}
+
+.sec-filing-article-header {
+  display: grid;
+  gap: 8px;
+  padding: 22px 24px 18px;
+}
+
+.sec-filing-meta-line {
+  align-items: center;
+  color: var(--muted-foreground);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sec-filing-meta-line span {
+  background: color-mix(in oklab, var(--surface-alt) 68%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--border) 76%, transparent);
+  border-radius: 999px;
+  padding: 5px 9px;
+}
+
+.sec-filing-meta-line .sec-provider-pill {
+  background: color-mix(in oklab, #2563eb 12%, var(--surface));
+  border-color: color-mix(in oklab, #2563eb 28%, var(--border));
+  color: #1d4ed8;
+}
+
+.sec-filing-article-header h3 {
+  color: var(--foreground);
+  font-family: "Segoe UI", Arial, sans-serif;
+  font-size: clamp(28px, 4vw, 46px);
+  font-weight: 560;
+  letter-spacing: 0;
+  line-height: 1.05;
+  margin: 0;
+}
+
+.sec-filing-article-header p {
+  color: var(--muted-foreground);
+  font-size: 14px;
+  line-height: 1.45;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.sec-filing-stat-grid {
+  border-top: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.sec-filing-stat-grid div {
+  display: grid;
+  gap: 3px;
+  padding: 13px 18px;
+}
+
+.sec-filing-stat-grid div + div {
+  border-left: 1px solid var(--border);
+}
+
+.sec-filing-stat-grid span,
+.sec-filing-fact-grid dt {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 720;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sec-filing-stat-grid strong {
+  color: var(--foreground);
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 720;
+}
+
+.sec-filing-fact-grid {
+  border-top: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin: 0;
+}
+
+.sec-filing-fact-grid div {
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 68%, transparent);
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 11px 16px;
+}
+
+.sec-filing-fact-grid dd {
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sec-filing-link-row {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface-alt) 58%, var(--surface));
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  padding: 10px 14px;
+}
+
+.sec-filing-link-row a {
+  border: 1px solid color-mix(in oklab, var(--accent) 32%, var(--border));
+  border-radius: 8px;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 680;
+  padding: 7px 10px;
+  text-decoration: none;
+}
+
+.sec-filing-link-row a:hover {
+  background: color-mix(in oklab, var(--accent) 8%, transparent);
+}
+
+.sec-filing-detail-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-height: 0;
+}
+
+.sec-filing-detail-section {
+  background: var(--surface);
+  border: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+  border-radius: 10px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  max-height: 360px;
+  min-height: 220px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.sec-filing-detail-section.wide {
+  grid-column: 1 / -1;
+  max-height: 420px;
+}
+
+.sec-filing-detail-section h4 {
+  background: color-mix(in oklab, var(--surface-alt) 74%, var(--surface));
+  border-bottom: 1px solid var(--border);
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 720;
+  margin: 0;
+  padding: 10px 12px;
+}
+
+.sec-filing-text-list {
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+}
+
+.sec-filing-text-list details {
+  border: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.sec-filing-text-list details + details {
+  margin-top: 8px;
+}
+
+.sec-filing-text-list summary {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface-alt) 70%, var(--surface));
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 8px 10px;
+}
+
+.sec-filing-text-list summary span {
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.sec-filing-text-list summary strong {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.sec-filing-text-list pre {
+  color: var(--foreground);
+  font-family: "Segoe UI", Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre-wrap;
+}
+
+.sec-filing-empty-note {
+  color: var(--muted-foreground);
+  font-size: 13px;
+  margin: 0;
+  padding: 14px;
 }
 
 .news-enrichment-debug-list {

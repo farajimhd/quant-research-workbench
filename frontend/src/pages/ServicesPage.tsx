@@ -355,7 +355,13 @@ function ServiceDetail({ pageError, service }: { pageError: string; service: Ser
           <ServiceDependenciesPanel service={service} />
         </Modal>
       ) : null}
-      {service.registry.id === "news" ? <NewsServiceWorkAndRows service={service} /> : <ServiceWorkAndActivity service={service} />}
+      {service.registry.id === "news" ? (
+        <NewsServiceWorkAndRows service={service} />
+      ) : service.registry.id === "sec" ? (
+        <SecServiceWorkAndRows service={service} />
+      ) : (
+        <ServiceWorkAndActivity service={service} />
+      )}
       <ServiceErrorLogPanel pageError={pageError} service={service} />
     </>
   );
@@ -613,6 +619,98 @@ type NewsTodaySummary = {
   withTicker: number;
 };
 
+type SecTodayRow = {
+  acceptedAtUtc: string;
+  acceptanceDatetimeRaw: string;
+  accessionNumber: string;
+  accessionNumberCompact: string;
+  activityStatus: string;
+  cik: string;
+  companyName: string;
+  documentIssueRows: number;
+  documentRows: number;
+  documentTextReadyRows: number;
+  documentTypeSample: string[];
+  fileExtensionSample: string[];
+  filingDate: string;
+  filingDetailUrl: string;
+  filingId: string;
+  filingSize: number;
+  formType: string;
+  items: string[];
+  issuerId: string;
+  primaryDocument: string;
+  primaryDocumentRows: number;
+  primaryDocumentUrl: string;
+  qualityFlagSample: string[];
+  reportDate: string;
+  sourceFileName: string;
+  textChars: number;
+  textKindSample: string[];
+  textRows: number;
+  textStatus: string;
+  xbrlFactRows: number;
+  xbrlFactTagSample: string[];
+  xbrlFactTags: number;
+  xbrlFrameRows: number;
+  xbrlFrameTagSample: string[];
+  xbrlFrameTags: number;
+};
+
+type SecTodayRowsPayload = {
+  database?: string;
+  document_table?: string;
+  filing_table?: string;
+  limit?: number;
+  rows?: Array<Record<string, unknown>>;
+  sort?: string;
+  summary?: Record<string, unknown>;
+  text_table?: string;
+  company_fact_table?: string;
+  frame_table?: string;
+  window_end_utc?: string;
+  window_start_utc?: string;
+};
+
+type SecTodayRowsState = {
+  error: string;
+  loading: boolean;
+  rows: SecTodayRow[];
+  sort: NewsTodaySort;
+  summary: SecTodaySummary;
+  windowEndUtc: string;
+  windowStartUtc: string;
+};
+
+type SecTodaySummary = {
+  documentRows: number;
+  latest: string;
+  loadedRows: number;
+  textRows: number;
+  totalFilings: number;
+  withDocuments: number;
+  withText: number;
+  withXbrl: number;
+  xbrlFactRows: number;
+  xbrlFrameRows: number;
+};
+
+type SecDetailPayload = {
+  accession_number?: string;
+  cik?: string;
+  company_fact_rows?: Array<Record<string, unknown>>;
+  company_fact_table?: string;
+  database?: string;
+  document_rows?: Array<Record<string, unknown>>;
+  document_table?: string;
+  filing_row?: Record<string, unknown>;
+  filing_table?: string;
+  frame_rows?: Array<Record<string, unknown>>;
+  frame_table?: string;
+  text_rows?: Array<Record<string, unknown>>;
+  text_table?: string;
+};
+
 function NewsServiceWorkAndRows({ service }: { service: ServiceStatusPayload }) {
   const [todaySort, setTodaySort] = useState<NewsTodaySort>("desc");
   const todayNews = useNewsTodayRows(service.registry.id === "news", todaySort);
@@ -620,6 +718,17 @@ function NewsServiceWorkAndRows({ service }: { service: ServiceStatusPayload }) 
     <section className="news-service-work-and-rows-grid">
       <ServiceWorkPlanPanel service={service} />
       <NewsTodayRowsPanel onSortChange={setTodaySort} state={todayNews} />
+    </section>
+  );
+}
+
+function SecServiceWorkAndRows({ service }: { service: ServiceStatusPayload }) {
+  const [todaySort, setTodaySort] = useState<NewsTodaySort>("desc");
+  const todaySec = useSecTodayRows(service.registry.id === "sec", todaySort);
+  return (
+    <section className="service-work-and-activity-grid service-work-and-activity-sec">
+      <ServiceWorkPlanPanel service={service} />
+      <SecTodayRowsPanel onSortChange={setTodaySort} state={todaySec} />
     </section>
   );
 }
@@ -888,6 +997,147 @@ function NewsTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: News
   );
 }
 
+function SecTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: NewsTodaySort) => void; state: SecTodayRowsState }) {
+  const [detail, setDetail] = useState<SecDetailPayload | null>(null);
+  const [detailError, setDetailError] = useState("");
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedRow, setSelectedRow] = useState<SecTodayRow | null>(null);
+  const rows = state.rows;
+  const summary = state.summary;
+  const filteredRows = useMemo(() => secTodayFilteredRows(rows, searchQuery), [rows, searchQuery]);
+  const showingLabel = summary.totalFilings > summary.loadedRows
+    ? `Showing ${formatCompactNumber(summary.loadedRows)} of ${formatCompactNumber(summary.totalFilings)} filings`
+    : `${formatCompactNumber(summary.totalFilings)} filings loaded`;
+  const searchLabel = searchQuery.trim()
+    ? `Filtered ${formatCompactNumber(filteredRows.length)} of ${formatCompactNumber(summary.loadedRows)} loaded filings`
+    : showingLabel;
+
+  async function openFiling(row: SecTodayRow) {
+    setSelectedRow(row);
+    setDetail(null);
+    setDetailError("");
+    setDetailLoading(true);
+    try {
+      const payload = await api<SecDetailPayload>(`/api/services/sec/detail/${encodeURIComponent(row.cik)}/${encodeURIComponent(row.accessionNumber)}`);
+      setDetail(payload);
+    } catch (exc) {
+      setDetailError(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
+  return (
+    <Panel className="sec-today-panel" title="Today's SEC Filings And XBRL">
+      <div className="news-today-searchbar sec-today-searchbar">
+        <label className="news-today-search-field">
+          <Search size={14} />
+          <input
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="Search CIK, company, form, accession, document, text status, or XBRL tag"
+            type="search"
+            value={searchQuery}
+          />
+          {searchQuery ? (
+            <button aria-label="Clear SEC filing search" onClick={() => setSearchQuery("")} type="button">
+              <X size={14} />
+            </button>
+          ) : null}
+        </label>
+        <div className="news-today-compact-stats">
+          <span><small>Filings</small><strong>{formatCompactNumber(summary.totalFilings)}</strong></span>
+          <span><small>Loaded</small><strong>{formatCompactNumber(summary.loadedRows)}</strong></span>
+          <span><small>With Text</small><strong>{formatCompactNumber(summary.withText)}</strong></span>
+          <span><small>With XBRL</small><strong>{formatCompactNumber(summary.withXbrl)}</strong></span>
+          <span><small>Latest</small><strong>{summary.latest ? formatLogTime(summary.latest) : "-"}</strong></span>
+        </div>
+      </div>
+      <div className="news-today-meta">
+        <span>{state.windowStartUtc ? `Window ${formatLogTime(state.windowStartUtc)} -> ${formatLogTime(state.windowEndUtc)}` : "Today, market timezone"}</span>
+        {state.error ? <strong>{state.error}</strong> : <strong>{state.loading ? "Loading SEC filing rows..." : searchLabel}</strong>}
+      </div>
+      <div className="news-today-table-wrap sec-today-table-wrap">
+        <table className="news-today-table sec-today-table">
+          <thead>
+            <tr>
+              <th aria-sort={state.sort === "desc" ? "descending" : "ascending"}>
+                <button className="news-today-sort-button" onClick={() => onSortChange(state.sort === "desc" ? "asc" : "desc")} type="button">
+                  <span>Time</span>
+                  <strong>{state.sort === "desc" ? "Newest" : "Oldest"}</strong>
+                </button>
+              </th>
+              <th>CIK</th>
+              <th>Form</th>
+              <th>Filing</th>
+              <th>Docs / Text</th>
+              <th>XBRL</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(filteredRows.length ? filteredRows : [null]).map((row, index) => row ? (
+              <tr
+                className={secTodayRowTone(row)}
+                key={`${row.cik}-${row.accessionNumber}-${index}`}
+                onClick={() => void openFiling(row)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    void openFiling(row);
+                  }
+                }}
+                tabIndex={0}
+              >
+                <td className="news-today-time-cell" title={row.acceptedAtUtc}>
+                  <div className="news-today-cell-stack">
+                    <strong className="news-today-time-main">{formatTime(row.acceptedAtUtc)}</strong>
+                    <span className="news-today-date-muted">{formatNewsTableDate(row.acceptedAtUtc)}</span>
+                    <span>UTC {formatUtcDateTime(row.acceptedAtUtc)}</span>
+                  </div>
+                </td>
+                <td title={row.cik}>
+                  <div className="news-today-cell-stack">
+                    <strong>{row.cik || "-"}</strong>
+                    <span>{row.issuerId || row.accessionNumberCompact || "-"}</span>
+                  </div>
+                </td>
+                <td title={row.formType}>
+                  <span className="sec-form-chip">{row.formType || "-"}</span>
+                </td>
+                <td className="news-today-title-cell sec-filing-title-cell" title={`${row.companyName} ${row.accessionNumber}`}>
+                  <div className="news-today-cell-stack">
+                    <strong>{row.companyName || "Unknown SEC filer"}</strong>
+                    <span>{row.accessionNumber} / {row.primaryDocument || row.sourceFileName || "filing parent"}</span>
+                  </div>
+                </td>
+                <td title={secDocumentTextLabel(row)}>{secDocumentTextLabel(row)}</td>
+                <td title={secXbrlLabel(row)}>{secXbrlLabel(row)}</td>
+                <td><span className={`service-work-status ${workStatusClass(secActivityStatus(row))}`}>{displayName(row.activityStatus)}</span></td>
+              </tr>
+            ) : (
+              <tr key={`empty-${index}`}>
+                <td colSpan={7}>
+                  {state.loading
+                    ? "Loading today's SEC filing rows..."
+                    : searchQuery.trim()
+                      ? "No loaded SEC filing rows match this search."
+                      : "No SEC filing rows found for today's market date."}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {selectedRow ? (
+        <Modal className="sec-filing-detail-modal-panel" onClose={() => { setSelectedRow(null); setDetail(null); setDetailError(""); }} title="SEC Filing Detail">
+          <SecFilingDetailModal detail={detail} error={detailError} loading={detailLoading} row={selectedRow} />
+        </Modal>
+      ) : null}
+    </Panel>
+  );
+}
+
 function NewsTodayDetailModal({ detail, error, loading, row }: { detail: NewsDetailPayload | null; error: string; loading: boolean; row: NewsTodayRow }) {
   const dbRow = isRecord(detail?.row) ? detail.row : {};
   const tickerRows = Array.isArray(detail?.ticker_rows) ? detail.ticker_rows.filter(isRecord) : [];
@@ -1047,6 +1297,118 @@ function NewsTimeCard({ label, timeZone, value }: { label: string; timeZone: str
       <span>{label}</span>
       <strong>{value ? formatReadableDateTime(value, timeZone) : "-"}</strong>
       <small>{timeZone === "UTC" ? "UTC" : timeZone.replace("America/", "")}</small>
+    </div>
+  );
+}
+
+function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDetailPayload | null; error: string; loading: boolean; row: SecTodayRow }) {
+  const filingRow = isRecord(detail?.filing_row) ? detail.filing_row : {};
+  const documentRows = Array.isArray(detail?.document_rows) ? detail.document_rows.filter(isRecord) : [];
+  const textRows = Array.isArray(detail?.text_rows) ? detail.text_rows.filter(isRecord) : [];
+  const companyFactRows = Array.isArray(detail?.company_fact_rows) ? detail.company_fact_rows.filter(isRecord) : [];
+  const frameRows = Array.isArray(detail?.frame_rows) ? detail.frame_rows.filter(isRecord) : [];
+  const companyName = stringMetric(filingRow, ["company_name"]) || row.companyName || "Unknown SEC filer";
+  const formType = stringMetric(filingRow, ["form_type"]) || row.formType || "-";
+  const accession = stringMetric(filingRow, ["accession_number"]) || row.accessionNumber;
+  const acceptedAt = row.acceptedAtUtc || stringMetric(filingRow, ["accepted_at_utc"]);
+  const primaryDocumentUrl = stringMetric(filingRow, ["primary_document_url"]) || row.primaryDocumentUrl;
+  const filingDetailUrl = stringMetric(filingRow, ["filing_detail_url"]) || row.filingDetailUrl;
+  const primaryDocument = stringMetric(filingRow, ["primary_document"]) || row.primaryDocument;
+  const relationStats = [
+    { label: "Documents", value: documentRows.length || row.documentRows },
+    { label: "Text rows", value: textRows.length || row.textRows },
+    { label: "XBRL facts", value: companyFactRows.length || row.xbrlFactRows },
+    { label: "Frame rows", value: frameRows.length || row.xbrlFrameRows },
+  ];
+  const filingFacts = [
+    { label: "CIK", value: stringMetric(filingRow, ["cik"]) || row.cik },
+    { label: "Accession", value: accession },
+    { label: "Form", value: formType },
+    { label: "Filing date", value: stringMetric(filingRow, ["filing_date"]) || row.filingDate || "-" },
+    { label: "Report date", value: stringMetric(filingRow, ["report_date"]) || row.reportDate || "-" },
+    { label: "Accepted source", value: stringMetric(filingRow, ["accepted_at_source"]) || "-" },
+    { label: "Raw acceptance", value: stringMetric(filingRow, ["acceptance_datetime_raw"]) || row.acceptanceDatetimeRaw || "-" },
+    { label: "Text status", value: stringMetric(filingRow, ["text_status"]) || row.textStatus || "-" },
+    { label: "Primary document", value: primaryDocument || "-" },
+    { label: "Source file", value: stringMetric(filingRow, ["source_file_name"]) || row.sourceFileName || "-" },
+  ];
+  return (
+    <div className="sec-filing-detail">
+      <article className="sec-filing-article-card">
+        <header className="sec-filing-article-header">
+          <div className="sec-filing-meta-line">
+            <span className="sec-provider-pill">SEC</span>
+            <span>{formType}</span>
+            <span>{row.xbrlFactRows + row.xbrlFrameRows > 0 ? "XBRL linked" : "Filing parent"}</span>
+            <span>{row.textRows > 0 ? "Text extracted" : "No text rows"}</span>
+          </div>
+          <h3>{companyName}</h3>
+          <p>{accession} / {primaryDocument || row.sourceFileName || "filing parent"}</p>
+        </header>
+        <div className="news-full-time-grid">
+          <NewsTimeCard label="Market time" timeZone={EXCHANGE_TIME_ZONE} value={acceptedAt} />
+          <NewsTimeCard label="Vancouver" timeZone={VANCOUVER_TIME_ZONE} value={acceptedAt} />
+          <NewsTimeCard label="UTC" timeZone="UTC" value={acceptedAt} />
+        </div>
+        <div className="sec-filing-stat-grid">
+          {relationStats.map((item) => (
+            <div key={item.label}>
+              <span>{item.label}</span>
+              <strong>{formatCompactNumber(item.value)}</strong>
+            </div>
+          ))}
+        </div>
+        <dl className="sec-filing-fact-grid">
+          {filingFacts.map((item) => (
+            <div key={item.label}>
+              <dt>{item.label}</dt>
+              <dd>{item.value}</dd>
+            </div>
+          ))}
+        </dl>
+        <div className="sec-filing-link-row">
+          {primaryDocumentUrl ? <a href={primaryDocumentUrl} rel="noreferrer" target="_blank">Open primary document</a> : null}
+          {filingDetailUrl ? <a href={filingDetailUrl} rel="noreferrer" target="_blank">Open SEC filing detail</a> : null}
+        </div>
+      </article>
+      {loading ? <div className="news-full-detail-notice">Loading complete SEC filing row from ClickHouse...</div> : null}
+      {error ? <div className="news-full-detail-notice error">{error}</div> : null}
+      <div className="sec-filing-detail-grid">
+        <section className="sec-filing-detail-section">
+          <h4>Filing Documents</h4>
+          <DataTable empty="No document rows returned for this filing." fitToContent rows={documentRows.map(normalizeRow)} />
+        </section>
+        <section className="sec-filing-detail-section">
+          <h4>Extracted Filing Text</h4>
+          {textRows.length ? (
+            <div className="sec-filing-text-list">
+              {textRows.slice(0, 6).map((textRow, index) => (
+                <details key={`${stringMetric(textRow, ["document_id"])}-${index}`} open={index === 0}>
+                  <summary>
+                    <span>{displayName(stringMetric(textRow, ["text_kind"]) || "text")}</span>
+                    <strong>{formatCompactNumber(numericMetric(textRow, ["text_char_count"]))} chars</strong>
+                  </summary>
+                  <pre>{stringMetric(textRow, ["text_preview"]) || "No text preview returned."}</pre>
+                </details>
+              ))}
+            </div>
+          ) : (
+            <p className="sec-filing-empty-note">No filing text rows were returned for this filing.</p>
+          )}
+        </section>
+        <section className="sec-filing-detail-section">
+          <h4>XBRL Company Facts</h4>
+          <DataTable empty="No XBRL company fact rows returned for this filing." fitToContent rows={companyFactRows.map(normalizeRow)} />
+        </section>
+        <section className="sec-filing-detail-section">
+          <h4>XBRL Frame Observations</h4>
+          <DataTable empty="No XBRL frame rows returned for this filing." fitToContent rows={frameRows.map(normalizeRow)} />
+        </section>
+        <section className="sec-filing-detail-section wide">
+          <h4>Filing Parent Row</h4>
+          <NewsMetadataTable rows={Object.entries(filingRow).map(([key, value]) => ({ key, value: formatValue(key, value) }))} />
+        </section>
+      </div>
     </div>
   );
 }
@@ -2822,6 +3184,44 @@ function useNewsTodayRows(enabled: boolean, sort: NewsTodaySort): NewsTodayRowsS
   return payload;
 }
 
+function useSecTodayRows(enabled: boolean, sort: NewsTodaySort): SecTodayRowsState {
+  const [payload, setPayload] = useState<SecTodayRowsState>(() => defaultSecTodayRowsState(sort));
+  useEffect(() => {
+    if (!enabled) {
+      setPayload(defaultSecTodayRowsState(sort));
+      return undefined;
+    }
+    let cancelled = false;
+    async function load() {
+      setPayload((current) => ({ ...current, loading: true }));
+      try {
+        const response = await api<SecTodayRowsPayload>(`/api/services/sec/today?limit=5000&sort=${sort}`);
+        if (cancelled) return;
+        const rows = (response.rows || []).filter(isRecord).map(secTodayRowFromPayload);
+        setPayload({
+          error: "",
+          loading: false,
+          rows,
+          sort: response.sort === "asc" ? "asc" : "desc",
+          summary: secTodaySummaryFromPayload(response.summary, rows),
+          windowEndUtc: response.window_end_utc || "",
+          windowStartUtc: response.window_start_utc || "",
+        });
+      } catch (exc) {
+        if (cancelled) return;
+        setPayload((current) => ({ ...current, error: exc instanceof Error ? exc.message : String(exc), loading: false }));
+      }
+    }
+    void load();
+    const timer = window.setInterval(() => void load(), 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [enabled, sort]);
+  return payload;
+}
+
 function defaultNewsTodayRowsState(sort: NewsTodaySort): NewsTodayRowsState {
   return {
     error: "",
@@ -2838,6 +3238,29 @@ function defaultNewsTodayRowsState(sort: NewsTodaySort): NewsTodayRowsState {
       pdfRows: 0,
       totalRows: 0,
       withTicker: 0,
+    },
+    windowEndUtc: "",
+    windowStartUtc: "",
+  };
+}
+
+function defaultSecTodayRowsState(sort: NewsTodaySort): SecTodayRowsState {
+  return {
+    error: "",
+    loading: false,
+    rows: [],
+    sort,
+    summary: {
+      documentRows: 0,
+      latest: "",
+      loadedRows: 0,
+      textRows: 0,
+      totalFilings: 0,
+      withDocuments: 0,
+      withText: 0,
+      withXbrl: 0,
+      xbrlFactRows: 0,
+      xbrlFrameRows: 0,
     },
     windowEndUtc: "",
     windowStartUtc: "",
@@ -2873,6 +3296,156 @@ function newsTodayRowFromPayload(row: Record<string, unknown>): NewsTodayRow {
     title: stringMetric(row, ["title"]),
     urlDomain: stringMetric(row, ["url_domain"]),
   };
+}
+
+function secTodayRowFromPayload(row: Record<string, unknown>): SecTodayRow {
+  return {
+    acceptedAtUtc: stringMetric(row, ["accepted_at_utc"]),
+    acceptanceDatetimeRaw: stringMetric(row, ["acceptance_datetime_raw"]),
+    accessionNumber: stringMetric(row, ["accession_number"]),
+    accessionNumberCompact: stringMetric(row, ["accession_number_compact"]),
+    activityStatus: stringMetric(row, ["activity_status"]) || "filing",
+    cik: stringMetric(row, ["cik"]),
+    companyName: stringMetric(row, ["company_name"]),
+    documentIssueRows: numericMetric(row, ["document_issue_rows"]),
+    documentRows: numericMetric(row, ["document_rows"]),
+    documentTextReadyRows: numericMetric(row, ["document_text_ready_rows"]),
+    documentTypeSample: stringArrayMetric(row, ["document_type_sample"]),
+    fileExtensionSample: stringArrayMetric(row, ["file_extension_sample"]),
+    filingDate: stringMetric(row, ["filing_date"]),
+    filingDetailUrl: stringMetric(row, ["filing_detail_url"]),
+    filingId: stringMetric(row, ["filing_id"]),
+    filingSize: numericMetric(row, ["filing_size"]),
+    formType: stringMetric(row, ["form_type"]),
+    items: stringArrayMetric(row, ["items"]),
+    issuerId: stringMetric(row, ["issuer_id"]),
+    primaryDocument: stringMetric(row, ["primary_document"]),
+    primaryDocumentRows: numericMetric(row, ["primary_document_rows"]),
+    primaryDocumentUrl: stringMetric(row, ["primary_document_url"]),
+    qualityFlagSample: stringArrayMetric(row, ["quality_flag_sample"]),
+    reportDate: stringMetric(row, ["report_date"]),
+    sourceFileName: stringMetric(row, ["source_file_name"]),
+    textChars: numericMetric(row, ["text_chars"]),
+    textKindSample: stringArrayMetric(row, ["text_kind_sample"]),
+    textRows: numericMetric(row, ["text_rows"]),
+    textStatus: stringMetric(row, ["text_status"]),
+    xbrlFactRows: numericMetric(row, ["xbrl_fact_rows"]),
+    xbrlFactTagSample: stringArrayMetric(row, ["xbrl_fact_tag_sample"]),
+    xbrlFactTags: numericMetric(row, ["xbrl_fact_tags"]),
+    xbrlFrameRows: numericMetric(row, ["xbrl_frame_rows"]),
+    xbrlFrameTagSample: stringArrayMetric(row, ["xbrl_frame_tag_sample"]),
+    xbrlFrameTags: numericMetric(row, ["xbrl_frame_tags"]),
+  };
+}
+
+function secTodaySummaryFromPayload(summaryPayload: unknown, rows: SecTodayRow[]): SecTodaySummary {
+  const fallback = rows.reduce(
+    (summary, row) => ({
+      documentRows: summary.documentRows + row.documentRows,
+      latest: !summary.latest || Date.parse(row.acceptedAtUtc) > Date.parse(summary.latest) ? row.acceptedAtUtc : summary.latest,
+      loadedRows: rows.length,
+      textRows: summary.textRows + row.textRows,
+      totalFilings: rows.length,
+      withDocuments: summary.withDocuments + (row.documentRows > 0 ? 1 : 0),
+      withText: summary.withText + (row.textRows > 0 ? 1 : 0),
+      withXbrl: summary.withXbrl + (row.xbrlFactRows + row.xbrlFrameRows > 0 ? 1 : 0),
+      xbrlFactRows: summary.xbrlFactRows + row.xbrlFactRows,
+      xbrlFrameRows: summary.xbrlFrameRows + row.xbrlFrameRows,
+    }),
+    {
+      documentRows: 0,
+      latest: "",
+      loadedRows: rows.length,
+      textRows: 0,
+      totalFilings: rows.length,
+      withDocuments: 0,
+      withText: 0,
+      withXbrl: 0,
+      xbrlFactRows: 0,
+      xbrlFrameRows: 0,
+    },
+  );
+  if (!isRecord(summaryPayload)) return fallback;
+  return {
+    documentRows: numericMetric(summaryPayload, ["document_rows"]) || fallback.documentRows,
+    latest: stringMetric(summaryPayload, ["latest_accepted_at_utc"]) || fallback.latest,
+    loadedRows: numericMetric(summaryPayload, ["loaded_rows"]) || rows.length,
+    textRows: numericMetric(summaryPayload, ["text_rows"]) || fallback.textRows,
+    totalFilings: numericMetric(summaryPayload, ["total_filings"]) || fallback.totalFilings,
+    withDocuments: numericMetric(summaryPayload, ["with_documents"]) || fallback.withDocuments,
+    withText: numericMetric(summaryPayload, ["with_text"]) || fallback.withText,
+    withXbrl: numericMetric(summaryPayload, ["with_xbrl"]) || fallback.withXbrl,
+    xbrlFactRows: numericMetric(summaryPayload, ["xbrl_fact_rows"]) || fallback.xbrlFactRows,
+    xbrlFrameRows: numericMetric(summaryPayload, ["xbrl_frame_rows"]) || fallback.xbrlFrameRows,
+  };
+}
+
+function secTodayFilteredRows(rows: SecTodayRow[], query: string) {
+  const terms = query.toLowerCase().split(/\s+/).map((term) => term.trim()).filter(Boolean);
+  if (!terms.length) return rows;
+  return rows.filter((row) => {
+    const haystack = secTodaySearchText(row);
+    return terms.every((term) => haystack.includes(term));
+  });
+}
+
+function secTodaySearchText(row: SecTodayRow) {
+  return [
+    row.acceptedAtUtc,
+    row.accessionNumber,
+    row.accessionNumberCompact,
+    row.activityStatus,
+    row.cik,
+    row.companyName,
+    row.filingDate,
+    row.filingDetailUrl,
+    row.formType,
+    row.primaryDocument,
+    row.primaryDocumentUrl,
+    row.reportDate,
+    row.sourceFileName,
+    row.textStatus,
+    row.documentTypeSample.join(" "),
+    row.fileExtensionSample.join(" "),
+    row.items.join(" "),
+    row.qualityFlagSample.join(" "),
+    row.textKindSample.join(" "),
+    row.xbrlFactTagSample.join(" "),
+    row.xbrlFrameTagSample.join(" "),
+  ].join(" ").toLowerCase();
+}
+
+function secDocumentTextLabel(row: SecTodayRow) {
+  const parts = [
+    row.documentRows ? `${formatCompactNumber(row.documentRows)} docs` : "",
+    row.textRows ? `${formatCompactNumber(row.textRows)} text` : "",
+    row.textChars ? `${formatCompactNumber(row.textChars)} chars` : "",
+  ].filter(Boolean);
+  return parts.length ? parts.join(" / ") : "-";
+}
+
+function secXbrlLabel(row: SecTodayRow) {
+  const factRows = row.xbrlFactRows;
+  const frameRows = row.xbrlFrameRows;
+  const parts = [
+    factRows ? `${formatCompactNumber(factRows)} facts` : "",
+    frameRows ? `${formatCompactNumber(frameRows)} frames` : "",
+  ].filter(Boolean);
+  return parts.length ? parts.join(" / ") : "-";
+}
+
+function secActivityStatus(row: SecTodayRow) {
+  if (row.documentIssueRows > 0) return "warn";
+  if (row.xbrlFactRows + row.xbrlFrameRows > 0 || row.textRows > 0) return "ok";
+  if (row.documentRows > 0) return "active";
+  return "waiting";
+}
+
+function secTodayRowTone(row: SecTodayRow) {
+  if (row.documentIssueRows > 0) return "sec-row-warn";
+  if (row.xbrlFactRows + row.xbrlFrameRows > 0) return "sec-row-xbrl";
+  if (row.textRows > 0) return "sec-row-text";
+  return "sec-row-filing";
 }
 
 function newsTodayFilteredRows(rows: NewsTodayRow[], query: string) {

@@ -158,6 +158,7 @@ SERVICE_TABLE_STATE_CACHE_SECONDS = 30.0
 SERVICE_NEWS_HISTOGRAM_CACHE_SECONDS = 20.0
 SERVICE_NEWS_HISTOGRAM_BIN_SECONDS = 900
 SERVICE_NEWS_TODAY_ROWS_LIMIT = 5000
+SERVICE_SEC_TODAY_ROWS_LIMIT = 5000
 SERVICE_TABLE_STATE_START_YEAR = 2019
 SERVICE_TABLE_TIME_COLUMN_CANDIDATES = (
     "published_at_utc",
@@ -1772,6 +1773,346 @@ def service_news_detail(canonical_news_id: str) -> dict[str, Any]:
     }
 
 
+def clickhouse_json_each_row(query: str) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in clickhouse_status_query(query).splitlines() if line.strip()]
+
+
+def service_market_day_window() -> tuple[datetime, datetime, datetime, datetime]:
+    market_now = datetime.now(UTC).astimezone(ZoneInfo(EXCHANGE_TIME_ZONE))
+    window_start_et = market_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    window_end_et = window_start_et + timedelta(days=1)
+    return window_start_et, window_end_et, window_start_et.astimezone(UTC), window_end_et.astimezone(UTC)
+
+
+def service_datetime64_sql(value: datetime) -> str:
+    return f"toDateTime64({sql_string(value.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
+
+
+def service_sec_today_rows(limit: int = 250, sort: str = "desc") -> dict[str, Any]:
+    safe_limit = max(1, min(limit, SERVICE_SEC_TODAY_ROWS_LIMIT))
+    sort_direction = "ASC" if sort.strip().lower() == "asc" else "DESC"
+    database = "q_live"
+    filing_table = "sec_filing_v2"
+    document_table = "sec_filing_document_v2"
+    text_table = "sec_filing_text_v2"
+    company_fact_table = "sec_xbrl_company_fact_v1"
+    frame_table = "sec_xbrl_frame_observation_v1"
+    window_start_et, window_end_et, window_start_utc, window_end_utc = service_market_day_window()
+    window_start_sql = service_datetime64_sql(window_start_utc)
+    window_end_sql = service_datetime64_sql(window_end_utc)
+    count_query = f"""
+        WITH
+            {window_start_sql} AS window_start,
+            {window_end_sql} AS window_end
+        SELECT
+            toUInt64(count()) AS total_filings,
+            formatDateTime(max(accepted_at_utc), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS latest_accepted_at_utc
+        FROM {quote_ident(database)}.{quote_ident(filing_table)}
+        WHERE accepted_at_utc >= window_start
+          AND accepted_at_utc < window_end
+        FORMAT JSONEachRow
+    """
+    summary_rows = clickhouse_json_each_row(count_query)
+    count_summary = summary_rows[0] if summary_rows else {}
+    query = f"""
+        WITH
+            {window_start_sql} AS window_start,
+            {window_end_sql} AS window_end
+        SELECT
+            f.filing_id,
+            f.accession_number,
+            f.accession_number_compact,
+            toString(f.cik) AS cik,
+            f.issuer_id,
+            f.company_name,
+            f.form_type,
+            toString(f.filing_date) AS filing_date,
+            toString(f.report_date) AS report_date,
+            formatDateTime(f.accepted_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS accepted_at_utc,
+            f.acceptance_datetime_raw,
+            f.accepted_at_source,
+            f.primary_document,
+            f.primary_document_url,
+            f.filing_detail_url,
+            f.source_file_name,
+            f.filing_size,
+            f.items,
+            f.text_status,
+            'parent' AS activity_status
+        FROM {quote_ident(database)}.{quote_ident(filing_table)} AS f
+        WHERE f.accepted_at_utc >= window_start
+          AND f.accepted_at_utc < window_end
+        ORDER BY
+            f.accepted_at_utc {sort_direction},
+            f.accession_number {sort_direction}
+        LIMIT {safe_limit}
+        FORMAT JSONEachRow
+    """
+    rows = clickhouse_json_each_row(query)
+    key_pairs = [(str(row.get("cik") or ""), str(row.get("accession_number") or "")) for row in rows]
+    key_pairs = [(cik_value, accession_value) for cik_value, accession_value in key_pairs if cik_value and accession_value]
+    key_clause = ", ".join(f"({sql_string(cik_value)}, {sql_string(accession_value)})" for cik_value, accession_value in key_pairs)
+
+    def keyed_rows(query_sql: str) -> dict[tuple[str, str], dict[str, Any]]:
+        if not key_clause:
+            return {}
+        return {
+            (str(row.get("cik") or ""), str(row.get("accession_number") or "")): row
+            for row in clickhouse_json_each_row(query_sql)
+        }
+
+    document_counts = keyed_rows(
+        f"""
+        SELECT
+            toString(cik) AS cik,
+            accession_number,
+            toUInt64(count()) AS document_rows,
+            toUInt64(countIf(document_role = 'primary')) AS primary_document_rows,
+            toUInt64(countIf(has_normalized_text)) AS document_text_ready_rows,
+            toUInt64(countIf(extraction_status NOT IN ('', 'ok', 'complete', 'completed', 'extracted'))) AS document_issue_rows,
+            arraySort(arraySlice(groupUniqArray(nullIf(document_type, '')), 1, 8)) AS document_type_sample,
+            arraySort(arraySlice(groupUniqArray(nullIf(file_extension, '')), 1, 8)) AS file_extension_sample
+        FROM {quote_ident(database)}.{quote_ident(document_table)} FINAL
+        WHERE (toString(cik), accession_number) IN ({key_clause})
+        GROUP BY
+            cik,
+            accession_number
+        FORMAT JSONEachRow
+        """
+    )
+    text_counts = keyed_rows(
+        f"""
+        SELECT
+            toString(cik) AS cik,
+            accession_number,
+            toUInt64(count()) AS text_rows,
+            toUInt64(sum(text_char_count)) AS text_chars,
+            arraySort(arraySlice(groupUniqArray(nullIf(text_kind, '')), 1, 8)) AS text_kind_sample,
+            arraySort(arraySlice(arrayDistinct(arrayFlatten(groupArray(quality_flags))), 1, 10)) AS quality_flag_sample
+        FROM {quote_ident(database)}.{quote_ident(text_table)} FINAL
+        WHERE (toString(cik), accession_number) IN ({key_clause})
+        GROUP BY
+            cik,
+            accession_number
+        FORMAT JSONEachRow
+        """
+    )
+    company_fact_counts = keyed_rows(
+        f"""
+        SELECT
+            toString(cik) AS cik,
+            accession_number,
+            toUInt64(count()) AS xbrl_fact_rows,
+            toUInt64(uniqExact(tag)) AS xbrl_fact_tags,
+            arraySort(arraySlice(groupUniqArray(nullIf(tag, '')), 1, 12)) AS xbrl_fact_tag_sample
+        FROM {quote_ident(database)}.{quote_ident(company_fact_table)}
+        WHERE (toString(cik), accession_number) IN ({key_clause})
+        GROUP BY
+            cik,
+            accession_number
+        FORMAT JSONEachRow
+        """
+    )
+    frame_counts = keyed_rows(
+        f"""
+        SELECT
+            toString(cik) AS cik,
+            accession_number,
+            toUInt64(count()) AS xbrl_frame_rows,
+            toUInt64(uniqExact(tag)) AS xbrl_frame_tags,
+            arraySort(arraySlice(groupUniqArray(nullIf(tag, '')), 1, 12)) AS xbrl_frame_tag_sample
+        FROM {quote_ident(database)}.{quote_ident(frame_table)}
+        WHERE (toString(cik), accession_number) IN ({key_clause})
+        GROUP BY
+            cik,
+            accession_number
+        FORMAT JSONEachRow
+        """
+    )
+    related_defaults = {
+        "document_rows": 0,
+        "primary_document_rows": 0,
+        "document_text_ready_rows": 0,
+        "document_issue_rows": 0,
+        "document_type_sample": [],
+        "file_extension_sample": [],
+        "text_rows": 0,
+        "text_chars": 0,
+        "text_kind_sample": [],
+        "quality_flag_sample": [],
+        "xbrl_fact_rows": 0,
+        "xbrl_fact_tags": 0,
+        "xbrl_fact_tag_sample": [],
+        "xbrl_frame_rows": 0,
+        "xbrl_frame_tags": 0,
+        "xbrl_frame_tag_sample": [],
+    }
+    for row in rows:
+        key = (str(row.get("cik") or ""), str(row.get("accession_number") or ""))
+        row.update(related_defaults)
+        row.update(document_counts.get(key, {}))
+        row.update(text_counts.get(key, {}))
+        row.update(company_fact_counts.get(key, {}))
+        row.update(frame_counts.get(key, {}))
+        text_rows = int(row.get("text_rows") or 0)
+        xbrl_rows = int(row.get("xbrl_fact_rows") or 0) + int(row.get("xbrl_frame_rows") or 0)
+        document_rows = int(row.get("document_rows") or 0)
+        if xbrl_rows and text_rows:
+            row["activity_status"] = "xbrl_and_text"
+        elif xbrl_rows:
+            row["activity_status"] = "xbrl"
+        elif text_rows:
+            row["activity_status"] = "text"
+        elif document_rows:
+            row["activity_status"] = "filing"
+        else:
+            row["activity_status"] = "parent"
+
+    loaded_summary = {
+        "document_rows": sum(int(row.get("document_rows") or 0) for row in rows),
+        "text_rows": sum(int(row.get("text_rows") or 0) for row in rows),
+        "with_documents": sum(1 for row in rows if int(row.get("document_rows") or 0) > 0),
+        "with_text": sum(1 for row in rows if int(row.get("text_rows") or 0) > 0),
+        "with_xbrl": sum(
+            1
+            for row in rows
+            if int(row.get("xbrl_fact_rows") or 0) + int(row.get("xbrl_frame_rows") or 0) > 0
+        ),
+        "xbrl_fact_rows": sum(int(row.get("xbrl_fact_rows") or 0) for row in rows),
+        "xbrl_frame_rows": sum(int(row.get("xbrl_frame_rows") or 0) for row in rows),
+    }
+    return {
+        "database": database,
+        "document_table": document_table,
+        "filing_table": filing_table,
+        "limit": safe_limit,
+        "market_timezone": EXCHANGE_TIME_ZONE,
+        "rows": rows,
+        "sort": sort_direction.lower(),
+        "source": "clickhouse",
+        "summary": {
+            "document_rows": loaded_summary["document_rows"],
+            "latest_accepted_at_utc": str(count_summary.get("latest_accepted_at_utc") or ""),
+            "loaded_rows": len(rows),
+            "text_rows": loaded_summary["text_rows"],
+            "total_filings": int(count_summary.get("total_filings") or 0),
+            "with_documents": loaded_summary["with_documents"],
+            "with_text": loaded_summary["with_text"],
+            "with_xbrl": loaded_summary["with_xbrl"],
+            "xbrl_fact_rows": loaded_summary["xbrl_fact_rows"],
+            "xbrl_frame_rows": loaded_summary["xbrl_frame_rows"],
+        },
+        "text_table": text_table,
+        "company_fact_table": company_fact_table,
+        "frame_table": frame_table,
+        "window_end_et": window_end_et.isoformat(),
+        "window_end_utc": window_end_utc.isoformat().replace("+00:00", "Z"),
+        "window_start_et": window_start_et.isoformat(),
+        "window_start_utc": window_start_utc.isoformat().replace("+00:00", "Z"),
+    }
+
+
+def service_sec_detail(cik: str, accession_number: str) -> dict[str, Any]:
+    normalized_cik = cik.strip()
+    accession = accession_number.strip()
+    if not normalized_cik or not accession:
+        raise HTTPException(status_code=400, detail="cik and accession_number are required")
+    database = "q_live"
+    filing_table = "sec_filing_v2"
+    document_table = "sec_filing_document_v2"
+    text_table = "sec_filing_text_v2"
+    company_fact_table = "sec_xbrl_company_fact_v1"
+    frame_table = "sec_xbrl_frame_observation_v1"
+    cik_sql = sql_string(normalized_cik)
+    accession_sql = sql_string(accession)
+    where_key = f"toString(cik) = {cik_sql} AND accession_number = {accession_sql}"
+    filing_rows = clickhouse_json_each_row(
+        f"""
+        SELECT *
+        FROM {quote_ident(database)}.{quote_ident(filing_table)} FINAL
+        WHERE {where_key}
+        LIMIT 1
+        FORMAT JSONEachRow
+        """
+    )
+    if not filing_rows:
+        raise HTTPException(status_code=404, detail="SEC filing row not found")
+    document_rows = clickhouse_json_each_row(
+        f"""
+        SELECT *
+        FROM {quote_ident(database)}.{quote_ident(document_table)} FINAL
+        WHERE {where_key}
+        ORDER BY sequence_number ASC, document_name ASC
+        LIMIT 250
+        FORMAT JSONEachRow
+        """
+    )
+    text_rows = clickhouse_json_each_row(
+        f"""
+        SELECT
+            document_id,
+            filing_id,
+            accession_number,
+            accession_number_compact,
+            toString(cik) AS cik,
+            text_kind,
+            substring(text, 1, 30000) AS text_preview,
+            text_char_count,
+            text_byte_count,
+            text_sha256,
+            extraction_method,
+            normalizer_version,
+            quality_flags,
+            source_archive_date,
+            source_archive_member,
+            formatDateTime(extracted_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS extracted_at_utc,
+            source_run_id,
+            inserted_at,
+            text_char_count > 30000 AS text_truncated
+        FROM {quote_ident(database)}.{quote_ident(text_table)} FINAL
+        WHERE {where_key}
+        ORDER BY text_kind ASC, document_id ASC
+        LIMIT 50
+        FORMAT JSONEachRow
+        """
+    )
+    company_fact_rows = clickhouse_json_each_row(
+        f"""
+        SELECT *
+        FROM {quote_ident(database)}.{quote_ident(company_fact_table)}
+        WHERE {where_key}
+        ORDER BY taxonomy ASC, tag ASC, period_end_date DESC, unit_code ASC
+        LIMIT 300
+        FORMAT JSONEachRow
+        """
+    )
+    frame_rows = clickhouse_json_each_row(
+        f"""
+        SELECT *
+        FROM {quote_ident(database)}.{quote_ident(frame_table)}
+        WHERE {where_key}
+        ORDER BY taxonomy ASC, tag ASC, period_end_date DESC, unit_code ASC
+        LIMIT 300
+        FORMAT JSONEachRow
+        """
+    )
+    return {
+        "accession_number": accession,
+        "cik": normalized_cik,
+        "company_fact_rows": company_fact_rows,
+        "company_fact_table": company_fact_table,
+        "database": database,
+        "document_rows": document_rows,
+        "document_table": document_table,
+        "filing_row": filing_rows[0],
+        "filing_table": filing_table,
+        "frame_rows": frame_rows,
+        "frame_table": frame_table,
+        "text_rows": text_rows,
+        "text_table": text_table,
+    }
+
+
 def service_database_table_target(service_id: str, database: str, table: str) -> dict[str, str]:
     for target in SERVICE_DATABASE_TABLES.get(service_id, []):
         if target["database"] == database and target["table"] == table:
@@ -2126,6 +2467,16 @@ def news_service_today(limit: int = 250, sort: str = "desc") -> dict[str, Any]:
 @app.get("/api/services/news/detail/{canonical_news_id}")
 def news_service_detail(canonical_news_id: str) -> dict[str, Any]:
     return service_news_detail(canonical_news_id)
+
+
+@app.get("/api/services/sec/today")
+def sec_service_today(limit: int = 250, sort: str = "desc") -> dict[str, Any]:
+    return service_sec_today_rows(limit, sort)
+
+
+@app.get("/api/services/sec/detail/{cik}/{accession_number}")
+def sec_service_detail(cik: str, accession_number: str) -> dict[str, Any]:
+    return service_sec_detail(cik, accession_number)
 
 
 @app.get("/api/config/defaults")
