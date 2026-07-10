@@ -92,6 +92,10 @@ def parse_args() -> argparse.Namespace:
         help="Fail the profile if requested input modalities never produce available payloads across the measured batches.",
     )
     parser.add_argument("--coverage-required-keys", default="auto", help="Comma-separated input_availability keys to require, or auto from --data-groups.")
+    parser.add_argument("--coverage-min-fraction", type=float, default=1e-9, help="Minimum required availability fraction for each required coverage key.")
+    parser.add_argument("--coverage-max-skip-batches", type=int, default=512, help="Maximum batches to skip while seeking the first batch that exercises every required coverage key.")
+    parser.add_argument("--coverage-auto-plan", action=argparse.BooleanOptionalAction, default=True, help="When possible, pick context-rich tickers/start time so sparse modalities such as XBRL are exercised.")
+    parser.add_argument("--coverage-auto-ticker-limit", type=int, default=256, help="Maximum context-rich tickers selected by --coverage-auto-plan. Set 0 to disable ticker selection.")
     return parser.parse_args()
 
 
@@ -101,6 +105,8 @@ def main() -> int:
     load_env_files(discover_env_files(REPO_ROOT), verbose=True)
     args = parse_args()
     config = _config_from_args(args)
+    required_coverage_keys = _coverage_required_keys(str(args.coverage_required_keys), config.loader.data_groups)
+    coverage_plan = _apply_coverage_auto_plan(args, config, required_coverage_keys)
     set_seed(int(config.loader.seed))
     device = _resolve_device(str(args.device))
     if device.type == "cuda":
@@ -123,7 +129,10 @@ def main() -> int:
                 path.unlink()
             except FileNotFoundError:
                 pass
-    _write_json(paths["config"], {"args": vars(args), "config": to_dict(config), "device": str(device), "created_utc": _now_iso()})
+    _write_json(
+        paths["config"],
+        {"args": vars(args), "config": to_dict(config), "coverage_plan": coverage_plan, "device": str(device), "created_utc": _now_iso()},
+    )
     print(f"EXACT TRAINING LOADER PROFILE {run_dir}", flush=True)
     print(
         json.dumps(
@@ -138,6 +147,7 @@ def main() -> int:
                 "months": list(config.loader.months),
                 "training_days": list(config.loader.training_days),
                 "tickers": list(config.loader.tickers),
+                "coverage_auto_plan": coverage_plan,
             },
             sort_keys=True,
         ),
@@ -150,7 +160,7 @@ def main() -> int:
     telemetry_thread: threading.Thread | None = None
     rows: list[dict[str, Any]] = []
     first_shape_summary: dict[str, Any] = {}
-    coverage_summary = _CoverageSummary(_coverage_required_keys(str(args.coverage_required_keys), config.loader.data_groups))
+    coverage_summary = _CoverageSummary(required_coverage_keys)
     started = time.perf_counter()
     status = "complete"
     try:
@@ -163,25 +173,67 @@ def main() -> int:
             stop=telemetry_stop,
             interval_seconds=float(args.telemetry_seconds),
         )
-        total_batches = max(0, int(args.warmup_batches)) + max(1, int(args.batches))
-        for batch_index in range(1, total_batches + 1):
-            phase = "warmup" if batch_index <= int(args.warmup_batches) else "measure"
+        warmup_batches = max(0, int(args.warmup_batches))
+        measured_target = max(1, int(args.batches))
+        batch_index = 0
+        for _ in range(warmup_batches):
+            batch_index += 1
             row, shape_summary = _profile_one_batch(
                 iterator=iterator,
                 loader=loader,
-                phase=phase,
+                phase="warmup",
                 batch_index=batch_index,
                 device=device,
                 started=started,
             )
-            coverage_summary.add(row)
             if shape_summary and not first_shape_summary:
                 first_shape_summary = shape_summary
                 _write_json(paths["shapes"], shape_summary)
             _append_jsonl(paths["batches"], row)
             rows.append(row)
             if int(args.print_every_batches) > 0 and (batch_index % int(args.print_every_batches) == 0 or batch_index == 1):
-                _print_batch_row(row, total_batches=total_batches)
+                _print_batch_row(row, total_batches=warmup_batches + measured_target)
+        measured_count = 0
+        coverage_seek_count = 0
+        coverage_seek_max = max(0, int(args.coverage_max_skip_batches))
+        while measured_count < measured_target:
+            batch_index += 1
+            row, shape_summary = _profile_one_batch(
+                iterator=iterator,
+                loader=loader,
+                phase="measure",
+                batch_index=batch_index,
+                device=device,
+                started=started,
+            )
+            if shape_summary and not first_shape_summary:
+                first_shape_summary = shape_summary
+                _write_json(paths["shapes"], shape_summary)
+            if (
+                bool(args.require_all_input_coverage)
+                and measured_count == 0
+                and coverage_seek_max > 0
+                and not _coverage_row_ok(row, required_coverage_keys, min_fraction=float(args.coverage_min_fraction))
+            ):
+                coverage_seek_count += 1
+                if coverage_seek_count <= coverage_seek_max:
+                    row["phase"] = "coverage_seek"
+                    row["coverage_seek_missing"] = _coverage_row_missing(row, required_coverage_keys, min_fraction=float(args.coverage_min_fraction))
+                    _append_jsonl(paths["batches"], row)
+                    rows.append(row)
+                    if int(args.print_every_batches) > 0 and (
+                        coverage_seek_count % int(args.print_every_batches) == 0 or coverage_seek_count == 1
+                    ):
+                        _print_batch_row(row, total_batches=warmup_batches + measured_target)
+                    continue
+                row["coverage_seek_exhausted"] = int(coverage_seek_count)
+            measured_count += 1
+            row["coverage_seek_batches"] = int(coverage_seek_count)
+            coverage_summary.add(row)
+            _append_jsonl(paths["batches"], row)
+            rows.append(row)
+            if int(args.print_every_batches) > 0 and (measured_count % int(args.print_every_batches) == 0 or measured_count == 1):
+                _print_batch_row(row, total_batches=warmup_batches + measured_target)
         measured_rows = [row for row in rows if row.get("phase") == "measure"]
         summary = _summary_payload(
             args=args,
@@ -189,6 +241,7 @@ def main() -> int:
             rows=measured_rows,
             all_rows=rows,
             coverage=coverage_summary.summary(),
+            coverage_plan=coverage_plan,
             run_dir=run_dir,
             device=device,
             status=status,
@@ -219,6 +272,7 @@ def main() -> int:
             rows=[row for row in rows if row.get("phase") == "measure"],
             all_rows=rows,
             coverage=coverage_summary.summary(),
+            coverage_plan=coverage_plan,
             run_dir=run_dir,
             device=device,
             status=status,
@@ -235,6 +289,7 @@ def main() -> int:
             rows=[row for row in rows if row.get("phase") == "measure"],
             all_rows=rows,
             coverage=coverage_summary.summary(),
+            coverage_plan=coverage_plan,
             run_dir=run_dir,
             device=device,
             status=status,
@@ -400,19 +455,39 @@ def _batch_coverage(batch: TemporalBatch) -> dict[str, float]:
     out: dict[str, float] = {}
     sample_count = max(1, int(batch.sample_count))
     availability = batch.x.get("input_availability", {}) if isinstance(batch.x, Mapping) else {}
-    if not isinstance(availability, Mapping):
-        return out
-    for key, value in availability.items():
-        arr = _to_numpy(value)
-        if arr.size == 0:
-            out[str(key)] = 0.0
-            continue
-        if arr.shape[:1] == (sample_count,):
-            reduced = arr.reshape((sample_count, -1)).any(axis=1)
-            out[str(key)] = float(np.mean(reduced.astype(np.float32)))
-        else:
-            out[str(key)] = float(bool(np.any(arr)))
+    if isinstance(availability, Mapping):
+        for key, value in availability.items():
+            out[str(key)] = _availability_fraction(value, sample_count=sample_count)
+    y = batch.y if isinstance(batch.y, Mapping) else {}
+    intraday_labels = y.get("intraday_labels", {}) if isinstance(y, Mapping) else {}
+    if isinstance(intraday_labels, Mapping):
+        available = intraday_labels.get("available")
+        if available is not None:
+            out["intraday_labels_available"] = _availability_fraction(available, sample_count=sample_count)
+        elif any(_first_dim_is_sample_count(value, sample_count) for value in intraday_labels.values()):
+            out["intraday_labels_available"] = 1.0
+    corporate_labels = y.get("corporate_action_labels", {}) if isinstance(y, Mapping) else {}
+    if isinstance(corporate_labels, Mapping) and any(_first_dim_is_sample_count(value, sample_count) for value in corporate_labels.values()):
+        out["corporate_action_labels_available"] = 1.0
+    xbrl_inputs = batch.x.get("xbrl_inputs", {}) if isinstance(batch.x, Mapping) else {}
+    if isinstance(xbrl_inputs, Mapping) and xbrl_inputs.get("mask") is not None:
+        out["xbrl_available"] = _availability_fraction(xbrl_inputs["mask"], sample_count=sample_count)
     return out
+
+
+def _availability_fraction(value: Any, *, sample_count: int) -> float:
+    arr = _to_numpy(value)
+    if arr.size == 0:
+        return 0.0
+    if arr.shape[:1] == (sample_count,):
+        reduced = arr.reshape((sample_count, -1)).any(axis=1)
+        return float(np.mean(reduced.astype(np.float32)))
+    return float(bool(np.any(arr)))
+
+
+def _first_dim_is_sample_count(value: Any, sample_count: int) -> bool:
+    arr = _to_numpy(value)
+    return bool(arr.ndim >= 1 and arr.shape[0] == sample_count)
 
 
 class _CoverageSummary:
@@ -475,6 +550,154 @@ def _coverage_required_keys(value: str, data_groups: tuple[str, ...]) -> tuple[s
     return tuple(required)
 
 
+def _coverage_row_missing(row: Mapping[str, Any], required_keys: tuple[str, ...], *, min_fraction: float) -> dict[str, float]:
+    minimum = max(0.0, min(1.0, float(min_fraction)))
+    return {
+        str(key): float(row.get(f"coverage/{key}", 0.0) or 0.0)
+        for key in required_keys
+        if float(row.get(f"coverage/{key}", 0.0) or 0.0) < minimum
+    }
+
+
+def _coverage_row_ok(row: Mapping[str, Any], required_keys: tuple[str, ...], *, min_fraction: float) -> bool:
+    return not _coverage_row_missing(row, required_keys, min_fraction=min_fraction)
+
+
+def _apply_coverage_auto_plan(args: argparse.Namespace, config: ExperimentConfig, required_keys: tuple[str, ...]) -> dict[str, Any]:
+    plan: dict[str, Any] = {
+        "enabled": bool(args.coverage_auto_plan),
+        "selected_tickers": 0,
+        "start_utc": "",
+        "reason": "",
+    }
+    if not bool(args.coverage_auto_plan):
+        plan["reason"] = "disabled"
+        return plan
+    if str(args.tickers or "").strip():
+        plan["reason"] = "explicit_tickers"
+        return plan
+    if not bool(args.require_all_input_coverage) or not required_keys:
+        plan["reason"] = "coverage_not_required"
+        return plan
+    limit = max(0, int(args.coverage_auto_ticker_limit))
+    if limit <= 0:
+        plan["reason"] = "ticker_limit_zero"
+        return plan
+    selected, start_utc, detail = _auto_coverage_plan(config, required_keys=required_keys, limit=limit)
+    if selected:
+        config.loader.tickers = tuple(selected)
+        plan["selected_tickers"] = int(len(selected))
+        plan["selected_ticker_preview"] = list(selected[:20])
+    if start_utc and not str(config.loader.start_utc or "").strip():
+        config.loader.start_utc = start_utc
+        plan["start_utc"] = start_utc
+    plan.update(detail)
+    if not selected and not start_utc:
+        plan["reason"] = detail.get("reason") or "no_plan_found"
+    return plan
+
+
+def _auto_coverage_plan(config: ExperimentConfig, *, required_keys: tuple[str, ...], limit: int) -> tuple[tuple[str, ...], str, dict[str, Any]]:
+    required_groups = _manifest_groups_for_availability_keys(required_keys)
+    detail: dict[str, Any] = {"required_manifest_groups": list(required_groups)}
+    if not required_groups:
+        detail["reason"] = "no_sparse_manifest_groups"
+        return (), "", detail
+    sparse_groups = tuple(group for group in required_groups if group in {"News Embeddings", "SEC Embeddings", "XBRL", "Corporate Actions"})
+    candidates: list[tuple[int, int, str]] = []
+    checked = 0
+    for month in config.loader.months or ():
+        month_dir = Path(config.loader.cache_root) / f"month={month}"
+        if not month_dir.exists():
+            continue
+        for manifest_path in month_dir.glob("ticker=*/manifest.json"):
+            checked += 1
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            ticker = str(manifest.get("ticker") or manifest_path.parent.name.split("=", 1)[-1])
+            rows = dict(manifest.get("written_modality_rows") or {})
+            if not all(int(rows.get(group, 0) or 0) > 0 for group in required_groups):
+                continue
+            score = sum(int(rows.get(group, 0) or 0) for group in required_groups)
+            available_start = _ticker_sparse_available_start_us(manifest_path.parent, sparse_groups)
+            if sparse_groups and available_start <= 0:
+                continue
+            candidates.append((int(available_start), int(score), ticker))
+    ranked = sorted(candidates, key=lambda item: (item[0], -item[1], item[2]))
+    selected = tuple(ticker for _available_start, _score, ticker in ranked[:limit])
+    start_utc = ""
+    if ranked and sparse_groups:
+        start_us = int(ranked[0][0]) + 1_000_000
+        start_utc = datetime.fromtimestamp(start_us / 1_000_000, tz=timezone.utc).isoformat(timespec="seconds")
+    detail.update(
+        {
+            "checked_manifests": int(checked),
+            "candidate_tickers": int(len(ranked)),
+            "reason": "context_rich_tickers" if selected else "no_matching_context_rich_tickers",
+        }
+    )
+    return selected, start_utc, detail
+
+
+def _ticker_sparse_available_start_us(package_dir: Path, required_groups: tuple[str, ...]) -> int:
+    if not required_groups:
+        return 0
+    group_to_folder = {
+        "News Embeddings": "news_embeddings",
+        "SEC Embeddings": "sec_embeddings",
+        "XBRL": "xbrl",
+        "Corporate Actions": "corporate_actions",
+    }
+    group_to_timestamp = {
+        "News Embeddings": "timestamp_us",
+        "SEC Embeddings": "timestamp_us",
+        "XBRL": "timestamp_us",
+        "Corporate Actions": "available_timestamp_us",
+    }
+    try:
+        import polars as pl  # type: ignore
+    except Exception:
+        return 0
+    starts: list[int] = []
+    for group in required_groups:
+        folder = group_to_folder.get(group)
+        column = group_to_timestamp.get(group)
+        if not folder or not column:
+            continue
+        best = 0
+        for path in (package_dir / folder).glob("*.parquet"):
+            try:
+                frame = pl.scan_parquet(path).select(pl.col(column).min().alias("min_ts")).collect()
+                value = frame.item(0, "min_ts") if int(frame.height) else None
+                timestamp_us = int(value or 0)
+            except Exception:
+                timestamp_us = 0
+            if timestamp_us > 0 and (best <= 0 or timestamp_us < best):
+                best = timestamp_us
+        if best <= 0:
+            return 0
+        starts.append(best)
+    return max(starts) if starts else 0
+
+
+def _manifest_groups_for_availability_keys(keys: tuple[str, ...]) -> tuple[str, ...]:
+    key_to_group = {
+        "ticker_news_available": "News Embeddings",
+        "sec_filings_available": "SEC Embeddings",
+        "xbrl_available": "XBRL",
+        "corporate_actions_available": "Corporate Actions",
+        "ticker_daily_bars_available": "Macro Bars",
+    }
+    groups: list[str] = []
+    for key in keys:
+        group = key_to_group.get(str(key))
+        if group and group not in groups:
+            groups.append(group)
+    return tuple(groups)
+
+
 def _summary_payload(
     *,
     args: argparse.Namespace,
@@ -482,6 +705,7 @@ def _summary_payload(
     rows: list[Mapping[str, Any]],
     all_rows: list[Mapping[str, Any]],
     coverage: Mapping[str, Any],
+    coverage_plan: Mapping[str, Any],
     run_dir: Path,
     device: torch.device,
     status: str,
@@ -516,6 +740,8 @@ def _summary_payload(
         "averages": averages,
         "p95": p95,
         "coverage": dict(coverage),
+        "coverage_plan": dict(coverage_plan),
+        "coverage_seek_batches": int(sum(1 for row in all_rows if row.get("phase") == "coverage_seek")),
         "last_row": dict(all_rows[-1]) if all_rows else {},
     }
 

@@ -241,10 +241,37 @@ visible instead of looking stuck.
 
 By default, `--require-all-input-coverage` is enabled. The profile fails with a
 coverage summary if any requested input modality never has an available payload
-in the measured batches. Disable this only for tiny smoke tests:
+in the measured batches. Intraday and corporate-action label coverage is checked
+from the emitted `y` tensors and masks, not from `x.input_availability`; false
+corporate-action labels are valid labels, not missing data. XBRL coverage is
+checked from `x.xbrl_inputs.mask`.
+
+The exact profiler also enables `--coverage-auto-plan` by default. If no ticker
+filter is supplied, it selects context-rich ticker packages and an as-of start
+time that can exercise sparse modalities such as XBRL, SEC, news, and corporate
+actions. It still runs through the same training loader path, and the selected
+tickers/start time are written to `exact_training_loader_config.json` under
+`coverage_plan`. Disable this with `--no-coverage-auto-plan` when intentionally
+profiling the earliest chronological all-ticker slice.
+
+Disable coverage requirements only for tiny smoke tests:
 
 ```powershell
 python research\temporal_event_model\v3\run_profile_exact_training_loader.py --tickers AAPL --batch-size 16 --warmup-batches 1 --batches 1 --device cpu --no-require-all-input-coverage
+```
+
+To test large exact-loader batch sizes on the workstation:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\temporal_event_model\v3\run_profile_exact_training_loader_batch_tests.py
+```
+
+The no-arg batch test runs `run_profile_exact_training_loader.py` for batch
+sizes `1024` and `2048`, sets `materialize_chunk_size` equal to the batch size,
+uses all default v3 data groups, and writes aggregate results to:
+
+```text
+D:\TradingML\runtimes\temporal_event_model\v3\exact_loader_batch_tests
 ```
 
 ## Loader Frontier Profiler
