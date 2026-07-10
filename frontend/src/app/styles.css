@@ -1440,12 +1440,12 @@ button {
 
 .news-today-table th:nth-child(1),
 .news-today-table td:nth-child(1) {
-  width: 168px;
+  width: 132px;
 }
 
 .news-today-table th:nth-child(2),
 .news-today-table td:nth-child(2) {
-  width: 132px;
+  width: 124px;
 }
 
 .news-today-table th:nth-child(3),
@@ -1455,17 +1455,17 @@ button {
 
 .news-today-table th:nth-child(4),
 .news-today-table td:nth-child(4) {
-  width: 138px;
+  width: 116px;
 }
 
 .news-today-table th:nth-child(5),
 .news-today-table td:nth-child(5) {
-  width: 126px;
+  width: 122px;
 }
 
 .news-today-table th:nth-child(6),
 .news-today-table td:nth-child(6) {
-  width: 138px;
+  width: 96px;
 }
 
 .news-today-cell-stack {
@@ -1489,6 +1489,44 @@ button {
   font-size: 10px;
   line-height: 1.2;
   text-overflow: ellipsis;
+}
+
+.news-today-time-cell .news-today-time-main {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 760;
+  line-height: 1.05;
+}
+
+.news-today-time-cell .news-today-date-muted {
+  color: color-mix(in oklab, var(--muted-foreground) 82%, var(--foreground));
+  font-size: 10px;
+  font-weight: 620;
+}
+
+.news-today-title-cell .news-today-cell-stack {
+  gap: 3px;
+}
+
+.news-today-title-cell .news-today-cell-stack strong {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 760;
+  letter-spacing: 0;
+  line-height: 1.18;
+}
+
+.news-today-title-cell .news-today-cell-stack span {
+  font-size: 10.5px;
+  line-height: 1.25;
+}
+
+.news-today-source-cell .news-today-cell-stack strong {
+  font-size: 10.5px;
+}
+
+.news-today-source-cell .news-today-cell-stack span {
+  font-size: 9.5px;
 }
 
 .news-today-chip-row {

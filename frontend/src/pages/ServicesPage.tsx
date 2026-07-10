@@ -670,9 +670,9 @@ function NewsTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: News
               </th>
               <th>Tickers</th>
               <th>Title</th>
-              <th>Source</th>
               <th>Text</th>
               <th>Flags</th>
+              <th>Source</th>
             </tr>
           </thead>
           <tbody>
@@ -691,7 +691,8 @@ function NewsTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: News
               >
                 <td className="news-today-time-cell" title={row.publishedAtUtc}>
                   <div className="news-today-cell-stack">
-                    <strong>{formatLogTime(row.publishedAtUtc)}</strong>
+                    <strong className="news-today-time-main">{formatTime(row.publishedAtUtc)}</strong>
+                    <span className="news-today-date-muted">{formatNewsTableDate(row.publishedAtUtc)}</span>
                     <span>UTC {formatUtcDateTime(row.publishedAtUtc)}</span>
                   </div>
                 </td>
@@ -706,16 +707,16 @@ function NewsTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: News
                     <span>{row.textPreview || row.normalizedTitle || "No text preview reported."}</span>
                   </div>
                 </td>
-                <td className="news-today-source-cell" title={row.articleUrl || row.urlDomain}>
-                  <div className="news-today-cell-stack">
-                    <strong>{row.urlDomain || "-"}</strong>
-                    <span>{row.author || row.channels.slice(0, 2).join(", ") || "Benzinga"}</span>
-                  </div>
-                </td>
                 <td className="news-today-text-cell" title={newsTodayTextLabel(row)}>{newsTodayTextLabel(row)}</td>
                 <td className="news-today-flag-cell" title={row.contentQualityFlags.join(", ")}>
                   <div className="news-today-chip-row muted">
                     {newsTodayFlagChips(row).map((flag) => <span key={flag}>{flag}</span>)}
+                  </div>
+                </td>
+                <td className="news-today-source-cell" title={row.articleUrl || row.urlDomain}>
+                  <div className="news-today-cell-stack">
+                    <strong>{row.urlDomain || "-"}</strong>
+                    <span>{row.author || row.channels.slice(0, 2).join(", ") || "Benzinga"}</span>
                   </div>
                 </td>
               </tr>
@@ -4394,6 +4395,12 @@ function formatLogTime(value: string) {
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) return value;
   return new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(parsed));
+}
+
+function formatNewsTableDate(value: string) {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return value || "-";
+  return new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", year: "numeric" }).format(new Date(parsed));
 }
 
 function parseLogTime(value: string) {
