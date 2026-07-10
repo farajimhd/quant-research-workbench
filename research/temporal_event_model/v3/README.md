@@ -19,6 +19,10 @@
   cache. It runs warmup and measured batches, records loader/model/memory
   timings, records the production cache path, exports model artifacts, and
   checkpoints profiler + loader state so it can resume after interruption.
+- `run_profile_loader_frontier_grid.py` profiles only the chronological loader
+  over a grid of `time_window_seconds`, `frontier_max_origins_per_window`,
+  materialization chunk, worker, and payload-cache settings. Use it before long
+  training runs to choose loader defaults without model/GPU noise.
 - `run_sweep_training_profile.py` runs a grid of training-profile jobs across
   model presets and batch sizes, then writes consolidated CSV/JSONL results for
   throughput, memory, loss, checkpoint, audit, and modality-coverage behavior.
@@ -170,6 +174,55 @@ Each JSONL row includes:
 - detailed loader stage timings from `DailyIndexTrainingBatch.profile`, such as
   raw stream gather, label, text, XBRL, bar, corporate-action, payload load, and
   materialization wait timings
+
+## Loader Frontier Profiler
+
+Default workstation command:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\temporal_event_model\v3\run_profile_loader_frontier_grid.py
+```
+
+The no-arg run uses `preset=quick`:
+
+```text
+batch_size: 1024
+warmup_batches: 1
+measured_batches: 4
+time_window_seconds_grid: 15,60
+frontier_max_origins_grid: 0,16384,65536
+materialize_chunk_size_grid: 256
+worker_grid: 16x32
+loaded_parts_per_group_grid: 256
+origin_cursor_chunk_rows_grid: 1024
+```
+
+It writes:
+
+```text
+loader_frontier_grid_batches.jsonl
+loader_frontier_grid_results.jsonl
+loader_frontier_grid_summary.csv
+loader_frontier_grid_summary.json
+recommended_loader_config.json
+```
+
+Use the balanced preset when the quick run does not clearly rank the settings:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\temporal_event_model\v3\run_profile_loader_frontier_grid.py --preset balanced
+```
+
+Use a custom focused grid to compare final candidates:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\temporal_event_model\v3\run_profile_loader_frontier_grid.py `
+  --preset custom `
+  --time-window-seconds-grid 15,30,60 `
+  --frontier-max-origins-grid 0,32768,65536 `
+  --materialize-chunk-size-grid 256,512 `
+  --worker-grid 16x32,16x48
+```
 
 ## Sample-Based Training Cadence
 
