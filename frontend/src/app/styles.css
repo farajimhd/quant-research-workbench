@@ -3721,6 +3721,77 @@ button {
   overflow-wrap: anywhere;
 }
 
+.sec-filing-hero-identity {
+  align-items: stretch;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(150px, 0.22fr) minmax(0, 1fr);
+  margin-top: 8px;
+  max-width: 980px;
+}
+
+.sec-filing-hero-ticker-card {
+  background: color-mix(in oklab, #eff6ff 76%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--accent) 20%, var(--border));
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px 13px;
+}
+
+.sec-filing-hero-ticker-card span,
+.sec-filing-hero-identity-list dt {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.sec-filing-hero-ticker-card strong {
+  color: var(--foreground);
+  font-family: "Segoe UI", Arial, sans-serif;
+  font-size: 30px;
+  font-weight: 620;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+.sec-filing-hero-ticker-card small {
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.sec-filing-hero-identity-list {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin: 0;
+  min-width: 0;
+}
+
+.sec-filing-hero-identity-list div {
+  background: color-mix(in oklab, var(--surface-alt) 48%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--border) 74%, transparent);
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 11px;
+}
+
+.sec-filing-hero-identity-list dd {
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 680;
+  line-height: 1.25;
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .sec-filing-time-grid {
   border-top: 1px solid var(--border);
   grid-column: 1 / -1;
@@ -3850,41 +3921,6 @@ button {
   gap: 8px;
   min-height: 0;
   padding: 14px;
-}
-
-.sec-filing-market-identity-card {
-  background: color-mix(in oklab, var(--surface) 92%, #eff6ff);
-  border-color: color-mix(in oklab, var(--accent) 16%, var(--border));
-}
-
-.sec-filing-profile-header {
-  border-bottom: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
-  display: grid;
-  gap: 3px;
-  padding-bottom: 12px;
-}
-
-.sec-filing-profile-header span {
-  color: var(--muted-foreground);
-  font-size: 10px;
-  font-weight: 760;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-
-.sec-filing-profile-header strong {
-  color: var(--foreground);
-  font-family: "Segoe UI", Arial, sans-serif;
-  font-size: 28px;
-  font-weight: 620;
-  letter-spacing: 0;
-  line-height: 1;
-}
-
-.sec-filing-profile-header small {
-  color: var(--muted-foreground);
-  font-size: 12px;
-  font-weight: 650;
 }
 
 .sec-filing-side-card h4 {
@@ -4070,8 +4106,13 @@ button {
 
 @media (max-width: 1100px) {
   .sec-filing-hero-card,
-  .sec-filing-reader-layout {
+  .sec-filing-reader-layout,
+  .sec-filing-hero-identity {
     grid-template-columns: 1fr;
+  }
+
+  .sec-filing-hero-identity-list {
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   }
 
   .sec-filing-hero-actions {

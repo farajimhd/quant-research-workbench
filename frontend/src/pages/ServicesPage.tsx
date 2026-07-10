@@ -1475,13 +1475,10 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
     { label: "Ambiguity", value: row.ambiguityStatusSample.length ? row.ambiguityStatusSample.join(", ") : stringMetric(identitySummary, ["ambiguity_status_sample"]) || "-" },
     { label: "Confidence", value: secMappingConfidenceLabel(numericMetric(identitySummary, ["max_mapping_confidence"]) || row.maxMappingConfidence) },
   ];
-  const marketIdentityPrimaryFacts = marketIdentityFacts.filter((item) => [
+  const marketLabel = [stringMetric(identitySummary, ["primary_exchange_code"]) || row.primaryExchangeCode, stringMetric(identitySummary, ["primary_currency_code"]) || row.primaryCurrencyCode].filter(Boolean).join(" / ") || "No listed market";
+  const heroIdentityFacts = marketIdentityFacts.filter((item) => [
     "All linked tickers",
-    "Exchange",
-    "Currency",
     "IBKR conid",
-    "Issuer",
-    "Legal name",
     "SIC",
     "Security type",
     "Confidence",
@@ -1537,6 +1534,21 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
           </div>
           <h3>{companyName}</h3>
           <p>{accession} / {primaryDocument || row.sourceFileName || "filing parent"}</p>
+          <section className="sec-filing-hero-identity" aria-label="SEC filing market identity">
+            <div className="sec-filing-hero-ticker-card">
+              <span>Market identity</span>
+              <strong>{primaryTicker || "No ticker"}</strong>
+              <small>{marketLabel}</small>
+            </div>
+            <dl className="sec-filing-hero-identity-list">
+              {heroIdentityFacts.map((item) => (
+                <div key={item.label}>
+                  <dt>{item.label}</dt>
+                  <dd>{item.value}</dd>
+                </div>
+              ))}
+            </dl>
+          </section>
         </div>
         <div className="sec-filing-hero-actions">
           {primaryDocumentUrl ? <a href={primaryDocumentUrl} rel="noreferrer" target="_blank">Primary document</a> : null}
@@ -1576,21 +1588,6 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
           </div>
         </article>
         <aside className="sec-filing-context-panel">
-          <section className="sec-filing-side-card sec-filing-market-identity-card">
-            <div className="sec-filing-profile-header">
-              <span>Market identity</span>
-              <strong>{primaryTicker || "No ticker"}</strong>
-              <small>{[stringMetric(identitySummary, ["primary_exchange_code"]) || row.primaryExchangeCode, stringMetric(identitySummary, ["primary_currency_code"]) || row.primaryCurrencyCode].filter(Boolean).join(" / ") || "No listed market"}</small>
-            </div>
-            <dl className="sec-filing-context-list">
-              {marketIdentityPrimaryFacts.map((item) => (
-                <div key={item.label}>
-                  <dt>{item.label}</dt>
-                  <dd>{item.value}</dd>
-                </div>
-              ))}
-            </dl>
-          </section>
           <section className="sec-filing-side-card">
             <h4>Filing Snapshot</h4>
             <dl className="sec-filing-context-list">
