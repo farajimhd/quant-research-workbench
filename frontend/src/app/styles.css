@@ -3599,8 +3599,20 @@ button {
 
 .modal-panel.sec-filing-detail-modal-panel {
   background: var(--surface);
-  width: min(1540px, calc(100vw - 72px));
+  display: flex;
+  flex-direction: column;
   max-height: min(900px, calc(100vh - 56px));
+  overflow: hidden;
+  padding: 0;
+  width: min(1540px, calc(100vw - 72px));
+}
+
+.modal-panel.sec-filing-detail-modal-panel .modal-header {
+  background: color-mix(in oklab, var(--surface) 88%, var(--surface-alt));
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 16px 18px;
 }
 
 .modal-panel.sec-filing-detail-modal-panel .modal-body {
@@ -3610,8 +3622,9 @@ button {
 
 .sec-filing-detail {
   display: grid;
+  flex: 1 1 auto;
   gap: 14px;
-  max-height: calc(100vh - 142px);
+  max-height: none;
   min-height: 0;
   overflow: auto;
   padding: 14px;
@@ -3739,10 +3752,11 @@ button {
 }
 
 .sec-filing-reader-layout {
+  align-items: start;
   display: grid;
   gap: 14px;
   grid-template-columns: minmax(0, 1.65fr) minmax(330px, 0.7fr);
-  min-height: 540px;
+  min-height: 0;
 }
 
 .sec-filing-reader-card,
@@ -3802,6 +3816,7 @@ button {
   font-family: "Segoe UI", Arial, sans-serif;
   font-size: 16px;
   line-height: 1.68;
+  max-height: clamp(360px, 42vh, 560px);
   min-height: 0;
   overflow: auto;
   padding: 24px 30px 32px;
@@ -3889,8 +3904,6 @@ button {
 .sec-filing-text-row-list {
   display: grid;
   gap: 8px;
-  max-height: 190px;
-  overflow: auto;
   padding-right: 4px;
 }
 
