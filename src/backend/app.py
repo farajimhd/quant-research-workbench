@@ -1804,6 +1804,69 @@ def service_datetime64_sql(value: datetime) -> str:
     return f"toDateTime64({sql_string(value.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
 
 
+def parse_service_timestamp_utc(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def format_service_timestamp_utc(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def service_sec_feed_company_name(title: Any, *, cik: str, form_type: str) -> str:
+    text = str(title or "").strip()
+    if not text:
+        return ""
+    prefix = f"{form_type} - " if form_type else ""
+    if prefix and text.startswith(prefix):
+        text = text[len(prefix):].strip()
+    cik_marker = f"({cik})" if cik else ""
+    if cik_marker and cik_marker in text:
+        text = text.split(cik_marker, 1)[0].strip()
+    return text.rstrip("- ").strip()
+
+
+def service_sec_recent_feed_rows(window_start_utc: datetime, window_end_utc: datetime, limit: int) -> tuple[list[dict[str, Any]], str]:
+    service = SERVICE_REGISTRY.get("sec")
+    if not service:
+        return [], "SEC service registry entry is missing"
+    payload, error = fetch_service_json(service_base_url(service), f"/snapshot/sec/recent?limit={max(1, limit)}")
+    if error:
+        return [], error
+    if not isinstance(payload, dict):
+        return [], "Unexpected SEC recent feed payload"
+    raw_rows = payload.get("rows")
+    if not isinstance(raw_rows, list):
+        return [], ""
+    rows: list[dict[str, Any]] = []
+    for raw_row in raw_rows:
+        if not isinstance(raw_row, dict):
+            continue
+        updated_at = parse_service_timestamp_utc(raw_row.get("updated_at_utc"))
+        if updated_at is None or updated_at < window_start_utc or updated_at >= window_end_utc:
+            continue
+        cik = str(raw_row.get("cik") or "").strip()
+        accession = str(raw_row.get("accession_number") or "").strip()
+        if not cik or not accession:
+            continue
+        row = dict(raw_row)
+        row["cik"] = cik
+        row["accession_number"] = accession
+        row["updated_at_utc"] = format_service_timestamp_utc(updated_at)
+        rows.append(row)
+    return rows, ""
+
+
 def service_sec_histogram(
     *,
     company_fact_table: str,
@@ -2162,6 +2225,8 @@ def service_sec_today_rows(limit: int = 250, sort: str = "desc") -> dict[str, An
     }
     for row in rows:
         key = (str(row.get("cik") or ""), str(row.get("accession_number") or ""))
+        row["filing_parent_cik"] = str(row.get("cik") or "")
+        row["row_origin"] = "canonical_parent"
         row.update(related_defaults)
         row.update(document_counts.get(key, {}))
         row.update(text_counts.get(key, {}))
@@ -2186,6 +2251,58 @@ def service_sec_today_rows(limit: int = 250, sort: str = "desc") -> dict[str, An
             row["activity_status"] = "filing"
         else:
             row["activity_status"] = "parent"
+
+    rows_by_key = {
+        (str(row.get("cik") or ""), str(row.get("accession_number") or "")): row
+        for row in rows
+    }
+    parent_by_accession: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        accession = str(row.get("accession_number") or "")
+        if accession:
+            parent_by_accession.setdefault(accession, row)
+
+    recent_feed_rows, recent_feed_error = service_sec_recent_feed_rows(
+        window_start_utc=window_start_utc,
+        window_end_utc=window_end_utc,
+        limit=SERVICE_SEC_TODAY_ROWS_LIMIT,
+    )
+    feed_participant_rows = 0
+    for feed_row in recent_feed_rows:
+        cik = str(feed_row.get("cik") or "")
+        accession = str(feed_row.get("accession_number") or "")
+        key = (cik, accession)
+        target = rows_by_key.get(key)
+        if target is None:
+            parent = parent_by_accession.get(accession)
+            if parent is None:
+                continue
+            target = dict(parent)
+            target["row_origin"] = "sec_gateway_feed_participant"
+            target["filing_parent_cik"] = str(parent.get("filing_parent_cik") or parent.get("cik") or "")
+            target["cik"] = cik
+            target["company_name"] = service_sec_feed_company_name(
+                feed_row.get("title"),
+                cik=cik,
+                form_type=str(feed_row.get("form_type") or parent.get("form_type") or ""),
+            ) or str(feed_row.get("title") or "") or str(parent.get("company_name") or "")
+            target["form_type"] = str(feed_row.get("form_type") or parent.get("form_type") or "")
+            rows.append(target)
+            rows_by_key[key] = target
+            feed_participant_rows += 1
+        target["feed_status"] = str(feed_row.get("status") or "")
+        target["feed_title"] = str(feed_row.get("title") or "")
+        target["feed_updated_at_utc"] = str(feed_row.get("updated_at_utc") or "")
+        target["feed_documents"] = int(feed_row.get("documents") or 0)
+        target["feed_texts"] = int(feed_row.get("texts") or 0)
+        target["feed_skips"] = int(feed_row.get("skips") or 0)
+        target["feed_xbrl_facts"] = int(feed_row.get("xbrl_facts") or 0)
+
+    reverse_sort = sort_direction == "DESC"
+    rows.sort(
+        key=lambda row: parse_service_timestamp_utc(row.get("feed_updated_at_utc") or row.get("accepted_at_utc")) or datetime.min.replace(tzinfo=UTC),
+        reverse=reverse_sort,
+    )
 
     loaded_summary = {
         "document_rows": sum(int(row.get("document_rows") or 0) for row in rows),
@@ -2212,6 +2329,9 @@ def service_sec_today_rows(limit: int = 250, sort: str = "desc") -> dict[str, An
         "source": "clickhouse",
         "summary": {
             "document_rows": loaded_summary["document_rows"],
+            "feed_participant_rows": feed_participant_rows,
+            "feed_recent_error": recent_feed_error,
+            "feed_recent_rows": len(recent_feed_rows),
             "latest_accepted_at_utc": str(count_summary.get("latest_accepted_at_utc") or ""),
             "loaded_rows": len(rows),
             "text_rows": loaded_summary["text_rows"],

@@ -665,7 +665,15 @@ type SecTodayRow = {
   documentTextReadyRows: number;
   documentTypeSample: string[];
   exchangeCodeSample: string[];
+  feedDocuments: number;
+  feedSkips: number;
+  feedStatus: string;
+  feedTexts: number;
+  feedTitle: string;
+  feedUpdatedAtUtc: string;
+  feedXbrlFacts: number;
   fileExtensionSample: string[];
+  filingParentCik: string;
   filingDate: string;
   filingDetailUrl: string;
   filingId: string;
@@ -710,6 +718,7 @@ type SecTodayRow = {
   sourceFileName: string;
   symbolIdSample: string[];
   symbolSourceSample: string[];
+  rowOrigin: string;
   textChars: number;
   textKindSample: string[];
   textRows: number;
@@ -764,6 +773,9 @@ type SecTodayRowsState = {
 
 type SecTodaySummary = {
   documentRows: number;
+  feedParticipantRows: number;
+  feedRecentError: string;
+  feedRecentRows: number;
   latest: string;
   loadedRows: number;
   textRows: number;
@@ -1108,7 +1120,9 @@ function SecTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: NewsT
   const filteredRows = useMemo(() => secTodayFilteredRows(rows, searchQuery), [rows, searchQuery]);
   const showingLabel = summary.totalFilings > summary.loadedRows
     ? `Showing ${formatCompactNumber(summary.loadedRows)} of ${formatCompactNumber(summary.totalFilings)} filings`
-    : `${formatCompactNumber(summary.totalFilings)} filings loaded`;
+    : summary.feedParticipantRows
+      ? `${formatCompactNumber(summary.totalFilings)} filings + ${formatCompactNumber(summary.feedParticipantRows)} feed participants loaded`
+      : `${formatCompactNumber(summary.totalFilings)} filings loaded`;
   const searchLabel = searchQuery.trim()
     ? `Filtered ${formatCompactNumber(filteredRows.length)} of ${formatCompactNumber(summary.loadedRows)} loaded filings`
     : showingLabel;
@@ -1119,7 +1133,8 @@ function SecTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: NewsT
     setDetailError("");
     setDetailLoading(true);
     try {
-      const payload = await api<SecDetailPayload>(`/api/services/sec/detail/${encodeURIComponent(row.cik)}/${encodeURIComponent(row.accessionNumber)}`);
+      const detailCik = row.filingParentCik || row.cik;
+      const payload = await api<SecDetailPayload>(`/api/services/sec/detail/${encodeURIComponent(detailCik)}/${encodeURIComponent(row.accessionNumber)}`);
       setDetail(payload);
     } catch (exc) {
       setDetailError(exc instanceof Error ? exc.message : String(exc));
@@ -1148,6 +1163,7 @@ function SecTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: NewsT
         <div className="news-today-compact-stats">
           <span><small>Filings</small><strong>{formatCompactNumber(summary.totalFilings)}</strong></span>
           <span><small>Loaded</small><strong>{formatCompactNumber(summary.loadedRows)}</strong></span>
+          {summary.feedParticipantRows ? <span><small>Feed participants</small><strong>{formatCompactNumber(summary.feedParticipantRows)}</strong></span> : null}
           <span><small>With Text</small><strong>{formatCompactNumber(summary.withText)}</strong></span>
           <span><small>With XBRL</small><strong>{formatCompactNumber(summary.withXbrl)}</strong></span>
           <span><small>Latest</small><strong>{summary.latest ? formatLogTime(summary.latest) : "-"}</strong></span>
@@ -1179,8 +1195,8 @@ function SecTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: NewsT
           <tbody>
             {(filteredRows.length ? filteredRows : [null]).map((row, index) => row ? (
               <tr
-                className={`${secTodayRowTone(row)} ${tableRowRecencyClass(row.acceptedAtUtc)}`}
-                key={`${row.cik}-${row.accessionNumber}-${index}`}
+                className={`${secTodayRowTone(row)} ${tableRowRecencyClass(row.feedUpdatedAtUtc || row.acceptedAtUtc)}`}
+                key={`${row.rowOrigin}-${row.cik}-${row.accessionNumber}-${index}`}
                 onClick={() => void openFiling(row)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
@@ -1190,7 +1206,7 @@ function SecTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: NewsT
                 }}
                 tabIndex={0}
               >
-                <ServiceTableTimeCell className="news-today-time-cell" value={row.acceptedAtUtc} />
+                <ServiceTableTimeCell className="news-today-time-cell" value={row.feedUpdatedAtUtc || row.acceptedAtUtc} />
                 <td className="sec-filing-ticker-cell" title={secTickerTitle(row)}>
                   <div className="news-today-cell-stack">
                     {row.primaryTicker ? <strong>{row.primaryTicker}</strong> : <strong className="muted-value">-</strong>}
@@ -1200,7 +1216,7 @@ function SecTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: NewsT
                 <td title={row.cik}>
                   <div className="news-today-cell-stack">
                     <strong>{row.cik || "-"}</strong>
-                    <span>{row.issuerName || row.issuerId || row.accessionNumberCompact || "-"}</span>
+                    <span>{row.rowOrigin === "sec_gateway_feed_participant" ? "feed participant" : row.issuerName || row.issuerId || row.accessionNumberCompact || "-"}</span>
                   </div>
                 </td>
                 <td title={row.formType}>
@@ -1214,7 +1230,7 @@ function SecTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: NewsT
                 </td>
                 <td title={secDocumentTextLabel(row)}>{secDocumentTextLabel(row)}</td>
                 <td title={secXbrlLabel(row)}>{secXbrlLabel(row)}</td>
-                <td><span className={`service-work-status ${workStatusClass(secActivityStatus(row))}`}>{displayName(row.activityStatus)}</span></td>
+                <td><span className={`service-work-status ${workStatusClass(secActivityStatus(row))}`}>{displayName(secDisplayStatus(row))}</span></td>
               </tr>
             ) : (
               <tr key={`empty-${index}`}>
@@ -3717,6 +3733,9 @@ function defaultSecTodayRowsState(sort: NewsTodaySort): SecTodayRowsState {
     sort,
     summary: {
       documentRows: 0,
+      feedParticipantRows: 0,
+      feedRecentError: "",
+      feedRecentRows: 0,
       latest: "",
       loadedRows: 0,
       textRows: 0,
@@ -3807,7 +3826,15 @@ function secTodayRowFromPayload(row: Record<string, unknown>): SecTodayRow {
     documentTextReadyRows: numericMetric(row, ["document_text_ready_rows"]),
     documentTypeSample: stringArrayMetric(row, ["document_type_sample"]),
     exchangeCodeSample: stringArrayMetric(row, ["exchange_code_sample"]),
+    feedDocuments: numericMetric(row, ["feed_documents"]),
+    feedSkips: numericMetric(row, ["feed_skips"]),
+    feedStatus: stringMetric(row, ["feed_status"]),
+    feedTexts: numericMetric(row, ["feed_texts"]),
+    feedTitle: stringMetric(row, ["feed_title"]),
+    feedUpdatedAtUtc: stringMetric(row, ["feed_updated_at_utc"]),
+    feedXbrlFacts: numericMetric(row, ["feed_xbrl_facts"]),
     fileExtensionSample: stringArrayMetric(row, ["file_extension_sample"]),
+    filingParentCik: stringMetric(row, ["filing_parent_cik"]),
     filingDate: stringMetric(row, ["filing_date"]),
     filingDetailUrl: stringMetric(row, ["filing_detail_url"]),
     filingId: stringMetric(row, ["filing_id"]),
@@ -3852,6 +3879,7 @@ function secTodayRowFromPayload(row: Record<string, unknown>): SecTodayRow {
     sourceFileName: stringMetric(row, ["source_file_name"]),
     symbolIdSample: stringArrayMetric(row, ["symbol_id_sample"]),
     symbolSourceSample: stringArrayMetric(row, ["symbol_source_sample"]),
+    rowOrigin: stringMetric(row, ["row_origin"]) || "canonical_parent",
     textChars: numericMetric(row, ["text_chars"]),
     textKindSample: stringArrayMetric(row, ["text_kind_sample"]),
     textRows: numericMetric(row, ["text_rows"]),
@@ -3869,6 +3897,9 @@ function secTodaySummaryFromPayload(summaryPayload: unknown, rows: SecTodayRow[]
   const fallback = rows.reduce(
     (summary, row) => ({
       documentRows: summary.documentRows + row.documentRows,
+      feedParticipantRows: summary.feedParticipantRows + (row.rowOrigin === "sec_gateway_feed_participant" ? 1 : 0),
+      feedRecentError: summary.feedRecentError,
+      feedRecentRows: summary.feedRecentRows,
       latest: !summary.latest || parseServiceTimestamp(row.acceptedAtUtc) > parseServiceTimestamp(summary.latest) ? row.acceptedAtUtc : summary.latest,
       loadedRows: rows.length,
       textRows: summary.textRows + row.textRows,
@@ -3881,6 +3912,9 @@ function secTodaySummaryFromPayload(summaryPayload: unknown, rows: SecTodayRow[]
     }),
     {
       documentRows: 0,
+      feedParticipantRows: 0,
+      feedRecentError: "",
+      feedRecentRows: 0,
       latest: "",
       loadedRows: rows.length,
       textRows: 0,
@@ -3895,6 +3929,9 @@ function secTodaySummaryFromPayload(summaryPayload: unknown, rows: SecTodayRow[]
   if (!isRecord(summaryPayload)) return fallback;
   return {
     documentRows: numericMetric(summaryPayload, ["document_rows"]) || fallback.documentRows,
+    feedParticipantRows: numericMetric(summaryPayload, ["feed_participant_rows"]) || fallback.feedParticipantRows,
+    feedRecentError: stringMetric(summaryPayload, ["feed_recent_error"]) || fallback.feedRecentError,
+    feedRecentRows: numericMetric(summaryPayload, ["feed_recent_rows"]) || fallback.feedRecentRows,
     latest: stringMetric(summaryPayload, ["latest_accepted_at_utc"]) || fallback.latest,
     loadedRows: numericMetric(summaryPayload, ["loaded_rows"]) || rows.length,
     textRows: numericMetric(summaryPayload, ["text_rows"]) || fallback.textRows,
@@ -3922,6 +3959,10 @@ function secTodaySearchText(row: SecTodayRow) {
     row.accessionNumber,
     row.accessionNumberCompact,
     row.activityStatus,
+    row.feedStatus,
+    row.feedTitle,
+    row.feedUpdatedAtUtc,
+    row.filingParentCik,
     row.primaryTicker,
     row.identityTickers.join(" "),
     row.primaryExchangeCode,
@@ -3975,6 +4016,7 @@ function secXbrlLabel(row: SecTodayRow) {
 
 function secTickerTitle(row: SecTodayRow) {
   const parts = [
+    row.rowOrigin === "sec_gateway_feed_participant" ? `Gateway feed participant for parent CIK ${row.filingParentCik || "-"}` : "",
     row.identityTickers.length ? `Tickers: ${row.identityTickers.join(", ")}` : "No linked ticker",
     row.primaryExchangeCode ? `Exchange: ${row.primaryExchangeCode}` : "",
     row.primaryIbkrConid ? `IBKR: ${row.primaryIbkrConid}` : "",
@@ -4009,10 +4051,15 @@ function secMappingConfidenceLabel(value: number) {
 }
 
 function secActivityStatus(row: SecTodayRow) {
+  if (row.feedStatus === "failed") return "error";
   if (row.documentIssueRows > 0) return "warn";
   if (row.xbrlFactRows + row.xbrlFrameRows > 0 || row.textRows > 0) return "ok";
   if (row.documentRows > 0) return "active";
   return "waiting";
+}
+
+function secDisplayStatus(row: SecTodayRow) {
+  return row.feedStatus || row.activityStatus;
 }
 
 function secTodayRowTone(row: SecTodayRow) {
