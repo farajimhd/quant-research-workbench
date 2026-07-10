@@ -87,15 +87,17 @@ The xlarge launcher is tuned for the 128-core workstation loader path:
 batch_size: 1024
 read_workers: 16
 materialize_workers: 32
-loaded_parts_per_group: 32
+loaded_parts_per_group: 256
 materialize_chunk_size: 256
 prefetch_batches: 64
-time_window_seconds: 5.0
+time_window_seconds: 60.0
+origin_cursor_chunk_rows: 1024
 scanner_prefetch_workers: 8
 learning_rate: 1e-3
 scheduler: cosine restarts every 1,024,000 samples to eta_min=1e-6
 scheduler_decay: peak LR multiplied by 0.95 after every 100 restart cycles
 compile_model: true
+optimizer_foreach: false
 ```
 
 The xlarge launcher can target another monthly cache with:
@@ -346,9 +348,9 @@ The default v3 loader path is chronological replay:
 
 ```text
 chronological_replay: true
-time_window_seconds: 1.0
+time_window_seconds: 60.0
 ticker_cache_capacity: 15000
-origin_cursor_chunk_rows: 4096
+origin_cursor_chunk_rows: 1024
 warm_all_ticker_caches: true
 ```
 
@@ -370,8 +372,10 @@ before that origin is emitted.
 Origin rows are not materialized as one full-day table. The loader keeps
 per-ticker origin cursors, loads `origin_cursor_chunk_rows` rows per ticker, and
 pops only the current `time_window_seconds` rows into a sorted replay window.
-This avoids repeatedly scanning all origin parquet files and avoids retaining a
-full day of origins in memory.
+The default window is intentionally large enough to produce multiple batches per
+window, so the raw batch prefetch queue can fill instead of rebuilding payload
+state for sub-batch windows. This avoids repeatedly scanning all origin parquet
+files and avoids retaining a full day of origins in memory.
 
 Sparse contexts follow the same production contract conceptually: ticker news,
 market news, SEC embeddings, XBRL, corporate actions, daily/global bars, and

@@ -180,6 +180,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--amp-dtype", choices=("bf16", "fp16", "float16", "bfloat16", "float32"), default=default_train.amp_dtype)
     parser.add_argument("--compile-model", action=argparse.BooleanOptionalAction, default=default_train.compile_model)
+    parser.add_argument("--optimizer-foreach", action=argparse.BooleanOptionalAction, default=default_train.optimizer_foreach)
     parser.add_argument("--logging-samples", type=int, default=default_train.logging_samples)
     parser.add_argument("--fast-summary-samples", type=int, default=default_train.fast_summary_samples)
     parser.add_argument("--train-metric-window-samples", type=int, default=default_train.train_metric_window_samples)
@@ -229,7 +230,12 @@ def main() -> int:
         torch.set_float32_matmul_precision("high")
     model = TemporalEventModelV3(config.model).to(device)
     model = maybe_compile_model(model, bool(config.train.compile_model))
-    optimizer = torch.optim.AdamW(model.parameters(), lr=float(config.train.learning_rate), weight_decay=float(config.train.weight_decay))
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=float(config.train.learning_rate),
+        weight_decay=float(config.train.weight_decay),
+        foreach=bool(config.train.optimizer_foreach),
+    )
     scheduler = build_scheduler(optimizer, config.train)
     scaler = torch.amp.GradScaler("cuda", enabled=bool(config.train.amp and config.train.amp_dtype in {"fp16", "float16"} and device.type == "cuda"))
     train_loader = None if args.dummy_data else _make_loader(config.loader, validation=False)
@@ -982,6 +988,7 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         amp=bool(args.amp),
         amp_dtype=str(args.amp_dtype),
         compile_model=bool(args.compile_model),
+        optimizer_foreach=bool(args.optimizer_foreach),
         seed=int(args.seed),
         logging_samples=_sample_arg(args.logging_samples, args.logging_steps, config_value=0, batch_size=int(args.batch_size)),
         fast_summary_samples=_sample_arg(args.fast_summary_samples, args.fast_summary_steps, config_value=train_defaults.fast_summary_samples, batch_size=int(args.batch_size)),

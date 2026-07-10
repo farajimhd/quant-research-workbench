@@ -157,7 +157,7 @@ def main() -> int:
     if bool(config.train.compile_model):
         model = torch.compile(model)  # type: ignore[assignment]
     model_parameters = parameter_summary(_unwrap_model(model))
-    optimizer = torch.optim.AdamW(model.parameters(), lr=float(config.train.learning_rate), weight_decay=float(config.train.weight_decay))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=float(config.train.learning_rate), weight_decay=float(config.train.weight_decay), foreach=False)
     scaler = torch.amp.GradScaler("cuda", enabled=bool(config.train.amp and config.train.amp_dtype in {"fp16", "float16"} and device.type == "cuda"))
     loader = _make_loader(config.loader)
     state = {

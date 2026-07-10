@@ -250,15 +250,15 @@ class LoaderConfig:
     event_columns: tuple[str, ...] = DEFAULT_EVENT_FEATURE_NAMES
     intraday_label_horizons: tuple[str, ...] = DEFAULT_INTRADAY_LABEL_HORIZONS
     event_stream_length: int = 1024
-    loaded_parts_per_group: int = 4
+    loaded_parts_per_group: int = 256
     read_workers: int = 4
     materialize_workers: int = 4
     materialize_chunk_size: int = 0
     prefetch_batches: int = 64
     chronological_replay: bool = True
-    time_window_seconds: float = 1.0
+    time_window_seconds: float = 60.0
     ticker_cache_capacity: int = 15_000
-    origin_cursor_chunk_rows: int = 4096
+    origin_cursor_chunk_rows: int = 1024
     warm_all_ticker_caches: bool = True
     scanner_index_cache_entries: int = 4
     prefetch_scanner_indexes: bool = True
@@ -300,6 +300,7 @@ class TrainConfig:
     amp: bool = True
     amp_dtype: str = "bf16"
     compile_model: bool = True
+    optimizer_foreach: bool = False
     seed: int = 17
     logging_samples: int = 0
     fast_summary_samples: int = 25_000

@@ -257,7 +257,7 @@ class DailyIndexLoaderConfig:
     context_chunks: int = 32
     context_stride_events: int = 64
     flat_coverage_events: int = 0
-    loaded_parts_per_group: int = 8
+    loaded_parts_per_group: int = 256
     read_workers: int = 4
     materialize_workers: int = 4
     max_batches: int = 0
@@ -301,9 +301,9 @@ class DailyIndexLoaderConfig:
     scanner_prefetch_workers: int = 4
     days: tuple[str, ...] = ()
     chronological_replay: bool = False
-    time_window_seconds: float = 1.0
+    time_window_seconds: float = 60.0
     ticker_cache_capacity: int = 15_000
-    origin_cursor_chunk_rows: int = 4096
+    origin_cursor_chunk_rows: int = 1024
     warm_all_ticker_caches: bool = True
 
 
@@ -5442,16 +5442,49 @@ class _RollingEventStreamCache:
     ) -> tuple[np.ndarray, tuple[str, ...], dict[str, float | int]]:
         start = time.perf_counter()
         out = np.empty((len(refs), self.stream_length, len(self.columns)), dtype=np.float32)
+        offsets = np.arange(int(self.stream_length), dtype=np.int64)
         rebuilt = 0
         appended = 0
         protected_tickers = {str(parts[int(ref.part_index)].plan.ticker) for ref in refs}
-        for output_row, ref in enumerate(refs):
-            part = parts[int(ref.part_index)]
-            origin_row = int(ref.origin_row)
-            state, did_rebuild, appended_rows = self._ensure_state(part=part, origin_row=origin_row)
-            rebuilt += int(bool(did_rebuild))
-            appended += int(appended_rows)
-            out[output_row] = state.snapshot()
+        grouped_rows = _rows_by_part(refs)
+        for part_index, rows in grouped_rows.items():
+            part = parts[int(part_index)]
+            origin_rows = _origin_rows_for_refs(refs, rows)
+            event_offsets = part.origin_array("event_row_offset").astype(np.int64, copy=False)[origin_rows]
+            origin_ordinals = part.origin_array("origin_ordinal").astype(np.int64, copy=False)[origin_rows]
+            origin_timestamps = part.origin_array("origin_timestamp_us").astype(np.int64, copy=False)[origin_rows]
+            starts = event_offsets - int(self.stream_length) + 1
+            if np.any(starts < 0):
+                raise RuntimeError(f"Chronological event cache lacks lookback rows for {_part_key(part.plan)}.")
+            ordinals = part.event_array("ordinal").astype(np.int64, copy=False)
+            ends = starts + int(self.stream_length) - 1
+            if np.any(ends >= int(ordinals.shape[0])):
+                raise RuntimeError(f"Chronological event cache stream exceeds loaded event rows for {_part_key(part.plan)}.")
+            gather_indices = starts[:, None] + offsets[None, :]
+            window_ordinals = ordinals[gather_indices]
+            if not bool(np.all(window_ordinals[:, -1] == origin_ordinals)):
+                raise RuntimeError(f"Chronological event cache gathered windows do not end at origins for {_part_key(part.plan)}.")
+            if int(self.stream_length) > 1 and not bool(np.all(np.diff(window_ordinals, axis=1) == 1)):
+                raise RuntimeError(f"Chronological event cache crosses an ordinal gap for {_part_key(part.plan)}.")
+            matrix = part.event_matrix(self.columns)
+            out[rows] = matrix[gather_indices]
+
+            latest_local = int(np.argmax(origin_ordinals))
+            ticker = str(part.plan.ticker)
+            previous = self._state_by_ticker.get(ticker)
+            latest_ordinal = int(origin_ordinals[latest_local])
+            if previous is None or not previous.can_append(latest_ordinal):
+                rebuilt += 1
+            else:
+                appended += max(0, latest_ordinal - int(previous.last_ordinal))
+            self._state_by_ticker[ticker] = _RollingEventTickerState(
+                ticker=ticker,
+                stream=np.asarray(out[int(rows[latest_local])], dtype=np.float32).copy(),
+                ordinals=window_ordinals[latest_local].astype(np.int64, copy=True),
+                last_ordinal=latest_ordinal,
+                last_used_source_date=str(part.plan.source_date),
+                last_used_timestamp_us=int(origin_timestamps[latest_local]),
+            )
         evicted = self._trim_capacity(protected_tickers=protected_tickers)
         return out, self.columns, {
             "raw_stream_rolling_seconds": time.perf_counter() - start,
@@ -5460,6 +5493,7 @@ class _RollingEventStreamCache:
             "raw_stream_rolling_ticker_states": int(len(self._state_by_ticker)),
             "raw_stream_rolling_evictions": int(evicted),
             "event_cache_protected_tickers": int(len(protected_tickers)),
+            "raw_stream_rolling_vectorized": int(1),
         }
 
     def _ensure_state(

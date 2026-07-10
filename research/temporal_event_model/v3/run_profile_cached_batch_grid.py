@@ -64,15 +64,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile-production-steps", type=int, default=1)
     parser.add_argument("--read-workers", type=int, default=8)
     parser.add_argument("--materialize-workers", type=int, default=16)
-    parser.add_argument("--loaded-parts-per-group", type=int, default=16)
+    parser.add_argument("--loaded-parts-per-group", type=int, default=256)
     parser.add_argument("--materialize-chunk-size", type=int, default=0)
     parser.add_argument("--prefetch-batches", type=int, default=10)
     parser.add_argument("--scanner-index-cache-entries", type=int, default=64)
     parser.add_argument("--scanner-prefetch-workers", type=int, default=8)
     parser.add_argument("--max-origins-per-epoch", type=int, default=200_000)
-    parser.add_argument("--time-window-seconds", type=float, default=1.0)
+    parser.add_argument("--time-window-seconds", type=float, default=60.0)
     parser.add_argument("--ticker-cache-capacity", type=int, default=15_000)
-    parser.add_argument("--origin-cursor-chunk-rows", type=int, default=4096)
+    parser.add_argument("--origin-cursor-chunk-rows", type=int, default=1024)
     parser.add_argument("--chronological-replay", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--warm-all-ticker-caches", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--prefetch-scanner-indexes", action=argparse.BooleanOptionalAction, default=True)
@@ -293,7 +293,7 @@ def _profile_combo(
     if bool(args.compile_model):
         model_for_forward = torch.compile(model)  # type: ignore[assignment]
         compiled = True
-    optimizer = torch.optim.AdamW(model_for_forward.parameters(), lr=float(args.learning_rate), weight_decay=float(args.weight_decay))
+    optimizer = torch.optim.AdamW(model_for_forward.parameters(), lr=float(args.learning_rate), weight_decay=float(args.weight_decay), foreach=False)
     amp_dtype = _amp_dtype(str(args.amp_dtype))
     scaler = torch.amp.GradScaler("cuda", enabled=bool(args.amp) and device.type == "cuda" and amp_dtype is torch.float16)
     rows: list[dict[str, Any]] = []

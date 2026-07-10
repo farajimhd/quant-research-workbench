@@ -572,11 +572,15 @@ Sizing rule:
 Loader replay rule:
 
 - v3 training uses chronological replay by default with
-  `time_window_seconds=1.0`.
+  `time_window_seconds=60.0`. The larger replay window still preserves
+  timestamp ordering, but it gives the loader enough origins to produce several
+  batches per window and keep the trainer-side prefetch queue warm.
 - Event input is a production-style rolling ticker cache. At the first origin
   the loader fills `[B,1024,F]` from saved lookback context plus the origin
   event. Later origins append only newly arrived events to the ticker cache and
-  evict the oldest rows before copying the cache snapshot to the batch.
+  evict the oldest rows. Batch materialization gathers the equivalent cache
+  snapshots by ticker/part in vectorized blocks and still verifies that each
+  sample window ends at the origin ordinal and has no ordinal gap.
 - If configured days are adjacent in replay order, event and sparse-context
   cache state is carried into the next day. If the schedule jumps, state is
   rebuilt from saved context before that day's first origin.
