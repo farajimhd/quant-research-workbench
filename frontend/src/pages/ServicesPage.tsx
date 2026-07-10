@@ -1475,6 +1475,17 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
     { label: "Ambiguity", value: row.ambiguityStatusSample.length ? row.ambiguityStatusSample.join(", ") : stringMetric(identitySummary, ["ambiguity_status_sample"]) || "-" },
     { label: "Confidence", value: secMappingConfidenceLabel(numericMetric(identitySummary, ["max_mapping_confidence"]) || row.maxMappingConfidence) },
   ];
+  const marketIdentityPrimaryFacts = marketIdentityFacts.filter((item) => [
+    "All linked tickers",
+    "Exchange",
+    "Currency",
+    "IBKR conid",
+    "Issuer",
+    "Legal name",
+    "SIC",
+    "Security type",
+    "Confidence",
+  ].includes(item.label));
   const filingFacts = [
     { label: "Ticker", value: primaryTicker || "-" },
     { label: "CIK", value: stringMetric(filingRow, ["cik"]) || row.cik },
@@ -1501,6 +1512,15 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
     { label: "Raw acceptance", value: stringMetric(filingRow, ["acceptance_datetime_raw"]) || row.acceptanceDatetimeRaw || "-" },
     { label: "Text status", value: stringMetric(filingRow, ["text_status"]) || row.textStatus || "-" },
   ];
+  const filingSnapshotFacts = contextFacts.filter((item) => [
+    "CIK",
+    "Accession",
+    "Filing date",
+    "Report date",
+    "Accepted source",
+    "Raw acceptance",
+    "Text status",
+  ].includes(item.label));
   useEffect(() => {
     detailScrollRef.current?.scrollTo({ left: 0, top: 0 });
   }, [accession, primaryDocument]);
@@ -1538,19 +1558,6 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
       </article>
       {loading ? <div className="news-full-detail-notice">Loading complete SEC filing row from ClickHouse...</div> : null}
       {error ? <div className="news-full-detail-notice error">{error}</div> : null}
-      <section className="sec-filing-context-overview">
-        <section className="sec-filing-side-card sec-filing-market-identity-card">
-          <h4>Market Identity</h4>
-          <dl className="sec-filing-context-list sec-filing-context-list-grid">
-            {marketIdentityFacts.map((item) => (
-              <div key={item.label}>
-                <dt>{item.label}</dt>
-                <dd>{item.value}</dd>
-              </div>
-            ))}
-          </dl>
-        </section>
-      </section>
       <section className="sec-filing-reader-layout">
         <article className="sec-filing-reader-card">
           <header>
@@ -1568,43 +1575,58 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
             )}
           </div>
         </article>
-      </section>
-      <section className="sec-filing-context-grid">
-        <section className="sec-filing-side-card">
-          <h4>Filing Context</h4>
-          <dl className="sec-filing-context-list sec-filing-context-list-grid">
-            {contextFacts.map((item) => (
-              <div key={item.label}>
-                <dt>{item.label}</dt>
-                <dd>{item.value}</dd>
-              </div>
-            ))}
-          </dl>
-        </section>
-        <section className="sec-filing-side-card">
-          <h4>Document Signals</h4>
-          <div className="sec-filing-chip-cloud">
-            {documentTypeSample.length ? documentTypeSample.map((item) => <span key={item}>{item}</span>) : <em>No document type sample.</em>}
-          </div>
-        </section>
-        <section className="sec-filing-side-card">
-          <h4>XBRL Tags</h4>
-          <div className="sec-filing-chip-cloud">
-            {[...xbrlFactTags, ...xbrlFrameTags].length ? [...xbrlFactTags, ...xbrlFrameTags].map((item) => <span key={item}>{item}</span>) : <em>No XBRL tags linked.</em>}
-          </div>
-        </section>
-        <section className="sec-filing-side-card">
-          <h4>Text Rows</h4>
-          <div className="sec-filing-text-row-list">
-            {textRows.length ? textRows.map((textRow, index) => (
-              <div key={`${stringMetric(textRow, ["document_id", "filing_text_id"])}-${index}`}>
-                <strong>{displayName(stringMetric(textRow, ["text_kind", "kind"]) || `Text row ${index + 1}`)}</strong>
-                <span>{formatCompactNumber(secTextCharCount(textRow))} chars</span>
-                <small>{stringMetric(textRow, ["document_id", "filing_document_id", "source_file_name"]) || "-"}</small>
-              </div>
-            )) : <p>No text rows returned.</p>}
-          </div>
-        </section>
+        <aside className="sec-filing-context-panel">
+          <section className="sec-filing-side-card sec-filing-market-identity-card">
+            <div className="sec-filing-profile-header">
+              <span>Market identity</span>
+              <strong>{primaryTicker || "No ticker"}</strong>
+              <small>{[stringMetric(identitySummary, ["primary_exchange_code"]) || row.primaryExchangeCode, stringMetric(identitySummary, ["primary_currency_code"]) || row.primaryCurrencyCode].filter(Boolean).join(" / ") || "No listed market"}</small>
+            </div>
+            <dl className="sec-filing-context-list">
+              {marketIdentityPrimaryFacts.map((item) => (
+                <div key={item.label}>
+                  <dt>{item.label}</dt>
+                  <dd>{item.value}</dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+          <section className="sec-filing-side-card">
+            <h4>Filing Snapshot</h4>
+            <dl className="sec-filing-context-list">
+              {filingSnapshotFacts.map((item) => (
+                <div key={item.label}>
+                  <dt>{item.label}</dt>
+                  <dd>{item.value}</dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+          <section className="sec-filing-side-card">
+            <h4>Document Signals</h4>
+            <div className="sec-filing-chip-cloud">
+              {documentTypeSample.length ? documentTypeSample.map((item) => <span key={item}>{item}</span>) : <em>No document type sample.</em>}
+            </div>
+          </section>
+          <section className="sec-filing-side-card">
+            <h4>XBRL Tags</h4>
+            <div className="sec-filing-chip-cloud">
+              {[...xbrlFactTags, ...xbrlFrameTags].length ? [...xbrlFactTags, ...xbrlFrameTags].map((item) => <span key={item}>{item}</span>) : <em>No XBRL tags linked.</em>}
+            </div>
+          </section>
+          <section className="sec-filing-side-card">
+            <h4>Text Rows</h4>
+            <div className="sec-filing-text-row-list">
+              {textRows.length ? textRows.map((textRow, index) => (
+                <div key={`${stringMetric(textRow, ["document_id", "filing_text_id"])}-${index}`}>
+                  <strong>{displayName(stringMetric(textRow, ["text_kind", "kind"]) || `Text row ${index + 1}`)}</strong>
+                  <span>{formatCompactNumber(secTextCharCount(textRow))} chars</span>
+                  <small>{stringMetric(textRow, ["document_id", "filing_document_id", "source_file_name"]) || "-"}</small>
+                </div>
+              )) : <p>No text rows returned.</p>}
+            </div>
+          </section>
+        </aside>
       </section>
       <section className="sec-filing-data-sections">
         <header className="sec-filing-data-section-header">
