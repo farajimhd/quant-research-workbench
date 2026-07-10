@@ -3758,7 +3758,9 @@ button {
   display: grid;
   gap: 12px;
   grid-template-columns: minmax(0, 1fr) minmax(320px, 360px);
-  min-height: 0;
+  height: clamp(430px, 52vh, 620px);
+  min-height: 430px;
+  overflow: hidden;
 }
 
 .sec-filing-reader-card,
@@ -3772,6 +3774,7 @@ button {
 .sec-filing-reader-card {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
   min-height: 0;
   overflow: hidden;
 }
@@ -3818,7 +3821,6 @@ button {
   font-family: "Segoe UI", Arial, sans-serif;
   font-size: 15px;
   line-height: 1.6;
-  max-height: clamp(340px, 42vh, 560px);
   min-height: 0;
   overflow: auto;
   padding: 22px 28px 30px;
@@ -3835,7 +3837,11 @@ button {
   align-content: start;
   display: grid;
   gap: 10px;
+  height: 100%;
   min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
 }
 
 .sec-filing-side-card {
@@ -4037,10 +4043,17 @@ button {
   }
 
   .sec-filing-reader-layout {
+    height: auto;
     min-height: auto;
+    overflow: visible;
   }
 
   .sec-filing-readable-body {
+    max-height: 520px;
+  }
+
+  .sec-filing-context-rail {
+    height: auto;
     max-height: 520px;
   }
 }
