@@ -2821,7 +2821,7 @@ function coverageWindowLabel(startUtc: string, endUtc: string) {
 }
 
 function formatShortUtcWindowTime(value: string) {
-  const parsed = Date.parse(value);
+  const parsed = parseServiceTimestamp(value);
   if (!Number.isFinite(parsed)) return value;
   return new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(parsed));
 }
@@ -3447,7 +3447,7 @@ function secTodaySummaryFromPayload(summaryPayload: unknown, rows: SecTodayRow[]
   const fallback = rows.reduce(
     (summary, row) => ({
       documentRows: summary.documentRows + row.documentRows,
-      latest: !summary.latest || Date.parse(row.acceptedAtUtc) > Date.parse(summary.latest) ? row.acceptedAtUtc : summary.latest,
+      latest: !summary.latest || parseServiceTimestamp(row.acceptedAtUtc) > parseServiceTimestamp(summary.latest) ? row.acceptedAtUtc : summary.latest,
       loadedRows: rows.length,
       textRows: summary.textRows + row.textRows,
       totalFilings: rows.length,
@@ -3594,7 +3594,7 @@ function newsTodaySummaryFromPayload(summaryPayload: unknown, rows: NewsTodayRow
       const tickerCount = row.tickerLinkCount || row.tickers.length;
       return {
         externalText: summary.externalText + (row.hasExternalText ? 1 : 0),
-        latest: !summary.latest || Date.parse(row.publishedAtUtc) > Date.parse(summary.latest) ? row.publishedAtUtc : summary.latest,
+        latest: !summary.latest || parseServiceTimestamp(row.publishedAtUtc) > parseServiceTimestamp(summary.latest) ? row.publishedAtUtc : summary.latest,
         loadedRows: rows.length,
         multiTickerRows: summary.multiTickerRows + (tickerCount > 1 ? 1 : 0),
         noTickerRows: summary.noTickerRows + (tickerCount <= 0 ? 1 : 0),
@@ -3688,7 +3688,7 @@ function newsTodayRowTone(row: NewsTodayRow) {
 }
 
 function newsTodayIsRecent(publishedAtUtc: string) {
-  const publishedAtMs = Date.parse(publishedAtUtc);
+  const publishedAtMs = parseServiceTimestamp(publishedAtUtc);
   if (!Number.isFinite(publishedAtMs)) return false;
   const ageMs = Date.now() - publishedAtMs;
   return ageMs >= 0 && ageMs <= 60 * 60 * 1000;
@@ -4984,7 +4984,7 @@ function databaseClass(database: string | undefined) {
 
 function shortTableTimestamp(value: string | undefined) {
   if (!value || value === "-") return "-";
-  const parsed = Date.parse(value);
+  const parsed = parseServiceTimestamp(value);
   if (!Number.isFinite(parsed)) return value;
   return new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(parsed));
 }
@@ -5527,7 +5527,7 @@ function latestWorkTimestamp(rows: ServiceWorkRow[]) {
 function firstTimestamp(row: Record<string, unknown>) {
   const raw = firstString(row, ["updated_at_utc", "last_seen_at_utc", "last_run_at_utc", "completed_at_utc", "started_at_utc", "last_poll_at_utc", "checked_at_utc", "ts_utc", "time_utc", "updated_at", "last_seen", "last_run", "completed_at", "started_at", "last_poll_at", "checked_at", "time", "since"]);
   if (!raw || raw === "-") return { label: "-", value: undefined };
-  const parsed = Date.parse(raw);
+  const parsed = parseServiceTimestamp(raw);
   if (!Number.isFinite(parsed)) return { label: raw.length > 28 ? `${raw.slice(0, 25)}...` : raw, value: undefined };
   return { label: formatLogTime(raw), value: parsed };
 }
@@ -5674,26 +5674,37 @@ function debugObjectValueWide(value: unknown) {
   return String(value ?? "").length > 100;
 }
 
+function parseServiceTimestamp(value: string) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return Number.NaN;
+  const clickHouseUtc = trimmed.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d+)?$/);
+  if (clickHouseUtc) {
+    const fraction = clickHouseUtc[3] ? clickHouseUtc[3].slice(0, 4).padEnd(4, "0") : "";
+    return Date.parse(`${clickHouseUtc[1]}T${clickHouseUtc[2]}${fraction}Z`);
+  }
+  return Date.parse(trimmed);
+}
+
 function formatTime(value: string) {
-  const parsed = Date.parse(value);
+  const parsed = parseServiceTimestamp(value);
   if (!Number.isFinite(parsed)) return value;
   return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(parsed));
 }
 
 function formatLogTime(value: string) {
-  const parsed = Date.parse(value);
+  const parsed = parseServiceTimestamp(value);
   if (!Number.isFinite(parsed)) return value;
   return new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(parsed));
 }
 
 function formatNewsTableDate(value: string) {
-  const parsed = Date.parse(value);
+  const parsed = parseServiceTimestamp(value);
   if (!Number.isFinite(parsed)) return value || "-";
   return new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", year: "numeric" }).format(new Date(parsed));
 }
 
 function parseLogTime(value: string) {
-  const parsed = Date.parse(value);
+  const parsed = parseServiceTimestamp(value);
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
@@ -5710,7 +5721,7 @@ function formatZoneDateTime(value: Date, timeZone: string) {
 }
 
 function formatReadableDateTime(value: string, timeZone: string) {
-  const parsed = Date.parse(value);
+  const parsed = parseServiceTimestamp(value);
   if (!Number.isFinite(parsed)) return value || "-";
   return new Intl.DateTimeFormat(undefined, {
     day: "2-digit",
@@ -5726,7 +5737,7 @@ function formatReadableDateTime(value: string, timeZone: string) {
 }
 
 function formatUtcDateTime(value: string) {
-  const parsed = Date.parse(value);
+  const parsed = parseServiceTimestamp(value);
   if (!Number.isFinite(parsed)) return value || "-";
   return new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" }).format(new Date(parsed));
 }

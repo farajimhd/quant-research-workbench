@@ -1746,7 +1746,17 @@ def service_news_detail(canonical_news_id: str) -> dict[str, Any]:
     ticker_table = "benzinga_news_ticker_v1"
     news_id_sql = sql_string(news_id)
     row_query = f"""
-        SELECT *
+        SELECT * REPLACE
+        (
+            formatDateTime(published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
+            formatDateTime(downloaded_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS downloaded_at_utc,
+            if(
+                isNull(last_updated_at_utc),
+                NULL,
+                formatDateTime(assumeNotNull(last_updated_at_utc), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC')
+            ) AS last_updated_at_utc,
+            formatDateTime(updated_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS updated_at_utc
+        )
         FROM {quote_ident(database)}.{quote_ident(normalized_table)} FINAL
         WHERE canonical_news_id = {news_id_sql}
         LIMIT 1
@@ -1756,7 +1766,10 @@ def service_news_detail(canonical_news_id: str) -> dict[str, Any]:
     if not rows:
         raise HTTPException(status_code=404, detail="News row not found")
     ticker_query = f"""
-        SELECT *
+        SELECT * REPLACE
+        (
+            formatDateTime(published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc
+        )
         FROM {quote_ident(database)}.{quote_ident(ticker_table)} FINAL
         WHERE canonical_news_id = {news_id_sql}
         ORDER BY ticker ASC
