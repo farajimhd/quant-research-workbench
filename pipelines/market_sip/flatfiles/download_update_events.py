@@ -11,6 +11,7 @@ import sys
 import time
 from collections import defaultdict, deque
 from dataclasses import asdict, dataclass
+from decimal import ROUND_HALF_UP
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -87,7 +88,6 @@ from pipelines.market_sip.ingest.clickhouse_ingest_sip_compact_codec import (  #
     env_status_keys,
 )
 from pipelines.market_sip.validation.clickhouse_compact_schema_validate_sample import (  # noqa: E402
-    price_int,
     price_precision_clipped,
     scale_code,
     tape_code,
@@ -2370,6 +2370,13 @@ def float32_value(value: Any) -> float:
     return struct.unpack("f", struct.pack("f", float(to_decimal_or_zero(value))))[0]
 
 
+def clickhouse_price_int(price: Any) -> int:
+    """Mirror ClickHouse round(...) used by the flatfile insert SQL for positive prices."""
+    decimal_price = to_decimal_or_zero(price)
+    scale = 10000 if scale_code(decimal_price) else 100
+    return int((decimal_price * scale).to_integral_value(rounding=ROUND_HALF_UP))
+
+
 def condition_codes(raw_conditions: Any, slots: int) -> list[int]:
     parts = str(raw_conditions or "").split(",")
     values: list[int] = []
@@ -2451,8 +2458,8 @@ def event_values_match(expected: dict[str, Any], actual: dict[str, Any]) -> bool
 def quote_raw_row_to_event(row: dict[str, Any], token_maps: dict[str, dict[int, int]]) -> dict[str, Any] | None:
     bid = to_decimal_or_zero(row.get("bid_price"))
     ask = to_decimal_or_zero(row.get("ask_price"))
-    bid_int = price_int(bid)
-    ask_int = price_int(ask)
+    bid_int = clickhouse_price_int(bid)
+    ask_int = clickhouse_price_int(ask)
     bid_size = to_decimal_or_zero(row.get("bid_size"))
     ask_size = to_decimal_or_zero(row.get("ask_size"))
     bid_size_int = int(float(bid_size)) if bid_size > 0 else 0
@@ -2496,7 +2503,7 @@ def quote_raw_row_to_event(row: dict[str, Any], token_maps: dict[str, dict[int, 
 
 def trade_raw_row_to_event(row: dict[str, Any], token_maps: dict[str, dict[int, int]]) -> dict[str, Any] | None:
     trade_price = to_decimal_or_zero(row.get("price"))
-    trade_int = price_int(trade_price)
+    trade_int = clickhouse_price_int(trade_price)
     size = to_decimal_or_zero(row.get("size"))
     if not row.get("ticker") or to_int_or_zero(row.get("sip_timestamp")) <= 0 or to_int_or_zero(row.get("sequence_number")) <= 0:
         return None
