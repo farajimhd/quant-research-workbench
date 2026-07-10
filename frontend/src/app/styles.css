@@ -3765,14 +3765,20 @@ button {
 }
 
 .modal-panel.service-dependencies-modal-panel {
-  max-height: min(800px, calc(100vh - 56px));
-  max-width: min(1220px, calc(100vw - 72px));
-  width: min(1220px, calc(100vw - 72px));
+  max-height: min(860px, calc(100vh - 48px));
+  max-width: min(1320px, calc(100vw - 64px));
+  width: min(1320px, calc(100vw - 64px));
 }
 
 .modal-panel.service-dependencies-modal-panel .service-dependencies-panel {
-  max-height: calc(100vh - 134px);
+  max-height: calc(100vh - 126px);
   overflow: auto;
+}
+
+.modal-panel.service-dependency-detail-modal-panel {
+  max-height: min(780px, calc(100vh - 56px));
+  max-width: min(980px, calc(100vw - 72px));
+  width: min(980px, calc(100vw - 72px));
 }
 
 .modal-panel.service-log-detail-modal-panel {
@@ -4236,27 +4242,80 @@ button {
 
 .service-dependencies-panel {
   display: grid;
-  gap: 12px;
-  padding: 12px;
+  gap: 14px;
+  padding: 14px;
+}
+
+.service-dependencies-hero {
+  align-items: flex-start;
+  background:
+    linear-gradient(135deg, color-mix(in oklab, var(--badge-info-bg) 42%, var(--surface)) 0%, var(--surface) 58%),
+    var(--surface);
+  border: 1px solid var(--surface-border);
+  border-radius: 8px;
+  display: flex;
+  gap: 18px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 15px 16px;
+}
+
+.service-dependencies-kicker {
+  color: var(--muted-foreground);
+  display: block;
+  font-size: 10px;
+  font-weight: 680;
+  letter-spacing: 0.08em;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+}
+
+.service-dependencies-hero h3 {
+  color: var(--foreground);
+  font-size: 22px;
+  font-weight: 620;
+  letter-spacing: 0;
+  line-height: 1.15;
+  margin: 0 0 6px;
+}
+
+.service-dependencies-hero p {
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1.4;
+  margin: 0;
+  max-width: 760px;
 }
 
 .service-dependencies-summary {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.service-dependencies-summary div {
-  background: color-mix(in oklab, var(--surface-alt) 48%, var(--surface));
+.service-dependencies-summary-item {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface-alt) 46%, var(--surface));
   border: 1px solid var(--border);
-  border-radius: 8px;
-  display: grid;
-  gap: 4px;
+  border-radius: 7px;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
   min-width: 0;
-  padding: 10px;
+  padding: 10px 12px;
 }
 
-.service-dependencies-summary span {
+.service-dependencies-summary-item.ok {
+  background: color-mix(in oklab, var(--badge-success-bg) 48%, var(--surface));
+  border-color: var(--badge-success-border);
+}
+
+.service-dependencies-summary-item.warn {
+  background: color-mix(in oklab, var(--badge-warning-bg) 50%, var(--surface));
+  border-color: var(--badge-warning-border);
+}
+
+.service-dependencies-summary-item span {
   color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 650;
@@ -4264,7 +4323,7 @@ button {
   text-transform: uppercase;
 }
 
-.service-dependencies-summary strong {
+.service-dependencies-summary-item strong {
   color: var(--foreground);
   font-size: 15px;
   font-weight: 620;
@@ -4284,8 +4343,24 @@ button {
   background: var(--surface);
   border: 1px solid var(--surface-border);
   border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  min-height: 260px;
   min-width: 0;
   overflow: hidden;
+}
+
+.service-dependencies-section.ok {
+  border-color: color-mix(in oklab, var(--badge-success-border) 48%, var(--surface-border));
+}
+
+.service-dependencies-section.warn,
+.service-dependencies-section.waiting {
+  border-color: color-mix(in oklab, var(--badge-warning-border) 62%, var(--surface-border));
+}
+
+.service-dependencies-section.error {
+  border-color: color-mix(in oklab, var(--badge-danger-border) 66%, var(--surface-border));
 }
 
 .service-dependencies-section-header {
@@ -4295,12 +4370,13 @@ button {
   display: flex;
   gap: 12px;
   justify-content: space-between;
-  padding: 11px 12px;
+  min-height: 78px;
+  padding: 12px;
 }
 
 .service-dependencies-section-header h3 {
   color: var(--foreground);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 620;
   margin: 0 0 4px;
 }
@@ -4312,23 +4388,173 @@ button {
   margin: 0;
 }
 
-.service-dependencies-section-header span {
+.service-dependencies-section-badges {
+  align-items: flex-end;
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.service-dependencies-section-badges > span:not(.service-work-status) {
   background: color-mix(in oklab, var(--surface) 72%, transparent);
   border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--muted-foreground);
-  flex: 0 0 auto;
   font-size: 10px;
   font-weight: 650;
   padding: 3px 8px;
   white-space: nowrap;
 }
 
-.service-dependencies-section .data-table-shell {
-  border: 0;
-  border-radius: 0;
-  max-height: 260px;
+.service-dependency-row-list {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
+}
+
+.service-dependency-row {
+  align-items: center;
+  background: var(--surface);
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--foreground);
+  cursor: pointer;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(130px, 1.1fr) 96px 74px 84px minmax(140px, 1.4fr);
+  min-height: 45px;
+  padding: 8px 10px;
+  text-align: left;
+  width: 100%;
+}
+
+.service-dependency-row:hover {
+  background: color-mix(in oklab, var(--badge-info-bg) 18%, var(--surface));
+}
+
+.service-dependency-row:focus {
+  outline: 2px solid color-mix(in oklab, var(--accent) 45%, transparent);
+  outline-offset: -2px;
+}
+
+.service-dependency-row.ok {
+  background: color-mix(in oklab, var(--badge-success-bg) 18%, var(--surface));
+}
+
+.service-dependency-row.active {
+  background: color-mix(in oklab, var(--badge-info-bg) 18%, var(--surface));
+}
+
+.service-dependency-row.warn,
+.service-dependency-row.waiting {
+  background: color-mix(in oklab, var(--badge-warning-bg) 15%, var(--surface));
+}
+
+.service-dependency-row.error {
+  background: color-mix(in oklab, var(--badge-danger-bg) 17%, var(--surface));
+}
+
+.service-dependency-row div,
+.service-dependency-row span,
+.service-dependency-row p {
+  min-width: 0;
+}
+
+.service-dependency-row strong {
+  color: var(--foreground);
+  display: block;
+  font-size: 12.5px;
+  font-weight: 620;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.service-dependency-row div > span {
+  color: var(--muted-foreground);
+  display: block;
+  font-size: 10px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.service-dependency-row > span:not(.service-work-status) {
+  color: var(--muted-foreground);
+  font-family: "Roboto Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.service-dependency-row p {
+  color: var(--muted-foreground);
+  font-size: 11.5px;
+  line-height: 1.3;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.service-dependency-empty {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  padding: 12px;
+}
+
+.service-dependency-detail {
+  display: grid;
+  gap: 14px;
+  padding: 12px;
+}
+
+.service-dependency-detail-heading {
+  align-items: flex-start;
+  background: color-mix(in oklab, var(--surface-alt) 62%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 12px;
+}
+
+.service-dependency-detail-heading.ok,
+.service-dependency-detail-heading.active {
+  background: color-mix(in oklab, var(--badge-success-bg) 62%, var(--surface));
+  border-color: var(--badge-success-border);
+}
+
+.service-dependency-detail-heading.warn,
+.service-dependency-detail-heading.waiting {
+  background: color-mix(in oklab, var(--badge-warning-bg) 64%, var(--surface));
+  border-color: var(--badge-warning-border);
+}
+
+.service-dependency-detail-heading.error {
+  background: color-mix(in oklab, var(--badge-danger-bg) 70%, var(--surface));
+  border-color: var(--badge-danger-border);
+}
+
+.service-dependency-detail-heading span:first-child {
+  color: var(--muted-foreground);
+  display: block;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+}
+
+.service-dependency-detail-heading strong {
+  color: var(--foreground);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.25;
 }
 
 @media (max-width: 1280px) {
@@ -4414,6 +4640,10 @@ button {
 
   .service-dependencies-summary,
   .service-dependencies-sections {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .service-dependency-row {
     grid-template-columns: minmax(0, 1fr);
   }
 
