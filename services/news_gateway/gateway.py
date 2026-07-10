@@ -1113,7 +1113,7 @@ class NewsGateway:
             "enrichment_domain_sample": sorted(set(domains))[:8],
             "enrichment_provider_article_id_sample": provider_article_ids[:8],
             "enrichment_canonical_news_id_sample": canonical_news_ids[:8],
-            "items": item_rows,
+            "enrichment_items": item_rows,
         }
 
     def _enrich_live_item(self, live_item: LiveNewsPayload) -> list[dict[str, Any]]:
