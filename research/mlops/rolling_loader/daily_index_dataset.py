@@ -4129,6 +4129,41 @@ def _process_rss_mib() -> float:
 
         return float(psutil.Process().memory_info().rss) / (1024.0 * 1024.0)
     except Exception:  # noqa: BLE001
+        return _process_rss_mib_windows()
+
+
+def _process_rss_mib_windows() -> float:
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class ProcessMemoryCounters(ctypes.Structure):
+            _fields_ = [
+                ("cb", wintypes.DWORD),
+                ("PageFaultCount", wintypes.DWORD),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        counters = ProcessMemoryCounters()
+        counters.cb = ctypes.sizeof(counters)
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessMemoryCounters), wintypes.DWORD]
+        psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+        kernel32.GetCurrentProcess.argtypes = []
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        ok = psapi.GetProcessMemoryInfo(kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb)
+        if not ok:
+            return 0.0
+        return float(counters.WorkingSetSize) / (1024.0 * 1024.0)
+    except Exception:  # noqa: BLE001
         return 0.0
 
 
@@ -5065,6 +5100,10 @@ def _merge_profile_metric(key: str, current: Any, value: float | int) -> float |
 
 def _profile_metric_should_scale(key: str) -> bool:
     key = str(key)
+    if key.startswith("cache_first_") or key.startswith("event_cache_warm_") or key.startswith("context_cache_warm_"):
+        return False
+    if key in {"origin_cursor_initial_seconds", "cache_first_cursor_build_seconds"}:
+        return False
     return (
         key.endswith("_seconds")
         or key.endswith("/seconds")
@@ -5781,6 +5820,7 @@ class _RollingContextTensorCache:
         hits = 0
         misses = 0
         stale = 0
+        scan_start = time.perf_counter()
         for row, ref in enumerate(refs):
             part = parts[int(ref.part_index)]
             ticker = str(tickers[int(row)])
@@ -5806,13 +5846,19 @@ class _RollingContextTensorCache:
                     stale += 1
                 missing_rows_by_payload[payload_name].append(int(row))
                 misses += 1
+        scan_seconds = time.perf_counter() - scan_start
         all_missing_rows = sorted({row for rows in missing_rows_by_payload.values() for row in rows})
         base_profile: dict[str, float | int] = {}
         materialized_by_payload: dict[str, Any] = {}
         if all_missing_rows:
             subset_refs = [refs[row] for row in all_missing_rows]
+            miss_start = time.perf_counter()
             materialized_by_payload, base_profile = materialize_fn(parts, subset_refs)
             annotate_fn(materialized_by_payload, parts, subset_refs)
+            base_profile[f"{profile_prefix}_miss_materialize_seconds"] = time.perf_counter() - miss_start
+        else:
+            base_profile[f"{profile_prefix}_miss_materialize_seconds"] = 0.0
+        store_start = time.perf_counter()
         for payload_name in requested_payloads:
             payload_name = str(payload_name)
             if payload_name in materialized_by_payload:
@@ -5838,10 +5884,14 @@ class _RollingContextTensorCache:
                     )
             elif payload_name not in output_by_payload:
                 output_by_payload[payload_name] = {}
+        store_seconds = time.perf_counter() - store_start
         base_profile[f"{profile_prefix}_hits"] = int(hits)
         base_profile[f"{profile_prefix}_misses"] = int(misses)
         base_profile[f"{profile_prefix}_stale"] = int(stale)
         base_profile[f"{profile_prefix}_payloads"] = int(len(requested_payloads))
+        base_profile[f"{profile_prefix}_scan_seconds"] = float(scan_seconds)
+        base_profile[f"{profile_prefix}_store_seconds"] = float(store_seconds)
+        base_profile[f"{profile_prefix}_hit_refresh_rows"] = int(hits)
         return output_by_payload, base_profile
 
     def _materialize_sparse_with_cache(
@@ -5871,6 +5921,7 @@ class _RollingContextTensorCache:
         stale = 0
         hits = 0
         misses = 0
+        scan_start = time.perf_counter()
         for row, ref in enumerate(refs):
             part = parts[int(ref.part_index)]
             ticker = str(tickers[int(row)])
@@ -5894,12 +5945,18 @@ class _RollingContextTensorCache:
                     stale += 1
                 missing_rows_by_payload[payload_name].append(int(row))
                 misses += 1
+        scan_seconds = time.perf_counter() - scan_start
         all_missing_rows = sorted({row for rows in missing_rows_by_payload.values() for row in rows})
         base_profile: dict[str, float | int] = {}
         materialized_by_payload: dict[str, Any] = {}
         if all_missing_rows:
             subset_refs = [refs[row] for row in all_missing_rows]
+            miss_start = time.perf_counter()
             materialized_by_payload, base_profile = materialize_fn(parts, subset_refs)
+            base_profile[f"{profile_prefix}_miss_materialize_seconds"] = time.perf_counter() - miss_start
+        else:
+            base_profile[f"{profile_prefix}_miss_materialize_seconds"] = 0.0
+        store_start = time.perf_counter()
         for payload_name in requested_payloads:
             payload_name = str(payload_name)
             if payload_name in materialized_by_payload:
@@ -5924,10 +5981,14 @@ class _RollingContextTensorCache:
                     )
             elif payload_name not in output_by_payload:
                 output_by_payload[payload_name] = {}
+        store_seconds = time.perf_counter() - store_start
         base_profile[f"{profile_prefix}_hits"] = int(hits)
         base_profile[f"{profile_prefix}_misses"] = int(misses)
         base_profile[f"{profile_prefix}_stale"] = int(stale)
         base_profile[f"{profile_prefix}_payloads"] = int(len(requested_payloads))
+        base_profile[f"{profile_prefix}_scan_seconds"] = float(scan_seconds)
+        base_profile[f"{profile_prefix}_store_seconds"] = float(store_seconds)
+        base_profile[f"{profile_prefix}_hit_refresh_rows"] = int(hits)
         return output_by_payload, base_profile
 
     def _cached_payload_is_fresh(

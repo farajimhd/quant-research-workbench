@@ -53,6 +53,23 @@ PROFILE_NUMERIC_KEYS = (
     "window_active_tickers",
     "payload_cache_parts",
     "payload_cache_limit",
+    "cache_first_cursor_build_seconds",
+    "cache_first_day_warm_seconds",
+    "cache_first_day_context_warm_seconds",
+    "event_cache_warm_tickers",
+    "event_cache_warm_total_tickers",
+    "event_cache_warm_rows",
+    "event_cache_warm_rebuilds",
+    "event_cache_warm_appends",
+    "event_cache_warm_reused",
+    "event_cache_warm_evictions",
+    "event_cache_warm_rss_delta_mib",
+    "context_cache_warm_payload_tickers",
+    "context_cache_warm_payload_total_tickers",
+    "context_cache_warm_payload_rows",
+    "context_cache_warm_payload_bytes",
+    "context_cache_warm_payload_materialize_seconds",
+    "context_cache_warm_payload_rss_delta_mib",
     "rolling_context_seconds",
     "rolling_text_seconds",
     "rolling_xbrl_seconds",
@@ -60,6 +77,24 @@ PROFILE_NUMERIC_KEYS = (
     "rolling_bar_seconds",
     "rolling_scanner_seconds",
     "rolling_context_estimated_bytes",
+    "rolling_text_cache_scan_seconds",
+    "rolling_text_cache_miss_materialize_seconds",
+    "rolling_text_cache_store_seconds",
+    "rolling_xbrl_cache_scan_seconds",
+    "rolling_xbrl_cache_miss_materialize_seconds",
+    "rolling_xbrl_cache_store_seconds",
+    "rolling_corporate_action_cache_scan_seconds",
+    "rolling_corporate_action_cache_miss_materialize_seconds",
+    "rolling_corporate_action_cache_store_seconds",
+    "rolling_bar_cache_scan_seconds",
+    "rolling_bar_cache_miss_materialize_seconds",
+    "rolling_bar_cache_store_seconds",
+    "rolling_intraday_bar_cache_scan_seconds",
+    "rolling_intraday_bar_cache_miss_materialize_seconds",
+    "rolling_intraday_bar_cache_store_seconds",
+    "rolling_scanner_cache_scan_seconds",
+    "rolling_scanner_cache_miss_materialize_seconds",
+    "rolling_scanner_cache_store_seconds",
     "event_cache_state_copy_seconds",
     "event_cache_materialize_seconds",
     "event_cache_rebuilds",
@@ -527,10 +562,45 @@ def _run_dir(args: argparse.Namespace) -> Path:
 
 
 def _rss_mib() -> float:
-    if psutil is None:
-        return 0.0
+    if psutil is not None:
+        try:
+            return float(psutil.Process().memory_info().rss) / (1024.0 * 1024.0)
+        except Exception:  # noqa: BLE001
+            pass
+    return _rss_mib_windows()
+
+
+def _rss_mib_windows() -> float:
     try:
-        return float(psutil.Process().memory_info().rss) / (1024.0 * 1024.0)
+        import ctypes
+        from ctypes import wintypes
+
+        class ProcessMemoryCounters(ctypes.Structure):
+            _fields_ = [
+                ("cb", wintypes.DWORD),
+                ("PageFaultCount", wintypes.DWORD),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        counters = ProcessMemoryCounters()
+        counters.cb = ctypes.sizeof(counters)
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessMemoryCounters), wintypes.DWORD]
+        psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+        kernel32.GetCurrentProcess.argtypes = []
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        ok = psapi.GetProcessMemoryInfo(kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb)
+        if not ok:
+            return 0.0
+        return float(counters.WorkingSetSize) / (1024.0 * 1024.0)
     except Exception:  # noqa: BLE001
         return 0.0
 
