@@ -4607,20 +4607,22 @@ def _restore_batch_row(target: Any, snapshot: Any, row: int, sample_count: int, 
 
 
 def _copy_batch_row(target: Any, source: Any, *, target_row: int, source_row: int, source_sample_count: int) -> None:
-    snapshot = _snapshot_batch_row(source, int(source_row), int(source_sample_count))
     target_sample_count = _payload_sample_count(target)
     if target_sample_count <= 0:
         return
     if isinstance(target, np.ndarray):
         if target.dtype != object and target.shape[:1]:
-            target[int(target_row)] = snapshot
+            if isinstance(source, np.ndarray) and source.dtype != object and source.shape[:1] and int(source.shape[0]) == int(source_sample_count):
+                target[int(target_row)] = source[int(source_row)]
+            else:
+                target[int(target_row)] = _snapshot_batch_row(source, int(source_row), int(source_sample_count))
         return
-    if isinstance(target, Mapping) and isinstance(snapshot, Mapping):
+    if isinstance(target, Mapping) and isinstance(source, Mapping):
         for key, item in target.items():
-            if key in snapshot and key not in METADATA_PAYLOAD_FIELDS:
-                _restore_batch_row(item, snapshot[key], int(target_row), target_sample_count)
+            if key in source and key not in METADATA_PAYLOAD_FIELDS:
+                _copy_batch_row(item, source[key], target_row=int(target_row), source_row=int(source_row), source_sample_count=int(source_sample_count))
         return
-    _restore_batch_row(target, snapshot, int(target_row), target_sample_count)
+    _restore_batch_row(target, _snapshot_batch_row(source, int(source_row), int(source_sample_count)), int(target_row), target_sample_count)
 
 
 def _payload_sample_count(value: Any) -> int:
@@ -5538,6 +5540,200 @@ class _RollingContextTensorCache:
             "context_cache_warm_tickers": int(len(first_ref_by_ticker)),
             "context_cache_warm_evictions": int(evicted),
         }
+
+    def seed_from_loaded_parts(
+        self,
+        materializer: DailyIndexBatchMaterializer,
+        parts: Sequence[LoadedDailyIndexPart],
+        refs: Sequence[DailyIndexSampleRef],
+    ) -> dict[str, float | int]:
+        start = time.perf_counter()
+        if not refs:
+            return {
+                "context_cache_seed_seconds": 0.0,
+                "context_cache_seed_rows": 0,
+                "context_cache_seed_payload_states": 0,
+                "context_cache_seed_estimated_bytes": 0,
+            }
+        self._signature_cache.clear()
+        tickers, _ordinals, _timestamps = _identity_arrays(parts, refs)
+        protected = {str(ticker) for ticker in tickers}
+        self._last_warm_tickers = int(len(protected))
+        self._last_window_refs = int(len(refs))
+        self._last_window_tickers = int(len(protected))
+        materialize_seconds = 0.0
+        store_seconds = 0.0
+        seeded_states = 0
+        context_bytes = 0
+        profile: dict[str, float | int] = {
+            "context_cache_seed_rows": int(len(refs)),
+            "context_cache_seed_tickers": int(len(protected)),
+        }
+
+        if TEXT_CONTEXT_GROUPS.intersection(set(self.config.data_groups)):
+            section_start = time.perf_counter()
+            text_inputs, text_profile = materializer._materialize_text_inputs(parts, refs)
+            materialize_seconds += time.perf_counter() - section_start
+            profile.update({f"context_cache_seed_{key}": value for key, value in text_profile.items()})
+            store_start = time.perf_counter()
+            seeded_states += self._seed_payload_batch(
+                parts,
+                refs,
+                text_inputs,
+                payload_to_group={
+                    "ticker_news": "ticker_news",
+                    "market_news": "market_news",
+                    "sec_filings": "sec_filings",
+                },
+                global_payloads={"market_news"},
+            )
+            store_seconds += time.perf_counter() - store_start
+            context_bytes += _nested_array_nbytes(text_inputs)
+
+        if "xbrl" in self.config.data_groups:
+            section_start = time.perf_counter()
+            xbrl_inputs, xbrl_profile = materializer._materialize_xbrl_inputs(parts, refs)
+            materialize_seconds += time.perf_counter() - section_start
+            profile.update({f"context_cache_seed_{key}": value for key, value in xbrl_profile.items()})
+            store_start = time.perf_counter()
+            seeded_states += self._seed_payload_batch(
+                parts,
+                refs,
+                {"xbrl": xbrl_inputs},
+                payload_to_group={"xbrl": "xbrl"},
+                global_payloads=set(),
+            )
+            store_seconds += time.perf_counter() - store_start
+            context_bytes += _nested_array_nbytes(xbrl_inputs)
+
+        if "corporate_actions" in self.config.data_groups:
+            section_start = time.perf_counter()
+            corporate_inputs, corporate_profile = materializer._materialize_corporate_action_inputs(parts, refs)
+            materialize_seconds += time.perf_counter() - section_start
+            profile.update({f"context_cache_seed_{key}": value for key, value in corporate_profile.items()})
+            store_start = time.perf_counter()
+            seeded_states += self._seed_payload_batch(
+                parts,
+                refs,
+                {"corporate_actions": corporate_inputs},
+                payload_to_group={"corporate_actions": "corporate_actions"},
+                global_payloads=set(),
+            )
+            store_seconds += time.perf_counter() - store_start
+            context_bytes += _nested_array_nbytes(corporate_inputs)
+
+        if {"daily_bars", "global_daily_bars"}.intersection(set(self.config.data_groups)):
+            section_start = time.perf_counter()
+            bar_inputs, bar_profile = materializer._materialize_bar_inputs(parts, refs)
+            _annotate_bar_cache_payloads(materializer, bar_inputs, parts, refs, self.config)
+            materialize_seconds += time.perf_counter() - section_start
+            profile.update({f"context_cache_seed_{key}": value for key, value in bar_profile.items()})
+            store_start = time.perf_counter()
+            seeded_states += self._seed_payload_batch(
+                parts,
+                refs,
+                bar_inputs,
+                payload_to_group={
+                    "ticker_daily_bars": "ticker_daily_bars",
+                    "global_daily_bars": "global_daily_bars",
+                },
+                global_payloads={"global_daily_bars"},
+                signature_fn=lambda part, ref, payload_name: self._bar_payload_signature(materializer, part, ref, str(payload_name)),
+            )
+            store_seconds += time.perf_counter() - store_start
+            context_bytes += _nested_array_nbytes(bar_inputs)
+
+        if "intraday_bars" in self.config.data_groups:
+            section_start = time.perf_counter()
+            intraday_inputs, intraday_profile = materializer._materialize_intraday_bar_inputs(parts, refs)
+            _annotate_bar_cache_payloads(materializer, intraday_inputs, parts, refs, self.config)
+            materialize_seconds += time.perf_counter() - section_start
+            profile.update({f"context_cache_seed_{key}": value for key, value in intraday_profile.items()})
+            store_start = time.perf_counter()
+            seeded_states += self._seed_payload_batch(
+                parts,
+                refs,
+                intraday_inputs,
+                payload_to_group={"ticker_intraday_bars": "ticker_intraday_bars"},
+                global_payloads=set(),
+                signature_fn=lambda part, ref, payload_name: self._bar_payload_signature(materializer, part, ref, str(payload_name)),
+            )
+            store_seconds += time.perf_counter() - store_start
+            context_bytes += _nested_array_nbytes(intraday_inputs)
+
+        if "scanner_context" in self.config.data_groups:
+            section_start = time.perf_counter()
+            scanner_inputs, scanner_profile = materializer._materialize_scanner_inputs(parts, refs)
+            scanner_payloads = {"scanner_context": scanner_inputs}
+            _annotate_scanner_cache_payload(materializer, scanner_payloads, parts, refs, self.config)
+            materialize_seconds += time.perf_counter() - section_start
+            profile.update({f"context_cache_seed_{key}": value for key, value in scanner_profile.items()})
+            store_start = time.perf_counter()
+            seeded_states += self._seed_payload_batch(
+                parts,
+                refs,
+                scanner_payloads,
+                payload_to_group={"scanner_context": "scanner_context"},
+                global_payloads=set(),
+                signature_fn=lambda part, ref, payload_name: self._scanner_payload_signature(materializer, part, ref),
+            )
+            store_seconds += time.perf_counter() - store_start
+            context_bytes += _nested_array_nbytes(scanner_inputs)
+
+        evicted = self._trim_capacity(protected_tickers=protected)
+        elapsed = time.perf_counter() - start
+        self._last_context_seconds = float(elapsed)
+        self._last_context_bytes = int(context_bytes)
+        profile.update(
+            {
+                "context_cache_seed_seconds": float(elapsed),
+                "context_cache_seed_materialize_seconds": float(materialize_seconds),
+                "context_cache_seed_store_seconds": float(store_seconds),
+                "context_cache_seed_payload_states": int(seeded_states),
+                "context_cache_seed_estimated_bytes": int(context_bytes),
+                "context_cache_seed_evictions": int(evicted),
+                **self.telemetry_snapshot(),
+            }
+        )
+        return profile
+
+    def _seed_payload_batch(
+        self,
+        parts: Sequence[LoadedDailyIndexPart],
+        refs: Sequence[DailyIndexSampleRef],
+        payloads: Mapping[str, Any],
+        *,
+        payload_to_group: Mapping[str, str],
+        global_payloads: set[str],
+        signature_fn: Callable[[LoadedDailyIndexPart, DailyIndexSampleRef, str], Any] | None = None,
+    ) -> int:
+        if not refs or not payloads:
+            return 0
+        tickers, _ordinals, timestamps = _identity_arrays(parts, refs)
+        sample_count = int(len(refs))
+        seeded = 0
+        for payload_name, payload in payloads.items():
+            if not payload:
+                continue
+            payload_name = str(payload_name)
+            group = str(payload_to_group.get(payload_name, payload_name))
+            is_global = payload_name in global_payloads
+            for row, ref in enumerate(refs):
+                part = parts[int(ref.part_index)]
+                ticker = str(tickers[int(row)])
+                state_key = ("__global__", group) if is_global else (ticker, group)
+                signature = signature_fn(part, ref, payload_name) if signature_fn is not None else None
+                self._store_payload_state(
+                    state_key,
+                    group=group,
+                    payload=_snapshot_batch_row(payload, int(row), sample_count),
+                    global_state=is_global,
+                    source_date="global" if is_global else str(part.plan.source_date),
+                    timestamp_us=int(timestamps[int(row)]),
+                    signature=signature,
+                )
+                seeded += 1
+        return int(seeded)
 
     def materialize(
         self,
@@ -7308,11 +7504,11 @@ def _warm_context_cache_for_day(
             return
         refs = [DailyIndexSampleRef(part_index=index, origin_row=0) for index in range(len(loaded_chunk))]
         chunk_start = time.perf_counter()
-        context_batch = context_cache.materialize(materializer, loaded_chunk, refs)
+        seed_profile = context_cache.seed_from_loaded_parts(materializer, loaded_chunk, refs)
         materialize_seconds += time.perf_counter() - chunk_start
         warmed += int(len(loaded_chunk))
-        context_rows += int(context_batch.profile.get("rolling_context_rows", 0) or 0)
-        context_bytes += int(context_batch.profile.get("rolling_context_estimated_bytes", 0) or 0)
+        context_rows += int(seed_profile.get("context_cache_seed_rows", 0) or 0)
+        context_bytes += int(seed_profile.get("context_cache_seed_estimated_bytes", 0) or 0)
         for loaded in loaded_chunk:
             clear_loaded(loaded)
         loaded_chunk.clear()
