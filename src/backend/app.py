@@ -2257,7 +2257,18 @@ def service_sec_detail(cik: str, accession_number: str) -> dict[str, Any]:
     )
     if not filing_rows:
         raise HTTPException(status_code=404, detail="SEC filing row not found")
-    document_rows = clickhouse_json_each_row(
+
+    detail_errors: list[dict[str, str]] = []
+
+    def optional_detail_rows(part: str, query: str) -> list[dict[str, Any]]:
+        try:
+            return clickhouse_json_each_row(query)
+        except Exception as exc:
+            detail_errors.append({"part": part, "message": str(exc)})
+            return []
+
+    document_rows = optional_detail_rows(
+        "document_rows",
         f"""
         SELECT *
         FROM {quote_ident(database)}.{quote_ident(document_table)} FINAL
@@ -2265,9 +2276,10 @@ def service_sec_detail(cik: str, accession_number: str) -> dict[str, Any]:
         ORDER BY sequence_number ASC, document_name ASC
         LIMIT 250
         FORMAT JSONEachRow
-        """
+        """,
     )
-    text_rows = clickhouse_json_each_row(
+    text_rows = optional_detail_rows(
+        "text_rows",
         f"""
         SELECT
             document_id,
@@ -2294,9 +2306,10 @@ def service_sec_detail(cik: str, accession_number: str) -> dict[str, Any]:
         ORDER BY text_kind ASC, document_id ASC
         LIMIT 50
         FORMAT JSONEachRow
-        """
+        """,
     )
-    company_fact_rows = clickhouse_json_each_row(
+    company_fact_rows = optional_detail_rows(
+        "company_fact_rows",
         f"""
         SELECT *
         FROM {quote_ident(database)}.{quote_ident(company_fact_table)}
@@ -2304,9 +2317,10 @@ def service_sec_detail(cik: str, accession_number: str) -> dict[str, Any]:
         ORDER BY taxonomy ASC, tag ASC, period_end_date DESC, unit_code ASC
         LIMIT 300
         FORMAT JSONEachRow
-        """
+        """,
     )
-    frame_rows = clickhouse_json_each_row(
+    frame_rows = optional_detail_rows(
+        "frame_rows",
         f"""
         SELECT *
         FROM {quote_ident(database)}.{quote_ident(frame_table)}
@@ -2314,15 +2328,20 @@ def service_sec_detail(cik: str, accession_number: str) -> dict[str, Any]:
         ORDER BY taxonomy ASC, tag ASC, period_end_date DESC, unit_code ASC
         LIMIT 300
         FORMAT JSONEachRow
-        """
+        """,
     )
-    identity_rows = service_sec_identity_rows_by_cik(database, [normalized_cik]).get(normalized_cik, [])
+    try:
+        identity_rows = service_sec_identity_rows_by_cik(database, [normalized_cik]).get(normalized_cik, [])
+    except Exception as exc:
+        detail_errors.append({"part": "identity_rows", "message": str(exc)})
+        identity_rows = []
     return {
         "accession_number": accession,
         "cik": normalized_cik,
         "company_fact_rows": company_fact_rows,
         "company_fact_table": company_fact_table,
         "database": database,
+        "detail_errors": detail_errors,
         "document_rows": document_rows,
         "document_table": document_table,
         "filing_row": filing_rows[0],

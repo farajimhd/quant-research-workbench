@@ -781,6 +781,7 @@ type SecDetailPayload = {
   company_fact_rows?: Array<Record<string, unknown>>;
   company_fact_table?: string;
   database?: string;
+  detail_errors?: Array<Record<string, unknown>>;
   document_rows?: Array<Record<string, unknown>>;
   document_table?: string;
   filing_row?: Record<string, unknown>;
@@ -1518,11 +1519,20 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
     "Raw acceptance",
     "Text status",
   ].includes(item.label));
+  const detailErrors = Array.isArray(detail?.detail_errors) ? detail.detail_errors.filter(isRecord) : [];
+  const partialDetailMessage = detailErrors.length
+    ? `Loaded filing parent, but ${detailErrors.length} related detail ${detailErrors.length === 1 ? "query" : "queries"} failed: ${
+        detailErrors
+          .map((item) => stringMetric(item, ["part"]) || "related data")
+          .slice(0, 4)
+          .join(", ")
+      }${detailErrors.length > 4 ? ", ..." : ""}.`
+    : "";
   useEffect(() => {
     detailScrollRef.current?.scrollTo({ left: 0, top: 0 });
   }, [accession, primaryDocument]);
   return (
-    <div className="sec-filing-detail" ref={detailScrollRef}>
+    <div className="sec-filing-detail">
       <article className="sec-filing-hero-card">
         <div className="sec-filing-hero-main">
           <div className="sec-filing-meta-line">
@@ -1568,100 +1578,103 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
           ))}
         </div>
       </article>
-      {loading ? <div className="news-full-detail-notice">Loading complete SEC filing row from ClickHouse...</div> : null}
-      {error ? <div className="news-full-detail-notice error">{error}</div> : null}
-      <section className="sec-filing-reader-layout">
-        <article className="sec-filing-reader-card">
-          <header>
+      <div className="sec-filing-detail-scroll" ref={detailScrollRef}>
+        {loading ? <div className="news-full-detail-notice">Loading complete SEC filing row from ClickHouse...</div> : null}
+        {error ? <div className="news-full-detail-notice error">{error}</div> : null}
+        {partialDetailMessage ? <div className="news-full-detail-notice warning">{partialDetailMessage}</div> : null}
+        <section className="sec-filing-reader-layout">
+          <article className="sec-filing-reader-card">
+            <header>
+              <div>
+                <span>Readable filing text</span>
+                <h4>{primaryTextKind}</h4>
+              </div>
+              <strong>{primaryTextChars ? `${formatCompactNumber(primaryTextChars)} chars` : "No text"}</strong>
+            </header>
+            <div className="sec-filing-readable-body">
+              {primaryTextBlocks.length ? (
+                primaryTextBlocks.map((block, index) => <p key={`${index}-${block.slice(0, 24)}`}>{block}</p>)
+              ) : (
+                <p className="sec-filing-empty-note">No filing text was returned for this filing yet.</p>
+              )}
+            </div>
+          </article>
+          <aside className="sec-filing-context-panel">
+            <section className="sec-filing-side-card">
+              <h4>Filing Snapshot</h4>
+              <dl className="sec-filing-context-list">
+                {filingSnapshotFacts.map((item) => (
+                  <div key={item.label}>
+                    <dt>{item.label}</dt>
+                    <dd>{item.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+            <section className="sec-filing-side-card">
+              <h4>Document Signals</h4>
+              <div className="sec-filing-chip-cloud">
+                {documentTypeSample.length ? documentTypeSample.map((item) => <span key={item}>{item}</span>) : <em>No document type sample.</em>}
+              </div>
+            </section>
+            <section className="sec-filing-side-card">
+              <h4>XBRL Tags</h4>
+              <div className="sec-filing-chip-cloud">
+                {[...xbrlFactTags, ...xbrlFrameTags].length ? [...xbrlFactTags, ...xbrlFrameTags].map((item) => <span key={item}>{item}</span>) : <em>No XBRL tags linked.</em>}
+              </div>
+            </section>
+            <section className="sec-filing-side-card">
+              <h4>Text Rows</h4>
+              <div className="sec-filing-text-row-list">
+                {textRows.length ? textRows.map((textRow, index) => (
+                  <div key={`${stringMetric(textRow, ["document_id", "filing_text_id"])}-${index}`}>
+                    <strong>{displayName(stringMetric(textRow, ["text_kind", "kind"]) || `Text row ${index + 1}`)}</strong>
+                    <span>{formatCompactNumber(secTextCharCount(textRow))} chars</span>
+                    <small>{stringMetric(textRow, ["document_id", "filing_document_id", "source_file_name"]) || "-"}</small>
+                  </div>
+                )) : <p>No text rows returned.</p>}
+              </div>
+            </section>
+          </aside>
+        </section>
+        <section className="sec-filing-data-sections">
+          <header className="sec-filing-data-section-header">
             <div>
-              <span>Readable filing text</span>
-              <h4>{primaryTextKind}</h4>
+              <span>Technical row data</span>
+              <strong>Documents, XBRL, market bridge, and raw filing parent</strong>
             </div>
-            <strong>{primaryTextChars ? `${formatCompactNumber(primaryTextChars)} chars` : "No text"}</strong>
+            <p>Collapsed by default so the readable filing stays primary. Open a section when you need raw rows.</p>
           </header>
-          <div className="sec-filing-readable-body">
-            {primaryTextBlocks.length ? (
-              primaryTextBlocks.map((block, index) => <p key={`${index}-${block.slice(0, 24)}`}>{block}</p>)
-            ) : (
-              <p className="sec-filing-empty-note">No filing text was returned for this filing yet.</p>
-            )}
-          </div>
-        </article>
-        <aside className="sec-filing-context-panel">
-          <section className="sec-filing-side-card">
-            <h4>Filing Snapshot</h4>
-            <dl className="sec-filing-context-list">
-              {filingSnapshotFacts.map((item) => (
-                <div key={item.label}>
-                  <dt>{item.label}</dt>
-                  <dd>{item.value}</dd>
-                </div>
-              ))}
-            </dl>
-          </section>
-          <section className="sec-filing-side-card">
-            <h4>Document Signals</h4>
-            <div className="sec-filing-chip-cloud">
-              {documentTypeSample.length ? documentTypeSample.map((item) => <span key={item}>{item}</span>) : <em>No document type sample.</em>}
+          <details>
+            <summary><span>Filing Documents</span><strong>{formatCompactNumber(documentRows.length)}</strong></summary>
+            <div className="sec-filing-data-table-wrap">
+              <DataTable empty="No document rows returned for this filing." fitToContent rows={documentRows.map(normalizeRow)} />
             </div>
-          </section>
-          <section className="sec-filing-side-card">
-            <h4>XBRL Tags</h4>
-            <div className="sec-filing-chip-cloud">
-              {[...xbrlFactTags, ...xbrlFrameTags].length ? [...xbrlFactTags, ...xbrlFrameTags].map((item) => <span key={item}>{item}</span>) : <em>No XBRL tags linked.</em>}
+          </details>
+          <details>
+            <summary><span>XBRL Company Facts</span><strong>{formatCompactNumber(companyFactRows.length)}</strong></summary>
+            <div className="sec-filing-data-table-wrap">
+              <DataTable empty="No XBRL company fact rows returned for this filing." fitToContent rows={companyFactRows.map(normalizeRow)} />
             </div>
-          </section>
-          <section className="sec-filing-side-card">
-            <h4>Text Rows</h4>
-            <div className="sec-filing-text-row-list">
-              {textRows.length ? textRows.map((textRow, index) => (
-                <div key={`${stringMetric(textRow, ["document_id", "filing_text_id"])}-${index}`}>
-                  <strong>{displayName(stringMetric(textRow, ["text_kind", "kind"]) || `Text row ${index + 1}`)}</strong>
-                  <span>{formatCompactNumber(secTextCharCount(textRow))} chars</span>
-                  <small>{stringMetric(textRow, ["document_id", "filing_document_id", "source_file_name"]) || "-"}</small>
-                </div>
-              )) : <p>No text rows returned.</p>}
+          </details>
+          <details>
+            <summary><span>XBRL Frame Observations</span><strong>{formatCompactNumber(frameRows.length)}</strong></summary>
+            <div className="sec-filing-data-table-wrap">
+              <DataTable empty="No XBRL frame rows returned for this filing." fitToContent rows={frameRows.map(normalizeRow)} />
             </div>
-          </section>
-        </aside>
-      </section>
-      <section className="sec-filing-data-sections">
-        <header className="sec-filing-data-section-header">
-          <div>
-            <span>Technical row data</span>
-            <strong>Documents, XBRL, market bridge, and raw filing parent</strong>
-          </div>
-          <p>Collapsed by default so the readable filing stays primary. Open a section when you need raw rows.</p>
-        </header>
-        <details>
-          <summary><span>Filing Documents</span><strong>{formatCompactNumber(documentRows.length)}</strong></summary>
-          <div className="sec-filing-data-table-wrap">
-            <DataTable empty="No document rows returned for this filing." fitToContent rows={documentRows.map(normalizeRow)} />
-          </div>
-        </details>
-        <details>
-          <summary><span>XBRL Company Facts</span><strong>{formatCompactNumber(companyFactRows.length)}</strong></summary>
-          <div className="sec-filing-data-table-wrap">
-            <DataTable empty="No XBRL company fact rows returned for this filing." fitToContent rows={companyFactRows.map(normalizeRow)} />
-          </div>
-        </details>
-        <details>
-          <summary><span>XBRL Frame Observations</span><strong>{formatCompactNumber(frameRows.length)}</strong></summary>
-          <div className="sec-filing-data-table-wrap">
-            <DataTable empty="No XBRL frame rows returned for this filing." fitToContent rows={frameRows.map(normalizeRow)} />
-          </div>
-        </details>
-        <details>
-          <summary><span>SEC Market Bridge And Listing Identity</span><strong>{formatCompactNumber(identityRows.length)}</strong></summary>
-          <div className="sec-filing-data-table-wrap">
-            <DataTable empty="No SEC market bridge rows returned for this filing CIK." fitToContent rows={identityRows.map(normalizeRow)} />
-          </div>
-        </details>
-        <details>
-          <summary><span>Filing Parent Row</span><strong>{formatCompactNumber(filingFacts.length)}</strong></summary>
-          <NewsMetadataTable rows={Object.entries(filingRow).map(([key, value]) => ({ key, value: formatValue(key, value) }))} />
-        </details>
-      </section>
+          </details>
+          <details>
+            <summary><span>SEC Market Bridge And Listing Identity</span><strong>{formatCompactNumber(identityRows.length)}</strong></summary>
+            <div className="sec-filing-data-table-wrap">
+              <DataTable empty="No SEC market bridge rows returned for this filing CIK." fitToContent rows={identityRows.map(normalizeRow)} />
+            </div>
+          </details>
+          <details>
+            <summary><span>Filing Parent Row</span><strong>{formatCompactNumber(filingFacts.length)}</strong></summary>
+            <NewsMetadataTable rows={Object.entries(filingRow).map(([key, value]) => ({ key, value: formatValue(key, value) }))} />
+          </details>
+        </section>
+      </div>
     </div>
   );
 }

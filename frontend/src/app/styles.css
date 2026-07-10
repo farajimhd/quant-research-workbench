@@ -3310,6 +3310,12 @@ button {
   color: var(--danger);
 }
 
+.news-full-detail-notice.warning {
+  background: color-mix(in oklab, var(--badge-warning-bg) 70%, var(--surface));
+  border-color: var(--badge-warning-border);
+  color: var(--badge-warning-fg);
+}
+
 .news-full-technical-section {
   background: transparent;
   border: 0;
@@ -3625,13 +3631,23 @@ button {
   background:
     linear-gradient(180deg, color-mix(in oklab, var(--surface-alt) 52%, var(--surface)) 0, var(--surface) 220px),
     var(--surface);
-  display: grid;
+  display: flex;
+  flex-direction: column;
   flex: 1 1 auto;
   gap: 14px;
   max-height: none;
   min-height: 0;
+  overflow: hidden;
+  padding: 14px 16px 0;
+}
+
+.sec-filing-detail-scroll {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 14px;
+  min-height: 0;
   overflow: auto;
-  padding: 14px 16px 20px;
+  padding: 0 0 20px;
   scrollbar-gutter: stable;
 }
 
@@ -3643,9 +3659,8 @@ button {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   overflow: hidden;
-  position: sticky;
-  top: 0;
-  z-index: 4;
+  position: relative;
+  z-index: 2;
 }
 
 .sec-filing-hero-main {
