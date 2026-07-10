@@ -157,6 +157,8 @@ SERVICE_TABLE_STATE_LIMIT = 32
 SERVICE_TABLE_STATE_CACHE_SECONDS = 30.0
 SERVICE_NEWS_HISTOGRAM_CACHE_SECONDS = 20.0
 SERVICE_NEWS_HISTOGRAM_BIN_SECONDS = 900
+SERVICE_SEC_HISTOGRAM_CACHE_SECONDS = 20.0
+SERVICE_SEC_HISTOGRAM_BIN_SECONDS = SERVICE_NEWS_HISTOGRAM_BIN_SECONDS
 SERVICE_NEWS_TODAY_ROWS_LIMIT = 5000
 SERVICE_SEC_TODAY_ROWS_LIMIT = 5000
 SERVICE_TABLE_STATE_START_YEAR = 2019
@@ -184,6 +186,7 @@ SERVICE_TABLE_TIME_COLUMN_CANDIDATES = (
 )
 _SERVICE_TABLE_STATE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _SERVICE_NEWS_HISTOGRAM_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_SERVICE_SEC_HISTOGRAM_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 SERVICE_DATABASE_TABLES: dict[str, list[dict[str, str]]] = {
     "qmd": [
@@ -1801,6 +1804,175 @@ def service_datetime64_sql(value: datetime) -> str:
     return f"toDateTime64({sql_string(value.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
 
 
+def service_sec_histogram(
+    *,
+    company_fact_table: str,
+    database: str,
+    document_table: str,
+    filing_table: str,
+    frame_table: str,
+    text_table: str,
+    window_end_et: datetime,
+    window_end_utc: datetime,
+    window_start_et: datetime,
+    window_start_utc: datetime,
+) -> dict[str, Any]:
+    safe_bin_seconds = SERVICE_SEC_HISTOGRAM_BIN_SECONDS
+    cache_key = f"{window_start_et.date().isoformat()}:{database}:{safe_bin_seconds}"
+    cached_at, cached_payload = _SERVICE_SEC_HISTOGRAM_CACHE.get(cache_key, (0.0, {}))
+    if cached_payload and time.monotonic() - cached_at < SERVICE_SEC_HISTOGRAM_CACHE_SECONDS:
+        return cached_payload
+
+    bin_count = int(((window_end_utc - window_start_utc).total_seconds() + safe_bin_seconds - 1) // safe_bin_seconds)
+    window_start_sql = service_datetime64_sql(window_start_utc)
+    window_end_sql = service_datetime64_sql(window_end_utc)
+    query = f"""
+        WITH
+            {window_start_sql} AS window_start,
+            {window_end_sql} AS window_end,
+            filing_buckets AS
+            (
+                SELECT
+                    toString(cik) AS cik,
+                    accession_number,
+                    toUInt64(intDiv(dateDiff('second', window_start, accepted_at_utc) + {safe_bin_seconds // 2}, {safe_bin_seconds})) AS bucket_index
+                FROM {quote_ident(database)}.{quote_ident(filing_table)}
+                WHERE accepted_at_utc >= window_start
+                  AND accepted_at_utc < window_end
+            ),
+            document_counts AS
+            (
+                SELECT
+                    toString(cik) AS cik,
+                    accession_number,
+                    toUInt64(count()) AS document_rows
+                FROM {quote_ident(database)}.{quote_ident(document_table)} FINAL
+                WHERE (toString(cik), accession_number) IN (SELECT cik, accession_number FROM filing_buckets)
+                GROUP BY
+                    cik,
+                    accession_number
+            ),
+            text_counts AS
+            (
+                SELECT
+                    toString(cik) AS cik,
+                    accession_number,
+                    toUInt64(count()) AS text_rows
+                FROM {quote_ident(database)}.{quote_ident(text_table)} FINAL
+                WHERE (toString(cik), accession_number) IN (SELECT cik, accession_number FROM filing_buckets)
+                GROUP BY
+                    cik,
+                    accession_number
+            ),
+            fact_counts AS
+            (
+                SELECT
+                    toString(cik) AS cik,
+                    accession_number,
+                    toUInt64(count()) AS xbrl_fact_rows
+                FROM {quote_ident(database)}.{quote_ident(company_fact_table)}
+                WHERE (toString(cik), accession_number) IN (SELECT cik, accession_number FROM filing_buckets)
+                GROUP BY
+                    cik,
+                    accession_number
+            ),
+            frame_counts AS
+            (
+                SELECT
+                    toString(cik) AS cik,
+                    accession_number,
+                    toUInt64(count()) AS xbrl_frame_rows
+                FROM {quote_ident(database)}.{quote_ident(frame_table)}
+                WHERE (toString(cik), accession_number) IN (SELECT cik, accession_number FROM filing_buckets)
+                GROUP BY
+                    cik,
+                    accession_number
+            ),
+            classified_filings AS
+            (
+                SELECT
+                    f.bucket_index AS bucket_index,
+                    toUInt64(ifNull(d.document_rows, 0)) AS related_document_rows,
+                    toUInt64(ifNull(t.text_rows, 0)) AS related_text_rows,
+                    toUInt64(ifNull(cf.xbrl_fact_rows, 0) + ifNull(fr.xbrl_frame_rows, 0)) AS related_xbrl_rows
+                FROM filing_buckets AS f
+                LEFT JOIN document_counts AS d
+                    ON d.cik = f.cik AND d.accession_number = f.accession_number
+                LEFT JOIN text_counts AS t
+                    ON t.cik = f.cik AND t.accession_number = f.accession_number
+                LEFT JOIN fact_counts AS cf
+                    ON cf.cik = f.cik AND cf.accession_number = f.accession_number
+                LEFT JOIN frame_counts AS fr
+                    ON fr.cik = f.cik AND fr.accession_number = f.accession_number
+            ),
+            bucket_counts AS
+            (
+                SELECT
+                    bucket_index,
+                    toUInt64(count()) AS total_rows,
+                    toUInt64(countIf(related_xbrl_rows > 0)) AS xbrl_rows,
+                    toUInt64(countIf(related_xbrl_rows = 0 AND related_text_rows > 0)) AS text_rows,
+                    toUInt64(countIf(related_xbrl_rows = 0 AND related_text_rows = 0 AND related_document_rows > 0)) AS document_rows,
+                    toUInt64(countIf(related_xbrl_rows = 0 AND related_text_rows = 0 AND related_document_rows = 0)) AS filing_only_rows
+                FROM classified_filings
+                GROUP BY bucket_index
+            )
+        SELECT
+            formatDateTime(
+                window_start + toIntervalSecond(toInt64(b.bucket_index) * {safe_bin_seconds}),
+                '%Y-%m-%dT%H:%i:%S.000Z',
+                'UTC'
+            ) AS bucket_utc,
+            toUInt64(ifNull(c.filing_only_rows, 0)) AS filing_only_rows,
+            toUInt64(ifNull(c.document_rows, 0)) AS document_rows,
+            toUInt64(ifNull(c.text_rows, 0)) AS text_rows,
+            toUInt64(ifNull(c.xbrl_rows, 0)) AS xbrl_rows,
+            toUInt64(ifNull(c.total_rows, 0)) AS total_rows
+        FROM
+        (
+            SELECT toUInt64(number) AS bucket_index
+            FROM numbers({bin_count + 1})
+        ) AS b
+        LEFT JOIN bucket_counts AS c
+            ON c.bucket_index = b.bucket_index
+        ORDER BY b.bucket_index
+        FORMAT JSONEachRow
+    """
+    rows: list[dict[str, Any]] = []
+    for line in clickhouse_status_query(query).splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        rows.append(
+            {
+                "bucket_utc": str(row.get("bucket_utc") or ""),
+                "document_rows": int(row.get("document_rows") or 0),
+                "filing_only_rows": int(row.get("filing_only_rows") or 0),
+                "text_rows": int(row.get("text_rows") or 0),
+                "total_rows": int(row.get("total_rows") or 0),
+                "xbrl_rows": int(row.get("xbrl_rows") or 0),
+            }
+        )
+    payload = {
+        "bin_seconds": safe_bin_seconds,
+        "company_fact_table": company_fact_table,
+        "database": database,
+        "document_table": document_table,
+        "filing_table": filing_table,
+        "frame_table": frame_table,
+        "market_timezone": EXCHANGE_TIME_ZONE,
+        "rows": rows,
+        "source": "clickhouse",
+        "text_table": text_table,
+        "window_end_et": window_end_et.isoformat(),
+        "window_end_utc": window_end_utc.isoformat().replace("+00:00", "Z"),
+        "window_start_et": window_start_et.isoformat(),
+        "window_start_utc": window_start_utc.isoformat().replace("+00:00", "Z"),
+    }
+    _SERVICE_SEC_HISTOGRAM_CACHE[cache_key] = (time.monotonic(), payload)
+    return payload
+
+
 def service_sec_today_rows(limit: int = 250, sort: str = "desc") -> dict[str, Any]:
     safe_limit = max(1, min(limit, SERVICE_SEC_TODAY_ROWS_LIMIT))
     sort_direction = "ASC" if sort.strip().lower() == "asc" else "DESC"
@@ -1813,6 +1985,30 @@ def service_sec_today_rows(limit: int = 250, sort: str = "desc") -> dict[str, An
     window_start_et, window_end_et, window_start_utc, window_end_utc = service_market_day_window()
     window_start_sql = service_datetime64_sql(window_start_utc)
     window_end_sql = service_datetime64_sql(window_end_utc)
+    try:
+        histogram = service_sec_histogram(
+            company_fact_table=company_fact_table,
+            database=database,
+            document_table=document_table,
+            filing_table=filing_table,
+            frame_table=frame_table,
+            text_table=text_table,
+            window_end_et=window_end_et,
+            window_end_utc=window_end_utc,
+            window_start_et=window_start_et,
+            window_start_utc=window_start_utc,
+        )
+    except Exception as exc:
+        histogram = {
+            "bin_seconds": SERVICE_SEC_HISTOGRAM_BIN_SECONDS,
+            "error": str(exc),
+            "rows": [],
+            "source": "clickhouse",
+            "window_end_et": window_end_et.isoformat(),
+            "window_end_utc": window_end_utc.isoformat().replace("+00:00", "Z"),
+            "window_start_et": window_start_et.isoformat(),
+            "window_start_utc": window_start_utc.isoformat().replace("+00:00", "Z"),
+        }
     count_query = f"""
         WITH
             {window_start_sql} AS window_start,
@@ -1998,6 +2194,7 @@ def service_sec_today_rows(limit: int = 250, sort: str = "desc") -> dict[str, An
         "database": database,
         "document_table": document_table,
         "filing_table": filing_table,
+        "histogram": histogram,
         "limit": safe_limit,
         "market_timezone": EXCHANGE_TIME_ZONE,
         "rows": rows,

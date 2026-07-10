@@ -527,6 +527,37 @@ type NewsDailyHistogramState = {
   windowStartUtc: string;
 };
 
+type SecDailyHistogramDatum = {
+  bucketUtc: string;
+  documentRows: number;
+  filingOnlyRows: number;
+  textRows: number;
+  totalRows: number;
+  xbrlRows: number;
+};
+
+type SecDailyHistogramState = {
+  binSeconds: number;
+  error: string;
+  rows: SecDailyHistogramDatum[];
+  windowEndUtc: string;
+  windowStartUtc: string;
+};
+
+type SecLiveFeedRow = {
+  accession: string;
+  cik: string;
+  company: string;
+  documents: string;
+  form: string;
+  raw: Record<string, unknown>;
+  status: string;
+  time: string;
+  timeMs?: number;
+  title: string;
+  xbrl: string;
+};
+
 type NewsHistogramPayload = {
   bin_seconds: number;
   error?: string;
@@ -661,6 +692,20 @@ type SecTodayRowsPayload = {
   database?: string;
   document_table?: string;
   filing_table?: string;
+  histogram?: {
+    bin_seconds?: number;
+    error?: string;
+    rows?: Array<{
+      bucket_utc?: string;
+      document_rows?: number;
+      filing_only_rows?: number;
+      text_rows?: number;
+      total_rows?: number;
+      xbrl_rows?: number;
+    }>;
+    window_end_utc?: string;
+    window_start_utc?: string;
+  };
   limit?: number;
   rows?: Array<Record<string, unknown>>;
   sort?: string;
@@ -674,6 +719,7 @@ type SecTodayRowsPayload = {
 
 type SecTodayRowsState = {
   error: string;
+  histogram: SecDailyHistogramState;
   loading: boolean;
   rows: SecTodayRow[];
   sort: NewsTodaySort;
@@ -727,7 +773,7 @@ function SecServiceWorkAndRows({ service }: { service: ServiceStatusPayload }) {
   const todaySec = useSecTodayRows(service.registry.id === "sec", todaySort);
   return (
     <section className="service-work-and-activity-grid service-work-and-activity-sec">
-      <ServiceWorkPlanPanel service={service} />
+      <ServiceWorkPlanPanel secToday={todaySec} service={service} />
       <SecTodayRowsPanel onSortChange={setTodaySort} state={todaySec} />
     </section>
   );
@@ -1683,7 +1729,7 @@ function NewsMetadataTable({ rows }: { rows: Array<{ key: string; value: string 
   );
 }
 
-function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
+function ServiceWorkPlanPanel({ secToday, service }: { secToday?: SecTodayRowsState; service: ServiceStatusPayload }) {
   const groups = serviceWorkGroups(service);
   const visibleGroups = visibleServiceWorkGroups(groups, service.registry.id);
   const newsPollHistory = useNewsPollHistory(service);
@@ -1699,19 +1745,31 @@ function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
       </div>
       <div className="service-work-plan-layout">
         <section className="service-work-live-section">
-          <ServiceWorkResponsibilityGrid groups={visibleGroups} newsPollHistory={newsPollHistory} service={service} />
+          <ServiceWorkResponsibilityGrid groups={visibleGroups} newsPollHistory={newsPollHistory} secToday={secToday} service={service} />
         </section>
       </div>
     </Panel>
   );
 }
 
-function ServiceWorkResponsibilityGrid({ groups, newsPollHistory, service }: { groups: ServiceWorkGroup[]; newsPollHistory: NewsPollHistoryRow[]; service: ServiceStatusPayload }) {
+function ServiceWorkResponsibilityGrid({
+  groups,
+  newsPollHistory,
+  secToday,
+  service,
+}: {
+  groups: ServiceWorkGroup[];
+  newsPollHistory: NewsPollHistoryRow[];
+  secToday?: SecTodayRowsState;
+  service: ServiceStatusPayload;
+}) {
   const visibleGroups = visibleServiceWorkGroups(groups, service.registry.id);
   return (
     <div className="service-work-responsibility-grid">
       {visibleGroups.map((group) => group.id === "live" && service.registry.id === "news" ? (
         <NewsBenzingaLiveCard group={group} history={newsPollHistory} key={group.id} service={service} />
+      ) : group.id === "live" && service.registry.id === "sec" ? (
+        <SecLiveFeedCard group={group} histogram={secToday?.histogram ?? defaultSecHistogramWindow(900)} key={group.id} service={service} />
       ) : group.id === "publish" && service.registry.id === "news" ? (
         <NewsDatabasePublishingCard group={group} key={group.id} service={service} />
       ) : group.id === "processing" && service.registry.id === "news" ? (
@@ -1940,6 +1998,120 @@ function NewsDailyHistogram({
   );
 }
 
+function SecLiveFeedCard({ group, histogram, service }: { group: ServiceWorkGroup; histogram: SecDailyHistogramState; service: ServiceStatusPayload }) {
+  const metrics = serviceMetricsRecord(service);
+  const rows = secLiveFeedRows(service);
+  const status = stringMetric(metrics, ["last_error_status", "run_status", "status"]) || group.status || "idle";
+  const summary = secHistogramSummary(histogram.rows);
+  const queueDepth = numericMetric(metrics, ["queue_depth", "feed_queue_depth", "pending_filings"]);
+  return (
+    <section className={`service-work-responsibility-card sec-live-card ${workStatusClass(status)}`}>
+      <div className="service-work-responsibility-header news-live-card-header">
+        <div>
+          <h3>{group.title}</h3>
+          <p>{group.description}</p>
+        </div>
+        <span className={`service-work-status ${workStatusClass(status)}`}>{displayName(status)}</span>
+      </div>
+      <SecDailyHistogram
+        binSeconds={histogram.binSeconds}
+        data={histogram.rows}
+        error={histogram.error}
+        windowEndUtc={histogram.windowEndUtc}
+        windowStartUtc={histogram.windowStartUtc}
+      />
+      <div className="news-live-summary sec-live-summary">
+        <span><small>Submissions</small><strong>{formatCompactNumber(summary.total)}</strong></span>
+        <span><small>Filing Only</small><strong>{formatCompactNumber(summary.filingOnly)}</strong></span>
+        <span><small>Docs</small><strong>{formatCompactNumber(summary.documents)}</strong></span>
+        <span className={summary.text > 0 ? "metric-good" : ""}><small>Text</small><strong>{formatCompactNumber(summary.text)}</strong></span>
+        <span className={summary.xbrl > 0 ? "metric-good" : ""}><small>XBRL</small><strong>{formatCompactNumber(summary.xbrl)}</strong></span>
+        <span><small>Queue</small><strong>{formatCompactNumber(queueDepth)}</strong></span>
+      </div>
+      <SecLiveFeedTable rows={rows} />
+    </section>
+  );
+}
+
+function SecDailyHistogram({
+  binSeconds,
+  data,
+  error,
+  windowEndUtc,
+  windowStartUtc,
+}: {
+  binSeconds: number;
+  data: SecDailyHistogramDatum[];
+  error: string;
+  windowEndUtc: string;
+  windowStartUtc: string;
+}) {
+  const defaultWindow = useMemo(() => defaultSecHistogramWindow(binSeconds), [binSeconds]);
+  const effectiveWindowStartUtc = windowStartUtc || defaultWindow.windowStartUtc;
+  const effectiveWindowEndUtc = windowEndUtc || defaultWindow.windowEndUtc;
+  const effectiveData = useMemo(
+    () => data.length ? elapsedSecHistogramRows(data, effectiveWindowStartUtc, effectiveWindowEndUtc, binSeconds) : defaultWindow.rows,
+    [binSeconds, data, defaultWindow.rows, effectiveWindowEndUtc, effectiveWindowStartUtc],
+  );
+  const displayData = useMemo(
+    () => secHistogramFullWindowRows(effectiveData, effectiveWindowStartUtc, effectiveWindowEndUtc, binSeconds),
+    [binSeconds, effectiveData, effectiveWindowEndUtc, effectiveWindowStartUtc],
+  );
+  const [hover, setHover] = useState<ReturnType<typeof secHistogramHover> | null>(null);
+  const maxTotal = useMemo(() => Math.max(1, ...displayData.map((row) => row.totalRows)), [displayData]);
+  const summary = secHistogramSummary(effectiveData);
+  return (
+    <div className="news-live-histogram sec-live-histogram">
+      <div className="news-live-histogram-label">
+        <span>Today from DB / {formatNewsBinDuration(binSeconds)} bins</span>
+        <div className="news-live-histogram-legend sec-live-histogram-legend">
+          <span className="xbrl">XBRL <strong>{formatCompactNumber(summary.xbrl)}</strong></span>
+          <span className="text">text <strong>{formatCompactNumber(summary.text)}</strong></span>
+          <span className="documents">docs <strong>{formatCompactNumber(summary.documents)}</strong></span>
+          <span className="filing">filing only <strong>{formatCompactNumber(summary.filingOnly)}</strong></span>
+          <span>total <strong>{formatCompactNumber(summary.total)}</strong></span>
+        </div>
+      </div>
+      {hover ? (
+        <div className="news-live-histogram-hover sec-live-histogram-hover">
+          <strong>{hover.et}</strong>
+          <span>VAN {hover.van}</span>
+          <span>UTC {hover.utc}</span>
+          <span>XBRL {formatCompactNumber(hover.xbrl)}</span>
+          <span>text {formatCompactNumber(hover.text)}</span>
+          <span>docs {formatCompactNumber(hover.documents)}</span>
+          <span>filing only {formatCompactNumber(hover.filingOnly)}</span>
+        </div>
+      ) : null}
+      {error ? <div className="news-live-histogram-error">{error}</div> : null}
+      <div
+        className="news-live-histogram-chart"
+        onMouseLeave={() => setHover(null)}
+        style={{ "--histogram-bin-count": displayData.length } as CSSProperties}
+      >
+        {displayData.map((row) => (
+          <div
+            aria-label={`${formatZoneDateTime(new Date(Date.parse(row.bucketUtc)), EXCHANGE_TIME_ZONE)}: ${row.totalRows} SEC filings`}
+            className={row.totalRows > 0 ? "news-live-histogram-bin has-data" : "news-live-histogram-bin"}
+            key={row.bucketUtc}
+            onMouseEnter={() => setHover(secHistogramHover(row))}
+            style={{ "--bar-height": `${newsHistogramBarHeight(row.totalRows, maxTotal)}%` } as CSSProperties}
+          >
+            {row.totalRows > 0 ? (
+              <span className="news-live-histogram-stack">
+                <span className="news-live-histogram-segment filing" style={{ height: `${(row.filingOnlyRows / row.totalRows) * 100}%` }} />
+                <span className="news-live-histogram-segment documents" style={{ height: `${(row.documentRows / row.totalRows) * 100}%` }} />
+                <span className="news-live-histogram-segment text" style={{ height: `${(row.textRows / row.totalRows) * 100}%` }} />
+                <span className="news-live-histogram-segment xbrl" style={{ height: `${(row.xbrlRows / row.totalRows) * 100}%` }} />
+              </span>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function NewsPollHistoryTable({ rows }: { rows: NewsPollHistoryRow[] }) {
   return (
     <div className="news-poll-history-table-wrap">
@@ -1971,6 +2143,45 @@ function NewsPollHistoryTable({ rows }: { rows: NewsPollHistoryRow[] }) {
           ) : (
             <tr key={`empty-${index}`}>
               <td colSpan={8}>No poll has been observed by this dashboard yet.</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SecLiveFeedTable({ rows }: { rows: SecLiveFeedRow[] }) {
+  return (
+    <div className="news-poll-history-table-wrap sec-live-feed-table-wrap">
+      <table className="news-poll-history-table sec-live-feed-table">
+        <thead>
+          <tr>
+            <th title="When the SEC feed item was observed by the gateway, shown in your local browser timezone.">Time</th>
+            <th title="Central Index Key reported by SEC.">CIK</th>
+            <th title="SEC filing form type, such as 10-K, 8-K, 4, 424B2, or FWP.">Form</th>
+            <th title="SEC accession number for the filing.">Accession</th>
+            <th title="Gateway status for this live feed item.">Status</th>
+            <th title="Company or filing title from the live feed item.">Filing</th>
+            <th title="Document and extracted text counts reported with this item.">Docs / Text</th>
+            <th title="XBRL facts or frame observations reported with this item.">XBRL</th>
+          </tr>
+        </thead>
+        <tbody>
+          {(rows.length ? rows : [null]).map((row, index) => row ? (
+            <tr className={workStatusClass(row.status)} key={`${row.accession}-${row.time}-${index}`}>
+              <td title={row.time}>{row.time}</td>
+              <td title={row.cik}>{row.cik || "-"}</td>
+              <td>{row.form || "-"}</td>
+              <td title={row.accession}>{row.accession || "-"}</td>
+              <td><span className={`service-work-mini-status ${workStatusClass(row.status)}`}>{displayName(row.status)}</span></td>
+              <td title={row.title || row.company}>{row.title || row.company || "-"}</td>
+              <td title={row.documents}>{row.documents || "-"}</td>
+              <td title={row.xbrl}>{row.xbrl || "-"}</td>
+            </tr>
+          ) : (
+            <tr key={`empty-${index}`}>
+              <td colSpan={8}>No live SEC feed item has been observed by this dashboard yet.</td>
             </tr>
           ))}
         </tbody>
@@ -3305,6 +3516,7 @@ function useSecTodayRows(enabled: boolean, sort: NewsTodaySort): SecTodayRowsSta
         const rows = (response.rows || []).filter(isRecord).map(secTodayRowFromPayload);
         setPayload({
           error: "",
+          histogram: secHistogramFromPayload(response.histogram),
           loading: false,
           rows,
           sort: response.sort === "asc" ? "asc" : "desc",
@@ -3352,6 +3564,7 @@ function defaultNewsTodayRowsState(sort: NewsTodaySort): NewsTodayRowsState {
 function defaultSecTodayRowsState(sort: NewsTodaySort): SecTodayRowsState {
   return {
     error: "",
+    histogram: defaultSecHistogramWindow(900),
     loading: false,
     rows: [],
     sort,
@@ -3369,6 +3582,34 @@ function defaultSecTodayRowsState(sort: NewsTodaySort): SecTodayRowsState {
     },
     windowEndUtc: "",
     windowStartUtc: "",
+  };
+}
+
+function secHistogramFromPayload(payload: SecTodayRowsPayload["histogram"]): SecDailyHistogramState {
+  const binSeconds = Number(payload?.bin_seconds || 900);
+  const defaultWindow = defaultSecHistogramWindow(binSeconds);
+  const windowStartUtc = payload?.window_start_utc || defaultWindow.windowStartUtc;
+  const windowEndUtc = payload?.window_end_utc || defaultWindow.windowEndUtc;
+  return {
+    binSeconds,
+    error: String(payload?.error || ""),
+    rows: elapsedSecHistogramRows(
+      (payload?.rows || [])
+        .map((row) => ({
+          bucketUtc: String(row.bucket_utc || ""),
+          documentRows: Number(row.document_rows || 0),
+          filingOnlyRows: Number(row.filing_only_rows || 0),
+          textRows: Number(row.text_rows || 0),
+          totalRows: Number(row.total_rows || 0),
+          xbrlRows: Number(row.xbrl_rows || 0),
+        }))
+        .filter((row) => row.bucketUtc),
+      windowStartUtc,
+      windowEndUtc,
+      binSeconds,
+    ),
+    windowEndUtc,
+    windowStartUtc,
   };
 }
 
@@ -3781,6 +4022,66 @@ function serviceWorkPlanSummary(groups: ServiceWorkGroup[]) {
   );
 }
 
+function secHistogramSummary(rows: SecDailyHistogramDatum[]) {
+  return rows.reduce(
+    (summary, row) => {
+      summary.documents += row.documentRows;
+      summary.filingOnly += row.filingOnlyRows;
+      summary.text += row.textRows;
+      summary.total += row.totalRows;
+      summary.xbrl += row.xbrlRows;
+      return summary;
+    },
+    { documents: 0, filingOnly: 0, text: 0, total: 0, xbrl: 0 },
+  );
+}
+
+function secLiveFeedRows(service: ServiceStatusPayload): SecLiveFeedRow[] {
+  const rows = serviceActivitySourceRows(service)
+    .map((row) => secLiveFeedRow(row))
+    .filter((row): row is SecLiveFeedRow => Boolean(row));
+  const byKey = new Map<string, SecLiveFeedRow>();
+  for (const row of rows) {
+    const key = [row.accession || row.title, row.time, row.status].join("|");
+    if (!byKey.has(key)) byKey.set(key, row);
+  }
+  return Array.from(byKey.values())
+    .sort((left, right) => (right.timeMs ?? 0) - (left.timeMs ?? 0))
+    .slice(0, 50);
+}
+
+function secLiveFeedRow(row: Record<string, unknown>): SecLiveFeedRow | null {
+  const accession = firstString(row, ["accession_number", "accession", "accessionNumber"]);
+  const cik = firstString(row, ["cik", "central_index_key"]);
+  const form = firstString(row, ["form_type", "form", "type"]);
+  const title = firstString(row, ["title", "company_name", "issuer_name", "filer_name"]);
+  if (!accession && !cik && !form && !title) return null;
+  const timestamp = firstTimestamp(row);
+  const documentRows = firstString(row, ["documents", "document_rows", "docs"]);
+  const textRows = firstString(row, ["texts", "text_rows", "text_count"]);
+  const factRows = firstString(row, ["xbrl_facts", "xbrl_fact_rows", "facts_written"]);
+  const frameRows = firstString(row, ["xbrl_frames", "xbrl_frame_rows", "frames_written"]);
+  return {
+    accession,
+    cik,
+    company: firstString(row, ["company_name", "issuer_name", "filer_name"]),
+    documents: [
+      documentRows ? `${documentRows} docs` : "",
+      textRows ? `${textRows} text` : "",
+    ].filter(Boolean).join(" / "),
+    form,
+    raw: row,
+    status: firstString(row, ["status", "state", "result", "level"]) || "observed",
+    time: timestamp.label,
+    timeMs: timestamp.value,
+    title,
+    xbrl: [
+      factRows ? `${factRows} facts` : "",
+      frameRows ? `${frameRows} frames` : "",
+    ].filter(Boolean).join(" / "),
+  };
+}
+
 function serviceActivitySpec(service: ServiceStatusPayload): ServiceActivitySpec {
   const metrics = serviceMetricsRecord(service);
   const status = stringMetric(metrics, ["activity_status", "run_status", "status"]) || service.status || "unknown";
@@ -4142,6 +4443,20 @@ function newsHistogramHover(row: NewsDailyHistogramDatum) {
   };
 }
 
+function secHistogramHover(row: SecDailyHistogramDatum) {
+  const bucketDate = new Date(Date.parse(row.bucketUtc));
+  return {
+    documents: row.documentRows,
+    et: formatZoneDateTime(bucketDate, EXCHANGE_TIME_ZONE),
+    filingOnly: row.filingOnlyRows,
+    text: row.textRows,
+    total: row.totalRows,
+    utc: formatUtcDateTime(row.bucketUtc),
+    van: formatZoneDateTime(bucketDate, VANCOUVER_TIME_ZONE),
+    xbrl: row.xbrlRows,
+  };
+}
+
 function formatNewsBinDuration(binSeconds: number) {
   if (binSeconds > 0 && binSeconds % 60 === 0) {
     const minutes = binSeconds / 60;
@@ -4176,6 +4491,26 @@ function defaultNewsHistogramWindow(binSeconds: number): NewsDailyHistogramState
   };
 }
 
+function defaultSecHistogramWindow(binSeconds: number): SecDailyHistogramState {
+  const { day, month, year } = exchangeDateParts(new Date());
+  const start = zonedDateTimeToUtc(year, month, day, 0, 0, EXCHANGE_TIME_ZONE);
+  const nextDay = nextCalendarDate(year, month, day);
+  const end = zonedDateTimeToUtc(nextDay.year, nextDay.month, nextDay.day, 0, 0, EXCHANGE_TIME_ZONE);
+  const totalBins = Math.max(0, Math.ceil((end.getTime() - start.getTime()) / (binSeconds * 1000)) + 1);
+  const elapsedBins = Math.max(0, Math.min(totalBins, Math.ceil((Date.now() - start.getTime()) / (binSeconds * 1000)) + 1));
+  const rows = Array.from({ length: elapsedBins }, (_, index) => {
+    const bucketUtc = new Date(start.getTime() + index * binSeconds * 1000).toISOString();
+    return { bucketUtc, documentRows: 0, filingOnlyRows: 0, textRows: 0, totalRows: 0, xbrlRows: 0 };
+  });
+  return {
+    binSeconds,
+    error: "",
+    rows,
+    windowEndUtc: end.toISOString(),
+    windowStartUtc: start.toISOString(),
+  };
+}
+
 function elapsedNewsHistogramRows(rows: NewsDailyHistogramDatum[], windowStartUtc: string, windowEndUtc: string, binSeconds: number) {
   const start = Date.parse(windowStartUtc);
   const end = Date.parse(windowEndUtc);
@@ -4188,6 +4523,21 @@ function elapsedNewsHistogramRows(rows: NewsDailyHistogramDatum[], windowStartUt
     if (Number.isFinite(end) && bucket >= end) return false;
     if (bucket - halfBinMs >= cutoff) return false;
     return row.totalRows > 0 || row.singleTickerRows > 0 || row.broadOrNoneRows > 0;
+  });
+}
+
+function elapsedSecHistogramRows(rows: SecDailyHistogramDatum[], windowStartUtc: string, windowEndUtc: string, binSeconds: number) {
+  const start = Date.parse(windowStartUtc);
+  const end = Date.parse(windowEndUtc);
+  const cutoff = Math.min(Number.isFinite(end) ? end : Date.now(), Date.now());
+  const halfBinMs = Math.max(0, binSeconds * 500);
+  return rows.filter((row) => {
+    const bucket = Date.parse(row.bucketUtc);
+    if (!Number.isFinite(bucket)) return false;
+    if (Number.isFinite(start) && bucket < start) return false;
+    if (Number.isFinite(end) && bucket >= end) return false;
+    if (bucket - halfBinMs >= cutoff) return false;
+    return row.totalRows > 0 || row.filingOnlyRows > 0 || row.documentRows > 0 || row.textRows > 0 || row.xbrlRows > 0;
   });
 }
 
@@ -4204,6 +4554,22 @@ function newsHistogramFullWindowRows(rows: NewsDailyHistogramDatum[], windowStar
   return Array.from({ length: totalBins }, (_, index) => {
     const timestamp = start + index * binSeconds * 1000;
     return byTime.get(timestamp) ?? { broadOrNoneRows: 0, bucketUtc: new Date(timestamp).toISOString(), singleTickerRows: 0, totalRows: 0 };
+  });
+}
+
+function secHistogramFullWindowRows(rows: SecDailyHistogramDatum[], windowStartUtc: string, windowEndUtc: string, binSeconds: number) {
+  const start = Date.parse(windowStartUtc);
+  const end = Date.parse(windowEndUtc);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || binSeconds <= 0) return rows;
+  const byTime = new Map<number, SecDailyHistogramDatum>();
+  for (const row of rows) {
+    const timestamp = Date.parse(row.bucketUtc);
+    if (Number.isFinite(timestamp)) byTime.set(timestamp, row);
+  }
+  const totalBins = Math.max(1, Math.ceil((end - start) / (binSeconds * 1000)) + 1);
+  return Array.from({ length: totalBins }, (_, index) => {
+    const timestamp = start + index * binSeconds * 1000;
+    return byTime.get(timestamp) ?? { bucketUtc: new Date(timestamp).toISOString(), documentRows: 0, filingOnlyRows: 0, textRows: 0, totalRows: 0, xbrlRows: 0 };
   });
 }
 
@@ -5344,16 +5710,16 @@ function serviceResponsibilitySpecs(serviceId: ServiceId): ServiceResponsibility
     ],
     sec: [
       {
-        description: "SEC coverage manifest, current-day gaps, historical archive backfill, and bulk catch-up state.",
-        id: "coverage",
-        match: [/coverage|manifest|gap|backfill|catch.?up|archive|bulk|submissions|companyfacts|initial|historical/],
-        title: "Coverage, Gap Fill, Backfill",
-      },
-      {
         description: "SEC current feed polling, rate-limit aware retries, filing discovery, and duplicate suppression.",
         id: "live",
         match: [/poll|feed|rss|current|live|filing|accession|duplicate|skip|sec/],
         title: "Live SEC Feed Update",
+      },
+      {
+        description: "SEC coverage manifest, current-day gaps, historical archive backfill, and bulk catch-up state.",
+        id: "coverage",
+        match: [/coverage|manifest|gap|backfill|catch.?up|archive|bulk|submissions|companyfacts|initial|historical/],
+        title: "Coverage, Gap Fill, Backfill",
       },
       {
         description: "Filing text extraction, document parsing, XBRL companyfacts/frames, and canonical filing rows.",

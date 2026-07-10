@@ -2041,6 +2041,22 @@ button {
   background: #f79009;
 }
 
+.sec-live-histogram-legend .xbrl::before {
+  background: #7c3aed;
+}
+
+.sec-live-histogram-legend .text::before {
+  background: #17b26a;
+}
+
+.sec-live-histogram-legend .documents::before {
+  background: #2e90fa;
+}
+
+.sec-live-histogram-legend .filing::before {
+  background: #98a2b3;
+}
+
 .news-live-histogram-error {
   background: color-mix(in oklab, var(--badge-danger-bg) 40%, transparent);
   border: 1px solid var(--badge-danger-border);
@@ -2121,6 +2137,22 @@ button {
 
 .news-live-histogram-segment.broad {
   background: #f79009;
+}
+
+.news-live-histogram-segment.xbrl {
+  background: #7c3aed;
+}
+
+.news-live-histogram-segment.text {
+  background: #17b26a;
+}
+
+.news-live-histogram-segment.documents {
+  background: #2e90fa;
+}
+
+.news-live-histogram-segment.filing {
+  background: #98a2b3;
 }
 
 .news-live-summary {
@@ -2344,6 +2376,16 @@ button {
   min-height: 220px;
 }
 
+.sec-live-card .sec-live-feed-table-wrap {
+  height: 124px;
+  max-height: 124px;
+  min-height: 124px;
+}
+
+.sec-live-feed-table {
+  min-width: 0;
+}
+
 .news-poll-history-table th,
 .news-poll-history-table td,
 .news-publish-history-table th,
@@ -2448,6 +2490,51 @@ button {
 .news-poll-history-table th:nth-child(8),
 .news-poll-history-table td:nth-child(8) {
   width: 64px;
+}
+
+.sec-live-feed-table th,
+.sec-live-feed-table td {
+  text-align: left;
+}
+
+.sec-live-feed-table th:nth-child(1),
+.sec-live-feed-table td:nth-child(1) {
+  width: 104px;
+}
+
+.sec-live-feed-table th:nth-child(2),
+.sec-live-feed-table td:nth-child(2) {
+  width: 92px;
+}
+
+.sec-live-feed-table th:nth-child(3),
+.sec-live-feed-table td:nth-child(3) {
+  width: 64px;
+}
+
+.sec-live-feed-table th:nth-child(4),
+.sec-live-feed-table td:nth-child(4) {
+  width: 150px;
+}
+
+.sec-live-feed-table th:nth-child(5),
+.sec-live-feed-table td:nth-child(5) {
+  width: 92px;
+}
+
+.sec-live-feed-table th:nth-child(6),
+.sec-live-feed-table td:nth-child(6) {
+  width: auto;
+}
+
+.sec-live-feed-table th:nth-child(7),
+.sec-live-feed-table td:nth-child(7) {
+  width: 94px;
+}
+
+.sec-live-feed-table th:nth-child(8),
+.sec-live-feed-table td:nth-child(8) {
+  width: 88px;
 }
 
 .news-publish-history-table th:nth-child(1),
