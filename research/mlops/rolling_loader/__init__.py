@@ -17,6 +17,14 @@ from research.mlops.rolling_loader.daily_index_dataset import (
     DailyIndexLoaderState,
     DailyIndexTrainingBatch,
 )
+from research.mlops.rolling_loader.rust_chrono_loader import (
+    RustQueueRuntimeConfig,
+    RustQueueRuntimeStats,
+    build_rust_library,
+    profile_rust_queue_runtime,
+    rust_library_path,
+    rust_version,
+)
 
 __all__ = [
     "AsyncDailyIndexBatchLoader",
@@ -27,4 +35,10 @@ __all__ = [
     "DailyIndexLoaderConfig",
     "DailyIndexLoaderState",
     "DailyIndexTrainingBatch",
+    "RustQueueRuntimeConfig",
+    "RustQueueRuntimeStats",
+    "build_rust_library",
+    "profile_rust_queue_runtime",
+    "rust_library_path",
+    "rust_version",
 ]
