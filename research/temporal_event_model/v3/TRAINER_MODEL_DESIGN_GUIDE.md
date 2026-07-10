@@ -581,10 +581,6 @@ Loader replay rule:
   evict the oldest rows. Batch materialization gathers the equivalent cache
   snapshots by ticker/part in vectorized blocks and still verifies that each
   sample window ends at the origin ordinal and has no ordinal gap.
-- Replay windows use one-window lookahead. Origin refs and payload views for
-  the next window are prepared while the current window is materialized. Event
-  and sparse-context cache mutation remains strictly chronological and happens
-  only when that prepared window becomes current.
 - If configured days are adjacent in replay order, event and sparse-context
   cache state is carried into the next day. If the schedule jumps, state is
   rebuilt from saved context before that day's first origin.
