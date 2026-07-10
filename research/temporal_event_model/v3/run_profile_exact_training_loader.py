@@ -606,6 +606,8 @@ def _auto_coverage_plan(config: ExperimentConfig, *, required_keys: tuple[str, .
     sparse_groups = tuple(group for group in required_groups if group in {"News Embeddings", "SEC Embeddings", "XBRL", "Corporate Actions"})
     candidates: list[tuple[int, int, str]] = []
     checked = 0
+    rejected_late_context = 0
+    rejected_missing_origin = 0
     for month in config.loader.months or ():
         month_dir = Path(config.loader.cache_root) / f"month={month}"
         if not month_dir.exists():
@@ -624,21 +626,46 @@ def _auto_coverage_plan(config: ExperimentConfig, *, required_keys: tuple[str, .
             available_start = _ticker_sparse_available_start_us(manifest_path.parent, sparse_groups)
             if sparse_groups and available_start <= 0:
                 continue
-            candidates.append((int(available_start), int(score), ticker))
+            first_origin = _ticker_first_origin_us(manifest_path.parent)
+            if first_origin <= 0:
+                rejected_missing_origin += 1
+                continue
+            if sparse_groups and available_start > first_origin:
+                rejected_late_context += 1
+                continue
+            candidates.append((int(first_origin), int(score), ticker))
     ranked = sorted(candidates, key=lambda item: (item[0], -item[1], item[2]))
-    selected = tuple(ticker for _available_start, _score, ticker in ranked[:limit])
+    selected = tuple(ticker for _first_origin, _score, ticker in ranked[:limit])
     start_utc = ""
-    if ranked and sparse_groups:
-        start_us = int(ranked[0][0]) + 1_000_000
+    if ranked:
+        start_us = int(ranked[0][0])
         start_utc = datetime.fromtimestamp(start_us / 1_000_000, tz=timezone.utc).isoformat(timespec="seconds")
     detail.update(
         {
             "checked_manifests": int(checked),
             "candidate_tickers": int(len(ranked)),
+            "rejected_late_sparse_context": int(rejected_late_context),
+            "rejected_missing_origin": int(rejected_missing_origin),
             "reason": "context_rich_tickers" if selected else "no_matching_context_rich_tickers",
         }
     )
     return selected, start_utc, detail
+
+
+def _ticker_first_origin_us(package_dir: Path) -> int:
+    try:
+        import polars as pl  # type: ignore
+    except Exception:
+        return 0
+    path = package_dir / "daily_index.parquet"
+    if not path.exists():
+        return 0
+    try:
+        frame = pl.scan_parquet(path).select(pl.col("first_sip_timestamp_us").min().alias("first_origin")).collect()
+        value = frame.item(0, "first_origin") if int(frame.height) else None
+        return int(value or 0)
+    except Exception:
+        return 0
 
 
 def _ticker_sparse_available_start_us(package_dir: Path, required_groups: tuple[str, ...]) -> int:
