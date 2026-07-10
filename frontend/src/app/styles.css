@@ -1510,15 +1510,15 @@ button {
 
 .news-today-title-cell .news-today-cell-stack strong {
   color: var(--foreground);
-  font-size: 13px;
-  font-weight: 760;
+  font-size: 13.25px;
+  font-weight: 650;
   letter-spacing: 0;
-  line-height: 1.18;
+  line-height: 1.22;
 }
 
 .news-today-title-cell .news-today-cell-stack span {
-  font-size: 10.5px;
-  line-height: 1.25;
+  font-size: 10.75px;
+  line-height: 1.28;
 }
 
 .news-today-source-cell .news-today-cell-stack strong {
