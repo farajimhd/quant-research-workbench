@@ -489,6 +489,7 @@ type NewsEnrichmentHistoryRow = {
 
 type NewsCoverageHistoryRow = {
   chunkCount: number;
+  coverageId: string;
   detail: string;
   endUtc: string;
   event: string;
@@ -1924,6 +1925,10 @@ function NewsCoverageDetailModal({ row }: { row: NewsCoverageHistoryRow }) {
           <dd>{displayName(row.event)}</dd>
         </div>
         <div>
+          <dt>Coverage Id</dt>
+          <dd>{row.coverageId || "-"}</dd>
+        </div>
+        <div>
           <dt>Stage</dt>
           <dd>{row.stage || "-"}</dd>
         </div>
@@ -2088,6 +2093,7 @@ function newsCoverageHistoryRows(service: ServiceStatusPayload): NewsCoverageHis
   if (!gapStatus && !gapMessage) return [];
   return [{
     chunkCount: numericMetric(metrics, ["gap_fill_flushed_chunks"]),
+    coverageId: "gap_status_snapshot",
     detail: gapMessage || coverageStatusLabel(gapStatus),
     endUtc: "",
     event: "gap_status_snapshot",
@@ -2114,20 +2120,36 @@ function compactNewsCoverageHistoryRows(rows: NewsCoverageHistoryRow[]) {
   const seen = new Set<string>();
   const compactRows: NewsCoverageHistoryRow[] = [];
   for (const row of rows) {
-    const key = [
-      row.event,
-      row.stage,
-      row.status,
-      row.startUtc || "-",
-      row.endUtc || "-",
-      row.window || "-",
-      row.script || "",
-    ].join("|");
+    const key = newsCoverageHistoryJobKey(row);
     if (seen.has(key)) continue;
     seen.add(key);
     compactRows.push(row);
   }
   return compactRows;
+}
+
+function newsCoverageHistoryJobKey(row: NewsCoverageHistoryRow) {
+  if (row.coverageId) return `coverage:${row.event}:${row.coverageId}`;
+  if (row.event === "coverage_live_snapshot_written" || row.event === "coverage_gap_snapshot_written") {
+    return `coverage:${row.event}:${row.startUtc || row.stage || "unknown"}`;
+  }
+  if (row.event.startsWith("gap_fill_")) {
+    return [
+      "gap-fill",
+      row.startUtc || "-",
+      row.endUtc || "-",
+      row.script || "",
+    ].join("|");
+  }
+  return [
+    row.event,
+    row.stage,
+    row.status,
+    row.startUtc || "-",
+    row.endUtc || "-",
+    row.window || "-",
+    row.script || "",
+  ].join("|");
 }
 
 function isNewsPublishLogEvent(event: string) {
@@ -2174,6 +2196,7 @@ function newsCoverageHistoryRow(logRow: ServiceRuntimeLogRow): NewsCoverageHisto
   const totalChunks = numericMetric(fields, ["total_chunks", "chunks"]);
   return {
     chunkCount,
+    coverageId: stringMetric(fields, ["coverage_id", "gap_fill_id", "job_id", "run_id", "task_id"]),
     detail: coverageEventDetail(event, fields, summary, logRow.detail || ""),
     endUtc,
     event,
