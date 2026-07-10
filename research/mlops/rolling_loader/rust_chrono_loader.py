@@ -174,6 +174,12 @@ def load_rust_library(path: str | os.PathLike[str] | None = None, *, build_if_mi
             ctypes.POINTER(_FfiTensorAssemblyStats),
         ]
         lib.rolling_loader_rust_assemble_tensors.restype = ctypes.c_int32
+    if hasattr(lib, "rolling_loader_rust_profile_native_cache"):
+        lib.rolling_loader_rust_profile_native_cache.argtypes = [
+            ctypes.POINTER(_FfiNativeCacheProfileConfig),
+            ctypes.POINTER(_FfiNativeCacheProfileStats),
+        ]
+        lib.rolling_loader_rust_profile_native_cache.restype = ctypes.c_int32
     lib.rolling_loader_rust_version.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
     lib.rolling_loader_rust_version.restype = ctypes.c_size_t
     return lib
@@ -340,6 +346,142 @@ class RustTensorAssemblyStats:
 class RustTensorAssemblyResult:
     stats: RustTensorAssemblyStats
     outputs: dict[str, Any]
+
+
+@dataclass(slots=True)
+class RustNativeCacheProfileConfig:
+    cache_root: Path
+    month: str = "2019-02"
+    ticker_limit: int = 64
+    batch_size: int = 1024
+    max_batches: int = 8
+    event_stream_len: int = 1024
+    read_workers: int = 8
+    strict: bool = True
+
+
+@dataclass(slots=True)
+class RustNativeCacheProfileStats:
+    status: int
+    elapsed_ns: int
+    packages_discovered: int
+    packages_processed: int
+    parts_processed: int
+    parquet_files_opened: int
+    parquet_rows_seen: int
+    event_rows: int
+    origin_rows: int
+    samples: int
+    batches: int
+    invalid_event_windows: int
+    ordinal_mismatches: int
+    ticker_news_rows: int
+    market_news_rows: int
+    sec_filing_rows: int
+    xbrl_rows: int
+    corporate_action_rows: int
+    ticker_daily_bar_rows: int
+    global_daily_bar_rows: int
+    intraday_base_bar_rows: int
+    scanner_rows: int
+    text_selected: int
+    xbrl_selected: int
+    corporate_action_selected: int
+    ticker_daily_bar_selected: int
+    global_daily_bar_selected: int
+    scanner_dates_touched: int
+    schema_errors: int
+    io_errors: int
+    read_ns: int
+    event_ns: int
+    context_ns: int
+    checksum_bits: int
+
+    @property
+    def elapsed_seconds(self) -> float:
+        return float(self.elapsed_ns) / 1_000_000_000.0
+
+    @property
+    def read_seconds(self) -> float:
+        return float(self.read_ns) / 1_000_000_000.0
+
+    @property
+    def event_seconds(self) -> float:
+        return float(self.event_ns) / 1_000_000_000.0
+
+    @property
+    def context_seconds(self) -> float:
+        return float(self.context_ns) / 1_000_000_000.0
+
+    @property
+    def samples_per_second(self) -> float:
+        return float(self.samples) / self.elapsed_seconds if self.elapsed_seconds > 0 else 0.0
+
+    @property
+    def batches_per_second(self) -> float:
+        return float(self.batches) / self.elapsed_seconds if self.elapsed_seconds > 0 else 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        out = asdict(self)
+        out["elapsed_seconds"] = self.elapsed_seconds
+        out["read_seconds"] = self.read_seconds
+        out["event_seconds"] = self.event_seconds
+        out["context_seconds"] = self.context_seconds
+        out["samples_per_second"] = self.samples_per_second
+        out["batches_per_second"] = self.batches_per_second
+        return out
+
+
+class _FfiNativeCacheProfileConfig(ctypes.Structure):
+    _fields_ = [
+        ("cache_root", ctypes.c_char_p),
+        ("month", ctypes.c_char_p),
+        ("ticker_limit", ctypes.c_uint32),
+        ("batch_size", ctypes.c_uint32),
+        ("max_batches", ctypes.c_uint32),
+        ("event_stream_len", ctypes.c_uint32),
+        ("read_workers", ctypes.c_uint32),
+        ("strict", ctypes.c_uint32),
+    ]
+
+
+class _FfiNativeCacheProfileStats(ctypes.Structure):
+    _fields_ = [
+        ("status", ctypes.c_int32),
+        ("elapsed_ns", ctypes.c_uint64),
+        ("packages_discovered", ctypes.c_uint64),
+        ("packages_processed", ctypes.c_uint64),
+        ("parts_processed", ctypes.c_uint64),
+        ("parquet_files_opened", ctypes.c_uint64),
+        ("parquet_rows_seen", ctypes.c_uint64),
+        ("event_rows", ctypes.c_uint64),
+        ("origin_rows", ctypes.c_uint64),
+        ("samples", ctypes.c_uint64),
+        ("batches", ctypes.c_uint64),
+        ("invalid_event_windows", ctypes.c_uint64),
+        ("ordinal_mismatches", ctypes.c_uint64),
+        ("ticker_news_rows", ctypes.c_uint64),
+        ("market_news_rows", ctypes.c_uint64),
+        ("sec_filing_rows", ctypes.c_uint64),
+        ("xbrl_rows", ctypes.c_uint64),
+        ("corporate_action_rows", ctypes.c_uint64),
+        ("ticker_daily_bar_rows", ctypes.c_uint64),
+        ("global_daily_bar_rows", ctypes.c_uint64),
+        ("intraday_base_bar_rows", ctypes.c_uint64),
+        ("scanner_rows", ctypes.c_uint64),
+        ("text_selected", ctypes.c_uint64),
+        ("xbrl_selected", ctypes.c_uint64),
+        ("corporate_action_selected", ctypes.c_uint64),
+        ("ticker_daily_bar_selected", ctypes.c_uint64),
+        ("global_daily_bar_selected", ctypes.c_uint64),
+        ("scanner_dates_touched", ctypes.c_uint64),
+        ("schema_errors", ctypes.c_uint64),
+        ("io_errors", ctypes.c_uint64),
+        ("read_ns", ctypes.c_uint64),
+        ("event_ns", ctypes.c_uint64),
+        ("context_ns", ctypes.c_uint64),
+        ("checksum_bits", ctypes.c_uint64),
+    ]
 
 
 class _FfiRealCacheConfig(ctypes.Structure):
@@ -512,6 +654,37 @@ def profile_rust_real_cache_parts(
     _ = kept_alive
     payload = {name: int(getattr(ffi_stats, name)) for name, _ctype in _FfiRealCacheStats._fields_}
     return RustRealCacheRuntimeStats(**payload)
+
+
+def profile_rust_native_cache(
+    config: RustNativeCacheProfileConfig,
+    *,
+    library_path: str | os.PathLike[str] | None = None,
+    build_if_missing: bool = True,
+    release: bool = True,
+) -> RustNativeCacheProfileStats:
+    cache_root = str(Path(config.cache_root)).encode("utf-8")
+    month = str(config.month).encode("utf-8")
+    ffi_config = _FfiNativeCacheProfileConfig(
+        cache_root=ctypes.c_char_p(cache_root),
+        month=ctypes.c_char_p(month),
+        ticker_limit=max(0, int(config.ticker_limit)),
+        batch_size=max(1, int(config.batch_size)),
+        max_batches=max(1, int(config.max_batches)),
+        event_stream_len=max(1, int(config.event_stream_len)),
+        read_workers=max(1, int(config.read_workers)),
+        strict=1 if bool(config.strict) else 0,
+    )
+    ffi_stats = _FfiNativeCacheProfileStats()
+    lib = load_rust_library(library_path, build_if_missing=build_if_missing, release=release)
+    if not hasattr(lib, "rolling_loader_rust_profile_native_cache"):
+        raise RuntimeError("Loaded Rust library does not expose rolling_loader_rust_profile_native_cache; rebuild the DLL.")
+    status = int(lib.rolling_loader_rust_profile_native_cache(ctypes.byref(ffi_config), ctypes.byref(ffi_stats)))
+    payload = {name: int(getattr(ffi_stats, name)) for name, _ctype in _FfiNativeCacheProfileStats._fields_}
+    result = RustNativeCacheProfileStats(**payload)
+    if status != 0:
+        raise RuntimeError(f"rolling_loader_rust_profile_native_cache failed with status={status}: {result.to_dict()}")
+    return result
 
 
 def assemble_tensors_with_rust(

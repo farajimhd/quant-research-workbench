@@ -1,12 +1,17 @@
+use arrow_array::{Array, Int64Array, RecordBatch, UInt32Array, UInt64Array, UInt8Array};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use serde_json::Value;
 use std::collections::VecDeque;
-use std::ffi::c_char;
+use std::ffi::{c_char, CStr};
+use std::fs::{self, File};
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const VERSION: &str = "rolling_loader_rust/0.3.0";
+const VERSION: &str = "rolling_loader_rust/0.4.0";
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -157,6 +162,58 @@ pub struct RustTensorAssemblyStats {
     pub contiguous_tensors: u64,
     pub gathered_tensors: u64,
     pub invalid_specs: u64,
+    pub checksum_bits: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RustNativeCacheProfileConfig {
+    pub cache_root: *const c_char,
+    pub month: *const c_char,
+    pub ticker_limit: u32,
+    pub batch_size: u32,
+    pub max_batches: u32,
+    pub event_stream_len: u32,
+    pub read_workers: u32,
+    pub strict: u32,
+}
+
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+pub struct RustNativeCacheProfileStats {
+    pub status: i32,
+    pub elapsed_ns: u64,
+    pub packages_discovered: u64,
+    pub packages_processed: u64,
+    pub parts_processed: u64,
+    pub parquet_files_opened: u64,
+    pub parquet_rows_seen: u64,
+    pub event_rows: u64,
+    pub origin_rows: u64,
+    pub samples: u64,
+    pub batches: u64,
+    pub invalid_event_windows: u64,
+    pub ordinal_mismatches: u64,
+    pub ticker_news_rows: u64,
+    pub market_news_rows: u64,
+    pub sec_filing_rows: u64,
+    pub xbrl_rows: u64,
+    pub corporate_action_rows: u64,
+    pub ticker_daily_bar_rows: u64,
+    pub global_daily_bar_rows: u64,
+    pub intraday_base_bar_rows: u64,
+    pub scanner_rows: u64,
+    pub text_selected: u64,
+    pub xbrl_selected: u64,
+    pub corporate_action_selected: u64,
+    pub ticker_daily_bar_selected: u64,
+    pub global_daily_bar_selected: u64,
+    pub scanner_dates_touched: u64,
+    pub schema_errors: u64,
+    pub io_errors: u64,
+    pub read_ns: u64,
+    pub event_ns: u64,
+    pub context_ns: u64,
     pub checksum_bits: u64,
 }
 
@@ -1236,6 +1293,808 @@ fn run_tensor_assembly(
     }
 }
 
+fn run_native_cache_profile(
+    cache_root: PathBuf,
+    month: String,
+    cfg: RustNativeCacheProfileConfig,
+) -> RustNativeCacheProfileStats {
+    let started = Instant::now();
+    let mut base = RustNativeCacheProfileStats {
+        status: 0,
+        ..RustNativeCacheProfileStats::default()
+    };
+    let month_dir = cache_root.join(format!("month={month}"));
+    let package_dirs = match discover_native_packages(&month_dir, cfg.ticker_limit as usize) {
+        Ok(items) => items,
+        Err(_) => {
+            base.status = -3;
+            base.io_errors = 1;
+            base.elapsed_ns = started.elapsed().as_nanos() as u64;
+            return base;
+        }
+    };
+    base.packages_discovered = package_dirs.len() as u64;
+    if package_dirs.is_empty() {
+        base.elapsed_ns = started.elapsed().as_nanos() as u64;
+        return base;
+    }
+
+    let workers = (cfg.read_workers.max(1) as usize).min(package_dirs.len().max(1));
+    let target_samples =
+        (cfg.batch_size.max(1) as u64).saturating_mul(cfg.max_batches.max(1) as u64);
+    let queue = Arc::new(Mutex::new(VecDeque::from(package_dirs)));
+    let stats = Arc::new(Mutex::new(base));
+    let global_samples = Arc::new(AtomicU64::new(0));
+    let strict = cfg.strict != 0;
+    let stream_len = cfg.event_stream_len.max(1) as usize;
+    let mut handles = Vec::with_capacity(workers);
+
+    for _ in 0..workers {
+        let queue = Arc::clone(&queue);
+        let stats = Arc::clone(&stats);
+        let samples = Arc::clone(&global_samples);
+        let cache_root = cache_root.clone();
+        let month = month.clone();
+        handles.push(thread::spawn(move || loop {
+            if samples.load(Ordering::Acquire) >= target_samples {
+                break;
+            }
+            let package_dir = {
+                let mut guard = queue.lock().expect("native package queue poisoned");
+                guard.pop_front()
+            };
+            let Some(package_dir) = package_dir else {
+                break;
+            };
+            let local = process_native_package(
+                &cache_root,
+                &month,
+                &package_dir,
+                stream_len,
+                target_samples,
+                &samples,
+                strict,
+            );
+            let mut guard = stats.lock().expect("native stats mutex poisoned");
+            combine_native_stats(&mut guard, &local);
+            if strict && local.status != 0 {
+                guard.status = local.status;
+                break;
+            }
+        }));
+    }
+    for handle in handles {
+        let _ = handle.join();
+    }
+    let mut out = *stats.lock().expect("native stats mutex poisoned");
+    out.samples = global_samples.load(Ordering::Relaxed);
+    out.batches = out.samples / cfg.batch_size.max(1) as u64;
+    out.elapsed_ns = started.elapsed().as_nanos() as u64;
+    out
+}
+
+fn discover_native_packages(month_dir: &Path, ticker_limit: usize) -> Result<Vec<PathBuf>, String> {
+    let mut dirs = Vec::new();
+    for entry in fs::read_dir(month_dir).map_err(|err| err.to_string())? {
+        let entry = entry.map_err(|err| err.to_string())?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("ticker=") {
+            continue;
+        }
+        if path.join("manifest.json").exists() {
+            dirs.push(path);
+        }
+    }
+    dirs.sort();
+    if ticker_limit > 0 && dirs.len() > ticker_limit {
+        dirs.truncate(ticker_limit);
+    }
+    Ok(dirs)
+}
+
+fn process_native_package(
+    cache_root: &Path,
+    month: &str,
+    package_dir: &Path,
+    stream_len: usize,
+    target_samples: u64,
+    global_samples: &AtomicU64,
+    strict: bool,
+) -> RustNativeCacheProfileStats {
+    let mut stats = RustNativeCacheProfileStats {
+        status: 0,
+        packages_processed: 1,
+        ..RustNativeCacheProfileStats::default()
+    };
+    let manifest_path = package_dir.join("manifest.json");
+    let manifest_text = match fs::read_to_string(&manifest_path) {
+        Ok(text) => text,
+        Err(_) => {
+            stats.status = -3;
+            stats.io_errors += 1;
+            return stats;
+        }
+    };
+    let manifest: Value = match serde_json::from_str(&manifest_text) {
+        Ok(value) => value,
+        Err(_) => {
+            stats.status = -4;
+            stats.schema_errors += 1;
+            return stats;
+        }
+    };
+    touch_native_context_files(cache_root, month, &manifest, &mut stats);
+    let Some(parts) = manifest.get("parts").and_then(|value| value.as_array()) else {
+        stats.status = -4;
+        stats.schema_errors += 1;
+        return stats;
+    };
+    let mut event_parts: Vec<&Value> = parts
+        .iter()
+        .filter(|part| {
+            part.get("modality").and_then(|value| value.as_str()) == Some("events")
+                && part
+                    .get("event_path")
+                    .and_then(|value| value.as_str())
+                    .is_some()
+                && part
+                    .get("event_rows")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0)
+                    > 0
+        })
+        .collect();
+    event_parts.sort_by_key(|part| {
+        (
+            part.get("ordinal_min")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+            part.get("part_id")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+        )
+    });
+    let mut all_event_ordinals: Vec<u64> = Vec::new();
+    for part in event_parts {
+        if global_samples.load(Ordering::Acquire) >= target_samples {
+            break;
+        }
+        let Some(event_rel) = part.get("event_path").and_then(|value| value.as_str()) else {
+            stats.schema_errors += 1;
+            if strict {
+                stats.status = -4;
+                return stats;
+            }
+            continue;
+        };
+        let event_prefix = all_event_ordinals.len() as i64;
+        let event_read_started = Instant::now();
+        let event_path = cache_root.join(event_rel);
+        match read_u64_column(&event_path, "ordinal", &mut stats) {
+            Ok(mut values) => {
+                stats.event_rows += values.len() as u64;
+                all_event_ordinals.append(&mut values);
+            }
+            Err(_) => {
+                if strict {
+                    stats.status = -5;
+                    stats.event_ns += event_read_started.elapsed().as_nanos() as u64;
+                    return stats;
+                }
+                continue;
+            }
+        }
+        stats.event_ns += event_read_started.elapsed().as_nanos() as u64;
+        if part.get("kind").and_then(|value| value.as_str()) != Some("origin") {
+            continue;
+        }
+        let origin_rows = part
+            .get("origin_rows")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let event_rows = part
+            .get("event_rows")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        if origin_rows == 0 || event_rows == 0 {
+            continue;
+        }
+        let Some(origin_rel) = part.get("origin_path").and_then(|value| value.as_str()) else {
+            stats.schema_errors += 1;
+            if strict {
+                stats.status = -4;
+                return stats;
+            }
+            continue;
+        };
+        let source_date = source_date_from_part(part);
+        let origin_path = cache_root.join(origin_rel);
+
+        let origin_started = Instant::now();
+        let origin_ordinals = match read_u64_column(&origin_path, "origin_ordinal", &mut stats) {
+            Ok(values) => values,
+            Err(_) => {
+                if strict {
+                    stats.status = -5;
+                    return stats;
+                }
+                continue;
+            }
+        };
+        let origin_offsets = match read_i64_column(&origin_path, "event_row_offset", &mut stats) {
+            Ok(values) => values,
+            Err(_) => {
+                if strict {
+                    stats.status = -5;
+                    return stats;
+                }
+                continue;
+            }
+        };
+        let origin_timestamps =
+            match read_u64_column(&origin_path, "origin_timestamp_us", &mut stats) {
+                Ok(values) => values,
+                Err(_) => {
+                    if strict {
+                        stats.status = -5;
+                        return stats;
+                    }
+                    continue;
+                }
+            };
+        let origin_offsets: Vec<i64> = origin_offsets
+            .into_iter()
+            .map(|value| value.saturating_add(event_prefix))
+            .collect();
+        stats.origin_rows += origin_ordinals.len() as u64;
+        stats.read_ns += origin_started.elapsed().as_nanos() as u64;
+        let part_samples = validate_native_event_windows(
+            &all_event_ordinals,
+            &origin_ordinals,
+            &origin_offsets,
+            &origin_timestamps,
+            stream_len,
+            target_samples,
+            global_samples,
+            &mut stats,
+        );
+        if part_samples > 0 {
+            touch_native_part_day_context(
+                cache_root,
+                month,
+                package_dir,
+                &source_date,
+                &origin_timestamps,
+                &mut stats,
+            );
+        }
+        stats.parts_processed += 1;
+    }
+    stats
+}
+
+fn validate_native_event_windows(
+    event_ordinals: &[u64],
+    origin_ordinals: &[u64],
+    origin_offsets: &[i64],
+    origin_timestamps: &[u64],
+    stream_len: usize,
+    target_samples: u64,
+    global_samples: &AtomicU64,
+    stats: &mut RustNativeCacheProfileStats,
+) -> u64 {
+    let count = origin_ordinals
+        .len()
+        .min(origin_offsets.len())
+        .min(origin_timestamps.len());
+    let mut accepted = 0_u64;
+    for row in 0..count {
+        if global_samples.load(Ordering::Acquire) >= target_samples {
+            break;
+        }
+        let offset = origin_offsets[row];
+        if offset < 0 {
+            stats.invalid_event_windows += 1;
+            continue;
+        }
+        let offset = offset as usize;
+        if offset >= event_ordinals.len() || offset + 1 < stream_len {
+            stats.invalid_event_windows += 1;
+            continue;
+        }
+        if event_ordinals[offset] != origin_ordinals[row] {
+            stats.ordinal_mismatches += 1;
+            continue;
+        }
+        let start = offset + 1 - stream_len;
+        let end = offset;
+        if event_ordinals[end].saturating_sub(event_ordinals[start]) != (stream_len - 1) as u64 {
+            stats.invalid_event_windows += 1;
+            continue;
+        }
+        let mut contiguous = true;
+        for pos in start + 1..=end {
+            if event_ordinals[pos] != event_ordinals[pos - 1].saturating_add(1) {
+                contiguous = false;
+                break;
+            }
+        }
+        if !contiguous {
+            stats.invalid_event_windows += 1;
+            continue;
+        }
+        accepted += 1;
+        global_samples.fetch_add(1, Ordering::AcqRel);
+        stats.checksum_bits ^= origin_ordinals[row].rotate_left((row % 63) as u32)
+            ^ origin_timestamps[row].rotate_left(((row + 7) % 63) as u32)
+            ^ event_ordinals[start].rotate_left(((row + 13) % 63) as u32);
+    }
+    accepted
+}
+
+fn touch_native_context_files(
+    cache_root: &Path,
+    month: &str,
+    manifest: &Value,
+    stats: &mut RustNativeCacheProfileStats,
+) {
+    let Some(parts) = manifest
+        .get("modality_parts")
+        .and_then(|value| value.as_array())
+    else {
+        return;
+    };
+    for part in parts {
+        let Some(paths) = part.get("output_paths").and_then(|value| value.as_object()) else {
+            continue;
+        };
+        for (name, rel) in paths {
+            let Some(rel) = rel.as_str() else {
+                continue;
+            };
+            let path = cache_root.join(rel);
+            let started = Instant::now();
+            let row_count =
+                match parquet_row_count_and_validate(&path, required_columns_for_modality(name)) {
+                    Ok(rows) => rows,
+                    Err(_) => {
+                        stats.schema_errors += 1;
+                        continue;
+                    }
+                };
+            stats.context_ns += started.elapsed().as_nanos() as u64;
+            stats.parquet_files_opened += 1;
+            stats.parquet_rows_seen += row_count;
+            match name.as_str() {
+                "news_embeddings" => stats.ticker_news_rows += row_count,
+                "sec_embeddings" => stats.sec_filing_rows += row_count,
+                "xbrl" => stats.xbrl_rows += row_count,
+                "corporate_actions" => stats.corporate_action_rows += row_count,
+                "macro_bars" => stats.ticker_daily_bar_rows += row_count,
+                "intraday_base_bars" => stats.intraday_base_bar_rows += row_count,
+                _ => {}
+            }
+        }
+    }
+    let global_dir = cache_root.join(format!("month={month}")).join("global");
+    if let Some(path) = first_parquet_in(&global_dir.join("market_news_embeddings")) {
+        if let Ok(rows) = parquet_row_count_and_validate(
+            &path,
+            &["timestamp_us", "token_chunk_index", "embedding"],
+        ) {
+            stats.parquet_files_opened += 1;
+            stats.parquet_rows_seen += rows;
+            stats.market_news_rows += rows;
+        }
+    }
+    if let Some(path) = first_parquet_in(&global_dir.join("global_macro_bars")) {
+        if let Ok(rows) = parquet_row_count_and_validate(
+            &path,
+            &["sym", "bar_start_ms", "bar_family", "open", "close"],
+        ) {
+            stats.parquet_files_opened += 1;
+            stats.parquet_rows_seen += rows;
+            stats.global_daily_bar_rows += rows;
+        }
+    }
+}
+
+fn touch_native_part_day_context(
+    cache_root: &Path,
+    month: &str,
+    package_dir: &Path,
+    source_date: &str,
+    origin_timestamps: &[u64],
+    stats: &mut RustNativeCacheProfileStats,
+) {
+    if source_date.is_empty() || origin_timestamps.is_empty() {
+        return;
+    }
+    let started = Instant::now();
+    for dir in [
+        "news_embeddings",
+        "sec_embeddings",
+        "xbrl",
+        "corporate_actions",
+        "macro_bars",
+    ] {
+        if let Some(path) = first_parquet_in(&package_dir.join(dir)) {
+            let timestamp_col = if dir == "corporate_actions" {
+                "available_timestamp_us"
+            } else if dir == "macro_bars" {
+                "bar_start_ms"
+            } else {
+                "timestamp_us"
+            };
+            if let Ok(timestamps) = read_i64_or_u64_column(&path, timestamp_col, stats) {
+                let selected = count_asof_selected(
+                    &timestamps,
+                    origin_timestamps,
+                    max_items_for_context_dir(dir),
+                );
+                match dir {
+                    "news_embeddings" => stats.text_selected += selected,
+                    "sec_embeddings" => stats.text_selected += selected,
+                    "xbrl" => stats.xbrl_selected += selected,
+                    "corporate_actions" => stats.corporate_action_selected += selected,
+                    "macro_bars" => stats.ticker_daily_bar_selected += selected,
+                    _ => {}
+                }
+            }
+        }
+    }
+    let global_dir = cache_root.join(format!("month={month}")).join("global");
+    if let Some(path) = first_parquet_in(&global_dir.join("market_news_embeddings")) {
+        if let Ok(timestamps) = read_i64_or_u64_column(&path, "timestamp_us", stats) {
+            stats.text_selected += count_asof_selected(&timestamps, origin_timestamps, 16);
+        }
+    }
+    if let Some(path) = first_parquet_in(&global_dir.join("global_macro_bars")) {
+        if let Ok(timestamps_ms) = read_i64_or_u64_column(&path, "bar_start_ms", stats) {
+            let timestamps_us: Vec<i64> = timestamps_ms
+                .iter()
+                .map(|value| value.saturating_mul(1000))
+                .collect();
+            stats.global_daily_bar_selected +=
+                count_asof_selected(&timestamps_us, origin_timestamps, 3);
+        }
+    }
+    let scanner_path = global_dir
+        .join("scanner")
+        .join(format!("scanner_{source_date}.parquet"));
+    if scanner_path.exists() {
+        if let Ok(rows) = parquet_row_count_and_validate(
+            &scanner_path,
+            &[
+                "source_date",
+                "ticker",
+                "scanner_bucket",
+                "scanner_timestamp_us",
+            ],
+        ) {
+            stats.parquet_files_opened += 1;
+            stats.parquet_rows_seen += rows;
+            stats.scanner_rows += rows;
+            stats.scanner_dates_touched += 1;
+        }
+    }
+    stats.context_ns += started.elapsed().as_nanos() as u64;
+}
+
+fn source_date_from_part(part: &Value) -> String {
+    if let Some(job_id) = part.get("job_id").and_then(|value| value.as_str()) {
+        for token in job_id.split('|') {
+            if token.len() == 10
+                && token.as_bytes().get(4) == Some(&b'-')
+                && token.as_bytes().get(7) == Some(&b'-')
+            {
+                return token.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+fn required_columns_for_modality(name: &str) -> &'static [&'static str] {
+    match name {
+        "news_embeddings" | "sec_embeddings" => &["timestamp_us", "token_chunk_index", "embedding"],
+        "xbrl" => &["timestamp_us", "value", "taxonomy_id", "tag_id"],
+        "corporate_actions" => &[
+            "available_timestamp_us",
+            "effective_timestamp_us",
+            "action_type_id",
+        ],
+        "macro_bars" => &["sym", "bar_start_ms", "bar_family", "open", "close"],
+        "intraday_base_bars" => &[
+            "local_date",
+            "label_resolution_us",
+            "bucket_index",
+            "bar_family",
+            "open",
+            "close",
+            "event_count",
+        ],
+        "intraday_condition_events" => &["timestamp_us"],
+        _ => &[],
+    }
+}
+
+fn max_items_for_context_dir(dir: &str) -> usize {
+    match dir {
+        "news_embeddings" => 8,
+        "sec_embeddings" => 4,
+        "xbrl" => 4096,
+        "corporate_actions" => 128,
+        "macro_bars" => 200,
+        _ => 1,
+    }
+}
+
+fn first_parquet_in(dir: &Path) -> Option<PathBuf> {
+    let entries = fs::read_dir(dir).ok()?;
+    let mut paths = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) == Some("parquet") {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    paths.into_iter().next()
+}
+
+fn parquet_row_count_and_validate(path: &Path, required: &[&str]) -> Result<u64, String> {
+    let file = File::open(path).map_err(|err| err.to_string())?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|err| err.to_string())?;
+    let schema = builder.schema();
+    for column in required {
+        if schema.index_of(column).is_err() {
+            return Err(format!(
+                "missing required column {column} in {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(builder.metadata().file_metadata().num_rows().max(0) as u64)
+}
+
+fn read_batches(
+    path: &Path,
+    stats: &mut RustNativeCacheProfileStats,
+) -> Result<Vec<RecordBatch>, String> {
+    let file = File::open(path).map_err(|err| {
+        stats.io_errors += 1;
+        err.to_string()
+    })?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|err| {
+        stats.schema_errors += 1;
+        err.to_string()
+    })?;
+    let mut reader = builder.with_batch_size(65_536).build().map_err(|err| {
+        stats.schema_errors += 1;
+        err.to_string()
+    })?;
+    let mut batches = Vec::new();
+    while let Some(batch) = reader.next() {
+        let batch = batch.map_err(|err| {
+            stats.io_errors += 1;
+            err.to_string()
+        })?;
+        stats.parquet_rows_seen += batch.num_rows() as u64;
+        batches.push(batch);
+    }
+    stats.parquet_files_opened += 1;
+    Ok(batches)
+}
+
+fn read_u64_column(
+    path: &Path,
+    column: &str,
+    stats: &mut RustNativeCacheProfileStats,
+) -> Result<Vec<u64>, String> {
+    let mut values = Vec::new();
+    for batch in read_batches(path, stats)? {
+        append_u64_from_batch(&batch, column, &mut values)?;
+    }
+    Ok(values)
+}
+
+fn read_i64_column(
+    path: &Path,
+    column: &str,
+    stats: &mut RustNativeCacheProfileStats,
+) -> Result<Vec<i64>, String> {
+    let mut values = Vec::new();
+    for batch in read_batches(path, stats)? {
+        append_i64_from_batch(&batch, column, &mut values)?;
+    }
+    Ok(values)
+}
+
+fn read_i64_or_u64_column(
+    path: &Path,
+    column: &str,
+    stats: &mut RustNativeCacheProfileStats,
+) -> Result<Vec<i64>, String> {
+    let mut values = Vec::new();
+    for batch in read_batches(path, stats)? {
+        if append_i64_from_batch(&batch, column, &mut values).is_ok() {
+            continue;
+        }
+        let mut unsigned = Vec::new();
+        append_u64_from_batch(&batch, column, &mut unsigned)?;
+        values.extend(
+            unsigned
+                .into_iter()
+                .map(|value| value.min(i64::MAX as u64) as i64),
+        );
+    }
+    values.sort_unstable();
+    Ok(values)
+}
+
+fn append_u64_from_batch(
+    batch: &RecordBatch,
+    column: &str,
+    values: &mut Vec<u64>,
+) -> Result<(), String> {
+    let index = batch
+        .schema()
+        .index_of(column)
+        .map_err(|_| format!("missing column {column}"))?;
+    let array = batch.column(index);
+    if let Some(array) = array.as_any().downcast_ref::<UInt64Array>() {
+        for row in 0..array.len() {
+            values.push(if array.is_null(row) {
+                0
+            } else {
+                array.value(row)
+            });
+        }
+        return Ok(());
+    }
+    if let Some(array) = array.as_any().downcast_ref::<UInt32Array>() {
+        for row in 0..array.len() {
+            values.push(if array.is_null(row) {
+                0
+            } else {
+                array.value(row) as u64
+            });
+        }
+        return Ok(());
+    }
+    if let Some(array) = array.as_any().downcast_ref::<UInt8Array>() {
+        for row in 0..array.len() {
+            values.push(if array.is_null(row) {
+                0
+            } else {
+                array.value(row) as u64
+            });
+        }
+        return Ok(());
+    }
+    if let Some(array) = array.as_any().downcast_ref::<Int64Array>() {
+        for row in 0..array.len() {
+            let value = if array.is_null(row) {
+                0
+            } else {
+                array.value(row).max(0) as u64
+            };
+            values.push(value);
+        }
+        return Ok(());
+    }
+    Err(format!("column {column} is not integer-compatible"))
+}
+
+fn append_i64_from_batch(
+    batch: &RecordBatch,
+    column: &str,
+    values: &mut Vec<i64>,
+) -> Result<(), String> {
+    let index = batch
+        .schema()
+        .index_of(column)
+        .map_err(|_| format!("missing column {column}"))?;
+    let array = batch.column(index);
+    if let Some(array) = array.as_any().downcast_ref::<Int64Array>() {
+        for row in 0..array.len() {
+            values.push(if array.is_null(row) {
+                0
+            } else {
+                array.value(row)
+            });
+        }
+        return Ok(());
+    }
+    if let Some(array) = array.as_any().downcast_ref::<UInt64Array>() {
+        for row in 0..array.len() {
+            values.push(if array.is_null(row) {
+                0
+            } else {
+                array.value(row).min(i64::MAX as u64) as i64
+            });
+        }
+        return Ok(());
+    }
+    if let Some(array) = array.as_any().downcast_ref::<UInt32Array>() {
+        for row in 0..array.len() {
+            values.push(if array.is_null(row) {
+                0
+            } else {
+                array.value(row) as i64
+            });
+        }
+        return Ok(());
+    }
+    Err(format!("column {column} is not integer-compatible"))
+}
+
+fn count_asof_selected(timestamps: &[i64], origins_us: &[u64], max_items: usize) -> u64 {
+    if timestamps.is_empty() || max_items == 0 {
+        return 0;
+    }
+    let mut selected = 0_u64;
+    for origin in origins_us {
+        let origin = (*origin).min(i64::MAX as u64) as i64;
+        let right = timestamps.partition_point(|value| *value <= origin);
+        selected += right.min(max_items) as u64;
+    }
+    selected
+}
+
+fn combine_native_stats(dst: &mut RustNativeCacheProfileStats, src: &RustNativeCacheProfileStats) {
+    if src.status != 0 && dst.status == 0 {
+        dst.status = src.status;
+    }
+    dst.packages_processed += src.packages_processed;
+    dst.parts_processed += src.parts_processed;
+    dst.parquet_files_opened += src.parquet_files_opened;
+    dst.parquet_rows_seen += src.parquet_rows_seen;
+    dst.event_rows += src.event_rows;
+    dst.origin_rows += src.origin_rows;
+    dst.invalid_event_windows += src.invalid_event_windows;
+    dst.ordinal_mismatches += src.ordinal_mismatches;
+    dst.ticker_news_rows += src.ticker_news_rows;
+    dst.market_news_rows += src.market_news_rows;
+    dst.sec_filing_rows += src.sec_filing_rows;
+    dst.xbrl_rows += src.xbrl_rows;
+    dst.corporate_action_rows += src.corporate_action_rows;
+    dst.ticker_daily_bar_rows += src.ticker_daily_bar_rows;
+    dst.global_daily_bar_rows += src.global_daily_bar_rows;
+    dst.intraday_base_bar_rows += src.intraday_base_bar_rows;
+    dst.scanner_rows += src.scanner_rows;
+    dst.text_selected += src.text_selected;
+    dst.xbrl_selected += src.xbrl_selected;
+    dst.corporate_action_selected += src.corporate_action_selected;
+    dst.ticker_daily_bar_selected += src.ticker_daily_bar_selected;
+    dst.global_daily_bar_selected += src.global_daily_bar_selected;
+    dst.scanner_dates_touched += src.scanner_dates_touched;
+    dst.schema_errors += src.schema_errors;
+    dst.io_errors += src.io_errors;
+    dst.read_ns += src.read_ns;
+    dst.event_ns += src.event_ns;
+    dst.context_ns += src.context_ns;
+    dst.checksum_bits ^= src.checksum_bits;
+}
+
+fn c_string(ptr: *const c_char) -> Result<String, String> {
+    if ptr.is_null() {
+        return Err("null string pointer".to_string());
+    }
+    let value = unsafe { CStr::from_ptr(ptr) };
+    value
+        .to_str()
+        .map(|text| text.to_string())
+        .map_err(|err| err.to_string())
+}
+
 #[no_mangle]
 pub extern "C" fn rolling_loader_rust_profile(
     config: *const RustQueueProfileConfig,
@@ -1376,6 +2235,53 @@ pub extern "C" fn rolling_loader_rust_assemble_tensors(
         ptr::write(stats, result);
     }
     0
+}
+
+#[no_mangle]
+pub extern "C" fn rolling_loader_rust_profile_native_cache(
+    config: *const RustNativeCacheProfileConfig,
+    stats: *mut RustNativeCacheProfileStats,
+) -> i32 {
+    if stats.is_null() || config.is_null() {
+        return -1;
+    }
+    let cfg = unsafe { *config };
+    let cache_root = match c_string(cfg.cache_root) {
+        Ok(value) => PathBuf::from(value),
+        Err(_) => {
+            unsafe {
+                ptr::write(
+                    stats,
+                    RustNativeCacheProfileStats {
+                        status: -2,
+                        ..RustNativeCacheProfileStats::default()
+                    },
+                );
+            }
+            return -2;
+        }
+    };
+    let month = match c_string(cfg.month) {
+        Ok(value) => value,
+        Err(_) => {
+            unsafe {
+                ptr::write(
+                    stats,
+                    RustNativeCacheProfileStats {
+                        status: -2,
+                        ..RustNativeCacheProfileStats::default()
+                    },
+                );
+            }
+            return -2;
+        }
+    };
+    let result = run_native_cache_profile(cache_root, month, cfg);
+    let status = result.status;
+    unsafe {
+        ptr::write(stats, result);
+    }
+    status
 }
 
 #[no_mangle]

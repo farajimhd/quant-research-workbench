@@ -54,19 +54,26 @@ concurrency shape can keep shared cache state hot without Python object copying.
 
 ## Not Yet Replaced
 
-The current Rust profile does not yet read parquet directly and does not yet
-emit full trainer batches.  Full integration still needs:
+The Rust crate now includes Arrow/Parquet and can open the daily-index cache
+artifacts directly.  The native cache profile is manifest-driven:
 
-- Rust-side parquet/Arrow readers or Python-fed zero-copy Arrow buffers;
-- native Rust as-of selection for news, SEC, XBRL, corporate actions, bars, and
-  scanner;
-- native Rust label index/cache state;
-- Python batch wrapper returning NumPy/DLPack-compatible tensors from Rust-owned
-  buffers;
-- v3 trainer switch from `AsyncDailyIndexBatchLoader` to the Rust loader.
+- discovers `month=YYYY-MM/ticker=.../manifest.json` packages;
+- reads event/context/origin parquet files from Rust;
+- builds a single ticker event stream by appending the saved context event part
+  before origin event parts;
+- validates each raw event stream window ends exactly at the origin ordinal and
+  does not cross ordinal gaps;
+- touches the sparse context artifacts declared in `modality_parts`;
+- runs native as-of selection counters for text embeddings, XBRL, corporate
+  actions, ticker daily bars, global daily bars, and scanner source dates.
 
-The current crate is intentionally dependency-free so it can build in the
-workstation environment without fetching PyO3/Arrow crates.
+This removes the previous "Rust cannot read the cache files" boundary.
+
+What is still not replaced is the trainer-facing batch object.  The v3 trainer
+still receives `DailyIndexTrainingBatch` from the Python loader.  Full trainer
+replacement still needs a Rust-owned batch-buffer API that exposes the nested
+`x`, `y`, identity, masks, and metadata buffers to Python as NumPy/DLPack
+without first materializing those tensors in Python.
 
 ## Profiling
 
@@ -85,6 +92,10 @@ There are two profilers:
   payloads to the Rust assembler. It verifies equality by default. This measures
   the full final tensor assembly/copy boundary, but it still relies on Python
   for parquet reads and per-modality as-of materialization.
+- `run_profile_rust_native_cache_loader.py` is the native parquet-reader smoke
+  profile. It opens real daily-index cache parquet files from Rust, validates
+  raw event stream continuity with saved context rows, and touches all required
+  modality artifact types. It does not yet return trainer batches.
 
 Build and profile from Python:
 
@@ -92,6 +103,7 @@ Build and profile from Python:
 python research\mlops\rolling_loader\run_profile_rust_chrono_loader.py
 python research\mlops\rolling_loader\run_profile_rust_real_cache_loader.py
 python research\mlops\rolling_loader\run_profile_rust_full_batch_assembly.py
+python research\mlops\rolling_loader\run_profile_rust_native_cache_loader.py
 ```
 
 The no-argument profile runs the default workstation grid:

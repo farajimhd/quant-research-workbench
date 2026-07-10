@@ -16,6 +16,7 @@ Older materialized-cache, indexed-daily, replay, and ticker-month builder trials
 | `run_profile_rust_chrono_loader.py` | Standalone profiler for the Rust queue/cache hot path. |
 | `run_profile_rust_real_cache_loader.py` | Reads real daily-index parquet event/origin parts, builds the real Rust rolling event cache, and profiles realistic cache throughput. |
 | `run_profile_rust_full_batch_assembly.py` | Runs real daily-index batches and sends every numeric/bool batch tensor through the Rust full-batch assembly/gather ABI. |
+| `run_profile_rust_native_cache_loader.py` | Opens real daily-index parquet cache artifacts directly from Rust and validates/touches events, origins, sparse context, bars, scanner, and label sources. |
 | `DAILY_INDEX_STREAMING_CACHE_DESIGN.md` | Design contract for the builder, cache layout, concurrency, and terminal reporting. |
 | `CACHE_FIRST_CHRONOLOGICAL_LOADER_DESIGN.md` | Active cache-first chronological loader contract with ticker cache capacity, rolling context state, hybrid frontier origins, and detailed profiling requirements. |
 | `RUST_CHRONOLOGICAL_LOADER_RUNTIME.md` | Rust implementation contract for the four-pool realtime/prefetch runtime and current profiling boundary. |
@@ -42,11 +43,11 @@ cache_root/
       sec_embeddings/*.parquet
       xbrl/*.parquet
       corporate_actions/*.parquet
-      scanner/scanner_YYYY-MM-DD.parquet
     global/
       manifest.json
       global_macro_bars/*.parquet
       market_news_embeddings/*.parquet
+      scanner/scanner_YYYY-MM-DD.parquet
 ```
 
 Ticker package directory names encode the exact ticker bytes as lowercase UTF-8 hex, while package manifests keep the human-readable ticker. This avoids Windows case-insensitive path collisions such as `CPK` versus `CpK`. There is no split directory and no ticker-hash bucket. Train/validation/test periods are selected by the downstream loader/trainer.
@@ -82,19 +83,29 @@ and profiles cache, origin-frontier, and batch-assembly stages by time and
 memory.
 
 `RUST_CHRONOLOGICAL_LOADER_RUNTIME.md` contains the Rust implementation path for
-the same idea. The first Rust crate is a dependency-free compiled hot-path
-profiler: it implements the four worker pools, realtime-priority queue stealing,
-shared-buffer read-to-process handoff, per-ticker event cache update, ready
-batch accounting, and a generic full-batch tensor assembly/gather ABI that can
-copy or row-gather every numeric/bool tensor in the final trainer batch. It does
-not yet replace `AsyncDailyIndexBatchLoader` for native parquet reads and
-per-modality as-of selection.
+the same idea. The Rust crate now has two validated boundaries:
+
+- queue/cache/tensor hot-path profiling, including the four worker pools,
+  realtime-priority queue stealing, shared-buffer handoff, per-ticker event
+  cache update, ready batch accounting, and generic numeric/bool tensor
+  assembly/gather;
+- native Arrow/Parquet cache reading via `run_profile_rust_native_cache_loader.py`,
+  which opens the real daily-index manifests and parquet artifacts from Rust,
+  prepends saved event context rows before origin event parts, validates raw
+  stream continuity, and touches sparse context/bar/scanner artifacts.
+
+The remaining boundary is trainer integration: v3 still receives
+`DailyIndexTrainingBatch` from `AsyncDailyIndexBatchLoader`. The native Rust
+reader does not yet expose Rust-owned nested `x`/`y` buffers back to the trainer.
 
 Use `run_profile_rust_real_cache_loader.py` for realistic throughput. The older
 `run_profile_rust_chrono_loader.py` synthetic profiler is only a concurrency
 smoke/stress test and intentionally does not read real cache files.
 Use `run_profile_rust_full_batch_assembly.py` to measure the Rust final tensor
 assembly boundary against real emitted batches.
+Use `run_profile_rust_native_cache_loader.py` to validate direct Rust parquet
+reads and manifest-driven cache integrity before moving more trainer work into
+Rust-owned buffers.
 
 The active v3 chronological loader now exposes these cache-first controls:
 
