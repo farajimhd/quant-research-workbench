@@ -19,6 +19,12 @@
   cache. It runs warmup and measured batches, records loader/model/memory
   timings, records the production cache path, exports model artifacts, and
   checkpoints profiler + loader state so it can resume after interruption.
+- `run_profile_exact_training_loader.py` profiles the exact loader path used by
+  `train.py`: `AsyncDailyIndexBatchLoader`, the training raw-prefetch iterator,
+  and `batch_to_torch`. It reads all configured data groups, warms the rolling
+  event/context caches, keeps consuming many batches, samples live loader
+  telemetry while waiting, and verifies that requested modalities appear in
+  `input_availability`.
 - `run_profile_loader_frontier_grid.py` profiles only the chronological loader
   over a grid of `time_window_seconds`, `frontier_max_origins_per_window`,
   materialization chunk, worker, and payload-cache settings. Use it before long
@@ -175,6 +181,71 @@ Each JSONL row includes:
 - detailed loader stage timings from `DailyIndexTrainingBatch.profile`, such as
   raw stream gather, label, text, XBRL, bar, corporate-action, payload load, and
   materialization wait timings
+
+## Exact Training Loader Profiler
+
+Default workstation command:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\temporal_event_model\v3\run_profile_exact_training_loader.py
+```
+
+This profiler is for validating the real trainer input pipeline, not a
+synthetic cache or a lower-level loader component. It instantiates the loader
+through `train._make_loader(...)` and consumes batches through
+`train._batch_iterator(...)`, so the measured path includes:
+
+- daily-index cache discovery
+- scanner index warm/prefetch
+- rolling event-cache warmup
+- rolling sparse context warmup for text, XBRL, corporate actions, daily bars,
+  global bars, intraday bars, and scanner context
+- raw batch prefetch queue behavior
+- `batch_to_torch` conversion and optional CUDA transfer
+- input availability coverage for all requested modalities
+
+The no-arg run uses the v3 loader defaults:
+
+```text
+cache_root: D:/market-data/prepared/daily_index_streaming_cache/events_daily_index_2019-02
+months: 2019-02
+data_groups: all DEFAULT_DATA_GROUPS
+batch_size: 256
+warmup_batches: 4
+measured_batches: 128
+prefetch_batches: 64
+read_workers: 4
+materialize_workers: 4
+loaded_parts_per_group: 256
+chronological_replay: true
+warm_all_ticker_caches: true
+device: auto
+```
+
+It writes:
+
+```text
+exact_training_loader_batches.jsonl
+exact_training_loader_telemetry.jsonl
+exact_training_loader_summary.json
+exact_training_loader_first_batch_shapes.json
+exact_training_loader_config.json
+fatal_error.txt, only when an exception occurs
+```
+
+Each batch row includes `next_batch_seconds`, samples/s, CPU/CUDA memory, batch
+payload size, before/after raw-prefetch queue depth, loader cache telemetry, and
+all scalar `DailyIndexTrainingBatch.profile` timings. Telemetry rows are sampled
+while the profiler is blocked waiting for a batch, so long first-batch warmup is
+visible instead of looking stuck.
+
+By default, `--require-all-input-coverage` is enabled. The profile fails with a
+coverage summary if any requested input modality never has an available payload
+in the measured batches. Disable this only for tiny smoke tests:
+
+```powershell
+python research\temporal_event_model\v3\run_profile_exact_training_loader.py --tickers AAPL --batch-size 16 --warmup-batches 1 --batches 1 --device cpu --no-require-all-input-coverage
+```
 
 ## Loader Frontier Profiler
 
