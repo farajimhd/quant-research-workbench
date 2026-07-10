@@ -1837,32 +1837,48 @@ button {
 
 .sec-today-table th:nth-child(2),
 .sec-today-table td:nth-child(2) {
-  width: 128px;
+  width: 112px;
 }
 
 .sec-today-table th:nth-child(3),
 .sec-today-table td:nth-child(3) {
-  width: 96px;
+  width: 128px;
 }
 
 .sec-today-table th:nth-child(4),
 .sec-today-table td:nth-child(4) {
-  width: auto;
+  width: 96px;
 }
 
 .sec-today-table th:nth-child(5),
 .sec-today-table td:nth-child(5) {
-  width: 142px;
+  width: auto;
 }
 
 .sec-today-table th:nth-child(6),
 .sec-today-table td:nth-child(6) {
-  width: 118px;
+  width: 142px;
 }
 
 .sec-today-table th:nth-child(7),
 .sec-today-table td:nth-child(7) {
+  width: 118px;
+}
+
+.sec-today-table th:nth-child(8),
+.sec-today-table td:nth-child(8) {
   width: 112px;
+}
+
+.sec-filing-ticker-cell strong {
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 760;
+  letter-spacing: 0;
+}
+
+.sec-filing-ticker-cell .muted-value {
+  color: var(--muted-foreground);
 }
 
 .sec-today-table tbody tr.sec-row-xbrl {

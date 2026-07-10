@@ -656,26 +656,60 @@ type SecTodayRow = {
   accessionNumber: string;
   accessionNumberCompact: string;
   activityStatus: string;
+  ambiguityStatusSample: string[];
+  bridgeIdSample: string[];
   cik: string;
   companyName: string;
   documentIssueRows: number;
   documentRows: number;
   documentTextReadyRows: number;
   documentTypeSample: string[];
+  exchangeCodeSample: string[];
   fileExtensionSample: string[];
   filingDate: string;
   filingDetailUrl: string;
   filingId: string;
   filingSize: number;
   formType: string;
+  identityBridgeCount: number;
+  identityTickers: string[];
   items: string[];
   issuerId: string;
+  issuerDomicileCountryCode: string;
+  issuerEntityType: string;
+  issuerIndustry: string;
+  issuerIndustryGroup: string;
+  issuerLegalName: string;
+  issuerName: string;
+  issuerSector: string;
+  issuerSicCode: string;
+  issuerSicDescription: string;
+  issuerStateOfIncorporation: string;
+  issuerStatus: string;
+  issuerWebsiteUrl: string;
+  listingIdSample: string[];
+  listingStatusSample: string[];
+  mappingStatusSample: string[];
+  maxMappingConfidence: number;
+  primaryCurrencyCode: string;
   primaryDocument: string;
   primaryDocumentRows: number;
   primaryDocumentUrl: string;
+  primaryExchangeCode: string;
+  primaryIbkrConid: string;
+  primaryTicker: string;
   qualityFlagSample: string[];
   reportDate: string;
+  securityAssetClass: string;
+  securityIdSample: string[];
+  securityInstrumentType: string;
+  securityName: string;
+  securityProductType: string;
+  securityStatus: string;
+  securityType: string;
   sourceFileName: string;
+  symbolIdSample: string[];
+  symbolSourceSample: string[];
   textChars: number;
   textKindSample: string[];
   textRows: number;
@@ -753,6 +787,8 @@ type SecDetailPayload = {
   filing_table?: string;
   frame_rows?: Array<Record<string, unknown>>;
   frame_table?: string;
+  identity_rows?: Array<Record<string, unknown>>;
+  identity_summary?: Record<string, unknown>;
   text_rows?: Array<Record<string, unknown>>;
   text_table?: string;
 };
@@ -1081,7 +1117,7 @@ function SecTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: NewsT
           <Search size={14} />
           <input
             onChange={(event) => setSearchQuery(event.target.value)}
-            placeholder="Search CIK, company, SEC form, accession, document, text status, or XBRL tag"
+            placeholder="Search ticker, CIK, issuer, company, SEC form, accession, document, text status, or XBRL tag"
             type="search"
             value={searchQuery}
           />
@@ -1113,6 +1149,7 @@ function SecTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: NewsT
                   <strong>{state.sort === "desc" ? "Newest" : "Oldest"}</strong>
                 </button>
               </th>
+              <th>Ticker</th>
               <th>CIK</th>
               <th title="SEC filing form type, such as 10-K, 8-K, 424B2, or FWP. This is not the ticker.">SEC Form</th>
               <th>Filing</th>
@@ -1142,10 +1179,16 @@ function SecTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: NewsT
                     <span>UTC {formatUtcDateTime(row.acceptedAtUtc)}</span>
                   </div>
                 </td>
+                <td className="sec-filing-ticker-cell" title={secTickerTitle(row)}>
+                  <div className="news-today-cell-stack">
+                    {row.primaryTicker ? <strong>{row.primaryTicker}</strong> : <strong className="muted-value">-</strong>}
+                    <span>{secTickerSubLabel(row)}</span>
+                  </div>
+                </td>
                 <td title={row.cik}>
                   <div className="news-today-cell-stack">
                     <strong>{row.cik || "-"}</strong>
-                    <span>{row.issuerId || row.accessionNumberCompact || "-"}</span>
+                    <span>{row.issuerName || row.issuerId || row.accessionNumberCompact || "-"}</span>
                   </div>
                 </td>
                 <td title={row.formType}>
@@ -1163,7 +1206,7 @@ function SecTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: NewsT
               </tr>
             ) : (
               <tr key={`empty-${index}`}>
-                <td colSpan={7}>
+                <td colSpan={8}>
                   {state.loading
                     ? "Loading today's SEC filing rows..."
                     : searchQuery.trim()
@@ -1357,6 +1400,8 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
   const textRows = Array.isArray(detail?.text_rows) ? detail.text_rows.filter(isRecord) : [];
   const companyFactRows = Array.isArray(detail?.company_fact_rows) ? detail.company_fact_rows.filter(isRecord) : [];
   const frameRows = Array.isArray(detail?.frame_rows) ? detail.frame_rows.filter(isRecord) : [];
+  const identityRows = Array.isArray(detail?.identity_rows) ? detail.identity_rows.filter(isRecord) : [];
+  const identitySummary = isRecord(detail?.identity_summary) ? detail.identity_summary : {};
   const companyName = stringMetric(filingRow, ["company_name"]) || row.companyName || "Unknown SEC filer";
   const formType = stringMetric(filingRow, ["form_type"]) || row.formType || "-";
   const accession = stringMetric(filingRow, ["accession_number"]) || row.accessionNumber;
@@ -1364,6 +1409,8 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
   const primaryDocumentUrl = stringMetric(filingRow, ["primary_document_url"]) || row.primaryDocumentUrl;
   const filingDetailUrl = stringMetric(filingRow, ["filing_detail_url"]) || row.filingDetailUrl;
   const primaryDocument = stringMetric(filingRow, ["primary_document"]) || row.primaryDocument;
+  const identityTickers = secIdentityTickers(identitySummary, row, identityRows);
+  const primaryTicker = stringMetric(identitySummary, ["primary_ticker"]) || row.primaryTicker || identityTickers[0] || "";
   const primaryTextRow = secPrimaryTextRow(textRows);
   const primaryText = primaryTextRow ? secTextValue(primaryTextRow) : "";
   const primaryTextBlocks = secReadableTextBlocks(primaryText);
@@ -1396,7 +1443,28 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
     { label: "XBRL facts", value: companyFactRows.length || row.xbrlFactRows },
     { label: "Frame rows", value: frameRows.length || row.xbrlFrameRows },
   ];
+  const marketIdentityFacts = [
+    { label: "Ticker", value: primaryTicker || "-" },
+    { label: "All linked tickers", value: identityTickers.length ? identityTickers.join(", ") : "-" },
+    { label: "Exchange", value: stringMetric(identitySummary, ["primary_exchange_code"]) || row.primaryExchangeCode || row.exchangeCodeSample.join(", ") || "-" },
+    { label: "Currency", value: stringMetric(identitySummary, ["primary_currency_code"]) || row.primaryCurrencyCode || "-" },
+    { label: "IBKR conid", value: stringMetric(identitySummary, ["primary_ibkr_conid"]) || row.primaryIbkrConid || "-" },
+    { label: "Issuer", value: stringMetric(identitySummary, ["issuer_name"]) || row.issuerName || companyName },
+    { label: "Legal name", value: stringMetric(identitySummary, ["issuer_legal_name"]) || row.issuerLegalName || "-" },
+    { label: "Domicile", value: stringMetric(identitySummary, ["issuer_domicile_country_code"]) || row.issuerDomicileCountryCode || "-" },
+    { label: "State", value: stringMetric(identitySummary, ["issuer_state_of_incorporation"]) || row.issuerStateOfIncorporation || "-" },
+    { label: "Sector", value: stringMetric(identitySummary, ["issuer_sector"]) || row.issuerSector || "-" },
+    { label: "Industry", value: stringMetric(identitySummary, ["issuer_industry"]) || row.issuerIndustry || "-" },
+    { label: "SIC", value: [stringMetric(identitySummary, ["issuer_sic_code"]) || row.issuerSicCode, stringMetric(identitySummary, ["issuer_sic_description"]) || row.issuerSicDescription].filter(Boolean).join(" - ") || "-" },
+    { label: "Security", value: stringMetric(identitySummary, ["security_name"]) || row.securityName || "-" },
+    { label: "Security type", value: stringMetric(identitySummary, ["security_type"]) || row.securityType || row.securityProductType || "-" },
+    { label: "Bridge rows", value: formatCompactNumber(numericMetric(identitySummary, ["identity_bridge_count"]) || row.identityBridgeCount || identityRows.length) },
+    { label: "Mapping", value: row.mappingStatusSample.length ? row.mappingStatusSample.join(", ") : stringMetric(identitySummary, ["mapping_status_sample"]) || "-" },
+    { label: "Ambiguity", value: row.ambiguityStatusSample.length ? row.ambiguityStatusSample.join(", ") : stringMetric(identitySummary, ["ambiguity_status_sample"]) || "-" },
+    { label: "Confidence", value: secMappingConfidenceLabel(numericMetric(identitySummary, ["max_mapping_confidence"]) || row.maxMappingConfidence) },
+  ];
   const filingFacts = [
+    { label: "Ticker", value: primaryTicker || "-" },
     { label: "CIK", value: stringMetric(filingRow, ["cik"]) || row.cik },
     { label: "Accession", value: accession },
     { label: "Form", value: formType },
@@ -1410,8 +1478,9 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
   ];
   const contextFacts = [
     { label: "Company", value: companyName },
+    { label: "Ticker", value: primaryTicker || "-" },
     { label: "CIK", value: stringMetric(filingRow, ["cik"]) || row.cik },
-    { label: "Issuer ID", value: stringMetric(filingRow, ["issuer_id"]) || row.issuerId || "-" },
+    { label: "Issuer ID", value: stringMetric(filingRow, ["issuer_id"]) || row.issuerId || stringMetric(identitySummary, ["issuer_id"]) || "-" },
     { label: "Accession", value: accession },
     { label: "Form", value: formType },
     { label: "Filing date", value: stringMetric(filingRow, ["filing_date"]) || row.filingDate || "-" },
@@ -1426,6 +1495,7 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
         <div className="sec-filing-hero-main">
           <div className="sec-filing-meta-line">
             <span className="sec-provider-pill">SEC</span>
+            {primaryTicker ? <span>{primaryTicker}</span> : null}
             <span>{formType}</span>
             <span>{row.xbrlFactRows + row.xbrlFrameRows > 0 ? "XBRL linked" : "Filing parent"}</span>
             <span>{row.textRows > 0 ? "Text extracted" : "No text rows"}</span>
@@ -1471,6 +1541,17 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
           </div>
         </article>
         <aside className="sec-filing-context-rail">
+          <section className="sec-filing-side-card">
+            <h4>Market Identity</h4>
+            <dl className="sec-filing-context-list">
+              {marketIdentityFacts.map((item) => (
+                <div key={item.label}>
+                  <dt>{item.label}</dt>
+                  <dd>{item.value}</dd>
+                </div>
+              ))}
+            </dl>
+          </section>
           <section className="sec-filing-side-card">
             <h4>Filing Context</h4>
             <dl className="sec-filing-context-list">
@@ -1525,6 +1606,12 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
           <summary><span>XBRL Frame Observations</span><strong>{formatCompactNumber(frameRows.length)}</strong></summary>
           <div className="sec-filing-data-table-wrap">
             <DataTable empty="No XBRL frame rows returned for this filing." fitToContent rows={frameRows.map(normalizeRow)} />
+          </div>
+        </details>
+        <details open={identityRows.length > 0}>
+          <summary><span>SEC Market Bridge And Listing Identity</span><strong>{formatCompactNumber(identityRows.length)}</strong></summary>
+          <div className="sec-filing-data-table-wrap">
+            <DataTable empty="No SEC market bridge rows returned for this filing CIK." fitToContent rows={identityRows.map(normalizeRow)} />
           </div>
         </details>
         <details>
@@ -3655,26 +3742,60 @@ function secTodayRowFromPayload(row: Record<string, unknown>): SecTodayRow {
     accessionNumber: stringMetric(row, ["accession_number"]),
     accessionNumberCompact: stringMetric(row, ["accession_number_compact"]),
     activityStatus: stringMetric(row, ["activity_status"]) || "filing",
+    ambiguityStatusSample: stringArrayMetric(row, ["ambiguity_status_sample"]),
+    bridgeIdSample: stringArrayMetric(row, ["bridge_id_sample"]),
     cik: stringMetric(row, ["cik"]),
     companyName: stringMetric(row, ["company_name"]),
     documentIssueRows: numericMetric(row, ["document_issue_rows"]),
     documentRows: numericMetric(row, ["document_rows"]),
     documentTextReadyRows: numericMetric(row, ["document_text_ready_rows"]),
     documentTypeSample: stringArrayMetric(row, ["document_type_sample"]),
+    exchangeCodeSample: stringArrayMetric(row, ["exchange_code_sample"]),
     fileExtensionSample: stringArrayMetric(row, ["file_extension_sample"]),
     filingDate: stringMetric(row, ["filing_date"]),
     filingDetailUrl: stringMetric(row, ["filing_detail_url"]),
     filingId: stringMetric(row, ["filing_id"]),
     filingSize: numericMetric(row, ["filing_size"]),
     formType: stringMetric(row, ["form_type"]),
+    identityBridgeCount: numericMetric(row, ["identity_bridge_count"]),
+    identityTickers: stringArrayMetric(row, ["identity_tickers"]),
     items: stringArrayMetric(row, ["items"]),
     issuerId: stringMetric(row, ["issuer_id"]),
+    issuerDomicileCountryCode: stringMetric(row, ["issuer_domicile_country_code"]),
+    issuerEntityType: stringMetric(row, ["issuer_entity_type"]),
+    issuerIndustry: stringMetric(row, ["issuer_industry"]),
+    issuerIndustryGroup: stringMetric(row, ["issuer_industry_group"]),
+    issuerLegalName: stringMetric(row, ["issuer_legal_name"]),
+    issuerName: stringMetric(row, ["issuer_name"]),
+    issuerSector: stringMetric(row, ["issuer_sector"]),
+    issuerSicCode: stringMetric(row, ["issuer_sic_code"]),
+    issuerSicDescription: stringMetric(row, ["issuer_sic_description"]),
+    issuerStateOfIncorporation: stringMetric(row, ["issuer_state_of_incorporation"]),
+    issuerStatus: stringMetric(row, ["issuer_status"]),
+    issuerWebsiteUrl: stringMetric(row, ["issuer_website_url"]),
+    listingIdSample: stringArrayMetric(row, ["listing_id_sample"]),
+    listingStatusSample: stringArrayMetric(row, ["listing_status_sample"]),
+    mappingStatusSample: stringArrayMetric(row, ["mapping_status_sample"]),
+    maxMappingConfidence: numericMetric(row, ["max_mapping_confidence"]),
+    primaryCurrencyCode: stringMetric(row, ["primary_currency_code"]),
     primaryDocument: stringMetric(row, ["primary_document"]),
     primaryDocumentRows: numericMetric(row, ["primary_document_rows"]),
     primaryDocumentUrl: stringMetric(row, ["primary_document_url"]),
+    primaryExchangeCode: stringMetric(row, ["primary_exchange_code"]),
+    primaryIbkrConid: stringMetric(row, ["primary_ibkr_conid"]),
+    primaryTicker: stringMetric(row, ["primary_ticker"]),
     qualityFlagSample: stringArrayMetric(row, ["quality_flag_sample"]),
     reportDate: stringMetric(row, ["report_date"]),
+    securityAssetClass: stringMetric(row, ["security_asset_class"]),
+    securityIdSample: stringArrayMetric(row, ["security_id_sample"]),
+    securityInstrumentType: stringMetric(row, ["security_instrument_type"]),
+    securityName: stringMetric(row, ["security_name"]),
+    securityProductType: stringMetric(row, ["security_product_type"]),
+    securityStatus: stringMetric(row, ["security_status"]),
+    securityType: stringMetric(row, ["security_type"]),
     sourceFileName: stringMetric(row, ["source_file_name"]),
+    symbolIdSample: stringArrayMetric(row, ["symbol_id_sample"]),
+    symbolSourceSample: stringArrayMetric(row, ["symbol_source_sample"]),
     textChars: numericMetric(row, ["text_chars"]),
     textKindSample: stringArrayMetric(row, ["text_kind_sample"]),
     textRows: numericMetric(row, ["text_rows"]),
@@ -3745,8 +3866,17 @@ function secTodaySearchText(row: SecTodayRow) {
     row.accessionNumber,
     row.accessionNumberCompact,
     row.activityStatus,
+    row.primaryTicker,
+    row.identityTickers.join(" "),
+    row.primaryExchangeCode,
+    row.primaryIbkrConid,
     row.cik,
     row.companyName,
+    row.issuerName,
+    row.issuerLegalName,
+    row.issuerSector,
+    row.issuerIndustry,
+    row.securityName,
     row.filingDate,
     row.filingDetailUrl,
     row.formType,
@@ -3756,8 +3886,11 @@ function secTodaySearchText(row: SecTodayRow) {
     row.sourceFileName,
     row.textStatus,
     row.documentTypeSample.join(" "),
+    row.exchangeCodeSample.join(" "),
     row.fileExtensionSample.join(" "),
     row.items.join(" "),
+    row.listingStatusSample.join(" "),
+    row.mappingStatusSample.join(" "),
     row.qualityFlagSample.join(" "),
     row.textKindSample.join(" "),
     row.xbrlFactTagSample.join(" "),
@@ -3782,6 +3915,41 @@ function secXbrlLabel(row: SecTodayRow) {
     frameRows ? `${formatCompactNumber(frameRows)} frames` : "",
   ].filter(Boolean);
   return parts.length ? parts.join(" / ") : "-";
+}
+
+function secTickerTitle(row: SecTodayRow) {
+  const parts = [
+    row.identityTickers.length ? `Tickers: ${row.identityTickers.join(", ")}` : "No linked ticker",
+    row.primaryExchangeCode ? `Exchange: ${row.primaryExchangeCode}` : "",
+    row.primaryIbkrConid ? `IBKR: ${row.primaryIbkrConid}` : "",
+    row.identityBridgeCount ? `Bridge rows: ${formatCompactNumber(row.identityBridgeCount)}` : "",
+  ].filter(Boolean);
+  return parts.join(" | ");
+}
+
+function secTickerSubLabel(row: SecTodayRow) {
+  const extra = row.identityTickers.length > 1 ? `+${row.identityTickers.length - 1}` : "";
+  const exchange = row.primaryExchangeCode || row.exchangeCodeSample[0] || "";
+  const currency = row.primaryCurrencyCode || "";
+  return [exchange, currency, extra].filter(Boolean).join(" / ") || "No market bridge";
+}
+
+function secIdentityTickers(identitySummary: Record<string, unknown>, row: SecTodayRow, identityRows: Record<string, unknown>[]) {
+  return uniqueStringSample(
+    [
+      ...stringArrayMetric(identitySummary, ["identity_tickers"]),
+      row.primaryTicker,
+      ...row.identityTickers,
+      ...identityRows.map((item) => stringMetric(item, ["ticker"])),
+    ],
+    48,
+  );
+}
+
+function secMappingConfidenceLabel(value: number) {
+  if (!value) return "-";
+  if (value <= 1) return `${Math.round(value * 100)}%`;
+  return formatCompactNumber(value);
 }
 
 function secActivityStatus(row: SecTodayRow) {

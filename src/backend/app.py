@@ -2058,6 +2058,10 @@ def service_sec_today_rows(limit: int = 250, sort: str = "desc") -> dict[str, An
         FORMAT JSONEachRow
     """
     rows = clickhouse_json_each_row(query)
+    identity_rows_by_cik = service_sec_identity_rows_by_cik(
+        database,
+        sorted({str(row.get("cik") or "") for row in rows if str(row.get("cik") or "")}),
+    )
     key_pairs = [(str(row.get("cik") or ""), str(row.get("accession_number") or "")) for row in rows]
     key_pairs = [(cik_value, accession_value) for cik_value, accession_value in key_pairs if cik_value and accession_value]
     key_clause = ", ".join(f"({sql_string(cik_value)}, {sql_string(accession_value)})" for cik_value, accession_value in key_pairs)
@@ -2163,6 +2167,12 @@ def service_sec_today_rows(limit: int = 250, sort: str = "desc") -> dict[str, An
         row.update(text_counts.get(key, {}))
         row.update(company_fact_counts.get(key, {}))
         row.update(frame_counts.get(key, {}))
+        row.update(
+            service_sec_identity_summary(
+                identity_rows_by_cik.get(str(row.get("cik") or ""), []),
+                accession_number=str(row.get("accession_number") or ""),
+            )
+        )
         text_rows = int(row.get("text_rows") or 0)
         xbrl_rows = int(row.get("xbrl_fact_rows") or 0) + int(row.get("xbrl_frame_rows") or 0)
         document_rows = int(row.get("document_rows") or 0)
@@ -2306,6 +2316,7 @@ def service_sec_detail(cik: str, accession_number: str) -> dict[str, Any]:
         FORMAT JSONEachRow
         """
     )
+    identity_rows = service_sec_identity_rows_by_cik(database, [normalized_cik]).get(normalized_cik, [])
     return {
         "accession_number": accession,
         "cik": normalized_cik,
@@ -2318,8 +2329,190 @@ def service_sec_detail(cik: str, accession_number: str) -> dict[str, Any]:
         "filing_table": filing_table,
         "frame_rows": frame_rows,
         "frame_table": frame_table,
+        "identity_rows": identity_rows,
+        "identity_summary": service_sec_identity_summary(identity_rows, accession_number=accession),
         "text_rows": text_rows,
         "text_table": text_table,
+    }
+
+
+def service_sec_identity_rows_by_cik(database: str, ciks: list[str]) -> dict[str, list[dict[str, Any]]]:
+    normalized_ciks = sorted({str(cik).strip() for cik in ciks if str(cik).strip()})
+    if not normalized_ciks:
+        return {}
+    cik_clause = ", ".join(sql_string(cik) for cik in normalized_ciks)
+    rows = clickhouse_json_each_row(
+        f"""
+        SELECT
+            b.bridge_id,
+            b.cik,
+            b.issuer_id AS bridge_issuer_id,
+            ifNull(b.security_id, '') AS bridge_security_id,
+            ifNull(b.listing_id, '') AS bridge_listing_id,
+            ifNull(b.symbol_id, '') AS bridge_symbol_id,
+            ifNull(b.ticker, '') AS ticker,
+            ifNull(b.accession_number, '') AS bridge_accession_number,
+            toString(b.valid_from_date) AS bridge_valid_from_date,
+            toString(b.valid_to_date_exclusive) AS bridge_valid_to_date_exclusive,
+            b.mapping_method,
+            b.mapping_status,
+            b.confidence_score AS mapping_confidence_score,
+            b.ambiguity_status,
+            issuer.issuer_id,
+            issuer.issuer_name,
+            issuer.issuer_name_normalized,
+            ifNull(issuer.legal_name, '') AS issuer_legal_name,
+            ifNull(issuer.branding_name, '') AS issuer_branding_name,
+            ifNull(issuer.entity_type, '') AS issuer_entity_type,
+            ifNull(issuer.domicile_country_code, '') AS issuer_domicile_country_code,
+            ifNull(issuer.state_of_incorporation, '') AS issuer_state_of_incorporation,
+            ifNull(issuer.sic_code, '') AS issuer_sic_code,
+            ifNull(issuer.sic_description, '') AS issuer_sic_description,
+            ifNull(issuer.sector, '') AS issuer_sector,
+            ifNull(issuer.industry, '') AS issuer_industry,
+            ifNull(issuer.industry_group, '') AS issuer_industry_group,
+            ifNull(issuer.website_url, '') AS issuer_website_url,
+            ifNull(issuer.investor_website_url, '') AS issuer_investor_website_url,
+            issuer.status AS issuer_status,
+            sec.security_id,
+            sec.security_name,
+            sec.product_type AS security_product_type,
+            ifNull(sec.asset_class, '') AS security_asset_class,
+            ifNull(sec.instrument_type, '') AS security_instrument_type,
+            ifNull(sec.security_type, '') AS security_type,
+            ifNull(toString(sec.has_options), '') AS security_has_options,
+            sec.status AS security_status,
+            listing.listing_id,
+            listing.exchange_code,
+            listing.currency_code,
+            ifNull(listing.ibkr_conid, '') AS ibkr_conid,
+            ifNull(listing.board_code, '') AS listing_board_code,
+            ifNull(listing.segment_name, '') AS listing_segment_name,
+            listing.listing_status,
+            listing.is_primary_listing,
+            toString(listing.list_date) AS listing_list_date,
+            toString(listing.delisted_date) AS listing_delisted_date,
+            sym.symbol_id,
+            sym.source_system AS symbol_source_system,
+            sym.ticker_normalized,
+            sym.display_name AS symbol_display_name,
+            ifNull(sym.ticker_root, '') AS ticker_root,
+            ifNull(sym.ticker_suffix, '') AS ticker_suffix,
+            ifNull(sym.ticker_type_id, '') AS ticker_type_id,
+            sym.asset_type AS symbol_asset_type,
+            sym.instrument_type AS symbol_instrument_type,
+            ifNull(sym.security_type, '') AS symbol_security_type,
+            sym.status AS symbol_status,
+            sym.primary_symbol_flag
+        FROM {quote_ident(database)}.id_sec_market_bridge_v1 AS b FINAL
+        LEFT JOIN {quote_ident(database)}.id_issuer_v1 AS issuer FINAL
+            ON issuer.issuer_id = b.issuer_id
+        LEFT JOIN {quote_ident(database)}.id_security_v1 AS sec FINAL
+            ON sec.security_id = ifNull(b.security_id, '')
+        LEFT JOIN {quote_ident(database)}.id_listing_v1 AS listing FINAL
+            ON listing.listing_id = ifNull(b.listing_id, '')
+        LEFT JOIN {quote_ident(database)}.id_symbol_v1 AS sym FINAL
+            ON sym.symbol_id = ifNull(b.symbol_id, '')
+        WHERE b.cik IN ({cik_clause})
+        ORDER BY
+            b.cik ASC,
+            sym.primary_symbol_flag DESC,
+            listing.is_primary_listing DESC,
+            b.confidence_score DESC,
+            ifNull(b.ticker, '') ASC
+        FORMAT JSONEachRow
+        """
+    )
+    rows_by_cik: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        rows_by_cik.setdefault(str(row.get("cik") or ""), []).append(row)
+    return rows_by_cik
+
+
+def service_sec_identity_summary(
+    identity_rows: list[dict[str, Any]],
+    *,
+    accession_number: str = "",
+) -> dict[str, Any]:
+    def value(row: dict[str, Any], key: str) -> str:
+        return str(row.get(key) or "").strip()
+
+    def primary_flag(row: dict[str, Any]) -> int:
+        raw_value = row.get("primary_symbol_flag")
+        try:
+            return int(raw_value or 0)
+        except (TypeError, ValueError):
+            return 1 if str(raw_value).strip().lower() in {"true", "yes"} else 0
+
+    def first_value(row: dict[str, Any], *keys: str) -> str:
+        for key in keys:
+            row_value = value(row, key)
+            if row_value:
+                return row_value
+        return ""
+
+    def unique_values(key: str, *, limit: int = 12) -> list[str]:
+        values: list[str] = []
+        seen: set[str] = set()
+        for item in identity_rows:
+            item_value = value(item, key)
+            if not item_value or item_value in seen:
+                continue
+            seen.add(item_value)
+            values.append(item_value)
+            if len(values) >= limit:
+                break
+        return values
+
+    accession = accession_number.strip()
+    ticker_rows = [item for item in identity_rows if value(item, "ticker")]
+    accession_rows = [item for item in ticker_rows if accession and value(item, "bridge_accession_number") == accession]
+    primary_candidates = accession_rows or ticker_rows or identity_rows
+    primary = next((item for item in primary_candidates if value(item, "ticker") and primary_flag(item) > 0), None)
+    if primary is None:
+        primary = next((item for item in primary_candidates if value(item, "ticker")), identity_rows[0] if identity_rows else {})
+    tickers = unique_values("ticker", limit=24)
+    return {
+        "identity_bridge_count": len(identity_rows),
+        "identity_tickers": tickers,
+        "issuer_id": first_value(primary, "issuer_id", "bridge_issuer_id"),
+        "security_id": first_value(primary, "security_id", "bridge_security_id"),
+        "listing_id": first_value(primary, "listing_id", "bridge_listing_id"),
+        "symbol_id": first_value(primary, "symbol_id", "bridge_symbol_id"),
+        "primary_ticker": value(primary, "ticker"),
+        "primary_exchange_code": value(primary, "exchange_code"),
+        "primary_currency_code": value(primary, "currency_code"),
+        "primary_ibkr_conid": value(primary, "ibkr_conid"),
+        "bridge_id_sample": unique_values("bridge_id", limit=8),
+        "security_id_sample": unique_values("security_id", limit=8),
+        "listing_id_sample": unique_values("listing_id", limit=8),
+        "symbol_id_sample": unique_values("symbol_id", limit=8),
+        "exchange_code_sample": unique_values("exchange_code", limit=8),
+        "listing_status_sample": unique_values("listing_status", limit=8),
+        "symbol_source_sample": unique_values("symbol_source_system", limit=8),
+        "mapping_status_sample": unique_values("mapping_status", limit=8),
+        "ambiguity_status_sample": unique_values("ambiguity_status", limit=8),
+        "max_mapping_confidence": max((float(item.get("mapping_confidence_score") or 0.0) for item in identity_rows), default=0.0),
+        "issuer_name": value(primary, "issuer_name"),
+        "issuer_legal_name": value(primary, "issuer_legal_name"),
+        "issuer_branding_name": value(primary, "issuer_branding_name"),
+        "issuer_entity_type": value(primary, "issuer_entity_type"),
+        "issuer_domicile_country_code": value(primary, "issuer_domicile_country_code"),
+        "issuer_state_of_incorporation": value(primary, "issuer_state_of_incorporation"),
+        "issuer_sic_code": value(primary, "issuer_sic_code"),
+        "issuer_sic_description": value(primary, "issuer_sic_description"),
+        "issuer_sector": value(primary, "issuer_sector"),
+        "issuer_industry": value(primary, "issuer_industry"),
+        "issuer_industry_group": value(primary, "issuer_industry_group"),
+        "issuer_website_url": value(primary, "issuer_website_url"),
+        "issuer_investor_website_url": value(primary, "issuer_investor_website_url"),
+        "issuer_status": value(primary, "issuer_status"),
+        "security_name": value(primary, "security_name"),
+        "security_product_type": value(primary, "security_product_type"),
+        "security_asset_class": value(primary, "security_asset_class"),
+        "security_instrument_type": value(primary, "security_instrument_type"),
+        "security_type": value(primary, "security_type"),
+        "security_status": value(primary, "security_status"),
     }
 
 
