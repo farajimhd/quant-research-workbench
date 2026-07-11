@@ -772,10 +772,10 @@ class SecGateway:
         self.metrics.audit_status = "ok" if audit.ok else "warn"
         self.metrics.audit_message = (
             f"write_db={self.config.pipeline.clickhouse.write_database} "
-            f"filings={audit.filing_rows} documents={audit.document_rows} payloads={audit.payload_rows} texts={audit.text_rows} skips={audit.skip_rows} "
+            f"filings={audit.filing_rows} documents={audit.document_rows} text_sources={audit.text_source_rows} texts={audit.text_rows} skips={audit.skip_rows} "
             f"xbrl_facts={audit.xbrl_company_fact_rows} xbrl_frames={audit.xbrl_frame_rows} "
             f"duplicate_filings={audit.duplicate_filing_keys} orphan_documents={audit.documents_without_filing} "
-            f"orphan_payload_documents={audit.payloads_without_document} orphan_text_documents={audit.texts_without_document} orphan_text_filings={audit.texts_without_filing} "
+            f"orphan_text_source_documents={audit.text_sources_without_document} orphan_text_documents={audit.texts_without_document} orphan_text_filings={audit.texts_without_filing} "
             f"orphan_xbrl_facts={audit.company_facts_without_filing} "
             f"orphan_frame_fact={audit.frame_observations_without_company_fact} "
             f"orphan_frame_parent={audit.frame_observations_without_frame_parent}"
@@ -823,7 +823,7 @@ class SecGateway:
         return self._writer.write_accession(
             filing_row=rows.filing_row,
             document_rows=rows.document_rows,
-            payload_rows=rows.payload_rows,
+            text_source_rows=rows.text_source_rows,
             text_rows=rows.text_rows,
             skip_rows=rows.skip_rows,
             xbrl_concept_rows=rows.xbrl_rows.concept_rows,
@@ -843,7 +843,7 @@ class SecGateway:
             "updated_at_utc": item.updated_at_utc.isoformat().replace("+00:00", "Z") if item.updated_at_utc else "",
             "status": "skipped_existing" if result.skipped_existing else "written",
             "documents": result.document_rows,
-            "payloads": result.payload_rows,
+            "text_sources": result.text_source_rows,
             "texts": result.text_rows,
             "skips": result.skip_rows,
             "xbrl_facts": result.xbrl_company_fact_rows,

@@ -33,7 +33,7 @@ PARTITION BY cityHash64(cik) % 64
 ORDER BY (cik, accession_number, sequence_number, document_id)
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
 
-CREATE TABLE IF NOT EXISTS q_live.sec_filing_document_payload_v1
+CREATE TABLE IF NOT EXISTS q_live.sec_filing_text_source_v1
 (
     document_id String,
     filing_id String,
@@ -53,9 +53,9 @@ CREATE TABLE IF NOT EXISTS q_live.sec_filing_document_payload_v1
     file_extension LowCardinality(String),
     content_format LowCardinality(String),
     mime_type Nullable(String),
-    payload_text String CODEC(ZSTD(9)),
-    payload_char_count UInt64,
-    payload_byte_count UInt64,
+    source_text String CODEC(ZSTD(9)),
+    source_text_char_count UInt64,
+    source_text_byte_count UInt64,
     content_sha256 String,
     normalizer_version LowCardinality(String),
     source_run_id String,

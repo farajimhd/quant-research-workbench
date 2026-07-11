@@ -108,7 +108,7 @@ def check_clickhouse(config: SecGatewayConfig) -> str:
         f"read={ch.read_database} write={ch.write_database} "
         f"tables={len(tables)} coverage={ch.coverage_table} "
         f"audit={'ok' if audit.ok else 'warn'} filings={audit.filing_rows} docs={audit.document_rows} "
-        f"payloads={audit.payload_rows} texts={audit.text_rows} xbrl_facts={audit.xbrl_company_fact_rows} xbrl_frames={audit.xbrl_frame_rows}"
+        f"text_sources={audit.text_source_rows} texts={audit.text_rows} xbrl_facts={audit.xbrl_company_fact_rows} xbrl_frames={audit.xbrl_frame_rows}"
     )
 
 

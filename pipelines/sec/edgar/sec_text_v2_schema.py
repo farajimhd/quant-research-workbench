@@ -52,7 +52,7 @@ class SchemaPaths:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Render and optionally execute q_live SEC archive-derived document/payload/text v2 table DDL."
+        description="Render and optionally execute q_live SEC archive-derived document/source-text/text v2 table DDL."
     )
     parser.add_argument("--clickhouse-url", default=default_sec_clickhouse_url())
     parser.add_argument("--user", default=default_sec_clickhouse_user())
