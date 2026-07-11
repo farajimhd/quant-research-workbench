@@ -483,6 +483,7 @@ WITH
     toDayOfYear(ts_utc) AS utc_doy,
     dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second
 SELECT
+    cityHash64(ticker) AS ticker_id,
     ticker AS event_ticker,
     toUInt64(ordinal) AS ordinal,
     event_meta,
@@ -505,6 +506,8 @@ SELECT
     toFloat32(sin(2 * pi() * (utc_doy - 1) / 366.0)) AS utc_day_of_year_sin,
     toFloat32(cos(2 * pi() * (utc_doy - 1) / 366.0)) AS utc_day_of_year_cos,
     toFloat32(toYear(ts_utc) - 2000 + (utc_doy - 1) / 366.0) AS years_since_2000,
+    toDate(ts_local) AS local_date,
+    toUInt64(dateDiff('microsecond', toStartOfDay(ts_local), ts_local)) AS local_session_us,
     toUInt32(local_second) AS session_second,
     toFloat32(greatest(0, least({SESSION_LENGTH_SECOND}, local_second - {SESSION_START_SECOND})) / {float(SESSION_LENGTH_SECOND)}) AS session_progress,
     toUInt8(local_second >= {SESSION_REGULAR_START_SECOND} AND local_second < {SESSION_REGULAR_END_SECOND}) AS is_regular_hours,

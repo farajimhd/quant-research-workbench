@@ -82,6 +82,28 @@ python -m research.packed_market_model.v1.run_profile_workstation `
   --ticker-workers 1
 ```
 
+Profile all available loader modalities:
+
+```powershell
+python -m research.packed_market_model.v1.run_profile_full_workstation
+```
+
+This profiler times the real loads for:
+
+- packed ticker events and event-derived labels
+- intraday base bars
+- intraday condition events
+- ticker news embeddings
+- market news embeddings
+- SEC text embeddings
+- XBRL context
+- corporate actions
+- ticker daily bars
+- global daily bars
+- scanner artifacts, when available under `--scanner-cache-root`
+
+Use `--require-scanner` if scanner files must be present; otherwise missing scanner files are reported as rows in the `scanner.cache` step.
+
 Train:
 
 ```powershell
