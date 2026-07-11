@@ -52,7 +52,7 @@ class SchemaPaths:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Render and optionally execute q_live SEC archive-derived document/text v2 table DDL."
+        description="Render and optionally execute q_live SEC archive-derived document/payload/text v2 table DDL."
     )
     parser.add_argument("--clickhouse-url", default=default_sec_clickhouse_url())
     parser.add_argument("--user", default=default_sec_clickhouse_user())
@@ -201,8 +201,8 @@ def strip_sql_comments(sql: str) -> str:
 def validate_rendered_sql(rendered_sql: str, statements: list[str], args: argparse.Namespace) -> None:
     if STORAGE_POLICY_PLACEHOLDER in rendered_sql:
         raise SystemExit(f"Rendered SQL still contains {STORAGE_POLICY_PLACEHOLDER}.")
-    if len(statements) != 3:
-        raise SystemExit(f"Expected 3 CREATE TABLE statements, got {len(statements)}.")
+    if len(statements) != 4:
+        raise SystemExit(f"Expected 4 CREATE TABLE statements, got {len(statements)}.")
     for statement in statements:
         if not statement.upper().startswith("CREATE TABLE IF NOT EXISTS"):
             raise SystemExit("Only CREATE TABLE IF NOT EXISTS statements are allowed in this schema script.")

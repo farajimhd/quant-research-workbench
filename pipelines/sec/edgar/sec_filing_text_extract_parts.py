@@ -92,6 +92,33 @@ DOCUMENT_COLUMNS = [
     "source_run_id",
     "inserted_at",
 ]
+PAYLOAD_COLUMNS = [
+    "document_id",
+    "filing_id",
+    "accession_number",
+    "accession_number_compact",
+    "cik",
+    "sequence_number",
+    "document_name",
+    "document_type",
+    "document_role",
+    "description",
+    "document_url",
+    "text_kind",
+    "source_archive_date",
+    "source_archive_member",
+    "source_archive_path",
+    "file_extension",
+    "content_format",
+    "mime_type",
+    "payload_text",
+    "payload_char_count",
+    "payload_byte_count",
+    "content_sha256",
+    "normalizer_version",
+    "source_run_id",
+    "inserted_at",
+]
 TEXT_COLUMNS = [
     "document_id",
     "filing_id",
@@ -238,8 +265,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Parse SEC daily .nc.tar.gz archives and build DB-ready JSONEachRow "
-            "parts for sec_filing_document_v2, sec_filing_text_v2, and "
-            "sec_filing_document_skip_v1. This script does not insert rows."
+            "parts for sec_filing_document_v2, sec_filing_document_payload_v1, "
+            "sec_filing_text_v2, and sec_filing_document_skip_v1. This script "
+            "does not insert rows."
         )
     )
     parser.add_argument("--clickhouse-url", default=default_sec_clickhouse_url())
@@ -430,6 +458,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     part_paths = {
         "filing": parts_root / "sec_filing_v2_parts" / f"sec_filing_v2_part_{part_prefix}.jsonl",
         "document": parts_root / "sec_filing_document_v2_parts" / f"sec_filing_document_v2_part_{part_prefix}.jsonl",
+        "payload": parts_root / "sec_filing_document_payload_v1_parts" / f"sec_filing_document_payload_v1_part_{part_prefix}.jsonl",
         "text": parts_root / "sec_filing_text_v2_parts" / f"sec_filing_text_v2_part_{part_prefix}.jsonl",
         "skip": parts_root / "sec_filing_document_skip_v1_parts" / f"sec_filing_document_skip_v1_part_{part_prefix}.jsonl",
     }
@@ -454,6 +483,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
         "documents": 0,
         "filing_parent_rows": 0,
         "document_rows": 0,
+        "payload_rows": 0,
         "text_rows": 0,
         "skip_rows": 0,
         "error_rows": 0,
@@ -470,11 +500,12 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
         "errors": [],
         "samples": [],
     }
-    filing_parent_count = doc_count = text_count = skip_count = 0
+    filing_parent_count = doc_count = payload_count = text_count = skip_count = 0
     try:
         with (
             part_paths["filing"].open("w", encoding="utf-8") as filing_out,
             part_paths["document"].open("w", encoding="utf-8") as doc_out,
+            part_paths["payload"].open("w", encoding="utf-8") as payload_out,
             part_paths["text"].open("w", encoding="utf-8") as text_out,
             part_paths["skip"].open("w", encoding="utf-8") as skip_out,
             tarfile.open(archive, "r:gz") as tar,
@@ -508,11 +539,14 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
                     parents[("", parent.accession_number)] = parent
                 for document in filing["documents"]:
                     stats["documents"] += 1
-                    doc_row, text_row, skip_row, sample_row = build_rows(payload, archive, archive_date_text, member.name, parent, document, inserted_at)
+                    doc_row, payload_row, text_row, skip_row, sample_row = build_rows(payload, archive, archive_date_text, member.name, parent, document, inserted_at)
                     doc_out.write(json.dumps(doc_row, ensure_ascii=False, sort_keys=True) + "\n")
                     doc_count += 1
                     stats["document_roles"][doc_row["document_role"]] += 1
                     stats["content_formats"][doc_row["content_format"]] += 1
+                    if payload_row is not None:
+                        payload_out.write(json.dumps(payload_row, ensure_ascii=False, sort_keys=True) + "\n")
+                        payload_count += 1
                     if text_row is not None:
                         text_out.write(json.dumps(text_row, ensure_ascii=False, sort_keys=True) + "\n")
                         text_count += 1
@@ -529,6 +563,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
 
     stats["filing_parent_rows"] = filing_parent_count
     stats["document_rows"] = doc_count
+    stats["payload_rows"] = payload_count
     stats["text_rows"] = text_count
     stats["skip_rows"] = skip_count
     stats["error_rows"] = len(stats["errors"])
@@ -540,6 +575,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     stats["part_files"] = [
         part_file_summary("filing", "sec_filing_v2", part_paths["filing"], filing_parent_count, FILING_COLUMNS),
         part_file_summary("document", "sec_filing_document_v2", part_paths["document"], doc_count, DOCUMENT_COLUMNS),
+        part_file_summary("payload", "sec_filing_document_payload_v1", part_paths["payload"], payload_count, PAYLOAD_COLUMNS),
         part_file_summary("text", "sec_filing_text_v2", part_paths["text"], text_count, TEXT_COLUMNS),
         part_file_summary("skip", "sec_filing_document_skip_v1", part_paths["skip"], skip_count, SKIP_COLUMNS),
     ]
@@ -695,7 +731,7 @@ def build_rows(
     parent: FilingParent,
     document: dict[str, Any],
     inserted_at: str,
-) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
     doc_type = document["document_type"]
     doc_name = document["document_name"]
     file_ext = file_extension(doc_name)
@@ -714,6 +750,7 @@ def build_rows(
     document_url = build_document_url(parent, doc_name)
     status = "text_extracted" if has_text else f"skipped_{skip_reason or 'empty'}"
     extraction_error = None
+    text_kind = text_kind_for_role(document_role)
     doc_row = {
         "document_id": document_id,
         "filing_id": parent.filing_id,
@@ -743,6 +780,36 @@ def build_rows(
         "source_run_id": str(payload["source_run_id"]),
         "inserted_at": inserted_at,
     }
+    payload_row = None
+    if should_persist_document_payload(document_role, content_format):
+        payload_text = document["payload"]
+        payload_row = {
+            "document_id": document_id,
+            "filing_id": parent.filing_id,
+            "accession_number": parent.accession_number,
+            "accession_number_compact": parent.accession_number_compact,
+            "cik": parent.cik,
+            "sequence_number": int(document["sequence_number"]),
+            "document_name": doc_name,
+            "document_type": doc_type,
+            "document_role": document_role,
+            "description": document["description"] or None,
+            "document_url": document_url or None,
+            "text_kind": text_kind,
+            "source_archive_date": archive_date_text,
+            "source_archive_member": member_name,
+            "source_archive_path": str(archive),
+            "file_extension": file_ext,
+            "content_format": content_format,
+            "mime_type": mime_type_for_format(content_format),
+            "payload_text": payload_text,
+            "payload_char_count": len(payload_text),
+            "payload_byte_count": len(payload_text.encode("utf-8", errors="replace")),
+            "content_sha256": content_sha,
+            "normalizer_version": NORMALIZER_VERSION,
+            "source_run_id": str(payload["source_run_id"]),
+            "inserted_at": inserted_at,
+        }
     text_row = None
     if has_text:
         text_row = {
@@ -751,7 +818,7 @@ def build_rows(
             "accession_number": parent.accession_number,
             "accession_number_compact": parent.accession_number_compact,
             "cik": parent.cik,
-            "text_kind": text_kind_for_role(document_role),
+            "text_kind": text_kind,
             "text": normalized_text,
             "text_char_count": len(normalized_text),
             "text_byte_count": len(normalized_text.encode("utf-8")),
@@ -800,12 +867,12 @@ def build_rows(
             "document_type": doc_type,
             "document_name": doc_name,
             "document_role": document_role,
-            "text_kind": text_row["text_kind"] if text_row else "",
+            "text_kind": text_kind,
             "text_char_count": len(normalized_text),
             "quality_flags": sorted(set(quality_flags)),
             "text_prefix": normalized_text[: int(payload["sample_text_chars"])],
         }
-    return doc_row, text_row, skip_row, sample_row
+    return doc_row, payload_row, text_row, skip_row, sample_row
 
 
 def normalize_document_text(payload: str, content_format: str) -> tuple[str, str, list[str]]:
@@ -856,6 +923,14 @@ def plain_text_to_text(payload: str) -> str:
         text = re.sub(r"(?is)<style\b.*?</style>", " ", text)
         text = re.sub(r"(?is)<[^>]+>", " ", text)
     return text
+
+
+def should_persist_document_payload(document_role: str, content_format: str) -> bool:
+    if document_role == "xbrl_sidecar" or content_format == "xbrl":
+        return False
+    if document_role in {"image", "stylesheet_or_script", "spreadsheet", "archive_or_json", "pdf"}:
+        return False
+    return content_format in {"html", "plain_text", "xml"}
 
 
 def canonicalize_text(text: str) -> str:
@@ -1043,6 +1118,7 @@ def structure_for_columns(columns: list[str]) -> str:
         "sequence_number": "UInt32",
         "byte_size": "UInt64",
         "payload_char_count": "UInt64",
+        "payload_byte_count": "UInt64",
         "has_normalized_text": "UInt8",
         "text_char_count": "UInt64",
         "text_byte_count": "UInt64",
@@ -1098,7 +1174,7 @@ def aggregate_results(args: argparse.Namespace, source_run_id: str, loaded_env: 
     for result in results:
         if result.get("status") != "ok":
             summary["failed_archives"] += 1
-        for key in ("members", "filings", "documents", "document_rows", "text_rows", "skip_rows", "error_rows", "parent_rows_loaded", "parent_missing_filings", "parse_errors"):
+        for key in ("members", "filings", "documents", "document_rows", "payload_rows", "text_rows", "skip_rows", "error_rows", "parent_rows_loaded", "parent_missing_filings", "parse_errors"):
             summary[key] += int(result.get(key) or 0)
         summary["filing_parent_rows"] += int(result.get("filing_parent_rows") or 0)
         merge_counter(summary["document_roles"], result.get("document_roles") or {})
@@ -1125,6 +1201,7 @@ def empty_summary(args: argparse.Namespace, source_run_id: str, loaded_env: list
         "documents": 0,
         "filing_parent_rows": 0,
         "document_rows": 0,
+        "payload_rows": 0,
         "text_rows": 0,
         "skip_rows": 0,
         "error_rows": 0,
@@ -1151,6 +1228,7 @@ def write_manifest(path: Path, args: argparse.Namespace, source_run_id: str, loa
         "target_tables": {
             "filing": "sec_filing_v2",
             "document": "sec_filing_document_v2",
+            "payload": "sec_filing_document_payload_v1",
             "text": "sec_filing_text_v2",
             "skip": "sec_filing_document_skip_v1",
         },
@@ -1175,6 +1253,7 @@ def write_summary(path: Path, args: argparse.Namespace, source_run_id: str, summ
         f"- Documents parsed: `{summary['documents']:,}`",
         f"- Missing parent rows written: `{summary['filing_parent_rows']:,}`",
         f"- Document rows: `{summary['document_rows']:,}`",
+        f"- Raw payload rows: `{summary['payload_rows']:,}`",
         f"- Text rows: `{summary['text_rows']:,}`",
         f"- Skip rows: `{summary['skip_rows']:,}`",
         f"- Error rows: `{summary['error_rows']:,}`",
@@ -1198,6 +1277,7 @@ def failed_archive_result(archive: Path, error: str) -> dict[str, Any]:
         "filings": 0,
         "documents": 0,
         "document_rows": 0,
+        "payload_rows": 0,
         "text_rows": 0,
         "skip_rows": 0,
         "error_rows": 1,

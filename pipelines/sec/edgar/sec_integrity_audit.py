@@ -34,6 +34,7 @@ DEFAULT_ARCHIVE_ROOT_WIN = Path("D:/market-data/sec_core/daily_archives")
 SEC_TABLES = (
     "sec_filing_v2",
     "sec_filing_document_v2",
+    "sec_filing_document_payload_v1",
     "sec_filing_text_v2",
     "sec_filing_document_skip_v1",
     "sec_xbrl_company_fact_v1",
@@ -108,6 +109,10 @@ def main() -> None:
         checks.extend(check_filing_parent(client, args.database, scope_start))
     if "sec_filing_document_v2" in table_meta:
         checks.extend(check_document_v2_shape(column_map))
+    if "sec_filing_document_payload_v1" in table_meta:
+        checks.extend(check_document_payload_shape(column_map))
+        if "sec_filing_document_v2" in table_meta:
+            checks.extend(check_payload_table(client, args.database, payload_table="sec_filing_document_payload_v1", document_table="sec_filing_document_v2"))
     if "sec_filing_text_v2" in table_meta:
         checks.extend(check_text_v2_shape(column_map))
         if "sec_filing_document_v2" in table_meta:
@@ -152,11 +157,11 @@ def check_required_tables(table_meta: dict[str, dict[str, Any]], require_v2_tabl
     rows = []
     required = {"sec_filing_v2"}
     if require_v2_tables:
-        required |= {"sec_filing_document_v2", "sec_filing_text_v2", "sec_filing_document_skip_v1"}
+        required |= {"sec_filing_document_v2", "sec_filing_document_payload_v1", "sec_filing_text_v2", "sec_filing_document_skip_v1"}
     for table in SEC_TABLES:
         exists = table in table_meta
         status = "pass" if exists or table not in required else "fail"
-        if table in {"sec_filing_document_v2", "sec_filing_text_v2", "sec_filing_document_skip_v1"} and not exists and not require_v2_tables:
+        if table in {"sec_filing_document_v2", "sec_filing_document_payload_v1", "sec_filing_text_v2", "sec_filing_document_skip_v1"} and not exists and not require_v2_tables:
             status = "warn"
         rows.append(
             check(
@@ -277,6 +282,80 @@ def check_text_v2_shape(column_map: dict[str, set[str]]) -> list[dict[str, Any]]
     columns = column_map.get("sec_filing_text_v2", set())
     missing = sorted(required - columns)
     return [check("sec_filing_text_v2_required_columns", "pass" if not missing else "fail", "text v2 required schema columns", table="sec_filing_text_v2", details={"missing_columns": missing})]
+
+
+def check_document_payload_shape(column_map: dict[str, set[str]]) -> list[dict[str, Any]]:
+    required = {
+        "document_id",
+        "filing_id",
+        "accession_number",
+        "accession_number_compact",
+        "cik",
+        "sequence_number",
+        "document_name",
+        "document_type",
+        "document_role",
+        "text_kind",
+        "content_format",
+        "mime_type",
+        "payload_text",
+        "payload_char_count",
+        "payload_byte_count",
+        "content_sha256",
+        "source_archive_date",
+        "source_archive_member",
+        "source_archive_path",
+        "source_run_id",
+        "inserted_at",
+    }
+    columns = column_map.get("sec_filing_document_payload_v1", set())
+    missing = sorted(required - columns)
+    return [
+        check(
+            "sec_filing_document_payload_v1_required_columns",
+            "pass" if not missing else "fail",
+            "document payload required schema columns",
+            table="sec_filing_document_payload_v1",
+            details={"missing_columns": missing},
+        )
+    ]
+
+
+def check_payload_table(client: ClickHouseHttpClient, db: str, *, payload_table: str, document_table: str) -> list[dict[str, Any]]:
+    duplicate_payload = scalar_int(
+        client,
+        f"""
+        SELECT count()
+        FROM (
+            SELECT document_id, count() AS c
+            FROM {qi(db)}.{qi(payload_table)} FINAL
+            GROUP BY document_id
+            HAVING c > 1
+        )
+        """,
+    )
+    without_document = scalar_int(
+        client,
+        f"""
+        SELECT count()
+        FROM (SELECT document_id FROM {qi(db)}.{qi(payload_table)} FINAL GROUP BY document_id) AS p
+        LEFT ANTI JOIN (SELECT document_id FROM {qi(db)}.{qi(document_table)} FINAL GROUP BY document_id) AS d
+        ON p.document_id = d.document_id
+        """,
+    )
+    xbrl_payload_rows = scalar_int(
+        client,
+        f"""
+        SELECT count()
+        FROM {qi(db)}.{qi(payload_table)} FINAL
+        WHERE content_format = 'xbrl' OR document_role = 'xbrl_sidecar'
+        """,
+    )
+    return [
+        check(f"{payload_table}_duplicate_keys", "pass" if duplicate_payload == 0 else "fail", "duplicate raw payload keys", table=payload_table, details={"duplicates": duplicate_payload}),
+        check(f"{payload_table}_without_document_parent", "pass" if without_document == 0 else "fail", "raw payload rows without document parent", table=payload_table, details={"without_document_parent": without_document}),
+        check(f"{payload_table}_xbrl_sidecar_exclusion", "pass" if xbrl_payload_rows == 0 else "fail", "raw payload table excludes XBRL sidecars", table=payload_table, details={"xbrl_payload_rows": xbrl_payload_rows}),
+    ]
 
 
 def check_text_table(client: ClickHouseHttpClient, db: str, *, text_table: str, document_table: str) -> list[dict[str, Any]]:

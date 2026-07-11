@@ -33,6 +33,39 @@ PARTITION BY cityHash64(cik) % 64
 ORDER BY (cik, accession_number, sequence_number, document_id)
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
 
+CREATE TABLE IF NOT EXISTS q_live.sec_filing_document_payload_v1
+(
+    document_id String,
+    filing_id String,
+    accession_number String,
+    accession_number_compact String,
+    cik String,
+    sequence_number UInt32,
+    document_name String,
+    document_type LowCardinality(String),
+    document_role LowCardinality(String),
+    description Nullable(String),
+    document_url Nullable(String),
+    text_kind LowCardinality(String),
+    source_archive_date Date,
+    source_archive_member String,
+    source_archive_path Nullable(String),
+    file_extension LowCardinality(String),
+    content_format LowCardinality(String),
+    mime_type Nullable(String),
+    payload_text String CODEC(ZSTD(9)),
+    payload_char_count UInt64,
+    payload_byte_count UInt64,
+    content_sha256 String,
+    normalizer_version LowCardinality(String),
+    source_run_id String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(inserted_at)
+PARTITION BY cityHash64(cik) % 64
+ORDER BY (cik, accession_number, document_id, content_format)
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
 CREATE TABLE IF NOT EXISTS q_live.sec_filing_text_v2
 (
     document_id String,

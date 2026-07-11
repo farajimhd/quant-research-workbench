@@ -23,6 +23,7 @@ from pipelines.sec.edgar.sec_pipeline.xbrl_live import LiveXbrlRows, SecLiveXbrl
 class LiveFilingRows:
     filing_row: dict[str, Any]
     document_rows: list[dict[str, Any]]
+    payload_rows: list[dict[str, Any]]
     text_rows: list[dict[str, Any]]
     skip_rows: list[dict[str, Any]]
     xbrl_rows: LiveXbrlRows
@@ -89,14 +90,17 @@ class SecLiveFilingPipeline:
         if submission is not None:
             filing_row, parent = apply_submission_metadata(filing_row, parent, submission)
         document_rows: list[dict[str, Any]] = []
+        payload_rows: list[dict[str, Any]] = []
         text_rows: list[dict[str, Any]] = []
         skip_rows: list[dict[str, Any]] = []
         has_xbrl_payload = False
         for document in filing.get("documents") or []:
-            doc_row, text_row, skip_row, _sample = build_rows(payload, raw_path, archive_date_text, raw_path.name, parent, document, inserted_at)
+            doc_row, payload_row, text_row, skip_row, _sample = build_rows(payload, raw_path, archive_date_text, raw_path.name, parent, document, inserted_at)
             document_rows.append(doc_row)
             if doc_row.get("document_role") == "xbrl_sidecar" or doc_row.get("content_format") == "xbrl":
                 has_xbrl_payload = True
+            if payload_row:
+                payload_rows.append(payload_row)
             if text_row:
                 text_rows.append(text_row)
             if skip_row:
@@ -112,6 +116,7 @@ class SecLiveFilingPipeline:
         return LiveFilingRows(
             filing_row=filing_row,
             document_rows=document_rows,
+            payload_rows=payload_rows,
             text_rows=text_rows,
             skip_rows=skip_rows,
             xbrl_rows=xbrl_rows,

@@ -10,6 +10,7 @@ from research.mlops.clickhouse import ClickHouseHttpClient
 
 FILING_TABLE = "sec_filing_v2"
 DOCUMENT_TABLE = "sec_filing_document_v2"
+PAYLOAD_TABLE = "sec_filing_document_payload_v1"
 TEXT_TABLE = "sec_filing_text_v2"
 SKIP_TABLE = "sec_filing_document_skip_v1"
 XBRL_CONCEPT_TABLE = "sec_xbrl_concept_v1"
@@ -19,6 +20,7 @@ XBRL_FRAME_OBSERVATION_TABLE = "sec_xbrl_frame_observation_v1"
 WRITE_TABLES = [
     FILING_TABLE,
     DOCUMENT_TABLE,
+    PAYLOAD_TABLE,
     TEXT_TABLE,
     SKIP_TABLE,
     XBRL_CONCEPT_TABLE,
@@ -32,6 +34,7 @@ WRITE_TABLES = [
 class SecWriteResult:
     filing_rows: int = 0
     document_rows: int = 0
+    payload_rows: int = 0
     text_rows: int = 0
     skip_rows: int = 0
     xbrl_concept_rows: int = 0
@@ -45,6 +48,7 @@ class SecWriteResult:
 class SecWriteAudit:
     filing_rows: int
     document_rows: int
+    payload_rows: int
     text_rows: int
     skip_rows: int
     xbrl_concept_rows: int
@@ -53,6 +57,7 @@ class SecWriteAudit:
     xbrl_frame_observation_rows: int
     duplicate_filing_keys: int
     documents_without_filing: int
+    payloads_without_document: int
     texts_without_document: int
     texts_without_filing: int
     company_facts_without_filing: int
@@ -64,6 +69,7 @@ class SecWriteAudit:
         return (
             self.duplicate_filing_keys == 0
             and self.documents_without_filing == 0
+            and self.payloads_without_document == 0
             and self.texts_without_document == 0
             and self.texts_without_filing == 0
             and self.company_facts_without_filing == 0
@@ -97,6 +103,7 @@ class SecClickHouseWriter:
         return SecWriteAudit(
             filing_rows=scalar_int(self.client, f"SELECT count() FROM {qi(self.database)}.{qi(FILING_TABLE)} FINAL"),
             document_rows=scalar_int(self.client, f"SELECT count() FROM {qi(self.database)}.{qi(DOCUMENT_TABLE)} FINAL"),
+            payload_rows=scalar_int(self.client, f"SELECT count() FROM {qi(self.database)}.{qi(PAYLOAD_TABLE)} FINAL"),
             text_rows=scalar_int(self.client, f"SELECT count() FROM {qi(self.database)}.{qi(TEXT_TABLE)} FINAL"),
             skip_rows=scalar_int(self.client, f"SELECT count() FROM {qi(self.database)}.{qi(SKIP_TABLE)} FINAL"),
             xbrl_concept_rows=scalar_int(self.client, f"SELECT count() FROM {qi(self.database)}.{qi(XBRL_CONCEPT_TABLE)} FINAL"),
@@ -122,6 +129,17 @@ class SecClickHouseWriter:
                 FROM (SELECT cik, accession_number FROM {qi(self.database)}.{qi(DOCUMENT_TABLE)} FINAL) AS d
                 LEFT ANTI JOIN (SELECT cik, accession_number FROM {qi(self.database)}.{qi(FILING_TABLE)} FINAL) AS f
                 ON d.cik = f.cik AND d.accession_number = f.accession_number
+                """,
+            ),
+            payloads_without_document=scalar_int(
+                self.client,
+                f"""
+                SELECT count()
+                FROM (SELECT cik, accession_number, document_id FROM {qi(self.database)}.{qi(PAYLOAD_TABLE)} FINAL) AS p
+                LEFT ANTI JOIN (SELECT cik, accession_number, document_id FROM {qi(self.database)}.{qi(DOCUMENT_TABLE)} FINAL) AS d
+                ON p.cik = d.cik
+                   AND p.accession_number = d.accession_number
+                   AND p.document_id = d.document_id
                 """,
             ),
             texts_without_document=scalar_int(
@@ -211,6 +229,7 @@ class SecClickHouseWriter:
         *,
         filing_row: dict[str, Any],
         document_rows: list[dict[str, Any]],
+        payload_rows: list[dict[str, Any]],
         text_rows: list[dict[str, Any]],
         skip_rows: list[dict[str, Any]],
         xbrl_concept_rows: list[dict[str, Any]] | None = None,
@@ -223,6 +242,7 @@ class SecClickHouseWriter:
             return SecWriteResult(skipped_existing=True)
         self.insert_rows(FILING_TABLE, [filing_row])
         self.insert_rows(DOCUMENT_TABLE, document_rows)
+        self.insert_rows(PAYLOAD_TABLE, payload_rows)
         self.insert_rows(TEXT_TABLE, text_rows)
         self.insert_rows(SKIP_TABLE, skip_rows)
         self.insert_rows(XBRL_CONCEPT_TABLE, xbrl_concept_rows or [])
@@ -232,6 +252,7 @@ class SecClickHouseWriter:
         return SecWriteResult(
             filing_rows=1,
             document_rows=len(document_rows),
+            payload_rows=len(payload_rows),
             text_rows=len(text_rows),
             skip_rows=len(skip_rows),
             xbrl_concept_rows=len(xbrl_concept_rows or []),
