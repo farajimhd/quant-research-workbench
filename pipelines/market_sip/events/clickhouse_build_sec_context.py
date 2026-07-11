@@ -61,8 +61,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--replace-range", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--wait-mutations", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--mutation-timeout-seconds", type=int, default=7200)
-    parser.add_argument("--text-prefix-chars", type=int, default=16000)
-    parser.add_argument("--max-text-rows-per-filing", type=int, default=2)
+    parser.add_argument("--text-prefix-chars", type=int, default=0, help="Deprecated no-op. SEC text context now stores full text.")
+    parser.add_argument("--max-text-rows-per-filing", type=int, default=0, help="Deprecated no-op. SEC text context now stores every text row.")
     parser.add_argument("--sec-text-buckets", type=int, default=64, help="Process SEC text by cityHash64(cik) buckets to match q_live.sec_filing_text_v2 partitioning.")
     parser.add_argument("--skip-text", action="store_true")
     parser.add_argument("--skip-xbrl", action="store_true")
@@ -90,7 +90,7 @@ def main() -> int:
     print(f"settings={query_settings(args).strip() or '<none>'}", flush=True)
     print(f"replace_range={args.replace_range} wait_mutations={args.wait_mutations} dry_run={args.dry_run}", flush=True)
     print(
-        f"text_prefix_chars={args.text_prefix_chars} max_text_rows_per_filing={args.max_text_rows_per_filing} "
+        "sec_text_context=full_text_all_rows "
         f"sec_text_buckets={args.sec_text_buckets} skip_text={args.skip_text}",
         flush=True,
     )
@@ -351,8 +351,6 @@ def insert_text_context_sql(args: argparse.Namespace, *, start_date: date, end_d
     source_db = quote_ident(args.source_database)
     filing_context = f"{quote_ident(args.target_database)}.{quote_ident(args.filing_table)}"
     target = f"{quote_ident(args.target_database)}.{quote_ident(args.text_table)}"
-    text_chars = max(1, int(args.text_prefix_chars))
-    per_filing = max(1, int(args.max_text_rows_per_filing))
     buckets = max(1, int(args.sec_text_buckets))
     return f"""
 INSERT INTO {target}
@@ -366,7 +364,7 @@ SELECT
     toUInt8(0) AS text_rank,
     ifNull(t.document_id, '') AS document_id,
     ifNull(t.text_kind, '') AS text_kind,
-    substring(ifNull(t.text, ''), 1, {text_chars}) AS text,
+    ifNull(t.text, '') AS text,
     toUInt32(least(ifNull(t.text_char_count, 0), 4294967295)) AS text_char_count,
     arrayStringConcat(t.quality_flags, ',') AS quality_flags,
     now64(3, 'UTC') AS updated_at
@@ -378,7 +376,6 @@ WHERE f.accepted_at_utc >= {date_time64_sql(start_date)}
   AND f.accepted_at_utc < {date_time64_sql(end_date_exclusive)}
   AND cityHash64(t.cik) % {buckets} = {int(bucket)}
 ORDER BY f.ticker, f.accepted_at_utc, f.accession_number, t.text_kind, t.document_id
-LIMIT {per_filing} BY f.ticker, f.cik, f.accession_number
 {query_settings(args)}
 """
 

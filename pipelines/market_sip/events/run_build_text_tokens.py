@@ -74,7 +74,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--news-body-prefix-chars", type=int, default=0)
     parser.add_argument("--news-external-prefix-chars", type=int, default=0)
     parser.add_argument("--news-pdf-prefix-chars", type=int, default=0)
-    parser.add_argument("--sec-text-prefix-chars", type=int, default=16000)
+    parser.add_argument("--sec-text-prefix-chars", type=int, default=0, help="Deprecated no-op. SEC tokenization now reads full context text.")
     parser.add_argument("--max-threads", type=int, default=DEFAULTS["max_threads"])
     parser.add_argument("--max-memory-usage", default=DEFAULTS["max_memory_usage"])
     parser.add_argument("--output-root-win", default=DEFAULTS["output_root_win"])

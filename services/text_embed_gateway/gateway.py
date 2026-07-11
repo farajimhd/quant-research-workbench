@@ -1321,8 +1321,6 @@ def missing_sec_text_context_select_sql(config: TextEmbedGatewayConfig, bounds: 
     text_table = quote_ident(config.sec_live_text_table)
     filing_context = f"{quote_ident(config.context_database)}.{quote_ident(config.sec_context_filing_table)}"
     target = f"{quote_ident(config.context_database)}.{quote_ident(config.sec_context_text_table)}"
-    text_chars = max(1, int(config.sec_text_prefix_chars))
-    per_filing = max(1, int(config.sec_max_text_rows_per_filing))
     return f"""
 SELECT
     selected.ticker AS ticker,
@@ -1350,7 +1348,7 @@ FROM
         toUInt8(0) AS text_rank,
         ifNull(t.document_id, '') AS document_id,
         ifNull(t.text_kind, '') AS text_kind,
-        substring(ifNull(t.text, ''), 1, {text_chars}) AS text,
+        ifNull(t.text, '') AS text,
         toUInt32(least(ifNull(t.text_char_count, 0), 4294967295)) AS text_char_count,
         arrayStringConcat(t.quality_flags, ',') AS quality_flags
     FROM {filing_context} AS f
@@ -1360,7 +1358,6 @@ FROM
     WHERE f.accepted_at_utc >= {dt64_sql(bounds[0])}
       AND f.accepted_at_utc < {dt64_sql(bounds[1])}
     ORDER BY f.ticker, f.accepted_at_utc, f.accession_number, t.text_kind, t.document_id
-    LIMIT {per_filing} BY f.ticker, f.cik, f.accession_number
 ) AS selected
 LEFT JOIN {target} AS existing
     ON existing.ticker = selected.ticker
@@ -1487,7 +1484,6 @@ def missing_sec_source_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetim
     context = f"{quote_ident(config.context_database)}.{quote_ident(config.sec_context_text_table)}"
     target = quote_ident(config.target_database)
     token_table = quote_ident(config.sec_token_table)
-    text_chars = max(1, config.sec_text_prefix_chars)
     return f"""
 SELECT
     src.ticker,
@@ -1500,7 +1496,7 @@ SELECT
     src.text_rank,
     src.document_id,
     src.text_kind,
-    substring(src.text, 1, {text_chars}) AS text,
+    src.text AS text,
     src.text_char_count AS source_text_char_count,
     src.quality_flags
 FROM {context} AS src

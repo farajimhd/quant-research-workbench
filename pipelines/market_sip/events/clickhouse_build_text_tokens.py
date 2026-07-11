@@ -264,7 +264,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--news-body-prefix-chars", type=int, default=0)
     parser.add_argument("--news-external-prefix-chars", type=int, default=0)
     parser.add_argument("--news-pdf-prefix-chars", type=int, default=0)
-    parser.add_argument("--sec-text-prefix-chars", type=int, default=16000)
+    parser.add_argument("--sec-text-prefix-chars", type=int, default=0, help="Deprecated no-op. SEC tokenization now reads full context text.")
     parser.add_argument("--storage-policy", default=default_storage_policy())
     parser.add_argument("--max-threads", type=int, default=16)
     parser.add_argument("--max-memory-usage", default="120G")
@@ -323,7 +323,7 @@ def main() -> int:
     )
     print(
         f"news_component_prefix_chars=body:{args.news_body_prefix_chars},external:{args.news_external_prefix_chars},pdf:{args.news_pdf_prefix_chars} "
-        f"sec_text_prefix_chars={args.sec_text_prefix_chars}",
+        "sec_text_context=full_text",
         flush=True,
     )
     print(f"insert_batch_size={args.insert_batch_size} storage_policy={args.storage_policy or '<default>'}", flush=True)
@@ -981,7 +981,6 @@ FORMAT JSONEachRow
 def sec_source_sql(args: argparse.Namespace, *, chunk_start: date, chunk_end: date) -> str:
     table = f"{quote_ident(args.context_database)}.{quote_ident(args.sec_text_context_table)}"
     limit_sql = f"\nLIMIT {int(args.limit_rows_per_chunk)}" if int(args.limit_rows_per_chunk) > 0 else ""
-    text_chars = max(1, int(args.sec_text_prefix_chars))
     return f"""
 SELECT
     ticker,
@@ -994,7 +993,7 @@ SELECT
     text_rank,
     document_id,
     text_kind,
-    substring(text, 1, {text_chars}) AS text,
+    text,
     text_char_count AS source_text_char_count,
     quality_flags
 FROM {table}

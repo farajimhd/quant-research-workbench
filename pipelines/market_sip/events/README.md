@@ -269,9 +269,11 @@ assembled explicitly from `title`, `teaser`, `body_text`, `external_text`, and
 text. This avoids relying on a prefix of `normalized_full_text`, which can miss
 enriched external/PDF text when it appears later in the merged article.
 
-SEC filing text uses up to eight 1024-token rows per source text row. Both token
-tables include `token_chunk_index`, `token_start`, and `token_end`, so multiple
-chunks do not collapse under the same replacing key.
+SEC filing context stores full `sec_filing_text_v2.text` rows without a text
+prefix cap and without limiting the number of readable text rows per filing.
+Tokenization currently uses up to eight 1024-token rows per source text row.
+Both token tables include `token_chunk_index`, `token_start`, and `token_end`,
+so multiple chunks do not collapse under the same replacing key.
 
 Embeddings are also chunk-level, not item-level. The LLM is run independently for
 each stored chunk:

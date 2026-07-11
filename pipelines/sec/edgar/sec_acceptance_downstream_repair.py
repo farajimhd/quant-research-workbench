@@ -87,8 +87,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-abs-shift-hours", type=float, default=6.0)
     parser.add_argument("--output-root-win", default=str(DEFAULT_OUTPUT_ROOT_WIN))
     parser.add_argument("--storage-policy", default=default_storage_policy())
-    parser.add_argument("--text-prefix-chars", type=int, default=16000)
-    parser.add_argument("--max-text-rows-per-filing", type=int, default=2)
+    parser.add_argument("--text-prefix-chars", type=int, default=0, help="Deprecated no-op. SEC text context now stores full text.")
+    parser.add_argument("--max-text-rows-per-filing", type=int, default=0, help="Deprecated no-op. SEC text context now stores every text row.")
     parser.add_argument("--sec-text-buckets", type=int, default=64)
     parser.add_argument("--max-threads", type=int, default=8)
     parser.add_argument("--max-memory-usage", default="16G")
@@ -645,8 +645,6 @@ def insert_corrected_text_context_sql(args: argparse.Namespace, cte_body: str) -
     source_db = quote_ident(args.source_database)
     filing_context = f"{quote_ident(args.context_database)}.{quote_ident(args.filing_context_table)}"
     target = f"{quote_ident(args.context_database)}.{quote_ident(args.text_context_table)}"
-    text_chars = max(1, int(args.text_prefix_chars))
-    per_filing = max(1, int(args.max_text_rows_per_filing))
     return f"""
 INSERT INTO {target}
 WITH
@@ -661,7 +659,7 @@ SELECT
     toUInt8(0) AS text_rank,
     ifNull(t.document_id, '') AS document_id,
     ifNull(t.text_kind, '') AS text_kind,
-    substring(ifNull(t.text, ''), 1, {text_chars}) AS text,
+    ifNull(t.text, '') AS text,
     toUInt32(least(ifNull(t.text_char_count, 0), 4294967295)) AS text_char_count,
     arrayStringConcat(t.quality_flags, ',') AS quality_flags,
     now64(3, 'UTC') AS updated_at
@@ -674,7 +672,6 @@ INNER JOIN {source_db}.{quote_ident(args.sec_text_source_table)} AS t
     ON t.cik = f.cik
    AND t.accession_number = f.accession_number
 ORDER BY f.ticker, f.accepted_at_utc, f.accession_number, t.text_kind, t.document_id
-LIMIT {per_filing} BY f.ticker, f.cik, f.accession_number
 {query_settings(args)}
 """
 
@@ -684,8 +681,6 @@ def insert_corrected_text_context_sql_for_stage(args: argparse.Namespace, stage_
     stage = f"{quote_ident(stage_database)}.{quote_ident(stage_table)}"
     filing_context = f"{quote_ident(args.context_database)}.{quote_ident(args.filing_context_table)}"
     target = f"{quote_ident(args.context_database)}.{quote_ident(args.text_context_table)}"
-    text_chars = max(1, int(args.text_prefix_chars))
-    per_filing = max(1, int(args.max_text_rows_per_filing))
     return f"""
 INSERT INTO {target}
 SELECT
@@ -698,7 +693,7 @@ SELECT
     toUInt8(0) AS text_rank,
     ifNull(t.document_id, '') AS document_id,
     ifNull(t.text_kind, '') AS text_kind,
-    substring(ifNull(t.text, ''), 1, {text_chars}) AS text,
+    ifNull(t.text, '') AS text,
     toUInt32(least(ifNull(t.text_char_count, 0), 4294967295)) AS text_char_count,
     arrayStringConcat(t.quality_flags, ',') AS quality_flags,
     now64(3, 'UTC') AS updated_at
@@ -711,7 +706,6 @@ INNER JOIN {source_db}.{quote_ident(args.sec_text_source_table)} AS t
     ON t.cik = f.cik
    AND t.accession_number = f.accession_number
 ORDER BY f.ticker, f.accepted_at_utc, f.accession_number, t.text_kind, t.document_id
-LIMIT {per_filing} BY f.ticker, f.cik, f.accession_number
 {query_settings(args)}
 """
 
