@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 import torch
 import torch.nn.functional as F
@@ -79,11 +80,16 @@ def compute_loss(output: PackedModelOutput, batch: PackedTorchBlock) -> LossResu
 
 def label_group(name: str) -> str:
     lower = name.lower()
-    if any(token in lower for token in ("news", "sec", "arrival")):
+    tokens = set(re.split(r"[^a-z0-9]+", lower))
+    if any(token in tokens for token in ("news", "sec", "arrival")):
         return "external_arrival"
-    if any(token in lower for token in ("split", "dividend", "corporate")):
+    if any(token in tokens for token in ("split", "dividend", "corporate")):
         return "corporate_action"
-    if any(token in lower for token in CLASSIFICATION_TOKENS):
+    if (
+        any(token in tokens for token in ("flag", "halt", "luld", "condition", "available"))
+        or lower.startswith("is_")
+        or "_is_" in lower
+    ):
         return "event_state"
     if any(token in lower for token in COUNT_TOKENS):
         return "event_count"
