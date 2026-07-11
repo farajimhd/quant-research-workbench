@@ -4099,6 +4099,216 @@ button {
   gap: 10px;
 }
 
+.sec-filing-document-inventory-card {
+  background: var(--surface);
+  border: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.sec-filing-document-inventory-card > header {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface-alt) 62%, var(--surface));
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  padding: 13px 16px;
+}
+
+.sec-filing-document-inventory-card > header div {
+  min-width: 0;
+}
+
+.sec-filing-document-inventory-card > header span {
+  color: var(--muted-foreground);
+  display: block;
+  font-size: 10px;
+  font-weight: 740;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sec-filing-document-inventory-card > header h4 {
+  color: var(--foreground);
+  font-size: 16px;
+  font-weight: 680;
+  margin: 3px 0 0;
+}
+
+.sec-filing-document-inventory-card > header p {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.35;
+  margin: 4px 0 0;
+}
+
+.sec-filing-document-inventory-card > header strong {
+  background: var(--badge-neutral-bg);
+  border: 1px solid var(--badge-neutral-border);
+  border-radius: 999px;
+  color: var(--badge-neutral-fg);
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 9px;
+}
+
+.sec-filing-document-list {
+  display: grid;
+  gap: 10px;
+  max-height: 560px;
+  overflow: auto;
+  padding: 12px;
+}
+
+.sec-filing-document-card {
+  background: color-mix(in oklab, var(--surface-alt) 34%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+}
+
+.sec-filing-document-card-head {
+  align-items: flex-start;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.sec-filing-document-card-head span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sec-filing-document-card-head h5 {
+  color: var(--foreground);
+  font-size: 15px;
+  font-weight: 680;
+  line-height: 1.3;
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.sec-filing-document-card-head p {
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1.4;
+  margin: 5px 0 0;
+}
+
+.sec-filing-document-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  max-width: 360px;
+}
+
+.sec-filing-document-badges span {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--foreground);
+  font-size: 10px;
+  font-weight: 700;
+  max-width: 180px;
+  overflow: hidden;
+  padding: 4px 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sec-filing-document-badges .has-text {
+  background: var(--badge-success-bg);
+  border-color: var(--badge-success-border);
+  color: var(--badge-success-fg);
+}
+
+.sec-filing-document-badges .no-text {
+  background: var(--badge-neutral-bg);
+  border-color: var(--badge-neutral-border);
+  color: var(--badge-neutral-fg);
+}
+
+.sec-filing-document-badges .no-text.warn {
+  background: var(--badge-warning-bg);
+  border-color: var(--badge-warning-border);
+  color: var(--badge-warning-fg);
+}
+
+.sec-filing-document-facts {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+}
+
+.sec-filing-document-facts div {
+  background: var(--surface);
+  border: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+  border-radius: 8px;
+  min-width: 0;
+  padding: 8px 9px;
+}
+
+.sec-filing-document-facts div.wide {
+  grid-column: span 2;
+}
+
+.sec-filing-document-facts dt {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 740;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sec-filing-document-facts dd {
+  color: var(--foreground);
+  font-family: "Segoe UI", Arial, sans-serif;
+  font-size: 12px;
+  font-weight: 620;
+  line-height: 1.35;
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.sec-filing-document-actions {
+  align-items: center;
+  border-top: 1px solid color-mix(in oklab, var(--border) 68%, transparent);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+  padding-top: 10px;
+}
+
+.sec-filing-document-actions a,
+.sec-filing-document-actions span {
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.sec-filing-document-actions a {
+  background: color-mix(in oklab, var(--accent) 7%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--accent) 32%, var(--border));
+  color: var(--accent-strong);
+  padding: 6px 9px;
+  text-decoration: none;
+}
+
+.sec-filing-document-actions span {
+  color: var(--muted-foreground);
+}
+
 .sec-filing-data-section-header {
   align-items: center;
   background: var(--surface);
@@ -4198,6 +4408,19 @@ button {
 
   .sec-filing-readable-body {
     max-height: 520px;
+  }
+
+  .sec-filing-document-card-head {
+    grid-template-columns: 1fr;
+  }
+
+  .sec-filing-document-badges {
+    justify-content: flex-start;
+    max-width: none;
+  }
+
+  .sec-filing-document-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
 }

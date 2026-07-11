@@ -1441,6 +1441,7 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
   const identityTickers = secIdentityTickers(identitySummary, row, identityRows);
   const primaryTicker = stringMetric(identitySummary, ["primary_ticker"]) || row.primaryTicker || identityTickers[0] || "";
   const readableTextRows = secReadableTextRows(textRows);
+  const readableDocumentRows = secReadableDocumentRows(documentRows, textRows);
   const primaryTextKind = readableTextRows.length === 1
     ? readableTextRows[0].label
     : readableTextRows.length
@@ -1666,6 +1667,49 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
             </section>
           </aside>
         </section>
+        <section className="sec-filing-document-inventory-card">
+          <header>
+            <div>
+              <span>Document inventory</span>
+              <h4>Readable sec_filing_document_v2 rows</h4>
+              <p>Every saved filing document row is shown with extraction status, source artifact, content metadata, and linked text coverage.</p>
+            </div>
+            <strong>{formatCompactNumber(readableDocumentRows.length)} docs</strong>
+          </header>
+          {readableDocumentRows.length ? (
+            <div className="sec-filing-document-list">
+              {readableDocumentRows.map((doc) => (
+                <article className="sec-filing-document-card" key={doc.key}>
+                  <div className="sec-filing-document-card-head">
+                    <div>
+                      <span>#{doc.sequenceLabel}</span>
+                      <h5>{doc.title}</h5>
+                      {doc.description ? <p>{doc.description}</p> : null}
+                    </div>
+                    <div className="sec-filing-document-badges">
+                      {doc.badges.map((badge) => <span key={badge}>{badge}</span>)}
+                      <span className={doc.textStatusClass}>{doc.textStatusLabel}</span>
+                    </div>
+                  </div>
+                  <dl className="sec-filing-document-facts">
+                    {doc.facts.map((fact) => (
+                      <div className={fact.wide ? "wide" : undefined} key={fact.label}>
+                        <dt>{fact.label}</dt>
+                        <dd>{fact.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                  <div className="sec-filing-document-actions">
+                    {doc.documentUrl ? <a href={doc.documentUrl} rel="noreferrer" target="_blank">Open SEC document</a> : <span>No document URL stored</span>}
+                    {doc.linkedTextRows ? <span>{formatCompactNumber(doc.linkedTextRows)} linked text row{doc.linkedTextRows === 1 ? "" : "s"}</span> : <span>No linked text row</span>}
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="sec-filing-empty-note">No document rows were returned for this filing.</p>
+          )}
+        </section>
         <section className="sec-filing-data-sections">
           <header className="sec-filing-data-section-header">
             <div>
@@ -1735,6 +1779,72 @@ function secReadableTextRows(rows: Record<string, unknown>[]) {
     .filter((row) => row.blocks.length > 0);
 }
 
+function secReadableDocumentRows(documentRows: Record<string, unknown>[], textRows: Record<string, unknown>[]) {
+  const textRowsByDocumentId = new Map<string, Record<string, unknown>[]>();
+  for (const textRow of textRows) {
+    const documentId = stringMetric(textRow, ["document_id", "filing_document_id"]);
+    if (!documentId) continue;
+    textRowsByDocumentId.set(documentId, [...(textRowsByDocumentId.get(documentId) ?? []), textRow]);
+  }
+
+  return [...documentRows]
+    .sort((left, right) => numericMetric(left, ["sequence_number", "sequence"]) - numericMetric(right, ["sequence_number", "sequence"]))
+    .map((row, index) => {
+      const documentId = stringMetric(row, ["document_id", "filing_document_id"]);
+      const linkedTextRows = textRowsByDocumentId.get(documentId) ?? [];
+      const sequence = numericMetric(row, ["sequence_number", "sequence"]);
+      const documentName = stringMetric(row, ["document_name", "name", "filename"]);
+      const description = stringMetric(row, ["description"]);
+      const documentType = stringMetric(row, ["document_type", "type"]);
+      const documentRole = stringMetric(row, ["document_role", "role"]);
+      const extractionStatus = stringMetric(row, ["extraction_status"]);
+      const hasNormalizedText = numericMetric(row, ["has_normalized_text"]) > 0 || linkedTextRows.length > 0;
+      const textCharCount = linkedTextRows.reduce((total, item) => total + secTextCharCount(item), 0);
+      const documentUrl = stringMetric(row, ["document_url", "url"]);
+      const textKinds = uniqueStringSample(linkedTextRows.map((item) => stringMetric(item, ["text_kind", "kind"])), 8);
+      const badges = uniqueStringSample([documentRole, documentType, stringMetric(row, ["content_format"]), stringMetric(row, ["file_extension"])], 5).map(displayName);
+      const facts = [
+        { label: "Document ID", value: documentId || "-" },
+        { label: "Filing ID", value: stringMetric(row, ["filing_id"]) || "-" },
+        { label: "Sequence", value: sequence ? formatCompactNumber(sequence) : "-" },
+        { label: "Document name", value: documentName || "-" },
+        { label: "Document type", value: documentType || "-" },
+        { label: "Document role", value: documentRole || "-" },
+        { label: "Content format", value: stringMetric(row, ["content_format"]) || "-" },
+        { label: "MIME type", value: stringMetric(row, ["mime_type"]) || "-" },
+        { label: "File extension", value: stringMetric(row, ["file_extension"]) || "-" },
+        { label: "Byte size", value: formatByteCount(numericMetric(row, ["byte_size"])) },
+        { label: "Payload chars", value: formatCompactNumber(numericMetric(row, ["payload_char_count"])) },
+        { label: "Has normalized text", value: hasNormalizedText ? "Yes" : "No" },
+        { label: "Linked text kinds", value: textKinds.length ? textKinds.map(displayName).join(", ") : "-" },
+        { label: "Linked text chars", value: textCharCount ? `${formatCompactNumber(textCharCount)} chars` : "-" },
+        { label: "Extraction status", value: extractionStatus || "-" },
+        { label: "Extraction error", value: stringMetric(row, ["extraction_error"]) || "-", wide: true },
+        { label: "Normalizer", value: stringMetric(row, ["normalizer_version"]) || "-" },
+        { label: "Source archive date", value: stringMetric(row, ["source_archive_date"]) || "-" },
+        { label: "Source archive member", value: stringMetric(row, ["source_archive_member"]) || "-", wide: true },
+        { label: "Source archive path", value: stringMetric(row, ["source_archive_path"]) || "-", wide: true },
+        { label: "Document URL", value: documentUrl || "-", wide: true },
+        { label: "Content SHA256", value: stringMetric(row, ["content_sha256"]) || "-", wide: true },
+        { label: "Text SHA256", value: stringMetric(row, ["text_sha256"]) || "-", wide: true },
+        { label: "Source run", value: stringMetric(row, ["source_run_id"]) || "-", wide: true },
+        { label: "Inserted", value: stringMetric(row, ["inserted_at"]) || "-" },
+      ];
+      return {
+        badges: badges.length ? badges : ["Document"],
+        description,
+        documentUrl,
+        facts,
+        key: documentId || `${documentName}-${index}`,
+        linkedTextRows: linkedTextRows.length,
+        sequenceLabel: sequence ? formatCompactNumber(sequence) : formatCompactNumber(index + 1),
+        textStatusClass: hasNormalizedText ? "has-text" : extractionStatus.toLowerCase().includes("skip") || extractionStatus.toLowerCase().includes("error") ? "no-text warn" : "no-text",
+        textStatusLabel: hasNormalizedText ? "Text linked" : extractionStatus || "No text",
+        title: documentName || description || `Document ${index + 1}`,
+      };
+    });
+}
+
 function secTextValue(row: Record<string, unknown>) {
   return stringMetric(row, ["text", "clean_text", "normalized_text", "body_text", "content", "text_preview"]);
 }
@@ -1766,6 +1876,14 @@ function secTextMetadataRow(row: Record<string, unknown>) {
     delete metadata.text;
   }
   return metadata;
+}
+
+function formatByteCount(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "-";
+  if (value < 1024) return `${formatCompactNumber(value)} B`;
+  if (value < 1024 * 1024) return `${formatCompactNumber(value / 1024)} KiB`;
+  if (value < 1024 * 1024 * 1024) return `${formatCompactNumber(value / (1024 * 1024))} MiB`;
+  return `${formatCompactNumber(value / (1024 * 1024 * 1024))} GiB`;
 }
 
 function newsDetailTickers(dbRow: Record<string, unknown>, tickerRows: Record<string, unknown>[], row: NewsTodayRow) {
