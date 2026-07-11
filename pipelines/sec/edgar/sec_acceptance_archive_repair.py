@@ -13,7 +13,6 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -34,13 +33,13 @@ from pipelines.sec.edgar.sec_filing_text_extract_parts import (  # noqa: E402
     archive_date_from_name,
     parse_filing,
 )
+from pipelines.sec.edgar.sec_pipeline.submissions import parse_acceptance_datetime  # noqa: E402
 
 
 DEFAULT_ARCHIVE_ROOT_WIN = Path("D:/market-data/sec_core/daily_archives")
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_acceptance_archive_repair")
 DEFAULT_DATABASE = "q_live"
 DEFAULT_TARGET_TABLE = "sec_filing_v2"
-SEC_ET = ZoneInfo("America/New_York")
 DEFAULT_REPAIR_SOURCES = (
     "archive_acceptance_datetime",
     "archive_filing_date_midnight",
@@ -119,8 +118,8 @@ def parse_args() -> argparse.Namespace:
         description=(
             "Repair SEC filing accepted_at_utc rows that were created from daily archive fallback "
             "dates. The script scans local .nc.tar.gz archives, extracts EDGAR "
-            "ACCEPTANCE-DATETIME from the matching accession container, converts EDGAR Eastern "
-            "time to UTC, writes ReplacingMergeTree replacement rows, and optionally inserts "
+            "ACCEPTANCE-DATETIME from the matching accession container, normalizes it to UTC, "
+            "writes ReplacingMergeTree replacement rows, and optionally inserts "
             "those rows into q_live.sec_filing_v2."
         )
     )
@@ -581,14 +580,10 @@ def unresolved_from_candidate(row: dict[str, Any], reason: str, error: str) -> d
 
 
 def acceptance_datetime_to_utc(raw: str) -> str:
-    digits = re.sub(r"\D+", "", str(raw or ""))
-    if len(digits) < 14:
+    accepted = parse_acceptance_datetime(raw)
+    if not accepted:
         return ""
-    try:
-        parsed = datetime.strptime(digits[:14], "%Y%m%d%H%M%S").replace(tzinfo=SEC_ET)
-    except ValueError:
-        return ""
-    return parsed.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+    return accepted.replace("T", " ").removesuffix("Z")
 
 
 def repaired_source(old_source: str) -> str:

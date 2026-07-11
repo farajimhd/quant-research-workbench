@@ -17,7 +17,6 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 from urllib import error, request
-from zoneinfo import ZoneInfo
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -25,13 +24,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
+from pipelines.sec.edgar.sec_pipeline.submissions import parse_acceptance_datetime  # noqa: E402
 
 
 DEFAULT_ARTIFACT_ROOT_WIN = Path("D:/market-data/sec_edgar_feed")
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_edgar_feed")
 DEFAULT_SEC_USER_AGENT = "QuantResearchWorkbench SEC historical feed ingest contact@example.com"
 SEC_BASE_URL = "https://www.sec.gov/Archives/edgar"
-SEC_ET = ZoneInfo("America/New_York")
 RETRY_HTTP_CODES = {408, 425, 429, 500, 502, 503, 504}
 
 
@@ -997,10 +996,11 @@ def merge_submission_timestamp(submission: ParsedSubmission, timestamp: HeaderTi
 
 
 def accepted_times(raw_value: str) -> tuple[str, str]:
-    if not raw_value:
+    accepted_utc = parse_acceptance_datetime(raw_value)
+    if not accepted_utc:
         return "", ""
-    dt = datetime.strptime(raw_value, "%Y%m%d%H%M%S").replace(tzinfo=SEC_ET)
-    return dt.isoformat(), dt.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    dt = datetime.fromisoformat(accepted_utc.replace("Z", "+00:00"))
+    return dt.isoformat(), accepted_utc
 
 
 def hdr_url_for_accession(accession: str) -> str:

@@ -209,7 +209,7 @@ python D:\TradingCodes\quant-research-workbench\pipelines\sec\edgar\sec_historic
 - Header timestamp probes have their own retry policy. This prevents repeated `.hdr.sgml` failures from consuming the same retry budget intended for large archive downloads.
 - `.hdr.sgml` is the timestamp authority for `accepted_at`.
 - Some SEC feed entries do not expose a separate `.hdr.sgml` sidecar even though the filing directory is listed. Those rows are retained and marked with `timestamp_fetch_status="unavailable_404"` rather than counted as request failures.
-- `accepted_at_edgar_raw` is parsed as EDGAR Eastern time and converted to `accepted_at_utc`.
+- `accepted_at_edgar_raw` is normalized to `accepted_at_utc`; compact 14-digit header values are treated as UTC unless an explicit offset is present.
 - Normalized submission rows include `event_time_utc`, `event_time_source`, `event_time_quality`, and `market_label_eligible`. Only rows with `event_time_quality="exact_sec_acceptance"` and `market_label_eligible=true` should be used for market-reaction labels.
 - The archive date is not used as the event timestamp.
 - `FILING-DATE` is stored but should not be used for market-reaction labels.

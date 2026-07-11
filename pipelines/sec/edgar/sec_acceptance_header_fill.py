@@ -15,7 +15,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib import error, request
-from zoneinfo import ZoneInfo
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -41,6 +40,7 @@ from pipelines.sec.edgar.sec_historical_feed_download import (  # noqa: E402
     parse_retry_after,
     sec_user_agent,
 )
+from pipelines.sec.edgar.sec_pipeline.submissions import parse_acceptance_datetime  # noqa: E402
 
 
 DEFAULT_TARGET_DATABASE = "q_live"
@@ -52,7 +52,6 @@ DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_acceptance_header_fi
 DEFAULT_BATCH_SIZE = 5_000
 DEFAULT_REQUEST_MIN_INTERVAL_SECONDS = 0.11
 SEC_ARCHIVES_BASE_URL = "https://www.sec.gov/Archives/edgar"
-SEC_ET = ZoneInfo("America/New_York")
 
 
 @dataclass(frozen=True, slots=True)
@@ -480,14 +479,10 @@ def first_sgml_value(text: str, tag: str) -> str:
 
 
 def acceptance_datetime_to_utc(raw: str) -> str:
-    text = clean_string(raw)
-    if not text:
+    accepted = parse_acceptance_datetime(raw)
+    if not accepted:
         return ""
-    try:
-        parsed = datetime.strptime(text[:14], "%Y%m%d%H%M%S").replace(tzinfo=SEC_ET)
-    except ValueError:
-        return ""
-    return parsed.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+    return accepted.replace("T", " ").removesuffix("Z")
 
 
 def write_manifest(

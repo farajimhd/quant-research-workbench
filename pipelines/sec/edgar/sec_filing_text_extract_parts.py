@@ -17,7 +17,6 @@ from datetime import UTC, date, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -33,13 +32,13 @@ from research.mlops.clickhouse import (  # noqa: E402
     sql_string,
 )
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
+from pipelines.sec.edgar.sec_pipeline.submissions import parse_acceptance_datetime  # noqa: E402
 
 
 DEFAULT_ARCHIVE_ROOT_WIN = Path("D:/market-data/sec_core/daily_archives")
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_filing_text_parts")
 DEFAULT_DATABASE = "q_live"
 NORMALIZER_VERSION = "sec_text_normalizer_v1"
-SEC_ET = ZoneInfo("America/New_York")
 FILING_COLUMNS = [
     "filing_id",
     "accession_number",
@@ -1296,13 +1295,9 @@ def parse_sec_date_value(value: str | None) -> str:
 
 
 def accepted_timestamp_for_missing_parent(filing: dict[str, Any], archive_date: date) -> tuple[str, str]:
-    raw = re.sub(r"\D+", "", str(filing.get("acceptance_datetime_raw") or ""))
-    if len(raw) >= 14:
-        try:
-            accepted = datetime.strptime(raw[:14], "%Y%m%d%H%M%S").replace(tzinfo=SEC_ET)
-            return accepted.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f000"), "archive_acceptance_datetime"
-        except ValueError:
-            pass
+    accepted = parse_acceptance_datetime(filing.get("acceptance_datetime_raw"))
+    if accepted:
+        return accepted.replace("T", " ").removesuffix("Z"), "archive_acceptance_datetime"
     filing_date = str(filing.get("filing_date") or "")
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", filing_date):
         return f"{filing_date} 00:00:00.000000000", "archive_filing_date_midnight"

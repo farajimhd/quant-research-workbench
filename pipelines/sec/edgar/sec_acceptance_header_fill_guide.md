@@ -29,7 +29,7 @@ https://www.sec.gov/Archives/edgar/data/<cik>/<accession_compact>/<accession>.hd
 <ACCEPTANCE-DATETIME>YYYYMMDDHHMMSS
 ```
 
-5. Converts that Eastern Time timestamp to UTC.
+5. Normalizes that timestamp to UTC. Compact 14-digit header values are treated as UTC unless an explicit offset is present.
 
 6. Appends valid rows to:
 

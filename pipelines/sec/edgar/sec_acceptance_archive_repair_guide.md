@@ -8,7 +8,7 @@ It is designed for the issue created by archive-derived parent rows from the fil
 - `archive_date_midnight`
 - `filing_date_midnight_fallback`
 
-It also repairs rows marked `archive_acceptance_datetime` by converting the raw EDGAR `ACCEPTANCE-DATETIME` from `America/New_York` to UTC. This avoids treating EDGAR local time as UTC.
+It also repairs rows marked `archive_acceptance_datetime` by normalizing raw EDGAR `ACCEPTANCE-DATETIME` to UTC. Compact 14-digit header values are treated as UTC unless an explicit offset is present.
 
 ## What It Does
 
@@ -16,7 +16,7 @@ It also repairs rows marked `archive_acceptance_datetime` by converting the raw 
 2. Queries `q_live.sec_filing_v2 FINAL` for candidate fallback rows on each archive date.
 3. Opens matching local archive members.
 4. Parses `ACCEPTANCE-DATETIME` from the filing container header.
-5. Converts the timestamp from EDGAR Eastern time to UTC.
+5. Normalizes the timestamp to UTC.
 6. Writes replacement `sec_filing_v2` JSONEachRow parts.
 7. Writes unresolved rows to a diagnostic file.
 8. Optionally inserts replacement rows into ClickHouse.
