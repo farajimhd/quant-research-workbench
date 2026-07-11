@@ -25,6 +25,19 @@ validates them, extracts normalized filing/document/text rows, inserts them,
 runs API fallback for missing recent XBRL, repairs XBRL relationships, audits
 the result, and writes coverage rows.
 
+Focused text repair after parser/storage bugs:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_filing_text_repair_rebuild.py --start-date 2026-07-01 --end-date 2026-07-11 --archive-root-win D:/market-data/sec_core/daily_archives --database q_live --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --max-text-chars 0 --cleanup-stale-skips --execute
+```
+
+Use this focused repair when raw daily archives are already present and the goal
+is to rebuild `sec_filing_document_v2`/`sec_filing_text_v2` with the current
+parser. It force-inserts replacement part files and can remove stale skip rows
+for documents that now have extracted text. It does not repair filing-parent
+timestamps; run the acceptance timestamp repair scripts separately for
+`sec_filing_v2.accepted_at_utc`.
+
 Use the full argument form above for manual runs. The SEC gateway generates the
 same explicit shape so the workstation script does not depend on ambient shell
 defaults. `--resume-from-coverage` is enabled by default and records
