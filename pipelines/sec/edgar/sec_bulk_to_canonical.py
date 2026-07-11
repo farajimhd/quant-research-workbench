@@ -60,6 +60,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--user", default=default_clickhouse_user())
     parser.add_argument("--password", default=default_clickhouse_password())
     parser.add_argument("--output-root-win", default=os.environ.get("SEC_BULK_CANONICAL_OUTPUT_ROOT_WIN", str(DEFAULT_OUTPUT_ROOT_WIN)))
+    parser.add_argument(
+        "--max-partitions-per-insert-block",
+        type=int,
+        default=int(os.environ.get("SEC_BULK_CANONICAL_MAX_PARTITIONS_PER_INSERT_BLOCK", "10000")),
+        help="ClickHouse insert setting for wide historical XBRL rebuilds. 0 leaves the server default unchanged.",
+    )
     parser.add_argument("--execute", action="store_true")
     return parser.parse_args()
 
@@ -90,6 +96,7 @@ def main() -> None:
         "start_date": args.start_date,
         "end_date": args.end_date,
         "stages": stages,
+        "max_partitions_per_insert_block": int(args.max_partitions_per_insert_block),
         "loaded_env_files": [str(path) for path in loaded_env],
         "secret_status": secret_status(["REAL_LIVE_CLICKHOUSE_WRITE_URL", "REAL_LIVE_CLICKHOUSE_WRITE_USER", "REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD"]),
     }
@@ -110,8 +117,9 @@ def main() -> None:
     ensure_sec_write_database(client, read_database=args.schema_source_database, write_database=args.target_database)
     validate_tables(client, args.source_database, args.target_database)
     profiles: list[StageProfile] = []
+    insert_settings = insert_settings_sql(args)
     if "parents" in stages:
-        profiles.append(run_insert_stage(client, "parents", args.target_database, FILING_TABLE, parent_insert_sql(args, run_id)))
+        profiles.append(run_insert_stage(client, "parents", args.target_database, FILING_TABLE, parent_insert_sql(args, run_id), insert_settings))
         append_jsonl(events_path, asdict(profiles[-1]))
     if "xbrl" in stages:
         for stage, table, sql in [
@@ -120,7 +128,7 @@ def main() -> None:
             ("xbrl_frames", XBRL_FRAME_TABLE, xbrl_frame_insert_sql(args, run_id)),
             ("xbrl_frame_observations", XBRL_FRAME_OBSERVATION_TABLE, xbrl_frame_observation_insert_sql(args, run_id)),
         ]:
-            profiles.append(run_insert_stage(client, stage, args.target_database, table, sql))
+            profiles.append(run_insert_stage(client, stage, args.target_database, table, sql, insert_settings))
             append_jsonl(events_path, asdict(profiles[-1]))
     summary = {"run_id": run_id, "profiles": [asdict(item) for item in profiles], "status": "ok"}
     (run_root / "sec_bulk_to_canonical_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
@@ -153,11 +161,11 @@ def missing_tables(client: ClickHouseHttpClient, database: str, required: set[st
     return sorted(required - present)
 
 
-def run_insert_stage(client: ClickHouseHttpClient, stage: str, database: str, table: str, sql: str) -> StageProfile:
+def run_insert_stage(client: ClickHouseHttpClient, stage: str, database: str, table: str, sql: str, insert_settings: str = "") -> StageProfile:
     started = time.perf_counter()
     before = table_rows(client, database, table)
     try:
-        client.execute(sql)
+        client.execute(apply_insert_settings(sql, insert_settings))
         after = table_rows(client, database, table)
         profile = StageProfile(stage=stage, status="ok", before_rows=before, after_rows=after, inserted_delta=max(0, after - before), elapsed_seconds=round(time.perf_counter() - started, 3))
     except Exception as exc:  # noqa: BLE001
@@ -166,6 +174,24 @@ def run_insert_stage(client: ClickHouseHttpClient, stage: str, database: str, ta
     if profile.status != "ok":
         raise RuntimeError(profile.error)
     return profile
+
+
+def insert_settings_sql(args: argparse.Namespace) -> str:
+    settings: list[str] = []
+    if int(args.max_partitions_per_insert_block) > 0:
+        settings.append(f"max_partitions_per_insert_block = {int(args.max_partitions_per_insert_block)}")
+    return "SETTINGS " + ", ".join(settings) if settings else ""
+
+
+def apply_insert_settings(sql: str, insert_settings: str) -> str:
+    if not insert_settings:
+        return sql
+    lines = sql.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip().upper().startswith("INSERT INTO "):
+            lines.insert(index + 1, "    " + insert_settings)
+            return "\n".join(lines)
+    return sql
 
 
 def table_rows(client: ClickHouseHttpClient, database: str, table: str) -> int:

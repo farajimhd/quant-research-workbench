@@ -24,6 +24,11 @@ end date. All v3 table names, workstation `D:/market-data` output roots,
 resume-from-coverage are defaults. Override `--start-date` or `--end-date` only
 when intentionally running a smaller range.
 
+The bulk-to-canonical stage also defaults
+`max_partitions_per_insert_block=10000` for wide XBRL historical inserts, because
+the full 2019+ rebuild can legitimately touch more than the ClickHouse server
+default of 100 partitions in a single insert block.
+
 This unified gap-fill entry point refreshes SEC bulk `submissions` and
 `companyfacts`, mirrors those bulk files into `sec_core`, derives canonical
 filing parents and XBRL rows from that mirror, downloads missing daily archives,
