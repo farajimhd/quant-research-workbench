@@ -192,6 +192,8 @@ penny < 1
 20 <= mid < 100
 large >= 100
 ```
+- loader fetches are top-K bounded, `K=16` by default, plus the active ticker
+  row for the current block
 
 The completed-bar rule is:
 

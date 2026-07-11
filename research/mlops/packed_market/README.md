@@ -129,6 +129,10 @@ large: trade_close >= 100
 The table also keeps the generic `top_volume_*` all-volume fields for backward
 compatibility.
 
+Loader fetches are bounded: by default the profile/loader reads only the top
+`16` rows per scanner rank family plus the active ticker row. It does not pull
+every ticker's scanner row into a block.
+
 Run the full loader profile:
 
 ```powershell

@@ -25,6 +25,7 @@ DEFAULT_ARGS = {
     "--scanner-penny-price-threshold": "1.0",
     "--scanner-small-price-threshold": "20.0",
     "--scanner-mid-price-threshold": "100.0",
+    "--scanner-rank-top-k": "16",
     "--output-root": r"D:\TradingML\runtimes\packed_market_model\v1\profiles",
     "--progress-layout": "rich",
 }

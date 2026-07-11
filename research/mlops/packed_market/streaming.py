@@ -138,6 +138,7 @@ class ClickHouseTickerStreamConfig:
     scanner_penny_price_threshold: float = 1.0
     scanner_small_price_threshold: float = 20.0
     scanner_mid_price_threshold: float = 100.0
+    scanner_rank_top_k: int = 16
 
 
 @dataclass(slots=True)
@@ -244,6 +245,7 @@ class ClickHouseTickerStreamDataset:
                     penny_price_threshold=float(config.scanner_penny_price_threshold),
                     small_price_threshold=float(config.scanner_small_price_threshold),
                     mid_price_threshold=float(config.scanner_mid_price_threshold),
+                    rank_top_k=int(config.scanner_rank_top_k),
                     max_threads=int(config.max_threads_per_query),
                     max_memory_usage=str(config.max_memory_usage),
                 ),
@@ -405,7 +407,11 @@ class ClickHouseTickerStreamDataset:
         lower_bound_us = max(0, completed_scanner_bar_end_us(first_origin_us) - int(self.config.scanner_fetch_lookback_seconds) * 1_000_000)
         scanner_rows = 0
         if completed_before_us > lower_bound_us:
-            scanner_query = manager.fetch_completed_sql_for_origin_range(first_origin_us=first_origin_us, last_origin_us=last_origin_us)
+            scanner_query = manager.fetch_completed_sql_for_origin_range(
+                first_origin_us=first_origin_us,
+                last_origin_us=last_origin_us,
+                ticker=job.plan.ticker,
+            )
             scanner_frame = query_polars(self.config, scanner_query, active_queries=self.active_queries, label=f"scanner_fetch_{job.plan.ticker}_{job.block_id:06d}")
             scanner_rows = int(scanner_frame.height)
         return {

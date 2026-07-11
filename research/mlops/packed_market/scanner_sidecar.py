@@ -20,6 +20,7 @@ DEFAULT_SESSION_END_ET = "20:00:00"
 DEFAULT_PENNY_PRICE_THRESHOLD = 1.0
 DEFAULT_SMALL_PRICE_THRESHOLD = 20.0
 DEFAULT_MID_PRICE_THRESHOLD = 100.0
+DEFAULT_RANK_TOP_K = 16
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +48,7 @@ class ScannerSidecarConfig:
     penny_price_threshold: float = DEFAULT_PENNY_PRICE_THRESHOLD
     small_price_threshold: float = DEFAULT_SMALL_PRICE_THRESHOLD
     mid_price_threshold: float = DEFAULT_MID_PRICE_THRESHOLD
+    rank_top_k: int = DEFAULT_RANK_TOP_K
     max_threads: int = 16
     max_memory_usage: str = "64G"
     max_bytes_before_external_group_by: str = "32G"
@@ -184,13 +186,14 @@ class ScannerSidecarManager:
                 query_id=query_id,
             )
 
-    def fetch_completed_sql_for_origin_range(self, *, first_origin_us: int, last_origin_us: int) -> str:
+    def fetch_completed_sql_for_origin_range(self, *, first_origin_us: int, last_origin_us: int, ticker: str = "") -> str:
         completed_before_us = completed_scanner_bar_end_us(last_origin_us, base_us=int(self.config.base_timeframe_us))
         lower_bound_us = max(0, completed_scanner_bar_end_us(first_origin_us, base_us=int(self.config.base_timeframe_us)) - int(self.config.fetch_lookback_seconds) * 1_000_000)
         return fetch_completed_scanner_sql(
             self.config,
             lower_bound_us=lower_bound_us,
             completed_before_us=completed_before_us,
+            ticker=ticker,
         )
 
     def stop(self) -> None:
@@ -623,24 +626,24 @@ SELECT
     w.quote_ask_low,
     w.quote_ask_size_sum,
     w.quote_ask_event_count,
-    ifNull(g.rank_value, -1) AS top_gainers_rank,
-    ifNull(g.score_value, 0.0) AS top_gainers_score,
-    ifNull(g.percentile_value, 0.0) AS top_gainers_percentile,
-    ifNull(v.rank_value, -1) AS top_volume_rank,
-    ifNull(v.score_value, 0.0) AS top_volume_score,
-    ifNull(v.percentile_value, 0.0) AS top_volume_percentile,
-    ifNull(vl.rank_value, -1) AS top_volume_large_rank,
-    ifNull(vl.score_value, 0.0) AS top_volume_large_score,
-    ifNull(vl.percentile_value, 0.0) AS top_volume_large_percentile,
-    ifNull(vm.rank_value, -1) AS top_volume_mid_rank,
-    ifNull(vm.score_value, 0.0) AS top_volume_mid_score,
-    ifNull(vm.percentile_value, 0.0) AS top_volume_mid_percentile,
-    ifNull(vs.rank_value, -1) AS top_volume_small_rank,
-    ifNull(vs.score_value, 0.0) AS top_volume_small_score,
-    ifNull(vs.percentile_value, 0.0) AS top_volume_small_percentile,
-    ifNull(p.rank_value, -1) AS top_volume_penny_rank,
-    ifNull(p.score_value, 0.0) AS top_volume_penny_score,
-    ifNull(p.percentile_value, 0.0) AS top_volume_penny_percentile,
+    if(g.ticker = '', -1, g.rank_value) AS top_gainers_rank,
+    if(g.ticker = '', 0.0, g.score_value) AS top_gainers_score,
+    if(g.ticker = '', 0.0, g.percentile_value) AS top_gainers_percentile,
+    if(v.ticker = '', -1, v.rank_value) AS top_volume_rank,
+    if(v.ticker = '', 0.0, v.score_value) AS top_volume_score,
+    if(v.ticker = '', 0.0, v.percentile_value) AS top_volume_percentile,
+    if(vl.ticker = '', -1, vl.rank_value) AS top_volume_large_rank,
+    if(vl.ticker = '', 0.0, vl.score_value) AS top_volume_large_score,
+    if(vl.ticker = '', 0.0, vl.percentile_value) AS top_volume_large_percentile,
+    if(vm.ticker = '', -1, vm.rank_value) AS top_volume_mid_rank,
+    if(vm.ticker = '', 0.0, vm.score_value) AS top_volume_mid_score,
+    if(vm.ticker = '', 0.0, vm.percentile_value) AS top_volume_mid_percentile,
+    if(vs.ticker = '', -1, vs.rank_value) AS top_volume_small_rank,
+    if(vs.ticker = '', 0.0, vs.score_value) AS top_volume_small_score,
+    if(vs.ticker = '', 0.0, vs.percentile_value) AS top_volume_small_percentile,
+    if(p.ticker = '', -1, p.rank_value) AS top_volume_penny_rank,
+    if(p.ticker = '', 0.0, p.score_value) AS top_volume_penny_score,
+    if(p.ticker = '', 0.0, p.percentile_value) AS top_volume_penny_percentile,
     now64(6) AS created_at_utc
 FROM wide AS w
 LEFT JOIN gainers AS g ON g.source_date = w.source_date AND g.ticker = w.ticker AND g.bucket_index = w.bucket_index
@@ -655,13 +658,24 @@ WHERE w.bar_start_timestamp_us >= toInt64({int(window.emit_start_us)})
 """
 
 
-def fetch_completed_scanner_sql(config: ScannerSidecarConfig, *, lower_bound_us: int, completed_before_us: int) -> str:
+def fetch_completed_scanner_sql(config: ScannerSidecarConfig, *, lower_bound_us: int, completed_before_us: int, ticker: str = "") -> str:
+    top_k = max(1, int(config.rank_top_k))
+    ticker_filter = f" OR ticker = {sql_string(str(ticker).upper())}" if str(ticker).strip() else ""
     return f"""
 SELECT *
 FROM {scanner_table_name(config)}
 WHERE run_id = {sql_string(config.run_id)}
   AND bar_end_timestamp_us > toInt64({int(lower_bound_us)})
   AND bar_end_timestamp_us <= toInt64({int(completed_before_us)})
+  AND (
+      (top_gainers_rank >= 0 AND top_gainers_rank < {top_k})
+      OR (top_volume_rank >= 0 AND top_volume_rank < {top_k})
+      OR (top_volume_large_rank >= 0 AND top_volume_large_rank < {top_k})
+      OR (top_volume_mid_rank >= 0 AND top_volume_mid_rank < {top_k})
+      OR (top_volume_small_rank >= 0 AND top_volume_small_rank < {top_k})
+      OR (top_volume_penny_rank >= 0 AND top_volume_penny_rank < {top_k})
+      {ticker_filter}
+  )
 ORDER BY bar_end_timestamp_us ASC, ticker ASC
 {settings_sql(config)}
 """

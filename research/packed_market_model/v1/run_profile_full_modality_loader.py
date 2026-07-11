@@ -126,6 +126,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--scanner-penny-price-threshold", type=float, default=1.0)
     parser.add_argument("--scanner-small-price-threshold", type=float, default=20.0)
     parser.add_argument("--scanner-mid-price-threshold", type=float, default=100.0)
+    parser.add_argument("--scanner-rank-top-k", type=int, default=16)
     parser.add_argument("--scanner-keep-run", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--ticker-news-prior-items", type=int, default=64)
     parser.add_argument("--market-news-prior-items", type=int, default=512)
@@ -203,6 +204,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 penny_price_threshold=float(args.scanner_penny_price_threshold),
                 small_price_threshold=float(args.scanner_small_price_threshold),
                 mid_price_threshold=float(args.scanner_mid_price_threshold),
+                rank_top_k=int(args.scanner_rank_top_k),
                 max_threads=int(args.max_threads_per_query),
                 max_memory_usage=str(args.max_memory_usage),
             ),
@@ -346,6 +348,7 @@ def profile_block(
                     scanner_manager.fetch_completed_sql_for_origin_range(
                         first_origin_us=first_origin_us,
                         last_origin_us=last_origin_us,
+                        ticker=job.plan.ticker,
                     ),
                 ),
             )
