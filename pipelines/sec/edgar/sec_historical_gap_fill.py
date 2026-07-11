@@ -106,7 +106,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-limit", type=int, default=1000)
     parser.add_argument("--sample-text-chars", type=int, default=2000)
     parser.add_argument("--min-text-chars", type=int, default=40)
-    parser.add_argument("--max-text-chars", type=int, default=250000)
+    parser.add_argument("--max-text-chars", type=int, default=0, help="Optional normalized text storage cap. 0 means unlimited.")
     parser.add_argument("--text-limit-parts", type=int, default=0)
     parser.add_argument("--limit-days", type=int, default=0)
     parser.add_argument("--limit-archives", type=int, default=0)
@@ -413,7 +413,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                     "--min-text-chars",
                     str(max(0, args.min_text_chars)),
                     "--max-text-chars",
-                    str(max(1, args.max_text_chars)),
+                    str(max(0, args.max_text_chars)),
                     "--progress-every",
                     "1",
                 ],

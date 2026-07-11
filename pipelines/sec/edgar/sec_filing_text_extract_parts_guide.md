@@ -53,7 +53,7 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 - `--max-filings-per-archive`: smoke/testing cap only. Do not use for final extraction.
 - `--sample-limit`: number of text samples retained in the run output for manual review.
 - `--min-text-chars`: text shorter than this is skipped as low signal.
-- `--max-text-chars`: very large documents are truncated for LLM-ready text storage.
+- `--max-text-chars`: optional storage cap for emergency/debug runs. The default `0` means unlimited; do not cap final extraction.
 - `--parent-window-days-before`, `--parent-window-days-after`: accepted timestamp lookup window around each archive date.
 
 ## Output

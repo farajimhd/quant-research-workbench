@@ -529,7 +529,7 @@ class SecGateway:
                     "--min-text-chars",
                     "40",
                     "--max-text-chars",
-                    "250000",
+                    "0",
                     "--resume-from-coverage",
                 ],
                 execute=True,

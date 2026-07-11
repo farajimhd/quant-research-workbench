@@ -260,7 +260,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--parent-window-days-before", type=int, default=1)
     parser.add_argument("--parent-window-days-after", type=int, default=2)
     parser.add_argument("--min-text-chars", type=int, default=40)
-    parser.add_argument("--max-text-chars", type=int, default=int(os.environ.get("SEC_TEXT_EXTRACT_MAX_TEXT_CHARS", "5000000")))
+    parser.add_argument(
+        "--max-text-chars",
+        type=int,
+        default=int(os.environ.get("SEC_TEXT_EXTRACT_MAX_TEXT_CHARS", "0")),
+        help="Optional normalized text storage cap. 0 means unlimited and is the default.",
+    )
     parser.add_argument("--progress-every", type=int, default=10)
     parser.add_argument("--dry-run", action="store_true", help="Discover archives and write manifest only.")
     return parser.parse_args()
@@ -413,7 +418,7 @@ def worker_payload(args: argparse.Namespace, archive: Path, parts_root: Path, so
         "parent_window_days_before": max(0, int(args.parent_window_days_before)),
         "parent_window_days_after": max(1, int(args.parent_window_days_after)),
         "min_text_chars": max(0, int(args.min_text_chars)),
-        "max_text_chars": max(1000, int(args.max_text_chars)),
+        "max_text_chars": max(0, int(args.max_text_chars)),
     }
 
 
@@ -700,8 +705,9 @@ def build_rows(
     content_sha = sha256_text(document["payload"])
     normalized_text, extraction_method, quality_flags = normalize_document_text(document["payload"], content_format)
     skip_reason = skip_reason_for_document(document_role, content_format, normalized_text, quality_flags, int(payload["min_text_chars"]))
-    if normalized_text and len(normalized_text) > int(payload["max_text_chars"]):
-        normalized_text = normalized_text[: int(payload["max_text_chars"])].rstrip()
+    max_text_chars = int(payload.get("max_text_chars") or 0)
+    if max_text_chars > 0 and normalized_text and len(normalized_text) > max_text_chars:
+        normalized_text = normalized_text[:max_text_chars].rstrip()
         quality_flags.append("truncated_max_text_chars")
     has_text = bool(normalized_text and not skip_reason)
     text_sha = sha256_text(normalized_text) if normalized_text else ""

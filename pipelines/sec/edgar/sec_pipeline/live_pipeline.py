@@ -36,7 +36,7 @@ class SecLiveFilingPipeline:
         http: SecHttpClient,
         raw_root_win: Path,
         min_text_chars: int = 40,
-        max_text_chars: int = 5_000_000,
+        max_text_chars: int = 0,
         submissions_cache_entries: int = 512,
         submissions_cache_max_age_seconds: float = 3600.0,
         xbrl_payload_cache_entries: int = 32,
