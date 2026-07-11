@@ -53,6 +53,7 @@ DEFAULT_OUTPUT_ROOT = Path("D:/market-data/prepared/offline_training_batch_cache
 DEFAULT_CACHE_ID = "temporal_v3_offline_batches_2019-02_bs1024"
 DEFAULT_BATCH_SIZE = 1024
 DEFAULT_BATCHES_PER_SHARD = 10
+DEFAULT_MAX_OUTPUT_GIB = 2800.0
 
 
 @dataclass(slots=True)
@@ -65,6 +66,7 @@ class BuildProgressState:
     started_at: float = field(default_factory=time.perf_counter)
     target_batches: int = 0
     target_samples: int = 0
+    max_output_bytes: int = 0
     batches_per_shard: int = DEFAULT_BATCHES_PER_SHARD
     batches_created: int = 0
     batches_committed: int = 0
@@ -171,6 +173,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-batches", type=int, default=0, help="0 means materialize all available origins selected by the loader.")
     parser.add_argument("--max-samples", type=int, default=0, help="0 means no explicit sample cap.")
     parser.add_argument("--max-shards", type=int, default=0, help="0 means no explicit shard cap.")
+    parser.add_argument(
+        "--max-output-gib",
+        type=float,
+        default=DEFAULT_MAX_OUTPUT_GIB,
+        help=(
+            "Stop after committed parquet bytes reach this cap. "
+            "Default protects a workstation D: drive with about 3 TiB free. Use 0 to disable."
+        ),
+    )
     parser.add_argument("--max-samples-per-segment", type=int, default=0, help="0 means one segment per day.")
     parser.add_argument("--read-workers", type=int, default=0, help="0 resolves to min(cpu_count, 64).")
     parser.add_argument("--materialize-workers", type=int, default=0, help="0 resolves to min(cpu_count, 64).")
@@ -226,6 +237,7 @@ def main() -> int:
         output_root=str(Path(args.output_root) / str(args.cache_id)),
         target_batches=int(args.max_batches),
         target_samples=int(args.max_samples),
+        max_output_bytes=int(max(0.0, float(args.max_output_gib)) * (1024**3)),
         batches_per_shard=int(args.batches_per_shard),
     )
     loader: AsyncDailyIndexBatchLoader | None = None
@@ -245,6 +257,7 @@ def main() -> int:
                     "max_batches": int(args.max_batches),
                     "max_samples": int(args.max_samples),
                     "max_shards": int(args.max_shards),
+                    "max_output_gib": float(args.max_output_gib),
                     "read_workers": read_workers,
                     "materialize_workers": materialize_workers,
                     "scanner_prefetch_workers": scanner_workers,
@@ -261,6 +274,7 @@ def main() -> int:
         _append_jsonl(log_path, {"event": "start", "created_utc": _now_iso(), "args": _jsonable(vars(args)), "loader_config": _jsonable(to_dict(loader_config))})
         with BuildReporter(state, refresh_per_second=float(args.refresh_per_second)) as reporter:
             reporter.log("discovering daily-index cache packages")
+            _append_jsonl(log_path, {"event": "loader_discovery_start", "utc": _now_iso()})
             loader = AsyncDailyIndexBatchLoader(daily_config)
             summary = loader.summary()
             state.loader_summary = dict(summary)
@@ -270,6 +284,18 @@ def main() -> int:
                 state.target_samples = int(summary.get("total_available_origins") or 0)
             if state.target_batches <= 0 and state.target_samples > 0:
                 state.target_batches = int(math.ceil(state.target_samples / max(1, int(args.batch_size))))
+            _append_jsonl(
+                log_path,
+                {
+                    "event": "loader_discovery_complete",
+                    "utc": _now_iso(),
+                    "total_available_origins": int(summary.get("total_available_origins") or 0),
+                    "target_batches": int(state.target_batches),
+                    "target_samples": int(state.target_samples),
+                    "max_output_gib": float(args.max_output_gib),
+                    "loader_summary": _jsonable(summary),
+                },
+            )
             reporter.log(
                 "starting materialization "
                 f"origins={int(summary.get('total_available_origins') or 0):,} "
@@ -430,6 +456,8 @@ def _should_stop(args: argparse.Namespace, state: BuildProgressState) -> bool:
         return True
     if int(args.max_shards) > 0 and int(state.shards_saved) >= int(args.max_shards):
         return True
+    if float(args.max_output_gib) > 0 and int(state.parquet_bytes) >= int(float(args.max_output_gib) * (1024**3)):
+        return True
     return False
 
 
@@ -451,7 +479,7 @@ def _summary_panel(state: BuildProgressState) -> Any:
                 ("Elapsed", _duration(state.elapsed_seconds)),
                 ("ETA", _eta_text(state)),
                 ("Output", state.output_root),
-                ("Parquet", _human_bytes(state.parquet_bytes)),
+                ("Parquet", f"{_human_bytes(state.parquet_bytes)} / {_human_bytes(state.max_output_bytes) if state.max_output_bytes else 'unlimited'}"),
             )
         ),
     )
@@ -473,6 +501,8 @@ def _work_panel(state: BuildProgressState) -> Any:
     table.add_row("Samples created", _bar(state.samples_created, sample_total), f"{state.samples_created:,}/{state.target_samples or '?'}", f"{state.samples_created / elapsed:,.1f}/s")
     table.add_row("Shards saved", _bar(state.shards_saved, shard_total), f"{state.shards_saved:,}", f"{state.shards_saved / elapsed:.4f}/s")
     table.add_row("Pending in shard", _bar(state.pending_batches, int(state.batches_per_shard)), f"{state.pending_batches}/{state.batches_per_shard}", "")
+    if state.max_output_bytes > 0:
+        table.add_row("Output cap", _bar(state.parquet_bytes, state.max_output_bytes), f"{_human_bytes(state.parquet_bytes)}/{_human_bytes(state.max_output_bytes)}", "")
     return Panel(table, title="Build Progress", border_style="blue", box=box.ROUNDED if box else None)
 
 

@@ -169,7 +169,8 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\roll
   --cache-id temporal_v3_offline_batches_2019-02_bs1024 `
   --months 2019-02 `
   --batch-size 1024 `
-  --batches-per-shard 10
+  --batches-per-shard 10 `
+  --max-output-gib 2800
 ```
 
 For a small smoke run:
@@ -189,6 +190,11 @@ sample throughput, parquet size, current day/segment/shard, loader telemetry,
 recent shard summaries, and ETA. If `--max-batches` or `--max-samples` is not
 provided, ETA is based on the loader-reported available origins for the selected
 cache period.
+
+The script does not assume a full month can fit on disk. By default it stops
+when committed shard parquet bytes reach `2800 GiB`, which is intended for a
+workstation SSD with roughly `3 TiB` free. Use `--max-output-gib 0` only when an
+external disk quota or a much larger volume is controlling the run.
 
 `run_profile_rust_native_cache_loader.py` now defaults to the practical
 trainer-facing experiment: warm the cache once, then emit 20 complete
