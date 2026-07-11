@@ -9,7 +9,7 @@ from html.parser import HTMLParser
 from typing import Any
 
 
-SEC_PACKED_TEXT_RENDERER_VERSION = "sec_packed_text_renderer_v2"
+SEC_PACKED_TEXT_RENDERER_VERSION = "sec_packed_text_renderer_v3"
 STRUCTURED_XML_EXCLUDED_QUALITY_FLAG = "structured_xml_excluded"
 
 _UINT32_MAX = 4_294_967_295
@@ -437,24 +437,8 @@ def _render_table_blocks(rows: list[list[str]], caption: str) -> list[RenderedBl
 
 
 def _find_header_row(rows: list[list[str]]) -> int:
-    for index, row in enumerate(rows[:4]):
-        if index > 0 and any(len([cell for cell in previous if cell]) >= 2 for previous in rows[:index]):
-            continue
-        if len(row) < 2:
-            continue
-        non_empty = [cell for cell in row if cell]
-        if len(non_empty) < 2:
-            continue
-        numeric_count = sum(1 for cell in non_empty if _is_numericish(cell))
-        date_count = sum(1 for cell in non_empty if _is_dateish(cell))
-        year_count = sum(1 for cell in non_empty if _is_yearish(cell))
-        alpha_count = sum(1 for cell in non_empty if re.search(r"[A-Za-z]", cell))
-        avg_len = sum(len(cell) for cell in non_empty) / max(1, len(non_empty))
-        if date_count >= 2:
-            return index
-        if year_count >= 2:
-            return index
-        if len(non_empty) >= 3 and avg_len <= 80 and alpha_count >= 2 and numeric_count <= max(1, len(non_empty) // 3):
+    for index, row in enumerate(rows[:12]):
+        if _looks_like_header_row(row) and _following_rows_match_header(rows, index):
             return index
     return -1
 
@@ -470,21 +454,62 @@ def _header_columns(row: list[str]) -> list[str]:
     return cells
 
 
+def _looks_like_header_row(row: list[str]) -> bool:
+    non_empty = [cell for cell in row if cell]
+    if len(non_empty) < 2:
+        return False
+    numeric_count = sum(1 for cell in non_empty if _is_numericish(cell))
+    date_count = sum(1 for cell in non_empty if _is_dateish(cell))
+    year_count = sum(1 for cell in non_empty if _is_yearish(cell))
+    alpha_count = sum(1 for cell in non_empty if re.search(r"[A-Za-z]", cell))
+    avg_len = sum(len(cell) for cell in non_empty) / max(1, len(non_empty))
+    if date_count >= 2:
+        return True
+    if year_count >= 2:
+        return True
+    if len(non_empty) >= 3 and avg_len <= 80 and alpha_count >= 2 and numeric_count <= max(1, len(non_empty) // 3):
+        return True
+    return len(non_empty) == 2 and avg_len <= 80 and alpha_count == 2 and numeric_count == 0
+
+
+def _following_rows_match_header(rows: list[list[str]], header_index: int) -> bool:
+    columns = _header_columns(rows[header_index])
+    if not columns:
+        return False
+    column_count = len(columns)
+    matched = 0
+    for row in rows[header_index + 1 : header_index + 16]:
+        cells = [cell for cell in row if cell]
+        if not cells:
+            continue
+        if len(cells) == 1:
+            continue
+        if len(cells) in {column_count, column_count + 1}:
+            matched += 1
+        elif len(cells) > column_count + 1 and column_count >= 2:
+            matched += 1
+    return matched > 0
+
+
 def _render_table_row(row: list[str], columns: list[str]) -> str:
     cells = [cell for cell in row if cell]
     if not cells:
         return ""
     if columns and len(cells) == len(columns) + 1:
-        label = cells[0]
-        pairs = [f"{column}={value}" for column, value in zip(columns, cells[1:]) if value]
-        return f"{label}: " + "; ".join(pairs) if pairs else label
+        pairs = [f"Row={cells[0]}"]
+        pairs.extend(f"{column}={value}" for column, value in zip(columns, cells[1:]) if value)
+        return "; ".join(pairs)
     if columns and len(cells) == len(columns):
-        if len(columns) > 1 and not _is_numericish(cells[0]) and not _is_dateish(cells[0]):
-            label = cells[0]
-            pairs = [f"{column}={value}" for column, value in zip(columns[1:], cells[1:]) if value]
-            return f"{label}: " + "; ".join(pairs) if pairs else label
         pairs = [f"{column}={value}" for column, value in zip(columns, cells) if value]
         return "; ".join(pairs)
+    if columns and len(cells) > len(columns) + 1:
+        pairs = [f"Row={cells[0]}"]
+        pairs.extend(f"{column}={value}" for column, value in zip(columns, cells[1:]) if value)
+        extra = cells[len(columns) + 1 :]
+        pairs.extend(f"Extra {index}={value}" for index, value in enumerate(extra, 1) if value)
+        return "; ".join(pairs)
+    if columns and len(cells) == 1 and (_is_numericish(cells[0]) or _is_dateish(cells[0]) or len(columns) == 1):
+        return f"{columns[-1]}={cells[0]}"
     if len(cells) == 2 and _looks_like_label_cell(cells[0]):
         label = cells[0].rstrip(":")
         return f"{label}: {cells[1]}"
