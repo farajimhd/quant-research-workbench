@@ -112,7 +112,7 @@ class TextEmbedGatewayConfig:
             sec_context_filing_table=env_string("TEXT_EMBED_SEC_CONTEXT_FILING_TABLE", "sec_filing_context"),
             sec_context_text_table=env_string("TEXT_EMBED_SEC_CONTEXT_TEXT_TABLE", "sec_filing_text_context"),
             sec_live_filing_table=env_string("TEXT_EMBED_SEC_LIVE_FILING_TABLE", "sec_filing_v2"),
-            sec_live_text_table=env_string("TEXT_EMBED_SEC_LIVE_TEXT_TABLE", "sec_filing_text_v2"),
+            sec_live_text_table=env_string("TEXT_EMBED_SEC_LIVE_TEXT_TABLE", "sec_filing_text_v1"),
             sec_bridge_table=env_string("TEXT_EMBED_SEC_BRIDGE_TABLE", "id_sec_market_bridge_v1"),
             sec_max_text_rows_per_filing=env_int("TEXT_EMBED_SEC_MAX_TEXT_ROWS_PER_FILING", 0),
             sec_context_refresh_chunk_hours=env_float("TEXT_EMBED_SEC_CONTEXT_REFRESH_CHUNK_HOURS", 24.0),

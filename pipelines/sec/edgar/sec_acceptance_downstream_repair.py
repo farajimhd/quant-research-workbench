@@ -7,6 +7,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 
 REPO_ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "research").exists() and (parent / "pipelines").exists())
@@ -19,10 +20,9 @@ from pipelines.market_sip.events.clickhouse_build_sec_context import (  # noqa: 
     text_context_columns_sql,
     text_context_schema_migration_sqls,
 )
-from pipelines.market_sip.events.sec_model_text_normalizer import (  # noqa: E402
-    SEC_MODEL_TEXT_NORMALIZER_VERSION,
-    removed_layout_line_count_sql,
-    sec_model_text_sql,
+from pipelines.market_sip.events.sec_packed_text_renderer import (  # noqa: E402
+    SEC_PACKED_TEXT_RENDERER_VERSION,
+    build_sec_text_context_row,
 )
 from research.mlops.clickhouse import (  # noqa: E402
     ClickHouseHttpClient,
@@ -80,7 +80,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-database", default="market_sip_compact")
     parser.add_argument("--sec-filing-table", default="sec_filing_v2")
     parser.add_argument("--sec-bridge-table", default="id_sec_market_bridge_v1")
-    parser.add_argument("--sec-text-source-table", default="sec_filing_text_v2")
+    parser.add_argument("--sec-text-source-table", default="sec_filing_text_v1")
     parser.add_argument("--filing-context-table", default="sec_filing_context")
     parser.add_argument("--text-context-table", default="sec_filing_text_context")
     parser.add_argument("--sec-token-table", default="sec_filing_text_tokens")
@@ -97,6 +97,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--text-prefix-chars", type=int, default=0, help="Deprecated no-op. SEC text context now stores full text.")
     parser.add_argument("--max-text-rows-per-filing", type=int, default=0, help="Deprecated no-op. SEC text context now stores every text row.")
     parser.add_argument("--sec-text-buckets", type=int, default=64)
+    parser.add_argument("--render-batch-rows", type=int, default=256)
     parser.add_argument("--max-threads", type=int, default=8)
     parser.add_argument("--max-memory-usage", default="16G")
     parser.add_argument("--wait-mutations", action=argparse.BooleanOptionalAction, default=True)
@@ -152,6 +153,13 @@ def main() -> int:
     if not args.execute:
         for label, sql in delete_sqls(args, inserted_start, inserted_end):
             run_sql(client, label, sql, report_jsonl, execute=False)
+        preview = " ".join(
+            part.strip()
+            for part in corrected_text_context_source_sql(args, candidate_cte_body(args, inserted_start, inserted_end), limit=max(1, int(args.render_batch_rows))).strip().splitlines()
+            if part.strip()
+        )
+        write_jsonl(report_jsonl, {"step": "insert_corrected_sec_text_context", "status": "dry_run", "sql_preview": preview[:4000], "renderer": SEC_PACKED_TEXT_RENDERER_VERSION})
+        print(f"DRY RUN insert_corrected_sec_text_context: {preview[:500]}", flush=True)
         print("dry_run=True; downstream rows were not deleted and context was not rebuilt.", flush=True)
     else:
         try:
@@ -167,8 +175,9 @@ def main() -> int:
                 run_sql(client, label, sql, report_jsonl, execute=True)
                 if args.wait_mutations:
                     wait_for_mutations(client, target_database_for_label(args, label), table_for_label(args, label), int(args.mutation_timeout_seconds), report_jsonl)
-            for label, sql in rebuild_context_sqls_for_stage(args, stage_database, stage_table):
+            for label, sql in rebuild_filing_context_sqls_for_stage(args, stage_database, stage_table):
                 run_sql(client, label, sql, report_jsonl, execute=True)
+            action_counts["rebuilt_text_context_rows"] = rebuild_text_context_for_stage(client, args, stage_database, stage_table, report_jsonl)
             rebuilt = query_one(client, rebuilt_summary_sql_for_stage(args, stage_database, stage_table))
             action_counts.update({f"rebuilt_{key}": int(value or 0) for key, value in rebuilt.items() if str(value).isdigit()})
             run_sql(client, "drop_candidate_stage", drop_candidate_stage_sql(stage_database, stage_table), report_jsonl, execute=True)
@@ -550,19 +559,13 @@ DELETE WHERE source = 'sec'
     ]
 
 
-def rebuild_context_sqls(args: argparse.Namespace, inserted_start: datetime, inserted_end: datetime) -> list[tuple[str, str]]:
+def rebuild_filing_context_sqls(args: argparse.Namespace, inserted_start: datetime, inserted_end: datetime) -> list[tuple[str, str]]:
     cte_body = candidate_cte_body(args, inserted_start, inserted_end)
-    return [
-        ("insert_corrected_sec_filing_context", insert_corrected_filing_context_sql(args, cte_body)),
-        ("insert_corrected_sec_text_context", insert_corrected_text_context_sql(args, cte_body)),
-    ]
+    return [("insert_corrected_sec_filing_context", insert_corrected_filing_context_sql(args, cte_body))]
 
 
-def rebuild_context_sqls_for_stage(args: argparse.Namespace, stage_database: str, stage_table: str) -> list[tuple[str, str]]:
-    return [
-        ("insert_corrected_sec_filing_context", insert_corrected_filing_context_sql_for_stage(args, stage_database, stage_table)),
-        ("insert_corrected_sec_text_context", insert_corrected_text_context_sql_for_stage(args, stage_database, stage_table)),
-    ]
+def rebuild_filing_context_sqls_for_stage(args: argparse.Namespace, stage_database: str, stage_table: str) -> list[tuple[str, str]]:
+    return [("insert_corrected_sec_filing_context", insert_corrected_filing_context_sql_for_stage(args, stage_database, stage_table))]
 
 
 def insert_corrected_filing_context_sql(args: argparse.Namespace, cte_body: str) -> str:
@@ -649,128 +652,121 @@ WHERE f.accepted_at_utc IS NOT NULL
 """
 
 
-def insert_corrected_text_context_sql(args: argparse.Namespace, cte_body: str) -> str:
+def rebuild_text_context_for_stage(client: ClickHouseHttpClient, args: argparse.Namespace, stage_database: str, stage_table: str, report_jsonl: Path) -> int:
+    target = f"{quote_ident(args.context_database)}.{quote_ident(args.text_context_table)}"
+    total_inserted = 0
+    batch = 0
+    limit = max(1, int(args.render_batch_rows))
+    while True:
+        rows = query_json_rows(client, corrected_text_context_source_sql_for_stage(args, stage_database, stage_table, limit=limit))
+        if not rows:
+            break
+        batch += 1
+        updated_at = utc_now_clickhouse_text()
+        context_rows = [build_sec_text_context_row(row, updated_at=updated_at) for row in rows]
+        insert_json_each_row(client, target, context_rows)
+        total_inserted += len(context_rows)
+        write_jsonl(
+            report_jsonl,
+            {
+                "step": "insert_corrected_sec_text_context",
+                "status": "ok",
+                "batch": batch,
+                "source_rows": len(rows),
+                "inserted_rows": len(context_rows),
+                "renderer": SEC_PACKED_TEXT_RENDERER_VERSION,
+            },
+        )
+        print(f"DONE insert_corrected_sec_text_context batch={batch} rows={len(context_rows):,}", flush=True)
+        if len(rows) < limit:
+            break
+    write_jsonl(report_jsonl, {"step": "insert_corrected_sec_text_context", "status": "done", "inserted_rows": total_inserted, "renderer": SEC_PACKED_TEXT_RENDERER_VERSION})
+    return total_inserted
+
+
+def corrected_text_context_source_sql(args: argparse.Namespace, cte_body: str, *, limit: int) -> str:
     source_db = quote_ident(args.source_database)
     filing_context = f"{quote_ident(args.context_database)}.{quote_ident(args.filing_context_table)}"
-    target = f"{quote_ident(args.context_database)}.{quote_ident(args.text_context_table)}"
-    model_text_expr = sec_model_text_sql("source_text")
     return f"""
-INSERT INTO {target} ({text_context_columns_sql()})
 WITH
 {cte_body}
 SELECT
-    ticker,
-    timestamp_us,
-    accepted_at_utc,
-    cik,
-    accession_number,
-    form_type,
-    text_rank,
-    document_id,
-    text_kind,
-    model_text AS text,
-    toUInt32(least(toUInt64(lengthUTF8(model_text)), toUInt64(4294967295))) AS text_char_count,
-    source_text_char_count,
-    cityHash64(source_text) AS source_text_hash,
-    cityHash64(model_text) AS model_text_hash,
-    {sql_string(SEC_MODEL_TEXT_NORMALIZER_VERSION)} AS model_normalizer_version,
-    {removed_layout_line_count_sql("source_text", "model_text")} AS removed_layout_line_count,
-    quality_flags,
-    now64(3, 'UTC') AS updated_at
-FROM
-(
-    SELECT
-        base.*,
-        {model_text_expr} AS model_text
-    FROM
-    (
-        SELECT
-            f.ticker AS ticker,
-            f.timestamp_us AS timestamp_us,
-            f.accepted_at_utc AS accepted_at_utc,
-            f.cik AS cik,
-            f.accession_number AS accession_number,
-            f.form_type AS form_type,
-            toUInt8(0) AS text_rank,
-            ifNull(t.document_id, '') AS document_id,
-            ifNull(t.text_kind, '') AS text_kind,
-            ifNull(t.text, '') AS source_text,
-            toUInt32(least(toUInt64(ifNull(t.text_char_count, lengthUTF8(ifNull(t.text, '')))), toUInt64(4294967295))) AS source_text_char_count,
-            arrayStringConcat(t.quality_flags, ',') AS quality_flags
-        FROM {filing_context} AS f
-        INNER JOIN candidate AS x
-            ON x.cik = f.cik
-           AND x.accession_number = f.accession_number
-           AND x.expected_timestamp_us = f.timestamp_us
-        INNER JOIN {source_db}.{quote_ident(args.sec_text_source_table)} AS t
-            ON t.cik = f.cik
-           AND t.accession_number = f.accession_number
-    ) AS base
-) AS normalized
-ORDER BY ticker, accepted_at_utc, accession_number, text_kind, document_id
+    f.ticker AS ticker,
+    f.timestamp_us AS timestamp_us,
+    f.accepted_at_utc AS accepted_at_utc,
+    f.cik AS cik,
+    f.accession_number AS accession_number,
+    f.form_type AS form_type,
+    toUInt8(least(toUInt32(ifNull(t.sequence_number, 0)), 255)) AS text_rank,
+    ifNull(t.document_id, '') AS document_id,
+    ifNull(t.text_kind, '') AS text_kind,
+    toUInt32(ifNull(t.sequence_number, 0)) AS sequence_number,
+    ifNull(t.document_name, '') AS document_name,
+    ifNull(t.document_type, '') AS document_type,
+    ifNull(t.document_role, '') AS document_role,
+    ifNull(t.content_format, '') AS content_format,
+    ifNull(t.source_text, '') AS source_text,
+    toUInt32(least(toUInt64(ifNull(t.source_text_char_count, lengthUTF8(ifNull(t.source_text, '')))), toUInt64(4294967295))) AS source_text_char_count,
+    cityHash64(ifNull(t.source_text, '')) AS source_text_hash,
+    '' AS quality_flags
+FROM {filing_context} AS f
+INNER JOIN candidate AS x
+    ON x.cik = f.cik
+   AND x.accession_number = f.accession_number
+   AND x.expected_timestamp_us = f.timestamp_us
+INNER JOIN {source_db}.{quote_ident(args.sec_text_source_table)} AS t FINAL
+    ON t.cik = f.cik
+   AND t.accession_number = f.accession_number
+ORDER BY ticker, accepted_at_utc, accession_number, text_rank, document_id
+LIMIT {max(1, int(limit))}
 {query_settings(args)}
+FORMAT JSONEachRow
 """
 
 
-def insert_corrected_text_context_sql_for_stage(args: argparse.Namespace, stage_database: str, stage_table: str) -> str:
+def corrected_text_context_source_sql_for_stage(args: argparse.Namespace, stage_database: str, stage_table: str, *, limit: int) -> str:
     source_db = quote_ident(args.source_database)
     stage = f"{quote_ident(stage_database)}.{quote_ident(stage_table)}"
     filing_context = f"{quote_ident(args.context_database)}.{quote_ident(args.filing_context_table)}"
-    target = f"{quote_ident(args.context_database)}.{quote_ident(args.text_context_table)}"
-    model_text_expr = sec_model_text_sql("source_text")
     return f"""
-INSERT INTO {target} ({text_context_columns_sql()})
 SELECT
-    ticker,
-    timestamp_us,
-    accepted_at_utc,
-    cik,
-    accession_number,
-    form_type,
-    text_rank,
-    document_id,
-    text_kind,
-    model_text AS text,
-    toUInt32(least(toUInt64(lengthUTF8(model_text)), toUInt64(4294967295))) AS text_char_count,
-    source_text_char_count,
-    cityHash64(source_text) AS source_text_hash,
-    cityHash64(model_text) AS model_text_hash,
-    {sql_string(SEC_MODEL_TEXT_NORMALIZER_VERSION)} AS model_normalizer_version,
-    {removed_layout_line_count_sql("source_text", "model_text")} AS removed_layout_line_count,
-    quality_flags,
-    now64(3, 'UTC') AS updated_at
-FROM
-(
-    SELECT
-        base.*,
-        {model_text_expr} AS model_text
-    FROM
-    (
-        SELECT
-            f.ticker AS ticker,
-            f.timestamp_us AS timestamp_us,
-            f.accepted_at_utc AS accepted_at_utc,
-            f.cik AS cik,
-            f.accession_number AS accession_number,
-            f.form_type AS form_type,
-            toUInt8(0) AS text_rank,
-            ifNull(t.document_id, '') AS document_id,
-            ifNull(t.text_kind, '') AS text_kind,
-            ifNull(t.text, '') AS source_text,
-            toUInt32(least(toUInt64(ifNull(t.text_char_count, lengthUTF8(ifNull(t.text, '')))), toUInt64(4294967295))) AS source_text_char_count,
-            arrayStringConcat(t.quality_flags, ',') AS quality_flags
-        FROM {filing_context} AS f
-        INNER JOIN {stage} AS x
-            ON x.cik = f.cik
-           AND x.accession_number = f.accession_number
-           AND x.expected_timestamp_us = f.timestamp_us
-        INNER JOIN {source_db}.{quote_ident(args.sec_text_source_table)} AS t
-            ON t.cik = f.cik
-           AND t.accession_number = f.accession_number
-    ) AS base
-) AS normalized
-ORDER BY ticker, accepted_at_utc, accession_number, text_kind, document_id
+    f.ticker AS ticker,
+    f.timestamp_us AS timestamp_us,
+    f.accepted_at_utc AS accepted_at_utc,
+    f.cik AS cik,
+    f.accession_number AS accession_number,
+    f.form_type AS form_type,
+    toUInt8(least(toUInt32(ifNull(t.sequence_number, 0)), 255)) AS text_rank,
+    ifNull(t.document_id, '') AS document_id,
+    ifNull(t.text_kind, '') AS text_kind,
+    toUInt32(ifNull(t.sequence_number, 0)) AS sequence_number,
+    ifNull(t.document_name, '') AS document_name,
+    ifNull(t.document_type, '') AS document_type,
+    ifNull(t.document_role, '') AS document_role,
+    ifNull(t.content_format, '') AS content_format,
+    ifNull(t.source_text, '') AS source_text,
+    toUInt32(least(toUInt64(ifNull(t.source_text_char_count, lengthUTF8(ifNull(t.source_text, '')))), toUInt64(4294967295))) AS source_text_char_count,
+    cityHash64(ifNull(t.source_text, '')) AS source_text_hash,
+    '' AS quality_flags
+FROM {filing_context} AS f
+INNER JOIN {stage} AS x
+    ON x.cik = f.cik
+   AND x.accession_number = f.accession_number
+   AND x.expected_timestamp_us = f.timestamp_us
+INNER JOIN {source_db}.{quote_ident(args.sec_text_source_table)} AS t FINAL
+    ON t.cik = f.cik
+   AND t.accession_number = f.accession_number
+LEFT JOIN {quote_ident(args.context_database)}.{quote_ident(args.text_context_table)} AS existing FINAL
+    ON existing.ticker = f.ticker
+   AND existing.timestamp_us = f.timestamp_us
+   AND existing.accession_number = f.accession_number
+   AND existing.text_rank = toUInt8(least(toUInt32(ifNull(t.sequence_number, 0)), 255))
+   AND existing.document_id = ifNull(t.document_id, '')
+WHERE existing.document_id = ''
+ORDER BY ticker, accepted_at_utc, accession_number, text_rank, document_id
+LIMIT {max(1, int(limit))}
 {query_settings(args)}
+FORMAT JSONEachRow
 """
 
 
@@ -887,6 +883,17 @@ def query_one(client: ClickHouseHttpClient, sql: str) -> dict[str, object]:
     return json.loads(text.splitlines()[0])
 
 
+def query_json_rows(client: ClickHouseHttpClient, sql: str) -> list[dict[str, Any]]:
+    text = client.execute(sql).strip()
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def insert_json_each_row(client: ClickHouseHttpClient, target: str, rows: list[dict[str, Any]]) -> None:
+    payload = "\n".join(json.dumps(row, separators=(",", ":"), ensure_ascii=False) for row in rows)
+    if payload:
+        client.execute(f"INSERT INTO {target} ({text_context_columns_sql()}) SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n{payload}")
+
+
 def build_summary(args: argparse.Namespace, run_id: str, run_root: Path, candidate_summary: dict[str, object], action_counts: dict[str, int], started: float) -> RepairSummary:
     return RepairSummary(
         run_id=run_id,
@@ -925,6 +932,10 @@ def dt_text(value: datetime, *, precision: int = 3) -> str:
     if precision <= 3:
         return value.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     return value.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
+def utc_now_clickhouse_text() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
 
 def query_settings(args: argparse.Namespace) -> str:

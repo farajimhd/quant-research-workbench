@@ -204,23 +204,18 @@ no-lookahead event time. `id_sec_market_bridge_v1` is used only to map CIK or
 accession to a market ticker; it is deduplicated inside the migration and is not
 used as the event-time source.
 
-`q_live.sec_filing_text_v2` remains the full upstream readable filing text. The
-compact `sec_filing_text_context.text` field is deterministic model input:
-`sec_model_text_normalizer_v3` normalizes line endings, removes high-confidence
-layout and extraction artifacts, collapses repeated horizontal whitespace, and
-collapses runs of blank lines. The v3 cleanup includes separator-only lines,
-pipe-only table scaffolding, standalone XBRL/text-block labels, page/form header
-lines, common HTML entity residue, common mojibake fragments, and short OCR-like
-single-letter uppercase spacing. It also compacts common fragmented EDGAR table
-rows such as `label | value value` into `label: value; value` and preserves
-detected date columns as `Columns: date; date`. It does not remove SEC/legal boilerplate,
-signatures, risk factors, numeric-only lines, or rewrite table content. The
-normalizer also exposes diagnostics for duplicate paragraphs, repeated lines,
-table-fragmentation density, page/header artifacts, and encoding residue so
-those can be audited before any more aggressive future compaction. The context
-table also records
+`q_live.sec_filing_text_v1` stores submitted text-source documents such as HTML,
+plain text, and non-XBRL XML. The compact `sec_filing_text_context.text` field
+is deterministic packed model input rendered from those submitted sources by
+`sec_packed_text_renderer_v1`. HTML and inline-XBRL HTML are parsed by visible
+tags, real HTML tables are packed into column/value lines, hidden/script/style
+content is skipped, and plain text/XML are rendered conservatively. The renderer
+does not summarize, remove SEC/legal boilerplate, remove risk factors, remove
+signatures, or rewrite substantive contract/table text. `q_live.sec_filing_text_v2`
+remains the full readable extraction/audit table. The context table records
 `source_text_char_count`, `source_text_hash`, `model_text_hash`,
-`model_normalizer_version`, and `removed_layout_line_count` for auditability.
+`model_normalizer_version`, `removed_layout_line_count`, renderer block counts,
+table block counts, duplicate block counts, and per-block hashes for auditability.
 
 The script uses `CLICKHOUSE_HISTORICAL_STORAGE_POLICY` by default through the
 shared `default_storage_policy()` helper. Override it with `--storage-policy`
@@ -242,6 +237,12 @@ Preview DDL/DML without mutating ClickHouse:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_sec_context.py --dry-run --start-date 2026-01-01 --end-date 2026-01-02
+```
+
+Audit the packed text renderer against raw daily archive filings:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_packed_text_renderer_audit.py --archive-root-win D:\market-data\sec_core\daily_archives --start-date 2026-01-01 --end-date 2026-07-11 --sample-size 10
 ```
 
 By default, the migration deletes the target accepted-time range from the compact
@@ -287,10 +288,10 @@ assembled explicitly from `title`, `teaser`, `body_text`, `external_text`, and
 text. This avoids relying on a prefix of `normalized_full_text`, which can miss
 enriched external/PDF text when it appears later in the merged article.
 
-SEC filing context stores normalized model-input text derived from full
-`sec_filing_text_v2.text` rows without a prefix cap and without limiting the
-number of readable text rows per filing. Tokenization currently uses up to eight
-1024-token rows per source text row.
+SEC filing context stores packed model-input text derived from submitted
+`sec_filing_text_v1.source_text` rows without a prefix cap and without limiting
+the number of source text rows per filing. Tokenization currently uses up to
+eight 1024-token rows per source text row.
 Both token tables include `token_chunk_index`, `token_start`, and `token_end`,
 so multiple chunks do not collapse under the same replacing key.
 

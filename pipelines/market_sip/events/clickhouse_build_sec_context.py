@@ -26,10 +26,9 @@ from research.mlops.clickhouse import (  # noqa: E402
 )
 from research.mlops.env import load_env_files, secret_status  # noqa: E402
 from pipelines.market_sip.validation.clickhouse_delete_compact_audit_rows import default_clickhouse_url_with_network_fallback  # noqa: E402
-from pipelines.market_sip.events.sec_model_text_normalizer import (  # noqa: E402
-    SEC_MODEL_TEXT_NORMALIZER_VERSION,
-    removed_layout_line_count_sql,
-    sec_model_text_sql,
+from pipelines.market_sip.events.sec_packed_text_renderer import (  # noqa: E402
+    SEC_PACKED_TEXT_RENDERER_VERSION,
+    build_sec_text_context_row,
 )
 
 
@@ -56,6 +55,10 @@ TEXT_CONTEXT_COLUMNS = [
     "model_text_hash",
     "model_normalizer_version",
     "removed_layout_line_count",
+    "renderer_block_count",
+    "renderer_table_block_count",
+    "renderer_duplicate_block_count",
+    "renderer_block_hashes",
     "quality_flags",
     "updated_at",
 ]
@@ -77,6 +80,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--filing-table", default=DEFAULT_FILING_TABLE)
     parser.add_argument("--text-table", default=DEFAULT_TEXT_TABLE)
     parser.add_argument("--xbrl-table", default=DEFAULT_XBRL_TABLE)
+    parser.add_argument("--source-text-table", default="sec_filing_text_v1", help="q_live submitted text-source table to render into compact SEC context.")
     parser.add_argument("--start-date", default="2019-01-01", help="Inclusive UTC accepted_at date.")
     parser.add_argument("--end-date", default=datetime.now(UTC).date().isoformat(), help="Inclusive UTC accepted_at date.")
     parser.add_argument("--storage-policy", default=default_storage_policy(), help="Defaults to CLICKHOUSE_HISTORICAL_STORAGE_POLICY.")
@@ -88,7 +92,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mutation-timeout-seconds", type=int, default=7200)
     parser.add_argument("--text-prefix-chars", type=int, default=0, help="Deprecated no-op. SEC text context now stores full text.")
     parser.add_argument("--max-text-rows-per-filing", type=int, default=0, help="Deprecated no-op. SEC text context now stores every text row.")
-    parser.add_argument("--sec-text-buckets", type=int, default=64, help="Process SEC text by cityHash64(cik) buckets to match q_live.sec_filing_text_v2 partitioning.")
+    parser.add_argument("--sec-text-buckets", type=int, default=64, help="Process SEC text by cityHash64(cik) buckets to match q_live.sec_filing_text_v1 partitioning.")
+    parser.add_argument("--render-batch-rows", type=int, default=256, help="Maximum submitted source rows fetched and rendered per Python batch.")
     parser.add_argument("--skip-text", action="store_true")
     parser.add_argument("--skip-xbrl", action="store_true")
     parser.add_argument("--drop-target-tables", action="store_true")
@@ -116,7 +121,8 @@ def main() -> int:
     print(f"replace_range={args.replace_range} wait_mutations={args.wait_mutations} dry_run={args.dry_run}", flush=True)
     print(
         "sec_text_context=full_text_all_rows "
-        f"sec_text_buckets={args.sec_text_buckets} skip_text={args.skip_text}",
+        f"source_text_table={args.source_text_table} renderer={SEC_PACKED_TEXT_RENDERER_VERSION} "
+        f"sec_text_buckets={args.sec_text_buckets} render_batch_rows={args.render_batch_rows} skip_text={args.skip_text}",
         flush=True,
     )
     print(f"skip_xbrl={args.skip_xbrl} drop_target_tables={args.drop_target_tables}", flush=True)
@@ -199,12 +205,13 @@ def run_migration(client: ClickHouseHttpClient, args: argparse.Namespace, *, sta
     )
     if not args.skip_text:
         for bucket in range(max(1, int(args.sec_text_buckets))):
-            run_sql(
+            render_and_insert_text_context_bucket(
                 client,
-                f"insert_{args.text_table}_bucket_{bucket:02d}",
-                insert_text_context_sql(args, start_date=start_date, end_date_exclusive=end_date_exclusive, bucket=bucket),
-                report_path,
-                dry_run=bool(args.dry_run),
+                args,
+                start_date=start_date,
+                end_date_exclusive=end_date_exclusive,
+                bucket=bucket,
+                report_path=report_path,
             )
     if not args.skip_xbrl:
         run_sql(
@@ -271,6 +278,10 @@ CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
     model_text_hash UInt64,
     model_normalizer_version LowCardinality(String),
     removed_layout_line_count UInt32,
+    renderer_block_count UInt32 DEFAULT 0,
+    renderer_table_block_count UInt32 DEFAULT 0,
+    renderer_duplicate_block_count UInt32 DEFAULT 0,
+    renderer_block_hashes Array(UInt64) DEFAULT emptyArrayUInt64(),
     quality_flags String,
     updated_at DateTime64(3, 'UTC') DEFAULT now64(3, 'UTC')
 )
@@ -289,6 +300,10 @@ def text_context_schema_migration_sqls(database: str, table: str) -> list[str]:
         f"ALTER TABLE {target} ADD COLUMN IF NOT EXISTS model_text_hash UInt64 DEFAULT cityHash64(text) AFTER source_text_hash",
         f"ALTER TABLE {target} ADD COLUMN IF NOT EXISTS model_normalizer_version LowCardinality(String) DEFAULT '' AFTER model_text_hash",
         f"ALTER TABLE {target} ADD COLUMN IF NOT EXISTS removed_layout_line_count UInt32 DEFAULT 0 AFTER model_normalizer_version",
+        f"ALTER TABLE {target} ADD COLUMN IF NOT EXISTS renderer_block_count UInt32 DEFAULT 0 AFTER removed_layout_line_count",
+        f"ALTER TABLE {target} ADD COLUMN IF NOT EXISTS renderer_table_block_count UInt32 DEFAULT 0 AFTER renderer_block_count",
+        f"ALTER TABLE {target} ADD COLUMN IF NOT EXISTS renderer_duplicate_block_count UInt32 DEFAULT 0 AFTER renderer_table_block_count",
+        f"ALTER TABLE {target} ADD COLUMN IF NOT EXISTS renderer_block_hashes Array(UInt64) DEFAULT emptyArrayUInt64() AFTER renderer_duplicate_block_count",
     ]
 
 
@@ -393,64 +408,125 @@ WHERE f.accepted_at_utc IS NOT NULL
 """
 
 
-def insert_text_context_sql(args: argparse.Namespace, *, start_date: date, end_date_exclusive: date, bucket: int) -> str:
+def render_and_insert_text_context_bucket(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    *,
+    start_date: date,
+    end_date_exclusive: date,
+    bucket: int,
+    report_path: Path,
+) -> int:
+    target = f"{quote_ident(args.target_database)}.{quote_ident(args.text_table)}"
+    total_source_rows = 0
+    total_inserted_rows = 0
+    total_batches = 0
+    batch_limit = max(1, int(args.render_batch_rows))
+    if args.dry_run:
+        sql = select_text_context_source_rows_sql(args, start_date=start_date, end_date_exclusive=end_date_exclusive, bucket=bucket, limit=batch_limit)
+        compact = " ".join(line.strip() for line in sql.strip().splitlines() if line.strip())
+        print(f"DRY RUN render_{args.text_table}_bucket_{bucket:02d}: {compact[:1000]}", flush=True)
+        append_jsonl(report_path, {"operation": f"render_{args.text_table}_bucket_{bucket:02d}", "status": "dry_run", "sql_preview": compact[:4000]})
+        return 0
+
+    while True:
+        sql = select_text_context_source_rows_sql(args, start_date=start_date, end_date_exclusive=end_date_exclusive, bucket=bucket, limit=batch_limit)
+        started = time.perf_counter()
+        raw = client.execute(sql).strip()
+        source_rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
+        fetch_seconds = time.perf_counter() - started
+        if not source_rows:
+            break
+        total_batches += 1
+        total_source_rows += len(source_rows)
+        updated_at = utc_now_clickhouse_text()
+        context_rows = [build_sec_text_context_row(row, updated_at=updated_at) for row in source_rows]
+        insert_json_each_row(client, target, context_rows)
+        total_inserted_rows += len(context_rows)
+        append_jsonl(
+            report_path,
+            {
+                "operation": f"render_{args.text_table}_bucket_{bucket:02d}",
+                "status": "ok",
+                "batch": total_batches,
+                "source_rows": len(source_rows),
+                "inserted_rows": len(context_rows),
+                "fetch_seconds": round(fetch_seconds, 3),
+            },
+        )
+        print(
+            f"RENDER bucket={bucket:02d} batch={total_batches:,} source_rows={len(source_rows):,} "
+            f"inserted_rows={len(context_rows):,}",
+            flush=True,
+        )
+        if len(source_rows) < batch_limit:
+            break
+    append_jsonl(
+        report_path,
+        {
+            "operation": f"render_{args.text_table}_bucket_{bucket:02d}",
+            "status": "done",
+            "batches": total_batches,
+            "source_rows": total_source_rows,
+            "inserted_rows": total_inserted_rows,
+        },
+    )
+    if total_source_rows:
+        print(
+            f"RENDER DONE bucket={bucket:02d} batches={total_batches:,} "
+            f"source_rows={total_source_rows:,} inserted_rows={total_inserted_rows:,}",
+            flush=True,
+        )
+    return total_inserted_rows
+
+
+def select_text_context_source_rows_sql(args: argparse.Namespace, *, start_date: date, end_date_exclusive: date, bucket: int, limit: int) -> str:
     source_db = quote_ident(args.source_database)
     filing_context = f"{quote_ident(args.target_database)}.{quote_ident(args.filing_table)}"
     target = f"{quote_ident(args.target_database)}.{quote_ident(args.text_table)}"
     buckets = max(1, int(args.sec_text_buckets))
-    model_text_expr = sec_model_text_sql("source_text")
     return f"""
-INSERT INTO {target} ({text_context_columns_sql()})
 SELECT
-    ticker,
-    timestamp_us,
-    accepted_at_utc,
-    cik,
-    accession_number,
-    form_type,
-    text_rank,
-    document_id,
-    text_kind,
-    model_text AS text,
-    toUInt32(least(toUInt64(lengthUTF8(model_text)), toUInt64(4294967295))) AS text_char_count,
-    source_text_char_count,
-    cityHash64(source_text) AS source_text_hash,
-    cityHash64(model_text) AS model_text_hash,
-    {sql_string(SEC_MODEL_TEXT_NORMALIZER_VERSION)} AS model_normalizer_version,
-    {removed_layout_line_count_sql("source_text", "model_text")} AS removed_layout_line_count,
-    quality_flags,
-    now64(3, 'UTC') AS updated_at
-FROM
-(
-    SELECT
-        base.*,
-        {model_text_expr} AS model_text
-    FROM
-    (
-        SELECT
-            f.ticker AS ticker,
-            f.timestamp_us AS timestamp_us,
-            f.accepted_at_utc AS accepted_at_utc,
-            f.cik AS cik,
-            f.accession_number AS accession_number,
-            f.form_type AS form_type,
-            toUInt8(0) AS text_rank,
-            ifNull(t.document_id, '') AS document_id,
-            ifNull(t.text_kind, '') AS text_kind,
-            ifNull(t.text, '') AS source_text,
-            toUInt32(least(toUInt64(ifNull(t.text_char_count, lengthUTF8(ifNull(t.text, '')))), toUInt64(4294967295))) AS source_text_char_count,
-            arrayStringConcat(t.quality_flags, ',') AS quality_flags
-        FROM {filing_context} AS f
-        INNER JOIN {source_db}.sec_filing_text_v2 AS t
-            ON t.cik = f.cik
-           AND t.accession_number = f.accession_number
-        WHERE f.accepted_at_utc >= {date_time64_sql(start_date)}
-          AND f.accepted_at_utc < {date_time64_sql(end_date_exclusive)}
-          AND cityHash64(t.cik) % {buckets} = {int(bucket)}
-    ) AS base
-) AS normalized
-ORDER BY ticker, accepted_at_utc, accession_number, text_kind, document_id
+    f.ticker AS ticker,
+    f.timestamp_us AS timestamp_us,
+    f.accepted_at_utc AS accepted_at_utc,
+    f.cik AS cik,
+    f.accession_number AS accession_number,
+    f.form_type AS form_type,
+    toUInt8(least(toUInt32(ifNull(t.sequence_number, 0)), 255)) AS text_rank,
+    ifNull(t.document_id, '') AS document_id,
+    ifNull(t.text_kind, '') AS text_kind,
+    toUInt32(ifNull(t.sequence_number, 0)) AS sequence_number,
+    ifNull(t.document_name, '') AS document_name,
+    ifNull(t.document_type, '') AS document_type,
+    ifNull(t.document_role, '') AS document_role,
+    ifNull(t.content_format, '') AS content_format,
+    ifNull(t.source_text, '') AS source_text,
+    toUInt32(least(toUInt64(ifNull(t.source_text_char_count, lengthUTF8(ifNull(t.source_text, '')))), toUInt64(4294967295))) AS source_text_char_count,
+    cityHash64(ifNull(t.source_text, '')) AS source_text_hash,
+    '' AS quality_flags
+FROM {filing_context} AS f
+INNER JOIN {source_db}.{quote_ident(args.source_text_table)} AS t FINAL
+    ON t.cik = f.cik
+   AND t.accession_number = f.accession_number
+LEFT JOIN {target} AS existing FINAL
+    ON existing.ticker = f.ticker
+   AND existing.timestamp_us = f.timestamp_us
+   AND existing.accession_number = f.accession_number
+   AND existing.text_rank = toUInt8(least(toUInt32(ifNull(t.sequence_number, 0)), 255))
+   AND existing.document_id = ifNull(t.document_id, '')
+WHERE f.accepted_at_utc >= {date_time64_sql(start_date)}
+  AND f.accepted_at_utc < {date_time64_sql(end_date_exclusive)}
+  AND cityHash64(t.cik) % {buckets} = {int(bucket)}
+  AND (
+      existing.document_id = ''
+      OR existing.model_normalizer_version != {sql_string(SEC_PACKED_TEXT_RENDERER_VERSION)}
+      OR existing.source_text_hash != cityHash64(ifNull(t.source_text, ''))
+  )
+ORDER BY f.ticker, f.accepted_at_utc, f.accession_number, text_rank, document_id
+LIMIT {max(1, int(limit))}
 {query_settings(args)}
+FORMAT JSONEachRow
 """
 
 
@@ -562,6 +638,12 @@ FORMAT JSONEachRow
     )
 
 
+def insert_json_each_row(client: ClickHouseHttpClient, target: str, rows: list[dict[str, Any]]) -> None:
+    payload = "\n".join(json.dumps(row, separators=(",", ":"), ensure_ascii=False) for row in rows)
+    if payload:
+        client.execute(f"INSERT INTO {target} ({text_context_columns_sql()}) SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n{payload}")
+
+
 def wait_for_mutations(client: ClickHouseHttpClient, *, database: str, table: str, timeout_seconds: int, report_path: Path) -> None:
     deadline = time.perf_counter() + float(timeout_seconds)
     while True:
@@ -611,6 +693,10 @@ def query_settings(args: argparse.Namespace) -> str:
     if str(args.max_memory_usage).strip():
         settings.append(f"max_memory_usage = {parse_size_bytes(str(args.max_memory_usage))}")
     return "\nSETTINGS " + ", ".join(settings) if settings else ""
+
+
+def utc_now_clickhouse_text() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
 
 def date_time64_sql(value: date) -> str:

@@ -83,7 +83,7 @@ TEXT_EMBED_COVERAGE_TABLE=text_embedding_coverage_v1
 TEXT_EMBED_SEC_CONTEXT_FILING_TABLE=sec_filing_context
 TEXT_EMBED_SEC_CONTEXT_TEXT_TABLE=sec_filing_text_context
 TEXT_EMBED_SEC_LIVE_FILING_TABLE=sec_filing_v2
-TEXT_EMBED_SEC_LIVE_TEXT_TABLE=sec_filing_text_v2
+TEXT_EMBED_SEC_LIVE_TEXT_TABLE=sec_filing_text_v1
 TEXT_EMBED_SEC_BRIDGE_TABLE=id_sec_market_bridge_v1
 TEXT_EMBED_SEC_MAX_TEXT_ROWS_PER_FILING=0  # deprecated no-op; SEC context stores every text row
 TEXT_EMBED_SEC_CONTEXT_REFRESH_CHUNK_HOURS=24
@@ -152,20 +152,21 @@ each SEC live/gap-fill cycle, the gateway performs a small idempotent context
 refresh for the active lookback window:
 
 ```text
-q_live.sec_filing_v2 + q_live.sec_filing_text_v2
+q_live.sec_filing_v2 + q_live.sec_filing_text_v1
   + q_live.id_sec_market_bridge_v1
 -> market_sip_compact.sec_filing_context
 -> market_sip_compact.sec_filing_text_context
 ```
 
-The gateway applies the same deterministic SEC model-text normalizer as the
+The gateway applies the same deterministic SEC packed-text renderer as the
 historical context builder while refreshing `sec_filing_text_context`. Upstream
-`q_live.sec_filing_text_v2` remains full readable text; the compact context text
-normalizes line endings, removes high-confidence layout and extraction artifacts,
-compacts common fragmented numeric table rows, collapses repeated horizontal
-whitespace and excess blank lines, and records source/model hashes plus
-`model_normalizer_version` for audit. The normalizer does not remove SEC/legal
-boilerplate, risk factors, signatures, or substantive contract/table text.
+`q_live.sec_filing_text_v1` remains the submitted source text; `q_live.sec_filing_text_v2`
+remains the readable extraction/audit table. The compact context text is rendered
+from HTML/plain/XML source documents, packs real HTML tables into column/value
+lines, and records source/model hashes, renderer version, block counts, duplicate
+block counts, and per-block hashes for audit. The renderer does not remove
+SEC/legal boilerplate, risk factors, signatures, or substantive contract/table
+text.
 Tokenization and embedding read that context field directly, so there is no
 second SEC parser inside the embedding step.
 
@@ -184,6 +185,6 @@ so the live gateway does the same instead of creating a row-number rank.
 | Service | Writes | Text embedding dependency |
 | --- | --- | --- |
 | `news_gateway` | `q_live.benzinga_news_normalized_v1`, `q_live.benzinga_news_ticker_v1` | Final normalized/ticker rows are the news source. |
-| `sec_gateway` | `q_live.sec_filing_v2`, `q_live.sec_filing_document_v2`, `q_live.sec_filing_text_v2`, SEC XBRL tables | Raw SEC source only; it does not own ticker mapping or embeddings. |
+| `sec_gateway` | `q_live.sec_filing_v2`, `q_live.sec_filing_document_v2`, `q_live.sec_filing_text_v1`, `q_live.sec_filing_text_v2`, SEC XBRL tables | Raw SEC source and readable extraction only; it does not own ticker mapping or embeddings. |
 | `reference_gateway` | `q_live.id_sec_market_bridge_v1` and canonical reference mappings | Owns ongoing CIK/accession-to-market ticker bridge maintenance. |
 | `text_embed_gateway` | `market_sip_compact.*_tokens`, `market_sip_compact.*_embeddings`, `text_embedding_coverage_v1`; idempotent recent SEC context rows | Uses historical-compatible source rows and Qwen to persist tokens/embeddings. |

@@ -33,10 +33,9 @@ from pipelines.market_sip.events.clickhouse_build_sec_context import (
     text_context_columns_sql,
     text_context_schema_migration_sqls,
 )
-from pipelines.market_sip.events.sec_model_text_normalizer import (
-    SEC_MODEL_TEXT_NORMALIZER_VERSION,
-    removed_layout_line_count_sql,
-    sec_model_text_sql,
+from pipelines.market_sip.events.sec_packed_text_renderer import (
+    SEC_PACKED_TEXT_RENDERER_VERSION,
+    build_sec_text_context_row,
 )
 from research.mlops.clickhouse import ClickHouseHttpClient, parse_size_bytes, quote_ident, sql_string
 from services.gateway_core.market_calendar import MarketHoursSnapshot, MassiveMarketHoursClient
@@ -616,7 +615,7 @@ class TextEmbedGateway:
                 self.client.execute(insert_missing_sec_filing_context_sql(self.config, refresh_bounds))
             chunk_text_rows = scalar_count(self.client, count_missing_sec_text_context_sql(self.config, refresh_bounds))
             if chunk_text_rows:
-                self.client.execute(insert_missing_sec_text_context_sql(self.config, refresh_bounds))
+                chunk_text_rows = self._insert_missing_sec_text_context(refresh_bounds)
             chunk_blocked_rows = self._record_sec_context_blocks(refresh_bounds, mode)
             if chunk_filing_rows or chunk_text_rows or chunk_blocked_rows:
                 active_start = refresh_bounds[0] if active_start is None else min(active_start, refresh_bounds[0])
@@ -646,6 +645,23 @@ class TextEmbedGateway:
                 period=self.metrics.sec_context_gap_period,
                 seconds=round(seconds, 3),
             )
+
+    def _insert_missing_sec_text_context(self, bounds: tuple[datetime, datetime]) -> int:
+        target = f"{quote_ident(self.config.context_database)}.{quote_ident(self.config.sec_context_text_table)}"
+        limit = max(1, int(self.config.source_batch_size))
+        inserted = 0
+        while not self._stop_event.is_set():
+            sql = missing_sec_text_context_source_sql(self.config, bounds, limit=limit)
+            source_rows = json_rows(self.client.execute(sql))
+            if not source_rows:
+                break
+            updated_at = utc_now_clickhouse_text()
+            context_rows = [build_sec_text_context_row(row, updated_at=updated_at) for row in source_rows]
+            insert_json_each_row(self.client, target, context_rows, columns=text_context_columns_sql())
+            inserted += len(context_rows)
+            if len(source_rows) < limit:
+                break
+        return inserted
 
     def _sec_context_refresh_ranges(self, bounds: tuple[datetime, datetime], mode: str) -> list[tuple[datetime, datetime]]:
         if mode != "historical":
@@ -1315,80 +1331,58 @@ FORMAT TSV
 """
 
 
-def insert_missing_sec_text_context_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime]) -> str:
-    target = f"{quote_ident(config.context_database)}.{quote_ident(config.sec_context_text_table)}"
-    return f"""
-INSERT INTO {target} ({text_context_columns_sql()})
-{missing_sec_text_context_select_sql(config, bounds)}
-{query_settings(config)}
-"""
-
-
 def missing_sec_text_context_select_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime]) -> str:
     source_db = quote_ident(config.source_database)
     text_table = quote_ident(config.sec_live_text_table)
     filing_context = f"{quote_ident(config.context_database)}.{quote_ident(config.sec_context_filing_table)}"
     target = f"{quote_ident(config.context_database)}.{quote_ident(config.sec_context_text_table)}"
-    model_text_expr = sec_model_text_sql("source_text")
     return f"""
 SELECT
-    selected.ticker AS ticker,
-    selected.timestamp_us AS timestamp_us,
-    selected.accepted_at_utc AS accepted_at_utc,
-    selected.cik AS cik,
-    selected.accession_number AS accession_number,
-    selected.form_type AS form_type,
-    selected.text_rank AS text_rank,
-    selected.document_id AS document_id,
-    selected.text_kind AS text_kind,
-    selected.model_text AS text,
-    toUInt32(least(toUInt64(lengthUTF8(selected.model_text)), toUInt64(4294967295))) AS text_char_count,
-    selected.source_text_char_count AS source_text_char_count,
-    cityHash64(selected.source_text) AS source_text_hash,
-    cityHash64(selected.model_text) AS model_text_hash,
-    {sql_string(SEC_MODEL_TEXT_NORMALIZER_VERSION)} AS model_normalizer_version,
-    {removed_layout_line_count_sql("selected.source_text", "selected.model_text")} AS removed_layout_line_count,
-    selected.quality_flags AS quality_flags,
-    now64(3, 'UTC') AS updated_at
-FROM
-(
-    SELECT
-        base.*,
-        {model_text_expr} AS model_text
-    FROM
-    (
-        SELECT
-            f.ticker AS ticker,
-            f.timestamp_us AS timestamp_us,
-            f.accepted_at_utc AS accepted_at_utc,
-            f.cik AS cik,
-            f.accession_number AS accession_number,
-            f.form_type AS form_type,
-            toUInt8(0) AS text_rank,
-            ifNull(t.document_id, '') AS document_id,
-            ifNull(t.text_kind, '') AS text_kind,
-            ifNull(t.text, '') AS source_text,
-            toUInt32(least(toUInt64(ifNull(t.text_char_count, lengthUTF8(ifNull(t.text, '')))), toUInt64(4294967295))) AS source_text_char_count,
-            arrayStringConcat(t.quality_flags, ',') AS quality_flags
-        FROM {filing_context} AS f
-        INNER JOIN {source_db}.{text_table} AS t
-            ON t.cik = f.cik
-           AND t.accession_number = f.accession_number
-        WHERE f.accepted_at_utc >= {dt64_sql(bounds[0])}
-          AND f.accepted_at_utc < {dt64_sql(bounds[1])}
-        ORDER BY f.ticker, f.accepted_at_utc, f.accession_number, t.text_kind, t.document_id
-    ) AS base
-) AS selected
+    f.ticker AS ticker,
+    f.timestamp_us AS timestamp_us,
+    f.accepted_at_utc AS accepted_at_utc,
+    f.cik AS cik,
+    f.accession_number AS accession_number,
+    f.form_type AS form_type,
+    toUInt8(least(toUInt32(ifNull(t.sequence_number, 0)), 255)) AS text_rank,
+    ifNull(t.document_id, '') AS document_id,
+    ifNull(t.text_kind, '') AS text_kind,
+    toUInt32(ifNull(t.sequence_number, 0)) AS sequence_number,
+    ifNull(t.document_name, '') AS document_name,
+    ifNull(t.document_type, '') AS document_type,
+    ifNull(t.document_role, '') AS document_role,
+    ifNull(t.content_format, '') AS content_format,
+    ifNull(t.source_text, '') AS source_text,
+    toUInt32(least(toUInt64(ifNull(t.source_text_char_count, lengthUTF8(ifNull(t.source_text, '')))), toUInt64(4294967295))) AS source_text_char_count,
+    cityHash64(ifNull(t.source_text, '')) AS source_text_hash,
+    '' AS quality_flags
+FROM {filing_context} AS f
+INNER JOIN {source_db}.{text_table} AS t FINAL
+    ON t.cik = f.cik
+   AND t.accession_number = f.accession_number
 LEFT JOIN {target} AS existing FINAL
-    ON existing.ticker = selected.ticker
-   AND existing.timestamp_us = selected.timestamp_us
-   AND existing.accession_number = selected.accession_number
-   AND existing.text_rank = selected.text_rank
-   AND existing.document_id = selected.document_id
-WHERE existing.document_id = ''
-   OR existing.model_normalizer_version != {sql_string(SEC_MODEL_TEXT_NORMALIZER_VERSION)}
-   OR existing.source_text_hash != cityHash64(selected.source_text)
-   OR existing.model_text_hash != cityHash64(selected.model_text)
+    ON existing.ticker = f.ticker
+   AND existing.timestamp_us = f.timestamp_us
+   AND existing.accession_number = f.accession_number
+   AND existing.text_rank = toUInt8(least(toUInt32(ifNull(t.sequence_number, 0)), 255))
+   AND existing.document_id = ifNull(t.document_id, '')
+WHERE f.accepted_at_utc >= {dt64_sql(bounds[0])}
+  AND f.accepted_at_utc < {dt64_sql(bounds[1])}
+  AND (
+      existing.document_id = ''
+      OR existing.model_normalizer_version != {sql_string(SEC_PACKED_TEXT_RENDERER_VERSION)}
+      OR existing.source_text_hash != cityHash64(ifNull(t.source_text, ''))
+  )
+ORDER BY f.ticker, f.accepted_at_utc, f.accession_number, text_rank, document_id
+"""
+
+
+def missing_sec_text_context_source_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime], *, limit: int) -> str:
+    return f"""
+{missing_sec_text_context_select_sql(config, bounds)}
+LIMIT {max(1, int(limit))}
+{query_settings(config)}
+FORMAT JSONEachRow
 """
 
 
@@ -1747,10 +1741,11 @@ SETTINGS {", ".join(settings)}
 """
 
 
-def insert_json_each_row(client: ClickHouseHttpClient, table: str, rows: list[dict[str, Any]]) -> None:
+def insert_json_each_row(client: ClickHouseHttpClient, table: str, rows: list[dict[str, Any]], *, columns: str = "") -> None:
     payload = "\n".join(json.dumps(row, separators=(",", ":"), ensure_ascii=False) for row in rows)
     if payload:
-        client.execute(f"INSERT INTO {table} FORMAT JSONEachRow\n{payload}")
+        column_sql = f" ({columns})" if columns else ""
+        client.execute(f"INSERT INTO {table}{column_sql} SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n{payload}")
 
 
 def scalar_count(client: ClickHouseHttpClient, sql: str) -> int:
@@ -1806,6 +1801,10 @@ def query_settings(config: TextEmbedGatewayConfig) -> str:
 
 def utc_now_text() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def utc_now_clickhouse_text() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
 
 def utc_text(value: datetime) -> str:

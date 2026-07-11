@@ -16,6 +16,7 @@ DEFAULTS = {
     "filing_table": "sec_filing_context",
     "text_table": "sec_filing_text_context",
     "xbrl_table": "sec_xbrl_context",
+    "source_text_table": "sec_filing_text_v1",
     "start_date": "2019-01-01",
     "end_date": "2026-12-31",
     "max_threads": 32,
@@ -31,6 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--filing-table", default=DEFAULTS["filing_table"])
     parser.add_argument("--text-table", default=DEFAULTS["text_table"])
     parser.add_argument("--xbrl-table", default=DEFAULTS["xbrl_table"])
+    parser.add_argument("--source-text-table", default=DEFAULTS["source_text_table"])
     parser.add_argument("--start-date", default=DEFAULTS["start_date"])
     parser.add_argument("--end-date", default=DEFAULTS["end_date"])
     parser.add_argument("--max-threads", type=int, default=DEFAULTS["max_threads"])
@@ -46,6 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--text-prefix-chars", type=int, default=0, help="Deprecated no-op. SEC text context now stores full text.")
     parser.add_argument("--max-text-rows-per-filing", type=int, default=0, help="Deprecated no-op. SEC text context now stores every text row.")
     parser.add_argument("--sec-text-buckets", type=int, default=64)
+    parser.add_argument("--render-batch-rows", type=int, default=256)
     parser.add_argument("--skip-text", action="store_true")
     parser.add_argument("--skip-xbrl", action="store_true")
     parser.add_argument("--drop-target-tables", action="store_true")
@@ -69,6 +72,8 @@ def main() -> int:
         args.text_table,
         "--xbrl-table",
         args.xbrl_table,
+        "--source-text-table",
+        args.source_text_table,
         "--start-date",
         args.start_date,
         "--end-date",
@@ -87,6 +92,8 @@ def main() -> int:
         str(args.max_text_rows_per_filing),
         "--sec-text-buckets",
         str(args.sec_text_buckets),
+        "--render-batch-rows",
+        str(args.render_batch_rows),
     ]
     if args.storage_policy:
         argv.extend(["--storage-policy", args.storage_policy])
