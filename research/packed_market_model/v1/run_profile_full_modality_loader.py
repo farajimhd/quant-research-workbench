@@ -127,6 +127,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--scanner-small-price-threshold", type=float, default=20.0)
     parser.add_argument("--scanner-mid-price-threshold", type=float, default=100.0)
     parser.add_argument("--scanner-rank-top-k", type=int, default=16)
+    parser.add_argument("--scanner-background-chunk-seconds", type=int, default=60)
     parser.add_argument("--scanner-keep-run", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--ticker-news-prior-items", type=int, default=64)
     parser.add_argument("--market-news-prior-items", type=int, default=512)
@@ -205,6 +206,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 small_price_threshold=float(args.scanner_small_price_threshold),
                 mid_price_threshold=float(args.scanner_mid_price_threshold),
                 rank_top_k=int(args.scanner_rank_top_k),
+                background_chunk_seconds=int(args.scanner_background_chunk_seconds),
                 max_threads=int(args.max_threads_per_query),
                 max_memory_usage=str(args.max_memory_usage),
             ),
@@ -360,6 +362,7 @@ def profile_block(
                     "windows_built": sum(1 for profile in (scanner_profiles or ()) if getattr(profile, "built", False)),
                     "completed_before_us": completed_scanner_bar_end_us(last_origin_us),
                     "warmup_seconds": int(args.scanner_warmup_seconds),
+                    "background_chunk_seconds": int(args.scanner_background_chunk_seconds),
                 }
             )
             rows.append(asdict(scanner_fetch_result))

@@ -111,6 +111,8 @@ The sidecar:
 - drops older source dates only when the loader moves to a later source date
 - does a blocking `5s` warmup by default, then requests the remaining scanner
   window from the background sidecar builder
+- advances background sidecar builds in `60s` chunks by default, and does not
+  hold the sidecar manager lock while ClickHouse executes the insert query
 - computes scanner ranks from the base trade bars and persisted same-day open
   references
 - fetches only completed bars, where `bar_end_timestamp_us <= floor(origin_timestamp_us, 1s)`

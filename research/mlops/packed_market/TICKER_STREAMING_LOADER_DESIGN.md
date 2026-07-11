@@ -180,6 +180,9 @@ Rules:
   source date
 - the first blocking scanner build is intentionally small, `5s` by default;
   the remaining target window is requested from the sidecar background builder
+- the sidecar background builder advances in `60s` chunks by default so
+  foreground warmup/fetch work can interleave with prefetch instead of waiting
+  behind one large same-day scanner insert
 - ticker workers still calculate ticker-local intraday labels outside
   ClickHouse
 - the scanner fetch never reads the current in-progress second

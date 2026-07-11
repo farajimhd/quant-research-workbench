@@ -26,6 +26,7 @@ DEFAULT_ARGS = {
     "--scanner-small-price-threshold": "20.0",
     "--scanner-mid-price-threshold": "100.0",
     "--scanner-rank-top-k": "16",
+    "--scanner-background-chunk-seconds": "60",
     "--output-root": r"D:\TradingML\runtimes\packed_market_model\v1\profiles",
     "--progress-layout": "rich",
 }

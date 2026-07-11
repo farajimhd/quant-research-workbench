@@ -139,6 +139,7 @@ class ClickHouseTickerStreamConfig:
     scanner_small_price_threshold: float = 20.0
     scanner_mid_price_threshold: float = 100.0
     scanner_rank_top_k: int = 16
+    scanner_background_chunk_seconds: int = 60
 
 
 @dataclass(slots=True)
@@ -246,6 +247,7 @@ class ClickHouseTickerStreamDataset:
                     small_price_threshold=float(config.scanner_small_price_threshold),
                     mid_price_threshold=float(config.scanner_mid_price_threshold),
                     rank_top_k=int(config.scanner_rank_top_k),
+                    background_chunk_seconds=int(config.scanner_background_chunk_seconds),
                     max_threads=int(config.max_threads_per_query),
                     max_memory_usage=str(config.max_memory_usage),
                 ),

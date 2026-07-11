@@ -21,6 +21,7 @@ DEFAULT_PENNY_PRICE_THRESHOLD = 1.0
 DEFAULT_SMALL_PRICE_THRESHOLD = 20.0
 DEFAULT_MID_PRICE_THRESHOLD = 100.0
 DEFAULT_RANK_TOP_K = 16
+DEFAULT_BACKGROUND_CHUNK_SECONDS = 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +50,7 @@ class ScannerSidecarConfig:
     small_price_threshold: float = DEFAULT_SMALL_PRICE_THRESHOLD
     mid_price_threshold: float = DEFAULT_MID_PRICE_THRESHOLD
     rank_top_k: int = DEFAULT_RANK_TOP_K
+    background_chunk_seconds: int = DEFAULT_BACKGROUND_CHUNK_SECONDS
     max_threads: int = 16
     max_memory_usage: str = "64G"
     max_bytes_before_external_group_by: str = "32G"
@@ -77,6 +79,7 @@ class ScannerSidecarManager:
         self._built_until_us: dict[str, int] = {}
         self._active_source_date: str | None = None
         self._requested_targets: dict[str, int] = {}
+        self._inflight_by_source_date: dict[str, tuple[int, threading.Event]] = {}
         self._background_thread: threading.Thread | None = None
         self._background_stop = threading.Event()
         self._query_counter = 0
@@ -95,6 +98,10 @@ class ScannerSidecarManager:
             self._execute("scanner_cleanup_run", cleanup_run_sql(self.config))
             self._built.clear()
             self._built_until_us.clear()
+            self._requested_targets.clear()
+            for _target, event in self._inflight_by_source_date.values():
+                event.set()
+            self._inflight_by_source_date.clear()
 
     def cleanup_before_source_date(self, source_date: str) -> None:
         with self._lock:
@@ -133,28 +140,44 @@ class ScannerSidecarManager:
     def ensure_built_until(self, target_end_us: int, *, source_date: str) -> ScannerSidecarProfile:
         self.ensure_table()
         source_date = str(source_date)
-        with self._lock:
-            self._maybe_cleanup_for_source_date(source_date)
-            current_end = self._built_until_us.get(source_date)
-        if current_end is None:
-            current_end = self._load_existing_built_until(source_date)
-        session_start_us, session_end_us = session_bounds_us(source_date, self.config)
-        emit_start_us = max(int(session_start_us), int(current_end))
-        emit_end_us = min(int(session_end_us), max(int(target_end_us), emit_start_us))
-        if emit_end_us <= emit_start_us:
-            return ScannerSidecarProfile(
-                built=False,
+        while True:
+            with self._lock:
+                self._maybe_cleanup_for_source_date(source_date)
+                current_end = self._built_until_us.get(source_date)
+            if current_end is None:
+                current_end = self._load_existing_built_until(source_date)
+            session_start_us, session_end_us = session_bounds_us(source_date, self.config)
+            emit_start_us = max(int(session_start_us), int(current_end))
+            emit_end_us = min(int(session_end_us), max(int(target_end_us), emit_start_us))
+            if emit_end_us <= emit_start_us:
+                return ScannerSidecarProfile(
+                    built=False,
+                    source_date=source_date,
+                    emit_start_us=int(emit_start_us),
+                    emit_end_us=int(emit_end_us),
+                )
+            wait_event: threading.Event | None = None
+            build_event: threading.Event | None = None
+            with self._lock:
+                refreshed_end = int(self._built_until_us.get(source_date, current_end))
+                if refreshed_end > int(current_end):
+                    continue
+                inflight = self._inflight_by_source_date.get(source_date)
+                if inflight is not None:
+                    wait_event = inflight[1]
+                else:
+                    build_event = threading.Event()
+                    self._inflight_by_source_date[source_date] = (int(emit_end_us), build_event)
+            if wait_event is not None:
+                wait_event.wait(timeout=30.0)
+                continue
+            window = ScannerWindow(
                 source_date=source_date,
                 emit_start_us=int(emit_start_us),
                 emit_end_us=int(emit_end_us),
+                baseline_start_us=int(session_start_us),
             )
-        window = ScannerWindow(
-            source_date=source_date,
-            emit_start_us=int(emit_start_us),
-            emit_end_us=int(emit_end_us),
-            baseline_start_us=int(session_start_us),
-        )
-        return self.ensure_window(window)
+            return self._execute_claimed_window(window, build_event=build_event)
 
     def ensure_window(self, window: ScannerWindow) -> ScannerSidecarProfile:
         self.ensure_table()
@@ -168,14 +191,26 @@ class ScannerSidecarManager:
                     emit_start_us=int(window.emit_start_us),
                     emit_end_us=int(window.emit_end_us),
                 )
-            started = time.perf_counter()
+        return self._execute_claimed_window(window, build_event=None)
+
+    def _execute_claimed_window(self, window: ScannerWindow, *, build_event: threading.Event | None) -> ScannerSidecarProfile:
+        key = (window.source_date, int(window.emit_start_us), int(window.emit_end_us))
+        started = time.perf_counter()
+        query_id = ""
+        try:
             query_id = self._execute("scanner_insert_window", insert_scanner_window_sql(self.config, window))
             seconds = time.perf_counter() - started
-            self._built.add(key)
-            self._built_until_us[window.source_date] = max(
-                int(self._built_until_us.get(window.source_date, 0)),
-                int(window.emit_end_us),
-            )
+            with self._lock:
+                self._built.add(key)
+                self._built_until_us[window.source_date] = max(
+                    int(self._built_until_us.get(window.source_date, 0)),
+                    int(window.emit_end_us),
+                )
+                if build_event is not None:
+                    inflight = self._inflight_by_source_date.get(window.source_date)
+                    if inflight is not None and inflight[1] is build_event:
+                        self._inflight_by_source_date.pop(window.source_date, None)
+                    build_event.set()
             return ScannerSidecarProfile(
                 built=True,
                 source_date=window.source_date,
@@ -185,6 +220,14 @@ class ScannerSidecarManager:
                 seconds=float(seconds),
                 query_id=query_id,
             )
+        except Exception:
+            with self._lock:
+                if build_event is not None:
+                    inflight = self._inflight_by_source_date.get(window.source_date)
+                    if inflight is not None and inflight[1] is build_event:
+                        self._inflight_by_source_date.pop(window.source_date, None)
+                    build_event.set()
+            raise
 
     def fetch_completed_sql_for_origin_range(self, *, first_origin_us: int, last_origin_us: int, ticker: str = "") -> str:
         completed_before_us = completed_scanner_bar_end_us(last_origin_us, base_us=int(self.config.base_timeframe_us))
@@ -215,20 +258,38 @@ class ScannerSidecarManager:
                 continue
             source_date, target = task
             try:
-                self.ensure_built_until(target, source_date=source_date)
+                while not self._background_stop.is_set():
+                    current_end = self._known_built_until(source_date)
+                    if int(current_end) >= int(target):
+                        break
+                    chunk_us = max(1, int(self.config.background_chunk_seconds)) * 1_000_000
+                    chunk_target = min(int(target), int(current_end) + int(chunk_us))
+                    self.ensure_built_until(chunk_target, source_date=source_date)
+                with self._lock:
+                    remaining = int(self._requested_targets.get(source_date, 0))
+                    if remaining > int(target):
+                        self._requested_targets[source_date] = remaining
             except Exception:
                 # The foreground path will surface scanner issues when it needs the rows.
                 time.sleep(1.0)
 
+    def _known_built_until(self, source_date: str) -> int:
+        with self._lock:
+            value = self._built_until_us.get(str(source_date))
+        if value is not None:
+            return int(value)
+        return self._load_existing_built_until(str(source_date))
+
     def _load_existing_built_until(self, source_date: str) -> int:
         self.ensure_table()
         sql = existing_built_until_sql(self.config, source_date)
+        text = self.client.query_tsv(sql).strip()
+        value = int(text or "0")
+        session_start_us, _session_end_us = session_bounds_us(source_date, self.config)
+        value = max(int(session_start_us), value)
         with self._lock:
-            text = self.client.query_tsv(sql).strip()
-            value = int(text or "0")
-            session_start_us, _session_end_us = session_bounds_us(source_date, self.config)
-            value = max(int(session_start_us), value)
-            self._built_until_us[source_date] = value
+            value = max(value, int(self._built_until_us.get(source_date, 0)))
+            self._built_until_us[source_date] = int(value)
             return value
 
     def _maybe_cleanup_for_source_date(self, source_date: str) -> None:
@@ -244,8 +305,9 @@ class ScannerSidecarManager:
             self._active_source_date = str(source_date)
 
     def _execute(self, label: str, sql: str) -> str:
-        self._query_counter += 1
-        query_id = f"{self.query_id_prefix}_{label}_{self._query_counter:06d}"
+        with self._lock:
+            self._query_counter += 1
+            query_id = f"{self.query_id_prefix}_{label}_{self._query_counter:06d}"
         self.client.execute(sql, query_id=query_id)
         return query_id
 
