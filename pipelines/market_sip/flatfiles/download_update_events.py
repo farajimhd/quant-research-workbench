@@ -11,7 +11,6 @@ import sys
 import time
 from collections import defaultdict, deque
 from dataclasses import asdict, dataclass
-from decimal import ROUND_HALF_UP
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -89,6 +88,7 @@ from pipelines.market_sip.ingest.clickhouse_ingest_sip_compact_codec import (  #
 )
 from pipelines.market_sip.validation.clickhouse_compact_schema_validate_sample import (  # noqa: E402
     price_precision_clipped,
+    price_int,
     scale_code,
     tape_code,
     to_decimal_or_zero,
@@ -2373,8 +2373,7 @@ def float32_value(value: Any) -> float:
 def clickhouse_price_int(price: Any) -> int:
     """Mirror ClickHouse round(...) used by the flatfile insert SQL for positive prices."""
     decimal_price = to_decimal_or_zero(price)
-    scale = 10000 if scale_code(decimal_price) else 100
-    return int((decimal_price * scale).to_integral_value(rounding=ROUND_HALF_UP))
+    return price_int(decimal_price)
 
 
 def condition_codes(raw_conditions: Any, slots: int) -> list[int]:
