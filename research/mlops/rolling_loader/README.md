@@ -107,10 +107,12 @@ Use `run_profile_rust_native_cache_loader.py` to validate direct Rust parquet
 reads and manifest-driven cache integrity before moving more trainer work into
 Rust-owned buffers.
 
-The native cache profile defaults to one practical experiment for live-training
-feasibility: one 1024-sample batch, `read_workers=0` meaning CPU-count workers,
-and `ticker_limit=0` meaning the resolved worker count. Override those only when
-you intentionally want a broader stress test.
+`run_profile_rust_native_cache_loader.py` now defaults to the practical
+trainer-facing experiment: warm the cache once, then emit 20 complete
+1024-sample batches through the same materialized batch path the v3 trainer
+uses. `read_workers=0` and `materialize_workers=0` resolve to aggressive
+workstation-sized defaults. Use `--mode native-artifact-smoke` only when you
+want the lower-level Rust parquet reader integrity smoke.
 
 The active v3 chronological loader now exposes these cache-first controls:
 

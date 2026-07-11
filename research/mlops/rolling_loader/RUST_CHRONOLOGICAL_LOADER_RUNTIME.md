@@ -92,15 +92,13 @@ There are two profilers:
   payloads to the Rust assembler. It verifies equality by default. This measures
   the full final tensor assembly/copy boundary, but it still relies on Python
   for parquet reads and per-modality as-of materialization.
-- `run_profile_rust_native_cache_loader.py` is the native parquet-reader smoke
-  profile. It opens real daily-index cache parquet files from Rust, validates
-  raw event stream continuity with saved context rows, and touches all required
-  modality artifact types. It does not yet return trainer batches. The
-  no-argument native profile is intentionally a single practical experiment:
-  one 1024-sample batch, `read_workers=cpu_count`, and `ticker_limit` resolved
-  to the worker count unless explicitly overridden. Context artifacts are
-  touched only for ticker packages that actually contribute accepted origins to
-  that one batch.
+- `run_profile_rust_native_cache_loader.py` defaults to the practical
+  trainer-facing loader experiment: cache warmup plus 20 complete
+  1024-sample materialized batches using the same v3 batch path consumed by the
+  trainer. Pass `--mode native-artifact-smoke` for the lower-level Rust
+  parquet-reader smoke profile, which opens real daily-index cache parquet
+  files from Rust, validates raw event stream continuity with saved context
+  rows, and touches required modality artifact types.
 
 Build and profile from Python:
 
