@@ -21,7 +21,7 @@ from research.packed_market_model.v1.model import PackedMarketModelV1
 from research.packed_market_model.v1.config import ModelConfig, parse_csv
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Profile direct ClickHouse ticker-stream packed loader.")
     parser.add_argument("--months", default="2019-02")
     parser.add_argument("--tickers", default="", help="Comma-separated ticker smoke subset. Empty means all plans.")
@@ -44,12 +44,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--head-hidden-dim", type=int, default=256)
     parser.add_argument("--output-root", default=r"D:\TradingML\runtimes\packed_market_model\v1\profiles")
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default="auto")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     load_env_files(discover_env_files(REPO_ROOT), verbose=True)
-    args = parse_args()
+    args = parse_args(argv)
     run_dir = Path(args.output_root) / f"ticker_stream_profile_{time.strftime('%Y%m%d_%H%M%S')}"
     run_dir.mkdir(parents=True, exist_ok=True)
     report_path = run_dir / "profile.jsonl"

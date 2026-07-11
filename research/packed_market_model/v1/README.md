@@ -64,10 +64,22 @@ All logs, metrics, and checkpoints are keyed by samples seen, not steps.
 Profile the direct streaming loader:
 
 ```powershell
-python -m research.packed_market_model.v1.run_profile_ticker_stream_loader `
-  --months 2019-02 `
-  --max-blocks 20 `
-  --ticker-workers 24
+python -m research.packed_market_model.v1.run_profile_workstation
+```
+
+The workstation launcher prints the full equivalent command and writes logs under:
+
+```text
+D:\TradingML\runtimes\packed_market_model\v1\profiles
+```
+
+Override any profile argument after the launcher name:
+
+```powershell
+python -m research.packed_market_model.v1.run_profile_workstation `
+  --tickers AAPL `
+  --max-blocks 2 `
+  --ticker-workers 1
 ```
 
 Train:
