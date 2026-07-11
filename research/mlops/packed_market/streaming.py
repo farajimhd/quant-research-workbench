@@ -286,7 +286,8 @@ class ClickHouseTickerStreamDataset:
                     block = self._build_block(worker_id, slot, memory, job)
                     if block is None:
                         continue
-                    self._ready_queue.put(block)
+                    if not self._put_ready(block):
+                        break
                     with self.state.lock:
                         self.state.blocks_emitted += 1
                         self.state.origins_emitted += int(block.origin_count)
@@ -299,9 +300,18 @@ class ClickHouseTickerStreamDataset:
         except Exception as exc:  # noqa: BLE001
             slot.status = "error"
             slot.last_error = repr(exc)
-            self._ready_queue.put(_ErrorSentinel(error=repr(exc)))
+            self._put_ready(_ErrorSentinel(error=repr(exc)))
         finally:
-            self._ready_queue.put(_DoneSentinel())
+            self._put_ready(_DoneSentinel())
+
+    def _put_ready(self, item: PackedMarketBlock | _DoneSentinel | _ErrorSentinel) -> bool:
+        while not self._stop_event.is_set():
+            try:
+                self._ready_queue.put(item, timeout=0.25)
+                return True
+            except queue.Full:
+                continue
+        return False
 
     def _build_block(self, worker_id: int, slot: WorkerSlot, memory: WorkerMemoryManager, job: TickerBlockJob) -> PackedMarketBlock | None:
         with self.state.lock:
