@@ -158,6 +158,15 @@ q_live.sec_filing_v2 + q_live.sec_filing_text_v2
 -> market_sip_compact.sec_filing_text_context
 ```
 
+The gateway applies the same deterministic SEC model-text normalizer as the
+historical context builder while refreshing `sec_filing_text_context`. Upstream
+`q_live.sec_filing_text_v2` remains full readable text; the compact context text
+normalizes line endings, removes separator-only layout lines, collapses repeated
+horizontal whitespace and excess blank lines, and records source/model hashes
+plus `model_normalizer_version` for audit. Tokenization and embedding read that
+context field directly, so there is no second SEC parser inside the embedding
+step.
+
 `id_sec_market_bridge_v1` is read-only here and should be maintained by the
 reference gateway. If a SEC filing text row has no valid bridge yet, the gateway
 does not embed it; it writes coverage with `blocked_missing_ticker_mapping` and

@@ -16,6 +16,13 @@ if str(REPO_ROOT) not in sys.path:
 from pipelines.market_sip.events.clickhouse_build_sec_context import (  # noqa: E402
     create_filing_context_table_sql,
     create_text_context_table_sql,
+    text_context_columns_sql,
+    text_context_schema_migration_sqls,
+)
+from pipelines.market_sip.events.sec_model_text_normalizer import (  # noqa: E402
+    SEC_MODEL_TEXT_NORMALIZER_VERSION,
+    removed_layout_line_count_sql,
+    sec_model_text_sql,
 )
 from research.mlops.clickhouse import (  # noqa: E402
     ClickHouseHttpClient,
@@ -247,6 +254,7 @@ def ensure_context_tables(client: ClickHouseHttpClient, args: argparse.Namespace
     statements = [
         create_filing_context_table_sql(args.context_database, args.filing_context_table, args.storage_policy),
         create_text_context_table_sql(args.context_database, args.text_context_table, args.storage_policy),
+        *text_context_schema_migration_sqls(args.context_database, args.text_context_table),
     ]
     for index, statement in enumerate(statements, 1):
         run_sql(client, f"ensure_context_schema_{index}", statement, report_jsonl, execute=True)
@@ -645,33 +653,61 @@ def insert_corrected_text_context_sql(args: argparse.Namespace, cte_body: str) -
     source_db = quote_ident(args.source_database)
     filing_context = f"{quote_ident(args.context_database)}.{quote_ident(args.filing_context_table)}"
     target = f"{quote_ident(args.context_database)}.{quote_ident(args.text_context_table)}"
+    model_text_expr = sec_model_text_sql("source_text")
     return f"""
-INSERT INTO {target}
+INSERT INTO {target} ({text_context_columns_sql()})
 WITH
 {cte_body}
 SELECT
-    f.ticker AS ticker,
-    f.timestamp_us AS timestamp_us,
-    f.accepted_at_utc AS accepted_at_utc,
-    f.cik AS cik,
-    f.accession_number AS accession_number,
-    f.form_type AS form_type,
-    toUInt8(0) AS text_rank,
-    ifNull(t.document_id, '') AS document_id,
-    ifNull(t.text_kind, '') AS text_kind,
-    ifNull(t.text, '') AS text,
-    toUInt32(least(ifNull(t.text_char_count, 0), 4294967295)) AS text_char_count,
-    arrayStringConcat(t.quality_flags, ',') AS quality_flags,
+    ticker,
+    timestamp_us,
+    accepted_at_utc,
+    cik,
+    accession_number,
+    form_type,
+    text_rank,
+    document_id,
+    text_kind,
+    model_text AS text,
+    toUInt32(least(toUInt64(lengthUTF8(model_text)), toUInt64(4294967295))) AS text_char_count,
+    source_text_char_count,
+    cityHash64(source_text) AS source_text_hash,
+    cityHash64(model_text) AS model_text_hash,
+    {sql_string(SEC_MODEL_TEXT_NORMALIZER_VERSION)} AS model_normalizer_version,
+    {removed_layout_line_count_sql("source_text", "model_text")} AS removed_layout_line_count,
+    quality_flags,
     now64(3, 'UTC') AS updated_at
-FROM {filing_context} AS f
-INNER JOIN candidate AS x
-    ON x.cik = f.cik
-   AND x.accession_number = f.accession_number
-   AND x.expected_timestamp_us = f.timestamp_us
-INNER JOIN {source_db}.{quote_ident(args.sec_text_source_table)} AS t
-    ON t.cik = f.cik
-   AND t.accession_number = f.accession_number
-ORDER BY f.ticker, f.accepted_at_utc, f.accession_number, t.text_kind, t.document_id
+FROM
+(
+    SELECT
+        base.*,
+        {model_text_expr} AS model_text
+    FROM
+    (
+        SELECT
+            f.ticker AS ticker,
+            f.timestamp_us AS timestamp_us,
+            f.accepted_at_utc AS accepted_at_utc,
+            f.cik AS cik,
+            f.accession_number AS accession_number,
+            f.form_type AS form_type,
+            toUInt8(0) AS text_rank,
+            ifNull(t.document_id, '') AS document_id,
+            ifNull(t.text_kind, '') AS text_kind,
+            ifNull(t.text, '') AS source_text,
+            toUInt32(least(toUInt64(ifNull(t.text_char_count, lengthUTF8(ifNull(t.text, '')))), toUInt64(4294967295))) AS source_text_char_count,
+            arrayStringConcat(t.quality_flags, ',') AS quality_flags
+        FROM {filing_context} AS f
+        INNER JOIN candidate AS x
+            ON x.cik = f.cik
+           AND x.accession_number = f.accession_number
+           AND x.expected_timestamp_us = f.timestamp_us
+        INNER JOIN {source_db}.{quote_ident(args.sec_text_source_table)} AS t
+            ON t.cik = f.cik
+           AND t.accession_number = f.accession_number
+    ) AS base
+) AS normalized
+ORDER BY ticker, accepted_at_utc, accession_number, text_kind, document_id
 {query_settings(args)}
 """
 
@@ -681,31 +717,59 @@ def insert_corrected_text_context_sql_for_stage(args: argparse.Namespace, stage_
     stage = f"{quote_ident(stage_database)}.{quote_ident(stage_table)}"
     filing_context = f"{quote_ident(args.context_database)}.{quote_ident(args.filing_context_table)}"
     target = f"{quote_ident(args.context_database)}.{quote_ident(args.text_context_table)}"
+    model_text_expr = sec_model_text_sql("source_text")
     return f"""
-INSERT INTO {target}
+INSERT INTO {target} ({text_context_columns_sql()})
 SELECT
-    f.ticker AS ticker,
-    f.timestamp_us AS timestamp_us,
-    f.accepted_at_utc AS accepted_at_utc,
-    f.cik AS cik,
-    f.accession_number AS accession_number,
-    f.form_type AS form_type,
-    toUInt8(0) AS text_rank,
-    ifNull(t.document_id, '') AS document_id,
-    ifNull(t.text_kind, '') AS text_kind,
-    ifNull(t.text, '') AS text,
-    toUInt32(least(ifNull(t.text_char_count, 0), 4294967295)) AS text_char_count,
-    arrayStringConcat(t.quality_flags, ',') AS quality_flags,
+    ticker,
+    timestamp_us,
+    accepted_at_utc,
+    cik,
+    accession_number,
+    form_type,
+    text_rank,
+    document_id,
+    text_kind,
+    model_text AS text,
+    toUInt32(least(toUInt64(lengthUTF8(model_text)), toUInt64(4294967295))) AS text_char_count,
+    source_text_char_count,
+    cityHash64(source_text) AS source_text_hash,
+    cityHash64(model_text) AS model_text_hash,
+    {sql_string(SEC_MODEL_TEXT_NORMALIZER_VERSION)} AS model_normalizer_version,
+    {removed_layout_line_count_sql("source_text", "model_text")} AS removed_layout_line_count,
+    quality_flags,
     now64(3, 'UTC') AS updated_at
-FROM {filing_context} AS f
-INNER JOIN {stage} AS x
-    ON x.cik = f.cik
-   AND x.accession_number = f.accession_number
-   AND x.expected_timestamp_us = f.timestamp_us
-INNER JOIN {source_db}.{quote_ident(args.sec_text_source_table)} AS t
-    ON t.cik = f.cik
-   AND t.accession_number = f.accession_number
-ORDER BY f.ticker, f.accepted_at_utc, f.accession_number, t.text_kind, t.document_id
+FROM
+(
+    SELECT
+        base.*,
+        {model_text_expr} AS model_text
+    FROM
+    (
+        SELECT
+            f.ticker AS ticker,
+            f.timestamp_us AS timestamp_us,
+            f.accepted_at_utc AS accepted_at_utc,
+            f.cik AS cik,
+            f.accession_number AS accession_number,
+            f.form_type AS form_type,
+            toUInt8(0) AS text_rank,
+            ifNull(t.document_id, '') AS document_id,
+            ifNull(t.text_kind, '') AS text_kind,
+            ifNull(t.text, '') AS source_text,
+            toUInt32(least(toUInt64(ifNull(t.text_char_count, lengthUTF8(ifNull(t.text, '')))), toUInt64(4294967295))) AS source_text_char_count,
+            arrayStringConcat(t.quality_flags, ',') AS quality_flags
+        FROM {filing_context} AS f
+        INNER JOIN {stage} AS x
+            ON x.cik = f.cik
+           AND x.accession_number = f.accession_number
+           AND x.expected_timestamp_us = f.timestamp_us
+        INNER JOIN {source_db}.{quote_ident(args.sec_text_source_table)} AS t
+            ON t.cik = f.cik
+           AND t.accession_number = f.accession_number
+    ) AS base
+) AS normalized
+ORDER BY ticker, accepted_at_utc, accession_number, text_kind, document_id
 {query_settings(args)}
 """
 

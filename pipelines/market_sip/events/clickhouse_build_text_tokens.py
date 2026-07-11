@@ -994,7 +994,8 @@ SELECT
     document_id,
     text_kind,
     text,
-    text_char_count AS source_text_char_count,
+    source_text_char_count,
+    toUInt8(0) AS text_prefix_truncated,
     quality_flags
 FROM {table}
 WHERE accepted_at_utc >= {date_time64_sql(chunk_start)}
@@ -1341,7 +1342,7 @@ def sec_token_row(args: argparse.Namespace, row: dict[str, Any], text: str, chun
         "text_hash": stable_uint64(text),
         "text_char_count": len(text),
         "source_text_char_count": int(row.get("source_text_char_count", 0) or tokenized_source_body_chars(row)),
-        "text_prefix_truncated": int(int(row.get("source_text_char_count", 0) or 0) > tokenized_source_body_chars(row)),
+        "text_prefix_truncated": int(row.get("text_prefix_truncated", 0) or 0),
     }
 
 
@@ -1410,7 +1411,7 @@ def sec_embedding_row(args: argparse.Namespace, row: dict[str, Any], text: str, 
         "text_hash": stable_uint64(text),
         "text_char_count": len(text),
         "source_text_char_count": int(row.get("source_text_char_count", 0) or tokenized_source_body_chars(row)),
-        "text_prefix_truncated": int(int(row.get("source_text_char_count", 0) or 0) > tokenized_source_body_chars(row)),
+        "text_prefix_truncated": int(row.get("text_prefix_truncated", 0) or 0),
     }
 
 
@@ -1515,7 +1516,10 @@ def update_source_text_stats(stats: dict[str, int], row: dict[str, Any]) -> None
     tokenized_chars = tokenized_source_body_chars(row)
     stats["source_text_chars"] += source_chars
     stats["tokenized_body_chars"] += tokenized_chars
-    stats["text_prefix_truncated_sources"] += int(source_chars > tokenized_chars)
+    if "text_prefix_truncated" in row:
+        stats["text_prefix_truncated_sources"] += int(row.get("text_prefix_truncated", 0) or 0)
+    else:
+        stats["text_prefix_truncated_sources"] += int(source_chars > tokenized_chars)
 
 
 def tokenized_source_body_chars(row: dict[str, Any]) -> int:

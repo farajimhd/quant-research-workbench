@@ -195,7 +195,7 @@ The migration creates three compact context tables:
 | Table | Partition | Order key | Contents |
 | --- | --- | --- | --- |
 | `sec_filing_context` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, cik)` | one SEC filing metadata row per valid ticker/accession mapping |
-| `sec_filing_text_context` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, text_rank, document_id)` | bounded SEC filing text rows for model tokenization |
+| `sec_filing_text_context` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, text_rank, document_id)` | normalized SEC filing text rows for model tokenization |
 | `sec_xbrl_context` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, xbrl_row_kind, taxonomy, tag, unit_code, period_end_date, source_id)` | company facts and frame observations joined to their filing event time |
 
 The accepted timestamp source is always `q_live.sec_filing_v2.accepted_at_utc`.
@@ -203,6 +203,15 @@ Rows with null `accepted_at_utc` are skipped because they do not have a safe
 no-lookahead event time. `id_sec_market_bridge_v1` is used only to map CIK or
 accession to a market ticker; it is deduplicated inside the migration and is not
 used as the event-time source.
+
+`q_live.sec_filing_text_v2` remains the full upstream readable filing text. The
+compact `sec_filing_text_context.text` field is deterministic model input:
+`sec_model_text_normalizer_v1` normalizes line endings, removes separator-only
+layout lines, collapses repeated horizontal whitespace, and collapses runs of
+blank lines. It does not remove SEC/legal boilerplate, signatures, risk factors,
+numeric-only lines, or rewrite table content. The context table also records
+`source_text_char_count`, `source_text_hash`, `model_text_hash`,
+`model_normalizer_version`, and `removed_layout_line_count` for auditability.
 
 The script uses `CLICKHOUSE_HISTORICAL_STORAGE_POLICY` by default through the
 shared `default_storage_policy()` helper. Override it with `--storage-policy`
@@ -269,9 +278,10 @@ assembled explicitly from `title`, `teaser`, `body_text`, `external_text`, and
 text. This avoids relying on a prefix of `normalized_full_text`, which can miss
 enriched external/PDF text when it appears later in the merged article.
 
-SEC filing context stores full `sec_filing_text_v2.text` rows without a text
-prefix cap and without limiting the number of readable text rows per filing.
-Tokenization currently uses up to eight 1024-token rows per source text row.
+SEC filing context stores normalized model-input text derived from full
+`sec_filing_text_v2.text` rows without a prefix cap and without limiting the
+number of readable text rows per filing. Tokenization currently uses up to eight
+1024-token rows per source text row.
 Both token tables include `token_chunk_index`, `token_start`, and `token_end`,
 so multiple chunks do not collapse under the same replacing key.
 

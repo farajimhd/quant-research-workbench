@@ -26,6 +26,11 @@ from research.mlops.clickhouse import (  # noqa: E402
 )
 from research.mlops.env import load_env_files, secret_status  # noqa: E402
 from pipelines.market_sip.validation.clickhouse_delete_compact_audit_rows import default_clickhouse_url_with_network_fallback  # noqa: E402
+from pipelines.market_sip.events.sec_model_text_normalizer import (  # noqa: E402
+    SEC_MODEL_TEXT_NORMALIZER_VERSION,
+    removed_layout_line_count_sql,
+    sec_model_text_sql,
+)
 
 
 DEFAULT_SOURCE_DATABASE = "q_live"
@@ -34,6 +39,26 @@ DEFAULT_FILING_TABLE = "sec_filing_context"
 DEFAULT_TEXT_TABLE = "sec_filing_text_context"
 DEFAULT_XBRL_TABLE = "sec_xbrl_context"
 DEFAULT_OUTPUT_ROOT = DEFAULT_OUTPUT_ROOT_WIN / "sec_context"
+TEXT_CONTEXT_COLUMNS = [
+    "ticker",
+    "timestamp_us",
+    "accepted_at_utc",
+    "cik",
+    "accession_number",
+    "form_type",
+    "text_rank",
+    "document_id",
+    "text_kind",
+    "text",
+    "text_char_count",
+    "source_text_char_count",
+    "source_text_hash",
+    "model_text_hash",
+    "model_normalizer_version",
+    "removed_layout_line_count",
+    "quality_flags",
+    "updated_at",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -133,6 +158,7 @@ def run_migration(client: ClickHouseHttpClient, args: argparse.Namespace, *, sta
         f"CREATE DATABASE IF NOT EXISTS {quote_ident(args.target_database)}",
         create_filing_context_table_sql(args.target_database, args.filing_table, args.storage_policy),
         create_text_context_table_sql(args.target_database, args.text_table, args.storage_policy),
+        *text_context_schema_migration_sqls(args.target_database, args.text_table),
         create_xbrl_context_table_sql(args.target_database, args.xbrl_table, args.storage_policy),
     ]
     if args.drop_target_tables:
@@ -240,6 +266,11 @@ CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
     text_kind LowCardinality(String),
     text String CODEC(ZSTD(3)),
     text_char_count UInt32,
+    source_text_char_count UInt32,
+    source_text_hash UInt64,
+    model_text_hash UInt64,
+    model_normalizer_version LowCardinality(String),
+    removed_layout_line_count UInt32,
     quality_flags String,
     updated_at DateTime64(3, 'UTC') DEFAULT now64(3, 'UTC')
 )
@@ -248,6 +279,21 @@ PARTITION BY toYYYYMM(accepted_at_utc)
 ORDER BY (ticker, timestamp_us, accession_number, text_rank, document_id)
 {mergetree_settings_sql(storage_policy)}
 """
+
+
+def text_context_schema_migration_sqls(database: str, table: str) -> list[str]:
+    target = f"{quote_ident(database)}.{quote_ident(table)}"
+    return [
+        f"ALTER TABLE {target} ADD COLUMN IF NOT EXISTS source_text_char_count UInt32 DEFAULT text_char_count AFTER text_char_count",
+        f"ALTER TABLE {target} ADD COLUMN IF NOT EXISTS source_text_hash UInt64 DEFAULT cityHash64(text) AFTER source_text_char_count",
+        f"ALTER TABLE {target} ADD COLUMN IF NOT EXISTS model_text_hash UInt64 DEFAULT cityHash64(text) AFTER source_text_hash",
+        f"ALTER TABLE {target} ADD COLUMN IF NOT EXISTS model_normalizer_version LowCardinality(String) DEFAULT '' AFTER model_text_hash",
+        f"ALTER TABLE {target} ADD COLUMN IF NOT EXISTS removed_layout_line_count UInt32 DEFAULT 0 AFTER model_normalizer_version",
+    ]
+
+
+def text_context_columns_sql() -> str:
+    return ", ".join(quote_ident(column) for column in TEXT_CONTEXT_COLUMNS)
 
 
 def create_xbrl_context_table_sql(database: str, table: str, storage_policy: str) -> str:
@@ -352,30 +398,58 @@ def insert_text_context_sql(args: argparse.Namespace, *, start_date: date, end_d
     filing_context = f"{quote_ident(args.target_database)}.{quote_ident(args.filing_table)}"
     target = f"{quote_ident(args.target_database)}.{quote_ident(args.text_table)}"
     buckets = max(1, int(args.sec_text_buckets))
+    model_text_expr = sec_model_text_sql("source_text")
     return f"""
-INSERT INTO {target}
+INSERT INTO {target} ({text_context_columns_sql()})
 SELECT
-    f.ticker AS ticker,
-    f.timestamp_us AS timestamp_us,
-    f.accepted_at_utc AS accepted_at_utc,
-    f.cik AS cik,
-    f.accession_number AS accession_number,
-    f.form_type AS form_type,
-    toUInt8(0) AS text_rank,
-    ifNull(t.document_id, '') AS document_id,
-    ifNull(t.text_kind, '') AS text_kind,
-    ifNull(t.text, '') AS text,
-    toUInt32(least(ifNull(t.text_char_count, 0), 4294967295)) AS text_char_count,
-    arrayStringConcat(t.quality_flags, ',') AS quality_flags,
+    ticker,
+    timestamp_us,
+    accepted_at_utc,
+    cik,
+    accession_number,
+    form_type,
+    text_rank,
+    document_id,
+    text_kind,
+    model_text AS text,
+    toUInt32(least(toUInt64(lengthUTF8(model_text)), toUInt64(4294967295))) AS text_char_count,
+    source_text_char_count,
+    cityHash64(source_text) AS source_text_hash,
+    cityHash64(model_text) AS model_text_hash,
+    {sql_string(SEC_MODEL_TEXT_NORMALIZER_VERSION)} AS model_normalizer_version,
+    {removed_layout_line_count_sql("source_text", "model_text")} AS removed_layout_line_count,
+    quality_flags,
     now64(3, 'UTC') AS updated_at
-FROM {filing_context} AS f
-INNER JOIN {source_db}.sec_filing_text_v2 AS t
-    ON t.cik = f.cik
-   AND t.accession_number = f.accession_number
-WHERE f.accepted_at_utc >= {date_time64_sql(start_date)}
-  AND f.accepted_at_utc < {date_time64_sql(end_date_exclusive)}
-  AND cityHash64(t.cik) % {buckets} = {int(bucket)}
-ORDER BY f.ticker, f.accepted_at_utc, f.accession_number, t.text_kind, t.document_id
+FROM
+(
+    SELECT
+        base.*,
+        {model_text_expr} AS model_text
+    FROM
+    (
+        SELECT
+            f.ticker AS ticker,
+            f.timestamp_us AS timestamp_us,
+            f.accepted_at_utc AS accepted_at_utc,
+            f.cik AS cik,
+            f.accession_number AS accession_number,
+            f.form_type AS form_type,
+            toUInt8(0) AS text_rank,
+            ifNull(t.document_id, '') AS document_id,
+            ifNull(t.text_kind, '') AS text_kind,
+            ifNull(t.text, '') AS source_text,
+            toUInt32(least(toUInt64(ifNull(t.text_char_count, lengthUTF8(ifNull(t.text, '')))), toUInt64(4294967295))) AS source_text_char_count,
+            arrayStringConcat(t.quality_flags, ',') AS quality_flags
+        FROM {filing_context} AS f
+        INNER JOIN {source_db}.sec_filing_text_v2 AS t
+            ON t.cik = f.cik
+           AND t.accession_number = f.accession_number
+        WHERE f.accepted_at_utc >= {date_time64_sql(start_date)}
+          AND f.accepted_at_utc < {date_time64_sql(end_date_exclusive)}
+          AND cityHash64(t.cik) % {buckets} = {int(bucket)}
+    ) AS base
+) AS normalized
+ORDER BY ticker, accepted_at_utc, accession_number, text_kind, document_id
 {query_settings(args)}
 """
 

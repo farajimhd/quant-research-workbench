@@ -30,6 +30,13 @@ from pipelines.market_sip.events.clickhouse_build_text_tokens import (
 from pipelines.market_sip.events.clickhouse_build_sec_context import (
     create_filing_context_table_sql,
     create_text_context_table_sql,
+    text_context_columns_sql,
+    text_context_schema_migration_sqls,
+)
+from pipelines.market_sip.events.sec_model_text_normalizer import (
+    SEC_MODEL_TEXT_NORMALIZER_VERSION,
+    removed_layout_line_count_sql,
+    sec_model_text_sql,
 )
 from research.mlops.clickhouse import ClickHouseHttpClient, parse_size_bytes, quote_ident, sql_string
 from services.gateway_core.market_calendar import MarketHoursSnapshot, MassiveMarketHoursClient
@@ -328,6 +335,7 @@ class TextEmbedGateway:
             create_coverage_table_sql(self.config.target_database, self.config.coverage_table, self.config.storage_policy),
             create_filing_context_table_sql(self.config.context_database, self.config.sec_context_filing_table, self.config.storage_policy),
             create_text_context_table_sql(self.config.context_database, self.config.sec_context_text_table, self.config.storage_policy),
+            *text_context_schema_migration_sqls(self.config.context_database, self.config.sec_context_text_table),
         ]
         for statement in statements:
             self.client.execute(statement)
@@ -1310,7 +1318,7 @@ FORMAT TSV
 def insert_missing_sec_text_context_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime]) -> str:
     target = f"{quote_ident(config.context_database)}.{quote_ident(config.sec_context_text_table)}"
     return f"""
-INSERT INTO {target}
+INSERT INTO {target} ({text_context_columns_sql()})
 {missing_sec_text_context_select_sql(config, bounds)}
 {query_settings(config)}
 """
@@ -1321,6 +1329,7 @@ def missing_sec_text_context_select_sql(config: TextEmbedGatewayConfig, bounds: 
     text_table = quote_ident(config.sec_live_text_table)
     filing_context = f"{quote_ident(config.context_database)}.{quote_ident(config.sec_context_filing_table)}"
     target = f"{quote_ident(config.context_database)}.{quote_ident(config.sec_context_text_table)}"
+    model_text_expr = sec_model_text_sql("source_text")
     return f"""
 SELECT
     selected.ticker AS ticker,
@@ -1332,40 +1341,54 @@ SELECT
     selected.text_rank AS text_rank,
     selected.document_id AS document_id,
     selected.text_kind AS text_kind,
-    selected.text AS text,
-    selected.text_char_count AS text_char_count,
+    selected.model_text AS text,
+    toUInt32(least(toUInt64(lengthUTF8(selected.model_text)), toUInt64(4294967295))) AS text_char_count,
+    selected.source_text_char_count AS source_text_char_count,
+    cityHash64(selected.source_text) AS source_text_hash,
+    cityHash64(selected.model_text) AS model_text_hash,
+    {sql_string(SEC_MODEL_TEXT_NORMALIZER_VERSION)} AS model_normalizer_version,
+    {removed_layout_line_count_sql("selected.source_text", "selected.model_text")} AS removed_layout_line_count,
     selected.quality_flags AS quality_flags,
     now64(3, 'UTC') AS updated_at
 FROM
 (
     SELECT
-        f.ticker AS ticker,
-        f.timestamp_us AS timestamp_us,
-        f.accepted_at_utc AS accepted_at_utc,
-        f.cik AS cik,
-        f.accession_number AS accession_number,
-        f.form_type AS form_type,
-        toUInt8(0) AS text_rank,
-        ifNull(t.document_id, '') AS document_id,
-        ifNull(t.text_kind, '') AS text_kind,
-        ifNull(t.text, '') AS text,
-        toUInt32(least(ifNull(t.text_char_count, 0), 4294967295)) AS text_char_count,
-        arrayStringConcat(t.quality_flags, ',') AS quality_flags
-    FROM {filing_context} AS f
-    INNER JOIN {source_db}.{text_table} AS t
-        ON t.cik = f.cik
-       AND t.accession_number = f.accession_number
-    WHERE f.accepted_at_utc >= {dt64_sql(bounds[0])}
-      AND f.accepted_at_utc < {dt64_sql(bounds[1])}
-    ORDER BY f.ticker, f.accepted_at_utc, f.accession_number, t.text_kind, t.document_id
+        base.*,
+        {model_text_expr} AS model_text
+    FROM
+    (
+        SELECT
+            f.ticker AS ticker,
+            f.timestamp_us AS timestamp_us,
+            f.accepted_at_utc AS accepted_at_utc,
+            f.cik AS cik,
+            f.accession_number AS accession_number,
+            f.form_type AS form_type,
+            toUInt8(0) AS text_rank,
+            ifNull(t.document_id, '') AS document_id,
+            ifNull(t.text_kind, '') AS text_kind,
+            ifNull(t.text, '') AS source_text,
+            toUInt32(least(toUInt64(ifNull(t.text_char_count, lengthUTF8(ifNull(t.text, '')))), toUInt64(4294967295))) AS source_text_char_count,
+            arrayStringConcat(t.quality_flags, ',') AS quality_flags
+        FROM {filing_context} AS f
+        INNER JOIN {source_db}.{text_table} AS t
+            ON t.cik = f.cik
+           AND t.accession_number = f.accession_number
+        WHERE f.accepted_at_utc >= {dt64_sql(bounds[0])}
+          AND f.accepted_at_utc < {dt64_sql(bounds[1])}
+        ORDER BY f.ticker, f.accepted_at_utc, f.accession_number, t.text_kind, t.document_id
+    ) AS base
 ) AS selected
-LEFT JOIN {target} AS existing
+LEFT JOIN {target} AS existing FINAL
     ON existing.ticker = selected.ticker
    AND existing.timestamp_us = selected.timestamp_us
    AND existing.accession_number = selected.accession_number
    AND existing.text_rank = selected.text_rank
    AND existing.document_id = selected.document_id
 WHERE existing.document_id = ''
+   OR existing.model_normalizer_version != {sql_string(SEC_MODEL_TEXT_NORMALIZER_VERSION)}
+   OR existing.source_text_hash != cityHash64(selected.source_text)
+   OR existing.model_text_hash != cityHash64(selected.model_text)
 """
 
 
@@ -1415,9 +1438,7 @@ FORMAT JSONEachRow
 def sec_context_gap_period_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime]) -> str:
     source_db = quote_ident(config.source_database)
     filing_table = quote_ident(config.sec_live_filing_table)
-    text_table = quote_ident(config.sec_live_text_table)
     filing_context = f"{quote_ident(config.context_database)}.{quote_ident(config.sec_context_filing_table)}"
-    text_context = f"{quote_ident(config.context_database)}.{quote_ident(config.sec_context_text_table)}"
     return f"""
 SELECT
     count() AS rows,
@@ -1435,19 +1456,11 @@ FROM
       AND f.accepted_at_utc < {dt64_sql(bounds[1])}
       AND existing.accession_number = ''
     UNION ALL
-    SELECT fc.accepted_at_utc AS event_time
-    FROM {filing_context} AS fc
-    INNER JOIN {source_db}.{text_table} AS t
-        ON t.cik = fc.cik
-       AND t.accession_number = fc.accession_number
-    LEFT JOIN {text_context} AS existing
-        ON existing.ticker = fc.ticker
-       AND existing.timestamp_us = fc.timestamp_us
-       AND existing.accession_number = fc.accession_number
-       AND existing.document_id = ifNull(t.document_id, '')
-    WHERE fc.accepted_at_utc >= {dt64_sql(bounds[0])}
-      AND fc.accepted_at_utc < {dt64_sql(bounds[1])}
-      AND existing.document_id = ''
+    SELECT accepted_at_utc AS event_time
+    FROM
+    (
+{missing_sec_text_context_select_sql(config, bounds)}
+    )
 )
 {query_settings(config)}
 FORMAT JSONEachRow
@@ -1497,9 +1510,10 @@ SELECT
     src.document_id,
     src.text_kind,
     src.text AS text,
-    src.text_char_count AS source_text_char_count,
+    src.source_text_char_count AS source_text_char_count,
+    toUInt8(0) AS text_prefix_truncated,
     src.quality_flags
-FROM {context} AS src
+FROM {context} AS src FINAL
 LEFT JOIN {target}.{token_table} AS tok
     ON tok.ticker = src.ticker
    AND tok.accession_number = src.accession_number
@@ -1525,7 +1539,7 @@ SELECT
     count() AS rows,
     min(src.accepted_at_utc) AS min_time,
     max(src.accepted_at_utc) AS max_time
-FROM {context} AS src
+FROM {context} AS src FINAL
 LEFT JOIN {target}.{token_table} AS tok
     ON tok.ticker = src.ticker
    AND tok.accession_number = src.accession_number
@@ -1549,7 +1563,7 @@ def sec_available_coverage_sql(config: TextEmbedGatewayConfig, bounds: tuple[dat
 SELECT
     (
         SELECT count()
-        FROM {context} AS src
+        FROM {context} AS src FINAL
         WHERE src.accepted_at_utc >= {dt64_sql(bounds[0])}
           AND src.accepted_at_utc < {dt64_sql(bounds[1])}
     ) AS source_rows,
@@ -1570,13 +1584,13 @@ SELECT
     ) AS embedding_rows,
     (
         SELECT min(src.accepted_at_utc)
-        FROM {context} AS src
+        FROM {context} AS src FINAL
         WHERE src.accepted_at_utc >= {dt64_sql(bounds[0])}
           AND src.accepted_at_utc < {dt64_sql(bounds[1])}
     ) AS min_time,
     (
         SELECT max(src.accepted_at_utc)
-        FROM {context} AS src
+        FROM {context} AS src FINAL
         WHERE src.accepted_at_utc >= {dt64_sql(bounds[0])}
           AND src.accepted_at_utc < {dt64_sql(bounds[1])}
     ) AS max_time
