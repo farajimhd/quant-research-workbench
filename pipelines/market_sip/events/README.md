@@ -206,10 +206,17 @@ used as the event-time source.
 
 `q_live.sec_filing_text_v2` remains the full upstream readable filing text. The
 compact `sec_filing_text_context.text` field is deterministic model input:
-`sec_model_text_normalizer_v1` normalizes line endings, removes separator-only
-layout lines, collapses repeated horizontal whitespace, and collapses runs of
-blank lines. It does not remove SEC/legal boilerplate, signatures, risk factors,
-numeric-only lines, or rewrite table content. The context table also records
+`sec_model_text_normalizer_v2` normalizes line endings, removes high-confidence
+layout and extraction artifacts, collapses repeated horizontal whitespace, and
+collapses runs of blank lines. The v2 cleanup includes separator-only lines,
+pipe-only table scaffolding, standalone XBRL/text-block labels, page/form header
+lines, common HTML entity residue, common mojibake fragments, and short OCR-like
+single-letter uppercase spacing. It does not remove SEC/legal boilerplate,
+signatures, risk factors, numeric-only lines, or rewrite table content. The
+normalizer also exposes diagnostics for duplicate paragraphs, repeated lines,
+table-fragmentation density, page/header artifacts, and encoding residue so
+those can be audited before any more aggressive future compaction. The context
+table also records
 `source_text_char_count`, `source_text_hash`, `model_text_hash`,
 `model_normalizer_version`, and `removed_layout_line_count` for auditability.
 
