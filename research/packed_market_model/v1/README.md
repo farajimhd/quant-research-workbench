@@ -107,6 +107,9 @@ profiles the first block from four different ticker/month plans instead of four
 sequential blocks from the most active ticker. Shared month/day artifacts such as
 market-news embeddings, global daily bars, and scanner cache files are cached
 inside the profiling run and reported with `cache_hit` details in `profile.jsonl`.
+Scanner files are selected from the origin rows' local dates, not from event
+lookback rows, so a block that starts on February 1 does not require a January 31
+scanner file just because its event context reaches backward.
 
 Use `--require-scanner` if scanner files must be present; otherwise missing scanner files are reported as rows in the `scanner.cache` step.
 

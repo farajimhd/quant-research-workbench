@@ -264,7 +264,11 @@ def profile_block(
         return rows
     events_holder["events"] = events
     window = month_window(job.plan.month)
-    local_dates = local_dates_from_events(events)
+    origin_local_dates = local_dates_from_origin_events(
+        events,
+        origin_start_ordinal=int(job.origin_start_ordinal),
+        origin_end_ordinal=int(job.origin_end_ordinal),
+    )
 
     block_result, _block = run_step("events.packed_block_and_labels", lambda: build_packed_block_from_events(stream_config, job, events, worker_id=0))
     rows.append(asdict(block_result))
@@ -283,7 +287,7 @@ def profile_block(
     cached_context_tasks: dict[str, tuple[tuple[str, ...], Callable[[], Any]]] = {
         "context.market_news_embeddings": (("market_news", job.plan.month), lambda: _query_market_news(ctx_args, context_client_opts, rolling_config, window)),
         "bars.global_daily": (("global_daily", job.plan.month), lambda: _query_daily_bars(ctx_args, context_client_opts, rolling_config, window, symbols=tuple(rolling_config.global_symbols))),
-        "scanner.cache": (("scanner", job.plan.month, "|".join(local_dates)), lambda: load_scanner_frames(Path(args.scanner_cache_root), job.plan.month, local_dates, require=bool(args.require_scanner))),
+        "scanner.cache": (("scanner", job.plan.month, "|".join(origin_local_dates)), lambda: load_scanner_frames(Path(args.scanner_cache_root), job.plan.month, origin_local_dates, require=bool(args.require_scanner))),
     }
     with ThreadPoolExecutor(max_workers=max(1, int(args.context_workers)), thread_name_prefix="full-modality-context") as pool:
         futures = {pool.submit(run_step, name, task): name for name, task in context_tasks.items()}
@@ -400,10 +404,15 @@ def estimate_payload_bytes(frame: Any) -> int:
         return int(getattr(frame, "height", 0) * max(1, len(getattr(frame, "columns", ()))) * 8)
 
 
-def local_dates_from_events(events: Any) -> tuple[str, ...]:
+def local_dates_from_origin_events(events: Any, *, origin_start_ordinal: int, origin_end_ordinal: int) -> tuple[str, ...]:
     if "local_date" not in events.columns or events.height == 0:
         return ()
-    values = events.select("local_date").unique().sort("local_date").to_series().to_list()
+    import polars as pl
+
+    origin_events = events.filter((pl.col("ordinal") >= int(origin_start_ordinal)) & (pl.col("ordinal") <= int(origin_end_ordinal)))
+    if origin_events.height == 0:
+        return ()
+    values = origin_events.select("local_date").unique().sort("local_date").to_series().to_list()
     return tuple(str(value)[:10] for value in values)
 
 
