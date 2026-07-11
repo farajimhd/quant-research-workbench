@@ -9,7 +9,7 @@ from html.parser import HTMLParser
 from typing import Any
 
 
-SEC_PACKED_TEXT_RENDERER_VERSION = "sec_packed_text_renderer_v4"
+SEC_PACKED_TEXT_RENDERER_VERSION = "sec_packed_text_renderer_v5"
 STRUCTURED_XML_EXCLUDED_QUALITY_FLAG = "structured_xml_excluded"
 DUPLICATE_BLOCK_MIN_CHARS = 40
 
@@ -526,15 +526,34 @@ def _render_table_row(row: list[str], columns: list[str]) -> str:
 
 
 def _xml_blocks(source: str) -> list[RenderedBlock]:
-    text = source.strip()
+    text = _prepare_xml_source(source)
     if not text:
         return []
     try:
         root = ET.fromstring(text)
     except ET.ParseError:
-        return _plain_text_blocks(_strip_markup(source))
+        return _xml_like_blocks_with_tags(source)
     blocks: list[RenderedBlock] = []
     _walk_xml(root, [], blocks)
+    return blocks or _xml_like_blocks_with_tags(source)
+
+
+def _prepare_xml_source(source: str) -> str:
+    text = (source or "").strip()
+    wrapper_match = re.fullmatch(r"(?is)<XML>\s*(.*?)\s*</XML>", text)
+    if wrapper_match:
+        text = wrapper_match.group(1).strip()
+    text = re.sub(r"(?is)<\?xml[^>]*\?>", "", text).strip()
+    return text
+
+
+def _xml_like_blocks_with_tags(source: str) -> list[RenderedBlock]:
+    blocks: list[RenderedBlock] = []
+    for match in re.finditer(r"(?is)<([A-Za-z_][\w:.-]*)(?:\s[^>]*)?>\s*([^<]+?)\s*</\1>", source or ""):
+        tag = _strip_namespace(match.group(1))
+        text = _clean_block_text(match.group(2))
+        if tag and text and not _is_low_signal_text(text):
+            blocks.append(RenderedBlock("xml_leaf", f"{tag}: {text}"))
     return blocks or _plain_text_blocks(_strip_markup(source))
 
 
@@ -552,13 +571,31 @@ def _walk_xml(node: ET.Element, path: list[str], blocks: list[RenderedBlock]) ->
     next_path = [*path, tag] if tag else path
     text = _clean_block_text(node.text or "")
     children = list(node)
+    if tag and children:
+        blocks.append(RenderedBlock("xml_section", f"<{_xml_path(next_path)}>"))
+    attrs = _xml_attrs(node)
+    if attrs and tag:
+        blocks.append(RenderedBlock("xml_attrs", f"<{_xml_path(next_path)}> " + "; ".join(attrs)))
     if text and not children:
-        blocks.append(RenderedBlock("xml_leaf", f"{'/'.join(next_path)}: {text}"))
+        blocks.append(RenderedBlock("xml_leaf", f"<{_xml_path(next_path)}>: {text}"))
     for child in children:
         _walk_xml(child, next_path, blocks)
     tail = _clean_block_text(node.tail or "")
     if tail:
         blocks.append(RenderedBlock("xml_tail", tail))
+
+
+def _xml_attrs(node: ET.Element) -> list[str]:
+    attrs: list[str] = []
+    for name, value in sorted(node.attrib.items()):
+        clean_value = _clean_inline(value)
+        if clean_value:
+            attrs.append(f"@{_strip_namespace(name)}={clean_value}")
+    return attrs
+
+
+def _xml_path(path: list[str]) -> str:
+    return "/".join(part for part in path if part)
 
 
 def _plain_text_blocks(source: str) -> list[RenderedBlock]:
