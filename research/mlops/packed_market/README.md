@@ -99,6 +99,25 @@ the end of the run. For a larger/full-day benchmark, increase `--end-et` and
 consider `--materialize-engine MergeTree --keep-temp-table` only when you
 explicitly want to inspect the generated table.
 
+## Scanner Sidecar In Loader Profiles
+
+The packed full-modality profile uses a ClickHouse sidecar for scanner state.
+The sidecar:
+
+- materializes run-scoped `1s` trade / quote-bid / quote-ask scanner rows into
+  `market_sip_compact.packed_scanner_sidecar_bars`
+- builds aligned `15 minute` windows by default
+- computes scanner ranks from the base trade bars
+- fetches only completed bars, where `bar_end_timestamp_us <= floor(origin_timestamp_us, 1s)`
+- never fetches the current in-progress second
+- removes the run rows on normal shutdown unless `--scanner-keep-run` is set
+
+Run the full loader profile:
+
+```powershell
+python -m research.packed_market_model.v1.run_profile_full_workstation
+```
+
 ## Legacy Reader
 
 `PackedMarketDataset` can still read a pre-existing packed block cache for debugging. It is not the default training path and should not be used for new packed-market experiments unless explicitly requested.

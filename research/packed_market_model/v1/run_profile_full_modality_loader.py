@@ -15,9 +15,10 @@ REPO_ROOT = next(parent for parent in Path(__file__).resolve().parents if (paren
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from research.mlops.clickhouse import ClickHouseHttpClient
 from research.mlops.data.config import RollingMarketDataConfig
 from research.mlops.env import discover_env_files, load_env_files
-from research.mlops.packed_market.scanner import DirectScannerQueryConfig, query_direct_market_scanner_frames
+from research.mlops.packed_market.scanner_sidecar import ScannerSidecarConfig, ScannerSidecarManager, completed_scanner_bar_end_us
 from research.mlops.packed_market.streaming import (
     ActiveQueryRegistry,
     ClickHouseTickerStreamConfig,
@@ -38,6 +39,7 @@ from research.mlops.rolling_loader.daily_index_context import (
     _query_ticker_news,
     _query_xbrl,
     cancel_process_clickhouse_queries as cancel_context_queries,
+    query_polars as query_context_polars,
 )
 from research.packed_market_model.v1.config import parse_csv
 
@@ -115,10 +117,12 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--events-ticker-day-index-table", default="events_ticker_day_index")
     parser.add_argument("--max-threads-per-query", type=int, default=4)
     parser.add_argument("--max-memory-usage", default="32G")
-    parser.add_argument("--scanner-cache-root", default="", help="Deprecated; scanner profiling now computes market-wide scanner frames directly from ClickHouse.")
-    parser.add_argument("--scanner-resolution-us", type=int, default=1_000_000)
-    parser.add_argument("--scanner-horizons", default="1s,5s,30s,1m")
-    parser.add_argument("--require-scanner", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--scanner-sidecar", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--scanner-table", default="packed_scanner_sidecar_bars")
+    parser.add_argument("--scanner-window-seconds", type=int, default=900)
+    parser.add_argument("--scanner-fetch-lookback-seconds", type=int, default=300)
+    parser.add_argument("--scanner-baseline-et", default="09:30:00")
+    parser.add_argument("--scanner-keep-run", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--ticker-news-prior-items", type=int, default=64)
     parser.add_argument("--market-news-prior-items", type=int, default=512)
     parser.add_argument("--sec-filing-prior-items", type=int, default=32)
@@ -180,6 +184,23 @@ def main(argv: Iterable[str] | None = None) -> int:
         corporate_action_label_days=str(args.corporate_action_label_days),
     )
     shared_cache = FullProfileSharedCache()
+    scanner_manager: ScannerSidecarManager | None = None
+    if bool(args.scanner_sidecar):
+        scanner_manager = ScannerSidecarManager(
+            config=ScannerSidecarConfig(
+                run_id=run_dir.name,
+                database=str(args.database),
+                events_table_base=str(args.events_table_base),
+                scanner_table=str(args.scanner_table),
+                window_seconds=int(args.scanner_window_seconds),
+                fetch_lookback_seconds=int(args.scanner_fetch_lookback_seconds),
+                baseline_et=str(args.scanner_baseline_et),
+                max_threads=int(args.max_threads_per_query),
+                max_memory_usage=str(args.max_memory_usage),
+            ),
+            client=ClickHouseHttpClient(stream_config.clickhouse_url, stream_config.user, stream_config.password),
+            query_id_prefix=f"packed_full_scanner_{run_dir.name}",
+        )
 
     try:
         plan_step = time.perf_counter()
@@ -203,6 +224,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                     job=job,
                     stream_queries=stream_queries,
                     shared_cache=shared_cache,
+                    scanner_manager=scanner_manager,
                 )
                 append_jsonl(report_path, {"event": "block", "block": block_counter, "ticker": job.plan.ticker, "month": job.plan.month, "job": job_to_dict(job), "steps": block_rows})
                 update_state_from_block(state, block_rows)
@@ -230,6 +252,11 @@ def main(argv: Iterable[str] | None = None) -> int:
     finally:
         cancel_stream_queries(stream_config, stream_queries)
         cancel_context_queries(client_opts=context_client_opts, reason="full_modality_profile_shutdown")
+        if scanner_manager is not None and not bool(args.scanner_keep_run):
+            try:
+                scanner_manager.cleanup_run()
+            except Exception as exc:  # noqa: BLE001
+                append_jsonl(report_path, {"event": "scanner_cleanup_error", "error": repr(exc)})
 
     summary = state_summary(state)
     summary["shared_cache"] = shared_cache.summary()
@@ -248,6 +275,7 @@ def profile_block(
     job: Any,
     stream_queries: ActiveQueryRegistry,
     shared_cache: FullProfileSharedCache,
+    scanner_manager: ScannerSidecarManager | None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     events_holder: dict[str, Any] = {}
@@ -265,6 +293,11 @@ def profile_block(
     events_holder["events"] = events
     window = month_window(job.plan.month)
     origin_local_dates = local_dates_from_origin_events(
+        events,
+        origin_start_ordinal=int(job.origin_start_ordinal),
+        origin_end_ordinal=int(job.origin_end_ordinal),
+    )
+    origin_range = origin_timestamp_range_from_events(
         events,
         origin_start_ordinal=int(job.origin_start_ordinal),
         origin_end_ordinal=int(job.origin_end_ordinal),
@@ -287,22 +320,35 @@ def profile_block(
     cached_context_tasks: dict[str, tuple[tuple[str, ...], Callable[[], Any]]] = {
         "context.market_news_embeddings": (("market_news", job.plan.month), lambda: _query_market_news(ctx_args, context_client_opts, rolling_config, window)),
         "bars.global_daily": (("global_daily", job.plan.month), lambda: _query_daily_bars(ctx_args, context_client_opts, rolling_config, window, symbols=tuple(rolling_config.global_symbols))),
-        "scanner.direct_market": (
-            ("scanner_direct", job.plan.month, "|".join(origin_local_dates), str(args.scanner_resolution_us), str(args.scanner_horizons)),
-            lambda: query_direct_market_scanner_frames(
-                client_opts=context_client_opts,
-                config=DirectScannerQueryConfig(
-                    database=str(args.database),
-                    events_table_base=str(args.events_table_base),
-                    scanner_resolution_us=int(args.scanner_resolution_us),
-                    horizons=parse_csv(args.scanner_horizons),
-                    max_threads=int(args.max_threads_per_query),
-                    max_memory_usage=str(args.max_memory_usage),
-                ),
-                local_dates=origin_local_dates,
-            ),
-        ),
     }
+    if scanner_manager is not None and origin_range is not None:
+        first_origin_us, last_origin_us = origin_range
+        scanner_build_result, scanner_profiles = run_step(
+            "scanner.sidecar_build_15m_windows",
+            lambda: scanner_manager.ensure_windows_for_origin_range(first_origin_us, last_origin_us),
+        )
+        rows.append(asdict(scanner_build_result))
+        if scanner_build_result.status == "ok":
+            scanner_fetch_result, _scanner_frame = run_step(
+                "scanner.fetch_completed_1s_rows",
+                lambda: query_context_polars(
+                    context_client_opts,
+                    scanner_manager.fetch_completed_sql_for_origin_range(
+                        first_origin_us=first_origin_us,
+                        last_origin_us=last_origin_us,
+                    ),
+                ),
+            )
+            scanner_fetch_result.detail = dict(scanner_fetch_result.detail)
+            scanner_fetch_result.detail.update(
+                {
+                    "origin_local_dates": list(origin_local_dates),
+                    "windows": len(scanner_profiles or ()),
+                    "windows_built": sum(1 for profile in (scanner_profiles or ()) if getattr(profile, "built", False)),
+                    "completed_before_us": completed_scanner_bar_end_us(last_origin_us),
+                }
+            )
+            rows.append(asdict(scanner_fetch_result))
     with ThreadPoolExecutor(max_workers=max(1, int(args.context_workers)), thread_name_prefix="full-modality-context") as pool:
         futures = {pool.submit(run_step, name, task): name for name, task in context_tasks.items()}
         futures.update({pool.submit(run_cached_step, name, shared_cache, key, task): name for name, (key, task) in cached_context_tasks.items()})
@@ -428,6 +474,18 @@ def local_dates_from_origin_events(events: Any, *, origin_start_ordinal: int, or
         return ()
     values = origin_events.select("local_date").unique().sort("local_date").to_series().to_list()
     return tuple(str(value)[:10] for value in values)
+
+
+def origin_timestamp_range_from_events(events: Any, *, origin_start_ordinal: int, origin_end_ordinal: int) -> tuple[int, int] | None:
+    if "timestamp_us" not in events.columns or events.height == 0:
+        return None
+    import polars as pl
+
+    origin_events = events.filter((pl.col("ordinal") >= int(origin_start_ordinal)) & (pl.col("ordinal") <= int(origin_end_ordinal)))
+    if origin_events.height == 0:
+        return None
+    row = origin_events.select(pl.col("timestamp_us").min().alias("first"), pl.col("timestamp_us").max().alias("last")).row(0, named=True)
+    return int(row["first"]), int(row["last"])
 
 
 def update_state_from_block(state: ProfileState, rows: list[dict[str, Any]]) -> None:

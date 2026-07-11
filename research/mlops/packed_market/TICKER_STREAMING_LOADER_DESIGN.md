@@ -158,7 +158,35 @@ start_index = max(0, end_index - max_items)
 
 Missing context is represented by a short/empty ref range. Padding and masks are applied when the model gathers context.
 
-Scanner is market-wide and cannot be computed inside one ticker worker. It must be provided as a shared precomputed table or a separate market-wide streaming worker.
+Scanner is market-wide and cannot be computed inside one ticker worker. It is
+handled by a ClickHouse sidecar:
+
+```text
+events_YYYY
+  -> run-scoped 1s scanner bars in ClickHouse
+  -> global loader fetches completed scanner seconds
+  -> model receives scanner context by as-of time
+```
+
+Rules:
+
+- base scanner bars are `1s`
+- default sidecar window is `15 minutes`
+- rows are persisted in `market_sip_compact.packed_scanner_sidecar_bars`
+  under a `run_id`
+- ticker workers still calculate ticker-local intraday labels outside
+  ClickHouse
+- the scanner fetch never reads the current in-progress second
+
+The completed-bar rule is:
+
+```text
+bar_end_timestamp_us <= floor(origin_timestamp_us, 1s)
+```
+
+If an origin lands inside `[10:00:04.000, 10:00:05.000)`, the global scanner
+fetch can use bars ending at `10:00:04.000` and earlier, never the bar ending at
+`10:00:05.000`.
 
 ## Concurrency
 
@@ -170,6 +198,10 @@ N ticker stream workers
   -> ClickHouse fetch
   -> vectorized block processing
   -> ready block queue
+
+scanner sidecar worker
+  -> builds 15-minute 1s market scanner windows in ClickHouse
+  -> fetches completed scanner bars for block origin ranges
 
 trainer
   -> consumes ready blocks as GPU batches

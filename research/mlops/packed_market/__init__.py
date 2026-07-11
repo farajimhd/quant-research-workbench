@@ -8,6 +8,7 @@ from research.mlops.packed_market.cache import (
     PackedMarketBlock,
 )
 from research.mlops.packed_market.dataset import PackedMarketDataset, PackedMarketDatasetConfig
+from research.mlops.packed_market.scanner_sidecar import ScannerSidecarConfig, ScannerSidecarManager, ScannerWindow
 from research.mlops.packed_market.streaming import ClickHouseTickerStreamConfig, ClickHouseTickerStreamDataset
 
 __all__ = [
@@ -18,6 +19,9 @@ __all__ = [
     "PackedMarketBlock",
     "PackedMarketDataset",
     "PackedMarketDatasetConfig",
+    "ScannerSidecarConfig",
+    "ScannerSidecarManager",
+    "ScannerWindow",
     "ClickHouseTickerStreamConfig",
     "ClickHouseTickerStreamDataset",
 ]

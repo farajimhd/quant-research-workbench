@@ -26,6 +26,11 @@ from research.mlops.clickhouse import (
     sql_string,
 )
 from research.mlops.packed_market.cache import PackedBlockManifest, PackedMarketBlock, utc_now_iso
+from research.mlops.packed_market.scanner_sidecar import (
+    ScannerSidecarConfig,
+    ScannerSidecarManager,
+    completed_scanner_bar_end_us,
+)
 
 SESSION_TIMEZONE = "America/New_York"
 SESSION_START_SECOND = 4 * 3600
@@ -122,6 +127,13 @@ class ClickHouseTickerStreamConfig:
     shuffle_plans: bool = False
     seed: int = 17
     label_horizons_us: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_HORIZONS_US))
+    scanner_sidecar_enabled: bool = False
+    scanner_run_id: str = ""
+    scanner_table: str = "packed_scanner_sidecar_bars"
+    scanner_window_seconds: int = 900
+    scanner_fetch_lookback_seconds: int = 300
+    scanner_baseline_et: str = "09:30:00"
+    scanner_cleanup_on_stop: bool = True
 
 
 @dataclass(slots=True)
@@ -138,6 +150,8 @@ class WorkerSlot:
     emitted_blocks: int = 0
     emitted_origins: int = 0
     memory_mib: float = 0.0
+    scanner_seconds: float = 0.0
+    scanner_rows: int = 0
     last_error: str = ""
 
 
@@ -210,6 +224,24 @@ class ClickHouseTickerStreamDataset:
         self._ready_queue: queue.Queue[PackedMarketBlock | _DoneSentinel | _ErrorSentinel] = queue.Queue(maxsize=max(1, int(config.ready_queue_blocks)))
         self._plan_queue: queue.Queue[TickerMonthPlan | None] = queue.Queue()
         self._plans: list[TickerMonthPlan] = []
+        self._scanner_manager: ScannerSidecarManager | None = None
+        if bool(config.scanner_sidecar_enabled):
+            scanner_run_id = str(config.scanner_run_id or f"packed_stream_{uuid.uuid4().hex[:10]}")
+            self._scanner_manager = ScannerSidecarManager(
+                config=ScannerSidecarConfig(
+                    run_id=scanner_run_id,
+                    database=str(config.database),
+                    events_table_base=str(config.events_table_base),
+                    scanner_table=str(config.scanner_table),
+                    window_seconds=int(config.scanner_window_seconds),
+                    fetch_lookback_seconds=int(config.scanner_fetch_lookback_seconds),
+                    baseline_et=str(config.scanner_baseline_et),
+                    max_threads=int(config.max_threads_per_query),
+                    max_memory_usage=str(config.max_memory_usage),
+                ),
+                client=ClickHouseHttpClient(config.clickhouse_url, config.user, config.password),
+                query_id_prefix=f"packed_scanner_{scanner_run_id}",
+            )
 
     @property
     def event_feature_names(self) -> tuple[str, ...]:
@@ -258,6 +290,8 @@ class ClickHouseTickerStreamDataset:
     def _start_workers(self) -> None:
         if self._workers:
             return
+        if self._scanner_manager is not None:
+            self._scanner_manager.ensure_table()
         for plan in self.plan():
             self._plan_queue.put(plan)
         for _ in range(max(1, int(self.config.ticker_workers))):
@@ -332,14 +366,48 @@ class ClickHouseTickerStreamDataset:
             slot.status = "process"
         process_start = time.perf_counter()
         block = build_packed_block_from_events(self.config, job, events, worker_id=worker_id)
+        scanner_summary = self._refresh_scanner_sidecar(job, events)
+        if scanner_summary:
+            block.metadata["scanner_sidecar"] = scanner_summary
         process_seconds = time.perf_counter() - process_start
         memory.release(memory_key)
         with self.state.lock:
             slot.process_seconds = float(process_seconds)
             slot.origin_rows = int(block.origin_count)
             slot.memory_mib = memory.memory_mib
+            slot.scanner_seconds = float(scanner_summary.get("seconds", 0.0) if scanner_summary else 0.0)
+            slot.scanner_rows = int(scanner_summary.get("rows", 0) if scanner_summary else 0)
             slot.status = "ready"
         return block
+
+    def _refresh_scanner_sidecar(self, job: TickerBlockJob, events: pl.DataFrame) -> dict[str, Any]:
+        manager = self._scanner_manager
+        if manager is None or events.is_empty():
+            return {}
+        origin_events = events.filter((pl.col("ordinal") >= int(job.origin_start_ordinal)) & (pl.col("ordinal") <= int(job.origin_end_ordinal)))
+        if origin_events.is_empty():
+            return {}
+        first_origin_us = int(origin_events.select(pl.col("timestamp_us").min()).item())
+        last_origin_us = int(origin_events.select(pl.col("timestamp_us").max()).item())
+        started = time.perf_counter()
+        profiles = manager.ensure_windows_for_origin_range(first_origin_us, last_origin_us)
+        completed_before_us = completed_scanner_bar_end_us(last_origin_us)
+        lower_bound_us = max(0, completed_scanner_bar_end_us(first_origin_us) - int(self.config.scanner_fetch_lookback_seconds) * 1_000_000)
+        scanner_rows = 0
+        if completed_before_us > lower_bound_us:
+            scanner_query = manager.fetch_completed_sql_for_origin_range(first_origin_us=first_origin_us, last_origin_us=last_origin_us)
+            scanner_frame = query_polars(self.config, scanner_query, active_queries=self.active_queries, label=f"scanner_fetch_{job.plan.ticker}_{job.block_id:06d}")
+            scanner_rows = int(scanner_frame.height)
+        return {
+            "enabled": True,
+            "windows": len(profiles),
+            "windows_built": sum(1 for profile in profiles if profile.built),
+            "rows": int(scanner_rows),
+            "first_origin_us": int(first_origin_us),
+            "last_origin_us": int(last_origin_us),
+            "completed_before_us": int(completed_before_us),
+            "seconds": float(time.perf_counter() - started),
+        }
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -347,6 +415,11 @@ class ClickHouseTickerStreamDataset:
         for thread in self._workers:
             if thread.is_alive():
                 thread.join(timeout=1.0)
+        if self._scanner_manager is not None and bool(self.config.scanner_cleanup_on_stop):
+            try:
+                self._scanner_manager.cleanup_run()
+            except Exception:
+                pass
 
     def state_dict(self) -> dict[str, Any]:
         with self.state.lock:
@@ -385,6 +458,8 @@ class ClickHouseTickerStreamDataset:
                 snapshot[prefix + "origin_rows"] = float(slot.origin_rows)
                 snapshot[prefix + "fetch_seconds"] = float(slot.fetch_seconds)
                 snapshot[prefix + "process_seconds"] = float(slot.process_seconds)
+                snapshot[prefix + "scanner_seconds"] = float(slot.scanner_seconds)
+                snapshot[prefix + "scanner_rows"] = float(slot.scanner_rows)
                 snapshot[prefix + "memory_mib"] = float(slot.memory_mib)
             return snapshot
 

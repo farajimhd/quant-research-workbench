@@ -17,8 +17,10 @@ DEFAULT_ARGS = {
     "--context-workers": "8",
     "--max-threads-per-query": "4",
     "--max-memory-usage": "32G",
-    "--scanner-resolution-us": "1000000",
-    "--scanner-horizons": "1s,5s,30s,1m",
+    "--scanner-sidecar": "",
+    "--scanner-window-seconds": "900",
+    "--scanner-fetch-lookback-seconds": "300",
+    "--scanner-baseline-et": "09:30:00",
     "--output-root": r"D:\TradingML\runtimes\packed_market_model\v1\profiles",
     "--progress-layout": "rich",
 }
@@ -27,7 +29,10 @@ DEFAULT_ARGS = {
 def _default_argv() -> list[str]:
     argv: list[str] = []
     for key, value in DEFAULT_ARGS.items():
-        argv.extend([key, str(value)])
+        if value == "":
+            argv.append(key)
+        else:
+            argv.extend([key, str(value)])
     return argv
 
 
