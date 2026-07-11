@@ -207,7 +207,7 @@ used as the event-time source.
 `q_live.sec_filing_text_v1` stores submitted text-source documents such as HTML,
 plain text, and non-XBRL XML. The compact `sec_filing_text_context.text` field
 is deterministic packed model input rendered from those submitted sources by
-`sec_packed_text_renderer_v3`. HTML and inline-XBRL HTML are parsed by visible
+`sec_packed_text_renderer_v4`. HTML and inline-XBRL HTML are parsed by visible
 tags, real HTML tables are packed into column/value lines, hidden/script/style
 content is skipped, and plain text/XML are rendered conservatively. Structured
 fund-report XML such as NPORT/N-CEN is preserved in the upstream source table
@@ -218,7 +218,7 @@ signatures, or rewrite substantive contract/table text. `q_live.sec_filing_text_
 remains the full readable extraction/audit table. The context table records
 `source_text_char_count`, `source_text_hash`, `model_text_hash`,
 `model_normalizer_version`, `removed_layout_line_count`, renderer block counts,
-table block counts, duplicate block counts, and per-block hashes for auditability.
+table block counts, long-block duplicate counts, and per-block hashes for auditability.
 
 The script uses `CLICKHOUSE_HISTORICAL_STORAGE_POLICY` by default through the
 shared `default_storage_policy()` helper. Override it with `--storage-policy`
@@ -250,7 +250,7 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 
 The audit samples submitted text-source payloads by `content_format`, shows the
 upstream extracted source text, renders the packed model text, and includes
-examples of repeated renderer blocks when duplicate block hashes are detected.
+examples of repeated long renderer blocks when duplicate block hashes are detected.
 
 By default, the migration deletes the target accepted-time range from the compact
 tables and waits for ClickHouse mutations before reinserting. This keeps reruns

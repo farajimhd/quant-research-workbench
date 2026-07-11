@@ -9,8 +9,9 @@ from html.parser import HTMLParser
 from typing import Any
 
 
-SEC_PACKED_TEXT_RENDERER_VERSION = "sec_packed_text_renderer_v3"
+SEC_PACKED_TEXT_RENDERER_VERSION = "sec_packed_text_renderer_v4"
 STRUCTURED_XML_EXCLUDED_QUALITY_FLAG = "structured_xml_excluded"
+DUPLICATE_BLOCK_MIN_CHARS = 40
 
 _UINT32_MAX = 4_294_967_295
 _VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
@@ -331,11 +332,17 @@ def render_sec_packed_text(
     block_hashes = [stable_uint64(key) for key in block_keys]
     block_key_counts: dict[str, int] = {}
     duplicate_block_samples: list[str] = []
+    duplicate_candidate_count = 0
+    duplicate_unique_keys: set[str] = set()
     for block, key in zip((block for block in blocks if block.text.strip()), block_keys):
+        if len(key) < DUPLICATE_BLOCK_MIN_CHARS:
+            continue
+        duplicate_candidate_count += 1
+        duplicate_unique_keys.add(key)
         block_key_counts[key] = block_key_counts.get(key, 0) + 1
         if block_key_counts[key] == 2 and len(duplicate_block_samples) < 5:
             duplicate_block_samples.append(block.text)
-    duplicate_block_count = len(block_hashes) - len(set(block_hashes))
+    duplicate_block_count = duplicate_candidate_count - len(duplicate_unique_keys)
     table_block_count = sum(1 for block in blocks if block.kind.startswith("table"))
     return PackedTextResult(
         packed_text=packed_text,

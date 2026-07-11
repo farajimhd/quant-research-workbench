@@ -15,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from pipelines.market_sip.events.sec_packed_text_renderer import (  # noqa: E402
+    DUPLICATE_BLOCK_MIN_CHARS,
     SEC_PACKED_TEXT_RENDERER_VERSION,
     render_sec_packed_text,
 )
@@ -284,6 +285,7 @@ def render_report(args: argparse.Namespace, samples: list[dict[str, Any]], repor
         f"- Scan limited by cap: `{bool(getattr(args, 'audit_scan_limited', False))}`",
         f"- Collected samples: `{len(samples)}`",
         f"- Excerpt chars per section: `{int(args.excerpt_chars)}`",
+        f"- Duplicate block minimum chars: `{DUPLICATE_BLOCK_MIN_CHARS}`",
         f"- Report path: `{report_path}`",
         "",
         "## Summary",
@@ -353,8 +355,8 @@ def render_sample(index: int, sample: dict[str, Any], excerpt_chars: int) -> lis
 def render_duplicate_block_samples(sample: dict[str, Any], excerpt_chars: int) -> list[str]:
     duplicate_samples = sample.get("duplicate_block_samples") or []
     if not duplicate_samples:
-        return ["No repeated blocks detected in the renderer block hashes.", ""]
-    lines = [f"Showing up to `{len(duplicate_samples)}` repeated block examples.", ""]
+        return [f"No repeated blocks detected at or above `{DUPLICATE_BLOCK_MIN_CHARS}` normalized characters.", ""]
+    lines = [f"Showing up to `{len(duplicate_samples)}` repeated block examples at or above `{DUPLICATE_BLOCK_MIN_CHARS}` normalized characters.", ""]
     duplicate_excerpt_chars = min(max(400, excerpt_chars // 3), 1200)
     for index, text in enumerate(duplicate_samples, 1):
         lines.extend([f"#### Repeated Block {index}", "", fenced_excerpt(text, duplicate_excerpt_chars), ""])
