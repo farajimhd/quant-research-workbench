@@ -89,17 +89,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--parts-root-ch", default=env_string("SEC_TEXT_PARTS_ROOT_CH", DEFAULT_PARTS_ROOT_CH))
     parser.add_argument("--bulk-sources", default="submissions,companyfacts")
     parser.add_argument("--bulk-download-concurrency", type=int, default=2)
-    parser.add_argument("--bulk-ingest-batch-size", type=int, default=50000)
+    parser.add_argument("--bulk-ingest-batch-size", type=int, default=100000)
     parser.add_argument("--bulk-insert-max-retries", type=int, default=int(os.environ.get("SEC_BULK_INSERT_MAX_RETRIES", "12")))
     parser.add_argument("--bulk-insert-retry-base-seconds", type=float, default=float(os.environ.get("SEC_BULK_INSERT_RETRY_BASE_SECONDS", "5.0")))
     parser.add_argument("--bulk-insert-retry-max-seconds", type=float, default=float(os.environ.get("SEC_BULK_INSERT_RETRY_MAX_SECONDS", "120.0")))
     parser.add_argument("--bulk-limit-ciks", type=int, default=0)
-    parser.add_argument("--archive-download-concurrency", type=int, default=2)
-    parser.add_argument("--archive-validation-workers", type=int, default=4)
-    parser.add_argument("--text-extract-workers", type=int, default=4)
-    parser.add_argument("--xbrl-workers", type=int, default=4)
-    parser.add_argument("--sec-request-min-interval-seconds", type=float, default=0.2)
-    parser.add_argument("--request-timeout-seconds", type=float, default=60.0)
+    parser.add_argument("--archive-download-concurrency", type=int, default=3)
+    parser.add_argument("--archive-validation-workers", type=int, default=32)
+    parser.add_argument("--text-extract-workers", type=int, default=96)
+    parser.add_argument("--xbrl-workers", type=int, default=8)
+    parser.add_argument("--sec-request-min-interval-seconds", type=float, default=0.12)
+    parser.add_argument("--request-timeout-seconds", type=float, default=30.0)
     parser.add_argument("--max-retries", type=int, default=8)
     parser.add_argument("--retry-base-seconds", type=float, default=30.0)
     parser.add_argument("--pending-multiplier", type=int, default=2)
@@ -108,6 +108,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-text-chars", type=int, default=40)
     parser.add_argument("--max-text-chars", type=int, default=0, help="Optional normalized text storage cap. 0 means unlimited.")
     parser.add_argument("--text-limit-parts", type=int, default=0)
+    parser.add_argument("--text-ingest-max-threads", type=int, default=int(os.environ.get("SEC_TEXT_FILE_INGEST_MAX_THREADS", "96")))
+    parser.add_argument("--text-ingest-max-memory-usage", default=os.environ.get("SEC_TEXT_FILE_INGEST_MAX_MEMORY", "64G"))
     parser.add_argument("--limit-days", type=int, default=0)
     parser.add_argument("--limit-archives", type=int, default=0)
     parser.add_argument("--max-filings-per-archive", type=int, default=0)
@@ -222,6 +224,10 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
         args.parts_root_win,
         "--parts-root-ch",
         args.parts_root_ch,
+        "--max-threads",
+        str(max(1, args.text_ingest_max_threads)),
+        "--max-memory-usage",
+        str(args.text_ingest_max_memory_usage),
     ]
     if args.execute:
         text_ingest_execute.extend(["--execute", "--skip-preflight"])
@@ -437,6 +443,10 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                 args.parts_root_win,
                 "--parts-root-ch",
                 args.parts_root_ch,
+                "--max-threads",
+                str(max(1, args.text_ingest_max_threads)),
+                "--max-memory-usage",
+                str(args.text_ingest_max_memory_usage),
                 "--preflight-only",
             ],
             logs_root / "text-ingest-preflight.log",
