@@ -994,6 +994,7 @@ def text_kind_for_role(document_role: str) -> str:
 def detect_content_format(filename: str, payload: str) -> str:
     ext = file_extension(filename)
     lowered_payload = payload[:2000].lower()
+    html_like = bool(re.search(r"<html\b|<table\b|<div\b|<p\b|</[a-z][a-z0-9]*>", lowered_payload, flags=re.I))
     if not payload:
         return "empty"
     if ext in {"jpg", "jpeg", "png", "gif", "bmp", "tif", "tiff"}:
@@ -1008,9 +1009,11 @@ def detect_content_format(filename: str, payload: str) -> str:
         return "json"
     if ext in {"xsd", "xml"}:
         return "xml"
+    if ext in {"htm", "html"} and html_like:
+        return "html"
     if "xbrl" in lowered_payload or "<xbrl" in lowered_payload or "<ix:" in lowered_payload:
         return "xbrl"
-    if re.search(r"<html\b|<table\b|<div\b|<p\b|</[a-z][a-z0-9]*>", lowered_payload, flags=re.I):
+    if html_like:
         return "html"
     if is_binary_like(payload):
         return "binary_like"
