@@ -5,7 +5,7 @@ import re
 from research.mlops.clickhouse import sql_string
 
 
-SEC_MODEL_TEXT_NORMALIZER_VERSION = "sec_model_text_normalizer_v2"
+SEC_MODEL_TEXT_NORMALIZER_VERSION = "sec_model_text_normalizer_v3"
 _SEPARATOR_ONLY_LINE_RE = re.compile(r"(?m)^[ \t]*(?:[|+\-_=*~`.][ \t|+\-_=*~`.]*){3,}[ \t]*\n?")
 _PIPE_ONLY_LINE_RE = re.compile(r"(?m)^[ \t|]{1,}\n?")
 _STANDALONE_ARTIFACT_LINE_RE = re.compile(
@@ -19,6 +19,11 @@ _PAGE_LINE_RE = re.compile(r"(?im)^[ \t]*(?:page|p\.)[ \t]*\d{1,4}(?:[ \t]*(?:of
 _DASHED_PAGE_LINE_RE = re.compile(r"(?m)^[ \t]*[-\u2013\u2014][ \t]*\d{1,4}[ \t]*[-\u2013\u2014][ \t]*(?:\n|$)")
 _FORM_PAGE_HEADER_RE = re.compile(r"(?im)^[ \t]*(?:form[ \t]+(?:10-k|10-q|8-k|6-k|20-f|40-f))[ \t]*(?:\n|$)")
 _SPACED_WORD_RE = re.compile(r"\b([A-Z])\s([A-Z])\s([A-Z])\s([A-Z])(?:\s([A-Z]))?(?:\s([A-Z]))?(?:\s([A-Z]))?(?:\s([A-Z]))?\b")
+_DATE_CELL_PATTERN = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\. [0-9]{1,2}, [0-9]{4}"
+_NUMERIC_CELL_PATTERN = r"(?:\$ ?)?(?:\(?-?[0-9][0-9,]*(?:\.[0-9]+)?\)?|--[0-9]{2}-[0-9]{2})"
+_DATE_PAIR_BEFORE_ROW_RE = re.compile(rf"(?m)^({_DATE_CELL_PATTERN})[ \t]*\n+({_DATE_CELL_PATTERN})[ \t]*\n+([^|\n]{{2,180}} \|)")
+_TWO_VALUE_TABLE_ROW_RE = re.compile(rf"(?m)^([^|\n]{{2,180}}?) \|\n+({_NUMERIC_CELL_PATTERN})[ \t]*\n+({_NUMERIC_CELL_PATTERN})[ \t]*(\n|$)")
+_ONE_VALUE_METADATA_ROW_RE = re.compile(r"(?m)^([^|\n]{2,120}:) \|\n+([^|\n]{1,180})")
 _MOJIBAKE_REPLACEMENTS = (
     ("\u00a0", " "),
     ("\u2007", " "),
@@ -53,6 +58,13 @@ _MOJIBAKE_REPLACEMENTS = (
 )
 
 
+def _compact_fragmented_table_rows(value: str) -> str:
+    value = _DATE_PAIR_BEFORE_ROW_RE.sub(r"Columns: \1; \2\n\n\3", value)
+    value = _TWO_VALUE_TABLE_ROW_RE.sub(r"\1: \2; \3\4", value)
+    value = _ONE_VALUE_METADATA_ROW_RE.sub(r"\1 \2", value)
+    return value
+
+
 def normalize_sec_model_text(text: str | None) -> str:
     """Conservatively normalize SEC text for embedding input."""
     value = "" if text is None else str(text)
@@ -68,6 +80,9 @@ def normalize_sec_model_text(text: str | None) -> str:
     value = _SPACED_WORD_RE.sub(lambda match: "".join(group for group in match.groups() if group), value)
     value = re.sub(r"[ \t]*\n[ \t]*", "\n", value)
     value = re.sub(r"[ \t]{2,}", " ", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    value = _compact_fragmented_table_rows(value)
+    value = re.sub(r"[ \t]+\|(\n|$)", r"\1", value)
     value = re.sub(r"\n{3,}", "\n\n", value)
     return value.strip()
 
@@ -120,7 +135,7 @@ def sec_model_text_diagnostics(original: str | None, normalized: str | None = No
 def sec_model_text_sql(source_text_expr: str) -> str:
     """Return a deterministic ClickHouse SQL expression for SEC embedding text.
 
-    The v2 normalizer removes high-confidence extraction artifacts only. It does
+    The v3 normalizer removes high-confidence extraction artifacts only. It does
     not remove SEC/legal boilerplate, infer table structure, or summarize text.
     """
     text = f"ifNull({source_text_expr}, '')"
@@ -136,6 +151,11 @@ def sec_model_text_sql(source_text_expr: str) -> str:
     text = f"replaceRegexpAll({text}, {sql_string(r'\b([A-Z])\s([A-Z])\s([A-Z])\s([A-Z])(?:\s([A-Z]))?(?:\s([A-Z]))?(?:\s([A-Z]))?(?:\s([A-Z]))?\b')}, {sql_string(r'\1\2\3\4\5\6\7\8')})"
     text = f"replaceRegexpAll({text}, {sql_string(r'[ \t]*\n[ \t]*')}, {sql_string(chr(10))})"
     text = f"replaceRegexpAll({text}, {sql_string(r'[ \t]{2,}')}, {sql_string(' ')})"
+    text = f"replaceRegexpAll({text}, {sql_string(r'\n{3,}')}, {sql_string(chr(10) + chr(10))})"
+    text = f"replaceRegexpAll({text}, {sql_string('(?m)^(' + _DATE_CELL_PATTERN + ')[ \\t]*\\n+(' + _DATE_CELL_PATTERN + ')[ \\t]*\\n+([^|\\n]{2,180} \\|)')}, {sql_string(r'Columns: \1; \2' + chr(10) + chr(10) + r'\3')})"
+    text = f"replaceRegexpAll({text}, {sql_string('(?m)^([^|\\n]{2,180}?) \\|\\n+(' + _NUMERIC_CELL_PATTERN + ')[ \\t]*\\n+(' + _NUMERIC_CELL_PATTERN + ')[ \\t]*(\\n|$)')}, {sql_string(r'\1: \2; \3\4')})"
+    text = f"replaceRegexpAll({text}, {sql_string(r'(?m)^([^|\n]{2,120}:) \|\n+([^|\n]{1,180})')}, {sql_string(r'\1 \2')})"
+    text = f"replaceRegexpAll({text}, {sql_string(r'[ \t]+\|(\n|$)')}, {sql_string(r'\1')})"
     text = f"replaceRegexpAll({text}, {sql_string(r'\n{3,}')}, {sql_string(chr(10) + chr(10))})"
     text = f"replaceRegexpAll({text}, {sql_string(r'^[\n\t ]+')}, '')"
     text = f"replaceRegexpAll({text}, {sql_string(r'[\n\t ]+$')}, '')"
