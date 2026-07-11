@@ -5,8 +5,8 @@ Run this before building or loading archive-derived SEC filing text. The audit i
 ## What It Checks
 
 - `q_live.sec_filing_v2` exists, has logical rows, has no missing `accepted_at_utc`, and has no duplicate `(cik, accession_number)`.
-- Current v2 text tables have no duplicate text keys or text rows without document parents.
-- `sec_filing_document_v2`, `sec_filing_text_v2`, and `sec_filing_document_skip_v1` presence when `--require-v2-tables` is passed.
+- Current text tables have no duplicate text keys or text rows without document parents.
+- `sec_filing_document_v2`, `sec_filing_text_v1`, `sec_filing_text_v2`, and `sec_filing_document_skip_v1` presence when `--require-v2-tables` is passed.
 - Required v2 columns such as `text_sha256`, `normalizer_version`, `quality_flags`, `source_archive_date`, and `source_archive_member`.
 - Structured SEC/XBRL table presence.
 - A bounded XBRL accession sample join against `sec_filing_v2`.
@@ -18,9 +18,9 @@ Run this before building or loading archive-derived SEC filing text. The audit i
   documents belong in `sec_xbrl_company_fact_v1`.
 - Local daily archive inventory without scanning archive contents.
 
-`sec_filing_document_v1` and `sec_filing_text_v1` were legacy/provisional tables
-and are no longer part of the current schema or audit target. The archive-derived
-document/text path is v2 only.
+`sec_filing_text_v1` is the current submitted text-source table. The old
+provisional `sec_filing_document_v1` table is no longer part of the current
+schema or audit target.
 
 ## Local Laptop Command
 

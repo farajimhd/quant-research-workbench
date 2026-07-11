@@ -34,7 +34,7 @@ DEFAULT_ARCHIVE_ROOT_WIN = Path("D:/market-data/sec_core/daily_archives")
 SEC_TABLES = (
     "sec_filing_v2",
     "sec_filing_document_v2",
-    "sec_filing_text_source_v1",
+    "sec_filing_text_v1",
     "sec_filing_text_v2",
     "sec_filing_document_skip_v1",
     "sec_xbrl_company_fact_v1",
@@ -109,10 +109,10 @@ def main() -> None:
         checks.extend(check_filing_parent(client, args.database, scope_start))
     if "sec_filing_document_v2" in table_meta:
         checks.extend(check_document_v2_shape(column_map))
-    if "sec_filing_text_source_v1" in table_meta:
+    if "sec_filing_text_v1" in table_meta:
         checks.extend(check_text_source_shape(column_map))
         if "sec_filing_document_v2" in table_meta:
-            checks.extend(check_text_source_table(client, args.database, text_source_table="sec_filing_text_source_v1", document_table="sec_filing_document_v2"))
+            checks.extend(check_text_source_table(client, args.database, text_source_table="sec_filing_text_v1", document_table="sec_filing_document_v2"))
     if "sec_filing_text_v2" in table_meta:
         checks.extend(check_text_v2_shape(column_map))
         if "sec_filing_document_v2" in table_meta:
@@ -157,11 +157,11 @@ def check_required_tables(table_meta: dict[str, dict[str, Any]], require_v2_tabl
     rows = []
     required = {"sec_filing_v2"}
     if require_v2_tables:
-        required |= {"sec_filing_document_v2", "sec_filing_text_source_v1", "sec_filing_text_v2", "sec_filing_document_skip_v1"}
+        required |= {"sec_filing_document_v2", "sec_filing_text_v1", "sec_filing_text_v2", "sec_filing_document_skip_v1"}
     for table in SEC_TABLES:
         exists = table in table_meta
         status = "pass" if exists or table not in required else "fail"
-        if table in {"sec_filing_document_v2", "sec_filing_text_source_v1", "sec_filing_text_v2", "sec_filing_document_skip_v1"} and not exists and not require_v2_tables:
+        if table in {"sec_filing_document_v2", "sec_filing_text_v1", "sec_filing_text_v2", "sec_filing_document_skip_v1"} and not exists and not require_v2_tables:
             status = "warn"
         rows.append(
             check(
@@ -308,14 +308,14 @@ def check_text_source_shape(column_map: dict[str, set[str]]) -> list[dict[str, A
         "source_run_id",
         "inserted_at",
     }
-    columns = column_map.get("sec_filing_text_source_v1", set())
+    columns = column_map.get("sec_filing_text_v1", set())
     missing = sorted(required - columns)
     return [
         check(
-            "sec_filing_text_source_v1_required_columns",
+            "sec_filing_text_v1_required_columns",
             "pass" if not missing else "fail",
             "source text required schema columns",
-            table="sec_filing_text_source_v1",
+            table="sec_filing_text_v1",
             details={"missing_columns": missing},
         )
     ]

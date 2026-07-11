@@ -5,7 +5,7 @@ XBRL relationship failures.
 
 The script is idempotent and dry-run by default. It handles three repair stages:
 
-- `drop-legacy`: drops stale `sec_filing_document_v1` and `sec_filing_text_v1`.
+- `drop-legacy`: drops stale `sec_filing_document_v1`.
 - `filing-parents`: inserts missing `sec_filing_v2` parent rows for 2019+
   companyfacts accessions that do not currently join to `sec_filing_v2`.
 - `frame-parents`: inserts missing `sec_xbrl_frame_v1` rows derived from
@@ -31,7 +31,7 @@ D:/market-data/prepared/sec_xbrl_integrity_repair/<run_id>/
 
 ## Execute Full Repair
 
-This drops the two stale v1 tables and repairs both XBRL relationship failures:
+This drops the stale document v1 table and repairs both XBRL relationship failures:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_xbrl_integrity_repair.py --database q_live --scope-start-date 2019-01-01 --execute
@@ -61,7 +61,7 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 
 The terminal prints:
 
-- before snapshot: legacy v1 presence, XBRL orphan rows/accessions, frame orphan
+- before snapshot: legacy document v1 presence, XBRL orphan rows/accessions, frame orphan
   rows/frames;
 - stage progress and query elapsed time;
 - after snapshot with remaining orphan counts;
@@ -89,7 +89,7 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 
 Expected outcome:
 
-- no `sec_filing_document_v1` or `sec_filing_text_v1` table checks;
+- no `sec_filing_document_v1` table checks;
 - `xbrl_company_facts_without_filing_in_scope = 0`;
 - `xbrl_frame_observations_without_frame_in_scope = 0` by the frame table's
   natural key.

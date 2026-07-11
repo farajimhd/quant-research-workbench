@@ -39,7 +39,7 @@ DEFAULT_PARTS_ROOT_CH = DEFAULT_CLICKHOUSE_FILE_ROOT
 EXPECTED_TARGET_TABLES = {
     "filing": "sec_filing_v2",
     "document": "sec_filing_document_v2",
-    "text_source": "sec_filing_text_source_v1",
+    "text_source": "sec_filing_text_v1",
     "text": "sec_filing_text_v2",
     "skip": "sec_filing_document_skip_v1",
 }

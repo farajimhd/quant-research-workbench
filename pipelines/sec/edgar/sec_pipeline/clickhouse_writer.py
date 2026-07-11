@@ -10,7 +10,7 @@ from research.mlops.clickhouse import ClickHouseHttpClient
 
 FILING_TABLE = "sec_filing_v2"
 DOCUMENT_TABLE = "sec_filing_document_v2"
-TEXT_SOURCE_TABLE = "sec_filing_text_source_v1"
+TEXT_SOURCE_TABLE = "sec_filing_text_v1"
 TEXT_TABLE = "sec_filing_text_v2"
 SKIP_TABLE = "sec_filing_document_skip_v1"
 XBRL_CONCEPT_TABLE = "sec_xbrl_concept_v1"

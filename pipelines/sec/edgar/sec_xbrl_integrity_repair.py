@@ -28,7 +28,7 @@ from research.mlops.env import discover_env_files, load_env_files, secret_status
 
 DEFAULT_DATABASE = "q_live"
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_xbrl_integrity_repair")
-LEGACY_V1_TABLES = ("sec_filing_document_v1", "sec_filing_text_v1")
+LEGACY_V1_TABLES = ("sec_filing_document_v1",)
 
 
 @dataclass(frozen=True, slots=True)

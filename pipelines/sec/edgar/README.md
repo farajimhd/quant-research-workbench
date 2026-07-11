@@ -94,8 +94,7 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 ```
 
 Run the XBRL integrity repair after an audit reports missing XBRL filing parents
-or frame parents. This also drops stale `sec_filing_document_v1` and
-`sec_filing_text_v1`:
+or frame parents. This also drops stale `sec_filing_document_v1`:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_xbrl_integrity_repair.py --database q_live --scope-start-date 2019-01-01 --execute

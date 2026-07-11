@@ -148,5 +148,5 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 - Daily archives were downloaded separately from SEC bulk files. The current orchestrator keeps that separation.
 - Corrupt archive repair was done by deleting exact failed archives, redownloading, then validating. The orchestrator handles redownload and validation; targeted deletion remains a manual repair step because it depends on a specific failed archive summary.
 - The old acceptance header/download repair path is no longer the primary path. `sec_acceptance_fallback_submissions_repair.py` is the current repair stage because it uses local `submissions.zip` and avoids millions of SEC header requests.
-- `sec_filing_document_v1` and `sec_filing_text_v1` are legacy. The current text path writes to v2 tables.
+- `sec_filing_document_v1` is legacy. The current text path writes submitted text sources to `sec_filing_text_v1` and extracted readable text to `sec_filing_text_v2`.
 - The timestamp repair insert path batches by accepted month to avoid ClickHouse's `max_partitions_per_insert_block` error.

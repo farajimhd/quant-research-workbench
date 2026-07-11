@@ -265,7 +265,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Parse SEC daily .nc.tar.gz archives and build DB-ready JSONEachRow "
-            "parts for sec_filing_document_v2, sec_filing_text_source_v1, "
+            "parts for sec_filing_document_v2, sec_filing_text_v1, "
             "sec_filing_text_v2, and sec_filing_document_skip_v1. This script "
             "does not insert rows."
         )
@@ -458,7 +458,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     part_paths = {
         "filing": parts_root / "sec_filing_v2_parts" / f"sec_filing_v2_part_{part_prefix}.jsonl",
         "document": parts_root / "sec_filing_document_v2_parts" / f"sec_filing_document_v2_part_{part_prefix}.jsonl",
-        "text_source": parts_root / "sec_filing_text_source_v1_parts" / f"sec_filing_text_source_v1_part_{part_prefix}.jsonl",
+        "text_source": parts_root / "sec_filing_text_v1_parts" / f"sec_filing_text_v1_part_{part_prefix}.jsonl",
         "text": parts_root / "sec_filing_text_v2_parts" / f"sec_filing_text_v2_part_{part_prefix}.jsonl",
         "skip": parts_root / "sec_filing_document_skip_v1_parts" / f"sec_filing_document_skip_v1_part_{part_prefix}.jsonl",
     }
@@ -575,7 +575,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     stats["part_files"] = [
         part_file_summary("filing", "sec_filing_v2", part_paths["filing"], filing_parent_count, FILING_COLUMNS),
         part_file_summary("document", "sec_filing_document_v2", part_paths["document"], doc_count, DOCUMENT_COLUMNS),
-        part_file_summary("text_source", "sec_filing_text_source_v1", part_paths["text_source"], text_source_count, TEXT_SOURCE_COLUMNS),
+        part_file_summary("text_source", "sec_filing_text_v1", part_paths["text_source"], text_source_count, TEXT_SOURCE_COLUMNS),
         part_file_summary("text", "sec_filing_text_v2", part_paths["text"], text_count, TEXT_COLUMNS),
         part_file_summary("skip", "sec_filing_document_skip_v1", part_paths["skip"], skip_count, SKIP_COLUMNS),
     ]
@@ -1229,7 +1229,7 @@ def write_manifest(path: Path, args: argparse.Namespace, source_run_id: str, loa
         "target_tables": {
             "filing": "sec_filing_v2",
             "document": "sec_filing_document_v2",
-            "text_source": "sec_filing_text_source_v1",
+            "text_source": "sec_filing_text_v1",
             "text": "sec_filing_text_v2",
             "skip": "sec_filing_document_skip_v1",
         },
