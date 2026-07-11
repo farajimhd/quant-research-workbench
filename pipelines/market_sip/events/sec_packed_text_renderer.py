@@ -9,9 +9,10 @@ from html.parser import HTMLParser
 from typing import Any
 
 
-SEC_PACKED_TEXT_RENDERER_VERSION = "sec_packed_text_renderer_v5"
+SEC_PACKED_TEXT_RENDERER_VERSION = "sec_packed_text_renderer_v6"
 STRUCTURED_XML_EXCLUDED_QUALITY_FLAG = "structured_xml_excluded"
-DUPLICATE_BLOCK_MIN_CHARS = 40
+DUPLICATE_BLOCK_MIN_CHARS = 200
+DUPLICATE_PLACEHOLDER_PREFIX_CHARS = 15
 
 _UINT32_MAX = 4_294_967_295
 _VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
@@ -311,6 +312,7 @@ def render_sec_packed_text(
         blocks = _plain_text_blocks(source)
 
     blocks = _dedupe_empty_and_separator_blocks(blocks)
+    blocks, duplicate_block_count, duplicate_block_samples = _replace_duplicate_blocks(blocks)
     if document_name:
         flags.append(f"document_name_present")
     if document_type:
@@ -330,19 +332,6 @@ def render_sec_packed_text(
     intermediate_text = "\n".join(f"[{block.kind}] {block.text}" for block in blocks).strip()
     block_keys = [_block_hash_key(block.text) for block in blocks if block.text.strip()]
     block_hashes = [stable_uint64(key) for key in block_keys]
-    block_key_counts: dict[str, int] = {}
-    duplicate_block_samples: list[str] = []
-    duplicate_candidate_count = 0
-    duplicate_unique_keys: set[str] = set()
-    for block, key in zip((block for block in blocks if block.text.strip()), block_keys):
-        if len(key) < DUPLICATE_BLOCK_MIN_CHARS:
-            continue
-        duplicate_candidate_count += 1
-        duplicate_unique_keys.add(key)
-        block_key_counts[key] = block_key_counts.get(key, 0) + 1
-        if block_key_counts[key] == 2 and len(duplicate_block_samples) < 5:
-            duplicate_block_samples.append(block.text)
-    duplicate_block_count = duplicate_candidate_count - len(duplicate_unique_keys)
     table_block_count = sum(1 for block in blocks if block.kind.startswith("table"))
     return PackedTextResult(
         packed_text=packed_text,
@@ -629,6 +618,36 @@ def _dedupe_empty_and_separator_blocks(blocks: list[RenderedBlock]) -> list[Rend
         if text and not _is_low_signal_text(text):
             result.append(RenderedBlock(block.kind, text))
     return result
+
+
+def _replace_duplicate_blocks(blocks: list[RenderedBlock]) -> tuple[list[RenderedBlock], int, list[str]]:
+    result: list[RenderedBlock] = []
+    first_text_by_key: dict[str, str] = {}
+    duplicate_samples: list[str] = []
+    duplicate_count = 0
+
+    for block in blocks:
+        key = _block_hash_key(block.text)
+        if len(key) < DUPLICATE_BLOCK_MIN_CHARS:
+            result.append(block)
+            continue
+        first_text = first_text_by_key.get(key)
+        if first_text is None:
+            first_text_by_key[key] = block.text
+            result.append(block)
+            continue
+
+        duplicate_count += 1
+        if len(duplicate_samples) < 5:
+            duplicate_samples.append(block.text)
+        result.append(RenderedBlock("duplicate", f"DUPLICATE of [{_duplicate_placeholder_prefix(first_text)}]"))
+
+    return result, duplicate_count, duplicate_samples
+
+
+def _duplicate_placeholder_prefix(text: str) -> str:
+    prefix = _clean_inline(text)[:DUPLICATE_PLACEHOLDER_PREFIX_CHARS].strip()
+    return prefix or "empty"
 
 
 def _clean_block_text(value: str) -> str:

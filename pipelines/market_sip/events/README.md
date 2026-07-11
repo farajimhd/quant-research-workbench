@@ -207,13 +207,15 @@ used as the event-time source.
 `q_live.sec_filing_text_v1` stores submitted text-source documents such as HTML,
 plain text, and non-XBRL XML. The compact `sec_filing_text_context.text` field
 is deterministic packed model input rendered from those submitted sources by
-`sec_packed_text_renderer_v5`. HTML and inline-XBRL HTML are parsed by visible
+`sec_packed_text_renderer_v6`. HTML and inline-XBRL HTML are parsed by visible
 tags, real HTML tables are packed into column/value lines, hidden/script/style
 content is skipped, and plain text is rendered conservatively. XML is parsed
-with tag/path context so schema tags that carry heading meaning are preserved. Structured
-fund-report XML such as NPORT/N-CEN is preserved in the upstream source table
-but marked `structured_xml_excluded` in context so it is not tokenized as
-readable filing text. The renderer
+with tag/path context so schema tags that carry heading meaning are preserved.
+Repeated blocks are compacted only when their normalized length is at least 200
+characters; duplicate occurrences are replaced with `DUPLICATE of [first 15
+chars]`. Structured fund-report XML such as NPORT/N-CEN is preserved in the
+upstream source table but marked `structured_xml_excluded` in context so it is
+not tokenized as readable filing text. The renderer
 does not summarize, remove SEC/legal boilerplate, remove risk factors, remove
 signatures, or rewrite substantive contract/table text. `q_live.sec_filing_text_v2`
 remains the full readable extraction/audit table. The context table records
