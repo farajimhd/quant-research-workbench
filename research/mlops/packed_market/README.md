@@ -75,6 +75,30 @@ The profile logs:
 - worker status
 - optional model forward/backward timing
 
+## Scanner Bar Benchmark
+
+Before wiring scanner into training, measure the ClickHouse sidecar cost directly:
+
+```powershell
+python -m research.mlops.packed_market.run_benchmark_scanner_bars `
+  --date 2019-02-01 `
+  --start-et 09:45:00 `
+  --end-et 10:15:00
+```
+
+The benchmark times:
+
+- raw event count for the ET window
+- direct trade / quote-bid / quote-ask bars for `1s,5s,15s,30s,1m`
+- sidecar mode: materialize `1s` bars once into a run-scoped ClickHouse table
+- aggregate `5s,15s,30s,1m` bars from the `1s` table
+- optional scanner rank timing from the base trade bars
+
+The default temporary table uses ClickHouse `Memory` engine and is dropped at
+the end of the run. For a larger/full-day benchmark, increase `--end-et` and
+consider `--materialize-engine MergeTree --keep-temp-table` only when you
+explicitly want to inspect the generated table.
+
 ## Legacy Reader
 
 `PackedMarketDataset` can still read a pre-existing packed block cache for debugging. It is not the default training path and should not be used for new packed-market experiments unless explicitly requested.
