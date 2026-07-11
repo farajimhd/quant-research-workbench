@@ -16,6 +16,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from pipelines.market_sip.validation.clickhouse_delete_compact_audit_rows import default_clickhouse_url_with_network_fallback  # noqa: E402
+from pipelines.market_sip.events.sec_packed_text_renderer import STRUCTURED_XML_EXCLUDED_QUALITY_FLAG  # noqa: E402
 from research.mlops.clickhouse import (  # noqa: E402
     DEFAULT_OUTPUT_ROOT_WIN,
     ClickHouseHttpClient,
@@ -1000,6 +1001,7 @@ SELECT
 FROM {table}
 WHERE accepted_at_utc >= {date_time64_sql(chunk_start)}
   AND accepted_at_utc < {date_time64_sql(chunk_end)}
+  AND positionCaseInsensitive(ifNull(quality_flags, ''), {sql_string(STRUCTURED_XML_EXCLUDED_QUALITY_FLAG)}) = 0
 ORDER BY ticker, accepted_at_utc, accession_number, text_rank, document_id
 {limit_sql}
 {query_settings(args)}

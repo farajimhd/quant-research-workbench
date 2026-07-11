@@ -167,6 +167,7 @@ def sample_from_member(
         str(text_source_row.get("content_format") or ""),
         document_name=str(text_source_row.get("document_name") or ""),
         document_type=str(text_source_row.get("document_type") or ""),
+        form_type=parent.form_type,
         text_kind=str(text_source_row.get("text_kind") or ""),
     )
     return {

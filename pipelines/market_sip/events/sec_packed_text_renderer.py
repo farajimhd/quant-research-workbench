@@ -9,7 +9,8 @@ from html.parser import HTMLParser
 from typing import Any
 
 
-SEC_PACKED_TEXT_RENDERER_VERSION = "sec_packed_text_renderer_v1"
+SEC_PACKED_TEXT_RENDERER_VERSION = "sec_packed_text_renderer_v2"
+STRUCTURED_XML_EXCLUDED_QUALITY_FLAG = "structured_xml_excluded"
 
 _UINT32_MAX = 4_294_967_295
 _VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
@@ -41,6 +42,7 @@ _BLOCK_TAGS = {
 }
 _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
 _TABLE_TAGS = {"table", "thead", "tbody", "tfoot", "tr", "td", "th", "caption", "colgroup", "col"}
+_STRUCTURED_FUND_XML_FORM_PREFIXES = ("NPORT", "N-PORT", "N-CEN")
 _SEPARATOR_ONLY_RE = re.compile(r"^[\s|+\-_=*~`.]{3,}$")
 _NUMERICISH_RE = re.compile(r"^\s*(?:\$|usd)?\s*\(?-?[0-9][0-9,]*(?:\.[0-9]+)?%?\)?\s*$", re.I)
 _DATEISH_RE = re.compile(
@@ -271,6 +273,7 @@ def render_sec_packed_text(
     *,
     document_name: str = "",
     document_type: str = "",
+    form_type: str = "",
     text_kind: str = "",
 ) -> PackedTextResult:
     source = "" if source_text is None else str(source_text)
@@ -280,7 +283,15 @@ def render_sec_packed_text(
     parser_hidden_nodes = 0
     parser_table_count = 0
 
-    if fmt == "html":
+    if fmt == "xml" and _is_structured_fund_xml(form_type=form_type, document_type=document_type, document_name=document_name):
+        flags.extend(
+            [
+                STRUCTURED_XML_EXCLUDED_QUALITY_FLAG,
+                f"structured_xml_form_{_flag_token(form_type or document_type or document_name)}",
+            ]
+        )
+        blocks = []
+    elif fmt == "html":
         parser = _SecHTMLPackedTextParser()
         try:
             parser.feed(source)
@@ -302,6 +313,8 @@ def render_sec_packed_text(
         flags.append(f"document_name_present")
     if document_type:
         flags.append(f"document_type_{_flag_token(document_type)}")
+    if form_type:
+        flags.append(f"form_type_{_flag_token(form_type)}")
     if text_kind:
         flags.append(f"text_kind_{_flag_token(text_kind)}")
     if parser_hidden_nodes:
@@ -339,6 +352,7 @@ def build_sec_text_context_row(row: dict[str, Any], *, updated_at: str | None = 
         str(row.get("content_format", "") or ""),
         document_name=str(row.get("document_name", "") or ""),
         document_type=str(row.get("document_type", "") or ""),
+        form_type=str(row.get("form_type", "") or ""),
         text_kind=str(row.get("text_kind", "") or ""),
     )
     flags = _merge_quality_flags(row.get("quality_flags"), result.quality_flags)
@@ -481,6 +495,15 @@ def _xml_blocks(source: str) -> list[RenderedBlock]:
     blocks: list[RenderedBlock] = []
     _walk_xml(root, [], blocks)
     return blocks or _plain_text_blocks(_strip_markup(source))
+
+
+def _is_structured_fund_xml(*, form_type: str, document_type: str, document_name: str) -> bool:
+    candidates = [form_type, document_type, document_name]
+    for value in candidates:
+        token = re.sub(r"[^A-Z0-9]+", "-", str(value or "").upper()).strip("-")
+        if any(token.startswith(prefix) for prefix in _STRUCTURED_FUND_XML_FORM_PREFIXES):
+            return True
+    return False
 
 
 def _walk_xml(node: ET.Element, path: list[str], blocks: list[RenderedBlock]) -> None:
