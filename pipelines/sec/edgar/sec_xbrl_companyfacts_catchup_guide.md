@@ -1,17 +1,17 @@
 # SEC XBRL Companyfacts Catch-Up
 
-Use this script when `sec_filing_v2` and `sec_filing_text_v2` are current but
-`sec_xbrl_company_fact_v1` is behind.
+Use this script when `sec_filing_v3` and `sec_filing_text_rendered_v3` are current but
+`sec_xbrl_company_fact_v3` is behind.
 
-The script reads XBRL-looking filings from `sec_filing_document_v2`, excludes
-accessions already present in `sec_xbrl_company_fact_v1`, fetches SEC
+The script reads XBRL-looking filings from `sec_filing_document_v3`, excludes
+accessions already present in `sec_xbrl_company_fact_v3`, fetches SEC
 `companyfacts` once per CIK, extracts only the missing accessions, and writes the
 same canonical XBRL tables used by the live SEC gateway:
 
-- `sec_xbrl_concept_v1`
-- `sec_xbrl_company_fact_v1`
-- `sec_xbrl_frame_v1`
-- `sec_xbrl_frame_observation_v1`
+- `sec_xbrl_concept_v3`
+- `sec_xbrl_company_fact_v3`
+- `sec_xbrl_frame_v3`
+- `sec_xbrl_frame_observation_v3`
 
 It does not rewrite filing parents or filing text.
 

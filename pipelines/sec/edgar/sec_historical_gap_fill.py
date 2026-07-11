@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass
-from datetime import UTC, date, datetime, time as dt_time
+from datetime import UTC, date, datetime, time as dt_time, timedelta
 from pathlib import Path
 
 
@@ -35,6 +35,8 @@ from research.mlops.env import discover_env_files, load_env_files, secret_status
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_historical_gap_fill")
 DEFAULT_PARTS_ROOT_WIN = Path("D:/market-data")
 DEFAULT_PARTS_ROOT_CH = "/mnt/d/market-data"
+DEFAULT_SEC_BRIDGE_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/q_live_migration/step_06_bridge_features")
+DEFAULT_SEC_CONTEXT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_context")
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +60,91 @@ class StageResult:
     command: list[str]
 
 
+class HistoricalFillProgress:
+    def __init__(self, layout: str, commands: list[StageCommand], run_root: Path) -> None:
+        self.layout = layout
+        self.commands = commands
+        self.run_root = run_root
+        self.enabled = False
+        self.status_by_stage = {command.stage: "pending" for command in commands}
+        self.elapsed_by_stage: dict[str, float] = {}
+        self.current_stage = ""
+        self.current_command = ""
+        self.output_tail: list[str] = []
+        self._live = None
+        self._render = None
+
+    def __enter__(self) -> "HistoricalFillProgress":
+        if self.layout == "text" or (self.layout == "auto" and not sys.stdout.isatty()):
+            return self
+        try:
+            from rich.console import Group
+            from rich.live import Live
+            from rich.panel import Panel
+            from rich.table import Table
+            from rich.text import Text
+        except Exception:
+            return self
+
+        def render() -> object:
+            table = Table(title="SEC Historical Gap Fill", expand=True)
+            table.add_column("#", justify="right", width=4)
+            table.add_column("Stage")
+            table.add_column("Status", width=16)
+            table.add_column("Elapsed", justify="right", width=10)
+            table.add_column("Log")
+            for index, command in enumerate(self.commands, start=1):
+                status = self.status_by_stage.get(command.stage, "pending")
+                elapsed = self.elapsed_by_stage.get(command.stage)
+                table.add_row(
+                    str(index),
+                    command.stage,
+                    status,
+                    f"{elapsed:.1f}s" if elapsed is not None else "-",
+                    str(command.log_path),
+                )
+            tail_text = Text("\n".join(self.output_tail[-18:]) or "No stage output yet.", no_wrap=False)
+            current = Text(f"run_root={self.run_root}\ncurrent_stage={self.current_stage or '-'}\ncommand={self.current_command or '-'}", no_wrap=False)
+            return Group(table, Panel(current, title="Current"), Panel(tail_text, title="Recent Output"))
+
+        self._render = render
+        self._live = Live(render(), refresh_per_second=4, screen=True)
+        self._live.__enter__()
+        self.enabled = True
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        if self._live is not None:
+            self._live.__exit__(exc_type, exc, tb)
+
+    def start_stage(self, command: StageCommand, actual_command: list[str]) -> None:
+        self.current_stage = command.stage
+        self.current_command = format_command(actual_command)
+        self.status_by_stage[command.stage] = "running"
+        self.refresh()
+
+    def log_line(self, line: str) -> None:
+        clean = line.rstrip()
+        if clean:
+            self.output_tail.append(clean)
+            self.output_tail = self.output_tail[-50:]
+            self.refresh()
+
+    def finish_stage(self, result: StageResult) -> None:
+        self.status_by_stage[result.stage] = result.status
+        self.elapsed_by_stage[result.stage] = result.elapsed_seconds
+        self.current_stage = ""
+        self.current_command = ""
+        self.refresh()
+
+    def mark_skipped(self, result: StageResult) -> None:
+        self.finish_stage(result)
+
+    def refresh(self) -> None:
+        if self.enabled and self._live is not None and self._render is not None:
+            self._live.update(self._render())
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -74,7 +161,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--python-executable", default=sys.executable)
     parser.add_argument("--read-database", default=env_string("SEC_CLICKHOUSE_READ_DATABASE", "q_live"))
     parser.add_argument("--write-database", default=env_string("SEC_CLICKHOUSE_WRITE_DATABASE", env_string("SEC_GATEWAY_WRITE_DATABASE", "q_live")))
-    parser.add_argument("--coverage-table", default=env_string("SEC_COVERAGE_TABLE", "sec_coverage_manifest_v1"))
+    parser.add_argument("--coverage-table", default=env_string("SEC_COVERAGE_TABLE", "sec_coverage_manifest_v3"))
     parser.add_argument("--bulk-mirror-database", default=env_string("SEC_BULK_MIRROR_DATABASE", "sec_core"))
     parser.add_argument("--artifact-root-win", default=env_string("SEC_CORE_ARTIFACT_ROOT_WIN", "D:/market-data/sec_core"))
     parser.add_argument("--core-output-root-win", default=env_string("SEC_CORE_OUTPUT_ROOT_WIN", "D:/market-data/prepared/sec_core"))
@@ -85,6 +172,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--xbrl-output-root-win", default=env_string("SEC_XBRL_CATCHUP_OUTPUT_ROOT_WIN", "D:/market-data/prepared/sec_xbrl_companyfacts_catchup"))
     parser.add_argument("--xbrl-repair-output-root-win", default=env_string("SEC_XBRL_REPAIR_OUTPUT_ROOT_WIN", "D:/market-data/prepared/sec_xbrl_integrity_repair"))
     parser.add_argument("--integrity-audit-output-root-win", default=env_string("SEC_INTEGRITY_AUDIT_OUTPUT_ROOT_WIN", "D:/market-data/prepared/sec_integrity_audit"))
+    parser.add_argument("--sec-bridge-output-root-win", default=env_string("SEC_BRIDGE_OUTPUT_ROOT_WIN", str(DEFAULT_SEC_BRIDGE_OUTPUT_ROOT_WIN)))
+    parser.add_argument("--sec-bridge-table", default=env_string("SEC_BRIDGE_TABLE", "id_sec_market_bridge_v3"))
+    parser.add_argument("--context-database", default=env_string("SEC_CONTEXT_DATABASE", "market_sip_compact"))
+    parser.add_argument("--context-filing-table", default=env_string("SEC_CONTEXT_FILING_TABLE", "sec_filing_context_v3"))
+    parser.add_argument("--context-text-table", default=env_string("SEC_CONTEXT_TEXT_TABLE", "sec_filing_text_context_v3"))
+    parser.add_argument("--context-xbrl-table", default=env_string("SEC_CONTEXT_XBRL_TABLE", "sec_xbrl_context_v3"))
+    parser.add_argument("--context-output-root-win", default=env_string("SEC_CONTEXT_OUTPUT_ROOT_WIN", str(DEFAULT_SEC_CONTEXT_OUTPUT_ROOT_WIN)))
+    parser.add_argument("--context-sec-text-buckets", type=int, default=int(os.environ.get("SEC_CONTEXT_TEXT_BUCKETS", "64")))
+    parser.add_argument("--context-render-batch-rows", type=int, default=int(os.environ.get("SEC_CONTEXT_RENDER_BATCH_ROWS", "256")))
     parser.add_argument("--parts-root-win", default=env_string("SEC_TEXT_PARTS_ROOT_WIN", str(DEFAULT_PARTS_ROOT_WIN)))
     parser.add_argument("--parts-root-ch", default=env_string("SEC_TEXT_PARTS_ROOT_CH", DEFAULT_PARTS_ROOT_CH))
     parser.add_argument("--bulk-sources", default="submissions,companyfacts")
@@ -121,6 +217,7 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Skip stages whose stage-level coverage already covers the requested range.",
     )
+    parser.add_argument("--progress-layout", choices=["auto", "rich", "text"], default=env_string("SEC_HISTORICAL_GAP_FILL_PROGRESS_LAYOUT", "auto"))
     return parser.parse_args()
 
 
@@ -184,21 +281,24 @@ def main() -> None:
     results_path = run_root / "sec_historical_gap_fill_results.jsonl"
     if args.execute:
         ensure_historical_coverage_table(args)
-    for command in commands:
-        if args.execute and args.resume_from_coverage and stage_already_completed(args, command):
-            result = skipped_stage_result(command)
+    with HistoricalFillProgress(args.progress_layout, commands, run_root) as progress:
+        for command in commands:
+            if args.execute and args.resume_from_coverage and stage_already_completed(args, command):
+                result = skipped_stage_result(command)
+                results.append(result)
+                append_jsonl(results_path, asdict(result))
+                progress.mark_skipped(result)
+                if not progress.enabled:
+                    print(f"stage={command.stage} status=skipped_covered reason=coverage already covers requested range", flush=True)
+                continue
+            result = run_stage(command, progress=progress)
             results.append(result)
             append_jsonl(results_path, asdict(result))
-            print(f"stage={command.stage} status=skipped_covered reason=coverage already covers requested range", flush=True)
-            continue
-        result = run_stage(command)
-        results.append(result)
-        append_jsonl(results_path, asdict(result))
-        if result.returncode != 0 and not args.continue_on_error:
-            write_summary(run_root / "sec_historical_gap_fill_summary.md", args, results, coverage_written=False)
-            raise SystemExit(result.returncode)
-        if args.execute and result.returncode == 0:
-            write_stage_coverage(args, run_id, command)
+            if result.returncode != 0 and not args.continue_on_error:
+                write_summary(run_root / "sec_historical_gap_fill_summary.md", args, results, coverage_written=False)
+                raise SystemExit(result.returncode)
+            if args.execute and result.returncode == 0:
+                write_stage_coverage(args, run_id, command)
 
     failed = [result for result in results if result.returncode != 0]
     coverage_written = False
@@ -213,6 +313,7 @@ def main() -> None:
 def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageCommand]:
     archive_root = str(Path(args.artifact_root_win) / "daily_archives")
     text_manifest = f"<latest-text-manifest:{args.text_parts_output_root_win}>"
+    context_end_date = (parse_date(args.end_date) - timedelta(days=1)).isoformat()
     text_ingest_execute = [
         args.python_executable,
         script("pipelines/sec/edgar/sec_filing_text_clickhouse_file_ingest.py"),
@@ -511,6 +612,74 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
             (stage_coverage_kind("xbrl-integrity-repair"),),
         ),
         StageCommand(
+            "sec-bridge-rebuild",
+            add_execute_flag(
+                [
+                    args.python_executable,
+                    script("pipelines/reference_data/migration/step_06_build_q_live_bridge_features.py"),
+                    "--target-database",
+                    args.write_database,
+                    "--output-root-win",
+                    args.sec_bridge_output_root_win,
+                    "--feature-date",
+                    context_end_date,
+                    "--specs",
+                    "sec_market_bridge",
+                    "--sec-bridge-table",
+                    args.sec_bridge_table,
+                    "--allow-non-empty-targets",
+                ],
+                args,
+            ),
+            logs_root / "sec-bridge-rebuild.log",
+            True,
+            (stage_coverage_kind("sec-bridge-rebuild"),),
+        ),
+        StageCommand(
+            "sec-context-build",
+            add_execute_flag(
+                [
+                    args.python_executable,
+                    script("pipelines/market_sip/events/clickhouse_build_sec_context.py"),
+                    "--source-database",
+                    args.write_database,
+                    "--target-database",
+                    args.context_database,
+                    "--filing-table",
+                    args.context_filing_table,
+                    "--text-table",
+                    args.context_text_table,
+                    "--xbrl-table",
+                    args.context_xbrl_table,
+                    "--source-filing-table",
+                    "sec_filing_v3",
+                    "--source-text-table",
+                    "sec_filing_text_v3",
+                    "--source-bridge-table",
+                    args.sec_bridge_table,
+                    "--source-xbrl-company-fact-table",
+                    "sec_xbrl_company_fact_v3",
+                    "--source-xbrl-frame-observation-table",
+                    "sec_xbrl_frame_observation_v3",
+                    "--start-date",
+                    args.start_date,
+                    "--end-date",
+                    context_end_date,
+                    "--sec-text-buckets",
+                    str(max(1, args.context_sec_text_buckets)),
+                    "--render-batch-rows",
+                    str(max(1, args.context_render_batch_rows)),
+                    "--output-root-win",
+                    args.context_output_root_win,
+                ],
+                args,
+                dry_run_flag="--dry-run",
+            ),
+            logs_root / "sec-context-build.log",
+            True,
+            (stage_coverage_kind("sec-context-build"),),
+        ),
+        StageCommand(
             "integrity-audit",
             [
                 args.python_executable,
@@ -525,7 +694,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                 args.start_date,
                 "--archive-end-date",
                 args.end_date,
-                "--require-v2-tables",
+                "--require-v3-tables",
             ],
             logs_root / "integrity-audit.log",
             False,
@@ -566,6 +735,7 @@ def add_execute_flag(command: list[str], args: argparse.Namespace, *, dry_run_fl
             "sec_bulk_to_canonical.py" in command_text
             or "sec_xbrl_companyfacts_catchup.py" in command_text
             or "sec_xbrl_integrity_repair.py" in command_text
+            or "step_06_build_q_live_bridge_features.py" in command_text
         ):
             out.append("--execute")
     elif dry_run_flag:
@@ -573,14 +743,18 @@ def add_execute_flag(command: list[str], args: argparse.Namespace, *, dry_run_fl
     return out
 
 
-def run_stage(command: StageCommand) -> StageResult:
+def run_stage(command: StageCommand, *, progress: HistoricalFillProgress | None = None) -> StageResult:
     actual_command = resolve_runtime_command(command)
     started = time.perf_counter()
-    print("=" * 96, flush=True)
-    print(f"stage={command.stage}", flush=True)
-    print(format_command(actual_command), flush=True)
-    print(f"log={command.log_path}", flush=True)
-    print("=" * 96, flush=True)
+    rich_enabled = bool(progress and progress.enabled)
+    if progress:
+        progress.start_stage(command, actual_command)
+    if not rich_enabled:
+        print("=" * 96, flush=True)
+        print(f"stage={command.stage}", flush=True)
+        print(format_command(actual_command), flush=True)
+        print(f"log={command.log_path}", flush=True)
+        print("=" * 96, flush=True)
     command.log_path.parent.mkdir(parents=True, exist_ok=True)
     with command.log_path.open("w", encoding="utf-8") as log:
         log.write(f"command={format_command(actual_command)}\n\n")
@@ -596,14 +770,21 @@ def run_stage(command: StageCommand) -> StageResult:
         )
         assert process.stdout is not None
         for line in process.stdout:
-            print(line, end="", flush=True)
+            if rich_enabled and progress:
+                progress.log_line(line)
+            else:
+                print(line, end="", flush=True)
             log.write(line)
             log.flush()
         returncode = int(process.wait())
     elapsed = round(time.perf_counter() - started, 3)
     status = "ok" if returncode == 0 else "failed"
-    print(f"stage={command.stage} status={status} returncode={returncode} elapsed_seconds={elapsed}", flush=True)
-    return StageResult(command.stage, status, returncode, elapsed, str(command.log_path), actual_command)
+    result = StageResult(command.stage, status, returncode, elapsed, str(command.log_path), actual_command)
+    if progress:
+        progress.finish_stage(result)
+    if not rich_enabled:
+        print(f"stage={command.stage} status={status} returncode={returncode} elapsed_seconds={elapsed}", flush=True)
+    return result
 
 
 def skipped_stage_result(command: StageCommand) -> StageResult:

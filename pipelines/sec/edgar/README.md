@@ -15,15 +15,16 @@ This package contains the SEC EDGAR historical workflow:
 Preferred current historical gap-fill path used by SEC Gateway:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_gap_fill.py --start-date 2026-06-17 --end-date 2026-06-21 --read-database q_live --write-database q_live --coverage-table sec_coverage_manifest_v1 --bulk-mirror-database sec_core --artifact-root-win D:/market-data/sec_core --core-output-root-win D:/market-data/prepared/sec_core --output-root-win D:/market-data/prepared/sec_historical_gap_fill --daily-archive-output-root-win D:/market-data/prepared/sec_daily_feed_archives --archive-validation-output-root-win D:/market-data/prepared/sec_downloaded_archive_validation --text-parts-output-root-win D:/market-data/prepared/sec_filing_text_parts --xbrl-output-root-win D:/market-data/prepared/sec_xbrl_companyfacts_catchup --xbrl-repair-output-root-win D:/market-data/prepared/sec_xbrl_integrity_repair --integrity-audit-output-root-win D:/market-data/prepared/sec_integrity_audit --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --bulk-sources submissions,companyfacts --bulk-download-concurrency 2 --bulk-ingest-batch-size 100000 --archive-download-concurrency 3 --archive-validation-workers 32 --text-extract-workers 96 --xbrl-workers 8 --text-ingest-max-threads 96 --text-ingest-max-memory-usage 64G --sec-request-min-interval-seconds 0.12 --request-timeout-seconds 30 --max-retries 8 --retry-base-seconds 30 --pending-multiplier 2 --sample-limit 1000 --sample-text-chars 2000 --min-text-chars 40 --max-text-chars 0 --resume-from-coverage --execute
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_gap_fill.py --start-date 2026-06-17 --end-date 2026-06-21 --read-database q_live --write-database q_live --coverage-table sec_coverage_manifest_v3 --bulk-mirror-database sec_core --artifact-root-win D:/market-data/sec_core --core-output-root-win D:/market-data/prepared/sec_core --output-root-win D:/market-data/prepared/sec_historical_gap_fill --daily-archive-output-root-win D:/market-data/prepared/sec_daily_feed_archives --archive-validation-output-root-win D:/market-data/prepared/sec_downloaded_archive_validation --text-parts-output-root-win D:/market-data/prepared/sec_filing_text_parts --xbrl-output-root-win D:/market-data/prepared/sec_xbrl_companyfacts_catchup --xbrl-repair-output-root-win D:/market-data/prepared/sec_xbrl_integrity_repair --integrity-audit-output-root-win D:/market-data/prepared/sec_integrity_audit --sec-bridge-output-root-win D:/market-data/prepared/q_live_migration/step_06_bridge_features --sec-bridge-table id_sec_market_bridge_v3 --context-database market_sip_compact --context-filing-table sec_filing_context_v3 --context-text-table sec_filing_text_context_v3 --context-xbrl-table sec_xbrl_context_v3 --context-output-root-win D:/market-data/prepared/sec_context --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --bulk-sources submissions,companyfacts --bulk-download-concurrency 2 --bulk-ingest-batch-size 100000 --archive-download-concurrency 3 --archive-validation-workers 32 --text-extract-workers 96 --xbrl-workers 8 --text-ingest-max-threads 96 --text-ingest-max-memory-usage 64G --sec-request-min-interval-seconds 0.12 --request-timeout-seconds 30 --max-retries 8 --retry-base-seconds 30 --pending-multiplier 2 --sample-limit 1000 --sample-text-chars 2000 --min-text-chars 40 --max-text-chars 0 --progress-layout rich --resume-from-coverage --execute
 ```
 
 This unified gap-fill entry point refreshes SEC bulk `submissions` and
 `companyfacts`, mirrors those bulk files into `sec_core`, derives canonical
 filing parents and XBRL rows from that mirror, downloads missing daily archives,
 validates them, extracts normalized filing/document/text rows, inserts them,
-runs API fallback for missing recent XBRL, repairs XBRL relationships, audits
-the result, and writes coverage rows.
+runs API fallback for missing recent XBRL, repairs XBRL relationships, rebuilds
+`id_sec_market_bridge_v3`, builds SEC context tables in `market_sip_compact`,
+audits the result, and writes coverage rows.
 
 Focused text repair after parser/storage bugs:
 
@@ -32,11 +33,12 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 ```
 
 Use this focused repair when raw daily archives are already present and the goal
-is to rebuild `sec_filing_document_v2`/`sec_filing_text_v2` with the current
-parser. It force-inserts replacement part files and can remove stale skip rows
+is to rebuild `sec_filing_document_v3`/`sec_filing_text_v3`/
+`sec_filing_text_rendered_v3` with the current parser and renderer. It
+force-inserts replacement part files and can remove stale skip rows
 for documents that now have extracted text. It does not repair filing-parent
 timestamps; run the acceptance timestamp repair scripts separately for
-`sec_filing_v2.accepted_at_utc`.
+`sec_filing_v3.accepted_at_utc`.
 
 Use the full argument form above for manual runs. The SEC gateway generates the
 same explicit shape so the workstation script does not depend on ambient shell
@@ -87,7 +89,7 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 ```
 
 Run the XBRL companyfacts catch-up when filing/text tables are newer than
-`sec_xbrl_company_fact_v1`:
+`sec_xbrl_company_fact_v3`:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_xbrl_companyfacts_catchup.py --read-database q_live --write-database q_live --workers 4 --batch-size 10000 --execute

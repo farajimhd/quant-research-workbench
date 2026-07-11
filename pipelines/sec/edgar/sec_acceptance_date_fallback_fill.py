@@ -31,9 +31,9 @@ from pipelines.sec.edgar.sec_acceptance_backfill_build import (  # noqa: E402
 
 
 DEFAULT_TARGET_DATABASE = "q_live"
-DEFAULT_TARGET_TABLE = "sec_filing_v2"
+DEFAULT_TARGET_TABLE = "sec_filing_v3"
 DEFAULT_STAGE_DATABASE = "sec_core"
-DEFAULT_STAGE_TABLE = "sec_bulk_mirror_filing_acceptance_v1"
+DEFAULT_STAGE_TABLE = "sec_bulk_mirror_filing_acceptance_v3"
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_acceptance_date_fallback_fill")
 DEFAULT_BATCH_SIZE = 5_000
 DATE_FALLBACK_SOURCE = "filing_date_midnight_fallback"
@@ -214,7 +214,7 @@ def stage_row_from_source(source: dict[str, Any]) -> dict[str, Any]:
         "filing_detail_url": empty_to_none(source.get("filing_detail_url")),
         "filing_size": source.get("filing_size"),
         "items": empty_to_none(source.get("items")),
-        "source_file_id": clean_string(source.get("source_file_name")) or "q_live_sec_filing_v2",
+        "source_file_id": clean_string(source.get("source_file_name")) or "q_live_sec_filing_v3",
         "source_zip_sha256": "",
         "source_content_sha256": hashlib.sha256(
             f"{source.get('source_content_sha256') or ''}:{row_fingerprint}".encode("utf-8")

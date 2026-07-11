@@ -13,10 +13,14 @@ SCRIPT = REPO_ROOT / "pipelines" / "market_sip" / "events" / "clickhouse_build_s
 DEFAULTS = {
     "source_database": "q_live",
     "target_database": "market_sip_compact",
-    "filing_table": "sec_filing_context",
-    "text_table": "sec_filing_text_context",
-    "xbrl_table": "sec_xbrl_context",
-    "source_text_table": "sec_filing_text_v1",
+    "filing_table": "sec_filing_context_v3",
+    "text_table": "sec_filing_text_context_v3",
+    "xbrl_table": "sec_xbrl_context_v3",
+    "source_filing_table": "sec_filing_v3",
+    "source_text_table": "sec_filing_text_v3",
+    "source_bridge_table": "id_sec_market_bridge_v3",
+    "source_xbrl_company_fact_table": "sec_xbrl_company_fact_v3",
+    "source_xbrl_frame_observation_table": "sec_xbrl_frame_observation_v3",
     "start_date": "2019-01-01",
     "end_date": "2026-12-31",
     "max_threads": 32,
@@ -32,7 +36,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--filing-table", default=DEFAULTS["filing_table"])
     parser.add_argument("--text-table", default=DEFAULTS["text_table"])
     parser.add_argument("--xbrl-table", default=DEFAULTS["xbrl_table"])
+    parser.add_argument("--source-filing-table", default=DEFAULTS["source_filing_table"])
     parser.add_argument("--source-text-table", default=DEFAULTS["source_text_table"])
+    parser.add_argument("--source-bridge-table", default=DEFAULTS["source_bridge_table"])
+    parser.add_argument("--source-xbrl-company-fact-table", default=DEFAULTS["source_xbrl_company_fact_table"])
+    parser.add_argument("--source-xbrl-frame-observation-table", default=DEFAULTS["source_xbrl_frame_observation_table"])
     parser.add_argument("--start-date", default=DEFAULTS["start_date"])
     parser.add_argument("--end-date", default=DEFAULTS["end_date"])
     parser.add_argument("--max-threads", type=int, default=DEFAULTS["max_threads"])
@@ -72,8 +80,16 @@ def main() -> int:
         args.text_table,
         "--xbrl-table",
         args.xbrl_table,
+        "--source-filing-table",
+        args.source_filing_table,
         "--source-text-table",
         args.source_text_table,
+        "--source-bridge-table",
+        args.source_bridge_table,
+        "--source-xbrl-company-fact-table",
+        args.source_xbrl_company_fact_table,
+        "--source-xbrl-frame-observation-table",
+        args.source_xbrl_frame_observation_table,
         "--start-date",
         args.start_date,
         "--end-date",

@@ -69,7 +69,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Invalidate and rebuild SEC downstream rows whose accepted_at_utc/timestamp_us no longer "
-            "matches q_live.sec_filing_v2 FINAL after an acceptance timestamp repair. Dry-run is default."
+            "matches q_live.sec_filing_v3 FINAL after an acceptance timestamp repair. Dry-run is default."
         )
     )
     parser.add_argument("--clickhouse-url", default=default_clickhouse_url_with_network_fallback())
@@ -78,18 +78,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-database", default="q_live")
     parser.add_argument("--context-database", default="market_sip_compact")
     parser.add_argument("--target-database", default="market_sip_compact")
-    parser.add_argument("--sec-filing-table", default="sec_filing_v2")
-    parser.add_argument("--sec-bridge-table", default="id_sec_market_bridge_v1")
-    parser.add_argument("--sec-text-source-table", default="sec_filing_text_v1")
-    parser.add_argument("--filing-context-table", default="sec_filing_context")
-    parser.add_argument("--text-context-table", default="sec_filing_text_context")
-    parser.add_argument("--sec-token-table", default="sec_filing_text_tokens")
-    parser.add_argument("--sec-embedding-table", default="sec_filing_text_embeddings")
+    parser.add_argument("--sec-filing-table", default="sec_filing_v3")
+    parser.add_argument("--sec-bridge-table", default="id_sec_market_bridge_v3")
+    parser.add_argument("--sec-text-source-table", default="sec_filing_text_v3")
+    parser.add_argument("--filing-context-table", default="sec_filing_context_v3")
+    parser.add_argument("--text-context-table", default="sec_filing_text_context_v3")
+    parser.add_argument("--sec-token-table", default="sec_filing_text_tokens_v3")
+    parser.add_argument("--sec-embedding-table", default="sec_filing_text_embeddings_v3")
     parser.add_argument("--coverage-table", default="text_embedding_coverage_v1")
     parser.add_argument("--accepted-at-sources", default="submissions_recent,submissions_recent_timezone_repair")
     parser.add_argument("--lookback-hours", type=float, default=168.0)
-    parser.add_argument("--start-inserted-at", default="", help="Inclusive sec_filing_v2 inserted_at lower bound, UTC.")
-    parser.add_argument("--end-inserted-at", default="", help="Exclusive sec_filing_v2 inserted_at upper bound, UTC.")
+    parser.add_argument("--start-inserted-at", default="", help="Inclusive sec_filing_v3 inserted_at lower bound, UTC.")
+    parser.add_argument("--end-inserted-at", default="", help="Exclusive sec_filing_v3 inserted_at upper bound, UTC.")
     parser.add_argument("--min-abs-shift-hours", type=float, default=3.0)
     parser.add_argument("--max-abs-shift-hours", type=float, default=6.0)
     parser.add_argument("--output-root-win", default=str(DEFAULT_OUTPUT_ROOT_WIN))
@@ -145,7 +145,7 @@ def main() -> int:
         return 0
     if args.execute and int(candidate_summary.get("bad_parent_rows", 0) or 0) > 0:
         raise SystemExit(
-            "Refusing downstream repair while sec_filing_v2 FINAL still has bad parent timestamps. "
+            "Refusing downstream repair while sec_filing_v3 FINAL still has bad parent timestamps. "
             "Run sec_acceptance_timezone_repair.py --execute first, then rerun this script."
         )
 
@@ -561,11 +561,11 @@ DELETE WHERE source = 'sec'
 
 def rebuild_filing_context_sqls(args: argparse.Namespace, inserted_start: datetime, inserted_end: datetime) -> list[tuple[str, str]]:
     cte_body = candidate_cte_body(args, inserted_start, inserted_end)
-    return [("insert_corrected_sec_filing_context", insert_corrected_filing_context_sql(args, cte_body))]
+    return [("insert_corrected_sec_filing_context_v3", insert_corrected_filing_context_sql(args, cte_body))]
 
 
 def rebuild_filing_context_sqls_for_stage(args: argparse.Namespace, stage_database: str, stage_table: str) -> list[tuple[str, str]]:
-    return [("insert_corrected_sec_filing_context", insert_corrected_filing_context_sql_for_stage(args, stage_database, stage_table))]
+    return [("insert_corrected_sec_filing_context_v3", insert_corrected_filing_context_sql_for_stage(args, stage_database, stage_table))]
 
 
 def insert_corrected_filing_context_sql(args: argparse.Namespace, cte_body: str) -> str:

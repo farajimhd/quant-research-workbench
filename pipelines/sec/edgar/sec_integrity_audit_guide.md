@@ -4,21 +4,21 @@ Run this before building or loading archive-derived SEC filing text. The audit i
 
 ## What It Checks
 
-- `q_live.sec_filing_v2` exists, has logical rows, has no missing `accepted_at_utc`, and has no duplicate `(cik, accession_number)`.
+- `q_live.sec_filing_v3` exists, has logical rows, has no missing `accepted_at_utc`, and has no duplicate `(cik, accession_number)`.
 - Current text tables have no duplicate text keys or text rows without document parents.
-- `sec_filing_document_v2`, `sec_filing_text_v1`, `sec_filing_text_v2`, and `sec_filing_document_skip_v1` presence when `--require-v2-tables` is passed.
+- `sec_filing_document_v3`, `sec_filing_text_v3`, `sec_filing_text_rendered_v3`, and `sec_filing_document_skip_v3` presence when `--require-v3-tables` is passed.
 - Required v2 columns such as `text_sha256`, `normalizer_version`, `quality_flags`, `source_archive_date`, and `source_archive_member`.
 - Structured SEC/XBRL table presence.
-- A bounded XBRL accession sample join against `sec_filing_v2`.
+- A bounded XBRL accession sample join against `sec_filing_v3`.
 - A date-scoped SEC/XBRL integrity report. The default actionable scope starts
   at `2019-01-01`; older XBRL rows are summarized as legacy and are not treated
   as blockers.
 - XBRL-looking archive documents that do not have SEC companyfacts rows,
   grouped by form type. These are warnings because not all XML/XBRL-looking SEC
-  documents belong in `sec_xbrl_company_fact_v1`.
+  documents belong in `sec_xbrl_company_fact_v3`.
 - Local daily archive inventory without scanning archive contents.
 
-`sec_filing_text_v1` is the current submitted text-source table. The old
+`sec_filing_text_v3` is the current submitted text-source table. The old
 provisional `sec_filing_document_v1` table is no longer part of the current
 schema or audit target.
 
@@ -39,7 +39,7 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 Use this for the 2019+ SEC database audit after XBRL catch-up:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_integrity_audit.py --archive-root-win D:/market-data/sec_core/daily_archives --scope-start-date 2019-01-01 --require-v2-tables
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_integrity_audit.py --archive-root-win D:/market-data/sec_core/daily_archives --scope-start-date 2019-01-01 --require-v3-tables
 ```
 
 Rows before `2019-01-01` are reported under the legacy XBRL summary and should
@@ -48,10 +48,10 @@ the training horizon.
 
 ## After v2 Schema Creation
 
-Use `--require-v2-tables` to make missing v2 targets a failure:
+Use `--require-v3-tables` to make missing v3 targets a failure:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_integrity_audit.py --archive-root-win D:/market-data/sec_core/daily_archives --require-v2-tables
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_integrity_audit.py --archive-root-win D:/market-data/sec_core/daily_archives --require-v3-tables
 ```
 
 Use `--skip-xbrl-sample` when you only need a quick schema/archive audit:

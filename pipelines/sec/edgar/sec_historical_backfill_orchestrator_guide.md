@@ -56,7 +56,7 @@ Use discovery only when you want archive-format diagnostics. It is not required 
 | `archive-content-discovery` | `sec_archive_content_discovery.py` | Samples archive contents for diagnostics. | No |
 | `text-extract` | `sec_filing_text_extract_parts.py` | Parses archives and writes DB-ready JSONEachRow part files. | No |
 | `text-ingest-preflight` | `sec_filing_text_clickhouse_file_ingest.py` | Validates ClickHouse `file()` access and row counts for the part files. | No |
-| `text-ingest-execute` | `sec_filing_text_clickhouse_file_ingest.py` | Inserts `sec_filing_v2`, `sec_filing_document_v2`, `sec_filing_text_v2`, and skip rows. | Yes |
+| `text-ingest-execute` | `sec_filing_text_clickhouse_file_ingest.py` | Inserts `sec_filing_v3`, `sec_filing_document_v3`, `sec_filing_text_rendered_v3`, and skip rows. | Yes |
 | `timestamp-repair` | `sec_acceptance_fallback_submissions_repair.py` | Repairs date-only fallback `accepted_at_utc` rows from `submissions.zip`. | Yes |
 | `integrity-audit` | `sec_integrity_audit.py` | Runs read-only integrity checks after loading. | No |
 
@@ -148,5 +148,5 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 - Daily archives were downloaded separately from SEC bulk files. The current orchestrator keeps that separation.
 - Corrupt archive repair was done by deleting exact failed archives, redownloading, then validating. The orchestrator handles redownload and validation; targeted deletion remains a manual repair step because it depends on a specific failed archive summary.
 - The old acceptance header/download repair path is no longer the primary path. `sec_acceptance_fallback_submissions_repair.py` is the current repair stage because it uses local `submissions.zip` and avoids millions of SEC header requests.
-- `sec_filing_document_v1` is legacy. The current text path writes submitted text sources to `sec_filing_text_v1` and extracted readable text to `sec_filing_text_v2`.
+- `sec_filing_document_v1` is legacy. The current text path writes submitted text sources to `sec_filing_text_v3` and extracted readable text to `sec_filing_text_rendered_v3`.
 - The timestamp repair insert path batches by accepted month to avoid ClickHouse's `max_partitions_per_insert_block` error.

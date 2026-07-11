@@ -24,16 +24,16 @@ def run_sec_audit(client: ClickHouseHttpClient, *, database: str, output_path: P
     checks: list[dict[str, object]] = []
     checks.extend(integrity.check_required_tables(table_meta, require_v2_tables=True))
     scope_start = date(2019, 1, 1)
-    if "sec_filing_v2" in table_meta:
+    if "sec_filing_v3" in table_meta:
         checks.extend(integrity.check_filing_parent(client, database, scope_start))
-    if "sec_filing_document_v2" in table_meta:
+    if "sec_filing_document_v3" in table_meta:
         checks.extend(integrity.check_document_v2_shape(column_map))
-    if "sec_filing_text_v2" in table_meta:
+    if "sec_filing_text_rendered_v3" in table_meta:
         checks.extend(integrity.check_text_v2_shape(column_map))
-        if "sec_filing_document_v2" in table_meta:
-            checks.extend(integrity.check_text_table(client, database, text_table="sec_filing_text_v2", document_table="sec_filing_document_v2"))
+        if "sec_filing_document_v3" in table_meta:
+            checks.extend(integrity.check_text_table(client, database, text_table="sec_filing_text_rendered_v3", document_table="sec_filing_document_v3"))
     checks.extend(integrity.check_xbrl_presence(table_meta))
-    if {"sec_xbrl_company_fact_v1", "sec_filing_v2"}.issubset(table_meta):
+    if {"sec_xbrl_company_fact_v3", "sec_filing_v3"}.issubset(table_meta):
         checks.extend(integrity.check_xbrl_sample(client, database, 200000, scope_start))
     passed = sum(1 for row in checks if row.get("status") == "pass")
     warnings = sum(1 for row in checks if row.get("status") == "warn")

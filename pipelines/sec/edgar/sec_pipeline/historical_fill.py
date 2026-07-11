@@ -130,7 +130,7 @@ def build_integrity_audit_plan(
         database,
         "--scope-start-date",
         scope_start_date.isoformat(),
-        "--require-v2-tables",
+        "--require-v3-tables",
     ]
     return HistoricalFillPlan(start_date=scope_start_date, end_date=date.today(), command=command)
 

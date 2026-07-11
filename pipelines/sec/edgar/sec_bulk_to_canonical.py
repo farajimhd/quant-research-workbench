@@ -14,7 +14,15 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import WRITE_TABLES, ensure_sec_write_database  # noqa: E402
+from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import (  # noqa: E402
+    FILING_TABLE,
+    XBRL_COMPANY_FACT_TABLE,
+    XBRL_CONCEPT_TABLE,
+    XBRL_FRAME_OBSERVATION_TABLE,
+    XBRL_FRAME_TABLE,
+    WRITE_TABLES,
+    ensure_sec_write_database,
+)
 from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password, default_clickhouse_url, default_clickhouse_user, quote_ident, sql_string  # noqa: E402
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
 
@@ -103,14 +111,14 @@ def main() -> None:
     validate_tables(client, args.source_database, args.target_database)
     profiles: list[StageProfile] = []
     if "parents" in stages:
-        profiles.append(run_insert_stage(client, "parents", args.target_database, "sec_filing_v2", parent_insert_sql(args, run_id)))
+        profiles.append(run_insert_stage(client, "parents", args.target_database, FILING_TABLE, parent_insert_sql(args, run_id)))
         append_jsonl(events_path, asdict(profiles[-1]))
     if "xbrl" in stages:
         for stage, table, sql in [
-            ("xbrl_concepts", "sec_xbrl_concept_v1", xbrl_concept_insert_sql(args, run_id)),
-            ("xbrl_company_facts", "sec_xbrl_company_fact_v1", xbrl_company_fact_insert_sql(args, run_id)),
-            ("xbrl_frames", "sec_xbrl_frame_v1", xbrl_frame_insert_sql(args, run_id)),
-            ("xbrl_frame_observations", "sec_xbrl_frame_observation_v1", xbrl_frame_observation_insert_sql(args, run_id)),
+            ("xbrl_concepts", XBRL_CONCEPT_TABLE, xbrl_concept_insert_sql(args, run_id)),
+            ("xbrl_company_facts", XBRL_COMPANY_FACT_TABLE, xbrl_company_fact_insert_sql(args, run_id)),
+            ("xbrl_frames", XBRL_FRAME_TABLE, xbrl_frame_insert_sql(args, run_id)),
+            ("xbrl_frame_observations", XBRL_FRAME_OBSERVATION_TABLE, xbrl_frame_observation_insert_sql(args, run_id)),
         ]:
             profiles.append(run_insert_stage(client, stage, args.target_database, table, sql))
             append_jsonl(events_path, asdict(profiles[-1]))
@@ -121,8 +129,8 @@ def main() -> None:
 
 def validate_tables(client: ClickHouseHttpClient, source_database: str, target_database: str) -> None:
     required_source = {
-        "sec_bulk_mirror_filing_v1",
-        "sec_bulk_mirror_xbrl_fact_v1",
+        "sec_bulk_mirror_filing_v3",
+        "sec_bulk_mirror_xbrl_fact_v3",
     }
     required_target = set(WRITE_TABLES)
     source_missing = missing_tables(client, source_database, required_source)
@@ -172,7 +180,7 @@ def parent_insert_sql(args: argparse.Namespace, run_id: str) -> str:
     end = start_dt(args.end_date)
     run = sql_string(run_id)
     return f"""
-    INSERT INTO {target}.sec_filing_v2
+    INSERT INTO {target}.{quote_ident(FILING_TABLE)}
     SELECT
         lower(hex(SHA256(concat('sec-filing-v2-submissions-bulk|', cik, '|', accession_number)))) AS filing_id,
         accession_number,
@@ -196,7 +204,7 @@ def parent_insert_sql(args: argparse.Namespace, run_id: str) -> str:
         {run} AS source_run_id,
         lower(hex(SHA256(concat('sec-bulk-submission|', cik, '|', accession_number, '|', raw_submission_json)))) AS source_content_sha256,
         now64(3, 'UTC') AS inserted_at
-    FROM {source}.sec_bulk_mirror_filing_v1 FINAL
+    FROM {source}.sec_bulk_mirror_filing_v3 FINAL
     WHERE accepted_at_utc >= toDateTime64({sql_string(start)}, 9, 'UTC')
       AND accepted_at_utc < toDateTime64({sql_string(end)}, 9, 'UTC')
       AND accession_number != ''
@@ -209,7 +217,7 @@ def xbrl_concept_insert_sql(args: argparse.Namespace, run_id: str) -> str:
     target = quote_ident(args.target_database)
     run = sql_string(run_id)
     return f"""
-    INSERT INTO {target}.sec_xbrl_concept_v1
+    INSERT INTO {target}.{quote_ident(XBRL_CONCEPT_TABLE)}
     SELECT
         lower(hex(SHA256(concat('sec-xbrl-concept|', taxonomy, '|', tag)))) AS concept_id,
         taxonomy,
@@ -221,7 +229,7 @@ def xbrl_concept_insert_sql(args: argparse.Namespace, run_id: str) -> str:
         {run} AS source_run_id,
         lower(hex(SHA256(concat('sec-core-xbrl-concept|', taxonomy, '|', tag)))) AS source_content_sha256,
         now64(3, 'UTC') AS inserted_at
-    FROM {source}.sec_bulk_mirror_xbrl_fact_v1 FINAL
+    FROM {source}.sec_bulk_mirror_xbrl_fact_v3 FINAL
     WHERE filed_date >= toDate({sql_string(args.start_date)})
       AND filed_date < toDate({sql_string(args.end_date)})
       AND taxonomy != ''
@@ -235,7 +243,7 @@ def xbrl_company_fact_insert_sql(args: argparse.Namespace, run_id: str) -> str:
     target = quote_ident(args.target_database)
     run = sql_string(run_id)
     return f"""
-    INSERT INTO {target}.sec_xbrl_company_fact_v1
+    INSERT INTO {target}.{quote_ident(XBRL_COMPANY_FACT_TABLE)}
     SELECT
         lower(hex(SHA256(concat('sec-xbrl-company-fact|', cik, '|', taxonomy, '|', tag, '|', unit, '|', ifNull(toString(start_date), ''), '|', ifNull(toString(end_date), ''), '|', ifNull(accession_number, ''), '|', ifNull(frame, ''))))) AS company_fact_id,
         CAST(NULL, 'Nullable(String)') AS issuer_id,
@@ -254,7 +262,7 @@ def xbrl_company_fact_insert_sql(args: argparse.Namespace, run_id: str) -> str:
         {run} AS source_run_id,
         lower(hex(SHA256(concat('sec-core-xbrl-fact|', fact_id)))) AS source_content_sha256,
         now64(3, 'UTC') AS inserted_at
-    FROM {source}.sec_bulk_mirror_xbrl_fact_v1 FINAL
+    FROM {source}.sec_bulk_mirror_xbrl_fact_v3 FINAL
     WHERE filed_date >= toDate({sql_string(args.start_date)})
       AND filed_date < toDate({sql_string(args.end_date)})
       AND value IS NOT NULL
@@ -269,7 +277,7 @@ def xbrl_frame_insert_sql(args: argparse.Namespace, run_id: str) -> str:
     target = quote_ident(args.target_database)
     run = sql_string(run_id)
     return f"""
-    INSERT INTO {target}.sec_xbrl_frame_v1
+    INSERT INTO {target}.{quote_ident(XBRL_FRAME_TABLE)}
     SELECT
         lower(hex(SHA256(concat('sec-xbrl-frame|', taxonomy, '|', tag, '|', unit, '|', frame)))) AS frame_id,
         taxonomy,
@@ -280,7 +288,7 @@ def xbrl_frame_insert_sql(args: argparse.Namespace, run_id: str) -> str:
         {run} AS source_run_id,
         lower(hex(SHA256(concat('sec-core-xbrl-frame|', taxonomy, '|', tag, '|', unit, '|', frame)))) AS source_content_sha256,
         now64(3, 'UTC') AS inserted_at
-    FROM {source}.sec_bulk_mirror_xbrl_fact_v1 FINAL
+    FROM {source}.sec_bulk_mirror_xbrl_fact_v3 FINAL
     WHERE filed_date >= toDate({sql_string(args.start_date)})
       AND filed_date < toDate({sql_string(args.end_date)})
       AND frame IS NOT NULL
@@ -294,7 +302,7 @@ def xbrl_frame_observation_insert_sql(args: argparse.Namespace, run_id: str) -> 
     target = quote_ident(args.target_database)
     run = sql_string(run_id)
     return f"""
-    INSERT INTO {target}.sec_xbrl_frame_observation_v1
+    INSERT INTO {target}.{quote_ident(XBRL_FRAME_OBSERVATION_TABLE)}
     SELECT
         lower(hex(SHA256(concat('sec-xbrl-frame-observation|', taxonomy, '|', tag, '|', unit, '|', frame, '|', cik, '|', ifNull(accession_number, ''), '|', ifNull(toString(end_date), ''))))) AS frame_observation_id,
         lower(hex(SHA256(concat('sec-xbrl-frame|', taxonomy, '|', tag, '|', unit, '|', frame)))) AS frame_id,
@@ -313,7 +321,7 @@ def xbrl_frame_observation_insert_sql(args: argparse.Namespace, run_id: str) -> 
         {run} AS source_run_id,
         lower(hex(SHA256(concat('sec-core-xbrl-frame-observation|', fact_id)))) AS source_content_sha256,
         now64(3, 'UTC') AS inserted_at
-    FROM {source}.sec_bulk_mirror_xbrl_fact_v1 FINAL
+    FROM {source}.sec_bulk_mirror_xbrl_fact_v3 FINAL
     WHERE filed_date >= toDate({sql_string(args.start_date)})
       AND filed_date < toDate({sql_string(args.end_date)})
       AND frame IS NOT NULL

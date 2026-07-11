@@ -1,6 +1,6 @@
 # SEC Acceptance Archive Repair
 
-This script repairs `q_live.sec_filing_v2` rows whose acceptance timestamp came from a daily-archive date fallback instead of an exact EDGAR acceptance time.
+This script repairs `q_live.sec_filing_v3` rows whose acceptance timestamp came from a daily-archive date fallback instead of an exact EDGAR acceptance time.
 
 It is designed for the issue created by archive-derived parent rows from the filing-text extractor:
 
@@ -13,11 +13,11 @@ It also repairs rows marked `archive_acceptance_datetime` by normalizing raw EDG
 ## What It Does
 
 1. Selects local SEC daily `.nc.tar.gz` archives.
-2. Queries `q_live.sec_filing_v2 FINAL` for candidate fallback rows on each archive date.
+2. Queries `q_live.sec_filing_v3 FINAL` for candidate fallback rows on each archive date.
 3. Opens matching local archive members.
 4. Parses `ACCEPTANCE-DATETIME` from the filing container header.
 5. Normalizes the timestamp to UTC.
-6. Writes replacement `sec_filing_v2` JSONEachRow parts.
+6. Writes replacement `sec_filing_v3` JSONEachRow parts.
 7. Writes unresolved rows to a diagnostic file.
 8. Optionally inserts replacement rows into ClickHouse.
 
@@ -71,6 +71,6 @@ Important files:
 - `sec_acceptance_archive_repair_summary.md`
 - `archive_results.jsonl`
 - `unresolved_rows.jsonl`
-- `parts/sec_filing_v2_acceptance_repair_parts/*.jsonl`
+- `parts/sec_filing_v3_acceptance_repair_parts/*.jsonl`
 
 Unresolved rows should stay excluded from timestamp-sensitive market-reaction training until another source, such as SEC submissions API or accession header download, repairs them.

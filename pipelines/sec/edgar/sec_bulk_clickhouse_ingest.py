@@ -44,7 +44,7 @@ DEFAULT_BATCH_SIZE = 50_000
 DEFAULT_INSERT_MAX_RETRIES = 12
 DEFAULT_INSERT_RETRY_BASE_SECONDS = 5.0
 DEFAULT_INSERT_RETRY_MAX_SECONDS = 120.0
-MEMBER_MANIFEST_TABLE = "sec_bulk_mirror_member_manifest_v1"
+MEMBER_MANIFEST_TABLE = "sec_bulk_mirror_member_manifest_v3"
 SOURCE_URLS = {
     "submissions": f"{SEC_BULK_BASE_URL}/bulkdata/submissions.zip",
     "companyfacts": f"{SEC_BULK_BASE_URL}/xbrl/companyfacts.zip",
@@ -145,7 +145,7 @@ def main() -> None:
         started = time.perf_counter()
         if artifact.source_name in {"company_tickers", "company_tickers_exchange", "company_tickers_mf"}:
             rows = parse_ticker_mapping(artifact)
-            inserted = insert_rows(client, args.database, "sec_bulk_mirror_company_ticker_v1", rows, retry)
+            inserted = insert_rows(client, args.database, "sec_bulk_mirror_company_ticker_v3", rows, retry)
         elif artifact.source_name == "submissions":
             inserted = ingest_submissions_zip(client, args.database, artifact, args.batch_size, args.limit_ciks, retry, not args.disable_member_manifest)
         elif artifact.source_name == "companyfacts":
@@ -280,7 +280,7 @@ def insert_raw_source_rows(client: ClickHouseHttpClient, database: str, artifact
         }
         for item in artifacts
     ]
-    insert_rows(client, database, "sec_bulk_mirror_raw_source_file_v1", rows, retry)
+    insert_rows(client, database, "sec_bulk_mirror_raw_source_file_v3", rows, retry)
 
 
 def bootstrap_member_manifests(client: ClickHouseHttpClient, database: str, artifacts: list[SourceArtifact], retry: InsertRetryConfig) -> None:
@@ -323,11 +323,11 @@ def bootstrap_member_manifests(client: ClickHouseHttpClient, database: str, arti
 
 def load_existing_completion_state(client: ClickHouseHttpClient, database: str, artifact: SourceArtifact) -> dict[str, Any]:
     if artifact.source_name == "submissions":
-        company_ciks = load_distinct_ciks(client, database, "sec_bulk_mirror_company_v1", artifact.source_file_id)
-        filing_counts = load_counts_by_cik(client, database, "sec_bulk_mirror_filing_v1", artifact.source_file_id)
+        company_ciks = load_distinct_ciks(client, database, "sec_bulk_mirror_company_v3", artifact.source_file_id)
+        filing_counts = load_counts_by_cik(client, database, "sec_bulk_mirror_filing_v3", artifact.source_file_id)
         return {"company_ciks": company_ciks, "filing_counts": filing_counts}
     elif artifact.source_name == "companyfacts":
-        fact_counts = load_counts_by_cik(client, database, "sec_bulk_mirror_xbrl_fact_v1", artifact.source_file_id)
+        fact_counts = load_counts_by_cik(client, database, "sec_bulk_mirror_xbrl_fact_v3", artifact.source_file_id)
         return {"fact_counts": fact_counts}
     return {}
 
@@ -550,18 +550,18 @@ def ingest_submissions_zip(
                 manifest_batch.append(member_manifest_row(artifact, info, cik, now, status="completed", rows_inserted=1 + len(filing_rows), error=""))
             processed += 1
             if len(company_batch) >= batch_size:
-                inserted += flush(client, database, "sec_bulk_mirror_company_v1", company_batch, retry)
+                inserted += flush(client, database, "sec_bulk_mirror_company_v3", company_batch, retry)
             if len(file_ref_batch) >= batch_size:
-                inserted += flush(client, database, "sec_bulk_mirror_submission_file_ref_v1", file_ref_batch, retry)
+                inserted += flush(client, database, "sec_bulk_mirror_submission_file_ref_v3", file_ref_batch, retry)
             if len(filing_batch) >= batch_size:
-                inserted += flush(client, database, "sec_bulk_mirror_filing_v1", filing_batch, retry)
+                inserted += flush(client, database, "sec_bulk_mirror_filing_v3", filing_batch, retry)
             if use_member_manifest and len(manifest_batch) >= 5_000:
                 inserted += flush_member_manifest(client, database, retry, company_batch, file_ref_batch, filing_batch, manifest_batch)
             if processed % 5_000 == 0:
                 print(f"submissions processed_ciks={processed:,} skipped_completed={skipped:,} pending_filings={len(filing_batch):,}", flush=True)
-    inserted += flush(client, database, "sec_bulk_mirror_company_v1", company_batch, retry)
-    inserted += flush(client, database, "sec_bulk_mirror_submission_file_ref_v1", file_ref_batch, retry)
-    inserted += flush(client, database, "sec_bulk_mirror_filing_v1", filing_batch, retry)
+    inserted += flush(client, database, "sec_bulk_mirror_company_v3", company_batch, retry)
+    inserted += flush(client, database, "sec_bulk_mirror_submission_file_ref_v3", file_ref_batch, retry)
+    inserted += flush(client, database, "sec_bulk_mirror_filing_v3", filing_batch, retry)
     if use_member_manifest:
         insert_rows(client, database, MEMBER_MANIFEST_TABLE, manifest_batch, retry)
     if skipped:
@@ -714,17 +714,17 @@ def ingest_companyfacts_zip(
                             batch.append(xbrl_fact_row(cik, entity_name, taxonomy, tag, label, description, unit, fact, artifact.source_file_id, now))
                             member_rows += 1
                             if len(batch) >= batch_size:
-                                inserted += flush(client, database, "sec_bulk_mirror_xbrl_fact_v1", batch, retry)
+                                inserted += flush(client, database, "sec_bulk_mirror_xbrl_fact_v3", batch, retry)
             if use_member_manifest:
                 manifest_batch.append(member_manifest_row(artifact, info, cik, now, status="completed", rows_inserted=member_rows, error=""))
             processed += 1
             if use_member_manifest and len(manifest_batch) >= 5_000:
-                inserted += flush(client, database, "sec_bulk_mirror_xbrl_fact_v1", batch, retry)
+                inserted += flush(client, database, "sec_bulk_mirror_xbrl_fact_v3", batch, retry)
                 insert_rows(client, database, MEMBER_MANIFEST_TABLE, manifest_batch, retry)
                 manifest_batch.clear()
             if processed % 1_000 == 0:
                 print(f"companyfacts processed_ciks={processed:,} skipped_completed={skipped:,} pending_facts={len(batch):,}", flush=True)
-    inserted += flush(client, database, "sec_bulk_mirror_xbrl_fact_v1", batch, retry)
+    inserted += flush(client, database, "sec_bulk_mirror_xbrl_fact_v3", batch, retry)
     if use_member_manifest:
         insert_rows(client, database, MEMBER_MANIFEST_TABLE, manifest_batch, retry)
     if skipped:
@@ -787,9 +787,9 @@ def flush_member_manifest(
     manifest_batch: list[dict[str, Any]],
 ) -> int:
     inserted = 0
-    inserted += flush(client, database, "sec_bulk_mirror_company_v1", company_batch, retry)
-    inserted += flush(client, database, "sec_bulk_mirror_submission_file_ref_v1", file_ref_batch, retry)
-    inserted += flush(client, database, "sec_bulk_mirror_filing_v1", filing_batch, retry)
+    inserted += flush(client, database, "sec_bulk_mirror_company_v3", company_batch, retry)
+    inserted += flush(client, database, "sec_bulk_mirror_submission_file_ref_v3", file_ref_batch, retry)
+    inserted += flush(client, database, "sec_bulk_mirror_filing_v3", filing_batch, retry)
     insert_rows(client, database, MEMBER_MANIFEST_TABLE, manifest_batch, retry)
     manifest_batch.clear()
     return inserted
@@ -871,15 +871,15 @@ def summarize_error(exc: BaseException) -> str:
 
 
 def partition_rows_for_insert(table: str, rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
-    if table == "sec_bulk_mirror_raw_source_file_v1":
+    if table == "sec_bulk_mirror_raw_source_file_v3":
         return group_rows_by_yyyymm(rows, "downloaded_at_utc")
-    if table == "sec_bulk_mirror_filing_v1":
+    if table == "sec_bulk_mirror_filing_v3":
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in rows:
             key = yyyymm_from_value(row.get("accepted_at_utc")) or yyyymm_from_value(row.get("filing_date")) or "197001"
             grouped[key].append(row)
         return dict(grouped)
-    if table == "sec_bulk_mirror_xbrl_fact_v1":
+    if table == "sec_bulk_mirror_xbrl_fact_v3":
         return group_rows_by_yyyymm(rows, "end_date", default="197001")
     return {"all": rows}
 
@@ -900,7 +900,7 @@ def yyyymm_from_value(value: Any) -> str | None:
 
 def raw_source_file_table_sql(database: str, storage_policy: str) -> str:
     return f"""
-CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_bulk_mirror_raw_source_file_v1
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_bulk_mirror_raw_source_file_v3
 (
     source_file_id String,
     source_kind LowCardinality(String),
@@ -922,7 +922,7 @@ SETTINGS {merge_tree_settings(storage_policy)}
 
 def company_table_sql(database: str, storage_policy: str) -> str:
     return f"""
-CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_bulk_mirror_company_v1
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_bulk_mirror_company_v3
 (
     cik String,
     entity_name String,
@@ -945,7 +945,7 @@ SETTINGS {merge_tree_settings(storage_policy)}
 
 def ticker_table_sql(database: str, storage_policy: str) -> str:
     return f"""
-CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_bulk_mirror_company_ticker_v1
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_bulk_mirror_company_ticker_v3
 (
     mapping_id String,
     cik String,
@@ -968,7 +968,7 @@ SETTINGS {merge_tree_settings(storage_policy)}
 
 def submission_file_ref_table_sql(database: str, storage_policy: str) -> str:
     return f"""
-CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_bulk_mirror_submission_file_ref_v1
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_bulk_mirror_submission_file_ref_v3
 (
     file_ref_id String,
     cik String,
@@ -987,7 +987,7 @@ SETTINGS {merge_tree_settings(storage_policy)}
 
 def filing_table_sql(database: str, storage_policy: str) -> str:
     return f"""
-CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_bulk_mirror_filing_v1
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_bulk_mirror_filing_v3
 (
     accession_number String,
     accession_number_compact String,
@@ -1022,7 +1022,7 @@ SETTINGS {merge_tree_settings(storage_policy)}
 
 def xbrl_fact_table_sql(database: str, storage_policy: str) -> str:
     return f"""
-CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_bulk_mirror_xbrl_fact_v1
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_bulk_mirror_xbrl_fact_v3
 (
     fact_id String,
     cik String,

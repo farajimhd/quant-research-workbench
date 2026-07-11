@@ -32,15 +32,15 @@ DEFAULT_DATABASE = "q_live"
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_integrity_audit")
 DEFAULT_ARCHIVE_ROOT_WIN = Path("D:/market-data/sec_core/daily_archives")
 SEC_TABLES = (
-    "sec_filing_v2",
-    "sec_filing_document_v2",
-    "sec_filing_text_v1",
-    "sec_filing_text_v2",
-    "sec_filing_document_skip_v1",
-    "sec_xbrl_company_fact_v1",
-    "sec_xbrl_frame_observation_v1",
-    "sec_xbrl_frame_v1",
-    "sec_xbrl_concept_v1",
+    "sec_filing_v3",
+    "sec_filing_document_v3",
+    "sec_filing_text_v3",
+    "sec_filing_text_rendered_v3",
+    "sec_filing_document_skip_v3",
+    "sec_xbrl_company_fact_v3",
+    "sec_xbrl_frame_observation_v3",
+    "sec_xbrl_frame_v3",
+    "sec_xbrl_concept_v3",
 )
 
 
@@ -82,7 +82,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--xbrl-sample-limit", type=int, default=int(os.environ.get("SEC_INTEGRITY_XBRL_SAMPLE_LIMIT", "200000")))
     parser.add_argument("--skip-xbrl-sample", action="store_true", help="Skip the sampled XBRL-to-filing orphan check.")
-    parser.add_argument("--require-v2-tables", action="store_true", help="Fail if SEC document/text v2 target tables are absent.")
+    parser.add_argument("--require-v3-tables", action="store_true", help="Fail if SEC document/text v3 target tables are absent.")
     parser.add_argument("--fail-on-warn", action="store_true", help="Exit non-zero when any warning is present.")
     return parser.parse_args()
 
@@ -104,23 +104,23 @@ def main() -> None:
     table_meta = query_table_metadata(client, args.database)
     column_map = query_column_map(client, args.database)
 
-    checks.extend(check_required_tables(table_meta, args.require_v2_tables))
-    if "sec_filing_v2" in table_meta:
+    checks.extend(check_required_tables(table_meta, args.require_v3_tables))
+    if "sec_filing_v3" in table_meta:
         checks.extend(check_filing_parent(client, args.database, scope_start))
-    if "sec_filing_document_v2" in table_meta:
+    if "sec_filing_document_v3" in table_meta:
         checks.extend(check_document_v2_shape(column_map))
-    if "sec_filing_text_v1" in table_meta:
+    if "sec_filing_text_v3" in table_meta:
         checks.extend(check_text_source_shape(column_map))
-        if "sec_filing_document_v2" in table_meta:
-            checks.extend(check_text_source_table(client, args.database, text_source_table="sec_filing_text_v1", document_table="sec_filing_document_v2"))
-    if "sec_filing_text_v2" in table_meta:
+        if "sec_filing_document_v3" in table_meta:
+            checks.extend(check_text_source_table(client, args.database, text_source_table="sec_filing_text_v3", document_table="sec_filing_document_v3"))
+    if "sec_filing_text_rendered_v3" in table_meta:
         checks.extend(check_text_v2_shape(column_map))
-        if "sec_filing_document_v2" in table_meta:
-            checks.extend(check_text_table(client, args.database, text_table="sec_filing_text_v2", document_table="sec_filing_document_v2"))
+        if "sec_filing_document_v3" in table_meta:
+            checks.extend(check_text_table(client, args.database, text_table="sec_filing_text_rendered_v3", document_table="sec_filing_document_v3"))
     checks.extend(check_xbrl_presence(table_meta))
-    if not args.skip_xbrl_sample and args.xbrl_sample_limit > 0 and {"sec_xbrl_company_fact_v1", "sec_filing_v2"}.issubset(table_meta):
+    if not args.skip_xbrl_sample and args.xbrl_sample_limit > 0 and {"sec_xbrl_company_fact_v3", "sec_filing_v3"}.issubset(table_meta):
         checks.extend(check_xbrl_sample(client, args.database, args.xbrl_sample_limit, scope_start))
-    if {"sec_filing_v2", "sec_filing_document_v2", "sec_xbrl_company_fact_v1", "sec_xbrl_frame_v1", "sec_xbrl_frame_observation_v1", "sec_xbrl_concept_v1"}.issubset(table_meta):
+    if {"sec_filing_v3", "sec_filing_document_v3", "sec_xbrl_company_fact_v3", "sec_xbrl_frame_v3", "sec_xbrl_frame_observation_v3", "sec_xbrl_concept_v3"}.issubset(table_meta):
         checks.extend(check_xbrl_scoped_integrity(client, args.database, scope_start))
     checks.extend(check_archive_inventory(args))
 
@@ -153,15 +153,15 @@ def default_sec_clickhouse_password() -> str:
     )
 
 
-def check_required_tables(table_meta: dict[str, dict[str, Any]], require_v2_tables: bool) -> list[dict[str, Any]]:
+def check_required_tables(table_meta: dict[str, dict[str, Any]], require_v3_tables: bool) -> list[dict[str, Any]]:
     rows = []
-    required = {"sec_filing_v2"}
-    if require_v2_tables:
-        required |= {"sec_filing_document_v2", "sec_filing_text_v1", "sec_filing_text_v2", "sec_filing_document_skip_v1"}
+    required = {"sec_filing_v3"}
+    if require_v3_tables:
+        required |= {"sec_filing_document_v3", "sec_filing_text_v3", "sec_filing_text_rendered_v3", "sec_filing_document_skip_v3"}
     for table in SEC_TABLES:
         exists = table in table_meta
         status = "pass" if exists or table not in required else "fail"
-        if table in {"sec_filing_document_v2", "sec_filing_text_v1", "sec_filing_text_v2", "sec_filing_document_skip_v1"} and not exists and not require_v2_tables:
+        if table in {"sec_filing_document_v3", "sec_filing_text_v3", "sec_filing_text_rendered_v3", "sec_filing_document_skip_v3"} and not exists and not require_v3_tables:
             status = "warn"
         rows.append(
             check(
@@ -189,16 +189,16 @@ def check_filing_parent(client: ClickHouseHttpClient, db: str, scope_start: date
             countIf(primary_document IS NULL OR primary_document = '') AS rows_missing_primary_document,
             countIf(accepted_at_utc >= {dt64_sql(scope_start, precision=9)}) AS rows_in_scope,
             countIf(accepted_at_utc >= {dt64_sql(scope_start, precision=9)} AND primary_document IS NOT NULL AND primary_document != '') AS rows_in_scope_with_primary_document
-        FROM {qi(db)}.sec_filing_v2 FINAL
+        FROM {qi(db)}.sec_filing_v3 FINAL
         FORMAT TSVWithNames
         """,
     )
     rows.append(
         check(
-            "sec_filing_v2_parent_summary",
+            "sec_filing_v3_parent_summary",
             "pass" if int(summary["rows"]) > 0 and int(summary["missing_accepted_at_utc"]) == 0 else "fail",
             "filing parent has rows and accepted timestamps are populated",
-            table="sec_filing_v2",
+            table="sec_filing_v3",
             details=summary,
         )
     )
@@ -208,20 +208,20 @@ def check_filing_parent(client: ClickHouseHttpClient, db: str, scope_start: date
         SELECT count()
         FROM (
             SELECT cik, accession_number, count() AS c
-            FROM {qi(db)}.sec_filing_v2 FINAL
+            FROM {qi(db)}.sec_filing_v3 FINAL
             GROUP BY cik, accession_number
             HAVING c > 1
         )
         """,
     )
-    rows.append(check("sec_filing_v2_duplicate_keys", "pass" if duplicate_count == 0 else "fail", "duplicate filing keys", table="sec_filing_v2", details={"duplicates": duplicate_count}))
+    rows.append(check("sec_filing_v3_duplicate_keys", "pass" if duplicate_count == 0 else "fail", "duplicate filing keys", table="sec_filing_v3", details={"duplicates": duplicate_count}))
     scoped_duplicate_count = scalar_int(
         client,
         f"""
         SELECT count()
         FROM (
             SELECT cik, accession_number, count() AS c
-            FROM {qi(db)}.sec_filing_v2 FINAL
+            FROM {qi(db)}.sec_filing_v3 FINAL
             WHERE accepted_at_utc >= {dt64_sql(scope_start, precision=9)}
             GROUP BY cik, accession_number
             HAVING c > 1
@@ -230,10 +230,10 @@ def check_filing_parent(client: ClickHouseHttpClient, db: str, scope_start: date
     )
     rows.append(
         check(
-            "sec_filing_v2_duplicate_keys_in_scope",
+            "sec_filing_v3_duplicate_keys_in_scope",
             "pass" if scoped_duplicate_count == 0 else "fail",
             f"duplicate filing keys from {scope_start.isoformat()} onward",
-            table="sec_filing_v2",
+            table="sec_filing_v3",
             details={"scope_start_date": scope_start.isoformat(), "duplicates": scoped_duplicate_count},
         )
     )
@@ -257,9 +257,9 @@ def check_document_v2_shape(column_map: dict[str, set[str]]) -> list[dict[str, A
         "has_normalized_text",
         "normalizer_version",
     }
-    columns = column_map.get("sec_filing_document_v2", set())
+    columns = column_map.get("sec_filing_document_v3", set())
     missing = sorted(required - columns)
-    return [check("sec_filing_document_v2_required_columns", "pass" if not missing else "fail", "document v2 required schema columns", table="sec_filing_document_v2", details={"missing_columns": missing})]
+    return [check("sec_filing_document_v3_required_columns", "pass" if not missing else "fail", "document v3 required schema columns", table="sec_filing_document_v3", details={"missing_columns": missing})]
 
 
 def check_text_v2_shape(column_map: dict[str, set[str]]) -> list[dict[str, Any]]:
@@ -279,9 +279,9 @@ def check_text_v2_shape(column_map: dict[str, set[str]]) -> list[dict[str, Any]]
         "source_archive_date",
         "source_archive_member",
     }
-    columns = column_map.get("sec_filing_text_v2", set())
+    columns = column_map.get("sec_filing_text_rendered_v3", set())
     missing = sorted(required - columns)
-    return [check("sec_filing_text_v2_required_columns", "pass" if not missing else "fail", "text v2 required schema columns", table="sec_filing_text_v2", details={"missing_columns": missing})]
+    return [check("sec_filing_text_rendered_v3_required_columns", "pass" if not missing else "fail", "rendered text v3 required schema columns", table="sec_filing_text_rendered_v3", details={"missing_columns": missing})]
 
 
 def check_text_source_shape(column_map: dict[str, set[str]]) -> list[dict[str, Any]]:
@@ -308,14 +308,14 @@ def check_text_source_shape(column_map: dict[str, set[str]]) -> list[dict[str, A
         "source_run_id",
         "inserted_at",
     }
-    columns = column_map.get("sec_filing_text_v1", set())
+    columns = column_map.get("sec_filing_text_v3", set())
     missing = sorted(required - columns)
     return [
         check(
-            "sec_filing_text_v1_required_columns",
+            "sec_filing_text_v3_required_columns",
             "pass" if not missing else "fail",
             "source text required schema columns",
-            table="sec_filing_text_v1",
+            table="sec_filing_text_v3",
             details={"missing_columns": missing},
         )
     ]
@@ -390,7 +390,7 @@ def check_text_table(client: ClickHouseHttpClient, db: str, *, text_table: str, 
 
 def check_xbrl_presence(table_meta: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     rows = []
-    for table in ("sec_xbrl_company_fact_v1", "sec_xbrl_frame_observation_v1", "sec_xbrl_frame_v1", "sec_xbrl_concept_v1"):
+    for table in ("sec_xbrl_company_fact_v3", "sec_xbrl_frame_observation_v3", "sec_xbrl_frame_v3", "sec_xbrl_concept_v3"):
         meta = table_meta.get(table, {})
         total_rows = int(meta.get("total_rows") or 0)
         rows.append(check(f"{table}_presence", "pass" if total_rows > 0 else "warn", "structured SEC/XBRL table presence", table=table, details={"system_total_rows": total_rows}))
@@ -404,12 +404,12 @@ def check_xbrl_sample(client: ClickHouseHttpClient, db: str, sample_limit: int, 
         SELECT count()
         FROM (
             SELECT cik, accession_number
-            FROM {qi(db)}.sec_xbrl_company_fact_v1 FINAL
+            FROM {qi(db)}.sec_xbrl_company_fact_v3 FINAL
             WHERE accession_number IS NOT NULL AND accession_number != ''
             GROUP BY cik, accession_number
             LIMIT {int(sample_limit)}
         ) AS x
-        LEFT ANTI JOIN (SELECT cik, accession_number FROM {qi(db)}.sec_filing_v2 FINAL) AS f
+        LEFT ANTI JOIN (SELECT cik, accession_number FROM {qi(db)}.sec_filing_v3 FINAL) AS f
         ON x.cik = f.cik AND x.accession_number = f.accession_number
         """,
     )
@@ -419,14 +419,14 @@ def check_xbrl_sample(client: ClickHouseHttpClient, db: str, sample_limit: int, 
         SELECT count()
         FROM (
             SELECT cik, accession_number
-            FROM {qi(db)}.sec_xbrl_company_fact_v1 FINAL
+            FROM {qi(db)}.sec_xbrl_company_fact_v3 FINAL
             WHERE accession_number IS NOT NULL
               AND accession_number != ''
               AND filed_at_utc >= {dt64_sql(scope_start, precision=3)}
             GROUP BY cik, accession_number
             LIMIT {int(sample_limit)}
         ) AS x
-        LEFT ANTI JOIN (SELECT cik, accession_number FROM {qi(db)}.sec_filing_v2 FINAL) AS f
+        LEFT ANTI JOIN (SELECT cik, accession_number FROM {qi(db)}.sec_filing_v3 FINAL) AS f
         ON x.cik = f.cik AND x.accession_number = f.accession_number
         """,
     )
@@ -434,15 +434,15 @@ def check_xbrl_sample(client: ClickHouseHttpClient, db: str, sample_limit: int, 
         check(
             "sec_xbrl_company_fact_sample_orphans_legacy_including_pre_scope",
             "pass" if sample_orphans == 0 else "warn",
-            "legacy-inclusive sampled XBRL accession references that do not join to sec_filing_v2",
-            table="sec_xbrl_company_fact_v1",
+            "legacy-inclusive sampled XBRL accession references that do not join to sec_filing_v3",
+            table="sec_xbrl_company_fact_v3",
             details={"sample_limit": sample_limit, "sample_orphans": sample_orphans, "scope_note": f"Rows before {scope_start.isoformat()} are legacy-only."},
         ),
         check(
             "sec_xbrl_company_fact_sample_orphans_in_scope",
             "pass" if scoped_sample_orphans == 0 else "fail",
-            f"sampled XBRL accession references from {scope_start.isoformat()} onward join to sec_filing_v2",
-            table="sec_xbrl_company_fact_v1",
+            f"sampled XBRL accession references from {scope_start.isoformat()} onward join to sec_filing_v3",
+            table="sec_xbrl_company_fact_v3",
             details={"sample_limit": sample_limit, "sample_orphans": scoped_sample_orphans, "scope_start_date": scope_start.isoformat()},
         ),
     ]
@@ -456,22 +456,22 @@ def check_xbrl_scoped_integrity(client: ClickHouseHttpClient, db: str, scope_sta
         SELECT 'filings' AS dataset, count() AS rows, uniqExact(accession_number) AS accessions,
                toString(min(accepted_at_utc)) AS min_event_utc, toString(max(accepted_at_utc)) AS max_event_utc,
                toString(max(inserted_at)) AS max_inserted_at
-        FROM {qi(db)}.sec_filing_v2 FINAL
+        FROM {qi(db)}.sec_filing_v3 FINAL
         WHERE accepted_at_utc >= {dt64_sql(scope_start, precision=9)}
         UNION ALL
         SELECT 'documents_v2', count(), uniqExact(accession_number),
                toString(min(toDateTime64(source_archive_date, 3, 'UTC'))), toString(max(toDateTime64(source_archive_date, 3, 'UTC'))), toString(max(inserted_at))
-        FROM {qi(db)}.sec_filing_document_v2 FINAL
+        FROM {qi(db)}.sec_filing_document_v3 FINAL
         WHERE source_archive_date >= toDate({sql_string(scope_start.isoformat())})
         UNION ALL
         SELECT 'texts_v2', count(), uniqExact(accession_number),
                toString(min(toDateTime64(source_archive_date, 3, 'UTC'))), toString(max(toDateTime64(source_archive_date, 3, 'UTC'))), toString(max(inserted_at))
-        FROM {qi(db)}.sec_filing_text_v2 FINAL
+        FROM {qi(db)}.sec_filing_text_rendered_v3 FINAL
         WHERE source_archive_date >= toDate({sql_string(scope_start.isoformat())})
         UNION ALL
         SELECT 'xbrl_company_facts', count(), uniqExact(accession_number),
                toString(min(filed_at_utc)), toString(max(filed_at_utc)), toString(max(inserted_at))
-        FROM {qi(db)}.sec_xbrl_company_fact_v1 FINAL
+        FROM {qi(db)}.sec_xbrl_company_fact_v3 FINAL
         WHERE filed_at_utc >= {dt64_sql(scope_start, precision=3)}
         FORMAT TSVWithNames
         """,
@@ -490,12 +490,12 @@ def check_xbrl_scoped_integrity(client: ClickHouseHttpClient, db: str, scope_sta
         SELECT 'xbrl_company_facts_without_filing_in_scope' AS metric, count() AS rows
         FROM (
             SELECT cik, accession_number
-            FROM {qi(db)}.sec_xbrl_company_fact_v1 FINAL
+            FROM {qi(db)}.sec_xbrl_company_fact_v3 FINAL
             WHERE accession_number IS NOT NULL
               AND accession_number != ''
               AND filed_at_utc >= {dt64_sql(scope_start, precision=3)}
         ) AS x
-        LEFT ANTI JOIN (SELECT cik, accession_number FROM {qi(db)}.sec_filing_v2 FINAL) AS f
+        LEFT ANTI JOIN (SELECT cik, accession_number FROM {qi(db)}.sec_filing_v3 FINAL) AS f
         ON x.cik = f.cik AND x.accession_number = f.accession_number
         UNION ALL
         SELECT 'xbrl_frame_observations_without_frame_in_scope', count()
@@ -503,11 +503,11 @@ def check_xbrl_scoped_integrity(client: ClickHouseHttpClient, db: str, scope_sta
             SELECT o.taxonomy, o.tag, o.unit_code, o.calendar_period_code
             FROM (
                 SELECT cik, accession_number, taxonomy, tag, unit_code, calendar_period_code, period_end_date
-                FROM {qi(db)}.sec_xbrl_frame_observation_v1 FINAL
+                FROM {qi(db)}.sec_xbrl_frame_observation_v3 FINAL
             ) AS o
             INNER JOIN (
                 SELECT cik, accession_number, taxonomy, tag, unit_code, period_end_date
-                FROM {qi(db)}.sec_xbrl_company_fact_v1 FINAL
+                FROM {qi(db)}.sec_xbrl_company_fact_v3 FINAL
                 WHERE accession_number IS NOT NULL
                   AND accession_number != ''
                   AND filed_at_utc >= {dt64_sql(scope_start, precision=3)}
@@ -519,7 +519,7 @@ def check_xbrl_scoped_integrity(client: ClickHouseHttpClient, db: str, scope_sta
                AND o.unit_code = x.unit_code
                AND o.period_end_date = x.period_end_date
         ) AS scoped_obs
-        LEFT ANTI JOIN (SELECT taxonomy, tag, unit_code, calendar_period_code FROM {qi(db)}.sec_xbrl_frame_v1 FINAL) AS fr
+        LEFT ANTI JOIN (SELECT taxonomy, tag, unit_code, calendar_period_code FROM {qi(db)}.sec_xbrl_frame_v3 FINAL) AS fr
         ON scoped_obs.taxonomy = fr.taxonomy
            AND scoped_obs.tag = fr.tag
            AND scoped_obs.unit_code = fr.unit_code
@@ -528,10 +528,10 @@ def check_xbrl_scoped_integrity(client: ClickHouseHttpClient, db: str, scope_sta
         SELECT 'xbrl_facts_without_concept_in_scope', count()
         FROM (
             SELECT taxonomy, tag
-            FROM {qi(db)}.sec_xbrl_company_fact_v1 FINAL
+            FROM {qi(db)}.sec_xbrl_company_fact_v3 FINAL
             WHERE filed_at_utc >= {dt64_sql(scope_start, precision=3)}
         ) AS x
-        LEFT ANTI JOIN (SELECT taxonomy, tag FROM {qi(db)}.sec_xbrl_concept_v1 FINAL) AS c
+        LEFT ANTI JOIN (SELECT taxonomy, tag FROM {qi(db)}.sec_xbrl_concept_v3 FINAL) AS c
         ON x.taxonomy = c.taxonomy AND x.tag = c.tag
         FORMAT TSVWithNames
         """,
@@ -542,7 +542,7 @@ def check_xbrl_scoped_integrity(client: ClickHouseHttpClient, db: str, scope_sta
             "sec_xbrl_relations_in_scope",
             "pass" if all(value == 0 for value in orphan_details.values()) else "fail",
             f"XBRL relationships are coherent from {scope_start.isoformat()} onward",
-            table="sec_xbrl_company_fact_v1",
+            table="sec_xbrl_company_fact_v3",
             details={"scope_start_date": scope_start.isoformat(), **orphan_details},
         )
     )
@@ -552,7 +552,7 @@ def check_xbrl_scoped_integrity(client: ClickHouseHttpClient, db: str, scope_sta
         SELECT
             countIf(filed_at_utc < {dt64_sql(scope_start, precision=3)}) AS legacy_xbrl_company_fact_rows,
             uniqExactIf(accession_number, filed_at_utc < {dt64_sql(scope_start, precision=3)}) AS legacy_xbrl_accessions
-        FROM {qi(db)}.sec_xbrl_company_fact_v1 FINAL
+        FROM {qi(db)}.sec_xbrl_company_fact_v3 FINAL
         FORMAT TSVWithNames
         """,
     )
@@ -561,7 +561,7 @@ def check_xbrl_scoped_integrity(client: ClickHouseHttpClient, db: str, scope_sta
             "sec_xbrl_legacy_pre_scope_summary",
             "pass",
             f"pre-{scope_start.isoformat()} XBRL rows are legacy and not actionable for this audit",
-            table="sec_xbrl_company_fact_v1",
+            table="sec_xbrl_company_fact_v3",
             details={"scope_start_date": scope_start.isoformat(), **legacy_details},
         )
     )
@@ -572,14 +572,14 @@ def check_xbrl_scoped_integrity(client: ClickHouseHttpClient, db: str, scope_sta
             SELECT d.cik AS cik, d.accession_number AS accession_number
             FROM (
                 SELECT DISTINCT cik, accession_number
-                FROM {qi(db)}.sec_filing_document_v2 FINAL
+                FROM {qi(db)}.sec_filing_document_v3 FINAL
                 WHERE source_archive_date >= toDate({sql_string(scope_start.isoformat())})
                   AND accession_number != ''
                   AND (content_format = 'xbrl' OR document_role = 'xbrl_sidecar' OR positionCaseInsensitive(document_type, 'xbrl') > 0)
             ) AS d
             LEFT ANTI JOIN (
                 SELECT DISTINCT cik, accession_number
-                FROM {qi(db)}.sec_xbrl_company_fact_v1 FINAL
+                FROM {qi(db)}.sec_xbrl_company_fact_v3 FINAL
                 WHERE accession_number IS NOT NULL AND accession_number != ''
             ) AS x ON d.cik = x.cik AND d.accession_number = x.accession_number
         )
@@ -587,7 +587,7 @@ def check_xbrl_scoped_integrity(client: ClickHouseHttpClient, db: str, scope_sta
         FROM missing AS m
         INNER JOIN (
             SELECT cik, accession_number, form_type
-            FROM {qi(db)}.sec_filing_v2 FINAL
+            FROM {qi(db)}.sec_filing_v3 FINAL
             WHERE accepted_at_utc >= {dt64_sql(scope_start, precision=9)}
         ) AS f
         ON m.cik = f.cik AND m.accession_number = f.accession_number
@@ -603,7 +603,7 @@ def check_xbrl_scoped_integrity(client: ClickHouseHttpClient, db: str, scope_sta
             "sec_xbrl_like_documents_without_companyfacts_in_scope",
             "warn" if missing_total else "pass",
             "XBRL-looking archive documents without SEC companyfacts rows; not all XML/XBRL document types map to companyfacts",
-            table="sec_filing_document_v2",
+            table="sec_filing_document_v3",
             details={"scope_start_date": scope_start.isoformat(), "top_forms": missing_by_form, "top_form_accessions": missing_total},
         )
     )

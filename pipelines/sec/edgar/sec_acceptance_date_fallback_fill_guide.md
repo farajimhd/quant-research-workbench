@@ -54,7 +54,7 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pip
 
 - `--execute`: inserts candidates. Without it, only writes diagnostics.
 - `--target-database`: default `q_live`.
-- `--target-table`: default `sec_filing_v2`.
+- `--target-table`: default `sec_filing_v3`.
 - `--stage-database`: default `sec_core`.
 - `--stage-table`: default `sec_bulk_mirror_filing_acceptance_v1`.
 - `--max-rows`: optional safety cap. Default `0`, meaning no cap.

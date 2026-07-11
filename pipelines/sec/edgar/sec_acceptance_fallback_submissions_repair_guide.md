@@ -1,6 +1,6 @@
 # SEC Fallback Acceptance Submissions Repair
 
-This script repairs `q_live.sec_filing_v2` rows whose `accepted_at_utc` is populated but only as a date-only fallback.
+This script repairs `q_live.sec_filing_v3` rows whose `accepted_at_utc` is populated but only as a date-only fallback.
 
 Targeted sources:
 
@@ -8,7 +8,7 @@ Targeted sources:
 - `archive_date_midnight`
 - `filing_date_midnight_fallback`
 
-It scans local SEC `submissions.zip`, including both main CIK JSON files and historical `CIK##########-submissions-###.json` fragments, then inserts replacement `sec_filing_v2` rows with exact `acceptanceDateTime` where available.
+It scans local SEC `submissions.zip`, including both main CIK JSON files and historical `CIK##########-submissions-###.json` fragments, then inserts replacement `sec_filing_v3` rows with exact `acceptanceDateTime` where available.
 
 The script is separate from `sec_acceptance_archive_repair.py`. The archive repair proved that daily `.nc` archives usually do not contain `ACCEPTANCE-DATETIME`; this script uses submissions bulk instead.
 
@@ -89,7 +89,7 @@ After execute, validate that fallback rows decreased and new repair sources exis
 
 ```sql
 SELECT accepted_at_source, count()
-FROM q_live.sec_filing_v2 FINAL
+FROM q_live.sec_filing_v3 FINAL
 GROUP BY accepted_at_source
 ORDER BY count() DESC;
 ```

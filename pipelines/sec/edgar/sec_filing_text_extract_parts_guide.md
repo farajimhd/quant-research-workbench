@@ -4,12 +4,15 @@ This script parses SEC daily `.nc.tar.gz` archives and writes DB-ready JSONEachR
 
 Output datasets:
 
-- `sec_filing_v2_parts`: archive-derived parent rows for filings missing from `q_live.sec_filing_v2`.
-- `sec_filing_document_v2_parts`: real archive `<DOCUMENT>` metadata.
-- `sec_filing_text_v2_parts`: clean body text for useful text documents.
-- `sec_filing_document_skip_v1_parts`: explicit skip records for structured XML/XBRL, images, PDFs without extraction, and low-signal documents.
+- `sec_filing_v3_parts`: archive-derived parent rows for filings missing from `q_live.sec_filing_v3`.
+- `sec_filing_document_v3_parts`: real archive `<DOCUMENT>` metadata.
+- `sec_filing_text_v3_parts`: submitted text-source documents.
+- `sec_filing_text_rendered_v3_parts`: packed renderer/normalizer output for useful text documents.
+- `sec_filing_document_skip_v3_parts`: explicit skip records for structured XML/XBRL, images, PDFs without extraction, and low-signal documents.
 
-The extractor uses `q_live.sec_filing_v2` as the filing parent table. It stores clean text only; training jobs should add prompt headers later by joining to filing/document metadata.
+The extractor uses `q_live.sec_filing_v3` as the filing parent table. It stores
+submitted source text and deterministic renderer output; training jobs should add
+prompt headers later by joining to filing/document metadata.
 
 ## Workstation Smoke
 
@@ -30,7 +33,7 @@ skips=50
 errors=0
 ```
 
-Parent-missing filings are not dropped. They are written as `sec_filing_v2` parent parts first, then document/text/skip rows are written against those generated parents.
+Parent-missing filings are not dropped. They are written as `sec_filing_v3` parent parts first, then document/text/skip rows are written against those generated parents.
 
 ## Full Historical Extract
 
@@ -65,10 +68,11 @@ sec_filing_text_extract_manifest.json
 sec_filing_text_extract_summary.md
 sec_filing_text_extract_errors.jsonl
 sec_filing_text_extract_samples.jsonl
-parts/sec_filing_document_v2_parts/*.jsonl
-parts/sec_filing_v2_parts/*.jsonl
-parts/sec_filing_text_v2_parts/*.jsonl
-parts/sec_filing_document_skip_v1_parts/*.jsonl
+parts/sec_filing_document_v3_parts/*.jsonl
+parts/sec_filing_v3_parts/*.jsonl
+parts/sec_filing_text_v3_parts/*.jsonl
+parts/sec_filing_text_rendered_v3_parts/*.jsonl
+parts/sec_filing_document_skip_v3_parts/*.jsonl
 ```
 
 Use `sec_filing_text_extract_manifest.json` as the input to `sec_filing_text_clickhouse_file_ingest.py`.

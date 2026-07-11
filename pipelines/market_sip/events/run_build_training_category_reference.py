@@ -12,9 +12,9 @@ SCRIPT = REPO_ROOT / "pipelines" / "market_sip" / "events" / "clickhouse_build_t
 
 DEFAULTS = {
     "database": "market_sip_compact",
-    "xbrl_table": "sec_xbrl_context",
+    "xbrl_table": "sec_xbrl_context_v3",
     "news_token_table": "news_text_tokens",
-    "sec_token_table": "sec_filing_text_tokens",
+    "sec_token_table": "sec_filing_text_tokens_v3",
     "reference_table": "training_category_reference",
     "max_threads": 16,
     "max_memory_usage": "80G",

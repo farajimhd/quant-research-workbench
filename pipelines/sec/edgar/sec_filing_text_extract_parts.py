@@ -265,8 +265,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Parse SEC daily .nc.tar.gz archives and build DB-ready JSONEachRow "
-            "parts for sec_filing_document_v2, sec_filing_text_v1, "
-            "sec_filing_text_v2, and sec_filing_document_skip_v1. This script "
+            "parts for sec_filing_document_v3, sec_filing_text_v3, "
+            "sec_filing_text_rendered_v3, and sec_filing_document_skip_v3. This script "
             "does not insert rows."
         )
     )
@@ -456,11 +456,11 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     part_prefix = f"{archive_date:%Y%m%d}_{int(payload['archive_index']):06d}"
     parts_root = Path(payload["parts_root"])
     part_paths = {
-        "filing": parts_root / "sec_filing_v2_parts" / f"sec_filing_v2_part_{part_prefix}.jsonl",
-        "document": parts_root / "sec_filing_document_v2_parts" / f"sec_filing_document_v2_part_{part_prefix}.jsonl",
-        "text_source": parts_root / "sec_filing_text_v1_parts" / f"sec_filing_text_v1_part_{part_prefix}.jsonl",
-        "text": parts_root / "sec_filing_text_v2_parts" / f"sec_filing_text_v2_part_{part_prefix}.jsonl",
-        "skip": parts_root / "sec_filing_document_skip_v1_parts" / f"sec_filing_document_skip_v1_part_{part_prefix}.jsonl",
+        "filing": parts_root / "sec_filing_v3_parts" / f"sec_filing_v3_part_{part_prefix}.jsonl",
+        "document": parts_root / "sec_filing_document_v3_parts" / f"sec_filing_document_v3_part_{part_prefix}.jsonl",
+        "text_source": parts_root / "sec_filing_text_v3_parts" / f"sec_filing_text_v3_part_{part_prefix}.jsonl",
+        "text": parts_root / "sec_filing_text_rendered_v3_parts" / f"sec_filing_text_rendered_v3_part_{part_prefix}.jsonl",
+        "skip": parts_root / "sec_filing_document_skip_v3_parts" / f"sec_filing_document_skip_v3_part_{part_prefix}.jsonl",
     }
     for path in part_paths.values():
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -573,11 +573,11 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     stats["content_formats"] = dict(stats["content_formats"])
     stats["form_types"] = dict(stats["form_types"])
     stats["part_files"] = [
-        part_file_summary("filing", "sec_filing_v2", part_paths["filing"], filing_parent_count, FILING_COLUMNS),
-        part_file_summary("document", "sec_filing_document_v2", part_paths["document"], doc_count, DOCUMENT_COLUMNS),
-        part_file_summary("text_source", "sec_filing_text_v1", part_paths["text_source"], text_source_count, TEXT_SOURCE_COLUMNS),
-        part_file_summary("text", "sec_filing_text_v2", part_paths["text"], text_count, TEXT_COLUMNS),
-        part_file_summary("skip", "sec_filing_document_skip_v1", part_paths["skip"], skip_count, SKIP_COLUMNS),
+        part_file_summary("filing", "sec_filing_v3", part_paths["filing"], filing_parent_count, FILING_COLUMNS),
+        part_file_summary("document", "sec_filing_document_v3", part_paths["document"], doc_count, DOCUMENT_COLUMNS),
+        part_file_summary("text_source", "sec_filing_text_v3", part_paths["text_source"], text_source_count, TEXT_SOURCE_COLUMNS),
+        part_file_summary("text", "sec_filing_text_rendered_v3", part_paths["text"], text_count, TEXT_COLUMNS),
+        part_file_summary("skip", "sec_filing_document_skip_v3", part_paths["skip"], skip_count, SKIP_COLUMNS),
     ]
     return stats
 
@@ -598,7 +598,7 @@ def load_parent_map(client: ClickHouseHttpClient, db: str, archive_date: date, d
             ifNull(primary_document, '') AS primary_document,
             ifNull(primary_document_url, '') AS primary_document_url,
             ifNull(filing_detail_url, '') AS filing_detail_url
-        FROM {quote_ident(db)}.sec_filing_v2 FINAL
+        FROM {quote_ident(db)}.sec_filing_v3 FINAL
         WHERE accepted_at_utc >= toDateTime64({sql_string(start.isoformat() + ' 00:00:00')}, 9, 'UTC')
           AND accepted_at_utc < toDateTime64({sql_string(end.isoformat() + ' 00:00:00')}, 9, 'UTC')
         FORMAT TSVWithNames
@@ -1227,11 +1227,11 @@ def write_manifest(path: Path, args: argparse.Namespace, source_run_id: str, loa
         "clickhouse_format": "JSONEachRow",
         "database": args.database,
         "target_tables": {
-            "filing": "sec_filing_v2",
-            "document": "sec_filing_document_v2",
-            "text_source": "sec_filing_text_v1",
-            "text": "sec_filing_text_v2",
-            "skip": "sec_filing_document_skip_v1",
+            "filing": "sec_filing_v3",
+            "document": "sec_filing_document_v3",
+            "text_source": "sec_filing_text_v3",
+            "text": "sec_filing_text_rendered_v3",
+            "skip": "sec_filing_document_skip_v3",
         },
         "parts_root": str(path.parent / "parts"),
         "part_files": part_files,

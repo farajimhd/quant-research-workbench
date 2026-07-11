@@ -24,6 +24,13 @@ from research.mlops.clickhouse import (  # noqa: E402
     sql_string,
 )
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
+from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import (  # noqa: E402
+    DOCUMENT_TABLE,
+    FILING_TABLE,
+    XBRL_COMPANY_FACT_TABLE,
+    XBRL_FRAME_OBSERVATION_TABLE,
+    XBRL_FRAME_TABLE,
+)
 
 
 DEFAULT_DATABASE = "q_live"
@@ -57,7 +64,7 @@ def parse_args() -> argparse.Namespace:
         description=(
             "Repair SEC XBRL integrity issues after historical SEC loads. "
             "The script can drop legacy v1 document/text tables, insert missing "
-            "sec_filing_v2 parents for XBRL facts, and insert missing frame parents "
+            "SEC filing parents for XBRL facts, and insert missing frame parents "
             "for frame observations."
         )
     )
@@ -186,7 +193,7 @@ def run_filing_parent_repair(client: ClickHouseHttpClient, args: argparse.Namesp
         flush=True,
     )
     if args.execute and before["accessions"] > 0:
-        print("[stage filing-parents] inserting missing sec_filing_v2 parents", flush=True)
+        print(f"[stage filing-parents] inserting missing {FILING_TABLE} parents", flush=True)
         timed_execute(client, sql_text, query_id=run_id + "_filing_parents")
     elif not args.execute:
         print(f"[stage filing-parents] dry-run; SQL written to {sql_path}", flush=True)
@@ -221,7 +228,7 @@ def run_frame_parent_repair(client: ClickHouseHttpClient, args: argparse.Namespa
         flush=True,
     )
     if args.execute and before["frame_keys"] > 0:
-        print("[stage frame-parents] inserting missing sec_xbrl_frame_v1 parents", flush=True)
+        print(f"[stage frame-parents] inserting missing {XBRL_FRAME_TABLE} parents", flush=True)
         timed_execute(client, sql_text, query_id=run_id + "_frame_parents")
     elif not args.execute:
         print(f"[stage frame-parents] dry-run; SQL written to {sql_path}", flush=True)
@@ -279,12 +286,12 @@ def xbrl_orphan_counts(client: ClickHouseHttpClient, database: str, scope_start_
             uniqExact(cik) AS ciks
         FROM (
             SELECT cik, accession_number
-            FROM {qi(database)}.sec_xbrl_company_fact_v1 FINAL
+            FROM {qi(database)}.{qi(XBRL_COMPANY_FACT_TABLE)} FINAL
             WHERE accession_number IS NOT NULL
               AND accession_number != ''
               AND filed_at_utc >= toDateTime64({sql_string(scope_start_date + " 00:00:00")}, 3, 'UTC')
         ) AS x
-        LEFT ANTI JOIN (SELECT cik, accession_number FROM {qi(database)}.sec_filing_v2 FINAL) AS f
+        LEFT ANTI JOIN (SELECT cik, accession_number FROM {qi(database)}.{qi(FILING_TABLE)} FINAL) AS f
         ON x.cik = f.cik AND x.accession_number = f.accession_number
         FORMAT JSONEachRow
         """,
@@ -303,11 +310,11 @@ def frame_orphan_counts(client: ClickHouseHttpClient, database: str, scope_start
             SELECT o.taxonomy, o.tag, o.unit_code, o.calendar_period_code
             FROM (
                 SELECT cik, accession_number, taxonomy, tag, unit_code, calendar_period_code, period_end_date
-                FROM {qi(database)}.sec_xbrl_frame_observation_v1 FINAL
+                FROM {qi(database)}.{qi(XBRL_FRAME_OBSERVATION_TABLE)} FINAL
             ) AS o
             INNER JOIN (
                 SELECT cik, accession_number, taxonomy, tag, unit_code, period_end_date
-                FROM {qi(database)}.sec_xbrl_company_fact_v1 FINAL
+                FROM {qi(database)}.{qi(XBRL_COMPANY_FACT_TABLE)} FINAL
                 WHERE accession_number IS NOT NULL
                   AND accession_number != ''
                   AND filed_at_utc >= toDateTime64({sql_string(scope_start_date + " 00:00:00")}, 3, 'UTC')
@@ -319,7 +326,7 @@ def frame_orphan_counts(client: ClickHouseHttpClient, database: str, scope_start
                AND o.unit_code = x.unit_code
                AND o.period_end_date = x.period_end_date
         ) AS scoped_obs
-        LEFT ANTI JOIN (SELECT taxonomy, tag, unit_code, calendar_period_code FROM {qi(database)}.sec_xbrl_frame_v1 FINAL) AS fr
+        LEFT ANTI JOIN (SELECT taxonomy, tag, unit_code, calendar_period_code FROM {qi(database)}.{qi(XBRL_FRAME_TABLE)} FINAL) AS fr
         ON scoped_obs.taxonomy = fr.taxonomy
            AND scoped_obs.tag = fr.tag
            AND scoped_obs.unit_code = fr.unit_code
@@ -332,7 +339,7 @@ def frame_orphan_counts(client: ClickHouseHttpClient, database: str, scope_start
 
 def filing_parent_insert_sql(database: str, scope_start_date: str, run_id: str) -> str:
     return f"""
-INSERT INTO {qi(database)}.sec_filing_v2
+INSERT INTO {qi(database)}.{qi(FILING_TABLE)}
 (
     filing_id,
     accession_number,
@@ -364,12 +371,12 @@ WITH
         SELECT DISTINCT x.cik, x.accession_number
         FROM (
             SELECT cik, accession_number
-            FROM {qi(database)}.sec_xbrl_company_fact_v1 FINAL
+            FROM {qi(database)}.{qi(XBRL_COMPANY_FACT_TABLE)} FINAL
             WHERE accession_number IS NOT NULL
               AND accession_number != ''
               AND filed_at_utc >= toDateTime64({sql_string(scope_start_date + " 00:00:00")}, 3, 'UTC')
         ) AS x
-        LEFT ANTI JOIN (SELECT cik, accession_number FROM {qi(database)}.sec_filing_v2 FINAL) AS f
+        LEFT ANTI JOIN (SELECT cik, accession_number FROM {qi(database)}.{qi(FILING_TABLE)} FINAL) AS f
         ON x.cik = f.cik AND x.accession_number = f.accession_number
     ),
     fact_agg AS (
@@ -380,7 +387,7 @@ WITH
             max(period_end_date) AS report_date,
             any(ifNull(form_type, '')) AS form_type,
             count() AS fact_rows
-        FROM {qi(database)}.sec_xbrl_company_fact_v1 FINAL
+        FROM {qi(database)}.{qi(XBRL_COMPANY_FACT_TABLE)} FINAL
         WHERE (cik, accession_number) IN (SELECT cik, accession_number FROM missing)
         GROUP BY cik, accession_number
     ),
@@ -397,7 +404,7 @@ WITH
             min(source_archive_date) AS source_archive_date,
             sum(byte_size) AS filing_size,
             count() AS document_rows
-        FROM {qi(database)}.sec_filing_document_v2 FINAL
+        FROM {qi(database)}.{qi(DOCUMENT_TABLE)} FINAL
         WHERE (cik, accession_number) IN (SELECT cik, accession_number FROM missing)
         GROUP BY cik, accession_number
     )
@@ -425,7 +432,7 @@ SELECT
     nullIf(d.primary_document, '') AS primary_document,
     nullIf(d.primary_document_url, '') AS primary_document_url,
     concat('https://www.sec.gov/Archives/edgar/data/', toString(toUInt64OrZero(fa.cik)), '/', replaceAll(fa.accession_number, '-', ''), '/') AS filing_detail_url,
-    if(ifNull(d.source_archive_member, '') != '', d.source_archive_member, 'sec_xbrl_company_fact_v1') AS source_file_name,
+    if(ifNull(d.source_archive_member, '') != '', d.source_archive_member, {sql_string(XBRL_COMPANY_FACT_TABLE)}) AS source_file_name,
     CAST(ifNull(d.filing_size, 0), 'Nullable(UInt64)') AS filing_size,
     CAST(NULL, 'Nullable(String)') AS items,
     if(ifNull(d.document_rows, 0) > 0, 'archive_text_extracted', 'xbrl_parent_only') AS text_status,
@@ -440,7 +447,7 @@ ON fa.cik = d.cik AND fa.accession_number = d.accession_number
 
 def frame_parent_insert_sql(database: str, scope_start_date: str, run_id: str) -> str:
     return f"""
-INSERT INTO {qi(database)}.sec_xbrl_frame_v1
+INSERT INTO {qi(database)}.{qi(XBRL_FRAME_TABLE)}
 (
     frame_id,
     taxonomy,
@@ -469,11 +476,11 @@ FROM (
     SELECT o.frame_id, o.taxonomy, o.tag, o.unit_code, o.calendar_period_code, o.cik, o.accession_number, o.period_end_date, o.recorded_at_utc
     FROM (
         SELECT frame_id, taxonomy, tag, unit_code, calendar_period_code, cik, accession_number, period_end_date, recorded_at_utc
-        FROM {qi(database)}.sec_xbrl_frame_observation_v1 FINAL
+        FROM {qi(database)}.{qi(XBRL_FRAME_OBSERVATION_TABLE)} FINAL
     ) AS o
     INNER JOIN (
         SELECT cik, accession_number, taxonomy, tag, unit_code, period_end_date
-        FROM {qi(database)}.sec_xbrl_company_fact_v1 FINAL
+        FROM {qi(database)}.{qi(XBRL_COMPANY_FACT_TABLE)} FINAL
         WHERE accession_number IS NOT NULL
           AND accession_number != ''
           AND filed_at_utc >= toDateTime64({sql_string(scope_start_date + " 00:00:00")}, 3, 'UTC')
@@ -485,7 +492,7 @@ FROM (
        AND o.unit_code = x.unit_code
        AND o.period_end_date = x.period_end_date
 ) AS scoped_obs
-LEFT ANTI JOIN (SELECT taxonomy, tag, unit_code, calendar_period_code FROM {qi(database)}.sec_xbrl_frame_v1 FINAL) AS fr
+LEFT ANTI JOIN (SELECT taxonomy, tag, unit_code, calendar_period_code FROM {qi(database)}.{qi(XBRL_FRAME_TABLE)} FINAL) AS fr
 ON scoped_obs.taxonomy = fr.taxonomy
    AND scoped_obs.tag = fr.tag
    AND scoped_obs.unit_code = fr.unit_code
@@ -496,11 +503,11 @@ GROUP BY scoped_obs.taxonomy, scoped_obs.tag, scoped_obs.unit_code, scoped_obs.c
 
 def require_tables(client: ClickHouseHttpClient, database: str) -> None:
     required = {
-        "sec_filing_v2",
-        "sec_filing_document_v2",
-        "sec_xbrl_company_fact_v1",
-        "sec_xbrl_frame_v1",
-        "sec_xbrl_frame_observation_v1",
+        FILING_TABLE,
+        DOCUMENT_TABLE,
+        XBRL_COMPANY_FACT_TABLE,
+        XBRL_FRAME_TABLE,
+        XBRL_FRAME_OBSERVATION_TABLE,
     }
     rows = client.execute(
         f"""

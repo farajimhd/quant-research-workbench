@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import (  # noqa: E402
+    DOCUMENT_TABLE,
     XBRL_COMPANY_FACT_TABLE,
     XBRL_CONCEPT_TABLE,
     XBRL_FRAME_OBSERVATION_TABLE,
@@ -233,7 +234,7 @@ def load_missing_xbrl_work(
         SELECT d.cik AS cik, d.accession_number AS accession_number
         FROM (
             SELECT DISTINCT cik, accession_number
-            FROM {qi(read_database)}.sec_filing_document_v2 FINAL
+            FROM {qi(read_database)}.{qi(DOCUMENT_TABLE)} FINAL
             WHERE source_archive_date >= toDate({sql_string(start_date.isoformat())})
               AND source_archive_date < toDate({sql_string(end_date.isoformat())})
               AND accession_number != ''

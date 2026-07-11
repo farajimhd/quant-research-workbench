@@ -79,6 +79,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-database", default=os.environ.get("QLIVE_MIGRATION_TARGET_DATABASE", DEFAULT_TARGET_DATABASE))
     parser.add_argument("--output-root-win", default=os.environ.get("QLIVE_MIGRATION_STEP_06_OUTPUT_ROOT_WIN", str(DEFAULT_OUTPUT_ROOT_WIN)))
     parser.add_argument("--feature-date", default=os.environ.get("QLIVE_MIGRATION_FEATURE_DATE", date.today().isoformat()))
+    parser.add_argument("--sec-bridge-table", default=os.environ.get("QLIVE_SEC_MARKET_BRIDGE_TABLE", "id_sec_market_bridge_v3"))
     parser.add_argument(
         "--specs",
         default=os.environ.get("QLIVE_MIGRATION_STEP_06_SPECS", "all"),
@@ -95,6 +96,7 @@ def main() -> None:
     loaded_env = load_env_files(discover_env_files(REPO_ROOT), verbose=True)
     args = parse_args()
     validate_database_name(args.target_database, "--target-database")
+    validate_database_name(args.sec_bridge_table, "--sec-bridge-table")
     feature_date = parse_iso_date(args.feature_date)
 
     run_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
@@ -102,7 +104,7 @@ def main() -> None:
     inserted_at = clickhouse_now64()
     paths = StepPaths.create(Path(args.output_root_win), run_id)
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
-    specs = select_specs(build_specs(args.target_database, build_run_id, inserted_at, feature_date), args.specs)
+    specs = select_specs(build_specs(args.target_database, build_run_id, inserted_at, feature_date, sec_bridge_table=args.sec_bridge_table), args.specs)
 
     print_header(args, paths, loaded_env, build_run_id, specs, feature_date)
     preflight = run_preflight(client, args, specs)
@@ -169,8 +171,9 @@ def default_migration_clickhouse_password() -> str:
     )
 
 
-def build_specs(target_db: str, run_id: str, inserted_at: str, feature_date: date) -> list[BuildSpec]:
+def build_specs(target_db: str, run_id: str, inserted_at: str, feature_date: date, *, sec_bridge_table: str = "id_sec_market_bridge_v3") -> list[BuildSpec]:
     db = quote_ident(target_db)
+    sec_bridge = quote_ident(sec_bridge_table)
     literal_run_id = sql_string(run_id)
     literal_inserted_at = sql_string(inserted_at)
     literal_feature_date = sql_string(feature_date.isoformat())
@@ -178,7 +181,7 @@ def build_specs(target_db: str, run_id: str, inserted_at: str, feature_date: dat
     return [
         BuildSpec(
             name="sec_market_bridge",
-            target_table="id_sec_market_bridge_v1",
+            target_table=sec_bridge_table,
             critical_columns=("bridge_id", "cik", "issuer_id", "mapping_method", "mapping_status"),
             expected_sql=f"""
 SELECT uniqExact(tuple(iii.identifier_value_normalized, sec.security_id, l.listing_id, sym.symbol_id))
@@ -190,9 +193,9 @@ WHERE iii.identifier_kind = 'cik'
   AND sec.status = 'active'
   AND l.listing_status = 'active'
 """,
-            target_count_sql=f"SELECT count() FROM {db}.id_sec_market_bridge_v1 FINAL",
+            target_count_sql=f"SELECT count() FROM {db}.{sec_bridge} FINAL",
             insert_sql=f"""
-INSERT INTO {db}.id_sec_market_bridge_v1
+INSERT INTO {db}.{sec_bridge}
 (bridge_id, cik, issuer_id, security_id, listing_id, symbol_id, ticker, accession_number, valid_from_date, valid_to_date_exclusive, mapping_method, mapping_status, confidence_score, ambiguity_status, evidence_json, first_seen_at_utc, last_seen_at_utc, source_run_id, source_content_sha256, inserted_at)
 WITH bridge_source AS
 (
@@ -474,7 +477,8 @@ def select_specs(specs: list[BuildSpec], spec_text: str) -> list[BuildSpec]:
 
 
 def run_preflight(client: ClickHouseHttpClient, args: argparse.Namespace, specs: list[BuildSpec]) -> list[dict[str, Any]]:
-    required_tables = sorted({spec.target_table for spec in specs} | {"source_run_v1", "sync_validation_v1", "id_issuer_identifier_v1", "id_security_v1", "id_listing_v1", "id_symbol_v1", "sec_filing_v2"})
+    ensure_sec_bridge_table(client, args.target_database, specs)
+    required_tables = sorted({spec.target_table for spec in specs} | {"source_run_v1", "sync_validation_v1", "id_issuer_identifier_v1", "id_security_v1", "id_listing_v1", "id_symbol_v1", "sec_filing_v3"})
     missing = missing_tables(client, args.target_database, required_tables)
     if missing:
         raise SystemExit("Missing required target tables: " + json.dumps(missing, indent=2))
@@ -587,6 +591,39 @@ def missing_tables(client: ClickHouseHttpClient, database: str, tables: list[str
     found = query_json_each_row(client, f"SELECT name FROM system.tables WHERE database = {sql_string(database)} AND name IN ({values})")
     found_names = {row["name"] for row in found}
     return [table for table in tables if table not in found_names]
+
+
+def ensure_sec_bridge_table(client: ClickHouseHttpClient, database: str, specs: list[BuildSpec]) -> None:
+    targets = {spec.target_table for spec in specs if spec.name == "sec_market_bridge"}
+    for target_table in sorted(targets):
+        if target_table == "id_sec_market_bridge_v1" or table_exists(client, database, target_table):
+            continue
+        if not table_exists(client, database, "id_sec_market_bridge_v1"):
+            continue
+        clone_table_schema(client, database=database, source_table="id_sec_market_bridge_v1", target_table=target_table)
+
+
+def table_exists(client: ClickHouseHttpClient, database: str, table: str) -> bool:
+    return not missing_tables(client, database, [table])
+
+
+def clone_table_schema(client: ClickHouseHttpClient, *, database: str, source_table: str, target_table: str) -> None:
+    ddl = client.execute(f"SHOW CREATE TABLE {quote_ident(database)}.{quote_ident(source_table)} FORMAT TSVRaw").strip()
+    pattern = re.compile(
+        r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+        + r"(?:`[^`]+`|[A-Za-z_][A-Za-z0-9_]*)\."
+        + r"(?:`"
+        + re.escape(source_table)
+        + r"`|"
+        + re.escape(source_table)
+        + r")",
+        flags=re.IGNORECASE,
+    )
+    cloned = pattern.sub(f"CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(target_table)}", ddl, count=1)
+    if cloned == ddl:
+        raise RuntimeError(f"could not rewrite SHOW CREATE TABLE DDL for {database}.{source_table}")
+    cloned = re.sub(r"\s+UUID\s+'[^']+'", "", cloned, count=1, flags=re.IGNORECASE)
+    client.execute(cloned)
 
 
 def critical_empty_count(client: ClickHouseHttpClient, database: str, table: str, columns: tuple[str, ...]) -> int:

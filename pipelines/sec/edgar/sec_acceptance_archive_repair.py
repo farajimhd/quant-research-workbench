@@ -39,7 +39,7 @@ from pipelines.sec.edgar.sec_pipeline.submissions import parse_acceptance_dateti
 DEFAULT_ARCHIVE_ROOT_WIN = Path("D:/market-data/sec_core/daily_archives")
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_acceptance_archive_repair")
 DEFAULT_DATABASE = "q_live"
-DEFAULT_TARGET_TABLE = "sec_filing_v2"
+DEFAULT_TARGET_TABLE = "sec_filing_v3"
 DEFAULT_REPAIR_SOURCES = (
     "archive_acceptance_datetime",
     "archive_filing_date_midnight",
@@ -100,7 +100,7 @@ class RunPaths:
     def create(cls, output_root: Path, run_id: str) -> "RunPaths":
         run_root = output_root / run_id
         parts_root = run_root / "parts"
-        repair_parts_root = parts_root / "sec_filing_v2_acceptance_repair_parts"
+        repair_parts_root = parts_root / "sec_filing_v3_acceptance_repair_parts"
         repair_parts_root.mkdir(parents=True, exist_ok=True)
         return cls(
             run_root=run_root,
@@ -120,7 +120,7 @@ def parse_args() -> argparse.Namespace:
             "dates. The script scans local .nc.tar.gz archives, extracts EDGAR "
             "ACCEPTANCE-DATETIME from the matching accession container, normalizes it to UTC, "
             "writes ReplacingMergeTree replacement rows, and optionally inserts "
-            "those rows into q_live.sec_filing_v2."
+            "those rows into q_live.sec_filing_v3."
         )
     )
     parser.add_argument("--archive-root-win", default=os.environ.get("SEC_DAILY_ARCHIVE_ROOT_WIN", str(DEFAULT_ARCHIVE_ROOT_WIN)))
@@ -432,7 +432,7 @@ def write_repaired_rows(paths: RunPaths, part_state: dict[str, Any], rows: list[
         if part_state["current_path"] is None or int(part_state["rows_in_part"]) >= rows_per_part:
             part_state["part_index"] = int(part_state["part_index"]) + 1
             part_state["rows_in_part"] = 0
-            part_state["current_path"] = paths.repair_parts_root / f"sec_filing_v2_acceptance_repair_part_{int(part_state['part_index']):06d}.jsonl"
+            part_state["current_path"] = paths.repair_parts_root / f"sec_filing_v3_acceptance_repair_part_{int(part_state['part_index']):06d}.jsonl"
         path = Path(part_state["current_path"])
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n")
@@ -547,7 +547,7 @@ def write_summary(path: Path, args: argparse.Namespace, paths: RunPaths, run_id:
             "## Notes",
             "",
             "- This script inserts replacement rows only when `--execute` is used.",
-            "- Replacements rely on ClickHouse `ReplacingMergeTree`; query `sec_filing_v2 FINAL` to see repaired rows.",
+            "- Replacements rely on ClickHouse `ReplacingMergeTree`; query `sec_filing_v3 FINAL` to see repaired rows.",
             "- Unresolved rows stay in `unresolved_rows.jsonl` and should remain excluded from timestamp-sensitive training.",
         ]
     )

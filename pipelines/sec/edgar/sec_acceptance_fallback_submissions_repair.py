@@ -37,7 +37,7 @@ from pipelines.sec.edgar.sec_initial_fill_download import sha256_file  # noqa: E
 DEFAULT_ARTIFACT_ROOT_WIN = Path("D:/market-data/sec_core")
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_acceptance_fallback_submissions_repair")
 DEFAULT_DATABASE = "q_live"
-DEFAULT_TARGET_TABLE = "sec_filing_v2"
+DEFAULT_TARGET_TABLE = "sec_filing_v3"
 DEFAULT_FALLBACK_SOURCES = (
     "archive_filing_date_midnight",
     "archive_date_midnight",
@@ -96,7 +96,7 @@ def parse_args() -> argparse.Namespace:
         description=(
             "Repair SEC filing rows whose accepted_at_utc is a date-only fallback by scanning "
             "local SEC submissions.zip main and fragment JSON files for acceptanceDateTime. "
-            "The script writes replacement sec_filing_v2 JSONEachRow parts and optionally "
+            "The script writes replacement sec_filing_v3 JSONEachRow parts and optionally "
             "inserts them into ClickHouse."
         )
     )
@@ -700,7 +700,7 @@ def find_part_files(paths: RunPaths) -> list[Path]:
     files = sorted(paths.parts_root.glob("*.jsonl"))
     if files:
         return files
-    legacy_root = paths.run_root / "parts" / "sec_filing_v2_fallback_submissions_repair_parts"
+    legacy_root = paths.run_root / "parts" / "sec_filing_v3_fallback_submissions_repair_parts"
     return sorted(legacy_root.glob("*.jsonl"))
 
 

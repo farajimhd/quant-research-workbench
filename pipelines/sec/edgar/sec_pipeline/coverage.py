@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from research.mlops.clickhouse import ClickHouseHttpClient
-from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import qi, sql_string
+from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import FILING_TABLE, TEXT_TABLE, XBRL_COMPANY_FACT_TABLE, qi, sql_string
 
 
 KIND_LIVE_FEED = "sec_live_feed"
@@ -161,13 +161,13 @@ def bootstrap_from_existing_tables(
         return []
     database = qi(source_database or config.database)
     specs = {
-        KIND_LIVE_FEED: f"SELECT min(accepted_at_utc), max(accepted_at_utc), count() FROM {database}.sec_filing_v2 FINAL WHERE accepted_at_utc >= toDateTime64('2019-01-01 00:00:00', 3, 'UTC')",
+        KIND_LIVE_FEED: f"SELECT min(accepted_at_utc), max(accepted_at_utc), count() FROM {database}.{FILING_TABLE} FINAL WHERE accepted_at_utc >= toDateTime64('2019-01-01 00:00:00', 3, 'UTC')",
         KIND_TEXT_EXTRACTION: (
             f"SELECT min(toDateTime64(source_archive_date, 3, 'UTC')), max(toDateTime64(source_archive_date, 3, 'UTC')), count() "
-            f"FROM {database}.sec_filing_text_v2 FINAL WHERE source_archive_date >= toDate('2019-01-01')"
+            f"FROM {database}.{TEXT_TABLE} FINAL WHERE source_archive_date >= toDate('2019-01-01')"
         ),
-        KIND_BULK_COMPANYFACTS: f"SELECT min(filed_at_utc), max(filed_at_utc), count() FROM {database}.sec_xbrl_company_fact_v1 FINAL WHERE filed_at_utc >= toDateTime64('2019-01-01 00:00:00', 3, 'UTC')",
-        KIND_BULK_SUBMISSIONS: "SELECT min(accepted_at_utc), max(accepted_at_utc), count() FROM sec_core.sec_bulk_mirror_filing_acceptance_v1 FINAL WHERE accepted_at_utc >= toDateTime64('2019-01-01 00:00:00', 3, 'UTC')",
+        KIND_BULK_COMPANYFACTS: f"SELECT min(filed_at_utc), max(filed_at_utc), count() FROM {database}.{XBRL_COMPANY_FACT_TABLE} FINAL WHERE filed_at_utc >= toDateTime64('2019-01-01 00:00:00', 3, 'UTC')",
+        KIND_BULK_SUBMISSIONS: "SELECT min(accepted_at_utc), max(accepted_at_utc), count() FROM sec_core.sec_bulk_mirror_filing_v3 FINAL WHERE accepted_at_utc >= toDateTime64('2019-01-01 00:00:00', 3, 'UTC')",
     }
     stats: dict[str, dict[str, Any]] = {}
     latest_required: list[datetime] = []
@@ -221,9 +221,9 @@ def bootstrap_from_existing_tables(
 
 def plan_freshness_gaps(client: ClickHouseHttpClient, *, database: str, now_utc: datetime) -> list[SecGap]:
     gaps: list[SecGap] = []
-    latest_filing = scalar_dt(client, f"SELECT max(accepted_at_utc) FROM {qi(database)}.sec_filing_v2 FINAL")
-    latest_text = scalar_dt(client, f"SELECT max(toDateTime64(source_archive_date, 3, 'UTC')) FROM {qi(database)}.sec_filing_text_v2 FINAL")
-    latest_xbrl = scalar_dt(client, f"SELECT max(filed_at_utc) FROM {qi(database)}.sec_xbrl_company_fact_v1 FINAL")
+    latest_filing = scalar_dt(client, f"SELECT max(accepted_at_utc) FROM {qi(database)}.{qi(FILING_TABLE)} FINAL")
+    latest_text = scalar_dt(client, f"SELECT max(toDateTime64(source_archive_date, 3, 'UTC')) FROM {qi(database)}.{qi(TEXT_TABLE)} FINAL")
+    latest_xbrl = scalar_dt(client, f"SELECT max(filed_at_utc) FROM {qi(database)}.{qi(XBRL_COMPANY_FACT_TABLE)} FINAL")
     if latest_filing and now_utc - latest_filing > timedelta(hours=12):
         gaps.append(SecGap(KIND_LIVE_FEED, latest_filing, now_utc, "latest filing parent is stale"))
     if latest_text and now_utc - latest_text > timedelta(days=2):
@@ -304,15 +304,15 @@ def plan_freshness_fallback_for_kind(
     kind: str,
 ) -> list[SecGap]:
     if kind == KIND_LIVE_FEED:
-        latest = scalar_dt(client, f"SELECT max(accepted_at_utc) FROM {qi(database)}.sec_filing_v2 FINAL")
+        latest = scalar_dt(client, f"SELECT max(accepted_at_utc) FROM {qi(database)}.{qi(FILING_TABLE)} FINAL")
         if latest and now_utc - latest > timedelta(hours=12):
             return [SecGap(KIND_LIVE_FEED, latest, now_utc, "latest filing parent is stale")]
     if kind == KIND_TEXT_EXTRACTION:
-        latest = scalar_dt(client, f"SELECT max(toDateTime64(source_archive_date, 3, 'UTC')) FROM {qi(database)}.sec_filing_text_v2 FINAL")
+        latest = scalar_dt(client, f"SELECT max(toDateTime64(source_archive_date, 3, 'UTC')) FROM {qi(database)}.{qi(TEXT_TABLE)} FINAL")
         if latest and now_utc - latest > timedelta(days=2):
             return [SecGap(KIND_TEXT_EXTRACTION, latest, now_utc, "latest filing text archive date is stale")]
     if kind == KIND_BULK_COMPANYFACTS:
-        latest = scalar_dt(client, f"SELECT max(filed_at_utc) FROM {qi(database)}.sec_xbrl_company_fact_v1 FINAL")
+        latest = scalar_dt(client, f"SELECT max(filed_at_utc) FROM {qi(database)}.{qi(XBRL_COMPANY_FACT_TABLE)} FINAL")
         if latest and now_utc - latest > timedelta(days=2):
             return [SecGap(KIND_BULK_COMPANYFACTS, latest, now_utc, "latest XBRL companyfacts filed date is stale")]
     return []

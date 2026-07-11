@@ -6,10 +6,10 @@ XBRL relationship failures.
 The script is idempotent and dry-run by default. It handles three repair stages:
 
 - `drop-legacy`: drops stale `sec_filing_document_v1`.
-- `filing-parents`: inserts missing `sec_filing_v2` parent rows for 2019+
-  companyfacts accessions that do not currently join to `sec_filing_v2`.
-- `frame-parents`: inserts missing `sec_xbrl_frame_v1` rows derived from
-  `sec_xbrl_frame_observation_v1`, keyed by
+- `filing-parents`: inserts missing `sec_filing_v3` parent rows for 2019+
+  companyfacts accessions that do not currently join to `sec_filing_v3`.
+- `frame-parents`: inserts missing `sec_xbrl_frame_v3` rows derived from
+  `sec_xbrl_frame_observation_v3`, keyed by
   `(taxonomy, tag, unit_code, calendar_period_code)`.
 
 It does not call SEC APIs. It repairs relationships from data that is already in
@@ -45,7 +45,7 @@ Drop only legacy tables:
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_xbrl_integrity_repair.py --database q_live --stages drop-legacy --execute
 ```
 
-Repair only missing `sec_filing_v2` parents:
+Repair only missing `sec_filing_v3` parents:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_xbrl_integrity_repair.py --database q_live --scope-start-date 2019-01-01 --stages filing-parents --execute
@@ -84,7 +84,7 @@ repair_xbrl_missing_frame_parents.sql
 Run the scoped audit again:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_integrity_audit.py --archive-root-win D:/market-data/sec_core/daily_archives --scope-start-date 2019-01-01 --require-v2-tables
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_integrity_audit.py --archive-root-win D:/market-data/sec_core/daily_archives --scope-start-date 2019-01-01 --require-v3-tables
 ```
 
 Expected outcome:

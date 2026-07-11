@@ -203,19 +203,19 @@ SERVICE_DATABASE_TABLES: dict[str, list[dict[str, str]]] = {
         {"database": "q_live", "table": "benzinga_news_coverage_manifest_v1", "role": "coverage"},
     ],
     "sec": [
-        {"database": "q_live", "table": "sec_filing_v2", "role": "filings"},
-        {"database": "q_live", "table": "sec_filing_document_v2", "role": "documents"},
-        {"database": "q_live", "table": "sec_filing_text_v2", "role": "filing text"},
-        {"database": "q_live", "table": "sec_xbrl_company_fact_v1", "role": "company facts"},
-        {"database": "q_live", "table": "sec_xbrl_frame_observation_v1", "role": "frame facts"},
-        {"database": "q_live", "table": "sec_coverage_manifest_v1", "role": "coverage"},
+        {"database": "q_live", "table": "sec_filing_v3", "role": "filings"},
+        {"database": "q_live", "table": "sec_filing_document_v3", "role": "documents"},
+        {"database": "q_live", "table": "sec_filing_text_rendered_v3", "role": "filing text"},
+        {"database": "q_live", "table": "sec_xbrl_company_fact_v3", "role": "company facts"},
+        {"database": "q_live", "table": "sec_xbrl_frame_observation_v3", "role": "frame facts"},
+        {"database": "q_live", "table": "sec_coverage_manifest_v3", "role": "coverage"},
     ],
     "text-embed": [
         {"database": "market_sip_compact", "table": "news_text_tokens", "role": "news tokens"},
         {"database": "market_sip_compact", "table": "news_text_embeddings", "role": "news embeddings"},
-        {"database": "market_sip_compact", "table": "sec_filing_text_context", "role": "sec context"},
-        {"database": "market_sip_compact", "table": "sec_filing_text_tokens", "role": "sec tokens"},
-        {"database": "market_sip_compact", "table": "sec_filing_text_embeddings", "role": "sec embeddings"},
+        {"database": "market_sip_compact", "table": "sec_filing_text_context_v3", "role": "sec context"},
+        {"database": "market_sip_compact", "table": "sec_filing_text_tokens_v3", "role": "sec tokens"},
+        {"database": "market_sip_compact", "table": "sec_filing_text_embeddings_v3", "role": "sec embeddings"},
         {"database": "market_sip_compact", "table": "text_embedding_coverage_v1", "role": "coverage"},
     ],
     "reference": [
@@ -224,7 +224,7 @@ SERVICE_DATABASE_TABLES: dict[str, list[dict[str, str]]] = {
         {"database": "q_live", "table": "id_listing_v1", "role": "listings"},
         {"database": "q_live", "table": "id_symbol_v1", "role": "symbols"},
         {"database": "q_live", "table": "id_mapping_issue_v1", "role": "issues"},
-        {"database": "q_live", "table": "id_sec_market_bridge_v1", "role": "sec bridge"},
+        {"database": "q_live", "table": "id_sec_market_bridge_v3", "role": "sec bridge"},
         {"database": "q_live", "table": "feature_tradable_universe_v1", "role": "tradable universe"},
         {"database": "q_live", "table": "market_reference_alert_v1", "role": "alerts"},
         {"database": "q_live", "table": "market_reference_source_schedule_v1", "role": "source schedule"},
@@ -2040,11 +2040,11 @@ def service_sec_today_rows(limit: int = 250, sort: str = "desc") -> dict[str, An
     safe_limit = max(1, min(limit, SERVICE_SEC_TODAY_ROWS_LIMIT))
     sort_direction = "ASC" if sort.strip().lower() == "asc" else "DESC"
     database = "q_live"
-    filing_table = "sec_filing_v2"
-    document_table = "sec_filing_document_v2"
-    text_table = "sec_filing_text_v2"
-    company_fact_table = "sec_xbrl_company_fact_v1"
-    frame_table = "sec_xbrl_frame_observation_v1"
+    filing_table = "sec_filing_v3"
+    document_table = "sec_filing_document_v3"
+    text_table = "sec_filing_text_rendered_v3"
+    company_fact_table = "sec_xbrl_company_fact_v3"
+    frame_table = "sec_xbrl_frame_observation_v3"
     window_start_et, window_end_et, window_start_utc, window_end_utc = service_market_day_window()
     window_start_sql = service_datetime64_sql(window_start_utc)
     window_end_sql = service_datetime64_sql(window_end_utc)
@@ -2358,11 +2358,11 @@ def service_sec_detail(cik: str, accession_number: str) -> dict[str, Any]:
     if not normalized_cik or not accession:
         raise HTTPException(status_code=400, detail="cik and accession_number are required")
     database = "q_live"
-    filing_table = "sec_filing_v2"
-    document_table = "sec_filing_document_v2"
-    text_table = "sec_filing_text_v2"
-    company_fact_table = "sec_xbrl_company_fact_v1"
-    frame_table = "sec_xbrl_frame_observation_v1"
+    filing_table = "sec_filing_v3"
+    document_table = "sec_filing_document_v3"
+    text_table = "sec_filing_text_rendered_v3"
+    company_fact_table = "sec_xbrl_company_fact_v3"
+    frame_table = "sec_xbrl_frame_observation_v3"
     cik_sql = sql_string(normalized_cik)
     accession_sql = sql_string(accession)
     where_key = f"cik = {cik_sql} AND accession_number = {accession_sql}"
@@ -2547,7 +2547,7 @@ def service_sec_identity_rows_by_cik(database: str, ciks: list[str]) -> dict[str
             ifNull(sym.security_type, '') AS symbol_security_type,
             sym.status AS symbol_status,
             sym.primary_symbol_flag
-        FROM {quote_ident(database)}.id_sec_market_bridge_v1 AS b FINAL
+        FROM {quote_ident(database)}.id_sec_market_bridge_v3 AS b FINAL
         LEFT JOIN {quote_ident(database)}.id_issuer_v1 AS issuer FINAL
             ON issuer.issuer_id = b.issuer_id
         LEFT JOIN {quote_ident(database)}.id_security_v1 AS sec FINAL

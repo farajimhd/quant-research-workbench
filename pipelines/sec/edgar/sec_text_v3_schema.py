@@ -25,8 +25,8 @@ from research.mlops.clickhouse import (  # noqa: E402
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
 
 
-DEFAULT_SCHEMA_PATH = Path(__file__).with_name("sec_text_v2_schema.sql")
-DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_text_v2_schema")
+DEFAULT_SCHEMA_PATH = Path(__file__).with_name("sec_text_v3_schema.sql")
+DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_text_v3_schema")
 DEFAULT_TARGET_DATABASE = "q_live"
 STORAGE_POLICY_PLACEHOLDER = "{{CLICKHOUSE_LIVE_STORAGE_POLICY}}"
 
@@ -44,26 +44,26 @@ class SchemaPaths:
         run_root.mkdir(parents=True, exist_ok=True)
         return cls(
             run_root=run_root,
-            rendered_sql=run_root / "rendered_sec_text_v2_schema.sql",
-            manifest_json=run_root / "sec_text_v2_schema_manifest.json",
-            execution_jsonl=run_root / "sec_text_v2_schema_execution.jsonl",
+            rendered_sql=run_root / "rendered_sec_text_v3_schema.sql",
+            manifest_json=run_root / "sec_text_v3_schema_manifest.json",
+            execution_jsonl=run_root / "sec_text_v3_schema_execution.jsonl",
         )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Render and optionally execute q_live SEC archive-derived document/source-text/text v2 table DDL."
+        description="Render and optionally execute q_live SEC archive-derived document/source-text/rendered-text v3 table DDL."
     )
     parser.add_argument("--clickhouse-url", default=default_sec_clickhouse_url())
     parser.add_argument("--user", default=default_sec_clickhouse_user())
     parser.add_argument("--password", default=default_sec_clickhouse_password())
     parser.add_argument("--target-database", default=os.environ.get("SEC_TEXT_TARGET_DATABASE", DEFAULT_TARGET_DATABASE))
     parser.add_argument("--schema-path", default=str(DEFAULT_SCHEMA_PATH))
-    parser.add_argument("--output-root-win", default=os.environ.get("SEC_TEXT_V2_SCHEMA_OUTPUT_ROOT_WIN", str(DEFAULT_OUTPUT_ROOT_WIN)))
+    parser.add_argument("--output-root-win", default=os.environ.get("SEC_TEXT_V3_SCHEMA_OUTPUT_ROOT_WIN", str(DEFAULT_OUTPUT_ROOT_WIN)))
     parser.add_argument(
         "--storage-policy",
         default=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY", os.environ.get("SEC_CLICKHOUSE_STORAGE_POLICY", "")),
-        help="Storage policy for SEC text v2 tables. Defaults to CLICKHOUSE_LIVE_STORAGE_POLICY.",
+        help="Storage policy for SEC text v3 tables. Defaults to CLICKHOUSE_LIVE_STORAGE_POLICY.",
     )
     parser.add_argument("--execute", action="store_true", help="Execute rendered DDL. Default writes a dry-run manifest only.")
     parser.add_argument("--allow-empty-storage-policy", action="store_true", help="Permit omitting storage_policy if none is configured.")
@@ -261,7 +261,7 @@ def write_manifest(path: Path, args: argparse.Namespace, paths: SchemaPaths, loa
 
 def print_header(args: argparse.Namespace, paths: SchemaPaths, loaded_env: list[Path], statements: list[str]) -> None:
     print("=" * 96, flush=True)
-    print("SEC text v2 schema", flush=True)
+    print("SEC text v3 schema", flush=True)
     print(f"execute={args.execute}", flush=True)
     print(f"target_database={args.target_database}", flush=True)
     print(f"schema_path={args.schema_path}", flush=True)

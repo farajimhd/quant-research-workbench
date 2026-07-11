@@ -42,7 +42,7 @@ from pipelines.sec.edgar.sec_initial_fill_download import (  # noqa: E402
 DEFAULT_ARTIFACT_ROOT_WIN = Path("D:/market-data/sec_core")
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_daily_feed_archives")
 DEFAULT_TARGET_DATABASE = "q_live"
-DEFAULT_TARGET_TABLE = "sec_filing_v2"
+DEFAULT_TARGET_TABLE = "sec_filing_v3"
 DEFAULT_START_DATE = date(2019, 1, 1)
 
 
@@ -65,7 +65,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--start-date", help="Inclusive archive date, YYYY-MM-DD. Defaults to 2019-01-01.")
     parser.add_argument("--end-date", help="Exclusive archive date, YYYY-MM-DD. Defaults to tomorrow in UTC.")
-    parser.add_argument("--infer-from-clickhouse", action="store_true", help="Infer date range from q_live.sec_filing_v2 instead of using the default 2019-to-now range.")
+    parser.add_argument("--infer-from-clickhouse", action="store_true", help="Infer date range from q_live.sec_filing_v3 instead of using the default 2019-to-now range.")
     parser.add_argument("--target-database", default=os.environ.get("QLIVE_MIGRATION_TARGET_DATABASE", DEFAULT_TARGET_DATABASE))
     parser.add_argument("--target-table", default=os.environ.get("QLIVE_MIGRATION_SEC_FILING_TABLE", DEFAULT_TARGET_TABLE))
     parser.add_argument("--clickhouse-url", default=default_migration_clickhouse_url())

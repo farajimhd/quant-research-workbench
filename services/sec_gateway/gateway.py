@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import SecClickHouseWriter, SecWriteResult, qi, sql_string
+from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import FILING_TABLE, SecClickHouseWriter, SecWriteResult, qi, sql_string
 from pipelines.sec.edgar.sec_pipeline.coverage import (
     KIND_LIVE_FEED,
     SecCoverageConfig,
@@ -697,7 +697,7 @@ class SecGateway:
         out = self._client.execute(
             f"""
             SELECT accession_number
-            FROM {qi(self.config.pipeline.clickhouse.write_database)}.sec_filing_v2 FINAL
+            FROM {qi(self.config.pipeline.clickhouse.write_database)}.{qi(FILING_TABLE)} FINAL
             WHERE accession_number IN ({values})
             FORMAT TSV
             """

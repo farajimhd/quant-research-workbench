@@ -33,15 +33,15 @@ from research.mlops.env import discover_env_files, load_env_files, secret_status
 
 DEFAULT_MANIFEST_ROOT_WIN = Path("D:/market-data/prepared/sec_filing_text_parts")
 DEFAULT_DATABASE = "q_live"
-DEFAULT_PART_MANIFEST_TABLE = "sec_filing_text_file_ingest_manifest_v1"
+DEFAULT_PART_MANIFEST_TABLE = "sec_filing_text_file_ingest_manifest_v3"
 DEFAULT_PARTS_ROOT_WIN = Path("D:/market-data")
 DEFAULT_PARTS_ROOT_CH = DEFAULT_CLICKHOUSE_FILE_ROOT
 EXPECTED_TARGET_TABLES = {
-    "filing": "sec_filing_v2",
-    "document": "sec_filing_document_v2",
-    "text_source": "sec_filing_text_v1",
-    "text": "sec_filing_text_v2",
-    "skip": "sec_filing_document_skip_v1",
+    "filing": "sec_filing_v3",
+    "document": "sec_filing_document_v3",
+    "text_source": "sec_filing_text_v3",
+    "text": "sec_filing_text_rendered_v3",
+    "skip": "sec_filing_document_skip_v3",
 }
 DATASET_ORDER = {
     "filing": 0,
@@ -283,7 +283,7 @@ def validate_target_tables(client: ClickHouseHttpClient, args: argparse.Namespac
         if exists != 1:
             raise RuntimeError(
                 f"target table {args.database}.{table} does not exist. "
-                "Run sec_text_v2_schema.py --execute before loading SEC text parts."
+                "Run sec_text_v3_schema.py --execute before loading SEC text parts."
             )
 
 

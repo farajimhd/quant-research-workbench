@@ -34,9 +34,14 @@ from pipelines.market_sip.events.sec_packed_text_renderer import (  # noqa: E402
 
 DEFAULT_SOURCE_DATABASE = "q_live"
 DEFAULT_TARGET_DATABASE = "market_sip_compact"
-DEFAULT_FILING_TABLE = "sec_filing_context"
-DEFAULT_TEXT_TABLE = "sec_filing_text_context"
-DEFAULT_XBRL_TABLE = "sec_xbrl_context"
+DEFAULT_FILING_TABLE = "sec_filing_context_v3"
+DEFAULT_TEXT_TABLE = "sec_filing_text_context_v3"
+DEFAULT_XBRL_TABLE = "sec_xbrl_context_v3"
+DEFAULT_SOURCE_FILING_TABLE = "sec_filing_v3"
+DEFAULT_SOURCE_TEXT_TABLE = "sec_filing_text_v3"
+DEFAULT_SOURCE_BRIDGE_TABLE = "id_sec_market_bridge_v3"
+DEFAULT_SOURCE_XBRL_COMPANY_FACT_TABLE = "sec_xbrl_company_fact_v3"
+DEFAULT_SOURCE_XBRL_FRAME_OBSERVATION_TABLE = "sec_xbrl_frame_observation_v3"
 DEFAULT_OUTPUT_ROOT = DEFAULT_OUTPUT_ROOT_WIN / "sec_context"
 TEXT_CONTEXT_COLUMNS = [
     "ticker",
@@ -80,7 +85,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--filing-table", default=DEFAULT_FILING_TABLE)
     parser.add_argument("--text-table", default=DEFAULT_TEXT_TABLE)
     parser.add_argument("--xbrl-table", default=DEFAULT_XBRL_TABLE)
-    parser.add_argument("--source-text-table", default="sec_filing_text_v1", help="q_live submitted text-source table to render into compact SEC context.")
+    parser.add_argument("--source-filing-table", default=DEFAULT_SOURCE_FILING_TABLE, help="q_live SEC filing parent table.")
+    parser.add_argument("--source-text-table", default=DEFAULT_SOURCE_TEXT_TABLE, help="q_live submitted text-source table to render into compact SEC context.")
+    parser.add_argument("--source-bridge-table", default=DEFAULT_SOURCE_BRIDGE_TABLE, help="q_live CIK/security bridge table.")
+    parser.add_argument("--source-xbrl-company-fact-table", default=DEFAULT_SOURCE_XBRL_COMPANY_FACT_TABLE)
+    parser.add_argument("--source-xbrl-frame-observation-table", default=DEFAULT_SOURCE_XBRL_FRAME_OBSERVATION_TABLE)
     parser.add_argument("--start-date", default="2019-01-01", help="Inclusive UTC accepted_at date.")
     parser.add_argument("--end-date", default=datetime.now(UTC).date().isoformat(), help="Inclusive UTC accepted_at date.")
     parser.add_argument("--storage-policy", default=default_storage_policy(), help="Defaults to CLICKHOUSE_HISTORICAL_STORAGE_POLICY.")
@@ -92,7 +101,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mutation-timeout-seconds", type=int, default=7200)
     parser.add_argument("--text-prefix-chars", type=int, default=0, help="Deprecated no-op. SEC text context now stores full text.")
     parser.add_argument("--max-text-rows-per-filing", type=int, default=0, help="Deprecated no-op. SEC text context now stores every text row.")
-    parser.add_argument("--sec-text-buckets", type=int, default=64, help="Process SEC text by cityHash64(cik) buckets to match q_live.sec_filing_text_v1 partitioning.")
+    parser.add_argument("--sec-text-buckets", type=int, default=64, help="Process SEC text by cityHash64(cik) buckets to match q_live SEC text-source partitioning.")
     parser.add_argument("--render-batch-rows", type=int, default=256, help="Maximum submitted source rows fetched and rendered per Python batch.")
     parser.add_argument("--skip-text", action="store_true")
     parser.add_argument("--skip-xbrl", action="store_true")
@@ -121,7 +130,8 @@ def main() -> int:
     print(f"replace_range={args.replace_range} wait_mutations={args.wait_mutations} dry_run={args.dry_run}", flush=True)
     print(
         "sec_text_context=full_text_all_rows "
-        f"source_text_table={args.source_text_table} renderer={SEC_PACKED_TEXT_RENDERER_VERSION} "
+        f"source_filing_table={args.source_filing_table} source_text_table={args.source_text_table} "
+        f"source_bridge_table={args.source_bridge_table} renderer={SEC_PACKED_TEXT_RENDERER_VERSION} "
         f"sec_text_buckets={args.sec_text_buckets} render_batch_rows={args.render_batch_rows} skip_text={args.skip_text}",
         flush=True,
     )
@@ -361,7 +371,7 @@ bridge AS
         any(ifNull(listing_id, '')) AS listing_id,
         any(ifNull(symbol_id, '')) AS symbol_id,
         max(confidence_score) AS confidence_score
-    FROM {source_db}.id_sec_market_bridge_v1
+    FROM {source_db}.{quote_ident(args.source_bridge_table)}
     WHERE ifNull(ticker, '') != ''
       AND mapping_status IN ('active', 'mapped', 'accepted', '')
     GROUP BY ticker, cik, accession_number, valid_from_date, valid_to_date_exclusive
@@ -395,7 +405,7 @@ SELECT
     ifNull(f.filing_detail_url, '') AS filing_detail_url,
     ifNull(f.items, '') AS items,
     now64(3, 'UTC') AS updated_at
-FROM {source_db}.sec_filing_v2 AS f FINAL
+FROM {source_db}.{quote_ident(args.source_filing_table)} AS f FINAL
 INNER JOIN bridge AS b
     ON b.cik = f.cik
 WHERE f.accepted_at_utc IS NOT NULL
@@ -562,7 +572,7 @@ FROM
         f.mapping_confidence AS mapping_confidence,
         f.bridge_id AS bridge_id,
         now64(3, 'UTC') AS updated_at
-    FROM {source_db}.sec_xbrl_company_fact_v1 AS x
+    FROM {source_db}.{quote_ident(args.source_xbrl_company_fact_table)} AS x
     INNER JOIN {filing_context} AS f
         ON f.cik = x.cik
        AND f.accession_number = x.accession_number
@@ -594,7 +604,7 @@ FROM
         f.mapping_confidence AS mapping_confidence,
         f.bridge_id AS bridge_id,
         now64(3, 'UTC') AS updated_at
-    FROM {source_db}.sec_xbrl_frame_observation_v1 AS o
+    FROM {source_db}.{quote_ident(args.source_xbrl_frame_observation_table)} AS o
     INNER JOIN {filing_context} AS f
         ON f.cik = o.cik
        AND f.accession_number = o.accession_number

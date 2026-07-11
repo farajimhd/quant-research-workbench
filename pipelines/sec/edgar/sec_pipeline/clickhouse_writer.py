@@ -8,15 +8,26 @@ from typing import Any
 from research.mlops.clickhouse import ClickHouseHttpClient
 
 
-FILING_TABLE = "sec_filing_v2"
-DOCUMENT_TABLE = "sec_filing_document_v2"
-TEXT_SOURCE_TABLE = "sec_filing_text_v1"
-TEXT_TABLE = "sec_filing_text_v2"
-SKIP_TABLE = "sec_filing_document_skip_v1"
-XBRL_CONCEPT_TABLE = "sec_xbrl_concept_v1"
-XBRL_COMPANY_FACT_TABLE = "sec_xbrl_company_fact_v1"
-XBRL_FRAME_TABLE = "sec_xbrl_frame_v1"
-XBRL_FRAME_OBSERVATION_TABLE = "sec_xbrl_frame_observation_v1"
+FILING_TABLE = "sec_filing_v3"
+DOCUMENT_TABLE = "sec_filing_document_v3"
+TEXT_SOURCE_TABLE = "sec_filing_text_v3"
+TEXT_TABLE = "sec_filing_text_rendered_v3"
+SKIP_TABLE = "sec_filing_document_skip_v3"
+XBRL_CONCEPT_TABLE = "sec_xbrl_concept_v3"
+XBRL_COMPANY_FACT_TABLE = "sec_xbrl_company_fact_v3"
+XBRL_FRAME_TABLE = "sec_xbrl_frame_v3"
+XBRL_FRAME_OBSERVATION_TABLE = "sec_xbrl_frame_observation_v3"
+LEGACY_SCHEMA_SOURCE_TABLES = {
+    FILING_TABLE: "sec_filing_v2",
+    DOCUMENT_TABLE: "sec_filing_document_v2",
+    TEXT_SOURCE_TABLE: "sec_filing_text_v1",
+    TEXT_TABLE: "sec_filing_text_v2",
+    SKIP_TABLE: "sec_filing_document_skip_v1",
+    XBRL_CONCEPT_TABLE: "sec_xbrl_concept_v1",
+    XBRL_COMPANY_FACT_TABLE: "sec_xbrl_company_fact_v1",
+    XBRL_FRAME_TABLE: "sec_xbrl_frame_v1",
+    XBRL_FRAME_OBSERVATION_TABLE: "sec_xbrl_frame_observation_v1",
+}
 WRITE_TABLES = [
     FILING_TABLE,
     DOCUMENT_TABLE,
@@ -287,10 +298,19 @@ def ensure_sec_write_database(
     required = WRITE_TABLES
     created_or_present: list[str] = []
     for table in required:
-        if not table_exists(client, read_database, table):
-            raise RuntimeError(f"source SEC table is missing: {read_database}.{table}")
         if not table_exists(client, write_database, table):
-            clone_table_schema(client, source_database=read_database, target_database=write_database, table=table)
+            source_table = table
+            if not table_exists(client, read_database, source_table):
+                legacy_source_table = LEGACY_SCHEMA_SOURCE_TABLES.get(table, table)
+                if table_exists(client, read_database, legacy_source_table):
+                    source_table = legacy_source_table
+                elif table == TEXT_SOURCE_TABLE:
+                    create_text_source_table_schema(client, target_database=write_database, reference_database=read_database)
+                    created_or_present.append(f"{write_database}.{table}")
+                    continue
+                else:
+                    raise RuntimeError(f"source SEC table is missing: {read_database}.{table} or {read_database}.{legacy_source_table}")
+            clone_table_schema(client, source_database=read_database, target_database=write_database, source_table=source_table, target_table=table)
         created_or_present.append(f"{write_database}.{table}")
     return created_or_present
 
@@ -308,24 +328,87 @@ def table_exists(client: ClickHouseHttpClient, database: str, table: str) -> boo
     return int(out.strip() or "0") > 0
 
 
-def clone_table_schema(client: ClickHouseHttpClient, *, source_database: str, target_database: str, table: str) -> None:
-    ddl = client.execute(f"SHOW CREATE TABLE {qi(source_database)}.{qi(table)} FORMAT TSVRaw").strip()
+def clone_table_schema(client: ClickHouseHttpClient, *, source_database: str, target_database: str, source_table: str, target_table: str) -> None:
+    ddl = client.execute(f"SHOW CREATE TABLE {qi(source_database)}.{qi(source_table)} FORMAT TSVRaw").strip()
     pattern = re.compile(
         r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
         + r"(?:`[^`]+`|[A-Za-z_][A-Za-z0-9_]*)\."
         + r"(?:`"
-        + re.escape(table)
+        + re.escape(source_table)
         + r"`|"
-        + re.escape(table)
+        + re.escape(source_table)
         + r")",
         flags=re.IGNORECASE,
     )
-    replacement = f"CREATE TABLE IF NOT EXISTS {qi(target_database)}.{qi(table)}"
+    replacement = f"CREATE TABLE IF NOT EXISTS {qi(target_database)}.{qi(target_table)}"
     cloned = pattern.sub(replacement, ddl, count=1)
     if cloned == ddl:
-        raise RuntimeError(f"could not rewrite SHOW CREATE TABLE DDL for {source_database}.{table}")
+        raise RuntimeError(f"could not rewrite SHOW CREATE TABLE DDL for {source_database}.{source_table}")
     cloned = re.sub(r"\s+UUID\s+'[^']+'", "", cloned, count=1, flags=re.IGNORECASE)
     client.execute(cloned)
+
+
+def create_text_source_table_schema(client: ClickHouseHttpClient, *, target_database: str, reference_database: str) -> None:
+    storage_policy = infer_storage_policy(
+        client,
+        reference_database,
+        [
+            TEXT_TABLE,
+            LEGACY_SCHEMA_SOURCE_TABLES.get(TEXT_TABLE, TEXT_TABLE),
+            DOCUMENT_TABLE,
+            LEGACY_SCHEMA_SOURCE_TABLES.get(DOCUMENT_TABLE, DOCUMENT_TABLE),
+        ],
+    )
+    settings = "index_granularity = 8192"
+    if storage_policy:
+        settings += f", storage_policy = {sql_string(storage_policy)}"
+    client.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {qi(target_database)}.{qi(TEXT_SOURCE_TABLE)}
+        (
+            document_id String,
+            filing_id String,
+            accession_number String,
+            accession_number_compact String,
+            cik String,
+            sequence_number UInt32,
+            document_name String,
+            document_type LowCardinality(String),
+            document_role LowCardinality(String),
+            description Nullable(String),
+            document_url Nullable(String),
+            text_kind LowCardinality(String),
+            source_archive_date Date,
+            source_archive_member String,
+            source_archive_path Nullable(String),
+            file_extension LowCardinality(String),
+            content_format LowCardinality(String),
+            mime_type Nullable(String),
+            source_text String CODEC(ZSTD(9)),
+            source_text_char_count UInt64,
+            source_text_byte_count UInt64,
+            content_sha256 String,
+            normalizer_version LowCardinality(String),
+            source_run_id String,
+            inserted_at DateTime64(3, 'UTC')
+        )
+        ENGINE = ReplacingMergeTree(inserted_at)
+        PARTITION BY cityHash64(cik) % 64
+        ORDER BY (cik, accession_number, document_id, content_format)
+        SETTINGS {settings}
+        """
+    )
+
+
+def infer_storage_policy(client: ClickHouseHttpClient, database: str, tables: list[str]) -> str:
+    for table in tables:
+        if not table or not table_exists(client, database, table):
+            continue
+        ddl = client.execute(f"SHOW CREATE TABLE {qi(database)}.{qi(table)} FORMAT TSVRaw").strip()
+        match = re.search(r"storage_policy\s*=\s*'([^']+)'", ddl, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return ""
 
 
 def scalar_int(client: ClickHouseHttpClient, sql: str) -> int:

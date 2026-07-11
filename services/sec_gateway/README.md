@@ -13,7 +13,7 @@ start service
 -> validate q_live as the SEC source-of-truth read database
 -> create/validate the configured SEC write database
 -> clone SEC write-table schemas from q_live when the write database is empty
--> create/validate the write database sec_coverage_manifest_v1
+-> create/validate the write database sec_coverage_manifest_v3
 -> bootstrap write-database coverage from existing q_live SEC tables when the manifest is empty
 -> detect filing/text/XBRL coverage gaps from the manifest, falling back to q_live recency only when needed
 -> write workstation historical-fill command for old gaps, including repair and audit steps
@@ -24,7 +24,7 @@ start service
 -> download new accession .txt filings
 -> parse SGML documents with the shared SEC text normalizer
 -> fetch SEC companyfacts for filings that expose XBRL or inline-XBRL documents
--> write sec_filing_v2/document_v2/text_v2/skip rows to the configured write database
+-> write sec_filing_v3/document_v3/text_v3/text_rendered_v3/skip_v3 rows to the configured write database
 -> write sec_xbrl_* rows to the configured write database when matching companyfacts are available
 -> audit the write database for duplicate and orphan SEC rows
 -> keep one live-run coverage row current, including empty/all-duplicate polls
@@ -33,7 +33,7 @@ start service
 
 The gateway does not own global ticker/reference mappings. It writes raw SEC
 filing, document, text, skip, and XBRL rows only. `reference_gateway` maintains
-`q_live.id_sec_market_bridge_v1`, and `text_embed_gateway` reads that bridge to
+`q_live.id_sec_market_bridge_v3`, and `text_embed_gateway` reads that bridge to
 refresh ticker-aligned SEC text context before token and embedding writes.
 
 ## Run
@@ -202,7 +202,7 @@ result is trusted.
 Coverage is stored in:
 
 ```text
-<SEC_CLICKHOUSE_WRITE_DATABASE>.sec_coverage_manifest_v1
+<SEC_CLICKHOUSE_WRITE_DATABASE>.sec_coverage_manifest_v3
 ```
 
 Coverage kinds include:
@@ -236,7 +236,7 @@ finishes without failed stages.
 ## After-Hours Maintenance
 
 The SEC Gateway owns its own coverage checks, current feed repair, and
-historical gap-fill planning. It audits `q_live.sec_coverage_manifest_v1` with
+historical gap-fill planning. It audits `q_live.sec_coverage_manifest_v3` with
 the same SEC coverage planner used by live startup. If filing, text, or XBRL
 coverage is stale, it generates the unified historical fill command:
 
@@ -261,14 +261,15 @@ Preflight creates the write database if needed, clones these schemas from the
 read database, and validates them before polling starts:
 
 ```text
-sec_filing_v2
-sec_filing_document_v2
-sec_filing_text_v2
-sec_filing_document_skip_v1
-sec_xbrl_concept_v1
-sec_xbrl_company_fact_v1
-sec_xbrl_frame_v1
-sec_xbrl_frame_observation_v1
+sec_filing_v3
+sec_filing_document_v3
+sec_filing_text_v3
+sec_filing_text_rendered_v3
+sec_filing_document_skip_v3
+sec_xbrl_concept_v3
+sec_xbrl_company_fact_v3
+sec_xbrl_frame_v3
+sec_xbrl_frame_observation_v3
 ```
 
 The gateway write audit checks:
@@ -372,10 +373,10 @@ https://data.sec.gov/api/xbrl/companyfacts/CIK##########.json
 
 It filters facts to the exact accession and writes:
 
-- `sec_xbrl_concept_v1`
-- `sec_xbrl_company_fact_v1`
-- `sec_xbrl_frame_v1`
-- `sec_xbrl_frame_observation_v1`
+- `sec_xbrl_concept_v3`
+- `sec_xbrl_company_fact_v3`
+- `sec_xbrl_frame_v3`
+- `sec_xbrl_frame_observation_v3`
 
 Ownership XML filings such as Forms 3/4/5 are still recorded as structured
 documents and skip rows, but they do not create companyfacts XBRL rows unless SEC

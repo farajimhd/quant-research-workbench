@@ -76,15 +76,15 @@ TEXT_EMBED_SOURCE_DATABASE=q_live
 TEXT_EMBED_CONTEXT_DATABASE=market_sip_compact
 TEXT_EMBED_TARGET_DATABASE=market_sip_compact
 TEXT_EMBED_NEWS_TOKEN_TABLE=news_text_tokens
-TEXT_EMBED_SEC_TOKEN_TABLE=sec_filing_text_tokens
+TEXT_EMBED_SEC_TOKEN_TABLE=sec_filing_text_tokens_v3
 TEXT_EMBED_NEWS_EMBEDDING_TABLE=news_text_embeddings
-TEXT_EMBED_SEC_EMBEDDING_TABLE=sec_filing_text_embeddings
+TEXT_EMBED_SEC_EMBEDDING_TABLE=sec_filing_text_embeddings_v3
 TEXT_EMBED_COVERAGE_TABLE=text_embedding_coverage_v1
-TEXT_EMBED_SEC_CONTEXT_FILING_TABLE=sec_filing_context
-TEXT_EMBED_SEC_CONTEXT_TEXT_TABLE=sec_filing_text_context
-TEXT_EMBED_SEC_LIVE_FILING_TABLE=sec_filing_v2
-TEXT_EMBED_SEC_LIVE_TEXT_TABLE=sec_filing_text_v1
-TEXT_EMBED_SEC_BRIDGE_TABLE=id_sec_market_bridge_v1
+TEXT_EMBED_SEC_CONTEXT_FILING_TABLE=sec_filing_context_v3
+TEXT_EMBED_SEC_CONTEXT_TEXT_TABLE=sec_filing_text_context_v3
+TEXT_EMBED_SEC_LIVE_FILING_TABLE=sec_filing_v3
+TEXT_EMBED_SEC_LIVE_TEXT_TABLE=sec_filing_text_v3
+TEXT_EMBED_SEC_BRIDGE_TABLE=id_sec_market_bridge_v3
 TEXT_EMBED_SEC_MAX_TEXT_ROWS_PER_FILING=0  # deprecated no-op; SEC context stores every text row
 TEXT_EMBED_SEC_CONTEXT_REFRESH_CHUNK_HOURS=24
 TEXT_EMBED_SEC_CONTEXT_HISTORICAL_MAX_CHUNKS_PER_CYCLE=7
@@ -147,21 +147,21 @@ Use the default local-files-only mode after the Qwen tokenizer/model files are
 cached, so production does not depend on HuggingFace network availability.
 
 SEC tokenization reads the same historical-compatible context table used by the
-offline builder: `market_sip_compact.sec_filing_text_context` by default. Before
+offline builder: `market_sip_compact.sec_filing_text_context_v3` by default. Before
 each SEC live/gap-fill cycle, the gateway performs a small idempotent context
 refresh for the active lookback window:
 
 ```text
-q_live.sec_filing_v2 + q_live.sec_filing_text_v1
-  + q_live.id_sec_market_bridge_v1
--> market_sip_compact.sec_filing_context
--> market_sip_compact.sec_filing_text_context
+q_live.sec_filing_v3 + q_live.sec_filing_text_v3
+  + q_live.id_sec_market_bridge_v3
+-> market_sip_compact.sec_filing_context_v3
+-> market_sip_compact.sec_filing_text_context_v3
 ```
 
 The gateway applies the same deterministic SEC packed-text renderer as the
-historical context builder while refreshing `sec_filing_text_context`. Upstream
-`q_live.sec_filing_text_v1` remains the submitted source text; `q_live.sec_filing_text_v2`
-remains the readable extraction/audit table. The compact context text is rendered
+historical context builder while refreshing `sec_filing_text_context_v3`. Upstream
+`q_live.sec_filing_text_v3` remains the submitted source text; `q_live.sec_filing_text_rendered_v3`
+stores the renderer/normalizer output for audit. The compact context text is rendered
 from HTML/plain/XML source documents, packs real HTML tables into column/value
 lines, and records source/model hashes, renderer version, block counts, duplicate
 block counts, and per-block hashes for audit. The renderer does not remove
@@ -170,7 +170,7 @@ text.
 Tokenization and embedding read that context field directly, so there is no
 second SEC parser inside the embedding step.
 
-`id_sec_market_bridge_v1` is read-only here and should be maintained by the
+`id_sec_market_bridge_v3` is read-only here and should be maintained by the
 reference gateway. If a SEC filing text row has no valid bridge yet, the gateway
 does not embed it; it writes coverage with `blocked_missing_ticker_mapping` and
 retries on later cycles. News and existing-token embedding still continue.
@@ -185,6 +185,6 @@ so the live gateway does the same instead of creating a row-number rank.
 | Service | Writes | Text embedding dependency |
 | --- | --- | --- |
 | `news_gateway` | `q_live.benzinga_news_normalized_v1`, `q_live.benzinga_news_ticker_v1` | Final normalized/ticker rows are the news source. |
-| `sec_gateway` | `q_live.sec_filing_v2`, `q_live.sec_filing_document_v2`, `q_live.sec_filing_text_v1`, `q_live.sec_filing_text_v2`, SEC XBRL tables | Raw SEC source and readable extraction only; it does not own ticker mapping or embeddings. |
-| `reference_gateway` | `q_live.id_sec_market_bridge_v1` and canonical reference mappings | Owns ongoing CIK/accession-to-market ticker bridge maintenance. |
+| `sec_gateway` | `q_live.sec_filing_v3`, `q_live.sec_filing_document_v3`, `q_live.sec_filing_text_v3`, `q_live.sec_filing_text_rendered_v3`, SEC XBRL v3 tables | Raw SEC source and renderer output only; it does not own ticker mapping or embeddings. |
+| `reference_gateway` | `q_live.id_sec_market_bridge_v3` and canonical reference mappings | Owns ongoing CIK/accession-to-market ticker bridge maintenance. |
 | `text_embed_gateway` | `market_sip_compact.*_tokens`, `market_sip_compact.*_embeddings`, `text_embedding_coverage_v1`; idempotent recent SEC context rows | Uses historical-compatible source rows and Qwen to persist tokens/embeddings. |

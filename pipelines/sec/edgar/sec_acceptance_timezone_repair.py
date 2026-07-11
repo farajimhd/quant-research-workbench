@@ -29,7 +29,7 @@ from pipelines.sec.edgar.sec_pipeline.submissions import parse_acceptance_dateti
 
 
 DEFAULT_DATABASE = "q_live"
-DEFAULT_TARGET_TABLE = "sec_filing_v2"
+DEFAULT_TARGET_TABLE = "sec_filing_v3"
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_acceptance_timezone_repair")
 DEFAULT_REPAIR_SOURCES = (
     "submissions_recent",
@@ -67,7 +67,7 @@ class RunPaths:
         return cls(
             run_root=run_root,
             candidates_jsonl=run_root / "timezone_repair_candidates.jsonl",
-            repaired_rows_jsonl=run_root / "sec_filing_v2_timezone_repair_rows.jsonl",
+            repaired_rows_jsonl=run_root / "sec_filing_v3_timezone_repair_rows.jsonl",
             skipped_jsonl=run_root / "timezone_repair_skipped.jsonl",
             manifest_json=run_root / "sec_acceptance_timezone_repair_manifest.json",
             summary_md=run_root / "sec_acceptance_timezone_repair_summary.md",
@@ -80,7 +80,7 @@ def parse_args() -> argparse.Namespace:
             "Repair SEC filing parent rows whose accepted_at_utc disagrees with the explicit "
             "timezone in acceptance_datetime_raw by a timezone-sized offset. The script "
             "recomputes raw SEC timestamps with normal ISO/RFC3339 semantics and inserts "
-            "replacement rows into sec_filing_v2. Dry-run is the default."
+            "replacement rows into sec_filing_v3. Dry-run is the default."
         )
     )
     parser.add_argument("--clickhouse-url", default=default_migration_clickhouse_url())

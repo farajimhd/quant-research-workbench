@@ -7,10 +7,10 @@ Use this script when SEC rows were inserted with `accepted_at_utc` shifted by a 
 Target table:
 
 ```text
-q_live.sec_filing_v2
+q_live.sec_filing_v3
 ```
 
-The repair reads rows from `sec_filing_v2 FINAL`, recomputes `accepted_at_utc` from `acceptance_datetime_raw` using normal ISO/RFC3339 timestamp semantics, and inserts newer replacement rows into the same `ReplacingMergeTree(inserted_at)` table.
+The repair reads rows from `sec_filing_v3 FINAL`, recomputes `accepted_at_utc` from `acceptance_datetime_raw` using normal ISO/RFC3339 timestamp semantics, and inserts newer replacement rows into the same `ReplacingMergeTree(inserted_at)` table.
 
 It does not mutate rows in place.
 
@@ -71,7 +71,7 @@ Important files:
 ```text
 timezone_repair_candidates.jsonl
 timezone_repair_skipped.jsonl
-sec_filing_v2_timezone_repair_rows.jsonl
+sec_filing_v3_timezone_repair_rows.jsonl
 sec_acceptance_timezone_repair_manifest.json
 sec_acceptance_timezone_repair_summary.md
 ```
@@ -110,7 +110,7 @@ source list.
 
 ## Validate
 
-Use `FINAL` because `sec_filing_v2` is a `ReplacingMergeTree`:
+Use `FINAL` because `sec_filing_v3` is a `ReplacingMergeTree`:
 
 ```sql
 SELECT
@@ -118,7 +118,7 @@ SELECT
     min(accepted_at_utc) AS min_accepted,
     max(accepted_at_utc) AS max_accepted,
     count() AS rows
-FROM q_live.sec_filing_v2 FINAL
+FROM q_live.sec_filing_v3 FINAL
 WHERE source_run_id LIKE 'sec_acceptance_timezone_repair_%'
 GROUP BY accepted_at_source
 ORDER BY rows DESC;
@@ -135,7 +135,7 @@ SELECT
     accepted_at_source,
     source_run_id,
     inserted_at
-FROM q_live.sec_filing_v2 FINAL
+FROM q_live.sec_filing_v3 FINAL
 WHERE source_run_id LIKE 'sec_acceptance_timezone_repair_%'
 ORDER BY inserted_at DESC
 LIMIT 20;
@@ -144,7 +144,7 @@ LIMIT 20;
 ## After Repair
 
 If `text_embed_gateway` already consumed the bad rows, fixing
-`q_live.sec_filing_v2` is not enough. The downstream tables copy both
+`q_live.sec_filing_v3` is not enough. The downstream tables copy both
 `accepted_at_utc` and `timestamp_us`, and SEC tokenization includes
 `accepted_at_utc` in the model text. Stale downstream rows must be invalidated
 and rebuilt.

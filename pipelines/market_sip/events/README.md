@@ -194,18 +194,18 @@ The migration creates three compact context tables:
 
 | Table | Partition | Order key | Contents |
 | --- | --- | --- | --- |
-| `sec_filing_context` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, cik)` | one SEC filing metadata row per valid ticker/accession mapping |
-| `sec_filing_text_context` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, text_rank, document_id)` | normalized SEC filing text rows for model tokenization |
-| `sec_xbrl_context` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, xbrl_row_kind, taxonomy, tag, unit_code, period_end_date, source_id)` | company facts and frame observations joined to their filing event time |
+| `sec_filing_context_v3` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, cik)` | one SEC filing metadata row per valid ticker/accession mapping |
+| `sec_filing_text_context_v3` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, text_rank, document_id)` | normalized SEC filing text rows for model tokenization |
+| `sec_xbrl_context_v3` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, xbrl_row_kind, taxonomy, tag, unit_code, period_end_date, source_id)` | company facts and frame observations joined to their filing event time |
 
-The accepted timestamp source is always `q_live.sec_filing_v2.accepted_at_utc`.
+The accepted timestamp source is always `q_live.sec_filing_v3.accepted_at_utc`.
 Rows with null `accepted_at_utc` are skipped because they do not have a safe
-no-lookahead event time. `id_sec_market_bridge_v1` is used only to map CIK or
+no-lookahead event time. `id_sec_market_bridge_v3` is used only to map CIK or
 accession to a market ticker; it is deduplicated inside the migration and is not
 used as the event-time source.
 
-`q_live.sec_filing_text_v1` stores submitted text-source documents such as HTML,
-plain text, and non-XBRL XML. The compact `sec_filing_text_context.text` field
+`q_live.sec_filing_text_v3` stores submitted text-source documents such as HTML,
+plain text, and non-XBRL XML. The compact `sec_filing_text_context_v3.text` field
 is deterministic packed model input rendered from those submitted sources by
 `sec_packed_text_renderer_v6`. HTML and inline-XBRL HTML are parsed by visible
 tags, real HTML tables are packed into column/value lines, hidden/script/style
@@ -217,8 +217,8 @@ chars]`. Structured fund-report XML such as NPORT/N-CEN is preserved in the
 upstream source table but marked `structured_xml_excluded` in context so it is
 not tokenized as readable filing text. The renderer
 does not summarize, remove SEC/legal boilerplate, remove risk factors, remove
-signatures, or rewrite substantive contract/table text. `q_live.sec_filing_text_v2`
-remains the full readable extraction/audit table. The context table records
+signatures, or rewrite substantive contract/table text. `q_live.sec_filing_text_rendered_v3`
+stores the renderer/normalizer output for audit. The context table records
 `source_text_char_count`, `source_text_hash`, `model_text_hash`,
 `model_normalizer_version`, `removed_layout_line_count`, renderer block counts,
 table block counts, long-block duplicate counts, and per-block hashes for auditability.
@@ -275,9 +275,9 @@ The builder creates two separate tables:
 | Table | Partition | Order key | Source |
 | --- | --- | --- | --- |
 | `news_text_tokens` | `toYYYYMM(published_at_utc)` | `(ticker, timestamp_us, source_id, token_chunk_index)` | `q_live.benzinga_news_ticker_v1` joined to `q_live.benzinga_news_normalized_v1` |
-| `sec_filing_text_tokens` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, text_rank, document_id, source_id)` | `market_sip_compact.sec_filing_text_context` |
+| `sec_filing_text_tokens_v3` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, text_rank, document_id, source_id)` | `market_sip_compact.sec_filing_text_context_v3` |
 | `news_text_embeddings` | `toYYYYMM(published_at_utc)` | `(ticker, timestamp_us, source_id, token_chunk_index)` | one float32 Qwen embedding per news token chunk |
-| `sec_filing_text_embeddings` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, text_rank, document_id, source_id)` | one float32 Qwen embedding per SEC token chunk |
+| `sec_filing_text_embeddings_v3` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, text_rank, document_id, source_id)` | one float32 Qwen embedding per SEC token chunk |
 
 Each row stores source metadata plus fixed-length tokenizer output:
 
@@ -299,7 +299,7 @@ text. This avoids relying on a prefix of `normalized_full_text`, which can miss
 enriched external/PDF text when it appears later in the merged article.
 
 SEC filing context stores packed model-input text derived from submitted
-`sec_filing_text_v1.source_text` rows without a prefix cap and without limiting
+`sec_filing_text_v3.source_text` rows without a prefix cap and without limiting
 the number of source text rows per filing. Tokenization currently uses up to
 eight 1024-token rows per source text row.
 Both token tables include `token_chunk_index`, `token_start`, and `token_end`,

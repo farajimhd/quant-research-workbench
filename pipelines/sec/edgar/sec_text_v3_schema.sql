@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS q_live.sec_filing_document_v2
+CREATE TABLE IF NOT EXISTS q_live.sec_filing_document_v3
 (
     document_id String,
     filing_id String,
@@ -33,7 +33,7 @@ PARTITION BY cityHash64(cik) % 64
 ORDER BY (cik, accession_number, sequence_number, document_id)
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
 
-CREATE TABLE IF NOT EXISTS q_live.sec_filing_text_v1
+CREATE TABLE IF NOT EXISTS q_live.sec_filing_text_v3
 (
     document_id String,
     filing_id String,
@@ -66,7 +66,7 @@ PARTITION BY cityHash64(cik) % 64
 ORDER BY (cik, accession_number, document_id, content_format)
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
 
-CREATE TABLE IF NOT EXISTS q_live.sec_filing_text_v2
+CREATE TABLE IF NOT EXISTS q_live.sec_filing_text_rendered_v3
 (
     document_id String,
     filing_id String,
@@ -92,7 +92,7 @@ PARTITION BY cityHash64(cik) % 64
 ORDER BY (cik, accession_number, document_id, text_kind)
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
 
-CREATE TABLE IF NOT EXISTS q_live.sec_filing_document_skip_v1
+CREATE TABLE IF NOT EXISTS q_live.sec_filing_document_skip_v3
 (
     skip_id String,
     document_id String,

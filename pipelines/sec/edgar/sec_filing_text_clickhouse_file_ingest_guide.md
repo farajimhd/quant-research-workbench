@@ -4,13 +4,15 @@ This script loads the extractor part files into ClickHouse through the server-si
 
 Targets:
 
-- `q_live.sec_filing_v2`
-- `q_live.sec_filing_document_v2`
-- `q_live.sec_filing_text_v2`
-- `q_live.sec_filing_document_skip_v1`
-- `q_live.sec_filing_text_file_ingest_manifest_v1`
+- `q_live.sec_filing_v3`
+- `q_live.sec_filing_document_v3`
+- `q_live.sec_filing_text_v3`
+- `q_live.sec_filing_text_rendered_v3`
+- `q_live.sec_filing_document_skip_v3`
+- `q_live.sec_filing_text_file_ingest_manifest_v3`
 
-The daily archive files stay on disk. The database receives document metadata, clean normalized text, and skip records only.
+The daily archive files stay on disk. The database receives document metadata,
+submitted text-source rows, rendered/normalized text rows, and skip records only.
 
 ## Smoke Preflight
 
@@ -23,10 +25,11 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 Expected laptop smoke result:
 
 ```text
-preflight_part=1/4 dataset=filing rows=4
-preflight_part=2/4 dataset=document rows=62
-preflight_part=3/4 dataset=text rows=12
-preflight_part=4/4 dataset=skip rows=50
+preflight_part=1/5 dataset=filing rows=4
+preflight_part=2/5 dataset=document rows=62
+preflight_part=3/5 dataset=text_source rows=12
+preflight_part=4/5 dataset=text rows=12
+preflight_part=5/5 dataset=skip rows=50
 preflight=done
 ```
 
@@ -64,8 +67,8 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 
 ## Safety Checks
 
-- The loader validates target v2 tables are readable before inserting.
+- The loader validates target v3 tables are readable before inserting.
 - The loader validates every part through `file()` and row counts before insert.
 - For large loads, run `--preflight-only` once, then `--execute --skip-preflight` to avoid reading the full part set twice.
-- Successful parts are recorded in `q_live.sec_filing_text_file_ingest_manifest_v1`.
+- Successful parts are recorded in `q_live.sec_filing_text_file_ingest_manifest_v3`.
 - Re-running without `--force` skips parts already marked `ok` for the same source run.

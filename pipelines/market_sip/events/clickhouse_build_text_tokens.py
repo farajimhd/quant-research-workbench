@@ -36,10 +36,10 @@ DEFAULT_SOURCE_DATABASE = "q_live"
 DEFAULT_CONTEXT_DATABASE = "market_sip_compact"
 DEFAULT_TARGET_DATABASE = "market_sip_compact"
 DEFAULT_NEWS_TOKEN_TABLE = "news_text_tokens"
-DEFAULT_SEC_TOKEN_TABLE = "sec_filing_text_tokens"
+DEFAULT_SEC_TOKEN_TABLE = "sec_filing_text_tokens_v3"
 DEFAULT_NEWS_EMBEDDING_TABLE = "news_text_embeddings"
-DEFAULT_SEC_EMBEDDING_TABLE = "sec_filing_text_embeddings"
-DEFAULT_SEC_TEXT_CONTEXT_TABLE = "sec_filing_text_context"
+DEFAULT_SEC_EMBEDDING_TABLE = "sec_filing_text_embeddings_v3"
+DEFAULT_SEC_TEXT_CONTEXT_TABLE = "sec_filing_text_context_v3"
 DEFAULT_OUTPUT_ROOT = DEFAULT_OUTPUT_ROOT_WIN / "text_tokens"
 DEFAULT_TOKENIZER_MODEL = "Qwen/Qwen3-0.6B"
 DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
@@ -230,7 +230,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--user", default=default_clickhouse_user())
     parser.add_argument("--password", default=default_clickhouse_password())
     parser.add_argument("--source-database", default=DEFAULT_SOURCE_DATABASE, help="q_live database containing Benzinga news.")
-    parser.add_argument("--context-database", default=DEFAULT_CONTEXT_DATABASE, help="Database containing sec_filing_text_context.")
+    parser.add_argument("--context-database", default=DEFAULT_CONTEXT_DATABASE, help="Database containing SEC filing text context.")
     parser.add_argument("--target-database", default=DEFAULT_TARGET_DATABASE)
     parser.add_argument("--news-token-table", default=DEFAULT_NEWS_TOKEN_TABLE)
     parser.add_argument("--sec-token-table", default=DEFAULT_SEC_TOKEN_TABLE)

@@ -508,7 +508,7 @@ def build_stage_command(args: argparse.Namespace, stage: str, context: RunContex
             args.start_date,
             "--archive-end-date",
             args.end_date,
-            "--require-v2-tables",
+            "--require-v3-tables",
         ]
         if args.integrity_skip_xbrl_sample:
             command.append("--skip-xbrl-sample")

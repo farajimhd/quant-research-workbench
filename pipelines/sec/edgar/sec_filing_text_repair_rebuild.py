@@ -55,7 +55,7 @@ def parse_args() -> argparse.Namespace:
         description=(
             "Rebuild SEC filing document/text rows from daily archive raw submissions with "
             "the current parser. This is intended for repairing previously capped or "
-            "misclassified sec_filing_text_v2 rows. Dry-run writes a plan only."
+            "misclassified sec_filing_text_rendered_v3 rows. Dry-run writes a plan only."
         )
     )
     parser.add_argument("--start-date", required=True, help="Inclusive archive date, YYYY-MM-DD.")
@@ -87,7 +87,7 @@ def parse_args() -> argparse.Namespace:
         "--cleanup-stale-skips",
         action="store_true",
         help=(
-            "After replacement text rows are inserted, delete old sec_filing_document_skip_v1 "
+            "After replacement text rows are inserted, delete old sec_filing_document_skip_v3 "
             "rows for document_ids that now have text in this repair run."
         ),
     )
@@ -309,8 +309,8 @@ def cleanup_stale_skip_rows(args: argparse.Namespace, extract_manifest: dict[str
     if not source_run_id:
         raise RuntimeError("extract manifest has no source_run_id; cannot scope stale skip cleanup")
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
-    text_table = f"{quote_ident(args.database)}.sec_filing_text_v2"
-    skip_table = f"{quote_ident(args.database)}.sec_filing_document_skip_v1"
+    text_table = f"{quote_ident(args.database)}.sec_filing_text_rendered_v3"
+    skip_table = f"{quote_ident(args.database)}.sec_filing_document_skip_v3"
     count_sql = f"""
 SELECT count()
 FROM {skip_table} FINAL

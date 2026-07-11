@@ -1,6 +1,6 @@
 # SEC Acceptance Backfill Build Guide
 
-Use `sec_acceptance_backfill_build.py` before migration Step 7. It does not mirror all SEC bulk files into ClickHouse. It builds only the accepted-timestamp source needed for current rows in `q_live.sec_filing_v2`.
+Use `sec_acceptance_backfill_build.py` before migration Step 7. It does not mirror all SEC bulk files into ClickHouse. It builds only the accepted-timestamp source needed for current rows in `q_live.sec_filing_v3`.
 
 ## What It Does
 
@@ -8,7 +8,7 @@ Use `sec_acceptance_backfill_build.py` before migration Step 7. It does not mirr
 
 ```sql
 SELECT cik, accession_number
-FROM q_live.sec_filing_v2 FINAL
+FROM q_live.sec_filing_v3 FINAL
 WHERE accepted_at_utc IS NULL
 ```
 
