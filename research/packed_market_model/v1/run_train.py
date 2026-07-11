@@ -7,9 +7,12 @@ from research.packed_market_model.v1.train import main
 
 
 DEFAULT_ARGS = {
-    "--cache-root": r"D:\market-data\prepared\packed_market_block_cache\packed_events_daily_index_2019-02",
+    "--data-source": "clickhouse",
     "--months": "2019-02",
     "--max-samples": "2000000",
+    "--ticker-workers": "24",
+    "--ready-queue-blocks": "8",
+    "--target-origin-count-per-block": "65536",
     "--d-model": "384",
     "--event-layers": "8",
     "--learning-rate": "1e-3",

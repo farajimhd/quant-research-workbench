@@ -23,7 +23,7 @@ from research.mlops.env import discover_env_files, load_env_files
 from research.mlops.manifest import write_run_manifest
 from research.mlops.metrics import JsonlMetricLogger
 from research.mlops.model_artifacts import parameter_summary, write_model_artifacts, write_model_card
-from research.mlops.packed_market import PackedMarketDataset, PackedMarketDatasetConfig
+from research.mlops.packed_market import ClickHouseTickerStreamConfig, ClickHouseTickerStreamDataset, PackedMarketDataset, PackedMarketDatasetConfig
 from research.mlops.paths import RunPaths, default_run_root
 from research.mlops.wandb_utils import init_wandb as mlops_init_wandb
 from research.packed_market_model.v1 import MODEL_FAMILY, MODEL_VERSION
@@ -49,11 +49,23 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     model = ModelConfig()
     train = TrainConfig()
     parser = argparse.ArgumentParser(description="Train packed_market_model v1 on packed market block cache.")
+    parser.add_argument("--data-source", choices=("clickhouse", "packed-cache"), default=loader.data_source)
     parser.add_argument("--cache-root", default=str(loader.cache_root))
     parser.add_argument("--months", default="")
     parser.add_argument("--tickers", default="")
     parser.add_argument("--shuffle-blocks", action=argparse.BooleanOptionalAction, default=loader.shuffle_blocks)
     parser.add_argument("--max-blocks", type=int, default=train.max_blocks)
+    parser.add_argument("--database", default=loader.database)
+    parser.add_argument("--events-table-base", default=loader.events_table_base)
+    parser.add_argument("--events-ticker-day-index-table", default=loader.events_ticker_day_index_table)
+    parser.add_argument("--ticker-workers", type=int, default=loader.ticker_workers)
+    parser.add_argument("--ready-queue-blocks", type=int, default=loader.ready_queue_blocks)
+    parser.add_argument("--target-origin-count-per-block", type=int, default=loader.target_origin_count_per_block)
+    parser.add_argument("--event-context-rows", type=int, default=loader.event_context_rows)
+    parser.add_argument("--future-event-guard-rows", type=int, default=loader.future_event_guard_rows)
+    parser.add_argument("--max-threads-per-query", type=int, default=loader.max_threads_per_query)
+    parser.add_argument("--max-memory-usage", default=loader.max_memory_usage)
+    parser.add_argument("--worker-memory-limit-mib", type=int, default=loader.worker_memory_limit_mib)
     parser.add_argument("--output-root", default=str(train.output_root))
     parser.add_argument("--run-name", default="")
     parser.add_argument("--dataset-id", default="packed-market-cache")
@@ -122,7 +134,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         run_name=run_name,
         args=vars(args),
         config=to_dict(config),
-        data_roots={"cache_root": str(config.loader.cache_root)},
+        data_roots=loader_data_roots(config.loader),
         output_root=paths.run_root,
         source_checkpoint=Path(args.resume_checkpoint) if args.resume_checkpoint else None,
         wandb_info={"project": args.wandb_project, "entity": args.wandb_entity, "run_name": run_name},
@@ -267,11 +279,60 @@ def main(argv: Iterable[str] | None = None) -> int:
     return 130 if _INTERRUPTED else 0
 
 
-def build_config(args: argparse.Namespace) -> tuple[ExperimentConfig, PackedMarketDataset | None]:
+def build_config(args: argparse.Namespace) -> tuple[ExperimentConfig, Any | None]:
     dataset = None
-    loader = LoaderConfig(cache_root=Path(args.cache_root), months=parse_csv(args.months), tickers=parse_csv(args.tickers), shuffle_blocks=bool(args.shuffle_blocks), seed=int(args.seed), max_blocks=int(args.max_blocks))
+    months = parse_csv(args.months) or ("2019-02",)
+    loader = LoaderConfig(
+        data_source=str(args.data_source),
+        cache_root=Path(args.cache_root),
+        months=months,
+        tickers=parse_csv(args.tickers),
+        shuffle_blocks=bool(args.shuffle_blocks),
+        seed=int(args.seed),
+        max_blocks=int(args.max_blocks),
+        database=str(args.database),
+        events_table_base=str(args.events_table_base),
+        events_ticker_day_index_table=str(args.events_ticker_day_index_table),
+        ticker_workers=int(args.ticker_workers),
+        ready_queue_blocks=int(args.ready_queue_blocks),
+        target_origin_count_per_block=int(args.target_origin_count_per_block),
+        event_context_rows=int(args.event_context_rows),
+        future_event_guard_rows=int(args.future_event_guard_rows),
+        max_threads_per_query=int(args.max_threads_per_query),
+        max_memory_usage=str(args.max_memory_usage),
+        worker_memory_limit_mib=int(args.worker_memory_limit_mib),
+    )
     if args.dummy_data:
         model = ModelConfig(d_model=int(args.d_model), event_layers=int(args.event_layers), event_kernel_size=int(args.event_kernel_size), head_hidden_dim=int(args.head_hidden_dim), event_feature_names=tuple(f"feature_{i}" for i in range(16)), event_feature_dim=16, label_names=("future_trade_close", "future_halt_flag"))
+    elif loader.data_source == "clickhouse":
+        stream_config = ClickHouseTickerStreamConfig(
+            months=loader.months,
+            tickers=loader.tickers,
+            database=loader.database,
+            events_table_base=loader.events_table_base,
+            events_ticker_day_index_table=loader.events_ticker_day_index_table,
+            ticker_workers=loader.ticker_workers,
+            ready_queue_blocks=loader.ready_queue_blocks,
+            target_origin_count_per_block=loader.target_origin_count_per_block,
+            event_context_rows=loader.event_context_rows,
+            future_event_guard_rows=loader.future_event_guard_rows,
+            max_blocks=int(args.max_blocks),
+            max_threads_per_query=loader.max_threads_per_query,
+            max_memory_usage=loader.max_memory_usage,
+            worker_memory_limit_mib=loader.worker_memory_limit_mib,
+            shuffle_plans=bool(args.shuffle_blocks),
+            seed=int(args.seed),
+        )
+        dataset = ClickHouseTickerStreamDataset(stream_config)
+        model = ModelConfig(
+            d_model=int(args.d_model),
+            event_layers=int(args.event_layers),
+            event_kernel_size=int(args.event_kernel_size),
+            head_hidden_dim=int(args.head_hidden_dim),
+            event_feature_names=dataset.event_feature_names,
+            event_feature_dim=len(dataset.event_feature_names),
+            label_names=dataset.label_names,
+        )
     else:
         infer_dataset = PackedMarketDataset(PackedMarketDatasetConfig(cache_root=loader.cache_root, months=loader.months, tickers=loader.tickers, shuffle_blocks=False, seed=int(args.seed), max_blocks=1))
         event_names, label_names, event_dim = infer_contract_from_dataset(infer_dataset)
@@ -430,6 +491,18 @@ class NullReporter:
 def write_config(path: Path, config: ExperimentConfig) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(to_dict(config), indent=2, default=str), encoding="utf-8")
+
+
+def loader_data_roots(loader: LoaderConfig) -> dict[str, str]:
+    if loader.data_source == "clickhouse":
+        return {
+            "data_source": "clickhouse",
+            "database": loader.database,
+            "events_table_base": loader.events_table_base,
+            "events_ticker_day_index_table": loader.events_ticker_day_index_table,
+            "months": ",".join(loader.months),
+        }
+    return {"data_source": loader.data_source, "cache_root": str(loader.cache_root)}
 
 
 def input_contract(config: ModelConfig) -> dict[str, Any]:

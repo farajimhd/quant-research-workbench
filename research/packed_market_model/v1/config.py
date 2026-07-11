@@ -11,12 +11,24 @@ from research.packed_market_model.v1 import MODEL_FAMILY, MODEL_VERSION
 
 @dataclass(slots=True)
 class LoaderConfig:
-    cache_root: Path = Path(r"D:\market-data\prepared\packed_market_block_cache\packed_events_daily_index_2019-02")
+    data_source: str = "clickhouse"
+    cache_root: Path = Path(r"D:\market-data\prepared\packed_market_block_cache\legacy_debug")
     months: tuple[str, ...] = ()
     tickers: tuple[str, ...] = ()
     shuffle_blocks: bool = False
     seed: int = 17
     max_blocks: int = 0
+    database: str = "market_sip_compact"
+    events_table_base: str = "events"
+    events_ticker_day_index_table: str = "events_ticker_day_index"
+    ticker_workers: int = 24
+    ready_queue_blocks: int = 8
+    target_origin_count_per_block: int = 65_536
+    event_context_rows: int = 1_024
+    future_event_guard_rows: int = 262_144
+    max_threads_per_query: int = 4
+    max_memory_usage: str = "32G"
+    worker_memory_limit_mib: int = 12_288
 
 
 @dataclass(slots=True)

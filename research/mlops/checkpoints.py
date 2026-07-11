@@ -45,6 +45,8 @@ class AsyncCheckpointManager:
         self.best_val_loss = float("inf")
         self.message_callback = message_callback
         self.jobs: queue.Queue[tuple[dict[str, Any], list[tuple[Path, str]], dict[str, Any]] | None] = queue.Queue(maxsize=2)
+        self.pending_paths: set[Path] = set()
+        self.pending_lock = threading.RLock()
         self.worker = threading.Thread(target=self._worker, name="async-checkpoint-writer", daemon=True)
         self.worker.start()
 
@@ -116,6 +118,18 @@ class AsyncCheckpointManager:
             self.worker.join(timeout=timeout)
 
     def _enqueue(self, payload: dict[str, Any], reasons: list[tuple[Path, str]], event: dict[str, Any]) -> None:
+        with self.pending_lock:
+            filtered = []
+            for path, reason in reasons:
+                resolved = path.resolve()
+                if resolved in self.pending_paths:
+                    self._message(f"Skipped checkpoint {reason}; save is already pending for {path}.")
+                    continue
+                self.pending_paths.add(resolved)
+                filtered.append((path, reason))
+            reasons = filtered
+        if not reasons:
+            return
         while True:
             try:
                 self.jobs.put((payload, reasons, event), timeout=1)
@@ -130,9 +144,13 @@ class AsyncCheckpointManager:
                 return
             payload, destinations, event = job
             for path, reason in destinations:
-                atomic_torch_save(payload, path)
-                self._append_manifest({**event, "reason": reason, "path": str(path)})
-                self._message(f"Saved checkpoint {reason}: {path}")
+                try:
+                    atomic_torch_save(payload, path)
+                    self._append_manifest({**event, "reason": reason, "path": str(path)})
+                    self._message(f"Saved checkpoint {reason}: {path}")
+                finally:
+                    with self.pending_lock:
+                        self.pending_paths.discard(path.resolve())
 
     def _append_manifest(self, event: dict[str, Any]) -> None:
         with self.manifest_path.open("a", encoding="utf-8") as handle:

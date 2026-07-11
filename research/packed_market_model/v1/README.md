@@ -1,15 +1,13 @@
 # Packed Market Model v1
 
 `packed_market_model/v1` is the first block-native model family for market-event training.
-It is designed around packed chronological blocks rather than expanded per-origin context tensors.
+It is designed around direct ClickHouse ticker streams rather than expanded per-origin context tensors.
 
 ## Data Flow
 
 ```mermaid
 flowchart LR
-  daily["Daily-index streaming cache"] --> builder["Packed block builder"]
-  builder --> cache["Packed market block cache"]
-  cache --> loader["PackedMarketDataset"]
+  clickhouse["ClickHouse events_YYYY + index"] --> loader["Ticker stream workers"]
   loader --> model["PackedMarketModelV1"]
   model --> loss["Grouped loss over all origins"]
 ```
@@ -63,26 +61,45 @@ All logs, metrics, and checkpoints are keyed by samples seen, not steps.
 
 ## Run Commands
 
-Build packed cache first:
+Profile the direct streaming loader:
 
 ```powershell
-python -m research.mlops.packed_market.builder `
-  --source-cache-root D:\market-data\prepared\daily_index_streaming_cache\events_daily_index_2019-02 `
-  --output-root D:\market-data\prepared\packed_market_block_cache `
-  --cache-id packed_events_daily_index_2019-02 `
-  --months 2019-02
+python -m research.packed_market_model.v1.run_profile_ticker_stream_loader `
+  --months 2019-02 `
+  --max-blocks 20 `
+  --ticker-workers 24
 ```
 
 Train:
 
 ```powershell
 python -m research.packed_market_model.v1.train `
-  --cache-root D:\market-data\prepared\packed_market_block_cache\packed_events_daily_index_2019-02 `
-  --months 2019-02
+  --data-source clickhouse `
+  --months 2019-02 `
+  --ticker-workers 24 `
+  --ready-queue-blocks 8
 ```
 
 Smoke:
 
 ```powershell
-python -m research.packed_market_model.v1.train --dummy-data --max-blocks 2 --max-samples 128 --wandb-mode disabled --compile-model false
+python -m research.packed_market_model.v1.train --dummy-data --max-blocks 2 --max-samples 128 --wandb-mode disabled --no-compile-model
 ```
+
+## Direct Loader
+
+The active loader is `ClickHouseTickerStreamDataset`.
+
+Each worker owns one ticker/month stream at a time:
+
+```text
+fetch ordinal chunk
+compute vectorized future labels
+emit packed block
+release no-longer-needed memory
+continue same ticker or move to next plan
+```
+
+Blocks are consumed by the GPU as soon as they are ready. They do not need to be globally ordered across tickers.
+
+See [TICKER_STREAMING_LOADER_DESIGN.md](../../mlops/packed_market/TICKER_STREAMING_LOADER_DESIGN.md).

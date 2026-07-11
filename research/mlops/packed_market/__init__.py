@@ -8,6 +8,7 @@ from research.mlops.packed_market.cache import (
     PackedMarketBlock,
 )
 from research.mlops.packed_market.dataset import PackedMarketDataset, PackedMarketDatasetConfig
+from research.mlops.packed_market.streaming import ClickHouseTickerStreamConfig, ClickHouseTickerStreamDataset
 
 __all__ = [
     "PACKED_CACHE_FORMAT",
@@ -17,4 +18,6 @@ __all__ = [
     "PackedMarketBlock",
     "PackedMarketDataset",
     "PackedMarketDatasetConfig",
+    "ClickHouseTickerStreamConfig",
+    "ClickHouseTickerStreamDataset",
 ]
