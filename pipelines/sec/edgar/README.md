@@ -15,8 +15,14 @@ This package contains the SEC EDGAR historical workflow:
 Preferred current historical gap-fill path used by SEC Gateway:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_gap_fill.py --start-date 2026-06-17 --end-date 2026-06-21 --read-database q_live --write-database q_live --coverage-table sec_coverage_manifest_v3 --bulk-mirror-database sec_core --artifact-root-win D:/market-data/sec_core --core-output-root-win D:/market-data/prepared/sec_core --output-root-win D:/market-data/prepared/sec_historical_gap_fill --daily-archive-output-root-win D:/market-data/prepared/sec_daily_feed_archives --archive-validation-output-root-win D:/market-data/prepared/sec_downloaded_archive_validation --text-parts-output-root-win D:/market-data/prepared/sec_filing_text_parts --xbrl-output-root-win D:/market-data/prepared/sec_xbrl_companyfacts_catchup --xbrl-repair-output-root-win D:/market-data/prepared/sec_xbrl_integrity_repair --integrity-audit-output-root-win D:/market-data/prepared/sec_integrity_audit --sec-bridge-output-root-win D:/market-data/prepared/q_live_migration/step_06_bridge_features --sec-bridge-table id_sec_market_bridge_v3 --context-database market_sip_compact --context-filing-table sec_filing_context_v3 --context-text-table sec_filing_text_context_v3 --context-xbrl-table sec_xbrl_context_v3 --context-output-root-win D:/market-data/prepared/sec_context --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --bulk-sources submissions,companyfacts --bulk-download-concurrency 2 --bulk-ingest-batch-size 100000 --archive-download-concurrency 3 --archive-validation-workers 32 --text-extract-workers 96 --xbrl-workers 8 --text-ingest-max-threads 96 --text-ingest-max-memory-usage 64G --sec-request-min-interval-seconds 0.12 --request-timeout-seconds 30 --max-retries 8 --retry-base-seconds 30 --pending-multiplier 2 --sample-limit 1000 --sample-text-chars 2000 --min-text-chars 40 --max-text-chars 0 --progress-layout rich --resume-from-coverage --execute
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_gap_fill.py --execute
 ```
+
+The default rebuild window is `2019-01-01` through tomorrow UTC as an exclusive
+end date. All v3 table names, workstation `D:/market-data` output roots,
+`sec_core` mirror roots, rich progress, 96 text workers, 96 ingest threads, and
+resume-from-coverage are defaults. Override `--start-date` or `--end-date` only
+when intentionally running a smaller range.
 
 This unified gap-fill entry point refreshes SEC bulk `submissions` and
 `companyfacts`, mirrors those bulk files into `sec_core`, derives canonical
@@ -40,9 +46,8 @@ for documents that now have extracted text. It does not repair filing-parent
 timestamps; run the acceptance timestamp repair scripts separately for
 `sec_filing_v3.accepted_at_utc`.
 
-Use the full argument form above for manual runs. The SEC gateway generates the
-same explicit shape so the workstation script does not depend on ambient shell
-defaults. `--resume-from-coverage` is enabled by default and records
+The SEC gateway generates the same explicit shape so the workstation script does
+not depend on ambient shell defaults. `--resume-from-coverage` is enabled by default and records
 `sec_stage_<stage_name>` rows after each successful stage. If a run fails, rerun
 the same command; completed stages for the same date range are skipped, and the
 final semantic coverage rows are written only after the whole run succeeds.

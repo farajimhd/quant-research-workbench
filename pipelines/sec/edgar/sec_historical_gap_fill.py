@@ -37,6 +37,7 @@ DEFAULT_PARTS_ROOT_WIN = Path("D:/market-data")
 DEFAULT_PARTS_ROOT_CH = "/mnt/d/market-data"
 DEFAULT_SEC_BRIDGE_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/q_live_migration/step_06_bridge_features")
 DEFAULT_SEC_CONTEXT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_context")
+DEFAULT_START_DATE = "2019-01-01"
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,8 +155,16 @@ def parse_args() -> argparse.Namespace:
             "repairs XBRL relationships, audits the result, and writes coverage."
         )
     )
-    parser.add_argument("--start-date", required=True, help="Inclusive UTC/archive date, YYYY-MM-DD.")
-    parser.add_argument("--end-date", required=True, help="Exclusive UTC/archive date, YYYY-MM-DD.")
+    parser.add_argument(
+        "--start-date",
+        default=env_string("SEC_HISTORICAL_GAP_FILL_START_DATE", DEFAULT_START_DATE),
+        help="Inclusive UTC/archive date, YYYY-MM-DD. Defaults to 2019-01-01.",
+    )
+    parser.add_argument(
+        "--end-date",
+        default=env_string("SEC_HISTORICAL_GAP_FILL_END_DATE", default_end_date()),
+        help="Exclusive UTC/archive date, YYYY-MM-DD. Defaults to tomorrow UTC so today's archives are included.",
+    )
     parser.add_argument("--execute", action="store_true", help="Execute writes. Without this, only dry-run stage commands execute.")
     parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument("--python-executable", default=sys.executable)
@@ -217,8 +226,12 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Skip stages whose stage-level coverage already covers the requested range.",
     )
-    parser.add_argument("--progress-layout", choices=["auto", "rich", "text"], default=env_string("SEC_HISTORICAL_GAP_FILL_PROGRESS_LAYOUT", "auto"))
+    parser.add_argument("--progress-layout", choices=["auto", "rich", "text"], default=env_string("SEC_HISTORICAL_GAP_FILL_PROGRESS_LAYOUT", "rich"))
     return parser.parse_args()
+
+
+def default_end_date() -> str:
+    return (datetime.now(UTC).date() + timedelta(days=1)).isoformat()
 
 
 def main() -> None:
