@@ -17,7 +17,8 @@ DEFAULT_ARGS = {
     "--context-workers": "8",
     "--max-threads-per-query": "4",
     "--max-memory-usage": "32G",
-    "--scanner-cache-root": r"D:\market-data\prepared\daily_index_streaming_cache\events_daily_index_2019-02",
+    "--scanner-resolution-us": "1000000",
+    "--scanner-horizons": "1s,5s,30s,1m",
     "--output-root": r"D:\TradingML\runtimes\packed_market_model\v1\profiles",
     "--progress-layout": "rich",
 }

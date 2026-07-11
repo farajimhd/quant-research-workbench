@@ -100,18 +100,19 @@ This profiler times the real loads for:
 - corporate actions
 - ticker daily bars
 - global daily bars
-- scanner artifacts, when available under `--scanner-cache-root`
+- direct market-wide scanner frames computed from ClickHouse `events_YYYY`
 
 The default small profile uses `--block-sampling round-robin`, so `--max-blocks 4`
 profiles the first block from four different ticker/month plans instead of four
 sequential blocks from the most active ticker. Shared month/day artifacts such as
-market-news embeddings, global daily bars, and scanner cache files are cached
+market-news embeddings, global daily bars, and direct scanner frames are cached
 inside the profiling run and reported with `cache_hit` details in `profile.jsonl`.
-Scanner files are selected from the origin rows' local dates, not from event
-lookback rows, so a block that starts on February 1 does not require a January 31
-scanner file just because its event context reaches backward.
+Scanner frames are selected from the origin rows' local dates, not from event
+lookback rows, and are built from all market events for those dates. The packed
+profile does not read `daily_index_streaming_cache` or scanner parquet artifacts.
 
-Use `--require-scanner` if scanner files must be present; otherwise missing scanner files are reported as rows in the `scanner.cache` step.
+Use `--scanner-resolution-us` and `--scanner-horizons` to control the direct
+scanner frame shape used by the profile.
 
 Train:
 

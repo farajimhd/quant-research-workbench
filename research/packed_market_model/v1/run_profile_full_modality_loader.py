@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from research.mlops.data.config import RollingMarketDataConfig
 from research.mlops.env import discover_env_files, load_env_files
+from research.mlops.packed_market.scanner import DirectScannerQueryConfig, query_direct_market_scanner_frames
 from research.mlops.packed_market.streaming import (
     ActiveQueryRegistry,
     ClickHouseTickerStreamConfig,
@@ -39,9 +40,6 @@ from research.mlops.rolling_loader.daily_index_context import (
     cancel_process_clickhouse_queries as cancel_context_queries,
 )
 from research.packed_market_model.v1.config import parse_csv
-
-
-DEFAULT_SCANNER_CACHE_ROOT = Path(r"D:\market-data\prepared\daily_index_streaming_cache\events_daily_index_2019-02")
 
 
 @dataclass(slots=True)
@@ -117,7 +115,9 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--events-ticker-day-index-table", default="events_ticker_day_index")
     parser.add_argument("--max-threads-per-query", type=int, default=4)
     parser.add_argument("--max-memory-usage", default="32G")
-    parser.add_argument("--scanner-cache-root", default=str(DEFAULT_SCANNER_CACHE_ROOT))
+    parser.add_argument("--scanner-cache-root", default="", help="Deprecated; scanner profiling now computes market-wide scanner frames directly from ClickHouse.")
+    parser.add_argument("--scanner-resolution-us", type=int, default=1_000_000)
+    parser.add_argument("--scanner-horizons", default="1s,5s,30s,1m")
     parser.add_argument("--require-scanner", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--ticker-news-prior-items", type=int, default=64)
     parser.add_argument("--market-news-prior-items", type=int, default=512)
@@ -287,7 +287,21 @@ def profile_block(
     cached_context_tasks: dict[str, tuple[tuple[str, ...], Callable[[], Any]]] = {
         "context.market_news_embeddings": (("market_news", job.plan.month), lambda: _query_market_news(ctx_args, context_client_opts, rolling_config, window)),
         "bars.global_daily": (("global_daily", job.plan.month), lambda: _query_daily_bars(ctx_args, context_client_opts, rolling_config, window, symbols=tuple(rolling_config.global_symbols))),
-        "scanner.cache": (("scanner", job.plan.month, "|".join(origin_local_dates)), lambda: load_scanner_frames(Path(args.scanner_cache_root), job.plan.month, origin_local_dates, require=bool(args.require_scanner))),
+        "scanner.direct_market": (
+            ("scanner_direct", job.plan.month, "|".join(origin_local_dates), str(args.scanner_resolution_us), str(args.scanner_horizons)),
+            lambda: query_direct_market_scanner_frames(
+                client_opts=context_client_opts,
+                config=DirectScannerQueryConfig(
+                    database=str(args.database),
+                    events_table_base=str(args.events_table_base),
+                    scanner_resolution_us=int(args.scanner_resolution_us),
+                    horizons=parse_csv(args.scanner_horizons),
+                    max_threads=int(args.max_threads_per_query),
+                    max_memory_usage=str(args.max_memory_usage),
+                ),
+                local_dates=origin_local_dates,
+            ),
+        ),
     }
     with ThreadPoolExecutor(max_workers=max(1, int(args.context_workers)), thread_name_prefix="full-modality-context") as pool:
         futures = {pool.submit(run_step, name, task): name for name, task in context_tasks.items()}
@@ -414,28 +428,6 @@ def local_dates_from_origin_events(events: Any, *, origin_start_ordinal: int, or
         return ()
     values = origin_events.select("local_date").unique().sort("local_date").to_series().to_list()
     return tuple(str(value)[:10] for value in values)
-
-
-def load_scanner_frames(cache_root: Path, month: str, local_dates: tuple[str, ...], *, require: bool) -> dict[str, Any]:
-    import polars as pl
-
-    frames: dict[str, Any] = {}
-    missing: list[str] = []
-    root = Path(cache_root)
-    month_dir = root / f"month={month}"
-    if not month_dir.exists() and root.name == f"month={month}":
-        month_dir = root
-    for date_text in local_dates:
-        path = month_dir / "global" / "scanner" / f"scanner_{date_text}.parquet"
-        if path.exists():
-            frames[date_text] = pl.read_parquet(path)
-        else:
-            missing.append(str(path))
-    if missing and require:
-        raise RuntimeError(f"Missing scanner cache files: {missing[:5]}")
-    if missing:
-        frames["_missing"] = pl.DataFrame({"path": missing})
-    return frames
 
 
 def update_state_from_block(state: ProfileState, rows: list[dict[str, Any]]) -> None:
