@@ -102,6 +102,12 @@ This profiler times the real loads for:
 - global daily bars
 - scanner artifacts, when available under `--scanner-cache-root`
 
+The default small profile uses `--block-sampling round-robin`, so `--max-blocks 4`
+profiles the first block from four different ticker/month plans instead of four
+sequential blocks from the most active ticker. Shared month/day artifacts such as
+market-news embeddings, global daily bars, and scanner cache files are cached
+inside the profiling run and reported with `cache_hit` details in `profile.jsonl`.
+
 Use `--require-scanner` if scanner files must be present; otherwise missing scanner files are reported as rows in the `scanner.cache` step.
 
 Train:

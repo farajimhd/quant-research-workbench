@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -69,12 +70,44 @@ class ProfileState:
         return time.perf_counter() - self.started_at
 
 
+@dataclass(slots=True)
+class CachedPayloadRecord:
+    payload: Any
+    rows: int
+    columns: int
+    bytes: int
+    detail: dict[str, Any]
+
+
+@dataclass(slots=True)
+class FullProfileSharedCache:
+    records: dict[tuple[str, ...], CachedPayloadRecord] = field(default_factory=dict)
+    lock: threading.RLock = field(default_factory=threading.RLock)
+
+    def get(self, key: tuple[str, ...]) -> CachedPayloadRecord | None:
+        with self.lock:
+            return self.records.get(key)
+
+    def put(self, key: tuple[str, ...], record: CachedPayloadRecord) -> None:
+        with self.lock:
+            self.records[key] = record
+
+    def summary(self) -> dict[str, Any]:
+        with self.lock:
+            return {
+                "items": len(self.records),
+                "bytes": sum(int(record.bytes) for record in self.records.values()),
+                "keys": ["|".join(key) for key in list(self.records.keys())[:20]],
+            }
+
+
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Profile full packed-market data loading across all available modalities.")
     parser.add_argument("--months", default="2019-02")
     parser.add_argument("--tickers", default="", help="Comma-separated ticker subset. Empty uses the most active ticker plans.")
     parser.add_argument("--max-blocks", type=int, default=4)
     parser.add_argument("--max-plans", type=int, default=24)
+    parser.add_argument("--block-sampling", choices=("round-robin", "sequential"), default="round-robin")
     parser.add_argument("--target-origin-count-per-block", type=int, default=65_536)
     parser.add_argument("--event-context-rows", type=int, default=1_024)
     parser.add_argument("--future-event-guard-rows", type=int, default=262_144)
@@ -146,6 +179,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         xbrl_prior_rows=int(args.xbrl_prior_rows),
         corporate_action_label_days=str(args.corporate_action_label_days),
     )
+    shared_cache = FullProfileSharedCache()
 
     try:
         plan_step = time.perf_counter()
@@ -157,40 +191,36 @@ def main(argv: Iterable[str] | None = None) -> int:
 
         with FullProfileReporter(state, layout=str(args.progress_layout)) as reporter:
             block_counter = 0
-            for plan in plans:
-                for job in build_block_jobs(stream_config, plan):
-                    if int(args.max_blocks) > 0 and block_counter >= int(args.max_blocks):
-                        raise StopIteration
-                    block_counter += 1
-                    state.last_message = f"{plan.month} {plan.ticker} block={job.block_id}"
-                    block_rows = profile_block(
-                        args=args,
-                        stream_config=stream_config,
-                        context_client_opts=context_client_opts,
-                        rolling_config=rolling_config,
-                        ctx_args=ctx_args,
-                        job=job,
-                        stream_queries=stream_queries,
-                    )
-                    append_jsonl(report_path, {"event": "block", "block": block_counter, "ticker": plan.ticker, "month": plan.month, "job": job_to_dict(job), "steps": block_rows})
-                    update_state_from_block(state, block_rows)
-                    reporter.refresh()
-                    print(
-                        json.dumps(
-                            {
-                                "block": block_counter,
-                                "ticker": plan.ticker,
-                                "steps": len(block_rows),
-                                "rows": sum(int(row.get("rows") or 0) for row in block_rows),
-                                "seconds": sum(float(row.get("seconds") or 0.0) for row in block_rows),
-                                "errors": sum(1 for row in block_rows if row.get("status") != "ok"),
-                            },
-                            sort_keys=True,
-                        ),
-                        flush=True,
-                    )
-    except StopIteration:
-        pass
+            for job in iter_profile_jobs(stream_config, plans, max_blocks=int(args.max_blocks), mode=str(args.block_sampling)):
+                block_counter += 1
+                state.last_message = f"{job.plan.month} {job.plan.ticker} block={job.block_id}"
+                block_rows = profile_block(
+                    args=args,
+                    stream_config=stream_config,
+                    context_client_opts=context_client_opts,
+                    rolling_config=rolling_config,
+                    ctx_args=ctx_args,
+                    job=job,
+                    stream_queries=stream_queries,
+                    shared_cache=shared_cache,
+                )
+                append_jsonl(report_path, {"event": "block", "block": block_counter, "ticker": job.plan.ticker, "month": job.plan.month, "job": job_to_dict(job), "steps": block_rows})
+                update_state_from_block(state, block_rows)
+                reporter.refresh()
+                print(
+                    json.dumps(
+                        {
+                            "block": block_counter,
+                            "ticker": job.plan.ticker,
+                            "steps": len(block_rows),
+                            "rows": sum(int(row.get("rows") or 0) for row in block_rows),
+                            "seconds": sum(float(row.get("seconds") or 0.0) for row in block_rows),
+                            "errors": sum(1 for row in block_rows if row.get("status") != "ok"),
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
     except KeyboardInterrupt:
         state.last_message = "interrupt received; cancelling ClickHouse queries"
         cancel_stream_queries(stream_config, stream_queries)
@@ -202,6 +232,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         cancel_context_queries(client_opts=context_client_opts, reason="full_modality_profile_shutdown")
 
     summary = state_summary(state)
+    summary["shared_cache"] = shared_cache.summary()
     append_jsonl(report_path, {"event": "summary", **summary})
     print("SUMMARY " + json.dumps(summary, sort_keys=True), flush=True)
     return 1 if int(state.errors) and bool(args.strict_modalities) else 0
@@ -216,6 +247,7 @@ def profile_block(
     ctx_args: argparse.Namespace,
     job: Any,
     stream_queries: ActiveQueryRegistry,
+    shared_cache: FullProfileSharedCache,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     events_holder: dict[str, Any] = {}
@@ -243,20 +275,57 @@ def profile_block(
 
     context_tasks: dict[str, Callable[[], Any]] = {
         "context.ticker_news_embeddings": lambda: _query_ticker_news(ctx_args, context_client_opts, rolling_config, window, job.plan.ticker),
-        "context.market_news_embeddings": lambda: _query_market_news(ctx_args, context_client_opts, rolling_config, window),
         "context.sec_embeddings": lambda: _query_sec_tokens(ctx_args, context_client_opts, rolling_config, window, job.plan.ticker),
         "context.xbrl": lambda: _query_xbrl(ctx_args, context_client_opts, rolling_config, window, job.plan.ticker),
         "context.corporate_actions": lambda: _query_corporate_actions(ctx_args, context_client_opts, rolling_config, window, job.plan.ticker),
         "bars.ticker_daily": lambda: _query_daily_bars(ctx_args, context_client_opts, rolling_config, window, symbols=(job.plan.ticker,)),
-        "bars.global_daily": lambda: _query_daily_bars(ctx_args, context_client_opts, rolling_config, window, symbols=tuple(rolling_config.global_symbols)),
-        "scanner.cache": lambda: load_scanner_frames(Path(args.scanner_cache_root), job.plan.month, local_dates, require=bool(args.require_scanner)),
+    }
+    cached_context_tasks: dict[str, tuple[tuple[str, ...], Callable[[], Any]]] = {
+        "context.market_news_embeddings": (("market_news", job.plan.month), lambda: _query_market_news(ctx_args, context_client_opts, rolling_config, window)),
+        "bars.global_daily": (("global_daily", job.plan.month), lambda: _query_daily_bars(ctx_args, context_client_opts, rolling_config, window, symbols=tuple(rolling_config.global_symbols))),
+        "scanner.cache": (("scanner", job.plan.month, "|".join(local_dates)), lambda: load_scanner_frames(Path(args.scanner_cache_root), job.plan.month, local_dates, require=bool(args.require_scanner))),
     }
     with ThreadPoolExecutor(max_workers=max(1, int(args.context_workers)), thread_name_prefix="full-modality-context") as pool:
         futures = {pool.submit(run_step, name, task): name for name, task in context_tasks.items()}
+        futures.update({pool.submit(run_cached_step, name, shared_cache, key, task): name for name, (key, task) in cached_context_tasks.items()})
         for future in as_completed(futures):
             result, _payload = future.result()
             rows.append(asdict(result))
     return rows
+
+
+def iter_profile_jobs(
+    config: ClickHouseTickerStreamConfig,
+    plans: list[Any],
+    *,
+    max_blocks: int,
+    mode: str,
+) -> Iterable[Any]:
+    emitted = 0
+    limit = max(0, int(max_blocks))
+    if mode == "sequential":
+        for plan in plans:
+            for job in build_block_jobs(config, plan):
+                if limit and emitted >= limit:
+                    return
+                emitted += 1
+                yield job
+        return
+
+    active = [iter(build_block_jobs(config, plan)) for plan in plans]
+    while active:
+        next_active = []
+        for iterator in active:
+            if limit and emitted >= limit:
+                return
+            try:
+                job = next(iterator)
+            except StopIteration:
+                continue
+            emitted += 1
+            yield job
+            next_active.append(iterator)
+        active = next_active
 
 
 def run_step(name: str, fn: Callable[[], Any]) -> tuple[StepResult, Any | None]:
@@ -268,6 +337,33 @@ def run_step(name: str, fn: Callable[[], Any]) -> tuple[StepResult, Any | None]:
         return StepResult(name=name, status="ok", seconds=seconds, rows=rows, columns=columns, bytes=bytes_used, detail=detail), payload
     except Exception as exc:  # noqa: BLE001
         return StepResult(name=name, status="error", seconds=time.perf_counter() - started, error=repr(exc), detail={"traceback": traceback.format_exc(limit=8)}), None
+
+
+def run_cached_step(name: str, cache: FullProfileSharedCache, key: tuple[str, ...], fn: Callable[[], Any]) -> tuple[StepResult, Any | None]:
+    started = time.perf_counter()
+    record = cache.get(key)
+    if record is not None:
+        detail = {"cache_hit": True, "cached_bytes": int(record.bytes), "cache_key": "|".join(key)}
+        if "columns_preview" in record.detail:
+            detail["columns_preview"] = record.detail["columns_preview"]
+        return StepResult(name=name, status="ok", seconds=time.perf_counter() - started, rows=int(record.rows), columns=int(record.columns), bytes=0, detail=detail), record.payload
+
+    result, payload = run_step(name, fn)
+    result.detail = dict(result.detail)
+    result.detail["cache_hit"] = False
+    result.detail["cache_key"] = "|".join(key)
+    if result.status == "ok" and payload is not None:
+        cache.put(
+            key,
+            CachedPayloadRecord(
+                payload=payload,
+                rows=int(result.rows),
+                columns=int(result.columns),
+                bytes=int(result.bytes),
+                detail=dict(result.detail),
+            ),
+        )
+    return result, payload
 
 
 def summarize_payload(payload: Any) -> tuple[int, int, int, dict[str, Any]]:

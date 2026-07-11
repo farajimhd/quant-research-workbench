@@ -10,6 +10,7 @@ DEFAULT_ARGS = {
     "--months": "2019-02",
     "--max-blocks": "4",
     "--max-plans": "24",
+    "--block-sampling": "round-robin",
     "--target-origin-count-per-block": "65536",
     "--event-context-rows": "1024",
     "--future-event-guard-rows": "262144",
