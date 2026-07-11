@@ -2397,10 +2397,9 @@ def service_sec_detail(cik: str, accession_number: str) -> dict[str, Any]:
         "document_rows",
         f"""
         SELECT *
-        FROM {quote_ident(database)}.{quote_ident(document_table)}
+        FROM {quote_ident(database)}.{quote_ident(document_table)} FINAL
         WHERE {where_key}
         ORDER BY sequence_number ASC, inserted_at DESC, document_name ASC
-        LIMIT 250
         FORMAT JSONEachRow
         """,
     )
@@ -2414,7 +2413,7 @@ def service_sec_detail(cik: str, accession_number: str) -> dict[str, Any]:
             accession_number_compact,
             toString(cik) AS cik,
             text_kind,
-            substring(text, 1, 30000) AS text_preview,
+            text,
             text_char_count,
             text_byte_count,
             text_sha256,
@@ -2426,11 +2425,10 @@ def service_sec_detail(cik: str, accession_number: str) -> dict[str, Any]:
             formatDateTime(extracted_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS extracted_at_utc,
             source_run_id,
             inserted_at,
-            text_char_count > 30000 AS text_truncated
-        FROM {quote_ident(database)}.{quote_ident(text_table)}
+            false AS text_truncated
+        FROM {quote_ident(database)}.{quote_ident(text_table)} FINAL
         WHERE {where_key}
         ORDER BY text_kind ASC, document_id ASC, inserted_at DESC
-        LIMIT 50
         FORMAT JSONEachRow
         """,
     )

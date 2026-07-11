@@ -3928,6 +3928,58 @@ button {
   white-space: pre-wrap;
 }
 
+.sec-filing-readable-part {
+  display: block;
+}
+
+.sec-filing-readable-part + .sec-filing-readable-part {
+  border-top: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+  margin-top: 28px;
+  padding-top: 24px;
+}
+
+.sec-filing-readable-part-header {
+  align-items: baseline;
+  background: color-mix(in oklab, var(--surface-alt) 58%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--border) 74%, transparent);
+  border-radius: 8px;
+  display: flex;
+  gap: 10px;
+  margin: 0 0 18px;
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.sec-filing-readable-part-header strong,
+.sec-filing-readable-part-header span,
+.sec-filing-readable-part-header small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sec-filing-readable-part-header strong {
+  color: var(--foreground);
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-weight: 680;
+}
+
+.sec-filing-readable-part-header span {
+  color: var(--muted-foreground);
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+.sec-filing-readable-part-header small {
+  color: var(--muted);
+  flex: 1 1 auto;
+  font-family: "Roboto Mono", monospace;
+  font-size: 11px;
+}
+
 .sec-filing-context-panel {
   align-content: start;
   display: grid;

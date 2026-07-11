@@ -1440,11 +1440,13 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
   const primaryDocument = stringMetric(filingRow, ["primary_document"]) || row.primaryDocument;
   const identityTickers = secIdentityTickers(identitySummary, row, identityRows);
   const primaryTicker = stringMetric(identitySummary, ["primary_ticker"]) || row.primaryTicker || identityTickers[0] || "";
-  const primaryTextRow = secPrimaryTextRow(textRows);
-  const primaryText = primaryTextRow ? secTextValue(primaryTextRow) : "";
-  const primaryTextBlocks = secReadableTextBlocks(primaryText);
-  const primaryTextKind = primaryTextRow ? displayName(stringMetric(primaryTextRow, ["text_kind", "kind", "source_kind"]) || "extracted filing text") : "No extracted text";
-  const primaryTextChars = primaryTextRow ? secTextCharCount(primaryTextRow) || primaryText.length : 0;
+  const readableTextRows = secReadableTextRows(textRows);
+  const primaryTextKind = readableTextRows.length === 1
+    ? readableTextRows[0].label
+    : readableTextRows.length
+      ? `${formatCompactNumber(readableTextRows.length)} extracted text parts`
+      : "No extracted text";
+  const primaryTextChars = readableTextRows.reduce((total, item) => total + item.charCount, 0);
   const documentTypeSample = uniqueStringSample(
     [
       ...row.documentTypeSample,
@@ -1608,8 +1610,19 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
               <strong>{primaryTextChars ? `${formatCompactNumber(primaryTextChars)} chars` : "No text"}</strong>
             </header>
             <div className="sec-filing-readable-body">
-              {primaryTextBlocks.length ? (
-                primaryTextBlocks.map((block, index) => <p key={`${index}-${block.slice(0, 24)}`}>{block}</p>)
+              {readableTextRows.length ? (
+                readableTextRows.map((textPart, partIndex) => (
+                  <section className="sec-filing-readable-part" key={`${textPart.documentId || textPart.sha256 || textPart.label}-${partIndex}`}>
+                    <div className="sec-filing-readable-part-header">
+                      <strong>{textPart.label}</strong>
+                      <span>{formatCompactNumber(textPart.charCount)} chars</span>
+                      <small>{textPart.documentId || textPart.archiveMember || textPart.sha256 || "-"}</small>
+                    </div>
+                    {textPart.blocks.map((block, blockIndex) => (
+                      <p key={`${partIndex}-${blockIndex}-${block.slice(0, 24)}`}>{block}</p>
+                    ))}
+                  </section>
+                ))
               ) : (
                 <p className="sec-filing-empty-note">No filing text was returned for this filing yet.</p>
               )}
@@ -1668,6 +1681,12 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
             </div>
           </details>
           <details>
+            <summary><span>Filing Text Rows</span><strong>{formatCompactNumber(textRows.length)}</strong></summary>
+            <div className="sec-filing-data-table-wrap">
+              <DataTable empty="No text rows returned for this filing." fitToContent rows={textRows.map(secTextMetadataRow).map(normalizeRow)} />
+            </div>
+          </details>
+          <details>
             <summary><span>XBRL Company Facts</span><strong>{formatCompactNumber(companyFactRows.length)}</strong></summary>
             <div className="sec-filing-data-table-wrap">
               <DataTable empty="No XBRL company fact rows returned for this filing." fitToContent rows={companyFactRows.map(normalizeRow)} />
@@ -1695,17 +1714,29 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
   );
 }
 
-function secPrimaryTextRow(rows: Record<string, unknown>[]) {
-  if (!rows.length) return null;
+function secReadableTextRows(rows: Record<string, unknown>[]) {
   return [...rows].sort((left, right) => {
     const leftPrimary = /primary|main|document/.test(stringMetric(left, ["text_kind", "kind"]).toLowerCase()) ? 1 : 0;
     const rightPrimary = /primary|main|document/.test(stringMetric(right, ["text_kind", "kind"]).toLowerCase()) ? 1 : 0;
     return rightPrimary - leftPrimary || secTextCharCount(right) - secTextCharCount(left);
-  })[0] ?? null;
+  })
+    .map((row, index) => {
+      const value = secTextValue(row);
+      const label = displayName(stringMetric(row, ["text_kind", "kind", "source_kind"]) || `Text part ${index + 1}`);
+      return {
+        archiveMember: stringMetric(row, ["source_archive_member"]),
+        blocks: secReadableTextBlocks(value),
+        charCount: secTextCharCount(row) || value.length,
+        documentId: stringMetric(row, ["document_id", "filing_document_id"]),
+        label,
+        sha256: stringMetric(row, ["text_sha256"]),
+      };
+    })
+    .filter((row) => row.blocks.length > 0);
 }
 
 function secTextValue(row: Record<string, unknown>) {
-  return stringMetric(row, ["text_preview", "text", "clean_text", "normalized_text", "body_text", "content"]);
+  return stringMetric(row, ["text", "clean_text", "normalized_text", "body_text", "content", "text_preview"]);
 }
 
 function secTextCharCount(row: Record<string, unknown>) {
@@ -1724,7 +1755,17 @@ function secReadableTextBlocks(value: string) {
     .split(/\n{2,}/)
     .map((block) => block.replace(/[ \t]{2,}/g, " ").trim())
     .filter(Boolean);
-  return (blocks.length ? blocks : [normalized]).slice(0, 160);
+  return blocks.length ? blocks : [normalized];
+}
+
+function secTextMetadataRow(row: Record<string, unknown>) {
+  const metadata = { ...row };
+  if ("text" in metadata) {
+    const text = stringMetric(metadata, ["text"]);
+    metadata.text_preview = text.length > 400 ? `${text.slice(0, 400)}...` : text;
+    delete metadata.text;
+  }
+  return metadata;
 }
 
 function newsDetailTickers(dbRow: Record<string, unknown>, tickerRows: Record<string, unknown>[], row: NewsTodayRow) {
