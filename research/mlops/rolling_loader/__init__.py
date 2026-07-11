@@ -17,6 +17,14 @@ from research.mlops.rolling_loader.daily_index_dataset import (
     DailyIndexLoaderState,
     DailyIndexTrainingBatch,
 )
+from research.mlops.rolling_loader.offline_training_batch_cache import (
+    OFFLINE_BATCH_CACHE_FORMAT,
+    OFFLINE_BATCH_CACHE_VERSION,
+    OfflineBatchCacheWriter,
+    OfflineBatchCacheWriterConfig,
+    OfflineShardStats,
+    load_shard_tensor_rows,
+)
 from research.mlops.rolling_loader.rust_chrono_loader import (
     RustNativeCacheProfileConfig,
     RustNativeCacheProfileStats,
@@ -46,6 +54,11 @@ __all__ = [
     "DailyIndexLoaderConfig",
     "DailyIndexLoaderState",
     "DailyIndexTrainingBatch",
+    "OFFLINE_BATCH_CACHE_FORMAT",
+    "OFFLINE_BATCH_CACHE_VERSION",
+    "OfflineBatchCacheWriter",
+    "OfflineBatchCacheWriterConfig",
+    "OfflineShardStats",
     "RustNativeCacheProfileConfig",
     "RustNativeCacheProfileStats",
     "RustRealCachePart",
@@ -58,6 +71,7 @@ __all__ = [
     "RustTensorAssemblyStats",
     "assemble_tensors_with_rust",
     "build_rust_library",
+    "load_shard_tensor_rows",
     "profile_rust_native_cache",
     "profile_rust_real_cache_parts",
     "profile_rust_queue_runtime",

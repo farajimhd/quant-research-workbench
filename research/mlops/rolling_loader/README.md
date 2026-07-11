@@ -17,6 +17,8 @@ Older materialized-cache, indexed-daily, replay, and ticker-month builder trials
 | `run_profile_rust_real_cache_loader.py` | Reads real daily-index parquet event/origin parts, builds the real Rust rolling event cache, and profiles realistic cache throughput. |
 | `run_profile_rust_full_batch_assembly.py` | Runs real daily-index batches and sends every numeric/bool batch tensor through the Rust full-batch assembly/gather ABI. |
 | `run_profile_rust_native_cache_loader.py` | Opens real daily-index parquet cache artifacts directly from Rust and validates/touches events, origins, sparse context, bars, scanner, and label sources. |
+| `run_build_offline_training_batch_cache.py` | Materializes real trainer batches from the daily-index cache and writes day/segment/shard parquet tensor files for compute-light training. |
+| `offline_training_batch_cache.py` | Offline batch-cache manifest, parquet tensor writer, and tensor-row reader helpers. |
 | `DAILY_INDEX_STREAMING_CACHE_DESIGN.md` | Design contract for the builder, cache layout, concurrency, and terminal reporting. |
 | `CACHE_FIRST_CHRONOLOGICAL_LOADER_DESIGN.md` | Active cache-first chronological loader contract with ticker cache capacity, rolling context state, hybrid frontier origins, and detailed profiling requirements. |
 | `RUST_CHRONOLOGICAL_LOADER_RUNTIME.md` | Rust implementation contract for the four-pool realtime/prefetch runtime and current profiling boundary. |
@@ -106,6 +108,87 @@ assembly boundary against real emitted batches.
 Use `run_profile_rust_native_cache_loader.py` to validate direct Rust parquet
 reads and manifest-driven cache integrity before moving more trainer work into
 Rust-owned buffers.
+
+## Offline Training Batch Cache
+
+`run_build_offline_training_batch_cache.py` is the supported escape hatch when
+real-time materialization is too slow for GPU training. It uses the same
+daily-index chronological loader and `DailyIndexTrainingBatch` contract as v3
+training, then writes fully materialized batches to SSD. Training can then use a
+light reader that loads ready tensors instead of rebuilding rolling context,
+labels, scanner, sparse context, and event streams at training time.
+
+Default workstation output is on the SSD:
+
+```text
+D:\market-data\prepared\offline_training_batch_cache\<cache_id>
+```
+
+Each shard holds `10` complete batches by default:
+
+```text
+<cache_id>/
+  manifest.json
+  logs/
+    build_log.jsonl
+    shards.jsonl
+  month=YYYY-MM/
+    day=YYYY-MM-DD/
+      segment=000000/
+        shard=000000/
+          shard_manifest.json
+          tensors/
+            ticker.parquet
+            origin_ordinal.parquet
+            origin_timestamp_us.parquet
+            raw_event_stream.parquet
+            text_inputs/ticker_news/embeddings.parquet
+            xbrl_inputs/value.parquet
+            future_bar_values/trade.parquet
+            ...
+```
+
+Every tensor is saved as its own parquet file. Each parquet row is one batch
+payload with `batch_index`, `encoding`, `dtype`, `shape`, `payload_nbytes`,
+`sha256`, and `data`. Numeric and bool arrays are raw contiguous bytes; string
+or object arrays are JSON-encoded. `shard_manifest.json` records tensor paths,
+origin boundaries, sample counts, byte counts, source dates present, and per
+batch identity summaries.
+
+Shards are committed atomically: the script writes a temporary shard directory
+and renames it only after tensor parquet files and the shard manifest are
+complete. On Ctrl+C, the loader is cancelled, any fully materialized pending
+shard is committed as `partial_after_interrupt`, and the root manifest is marked
+`interrupted`.
+
+Run a full February 2019 cache build on the workstation with:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\run_build_offline_training_batch_cache.py `
+  --cache-root D:\market-data\prepared\daily_index_streaming_cache\events_daily_index_2019-02 `
+  --cache-id temporal_v3_offline_batches_2019-02_bs1024 `
+  --months 2019-02 `
+  --batch-size 1024 `
+  --batches-per-shard 10
+```
+
+For a small smoke run:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\run_build_offline_training_batch_cache.py `
+  --cache-root D:\market-data\prepared\daily_index_streaming_cache\events_daily_index_2019-02 `
+  --cache-id smoke_offline_batches_2019-02 `
+  --months 2019-02 `
+  --training-days 2019-02-01 `
+  --max-shards 1 `
+  --overwrite
+```
+
+The Rich terminal reports created batches, committed batches, saved shards,
+sample throughput, parquet size, current day/segment/shard, loader telemetry,
+recent shard summaries, and ETA. If `--max-batches` or `--max-samples` is not
+provided, ETA is based on the loader-reported available origins for the selected
+cache period.
 
 `run_profile_rust_native_cache_loader.py` now defaults to the practical
 trainer-facing experiment: warm the cache once, then emit 20 complete
