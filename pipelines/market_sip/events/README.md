@@ -245,8 +245,12 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_si
 Audit the packed text renderer against raw daily archive filings:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_packed_text_renderer_audit.py --archive-root-win D:\market-data\sec_core\daily_archives --start-date 2026-01-01 --end-date 2026-07-11 --sample-size 10
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_packed_text_renderer_audit.py --archive-root-win D:\market-data\sec_core\daily_archives --start-date 2026-01-01 --end-date 2026-07-11 --samples-per-content-type 3 --content-formats html,xml,plain_text
 ```
+
+The audit samples submitted text-source payloads by `content_format`, shows the
+upstream extracted source text, renders the packed model text, and includes
+examples of repeated renderer blocks when duplicate block hashes are detected.
 
 By default, the migration deletes the target accepted-time range from the compact
 tables and waits for ClickHouse mutations before reinserting. This keeps reruns

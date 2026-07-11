@@ -98,6 +98,7 @@ class PackedTextResult:
     table_block_count: int
     duplicate_block_count: int
     block_hashes: list[int]
+    duplicate_block_samples: list[str]
     source_text_hash: int
     packed_text_hash: int
     removed_layout_line_count: int
@@ -326,7 +327,14 @@ def render_sec_packed_text(
 
     packed_text = "\n".join(block.text for block in blocks).strip()
     intermediate_text = "\n".join(f"[{block.kind}] {block.text}" for block in blocks).strip()
-    block_hashes = [stable_uint64(_block_hash_key(block.text)) for block in blocks if block.text.strip()]
+    block_keys = [_block_hash_key(block.text) for block in blocks if block.text.strip()]
+    block_hashes = [stable_uint64(key) for key in block_keys]
+    block_key_counts: dict[str, int] = {}
+    duplicate_block_samples: list[str] = []
+    for block, key in zip((block for block in blocks if block.text.strip()), block_keys):
+        block_key_counts[key] = block_key_counts.get(key, 0) + 1
+        if block_key_counts[key] == 2 and len(duplicate_block_samples) < 5:
+            duplicate_block_samples.append(block.text)
     duplicate_block_count = len(block_hashes) - len(set(block_hashes))
     table_block_count = sum(1 for block in blocks if block.kind.startswith("table"))
     return PackedTextResult(
@@ -338,6 +346,7 @@ def render_sec_packed_text(
         table_block_count=table_block_count,
         duplicate_block_count=duplicate_block_count,
         block_hashes=block_hashes,
+        duplicate_block_samples=duplicate_block_samples,
         source_text_hash=stable_uint64(source),
         packed_text_hash=stable_uint64(packed_text),
         removed_layout_line_count=_removed_layout_line_count(source, packed_text),
