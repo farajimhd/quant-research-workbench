@@ -26,7 +26,7 @@ flowchart LR
 | Stage | Input | Output | Notes |
 |---|---:|---:|---|
 | Event projection | `[T, F]` | `[T, d_model]` | LayerNorm + MLP. Raw loader values stay raw; preprocessing is inside the model. |
-| Position embedding | `[T]` | `[T, d_model]` | Optional learned position id within the packed stream. |
+| Position embedding | `[T]` | `[T, d_model]` | Optional learned position id within the packed stream; disabled by default because a multi-million-row learned table is too large for the default profile. |
 | Causal event encoder | `[T, d_model]` | `[T, d_model]` | Stack of causal depthwise-conv residual blocks. This is faster than full attention for the first version. |
 | Origin gather | `[T, d_model]`, `[M]` | `[M, d_model]` | Selects model state at each origin without rebuilding windows. |
 | Label heads | `[M, d_model]` | `{label: [M]}` | One head per discovered label column. |
@@ -108,6 +108,24 @@ sequential blocks from the most active ticker. Shared month/day artifacts such a
 market-news embeddings and global daily bars are cached inside the profiling run
 and reported with `cache_hit` details in `profile.jsonl`.
 
+Profile the v1 model against the same ClickHouse ticker-stream loader used by
+training:
+
+```powershell
+python -m research.packed_market_model.v1.run_profile_model_workstation
+```
+
+This runs one warmup block and four profiled blocks by default, with scanner
+sidecar enabled, and writes stage timing to `profile.jsonl`:
+
+- loader wait
+- CPU/GPU tensor transfer
+- forward
+- loss calculation
+- backward
+- optimizer step
+- CUDA peak allocated/reserved memory
+
 Scanner is built by a ClickHouse sidecar, not by ticker workers and not from the
 old daily-index scanner cache. The sidecar materializes run-scoped `1s` scanner
 bars for aligned `15 minute` windows, then the loader fetches completed bars
@@ -126,7 +144,8 @@ python -m research.packed_market_model.v1.train `
   --data-source clickhouse `
   --months 2019-02 `
   --ticker-workers 24 `
-  --ready-queue-blocks 8
+  --ready-queue-blocks 8 `
+  --scanner-sidecar
 ```
 
 Smoke:

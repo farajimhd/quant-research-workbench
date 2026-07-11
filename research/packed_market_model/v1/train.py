@@ -66,6 +66,19 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-threads-per-query", type=int, default=loader.max_threads_per_query)
     parser.add_argument("--max-memory-usage", default=loader.max_memory_usage)
     parser.add_argument("--worker-memory-limit-mib", type=int, default=loader.worker_memory_limit_mib)
+    parser.add_argument("--scanner-sidecar", action=argparse.BooleanOptionalAction, default=loader.scanner_sidecar_enabled)
+    parser.add_argument("--scanner-run-id", default=loader.scanner_run_id)
+    parser.add_argument("--scanner-table", default=loader.scanner_table)
+    parser.add_argument("--scanner-window-seconds", type=int, default=loader.scanner_window_seconds)
+    parser.add_argument("--scanner-fetch-lookback-seconds", type=int, default=loader.scanner_fetch_lookback_seconds)
+    parser.add_argument("--scanner-warmup-seconds", type=int, default=loader.scanner_warmup_seconds)
+    parser.add_argument("--scanner-baseline-et", default=loader.scanner_baseline_et)
+    parser.add_argument("--scanner-cleanup-on-stop", action=argparse.BooleanOptionalAction, default=loader.scanner_cleanup_on_stop)
+    parser.add_argument("--scanner-penny-price-threshold", type=float, default=loader.scanner_penny_price_threshold)
+    parser.add_argument("--scanner-small-price-threshold", type=float, default=loader.scanner_small_price_threshold)
+    parser.add_argument("--scanner-mid-price-threshold", type=float, default=loader.scanner_mid_price_threshold)
+    parser.add_argument("--scanner-rank-top-k", type=int, default=loader.scanner_rank_top_k)
+    parser.add_argument("--scanner-background-chunk-seconds", type=int, default=loader.scanner_background_chunk_seconds)
     parser.add_argument("--output-root", default=str(train.output_root))
     parser.add_argument("--run-name", default="")
     parser.add_argument("--dataset-id", default="packed-market-cache")
@@ -73,6 +86,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--event-layers", type=int, default=model.event_layers)
     parser.add_argument("--event-kernel-size", type=int, default=model.event_kernel_size)
     parser.add_argument("--head-hidden-dim", type=int, default=model.head_hidden_dim)
+    parser.add_argument("--position-embedding", action=argparse.BooleanOptionalAction, default=model.use_position_embedding)
     parser.add_argument("--max-samples", type=int, default=train.max_samples)
     parser.add_argument("--epochs", type=int, default=train.epochs)
     parser.add_argument("--learning-rate", type=float, default=train.learning_rate)
@@ -301,9 +315,22 @@ def build_config(args: argparse.Namespace) -> tuple[ExperimentConfig, Any | None
         max_threads_per_query=int(args.max_threads_per_query),
         max_memory_usage=str(args.max_memory_usage),
         worker_memory_limit_mib=int(args.worker_memory_limit_mib),
+        scanner_sidecar_enabled=bool(args.scanner_sidecar),
+        scanner_run_id=str(args.scanner_run_id),
+        scanner_table=str(args.scanner_table),
+        scanner_window_seconds=int(args.scanner_window_seconds),
+        scanner_fetch_lookback_seconds=int(args.scanner_fetch_lookback_seconds),
+        scanner_warmup_seconds=int(args.scanner_warmup_seconds),
+        scanner_baseline_et=str(args.scanner_baseline_et),
+        scanner_cleanup_on_stop=bool(args.scanner_cleanup_on_stop),
+        scanner_penny_price_threshold=float(args.scanner_penny_price_threshold),
+        scanner_small_price_threshold=float(args.scanner_small_price_threshold),
+        scanner_mid_price_threshold=float(args.scanner_mid_price_threshold),
+        scanner_rank_top_k=int(args.scanner_rank_top_k),
+        scanner_background_chunk_seconds=int(args.scanner_background_chunk_seconds),
     )
     if args.dummy_data:
-        model = ModelConfig(d_model=int(args.d_model), event_layers=int(args.event_layers), event_kernel_size=int(args.event_kernel_size), head_hidden_dim=int(args.head_hidden_dim), event_feature_names=tuple(f"feature_{i}" for i in range(16)), event_feature_dim=16, label_names=("future_trade_close", "future_halt_flag"))
+        model = ModelConfig(d_model=int(args.d_model), event_layers=int(args.event_layers), event_kernel_size=int(args.event_kernel_size), head_hidden_dim=int(args.head_hidden_dim), use_position_embedding=bool(args.position_embedding), event_feature_names=tuple(f"feature_{i}" for i in range(16)), event_feature_dim=16, label_names=("future_trade_close", "future_halt_flag"))
     elif loader.data_source == "clickhouse":
         stream_config = ClickHouseTickerStreamConfig(
             months=loader.months,
@@ -322,6 +349,19 @@ def build_config(args: argparse.Namespace) -> tuple[ExperimentConfig, Any | None
             worker_memory_limit_mib=loader.worker_memory_limit_mib,
             shuffle_plans=bool(args.shuffle_blocks),
             seed=int(args.seed),
+            scanner_sidecar_enabled=bool(loader.scanner_sidecar_enabled),
+            scanner_run_id=str(loader.scanner_run_id),
+            scanner_table=str(loader.scanner_table),
+            scanner_window_seconds=int(loader.scanner_window_seconds),
+            scanner_fetch_lookback_seconds=int(loader.scanner_fetch_lookback_seconds),
+            scanner_warmup_seconds=int(loader.scanner_warmup_seconds),
+            scanner_baseline_et=str(loader.scanner_baseline_et),
+            scanner_cleanup_on_stop=bool(loader.scanner_cleanup_on_stop),
+            scanner_penny_price_threshold=float(loader.scanner_penny_price_threshold),
+            scanner_small_price_threshold=float(loader.scanner_small_price_threshold),
+            scanner_mid_price_threshold=float(loader.scanner_mid_price_threshold),
+            scanner_rank_top_k=int(loader.scanner_rank_top_k),
+            scanner_background_chunk_seconds=int(loader.scanner_background_chunk_seconds),
         )
         dataset = ClickHouseTickerStreamDataset(stream_config)
         model = ModelConfig(
@@ -332,12 +372,13 @@ def build_config(args: argparse.Namespace) -> tuple[ExperimentConfig, Any | None
             event_feature_names=dataset.event_feature_names,
             event_feature_dim=len(dataset.event_feature_names),
             label_names=dataset.label_names,
+            use_position_embedding=bool(args.position_embedding),
         )
     else:
         infer_dataset = PackedMarketDataset(PackedMarketDatasetConfig(cache_root=loader.cache_root, months=loader.months, tickers=loader.tickers, shuffle_blocks=False, seed=int(args.seed), max_blocks=1))
         event_names, label_names, event_dim = infer_contract_from_dataset(infer_dataset)
         dataset = PackedMarketDataset(PackedMarketDatasetConfig(cache_root=loader.cache_root, months=loader.months, tickers=loader.tickers, shuffle_blocks=loader.shuffle_blocks, seed=int(args.seed), max_blocks=int(args.max_blocks)))
-        model = ModelConfig(d_model=int(args.d_model), event_layers=int(args.event_layers), event_kernel_size=int(args.event_kernel_size), head_hidden_dim=int(args.head_hidden_dim), event_feature_names=event_names, event_feature_dim=event_dim, label_names=label_names)
+        model = ModelConfig(d_model=int(args.d_model), event_layers=int(args.event_layers), event_kernel_size=int(args.event_kernel_size), head_hidden_dim=int(args.head_hidden_dim), use_position_embedding=bool(args.position_embedding), event_feature_names=event_names, event_feature_dim=event_dim, label_names=label_names)
     train = TrainConfig(
         output_root=Path(args.output_root),
         run_name=args.run_name,
@@ -501,6 +542,8 @@ def loader_data_roots(loader: LoaderConfig) -> dict[str, str]:
             "events_table_base": loader.events_table_base,
             "events_ticker_day_index_table": loader.events_ticker_day_index_table,
             "months": ",".join(loader.months),
+            "scanner_sidecar_enabled": str(bool(loader.scanner_sidecar_enabled)),
+            "scanner_table": str(loader.scanner_table),
         }
     return {"data_source": loader.data_source, "cache_root": str(loader.cache_root)}
 

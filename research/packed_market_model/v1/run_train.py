@@ -13,6 +13,8 @@ DEFAULT_ARGS = {
     "--ticker-workers": "24",
     "--ready-queue-blocks": "8",
     "--target-origin-count-per-block": "65536",
+    "--scanner-sidecar": "",
+    "--scanner-background-chunk-seconds": "60",
     "--d-model": "384",
     "--event-layers": "8",
     "--learning-rate": "1e-3",
@@ -25,7 +27,9 @@ DEFAULT_ARGS = {
 def _default_argv() -> list[str]:
     argv: list[str] = []
     for key, value in DEFAULT_ARGS.items():
-        argv.extend([key, str(value)])
+        argv.append(key)
+        if value != "":
+            argv.append(str(value))
     return argv
 
 

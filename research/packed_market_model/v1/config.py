@@ -29,6 +29,19 @@ class LoaderConfig:
     max_threads_per_query: int = 4
     max_memory_usage: str = "32G"
     worker_memory_limit_mib: int = 12_288
+    scanner_sidecar_enabled: bool = False
+    scanner_run_id: str = ""
+    scanner_table: str = "packed_scanner_sidecar_bars"
+    scanner_window_seconds: int = 900
+    scanner_fetch_lookback_seconds: int = 300
+    scanner_warmup_seconds: int = 5
+    scanner_baseline_et: str = "04:00:00"
+    scanner_cleanup_on_stop: bool = False
+    scanner_penny_price_threshold: float = 1.0
+    scanner_small_price_threshold: float = 20.0
+    scanner_mid_price_threshold: float = 100.0
+    scanner_rank_top_k: int = 16
+    scanner_background_chunk_seconds: int = 60
 
 
 @dataclass(slots=True)
@@ -42,7 +55,7 @@ class ModelConfig:
     event_dropout: float = 0.05
     head_hidden_dim: int = 512
     max_position_embeddings: int = 4_194_304
-    use_position_embedding: bool = True
+    use_position_embedding: bool = False
 
 
 @dataclass(slots=True)
