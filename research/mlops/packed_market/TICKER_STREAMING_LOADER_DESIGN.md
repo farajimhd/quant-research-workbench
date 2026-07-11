@@ -174,9 +174,24 @@ Rules:
 - default sidecar window is `15 minutes`
 - rows are persisted in `market_sip_compact.packed_scanner_sidecar_bars`
   under a `run_id`
+- scanner rows are retained for the active source date so longer same-day
+  scanner context can be aggregated from the `1s` base
+- older source dates are deleted only when the sidecar advances to a later
+  source date
+- the first blocking scanner build is intentionally small, `5s` by default;
+  the remaining target window is requested from the sidecar background builder
 - ticker workers still calculate ticker-local intraday labels outside
   ClickHouse
 - the scanner fetch never reads the current in-progress second
+- volume scanner ranks are emitted for all volume plus penny, small, mid, and
+  large price buckets:
+
+```text
+penny < 1
+1 <= small < 20
+20 <= mid < 100
+large >= 100
+```
 
 The completed-bar rule is:
 
@@ -200,7 +215,9 @@ N ticker stream workers
   -> ready block queue
 
 scanner sidecar worker
-  -> builds 15-minute 1s market scanner windows in ClickHouse
+  -> grows same-day 1s market scanner bars in ClickHouse
+  -> starts with a 5-second blocking warmup
+  -> continues the configured scanner window in the background
   -> fetches completed scanner bars for block origin ranges
 
 trainer

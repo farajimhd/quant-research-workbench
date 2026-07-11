@@ -132,8 +132,12 @@ class ClickHouseTickerStreamConfig:
     scanner_table: str = "packed_scanner_sidecar_bars"
     scanner_window_seconds: int = 900
     scanner_fetch_lookback_seconds: int = 300
-    scanner_baseline_et: str = "09:30:00"
-    scanner_cleanup_on_stop: bool = True
+    scanner_warmup_seconds: int = 5
+    scanner_baseline_et: str = "04:00:00"
+    scanner_cleanup_on_stop: bool = False
+    scanner_penny_price_threshold: float = 1.0
+    scanner_small_price_threshold: float = 20.0
+    scanner_mid_price_threshold: float = 100.0
 
 
 @dataclass(slots=True)
@@ -235,7 +239,11 @@ class ClickHouseTickerStreamDataset:
                     scanner_table=str(config.scanner_table),
                     window_seconds=int(config.scanner_window_seconds),
                     fetch_lookback_seconds=int(config.scanner_fetch_lookback_seconds),
+                    warmup_seconds=int(config.scanner_warmup_seconds),
                     baseline_et=str(config.scanner_baseline_et),
+                    penny_price_threshold=float(config.scanner_penny_price_threshold),
+                    small_price_threshold=float(config.scanner_small_price_threshold),
+                    mid_price_threshold=float(config.scanner_mid_price_threshold),
                     max_threads=int(config.max_threads_per_query),
                     max_memory_usage=str(config.max_memory_usage),
                 ),
@@ -390,7 +398,9 @@ class ClickHouseTickerStreamDataset:
         first_origin_us = int(origin_events.select(pl.col("timestamp_us").min()).item())
         last_origin_us = int(origin_events.select(pl.col("timestamp_us").max()).item())
         started = time.perf_counter()
-        profiles = manager.ensure_windows_for_origin_range(first_origin_us, last_origin_us)
+        warmup_profile = manager.ensure_warmup_for_origin(first_origin_us)
+        manager.request_build_through_origin(last_origin_us)
+        profiles = [warmup_profile]
         completed_before_us = completed_scanner_bar_end_us(last_origin_us)
         lower_bound_us = max(0, completed_scanner_bar_end_us(first_origin_us) - int(self.config.scanner_fetch_lookback_seconds) * 1_000_000)
         scanner_rows = 0
@@ -406,6 +416,7 @@ class ClickHouseTickerStreamDataset:
             "first_origin_us": int(first_origin_us),
             "last_origin_us": int(last_origin_us),
             "completed_before_us": int(completed_before_us),
+            "warmup_seconds": int(self.config.scanner_warmup_seconds),
             "seconds": float(time.perf_counter() - started),
         }
 
@@ -415,9 +426,11 @@ class ClickHouseTickerStreamDataset:
         for thread in self._workers:
             if thread.is_alive():
                 thread.join(timeout=1.0)
-        if self._scanner_manager is not None and bool(self.config.scanner_cleanup_on_stop):
+        if self._scanner_manager is not None:
             try:
-                self._scanner_manager.cleanup_run()
+                self._scanner_manager.stop()
+                if bool(self.config.scanner_cleanup_on_stop):
+                    self._scanner_manager.cleanup_run()
             except Exception:
                 pass
 

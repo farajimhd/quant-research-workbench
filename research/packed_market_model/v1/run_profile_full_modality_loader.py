@@ -121,8 +121,12 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--scanner-table", default="packed_scanner_sidecar_bars")
     parser.add_argument("--scanner-window-seconds", type=int, default=900)
     parser.add_argument("--scanner-fetch-lookback-seconds", type=int, default=300)
-    parser.add_argument("--scanner-baseline-et", default="09:30:00")
-    parser.add_argument("--scanner-keep-run", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--scanner-warmup-seconds", type=int, default=5)
+    parser.add_argument("--scanner-baseline-et", default="04:00:00")
+    parser.add_argument("--scanner-penny-price-threshold", type=float, default=1.0)
+    parser.add_argument("--scanner-small-price-threshold", type=float, default=20.0)
+    parser.add_argument("--scanner-mid-price-threshold", type=float, default=100.0)
+    parser.add_argument("--scanner-keep-run", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--ticker-news-prior-items", type=int, default=64)
     parser.add_argument("--market-news-prior-items", type=int, default=512)
     parser.add_argument("--sec-filing-prior-items", type=int, default=32)
@@ -194,7 +198,11 @@ def main(argv: Iterable[str] | None = None) -> int:
                 scanner_table=str(args.scanner_table),
                 window_seconds=int(args.scanner_window_seconds),
                 fetch_lookback_seconds=int(args.scanner_fetch_lookback_seconds),
+                warmup_seconds=int(args.scanner_warmup_seconds),
                 baseline_et=str(args.scanner_baseline_et),
+                penny_price_threshold=float(args.scanner_penny_price_threshold),
+                small_price_threshold=float(args.scanner_small_price_threshold),
+                mid_price_threshold=float(args.scanner_mid_price_threshold),
                 max_threads=int(args.max_threads_per_query),
                 max_memory_usage=str(args.max_memory_usage),
             ),
@@ -257,6 +265,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                 scanner_manager.cleanup_run()
             except Exception as exc:  # noqa: BLE001
                 append_jsonl(report_path, {"event": "scanner_cleanup_error", "error": repr(exc)})
+        if scanner_manager is not None:
+            scanner_manager.stop()
 
     summary = state_summary(state)
     summary["shared_cache"] = shared_cache.summary()
@@ -324,8 +334,8 @@ def profile_block(
     if scanner_manager is not None and origin_range is not None:
         first_origin_us, last_origin_us = origin_range
         scanner_build_result, scanner_profiles = run_step(
-            "scanner.sidecar_build_15m_windows",
-            lambda: scanner_manager.ensure_windows_for_origin_range(first_origin_us, last_origin_us),
+            "scanner.sidecar_warmup_and_prefetch",
+            lambda: _warmup_and_prefetch_scanner(scanner_manager, first_origin_us, last_origin_us),
         )
         rows.append(asdict(scanner_build_result))
         if scanner_build_result.status == "ok":
@@ -346,6 +356,7 @@ def profile_block(
                     "windows": len(scanner_profiles or ()),
                     "windows_built": sum(1 for profile in (scanner_profiles or ()) if getattr(profile, "built", False)),
                     "completed_before_us": completed_scanner_bar_end_us(last_origin_us),
+                    "warmup_seconds": int(args.scanner_warmup_seconds),
                 }
             )
             rows.append(asdict(scanner_fetch_result))
@@ -356,6 +367,12 @@ def profile_block(
             result, _payload = future.result()
             rows.append(asdict(result))
     return rows
+
+
+def _warmup_and_prefetch_scanner(scanner_manager: ScannerSidecarManager, first_origin_us: int, last_origin_us: int) -> list[Any]:
+    profile = scanner_manager.ensure_warmup_for_origin(first_origin_us)
+    scanner_manager.request_build_through_origin(last_origin_us)
+    return [profile]
 
 
 def iter_profile_jobs(

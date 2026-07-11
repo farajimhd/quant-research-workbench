@@ -13,7 +13,13 @@ DEFAULT_SCANNER_TABLE = "packed_scanner_sidecar_bars"
 DEFAULT_BASE_TIMEFRAME_US = 1_000_000
 DEFAULT_WINDOW_SECONDS = 900
 DEFAULT_FETCH_LOOKBACK_SECONDS = 300
-DEFAULT_BASELINE_ET = "09:30:00"
+DEFAULT_WARMUP_SECONDS = 5
+DEFAULT_BASELINE_ET = "04:00:00"
+DEFAULT_SESSION_START_ET = "04:00:00"
+DEFAULT_SESSION_END_ET = "20:00:00"
+DEFAULT_PENNY_PRICE_THRESHOLD = 1.0
+DEFAULT_SMALL_PRICE_THRESHOLD = 20.0
+DEFAULT_MID_PRICE_THRESHOLD = 100.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,7 +39,14 @@ class ScannerSidecarConfig:
     base_timeframe_us: int = DEFAULT_BASE_TIMEFRAME_US
     window_seconds: int = DEFAULT_WINDOW_SECONDS
     fetch_lookback_seconds: int = DEFAULT_FETCH_LOOKBACK_SECONDS
+    warmup_seconds: int = DEFAULT_WARMUP_SECONDS
     baseline_et: str = DEFAULT_BASELINE_ET
+    session_start_et: str = DEFAULT_SESSION_START_ET
+    session_end_et: str = DEFAULT_SESSION_END_ET
+    cleanup_previous_source_dates: bool = True
+    penny_price_threshold: float = DEFAULT_PENNY_PRICE_THRESHOLD
+    small_price_threshold: float = DEFAULT_SMALL_PRICE_THRESHOLD
+    mid_price_threshold: float = DEFAULT_MID_PRICE_THRESHOLD
     max_threads: int = 16
     max_memory_usage: str = "64G"
     max_bytes_before_external_group_by: str = "32G"
@@ -59,6 +72,11 @@ class ScannerSidecarManager:
         self._lock = threading.RLock()
         self._ensured = False
         self._built: set[tuple[str, int, int]] = set()
+        self._built_until_us: dict[str, int] = {}
+        self._active_source_date: str | None = None
+        self._requested_targets: dict[str, int] = {}
+        self._background_thread: threading.Thread | None = None
+        self._background_stop = threading.Event()
         self._query_counter = 0
 
     def ensure_table(self) -> None:
@@ -66,34 +84,81 @@ class ScannerSidecarManager:
             if self._ensured:
                 return
             self._execute("scanner_create_table", create_scanner_table_sql(self.config))
+            for sql in upgrade_scanner_table_sqls(self.config):
+                self._execute("scanner_upgrade_table", sql)
             self._ensured = True
 
     def cleanup_run(self) -> None:
         with self._lock:
             self._execute("scanner_cleanup_run", cleanup_run_sql(self.config))
             self._built.clear()
+            self._built_until_us.clear()
+
+    def cleanup_before_source_date(self, source_date: str) -> None:
+        with self._lock:
+            self._execute("scanner_cleanup_before_source_date", cleanup_before_source_date_sql(self.config, source_date))
+            self._built = {key for key in self._built if key[0] >= str(source_date)}
+            self._built_until_us = {day: value for day, value in self._built_until_us.items() if day >= str(source_date)}
 
     def ensure_window_for_origin(self, origin_timestamp_us: int) -> ScannerSidecarProfile:
-        window = scanner_window_for_origin(origin_timestamp_us, self.config)
-        return self.ensure_window(window)
+        window = scanner_window_for_origin(origin_timestamp_us, self.config, target_seconds=int(self.config.window_seconds))
+        return self.ensure_built_until(window.emit_end_us, source_date=window.source_date)
+
+    def ensure_warmup_for_origin(self, origin_timestamp_us: int) -> ScannerSidecarProfile:
+        window = scanner_window_for_origin(origin_timestamp_us, self.config, target_seconds=int(self.config.warmup_seconds))
+        return self.ensure_built_until(window.emit_end_us, source_date=window.source_date)
+
+    def request_build_through_origin(self, origin_timestamp_us: int, *, lookahead_seconds: int | None = None) -> None:
+        window = scanner_window_for_origin(
+            origin_timestamp_us,
+            self.config,
+            target_seconds=int(self.config.window_seconds if lookahead_seconds is None else lookahead_seconds),
+        )
+        with self._lock:
+            current = self._requested_targets.get(window.source_date, 0)
+            if int(window.emit_end_us) > current:
+                self._requested_targets[window.source_date] = int(window.emit_end_us)
+            if self._background_thread is None or not self._background_thread.is_alive():
+                self._background_stop.clear()
+                self._background_thread = threading.Thread(target=self._background_loop, name="scanner-sidecar-builder", daemon=True)
+                self._background_thread.start()
 
     def ensure_windows_for_origin_range(self, first_origin_us: int, last_origin_us: int) -> list[ScannerSidecarProfile]:
-        profiles: list[ScannerSidecarProfile] = []
-        cursor = int(first_origin_us)
-        last = int(last_origin_us)
-        while cursor <= last:
-            profile = self.ensure_window_for_origin(cursor)
-            profiles.append(profile)
-            next_cursor = int(profile.emit_end_us)
-            if next_cursor <= cursor:
-                break
-            cursor = next_cursor
-        return profiles
+        first = self.ensure_warmup_for_origin(first_origin_us)
+        self.request_build_through_origin(last_origin_us)
+        return [first]
+
+    def ensure_built_until(self, target_end_us: int, *, source_date: str) -> ScannerSidecarProfile:
+        self.ensure_table()
+        source_date = str(source_date)
+        with self._lock:
+            self._maybe_cleanup_for_source_date(source_date)
+            current_end = self._built_until_us.get(source_date)
+        if current_end is None:
+            current_end = self._load_existing_built_until(source_date)
+        session_start_us, session_end_us = session_bounds_us(source_date, self.config)
+        emit_start_us = max(int(session_start_us), int(current_end))
+        emit_end_us = min(int(session_end_us), max(int(target_end_us), emit_start_us))
+        if emit_end_us <= emit_start_us:
+            return ScannerSidecarProfile(
+                built=False,
+                source_date=source_date,
+                emit_start_us=int(emit_start_us),
+                emit_end_us=int(emit_end_us),
+            )
+        window = ScannerWindow(
+            source_date=source_date,
+            emit_start_us=int(emit_start_us),
+            emit_end_us=int(emit_end_us),
+            baseline_start_us=int(session_start_us),
+        )
+        return self.ensure_window(window)
 
     def ensure_window(self, window: ScannerWindow) -> ScannerSidecarProfile:
         self.ensure_table()
         key = (window.source_date, int(window.emit_start_us), int(window.emit_end_us))
         with self._lock:
+            self._maybe_cleanup_for_source_date(window.source_date)
             if key in self._built:
                 return ScannerSidecarProfile(
                     built=False,
@@ -105,6 +170,10 @@ class ScannerSidecarManager:
             query_id = self._execute("scanner_insert_window", insert_scanner_window_sql(self.config, window))
             seconds = time.perf_counter() - started
             self._built.add(key)
+            self._built_until_us[window.source_date] = max(
+                int(self._built_until_us.get(window.source_date, 0)),
+                int(window.emit_end_us),
+            )
             return ScannerSidecarProfile(
                 built=True,
                 source_date=window.source_date,
@@ -124,6 +193,53 @@ class ScannerSidecarManager:
             completed_before_us=completed_before_us,
         )
 
+    def stop(self) -> None:
+        self._background_stop.set()
+        thread = self._background_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
+
+    def _background_loop(self) -> None:
+        while not self._background_stop.is_set():
+            task: tuple[str, int] | None = None
+            with self._lock:
+                if self._requested_targets:
+                    source_date = min(self._requested_targets)
+                    target = self._requested_targets.pop(source_date)
+                    task = (source_date, int(target))
+            if task is None:
+                time.sleep(0.25)
+                continue
+            source_date, target = task
+            try:
+                self.ensure_built_until(target, source_date=source_date)
+            except Exception:
+                # The foreground path will surface scanner issues when it needs the rows.
+                time.sleep(1.0)
+
+    def _load_existing_built_until(self, source_date: str) -> int:
+        self.ensure_table()
+        sql = existing_built_until_sql(self.config, source_date)
+        with self._lock:
+            text = self.client.query_tsv(sql).strip()
+            value = int(text or "0")
+            session_start_us, _session_end_us = session_bounds_us(source_date, self.config)
+            value = max(int(session_start_us), value)
+            self._built_until_us[source_date] = value
+            return value
+
+    def _maybe_cleanup_for_source_date(self, source_date: str) -> None:
+        if not bool(self.config.cleanup_previous_source_dates):
+            return
+        if self._active_source_date is None:
+            self._active_source_date = str(source_date)
+            return
+        if str(source_date) > self._active_source_date:
+            self._execute("scanner_cleanup_previous_source_dates", cleanup_before_source_date_sql(self.config, source_date))
+            self._built = {key for key in self._built if key[0] >= str(source_date)}
+            self._built_until_us = {day: value for day, value in self._built_until_us.items() if day >= str(source_date)}
+            self._active_source_date = str(source_date)
+
     def _execute(self, label: str, sql: str) -> str:
         self._query_counter += 1
         query_id = f"{self.query_id_prefix}_{label}_{self._query_counter:06d}"
@@ -131,22 +247,29 @@ class ScannerSidecarManager:
         return query_id
 
 
-def scanner_window_for_origin(origin_timestamp_us: int, config: ScannerSidecarConfig) -> ScannerWindow:
+def scanner_window_for_origin(origin_timestamp_us: int, config: ScannerSidecarConfig, *, target_seconds: int | None = None) -> ScannerWindow:
     base_us = max(1, int(config.base_timeframe_us))
-    window_us = max(base_us, int(config.window_seconds) * 1_000_000)
-    emit_start_us = (int(origin_timestamp_us) // window_us) * window_us
-    emit_end_us = emit_start_us + window_us
+    target_us = max(base_us, int(config.warmup_seconds if target_seconds is None else target_seconds) * 1_000_000)
+    completed_us = completed_scanner_bar_end_us(origin_timestamp_us, base_us=base_us)
     origin_dt = datetime.fromtimestamp(int(origin_timestamp_us) / 1_000_000, tz=ZoneInfo("UTC")).astimezone(ZoneInfo(SESSION_TZ))
     local_day = origin_dt.date()
-    baseline_clock = parse_clock(config.baseline_et)
-    baseline_dt = datetime.combine(local_day, baseline_clock, tzinfo=ZoneInfo(SESSION_TZ)).astimezone(ZoneInfo("UTC"))
-    baseline_start_us = int(baseline_dt.timestamp() * 1_000_000)
+    source_date = local_day.isoformat()
+    session_start_us, session_end_us = session_bounds_us(source_date, config)
+    emit_start_us = int(session_start_us)
+    emit_end_us = min(int(session_end_us), max(int(completed_us) + target_us, int(session_start_us)))
     return ScannerWindow(
-        source_date=local_day.isoformat(),
+        source_date=source_date,
         emit_start_us=int(emit_start_us),
         emit_end_us=int(emit_end_us),
-        baseline_start_us=min(int(baseline_start_us), int(emit_start_us)),
+        baseline_start_us=int(session_start_us),
     )
+
+
+def session_bounds_us(source_date: str, config: ScannerSidecarConfig) -> tuple[int, int]:
+    local_day = datetime.fromisoformat(str(source_date)).date()
+    session_start_dt = datetime.combine(local_day, parse_clock(config.session_start_et), tzinfo=ZoneInfo(SESSION_TZ)).astimezone(ZoneInfo("UTC"))
+    session_end_dt = datetime.combine(local_day, parse_clock(config.session_end_et), tzinfo=ZoneInfo(SESSION_TZ)).astimezone(ZoneInfo("UTC"))
+    return int(session_start_dt.timestamp() * 1_000_000), int(session_end_dt.timestamp() * 1_000_000)
 
 
 def completed_scanner_bar_end_us(origin_timestamp_us: int, *, base_us: int = DEFAULT_BASE_TIMEFRAME_US) -> int:
@@ -194,6 +317,15 @@ CREATE TABLE IF NOT EXISTS {table}
     top_volume_rank Int32,
     top_volume_score Float32,
     top_volume_percentile Float32,
+    top_volume_large_rank Int32,
+    top_volume_large_score Float32,
+    top_volume_large_percentile Float32,
+    top_volume_mid_rank Int32,
+    top_volume_mid_score Float32,
+    top_volume_mid_percentile Float32,
+    top_volume_small_rank Int32,
+    top_volume_small_score Float32,
+    top_volume_small_percentile Float32,
     top_volume_penny_rank Int32,
     top_volume_penny_score Float32,
     top_volume_penny_percentile Float32,
@@ -205,14 +337,45 @@ ORDER BY (run_id, bar_end_timestamp_us, ticker)
 """
 
 
+def upgrade_scanner_table_sqls(config: ScannerSidecarConfig) -> list[str]:
+    table = scanner_table_name(config)
+    return [
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS top_volume_large_rank Int32 AFTER top_volume_percentile",
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS top_volume_large_score Float32 AFTER top_volume_large_rank",
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS top_volume_large_percentile Float32 AFTER top_volume_large_score",
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS top_volume_mid_rank Int32 AFTER top_volume_large_percentile",
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS top_volume_mid_score Float32 AFTER top_volume_mid_rank",
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS top_volume_mid_percentile Float32 AFTER top_volume_mid_score",
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS top_volume_small_rank Int32 AFTER top_volume_mid_percentile",
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS top_volume_small_score Float32 AFTER top_volume_small_rank",
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS top_volume_small_percentile Float32 AFTER top_volume_small_score",
+    ]
+
+
 def cleanup_run_sql(config: ScannerSidecarConfig) -> str:
     return f"ALTER TABLE {scanner_table_name(config)} DELETE WHERE run_id = {sql_string(config.run_id)}"
+
+
+def cleanup_before_source_date_sql(config: ScannerSidecarConfig, source_date: str) -> str:
+    return f"ALTER TABLE {scanner_table_name(config)} DELETE WHERE run_id = {sql_string(config.run_id)} AND source_date < toDate({sql_string(source_date)})"
+
+
+def existing_built_until_sql(config: ScannerSidecarConfig, source_date: str) -> str:
+    return f"""
+SELECT toInt64(ifNull(max(bar_end_timestamp_us), 0))
+FROM {scanner_table_name(config)}
+WHERE run_id = {sql_string(config.run_id)}
+  AND source_date = toDate({sql_string(source_date)})
+"""
 
 
 def insert_scanner_window_sql(config: ScannerSidecarConfig, window: ScannerWindow) -> str:
     table = events_table_name(config.database, config.events_table_base, window.source_date)
     base_us = int(config.base_timeframe_us)
-    query_start_us = min(int(window.baseline_start_us), int(window.emit_start_us))
+    query_start_us = int(window.emit_start_us)
+    penny = float(config.penny_price_threshold)
+    small = float(config.small_price_threshold)
+    mid = float(config.mid_price_threshold)
     return f"""
 INSERT INTO {scanner_table_name(config)}
 WITH
@@ -234,9 +397,9 @@ raw AS
         toFloat64(size_secondary) AS size_secondary
     FROM {table}
     PREWHERE event_date = toDate({sql_string(window.source_date)})
-    WHERE sip_timestamp_us >= toInt64({query_start_us})
+      AND sip_timestamp_us >= toInt64({query_start_us})
       AND sip_timestamp_us < toInt64({int(window.emit_end_us)})
-      AND ticker != ''
+    WHERE ticker != ''
 ),
 expanded AS
 (
@@ -311,19 +474,41 @@ wide AS
     FROM bars
     GROUP BY source_date, ticker, ticker_id, bucket_index
 ),
+day_open_candidates AS
+(
+    SELECT ticker, bucket_index, trade_open
+    FROM {scanner_table_name(config)}
+    WHERE run_id = {sql_string(config.run_id)}
+      AND source_date = toDate({sql_string(window.source_date)})
+      AND trade_available = 1
+      AND bar_start_timestamp_us < toInt64({int(window.emit_end_us)})
+    UNION ALL
+    SELECT ticker, bucket_index, trade_open
+    FROM wide
+    WHERE trade_available = 1
+),
+day_open AS
+(
+    SELECT
+        ticker,
+        argMin(trade_open, bucket_index) AS day_trade_open
+    FROM day_open_candidates
+    GROUP BY ticker
+),
 trade_scanner AS
 (
     SELECT
-        source_date,
-        ticker,
-        bucket_index,
-        trade_close,
-        trade_size_sum,
-        toFloat32(if(first_value(trade_open) OVER (PARTITION BY source_date, ticker ORDER BY bucket_index) > 0,
-            trade_close / first_value(trade_open) OVER (PARTITION BY source_date, ticker ORDER BY bucket_index) - 1.0,
+        w.source_date,
+        w.ticker,
+        w.bucket_index,
+        w.trade_close,
+        w.trade_size_sum,
+        toFloat32(if(d.day_trade_open > 0,
+            w.trade_close / d.day_trade_open - 1.0,
             0.0)) AS change_score
-    FROM wide
-    WHERE trade_available = 1
+    FROM wide AS w
+    INNER JOIN day_open AS d ON d.ticker = w.ticker
+    WHERE w.trade_available = 1
 ),
 gainers AS
 (
@@ -338,7 +523,7 @@ gainers AS
             1.0)) AS percentile_value
     FROM trade_scanner
 ),
-volume_nonpenny AS
+volume_all AS
 (
     SELECT
         source_date,
@@ -350,7 +535,48 @@ volume_nonpenny AS
             1.0 - ((row_number() OVER (PARTITION BY source_date, bucket_index ORDER BY trade_size_sum DESC, ticker ASC) - 1) / (count() OVER (PARTITION BY source_date, bucket_index) - 1)),
             1.0)) AS percentile_value
     FROM trade_scanner
-    WHERE trade_close >= 1.0
+),
+volume_large AS
+(
+    SELECT
+        source_date,
+        ticker,
+        bucket_index,
+        toInt32(row_number() OVER (PARTITION BY source_date, bucket_index ORDER BY trade_size_sum DESC, ticker ASC) - 1) AS rank_value,
+        toFloat32(trade_size_sum) AS score_value,
+        toFloat32(if(count() OVER (PARTITION BY source_date, bucket_index) > 1,
+            1.0 - ((row_number() OVER (PARTITION BY source_date, bucket_index ORDER BY trade_size_sum DESC, ticker ASC) - 1) / (count() OVER (PARTITION BY source_date, bucket_index) - 1)),
+            1.0)) AS percentile_value
+    FROM trade_scanner
+    WHERE trade_close >= {mid}
+),
+volume_mid AS
+(
+    SELECT
+        source_date,
+        ticker,
+        bucket_index,
+        toInt32(row_number() OVER (PARTITION BY source_date, bucket_index ORDER BY trade_size_sum DESC, ticker ASC) - 1) AS rank_value,
+        toFloat32(trade_size_sum) AS score_value,
+        toFloat32(if(count() OVER (PARTITION BY source_date, bucket_index) > 1,
+            1.0 - ((row_number() OVER (PARTITION BY source_date, bucket_index ORDER BY trade_size_sum DESC, ticker ASC) - 1) / (count() OVER (PARTITION BY source_date, bucket_index) - 1)),
+            1.0)) AS percentile_value
+    FROM trade_scanner
+    WHERE trade_close >= {small} AND trade_close < {mid}
+),
+volume_small AS
+(
+    SELECT
+        source_date,
+        ticker,
+        bucket_index,
+        toInt32(row_number() OVER (PARTITION BY source_date, bucket_index ORDER BY trade_size_sum DESC, ticker ASC) - 1) AS rank_value,
+        toFloat32(trade_size_sum) AS score_value,
+        toFloat32(if(count() OVER (PARTITION BY source_date, bucket_index) > 1,
+            1.0 - ((row_number() OVER (PARTITION BY source_date, bucket_index ORDER BY trade_size_sum DESC, ticker ASC) - 1) / (count() OVER (PARTITION BY source_date, bucket_index) - 1)),
+            1.0)) AS percentile_value
+    FROM trade_scanner
+    WHERE trade_close >= {penny} AND trade_close < {small}
 ),
 volume_penny AS
 (
@@ -364,7 +590,7 @@ volume_penny AS
             1.0 - ((row_number() OVER (PARTITION BY source_date, bucket_index ORDER BY trade_size_sum DESC, ticker ASC) - 1) / (count() OVER (PARTITION BY source_date, bucket_index) - 1)),
             1.0)) AS percentile_value
     FROM trade_scanner
-    WHERE trade_close < 1.0
+    WHERE trade_close > 0 AND trade_close < {penny}
 )
 SELECT
     {sql_string(config.run_id)} AS run_id,
@@ -403,13 +629,25 @@ SELECT
     ifNull(v.rank_value, -1) AS top_volume_rank,
     ifNull(v.score_value, 0.0) AS top_volume_score,
     ifNull(v.percentile_value, 0.0) AS top_volume_percentile,
+    ifNull(vl.rank_value, -1) AS top_volume_large_rank,
+    ifNull(vl.score_value, 0.0) AS top_volume_large_score,
+    ifNull(vl.percentile_value, 0.0) AS top_volume_large_percentile,
+    ifNull(vm.rank_value, -1) AS top_volume_mid_rank,
+    ifNull(vm.score_value, 0.0) AS top_volume_mid_score,
+    ifNull(vm.percentile_value, 0.0) AS top_volume_mid_percentile,
+    ifNull(vs.rank_value, -1) AS top_volume_small_rank,
+    ifNull(vs.score_value, 0.0) AS top_volume_small_score,
+    ifNull(vs.percentile_value, 0.0) AS top_volume_small_percentile,
     ifNull(p.rank_value, -1) AS top_volume_penny_rank,
     ifNull(p.score_value, 0.0) AS top_volume_penny_score,
     ifNull(p.percentile_value, 0.0) AS top_volume_penny_percentile,
     now64(6) AS created_at_utc
 FROM wide AS w
 LEFT JOIN gainers AS g ON g.source_date = w.source_date AND g.ticker = w.ticker AND g.bucket_index = w.bucket_index
-LEFT JOIN volume_nonpenny AS v ON v.source_date = w.source_date AND v.ticker = w.ticker AND v.bucket_index = w.bucket_index
+LEFT JOIN volume_all AS v ON v.source_date = w.source_date AND v.ticker = w.ticker AND v.bucket_index = w.bucket_index
+LEFT JOIN volume_large AS vl ON vl.source_date = w.source_date AND vl.ticker = w.ticker AND vl.bucket_index = w.bucket_index
+LEFT JOIN volume_mid AS vm ON vm.source_date = w.source_date AND vm.ticker = w.ticker AND vm.bucket_index = w.bucket_index
+LEFT JOIN volume_small AS vs ON vs.source_date = w.source_date AND vs.ticker = w.ticker AND vs.bucket_index = w.bucket_index
 LEFT JOIN volume_penny AS p ON p.source_date = w.source_date AND p.ticker = w.ticker AND p.bucket_index = w.bucket_index
 WHERE w.bar_start_timestamp_us >= toInt64({int(window.emit_start_us)})
   AND w.bar_start_timestamp_us < toInt64({int(window.emit_end_us)})

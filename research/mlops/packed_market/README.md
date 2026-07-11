@@ -106,11 +106,28 @@ The sidecar:
 
 - materializes run-scoped `1s` trade / quote-bid / quote-ask scanner rows into
   `market_sip_compact.packed_scanner_sidecar_bars`
-- builds aligned `15 minute` windows by default
-- computes scanner ranks from the base trade bars
+- grows a same-day sidecar from 04:00 ET to 20:00 ET instead of deleting
+  intra-day rows
+- drops older source dates only when the loader moves to a later source date
+- does a blocking `5s` warmup by default, then requests the remaining scanner
+  window from the background sidecar builder
+- computes scanner ranks from the base trade bars and persisted same-day open
+  references
 - fetches only completed bars, where `bar_end_timestamp_us <= floor(origin_timestamp_us, 1s)`
 - never fetches the current in-progress second
-- removes the run rows on normal shutdown unless `--scanner-keep-run` is set
+- keeps current-day rows on normal shutdown unless explicit cleanup is requested
+
+Volume scanner ranks are split by price bucket:
+
+```text
+penny: trade_close < 1
+small: 1 <= trade_close < 20
+mid:   20 <= trade_close < 100
+large: trade_close >= 100
+```
+
+The table also keeps the generic `top_volume_*` all-volume fields for backward
+compatibility.
 
 Run the full loader profile:
 

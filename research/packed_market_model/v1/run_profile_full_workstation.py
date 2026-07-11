@@ -20,7 +20,11 @@ DEFAULT_ARGS = {
     "--scanner-sidecar": "",
     "--scanner-window-seconds": "900",
     "--scanner-fetch-lookback-seconds": "300",
-    "--scanner-baseline-et": "09:30:00",
+    "--scanner-warmup-seconds": "5",
+    "--scanner-baseline-et": "04:00:00",
+    "--scanner-penny-price-threshold": "1.0",
+    "--scanner-small-price-threshold": "20.0",
+    "--scanner-mid-price-threshold": "100.0",
     "--output-root": r"D:\TradingML\runtimes\packed_market_model\v1\profiles",
     "--progress-layout": "rich",
 }
