@@ -57,7 +57,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-text-rows-per-filing", type=int, default=0, help="Deprecated no-op. SEC text context now stores every text row.")
     parser.add_argument("--sec-text-buckets", type=int, default=64)
     parser.add_argument("--render-batch-rows", type=int, default=256)
-    parser.add_argument("--skip-text", action="store_true")
+    parser.add_argument(
+        "--skip-text",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Skip the legacy SEC text-context copy by default.",
+    )
     parser.add_argument("--skip-xbrl", action="store_true")
     parser.add_argument("--drop-target-tables", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -125,6 +130,8 @@ def main() -> int:
         argv.append("--no-wait-mutations")
     if args.skip_text:
         argv.append("--skip-text")
+    else:
+        argv.append("--no-skip-text")
     if args.skip_xbrl:
         argv.append("--skip-xbrl")
     if args.drop_target_tables:

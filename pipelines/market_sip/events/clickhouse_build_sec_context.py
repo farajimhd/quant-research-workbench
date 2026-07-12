@@ -103,7 +103,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-text-rows-per-filing", type=int, default=0, help="Deprecated no-op. SEC text context now stores every text row.")
     parser.add_argument("--sec-text-buckets", type=int, default=64, help="Process SEC text by cityHash64(cik) buckets to match q_live SEC text-source partitioning.")
     parser.add_argument("--render-batch-rows", type=int, default=256, help="Maximum submitted source rows fetched and rendered per Python batch.")
-    parser.add_argument("--skip-text", action="store_true")
+    parser.add_argument(
+        "--skip-text",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Skip the legacy SEC text-context copy by default. Use --no-skip-text only for an explicit compatibility rebuild.",
+    )
     parser.add_argument("--skip-xbrl", action="store_true")
     parser.add_argument("--drop-target-tables", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -173,17 +178,23 @@ def run_migration(client: ClickHouseHttpClient, args: argparse.Namespace, *, sta
     statements = [
         f"CREATE DATABASE IF NOT EXISTS {quote_ident(args.target_database)}",
         create_filing_context_table_sql(args.target_database, args.filing_table, args.storage_policy),
-        create_text_context_table_sql(args.target_database, args.text_table, args.storage_policy),
-        *text_context_schema_migration_sqls(args.target_database, args.text_table),
-        create_xbrl_context_table_sql(args.target_database, args.xbrl_table, args.storage_policy),
     ]
+    if not args.skip_text:
+        statements.extend(
+            [
+                create_text_context_table_sql(args.target_database, args.text_table, args.storage_policy),
+                *text_context_schema_migration_sqls(args.target_database, args.text_table),
+            ]
+        )
+    if not args.skip_xbrl:
+        statements.append(create_xbrl_context_table_sql(args.target_database, args.xbrl_table, args.storage_policy))
     if args.drop_target_tables:
-        statements = [
-            f"DROP TABLE IF EXISTS {quote_ident(args.target_database)}.{quote_ident(args.filing_table)}",
-            f"DROP TABLE IF EXISTS {quote_ident(args.target_database)}.{quote_ident(args.text_table)}",
-            f"DROP TABLE IF EXISTS {quote_ident(args.target_database)}.{quote_ident(args.xbrl_table)}",
-            *statements,
-        ]
+        drops = [f"DROP TABLE IF EXISTS {quote_ident(args.target_database)}.{quote_ident(args.filing_table)}"]
+        if not args.skip_text:
+            drops.append(f"DROP TABLE IF EXISTS {quote_ident(args.target_database)}.{quote_ident(args.text_table)}")
+        if not args.skip_xbrl:
+            drops.append(f"DROP TABLE IF EXISTS {quote_ident(args.target_database)}.{quote_ident(args.xbrl_table)}")
+        statements = [*drops, *statements]
     for index, statement in enumerate(statements, 1):
         run_sql(client, f"schema_{index}", statement, report_path, dry_run=bool(args.dry_run))
 

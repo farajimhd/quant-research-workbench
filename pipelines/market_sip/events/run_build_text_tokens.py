@@ -18,7 +18,10 @@ DEFAULTS = {
     "sec_token_table": "sec_filing_text_tokens_v3",
     "news_embedding_table": "news_text_embeddings",
     "sec_embedding_table": "sec_filing_text_embeddings_v3",
-    "sec_text_context_table": "sec_filing_text_context_v3",
+    "sec_filing_table": "sec_filing_v3",
+    "sec_document_table": "sec_filing_document_v3",
+    "sec_rendered_text_table": "sec_filing_text_rendered_v3",
+    "sec_bridge_table": "id_sec_market_bridge_v3",
     "start_date": "2019-01-01",
     "end_date": "2026-12-31",
     "sources": "news,sec",
@@ -48,7 +51,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sec-token-table", default=DEFAULTS["sec_token_table"])
     parser.add_argument("--news-embedding-table", default=DEFAULTS["news_embedding_table"])
     parser.add_argument("--sec-embedding-table", default=DEFAULTS["sec_embedding_table"])
-    parser.add_argument("--sec-text-context-table", default=DEFAULTS["sec_text_context_table"])
+    parser.add_argument("--sec-filing-table", default=DEFAULTS["sec_filing_table"])
+    parser.add_argument("--sec-document-table", default=DEFAULTS["sec_document_table"])
+    parser.add_argument("--sec-rendered-text-table", default=DEFAULTS["sec_rendered_text_table"])
+    parser.add_argument("--sec-bridge-table", default=DEFAULTS["sec_bridge_table"])
     parser.add_argument("--start-date", default=DEFAULTS["start_date"])
     parser.add_argument("--end-date", default=DEFAULTS["end_date"])
     parser.add_argument("--sources", default=DEFAULTS["sources"])
@@ -74,7 +80,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--news-body-prefix-chars", type=int, default=0)
     parser.add_argument("--news-external-prefix-chars", type=int, default=0)
     parser.add_argument("--news-pdf-prefix-chars", type=int, default=0)
-    parser.add_argument("--sec-text-prefix-chars", type=int, default=0, help="Deprecated no-op. SEC tokenization now reads full context text.")
+    parser.add_argument("--sec-text-prefix-chars", type=int, default=0, help="Deprecated no-op. SEC tokenization reads full rendered document text.")
     parser.add_argument("--max-threads", type=int, default=DEFAULTS["max_threads"])
     parser.add_argument("--max-memory-usage", default=DEFAULTS["max_memory_usage"])
     parser.add_argument("--output-root-win", default=DEFAULTS["output_root_win"])
@@ -115,8 +121,14 @@ def main() -> int:
         args.news_embedding_table,
         "--sec-embedding-table",
         args.sec_embedding_table,
-        "--sec-text-context-table",
-        args.sec_text_context_table,
+        "--sec-filing-table",
+        args.sec_filing_table,
+        "--sec-document-table",
+        args.sec_document_table,
+        "--sec-rendered-text-table",
+        args.sec_rendered_text_table,
+        "--sec-bridge-table",
+        args.sec_bridge_table,
         "--start-date",
         args.start_date,
         "--end-date",

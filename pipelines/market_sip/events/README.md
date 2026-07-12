@@ -186,16 +186,17 @@ training macro-bar build, and it should not be used to populate
 
 ## SEC Context Migration
 
-`clickhouse_build_sec_context.py` materializes SEC and XBRL context from
-`q_live` into `market_sip_compact` so training does not repeatedly query raw SEC
-tables with `FINAL`, text joins, and CIK-to-market bridge joins.
+`clickhouse_build_sec_context.py` materializes filing and XBRL context from
+`q_live` into `market_sip_compact` for structured training inputs. SEC text
+tokenization and embedding no longer depend on a materialized text-context copy.
 
-The migration creates three compact context tables:
+The migration creates filing and XBRL context tables by default. The legacy
+text-context table is created only with `--no-skip-text`:
 
 | Table | Partition | Order key | Contents |
 | --- | --- | --- | --- |
 | `sec_filing_context_v3` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, cik)` | one SEC filing metadata row per valid ticker/accession mapping |
-| `sec_filing_text_context_v3` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, text_rank, document_id)` | normalized SEC filing text rows for model tokenization |
+| `sec_filing_text_context_v3` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, text_rank, document_id)` | legacy optional materialization; not used by v3 tokenization or embedding |
 | `sec_xbrl_context_v3` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, xbrl_row_kind, taxonomy, tag, unit_code, period_end_date, source_id)` | company facts and frame observations joined to their filing event time |
 
 The accepted timestamp source is always `q_live.sec_filing_v3.accepted_at_utc`.
@@ -263,19 +264,18 @@ with status code `130` and writes an interrupted row to the JSONL report.
 ## Qwen Text Tokens And Embeddings
 
 `clickhouse_build_text_tokens.py` pre-tokenizes news and SEC filing text for
-training. `clickhouse_build_qwen_text_embeddings.py` is the embedding-first alias
-for the same pipeline: it defaults to `--build-embeddings` and
-`--embedding-input-source token_tables`, so it reads existing token rows and
-writes reusable float32 Qwen embeddings once per stored text chunk. This avoids
-rewriting token tables or repeatedly tokenizing the same Benzinga article or SEC
-filing document while materializing rolling batches.
+training. `clickhouse_build_qwen_text_embeddings.py` is the combined embedding
+launcher for the same pipeline: it defaults to `--build-embeddings` and
+`--embedding-input-source source_text`, so one run writes token rows and their
+float32 Qwen embeddings. Pass `--embedding-input-source token_tables`
+explicitly only for an embedding-only repair from existing token rows.
 
 The builder creates two separate tables:
 
 | Table | Partition | Order key | Source |
 | --- | --- | --- | --- |
 | `news_text_tokens` | `toYYYYMM(published_at_utc)` | `(ticker, timestamp_us, source_id, token_chunk_index)` | `q_live.benzinga_news_ticker_v1` joined to `q_live.benzinga_news_normalized_v1` |
-| `sec_filing_text_tokens_v3` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, text_rank, document_id, source_id)` | `market_sip_compact.sec_filing_text_context_v3` |
+| `sec_filing_text_tokens_v3` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, text_rank, document_id, source_id)` | `q_live.sec_filing_text_rendered_v3` joined to document, filing, and event-valid bridge rows |
 | `news_text_embeddings` | `toYYYYMM(published_at_utc)` | `(ticker, timestamp_us, source_id, token_chunk_index)` | one float32 Qwen embedding per news token chunk |
 | `sec_filing_text_embeddings_v3` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, text_rank, document_id, source_id)` | one float32 Qwen embedding per SEC token chunk |
 
@@ -298,10 +298,12 @@ assembled explicitly from `title`, `teaser`, `body_text`, `external_text`, and
 text. This avoids relying on a prefix of `normalized_full_text`, which can miss
 enriched external/PDF text when it appears later in the merged article.
 
-SEC filing context stores packed model-input text derived from submitted
-`sec_filing_text_v3.source_text` rows without a prefix cap and without limiting
-the number of source text rows per filing. Tokenization currently uses up to
-eight 1024-token rows per source text row.
+SEC tokenization reads each `sec_filing_text_rendered_v3` document row directly,
+without a prefix cap and without concatenating documents from the same filing.
+It joins `sec_filing_document_v3`, `sec_filing_v3`, and the event-valid
+`id_sec_market_bridge_v3` relation to attach sequence, acceptance time, and
+ticker identity. Tokenization currently uses up to eight 1024-token rows per
+rendered document as a temporary safety policy pending corpus length statistics.
 Both token tables include `token_chunk_index`, `token_start`, and `token_end`,
 so multiple chunks do not collapse under the same replacing key.
 
@@ -338,9 +340,9 @@ Run on the workstation:
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_text_tokens.py --start-date 2019-01-01 --end-date 2026-12-31
 ```
 
-Build embeddings from existing token tables. The Qwen launcher enables
-`--build-embeddings` and `--embedding-input-source token_tables` by default, so
-it writes only the embedding tables unless you override the input source:
+Build tokens and embeddings together from normalized source text. The Qwen
+launcher enables `--build-embeddings` and `--embedding-input-source source_text`
+by default:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_qwen_text_embeddings.py `

@@ -739,6 +739,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                     str(max(1, args.context_sec_text_buckets)),
                     "--render-batch-rows",
                     str(max(1, args.context_render_batch_rows)),
+                    "--skip-text",
                     "--output-root-win",
                     args.context_output_root_win,
                 ],

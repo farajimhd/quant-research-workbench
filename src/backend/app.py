@@ -213,7 +213,7 @@ SERVICE_DATABASE_TABLES: dict[str, list[dict[str, str]]] = {
     "text-embed": [
         {"database": "market_sip_compact", "table": "news_text_tokens", "role": "news tokens"},
         {"database": "market_sip_compact", "table": "news_text_embeddings", "role": "news embeddings"},
-        {"database": "market_sip_compact", "table": "sec_filing_text_context_v3", "role": "sec context"},
+        {"database": "q_live", "table": "sec_filing_text_rendered_v3", "role": "sec rendered source"},
         {"database": "market_sip_compact", "table": "sec_filing_text_tokens_v3", "role": "sec tokens"},
         {"database": "market_sip_compact", "table": "sec_filing_text_embeddings_v3", "role": "sec embeddings"},
         {"database": "market_sip_compact", "table": "text_embedding_coverage_v1", "role": "coverage"},

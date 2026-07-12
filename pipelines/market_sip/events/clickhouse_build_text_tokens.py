@@ -39,7 +39,10 @@ DEFAULT_NEWS_TOKEN_TABLE = "news_text_tokens"
 DEFAULT_SEC_TOKEN_TABLE = "sec_filing_text_tokens_v3"
 DEFAULT_NEWS_EMBEDDING_TABLE = "news_text_embeddings"
 DEFAULT_SEC_EMBEDDING_TABLE = "sec_filing_text_embeddings_v3"
-DEFAULT_SEC_TEXT_CONTEXT_TABLE = "sec_filing_text_context_v3"
+DEFAULT_SEC_FILING_TABLE = "sec_filing_v3"
+DEFAULT_SEC_DOCUMENT_TABLE = "sec_filing_document_v3"
+DEFAULT_SEC_RENDERED_TEXT_TABLE = "sec_filing_text_rendered_v3"
+DEFAULT_SEC_BRIDGE_TABLE = "id_sec_market_bridge_v3"
 DEFAULT_OUTPUT_ROOT = DEFAULT_OUTPUT_ROOT_WIN / "text_tokens"
 DEFAULT_TOKENIZER_MODEL = "Qwen/Qwen3-0.6B"
 DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
@@ -236,7 +239,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sec-token-table", default=DEFAULT_SEC_TOKEN_TABLE)
     parser.add_argument("--news-embedding-table", default=DEFAULT_NEWS_EMBEDDING_TABLE)
     parser.add_argument("--sec-embedding-table", default=DEFAULT_SEC_EMBEDDING_TABLE)
-    parser.add_argument("--sec-text-context-table", default=DEFAULT_SEC_TEXT_CONTEXT_TABLE)
+    parser.add_argument("--sec-filing-table", default=DEFAULT_SEC_FILING_TABLE)
+    parser.add_argument("--sec-document-table", default=DEFAULT_SEC_DOCUMENT_TABLE)
+    parser.add_argument("--sec-rendered-text-table", default=DEFAULT_SEC_RENDERED_TEXT_TABLE)
+    parser.add_argument("--sec-bridge-table", default=DEFAULT_SEC_BRIDGE_TABLE)
     parser.add_argument("--start-date", default="2019-01-01")
     parser.add_argument("--end-date", default=datetime.now(UTC).date().isoformat())
     parser.add_argument("--sources", default="news,sec", help="Comma-separated subset of news,sec.")
@@ -265,7 +271,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--news-body-prefix-chars", type=int, default=0)
     parser.add_argument("--news-external-prefix-chars", type=int, default=0)
     parser.add_argument("--news-pdf-prefix-chars", type=int, default=0)
-    parser.add_argument("--sec-text-prefix-chars", type=int, default=0, help="Deprecated no-op. SEC tokenization now reads full context text.")
+    parser.add_argument("--sec-text-prefix-chars", type=int, default=0, help="Deprecated no-op. SEC tokenization reads full rendered document text.")
     parser.add_argument("--storage-policy", default=default_storage_policy())
     parser.add_argument("--max-threads", type=int, default=16)
     parser.add_argument("--max-memory-usage", default="120G")
@@ -292,7 +298,7 @@ def main() -> int:
 
     print("=" * 100, flush=True)
     print("Market SIP Qwen text token and embedding table builder", flush=True)
-    print(f"sources={sources} source_database={args.source_database} context_database={args.context_database}", flush=True)
+    print(f"sources={sources} source_database={args.source_database} target_database={args.target_database}", flush=True)
     print(
         f"target_database={args.target_database} token_tables={args.news_token_table},{args.sec_token_table} "
         f"embedding_tables={args.news_embedding_table},{args.sec_embedding_table}",
@@ -324,7 +330,7 @@ def main() -> int:
     )
     print(
         f"news_component_prefix_chars=body:{args.news_body_prefix_chars},external:{args.news_external_prefix_chars},pdf:{args.news_pdf_prefix_chars} "
-        "sec_text_context=full_text",
+        "sec_text_source=q_live_rendered_document_rows",
         flush=True,
     )
     print(f"insert_batch_size={args.insert_batch_size} storage_policy={args.storage_policy or '<default>'}", flush=True)
@@ -980,9 +986,17 @@ FORMAT JSONEachRow
 
 
 def sec_source_sql(args: argparse.Namespace, *, chunk_start: date, chunk_end: date) -> str:
-    table = f"{quote_ident(args.context_database)}.{quote_ident(args.sec_text_context_table)}"
     limit_sql = f"\nLIMIT {int(args.limit_rows_per_chunk)}" if int(args.limit_rows_per_chunk) > 0 else ""
     return f"""
+WITH {sec_rendered_source_ctes_sql(
+        source_database=args.source_database,
+        filing_table=args.sec_filing_table,
+        document_table=args.sec_document_table,
+        rendered_text_table=args.sec_rendered_text_table,
+        bridge_table=args.sec_bridge_table,
+        start_sql=date_time64_sql(chunk_start),
+        end_sql=date_time64_sql(chunk_end),
+    )}
 SELECT
     ticker,
     timestamp_us,
@@ -998,14 +1012,107 @@ SELECT
     source_text_char_count,
     toUInt8(0) AS text_prefix_truncated,
     quality_flags
-FROM {table}
-WHERE accepted_at_utc >= {date_time64_sql(chunk_start)}
-  AND accepted_at_utc < {date_time64_sql(chunk_end)}
-  AND positionCaseInsensitive(ifNull(quality_flags, ''), {sql_string(STRUCTURED_XML_EXCLUDED_QUALITY_FLAG)}) = 0
+FROM sec_rendered_source
 ORDER BY ticker, accepted_at_utc, accession_number, text_rank, document_id
 {limit_sql}
 {query_settings(args)}
 FORMAT JSONEachRow
+"""
+
+
+def sec_rendered_source_ctes_sql(
+    *,
+    source_database: str,
+    filing_table: str,
+    document_table: str,
+    rendered_text_table: str,
+    bridge_table: str,
+    start_sql: str,
+    end_sql: str,
+) -> str:
+    db = quote_ident(source_database)
+    return f"""
+bridge AS
+(
+    SELECT
+        ifNull(ticker, '') AS ticker,
+        cik,
+        ifNull(accession_number, '') AS accession_number,
+        valid_from_date,
+        valid_to_date_exclusive,
+        any(bridge_id) AS bridge_id,
+        any(ifNull(issuer_id, '')) AS issuer_id,
+        any(ifNull(security_id, '')) AS security_id,
+        any(ifNull(listing_id, '')) AS listing_id,
+        any(ifNull(symbol_id, '')) AS symbol_id,
+        max(confidence_score) AS confidence_score
+    FROM {db}.{quote_ident(bridge_table)} FINAL
+    WHERE ifNull(ticker, '') != ''
+      AND mapping_status IN ('active', 'mapped', 'accepted', '')
+    GROUP BY ticker, cik, accession_number, valid_from_date, valid_to_date_exclusive
+),
+mapped_filings AS
+(
+    SELECT
+        b.ticker AS ticker,
+        toUInt64(toUnixTimestamp64Micro(f.accepted_at_utc)) AS timestamp_us,
+        f.accepted_at_utc AS accepted_at_utc,
+        f.cik AS cik,
+        f.accession_number AS accession_number,
+        ifNull(f.form_type, '') AS form_type,
+        b.bridge_id AS bridge_id,
+        b.issuer_id AS issuer_id,
+        b.security_id AS security_id,
+        b.listing_id AS listing_id,
+        b.symbol_id AS symbol_id,
+        toFloat32(b.confidence_score) AS mapping_confidence
+    FROM {db}.{quote_ident(filing_table)} AS f FINAL
+    INNER JOIN bridge AS b
+        ON b.cik = f.cik
+       AND (b.accession_number = '' OR b.accession_number = f.accession_number)
+       AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
+       AND (b.valid_to_date_exclusive IS NULL OR b.valid_to_date_exclusive > toDate(f.accepted_at_utc))
+    WHERE f.accepted_at_utc IS NOT NULL
+      AND f.accepted_at_utc >= {start_sql}
+      AND f.accepted_at_utc < {end_sql}
+),
+sec_rendered_source AS
+(
+    SELECT
+        f.ticker AS ticker,
+        f.timestamp_us AS timestamp_us,
+        f.accepted_at_utc AS accepted_at_utc,
+        f.cik AS cik,
+        f.accession_number AS accession_number,
+        f.form_type AS form_type,
+        toUInt8(least(toUInt32(d.sequence_number), 255)) AS text_rank,
+        r.document_id AS document_id,
+        ifNull(r.text_kind, '') AS text_kind,
+        r.text AS text,
+        toUInt64(r.text_char_count) AS source_text_char_count,
+        arrayStringConcat(r.quality_flags, ',') AS quality_flags,
+        f.bridge_id AS bridge_id,
+        f.issuer_id AS issuer_id,
+        f.security_id AS security_id,
+        f.listing_id AS listing_id,
+        f.symbol_id AS symbol_id,
+        f.mapping_confidence AS mapping_confidence
+    FROM
+    (
+        SELECT *
+        FROM {db}.{quote_ident(rendered_text_table)} FINAL
+        PREWHERE (cik, accession_number) IN (SELECT cik, accession_number FROM mapped_filings)
+    ) AS r
+    INNER JOIN {db}.{quote_ident(document_table)} AS d FINAL
+        ON d.document_id = r.document_id
+       AND d.cik = r.cik
+       AND d.accession_number = r.accession_number
+    INNER JOIN mapped_filings AS f
+        ON f.cik = r.cik
+       AND f.accession_number = r.accession_number
+    WHERE notEmpty(r.text)
+      AND arrayExists(flag -> positionCaseInsensitive(flag, {sql_string(STRUCTURED_XML_EXCLUDED_QUALITY_FLAG)}) > 0, r.quality_flags) = 0
+)
 """
 
 

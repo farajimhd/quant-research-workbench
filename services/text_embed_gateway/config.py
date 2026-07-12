@@ -30,21 +30,16 @@ class TextEmbedGatewayConfig:
     clickhouse_user: str
     clickhouse_password_present: bool
     source_database: str
-    context_database: str
     target_database: str
     news_token_table: str
     sec_token_table: str
     news_embedding_table: str
     sec_embedding_table: str
     coverage_table: str
-    sec_context_filing_table: str
-    sec_context_text_table: str
     sec_live_filing_table: str
-    sec_live_text_table: str
+    sec_live_document_table: str
+    sec_live_rendered_text_table: str
     sec_bridge_table: str
-    sec_max_text_rows_per_filing: int
-    sec_context_refresh_chunk_hours: float
-    sec_context_historical_max_chunks_per_cycle: int
     storage_policy: str
     tokenizer_model: str
     embedding_model: str
@@ -102,21 +97,16 @@ class TextEmbedGatewayConfig:
             clickhouse_user=default_clickhouse_user(),
             clickhouse_password_present=bool(clickhouse_password),
             source_database=env_string("TEXT_EMBED_SOURCE_DATABASE", "q_live"),
-            context_database=env_string("TEXT_EMBED_CONTEXT_DATABASE", "market_sip_compact"),
             target_database=env_string("TEXT_EMBED_TARGET_DATABASE", "market_sip_compact"),
             news_token_table=env_string("TEXT_EMBED_NEWS_TOKEN_TABLE", "news_text_tokens"),
             sec_token_table=env_string("TEXT_EMBED_SEC_TOKEN_TABLE", "sec_filing_text_tokens_v3"),
             news_embedding_table=env_string("TEXT_EMBED_NEWS_EMBEDDING_TABLE", "news_text_embeddings"),
             sec_embedding_table=env_string("TEXT_EMBED_SEC_EMBEDDING_TABLE", "sec_filing_text_embeddings_v3"),
             coverage_table=env_string("TEXT_EMBED_COVERAGE_TABLE", "text_embedding_coverage_v1"),
-            sec_context_filing_table=env_string("TEXT_EMBED_SEC_CONTEXT_FILING_TABLE", "sec_filing_context_v3"),
-            sec_context_text_table=env_string("TEXT_EMBED_SEC_CONTEXT_TEXT_TABLE", "sec_filing_text_context_v3"),
             sec_live_filing_table=env_string("TEXT_EMBED_SEC_LIVE_FILING_TABLE", "sec_filing_v3"),
-            sec_live_text_table=env_string("TEXT_EMBED_SEC_LIVE_TEXT_TABLE", "sec_filing_text_v3"),
+            sec_live_document_table=env_string("TEXT_EMBED_SEC_LIVE_DOCUMENT_TABLE", "sec_filing_document_v3"),
+            sec_live_rendered_text_table=env_string("TEXT_EMBED_SEC_LIVE_RENDERED_TEXT_TABLE", "sec_filing_text_rendered_v3"),
             sec_bridge_table=env_string("TEXT_EMBED_SEC_BRIDGE_TABLE", "id_sec_market_bridge_v3"),
-            sec_max_text_rows_per_filing=env_int("TEXT_EMBED_SEC_MAX_TEXT_ROWS_PER_FILING", 0),
-            sec_context_refresh_chunk_hours=env_float("TEXT_EMBED_SEC_CONTEXT_REFRESH_CHUNK_HOURS", 24.0),
-            sec_context_historical_max_chunks_per_cycle=env_int("TEXT_EMBED_SEC_CONTEXT_HISTORICAL_MAX_CHUNKS_PER_CYCLE", 7),
             storage_policy=env_string("TEXT_EMBED_STORAGE_POLICY", default_storage_policy()),
             tokenizer_model=env_string("TEXT_EMBED_TOKENIZER_MODEL", "Qwen/Qwen3-0.6B"),
             embedding_model=env_string("TEXT_EMBED_MODEL", "Qwen/Qwen3-Embedding-0.6B"),

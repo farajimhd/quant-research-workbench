@@ -15,7 +15,7 @@ def main() -> int:
     _text_token_launcher.SCRIPT = REPO_ROOT / "pipelines" / "market_sip" / "events" / "clickhouse_build_qwen_text_embeddings.py"
     args = sys.argv[1:]
     if "--embedding-input-source" not in args:
-        sys.argv.extend(["--embedding-input-source", "token_tables"])
+        sys.argv.extend(["--embedding-input-source", "source_text"])
     if not any(arg in {"--build-embeddings", "--no-build-embeddings", "--profile-embeddings-only", "--summary-only"} for arg in args):
         sys.argv.append("--build-embeddings")
     return _text_token_launcher.main()

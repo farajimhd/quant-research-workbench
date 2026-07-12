@@ -22,10 +22,10 @@ schemas as the historical builder in `pipelines/market_sip/events`.
 7. On shutdown, cancel active ClickHouse queries, finish the current persist
    step when possible, release model references, and clear CUDA cache.
 
-Historical SEC context refresh is chunked before tokenization/embedding. This
-avoids forcing ClickHouse to sort the full historical lookback window in one
-query when selecting the top SEC text rows per filing. The gateway scans chunks
-newest-to-oldest and advances the cursor only after a chunk succeeds.
+SEC source rows are read directly from `q_live.sec_filing_text_rendered_v3`,
+joined to document metadata, filing acceptance time, and the event-valid
+`id_sec_market_bridge_v3` ticker/listing relationship. No duplicate SEC text
+context table is refreshed by this service.
 
 The gateway does not retain SEC filings, article bodies, PDFs, enriched text, or
 embedding arrays in memory after a batch is written. The terminal keeps only a
@@ -49,7 +49,7 @@ The Rich terminal separates progress into several panels:
   token chunks, embedding chunks, source gaps, embedding gaps, rows processed
   in the last cycle for that mode, remaining rows, and the source availability
   period.
-- `Gap Summary`: shows source, embedding, and SEC context gaps by mode/source
+- `Gap Summary`: shows source, embedding, and SEC bridge-mapping gaps by mode/source
   so a zero live poll does not erase the last historical gap-fill state.
 - `Embedding Timing`: reports live and historical inference batches, sequences,
   average inference seconds, last inference seconds, average ms/sequence,
@@ -61,11 +61,10 @@ the min/max missing event period for:
 
 - news source rows missing tokens
 - news token rows missing embeddings
-- SEC context rows missing from recent raw SEC rows
-- SEC context rows missing tokens
+- SEC rendered document rows missing tokens
 - SEC token rows missing embeddings
 
-SEC rows blocked by missing ticker mapping are shown on the SEC context row as
+SEC rows blocked by missing ticker mapping are shown on the bridge-mapping row as
 `blocked_mapping=N` and are retried in later cycles.
 
 ## Important Env Vars
@@ -73,21 +72,16 @@ SEC rows blocked by missing ticker mapping are shown on the SEC context row as
 ```text
 TEXT_EMBED_GATEWAY_BIND=127.0.0.1:8798
 TEXT_EMBED_SOURCE_DATABASE=q_live
-TEXT_EMBED_CONTEXT_DATABASE=market_sip_compact
 TEXT_EMBED_TARGET_DATABASE=market_sip_compact
 TEXT_EMBED_NEWS_TOKEN_TABLE=news_text_tokens
 TEXT_EMBED_SEC_TOKEN_TABLE=sec_filing_text_tokens_v3
 TEXT_EMBED_NEWS_EMBEDDING_TABLE=news_text_embeddings
 TEXT_EMBED_SEC_EMBEDDING_TABLE=sec_filing_text_embeddings_v3
 TEXT_EMBED_COVERAGE_TABLE=text_embedding_coverage_v1
-TEXT_EMBED_SEC_CONTEXT_FILING_TABLE=sec_filing_context_v3
-TEXT_EMBED_SEC_CONTEXT_TEXT_TABLE=sec_filing_text_context_v3
 TEXT_EMBED_SEC_LIVE_FILING_TABLE=sec_filing_v3
-TEXT_EMBED_SEC_LIVE_TEXT_TABLE=sec_filing_text_v3
+TEXT_EMBED_SEC_LIVE_DOCUMENT_TABLE=sec_filing_document_v3
+TEXT_EMBED_SEC_LIVE_RENDERED_TEXT_TABLE=sec_filing_text_rendered_v3
 TEXT_EMBED_SEC_BRIDGE_TABLE=id_sec_market_bridge_v3
-TEXT_EMBED_SEC_MAX_TEXT_ROWS_PER_FILING=0  # deprecated no-op; SEC context stores every text row
-TEXT_EMBED_SEC_CONTEXT_REFRESH_CHUNK_HOURS=24
-TEXT_EMBED_SEC_CONTEXT_HISTORICAL_MAX_CHUNKS_PER_CYCLE=7
 TEXT_EMBED_MODEL=Qwen/Qwen3-Embedding-0.6B
 TEXT_EMBED_TOKENIZER_MODEL=Qwen/Qwen3-0.6B
 TEXT_EMBED_DEVICE=auto
@@ -146,29 +140,23 @@ First-time model download/cache warmup:
 Use the default local-files-only mode after the Qwen tokenizer/model files are
 cached, so production does not depend on HuggingFace network availability.
 
-SEC tokenization reads the same historical-compatible context table used by the
-offline builder: `market_sip_compact.sec_filing_text_context_v3` by default. Before
-each SEC live/gap-fill cycle, the gateway performs a small idempotent context
-refresh for the active lookback window:
+SEC tokenization and embedding use the same direct source join as the offline
+builder:
 
 ```text
-q_live.sec_filing_v3 + q_live.sec_filing_text_v3
+q_live.sec_filing_text_rendered_v3
+  + q_live.sec_filing_document_v3
+  + q_live.sec_filing_v3
   + q_live.id_sec_market_bridge_v3
--> market_sip_compact.sec_filing_context_v3
--> market_sip_compact.sec_filing_text_context_v3
+-> market_sip_compact.sec_filing_text_tokens_v3
+-> market_sip_compact.sec_filing_text_embeddings_v3
 ```
 
-The gateway applies the same deterministic SEC packed-text renderer as the
-historical context builder while refreshing `sec_filing_text_context_v3`. Upstream
-`q_live.sec_filing_text_v3` remains the submitted source text; `q_live.sec_filing_text_rendered_v3`
-stores the renderer/normalizer output for audit. The compact context text is rendered
-from HTML/plain/XML source documents, packs real HTML tables into column/value
-lines, and records source/model hashes, renderer version, block counts, duplicate
-block counts, and per-block hashes for audit. The renderer does not remove
-SEC/legal boilerplate, risk factors, signatures, or substantive contract/table
-text.
-Tokenization and embedding read that context field directly, so there is no
-second SEC parser inside the embedding step.
+`sec_filing_text_rendered_v3` is the authoritative normalized input. The
+embedding gateway does not run a second renderer. Each rendered document row is
+an independent source item; documents from the same filing are not concatenated.
+The existing safety chunk policy remains in place until corpus length statistics
+determine the final embedding context policy.
 
 `id_sec_market_bridge_v3` is read-only here and should be maintained by the
 reference gateway. If a SEC filing text row has no valid bridge yet, the gateway
@@ -176,9 +164,9 @@ does not embed it; it writes coverage with `blocked_missing_ticker_mapping` and
 retries on later cycles. News and existing-token embedding still continue.
 
 SEC `source_id` is intentionally compatible with the historical token builder:
-`accession_number:text_rank:document_id`. The SEC context builder currently uses
-`text_rank=0` for selected filing text rows and keeps `document_id` in the key,
-so the live gateway does the same instead of creating a row-number rank.
+`accession_number:text_rank:document_id`. `text_rank` is the submitted document
+sequence number capped to the current UInt8 schema, and `document_id` keeps each
+rendered submitted document distinct.
 
 ## Service Boundaries
 
@@ -187,4 +175,4 @@ so the live gateway does the same instead of creating a row-number rank.
 | `news_gateway` | `q_live.benzinga_news_normalized_v1`, `q_live.benzinga_news_ticker_v1` | Final normalized/ticker rows are the news source. |
 | `sec_gateway` | `q_live.sec_filing_v3`, `q_live.sec_filing_document_v3`, `q_live.sec_filing_text_v3`, `q_live.sec_filing_text_rendered_v3`, SEC XBRL v3 tables | Raw SEC source and renderer output only; it does not own ticker mapping or embeddings. |
 | `reference_gateway` | `q_live.id_sec_market_bridge_v3` and canonical reference mappings | Owns ongoing CIK/accession-to-market ticker bridge maintenance. |
-| `text_embed_gateway` | `market_sip_compact.*_tokens`, `market_sip_compact.*_embeddings`, `text_embedding_coverage_v1`; idempotent recent SEC context rows | Uses historical-compatible source rows and Qwen to persist tokens/embeddings. |
+| `text_embed_gateway` | `market_sip_compact.*_tokens`, `market_sip_compact.*_embeddings`, `text_embedding_coverage_v1` | Directly joins rendered SEC documents to filing and bridge rows, then persists tokens/embeddings. |
