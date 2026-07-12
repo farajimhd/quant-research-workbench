@@ -17,7 +17,7 @@ The validator:
 Validate one downloaded archive:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_validate_downloaded_archives.py --manifest-jsonl D:/market-data/prepared/sec_daily_feed_archives/sec_daily_feed_archives_20260615_163812.jsonl --expected-count 68 --limit-archives 1 --archive-workers 1
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_validate_downloaded_archives.py --manifest-jsonl D:/market-data/prepared/sec_daily_feed_archives/sec_daily_feed_archives_20260615_163812.jsonl --expected-count 68 --limit-archives 1 --archive-workers 1
 ```
 
 ## Validate The Redownloaded Set
@@ -25,7 +25,7 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pip
 Validate the latest run that redownloaded 68 archives:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_validate_downloaded_archives.py --manifest-jsonl D:/market-data/prepared/sec_daily_feed_archives/sec_daily_feed_archives_20260615_163812.jsonl --expected-count 68 --archive-workers 4 --pending-multiplier 1 --sample-limit 1000 --repair-failed-archives
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_validate_downloaded_archives.py --manifest-jsonl D:/market-data/prepared/sec_daily_feed_archives/sec_daily_feed_archives_20260615_163812.jsonl --expected-count 68 --archive-workers 4 --pending-multiplier 1 --sample-limit 1000 --repair-failed-archives
 ```
 
 When running from a different machine against a shared archive folder, remap manifest paths:

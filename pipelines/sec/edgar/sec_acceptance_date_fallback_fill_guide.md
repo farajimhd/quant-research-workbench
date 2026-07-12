@@ -33,7 +33,7 @@ python D:\TradingCodes\quant-research-workbench\pipelines\sec\edgar\sec_acceptan
 Workstation:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_acceptance_date_fallback_fill.py --output-root-win D:/market-data/prepared/sec_acceptance_date_fallback_fill
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_acceptance_date_fallback_fill.py --output-root-win D:/market-data/prepared/sec_acceptance_date_fallback_fill
 ```
 
 ## Execute
@@ -47,7 +47,7 @@ python D:\TradingCodes\quant-research-workbench\pipelines\sec\edgar\sec_acceptan
 Workstation:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_acceptance_date_fallback_fill.py --execute --output-root-win D:/market-data/prepared/sec_acceptance_date_fallback_fill
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_acceptance_date_fallback_fill.py --execute --output-root-win D:/market-data/prepared/sec_acceptance_date_fallback_fill
 ```
 
 ## Arguments

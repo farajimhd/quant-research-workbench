@@ -79,19 +79,19 @@ python D:/TradingCodes/quant-research-workbench/pipelines/news/benzinga/news_ben
 Workstation smoke test:
 
 ```powershell
-python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/pipelines/news/benzinga/news_benzinga_url_fetch_plan.py --inventory-root-win D:/market-data/prepared/benzinga_news_url_inventory --output-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --limit-rows 200000 --shards 32 --progress-interval 50000
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/quant_research_workbench_pipelines/pipelines/news/benzinga/news_benzinga_url_fetch_plan.py --inventory-root-win D:/market-data/prepared/benzinga_news_url_inventory --output-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --limit-rows 200000 --shards 32 --progress-interval 50000
 ```
 
 Workstation full run:
 
 ```powershell
-python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/pipelines/news/benzinga/news_benzinga_url_fetch_plan.py --inventory-root-win D:/market-data/prepared/benzinga_news_url_inventory --output-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --shards 256 --progress-interval 1000000
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/quant_research_workbench_pipelines/pipelines/news/benzinga/news_benzinga_url_fetch_plan.py --inventory-root-win D:/market-data/prepared/benzinga_news_url_inventory --output-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --shards 256 --progress-interval 1000000
 ```
 
 Workstation full run with a custom policy:
 
 ```powershell
-python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/pipelines/news/benzinga/news_benzinga_url_fetch_plan.py --inventory-root-win D:/market-data/prepared/benzinga_news_url_inventory --output-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --policy-json D:/market-data/prepared/benzinga_news_url_fetch_plan/domain_policy_override.json --shards 256 --progress-interval 1000000
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/quant_research_workbench_pipelines/pipelines/news/benzinga/news_benzinga_url_fetch_plan.py --inventory-root-win D:/market-data/prepared/benzinga_news_url_inventory --output-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --policy-json D:/market-data/prepared/benzinga_news_url_fetch_plan/domain_policy_override.json --shards 256 --progress-interval 1000000
 ```
 
 ## Arguments

@@ -30,19 +30,19 @@ The script creates the database and tables if they do not exist.
 Dry run:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_bulk_clickhouse_ingest.py --dry-run --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_bulk_clickhouse_ingest.py --dry-run --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core
 ```
 
 Small schema/parser smoke test:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_bulk_clickhouse_ingest.py --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core --sources company_tickers,company_tickers_exchange,company_tickers_mf,submissions,companyfacts --limit-ciks 10 --batch-size 5000
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_bulk_clickhouse_ingest.py --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core --sources company_tickers,company_tickers_exchange,company_tickers_mf,submissions,companyfacts --limit-ciks 10 --batch-size 5000
 ```
 
 Full bulk ingest:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_bulk_clickhouse_ingest.py --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core --sources company_tickers,company_tickers_exchange,company_tickers_mf,submissions,companyfacts --batch-size 50000
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_bulk_clickhouse_ingest.py --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core --sources company_tickers,company_tickers_exchange,company_tickers_mf,submissions,companyfacts --batch-size 50000
 ```
 
 ## Environment

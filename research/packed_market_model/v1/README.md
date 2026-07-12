@@ -108,6 +108,11 @@ sequential blocks from the most active ticker. Shared month/day artifacts such a
 market-news embeddings and global daily bars are cached inside the profiling run
 and reported with `cache_hit` details in `profile.jsonl`.
 
+Reusable month-window, multimodal ClickHouse context-query, and vectorized
+intraday bar helpers are owned by `research.mlops.packed_market.context`. The
+packed profiler and trainer do not depend on the removed temporal daily-index or
+chronological-loader packages.
+
 Profile the v1 model against the same ClickHouse ticker-stream loader used by
 training:
 

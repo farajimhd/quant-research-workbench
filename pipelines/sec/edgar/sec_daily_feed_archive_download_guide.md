@@ -72,7 +72,7 @@ python D:\TradingCodes\quant-research-workbench\pipelines\sec\edgar\sec_daily_fe
 Workstation path:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_daily_feed_archive_download.py --output-root-win D:/market-data/prepared/sec_daily_feed_archives
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_daily_feed_archive_download.py --output-root-win D:/market-data/prepared/sec_daily_feed_archives
 ```
 
 ## Resume Behavior

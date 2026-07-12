@@ -55,19 +55,19 @@ trade reads and local quote/trade merging.
 Small comparison:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\run_benchmark_quote_nearest_query.py --batch-size 16 --benchmark-batches 2 --workers 8 --events-per-sample 128
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\run_benchmark_quote_nearest_query.py --batch-size 16 --benchmark-batches 2 --workers 8 --events-per-sample 128
 ```
 
 Larger batch:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\run_benchmark_quote_nearest_query.py --batch-size 256 --benchmark-batches 10 --workers 32 --events-per-sample 128
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\run_benchmark_quote_nearest_query.py --batch-size 256 --benchmark-batches 10 --workers 32 --events-per-sample 128
 ```
 
 Bounded lookback experiment:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\run_benchmark_quote_nearest_query.py --batch-size 256 --benchmark-batches 10 --workers 32 --events-per-sample 128 --lookback-us 86400000000
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\run_benchmark_quote_nearest_query.py --batch-size 256 --benchmark-batches 10 --workers 32 --events-per-sample 128 --lookback-us 86400000000
 ```
 
 Key metrics:

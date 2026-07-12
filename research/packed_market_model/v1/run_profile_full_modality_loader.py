@@ -16,8 +16,21 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from research.mlops.clickhouse import ClickHouseHttpClient
-from research.mlops.data.config import RollingMarketDataConfig
 from research.mlops.env import discover_env_files, load_env_files
+from research.mlops.packed_market.context import (
+    PackedContextConfig,
+    build_intraday_base_bars,
+    build_intraday_condition_events,
+    cancel_process_clickhouse_queries as cancel_context_queries,
+    month_window,
+    query_corporate_actions,
+    query_daily_bars,
+    query_market_news,
+    query_polars as query_context_polars,
+    query_sec_embeddings,
+    query_ticker_news,
+    query_xbrl,
+)
 from research.mlops.packed_market.scanner_sidecar import ScannerSidecarConfig, ScannerSidecarManager, completed_scanner_bar_end_us
 from research.mlops.packed_market.streaming import (
     ActiveQueryRegistry,
@@ -27,19 +40,6 @@ from research.mlops.packed_market.streaming import (
     cancel_process_clickhouse_queries as cancel_stream_queries,
     fetch_event_frame,
     load_ticker_month_plans,
-)
-from research.mlops.rolling_loader.daily_index_cache import month_window
-from research.mlops.rolling_loader.daily_index_context import (
-    _build_intraday_base_bars,
-    _build_intraday_condition_events,
-    _query_corporate_actions,
-    _query_daily_bars,
-    _query_market_news,
-    _query_sec_tokens,
-    _query_ticker_news,
-    _query_xbrl,
-    cancel_process_clickhouse_queries as cancel_context_queries,
-    query_polars as query_context_polars,
 )
 from research.packed_market_model.v1.config import parse_csv
 
@@ -172,7 +172,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         "query_retries": str(stream_config.query_retries),
         "query_retry_backoff_seconds": str(stream_config.query_retry_backoff_seconds),
     }
-    rolling_config = RollingMarketDataConfig(
+    context_config = PackedContextConfig(
         database=str(args.database),
         sec_context_database=str(args.database),
         events_table=str(args.events_table_base),
@@ -231,7 +231,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                     args=args,
                     stream_config=stream_config,
                     context_client_opts=context_client_opts,
-                    rolling_config=rolling_config,
+                    context_config=context_config,
                     ctx_args=ctx_args,
                     job=job,
                     stream_queries=stream_queries,
@@ -284,7 +284,7 @@ def profile_block(
     args: argparse.Namespace,
     stream_config: ClickHouseTickerStreamConfig,
     context_client_opts: Mapping[str, str],
-    rolling_config: RollingMarketDataConfig,
+    context_config: PackedContextConfig,
     ctx_args: argparse.Namespace,
     job: Any,
     stream_queries: ActiveQueryRegistry,
@@ -319,21 +319,21 @@ def profile_block(
 
     block_result, _block = run_step("events.packed_block_and_labels", lambda: build_packed_block_from_events(stream_config, job, events, worker_id=0))
     rows.append(asdict(block_result))
-    intraday_result, intraday = run_step("intraday.base_bars", lambda: _build_intraday_base_bars(events_holder["events"]))
+    intraday_result, intraday = run_step("intraday.base_bars", lambda: build_intraday_base_bars(events_holder["events"]))
     rows.append(asdict(intraday_result))
-    condition_result, condition_events = run_step("intraday.condition_events", lambda: _build_intraday_condition_events(events_holder["events"]))
+    condition_result, condition_events = run_step("intraday.condition_events", lambda: build_intraday_condition_events(events_holder["events"]))
     rows.append(asdict(condition_result))
 
     context_tasks: dict[str, Callable[[], Any]] = {
-        "context.ticker_news_embeddings": lambda: _query_ticker_news(ctx_args, context_client_opts, rolling_config, window, job.plan.ticker),
-        "context.sec_embeddings": lambda: _query_sec_tokens(ctx_args, context_client_opts, rolling_config, window, job.plan.ticker),
-        "context.xbrl": lambda: _query_xbrl(ctx_args, context_client_opts, rolling_config, window, job.plan.ticker),
-        "context.corporate_actions": lambda: _query_corporate_actions(ctx_args, context_client_opts, rolling_config, window, job.plan.ticker),
-        "bars.ticker_daily": lambda: _query_daily_bars(ctx_args, context_client_opts, rolling_config, window, symbols=(job.plan.ticker,)),
+        "context.ticker_news_embeddings": lambda: query_ticker_news(ctx_args, context_client_opts, context_config, window, job.plan.ticker),
+        "context.sec_embeddings": lambda: query_sec_embeddings(ctx_args, context_client_opts, context_config, window, job.plan.ticker),
+        "context.xbrl": lambda: query_xbrl(ctx_args, context_client_opts, context_config, window, job.plan.ticker),
+        "context.corporate_actions": lambda: query_corporate_actions(ctx_args, context_client_opts, context_config, window, job.plan.ticker),
+        "bars.ticker_daily": lambda: query_daily_bars(ctx_args, context_client_opts, context_config, window, symbols=(job.plan.ticker,)),
     }
     cached_context_tasks: dict[str, tuple[tuple[str, ...], Callable[[], Any]]] = {
-        "context.market_news_embeddings": (("market_news", job.plan.month), lambda: _query_market_news(ctx_args, context_client_opts, rolling_config, window)),
-        "bars.global_daily": (("global_daily", job.plan.month), lambda: _query_daily_bars(ctx_args, context_client_opts, rolling_config, window, symbols=tuple(rolling_config.global_symbols))),
+        "context.market_news_embeddings": (("market_news", job.plan.month), lambda: query_market_news(ctx_args, context_client_opts, context_config, window)),
+        "bars.global_daily": (("global_daily", job.plan.month), lambda: query_daily_bars(ctx_args, context_client_opts, context_config, window, symbols=tuple(context_config.global_symbols))),
     }
     if scanner_manager is not None and origin_range is not None:
         first_origin_us, last_origin_us = origin_range

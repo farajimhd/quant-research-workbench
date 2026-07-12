@@ -16,19 +16,19 @@ The script is intentionally conservative:
 Dry-run first:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_delete_failed_archives.py --discovery-run-root D:/market-data/prepared/sec_archive_content_discovery/20260613_195823 --archive-root-win G:/market-data/sec_core/daily_archives --expected-count 66
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_delete_failed_archives.py --discovery-run-root D:/market-data/prepared/sec_archive_content_discovery/20260613_195823 --archive-root-win G:/market-data/sec_core/daily_archives --expected-count 66
 ```
 
 Execute:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_delete_failed_archives.py --discovery-run-root D:/market-data/prepared/sec_archive_content_discovery/20260613_195823 --archive-root-win G:/market-data/sec_core/daily_archives --expected-count 66 --execute
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_delete_failed_archives.py --discovery-run-root D:/market-data/prepared/sec_archive_content_discovery/20260613_195823 --archive-root-win G:/market-data/sec_core/daily_archives --expected-count 66 --execute
 ```
 
 If all rows fail with `PermissionError(13, 'Access is denied')`, run the terminal as Administrator and use the ACL repair mode. This only changes permissions for the exact 66 failed archive files selected from `archive_summary.jsonl`; it does not recursively modify the archive folders.
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_delete_failed_archives.py --discovery-run-root D:/market-data/prepared/sec_archive_content_discovery/20260613_195823 --archive-root-win G:/market-data/sec_core/daily_archives --expected-count 66 --execute --windows-fix-acl --windows-take-ownership
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_delete_failed_archives.py --discovery-run-root D:/market-data/prepared/sec_archive_content_discovery/20260613_195823 --archive-root-win G:/market-data/sec_core/daily_archives --expected-count 66 --execute --windows-fix-acl --windows-take-ownership
 ```
 
 ## Delete From D Instead
@@ -36,7 +36,7 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pip
 Only use this if you intentionally need to remove failed archives from the SSD archive root:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_delete_failed_archives.py --discovery-run-root D:/market-data/prepared/sec_archive_content_discovery/20260613_195823 --archive-root-win D:/market-data/sec_core/daily_archives --expected-count 66 --execute
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_delete_failed_archives.py --discovery-run-root D:/market-data/prepared/sec_archive_content_discovery/20260613_195823 --archive-root-win D:/market-data/sec_core/daily_archives --expected-count 66 --execute
 ```
 
 ## Important Arguments

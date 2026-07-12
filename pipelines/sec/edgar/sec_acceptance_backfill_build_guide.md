@@ -47,25 +47,25 @@ If the zip is somewhere else, pass `--submissions-zip-win`.
 Dry run with a small key sample:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_acceptance_backfill_build.py --limit-missing-keys 10000 --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_acceptance_backfill
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_acceptance_backfill_build.py --limit-missing-keys 10000 --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_acceptance_backfill
 ```
 
 Execute with a small key sample:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_acceptance_backfill_build.py --execute --limit-missing-keys 10000 --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_acceptance_backfill
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_acceptance_backfill_build.py --execute --limit-missing-keys 10000 --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_acceptance_backfill
 ```
 
 Full execute:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_acceptance_backfill_build.py --execute --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_acceptance_backfill
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_acceptance_backfill_build.py --execute --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_acceptance_backfill
 ```
 
 Then run Step 7:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\reference_data\migration\step_07_backfill_sec_accepted_timestamps.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_07_sec_accepted_timestamps
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\migration\step_07_backfill_sec_accepted_timestamps.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_07_sec_accepted_timestamps
 ```
 
 ## Useful Arguments

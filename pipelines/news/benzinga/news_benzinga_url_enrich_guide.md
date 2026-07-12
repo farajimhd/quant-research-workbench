@@ -98,25 +98,25 @@ python D:/TradingCodes/quant-research-workbench/pipelines/news/benzinga/news_ben
 Workstation smoke test:
 
 ```powershell
-python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/pipelines/news/benzinga/news_benzinga_url_enrich.py --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --output-root-win D:/market-data/prepared/benzinga_news_url_enrichment --limit-urls 1000 --network-concurrency 8 --max-pending-futures 32 --per-domain-min-interval-seconds 0.2 --timeout-seconds 8 --progress-interval 100 --heartbeat-seconds 15 --load-progress-interval 100000 --flush-interval 100 --resume
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/quant_research_workbench_pipelines/pipelines/news/benzinga/news_benzinga_url_enrich.py --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --output-root-win D:/market-data/prepared/benzinga_news_url_enrichment --limit-urls 1000 --network-concurrency 8 --max-pending-futures 32 --per-domain-min-interval-seconds 0.2 --timeout-seconds 8 --progress-interval 100 --heartbeat-seconds 15 --load-progress-interval 100000 --flush-interval 100 --resume
 ```
 
 Workstation medium run:
 
 ```powershell
-python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/pipelines/news/benzinga/news_benzinga_url_enrich.py --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --output-root-win D:/market-data/prepared/benzinga_news_url_enrichment --limit-urls 50000 --network-concurrency 12 --max-pending-futures 48 --per-domain-min-interval-seconds 0.2 --timeout-seconds 8 --progress-interval 1000 --heartbeat-seconds 15 --load-progress-interval 100000 --flush-interval 100 --resume
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/quant_research_workbench_pipelines/pipelines/news/benzinga/news_benzinga_url_enrich.py --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --output-root-win D:/market-data/prepared/benzinga_news_url_enrichment --limit-urls 50000 --network-concurrency 12 --max-pending-futures 48 --per-domain-min-interval-seconds 0.2 --timeout-seconds 8 --progress-interval 1000 --heartbeat-seconds 15 --load-progress-interval 100000 --flush-interval 100 --resume
 ```
 
 Workstation full run:
 
 ```powershell
-python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/pipelines/news/benzinga/news_benzinga_url_enrich.py --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --output-root-win D:/market-data/prepared/benzinga_news_url_enrichment --network-concurrency 12 --max-pending-futures 48 --per-domain-min-interval-seconds 0.2 --timeout-seconds 8 --progress-interval 1000 --heartbeat-seconds 15 --load-progress-interval 100000 --flush-interval 100 --resume
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/quant_research_workbench_pipelines/pipelines/news/benzinga/news_benzinga_url_enrich.py --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --output-root-win D:/market-data/prepared/benzinga_news_url_enrichment --network-concurrency 12 --max-pending-futures 48 --per-domain-min-interval-seconds 0.2 --timeout-seconds 8 --progress-interval 1000 --heartbeat-seconds 15 --load-progress-interval 100000 --flush-interval 100 --resume
 ```
 
 Debug run with raw artifacts:
 
 ```powershell
-python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/pipelines/news/benzinga/news_benzinga_url_enrich.py --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --output-root-win D:/market-data/prepared/benzinga_news_url_enrichment --limit-urls 100 --network-concurrency 4 --save-raw-artifacts
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/quant_research_workbench_pipelines/pipelines/news/benzinga/news_benzinga_url_enrich.py --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --output-root-win D:/market-data/prepared/benzinga_news_url_enrichment --limit-urls 100 --network-concurrency 4 --save-raw-artifacts
 ```
 
 ## Arguments

@@ -58,7 +58,7 @@ python D:/TradingCodes/quant-research-workbench/pipelines/news/benzinga/news_ben
 Workstation full inventory after sync:
 
 ```powershell
-python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/pipelines/news/benzinga/news_benzinga_url_inventory.py --raw-root-win D:/market-data/news-benzinga --output-root-win D:/market-data/prepared/benzinga_news_url_inventory --processes 32 --chunk-size 1000
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/quant_research_workbench_pipelines/pipelines/news/benzinga/news_benzinga_url_inventory.py --raw-root-win D:/market-data/news-benzinga --output-root-win D:/market-data/prepared/benzinga_news_url_inventory --processes 32 --chunk-size 1000
 ```
 
 ## Arguments

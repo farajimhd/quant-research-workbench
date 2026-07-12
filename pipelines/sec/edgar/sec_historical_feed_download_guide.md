@@ -49,13 +49,13 @@ python D:\TradingCodes\quant-research-workbench\pipelines\sec\edgar\sec_historic
 Workstation mirror:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_historical_feed_download.py
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_feed_download.py
 ```
 
 Workstation bounded pipeline:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_historical_feed_pipeline.py
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_feed_pipeline.py
 ```
 
 ## What Gets Written
@@ -107,7 +107,7 @@ This is the safest first pass. It downloads compressed daily archives and stops.
 The script first reads the SEC quarterly Feed directory listings and creates jobs only for archive files that actually exist. Weekends, holidays, and missing archive dates are not guessed as failed jobs.
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_historical_feed_download.py --start-date 2026-06-01 --end-date 2026-06-08 --download-only --archive-concurrency 2
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_feed_download.py --start-date 2026-06-01 --end-date 2026-06-08 --download-only --archive-concurrency 2
 ```
 
 ## Bounded Download + Normalize Pipeline
@@ -117,31 +117,31 @@ Use this when you want to keep compressed archives on HDD and write normalized J
 The pipeline keeps at most roughly `--download-concurrency` archive downloads ahead of parsing, so it does not require downloading the entire historical range before normalized output starts.
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_historical_feed_pipeline.py --start-date 2020-01-01 --end-date 2026-06-08 --download-concurrency 2 --archive-copy-concurrency 1 --header-concurrency 8 --sec-request-min-interval-seconds 0.11 --progress-interval-seconds 10 --progress-file-interval-mib 64 --progress-record-interval 500
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_feed_pipeline.py --start-date 2020-01-01 --end-date 2026-06-08 --download-concurrency 2 --archive-copy-concurrency 1 --header-concurrency 8 --sec-request-min-interval-seconds 0.11 --progress-interval-seconds 10 --progress-file-interval-mib 64 --progress-record-interval 500
 ```
 
 If the raw archives were created by `sec_daily_feed_archive_download.py`, they live under `sec_core\daily_archives` instead of `sec_core\archives`. In that case pass `--archive-subdir daily_archives` so the parser reuses the completed archive set instead of downloading a second copy:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_historical_feed_pipeline.py --start-date 2019-01-01 --end-date 2026-06-11 --artifact-root-win D:/market-data/sec_core --archive-subdir daily_archives --temp-root-win D:/market-data/sec_edgar_feed_temp --normalized-root-win D:/market-data/sec_edgar_feed_normalized --output-root-win D:/market-data/prepared/sec_edgar_feed --download-concurrency 2 --archive-copy-concurrency 1 --header-concurrency 8 --sec-request-min-interval-seconds 0.11 --progress-interval-seconds 10 --progress-file-interval-mib 64 --progress-record-interval 500
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_feed_pipeline.py --start-date 2019-01-01 --end-date 2026-06-11 --artifact-root-win D:/market-data/sec_core --archive-subdir daily_archives --temp-root-win D:/market-data/sec_edgar_feed_temp --normalized-root-win D:/market-data/sec_edgar_feed_normalized --output-root-win D:/market-data/prepared/sec_edgar_feed --download-concurrency 2 --archive-copy-concurrency 1 --header-concurrency 8 --sec-request-min-interval-seconds 0.11 --progress-interval-seconds 10 --progress-file-interval-mib 64 --progress-record-interval 500
 ```
 
 Recommended dry-run smoke test. This validates discovery/config without writing partial normalized data:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_historical_feed_pipeline.py --start-date 2026-06-05 --end-date 2026-06-06 --download-concurrency 1 --archive-copy-concurrency 1 --header-concurrency 4 --sec-request-min-interval-seconds 0.11 --progress-interval-seconds 5 --progress-file-interval-mib 16 --progress-record-interval 500 --dry-run
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_feed_pipeline.py --start-date 2026-06-05 --end-date 2026-06-06 --download-concurrency 1 --archive-copy-concurrency 1 --header-concurrency 4 --sec-request-min-interval-seconds 0.11 --progress-interval-seconds 5 --progress-file-interval-mib 16 --progress-record-interval 500 --dry-run
 ```
 
 Recommended full one-day pipeline smoke test. This parses every filing in the selected daily archive:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_historical_feed_pipeline.py --start-date 2026-06-05 --end-date 2026-06-06 --download-concurrency 1 --archive-copy-concurrency 1 --header-concurrency 4 --sec-request-min-interval-seconds 0.11 --progress-interval-seconds 10 --progress-file-interval-mib 64 --progress-record-interval 500
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_feed_pipeline.py --start-date 2026-06-05 --end-date 2026-06-06 --download-concurrency 1 --archive-copy-concurrency 1 --header-concurrency 4 --sec-request-min-interval-seconds 0.11 --progress-interval-seconds 10 --progress-file-interval-mib 64 --progress-record-interval 500
 ```
 
 Delete permanent HDD compressed archives only after a day parses successfully:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_historical_feed_pipeline.py --start-date 2020-01-01 --end-date 2026-06-08 --download-concurrency 2 --archive-copy-concurrency 1 --header-concurrency 8 --sec-request-min-interval-seconds 0.11 --progress-interval-seconds 10 --progress-file-interval-mib 64 --progress-record-interval 500 --delete-archive-after-parse
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_feed_pipeline.py --start-date 2020-01-01 --end-date 2026-06-08 --download-concurrency 2 --archive-copy-concurrency 1 --header-concurrency 8 --sec-request-min-interval-seconds 0.11 --progress-interval-seconds 10 --progress-file-interval-mib 64 --progress-record-interval 500 --delete-archive-after-parse
 ```
 
 Progress controls:
@@ -170,7 +170,7 @@ This downloads archives if missing, streams `.nc` files from the compressed arch
 Parse/enrich mode processes archive days one at a time so `--header-concurrency` and `--sec-request-min-interval-seconds` remain the effective SEC request controls across the run.
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_historical_feed_download.py --start-date 2026-06-05 --end-date 2026-06-06 --archive-concurrency 1 --header-concurrency 8 --sec-request-min-interval-seconds 0.11
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_feed_download.py --start-date 2026-06-05 --end-date 2026-06-06 --archive-concurrency 1 --header-concurrency 8 --sec-request-min-interval-seconds 0.11
 ```
 
 ## Persist Extracted `.nc` Files
@@ -178,7 +178,7 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pip
 Use this only when you want expanded `.nc` files on disk for manual inspection or downstream artifact retention.
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_historical_feed_download.py --start-date 2026-06-05 --end-date 2026-06-06 --archive-concurrency 1 --header-concurrency 8 --sec-request-min-interval-seconds 0.11 --persist-nc-files
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_feed_download.py --start-date 2026-06-05 --end-date 2026-06-06 --archive-concurrency 1 --header-concurrency 8 --sec-request-min-interval-seconds 0.11 --persist-nc-files
 ```
 
 ## Local Smoke Test With Already Extracted Folder

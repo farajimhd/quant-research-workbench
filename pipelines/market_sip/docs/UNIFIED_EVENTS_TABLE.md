@@ -35,7 +35,7 @@ sip_timestamp_us <= <origin>
 Build the final table with:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\events\run_build_unified_events.py --rebuild
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_unified_events.py --rebuild
 ```
 
 Use `--rebuild` when moving from the older ticker-at-a-time builder to this
@@ -156,7 +156,7 @@ Ctrl+C is handled. The active day is marked `interrupted` in
 use:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\events\run_build_unified_events.py --retry-started --force-day-delete
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_unified_events.py --retry-started --force-day-delete
 ```
 
 `--force-day-delete` is required for interrupted/started day retries so the

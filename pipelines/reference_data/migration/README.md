@@ -13,7 +13,7 @@ python D:\TradingCodes\quant-research-workbench\pipelines\reference_data\migrati
 Workstation runtime command after sync:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\reference_data\migration\audit_trading_dashboard_dev.py --profile-mode metadata --output-root-win D:/market-data/prepared/q_live_migration/schema_audit
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\migration\audit_trading_dashboard_dev.py --profile-mode metadata --output-root-win D:/market-data/prepared/q_live_migration/schema_audit
 ```
 
 Local command:
@@ -27,7 +27,7 @@ Use `--profile-mode metadata` for the default audit. It reads ClickHouse system 
 Use `--profile-mode light` only when you want small row samples and key-column profiles. It scans likely key columns and can be slower on large tables:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\reference_data\migration\audit_trading_dashboard_dev.py --profile-mode light --sample-rows 3 --output-root-win D:/market-data/prepared/q_live_migration/schema_audit
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\migration\audit_trading_dashboard_dev.py --profile-mode light --sample-rows 3 --output-root-win D:/market-data/prepared/q_live_migration/schema_audit
 ```
 
 ## Outputs
@@ -83,7 +83,7 @@ python D:\TradingCodes\quant-research-workbench\pipelines\reference_data\migrati
 Workstation:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\reference_data\migration\step_01_create_q_live_schema.py --output-root-win D:/market-data/prepared/q_live_migration/schema_create
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\migration\step_01_create_q_live_schema.py --output-root-win D:/market-data/prepared/q_live_migration/schema_create
 ```
 
 Execute the schema after reviewing the rendered SQL:
@@ -97,7 +97,7 @@ python D:\TradingCodes\quant-research-workbench\pipelines\reference_data\migrati
 Workstation:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\reference_data\migration\step_01_create_q_live_schema.py --execute --output-root-win D:/market-data/prepared/q_live_migration/schema_create
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\migration\step_01_create_q_live_schema.py --execute --output-root-win D:/market-data/prepared/q_live_migration/schema_create
 ```
 
 Important behavior:
@@ -118,7 +118,7 @@ python D:\TradingCodes\quant-research-workbench\pipelines\reference_data\migrati
 Dry-run on workstation:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\reference_data\migration\step_02_migrate_reference_identity.py --output-root-win D:/market-data/prepared/q_live_migration/step_02_reference_identity
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\migration\step_02_migrate_reference_identity.py --output-root-win D:/market-data/prepared/q_live_migration/step_02_reference_identity
 ```
 
 Execute locally:
@@ -130,7 +130,7 @@ python D:\TradingCodes\quant-research-workbench\pipelines\reference_data\migrati
 Execute on workstation:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\reference_data\migration\step_02_migrate_reference_identity.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_02_reference_identity
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\migration\step_02_migrate_reference_identity.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_02_reference_identity
 ```
 
 Record validation only after a completed migration, without inserting migrated rows:
@@ -206,7 +206,7 @@ python D:\TradingCodes\quant-research-workbench\pipelines\reference_data\migrati
 Dry-run on workstation:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\reference_data\migration\step_03_migrate_market_publications.py --output-root-win D:/market-data/prepared/q_live_migration/step_03_market_publications
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\migration\step_03_migrate_market_publications.py --output-root-win D:/market-data/prepared/q_live_migration/step_03_market_publications
 ```
 
 Execute locally:
@@ -224,7 +224,7 @@ python D:\TradingCodes\quant-research-workbench\pipelines\reference_data\migrati
 Execute on workstation:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\reference_data\migration\step_03_migrate_market_publications.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_03_market_publications
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\migration\step_03_migrate_market_publications.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_03_market_publications
 ```
 
 Step 3 migrates:
@@ -255,7 +255,7 @@ python D:\TradingCodes\quant-research-workbench\pipelines\reference_data\migrati
 Dry-run on workstation:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\reference_data\migration\step_04_migrate_sec_publications.py --output-root-win D:/market-data/prepared/q_live_migration/step_04_sec_publications
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\migration\step_04_migrate_sec_publications.py --output-root-win D:/market-data/prepared/q_live_migration/step_04_sec_publications
 ```
 
 Execute locally:
@@ -273,7 +273,7 @@ python D:\TradingCodes\quant-research-workbench\pipelines\reference_data\migrati
 Execute on workstation:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\reference_data\migration\step_04_migrate_sec_publications.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_04_sec_publications
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\migration\step_04_migrate_sec_publications.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_04_sec_publications
 ```
 
 Step 4 migrates:
@@ -299,7 +299,7 @@ python D:\TradingCodes\quant-research-workbench\pipelines\reference_data\migrati
 Dry-run on workstation:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\reference_data\migration\step_05_validate_q_live_migration.py --output-root-win D:/market-data/prepared/q_live_migration/step_05_validation
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\migration\step_05_validate_q_live_migration.py --output-root-win D:/market-data/prepared/q_live_migration/step_05_validation
 ```
 
 Execute locally:
@@ -311,7 +311,7 @@ python D:\TradingCodes\quant-research-workbench\pipelines\reference_data\migrati
 Execute on workstation:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\reference_data\migration\step_05_validate_q_live_migration.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_05_validation
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\migration\step_05_validate_q_live_migration.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_05_validation
 ```
 
 Step 5 validates:
@@ -350,7 +350,7 @@ python D:\TradingCodes\quant-research-workbench\pipelines\reference_data\migrati
 Execute on workstation:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\reference_data\migration\step_06_build_q_live_bridge_features.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_06_bridge_features --feature-date 2026-06-09
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\migration\step_06_build_q_live_bridge_features.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_06_bridge_features --feature-date 2026-06-09
 ```
 
 Step 6 builds:
@@ -381,7 +381,7 @@ python D:\TradingCodes\quant-research-workbench\pipelines\reference_data\migrati
 Execute on workstation:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\reference_data\migration\step_07_backfill_sec_accepted_timestamps.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_07_sec_accepted_timestamps
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\migration\step_07_backfill_sec_accepted_timestamps.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_07_sec_accepted_timestamps
 ```
 
 Step 7 backfills `q_live.sec_filing_v2.accepted_at_utc` from an SEC accepted timestamp source table, defaulting to `sec_core.sec_bulk_mirror_filing_acceptance_v1`.

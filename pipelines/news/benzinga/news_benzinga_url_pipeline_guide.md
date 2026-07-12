@@ -9,7 +9,7 @@ The downloader reads the deduplicated fetch plan, skips already completed rows w
 Recommended workstation command:
 
 ```powershell
-python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/pipelines/news/benzinga/news_benzinga_url_download.py --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --output-root-win D:/market-data/prepared/benzinga_news_url_download --artifact-root-win D:/market-data/news_benzinga_url_download_artifacts --network-concurrency 128 --max-pending-futures 512 --per-domain-min-interval-seconds 0.02 --timeout-seconds 5 --max-retries 0 --progress-interval 5000 --heartbeat-seconds 15 --flush-interval 500 --resume
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/quant_research_workbench_pipelines/pipelines/news/benzinga/news_benzinga_url_download.py --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --output-root-win D:/market-data/prepared/benzinga_news_url_download --artifact-root-win D:/market-data/news_benzinga_url_download_artifacts --network-concurrency 128 --max-pending-futures 512 --per-domain-min-interval-seconds 0.02 --timeout-seconds 5 --max-retries 0 --progress-interval 5000 --heartbeat-seconds 15 --flush-interval 500 --resume
 ```
 
 Expected startup marker:
@@ -32,7 +32,7 @@ The standalone extractor reads downloaded artifact metadata and uses a process p
 Recommended workstation command:
 
 ```powershell
-python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/pipelines/news/benzinga/news_benzinga_url_extract.py --download-root-win D:/market-data/prepared/benzinga_news_url_download --output-root-win D:/market-data/prepared/benzinga_news_url_extraction --processes 16 --max-pending-futures 64 --progress-interval 1000 --heartbeat-seconds 15 --flush-interval 100 --resume
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/quant_research_workbench_pipelines/pipelines/news/benzinga/news_benzinga_url_extract.py --download-root-win D:/market-data/prepared/benzinga_news_url_download --output-root-win D:/market-data/prepared/benzinga_news_url_extraction --processes 16 --max-pending-futures 64 --progress-interval 1000 --heartbeat-seconds 15 --flush-interval 100 --resume
 ```
 
 The extractor writes:
@@ -48,13 +48,13 @@ The row builder reads the original raw Benzinga article JSON, extracts downloade
 Recommended workstation command after URL download finishes:
 
 ```powershell
-python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/pipelines/news/benzinga/news_benzinga_build_normalized_rows.py --raw-root-win D:/market-data/news-benzinga/raw --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --download-root-win D:/market-data/prepared/benzinga_news_url_download --extraction-root-win D:/market-data/prepared/benzinga_news_url_extraction --output-root-win D:/market-data/prepared/benzinga_news_normalized_rows --processes 24 --max-pending-futures 96 --inline-extraction-processes 24 --text-limit-chars 24000 --max-enriched-text-chars-per-url 12000 --max-enriched-urls-per-article 5 --rows-per-file 100000 --max-output-file-bytes 268435456 --progress-interval 25000 --inline-extraction-progress-interval 5000 --flush-interval 1000
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/quant_research_workbench_pipelines/pipelines/news/benzinga/news_benzinga_build_normalized_rows.py --raw-root-win D:/market-data/news-benzinga/raw --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --download-root-win D:/market-data/prepared/benzinga_news_url_download --extraction-root-win D:/market-data/prepared/benzinga_news_url_extraction --output-root-win D:/market-data/prepared/benzinga_news_normalized_rows --processes 24 --max-pending-futures 96 --inline-extraction-processes 24 --text-limit-chars 24000 --max-enriched-text-chars-per-url 12000 --max-enriched-urls-per-article 5 --rows-per-file 100000 --max-output-file-bytes 268435456 --progress-interval 25000 --inline-extraction-progress-interval 5000 --flush-interval 1000
 ```
 
 Smoke-test command:
 
 ```powershell
-python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/pipelines/news/benzinga/news_benzinga_build_normalized_rows.py --raw-root-win D:/market-data/news-benzinga/raw --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --download-root-win D:/market-data/prepared/benzinga_news_url_download --output-root-win D:/market-data/prepared/benzinga_news_normalized_rows_smoke --limit-articles 1000 --limit-attachment-rows 10000 --processes 8 --max-pending-futures 32 --inline-extraction-processes 8 --rows-per-file 10000 --progress-interval 100 --inline-extraction-progress-interval 500
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/quant_research_workbench_pipelines/pipelines/news/benzinga/news_benzinga_build_normalized_rows.py --raw-root-win D:/market-data/news-benzinga/raw --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --download-root-win D:/market-data/prepared/benzinga_news_url_download --output-root-win D:/market-data/prepared/benzinga_news_normalized_rows_smoke --limit-articles 1000 --limit-attachment-rows 10000 --processes 8 --max-pending-futures 32 --inline-extraction-processes 8 --rows-per-file 10000 --progress-interval 100 --inline-extraction-progress-interval 500
 ```
 
 The row builder writes:
@@ -92,13 +92,13 @@ The ClickHouse loader reads the Stage 3 manifest, validates each dataset part fi
 Preflight only:
 
 ```powershell
-python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/pipelines/news/benzinga/news_benzinga_clickhouse_file_ingest.py --manifest-root-win D:/market-data/prepared/benzinga_news_normalized_rows --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --preflight-only
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/quant_research_workbench_pipelines/pipelines/news/benzinga/news_benzinga_clickhouse_file_ingest.py --manifest-root-win D:/market-data/prepared/benzinga_news_normalized_rows --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --preflight-only
 ```
 
 Execute:
 
 ```powershell
-python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/pipelines/news/benzinga/news_benzinga_clickhouse_file_ingest.py --manifest-root-win D:/market-data/prepared/benzinga_news_normalized_rows --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --execute
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/quant_research_workbench_pipelines/pipelines/news/benzinga/news_benzinga_clickhouse_file_ingest.py --manifest-root-win D:/market-data/prepared/benzinga_news_normalized_rows --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --execute
 ```
 
 ## Resume

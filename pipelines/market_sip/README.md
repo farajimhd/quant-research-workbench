@@ -18,20 +18,21 @@ docs/          Market SIP data contracts, runbooks, and benchmark notes.
 
 ## Current Training Path
 
-The active masked-event pretraining path is:
+The active packed-model training path is:
 
 ```text
 Massive flatfiles
   -> ingest/clickhouse_ingest_sip_compact_codec.py
   -> events/clickhouse_build_unified_events.py
   -> events/clickhouse_build_trade_bars.py
-  -> sample_cache/build_event_sample_cache.py
-  -> research/masked_event_model/vN
+  -> market_sip_compact.events_YYYY + events_ticker_day_index
+  -> research/mlops/packed_market/streaming.py
+  -> research/packed_market_model/v1
 ```
 
-The sample-cache record contract is documented in
-`docs/EVENT_SAMPLE_CACHE.md`. The unified event table contract is documented in
-`docs/UNIFIED_EVENTS_TABLE.md`.
+The packed loader streams ticker/month blocks directly from ClickHouse and does
+not require the legacy fixed-width sample cache. The unified event table
+contract is documented in `docs/UNIFIED_EVENTS_TABLE.md`.
 
 For incremental flatfile updates that should keep quotes/trades only on disk
 and write unified events plus qmd-compatible bars to ClickHouse, use
@@ -51,21 +52,10 @@ bars or unsupported `1mo` rows in the macro table. The qmd-compatible
 `live_market_bars` / `bars_by_*` staging path is legacy and is available only
 through explicit `--bar-mode qmd`.
 
-To build only validation sample-cache shards, pass `--splits validation` to
-`sample_cache/run_build_event_sample_cache.py` or directly to
-`sample_cache/build_event_sample_cache.py`. The number of validation shards is
-approximately `ceil(validation_cache_gib / shard_size_gib)`, except the final
-shard may be partial.
-
-For reconstruction-only masked-event pretraining, prefer the x-only launcher:
-
-```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\sample_cache\run_event_sample_cache_pretrain_cycle.py --smoke
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\sample_cache\run_event_sample_cache_pretrain_cycle.py
-```
-
-It uses the current ClickHouse bundled sampler but writes v1-compatible
-`samples.bin` shards only, with no future `y.bin` and no label sidecar.
+The `sample_cache` scripts and `docs/EVENT_SAMPLE_CACHE.md` remain historical
+pipeline tooling; they are not on the packed-model run chain. Review them as a
+separate pipeline cleanup boundary before removal because external data audits
+may still use the shard readers.
 
 ## Compatibility
 
@@ -81,5 +71,5 @@ The shared utility code that model versions import directly remains in
 - `research/mlops/compact_events.py`
 - `research/mlops/event_sample_cache.py`
 
-Do not move those shared provider modules while active training jobs still
-depend on them.
+These modules also support operational pipelines or the reserved Market AI
+boundary and are not part of the removed temporal-model abstraction.

@@ -32,13 +32,13 @@ Default production settings:
 Example for the first production chunk:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\ingest\clickhouse_ingest_sip_compact_codec.py --database market_sip_compact --start-date 2025-01-01 --end-date 2026-06-06 --insert-concurrency 12 --max-threads 4
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\ingest\clickhouse_ingest_sip_compact_codec.py --database market_sip_compact --start-date 2025-01-01 --end-date 2026-06-06 --insert-concurrency 12 --max-threads 4
 ```
 
 Example for the next older chunk:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\ingest\clickhouse_ingest_sip_compact_codec.py --database market_sip_compact --start-date 2024-01-01 --end-date 2024-12-31 --insert-concurrency 12 --max-threads 4
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\ingest\clickhouse_ingest_sip_compact_codec.py --database market_sip_compact --start-date 2024-01-01 --end-date 2024-12-31 --insert-concurrency 12 --max-threads 4
 ```
 
 The script is resumable. It writes one row per source file attempt to `ingest_manifest`. Files with latest status `ok` are skipped. Files with latest status `failed` or `started` are skipped unless `--retry-failed` or `--retry-started` is provided.
@@ -332,7 +332,7 @@ ORDER BY kind, source_date, source_file
 After ingesting a test chunk, validate random raw rows against ClickHouse decoded rows:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\clickhouse_compact_schema_validate_sample.py --database market_sip_compact --quote-table quotes --trade-table trades --quote-date 2026-05-15 --trade-date 2026-05-15 --sample-size 1000
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\clickhouse_compact_schema_validate_sample.py --database market_sip_compact --quote-table quotes --trade-table trades --quote-date 2026-05-15 --trade-date 2026-05-15 --sample-size 1000
 ```
 
 Expected result for a valid schema is:
@@ -355,7 +355,7 @@ That expression uses the ClickHouse server timezone. If the server timezone is n
 Use the UTC rebuild script before inserting more data into such a database:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\clickhouse_fix_compact_event_date.py --database market_sip_compact --copy --validate --max-threads 24
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\clickhouse_fix_compact_event_date.py --database market_sip_compact --copy --validate --max-threads 24
 ```
 
 The script:
@@ -370,7 +370,7 @@ The script:
 After copy/validation completes cleanly, promote the corrected tables and remove the stale local-date backups:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\clickhouse_fix_compact_event_date.py --database market_sip_compact --validate --swap --drop-stale-backups-after-swap
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\clickhouse_fix_compact_event_date.py --database market_sip_compact --validate --swap --drop-stale-backups-after-swap
 ```
 
 The swap first validates the UTC shadow tables, renames the old tables to timestamped backups, promotes the UTC shadow tables to `quotes` and `trades`, validates the promoted production tables, and then drops the stale backups when `--drop-stale-backups-after-swap` is provided. Use this flag for the large production dataset so stale server-local-date tables are not kept on disk.

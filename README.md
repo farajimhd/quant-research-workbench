@@ -170,25 +170,27 @@ commands are documented in each service or pipeline README. Secrets belong in
 environment variables or discovered local env files and must not be copied into
 runtime artifacts or committed.
 
-## Stale and Archive Candidates for Review
+## Repository Cleanup Status
 
-These are candidates, not approved deletions. “No runtime import found” means a
-repository-wide static reference scan did not find an import from code outside
-the candidate family; it does not prove that notebooks, workstation copies,
-external commands, checkpoints, or untracked runtime jobs no longer depend on
-it.
+The approved model/loader consolidation is complete in source:
 
-| Candidate | Evidence | Dependency/risk before removal | Recommended review action |
-|---|---|---|---|
-| `research/masked_event_model` | Superseded research family with many version directories; no production/service/pipeline imports were found. References outside the family are confined to old `temporal_event_model` experiments. | Historical notebooks, checkpoints, workstation launchers, and temporal-model comparison scripts may still use it. | Archive the whole family together with any dependent comparison experiments after checking workstation jobs and artifact manifests. |
-| `research/temporal_event_model` | Superseded by `packed_market_model`. Its remaining shared-module references are from the old chronological cache/loader chain, not from packed training. | Temporal v3 is imported by temporal-specific `research/mlops/rolling_loader` build/profile tools and old masked-model experiments. Those consumers should be archived with the model rather than treated as a reason to retain it. | Migrate the two packed-used helper seams described below, validate the packed run chain, check external workstation jobs/artifacts, and then archive temporal v3 with its chronological loader consumers. |
-| Chronological loader legacy inside `research/mlops/rolling_loader` | Packed training, ticker-stream profiling, and model profiling use `research/mlops/packed_market`, not the chronological loader. Most daily-index datasets, offline-cache builders, Rust chronological-loader code, and associated profilers serve temporal v3 only. | `run_profile_full_modality_loader.py` still imports `month_window` from `daily_index_cache.py` and context query/bar-building functions from `daily_index_context.py`. This is architectural leakage from a superseded loader package, not evidence that packed training requires the old loader. | Move the packed-used month-window and context-query/bar helpers into `research/mlops/packed_market` or a genuinely generic MLOps module, update the profiler imports, and archive the remaining chronological loader package after validation. |
-| Legacy candidates inside `research/mlops/data` | The packed full-modality profiler currently uses `data.config.RollingMarketDataConfig`; the imported rolling-cache helper also reaches constants in `data.contracts`. No repository consumers outside `research/mlops/data` were found for the other data-provider modules. | Standalone commands, workstation runtime copies, or external jobs are not visible to the static repository scan. Removing the whole package now would also break the two packed-used types. | After migrating the packed helper seam, keep or relocate only the configuration/contracts still required by packed code and review the remaining modules as a separate archive set. |
-| Generic and operational `research/mlops` utilities | ClickHouse, environment, manifest, path, checkpoint, metric, model-artifact, W&B, compact-event, and related helpers are used by packed training and/or operational services and pipelines. | Broadly archiving `mlops` would break QMD-adjacent pipelines, news/SEC pipelines, reference gateway, news gateway, Market AI encoding, and active packed-model training. | Keep these shared utilities; perform consolidation at module/package granularity rather than archiving `research/mlops` as a whole. |
-| `services/market-ai/src/market_ai` prototype implementation | The service README and launchers explicitly state that production serving is disabled and the batching code is exploratory. | The service boundary itself is required by the target architecture, and its historical encoder imports `research.mlops.clickhouse_events`. | Keep the service shell/README; review prototype modules once the packed-model inference contract is defined. |
-| Disconnected frontend pages | `StrategyPage`, `ResearchRunsPage`, `MarketDataBuildPage`, `MarketDataReviewPage`, and the historical `LiveTradingPage` are not routed by the current `App.tsx`. | Strategy configuration, backtesting, data review, and simulation are explicit product requirements; deleting these pages would discard potentially reusable implementation. | Treat as an integration audit, not stale deletion. Compare each page/API with the target unified workspace and either reconnect, refactor, or replace it deliberately. |
-| `src/frontend` | The directory is empty while the active UI lives in top-level `frontend`. | None found in the tracked source inventory, but verify packaging scripts before deletion. | Safe-looking cleanup candidate after a final path/reference check. |
-| Generated and runtime artifacts in the working tree | Local directories such as `frontend/node_modules`, `frontend/dist`, `__pycache__`, `.pytest_cache`, `wandb`, `tmp`, logs, and backtest outputs are not application source. | Some may be ignored local state needed for development, but none should be documented or committed as product components. | Keep ignored locally as needed; remove only through a separate approved cleanup. |
+- `research/masked_event_model` and `research/temporal_event_model` were removed.
+- The temporal daily-index/offline-cache/Rust chronological loader under
+  `research/mlops/rolling_loader` was removed.
+- The unused experimental provider stack under `research/mlops/data` was
+  removed.
+- Packed-used month-window, multimodal context-query, and intraday bar helpers
+  now live in `research/mlops/packed_market/context.py`; the full-modality
+  profiler no longer imports a superseded loader abstraction.
+- The empty `src/frontend` placeholder was removed. The active UI remains in
+  top-level `frontend`.
+- Obsolete workstation commands pointing through a `masked_event_model\v4`
+  code root were updated to `quant_research_workbench_pipelines`.
+
+Historical checkpoints, experiment outputs, and workstation runtime directories
+were retained outside the repository as provenance. They are not current source
+authorities and should be removed only under an explicit artifact-retention
+decision.
 
 ### Components that should not be classified as stale
 
@@ -205,25 +207,10 @@ it.
 
 ## Review Decisions Still Needed
 
-1. Migrate `month_window` plus the packed-used context query/bar-building
-   functions out of `research/mlops/rolling_loader` into
-   `research/mlops/packed_market` or a genuinely generic MLOps module. Update
-   `run_profile_full_modality_loader.py` to use the new authority.
-2. Validate packed training, ticker-stream profiling, full-modality profiling,
-   and model profiling after the migration.
-3. Check workstation runtime launchers, scheduled/manual commands, checkpoints,
-   and artifact manifests for external dependencies that static repository
-   imports cannot reveal.
-4. Archive `temporal_event_model` together with its temporal-specific daily-index,
-   offline-cache, and Rust chronological-loader consumers. Archive
-   `masked_event_model` and dependent comparison experiments in the approved
-   boundary.
-5. Separately review `research/mlops/data`, retaining or relocating only the
-   configuration/contracts required by the packed path after migration.
-6. Decide which disconnected UI pages should be reconnected versus replaced by
+1. Decide which disconnected UI pages should be reconnected versus replaced by
    the unified trading workspace.
-7. Define the packed-model prediction schema and live cache contract before
+2. Define the packed-model prediction schema and live cache contract before
    implementing the production `market-ai` service.
-8. Confirm the deployed ClickHouse retention and views for `q_live.events_YYYY`
+3. Confirm the deployed ClickHouse retention and views for `q_live.events_YYYY`
    and `market_sip_compact.events_YYYY` with live schema/row checks.
-9. Define the cross-text scope and final service name for News Intelligence.
+4. Define the cross-text scope and final service name for News Intelligence.

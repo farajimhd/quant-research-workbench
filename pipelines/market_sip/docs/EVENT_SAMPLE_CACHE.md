@@ -531,7 +531,7 @@ v4 training supports:
 Example:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\run_train.py --sample-cache-root D:\market-data\prepared\event_sample_cache\cache_YYYYMMDD_HHMMSS --epochs 2 --batch-size 4096
+python D:\TradingML\codes\quant_research_workbench_pipelines\run_train.py --sample-cache-root D:\market-data\prepared\event_sample_cache\cache_YYYYMMDD_HHMMSS --epochs 2 --batch-size 4096
 ```
 
 Changing `--batch-size` does not require rebuilding the cache.

@@ -18,8 +18,8 @@ pipelines/
   reference_data/           # symbol/listing/conid/fundamental reference material
 
 research/
-  mlops/                    # shared utilities only
-  masked_event_model/vN/    # model-specific experiments and launchers
+  mlops/                    # shared utilities and packed-market loader support
+  packed_market_model/v1/   # active causal market model and launchers
 
 docs/
   architecture/
@@ -57,14 +57,18 @@ The market SIP operational move is implemented under `pipelines/market_sip/`.
 The temporary `research/mlops` market-SIP wrappers have been removed; runbooks
 and workstation commands should use the pipeline paths directly.
 
+The superseded `masked_event_model`, `temporal_event_model`, chronological
+daily-index/Rust loader, and unused `research/mlops/data` provider stack were
+removed after the packed model's context queries and month-window helper moved
+to `research/mlops/packed_market/context.py`. Historical experiment artifacts
+may remain outside the repository, but they are not active source authorities.
+
 ## Compatibility Rule
 
-Do not break active workstation commands in one large move. Use a two-stage migration:
-
-1. Move the real implementation to the target folder.
-2. Leave a temporary wrapper at the old `research/mlops/...` path that imports or executes the new module.
-
-After active historical SEC/news loads are complete and workstation runtime guides are updated, remove wrappers in a dedicated cleanup commit. This has been done for SEC, Benzinga, and market SIP wrappers; they are archived or removed, not active command paths.
+Active commands must use the current source authority directly. Temporary
+wrappers are acceptable only during a bounded migration and must be removed
+after consumers and workstation runbooks have moved. SEC, Benzinga, market SIP,
+and packed-model loader migrations now use their final paths.
 
 ## Active Scripts To Keep Working During Migration
 
