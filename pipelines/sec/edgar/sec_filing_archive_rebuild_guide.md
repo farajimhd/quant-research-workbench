@@ -34,7 +34,7 @@ Direct focused run:
 python pipelines\sec\edgar\sec_filing_archive_rebuild.py `
   --start-date 2019-01-01 `
   --end-date 2026-07-12 `
-  --workers 15 `
+  --workers 32 `
   --execute
 ```
 

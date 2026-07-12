@@ -31,6 +31,13 @@ class SecFilingArchiveRebuildTests(unittest.TestCase):
         else:
             self.assertEqual(count, 96)
 
+    def test_archive_rebuild_default_is_32_workers(self) -> None:
+        argv = ["sec_filing_archive_rebuild.py", "--start-date", "2026-07-01", "--end-date", "2026-07-02"]
+        with mock.patch.dict(rebuild.os.environ, {}, clear=True), mock.patch.object(rebuild.sys, "argv", argv):
+            args = rebuild.parse_args()
+
+        self.assertEqual(args.workers, 32)
+
     def test_gzip_parts_use_explicit_clickhouse_compression(self) -> None:
         part = ingest.PartFile(
             run_id="run",

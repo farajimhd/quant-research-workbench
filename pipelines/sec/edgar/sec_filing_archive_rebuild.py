@@ -62,7 +62,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--parts-root-ch", default=os.environ.get("SEC_TEXT_PARTS_ROOT_CH", DEFAULT_PARTS_ROOT_CH))
     parser.add_argument("--start-date", required=True, help="Inclusive archive date, YYYY-MM-DD.")
     parser.add_argument("--end-date", required=True, help="Exclusive archive date, YYYY-MM-DD.")
-    parser.add_argument("--workers", type=int, default=int(os.environ.get("SEC_ARCHIVE_REBUILD_WORKERS", "15")))
+    parser.add_argument("--workers", type=int, default=int(os.environ.get("SEC_ARCHIVE_REBUILD_WORKERS", "32")))
     parser.add_argument("--insert-max-threads", type=int, default=int(os.environ.get("SEC_ARCHIVE_INSERT_MAX_THREADS", "4")))
     parser.add_argument("--insert-max-memory-usage", default=os.environ.get("SEC_ARCHIVE_INSERT_MAX_MEMORY", "16G"))
     parser.add_argument("--part-manifest-table", default=os.environ.get("SEC_TEXT_FILE_INGEST_MANIFEST_TABLE", file_ingest.DEFAULT_PART_MANIFEST_TABLE))

@@ -20,7 +20,7 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 
 The default rebuild window is `2019-01-01` through tomorrow UTC as an exclusive
 end date. All v3 table names, workstation `D:/market-data` output roots,
-`sec_core` mirror roots, rich progress, 15 bounded archive worker lanes, and
+`sec_core` mirror roots, rich progress, 32 bounded archive worker lanes, and
 resume-from-coverage are defaults. Override `--start-date` or `--end-date` only
 when intentionally running a smaller range.
 

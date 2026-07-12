@@ -296,7 +296,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bulk-limit-ciks", type=int, default=0)
     parser.add_argument("--archive-download-concurrency", type=int, default=3)
     parser.add_argument("--archive-validation-workers", type=int, default=32)
-    parser.add_argument("--text-extract-workers", type=int, default=int(os.environ.get("SEC_ARCHIVE_REBUILD_WORKERS", "15")))
+    parser.add_argument("--text-extract-workers", type=int, default=int(os.environ.get("SEC_ARCHIVE_REBUILD_WORKERS", "32")))
     parser.add_argument("--xbrl-workers", type=int, default=8)
     parser.add_argument("--sec-request-min-interval-seconds", type=float, default=0.12)
     parser.add_argument("--request-timeout-seconds", type=float, default=30.0)
