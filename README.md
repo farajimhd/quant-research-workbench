@@ -205,12 +205,37 @@ decision.
   analysis role aligns with the app description. It needs scope/name review,
   not automatic deletion.
 
-## Review Decisions Still Needed
+## Remaining Tasks to Reach the Final Working Version
 
-1. Decide which disconnected UI pages should be reconnected versus replaced by
-   the unified trading workspace.
-2. Define the packed-model prediction schema and live cache contract before
-   implementing the production `market-ai` service.
-3. Confirm the deployed ClickHouse retention and views for `q_live.events_YYYY`
-   and `market_sip_compact.events_YYYY` with live schema/row checks.
-4. Define the cross-text scope and final service name for News Intelligence.
+The main foundations exist, but the following product-level outcomes are still
+required before the workbench is a complete end-to-end application:
+
+1. **Complete and certify the authoritative data foundation.** Finish the SEC
+   v3 cutover, align its point-in-time market identity links, regenerate derived
+   text products, and audit coverage and integrity before dependent services use
+   the new data.
+2. **Implement one live and historical market-data path.** Put QMD recent data
+   and historical SIP data behind the same ordered, deduplicated contract used
+   by charts, scanners, replay, backtests, and model consumers.
+3. **Finish causal model selection and production forecast serving.** Complete
+   the intended packed-model inputs and validation, approve a checkpoint and
+   prediction contract, and implement the currently disabled `market-ai`
+   service for replay and live forecasts.
+4. **Select strategies and build a shared trading runtime.** Promote strategies
+   only after evidence-based evaluation, and reuse the same scanning, risk,
+   entry, position-management, exit, re-entry, and account-routing logic across
+   backtest, simulation, assisted, and automatic trading.
+5. **Complete the brokerage execution lifecycle.** Connect the live UI to
+   broker preview and submission, handle confirmations, changes, cancellation,
+   fills, and reconciliation, and validate safe paper and live multi-account
+   routing through the IBKR supervisor.
+6. **Unify the operator workflow.** Reconnect, merge, or deliberately replace
+   the disconnected simulation, strategy, backtest, market-data, and research
+   pages so operators can move from research to deployment in one workspace.
+7. **Finalize text intelligence.** Decide the scope and final service boundary
+   for news and SEC intelligence, then integrate versioned outputs with the
+   canonical stores, live streams, model inputs, and operator UI.
+8. **Pass full-system release validation.** Prove replay/live parity, paper
+   execution, service restart and recovery, stale-data behavior, risk controls,
+   performance, and operational recovery before enabling unattended or live
+   automatic trading.
