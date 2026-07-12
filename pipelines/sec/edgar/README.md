@@ -20,7 +20,7 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 
 The default rebuild window is `2019-01-01` through tomorrow UTC as an exclusive
 end date. All v3 table names, workstation `D:/market-data` output roots,
-`sec_core` mirror roots, rich progress, 96 text workers, 96 ingest threads, and
+`sec_core` mirror roots, rich progress, 15 bounded archive worker lanes, and
 resume-from-coverage are defaults. Override `--start-date` or `--end-date` only
 when intentionally running a smaller range.
 
@@ -36,6 +36,14 @@ validates them, extracts normalized filing/document/text rows, inserts them,
 runs API fallback for missing recent XBRL, repairs XBRL relationships, rebuilds
 `id_sec_market_bridge_v3`, builds SEC context tables in `market_sip_compact`,
 audits the result, and writes coverage rows.
+
+Archive text rebuild is transactional per daily `.nc.tar.gz`: each fixed worker
+lane extracts and renders one archive into gzip-compressed temporary parts,
+preflights and inserts those parts, records archive-level completion, and then
+deletes the temporary parts. Original daily archives remain the durable source.
+Interrupted runs reuse archive completion rows and any prior fully extracted
+parts that can be proven complete from their state journal or legacy successful
+extract log. Partial files are never treated as complete input.
 
 Focused text repair after parser/storage bugs:
 

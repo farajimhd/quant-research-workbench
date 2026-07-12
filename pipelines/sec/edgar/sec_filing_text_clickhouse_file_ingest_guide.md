@@ -1,6 +1,8 @@
 # SEC Filing Text ClickHouse File Ingest Guide
 
-This script loads the extractor part files into ClickHouse through the server-side `file()` table function.
+This script loads extractor part files into ClickHouse through the server-side
+`file()` table function. It accepts legacy `.jsonl` and gzip-compressed
+`.jsonl.gz` parts.
 
 Targets:
 
@@ -13,6 +15,11 @@ Targets:
 
 The daily archive files stay on disk. The database receives document metadata,
 submitted text-source rows, rendered/normalized text rows, and skip records only.
+
+The preferred historical path is `sec_filing_archive_rebuild.py`, which invokes
+the same preflight/insert manifest contract per archive and removes temporary
+parts only after successful verification. Use this standalone loader for smoke,
+repair, and legacy manifest workflows.
 
 ## Smoke Preflight
 

@@ -291,7 +291,7 @@ def preflight_parts(client: ClickHouseHttpClient, args: argparse.Namespace, part
     print("preflight=start", flush=True)
     total = len(parts)
     for index, part in enumerate(parts, start=1):
-        sql = f"SELECT count() FROM file({sql_string(part.clickhouse_path)}, 'JSONEachRow', {sql_string(part.structure)})"
+        sql = f"SELECT count() FROM {file_table_function(part)}"
         try:
             actual_rows = int((client.execute(sql + settings_sql(args)).strip() or "0").splitlines()[0])
         except Exception as exc:  # noqa: BLE001
@@ -415,8 +415,19 @@ def insert_sql(args: argparse.Namespace, part: PartFile) -> str:
     return (
         f"INSERT INTO {quote_ident(args.database)}.{quote_ident(part.target_table)} ({columns})\n"
         f"SELECT {select_columns}\n"
-        f"FROM file({sql_string(part.clickhouse_path)}, 'JSONEachRow', {sql_string(part.structure)})"
+        f"FROM {file_table_function(part)}"
     )
+
+
+def file_table_function(part: PartFile) -> str:
+    arguments = [
+        sql_string(part.clickhouse_path),
+        sql_string("JSONEachRow"),
+        sql_string(part.structure),
+    ]
+    if part.windows_path.name.lower().endswith(".gz"):
+        arguments.append(sql_string("gzip"))
+    return f"file({', '.join(arguments)})"
 
 
 def insert_part_manifest(client: ClickHouseHttpClient, args: argparse.Namespace, part: PartFile, profile: InsertProfile) -> None:

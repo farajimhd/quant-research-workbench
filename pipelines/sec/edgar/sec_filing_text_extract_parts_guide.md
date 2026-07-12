@@ -35,18 +35,21 @@ errors=0
 
 Parent-missing filings are not dropped. They are written as `sec_filing_v3` parent parts first, then document/text/skip rows are written against those generated parents.
 
-## Full Historical Extract
+## Full Historical Rebuild
 
-Run this after the smoke output looks reasonable.
+Do not use this standalone extractor to stage the full archive history. Full
+source text can require several terabytes as uncompressed JSONL. Use the bounded
+archive rebuild, which compresses, inserts, verifies, and deletes temporary
+parts one archive at a time:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_filing_text_extract_parts.py --archive-root-win D:/market-data/sec_core/daily_archives --output-root-win D:/market-data/prepared/sec_filing_text_parts --start-date 2019-01-01 --end-date 2026-06-17 --archive-workers 4 --pending-multiplier 2 --sample-limit 1000 --progress-every 1
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_filing_archive_rebuild.py --start-date 2019-01-01 --end-date 2026-07-12 --execute
 ```
 
-Conservative first full run:
+The unified historical fill invokes this path automatically:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_filing_text_extract_parts.py --archive-root-win D:/market-data/sec_core/daily_archives --output-root-win D:/market-data/prepared/sec_filing_text_parts --start-date 2019-01-01 --end-date 2026-06-17 --archive-workers 2 --pending-multiplier 1 --sample-limit 1000 --progress-every 1
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_gap_fill.py --execute
 ```
 
 ## Important Arguments
@@ -58,6 +61,7 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 - `--min-text-chars`: text shorter than this is skipped as low signal.
 - `--max-text-chars`: optional storage cap for emergency/debug runs. The default `0` means unlimited; do not cap final extraction.
 - `--parent-window-days-before`, `--parent-window-days-after`: accepted timestamp lookup window around each archive date.
+- `--compress-parts`: writes `.jsonl.gz` parts; the bounded historical rebuild enables it by default.
 
 ## Output
 

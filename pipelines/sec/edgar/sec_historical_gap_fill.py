@@ -72,6 +72,8 @@ class HistoricalFillProgress:
         self.current_stage = ""
         self.current_command = ""
         self.output_tail: list[str] = []
+        self.archive_worker_states: dict[int, dict[str, object]] = {}
+        self.archive_overall: dict[str, object] = {}
         self._live = None
         self._render = None
 
@@ -104,9 +106,56 @@ class HistoricalFillProgress:
                     f"{elapsed:.1f}s" if elapsed is not None else "-",
                     str(command.log_path),
                 )
+            archive_table = None
+            if self.current_stage == "archive-text-rebuild" and self.archive_worker_states:
+                archive_table = Table(title="Archive Worker Lanes", expand=True)
+                archive_table.add_column("Lane", justify="right", width=5)
+                archive_table.add_column("Archive", width=22)
+                archive_table.add_column("Extract", justify="right", width=9)
+                archive_table.add_column("Preflight", justify="right", width=10)
+                archive_table.add_column("Insert", justify="right", width=9)
+                archive_table.add_column("Verify", justify="right", width=9)
+                archive_table.add_column("Cleanup", justify="right", width=9)
+                archive_table.add_column("Progress", width=24)
+                archive_table.add_column("Rows", justify="right", width=10)
+                archive_table.add_column("Temp", justify="right", width=9)
+                archive_table.add_column("Status", width=10)
+                for lane in sorted(self.archive_worker_states):
+                    state = self.archive_worker_states[lane]
+                    durations = state.get("durations") if isinstance(state.get("durations"), dict) else {}
+                    stage = str(state.get("stage") or "")
+                    position = int(state.get("position") or 0)
+                    total = int(state.get("total") or 0)
+                    archive_table.add_row(
+                        str(lane),
+                        str(state.get("archive") or "-"),
+                        archive_stage_cell("extract", stage, durations),
+                        archive_stage_cell("preflight", stage, durations),
+                        archive_stage_cell("insert", stage, durations),
+                        archive_stage_cell("verify", stage, durations),
+                        archive_stage_cell("cleanup", stage, durations),
+                        archive_progress_bar(position, total),
+                        f"{int(state.get('rows') or 0):,}",
+                        format_bytes(int(state.get("temp_bytes") or 0)),
+                        str(state.get("status") or "pending"),
+                    )
             tail_text = Text("\n".join(self.output_tail[-18:]) or "No stage output yet.", no_wrap=False)
             current = Text(f"run_root={self.run_root}\ncurrent_stage={self.current_stage or '-'}\ncommand={self.current_command or '-'}", no_wrap=False)
-            return Group(table, Panel(current, title="Current"), Panel(tail_text, title="Recent Output"))
+            sections = [table, Panel(current, title="Current")]
+            if archive_table is not None:
+                overall_total = int(self.archive_overall.get("total") or 0)
+                already = int(self.archive_overall.get("already_completed") or 0)
+                lane_completed = sum(
+                    int(state.get("position") or 0)
+                    if str(state.get("stage") or "") == "done"
+                    else max(0, int(state.get("position") or 0) - 1)
+                    for state in self.archive_worker_states.values()
+                )
+                sections.append(Panel(archive_progress_bar(already + lane_completed, overall_total), title="Overall Archive Progress"))
+                sections.append(archive_table)
+            else:
+                sections.append(Panel(tail_text, title="Recent Output"))
+            return Group(*sections)
 
         self._render = render
         self._live = Live(render(), refresh_per_second=4, screen=True)
@@ -126,6 +175,23 @@ class HistoricalFillProgress:
 
     def log_line(self, line: str) -> None:
         clean = line.rstrip()
+        if clean.startswith("SEC_ARCHIVE_EVENT="):
+            try:
+                payload = json.loads(clean.removeprefix("SEC_ARCHIVE_EVENT="))
+            except json.JSONDecodeError:
+                payload = {}
+            if payload.get("kind") == "init":
+                self.archive_overall = payload
+                for item in payload.get("lanes") or []:
+                    lane = int(item.get("lane") or 0)
+                    if lane:
+                        self.archive_worker_states[lane] = {"lane": lane, "total": int(item.get("total") or 0), "status": "pending"}
+            elif payload.get("kind") == "lane":
+                lane = int(payload.get("lane") or 0)
+                if lane:
+                    self.archive_worker_states[lane] = payload
+            self.refresh()
+            return
         if clean:
             self.output_tail.append(clean)
             self.output_tail = self.output_tail[-50:]
@@ -144,6 +210,35 @@ class HistoricalFillProgress:
     def refresh(self) -> None:
         if self.enabled and self._live is not None and self._render is not None:
             self._live.update(self._render())
+
+
+def archive_stage_cell(name: str, active_stage: str, durations: dict[str, object]) -> str:
+    if name in durations:
+        return f"{float(durations[name]):.1f}s"
+    order = {"extract": 0, "preflight": 1, "insert": 2, "verify": 3, "cleanup": 4, "done": 5, "failed": -1}
+    if active_stage == name:
+        return "active"
+    if order.get(active_stage, -1) > order[name]:
+        return "done"
+    return "-"
+
+
+def archive_progress_bar(completed: int, total: int, width: int = 12) -> str:
+    total = max(0, int(total))
+    completed = max(0, min(int(completed), total)) if total else 0
+    filled = int(round(width * completed / total)) if total else 0
+    return f"[{'#' * filled}{'-' * (width - filled)}] {completed:,}/{total:,}"
+
+
+def format_bytes(value: int) -> str:
+    value = max(0, int(value))
+    if value >= 1024**3:
+        return f"{value / 1024**3:.1f}G"
+    if value >= 1024**2:
+        return f"{value / 1024**2:.1f}M"
+    if value >= 1024:
+        return f"{value / 1024:.1f}K"
+    return f"{value}B"
 
 
 def parse_args() -> argparse.Namespace:
@@ -201,7 +296,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bulk-limit-ciks", type=int, default=0)
     parser.add_argument("--archive-download-concurrency", type=int, default=3)
     parser.add_argument("--archive-validation-workers", type=int, default=32)
-    parser.add_argument("--text-extract-workers", type=int, default=96)
+    parser.add_argument("--text-extract-workers", type=int, default=int(os.environ.get("SEC_ARCHIVE_REBUILD_WORKERS", "15")))
     parser.add_argument("--xbrl-workers", type=int, default=8)
     parser.add_argument("--sec-request-min-interval-seconds", type=float, default=0.12)
     parser.add_argument("--request-timeout-seconds", type=float, default=30.0)
@@ -215,6 +310,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--text-limit-parts", type=int, default=0)
     parser.add_argument("--text-ingest-max-threads", type=int, default=int(os.environ.get("SEC_TEXT_FILE_INGEST_MAX_THREADS", "96")))
     parser.add_argument("--text-ingest-max-memory-usage", default=os.environ.get("SEC_TEXT_FILE_INGEST_MAX_MEMORY", "64G"))
+    parser.add_argument("--text-worker-insert-max-threads", type=int, default=int(os.environ.get("SEC_ARCHIVE_INSERT_MAX_THREADS", "4")))
+    parser.add_argument("--text-worker-insert-max-memory-usage", default=os.environ.get("SEC_ARCHIVE_INSERT_MAX_MEMORY", "16G"))
+    parser.add_argument("--text-archive-manifest-table", default=env_string("SEC_ARCHIVE_INGEST_MANIFEST_TABLE", "sec_filing_archive_ingest_manifest_v3"))
     parser.add_argument("--limit-days", type=int, default=0)
     parser.add_argument("--limit-archives", type=int, default=0)
     parser.add_argument("--max-filings-per-archive", type=int, default=0)
@@ -325,26 +423,7 @@ def main() -> None:
 
 def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageCommand]:
     archive_root = str(Path(args.artifact_root_win) / "daily_archives")
-    text_manifest = f"<latest-text-manifest:{args.text_parts_output_root_win}>"
     context_end_date = (parse_date(args.end_date) - timedelta(days=1)).isoformat()
-    text_ingest_execute = [
-        args.python_executable,
-        script("pipelines/sec/edgar/sec_filing_text_clickhouse_file_ingest.py"),
-        "--manifest-json",
-        text_manifest,
-        "--database",
-        args.write_database,
-        "--parts-root-win",
-        args.parts_root_win,
-        "--parts-root-ch",
-        args.parts_root_ch,
-        "--max-threads",
-        str(max(1, args.text_ingest_max_threads)),
-        "--max-memory-usage",
-        str(args.text_ingest_max_memory_usage),
-    ]
-    if args.execute:
-        text_ingest_execute.extend(["--execute", "--skip-preflight"])
     return [
         StageCommand(
             "bulk-download",
@@ -507,11 +586,11 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
             (stage_coverage_kind("validate-downloaded"),),
         ),
         StageCommand(
-            "text-extract",
+            "archive-text-rebuild",
             add_execute_flag(
                 [
                     args.python_executable,
-                    script("pipelines/sec/edgar/sec_filing_text_extract_parts.py"),
+                    script("pipelines/sec/edgar/sec_filing_archive_rebuild.py"),
                     "--database",
                     args.write_database,
                     "--archive-root-win",
@@ -522,61 +601,39 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                     args.start_date,
                     "--end-date",
                     args.end_date,
-                    "--archive-workers",
+                    "--workers",
                     str(max(1, args.text_extract_workers)),
-                    "--pending-multiplier",
-                    str(max(1, args.pending_multiplier)),
-                    "--sample-limit",
-                    str(max(0, args.sample_limit)),
+                    "--sample-limit-per-archive",
+                    "1" if args.sample_limit else "0",
                     "--sample-text-chars",
                     str(max(0, args.sample_text_chars)),
                     "--min-text-chars",
                     str(max(0, args.min_text_chars)),
                     "--max-text-chars",
                     str(max(0, args.max_text_chars)),
-                    "--progress-every",
-                    "1",
+                    "--parts-root-win",
+                    args.parts_root_win,
+                    "--parts-root-ch",
+                    args.parts_root_ch,
+                    "--historical-output-root-win",
+                    args.output_root_win,
+                    "--insert-max-threads",
+                    str(max(1, args.text_worker_insert_max_threads)),
+                    "--insert-max-memory-usage",
+                    str(args.text_worker_insert_max_memory_usage),
+                    "--archive-manifest-table",
+                    args.text_archive_manifest_table,
+                    "--compress-parts",
+                    "--cleanup-parts",
+                    "--recover-incomplete-runs",
+                    "--progress-layout",
+                    "events",
                 ],
                 args,
-                dry_run_flag="--dry-run",
             ),
-            logs_root / "text-extract.log",
-            False,
-            (stage_coverage_kind("text-extract"),),
-        ),
-        StageCommand(
-            "text-ingest-preflight",
-            [
-                args.python_executable,
-                script("pipelines/sec/edgar/sec_filing_text_clickhouse_file_ingest.py"),
-                "--manifest-json",
-                text_manifest,
-                "--database",
-                args.write_database,
-                "--parts-root-win",
-                args.parts_root_win,
-                "--parts-root-ch",
-                args.parts_root_ch,
-                "--max-threads",
-                str(max(1, args.text_ingest_max_threads)),
-                "--max-memory-usage",
-                str(args.text_ingest_max_memory_usage),
-                "--preflight-only",
-            ],
-            logs_root / "text-ingest-preflight.log",
-            False,
-            (stage_coverage_kind("text-ingest-preflight"),),
-            start_date=args.start_date,
-            end_date=args.end_date,
-        ),
-        StageCommand(
-            "text-ingest-execute",
-            text_ingest_execute,
-            logs_root / "text-ingest-execute.log",
+            logs_root / "archive-text-rebuild.log",
             True,
-            (stage_coverage_kind("text-ingest-execute"),),
-            start_date=args.start_date,
-            end_date=args.end_date,
+            (stage_coverage_kind("archive-text-rebuild"),),
         ),
         StageCommand(
             "xbrl-companyfacts-catchup",
@@ -736,7 +793,7 @@ def add_execute_flag(command: list[str], args: argparse.Namespace, *, dry_run_fl
             out.append("--allow-g-drive")
         if args.limit_days:
             out.extend(["--limit-days", str(args.limit_days)])
-    if "sec_filing_text_extract_parts.py" in command_text:
+    if "sec_filing_text_extract_parts.py" in command_text or "sec_filing_archive_rebuild.py" in command_text:
         if args.limit_archives:
             out.extend(["--limit-archives", str(args.limit_archives)])
         if args.max_filings_per_archive:
@@ -749,6 +806,7 @@ def add_execute_flag(command: list[str], args: argparse.Namespace, *, dry_run_fl
             or "sec_xbrl_companyfacts_catchup.py" in command_text
             or "sec_xbrl_integrity_repair.py" in command_text
             or "step_06_build_q_live_bridge_features.py" in command_text
+            or "sec_filing_archive_rebuild.py" in command_text
         ):
             out.append("--execute")
     elif dry_run_flag:

@@ -1,0 +1,807 @@
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import hashlib
+import json
+import os
+import queue
+import re
+import sys
+import time
+from datetime import UTC, date, datetime
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from pipelines.sec.edgar import sec_filing_text_clickhouse_file_ingest as file_ingest  # noqa: E402
+from pipelines.sec.edgar import sec_filing_text_extract_parts as extractor  # noqa: E402
+from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_string  # noqa: E402
+from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
+
+
+DEFAULT_ARCHIVE_ROOT_WIN = Path("D:/market-data/sec_core/daily_archives")
+DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_filing_text_parts")
+DEFAULT_HISTORICAL_ROOT_WIN = Path("D:/market-data/prepared/sec_historical_gap_fill")
+DEFAULT_PARTS_ROOT_WIN = Path("D:/market-data")
+DEFAULT_PARTS_ROOT_CH = "/mnt/d/market-data"
+DEFAULT_DATABASE = "q_live"
+DEFAULT_ARCHIVE_MANIFEST_TABLE = "sec_filing_archive_ingest_manifest_v3"
+EVENT_PREFIX = "SEC_ARCHIVE_EVENT="
+DATASET_ORDER = ("filing", "document", "text_source", "text", "skip")
+PART_DIRECTORIES = {
+    "filing": "sec_filing_v3_parts",
+    "document": "sec_filing_document_v3_parts",
+    "text_source": "sec_filing_text_v3_parts",
+    "text": "sec_filing_text_rendered_v3_parts",
+    "skip": "sec_filing_document_skip_v3_parts",
+}
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Rebuild SEC archive-derived v3 rows with bounded staging. Each worker lane extracts, "
+            "renders, preflights, inserts, verifies, and removes one archive's temporary parts before "
+            "advancing to its next assigned archive."
+        )
+    )
+    parser.add_argument("--clickhouse-url", default=extractor.default_sec_clickhouse_url())
+    parser.add_argument("--user", default=extractor.default_sec_clickhouse_user())
+    parser.add_argument("--password", default=extractor.default_sec_clickhouse_password())
+    parser.add_argument("--database", default=os.environ.get("SEC_TEXT_TARGET_DATABASE", DEFAULT_DATABASE))
+    parser.add_argument("--archive-root-win", default=os.environ.get("SEC_DAILY_ARCHIVE_ROOT_WIN", str(DEFAULT_ARCHIVE_ROOT_WIN)))
+    parser.add_argument("--output-root-win", default=os.environ.get("SEC_TEXT_PARTS_OUTPUT_ROOT_WIN", str(DEFAULT_OUTPUT_ROOT_WIN)))
+    parser.add_argument("--historical-output-root-win", default=os.environ.get("SEC_HISTORICAL_GAP_FILL_OUTPUT_ROOT_WIN", str(DEFAULT_HISTORICAL_ROOT_WIN)))
+    parser.add_argument("--parts-root-win", default=os.environ.get("SEC_TEXT_PARTS_ROOT_WIN", str(DEFAULT_PARTS_ROOT_WIN)))
+    parser.add_argument("--parts-root-ch", default=os.environ.get("SEC_TEXT_PARTS_ROOT_CH", DEFAULT_PARTS_ROOT_CH))
+    parser.add_argument("--start-date", required=True, help="Inclusive archive date, YYYY-MM-DD.")
+    parser.add_argument("--end-date", required=True, help="Exclusive archive date, YYYY-MM-DD.")
+    parser.add_argument("--workers", type=int, default=int(os.environ.get("SEC_ARCHIVE_REBUILD_WORKERS", "15")))
+    parser.add_argument("--insert-max-threads", type=int, default=int(os.environ.get("SEC_ARCHIVE_INSERT_MAX_THREADS", "4")))
+    parser.add_argument("--insert-max-memory-usage", default=os.environ.get("SEC_ARCHIVE_INSERT_MAX_MEMORY", "16G"))
+    parser.add_argument("--part-manifest-table", default=os.environ.get("SEC_TEXT_FILE_INGEST_MANIFEST_TABLE", file_ingest.DEFAULT_PART_MANIFEST_TABLE))
+    parser.add_argument("--archive-manifest-table", default=os.environ.get("SEC_ARCHIVE_INGEST_MANIFEST_TABLE", DEFAULT_ARCHIVE_MANIFEST_TABLE))
+    parser.add_argument("--storage-policy", default=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY", os.environ.get("CLICKHOUSE_STORAGE_POLICY", "")))
+    parser.add_argument("--limit-archives", type=int, default=0)
+    parser.add_argument("--max-filings-per-archive", type=int, default=0)
+    parser.add_argument("--sample-limit-per-archive", type=int, default=1)
+    parser.add_argument("--sample-text-chars", type=int, default=2000)
+    parser.add_argument("--parent-window-days-before", type=int, default=1)
+    parser.add_argument("--parent-window-days-after", type=int, default=2)
+    parser.add_argument("--min-text-chars", type=int, default=40)
+    parser.add_argument("--max-text-chars", type=int, default=0)
+    parser.add_argument("--compress-parts", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--cleanup-parts", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--recover-incomplete-runs", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--progress-layout", choices=("events", "text"), default="events")
+    parser.add_argument("--execute", action="store_true")
+    return parser.parse_args()
+
+
+def main() -> None:
+    loaded_env = load_env_files(discover_env_files(REPO_ROOT), verbose=True)
+    args = parse_args()
+    validate_args(args)
+    run_stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    source_run_id = f"sec_archive_rebuild_{run_stamp}"
+    run_root = Path(args.output_root_win) / run_stamp
+    parts_root = run_root / "parts"
+    states_root = run_root / "archive_states"
+    run_root.mkdir(parents=True, exist_ok=True)
+    parts_root.mkdir(parents=True, exist_ok=True)
+    states_root.mkdir(parents=True, exist_ok=True)
+
+    archives = extractor.discover_archives(Path(args.archive_root_win), args.start_date, args.end_date)
+    if args.limit_archives:
+        archives = archives[: max(0, int(args.limit_archives))]
+    archive_by_date = {extractor.archive_date_from_name(path.name).isoformat(): path for path in archives}
+
+    print_header(args, run_root, archives, loaded_env)
+    if not args.execute:
+        write_json(
+            run_root / "sec_filing_archive_rebuild_plan.json",
+            {
+                "source_run_id": source_run_id,
+                "archives": len(archives),
+                "workers": bounded_worker_count(args.workers, len(archives)),
+                "start_date": args.start_date,
+                "end_date": args.end_date,
+                "dry_run": True,
+            },
+        )
+        print("dry_run=true; pass --execute to extract and insert archive rows", flush=True)
+        return
+
+    client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
+    ingest_args = ingest_namespace(args)
+    ensure_target_tables(client, args.database)
+    file_ingest.create_part_manifest_table(client, ingest_args)
+    create_archive_manifest_table(client, args)
+    completed_keys = load_completed_archive_keys(client, args)
+
+    recovery_tasks: list[dict[str, Any]] = []
+    if args.recover_incomplete_runs:
+        recovery_tasks = discover_recovery_tasks(args, archive_by_date, completed_keys, current_run_root=run_root)
+    recovered_dates = {task["archive_date"] for task in recovery_tasks}
+    new_tasks = [
+        new_archive_task(path, source_run_id, parts_root, states_root, index)
+        for index, path in enumerate(archives, start=1)
+        if archive_identity(path)["archive_key"] not in completed_keys
+        and extractor.archive_date_from_name(path.name).isoformat() not in recovered_dates
+    ]
+    tasks = [*recovery_tasks, *new_tasks]
+    already_completed = len(archives) - len(tasks)
+    if not tasks:
+        if args.cleanup_parts:
+            cleanup_obsolete_incomplete_parts(Path(args.output_root_win), run_root, archive_by_date)
+            cleanup_empty_part_directories(Path(args.output_root_win))
+        print(f"all_archives_completed={len(archives):,}; nothing to rebuild", flush=True)
+        write_run_summary(run_root, args, source_run_id, len(archives), already_completed, [], loaded_env)
+        return
+
+    lanes = partition_tasks(tasks, bounded_worker_count(args.workers, len(tasks)))
+    emit_event(
+        args.progress_layout,
+        {
+            "kind": "init",
+            "total": len(archives),
+            "already_completed": already_completed,
+            "recovery": len(recovery_tasks),
+            "lanes": [{"lane": index + 1, "total": len(items)} for index, items in enumerate(lanes)],
+        },
+    )
+    payloads = [lane_payload(args, source_run_id, run_root, lane_index + 1, lane) for lane_index, lane in enumerate(lanes)]
+    results = run_lanes(payloads, args.progress_layout)
+    failed = [item for result in results for item in result.get("archives", []) if item.get("status") != "ok"]
+    completed = sum(int(result.get("completed") or 0) for result in results)
+    write_run_summary(run_root, args, source_run_id, len(archives), already_completed + completed, results, loaded_env)
+    if not failed and args.cleanup_parts:
+        cleanup_obsolete_incomplete_parts(Path(args.output_root_win), run_root, archive_by_date)
+    cleanup_empty_part_directories(Path(args.output_root_win))
+    print(
+        f"archive_rebuild_done completed={already_completed + completed:,}/{len(archives):,} "
+        f"failed={len(failed):,} run_root={run_root}",
+        flush=True,
+    )
+    if failed:
+        raise SystemExit(1)
+
+
+def validate_args(args: argparse.Namespace) -> None:
+    extractor.validate_identifier(args.database, "--database")
+    extractor.validate_identifier(args.part_manifest_table, "--part-manifest-table")
+    extractor.validate_identifier(args.archive_manifest_table, "--archive-manifest-table")
+    extractor.validate_date(args.start_date, "--start-date")
+    extractor.validate_date(args.end_date, "--end-date")
+    if date.fromisoformat(args.start_date) >= date.fromisoformat(args.end_date):
+        raise SystemExit("--start-date must be earlier than --end-date")
+    if int(args.workers) < 1:
+        raise SystemExit("--workers must be positive")
+
+
+def bounded_worker_count(requested: int, task_count: int) -> int:
+    return max(1, min(int(requested), max(1, int(task_count)), 61 if os.name == "nt" else int(requested)))
+
+
+def partition_tasks(tasks: list[dict[str, Any]], workers: int) -> list[list[dict[str, Any]]]:
+    lanes = [[] for _ in range(max(1, min(int(workers), len(tasks))))]
+    for index, task in enumerate(tasks):
+        lanes[index % len(lanes)].append(task)
+    return lanes
+
+
+def new_archive_task(archive: Path, source_run_id: str, parts_root: Path, states_root: Path, index: int) -> dict[str, Any]:
+    identity = archive_identity(archive)
+    return {
+        "kind": "extract",
+        **identity,
+        "source_run_id": source_run_id,
+        "parts_root": str(parts_root),
+        "state_path": str(states_root / f"{identity['archive_date'].replace('-', '')}_{identity['archive_key'][:12]}.json"),
+        "archive_index": int(index),
+    }
+
+
+def archive_identity(archive: Path) -> dict[str, Any]:
+    stat = archive.stat()
+    normalized = str(archive.resolve()).replace("\\", "/").lower()
+    material = f"{normalized}|{stat.st_size}|{stat.st_mtime_ns}"
+    return {
+        "archive_key": hashlib.sha256(material.encode("utf-8")).hexdigest(),
+        "archive_date": extractor.archive_date_from_name(archive.name).isoformat(),
+        "archive_path": str(archive),
+        "archive_size": int(stat.st_size),
+        "archive_mtime_ns": int(stat.st_mtime_ns),
+    }
+
+
+def lane_payload(args: argparse.Namespace, source_run_id: str, run_root: Path, lane: int, tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "lane": lane,
+        "tasks": tasks,
+        "source_run_id": source_run_id,
+        "run_root": str(run_root),
+        "database": args.database,
+        "clickhouse_url": args.clickhouse_url,
+        "user": args.user,
+        "password": args.password,
+        "parts_root_win": args.parts_root_win,
+        "parts_root_ch": args.parts_root_ch,
+        "part_manifest_table": args.part_manifest_table,
+        "archive_manifest_table": args.archive_manifest_table,
+        "storage_policy": args.storage_policy,
+        "insert_max_threads": max(1, int(args.insert_max_threads)),
+        "insert_max_memory_usage": args.insert_max_memory_usage,
+        "max_filings_per_archive": max(0, int(args.max_filings_per_archive)),
+        "sample_limit_per_archive": max(0, int(args.sample_limit_per_archive)),
+        "sample_text_chars": max(0, int(args.sample_text_chars)),
+        "parent_window_days_before": max(0, int(args.parent_window_days_before)),
+        "parent_window_days_after": max(1, int(args.parent_window_days_after)),
+        "min_text_chars": max(0, int(args.min_text_chars)),
+        "max_text_chars": max(0, int(args.max_text_chars)),
+        "compress_parts": bool(args.compress_parts),
+        "cleanup_parts": bool(args.cleanup_parts),
+    }
+
+
+def run_lanes(payloads: list[dict[str, Any]], progress_layout: str) -> list[dict[str, Any]]:
+    import multiprocessing
+
+    results: list[dict[str, Any]] = []
+    with multiprocessing.Manager() as manager:
+        event_queue = manager.Queue()
+        for payload in payloads:
+            payload["event_queue"] = event_queue
+        with concurrent.futures.ProcessPoolExecutor(max_workers=len(payloads)) as pool:
+            futures = [pool.submit(process_lane, payload) for payload in payloads]
+            while futures:
+                try:
+                    event = event_queue.get(timeout=0.25)
+                    emit_event(progress_layout, event)
+                except queue.Empty:
+                    pass
+                done = [future for future in futures if future.done()]
+                for future in done:
+                    futures.remove(future)
+                    results.append(future.result())
+            while True:
+                try:
+                    emit_event(progress_layout, event_queue.get_nowait())
+                except queue.Empty:
+                    break
+    return results
+
+
+def process_lane(payload: dict[str, Any]) -> dict[str, Any]:
+    lane = int(payload["lane"])
+    tasks = list(payload["tasks"])
+    event_queue = payload["event_queue"]
+    client = ClickHouseHttpClient(payload["clickhouse_url"], payload["user"], payload["password"])
+    args = ingest_namespace(SimpleNamespace(**payload))
+    latest_part_status = file_ingest.load_latest_part_status(client, args)
+    archive_results: list[dict[str, Any]] = []
+    completed = 0
+    for position, task in enumerate(tasks, start=1):
+        archive_started = time.perf_counter()
+        stages: dict[str, float] = {}
+        part_paths: list[Path] = []
+        emit_lane(event_queue, lane, task, position, len(tasks), "extract", stages, status="running")
+        try:
+            if task["kind"] == "recovery":
+                result = recovery_result(task)
+                stages["extract"] = 0.0
+            else:
+                extraction_started = time.perf_counter()
+                result = extractor.process_archive_worker(extractor_payload(payload, task))
+                stages["extract"] = time.perf_counter() - extraction_started
+                if result.get("status") != "ok":
+                    cleanup_result_parts(result)
+                    raise RuntimeError(f"archive extraction failed: {result.get('errors')}")
+                write_json(Path(task["state_path"]), {"status": "extracted", "task": task, "result": result})
+            part_paths = [Path(item["path"]) for item in result.get("part_files", [])]
+            emit_lane(event_queue, lane, task, position, len(tasks), "preflight", stages, result=result)
+            parts, preflight_seconds = build_and_preflight_parts(client, args, task, result)
+            stages["preflight"] = preflight_seconds
+            emit_lane(event_queue, lane, task, position, len(tasks), "insert", stages, result=result)
+            insert_started = time.perf_counter()
+            for part in parts:
+                key = (part.run_id, part.dataset_name, part.part_index)
+                if latest_part_status.get(key) == "ok":
+                    continue
+                profile = file_ingest.insert_one_part(client, args, part)
+                file_ingest.insert_part_manifest(client, args, part, profile)
+                if profile.status != "ok":
+                    raise RuntimeError(profile.exception)
+                latest_part_status[key] = "ok"
+            stages["insert"] = time.perf_counter() - insert_started
+            emit_lane(event_queue, lane, task, position, len(tasks), "verify", stages, result=result)
+            verify_started = time.perf_counter()
+            verify_parts_inserted(parts, latest_part_status)
+            insert_archive_manifest(client, payload, task, result, status="ok", error="")
+            stages["verify"] = time.perf_counter() - verify_started
+            emit_lane(event_queue, lane, task, position, len(tasks), "cleanup", stages, result=result)
+            cleanup_started = time.perf_counter()
+            cleanup_error = ""
+            if payload["cleanup_parts"]:
+                try:
+                    delete_part_files(part_paths)
+                except OSError as exc:
+                    cleanup_error = repr(exc)
+            stages["cleanup"] = time.perf_counter() - cleanup_started
+            completed += 1
+            row = archive_result_row(task, result, stages, time.perf_counter() - archive_started, "ok", cleanup_error)
+            archive_results.append(row)
+            emit_lane(event_queue, lane, task, position, len(tasks), "done", stages, result=result, status="ok")
+        except Exception as exc:  # noqa: BLE001
+            error = repr(exc)
+            try:
+                insert_archive_manifest(client, payload, task, {}, status="failed", error=error)
+            except Exception:
+                pass
+            archive_results.append(archive_result_row(task, {}, stages, time.perf_counter() - archive_started, "failed", error))
+            emit_lane(event_queue, lane, task, position, len(tasks), "failed", stages, status="failed", error=error)
+    return {"lane": lane, "assigned": len(tasks), "completed": completed, "archives": archive_results}
+
+
+def extractor_payload(payload: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "archive_path": task["archive_path"],
+        "archive_index": task["archive_index"],
+        "parts_root": task["parts_root"],
+        "source_run_id": task["source_run_id"],
+        "database": payload["database"],
+        "clickhouse_url": payload["clickhouse_url"],
+        "user": payload["user"],
+        "password": payload["password"],
+        "max_filings_per_archive": payload["max_filings_per_archive"],
+        "sample_limit": payload["sample_limit_per_archive"],
+        "sample_text_chars": payload["sample_text_chars"],
+        "parent_window_days_before": payload["parent_window_days_before"],
+        "parent_window_days_after": payload["parent_window_days_after"],
+        "min_text_chars": payload["min_text_chars"],
+        "max_text_chars": payload["max_text_chars"],
+        "compress_parts": payload["compress_parts"],
+    }
+
+
+def ingest_namespace(args: Any) -> SimpleNamespace:
+    return SimpleNamespace(
+        database=args.database,
+        part_manifest_table=args.part_manifest_table,
+        storage_policy=getattr(args, "storage_policy", ""),
+        parts_root_win=getattr(args, "parts_root_win", str(DEFAULT_PARTS_ROOT_WIN)),
+        parts_root_ch=getattr(args, "parts_root_ch", DEFAULT_PARTS_ROOT_CH),
+        max_threads=max(1, int(getattr(args, "insert_max_threads", 4))),
+        max_memory_usage=str(getattr(args, "insert_max_memory_usage", "16G")),
+        execute=True,
+        force=False,
+        retry_failed=True,
+    )
+
+
+def build_and_preflight_parts(
+    client: ClickHouseHttpClient,
+    args: SimpleNamespace,
+    task: dict[str, Any],
+    result: dict[str, Any],
+) -> tuple[list[file_ingest.PartFile], float]:
+    started = time.perf_counter()
+    parts: list[file_ingest.PartFile] = []
+    part_index = int(task["archive_date"].replace("-", ""))
+    for item in sorted(result.get("part_files", []), key=lambda row: file_ingest.DATASET_ORDER.get(row["dataset_name"], 99)):
+        path = Path(item["path"])
+        expected_rows = int(item.get("rows") if item.get("rows") is not None else -1)
+        if expected_rows == 0:
+            continue
+        part = file_ingest.PartFile(
+            run_id=str(task["source_run_id"]),
+            dataset_name=str(item["dataset_name"]),
+            target_table=str(item["target_table"]),
+            part_index=part_index,
+            windows_path=path,
+            clickhouse_path=file_ingest.windows_path_to_clickhouse_path(path, Path(args.parts_root_win), args.parts_root_ch),
+            expected_rows=max(0, expected_rows),
+            expected_bytes=path.stat().st_size,
+            columns=list(item["columns"]),
+            structure=str(item["structure"]),
+        )
+        actual_rows = count_part_rows(client, args, part)
+        if expected_rows >= 0 and actual_rows != expected_rows:
+            raise RuntimeError(f"archive part row mismatch path={path} expected={expected_rows} actual={actual_rows}")
+        if expected_rows < 0:
+            item["rows"] = actual_rows
+            part = file_ingest.PartFile(
+                run_id=part.run_id,
+                dataset_name=part.dataset_name,
+                target_table=part.target_table,
+                part_index=part.part_index,
+                windows_path=part.windows_path,
+                clickhouse_path=part.clickhouse_path,
+                expected_rows=actual_rows,
+                expected_bytes=part.expected_bytes,
+                columns=part.columns,
+                structure=part.structure,
+            )
+        if actual_rows == 0:
+            continue
+        parts.append(part)
+    result["filing_parent_rows"] = rows_for(result.get("part_files", []), "filing")
+    result["document_rows"] = rows_for(result.get("part_files", []), "document")
+    result["text_source_rows"] = rows_for(result.get("part_files", []), "text_source")
+    result["text_rows"] = rows_for(result.get("part_files", []), "text")
+    result["skip_rows"] = rows_for(result.get("part_files", []), "skip")
+    return parts, time.perf_counter() - started
+
+
+def count_part_rows(client: ClickHouseHttpClient, args: SimpleNamespace, part: file_ingest.PartFile) -> int:
+    sql = f"SELECT count() FROM {file_ingest.file_table_function(part)}{file_ingest.settings_sql(args)}"
+    return int((client.execute(sql).strip() or "0").splitlines()[0])
+
+
+def verify_parts_inserted(parts: list[file_ingest.PartFile], statuses: dict[tuple[str, str, int], str]) -> None:
+    missing = [part.windows_path for part in parts if statuses.get((part.run_id, part.dataset_name, part.part_index)) != "ok"]
+    if missing:
+        raise RuntimeError(f"archive part manifest verification failed: {missing}")
+
+
+def recovery_result(task: dict[str, Any]) -> dict[str, Any]:
+    part_files = []
+    for dataset in DATASET_ORDER:
+        path = Path(task["part_paths"][dataset])
+        columns = columns_for_dataset(dataset)
+        part_files.append(
+            {
+                "dataset_name": dataset,
+                "target_table": file_ingest.EXPECTED_TARGET_TABLES[dataset],
+                "path": str(path),
+                "rows": -1,
+                "bytes": path.stat().st_size,
+                "columns": columns,
+                "structure": extractor.structure_for_columns(columns),
+            }
+        )
+    return {
+        "archive_date": task["archive_date"],
+        "archive_path": task["archive_path"],
+        "status": "ok",
+        "part_files": part_files,
+        "filing_parent_rows": rows_for(part_files, "filing"),
+        "document_rows": rows_for(part_files, "document"),
+        "text_source_rows": rows_for(part_files, "text_source"),
+        "text_rows": rows_for(part_files, "text"),
+        "skip_rows": rows_for(part_files, "skip"),
+        "samples": [],
+        "errors": [],
+    }
+
+
+def rows_for(parts: list[dict[str, Any]], dataset: str) -> int:
+    return max(0, next((int(item["rows"]) for item in parts if item["dataset_name"] == dataset), 0))
+
+
+def columns_for_dataset(dataset: str) -> list[str]:
+    return {
+        "filing": extractor.FILING_COLUMNS,
+        "document": extractor.DOCUMENT_COLUMNS,
+        "text_source": extractor.TEXT_SOURCE_COLUMNS,
+        "text": extractor.TEXT_COLUMNS,
+        "skip": extractor.SKIP_COLUMNS,
+    }[dataset]
+
+
+def discover_recovery_tasks(
+    args: argparse.Namespace,
+    archive_by_date: dict[str, Path],
+    completed_keys: set[str],
+    *,
+    current_run_root: Path,
+) -> list[dict[str, Any]]:
+    output_root = Path(args.output_root_win)
+    successful_dates_by_run = legacy_successful_dates(Path(args.historical_output_root_win))
+    tasks_by_date: dict[str, dict[str, Any]] = {}
+    for run_root in sorted((path for path in output_root.glob("*") if path.is_dir() and path != current_run_root), reverse=True):
+        source_run_id = f"sec_text_extract_{run_root.name}"
+        successful_dates = successful_dates_by_run.get(source_run_id, set())
+        for state_path in (run_root / "archive_states").glob("*.json") if (run_root / "archive_states").exists() else []:
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                task = dict(state["task"])
+                result = dict(state["result"])
+            except Exception:
+                continue
+            archive_date = str(task.get("archive_date") or "")
+            archive = archive_by_date.get(archive_date)
+            if not archive or archive_identity(archive)["archive_key"] in completed_keys:
+                continue
+            if all(Path(item["path"]).exists() for item in result.get("part_files", [])):
+                tasks_by_date.setdefault(archive_date, {**task, "kind": "recovery", "part_paths": {item["dataset_name"]: item["path"] for item in result["part_files"]}})
+        for archive_date in sorted(successful_dates):
+            archive = archive_by_date.get(archive_date)
+            if not archive or archive_date in tasks_by_date:
+                continue
+            identity = archive_identity(archive)
+            if identity["archive_key"] in completed_keys:
+                continue
+            part_paths = legacy_part_paths(run_root, archive_date)
+            if part_paths:
+                tasks_by_date[archive_date] = {
+                    "kind": "recovery",
+                    **identity,
+                    "source_run_id": source_run_id,
+                    "part_paths": {key: str(value) for key, value in part_paths.items()},
+                    "archive_index": int(archive_date.replace("-", "")),
+                }
+    return [tasks_by_date[key] for key in sorted(tasks_by_date)]
+
+
+def legacy_successful_dates(historical_root: Path) -> dict[str, set[str]]:
+    output: dict[str, set[str]] = {}
+    if not historical_root.exists():
+        return output
+    for log_path in historical_root.glob("*/logs/text-extract.log"):
+        try:
+            text = log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        match = re.search(r"source_run_id=(sec_text_extract_\d{8}_\d{6})", text)
+        if not match:
+            continue
+        dates = {
+            datetime.strptime(value, "%Y%m%d").date().isoformat()
+            for value in re.findall(r"last=(\d{8})\.nc\.tar\.gz status=ok", text)
+        }
+        output.setdefault(match.group(1), set()).update(dates)
+    return output
+
+
+def legacy_part_paths(run_root: Path, archive_date: str) -> dict[str, Path]:
+    date_key = archive_date.replace("-", "")
+    paths: dict[str, Path] = {}
+    for dataset, directory in PART_DIRECTORIES.items():
+        matches = sorted((run_root / "parts" / directory).glob(f"*_{date_key}_*.jsonl*"))
+        if len(matches) != 1:
+            return {}
+        paths[dataset] = matches[0]
+    return paths
+
+
+def create_archive_manifest_table(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
+    settings = file_ingest.merge_tree_settings(args.storage_policy)
+    client.execute(
+        f"""
+CREATE TABLE IF NOT EXISTS {quote_ident(args.database)}.{quote_ident(args.archive_manifest_table)}
+(
+    archive_key String,
+    archive_date Date,
+    archive_path String,
+    archive_size UInt64,
+    archive_mtime_ns UInt64,
+    source_run_id String,
+    status LowCardinality(String),
+    filing_rows UInt64,
+    document_rows UInt64,
+    text_source_rows UInt64,
+    rendered_text_rows UInt64,
+    skip_rows UInt64,
+    error String,
+    updated_at_utc DateTime64(9, 'UTC') DEFAULT now64(9, 'UTC')
+)
+ENGINE = ReplacingMergeTree(updated_at_utc)
+ORDER BY archive_key
+{settings}
+"""
+    )
+
+
+def load_completed_archive_keys(client: ClickHouseHttpClient, args: argparse.Namespace) -> set[str]:
+    text = client.execute(
+        f"""
+SELECT archive_key
+FROM {quote_ident(args.database)}.{quote_ident(args.archive_manifest_table)} FINAL
+WHERE status = 'ok'
+FORMAT TSV
+"""
+    )
+    return {line.strip() for line in text.splitlines() if line.strip()}
+
+
+def insert_archive_manifest(
+    client: ClickHouseHttpClient,
+    payload: dict[str, Any],
+    task: dict[str, Any],
+    result: dict[str, Any],
+    *,
+    status: str,
+    error: str,
+) -> None:
+    row = {
+        "archive_key": task["archive_key"],
+        "archive_date": task["archive_date"],
+        "archive_path": task["archive_path"],
+        "archive_size": int(task["archive_size"]),
+        "archive_mtime_ns": int(task["archive_mtime_ns"]),
+        "source_run_id": task["source_run_id"],
+        "status": status,
+        "filing_rows": int(result.get("filing_parent_rows") or 0),
+        "document_rows": int(result.get("document_rows") or 0),
+        "text_source_rows": int(result.get("text_source_rows") or 0),
+        "rendered_text_rows": int(result.get("text_rows") or 0),
+        "skip_rows": int(result.get("skip_rows") or 0),
+        "error": error,
+    }
+    client.execute(
+        f"INSERT INTO {quote_ident(payload['database'])}.{quote_ident(payload['archive_manifest_table'])} "
+        "SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n"
+        + json.dumps(row, ensure_ascii=False)
+    )
+
+
+def ensure_target_tables(client: ClickHouseHttpClient, database: str) -> None:
+    missing = []
+    for table in file_ingest.EXPECTED_TARGET_TABLES.values():
+        exists = int(
+            (client.execute(f"SELECT count() FROM system.tables WHERE database={sql_string(database)} AND name={sql_string(table)}").strip() or "0").splitlines()[0]
+        )
+        if exists != 1:
+            missing.append(table)
+    if missing:
+        raise RuntimeError(f"missing SEC v3 target tables in {database}: {missing}")
+
+
+def emit_lane(
+    event_queue: Any,
+    lane: int,
+    task: dict[str, Any],
+    position: int,
+    total: int,
+    stage: str,
+    stages: dict[str, float],
+    *,
+    result: dict[str, Any] | None = None,
+    status: str = "running",
+    error: str = "",
+) -> None:
+    result = result or {}
+    temp_bytes = sum(Path(item["path"]).stat().st_size for item in result.get("part_files", []) if Path(item["path"]).exists())
+    event_queue.put(
+        {
+            "kind": "lane",
+            "lane": lane,
+            "archive": Path(task["archive_path"]).name,
+            "position": position,
+            "total": total,
+            "stage": stage,
+            "durations": {key: round(value, 3) for key, value in stages.items()},
+            "rows": sum(int(result.get(key) or 0) for key in ("document_rows", "text_source_rows", "text_rows", "skip_rows")),
+            "temp_bytes": temp_bytes,
+            "status": status,
+            "error": error[:500],
+            "recovery": task["kind"] == "recovery",
+        }
+    )
+
+
+def emit_event(layout: str, payload: dict[str, Any]) -> None:
+    if layout == "events":
+        print(EVENT_PREFIX + json.dumps(payload, separators=(",", ":"), ensure_ascii=True), flush=True)
+    elif payload.get("kind") == "lane" and payload.get("stage") in {"done", "failed"}:
+        print(
+            f"lane={payload['lane']} archive={payload['archive']} progress={payload['position']}/{payload['total']} "
+            f"status={payload['status']} rows={payload['rows']}",
+            flush=True,
+        )
+
+
+def archive_result_row(
+    task: dict[str, Any],
+    result: dict[str, Any],
+    stages: dict[str, float],
+    elapsed: float,
+    status: str,
+    error: str,
+) -> dict[str, Any]:
+    return {
+        "archive_key": task["archive_key"],
+        "archive_date": task["archive_date"],
+        "archive_path": task["archive_path"],
+        "status": status,
+        "recovery": task["kind"] == "recovery",
+        "elapsed_seconds": round(elapsed, 3),
+        "stage_seconds": {key: round(value, 3) for key, value in stages.items()},
+        "filing_rows": int(result.get("filing_parent_rows") or 0),
+        "document_rows": int(result.get("document_rows") or 0),
+        "text_source_rows": int(result.get("text_source_rows") or 0),
+        "rendered_text_rows": int(result.get("text_rows") or 0),
+        "skip_rows": int(result.get("skip_rows") or 0),
+        "error": error,
+    }
+
+
+def delete_part_files(paths: list[Path]) -> None:
+    for path in paths:
+        if path.exists():
+            path.unlink()
+
+
+def cleanup_result_parts(result: dict[str, Any]) -> None:
+    delete_part_files([Path(item["path"]) for item in result.get("part_files", [])])
+
+
+def cleanup_empty_part_directories(output_root: Path) -> None:
+    for parts_root in output_root.glob("*/parts"):
+        for directory in sorted((path for path in parts_root.rglob("*") if path.is_dir()), reverse=True):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+
+
+def cleanup_obsolete_incomplete_parts(output_root: Path, current_run_root: Path, archive_by_date: dict[str, Path]) -> None:
+    valid_dates = set(archive_by_date)
+    date_pattern = re.compile(r"_(\d{8})_\d{6}\.jsonl(?:\.gz)?$")
+    for run_root in output_root.glob("*"):
+        if not run_root.is_dir() or run_root == current_run_root:
+            continue
+        if (run_root / "sec_filing_text_extract_manifest.json").exists():
+            continue
+        for path in (run_root / "parts").rglob("*.jsonl*") if (run_root / "parts").exists() else []:
+            match = date_pattern.search(path.name)
+            if not match:
+                continue
+            archive_date = datetime.strptime(match.group(1), "%Y%m%d").date().isoformat()
+            if archive_date in valid_dates:
+                path.unlink()
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    temp.replace(path)
+
+
+def write_run_summary(
+    run_root: Path,
+    args: argparse.Namespace,
+    source_run_id: str,
+    archive_count: int,
+    completed: int,
+    lane_results: list[dict[str, Any]],
+    loaded_env: list[Path],
+) -> None:
+    archives = [row for lane in lane_results for row in lane.get("archives", [])]
+    payload = {
+        "source_run_id": source_run_id,
+        "start_date": args.start_date,
+        "end_date": args.end_date,
+        "archive_count": archive_count,
+        "archives_completed": completed,
+        "archives_failed": sum(1 for row in archives if row.get("status") != "ok"),
+        "workers": bounded_worker_count(args.workers, archive_count),
+        "cleanup_parts": bool(args.cleanup_parts),
+        "compress_parts": bool(args.compress_parts),
+        "loaded_env_files": [str(path) for path in loaded_env],
+        "archives": archives,
+        "created_at_utc": datetime.now(UTC).isoformat(),
+    }
+    write_json(run_root / "sec_filing_archive_rebuild_summary.json", payload)
+
+
+def print_header(args: argparse.Namespace, run_root: Path, archives: list[Path], loaded_env: list[Path]) -> None:
+    print("=" * 96, flush=True)
+    print("SEC bounded archive extract and ingest", flush=True)
+    print(f"range=[{args.start_date},{args.end_date}) archives={len(archives):,} workers={bounded_worker_count(args.workers, len(archives))}", flush=True)
+    print(f"run_root={run_root} compress_parts={args.compress_parts} cleanup_parts={args.cleanup_parts}", flush=True)
+    print(f"loaded_env_files={[str(path) for path in loaded_env]}", flush=True)
+    print("secret_status=" + json.dumps(secret_status(extractor.secret_keys()), sort_keys=True), flush=True)
+    print("=" * 96, flush=True)
+
+
+if __name__ == "__main__":
+    main()

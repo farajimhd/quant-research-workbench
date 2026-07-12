@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import gzip
 import hashlib
 import html
 import json
@@ -294,6 +295,12 @@ def parse_args() -> argparse.Namespace:
         help="Optional normalized text storage cap. 0 means unlimited and is the default.",
     )
     parser.add_argument("--progress-every", type=int, default=10)
+    parser.add_argument(
+        "--compress-parts",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Write gzip-compressed JSONEachRow parts. Full historical rebuilds should enable this.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Discover archives and write manifest only.")
     return parser.parse_args()
 
@@ -446,6 +453,7 @@ def worker_payload(args: argparse.Namespace, archive: Path, parts_root: Path, so
         "parent_window_days_after": max(1, int(args.parent_window_days_after)),
         "min_text_chars": max(0, int(args.min_text_chars)),
         "max_text_chars": max(0, int(args.max_text_chars)),
+        "compress_parts": bool(args.compress_parts),
     }
 
 
@@ -455,12 +463,13 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     archive_date_text = archive_date.isoformat()
     part_prefix = f"{archive_date:%Y%m%d}_{int(payload['archive_index']):06d}"
     parts_root = Path(payload["parts_root"])
+    suffix = ".jsonl.gz" if bool(payload.get("compress_parts")) else ".jsonl"
     part_paths = {
-        "filing": parts_root / "sec_filing_v3_parts" / f"sec_filing_v3_part_{part_prefix}.jsonl",
-        "document": parts_root / "sec_filing_document_v3_parts" / f"sec_filing_document_v3_part_{part_prefix}.jsonl",
-        "text_source": parts_root / "sec_filing_text_v3_parts" / f"sec_filing_text_v3_part_{part_prefix}.jsonl",
-        "text": parts_root / "sec_filing_text_rendered_v3_parts" / f"sec_filing_text_rendered_v3_part_{part_prefix}.jsonl",
-        "skip": parts_root / "sec_filing_document_skip_v3_parts" / f"sec_filing_document_skip_v3_part_{part_prefix}.jsonl",
+        "filing": parts_root / "sec_filing_v3_parts" / f"sec_filing_v3_part_{part_prefix}{suffix}",
+        "document": parts_root / "sec_filing_document_v3_parts" / f"sec_filing_document_v3_part_{part_prefix}{suffix}",
+        "text_source": parts_root / "sec_filing_text_v3_parts" / f"sec_filing_text_v3_part_{part_prefix}{suffix}",
+        "text": parts_root / "sec_filing_text_rendered_v3_parts" / f"sec_filing_text_rendered_v3_part_{part_prefix}{suffix}",
+        "skip": parts_root / "sec_filing_document_skip_v3_parts" / f"sec_filing_document_skip_v3_part_{part_prefix}{suffix}",
     }
     for path in part_paths.values():
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -503,11 +512,11 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     filing_parent_count = doc_count = text_source_count = text_count = skip_count = 0
     try:
         with (
-            part_paths["filing"].open("w", encoding="utf-8") as filing_out,
-            part_paths["document"].open("w", encoding="utf-8") as doc_out,
-            part_paths["text_source"].open("w", encoding="utf-8") as text_source_out,
-            part_paths["text"].open("w", encoding="utf-8") as text_out,
-            part_paths["skip"].open("w", encoding="utf-8") as skip_out,
+            open_part_text(part_paths["filing"]) as filing_out,
+            open_part_text(part_paths["document"]) as doc_out,
+            open_part_text(part_paths["text_source"]) as text_source_out,
+            open_part_text(part_paths["text"]) as text_out,
+            open_part_text(part_paths["skip"]) as skip_out,
             tarfile.open(archive, "r:gz") as tar,
         ):
             for member in tar:
@@ -580,6 +589,12 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
         part_file_summary("skip", "sec_filing_document_skip_v3", part_paths["skip"], skip_count, SKIP_COLUMNS),
     ]
     return stats
+
+
+def open_part_text(path: Path):
+    if path.name.lower().endswith(".gz"):
+        return gzip.open(path, "wt", encoding="utf-8", compresslevel=6)
+    return path.open("w", encoding="utf-8")
 
 
 def load_parent_map(client: ClickHouseHttpClient, db: str, archive_date: date, days_before: int, days_after: int) -> dict[tuple[str, str], FilingParent]:
