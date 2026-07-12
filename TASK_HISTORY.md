@@ -8,7 +8,6 @@ ledger; the table below is generated from it by
 ## Current Focus
 
 - **TASK-0046 - Rebuild SEC source and rendered text into audited v3 tables**. Next: Finish the 32-worker historical rebuild, verify v3 row/integrity/text-length distributions, decide per-document versus per-filing embedding units, add listing context headers, then run the combined v3 token/embedding builder before restarting SEC and text-embedding gateways.
-- **TASK-0044 - Integrate persistent scanner bars into the v1 loader/trainer**. Next: Inspect and record the final combined loader/trainer profiling results, then fix any remaining throughput or memory bottleneck before selecting the next training run.
 
 ## Overall Direction
 
@@ -21,11 +20,25 @@ and live-trading workflows before they influence real execution.
 The laptop repository remains the code source of truth. The workstation
 provides heavy storage, ingestion, profiling, and training capacity.
 
+## High-Level Flow
+
+```mermaid
+flowchart LR
+    A["Raw and live sources<br/>SIP, news, SEC, reference, IBKR"] --> B["Versioned ingestion and gateways<br/>coverage, repair, audit"]
+    B --> C["Canonical point-in-time stores<br/>market, text, identity, brokerage"]
+    C --> D["Rolling causal loader<br/>completed context only; no separate builder"]
+    D --> E["Representation learning<br/>event, text, and multimodal models"]
+    E --> F["Evidence gates<br/>probes, profiling, backtests, audits"]
+    F --> G["Decision systems<br/>global scanner and strategies"]
+    G --> H["Operator and execution layer<br/>service UI, semi-auto, live trading"]
+    C --> G
+```
+
 ## Ledger Summary
 
 - Durable tasks: 46
-- In progress: 18
-- Completed: 20
+- In progress: 17
+- Completed: 21
 - Superseded: 8
 
 Times use the Vancouver offset when an exact request timestamp is available.
@@ -81,5 +94,5 @@ timestamp precision would be misleading.
 | TASK-0043 | quant-research-workbench | SEC integrity | Completed | Inline-XBRL HTML classification and repair path | 2026-07-08 | 2026-07-11 | 2026-07-11 | Diagnose why readable inline-XBRL filing primaries were classified as sidecars and skipped, then prevent and repair the issue. | Reproduced a real accession, corrected format/role precedence for HTML-like filings, added targeted smoke validation, and defined scoped backfill and stale-skip cleanup. | New inline-XBRL HTML primaries follow the readable extraction path; historical repairs have a bounded workflow. | Protects filing-text completeness for SEC search, embeddings, and model training. |
 | TASK-0042 | quant-research-workbench | SEC UX | Superseded | Readable SEC filing detail and document inventory | 2026-07-10 | 2026-07-11 | 2026-07-11 | Make the SEC detail page suitable for reading and verifying all stored filing text and document coverage rather than exposing only truncated technical rows. | Fixed detail/header errors, table freshness, backend and frontend text caps, `FINAL` detail queries, complete readable text parts, document inventory, identity context, and technical fallback tables. | The readable v2 detail milestone was delivered, but v2 data is stale; the page must follow the audited v3 source/rendered tables after TASK-0046 completes. | Gives operators a trustworthy verification surface for SEC extraction and model inputs. |
 | TASK-0046 | quant-research-workbench | SEC data | In progress | Rebuild SEC source and rendered text into audited v3 tables | 2026-07-11 04:36 -07:00 | 2026-07-12 06:17 -07:00 |  | Non-destructively rebuild SEC data from 2019 through current archives into v3 source/document/filing/XBRL/bridge/rendered tables, preserving text-bearing source formats and then regenerate v3 embeddings/tokens from audited rendered text. | Removed upstream truncation, audited random raw artifacts, corrected inline-XBRL handling and timestamp semantics, separated text-bearing source documents from derived rendering, replaced the stale normalizer with a packed HTML/XML/text renderer, added duplicate/table handling, created v3 rebuild defaults, synced workstation code, and iterated resumable worker extraction after disk and archive errors. | Finish the 32-worker historical rebuild, verify v3 row/integrity/text-length distributions, decide per-document versus per-filing embedding units, add listing context headers, then run the combined v3 token/embedding builder before restarting SEC and text-embedding gateways. | Repairs the authoritative filing-text/fundamental substrate so temporal embeddings and downstream models do not learn from clipped, distorted, or mis-timestamped SEC data. |
-| TASK-0044 | quant-research-workbench | Training integration | In progress | Integrate persistent scanner bars into the v1 loader/trainer | 2026-07-11 10:33 -07:00 | 2026-07-11 13:55 -07:00 |  | Feed only completed global 1-second scanner bars backward into the rolling loader, unblock training after initial causal coverage, and profile the combined loader/model path. | Benchmarked bar queries, selected 1-second bases and a 15-minute scanner window, defined daily retention through after-hours, integrated loader concepts, reviewed worst-case ClickHouse timings, applied a performance fix, and connected the loader to the v1 trainer/profile launcher. | Inspect and record the final combined loader/trainer profiling results, then fix any remaining throughput or memory bottleneck before selecting the next training run. | This is the current bridge from global market context into causal multimodal model training. |
-| TASK-0045 | quant-research-workbench | Repository process | Completed | Chat-independent task history and maintenance rule | 2026-07-12 07:42 -07:00 | 2026-07-12 08:03 -07:00 | 2026-07-12 08:03 -07:00 | Create a durable high-level record of user-requested outcomes so any agent can understand completed work, active work, and the overall direction without reading prior chats. | Reviewed all 121 active-session files plus 13 archives, excluded 83 guardian/approval transcripts, reconciled 5,281 real user messages into 46 durable tasks, corrected the current SEC lifecycle, added January/February project lineage, converted the ledger to canonical CSV, generated Markdown focus/table output, and expanded agent guidance from repeated instructions. | Delivered a validated CSV-backed task ledger, two explicit current-focus outcomes, a deterministic renderer, and same-commit maintenance requirements for future work. | Preserves continuity across independent chats and projects and makes the evolving program legible to future agents. |
+| TASK-0044 | quant-research-workbench | Training integration | Completed | Integrate persistent scanner bars into the v1 loader/trainer | 2026-07-11 10:33 -07:00 | 2026-07-12 08:45 -07:00 | 2026-07-12 08:45 -07:00 | Feed only completed global 1-second scanner bars backward into the rolling loader, unblock training after initial causal coverage, and profile the combined loader/model path. | Benchmarked bar queries, selected 1-second bases and a 15-minute scanner window, defined daily retention through after-hours, integrated scanner context into the rolling loader and v1 trainer, applied the ClickHouse performance fix, and successfully profiled the combined path. | Profiling confirmed that the integrated rolling loader works for causal model training, so a separate causal-model data builder is unnecessary and was removed from the architecture. | Completes the direct bridge from canonical global market context into causal multimodal model training without a redundant intermediate builder. |
+| TASK-0045 | quant-research-workbench | Repository process | Completed | Chat-independent task history and maintenance rule | 2026-07-12 07:42 -07:00 | 2026-07-12 08:45 -07:00 | 2026-07-12 08:03 -07:00 | Create a durable high-level record of user-requested outcomes so any agent can understand completed work, active work, and the overall direction without reading prior chats. | Reviewed all 121 active-session files plus 13 archives, excluded 83 guardian/approval transcripts, reconciled 5,281 real user messages into 46 durable tasks, corrected the current SEC lifecycle, added January/February project lineage, converted the ledger to canonical CSV, generated Markdown focus/table output, expanded agent guidance from repeated instructions, and added a generated high-level program flow. | Delivered a validated CSV-backed task ledger, an explicit current-focus summary, a deterministic renderer, a high-level architecture flow, and same-commit maintenance requirements for future work. | Preserves continuity across independent chats and projects and makes the evolving program legible to future agents. |
