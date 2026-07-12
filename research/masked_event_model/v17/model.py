@@ -287,7 +287,7 @@ class ChunkEmbeddingBottleneck(nn.Module):
                 ]
             )
         )
-        self.all_projected_tokens_max_pool = nn.AdaptiveMaxPool1d(1)
+        self.all_projected_tokens_mean_pool = nn.AdaptiveAvgPool1d(1)
         self.chunk_embedding_output = ChunkEmbeddingOutput()
 
     def project_encoded_tokens(self, encoded_tokens: torch.Tensor) -> torch.Tensor:
@@ -300,7 +300,7 @@ class ChunkEmbeddingBottleneck(nn.Module):
         # AdaptiveMaxPool1d expects channels first. The temporary projected-token
         # tensor is consumed here and is no longer returned by the training path.
         # Input shape: [B, T, Z]. Output shape after transpose/pool/squeeze: [B, Z].
-        pooled_embedding = self.all_projected_tokens_max_pool(token_embeddings.transpose(1, 2)).squeeze(-1)
+        pooled_embedding = self.all_projected_tokens_mean_pool(token_embeddings.transpose(1, 2)).squeeze(-1)
         # Input shape: [B, Z]. Output shape: [B, Z].
         return self.chunk_embedding_output(pooled_embedding)
 

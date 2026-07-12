@@ -228,6 +228,12 @@ backtest_results/
 research/chronos2/reports/
 
 # Local model evaluation outputs
+tmp
+.tmp
 services/news-intelligence/evaluation_runs/
 services/news-intelligence/codex_suppervision/
 services/news-intelligence/pipeline_evaluation_runs/
+prepared/
+.codex
+.agents
+.streamlit
