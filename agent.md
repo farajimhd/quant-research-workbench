@@ -140,6 +140,33 @@ operations, and product UI work in this repository.
 - Do not commit temporary files, caches, generated logs, screenshots, local
   runtime output, or secrets.
 
+### Task History
+
+- Maintain `TASK_HISTORY.md` as the chat-independent, repository-level history
+  of user-requested outcomes and the overall direction of the work.
+- One row represents one durable task even when it spans multiple chats, design
+  iterations, commits, commands, failures, and validation runs. Do not create
+  rows for individual messages, transient errors, status checks, or small
+  corrections that belong to an existing outcome.
+- Create a new row when work begins on a materially separate outcome that can be
+  completed, blocked, cancelled, or superseded independently. Use the earliest
+  trustworthy request time as `Started`; do not invent timestamp precision for
+  consolidated historical work.
+- Before every git commit, update each task materially affected by that commit.
+  Refresh its status, `Last updated`, concise progress, validation evidence,
+  remaining dependency, and contribution to the broader program. The task-
+  history update must be included in the same commit as the work it describes.
+- Mark a task `Completed` only when the requested outcome is genuinely delivered
+  and sufficiently validated. Use `Blocked`, `Cancelled`, or `Superseded` when
+  those states are more accurate; never infer completion merely from a commit.
+- Keep summaries outcome-oriented and compact. Record important decisions,
+  implementation milestones, failures that changed the design, and final
+  results, but do not reproduce chat transcripts or create a commit-by-commit
+  changelog.
+- Small follow-up fixes to a completed outcome should update its existing row.
+  Create a new task only when the follow-up materially changes the intended
+  capability or can proceed independently.
+
 For every code change you make:
 
 1. Review the modified files for correctness and consistency.
