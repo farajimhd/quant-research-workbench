@@ -18,6 +18,9 @@ operations, and product UI work in this repository.
 - Preserve working behavior outside the requested seam. Avoid unrelated cleanup,
   broad rewrites, or speculative features unless they are required for the
   agreed result.
+- Respect the exact repository, folder, module, and version placed in scope. Do
+  not create a parallel copy in a parent or neighboring project, and do not edit
+  a related repository merely because it contains similar code.
 - For large requests, maintain a concrete checklist of every agreed requirement
   and verify each item before finishing.
 
@@ -33,6 +36,10 @@ operations, and product UI work in this repository.
 - Reproduce issues using the exact failing symbol, accession, timestamp, row,
   request, command, or run when possible. After the targeted reproduction,
   check whether the same defect affects similar historical cases.
+- Trace data problems through the complete active lifecycle: acquisition,
+  artifacts, parsing, normalization, canonical tables, derived context,
+  embeddings or labels, service reads, and UI presentation. Do not fix a
+  downstream symptom while leaving the authoritative upstream path wrong.
 - Before tuning parameters or changing a strategy, verify that the code actually
   implements the intended rules. Separate implementation bugs, data problems,
   execution-model limitations, and genuine strategy weakness.
@@ -53,9 +60,20 @@ operations, and product UI work in this repository.
 - Historical and live paths that promise the same output must produce the same
   schema and semantics. A backfill is not complete if it fills only a subset of
   what the live path produces.
+- Keep raw/source, normalized/rendered, canonical, and model-ready products as
+  explicit layers with clear provenance and versioning. Do not overwrite source
+  text with a lossy derivative or call a rendered/normalized value raw data.
+- For risky data rebuilds, prefer new versioned tables and a non-destructive
+  audit/cutover. Keep the current version intact until row integrity, source
+  coverage, timestamps, joins, and downstream consumers of the new version have
+  been validated; then identify stale versions explicitly.
 - Put code, data, manifests, logs, and runtime artifacts in their designated
   roots. Do not place generated scripts in data-only directories or scatter one
   run's outputs across unrelated locations.
+- Large raw payloads belong in the configured artifact/data store unless a
+  database copy has a demonstrated query or integrity purpose. Store metadata,
+  relationships, hashes, status, and model-ready derivatives in the database
+  without duplicating every source artifact by default.
 - Update nearby documentation when behavior, commands, schemas, defaults, or
   operational assumptions change.
 
@@ -70,6 +88,10 @@ operations, and product UI work in this repository.
 - Bound concurrency, queues, batches, and memory use. More workers are not
   automatically better; tune download, CPU processing, database writes, and GPU
   work independently for the available machine.
+- In resumable batch pipelines, make a worker own a complete bounded unit:
+  acquire or extract it, process it, durably insert and checkpoint it, and only
+  then delete temporary files. Resume logic must recognize both completed work
+  and safe reusable intermediate files.
 - Keep interactive and market-data hot paths responsive. Move durable slow work
   to controlled background processing without sacrificing correctness or
   observability.
@@ -88,6 +110,9 @@ operations, and product UI work in this repository.
 - Make time semantics explicit and timezone-aware. Storage may use UTC, while
   market logic and UI labels should use the appropriate exchange or user
   timezone without mixing naive and aware timestamps.
+- Apply point-in-time identity and reference joins using their validity periods;
+  a current ticker mapping must not be projected backward onto a filing, event,
+  order, or model example when it was not valid at that timestamp.
 - Validate table relationships, keys, ordering, partitioning, deduplication, and
   final-row query semantics before declaring a data pipeline complete.
 - Logs and manifests may record statuses, counts, reasons, paths, and secret
@@ -104,9 +129,15 @@ operations, and product UI work in this repository.
 - A steady-state terminal should retain the last useful state and show current
   focus; do not leave the operator staring at a generic `polling`, `queued`, or
   stale status.
+- When a market, source, or service is closed or temporarily unavailable, retain
+  and clearly timestamp the last trustworthy snapshot instead of blanking a
+  useful surface or presenting stale data as live.
 - Support graceful interruption and restart. Stop child processes, workers,
   servers, browser sessions, and terminal helpers when the parent exits or the
   task finishes.
+- For multi-worker jobs, show stable per-worker stage progress plus an accurate
+  overall total. Avoid message floods, flicker, or progress counters whose units
+  do not correspond to the actual work partition.
 - Prefer runnable Python launchers with complete safe defaults for operational
   jobs. Generated commands should include all required arguments so manual runs
   do not drift from the validated configuration.
@@ -116,6 +147,11 @@ operations, and product UI work in this repository.
 - Optimize for compact, readable information hierarchy. Avoid oversized titles,
   redundant summaries, unused whitespace, raw dictionary dumps, and controls
   that consume space without helping the current task.
+- Prefer a light, restrained financial visual system: Inter typography where
+  available, white or transparent surfaces, near-square corners, minimal
+  vertical borders, subtle headers, and no gradient backgrounds. Reserve strong
+  red, green, purple, and other colors for clear semantic meaning rather than
+  decoration.
 - Put primary status and actions where the user is already working. Show live
   results as work progresses instead of redirecting the user to a disconnected
   progress-only view.
@@ -124,6 +160,10 @@ operations, and product UI work in this repository.
   details into dialogs, tooltips, or expandable areas.
 - Tables and charts should use the available viewport, remain readable at narrow
   sizes, and expose active filters, timezones, legends, and status meanings.
+- Format displayed values according to their meaning without mutating the
+  underlying typed data used for sorting, filtering, queries, or calculations.
+  Human-readable labels and descriptions belong in presentation metadata rather
+  than replacing canonical field names in storage.
 - Verify visual changes from rendered screenshots at representative normal and
   compact viewport sizes. Data being present somewhere is not enough if it is
   clipped, misaligned, stale, or hard to interpret.
@@ -137,13 +177,32 @@ operations, and product UI work in this repository.
   runtime-copy verification as applicable.
 - Report exactly what was validated and what could not be validated. Never imply
   that an unrun test or inaccessible environment was confirmed.
+- For parsers, renderers, normalizers, and converters, audit representative
+  source samples through original, intermediate, and final outputs. Include
+  difficult content types and inspect length/distribution effects before
+  choosing truncation, chunking, or embedding limits.
 - Do not commit temporary files, caches, generated logs, screenshots, local
   runtime output, or secrets.
 
+### LLM And Agentic Processing
+
+- When an agreed stage is agentic, do not silently replace it with deterministic
+  heuristics. When determinism is required for reproducibility or integrity,
+  keep that stage explicit and separate from model judgment.
+- Require model/agent calls used by pipelines to return the requested final
+  structured result, not hidden reasoning, conversational filler, or an
+  unparseable thought stream. Validate the output contract and retain enough
+  status to diagnose rejects without logging sensitive or entire source data.
+- Use language models for semantic judgment where they add value; use
+  deterministic code for source preservation, structural parsing, identity,
+  deduplication hashes, timestamps, and other integrity-critical invariants.
+
 ### Task History
 
-- Maintain `TASK_HISTORY.md` as the chat-independent, repository-level history
-  of user-requested outcomes and the overall direction of the work.
+- Maintain `TASK_HISTORY.csv` as the canonical chat-independent ledger of
+  user-requested outcomes across relevant projects. `TASK_HISTORY.md` is the
+  human-readable view generated from that CSV; never edit its imported table by
+  hand.
 - One row represents one durable task even when it spans multiple chats, design
   iterations, commits, commands, failures, and validation runs. Do not create
   rows for individual messages, transient errors, status checks, or small
@@ -152,10 +211,13 @@ operations, and product UI work in this repository.
   completed, blocked, cancelled, or superseded independently. Use the earliest
   trustworthy request time as `Started`; do not invent timestamp precision for
   consolidated historical work.
-- Before every git commit, update each task materially affected by that commit.
-  Refresh its status, `Last updated`, concise progress, validation evidence,
-  remaining dependency, and contribution to the broader program. The task-
-  history update must be included in the same commit as the work it describes.
+- Before every git commit, update each task materially affected by that commit in
+  `TASK_HISTORY.csv`. Refresh its status, `Last updated`, concise progress,
+  validation evidence, remaining dependency, and contribution to the broader
+  program. Mark one to three genuine active outcomes with `current_focus=true`,
+  then run `python scripts/render_task_history.py` to refresh the Markdown focus
+  summary and imported table. Include both files in the same commit as the work
+  they describe.
 - Mark a task `Completed` only when the requested outcome is genuinely delivered
   and sufficiently validated. Use `Blocked`, `Cancelled`, or `Superseded` when
   those states are more accurate; never infer completion merely from a commit.
@@ -166,6 +228,9 @@ operations, and product UI work in this repository.
 - Small follow-up fixes to a completed outcome should update its existing row.
   Create a new task only when the follow-up materially changes the intended
   capability or can proceed independently.
+- Keep current focus short and operational. It should tell a new agent what the
+  user is actively advancing now and the next dependency, not list every open or
+  historically interesting task.
 
 For every code change you make:
 
