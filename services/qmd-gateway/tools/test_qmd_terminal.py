@@ -24,12 +24,11 @@ def representative_state() -> qmd.PollState:
     lanes = [
         lane("massive_feed", "Massive feed", "healthy", required=True, success=now),
         lane("compact_events", "q_live.events persistence", "healthy", required=True, success=now),
-        lane("bars", "Live bar persistence", "healthy", required=True, success=now),
+        lane("intraday_bars", "Canonical intraday bars", "healthy", required=True, success=now),
         lane("coverage_ledger", "Live coverage ledger", "healthy", required=True, success=now),
         lane("compact_audit", "Compact-event warning audit", "healthy", required=True, success=now),
         lane("indicators", "Indicator persistence", "disabled", enabled=False),
         lane("live_market_state", "Abnormal market-state persistence", "healthy", required=True, success=now),
-        lane("model_microbars", "Model microbar persistence", "disabled", enabled=False),
     ]
     operational = {"lanes": lanes, "recent_recoveries": []}
     state.health = {
@@ -54,11 +53,10 @@ def representative_state() -> qmd.PollState:
         "header": {"status": "RUNNING", "host_role": "laptop"},
         "attention": [],
         "downstream_products": [
-            {"product": "Bars", "enabled": True, "state": "healthy", "rows": 500},
+            {"product": "Intraday bars", "enabled": True, "state": "healthy", "rows": 500},
             {"product": "Indicators", "enabled": False, "state": "disabled"},
             {"product": "Scanner primitives", "enabled": True, "state": "healthy", "rows": 12},
             {"product": "Abnormal market state", "enabled": True, "state": "healthy", "rows": 2},
-            {"product": "Model microbars", "enabled": False, "state": "disabled"},
         ],
         "service_specific": {
             "operational": operational,
@@ -74,20 +72,24 @@ def representative_state() -> qmd.PollState:
         "compact_events_persisted": 99_990,
         "compact_events_reorder_pending": 5,
         "compact_event_rejected": 0,
-        "bar_rows_emitted": 500,
+        "intraday_bar_rows_emitted": 520,
+        "intraday_bar_rows_persisted": 500,
+        "intraday_bar_repairs_requested": 2,
+        "intraday_bar_repairs_completed": 2,
     }
     state.rates = {
         "ingest_quotes_per_sec": 1_200,
         "ingest_trades_per_sec": 350,
         "compact_events_emitted_per_sec": 1_550,
         "compact_events_persisted_per_sec": 1_548,
-        "bar_rows_emitted_per_sec": 40,
+        "intraday_bar_rows_emitted_per_sec": 42,
+        "intraday_bar_rows_persisted_per_sec": 40,
     }
     state.maintenance = {"active": False, "status": "up_to_date"}
     state.coverage = {
         "rows": [
             coverage("2026-07-10", "qmd_compact_event_writer", "compact_persisted"),
-            coverage("2026-07-10", "qmd_bar_writer", "bars_persisted"),
+            coverage("2026-07-10", "qmd_intraday_bar_writer", "intraday_bars_persisted"),
             flatfile("2026-07-10", "quote", "remote_ready/confirmed"),
             flatfile("2026-07-10", "trade", "remote_ready/confirmed"),
         ]

@@ -13,10 +13,8 @@ pub struct SharedMetrics {
 struct MetricsInner {
     bar_rows_emitted: AtomicU64,
     bar_events_dropped: AtomicU64,
-    bar_rows_persist_queued: AtomicU64,
     bar_rows_scanner_dropped: AtomicU64,
     bar_rows_indicator_dropped: AtomicU64,
-    bar_rows_writer_dropped: AtomicU64,
     clickhouse_events_dropped: AtomicU64,
     compact_event_broadcast_dropped: AtomicU64,
     compact_event_queue_dropped: AtomicU64,
@@ -38,6 +36,11 @@ struct MetricsInner {
     gap_fill_runs: AtomicU64,
     gap_fill_total_duration_ms: AtomicU64,
     indicator_events_dropped: AtomicU64,
+    intraday_bar_events_dropped: AtomicU64,
+    intraday_bar_rows_emitted: AtomicU64,
+    intraday_bar_rows_persisted: AtomicU64,
+    intraday_bar_repairs_completed: AtomicU64,
+    intraday_bar_repairs_requested: AtomicU64,
     ingest_events: AtomicU64,
     ingest_quotes: AtomicU64,
     ingest_trades: AtomicU64,
@@ -97,9 +100,7 @@ pub struct MetricsSnapshot {
     pub bar_rows_emitted: u64,
     pub bar_events_dropped: u64,
     pub bar_rows_indicator_dropped: u64,
-    pub bar_rows_persist_queued: u64,
     pub bar_rows_scanner_dropped: u64,
-    pub bar_rows_writer_dropped: u64,
     pub clickhouse_events_dropped: u64,
     pub compact_event_broadcast_dropped: u64,
     pub compact_event_queue_dropped: u64,
@@ -121,6 +122,11 @@ pub struct MetricsSnapshot {
     pub gap_fill_runs: u64,
     pub gap_fill_total_duration_ms: u64,
     pub indicator_events_dropped: u64,
+    pub intraday_bar_events_dropped: u64,
+    pub intraday_bar_rows_emitted: u64,
+    pub intraday_bar_rows_persisted: u64,
+    pub intraday_bar_repairs_completed: u64,
+    pub intraday_bar_repairs_requested: u64,
     pub ingest_events: u64,
     pub ingest_quotes: u64,
     pub ingest_trades: u64,
@@ -155,10 +161,8 @@ impl SharedMetrics {
             inner: Arc::new(MetricsInner {
                 bar_rows_emitted: AtomicU64::new(0),
                 bar_events_dropped: AtomicU64::new(0),
-                bar_rows_persist_queued: AtomicU64::new(0),
                 bar_rows_scanner_dropped: AtomicU64::new(0),
                 bar_rows_indicator_dropped: AtomicU64::new(0),
-                bar_rows_writer_dropped: AtomicU64::new(0),
                 clickhouse_events_dropped: AtomicU64::new(0),
                 compact_event_broadcast_dropped: AtomicU64::new(0),
                 compact_event_queue_dropped: AtomicU64::new(0),
@@ -180,6 +184,11 @@ impl SharedMetrics {
                 gap_fill_runs: AtomicU64::new(0),
                 gap_fill_total_duration_ms: AtomicU64::new(0),
                 indicator_events_dropped: AtomicU64::new(0),
+                intraday_bar_events_dropped: AtomicU64::new(0),
+                intraday_bar_rows_emitted: AtomicU64::new(0),
+                intraday_bar_rows_persisted: AtomicU64::new(0),
+                intraday_bar_repairs_completed: AtomicU64::new(0),
+                intraday_bar_repairs_requested: AtomicU64::new(0),
                 ingest_events: AtomicU64::new(0),
                 ingest_quotes: AtomicU64::new(0),
                 ingest_trades: AtomicU64::new(0),
@@ -331,9 +340,7 @@ impl SharedMetrics {
             bar_rows_emitted: self.get(&self.inner.bar_rows_emitted),
             bar_events_dropped: self.get(&self.inner.bar_events_dropped),
             bar_rows_indicator_dropped: self.get(&self.inner.bar_rows_indicator_dropped),
-            bar_rows_persist_queued: self.get(&self.inner.bar_rows_persist_queued),
             bar_rows_scanner_dropped: self.get(&self.inner.bar_rows_scanner_dropped),
-            bar_rows_writer_dropped: self.get(&self.inner.bar_rows_writer_dropped),
             clickhouse_events_dropped: self.get(&self.inner.clickhouse_events_dropped),
             compact_event_broadcast_dropped: self.get(&self.inner.compact_event_broadcast_dropped),
             compact_event_queue_dropped: self.get(&self.inner.compact_event_queue_dropped),
@@ -360,6 +367,11 @@ impl SharedMetrics {
             gap_fill_runs: self.get(&self.inner.gap_fill_runs),
             gap_fill_total_duration_ms: self.get(&self.inner.gap_fill_total_duration_ms),
             indicator_events_dropped: self.get(&self.inner.indicator_events_dropped),
+            intraday_bar_events_dropped: self.get(&self.inner.intraday_bar_events_dropped),
+            intraday_bar_rows_emitted: self.get(&self.inner.intraday_bar_rows_emitted),
+            intraday_bar_rows_persisted: self.get(&self.inner.intraday_bar_rows_persisted),
+            intraday_bar_repairs_completed: self.get(&self.inner.intraday_bar_repairs_completed),
+            intraday_bar_repairs_requested: self.get(&self.inner.intraday_bar_repairs_requested),
             ingest_events: self.get(&self.inner.ingest_events),
             ingest_quotes: self.get(&self.inner.ingest_quotes),
             ingest_trades: self.get(&self.inner.ingest_trades),
@@ -409,20 +421,12 @@ impl SharedMetrics {
         self.inc(&self.inner.bar_events_dropped, 1);
     }
 
-    pub fn inc_bar_persist_queued(&self) {
-        self.inc(&self.inner.bar_rows_persist_queued, 1);
-    }
-
     pub fn inc_bar_indicator_dropped(&self) {
         self.inc(&self.inner.bar_rows_indicator_dropped, 1);
     }
 
     pub fn inc_bar_scanner_dropped(&self) {
         self.inc(&self.inner.bar_rows_scanner_dropped, 1);
-    }
-
-    pub fn inc_bar_writer_dropped(&self) {
-        self.inc(&self.inner.bar_rows_writer_dropped, 1);
     }
 
     pub fn inc_clickhouse_event_dropped(&self) {
@@ -502,6 +506,26 @@ impl SharedMetrics {
 
     pub fn inc_indicator_event_dropped(&self) {
         self.inc(&self.inner.indicator_events_dropped, 1);
+    }
+
+    pub fn inc_intraday_bar_event_dropped(&self) {
+        self.inc(&self.inner.intraday_bar_events_dropped, 1);
+    }
+
+    pub fn inc_intraday_bar_emitted(&self, count: u64) {
+        self.inc(&self.inner.intraday_bar_rows_emitted, count);
+    }
+
+    pub fn inc_intraday_bar_persisted(&self, count: u64) {
+        self.inc(&self.inner.intraday_bar_rows_persisted, count);
+    }
+
+    pub fn inc_intraday_bar_repair_completed(&self) {
+        self.inc(&self.inner.intraday_bar_repairs_completed, 1);
+    }
+
+    pub fn inc_intraday_bar_repair_requested(&self) {
+        self.inc(&self.inner.intraday_bar_repairs_requested, 1);
     }
 
     pub fn inc_live_market_state_broadcast_dropped(&self) {

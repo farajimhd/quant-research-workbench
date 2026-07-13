@@ -10,12 +10,12 @@ mod flatfile;
 mod gapfill;
 mod indicator_catalog;
 mod indicators;
+mod intraday_bars;
 mod live_market_state;
 mod maintenance;
 mod market_calendar;
 mod massive;
 mod metrics;
-mod model_bars;
 mod replay;
 mod scanner;
 mod session;
@@ -24,7 +24,7 @@ mod state;
 mod timefmt;
 
 use crate::api::{app, AppState};
-use crate::bars::{spawn_bar_engines, BarClickHouseWriter, BarRow, SharedBarStore};
+use crate::bars::{spawn_bar_engines, SharedBarStore};
 use crate::clickhouse::ClickHouseWriter;
 use crate::compact_event::{
     CompactEventClickHouseWriter, CompactEventReferences, LiveCompactEvent, SharedCompactEventStore,
@@ -35,6 +35,7 @@ use crate::gapfill::{run_gap_fill_service, run_startup_maintenance};
 use crate::indicators::{
     spawn_indicator_engines, IndicatorClickHouseWriter, IndicatorRow, SharedIndicatorStore,
 };
+use crate::intraday_bars::spawn_intraday_bar_service;
 use crate::live_market_state::{
     spawn_live_market_state_service, LiveSymbolMarketStateEvent, SharedLiveMarketStateStore,
 };
@@ -42,7 +43,6 @@ use crate::maintenance::SharedMaintenanceState;
 use crate::market_calendar::{run_market_calendar_refresh, MarketCalendarClient};
 use crate::massive::{run_massive_ingest, MarketEventFanout};
 use crate::metrics::SharedMetrics;
-use crate::model_bars::spawn_model_bar_service;
 use crate::replay::run_replay_service;
 use crate::scanner::{spawn_scanner_primitive_engine, ScannerPrimitive, SharedScannerStore};
 use crate::state::SharedMarketState;
@@ -77,7 +77,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.compact_events_enabled && config.persist_compact_events,
         config.compact_events_enabled && config.persist_compact_events,
     );
-    metrics.register_lane("bars", "Live bar persistence", "writer", true, true);
+    metrics.register_lane(
+        "intraday_bars",
+        "Canonical intraday bars",
+        "writer",
+        true,
+        true,
+    );
     metrics.register_lane(
         "coverage_ledger",
         "Live coverage ledger",
@@ -113,13 +119,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.live_market_state_enabled,
         config.live_market_state_enabled,
     );
-    metrics.register_lane(
-        "model_microbars",
-        "Model microbar persistence",
-        "writer",
-        config.model_streaming_bars_enabled && config.model_streaming_bars_persist,
-        false,
-    );
     let market = SharedMarketState::new();
     let bars = SharedBarStore::new(
         config.bar_timeframes.clone(),
@@ -144,8 +143,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         mpsc::channel::<MarketEvent>(config.event_channel_capacity);
     let (compact_writer_sender, compact_writer_receiver) =
         mpsc::channel::<MarketEvent>(config.compact_event_channel_capacity);
-    let (bar_writer_sender, bar_writer_receiver) =
-        mpsc::channel::<BarRow>(config.bar_channel_capacity);
     let (indicator_writer_sender, indicator_writer_receiver) =
         mpsc::channel::<IndicatorRow>(config.indicator_channel_capacity);
     let (event_sender, _event_receiver) = broadcast::channel::<MarketEvent>(10_000);
@@ -154,11 +151,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (scanner_sender, _scanner_receiver) = broadcast::channel::<ScannerPrimitive>(10_000);
     let (live_market_state_sender, _live_market_state_receiver) =
         broadcast::channel::<LiveSymbolMarketStateEvent>(10_000);
-    let model_bar_service = spawn_model_bar_service(config.clone(), metrics.clone())
+    let intraday_bar_service = spawn_intraday_bar_service(config.clone(), metrics.clone())
         .await
         .map_err(|error| {
             startup_error(format!(
-                "qmd-gateway model streaming bar preflight failed: {error}"
+                "qmd-gateway canonical intraday bar preflight failed: {error}"
             ))
         })?;
 
@@ -196,9 +193,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             compact_event_sender.clone(),
             compact_event_store.clone(),
             metrics.clone(),
-            model_bar_service
-                .as_ref()
-                .map(|service| service.router.clone()),
+            intraday_bar_service.router.clone(),
         );
         compact_writer.initialize().await.map_err(|error| {
             startup_error(format!(
@@ -224,21 +219,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             "Compact event stream is disabled. Set QMD_COMPACT_EVENTS_ENABLED=true to enable it."
         );
     }
-    let bar_writer = BarClickHouseWriter::new(config.clone(), metrics.clone());
-    bar_writer.initialize().await.map_err(|error| {
-        startup_error(format!(
-            "qmd-gateway bar ClickHouse preflight failed: {error}"
-        ))
-    })?;
-    metrics.set_lane_state(
-        "bars",
-        "healthy",
-        "Live bar writer initialized; awaiting closed bars.",
-    );
     metrics.set_lane_state(
         "coverage_ledger",
         "healthy",
-        "Live event/bar coverage ledger initialized.",
+        "Live event and canonical intraday-bar coverage ledger initialized.",
     );
     let indicator_writer = IndicatorClickHouseWriter::new(config.clone(), metrics.clone());
     if config.persist_indicators {
@@ -254,7 +238,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         );
     }
 
-    writer_handles.push(tokio::spawn(bar_writer.run(bar_writer_receiver)));
     writer_handles.push(tokio::spawn(
         indicator_writer.run(indicator_writer_receiver),
     ));
@@ -282,7 +265,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Some(indicator_router.bar_sender()),
         Some(scanner_router.clone()),
         Some(live_market_state_router.clone()),
-        bar_writer_sender,
         metrics.clone(),
     );
 
@@ -319,9 +301,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         metrics: metrics.clone(),
         maintenance: maintenance.clone(),
         market_calendar: market_calendar.clone(),
-        model_microbars: model_bar_service
-            .as_ref()
-            .map(|service| service.rows.clone()),
+        intraday_bars: intraday_bar_service.rows.clone(),
         scanner,
         scanner_events: scanner_sender,
         shutdown: shutdown_sender,
@@ -402,9 +382,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     drop(scanner_router);
     drop(live_market_state_router);
     writer_handles.push(live_market_state_task);
-    if let Some(service) = model_bar_service {
-        writer_handles.extend(service.into_tasks());
-    }
+    writer_handles.extend(intraday_bar_service.into_tasks());
     match timeout(Duration::from_secs(15), async {
         let mut failures = Vec::new();
         for handle in writer_handles {
@@ -451,9 +429,9 @@ fn preflight_config(config: &GatewayConfig) -> Result<(), String> {
     if config.clickhouse_user.trim().is_empty() {
         return Err("QMD_CLICKHOUSE_USER is required before qmd-gateway starts".to_string());
     }
-    if config.model_streaming_bars_enabled && !config.compact_events_enabled {
+    if !config.compact_events_enabled || !config.persist_compact_events {
         return Err(
-            "QMD_MODEL_STREAMING_BARS_ENABLED requires QMD_COMPACT_EVENTS_ENABLED=true".to_string(),
+            "canonical intraday bars require QMD_COMPACT_EVENTS_ENABLED=true and QMD_PERSIST_COMPACT_EVENTS=true".to_string(),
         );
     }
     Ok(())

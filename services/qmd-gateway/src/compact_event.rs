@@ -1,7 +1,7 @@
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
+use crate::intraday_bars::IntradayBarRouter;
 use crate::metrics::SharedMetrics;
-use crate::model_bars::ModelBarRouter;
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, TimeZone, Utc};
 use reqwest::Client;
@@ -304,7 +304,7 @@ pub struct CompactEventClickHouseWriter {
     live_store: SharedCompactEventStore,
     metrics: SharedMetrics,
     references: CompactEventReferences,
-    model_bar_router: Option<ModelBarRouter>,
+    intraday_bar_router: IntradayBarRouter,
 }
 
 impl CompactEventClickHouseWriter {
@@ -314,7 +314,7 @@ impl CompactEventClickHouseWriter {
         event_sender: broadcast::Sender<LiveCompactEvent>,
         live_store: SharedCompactEventStore,
         metrics: SharedMetrics,
-        model_bar_router: Option<ModelBarRouter>,
+        intraday_bar_router: IntradayBarRouter,
     ) -> Self {
         Self {
             client: Client::new(),
@@ -323,7 +323,7 @@ impl CompactEventClickHouseWriter {
             live_store,
             metrics,
             references,
-            model_bar_router,
+            intraday_bar_router,
         }
     }
 
@@ -392,10 +392,9 @@ impl CompactEventClickHouseWriter {
                                     self.metrics.inc_compact_event_broadcast_dropped();
                                 }
                                 self.live_store.push(conversion.event.clone()).await;
-                                if let Some(router) = &self.model_bar_router {
-                                    if router.send(conversion.event.clone()).await.is_err() {
-                                        eprintln!("Model streaming bar receiver closed; could not route one compact event.");
-                                    }
+                                if self.intraday_bar_router.send(conversion.event.clone()).await.is_err() {
+                                    self.metrics.inc_intraday_bar_event_dropped();
+                                    eprintln!("Canonical intraday bar receiver closed; could not route one compact event.");
                                 }
                                 self.metrics.inc_compact_events_emitted(1);
                                 if self.config.persist_compact_events {

@@ -62,15 +62,22 @@ keeps a short per-ticker reorder buffer and inserts `q_live.events` without a
 durable ordinal. Cross-store consumers sort each segment under its own contract,
 concatenate a non-overlapping boundary, and may assign a query-local ordinal.
 
-## Optional Model Microbars
+## Canonical Intraday Bars
 
-`/stream/model-microbars` and optional table `live_model_microbars` expose the
-same long-form base-bar families used by `research/mlops/packed_market`:
-`trade`, `quote_bid`, and `quote_ask`. Rows use New York local-session buckets
-and contain `label_resolution_us`, `bucket_index`, OHLC, size
+`/stream/intraday-bars` and required table `intraday_bars_v1` expose the
+long-form families used by `research/mlops/packed_market`: `trade`,
+`quote_bid`, and `quote_ask`. Rows use New York 04:00-20:00 local-session
+buckets and contain `schema_version`, `ticker`, `local_date`,
+`label_resolution_us`, `bucket_index`, `bar_family`, price OHLC, size
 sum/open/close/high/low, event count, first/last event timestamps, and session
-bar bounds. Invalid zeroed prices do not enter a family bar. The default
-resolution is 100,000 microseconds (`100ms`).
+bar bounds. Invalid zeroed prices do not enter a family bar, and empty family
+rows are not fabricated.
+
+The base resolution is 100,000 microseconds (`100ms`). Every higher resolution
+is rolled up from closed base bars: first open, last close, maximum high,
+minimum low, summed size and event count, and first/last timestamps. Defaults
+are `100ms`, `1s`, `5s`, `10s`, `30s`, `1m`, `5m`, and `1h`; the packed
+training subset is `100ms`, `1s`, `5s`, `30s`, and `1m`.
 
 Coverage manifest: `qmd_market_coverage_manifest_v1`
 
@@ -95,12 +102,12 @@ fine-grained source of truth for live time gaps.
 Live event coverage manifest: `qmd_live_event_coverage_v1`
 
 This table is the fine-grained recent q_live coverage source. It is maintained
-by the compact-event writer, the bar writer, and REST repair. Live streaming
+by the compact-event writer, the intraday-bar writer, and REST repair. Live streaming
 does not become covered from a single `running` row. Coverage is materialized
 as:
 
 - `compact_persisted` intervals from `events` inserts.
-- `bars_persisted` intervals from `live_market_bars` inserts.
+- `intraday_bars_persisted` intervals from closed 100ms bar inserts.
 - the intersection of compact and bar intervals for the same run id.
 - explicit `repair_completed` intervals after REST repair routes events through
   the same fan-out and verifies bar persistence for that interval.
@@ -113,9 +120,9 @@ insert failure or bar insert failure from hiding a q_live time gap.
 | Field | Meaning |
 |---|---|
 | `coverage_kind` | `q_live_events` for live compact/bar coverage or `flatfile_events` in the flatfile table. |
-| `coverage_id` | Stable id for the row. Live confirmations use `compact_<run_id>` and `bars_<run_id>`. REST repair rows use `repair_<run_id>_<started_ms>_<interval_index>`. |
-| `source` | Writer or repair source, such as `qmd_compact_event_writer`, `qmd_bar_writer`, or `massive_rest_gap_repair`. |
-| `status` | `compact_persisted`, `bars_persisted`, `repair_completed`, or diagnostic statuses. |
+| `coverage_id` | Stable id for the row. Live confirmations use `compact_<run_id>` and `intraday_<run_id>`. REST repair rows use `repair_<run_id>_<started_ms>_<interval_index>`. |
+| `source` | Writer or repair source, such as `qmd_compact_event_writer`, `qmd_intraday_bar_writer`, or `massive_rest_gap_repair`. |
+| `status` | `compact_persisted`, `intraday_bars_persisted`, `repair_completed`, or diagnostic statuses. |
 | `coverage_start_utc`, `coverage_end_utc` | UTC interval covered or diagnosed. |
 | `rows_written`, `event_rows`, `bar_rows` | Writer-specific row counts. Repair rows store per-interval counts, not one repeated global count. |
 | `error_count` | Nonzero when a diagnostic row records a failed or partial interval. |
@@ -238,16 +245,13 @@ Table: `live_massive_quotes`
 | `tape` | Massive tape code. |
 | `raw` | Original row payload as text. |
 
-## Bar Contract
+## Memory-Only Enriched Bar Contract
 
-Tables: `live_market_bars`, `bars_by_symbol_time`, `bars_by_time_symbol`
-
-The three tables have identical rows and columns. They differ only by
-ClickHouse physical layout: `live_market_bars` is optimized for chart/date
-slices, `bars_by_symbol_time` for per-symbol temporal windows, and
-`bars_by_time_symbol` for market-wide time snapshots.
-
-Bars are built from Massive trades and quotes for configured timeframes. All bar state is updated incrementally as events arrive. A closed bar is emitted after its timeframe end passes.
+The scanner, indicator, LULD-estimate, and `/snapshot/bars/{ticker}` path keeps
+an enriched `BarRow` in memory. It is built directly from Massive events for
+configured operational timeframes and is not persisted. The only durable bar
+contract is `intraday_bars_v1` above. The fields below document the richer
+operational row consumed inside QMD.
 
 ### Identity And Time
 
@@ -440,7 +444,7 @@ Table: `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`.
 
 ## Indicator Persistence Policy
 
-Tick indicators are memory-first and are not persisted continuously. Closed bar-level indicators are also memory-first by default because the current set can be recomputed from `live_market_bars`. Set `QMD_PERSIST_INDICATORS=true` only when a run needs a materialized indicator table for chart-load speed or audit.
+Tick indicators are memory-first and are not persisted continuously. Closed bar-level indicators are also memory-first by default because the current set can be recomputed from compact events and `intraday_bars_v1`. Set `QMD_PERSIST_INDICATORS=true` only when a run needs a materialized indicator table for chart-load speed or audit.
 
 ## Indicator Catalog Summary
 

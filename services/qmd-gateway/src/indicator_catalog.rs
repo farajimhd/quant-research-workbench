@@ -150,7 +150,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "high_low_range_pct",
         ],
         typical_timeframes: ALL_LIVE_TFS,
-        storage_target: "live_market_bars",
+        storage_target: "memory_enriched_bars",
         rationale: "Base replay and chart state; every other bar-level feature depends on it.",
     },
     IndicatorCatalogEntry {
@@ -180,7 +180,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "spread_bps_close",
         ],
         typical_timeframes: ALL_LIVE_TFS,
-        storage_target: "live_market_bars",
+        storage_target: "memory_enriched_bars",
         rationale: "NBBO context is needed for slippage, liquidity filters, and honest tape-only trading decisions.",
     },
     IndicatorCatalogEntry {
@@ -272,7 +272,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "cumulative_delta",
         ],
         typical_timeframes: SHORT_TFS,
-        storage_target: "live_market_bars,scanner_signal_snapshots",
+        storage_target: "memory_enriched_bars,scanner_signal_snapshots",
         rationale: "Core order-flow proxy available from tape and NBBO; persist bar summaries and signal-time snapshots, not duplicate tick streams.",
     },
     IndicatorCatalogEntry {
@@ -293,7 +293,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "large_trade_notional",
         ],
         typical_timeframes: ALL_LIVE_TFS,
-        storage_target: "live_market_bars",
+        storage_target: "memory_enriched_bars",
         rationale: "Unusual size can separate real liquidity demand from quote noise.",
     },
     IndicatorCatalogEntry {
@@ -318,7 +318,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "liquidity_score",
         ],
         typical_timeframes: ALL_LIVE_TFS,
-        storage_target: "live_market_bars,scanner_signal_snapshots",
+        storage_target: "memory_enriched_bars,scanner_signal_snapshots",
         rationale: "Filters bad fills and provides an NBBO substitute for L2; durable bars keep the history while signal snapshots keep decisions auditable.",
     },
     IndicatorCatalogEntry {
@@ -466,7 +466,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "realized_volatility",
         ],
         typical_timeframes: BAR_TFS,
-        storage_target: "live_market_bars,live_market_indicators",
+        storage_target: "memory_enriched_bars,live_market_indicators",
         rationale: "Needed for risk, stop buffers, volatility filters, and breakout quality.",
     },
     IndicatorCatalogEntry {

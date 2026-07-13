@@ -80,10 +80,11 @@ are live-tradability blocking until their close transition is observed.
 | `QMD_BAR_HISTORY_LIMIT` | `1000` | In-memory closed bars retained per ticker/timeframe. | Deeper history should come from ClickHouse. |
 | `QMD_BAR_SHARD_COUNT` | `8` | Number of bar worker shards. | Increase if bar latency rises. |
 
-Model-only microbars are disabled by default. `QMD_MODEL_STREAMING_BARS_ENABLED`
-starts isolated workers, `QMD_MODEL_STREAMING_BAR_TIMEFRAMES` defaults to
-`100ms`, and `QMD_MODEL_STREAMING_BARS_PERSIST` independently enables the
-`live_model_microbars` writer. Disabled means no workers, buffers, or writes.
+Canonical intraday bars are always enabled and require compact-event
+persistence. `QMD_INTRADAY_BAR_TIMEFRAMES` defaults to
+`100ms,1s,5s,10s,30s,1m,5m,1h`, `QMD_INTRADAY_BAR_TABLE` defaults to
+`intraday_bars_v1`, and the channel/shard controls are
+`QMD_INTRADAY_BAR_CHANNEL_CAPACITY` and `QMD_INTRADAY_BAR_SHARD_COUNT`.
 
 ## Indicators
 
@@ -93,7 +94,7 @@ starts isolated workers, `QMD_MODEL_STREAMING_BAR_TIMEFRAMES` defaults to
 | `QMD_INDICATOR_HISTORY_BY_TIMEFRAME` | `1s:900,10s:360,30s:480,1m:960,5m:192,1h:32` | Closed indicator rows retained per ticker/timeframe. | If a timeframe is missing, fallback is `QMD_INDICATOR_HISTORY_LIMIT`. |
 | `QMD_INDICATOR_HISTORY_LIMIT` | `1000` | Fallback indicator history limit. | Used only for unlisted timeframes. |
 | `QMD_INDICATOR_SHARD_COUNT` | `8` | Number of indicator worker shards. | Increase if indicator latency rises. |
-| `QMD_PERSIST_INDICATORS` | `false` | Persist closed bar-level indicator rows to ClickHouse. | Keep false by default because these indicators can be recomputed from `live_market_bars`. |
+| `QMD_PERSIST_INDICATORS` | `false` | Persist closed bar-level indicator rows to ClickHouse. | Keep false by default because these indicators can be recomputed from compact events and `intraday_bars_v1`. |
 
 ## ClickHouse Batch Writes
 
@@ -136,14 +137,14 @@ starts isolated workers, `QMD_MODEL_STREAMING_BAR_TIMEFRAMES` defaults to
 | `QMD_MARKET_HOLIDAYS_URL` | Massive `/v1/marketstatus/upcoming` | Cached full-holiday and early-close calendar. | Local New York schedule is fallback only. |
 | `QMD_FLATFILE_ENDPOINT_URL` | `https://files.massive.com` | Massive S3-compatible flatfile endpoint. | Signed metadata discovery starts after 08:00 ET. |
 | `QMD_FLATFILE_ACCESS_KEY_ID` / `QMD_FLATFILE_SECRET_ACCESS_KEY` | shared AWS env fallbacks | Credentials for metadata-only remote discovery. | Secret values are never serialized by `/config`. |
-| `QMD_HISTORICAL_PIPELINE_CODE_ROOT` | `D:\TradingML\codes\quant_research_workbench_pipelines` | Workstation path used to build the flatfile update command. | Must point to the synced pipeline code that updates historical `events` and qmd-compatible `live_market_bars`. |
+| `QMD_HISTORICAL_PIPELINE_CODE_ROOT` | `D:\TradingML\codes\quant_research_workbench_pipelines` | Workstation path used to build the flatfile update command. | Must point to the synced pipeline code that updates read-only historical `events_YYYY`. |
 
 Recent live repair converts Massive REST rows to the same normalized
 `MarketEvent` type used by the websocket path, then feeds the same state,
 stream, bar, indicator, and compact-event queues. Raw `live_massive_trades` and
 `live_massive_quotes` are not part of the default repair contract. The repair
 loads `qmd_live_event_coverage_v1`, materializes covered intervals from the
-intersection of `compact_persisted` and `bars_persisted` rows plus explicit
+intersection of `compact_persisted` and `intraday_bars_persisted` rows plus explicit
 `repair_completed` rows, subtracts those intervals from the current New York
 market day plus the configured prior sessions, and fills every remaining
 04:00-20:00 ET session gap. Symbols come from the durable

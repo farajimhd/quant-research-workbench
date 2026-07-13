@@ -14,7 +14,6 @@ class ClickHouseReplayWriter:
     max_batch: int = 5000
     quote_rows: list[dict] = field(default_factory=list)
     trade_rows: list[dict] = field(default_factory=list)
-    bar_rows: list[dict] = field(default_factory=list)
 
     def initialize(self) -> None:
         if self.enabled:
@@ -68,14 +67,8 @@ class ClickHouseReplayWriter:
         )
         self.flush_if_needed()
 
-    def add_bar(self, row: dict | None) -> None:
-        if not self.enabled or not row:
-            return
-        self.bar_rows.append(row)
-        self.flush_if_needed()
-
     def flush_if_needed(self) -> None:
-        if len(self.trade_rows) >= self.max_batch or len(self.quote_rows) >= self.max_batch or len(self.bar_rows) >= self.max_batch:
+        if len(self.trade_rows) >= self.max_batch or len(self.quote_rows) >= self.max_batch:
             self.flush()
 
     def flush(self) -> None:
@@ -87,6 +80,3 @@ class ClickHouseReplayWriter:
         if self.quote_rows:
             self.client.insert_json_each_row("live_massive_quotes", self.quote_rows)
             self.quote_rows = []
-        if self.bar_rows:
-            self.client.insert_json_each_row("live_market_bars", self.bar_rows)
-            self.bar_rows = []

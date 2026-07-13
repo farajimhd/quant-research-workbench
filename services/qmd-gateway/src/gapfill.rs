@@ -853,7 +853,7 @@ impl GapFillService {
                 coverage_end_utc
             FROM {table} FINAL
             WHERE coverage_kind = 'q_live_events'
-              AND status IN ('repair_completed', 'coverage_bootstrap', 'compact_persisted', 'bars_persisted')
+              AND status IN ('repair_completed', 'coverage_bootstrap', 'compact_persisted', 'intraday_bars_persisted')
               AND coverage_end_utc > toDateTime64('{start}', 3, 'UTC')
               AND coverage_start_utc < toDateTime64('{end}', 3, 'UTC')
             ORDER BY coverage_start_utc, coverage_end_utc
@@ -1300,7 +1300,7 @@ impl GapFillService {
                     "reason": interval.reason,
                     "persistence_contract": [
                         self.config.compact_event_table.as_str(),
-                        "q_live.live_market_bars"
+                        self.config.intraday_bar_table.as_str()
                     ],
                     "symbols_attempted": stats.symbols_attempted,
                     "symbols_with_rows": stats.symbols_with_rows,
@@ -1328,13 +1328,15 @@ impl GapFillService {
         let sql = format!(
             r#"
             SELECT count()
-            FROM live_market_bars
-            WHERE bar_end > toDateTime64('{start}', 3, 'UTC')
-              AND bar_start < toDateTime64('{end}', 3, 'UTC')
+            FROM {table} FINAL
+            WHERE label_resolution_us = 100000
+              AND last_event_timestamp_us > {start_us}
+              AND first_event_timestamp_us < {end_us}
             FORMAT TSV
             "#,
-            start = clickhouse_datetime64(&start),
-            end = clickhouse_datetime64(&end),
+            table = self.config.intraday_bar_table,
+            start_us = start.timestamp_micros(),
+            end_us = end.timestamp_micros(),
         );
         Ok(self
             .query(&sql, true)
@@ -1711,7 +1713,7 @@ impl GapFillService {
                 true,
             )
             .await?;
-        let session_rows = old_sessions
+        let event_session_rows = old_sessions
             .lines()
             .filter_map(|line| {
                 let (date, count) = line.split_once('\t')?;
@@ -1721,6 +1723,35 @@ impl GapFillService {
                 ))
             })
             .collect::<Vec<_>>();
+        let old_bar_sessions = self
+            .query(
+                &format!(
+                    "SELECT toString(local_date), count() FROM {} FINAL WHERE local_date < toDate('{}') GROUP BY local_date ORDER BY local_date FORMAT TSV",
+                    self.config.intraday_bar_table, cutoff,
+                ),
+                true,
+            )
+            .await?;
+        let mut session_counts = BTreeMap::<NaiveDate, u64>::new();
+        for (date, count) in event_session_rows {
+            session_counts.insert(date, count);
+        }
+        for line in old_bar_sessions.lines() {
+            let Some((date, count)) = line.split_once('\t') else {
+                continue;
+            };
+            let (Ok(date), Ok(count)) = (
+                NaiveDate::parse_from_str(date, "%Y-%m-%d"),
+                count.parse::<u64>(),
+            ) else {
+                continue;
+            };
+            session_counts
+                .entry(date)
+                .and_modify(|value| *value = value.saturating_add(count))
+                .or_insert(count);
+        }
+        let session_rows = session_counts.into_iter().collect::<Vec<_>>();
         let older_rows = session_rows.iter().map(|(_, count)| count).sum::<u64>();
         if older_rows == 0 {
             return Ok(());
@@ -1751,6 +1782,14 @@ impl GapFillService {
             &format!(
                 "ALTER TABLE {} DELETE WHERE toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York')) < toDate('{}')",
                 self.config.compact_event_table, cutoff
+            ),
+            true,
+        )
+        .await?;
+        self.query(
+            &format!(
+                "ALTER TABLE {} DELETE WHERE local_date < toDate('{}')",
+                self.config.intraday_bar_table, cutoff
             ),
             true,
         )
@@ -2421,7 +2460,7 @@ fn merge_tree_settings(storage_policy: &str) -> String {
 fn materialize_confirmed_live_coverage(rows: &[CoverageRow]) -> Vec<CoverageInterval> {
     let mut direct = Vec::new();
     let mut compact_by_run: BTreeMap<String, Vec<&CoverageRow>> = BTreeMap::new();
-    let mut bars_by_run: BTreeMap<String, Vec<&CoverageRow>> = BTreeMap::new();
+    let mut intraday_by_run: BTreeMap<String, Vec<&CoverageRow>> = BTreeMap::new();
     for row in rows {
         match row.status.as_str() {
             "repair_completed" | "coverage_bootstrap" => direct.push(CoverageInterval {
@@ -2434,9 +2473,9 @@ fn materialize_confirmed_live_coverage(rows: &[CoverageRow]) -> Vec<CoverageInte
                     .or_default()
                     .push(row);
             }
-            "bars_persisted" => {
-                bars_by_run
-                    .entry(run_suffix(&row.coverage_id, "bars_"))
+            "intraday_bars_persisted" => {
+                intraday_by_run
+                    .entry(run_suffix(&row.coverage_id, "intraday_"))
                     .or_default()
                     .push(row);
             }
@@ -2445,7 +2484,7 @@ fn materialize_confirmed_live_coverage(rows: &[CoverageRow]) -> Vec<CoverageInte
     }
     let mut out = direct;
     for (run_id, compact_rows) in compact_by_run {
-        let Some(bar_rows) = bars_by_run.get(&run_id) else {
+        let Some(bar_rows) = intraday_by_run.get(&run_id) else {
             continue;
         };
         for compact in compact_rows {

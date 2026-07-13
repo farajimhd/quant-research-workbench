@@ -112,30 +112,6 @@ def ensure_replay_tables(client: ClickHouseHttpClient) -> None:
     )
     client.execute(
         """
-        CREATE TABLE IF NOT EXISTS live_market_bars
-        (
-            session_date Date,
-            timeframe LowCardinality(String),
-            bar_start DateTime64(3, 'UTC'),
-            bar_end DateTime64(3, 'UTC'),
-            sym LowCardinality(String),
-            open Float64,
-            high Float64,
-            low Float64,
-            close Float64,
-            volume Float64,
-            dollar_volume Float64,
-            trade_count UInt32,
-            vwap Float64,
-            source LowCardinality(String)
-        )
-        ENGINE = ReplacingMergeTree
-        PARTITION BY session_date
-        ORDER BY (session_date, timeframe, sym, bar_start)
-        """
-    )
-    client.execute(
-        """
         CREATE TABLE IF NOT EXISTS live_trading_sessions
         (
             trading_session_id String,

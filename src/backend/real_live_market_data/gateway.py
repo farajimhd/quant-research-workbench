@@ -180,10 +180,8 @@ class MarketGateway:
             return
         state = self.states.setdefault(event.sym, SymbolState())
         if isinstance(event, TradeEvent):
-            finalized_bar = rotate_minute_bar_if_needed(state, event)
+            rotate_minute_bar_if_needed(state, event)
             apply_trade(state, event)
-            if self.writer:
-                self.writer.add_bar(finalized_bar)
         else:
             apply_quote(state, event)
 

@@ -4,6 +4,7 @@ use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
 use crate::indicator_catalog::{indicator_catalog, IndicatorCatalogEntry};
 use crate::indicators::{IndicatorSnapshot, SharedIndicatorStore};
+use crate::intraday_bars::IntradayBarRow;
 use crate::live_market_state::{
     LiveMarketStateSnapshot, LiveSymbolMarketStateEvent, SharedLiveMarketStateStore,
     TickerLiveMarketStateSnapshot,
@@ -11,7 +12,6 @@ use crate::live_market_state::{
 use crate::maintenance::{MaintenanceSnapshot, SharedMaintenanceState};
 use crate::market_calendar::{MarketCalendarClient, MarketSnapshot};
 use crate::metrics::{MetricsSnapshot, OperationalSnapshot, SharedMetrics};
-use crate::model_bars::ModelBarRow;
 use crate::scanner::{ScannerPrimitive, ScannerPrimitiveSnapshot, SharedScannerStore};
 use crate::session::session_phase;
 use crate::signal_catalog::{signal_catalog, SignalMethodEntry};
@@ -44,7 +44,7 @@ pub struct AppState {
     pub maintenance: SharedMaintenanceState,
     pub market_calendar: MarketCalendarClient,
     pub metrics: SharedMetrics,
-    pub model_microbars: Option<broadcast::Sender<ModelBarRow>>,
+    pub intraday_bars: broadcast::Sender<IntradayBarRow>,
     pub scanner: SharedScannerStore,
     pub scanner_events: broadcast::Sender<ScannerPrimitive>,
     pub shutdown: watch::Sender<bool>,
@@ -122,7 +122,7 @@ pub fn app(state: AppState) -> Router {
             get(ticker_live_market_state_snapshot),
         )
         .route("/stream/compact-events", get(compact_event_stream))
-        .route("/stream/model-microbars", get(model_microbar_stream))
+        .route("/stream/intraday-bars", get(intraday_bar_stream))
         .route("/stream/events", get(event_stream))
         .route("/stream/live-market-state", get(live_market_state_stream))
         .route("/stream/scanner", get(scanner_stream))
@@ -401,7 +401,7 @@ fn build_live_pipeline(operational: &OperationalSnapshot, metrics: &MetricsSnaps
         json!({"key": "massive_feed", "label": "Massive feed", "state": lane_state(operational, "massive_feed"), "detail": lane_detail(operational, "massive_feed"), "rows": metrics.ingest_events, "last_event_utc": metrics.last_event_ts, "lag_ms": metrics.last_event_lag_ms}),
         json!({"key": "normalize", "label": "Normalize / encode", "state": normalize_state, "rows": metrics.compact_events_emitted, "rejected": metrics.compact_event_rejected, "detail": "Uses the compact event reference-table encoding contract; consumers should alert if rejects are actively rising."}),
         json!({"key": "compact_events", "label": "q_live.events", "lane": lane(operational, "compact_events"), "rows": metrics.compact_events_persisted, "reorder_pending": metrics.compact_events_reorder_pending}),
-        json!({"key": "bars", "label": "Live bars", "lane": lane(operational, "bars"), "rows": metrics.bar_rows_emitted}),
+        json!({"key": "intraday_bars", "label": "Canonical intraday bars", "lane": lane(operational, "intraday_bars"), "rows": metrics.intraday_bar_rows_persisted, "emitted": metrics.intraday_bar_rows_emitted}),
     ]
 }
 
@@ -410,18 +410,21 @@ fn build_downstream_products(
     operational: &OperationalSnapshot,
     metrics: &MetricsSnapshot,
 ) -> Vec<Value> {
-    let scanner_state = match lane_state(operational, "bars") {
-        "healthy" => "healthy",
-        "failed" => "degraded",
-        "disabled" => "disabled",
-        _ => "waiting",
+    let scanner_state = if metrics.bar_events_dropped > 0 || metrics.bar_rows_scanner_dropped > 0 {
+        "degraded"
+    } else {
+        match lane_state(operational, "massive_feed") {
+            "healthy" => "healthy",
+            "failed" => "degraded",
+            "disabled" => "disabled",
+            _ => "waiting",
+        }
     };
     vec![
-        json!({"product": "Bars", "enabled": true, "state": lane_state(operational, "bars"), "rows": metrics.bar_rows_emitted, "detail": lane_detail(operational, "bars")}),
+        json!({"product": "Intraday bars", "enabled": true, "state": lane_state(operational, "intraday_bars"), "rows": metrics.intraday_bar_rows_persisted, "detail": lane_detail(operational, "intraday_bars")}),
         json!({"product": "Indicators", "enabled": config.persist_indicators, "state": lane_state(operational, "indicators"), "detail": lane_detail(operational, "indicators")}),
         json!({"product": "Scanner primitives", "enabled": true, "state": scanner_state, "rows": metrics.scanner_candidates_emitted, "detail": "Zero candidates is normal when no primitive threshold is met."}),
         json!({"product": "Abnormal market state", "enabled": config.live_market_state_enabled, "state": lane_state(operational, "live_market_state"), "rows": metrics.live_market_state_events_persisted, "detail": lane_detail(operational, "live_market_state")}),
-        json!({"product": "Model microbars", "enabled": config.model_streaming_bars_enabled, "persist": config.model_streaming_bars_persist, "state": lane_state(operational, "model_microbars"), "detail": lane_detail(operational, "model_microbars")}),
     ]
 }
 
@@ -787,25 +790,17 @@ async fn compact_event_stream(
     })
 }
 
-async fn model_microbar_stream(
+async fn intraday_bar_stream(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
-        stream_model_microbars(socket, state).await;
+        stream_intraday_bars(socket, state).await;
     })
 }
 
-async fn stream_model_microbars(mut socket: WebSocket, state: Arc<AppState>) {
-    let Some(sender) = &state.model_microbars else {
-        let _ = socket
-            .send(Message::Text(
-                r#"{"status":"disabled","feature":"model_microbars"}"#.into(),
-            ))
-            .await;
-        return;
-    };
-    let mut receiver = sender.subscribe();
+async fn stream_intraday_bars(mut socket: WebSocket, state: Arc<AppState>) {
+    let mut receiver = state.intraday_bars.subscribe();
     loop {
         match receiver.recv().await {
             Ok(row) => {
@@ -816,7 +811,7 @@ async fn stream_model_microbars(mut socket: WebSocket, state: Arc<AppState>) {
             }
             Err(broadcast::error::RecvError::Lagged(count)) => {
                 let warning =
-                    format!(r#"{{"warning":"model_microbar_stream_lagged","skipped":{count}}}"#);
+                    format!(r#"{{"warning":"intraday_bar_stream_lagged","skipped":{count}}}"#);
                 if socket.send(Message::Text(warning.into())).await.is_err() {
                     break;
                 }

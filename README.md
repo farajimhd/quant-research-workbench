@@ -78,7 +78,7 @@ paper or live accounts.
 | Backtesting | `src/backtest` | Event ordering, fills, fees, portfolio state, results, observability, and step debugging. |
 | Prepared-data provider | `src/data_provider` | Builds and validates reusable historical bar/feature artifacts used by the current backtest and replay paths. |
 | Live market engine | `src/market_engine` | Shared event, bar, scanner, broker, source, and storage contracts. |
-| Live and recent market data | `services/qmd-gateway` | Rust gateway for Massive quotes/trades, compact events, live bars, indicators, scanner primitives, recent gap repair, and local streams/APIs. |
+| Live and recent market data | `services/qmd-gateway` | Rust gateway for Massive quotes/trades, compact events, always-on canonical intraday bars, indicators, scanner primitives, recent gap repair, and local streams/APIs. |
 | Historical market data | `pipelines/market_sip` | Massive flat-file download, compact event ingestion, validation, repairs, and derived event/bar builders. |
 | News | `services/news_gateway`, `pipelines/news/benzinga` | Live Benzinga acquisition plus historical ingestion, normalization, persistence, coverage, and repair. |
 | SEC filings | `services/sec_gateway`, `pipelines/sec/edgar` | Live SEC feed handling plus historical filing/document/XBRL extraction and rebuilding. |
@@ -113,9 +113,10 @@ when a requested range crosses the live/historical boundary:
   order the combined result by event time, source sequence, event type, and live
   arrival sequence. Historical ordinals remain authoritative only inside the
   historical segment; a consumer may assign a query-local ordinal afterward.
-- Closed live bars are persisted in `q_live` using schemas aligned with the
-  historical `market_sip_compact` bar layouts, allowing chart consumers to join
-  recent and older ranges.
+- `q_live.intraday_bars_v1` is the single rolling live bar table. Sparse
+  `trade`, `quote_bid`, and `quote_ask` bars are built at `100ms`, then rolled
+  up from closed base bars to `1s`, `5s`, `10s`, `30s`, `1m`, `5m`, and `1h`.
+  It retains the same current-plus-three-prior-session window as live events.
 
 After 08:00 Eastern, QMD discovers Massive quote and trade flatfiles and records
 per-object readiness in `q_live.qmd_flatfile_coverage_v2`. A workstation QMD
@@ -125,9 +126,11 @@ historical event tables directly. QMD also rechecks indexed object identity on
 a bounded cadence, so a changed remote flatfile reopens that session for an
 auditable updater rerun.
 
-Future live models can opt into QMD's `100ms` long-form `trade`, `quote_bid`,
-and `quote_ask` microbar stream. It is disabled by default and runs in isolated
-workers so the existing scanner/chart bar path is unchanged.
+The intraday bar product is always enabled and uses the same compact-event
+encoding and numeric sanitization as packed training preparation. Its exact
+training subset is `100ms`, `1s`, `5s`, `30s`, and `1m`; additional operational
+resolutions share the same table. The richer scanner/indicator bars remain
+memory-only and are not duplicated into separate ClickHouse layouts.
 
 QMD's terminal follows the same boundary. Its primary surface shows the live
 Massive-to-`q_live.events` pipeline, confirmed recent event/bar coverage,

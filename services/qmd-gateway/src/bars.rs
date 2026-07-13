@@ -1,46 +1,18 @@
-use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::live_market_state::LiveMarketStateRouter;
 use crate::metrics::SharedMetrics;
 use crate::scanner::ScannerPrimitiveRouter;
-use crate::timefmt::{clickhouse_datetime64, clickhouse_datetime64_opt};
 use chrono::{DateTime, TimeZone, Timelike, Utc};
 use chrono_tz::America::New_York;
-use reqwest::Client;
 use serde::Serialize;
-use serde_json::json;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
-use tokio::time::{interval, sleep, Duration};
+use tokio::time::{interval, Duration};
 
 pub const BAR_SCHEMA_VERSION: u16 = 2;
 const ESTIMATED_LULD_WINDOW_SECONDS: i64 = 300;
 const ESTIMATED_LULD_NEAR_BAND_PCT: f64 = 1.0;
-
-struct BarTableLayout {
-    name: &'static str,
-    partition_sql: &'static str,
-    order_by_sql: &'static str,
-}
-
-const BAR_TABLE_LAYOUTS: &[BarTableLayout] = &[
-    BarTableLayout {
-        name: "live_market_bars",
-        partition_sql: "PARTITION BY session_date",
-        order_by_sql: "ORDER BY (session_date, timeframe, sym, bar_start)",
-    },
-    BarTableLayout {
-        name: "bars_by_symbol_time",
-        partition_sql: "PARTITION BY toYYYYMM(bar_start)",
-        order_by_sql: "ORDER BY (sym, timeframe, bar_start)",
-    },
-    BarTableLayout {
-        name: "bars_by_time_symbol",
-        partition_sql: "PARTITION BY toYYYYMM(bar_start)",
-        order_by_sql: "ORDER BY (timeframe, bar_start, sym)",
-    },
-];
 
 #[derive(Clone, Debug, Serialize)]
 pub struct BarSnapshot {
@@ -1086,7 +1058,6 @@ pub fn spawn_bar_engines(
     indicator_sender: Option<mpsc::Sender<BarRow>>,
     scanner_sender: Option<ScannerPrimitiveRouter>,
     live_market_state_sender: Option<LiveMarketStateRouter>,
-    writer_sender: mpsc::Sender<BarRow>,
     metrics: SharedMetrics,
 ) -> BarEventRouter {
     let shard_count = bars.shard_count();
@@ -1102,7 +1073,6 @@ pub fn spawn_bar_engines(
             indicator_sender.clone(),
             scanner_sender.clone(),
             live_market_state_sender.clone(),
-            writer_sender.clone(),
             metrics.clone(),
         ));
     }
@@ -1118,7 +1088,6 @@ async fn run_bar_engine(
     indicator_sender: Option<mpsc::Sender<BarRow>>,
     scanner_sender: Option<ScannerPrimitiveRouter>,
     live_market_state_sender: Option<LiveMarketStateRouter>,
-    writer_sender: mpsc::Sender<BarRow>,
     metrics: SharedMetrics,
 ) {
     let mut heartbeat = interval(Duration::from_millis(250));
@@ -1128,18 +1097,18 @@ async fn run_bar_engine(
                 match event {
                     Some(event) => {
                         let finalized = shard.apply_event(&event).await;
-                        send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), scanner_sender.as_ref(), live_market_state_sender.as_ref(), &metrics, finalized).await;
+                        send_finalized_bars(shard_id, indicator_sender.as_ref(), scanner_sender.as_ref(), live_market_state_sender.as_ref(), &metrics, finalized).await;
                     }
                     None => {
                         let finalized = shard.finalize_due(Utc::now()).await;
-                        send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), scanner_sender.as_ref(), live_market_state_sender.as_ref(), &metrics, finalized).await;
+                        send_finalized_bars(shard_id, indicator_sender.as_ref(), scanner_sender.as_ref(), live_market_state_sender.as_ref(), &metrics, finalized).await;
                         return;
                     }
                 }
             }
             _ = heartbeat.tick() => {
                 let finalized = shard.finalize_due(Utc::now()).await;
-                send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), scanner_sender.as_ref(), live_market_state_sender.as_ref(), &metrics, finalized).await;
+                send_finalized_bars(shard_id, indicator_sender.as_ref(), scanner_sender.as_ref(), live_market_state_sender.as_ref(), &metrics, finalized).await;
             }
         }
     }
@@ -1147,7 +1116,6 @@ async fn run_bar_engine(
 
 async fn send_finalized_bars(
     shard_id: usize,
-    writer_sender: &mpsc::Sender<BarRow>,
     indicator_sender: Option<&mpsc::Sender<BarRow>>,
     scanner_sender: Option<&ScannerPrimitiveRouter>,
     live_market_state_sender: Option<&LiveMarketStateRouter>,
@@ -1173,504 +1141,8 @@ async fn send_finalized_bars(
                 eprintln!("Live market state receiver closed; shard {shard_id} could not route one finalized bar.");
             }
         }
-        if writer_sender.send(row).await.is_err() {
-            metrics.inc_bar_writer_dropped();
-            eprintln!(
-                "Bar writer receiver closed; shard {shard_id} could not persist one finalized bar."
-            );
-        } else {
-            metrics.inc_bar_persist_queued();
-        }
     }
 }
-
-#[derive(Clone)]
-pub struct BarClickHouseWriter {
-    client: Client,
-    config: GatewayConfig,
-    metrics: SharedMetrics,
-}
-
-impl BarClickHouseWriter {
-    pub fn new(config: GatewayConfig, metrics: SharedMetrics) -> Self {
-        Self {
-            client: Client::new(),
-            config,
-            metrics,
-        }
-    }
-
-    pub async fn initialize(&self) -> Result<(), String> {
-        self.execute(
-            &format!(
-                "CREATE DATABASE IF NOT EXISTS `{}`",
-                self.config.clickhouse_database
-            ),
-            false,
-        )
-        .await?;
-        for layout in BAR_TABLE_LAYOUTS {
-            self.execute(&self.create_bar_table_sql(layout), true)
-                .await?;
-            for alter_sql in self.bar_table_alter_sqls(layout.name) {
-                self.execute(&alter_sql, true).await?;
-            }
-        }
-        self.execute(&self.create_live_coverage_table_sql(), true)
-            .await?;
-        Ok(())
-    }
-
-    fn create_bar_table_sql(&self, layout: &BarTableLayout) -> String {
-        format!(
-            r#"
-            CREATE TABLE IF NOT EXISTS {table}
-            (
-                session_date Date,
-                schema_version UInt16,
-                timeframe LowCardinality(String),
-                sym LowCardinality(String),
-                bar_start DateTime64(3, 'UTC'),
-                bar_end DateTime64(3, 'UTC'),
-                is_closed UInt8,
-                first_event_ts Nullable(DateTime64(3, 'UTC')),
-                last_event_ts Nullable(DateTime64(3, 'UTC')),
-                open Float64,
-                high Float64,
-                low Float64,
-                close Float64,
-                volume Float64,
-                dollar_volume Float64,
-                trade_count UInt64,
-                vwap Float64,
-                avg_trade_size Float64,
-                median_trade_size Float64,
-                max_trade_size Float64,
-                large_trade_count UInt64,
-                large_trade_volume Float64,
-                large_trade_notional Float64,
-                trade_rate Float64,
-                volume_rate Float64,
-                dollar_volume_rate Float64,
-                price_change Float64,
-                price_change_pct Float64,
-                high_low_range Float64,
-                high_low_range_pct Float64,
-                bid_open Float64,
-                bid_high Float64,
-                bid_low Float64,
-                bid_close Float64,
-                ask_open Float64,
-                ask_high Float64,
-                ask_low Float64,
-                ask_close Float64,
-                mid_open Float64,
-                mid_high Float64,
-                mid_low Float64,
-                mid_close Float64,
-                spread_open Float64,
-                spread_high Float64,
-                spread_low Float64,
-                spread_close Float64,
-                spread_mean Float64,
-                spread_bps_mean Float64,
-                spread_bps_close Float64,
-                quoted_bid_size_mean Float64,
-                quoted_ask_size_mean Float64,
-                quote_count UInt64,
-                quote_rate Float64,
-                quote_update_intensity Float64,
-                locked_crossed_quote_count UInt64,
-                buy_trade_count UInt64,
-                sell_trade_count UInt64,
-                buy_volume Float64,
-                sell_volume Float64,
-                buy_dollar_volume Float64,
-                sell_dollar_volume Float64,
-                tape_imbalance Float64,
-                aggressive_buy_ratio Float64,
-                aggressive_sell_ratio Float64,
-                buy_sell_volume_delta Float64,
-                cumulative_delta Float64,
-                effective_spread_mean Float64,
-                realized_spread_proxy Float64,
-                price_impact_1s Float64,
-                price_impact_5s Float64,
-                slippage_proxy_bps Float64,
-                depth_imbalance_proxy Float64,
-                liquidity_score Float64,
-                spread_volume_ratio Float64,
-                return_1_bar Float64,
-                return_3_bar Float64,
-                return_5_bar Float64,
-                volume_accel Float64,
-                trade_count_accel Float64,
-                dollar_volume_accel Float64,
-                quote_rate_accel Float64,
-                tape_imbalance_accel Float64,
-                vwap_distance_pct Float64,
-                mid_vwap_distance_pct Float64,
-                realized_volatility Float64,
-                micro_price_volatility Float64,
-                mid_price_volatility Float64,
-                mean_abs_trade_return Float64,
-                direction_change_count UInt64,
-                chop_score Float64,
-                estimated_luld_active UInt8,
-                estimated_luld_reference_price Float64,
-                estimated_luld_lower_price Float64,
-                estimated_luld_upper_price Float64,
-                estimated_luld_parameter_pct Float64,
-                estimated_luld_distance_to_upper_pct Float64,
-                estimated_luld_distance_to_lower_pct Float64,
-                estimated_luld_state LowCardinality(String)
-            )
-            ENGINE = ReplacingMergeTree
-            {partition_sql}
-            {order_by_sql}
-            {settings}
-            "#,
-            table = layout.name,
-            partition_sql = layout.partition_sql,
-            order_by_sql = layout.order_by_sql,
-            settings = merge_tree_settings(&self.config.clickhouse_storage_policy),
-        )
-    }
-
-    fn bar_table_alter_sqls(&self, table: &str) -> Vec<String> {
-        [
-            "ADD COLUMN IF NOT EXISTS schema_version UInt16 AFTER session_date",
-            "ADD COLUMN IF NOT EXISTS large_trade_notional Float64 AFTER large_trade_volume",
-            "ADD COLUMN IF NOT EXISTS estimated_luld_active UInt8 AFTER chop_score",
-            "ADD COLUMN IF NOT EXISTS estimated_luld_reference_price Float64 AFTER estimated_luld_active",
-            "ADD COLUMN IF NOT EXISTS estimated_luld_lower_price Float64 AFTER estimated_luld_reference_price",
-            "ADD COLUMN IF NOT EXISTS estimated_luld_upper_price Float64 AFTER estimated_luld_lower_price",
-            "ADD COLUMN IF NOT EXISTS estimated_luld_parameter_pct Float64 AFTER estimated_luld_upper_price",
-            "ADD COLUMN IF NOT EXISTS estimated_luld_distance_to_upper_pct Float64 AFTER estimated_luld_parameter_pct",
-            "ADD COLUMN IF NOT EXISTS estimated_luld_distance_to_lower_pct Float64 AFTER estimated_luld_distance_to_upper_pct",
-            "ADD COLUMN IF NOT EXISTS estimated_luld_state LowCardinality(String) AFTER estimated_luld_distance_to_lower_pct",
-        ]
-        .iter()
-        .map(|clause| format!("ALTER TABLE {table} {clause}"))
-        .collect()
-    }
-
-    pub async fn run(self, mut receiver: mpsc::Receiver<BarRow>) {
-        let mut batch = Vec::with_capacity(self.config.max_clickhouse_batch);
-        let mut flush_interval = interval(Duration::from_millis(self.config.flush_interval_ms));
-        loop {
-            tokio::select! {
-                row = receiver.recv() => {
-                    match row {
-                        Some(row) => batch.push(row),
-                        None => {
-                            while !batch.is_empty() {
-                                self.flush(&mut batch).await;
-                                if !batch.is_empty() {
-                                    sleep(Duration::from_millis(250)).await;
-                                }
-                            }
-                            return;
-                        }
-                    }
-                    if batch.len() >= self.config.max_clickhouse_batch {
-                        self.flush(&mut batch).await;
-                    }
-                }
-                _ = flush_interval.tick() => {
-                    self.flush(&mut batch).await;
-                }
-            }
-            self.metrics
-                .set_lane_pending("bars", (batch.len() + receiver.len()) as u64);
-        }
-    }
-
-    async fn flush(&self, batch: &mut Vec<BarRow>) {
-        if batch.is_empty() {
-            return;
-        }
-        self.metrics.set_lane_pending("bars", batch.len() as u64);
-        if let Err(error) = self.insert_bars(batch).await {
-            self.metrics.record_lane_failure("bars", &error);
-            eprintln!("ClickHouse bar insert failed: {error}");
-            return;
-        }
-        let coverage_result = self.record_live_event_coverage(batch).await;
-        let count = batch.len() as u64;
-        batch.clear();
-        self.metrics
-            .record_lane_success("bars", count, "Committed closed live bars.");
-        self.metrics.set_lane_pending("bars", 0);
-        match coverage_result {
-            Ok(()) => self.metrics.record_lane_success(
-                "coverage_ledger",
-                1,
-                "Recorded bar coverage confirmation.",
-            ),
-            Err(error) => {
-                self.metrics.record_lane_failure("coverage_ledger", &error);
-                eprintln!("ClickHouse qmd bar coverage update failed: {error}");
-            }
-        }
-    }
-
-    async fn insert_bars(&self, rows: &[BarRow]) -> Result<(), String> {
-        let body = rows
-            .iter()
-            .map(|row| {
-                serde_json::to_string(&bar_insert_row(row)).unwrap_or_else(|_| "{}".to_string())
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        for layout in BAR_TABLE_LAYOUTS {
-            self.query_with_body(
-                &format!("INSERT INTO {} FORMAT JSONEachRow", layout.name),
-                body.clone(),
-            )
-            .await?;
-        }
-        Ok(())
-    }
-
-    fn create_live_coverage_table_sql(&self) -> String {
-        format!(
-            r#"
-            CREATE TABLE IF NOT EXISTS {table}
-            (
-                coverage_kind LowCardinality(String),
-                coverage_id String,
-                source LowCardinality(String),
-                status LowCardinality(String),
-                coverage_start_utc DateTime64(3, 'UTC'),
-                coverage_end_utc DateTime64(3, 'UTC'),
-                rows_written UInt64,
-                event_rows UInt64,
-                bar_rows UInt64,
-                error_count UInt64,
-                started_at_utc DateTime64(3, 'UTC'),
-                updated_at_utc DateTime64(3, 'UTC'),
-                completed_at_utc Nullable(DateTime64(3, 'UTC')),
-                metadata_json String
-            )
-            ENGINE = ReplacingMergeTree(updated_at_utc)
-            PARTITION BY toYYYYMM(coverage_start_utc)
-            ORDER BY (coverage_kind, coverage_id)
-            {settings}
-            "#,
-            table = self.config.qmd_live_event_coverage_table,
-            settings = merge_tree_settings(&self.config.clickhouse_storage_policy),
-        )
-    }
-
-    async fn record_live_event_coverage(&self, rows: &[BarRow]) -> Result<(), String> {
-        if rows.is_empty() {
-            return Ok(());
-        }
-        let now = Utc::now();
-        let min_ts = rows
-            .iter()
-            .filter_map(|row| row.first_event_ts.or(Some(row.bar_start)))
-            .min()
-            .unwrap_or(now);
-        let max_ts = rows
-            .iter()
-            .filter_map(|row| row.last_event_ts.or(Some(row.bar_end)))
-            .max()
-            .unwrap_or(now);
-        if max_ts <= min_ts {
-            return Ok(());
-        }
-        let started_at = self
-            .config
-            .qmd_run_started_at()
-            .unwrap_or_else(|| min_ts.min(now));
-        let row = json!({
-            "coverage_kind": "q_live_events",
-            "coverage_id": format!("bars_{}", self.config.qmd_run_id),
-            "source": "qmd_bar_writer",
-            "status": "bars_persisted",
-            "coverage_start_utc": clickhouse_datetime64(&started_at.min(min_ts)),
-            "coverage_end_utc": clickhouse_datetime64(&max_ts),
-            "rows_written": rows.len() as u64,
-            "event_rows": 0u64,
-            "bar_rows": rows.len() as u64,
-            "error_count": 0u64,
-            "started_at_utc": clickhouse_datetime64(&started_at),
-            "updated_at_utc": clickhouse_datetime64(&now),
-            "completed_at_utc": Option::<String>::None,
-            "metadata_json": json!({
-                "run_id": self.config.qmd_run_id,
-                "coverage_rule": "bar-side coverage confirmation; q_live coverage is confirmed only where compact events and bars overlap",
-                "raw_trade_quote_tables": "not_in_persistence_contract",
-                "indicators": "not_persisted_by_default",
-            }).to_string(),
-        });
-        self.query(
-            &format!(
-                "INSERT INTO {} FORMAT JSONEachRow\n{}",
-                self.config.qmd_live_event_coverage_table, row
-            ),
-            true,
-        )
-        .await
-        .map(|_| ())
-    }
-
-    async fn execute(&self, sql: &str, use_database: bool) -> Result<(), String> {
-        self.query(sql, use_database).await.map(|_| ())
-    }
-
-    async fn query_with_body(&self, sql: &str, body: String) -> Result<(), String> {
-        self.query(&format!("{sql}\n{body}"), true)
-            .await
-            .map(|_| ())
-    }
-
-    async fn query(&self, body: &str, use_database: bool) -> Result<String, String> {
-        let url = if use_database {
-            format!(
-                "{}/?database={}",
-                self.config.clickhouse_url,
-                urlencoding::encode(&self.config.clickhouse_database)
-            )
-        } else {
-            format!("{}/", self.config.clickhouse_url)
-        };
-        let mut request = self
-            .client
-            .post(url)
-            .header("Content-Type", "text/plain; charset=utf-8")
-            .header("X-ClickHouse-User", &self.config.clickhouse_user)
-            .body(body.to_string());
-        let password = self.config.clickhouse_password();
-        if !password.is_empty() {
-            request = request.header("X-ClickHouse-Key", password);
-        }
-        let response = request.send().await.map_err(|error| error.to_string())?;
-        let status = response.status();
-        let text = response.text().await.map_err(|error| error.to_string())?;
-        if !status.is_success() {
-            return Err(format!("ClickHouse HTTP {status}: {text}"));
-        }
-        Ok(text)
-    }
-}
-
-fn bar_insert_row(row: &BarRow) -> serde_json::Value {
-    json!({
-        "session_date": &row.session_date,
-        "schema_version": row.schema_version,
-        "timeframe": &row.timeframe,
-        "sym": &row.sym,
-        "bar_start": clickhouse_datetime64(&row.bar_start),
-        "bar_end": clickhouse_datetime64(&row.bar_end),
-        "is_closed": row.is_closed as u8,
-        "first_event_ts": clickhouse_datetime64_opt(row.first_event_ts.as_ref()),
-        "last_event_ts": clickhouse_datetime64_opt(row.last_event_ts.as_ref()),
-        "open": row.open,
-        "high": row.high,
-        "low": row.low,
-        "close": row.close,
-        "volume": row.volume,
-        "dollar_volume": row.dollar_volume,
-        "trade_count": row.trade_count,
-        "vwap": row.vwap,
-        "avg_trade_size": row.avg_trade_size,
-        "median_trade_size": row.median_trade_size,
-        "max_trade_size": row.max_trade_size,
-        "large_trade_count": row.large_trade_count,
-        "large_trade_volume": row.large_trade_volume,
-        "large_trade_notional": row.large_trade_notional,
-        "trade_rate": row.trade_rate,
-        "volume_rate": row.volume_rate,
-        "dollar_volume_rate": row.dollar_volume_rate,
-        "price_change": row.price_change,
-        "price_change_pct": row.price_change_pct,
-        "high_low_range": row.high_low_range,
-        "high_low_range_pct": row.high_low_range_pct,
-        "bid_open": row.bid_open,
-        "bid_high": row.bid_high,
-        "bid_low": row.bid_low,
-        "bid_close": row.bid_close,
-        "ask_open": row.ask_open,
-        "ask_high": row.ask_high,
-        "ask_low": row.ask_low,
-        "ask_close": row.ask_close,
-        "mid_open": row.mid_open,
-        "mid_high": row.mid_high,
-        "mid_low": row.mid_low,
-        "mid_close": row.mid_close,
-        "spread_open": row.spread_open,
-        "spread_high": row.spread_high,
-        "spread_low": row.spread_low,
-        "spread_close": row.spread_close,
-        "spread_mean": row.spread_mean,
-        "spread_bps_mean": row.spread_bps_mean,
-        "spread_bps_close": row.spread_bps_close,
-        "quoted_bid_size_mean": row.quoted_bid_size_mean,
-        "quoted_ask_size_mean": row.quoted_ask_size_mean,
-        "quote_count": row.quote_count,
-        "quote_rate": row.quote_rate,
-        "quote_update_intensity": row.quote_update_intensity,
-        "locked_crossed_quote_count": row.locked_crossed_quote_count,
-        "buy_trade_count": row.buy_trade_count,
-        "sell_trade_count": row.sell_trade_count,
-        "buy_volume": row.buy_volume,
-        "sell_volume": row.sell_volume,
-        "buy_dollar_volume": row.buy_dollar_volume,
-        "sell_dollar_volume": row.sell_dollar_volume,
-        "tape_imbalance": row.tape_imbalance,
-        "aggressive_buy_ratio": row.aggressive_buy_ratio,
-        "aggressive_sell_ratio": row.aggressive_sell_ratio,
-        "buy_sell_volume_delta": row.buy_sell_volume_delta,
-        "cumulative_delta": row.cumulative_delta,
-        "effective_spread_mean": row.effective_spread_mean,
-        "realized_spread_proxy": row.realized_spread_proxy,
-        "price_impact_1s": row.price_impact_1s,
-        "price_impact_5s": row.price_impact_5s,
-        "slippage_proxy_bps": row.slippage_proxy_bps,
-        "depth_imbalance_proxy": row.depth_imbalance_proxy,
-        "liquidity_score": row.liquidity_score,
-        "spread_volume_ratio": row.spread_volume_ratio,
-        "return_1_bar": row.return_1_bar,
-        "return_3_bar": row.return_3_bar,
-        "return_5_bar": row.return_5_bar,
-        "volume_accel": row.volume_accel,
-        "trade_count_accel": row.trade_count_accel,
-        "dollar_volume_accel": row.dollar_volume_accel,
-        "quote_rate_accel": row.quote_rate_accel,
-        "tape_imbalance_accel": row.tape_imbalance_accel,
-        "vwap_distance_pct": row.vwap_distance_pct,
-        "mid_vwap_distance_pct": row.mid_vwap_distance_pct,
-        "realized_volatility": row.realized_volatility,
-        "micro_price_volatility": row.micro_price_volatility,
-        "mid_price_volatility": row.mid_price_volatility,
-        "mean_abs_trade_return": row.mean_abs_trade_return,
-        "direction_change_count": row.direction_change_count,
-        "chop_score": row.chop_score,
-        "estimated_luld_active": row.estimated_luld_active as u8,
-        "estimated_luld_reference_price": row.estimated_luld_reference_price,
-        "estimated_luld_lower_price": row.estimated_luld_lower_price,
-        "estimated_luld_upper_price": row.estimated_luld_upper_price,
-        "estimated_luld_parameter_pct": row.estimated_luld_parameter_pct,
-        "estimated_luld_distance_to_upper_pct": row.estimated_luld_distance_to_upper_pct,
-        "estimated_luld_distance_to_lower_pct": row.estimated_luld_distance_to_lower_pct,
-        "estimated_luld_state": row.estimated_luld_state,
-    })
-}
-
-fn merge_tree_settings(storage_policy: &str) -> String {
-    if storage_policy.trim().is_empty() {
-        "SETTINGS index_granularity = 8192".to_string()
-    } else {
-        format!(
-            "SETTINGS index_granularity = 8192, storage_policy = '{}'",
-            storage_policy.trim().replace('\'', "\\'")
-        )
-    }
-}
-
 fn parse_timeframe(label: &str) -> Option<BarFrame> {
     let label = canonical_timeframe(label);
     let seconds = match label.as_str() {

@@ -260,7 +260,8 @@ def update_rates(state: PollState, metrics: dict[str, Any], now: float) -> None:
         "compact_events_emitted",
         "compact_events_persisted",
         "compact_event_rejected",
-        "bar_rows_emitted",
+        "intraday_bar_rows_emitted",
+        "intraday_bar_rows_persisted",
         "scanner_candidates_emitted",
         "live_market_state_events_persisted",
     )
@@ -475,8 +476,6 @@ def render_products(state: PollState, *, narrow: bool) -> Any:
         enabled = bool(item.get("enabled", True))
         status = str(item.get("state") or ("healthy" if enabled else "disabled"))
         detail = str(item.get("detail") or "-")
-        if item.get("product") == "Model microbars" and not enabled:
-            detail = "Disabled until a production model enables the isolated stream."
         table.add_row(
             str(item.get("product") or "-"),
             status_text(status),
@@ -510,7 +509,7 @@ def pipeline_rows(state: PollState) -> list[dict[str, str]]:
     lanes = operational_lanes(state)
     feed = lanes.get("massive_feed", {})
     compact = lanes.get("compact_events", {})
-    bars = lanes.get("bars", {})
+    bars = lanes.get("intraday_bars", {})
     event_age = as_float(metrics.get("last_event_lag_ms")) / 1000 if metrics.get("last_event_lag_ms") is not None else None
     return [
         {
@@ -538,12 +537,12 @@ def pipeline_rows(state: PollState) -> list[dict[str, str]]:
             "detail": f"persisted {format_int(metrics.get('compact_events_persisted'))}; failures {format_int(compact.get('failures'))}",
         },
         {
-            "stage": "Live bars",
+            "stage": "Intraday bars",
             "state": str(bars.get("state") or "waiting"),
-            "rate": format_rate(state.rates.get("bar_rows_emitted_per_sec")),
+            "rate": format_rate(state.rates.get("intraday_bar_rows_persisted_per_sec")),
             "freshness": lane_freshness(bars),
             "pending": format_int(bars.get("pending_rows")),
-            "detail": f"emitted {format_int(metrics.get('bar_rows_emitted'))}; failures {format_int(bars.get('failures'))}",
+            "detail": f"persisted {format_int(metrics.get('intraday_bar_rows_persisted'))}; emitted {format_int(metrics.get('intraday_bar_rows_emitted'))}; late repairs {format_int(metrics.get('intraday_bar_repairs_completed'))}/{format_int(metrics.get('intraday_bar_repairs_requested'))}; failures {format_int(bars.get('failures'))}",
         },
     ]
 

@@ -124,6 +124,7 @@ screen.
 | Endpoint | Sends |
 |---|---|
 | `/stream/compact-events` | Unified compact event rows for live ML consumers. |
+| `/stream/intraday-bars` | Closed sparse family bars at the configured 100ms-through-1h grid. |
 | `/stream/events` | Raw normalized Massive events. |
 | `/stream/scanner` | Periodic scanner market-state snapshots. |
 | `/stream/scanner-primitives` | Primitive candidate events as they are emitted. |
@@ -230,7 +231,7 @@ task starts. The gateway audits recent rows in the actual
 
 The structural audit is separate from time coverage. Recent time coverage is
 read from `qmd_live_event_coverage_v1`. Streaming writes are counted as covered
-only where `compact_persisted` and `bars_persisted` intervals for the same run
+only where `compact_persisted` and `intraday_bars_persisted` intervals for the same run
 overlap. REST repair rows are counted only when they are explicitly recorded as
 `repair_completed` per gap interval. If the recent event table is structurally
 clean, the gateway performs bounded Massive REST repair through the normal
@@ -287,9 +288,7 @@ Use replay in a separate run from live trading unless you are deliberately testi
 | `events` | yes | Durable live compact event source for ML-serving and live replay. |
 | `live_massive_trades` | optional | Raw trade source for replay/debug when `QMD_PERSIST_RAW_EVENTS=true`. |
 | `live_massive_quotes` | optional | Raw quote source for replay/debug when `QMD_PERSIST_RAW_EVENTS=true`. |
-| `live_market_bars` | yes | Published bars for chart/date-slice queries. |
-| `bars_by_symbol_time` | yes | Same published bars ordered for per-symbol temporal windows. |
-| `bars_by_time_symbol` | yes | Same published bars ordered for market-wide time snapshots. |
+| `intraday_bars_v1` | yes | Single rolling sparse family-bar table from 100ms through 1h. |
 | `live_symbol_market_event_v1` | yes | Sparse abnormal live market-state transition audit; normal state is not persisted. |
 | `live_market_indicators` | optional | Materialized closed bar-level indicators when `QMD_PERSIST_INDICATORS=true`. |
 | `qmd_gap_fill_runs` | yes if gap fill enabled | Audit trail for gap-fill attempts. |
@@ -297,7 +296,6 @@ Use replay in a separate run from live trading unless you are deliberately testi
 | `qmd_live_event_coverage_v1` | yes | Fine-grained recent q_live event coverage confirmations and repair intervals. |
 | `qmd_flatfile_coverage_v2` | yes | Per-session quote/trade remote and historical coverage. |
 | `qmd_compact_event_issue_v1` | yes | Overflow/unknown condition or tape audits. |
-| `live_model_microbars` | optional | Model-only microbars when streaming and persistence are enabled. |
 | `qmd_gap_fill_symbol_universe_v1` | yes | Durable ticker queue and per-symbol status source for recent q_live REST repair. |
 
 ## Common Checks
@@ -311,7 +309,7 @@ Before live use:
 5. `/metrics` shows rising `ingest_trades` and `ingest_quotes` during active market data.
 6. Drop counters stay at zero or remain explainable during bursts.
 7. `events` receives rows or `/stream/compact-events` emits rows.
-8. `live_market_bars`, `bars_by_symbol_time`, and `bars_by_time_symbol` receive closed bars.
+8. `intraday_bars_v1` receives closed 100ms bars and their derived rollups.
 9. `/snapshot/live-market-state` is reachable and `live_symbol_market_event_v1` exists.
 
 ## Failure Triage

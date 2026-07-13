@@ -37,14 +37,14 @@ The gateway outputs market-data primitives. The app backend combines those primi
 | `event.rs` | Massive payload parsing | Massive websocket JSON | `MarketEvent::Trade`, `MarketEvent::Quote` | Business logic |
 | `massive.rs` | Websocket connection and fan-out | Massive websocket | Queues for state, bars, indicators, compact writer, optional raw writer | Blocking writes |
 | `state.rs` | Simple latest market snapshot | Market events | `/snapshot/scanner`, `/snapshot/ticker` | Final scanner scoring |
-| `bars.rs` | Live bar aggregation | Market events | `BarRow`, `live_market_bars`, `bars_by_symbol_time`, `bars_by_time_symbol` | Historical chart storage |
+| `bars.rs` | Memory-only enriched scanner/indicator bars | Market events | `BarRow`, snapshots, downstream scanner/indicator inputs | Durable bar storage |
 | `live_market_state.rs` | Live abnormal market-state overlay | Market events, closed bars | `/snapshot/live-market-state`, `/stream/live-market-state`, `live_symbol_market_event_v1` | Reference identity/routing decisions |
 | `indicators.rs` | Streaming tick and bar indicators | Market events, closed bars | Tick snapshots, `IndicatorRow` | Wide research feature generation |
 | `scanner.rs` | Massive-only scanner primitives | Closed bars | Primitive snapshot/stream | Broker/reference-aware signals |
 | `compact_event.rs` | Historical-parity live encoding, ring buffers, bounded reorder, batched persistence/audits | Market events, ClickHouse references | `/stream/compact-events`, `/snapshot/compact-events/{ticker}`, `q_live.events` | Encoder chunk construction |
 | `market_calendar.rs` | Cached Rust Massive status/holiday authority | Massive status and upcoming-holiday APIs | Session and close decisions | Live event processing |
 | `flatfile.rs` | Signed remote flatfile discovery | Massive S3 metadata | Quote/trade readiness | Historical ingestion |
-| `model_bars.rs` | Optional isolated model microbars | Sanitized compact events | `/stream/model-microbars`, optional `live_model_microbars` | Scanner/chart bars |
+| `intraday_bars.rs` | Required canonical intraday bars | Sanitized compact events | `/stream/intraday-bars`, `intraday_bars_v1` | Enriched scanner calculations |
 | `clickhouse.rs` | Optional raw Massive persistence | Market events | `live_massive_trades`, `live_massive_quotes` | Primary ML surface |
 | `gapfill.rs` | Startup live coverage audit, Massive REST tail repair, historical flatfile planning | Live compact event rows, Massive REST, historical continuity rows | Same event fan-out as websocket, gap-fill audit rows, coarse coverage manifest | Deep historical row generation |
 | `replay.rs` | Raw-data replay | ClickHouse raw rows | Same in-memory pipeline as live | Re-persist raw events |
@@ -96,7 +96,7 @@ in-memory buffer and sort by `sip_timestamp_us, source_sequence, event_type,
 arrival_sequence` before taking the latest 128 events. Live storage has no
 durable ordinal; historical ordinals remain local to `events_YYYY`.
 
-## Bar Flow
+## Bar Flows
 
 ```text
 MarketEvent
@@ -107,7 +107,13 @@ MarketEvent
   -> send closed bar to:
        indicator engine
        scanner primitive engine
-       ClickHouse bar writer
+
+sanitized LiveCompactEvent
+  -> shard by ticker
+  -> aggregate sparse 100ms trade/quote-family bars
+  -> roll closed 100ms bars into configured parent resolutions
+  -> persist only to q_live.intraday_bars_v1
+  -> publish /stream/intraday-bars
 ```
 
 Bars are aligned to the top of their timeframe using event time. A `5m` bar starts at `:00`, `:05`, `:10`, and so on. A `1h` bar starts at the top of the hour.
@@ -172,15 +178,14 @@ Default durable writes:
 | `events` | `compact_event.rs` | yes | Live ML-serving event stream/table |
 | `live_massive_trades` | `clickhouse.rs` | no | Optional raw trade replay/debug source |
 | `live_massive_quotes` | `clickhouse.rs` | no | Optional raw quote replay/debug source |
-| `live_market_bars` | `bars.rs` | yes | Published bar history |
+| `intraday_bars_v1` | `intraday_bars.rs` | yes | Rolling sparse family bars from 100ms through 1h |
 | `live_symbol_market_event_v1` | `live_market_state.rs` | yes | Abnormal live market-state transition audit |
 | `live_market_indicators` | `indicators.rs` | no | Optional materialized bar-level indicator rows |
 | `qmd_gap_fill_runs` | `gapfill.rs` | yes | Gap-fill audit log |
 | `qmd_market_coverage_manifest_v1` | `gapfill.rs` | yes | Coarse startup repair and historical flatfile planning manifest |
-| `qmd_live_event_coverage_v1` | `compact_event.rs`, `bars.rs`, `gapfill.rs` | yes | Recent q_live coverage manifest for compact events and bars |
+| `qmd_live_event_coverage_v1` | `compact_event.rs`, `intraday_bars.rs`, `gapfill.rs` | yes | Recent q_live coverage manifest for compact events and canonical intraday bars |
 | `qmd_flatfile_coverage_v2` | `gapfill.rs` | yes | Per-session, per-source remote and historical coverage |
 | `qmd_compact_event_issue_v1` | `compact_event.rs` | yes | Full-identity overflow/unknown condition or tape audits |
-| `live_model_microbars` | `model_bars.rs` | no | Optional model-only 100ms quote/trade-family bars |
 
 Startup maintenance audits recent `q_live.events` rows for
 duplicate canonical identities before websocket ingest begins. It does not infer
@@ -209,7 +214,7 @@ exact command on laptops or launches the unchanged updater asynchronously on
 the workstation after collection closes. Live events are never merged into the
 historical `events_YYYY` tables.
 
-`QMD_PERSIST_INDICATORS` defaults to `false` because the current bar-level indicators can be recomputed from `live_market_bars`. Enable it only when a run specifically needs a materialized indicator table.
+`QMD_PERSIST_INDICATORS` defaults to `false` because the current bar-level indicators can be recomputed from compact events and `intraday_bars_v1`. Enable it only when a run specifically needs a materialized indicator table.
 
 ## Replay Flow
 
