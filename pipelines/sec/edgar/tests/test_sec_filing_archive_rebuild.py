@@ -16,10 +16,116 @@ from pipelines.sec.edgar import sec_filing_archive_rebuild as rebuild
 from pipelines.sec.edgar import sec_filing_text_clickhouse_file_ingest as ingest
 from pipelines.sec.edgar import sec_filing_text_extract_parts as extractor
 from pipelines.sec.edgar import sec_historical_gap_fill as historical
+from pipelines.sec.edgar import sec_text_v3_schema as text_schema
 from pipelines.sec.edgar.sec_parquet_parts import ParquetShardWriter, validate_parquet_part
 
 
 class SecFilingArchiveRebuildTests(unittest.TestCase):
+    def test_source_text_schema_uses_monthly_archive_partitions(self) -> None:
+        raw_sql = text_schema.DEFAULT_SCHEMA_PATH.read_text(encoding="utf-8")
+        rendered = text_schema.render_schema(raw_sql, "q_live", "live_market_ssd", False)
+        source_statement = next(
+            statement
+            for statement in text_schema.split_sql_statements(rendered)
+            if "q_live.sec_filing_text_v3" in statement
+        )
+
+        self.assertIn("PARTITION BY toYYYYMM(source_archive_date)", source_statement)
+        self.assertIn("ORDER BY (cik, accession_number, document_id, content_format)", source_statement)
+        self.assertNotIn("PARTITION BY cityHash64(cik) % 64", source_statement)
+
+    def test_part_checkpoints_only_apply_to_current_table_generation(self) -> None:
+        class FakeClient:
+            def execute(self, _sql: str) -> str:
+                return "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "run_id": "old",
+                                "dataset_name": "text_source",
+                                "part_index": 1,
+                                "target_table": "sec_filing_text_v3",
+                                "target_table_uuid": "old-uuid",
+                                "part_path": "sec_filing_text_v3_part_20260701_1.parquet",
+                                "status": "ok",
+                                "expected_rows": 10,
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "run_id": "current",
+                                "dataset_name": "text_source",
+                                "part_index": 2,
+                                "target_table": "sec_filing_text_v3",
+                                "target_table_uuid": "current-uuid",
+                                "part_path": "sec_filing_text_v3_part_20260702_2.parquet",
+                                "status": "ok",
+                                "expected_rows": 20,
+                            }
+                        ),
+                    ]
+                )
+
+        args = SimpleNamespace(
+            database="q_live",
+            part_manifest_table="sec_filing_text_file_ingest_manifest_v3",
+            target_table_uuids={"sec_filing_text_v3": "current-uuid"},
+        )
+
+        records = ingest.load_latest_part_records(FakeClient(), args)
+
+        self.assertEqual([(record.run_id, record.target_table_uuid) for record in records], [("current", "current-uuid")])
+
+    def test_archive_rebuild_creates_missing_source_text_table_from_shared_schema(self) -> None:
+        target_tables = set(ingest.EXPECTED_TARGET_TABLES.values())
+
+        class FakeClient:
+            def __init__(self) -> None:
+                self.existing = target_tables - {"sec_filing_text_v3"}
+                self.statements: list[str] = []
+
+            def execute(self, sql: str) -> str:
+                self.statements.append(sql)
+                if sql.startswith("SELECT count() FROM system.tables"):
+                    table = next(name for name in target_tables if f"name='{name}'" in sql)
+                    return "1" if table in self.existing else "0"
+                if sql.lstrip().startswith("CREATE TABLE IF NOT EXISTS q_live.sec_filing_text_v3"):
+                    self.existing.add("sec_filing_text_v3")
+                    return ""
+                if sql.startswith("SELECT partition_key, sorting_key"):
+                    return "toYYYYMM(source_archive_date)\tcik, accession_number, document_id, content_format"
+                if sql.startswith("SELECT name, toString(uuid)"):
+                    return "\n".join(f"{name}\tuuid-{name}" for name in sorted(self.existing))
+                return ""
+
+        client = FakeClient()
+
+        created, table_uuids = rebuild.ensure_target_tables(client, "q_live", "live_market_ssd")
+
+        self.assertEqual(created, {"sec_filing_text_v3"})
+        self.assertEqual(table_uuids["sec_filing_text_v3"], "uuid-sec_filing_text_v3")
+        source_ddl = next(sql for sql in client.statements if "CREATE TABLE IF NOT EXISTS q_live.sec_filing_text_v3" in sql)
+        self.assertIn("PARTITION BY toYYYYMM(source_archive_date)", source_ddl)
+
+    def test_archive_rebuild_rejects_stale_hash_partitioned_source_table(self) -> None:
+        class FakeClient:
+            def execute(self, _sql: str) -> str:
+                return "cityHash64(cik) % 64\tcik, accession_number, document_id, content_format"
+
+        with self.assertRaisesRegex(RuntimeError, "Drop the stale source-text table"):
+            rebuild.validate_source_text_layout(FakeClient(), "q_live")
+
+    def test_archive_stage_never_uses_coarse_coverage_for_resume(self) -> None:
+        command = historical.StageCommand(
+            "archive-text-rebuild",
+            ["python", "worker.py"],
+            Path("worker.log"),
+            True,
+            ("sec_stage_archive_text_rebuild",),
+        )
+
+        self.assertFalse(historical.stage_already_completed(SimpleNamespace(), command))
+
     def test_sec_file_ingest_uses_parallel_native_parquet_reader(self) -> None:
         settings = ingest.settings_sql(SimpleNamespace(max_threads=4, max_memory_usage="16G"))
 

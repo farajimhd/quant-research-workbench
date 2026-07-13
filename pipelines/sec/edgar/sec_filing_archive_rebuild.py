@@ -23,6 +23,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from pipelines.sec.edgar import sec_filing_text_clickhouse_file_ingest as file_ingest  # noqa: E402
 from pipelines.sec.edgar import sec_filing_text_extract_parts as extractor  # noqa: E402
+from pipelines.sec.edgar import sec_text_v3_schema as text_schema  # noqa: E402
 from pipelines.sec.edgar.sec_parquet_parts import (  # noqa: E402
     DEFAULT_FILE_BYTES,
     DEFAULT_ROW_GROUP_BYTES,
@@ -164,8 +165,10 @@ def main() -> None:
         return
 
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
+    created_tables, target_table_uuids = ensure_target_tables(client, args.database, args.storage_policy)
+    args.target_table_uuids = target_table_uuids
+    args.text_source_table_uuid = target_table_uuids[file_ingest.EXPECTED_TARGET_TABLES["text_source"]]
     ingest_args = ingest_namespace(args)
-    ensure_target_tables(client, args.database)
     file_ingest.create_part_manifest_table(client, ingest_args)
     create_archive_manifest_table(client, args)
     completed_keys = load_completed_archive_keys(client, args)
@@ -185,6 +188,12 @@ def main() -> None:
         retry_dataset_keys,
         progress_layout=args.progress_layout,
     )
+    if created_tables:
+        print(
+            "created_target_tables=" + ",".join(sorted(created_tables))
+            + f" text_source_generation={args.text_source_table_uuid}",
+            flush=True,
+        )
 
     recovery_tasks: list[dict[str, Any]] = []
     if args.recover_incomplete_runs:
@@ -326,6 +335,8 @@ def lane_payload(
         "part_manifest_table": args.part_manifest_table,
         "archive_manifest_table": args.archive_manifest_table,
         "storage_policy": args.storage_policy,
+        "target_table_uuids": dict(args.target_table_uuids),
+        "text_source_table_uuid": args.text_source_table_uuid,
         "insert_max_threads": max(1, int(args.insert_max_threads)),
         "insert_max_memory_usage": args.insert_max_memory_usage,
         "insert_concurrency": max(1, int(args.insert_concurrency)),
@@ -550,6 +561,7 @@ def ingest_namespace(args: Any) -> SimpleNamespace:
         execute=True,
         force=False,
         retry_failed=True,
+        target_table_uuids=dict(getattr(args, "target_table_uuids", {})),
     )
 
 
@@ -997,6 +1009,7 @@ CREATE TABLE IF NOT EXISTS {quote_ident(args.database)}.{quote_ident(args.archiv
     archive_size UInt64,
     archive_mtime_ns UInt64,
     source_run_id String,
+    text_source_table_uuid String,
     status LowCardinality(String),
     filing_rows UInt64,
     document_rows UInt64,
@@ -1011,6 +1024,10 @@ ORDER BY archive_key
 {settings}
 """
     )
+    client.execute(
+        f"ALTER TABLE {quote_ident(args.database)}.{quote_ident(args.archive_manifest_table)} "
+        "ADD COLUMN IF NOT EXISTS text_source_table_uuid String AFTER source_run_id"
+    )
 
 
 def load_completed_archive_keys(client: ClickHouseHttpClient, args: argparse.Namespace) -> set[str]:
@@ -1019,6 +1036,7 @@ def load_completed_archive_keys(client: ClickHouseHttpClient, args: argparse.Nam
 SELECT archive_key
 FROM {quote_ident(args.database)}.{quote_ident(args.archive_manifest_table)} FINAL
 WHERE status = 'ok'
+  AND text_source_table_uuid = {sql_string(args.text_source_table_uuid)}
 FORMAT TSV
 """
     )
@@ -1031,6 +1049,7 @@ def load_completed_archive_units(client: ClickHouseHttpClient, args: argparse.Na
 SELECT source_run_id, toString(archive_date)
 FROM {quote_ident(args.database)}.{quote_ident(args.archive_manifest_table)} FINAL
 WHERE status = 'ok'
+  AND text_source_table_uuid = {sql_string(args.text_source_table_uuid)}
 FORMAT TSV
 """
     )
@@ -1058,6 +1077,7 @@ def insert_archive_manifest(
         "archive_size": int(task["archive_size"]),
         "archive_mtime_ns": int(task["archive_mtime_ns"]),
         "source_run_id": task["source_run_id"],
+        "text_source_table_uuid": payload["text_source_table_uuid"],
         "status": status,
         "filing_rows": int(result.get("filing_parent_rows") or 0),
         "document_rows": int(result.get("document_rows") or 0),
@@ -1073,16 +1093,69 @@ def insert_archive_manifest(
     )
 
 
-def ensure_target_tables(client: ClickHouseHttpClient, database: str) -> None:
-    missing = []
+def ensure_target_tables(
+    client: ClickHouseHttpClient,
+    database: str,
+    storage_policy: str,
+) -> tuple[set[str], dict[str, str]]:
+    missing: set[str] = set()
     for table in file_ingest.EXPECTED_TARGET_TABLES.values():
         exists = int(
             (client.execute(f"SELECT count() FROM system.tables WHERE database={sql_string(database)} AND name={sql_string(table)}").strip() or "0").splitlines()[0]
         )
         if exists != 1:
-            missing.append(table)
+            missing.add(table)
     if missing:
-        raise RuntimeError(f"missing SEC v3 target tables in {database}: {missing}")
+        archive_tables = {
+            "sec_filing_document_v3",
+            "sec_filing_text_v3",
+            "sec_filing_text_rendered_v3",
+            "sec_filing_document_skip_v3",
+        }
+        unsupported = missing - archive_tables
+        if unsupported:
+            raise RuntimeError(f"missing non-archive SEC v3 target tables in {database}: {sorted(unsupported)}")
+        if not str(storage_policy).strip():
+            raise RuntimeError(
+                "CLICKHOUSE_LIVE_STORAGE_POLICY/--storage-policy is required to create missing SEC v3 text targets"
+            )
+        raw_sql = text_schema.DEFAULT_SCHEMA_PATH.read_text(encoding="utf-8")
+        rendered_sql = text_schema.render_schema(raw_sql, database, str(storage_policy), False)
+        statements = text_schema.split_sql_statements(rendered_sql)
+        for statement in statements:
+            client.execute(statement)
+
+    validate_source_text_layout(client, database)
+    target_table_uuids = file_ingest.load_target_table_uuids(client, database)
+    unresolved = set(file_ingest.EXPECTED_TARGET_TABLES.values()) - set(target_table_uuids)
+    if unresolved:
+        raise RuntimeError(f"missing SEC v3 target tables after schema creation in {database}: {sorted(unresolved)}")
+    return missing, target_table_uuids
+
+
+def validate_source_text_layout(client: ClickHouseHttpClient, database: str) -> None:
+    table = file_ingest.EXPECTED_TARGET_TABLES["text_source"]
+    text = client.execute(
+        f"SELECT partition_key, sorting_key FROM system.tables "
+        f"WHERE database = {sql_string(database)} AND name = {sql_string(table)} FORMAT TSV"
+    )
+    fields = (text.strip().splitlines() or [""])[0].split("\t")
+    partition_key = fields[0] if fields else ""
+    sorting_key = fields[1] if len(fields) > 1 else ""
+    expected_partition = "toYYYYMM(source_archive_date)"
+    expected_sorting = "cik,accession_number,document_id,content_format"
+    if normalized_clickhouse_key(partition_key) != normalized_clickhouse_key(expected_partition) or normalized_clickhouse_key(
+        sorting_key
+    ) != normalized_clickhouse_key(expected_sorting):
+        raise RuntimeError(
+            f"{database}.{table} has incompatible layout partition_key={partition_key!r} sorting_key={sorting_key!r}; "
+            f"expected partition_key={expected_partition!r} sorting_key={expected_sorting!r}. "
+            "Drop the stale source-text table before running the historical rebuild."
+        )
+
+
+def normalized_clickhouse_key(value: str) -> str:
+    return re.sub(r"[\s`()]+", "", value).lower()
 
 
 def emit_lane(

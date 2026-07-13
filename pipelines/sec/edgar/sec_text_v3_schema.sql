@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS q_live.sec_filing_text_v3
     inserted_at DateTime64(3, 'UTC')
 )
 ENGINE = ReplacingMergeTree(inserted_at)
-PARTITION BY cityHash64(cik) % 64
+PARTITION BY toYYYYMM(source_archive_date)
 ORDER BY (cik, accession_number, document_id, content_format)
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
 

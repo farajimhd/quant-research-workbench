@@ -93,6 +93,7 @@ class PartManifestRecord:
     part_path: str
     status: str
     expected_rows: int
+    target_table_uuid: str = ""
 
 
 def parse_args() -> argparse.Namespace:
@@ -161,6 +162,8 @@ def main() -> None:
         create_part_manifest_table(client, args)
     elif not args.skip_create_manifest_table:
         print("dry_run=create SEC text file ingest manifest table", flush=True)
+    if args.execute:
+        args.target_table_uuids = load_target_table_uuids(client, args.database)
 
     if args.preflight_only and args.skip_preflight:
         raise SystemExit("--preflight-only and --skip-preflight cannot be used together")
@@ -333,6 +336,7 @@ CREATE TABLE IF NOT EXISTS {quote_ident(args.database)}.{quote_ident(args.part_m
     run_id String,
     dataset_name LowCardinality(String),
     target_table String,
+    target_table_uuid String,
     part_index UInt32,
     part_path String,
     clickhouse_path String,
@@ -349,6 +353,25 @@ ORDER BY (run_id, dataset_name, part_index, updated_at_utc)
 {settings}
 """
     )
+    client.execute(
+        f"ALTER TABLE {quote_ident(args.database)}.{quote_ident(args.part_manifest_table)} "
+        "ADD COLUMN IF NOT EXISTS target_table_uuid String AFTER target_table"
+    )
+
+
+def load_target_table_uuids(client: ClickHouseHttpClient, database: str) -> dict[str, str]:
+    names = sorted(set(EXPECTED_TARGET_TABLES.values()))
+    names_sql = ", ".join(sql_string(name) for name in names)
+    text = client.execute(
+        f"SELECT name, toString(uuid) FROM system.tables "
+        f"WHERE database = {sql_string(database)} AND name IN ({names_sql}) FORMAT TSV"
+    )
+    output: dict[str, str] = {}
+    for line in text.splitlines():
+        fields = line.split("\t")
+        if len(fields) >= 2 and fields[0] and fields[1]:
+            output[fields[0]] = fields[1]
+    return output
 
 
 def load_latest_part_status(client: ClickHouseHttpClient, args: argparse.Namespace) -> dict[tuple[str, str, int], str]:
@@ -370,6 +393,7 @@ SELECT
     dataset_name,
     part_index,
     argMax(target_table, updated_at_utc) AS target_table,
+    argMax(target_table_uuid, updated_at_utc) AS target_table_uuid,
     argMax(part_path, updated_at_utc) AS part_path,
     argMax(status, updated_at_utc) AS status,
     argMax(expected_rows, updated_at_utc) AS expected_rows
@@ -384,19 +408,25 @@ FORMAT JSONEachRow
             return []
         raise
     output: list[PartManifestRecord] = []
+    current_uuids = getattr(args, "target_table_uuids", {})
     for line in text.splitlines():
         if not line.strip():
             continue
         row = json.loads(line)
+        target_table = str(row.get("target_table") or "")
+        target_table_uuid = str(row.get("target_table_uuid") or "")
+        if current_uuids and target_table_uuid != str(current_uuids.get(target_table) or ""):
+            continue
         output.append(
             PartManifestRecord(
                 run_id=str(row.get("run_id") or ""),
                 dataset_name=str(row.get("dataset_name") or ""),
-                target_table=str(row.get("target_table") or ""),
+                target_table=target_table,
                 part_index=int(row.get("part_index") or 0),
                 part_path=str(row.get("part_path") or ""),
                 status=str(row.get("status") or ""),
                 expected_rows=int(row.get("expected_rows") or 0),
+                target_table_uuid=target_table_uuid,
             )
         )
     return output
@@ -475,10 +505,15 @@ def file_table_function(part: PartFile) -> str:
 
 
 def insert_part_manifest(client: ClickHouseHttpClient, args: argparse.Namespace, part: PartFile, profile: InsertProfile) -> None:
+    target_table_uuids = getattr(args, "target_table_uuids", {})
+    target_table_uuid = str(target_table_uuids.get(part.target_table) or "")
+    if not target_table_uuid:
+        raise RuntimeError(f"missing ClickHouse UUID for target table {args.database}.{part.target_table}")
     row = {
         "run_id": part.run_id,
         "dataset_name": part.dataset_name,
         "target_table": part.target_table,
+        "target_table_uuid": target_table_uuid,
         "part_index": part.part_index,
         "part_path": str(part.windows_path),
         "clickhouse_path": part.clickhouse_path,

@@ -944,6 +944,9 @@ def stage_coverage_kind(stage: str) -> str:
 
 
 def stage_already_completed(args: argparse.Namespace, command: StageCommand) -> bool:
+    if command.stage == "archive-text-rebuild":
+        # Archive manifests are table-generation aware and are the authoritative resume state.
+        return False
     if not command.coverage_kinds:
         return False
     config = SecPipelineConfig.from_env()

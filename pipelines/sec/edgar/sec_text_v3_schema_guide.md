@@ -11,6 +11,16 @@ These tables are the current archive-derived SEC document/text targets.
 `sec_filing_text_v3` stores submitted text-source documents before packed
 renderer output is stored in `sec_filing_text_rendered_v3`.
 
+`sec_filing_text_v3` is partitioned by `toYYYYMM(source_archive_date)` and
+ordered by `(cik, accession_number, document_id, content_format)`. Monthly
+archive partitions keep parallel historical inserts from creating one small
+part per CIK hash bucket.
+
+The historical archive rebuild creates any missing archive-derived v3 target
+from this schema. Its archive and part checkpoints are tied to the physical
+ClickHouse table UUID, so checkpoints from a dropped table cannot skip rows in
+its replacement.
+
 ## Local Dry Run
 
 ```powershell
