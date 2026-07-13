@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import gzip
 import io
+import json
 import tempfile
 import tarfile
 import unittest
@@ -8,25 +10,23 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import pyarrow.parquet as pq
+
 from pipelines.sec.edgar import sec_filing_archive_rebuild as rebuild
 from pipelines.sec.edgar import sec_filing_text_clickhouse_file_ingest as ingest
 from pipelines.sec.edgar import sec_filing_text_extract_parts as extractor
 from pipelines.sec.edgar import sec_historical_gap_fill as historical
+from pipelines.sec.edgar.sec_parquet_parts import ParquetShardWriter, validate_parquet_part
 
 
 class SecFilingArchiveRebuildTests(unittest.TestCase):
-    def test_sec_file_ingest_disables_parallel_json_parsing_by_default(self) -> None:
+    def test_sec_file_ingest_uses_parallel_native_parquet_reader(self) -> None:
         settings = ingest.settings_sql(SimpleNamespace(max_threads=4, max_memory_usage="16G"))
 
-        self.assertIn("input_format_parallel_parsing = 0", settings)
-        self.assertIn("max_block_size = 16", settings)
-
-    def test_sec_file_ingest_can_explicitly_enable_parallel_json_parsing(self) -> None:
-        settings = ingest.settings_sql(
-            SimpleNamespace(max_threads=4, max_memory_usage="16G", input_format_parallel_parsing=True)
-        )
-
-        self.assertIn("input_format_parallel_parsing = 1", settings)
+        self.assertIn("input_format_parquet_use_native_reader_v3 = 1", settings)
+        self.assertIn("input_format_parquet_enable_row_group_prefetch = 1", settings)
+        self.assertIn("input_format_parquet_verify_checksums = 1", settings)
+        self.assertNotIn("max_block_size", settings)
 
     def test_partition_tasks_assigns_balanced_fixed_lanes(self) -> None:
         tasks = [{"archive_date": f"day-{index}"} for index in range(300)]
@@ -51,15 +51,17 @@ class SecFilingArchiveRebuildTests(unittest.TestCase):
             args = rebuild.parse_args()
 
         self.assertEqual(args.workers, 32)
+        self.assertEqual(args.insert_concurrency, 8)
+        self.assertEqual(args.insert_max_threads, 8)
 
-    def test_gzip_parts_use_explicit_clickhouse_compression(self) -> None:
+    def test_parquet_parts_use_native_file_format(self) -> None:
         part = ingest.PartFile(
             run_id="run",
             dataset_name="text_source",
             target_table="sec_filing_text_v3",
             part_index=1,
-            windows_path=Path("D:/market-data/part.jsonl.gz"),
-            clickhouse_path="/mnt/d/market-data/part.jsonl.gz",
+            windows_path=Path("D:/market-data/part.parquet"),
+            clickhouse_path="/mnt/d/market-data/part.parquet",
             expected_rows=1,
             expected_bytes=1,
             columns=["document_id"],
@@ -68,8 +70,112 @@ class SecFilingArchiveRebuildTests(unittest.TestCase):
 
         sql = ingest.file_table_function(part)
 
-        self.assertIn("'gzip'", sql)
-        self.assertIn("JSONEachRow", sql)
+        self.assertIn("'Parquet'", sql)
+        self.assertNotIn("JSONEachRow", sql)
+
+    def test_parquet_writer_shards_by_bytes_without_splitting_text_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            writer = ParquetShardWriter(
+                dataset_name="text_source",
+                target_table="sec_filing_text_v3",
+                output_directory=Path(temp_dir),
+                filename_prefix="sample",
+                columns=["document_id", "source_text", "source_text_byte_count"],
+                archive_index=1,
+                row_group_bytes=100,
+                file_bytes=220,
+            )
+            expected = ["A" * 180, "B" * 180, "C" * 180]
+            for index, text in enumerate(expected):
+                writer.append(
+                    {
+                        "document_id": str(index),
+                        "source_text": text,
+                        "source_text_byte_count": len(text.encode("utf-8")),
+                    }
+                )
+            parts = writer.close()
+
+            self.assertEqual(len(parts), 3)
+            actual = []
+            for part in parts:
+                metadata = validate_parquet_part(Path(part["path"]), part["rows"], part["columns"])
+                self.assertEqual(metadata["rows"], 1)
+                actual.extend(pq.read_table(part["path"], columns=["source_text"]).column("source_text").to_pylist())
+            self.assertEqual(actual, expected)
+
+    def test_parquet_preflight_does_not_query_clickhouse(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            writer = ParquetShardWriter(
+                dataset_name="document",
+                target_table="sec_filing_document_v3",
+                output_directory=Path(temp_dir),
+                filename_prefix="sample",
+                columns=["document_id"],
+                archive_index=1,
+                row_group_bytes=1024,
+                file_bytes=1024,
+            )
+            writer.append({"document_id": "doc"})
+            item = writer.close()[0]
+            part = ingest.PartFile(
+                run_id="run",
+                dataset_name="document",
+                target_table="sec_filing_document_v3",
+                part_index=item["part_index"],
+                windows_path=Path(item["path"]),
+                clickhouse_path="/mnt/d/sample.parquet",
+                expected_rows=1,
+                expected_bytes=item["bytes"],
+                columns=item["columns"],
+                structure="",
+                row_groups=item["row_groups"],
+            )
+
+            class NoQueryClient:
+                def execute(self, _sql: str) -> str:
+                    raise AssertionError("preflight must not query ClickHouse")
+
+            ingest.preflight_parts(NoQueryClient(), SimpleNamespace(), [part])
+
+    def test_legacy_recovery_streams_json_into_parquet(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "legacy.jsonl.gz"
+            row = {column: "" for column in extractor.TEXT_SOURCE_COLUMNS}
+            row.update(
+                {
+                    "document_id": "doc",
+                    "sequence_number": 1,
+                    "source_archive_date": "2026-07-01",
+                    "source_text": "complete source text",
+                    "source_text_char_count": 20,
+                    "source_text_byte_count": 20,
+                    "inserted_at": "2026-07-01 12:00:00.000",
+                }
+            )
+            with gzip.open(source, "wt", encoding="utf-8") as handle:
+                handle.write(json.dumps(row) + "\n")
+            task = {
+                "archive_date": "2026-07-01",
+                "archive_path": str(root / "20260701.nc.tar.gz"),
+                "archive_index": 1,
+                "part_paths": {"text_source": str(source)},
+            }
+            payload = {
+                "run_root": str(root / "run"),
+                "parquet_row_group_bytes": 1024,
+                "parquet_file_bytes": 2048,
+                "parquet_compression_level": 1,
+            }
+
+            result = rebuild.recovery_result(task, payload)
+
+            self.assertEqual(result["text_source_rows"], 1)
+            self.assertEqual(result["part_files"][0]["format"], "Parquet")
+            self.assertIn(str(source), result["cleanup_paths"])
+            actual = pq.read_table(result["part_files"][0]["path"], columns=["source_text"])
+            self.assertEqual(actual.column("source_text")[0].as_py(), "complete source text")
 
     def test_legacy_success_log_only_recovers_explicit_ok_archives(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -106,15 +212,16 @@ class SecFilingArchiveRebuildTests(unittest.TestCase):
 
         self.assertEqual(command[-1], "--execute")
 
-    def test_historical_archive_stage_disables_parallel_json_parsing(self) -> None:
+    def test_historical_archive_stage_uses_parallel_parquet_defaults(self) -> None:
         with mock.patch.object(historical.sys, "argv", ["sec_historical_gap_fill.py"]):
             args = historical.parse_args()
 
         stage = next(command for command in historical.build_commands(args, Path("logs")) if command.stage == "archive-text-rebuild")
 
-        self.assertIn("--no-input-format-parallel-parsing", stage.command)
-        self.assertEqual(stage.command[stage.command.index("--input-max-block-rows") + 1], "16")
-        self.assertEqual(stage.command[stage.command.index("--text-insert-concurrency") + 1], "2")
+        self.assertNotIn("--no-input-format-parallel-parsing", stage.command)
+        self.assertEqual(stage.command[stage.command.index("--insert-concurrency") + 1], "8")
+        self.assertEqual(stage.command[stage.command.index("--parquet-row-group-mb") + 1], "256")
+        self.assertEqual(stage.command[stage.command.index("--parquet-file-mb") + 1], "1024")
 
     def test_archive_lane_stops_after_first_failure(self) -> None:
         class FakeEvent:
@@ -151,7 +258,7 @@ class SecFilingArchiveRebuildTests(unittest.TestCase):
             "tasks": tasks,
             "event_queue": event_queue,
             "stop_event": stop_event,
-            "text_insert_semaphore": object(),
+            "insert_semaphore": object(),
             "clickhouse_url": "http://localhost",
             "user": "default",
             "password": "",
@@ -224,7 +331,7 @@ class SecFilingArchiveRebuildTests(unittest.TestCase):
             self.assertIn("Archive Failure - Stopping", rendered)
             self.assertIn("oversized row", rendered)
 
-    def test_archive_worker_writes_complete_gzip_parts(self) -> None:
+    def test_archive_worker_writes_complete_parquet_parts(self) -> None:
         class FakeClickHouseClient:
             def __init__(self, *_args: object, **_kwargs: object) -> None:
                 pass
@@ -272,7 +379,9 @@ ACCEPTANCE-DATETIME: 20260701120000
                 "parent_window_days_after": 2,
                 "min_text_chars": 1,
                 "max_text_chars": 0,
-                "compress_parts": True,
+                "parquet_row_group_bytes": 256,
+                "parquet_file_bytes": 512,
+                "parquet_compression_level": 1,
             }
             with mock.patch.object(extractor, "ClickHouseHttpClient", FakeClickHouseClient):
                 result = extractor.process_archive_worker(payload)
@@ -280,11 +389,12 @@ ACCEPTANCE-DATETIME: 20260701120000
             source_part = next(item for item in result["part_files"] if item["dataset_name"] == "text_source")
             source_path = Path(source_part["path"])
             self.assertEqual(result["status"], "ok")
-            self.assertTrue(source_path.name.endswith(".jsonl.gz"))
+            self.assertTrue(source_path.name.endswith(".parquet"))
             self.assertGreater(source_part["rows"], 0)
-            with extractor.gzip.open(source_path, "rt", encoding="utf-8") as handle:
-                row = handle.readline()
+            row = pq.read_table(source_path, columns=["source_text"]).column("source_text")[0].as_py()
             self.assertIn("Complete submitted text.", row)
+            self.assertEqual(source_part["format"], "Parquet")
+            self.assertGreaterEqual(source_part["row_groups"], 1)
 
             class SetEvent:
                 def is_set(self) -> bool:

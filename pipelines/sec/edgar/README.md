@@ -38,9 +38,10 @@ runs API fallback for missing recent XBRL, repairs XBRL relationships, rebuilds
 audits the result, and writes coverage rows.
 
 Archive text rebuild is transactional per daily `.nc.tar.gz`: each fixed worker
-lane extracts and renders one archive into gzip-compressed temporary parts,
-preflights and inserts those parts, records archive-level completion, and then
-deletes the temporary parts. Original daily archives remain the durable source.
+lane extracts and renders one archive into byte-bounded Parquet shards, validates
+their footers, inserts them through ClickHouse's parallel native Parquet reader,
+records archive-level completion, and then deletes the temporary shards. Original
+daily archives remain the durable source.
 Interrupted runs reuse archive completion rows and any prior fully extracted
 parts that can be proven complete from their state journal or legacy successful
 extract log. Partial files are never treated as complete input.
@@ -65,10 +66,12 @@ not depend on ambient shell defaults. `--resume-from-coverage` is enabled by def
 the same command; completed stages for the same date range are skipped, and the
 final semantic coverage rows are written only after the whole run succeeds.
 Archive extraction/insertion stops all worker lanes after the first failure and
-keeps the first archive exception visible in the Rich terminal. Uncapped SEC
-source-text JSON uses serial parsing, 16-row input blocks, and two concurrent
-wide-text inserts so large valid filings do not hit ClickHouse's parallel
-parser limit or create unbounded aggregate memory pressure.
+keeps the first archive exception visible in the Rich terminal. Uncapped source
+and rendered text use 256 MiB Parquet row groups, 1 GiB files, eight concurrent
+inserts, and eight ClickHouse threads per insert by default. One submitted
+document always remains one database row, including documents larger than a row
+group target. Legacy retained JSON parts are converted to bounded Parquet shards
+before recovery insertion.
 The validation stage is self-healing for corrupt daily archives selected from
 the downloader manifest: if an archive scan fails, it redownloads that archive
 from the SEC source URL and rescans it before returning a failed status. This is

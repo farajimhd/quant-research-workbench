@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
-import gzip
 import hashlib
 import html
 import json
@@ -34,6 +33,11 @@ from research.mlops.clickhouse import (  # noqa: E402
 )
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
 from pipelines.sec.edgar.sec_pipeline.submissions import parse_acceptance_datetime  # noqa: E402
+from pipelines.sec.edgar.sec_parquet_parts import (  # noqa: E402
+    DEFAULT_FILE_BYTES,
+    DEFAULT_ROW_GROUP_BYTES,
+    ParquetShardWriter,
+)
 
 
 DEFAULT_ARCHIVE_ROOT_WIN = Path("D:/market-data/sec_core/daily_archives")
@@ -265,7 +269,7 @@ class StructuredHTMLTextExtractor(HTMLParser):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Parse SEC daily .nc.tar.gz archives and build DB-ready JSONEachRow "
+            "Parse SEC daily .nc.tar.gz archives and build byte-bounded Parquet "
             "parts for sec_filing_document_v3, sec_filing_text_v3, "
             "sec_filing_text_rendered_v3, and sec_filing_document_skip_v3. This script "
             "does not insert rows."
@@ -296,10 +300,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--progress-every", type=int, default=10)
     parser.add_argument(
-        "--compress-parts",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Write gzip-compressed JSONEachRow parts. Full historical rebuilds should enable this.",
+        "--parquet-row-group-mb",
+        type=int,
+        default=int(os.environ.get("SEC_TEXT_PARQUET_ROW_GROUP_MB", str(DEFAULT_ROW_GROUP_BYTES // 1024**2))),
+    )
+    parser.add_argument(
+        "--parquet-file-mb",
+        type=int,
+        default=int(os.environ.get("SEC_TEXT_PARQUET_FILE_MB", str(DEFAULT_FILE_BYTES // 1024**2))),
+    )
+    parser.add_argument(
+        "--parquet-compression-level",
+        type=int,
+        default=int(os.environ.get("SEC_TEXT_PARQUET_ZSTD_LEVEL", "1")),
     )
     parser.add_argument("--dry-run", action="store_true", help="Discover archives and write manifest only.")
     return parser.parse_args()
@@ -311,6 +324,10 @@ def main() -> None:
     validate_identifier(args.database, "--database")
     validate_date(args.start_date, "--start-date")
     validate_date(args.end_date, "--end-date")
+    if int(args.parquet_row_group_mb) < 1:
+        raise SystemExit("--parquet-row-group-mb must be positive")
+    if int(args.parquet_file_mb) < int(args.parquet_row_group_mb):
+        raise SystemExit("--parquet-file-mb must be at least --parquet-row-group-mb")
     run_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     source_run_id = f"sec_text_extract_{run_id}"
     run_root = Path(args.output_root_win) / run_id
@@ -453,7 +470,9 @@ def worker_payload(args: argparse.Namespace, archive: Path, parts_root: Path, so
         "parent_window_days_after": max(1, int(args.parent_window_days_after)),
         "min_text_chars": max(0, int(args.min_text_chars)),
         "max_text_chars": max(0, int(args.max_text_chars)),
-        "compress_parts": bool(args.compress_parts),
+        "parquet_row_group_bytes": max(1, int(args.parquet_row_group_mb)) * 1024**2,
+        "parquet_file_bytes": max(1, int(args.parquet_file_mb)) * 1024**2,
+        "parquet_compression_level": int(args.parquet_compression_level),
     }
 
 
@@ -463,16 +482,27 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     archive_date_text = archive_date.isoformat()
     part_prefix = f"{archive_date:%Y%m%d}_{int(payload['archive_index']):06d}"
     parts_root = Path(payload["parts_root"])
-    suffix = ".jsonl.gz" if bool(payload.get("compress_parts")) else ".jsonl"
-    part_paths = {
-        "filing": parts_root / "sec_filing_v3_parts" / f"sec_filing_v3_part_{part_prefix}{suffix}",
-        "document": parts_root / "sec_filing_document_v3_parts" / f"sec_filing_document_v3_part_{part_prefix}{suffix}",
-        "text_source": parts_root / "sec_filing_text_v3_parts" / f"sec_filing_text_v3_part_{part_prefix}{suffix}",
-        "text": parts_root / "sec_filing_text_rendered_v3_parts" / f"sec_filing_text_rendered_v3_part_{part_prefix}{suffix}",
-        "skip": parts_root / "sec_filing_document_skip_v3_parts" / f"sec_filing_document_skip_v3_part_{part_prefix}{suffix}",
+    writer_specs = {
+        "filing": ("sec_filing_v3_parts", "sec_filing_v3", FILING_COLUMNS),
+        "document": ("sec_filing_document_v3_parts", "sec_filing_document_v3", DOCUMENT_COLUMNS),
+        "text_source": ("sec_filing_text_v3_parts", "sec_filing_text_v3", TEXT_SOURCE_COLUMNS),
+        "text": ("sec_filing_text_rendered_v3_parts", "sec_filing_text_rendered_v3", TEXT_COLUMNS),
+        "skip": ("sec_filing_document_skip_v3_parts", "sec_filing_document_skip_v3", SKIP_COLUMNS),
     }
-    for path in part_paths.values():
-        path.parent.mkdir(parents=True, exist_ok=True)
+    writers = {
+        dataset: ParquetShardWriter(
+            dataset_name=dataset,
+            target_table=target_table,
+            output_directory=parts_root / directory,
+            filename_prefix=f"{target_table}_part_{part_prefix}",
+            columns=columns,
+            archive_index=int(payload["archive_index"]),
+            row_group_bytes=int(payload.get("parquet_row_group_bytes") or DEFAULT_ROW_GROUP_BYTES),
+            file_bytes=int(payload.get("parquet_file_bytes") or DEFAULT_FILE_BYTES),
+            compression_level=int(payload.get("parquet_compression_level") or 1),
+        )
+        for dataset, (directory, target_table, columns) in writer_specs.items()
+    }
 
     client = ClickHouseHttpClient(str(payload["clickhouse_url"]), str(payload["user"]), str(payload["password"]))
     parents = load_parent_map(
@@ -511,14 +541,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     }
     filing_parent_count = doc_count = text_source_count = text_count = skip_count = 0
     try:
-        with (
-            open_part_text(part_paths["filing"]) as filing_out,
-            open_part_text(part_paths["document"]) as doc_out,
-            open_part_text(part_paths["text_source"]) as text_source_out,
-            open_part_text(part_paths["text"]) as text_out,
-            open_part_text(part_paths["skip"]) as skip_out,
-            tarfile.open(archive, "r:gz") as tar,
-        ):
+        with tarfile.open(archive, "r:gz") as tar:
             for member in tar:
                 stop_event = payload.get("stop_event")
                 if stop_event is not None and stop_event.is_set():
@@ -546,26 +569,26 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
                 if parent is None:
                     stats["parent_missing_filings"] += 1
                     parent_row, parent = build_missing_parent_row(payload, archive, archive_date, archive_date_text, member.name, raw, filing, inserted_at)
-                    filing_out.write(json.dumps(parent_row, ensure_ascii=False, sort_keys=True) + "\n")
+                    writers["filing"].append(parent_row)
                     filing_parent_count += 1
                     parents[(parent.cik, parent.accession_number)] = parent
                     parents[("", parent.accession_number)] = parent
                 for document in filing["documents"]:
                     stats["documents"] += 1
                     doc_row, text_source_row, text_row, skip_row, sample_row = build_rows(payload, archive, archive_date_text, member.name, parent, document, inserted_at)
-                    doc_out.write(json.dumps(doc_row, ensure_ascii=False, sort_keys=True) + "\n")
+                    writers["document"].append(doc_row)
                     doc_count += 1
                     stats["document_roles"][doc_row["document_role"]] += 1
                     stats["content_formats"][doc_row["content_format"]] += 1
                     if text_source_row is not None:
-                        text_source_out.write(json.dumps(text_source_row, ensure_ascii=False, sort_keys=True) + "\n")
+                        writers["text_source"].append(text_source_row)
                         text_source_count += 1
                     if text_row is not None:
-                        text_out.write(json.dumps(text_row, ensure_ascii=False, sort_keys=True) + "\n")
+                        writers["text"].append(text_row)
                         text_count += 1
                         stats["text_kinds"][text_row["text_kind"]] += 1
                     if skip_row is not None:
-                        skip_out.write(json.dumps(skip_row, ensure_ascii=False, sort_keys=True) + "\n")
+                        writers["skip"].append(skip_row)
                         skip_count += 1
                         stats["skip_reasons"][skip_row["skip_reason"]] += 1
                     if sample_row is not None and len(stats["samples"]) < payload["sample_limit"]:
@@ -573,6 +596,18 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         stats["status"] = "failed"
         add_error(stats, archive_date_text, "", "", "", "archive_error", repr(exc))
+
+    if stats["status"] == "ok":
+        try:
+            stats["part_files"] = [item for writer in writers.values() for item in writer.close()]
+        except Exception as exc:  # noqa: BLE001
+            stats["status"] = "failed"
+            add_error(stats, archive_date_text, "", "", "", "parquet_close_error", repr(exc))
+            for writer in writers.values():
+                writer.abort()
+    else:
+        for writer in writers.values():
+            writer.abort()
 
     stats["filing_parent_rows"] = filing_parent_count
     stats["document_rows"] = doc_count
@@ -585,20 +620,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     stats["skip_reasons"] = dict(stats["skip_reasons"])
     stats["content_formats"] = dict(stats["content_formats"])
     stats["form_types"] = dict(stats["form_types"])
-    stats["part_files"] = [
-        part_file_summary("filing", "sec_filing_v3", part_paths["filing"], filing_parent_count, FILING_COLUMNS),
-        part_file_summary("document", "sec_filing_document_v3", part_paths["document"], doc_count, DOCUMENT_COLUMNS),
-        part_file_summary("text_source", "sec_filing_text_v3", part_paths["text_source"], text_source_count, TEXT_SOURCE_COLUMNS),
-        part_file_summary("text", "sec_filing_text_rendered_v3", part_paths["text"], text_count, TEXT_COLUMNS),
-        part_file_summary("skip", "sec_filing_document_skip_v3", part_paths["skip"], skip_count, SKIP_COLUMNS),
-    ]
     return stats
-
-
-def open_part_text(path: Path):
-    if path.name.lower().endswith(".gz"):
-        return gzip.open(path, "wt", encoding="utf-8", compresslevel=6)
-    return path.open("w", encoding="utf-8")
 
 
 def load_parent_map(client: ClickHouseHttpClient, db: str, archive_date: date, days_before: int, days_after: int) -> dict[tuple[str, str], FilingParent]:
@@ -1119,19 +1141,6 @@ def detect_content_format(filename: str, payload: str) -> str:
     return "plain_text"
 
 
-def part_file_summary(dataset_name: str, target_table: str, path: Path, rows: int, columns: list[str]) -> dict[str, Any]:
-    return {
-        "dataset_name": dataset_name,
-        "target_table": target_table,
-        "path": str(path),
-        "rows": rows,
-        "bytes": path.stat().st_size if path.exists() else 0,
-        "format": "JSONEachRow",
-        "columns": columns,
-        "structure": structure_for_columns(columns),
-    }
-
-
 def structure_for_columns(columns: list[str]) -> str:
     type_map = {
         "sequence_number": "UInt32",
@@ -1243,7 +1252,7 @@ def write_manifest(path: Path, args: argparse.Namespace, source_run_id: str, loa
     payload = {
         "source_run_id": source_run_id,
         "normalizer_version": NORMALIZER_VERSION,
-        "clickhouse_format": "JSONEachRow",
+        "clickhouse_format": "Parquet",
         "database": args.database,
         "target_tables": {
             "filing": "sec_filing_v3",

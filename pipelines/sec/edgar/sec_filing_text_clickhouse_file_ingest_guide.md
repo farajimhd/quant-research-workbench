@@ -1,8 +1,7 @@
 # SEC Filing Text ClickHouse File Ingest Guide
 
-This script loads extractor part files into ClickHouse through the server-side
-`file()` table function. It accepts legacy `.jsonl` and gzip-compressed
-`.jsonl.gz` parts.
+This script loads typed Parquet shards into ClickHouse through the server-side
+`file()` table function and native Parquet v3 reader.
 
 Targets:
 
@@ -70,12 +69,12 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 - `--limit-parts`: optional cap for smoke/debug only.
 - `--force`: insert even if the part manifest says the part already loaded. Use only for deliberate reprocessing.
 - `--retry-failed`: retry parts whose latest manifest status is `failed`.
-- `--skip-preflight`: skip the file row-count scan during execute. Use this only after `--preflight-only` succeeded for the same manifest.
+- `--skip-preflight`: skip local Parquet footer validation during execute. Use this only after `--preflight-only` succeeded for the same manifest.
 
 ## Safety Checks
 
 - The loader validates target v3 tables are readable before inserting.
-- The loader validates every part through `file()` and row counts before insert.
-- For large loads, run `--preflight-only` once, then `--execute --skip-preflight` to avoid reading the full part set twice.
+- The loader validates Parquet schema and row counts from file footers without decoding text columns.
+- ClickHouse verifies Parquet page checksums and reads files and row groups in parallel.
 - Successful parts are recorded in `q_live.sec_filing_text_file_ingest_manifest_v3`.
 - Re-running without `--force` skips parts already marked `ok` for the same source run.

@@ -252,12 +252,13 @@ Before loading normalized text, run an integrity audit that verifies:
 
 ## Normalized Part Files
 
-The extraction script should write DB-ready JSONEachRow parts before ClickHouse load:
+The extraction script writes typed, byte-bounded Parquet shards before ClickHouse load:
 
 ```text
-sec_filing_document_parts/sec_filing_document_part_*.jsonl
-sec_filing_text_parts/sec_filing_text_part_*.jsonl
-sec_filing_skip_parts/sec_filing_skip_part_*.jsonl
+sec_filing_document_v3_parts/*.parquet
+sec_filing_text_v3_parts/*.parquet
+sec_filing_text_rendered_v3_parts/*.parquet
+sec_filing_document_skip_v3_parts/*.parquet
 ```
 
 Each run must write a manifest containing:
@@ -270,7 +271,7 @@ archive_count
 document_rows
 text_rows
 error_count
-part_files with rows and bytes
+part_files with rows, bytes, logical bytes, row groups, and format
 normalizer_version
 loaded_env_files with secret presence only
 ```
@@ -280,7 +281,7 @@ loaded_env_files with secret presence only
 Before loading to ClickHouse:
 
 - no failed archives in the selected archive validation;
-- part file row counts match manifest;
+- Parquet footer schemas and row counts match the manifest without a full preflight decode;
 - no duplicate `(document_id, text_kind)` in text parts;
 - no empty `accession_number` or `cik`;
 - primary filing text coverage is measured by form type;

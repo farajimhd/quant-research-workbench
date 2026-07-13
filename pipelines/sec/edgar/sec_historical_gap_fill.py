@@ -323,10 +323,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--text-limit-parts", type=int, default=0)
     parser.add_argument("--text-ingest-max-threads", type=int, default=int(os.environ.get("SEC_TEXT_FILE_INGEST_MAX_THREADS", "96")))
     parser.add_argument("--text-ingest-max-memory-usage", default=os.environ.get("SEC_TEXT_FILE_INGEST_MAX_MEMORY", "64G"))
-    parser.add_argument("--text-worker-insert-max-threads", type=int, default=int(os.environ.get("SEC_ARCHIVE_INSERT_MAX_THREADS", "4")))
+    parser.add_argument("--text-worker-insert-max-threads", type=int, default=int(os.environ.get("SEC_ARCHIVE_INSERT_MAX_THREADS", "8")))
     parser.add_argument("--text-worker-insert-max-memory-usage", default=os.environ.get("SEC_ARCHIVE_INSERT_MAX_MEMORY", "16G"))
-    parser.add_argument("--text-input-max-block-rows", type=int, default=int(os.environ.get("SEC_ARCHIVE_INPUT_MAX_BLOCK_ROWS", "16")))
-    parser.add_argument("--text-insert-concurrency", type=int, default=int(os.environ.get("SEC_ARCHIVE_TEXT_INSERT_CONCURRENCY", "2")))
+    parser.add_argument("--text-insert-concurrency", type=int, default=int(os.environ.get("SEC_ARCHIVE_INSERT_CONCURRENCY", "8")))
+    parser.add_argument("--text-parquet-row-group-mb", type=int, default=int(os.environ.get("SEC_TEXT_PARQUET_ROW_GROUP_MB", "256")))
+    parser.add_argument("--text-parquet-file-mb", type=int, default=int(os.environ.get("SEC_TEXT_PARQUET_FILE_MB", "1024")))
+    parser.add_argument("--text-parquet-compression-level", type=int, default=int(os.environ.get("SEC_TEXT_PARQUET_ZSTD_LEVEL", "1")))
     parser.add_argument("--text-archive-manifest-table", default=env_string("SEC_ARCHIVE_INGEST_MANIFEST_TABLE", "sec_filing_archive_ingest_manifest_v3"))
     parser.add_argument("--limit-days", type=int, default=0)
     parser.add_argument("--limit-archives", type=int, default=0)
@@ -636,14 +638,16 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                     str(max(1, args.text_worker_insert_max_threads)),
                     "--insert-max-memory-usage",
                     str(args.text_worker_insert_max_memory_usage),
-                    "--no-input-format-parallel-parsing",
-                    "--input-max-block-rows",
-                    str(max(1, args.text_input_max_block_rows)),
-                    "--text-insert-concurrency",
+                    "--insert-concurrency",
                     str(max(1, args.text_insert_concurrency)),
+                    "--parquet-row-group-mb",
+                    str(max(1, args.text_parquet_row_group_mb)),
+                    "--parquet-file-mb",
+                    str(max(1, args.text_parquet_file_mb)),
+                    "--parquet-compression-level",
+                    str(args.text_parquet_compression_level),
                     "--archive-manifest-table",
                     args.text_archive_manifest_table,
-                    "--compress-parts",
                     "--cleanup-parts",
                     "--recover-incomplete-runs",
                     "--progress-layout",

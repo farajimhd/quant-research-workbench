@@ -21,6 +21,13 @@ if str(REPO_ROOT) not in sys.path:
 
 from pipelines.sec.edgar import sec_filing_text_clickhouse_file_ingest as file_ingest  # noqa: E402
 from pipelines.sec.edgar import sec_filing_text_extract_parts as extractor  # noqa: E402
+from pipelines.sec.edgar.sec_parquet_parts import (  # noqa: E402
+    DEFAULT_FILE_BYTES,
+    DEFAULT_ROW_GROUP_BYTES,
+    ParquetShardWriter,
+    convert_json_part,
+    validate_parquet_part,
+)
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_string  # noqa: E402
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
 
@@ -47,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Rebuild SEC archive-derived v3 rows with bounded staging. Each worker lane extracts, "
-            "renders, preflights, inserts, verifies, and removes one archive's temporary parts before "
+            "renders into byte-bounded Parquet shards, inserts, verifies, and removes one archive's temporary parts before "
             "advancing to its next assigned archive."
         )
     )
@@ -63,16 +70,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start-date", required=True, help="Inclusive archive date, YYYY-MM-DD.")
     parser.add_argument("--end-date", required=True, help="Exclusive archive date, YYYY-MM-DD.")
     parser.add_argument("--workers", type=int, default=int(os.environ.get("SEC_ARCHIVE_REBUILD_WORKERS", "32")))
-    parser.add_argument("--insert-max-threads", type=int, default=int(os.environ.get("SEC_ARCHIVE_INSERT_MAX_THREADS", "4")))
+    parser.add_argument("--insert-max-threads", type=int, default=int(os.environ.get("SEC_ARCHIVE_INSERT_MAX_THREADS", "8")))
     parser.add_argument("--insert-max-memory-usage", default=os.environ.get("SEC_ARCHIVE_INSERT_MAX_MEMORY", "16G"))
+    parser.add_argument("--insert-concurrency", type=int, default=int(os.environ.get("SEC_ARCHIVE_INSERT_CONCURRENCY", "8")))
     parser.add_argument(
-        "--input-format-parallel-parsing",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Enable parallel JSONEachRow parsing. Disabled by default for uncapped SEC source-text rows.",
+        "--parquet-row-group-mb",
+        type=int,
+        default=int(os.environ.get("SEC_TEXT_PARQUET_ROW_GROUP_MB", str(DEFAULT_ROW_GROUP_BYTES // 1024**2))),
     )
-    parser.add_argument("--input-max-block-rows", type=int, default=int(os.environ.get("SEC_ARCHIVE_INPUT_MAX_BLOCK_ROWS", "16")))
-    parser.add_argument("--text-insert-concurrency", type=int, default=int(os.environ.get("SEC_ARCHIVE_TEXT_INSERT_CONCURRENCY", "2")))
+    parser.add_argument(
+        "--parquet-file-mb",
+        type=int,
+        default=int(os.environ.get("SEC_TEXT_PARQUET_FILE_MB", str(DEFAULT_FILE_BYTES // 1024**2))),
+    )
+    parser.add_argument("--parquet-compression-level", type=int, default=int(os.environ.get("SEC_TEXT_PARQUET_ZSTD_LEVEL", "1")))
     parser.add_argument("--part-manifest-table", default=os.environ.get("SEC_TEXT_FILE_INGEST_MANIFEST_TABLE", file_ingest.DEFAULT_PART_MANIFEST_TABLE))
     parser.add_argument("--archive-manifest-table", default=os.environ.get("SEC_ARCHIVE_INGEST_MANIFEST_TABLE", DEFAULT_ARCHIVE_MANIFEST_TABLE))
     parser.add_argument("--storage-policy", default=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY", os.environ.get("CLICKHOUSE_STORAGE_POLICY", "")))
@@ -84,7 +95,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--parent-window-days-after", type=int, default=2)
     parser.add_argument("--min-text-chars", type=int, default=40)
     parser.add_argument("--max-text-chars", type=int, default=0)
-    parser.add_argument("--compress-parts", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--cleanup-parts", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--recover-incomplete-runs", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--progress-layout", choices=("events", "text"), default="events")
@@ -192,10 +202,12 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--start-date must be earlier than --end-date")
     if int(args.workers) < 1:
         raise SystemExit("--workers must be positive")
-    if int(args.input_max_block_rows) < 1:
-        raise SystemExit("--input-max-block-rows must be positive")
-    if int(args.text_insert_concurrency) < 1:
-        raise SystemExit("--text-insert-concurrency must be positive")
+    if int(args.insert_concurrency) < 1:
+        raise SystemExit("--insert-concurrency must be positive")
+    if int(args.parquet_row_group_mb) < 1:
+        raise SystemExit("--parquet-row-group-mb must be positive")
+    if int(args.parquet_file_mb) < int(args.parquet_row_group_mb):
+        raise SystemExit("--parquet-file-mb must be at least --parquet-row-group-mb")
 
 
 def bounded_worker_count(requested: int, task_count: int) -> int:
@@ -251,9 +263,10 @@ def lane_payload(args: argparse.Namespace, source_run_id: str, run_root: Path, l
         "storage_policy": args.storage_policy,
         "insert_max_threads": max(1, int(args.insert_max_threads)),
         "insert_max_memory_usage": args.insert_max_memory_usage,
-        "input_format_parallel_parsing": bool(args.input_format_parallel_parsing),
-        "input_max_block_rows": max(1, int(args.input_max_block_rows)),
-        "text_insert_concurrency": max(1, int(args.text_insert_concurrency)),
+        "insert_concurrency": max(1, int(args.insert_concurrency)),
+        "parquet_row_group_bytes": max(1, int(args.parquet_row_group_mb)) * 1024**2,
+        "parquet_file_bytes": max(1, int(args.parquet_file_mb)) * 1024**2,
+        "parquet_compression_level": int(args.parquet_compression_level),
         "max_filings_per_archive": max(0, int(args.max_filings_per_archive)),
         "sample_limit_per_archive": max(0, int(args.sample_limit_per_archive)),
         "sample_text_chars": max(0, int(args.sample_text_chars)),
@@ -261,7 +274,6 @@ def lane_payload(args: argparse.Namespace, source_run_id: str, run_root: Path, l
         "parent_window_days_after": max(1, int(args.parent_window_days_after)),
         "min_text_chars": max(0, int(args.min_text_chars)),
         "max_text_chars": max(0, int(args.max_text_chars)),
-        "compress_parts": bool(args.compress_parts),
         "cleanup_parts": bool(args.cleanup_parts),
     }
 
@@ -273,11 +285,11 @@ def run_lanes(payloads: list[dict[str, Any]], progress_layout: str) -> list[dict
     with multiprocessing.Manager() as manager:
         event_queue = manager.Queue()
         stop_event = manager.Event()
-        text_insert_semaphore = manager.BoundedSemaphore(max(1, int(payloads[0].get("text_insert_concurrency", 2))))
+        insert_semaphore = manager.BoundedSemaphore(max(1, int(payloads[0].get("insert_concurrency", 8))))
         for payload in payloads:
             payload["event_queue"] = event_queue
             payload["stop_event"] = stop_event
-            payload["text_insert_semaphore"] = text_insert_semaphore
+            payload["insert_semaphore"] = insert_semaphore
         with concurrent.futures.ProcessPoolExecutor(max_workers=len(payloads)) as pool:
             futures = [pool.submit(process_lane, payload) for payload in payloads]
             while futures:
@@ -303,7 +315,7 @@ def process_lane(payload: dict[str, Any]) -> dict[str, Any]:
     tasks = list(payload["tasks"])
     event_queue = payload["event_queue"]
     stop_event = payload["stop_event"]
-    text_insert_semaphore = payload["text_insert_semaphore"]
+    insert_semaphore = payload["insert_semaphore"]
     client = ClickHouseHttpClient(payload["clickhouse_url"], payload["user"], payload["password"])
     args = ingest_namespace(SimpleNamespace(**payload))
     latest_part_status = file_ingest.load_latest_part_status(client, args)
@@ -318,8 +330,10 @@ def process_lane(payload: dict[str, Any]) -> dict[str, Any]:
         emit_lane(event_queue, lane, task, position, len(tasks), "extract", stages, status="running")
         try:
             if task["kind"] == "recovery":
-                result = recovery_result(task)
+                result = recovery_result(task, payload)
                 stages["extract"] = 0.0
+                if task.get("state_path"):
+                    write_json(Path(task["state_path"]), {"status": "extracted", "task": task, "result": result})
             else:
                 extraction_started = time.perf_counter()
                 result = extractor.process_archive_worker(extractor_payload(payload, task))
@@ -332,7 +346,10 @@ def process_lane(payload: dict[str, Any]) -> dict[str, Any]:
                     cleanup_result_parts(result)
                     raise RuntimeError(f"archive extraction failed: {result.get('errors')}")
                 write_json(Path(task["state_path"]), {"status": "extracted", "task": task, "result": result})
-            part_paths = [Path(item["path"]) for item in result.get("part_files", [])]
+            part_paths = [
+                Path(path)
+                for path in result.get("cleanup_paths", [item["path"] for item in result.get("part_files", [])])
+            ]
             if stop_event.is_set():
                 archive_results.append(cancelled_archive_row(event_queue, lane, task, position, len(tasks), stages, archive_started, result))
                 break
@@ -353,19 +370,17 @@ def process_lane(payload: dict[str, Any]) -> dict[str, Any]:
                 if latest_part_status.get(key) == "ok":
                     continue
                 acquired = False
-                if part.dataset_name in {"text_source", "text"}:
-                    while not stop_event.is_set():
-                        if text_insert_semaphore.acquire(timeout=0.25):
-                            acquired = True
-                            break
-                    if not acquired:
-                        cancelled = True
+                while not stop_event.is_set():
+                    if insert_semaphore.acquire(timeout=0.25):
+                        acquired = True
                         break
+                if not acquired:
+                    cancelled = True
+                    break
                 try:
                     profile = file_ingest.insert_one_part(client, args, part)
                 finally:
-                    if acquired:
-                        text_insert_semaphore.release()
+                    insert_semaphore.release()
                 file_ingest.insert_part_manifest(client, args, part, profile)
                 if profile.status != "ok":
                     raise RuntimeError(profile.exception)
@@ -439,7 +454,9 @@ def extractor_payload(payload: dict[str, Any], task: dict[str, Any]) -> dict[str
         "parent_window_days_after": payload["parent_window_days_after"],
         "min_text_chars": payload["min_text_chars"],
         "max_text_chars": payload["max_text_chars"],
-        "compress_parts": payload["compress_parts"],
+        "parquet_row_group_bytes": payload["parquet_row_group_bytes"],
+        "parquet_file_bytes": payload["parquet_file_bytes"],
+        "parquet_compression_level": payload["parquet_compression_level"],
     }
 
 
@@ -450,10 +467,8 @@ def ingest_namespace(args: Any) -> SimpleNamespace:
         storage_policy=getattr(args, "storage_policy", ""),
         parts_root_win=getattr(args, "parts_root_win", str(DEFAULT_PARTS_ROOT_WIN)),
         parts_root_ch=getattr(args, "parts_root_ch", DEFAULT_PARTS_ROOT_CH),
-        max_threads=max(1, int(getattr(args, "insert_max_threads", 4))),
+        max_threads=max(1, int(getattr(args, "insert_max_threads", 8))),
         max_memory_usage=str(getattr(args, "insert_max_memory_usage", "16G")),
-        input_format_parallel_parsing=bool(getattr(args, "input_format_parallel_parsing", False)),
-        input_max_block_rows=max(1, int(getattr(args, "input_max_block_rows", 16))),
         execute=True,
         force=False,
         retry_failed=True,
@@ -461,14 +476,13 @@ def ingest_namespace(args: Any) -> SimpleNamespace:
 
 
 def build_and_preflight_parts(
-    client: ClickHouseHttpClient,
+    _client: ClickHouseHttpClient,
     args: SimpleNamespace,
     task: dict[str, Any],
     result: dict[str, Any],
 ) -> tuple[list[file_ingest.PartFile], float]:
     started = time.perf_counter()
     parts: list[file_ingest.PartFile] = []
-    part_index = int(task["archive_date"].replace("-", ""))
     for item in sorted(result.get("part_files", []), key=lambda row: file_ingest.DATASET_ORDER.get(row["dataset_name"], 99)):
         path = Path(item["path"])
         expected_rows = int(item.get("rows") if item.get("rows") is not None else -1)
@@ -478,15 +492,18 @@ def build_and_preflight_parts(
             run_id=str(task["source_run_id"]),
             dataset_name=str(item["dataset_name"]),
             target_table=str(item["target_table"]),
-            part_index=part_index,
+            part_index=int(item["part_index"]),
             windows_path=path,
             clickhouse_path=file_ingest.windows_path_to_clickhouse_path(path, Path(args.parts_root_win), args.parts_root_ch),
             expected_rows=max(0, expected_rows),
             expected_bytes=path.stat().st_size,
             columns=list(item["columns"]),
-            structure=str(item["structure"]),
+            structure=str(item.get("structure") or ""),
+            file_format=str(item.get("format") or "Parquet"),
+            row_groups=int(item.get("row_groups") or 0),
         )
-        actual_rows = count_part_rows(client, args, part)
+        metadata = validate_parquet_part(path, expected_rows, part.columns)
+        actual_rows = metadata["rows"]
         if expected_rows >= 0 and actual_rows != expected_rows:
             raise RuntimeError(f"archive part row mismatch path={path} expected={expected_rows} actual={actual_rows}")
         if expected_rows < 0:
@@ -502,6 +519,8 @@ def build_and_preflight_parts(
                 expected_bytes=part.expected_bytes,
                 columns=part.columns,
                 structure=part.structure,
+                file_format=part.file_format,
+                row_groups=metadata["row_groups"],
             )
         if actual_rows == 0:
             continue
@@ -514,38 +533,37 @@ def build_and_preflight_parts(
     return parts, time.perf_counter() - started
 
 
-def count_part_rows(client: ClickHouseHttpClient, args: SimpleNamespace, part: file_ingest.PartFile) -> int:
-    sql = f"SELECT count() FROM {file_ingest.file_table_function(part)}{file_ingest.settings_sql(args)}"
-    return int((client.execute(sql).strip() or "0").splitlines()[0])
-
-
 def verify_parts_inserted(parts: list[file_ingest.PartFile], statuses: dict[tuple[str, str, int], str]) -> None:
     missing = [part.windows_path for part in parts if statuses.get((part.run_id, part.dataset_name, part.part_index)) != "ok"]
     if missing:
         raise RuntimeError(f"archive part manifest verification failed: {missing}")
 
 
-def recovery_result(task: dict[str, Any]) -> dict[str, Any]:
-    part_files = []
-    for dataset in DATASET_ORDER:
-        path = Path(task["part_paths"][dataset])
-        columns = columns_for_dataset(dataset)
-        part_files.append(
+def recovery_result(task: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    recovered = list(task.get("recovery_part_files") or [])
+    if not recovered:
+        recovered = [
             {
                 "dataset_name": dataset,
                 "target_table": file_ingest.EXPECTED_TARGET_TABLES[dataset],
                 "path": str(path),
                 "rows": -1,
-                "bytes": path.stat().st_size,
-                "columns": columns,
-                "structure": extractor.structure_for_columns(columns),
+                "columns": columns_for_dataset(dataset),
+                "format": "JSONEachRow",
             }
-        )
+            for dataset, path in task.get("part_paths", {}).items()
+        ]
+    if recovered and all(str(item.get("format") or "").lower() == "parquet" for item in recovered):
+        part_files = recovered
+        cleanup_paths = [item["path"] for item in part_files]
+    else:
+        part_files, cleanup_paths = convert_legacy_recovery_parts(task, payload, recovered)
     return {
         "archive_date": task["archive_date"],
         "archive_path": task["archive_path"],
         "status": "ok",
         "part_files": part_files,
+        "cleanup_paths": cleanup_paths,
         "filing_parent_rows": rows_for(part_files, "filing"),
         "document_rows": rows_for(part_files, "document"),
         "text_source_rows": rows_for(part_files, "text_source"),
@@ -556,8 +574,42 @@ def recovery_result(task: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def convert_legacy_recovery_parts(
+    task: dict[str, Any],
+    payload: dict[str, Any],
+    legacy_parts: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    converted: list[dict[str, Any]] = []
+    source_paths: list[str] = []
+    date_key = str(task["archive_date"]).replace("-", "")
+    archive_index = int(task.get("archive_index") or date_key)
+    for source_number, item in enumerate(legacy_parts, start=1):
+        source_path = Path(item["path"])
+        dataset = str(item["dataset_name"])
+        if source_path.suffix.lower() == ".parquet":
+            converted.append(item)
+            source_paths.append(str(source_path))
+            continue
+        columns = columns_for_dataset(dataset)
+        target_table = file_ingest.EXPECTED_TARGET_TABLES[dataset]
+        writer = ParquetShardWriter(
+            dataset_name=dataset,
+            target_table=target_table,
+            output_directory=Path(payload["run_root"]) / "parts" / PART_DIRECTORIES[dataset],
+            filename_prefix=f"{target_table}_part_{date_key}_recovery_{source_number:02d}",
+            columns=columns,
+            archive_index=archive_index,
+            row_group_bytes=int(payload["parquet_row_group_bytes"]),
+            file_bytes=int(payload["parquet_file_bytes"]),
+            compression_level=int(payload["parquet_compression_level"]),
+        )
+        converted.extend(convert_json_part(source_path=source_path, writer=writer))
+        source_paths.append(str(source_path))
+    return converted, [*source_paths, *(item["path"] for item in converted)]
+
+
 def rows_for(parts: list[dict[str, Any]], dataset: str) -> int:
-    return max(0, next((int(item["rows"]) for item in parts if item["dataset_name"] == dataset), 0))
+    return sum(max(0, int(item["rows"])) for item in parts if item["dataset_name"] == dataset)
 
 
 def columns_for_dataset(dataset: str) -> list[str]:
@@ -595,7 +647,15 @@ def discover_recovery_tasks(
             if not archive or archive_identity(archive)["archive_key"] in completed_keys:
                 continue
             if all(Path(item["path"]).exists() for item in result.get("part_files", [])):
-                tasks_by_date.setdefault(archive_date, {**task, "kind": "recovery", "part_paths": {item["dataset_name"]: item["path"] for item in result["part_files"]}})
+                tasks_by_date.setdefault(
+                    archive_date,
+                    {
+                        **task,
+                        "kind": "recovery",
+                        "recovery_part_files": result["part_files"],
+                        "state_path": str(state_path),
+                    },
+                )
         for archive_date in sorted(successful_dates):
             archive = archive_by_date.get(archive_date)
             if not archive or archive_date in tasks_by_date:
@@ -611,6 +671,11 @@ def discover_recovery_tasks(
                     "source_run_id": source_run_id,
                     "part_paths": {key: str(value) for key, value in part_paths.items()},
                     "archive_index": int(archive_date.replace("-", "")),
+                    "state_path": str(
+                        current_run_root
+                        / "archive_states"
+                        / f"{archive_date.replace('-', '')}_{identity['archive_key'][:12]}.json"
+                    ),
                 }
     return [tasks_by_date[key] for key in sorted(tasks_by_date)]
 
@@ -819,13 +884,21 @@ def cleanup_empty_part_directories(output_root: Path) -> None:
 
 def cleanup_obsolete_incomplete_parts(output_root: Path, current_run_root: Path, archive_by_date: dict[str, Path]) -> None:
     valid_dates = set(archive_by_date)
-    date_pattern = re.compile(r"_(\d{8})_\d{6}\.jsonl(?:\.gz)?$")
+    date_pattern = re.compile(r"_(\d{8})_\d{6}(?:_\d{2})?\.(?:parquet|jsonl(?:\.gz)?)$")
     for run_root in output_root.glob("*"):
         if not run_root.is_dir() or run_root == current_run_root:
             continue
         if (run_root / "sec_filing_text_extract_manifest.json").exists():
             continue
-        for path in (run_root / "parts").rglob("*.jsonl*") if (run_root / "parts").exists() else []:
+        candidates = (
+            [
+                *list((run_root / "parts").rglob("*.parquet")),
+                *list((run_root / "parts").rglob("*.jsonl*")),
+            ]
+            if (run_root / "parts").exists()
+            else []
+        )
+        for path in candidates:
             match = date_pattern.search(path.name)
             if not match:
                 continue
@@ -861,7 +934,9 @@ def write_run_summary(
         "archives_cancelled": sum(1 for row in archives if row.get("status") == "cancelled"),
         "workers": bounded_worker_count(args.workers, archive_count),
         "cleanup_parts": bool(args.cleanup_parts),
-        "compress_parts": bool(args.compress_parts),
+        "parquet_row_group_mb": int(args.parquet_row_group_mb),
+        "parquet_file_mb": int(args.parquet_file_mb),
+        "parquet_compression_level": int(args.parquet_compression_level),
         "loaded_env_files": [str(path) for path in loaded_env],
         "archives": archives,
         "created_at_utc": datetime.now(UTC).isoformat(),
@@ -873,7 +948,12 @@ def print_header(args: argparse.Namespace, run_root: Path, archives: list[Path],
     print("=" * 96, flush=True)
     print("SEC bounded archive extract and ingest", flush=True)
     print(f"range=[{args.start_date},{args.end_date}) archives={len(archives):,} workers={bounded_worker_count(args.workers, len(archives))}", flush=True)
-    print(f"run_root={run_root} compress_parts={args.compress_parts} cleanup_parts={args.cleanup_parts}", flush=True)
+    print(
+        f"run_root={run_root} parquet_row_group_mb={args.parquet_row_group_mb} "
+        f"parquet_file_mb={args.parquet_file_mb} insert_concurrency={args.insert_concurrency} "
+        f"cleanup_parts={args.cleanup_parts}",
+        flush=True,
+    )
     print(f"loaded_env_files={[str(path) for path in loaded_env]}", flush=True)
     print("secret_status=" + json.dumps(secret_status(extractor.secret_keys()), sort_keys=True), flush=True)
     print("=" * 96, flush=True)

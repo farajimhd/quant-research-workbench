@@ -1,6 +1,7 @@
 # SEC Filing Text Extract Parts Guide
 
-This script parses SEC daily `.nc.tar.gz` archives and writes DB-ready JSONEachRow part files. It does not insert anything into ClickHouse.
+This script parses SEC daily `.nc.tar.gz` archives and writes DB-ready,
+byte-bounded Parquet shards. It does not insert anything into ClickHouse.
 
 Output datasets:
 
@@ -38,9 +39,9 @@ Parent-missing filings are not dropped. They are written as `sec_filing_v3` pare
 ## Full Historical Rebuild
 
 Do not use this standalone extractor to stage the full archive history. Full
-source text can require several terabytes as uncompressed JSONL. Use the bounded
-archive rebuild, which compresses, inserts, verifies, and deletes temporary
-parts one archive at a time:
+source text can require several terabytes. Use the bounded archive rebuild,
+which writes 256 MiB row groups into 1 GiB Parquet files, inserts, verifies, and
+deletes temporary shards one archive at a time:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_filing_archive_rebuild.py --start-date 2019-01-01 --end-date 2026-07-12 --execute
@@ -61,7 +62,9 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 - `--min-text-chars`: text shorter than this is skipped as low signal.
 - `--max-text-chars`: optional storage cap for emergency/debug runs. The default `0` means unlimited; do not cap final extraction.
 - `--parent-window-days-before`, `--parent-window-days-after`: accepted timestamp lookup window around each archive date.
-- `--compress-parts`: writes `.jsonl.gz` parts; the bounded historical rebuild enables it by default.
+- `--parquet-row-group-mb`: logical byte target for each row group; default `256`.
+- `--parquet-file-mb`: logical byte target for each file; default `1024`.
+- `--parquet-compression-level`: ZSTD staging compression level; default `1`.
 
 ## Output
 
@@ -72,11 +75,11 @@ sec_filing_text_extract_manifest.json
 sec_filing_text_extract_summary.md
 sec_filing_text_extract_errors.jsonl
 sec_filing_text_extract_samples.jsonl
-parts/sec_filing_document_v3_parts/*.jsonl
-parts/sec_filing_v3_parts/*.jsonl
-parts/sec_filing_text_v3_parts/*.jsonl
-parts/sec_filing_text_rendered_v3_parts/*.jsonl
-parts/sec_filing_document_skip_v3_parts/*.jsonl
+parts/sec_filing_document_v3_parts/*.parquet
+parts/sec_filing_v3_parts/*.parquet
+parts/sec_filing_text_v3_parts/*.parquet
+parts/sec_filing_text_rendered_v3_parts/*.parquet
+parts/sec_filing_document_skip_v3_parts/*.parquet
 ```
 
 Use `sec_filing_text_extract_manifest.json` as the input to `sec_filing_text_clickhouse_file_ingest.py`.

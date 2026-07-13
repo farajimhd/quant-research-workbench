@@ -54,7 +54,7 @@ Use discovery only when you want archive-format diagnostics. It is not required 
 | `daily-archive-download` | `sec_daily_feed_archive_download.py` | Downloads daily `.nc.tar.gz` filing-content archives for the requested period. | No |
 | `validate-downloaded` | `sec_validate_downloaded_archives.py` | Validates the downloaded/reused archives selected from the latest downloader manifest. | No |
 | `archive-content-discovery` | `sec_archive_content_discovery.py` | Samples archive contents for diagnostics. | No |
-| `text-extract` | `sec_filing_text_extract_parts.py` | Parses archives and writes DB-ready JSONEachRow part files. | No |
+| `text-extract` | `sec_filing_text_extract_parts.py` | Parses archives and writes byte-bounded DB-ready Parquet shards. | No |
 | `text-ingest-preflight` | `sec_filing_text_clickhouse_file_ingest.py` | Validates ClickHouse `file()` access and row counts for the part files. | No |
 | `text-ingest-execute` | `sec_filing_text_clickhouse_file_ingest.py` | Inserts `sec_filing_v3`, `sec_filing_document_v3`, `sec_filing_text_rendered_v3`, and skip rows. | Yes |
 | `timestamp-repair` | `sec_acceptance_fallback_submissions_repair.py` | Repairs date-only fallback `accepted_at_utc` rows from `submissions.zip`. | Yes |

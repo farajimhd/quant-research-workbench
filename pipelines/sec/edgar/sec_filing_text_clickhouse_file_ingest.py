@@ -29,6 +29,7 @@ from research.mlops.clickhouse import (  # noqa: E402
     sql_string,
 )
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
+from pipelines.sec.edgar.sec_parquet_parts import validate_parquet_part  # noqa: E402
 
 
 DEFAULT_MANIFEST_ROOT_WIN = Path("D:/market-data/prepared/sec_filing_text_parts")
@@ -64,6 +65,8 @@ class PartFile:
     expected_bytes: int
     columns: list[str]
     structure: str
+    file_format: str = "Parquet"
+    row_groups: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,7 +87,7 @@ class InsertProfile:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Push SEC filing text extractor JSONEachRow part files into ClickHouse through the "
+            "Push SEC filing text extractor Parquet shards into ClickHouse through the "
             "server-side file() table function."
         )
     )
@@ -100,18 +103,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--parts-root-ch", default=os.environ.get("SEC_TEXT_PARTS_ROOT_CH") or os.environ.get("TD__DATABASE__CLICKHOUSE__FILE_ROOT") or str(DEFAULT_PARTS_ROOT_CH))
     parser.add_argument("--max-threads", type=int, default=int(os.environ.get("SEC_TEXT_FILE_INGEST_MAX_THREADS", "24")))
     parser.add_argument("--max-memory-usage", default=os.environ.get("SEC_TEXT_FILE_INGEST_MAX_MEMORY", "0"))
-    parser.add_argument(
-        "--input-format-parallel-parsing",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Enable parallel JSONEachRow parsing. Disabled by default because complete SEC source-text rows can exceed the parser chunk limit.",
-    )
-    parser.add_argument(
-        "--input-max-block-rows",
-        type=int,
-        default=int(os.environ.get("SEC_TEXT_FILE_INGEST_MAX_BLOCK_ROWS", "16")),
-        help="Maximum parsed rows per ClickHouse input block. Keep small for wide uncapped SEC text rows.",
-    )
     parser.add_argument("--limit-parts", type=int, default=int(os.environ.get("SEC_TEXT_FILE_INGEST_LIMIT_PARTS", "0")))
     parser.add_argument("--dataset", choices=["all", "filing", "document", "text_source", "text", "skip"], default="all")
     parser.add_argument("--execute", action="store_true", help="Actually insert rows. Without this, only validate and print SQL.")
@@ -203,8 +194,8 @@ def resolve_manifest_path(args: argparse.Namespace) -> Path:
 
 
 def validate_manifest(manifest: dict[str, Any], manifest_path: Path) -> None:
-    if manifest.get("clickhouse_format") != "JSONEachRow":
-        raise SystemExit("manifest clickhouse_format must be JSONEachRow")
+    if manifest.get("clickhouse_format") != "Parquet":
+        raise SystemExit("manifest clickhouse_format must be Parquet")
     if not manifest.get("source_run_id"):
         raise SystemExit("manifest contains no source_run_id")
     target_tables = manifest.get("target_tables") or {}
@@ -253,11 +244,15 @@ def load_part_files(args: argparse.Namespace, manifest: dict[str, Any]) -> list[
                 expected_bytes=actual_bytes,
                 columns=list(item.get("columns") or []),
                 structure=str(item.get("structure") or ""),
+                file_format=str(item.get("format") or "Parquet"),
+                row_groups=int(item.get("row_groups") or 0),
             )
         )
     for part in parts:
-        if not part.columns or not part.structure:
-            raise SystemExit(f"part lacks columns/structure: {part.windows_path}")
+        if not part.columns:
+            raise SystemExit(f"part lacks columns: {part.windows_path}")
+        if part.file_format != "Parquet":
+            raise SystemExit(f"unsupported SEC part format={part.file_format}: {part.windows_path}")
     return sorted(parts, key=lambda part: (DATASET_ORDER.get(part.dataset_name, 99), part.part_index))
 
 
@@ -299,22 +294,22 @@ def validate_target_tables(client: ClickHouseHttpClient, args: argparse.Namespac
             )
 
 
-def preflight_parts(client: ClickHouseHttpClient, args: argparse.Namespace, parts: list[PartFile]) -> None:
+def preflight_parts(_client: ClickHouseHttpClient, _args: argparse.Namespace, parts: list[PartFile]) -> None:
     print("preflight=start", flush=True)
     total = len(parts)
     for index, part in enumerate(parts, start=1):
-        sql = f"SELECT count() FROM {file_table_function(part)}"
         try:
-            actual_rows = int((client.execute(sql + settings_sql(args)).strip() or "0").splitlines()[0])
+            metadata = validate_parquet_part(part.windows_path, part.expected_rows, part.columns)
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(
-                "ClickHouse cannot read SEC text part through file(). "
-                f"dataset={part.dataset_name} part={part.windows_path} clickhouse_path={part.clickhouse_path} exception={exc!r}. "
-                "Check --parts-root-win and --parts-root-ch mapping and ClickHouse user_files_path/bind mounts."
+                "SEC Parquet footer preflight failed. "
+                f"dataset={part.dataset_name} part={part.windows_path} exception={exc!r}."
             ) from exc
-        if part.expected_rows and actual_rows != part.expected_rows:
-            raise RuntimeError(f"row count mismatch part={part.windows_path} expected={part.expected_rows} actual={actual_rows}")
-        print(f"preflight_part={index:,}/{total:,} dataset={part.dataset_name} part_index={part.part_index} rows={actual_rows:,}", flush=True)
+        print(
+            f"preflight_part={index:,}/{total:,} dataset={part.dataset_name} "
+            f"part_index={part.part_index} rows={metadata['rows']:,} row_groups={metadata['row_groups']:,}",
+            flush=True,
+        )
     print("preflight=done", flush=True)
 
 
@@ -432,14 +427,9 @@ def insert_sql(args: argparse.Namespace, part: PartFile) -> str:
 
 
 def file_table_function(part: PartFile) -> str:
-    arguments = [
-        sql_string(part.clickhouse_path),
-        sql_string("JSONEachRow"),
-        sql_string(part.structure),
-    ]
-    if part.windows_path.name.lower().endswith(".gz"):
-        arguments.append(sql_string("gzip"))
-    return f"file({', '.join(arguments)})"
+    if part.file_format != "Parquet":
+        raise ValueError(f"unsupported SEC part format: {part.file_format}")
+    return f"file({sql_string(part.clickhouse_path)}, {sql_string('Parquet')})"
 
 
 def insert_part_manifest(client: ClickHouseHttpClient, args: argparse.Namespace, part: PartFile, profile: InsertProfile) -> None:
@@ -467,10 +457,11 @@ def settings_sql(args: argparse.Namespace) -> str:
     settings = [
         "input_format_skip_unknown_fields = 0",
         "date_time_input_format = 'best_effort'",
-        f"input_format_parallel_parsing = {1 if bool(getattr(args, 'input_format_parallel_parsing', False)) else 0}",
+        "input_format_parquet_use_native_reader_v3 = 1",
+        "input_format_parquet_enable_row_group_prefetch = 1",
+        "input_format_parquet_verify_checksums = 1",
+        "input_format_parquet_preserve_order = 0",
     ]
-    if int(getattr(args, "input_max_block_rows", 16)) > 0:
-        settings.append(f"max_block_size = {int(getattr(args, 'input_max_block_rows', 16))}")
     if args.max_threads > 0:
         settings.append(f"max_threads = {int(args.max_threads)}")
     if str(args.max_memory_usage) != "0":

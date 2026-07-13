@@ -8,8 +8,8 @@ Each fixed worker lane performs:
 
 1. extract and parse one assigned daily archive;
 2. render every supported submitted text document without a text cap;
-3. write gzip-compressed v3 JSONEachRow parts;
-4. preflight every non-empty part through ClickHouse `file()`;
+3. write typed v3 Parquet shards with 256 MiB row groups and 1 GiB files;
+4. validate each non-empty shard from its Parquet footer without decoding it;
 5. insert filing, document, source text, rendered text, and skip rows;
 6. verify successful part-manifest status;
 7. record `sec_filing_archive_ingest_manifest_v3` completion;
@@ -27,12 +27,11 @@ archives, active extractors stop at the next filing-member boundary, and fully
 written parts remain eligible for resume. Peer-cancelled archives are reported
 separately from the original failure.
 
-Complete SEC source text can produce JSONEachRow records far wider than
-ClickHouse's parallel parser chunk. The archive path therefore defaults to
-`--no-input-format-parallel-parsing --input-max-block-rows 16` and permits only
-two concurrent source/rendered-text inserts. Extraction still uses all 32
-workers; only the memory-sensitive ClickHouse text inserts are serialized by
-`--text-insert-concurrency 2`.
+Complete SEC source text can contain individual documents hundreds of megabytes
+wide. The archive path never splits or caps those rows. It bounds surrounding
+work by logical bytes, writes oversized rows as singleton Parquet row groups,
+and defaults to 32 archive workers plus eight concurrent inserts with eight
+ClickHouse threads each. ClickHouse reads files and row groups in parallel.
 
 Run through the unified historical fill:
 
@@ -48,17 +47,19 @@ python pipelines\sec\edgar\sec_filing_archive_rebuild.py `
   --start-date 2019-01-01 `
   --end-date 2026-07-12 `
   --workers 32 `
-  --no-input-format-parallel-parsing `
-  --input-max-block-rows 16 `
-  --text-insert-concurrency 2 `
+  --insert-concurrency 8 `
+  --insert-max-threads 8 `
+  --parquet-row-group-mb 256 `
+  --parquet-file-mb 1024 `
   --execute
 ```
 
 Resume is automatic. The archive manifest skips fully inserted archives. A
-state journal reuses compressed parts left after an interruption between
+state journal reuses complete Parquet shards left after an interruption between
 extraction and insertion. For legacy failed extractor runs, recovery only uses
 archive dates explicitly logged with `status=ok`; files from active or failed
-archives are not inserted. Once the selected range completes, obsolete
+archives are not inserted. Retained legacy JSON parts are streamed once into
+bounded Parquet shards before insertion. Once the selected range completes, obsolete
 unmanifested temporary parts for that range are removed.
 
 The original files under `D:/market-data/sec_core/daily_archives` are never
