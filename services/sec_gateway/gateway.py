@@ -4,7 +4,7 @@ import asyncio
 import os
 import shutil
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -30,9 +30,10 @@ from pipelines.sec.edgar.sec_pipeline.historical_fill import (
 from pipelines.sec.edgar.sec_pipeline.http import SecHttpClient
 from pipelines.sec.edgar.sec_pipeline.live_pipeline import SecLiveFilingPipeline
 from pipelines.sec.edgar.sec_pipeline.rate_limit import SecRateLimiter
+from pipelines.sec.edgar.sec_pipeline.xbrl_context import SecXbrlContextSync
 from research.mlops.clickhouse import ClickHouseHttpClient
 from services.news_gateway.run_logger import AsyncRunLogger
-from services.sec_gateway.config import SecGatewayConfig, WORKSTATION_SHARE_CODE_ROOT_WIN
+from services.sec_gateway.config import SecGatewayConfig, WORKSTATION_SHARE_CODE_ROOT_WIN, xbrl_context_sync_config
 from services.sec_gateway.preflight import PreflightError, PreflightReport, run_preflight
 from services.gateway_policy import backfill_auto_run_allowed, maintenance_window_message
 from services.gateway_core.market_calendar import MarketHoursSnapshot, MassiveMarketHoursClient
@@ -82,6 +83,10 @@ class SecGatewayMetrics:
     xbrl_company_fact_rows: int = 0
     xbrl_frame_rows: int = 0
     xbrl_frame_observation_rows: int = 0
+    xbrl_context_rows: int = 0
+    xbrl_context_pending_rows: int = 0
+    xbrl_context_reconciled_accessions: int = 0
+    xbrl_context_sync_failures: int = 0
     run_log_path: str = ""
     live_queue_size: int = 0
     live_queue_max_items: int = 0
@@ -168,6 +173,7 @@ class SecGateway:
             storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
         )
         self._writer = SecClickHouseWriter(self._client, database=config.pipeline.clickhouse.write_database)
+        self._xbrl_context = SecXbrlContextSync(self._client, xbrl_context_sync_config(config))
         self._limiter = SecRateLimiter(config.pipeline.request_min_interval_seconds)
         self._http = SecHttpClient(
             user_agent=config.pipeline.sec_user_agent,
@@ -375,6 +381,8 @@ class SecGateway:
             self.metrics.xbrl_company_fact_rows += result.xbrl_company_fact_rows
             self.metrics.xbrl_frame_rows += result.xbrl_frame_rows
             self.metrics.xbrl_frame_observation_rows += result.xbrl_frame_observation_rows
+            self.metrics.xbrl_context_rows += result.xbrl_context_rows
+            self.metrics.xbrl_context_pending_rows += result.xbrl_context_pending_rows
         self.metrics.live_completed_filings += 1
         self.metrics.last_accession = outcome.item.accession_number
         self.metrics.last_form_type = outcome.item.form_type
@@ -615,6 +623,8 @@ class SecGateway:
         poll_id = f"sec_live_{self.metrics.poll_runs + 1:012d}_{uuid.uuid4().hex[:8]}"
         self.metrics.poll_runs += 1
         self.metrics.last_poll_at_utc = poll_started.isoformat(timespec="seconds").replace("+00:00", "Z")
+        if self.config.xbrl_context_sync_enabled:
+            await asyncio.to_thread(self._reconcile_xbrl_context)
         self._set_phase("poll_fetch", "Fetching SEC current feed.")
         items = await asyncio.to_thread(self._feed.fetch)
         existing = await asyncio.to_thread(self._existing_accessions, items)
@@ -702,7 +712,10 @@ class SecGateway:
             FORMAT TSV
             """
         )
-        return {line.strip() for line in out.splitlines() if line.strip()}
+        existing = {line.strip() for line in out.splitlines() if line.strip()}
+        if self.config.xbrl_context_sync_enabled and existing:
+            existing -= self._xbrl_context.pending_source_accessions(sorted(existing))
+        return existing
 
     async def _register_inflight(self, accession_number: str) -> bool:
         async with self._inflight_lock:
@@ -820,7 +833,16 @@ class SecGateway:
         if not self.config.execute:
             return SecWriteResult(skipped_existing=True)
         rows = self._live_pipeline.process_feed_item(item, source_run_id=self._run_id)
-        return self._writer.write_accession(
+        expected_facts = len(rows.xbrl_rows.company_fact_rows)
+        expected_frames = len(rows.xbrl_rows.frame_observation_rows)
+        if self.config.xbrl_context_sync_enabled and expected_facts + expected_frames:
+            self._xbrl_context.mark_pending(
+                cik=str(rows.filing_row["cik"]),
+                accession_number=str(rows.filing_row["accession_number"]),
+                expected_company_fact_rows=expected_facts,
+                expected_frame_observation_rows=expected_frames,
+            )
+        result = self._writer.write_accession(
             filing_row=rows.filing_row,
             document_rows=rows.document_rows,
             text_source_rows=rows.text_source_rows,
@@ -830,8 +852,32 @@ class SecGateway:
             xbrl_company_fact_rows=rows.xbrl_rows.company_fact_rows,
             xbrl_frame_rows=rows.xbrl_rows.frame_rows,
             xbrl_frame_observation_rows=rows.xbrl_rows.frame_observation_rows,
-            skip_existing=True,
+            skip_existing=False,
         )
+        if self.config.xbrl_context_sync_enabled and expected_facts + expected_frames:
+            sync = self._xbrl_context.sync_rows(
+                cik=str(rows.filing_row["cik"]),
+                accession_number=str(rows.filing_row["accession_number"]),
+                company_fact_rows=rows.xbrl_rows.company_fact_rows,
+                frame_observation_rows=rows.xbrl_rows.frame_observation_rows,
+            )
+            result = replace(
+                result,
+                xbrl_context_rows=sync.inserted_rows,
+                xbrl_context_pending_rows=sync.missing_rows,
+            )
+            self._log("xbrl_context_synced", result=asdict(sync))
+        return result
+
+    def _reconcile_xbrl_context(self) -> None:
+        results = self._xbrl_context.reconcile_pending(limit=max(0, self.config.xbrl_context_reconcile_limit))
+        if not results:
+            return
+        self.metrics.xbrl_context_reconciled_accessions += sum(1 for item in results if item.status == "ok")
+        self.metrics.xbrl_context_rows += sum(item.inserted_rows for item in results)
+        self.metrics.xbrl_context_pending_rows = sum(item.missing_rows for item in results if item.status != "ok")
+        self.metrics.xbrl_context_sync_failures += sum(1 for item in results if item.status == "failed")
+        self._log("xbrl_context_reconciled", results=[asdict(item) for item in results])
 
     def _remember(self, item: SecFeedItem, result: SecWriteResult) -> None:
         self._refresh_cache_metrics()
@@ -847,6 +893,8 @@ class SecGateway:
             "texts": result.text_rows,
             "skips": result.skip_rows,
             "xbrl_facts": result.xbrl_company_fact_rows,
+            "xbrl_context_rows": result.xbrl_context_rows,
+            "xbrl_context_pending_rows": result.xbrl_context_pending_rows,
         }
         self._recent.insert(0, row)
         self._prune_recent_metadata()

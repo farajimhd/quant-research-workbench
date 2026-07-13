@@ -31,7 +31,7 @@ class PackedContextConfig:
     macro_bars_table: str = "macro_bars_by_time_symbol"
     news_embedding_table: str = "news_text_embeddings"
     sec_filing_text_embedding_table: str = "sec_filing_text_embeddings"
-    sec_xbrl_context_table: str = "sec_xbrl_context"
+    sec_xbrl_context_table: str = "sec_xbrl_context_v3"
     category_reference_table: str = "training_category_reference"
     stock_split_table: str = "market_stock_split_v1"
     cash_dividend_table: str = "market_cash_dividend_v1"
@@ -125,7 +125,7 @@ DEFAULTS: dict[str, Any] = {
     "sec_filing_text_token_table": "sec_filing_text_tokens",
     "news_embedding_table": "news_text_embeddings",
     "sec_filing_text_embedding_table": "sec_filing_text_embeddings",
-    "sec_xbrl_context_table": "sec_xbrl_context",
+    "sec_xbrl_context_table": "sec_xbrl_context_v3",
     "category_reference_table": "training_category_reference",
     "q_live_database": "q_live",
     "stock_split_table": "market_stock_split_v1",

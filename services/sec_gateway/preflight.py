@@ -11,8 +11,9 @@ from pipelines.sec.edgar.sec_pipeline.coverage import SecCoverageConfig, ensure_
 from pipelines.sec.edgar.sec_pipeline.feed import SecCurrentFeedClient
 from pipelines.sec.edgar.sec_pipeline.http import SecHttpClient
 from pipelines.sec.edgar.sec_pipeline.rate_limit import SecRateLimiter
+from pipelines.sec.edgar.sec_pipeline.xbrl_context import SecXbrlContextSync
 from research.mlops.clickhouse import ClickHouseHttpClient
-from services.sec_gateway.config import SecGatewayConfig
+from services.sec_gateway.config import SecGatewayConfig, xbrl_context_sync_config
 from services.gateway_core.market_calendar import MassiveMarketHoursClient
 
 
@@ -103,12 +104,15 @@ def check_clickhouse(config: SecGatewayConfig) -> str:
     )
     writer = SecClickHouseWriter(client, database=ch.write_database)
     writer.validate_tables()
+    if config.xbrl_context_sync_enabled:
+        SecXbrlContextSync(client, xbrl_context_sync_config(config)).ensure_tables()
     audit = writer.audit_integrity()
     return (
         f"read={ch.read_database} write={ch.write_database} "
         f"tables={len(tables)} coverage={ch.coverage_table} "
         f"audit={'ok' if audit.ok else 'warn'} filings={audit.filing_rows} docs={audit.document_rows} "
-        f"text_sources={audit.text_source_rows} texts={audit.text_rows} xbrl_facts={audit.xbrl_company_fact_rows} xbrl_frames={audit.xbrl_frame_rows}"
+        f"text_sources={audit.text_source_rows} texts={audit.text_rows} xbrl_facts={audit.xbrl_company_fact_rows} xbrl_frames={audit.xbrl_frame_rows} "
+        f"xbrl_context_sync={'enabled' if config.xbrl_context_sync_enabled else 'disabled'}"
     )
 
 

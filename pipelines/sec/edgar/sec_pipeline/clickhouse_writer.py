@@ -52,6 +52,8 @@ class SecWriteResult:
     xbrl_company_fact_rows: int = 0
     xbrl_frame_rows: int = 0
     xbrl_frame_observation_rows: int = 0
+    xbrl_context_rows: int = 0
+    xbrl_context_pending_rows: int = 0
     skipped_existing: bool = False
 
 

@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from pipelines.sec.edgar.sec_pipeline.config import SecPipelineConfig, env_bool, env_float, env_int, env_string
+from pipelines.sec.edgar.sec_pipeline.xbrl_context import XbrlContextSyncConfig
 
 
 WORKSTATION_COMPUTER_NAME = "DESKTOP-SAAI85T"
@@ -39,6 +40,14 @@ class SecGatewayConfig:
     xbrl_payload_cache_entries: int
     xbrl_payload_cache_max_age_seconds: float
     xbrl_missing_cik_cache_entries: int
+    xbrl_context_sync_enabled: bool
+    xbrl_context_database: str
+    xbrl_context_table: str
+    xbrl_context_manifest_table: str
+    xbrl_context_reconcile_limit: int
+    xbrl_context_max_threads: int
+    xbrl_context_max_memory_usage: str
+    xbrl_context_insert_batch_rows: int
     recent_metadata_retention_hours: float
     full_audit_on_startup: bool
     full_audit_after_write_batches: int
@@ -77,6 +86,17 @@ class SecGatewayConfig:
             xbrl_payload_cache_entries=env_int("SEC_GATEWAY_XBRL_PAYLOAD_CACHE_ENTRIES", 32),
             xbrl_payload_cache_max_age_seconds=env_float("SEC_GATEWAY_XBRL_PAYLOAD_CACHE_MAX_AGE_SECONDS", 3600.0),
             xbrl_missing_cik_cache_entries=env_int("SEC_GATEWAY_XBRL_MISSING_CIK_CACHE_ENTRIES", 5_000),
+            xbrl_context_sync_enabled=env_bool("SEC_GATEWAY_XBRL_CONTEXT_SYNC_ENABLED", True),
+            xbrl_context_database=env_string("SEC_GATEWAY_XBRL_CONTEXT_DATABASE", "market_sip_compact"),
+            xbrl_context_table=env_string("SEC_GATEWAY_XBRL_CONTEXT_TABLE", "sec_xbrl_context_v3"),
+            xbrl_context_manifest_table=env_string(
+                "SEC_GATEWAY_XBRL_CONTEXT_MANIFEST_TABLE",
+                "sec_xbrl_context_sync_manifest_v3",
+            ),
+            xbrl_context_reconcile_limit=env_int("SEC_GATEWAY_XBRL_CONTEXT_RECONCILE_LIMIT", 100),
+            xbrl_context_max_threads=env_int("SEC_GATEWAY_XBRL_CONTEXT_MAX_THREADS", 8),
+            xbrl_context_max_memory_usage=env_string("SEC_GATEWAY_XBRL_CONTEXT_MAX_MEMORY", "16G"),
+            xbrl_context_insert_batch_rows=env_int("SEC_GATEWAY_XBRL_CONTEXT_INSERT_BATCH_ROWS", 10_000),
             recent_metadata_retention_hours=env_float("SEC_GATEWAY_RECENT_METADATA_RETENTION_HOURS", 24.0),
             full_audit_on_startup=env_bool("SEC_GATEWAY_FULL_AUDIT_ON_STARTUP", True),
             full_audit_after_write_batches=env_int("SEC_GATEWAY_FULL_AUDIT_AFTER_WRITE_BATCHES", 0),
@@ -136,3 +156,18 @@ def env_bool_auto(name: str, default: bool) -> bool:
     if value is None or not value.strip() or value.strip().lower() == "auto":
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def xbrl_context_sync_config(config: SecGatewayConfig) -> XbrlContextSyncConfig:
+    return XbrlContextSyncConfig(
+        source_database=config.pipeline.clickhouse.write_database,
+        bridge_database=config.pipeline.clickhouse.read_database,
+        context_database=config.xbrl_context_database,
+        bridge_table="id_sec_market_bridge_v3",
+        context_table=config.xbrl_context_table,
+        manifest_table=config.xbrl_context_manifest_table,
+        storage_policy=os.environ.get("CLICKHOUSE_HISTORICAL_STORAGE_POLICY") or "",
+        max_threads=max(1, int(config.xbrl_context_max_threads)),
+        max_memory_usage=config.xbrl_context_max_memory_usage,
+        insert_batch_rows=max(1, int(config.xbrl_context_insert_batch_rows)),
+    )

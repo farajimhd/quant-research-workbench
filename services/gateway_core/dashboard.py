@@ -146,6 +146,10 @@ def runtime_summary(metrics: dict[str, Any]) -> dict[str, Any]:
         "feed_items",
         "processed_filings",
         "written_filings",
+        "xbrl_context_rows",
+        "xbrl_context_pending_rows",
+        "xbrl_context_reconciled_accessions",
+        "xbrl_context_sync_failures",
         "source_rows_fetched",
         "embedding_rows_written",
         "cycles",
@@ -215,7 +219,12 @@ def configured_tables(config: dict[str, Any], *, read_database: str, write_datab
             continue
         table_names = table_names_from_value(value)
         for table_name in table_names:
-            database = table_database_for_key(key, read_database=read_database, write_database=write_database)
+            database = configured_table_database(
+                config,
+                key,
+                read_database=read_database,
+                write_database=write_database,
+            )
             identity = (database, table_name)
             if identity in seen:
                 continue
@@ -253,6 +262,26 @@ def table_database_for_key(key: str, *, read_database: str, write_database: str)
     if any(token in lowered for token in ("source", "read", "context", "live")):
         return read_database or write_database
     return write_database or read_database
+
+
+def configured_table_database(
+    config: dict[str, Any],
+    key: str,
+    *,
+    read_database: str,
+    write_database: str,
+) -> str:
+    stem = key.lower()
+    for suffix in ("_table_name", "_tables", "_table"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    parts = [part for part in stem.split("_") if part]
+    for size in range(len(parts), 0, -1):
+        database = config.get("_".join(parts[:size]) + "_database")
+        if database:
+            return str(database)
+    return table_database_for_key(key, read_database=read_database, write_database=write_database)
 
 
 def queue_summary(metrics: dict[str, Any]) -> list[dict[str, Any]]:

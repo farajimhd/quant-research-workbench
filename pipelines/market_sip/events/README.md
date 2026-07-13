@@ -189,6 +189,10 @@ training macro-bar build, and it should not be used to populate
 `clickhouse_build_sec_context.py` materializes filing and XBRL context from
 `q_live` into `market_sip_compact` for structured training inputs. SEC text
 tokenization and embedding no longer depend on a materialized text-context copy.
+The historical builder establishes `sec_xbrl_context_v3`; after cutover, the
+live SEC gateway maintains the same table accession by accession using the
+event-valid `id_sec_market_bridge_v3` relationship and a durable reconciliation
+manifest.
 
 The migration creates filing and XBRL context tables by default. The legacy
 text-context table is created only with `--no-skip-text`:
@@ -204,6 +208,10 @@ Rows with null `accepted_at_utc` are skipped because they do not have a safe
 no-lookahead event time. `id_sec_market_bridge_v3` is used only to map CIK or
 accession to a market ticker; it is deduplicated inside the migration and is not
 used as the event-time source.
+
+The packed-model context loader reads `market_sip_compact.sec_xbrl_context_v3`
+directly. Its default no longer references the stale unversioned
+`sec_xbrl_context` table.
 
 `q_live.sec_filing_text_v3` stores submitted text-source documents such as HTML,
 plain text, and non-XBRL XML. The compact `sec_filing_text_context_v3.text` field

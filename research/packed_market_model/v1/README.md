@@ -102,6 +102,10 @@ This profiler times the real loads for:
 - global daily bars
 - scanner sidecar bars
 
+XBRL is read directly from
+`market_sip_compact.sec_xbrl_context_v3`, which is built by the historical SEC
+context stage and maintained for new accessions by `sec_gateway`.
+
 The default small profile uses `--block-sampling round-robin`, so `--max-blocks 4`
 profiles the first block from four different ticker/month plans instead of four
 sequential blocks from the most active ticker. Shared month/day artifacts such as

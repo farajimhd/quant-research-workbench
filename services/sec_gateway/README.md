@@ -26,15 +26,20 @@ start service
 -> fetch SEC companyfacts for filings that expose XBRL or inline-XBRL documents
 -> write sec_filing_v3/document_v3/text_v3/text_rendered_v3/skip_v3 rows to the configured write database
 -> write sec_xbrl_* rows to the configured write database when matching companyfacts are available
+-> resolve event-valid ticker mappings from q_live.id_sec_market_bridge_v3
+-> insert the filing's company facts and frame observations into market_sip_compact.sec_xbrl_context_v3
+-> retain pending context work in sec_xbrl_context_sync_manifest_v3 for restart-safe reconciliation
 -> audit the write database for duplicate and orphan SEC rows
 -> keep one live-run coverage row current, including empty/all-duplicate polls
 -> show Rich terminal status and expose HTTP/websocket snapshots
 ```
 
-The gateway does not own global ticker/reference mappings. It writes raw SEC
-filing, document, text, skip, and XBRL rows only. `reference_gateway` maintains
-`q_live.id_sec_market_bridge_v3`, and `text_embed_gateway` reads that bridge to
-refresh ticker-aligned SEC text context before token and embedding writes.
+The gateway does not own global ticker/reference mappings.
+`reference_gateway` maintains `q_live.id_sec_market_bridge_v3`. The SEC gateway
+uses that point-in-time mapping after each XBRL source write to maintain
+`market_sip_compact.sec_xbrl_context_v3`; it does not create or alter bridge
+rows. SEC text token and embedding writes continue to join v3 source tables to
+the bridge directly rather than depending on a copied text-context table.
 
 ## Run
 
@@ -78,6 +83,14 @@ SEC_GATEWAY_SUBMISSIONS_CACHE_MAX_AGE_SECONDS=3600
 SEC_GATEWAY_XBRL_PAYLOAD_CACHE_ENTRIES=32
 SEC_GATEWAY_XBRL_PAYLOAD_CACHE_MAX_AGE_SECONDS=3600
 SEC_GATEWAY_XBRL_MISSING_CIK_CACHE_ENTRIES=5000
+SEC_GATEWAY_XBRL_CONTEXT_SYNC_ENABLED=true
+SEC_GATEWAY_XBRL_CONTEXT_DATABASE=market_sip_compact
+SEC_GATEWAY_XBRL_CONTEXT_TABLE=sec_xbrl_context_v3
+SEC_GATEWAY_XBRL_CONTEXT_MANIFEST_TABLE=sec_xbrl_context_sync_manifest_v3
+SEC_GATEWAY_XBRL_CONTEXT_RECONCILE_LIMIT=100
+SEC_GATEWAY_XBRL_CONTEXT_MAX_THREADS=8
+SEC_GATEWAY_XBRL_CONTEXT_MAX_MEMORY=16G
+SEC_GATEWAY_XBRL_CONTEXT_INSERT_BATCH_ROWS=10000
 SEC_GATEWAY_RECENT_METADATA_RETENTION_HOURS=24
 SEC_GATEWAY_FULL_AUDIT_ON_STARTUP=true
 SEC_GATEWAY_FULL_AUDIT_AFTER_WRITE_BATCHES=0
@@ -377,6 +390,20 @@ It filters facts to the exact accession and writes:
 - `sec_xbrl_company_fact_v3`
 - `sec_xbrl_frame_v3`
 - `sec_xbrl_frame_observation_v3`
+
+After those source rows are durable, the gateway resolves the filing's ticker
+through the bridge relationship valid at `accepted_at_utc` and writes company
+facts plus frame observations to
+`market_sip_compact.sec_xbrl_context_v3`. The target identity is
+`(ticker, timestamp_us, accession_number, xbrl_row_kind, source_id)`, so retries
+query the ordered target-key prefix and insert only missing identities.
+
+Before writing source XBRL rows, the gateway records expected row counts in
+`market_sip_compact.sec_xbrl_context_sync_manifest_v3`. A restart reconciles
+pending source, mapping, or target writes from the exact accession only. Missing
+bridge mappings remain explicitly pending and are retried after the reference
+gateway updates the bridge; context failures are not silently treated as
+complete.
 
 Ownership XML filings such as Forms 3/4/5 are still recorded as structured
 documents and skip rows, but they do not create companyfacts XBRL rows unless SEC

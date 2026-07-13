@@ -701,8 +701,18 @@ def metric_rows(payload: dict[str, Any], *, section: str) -> list[dict[str, str]
         if value is None or value == "":
             continue
         metric, detail = split_metric_value(value)
-        rows.append({"metric": key.replace("_", " "), "section": section, "value": metric, "detail": detail})
+        rows.append({"metric": metric_label(key), "section": section, "value": metric, "detail": detail})
     return rows
+
+
+def metric_label(key: str) -> str:
+    labels = {
+        "xbrl_context_rows": "xbrl context rows",
+        "xbrl_context_pending_rows": "xbrl context pending",
+        "xbrl_context_reconciled_accessions": "xbrl context reconciled",
+        "xbrl_context_sync_failures": "xbrl context failures",
+    }
+    return labels.get(key, key.replace("_", " "))
 
 
 def transposed_metric_rows(runtime: dict[str, Any], daily: dict[str, Any]) -> list[dict[str, str]]:
