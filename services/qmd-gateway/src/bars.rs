@@ -1157,6 +1157,10 @@ fn parse_timeframe(label: &str) -> Option<BarFrame> {
     Some(BarFrame { label, seconds })
 }
 
+pub fn is_supported_timeframe(value: &str) -> bool {
+    parse_timeframe(value).is_some()
+}
+
 fn canonical_timeframe(value: &str) -> String {
     value.trim().to_ascii_lowercase()
 }

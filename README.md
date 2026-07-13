@@ -80,7 +80,7 @@ paper or live accounts.
 | Prepared-data provider | `src/data_provider` | Existing historical feature artifacts. New historical execution and bar calculation use canonical events; feature migration remains separate from brokerage semantics. |
 | Shared market engine | `src/market_engine` | Canonical event and event-derived bar contracts used by historical and live consumers. |
 | Live and recent market data | `services/qmd-gateway` | Rust gateway for Massive quotes/trades, compact events, always-on canonical intraday bars, indicators, scanner primitives, recent gap repair, and local streams/APIs. |
-| Historical market-data API | `services/qmd_history_gateway` | Read-only QMD-compatible compact-event and event-derived bar API for Replay, Backtest, and Backtest Debug. It reads `market_sip_compact.events_YYYY`; it never connects to Massive. |
+| Historical market-data API | `services/qmd_history_gateway` | Read-only Rust compact-event, canonical-event, and event-derived bar API for Replay, Backtest, and Backtest Debug. It reads `market_sip_compact.events_YYYY` and depends on live QMD's shared `qmd_core` decoder/bar implementation; it never connects to Massive. |
 | Historical market data | `pipelines/market_sip` | Massive flat-file download, compact event ingestion, validation, repairs, and derived event/bar builders. |
 | Trading audit persistence | `services/trading_journal_gateway` | Mirrors the crash-safe local trading outbox into typed ClickHouse `q_live.tr_*` tables without making ClickHouse the order-command queue. |
 | News | `services/news_gateway`, `pipelines/news/benzinga` | Live Benzinga acquisition plus historical ingestion, normalization, persistence, coverage, and repair. |

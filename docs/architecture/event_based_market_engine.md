@@ -21,8 +21,7 @@ debug and review workflows.
 The quote/trade regime is the active app path. Its source data can come from:
 
 - Massive websocket trades and quotes
-- historical ClickHouse quote/trade tables
-- app-owned live replay tables
+- historical `market_sip_compact.events_YYYY` through the Rust historical QMD gateway
 
 All sources must be adapted into `src.market_engine` contracts before scanner,
 chart, strategy, replay, or backtest code consumes them.
@@ -99,14 +98,14 @@ This keeps crash recovery and rest-data backfill out of the live decision path.
 ### Historical Path
 
 ```text
-Historical ClickHouse database
-  -> canonical quote/trade events
-  -> synthetic Massive-like snapshot
-  -> scanner setup / bars / indicators / backtest
+market_sip_compact.events_YYYY
+  -> Rust qmd-history-gateway
+  -> shared qmd_core compact decoder and enriched bars
+  -> replay / backtest / debug
 ```
 
-The historical database is configured through `HISTORICAL_CLICKHOUSE_DATABASE`
-and related optional connection variables.
+The historical service is configured through `QMD_HISTORY_*` variables. It is
+read-only and does not share live QMD memory or writers.
 
 ## Shared Components
 

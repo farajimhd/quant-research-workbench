@@ -5,6 +5,61 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[derive(Clone, Debug)]
+pub struct HistoricalClickHouseConnection {
+    pub database: String,
+    pub password: String,
+    pub url: String,
+    pub user: String,
+}
+
+impl HistoricalClickHouseConnection {
+    pub fn from_env() -> Self {
+        Self {
+            database: env_string_any(
+                &["QMD_HISTORY_DATABASE", "QMD_HISTORICAL_CLICKHOUSE_DATABASE"],
+                "market_sip_compact",
+            ),
+            password: env_string_any(
+                &[
+                    "QMD_HISTORY_CLICKHOUSE_PASSWORD",
+                    "QMD_HISTORICAL_CLICKHOUSE_PASSWORD",
+                    "CLICKHOUSE_WORKSTATION_PASSWORD",
+                    "QMD_CLICKHOUSE_PASSWORD",
+                    "REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD",
+                    "CLICKHOUSE_PASSWORD",
+                ],
+                "",
+            ),
+            url: env_string_any(
+                &[
+                    "QMD_HISTORY_CLICKHOUSE_URL",
+                    "QMD_HISTORICAL_CLICKHOUSE_URL",
+                    "HISTORICAL_CLICKHOUSE_URL",
+                    "QMD_CLICKHOUSE_URL",
+                    "REAL_LIVE_CLICKHOUSE_WRITE_URL",
+                    "CLICKHOUSE_URL",
+                    "CLICKHOUSE_ENDPOINT",
+                ],
+                "http://localhost:8123",
+            )
+            .trim_end_matches('/')
+            .to_string(),
+            user: env_string_any(
+                &[
+                    "QMD_HISTORY_CLICKHOUSE_USER",
+                    "QMD_HISTORICAL_CLICKHOUSE_USER",
+                    "CLICKHOUSE_WORKSTATION_USER",
+                    "QMD_CLICKHOUSE_USER",
+                    "REAL_LIVE_CLICKHOUSE_WRITE_USER",
+                    "CLICKHOUSE_USER",
+                ],
+                "default",
+            ),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct GatewayConfig {
     pub api_key_present: bool,
@@ -82,10 +137,6 @@ pub struct GatewayConfig {
     #[serde(skip_serializing)]
     pub qmd_shutdown_token: String,
     pub qmd_startup_maintenance_enabled: bool,
-    pub replay_enabled: bool,
-    pub replay_date: String,
-    pub replay_max_rows: usize,
-    pub replay_symbols: Vec<String>,
     pub market_holidays_refresh_seconds: u64,
     pub market_holidays_url: String,
     pub market_status_enabled: bool,
@@ -117,16 +168,7 @@ impl GatewayConfig {
             ],
             "",
         );
-        let historical_clickhouse_password = env_string_any(
-            &[
-                "QMD_HISTORICAL_CLICKHOUSE_PASSWORD",
-                "CLICKHOUSE_WORKSTATION_PASSWORD",
-                "QMD_CLICKHOUSE_PASSWORD",
-                "REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD",
-                "CLICKHOUSE_PASSWORD",
-            ],
-            "",
-        );
+        let historical_clickhouse = HistoricalClickHouseConnection::from_env();
         let flatfile_access_key =
             env_string_any(&["QMD_FLATFILE_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"], "");
         let flatfile_secret_key = env_string_any(
@@ -223,34 +265,10 @@ impl GatewayConfig {
             ),
             recent_live_prior_market_days: env_i64("QMD_RECENT_LIVE_PRIOR_MARKET_DAYS", 3),
             recent_live_repair_concurrency: env_usize("QMD_RECENT_LIVE_REPAIR_CONCURRENCY", 8),
-            historical_clickhouse_database: env_string(
-                "QMD_HISTORICAL_CLICKHOUSE_DATABASE",
-                "market_sip_compact",
-            ),
-            historical_clickhouse_password_present: !historical_clickhouse_password.is_empty(),
-            historical_clickhouse_url: env_string_any(
-                &[
-                    "QMD_HISTORICAL_CLICKHOUSE_URL",
-                    "HISTORICAL_CLICKHOUSE_URL",
-                    "QMD_CLICKHOUSE_URL",
-                    "REAL_LIVE_CLICKHOUSE_WRITE_URL",
-                    "CLICKHOUSE_URL",
-                    "CLICKHOUSE_ENDPOINT",
-                ],
-                "http://localhost:8123",
-            )
-            .trim_end_matches('/')
-            .to_string(),
-            historical_clickhouse_user: env_string_any(
-                &[
-                    "QMD_HISTORICAL_CLICKHOUSE_USER",
-                    "CLICKHOUSE_WORKSTATION_USER",
-                    "QMD_CLICKHOUSE_USER",
-                    "REAL_LIVE_CLICKHOUSE_WRITE_USER",
-                    "CLICKHOUSE_USER",
-                ],
-                "default",
-            ),
+            historical_clickhouse_database: historical_clickhouse.database,
+            historical_clickhouse_password_present: !historical_clickhouse.password.is_empty(),
+            historical_clickhouse_url: historical_clickhouse.url,
+            historical_clickhouse_user: historical_clickhouse.user,
             historical_flatfile_autorun: env_bool("QMD_HISTORICAL_FLATFILE_AUTORUN", true),
             historical_flatfile_update_enabled: env_bool(
                 "QMD_HISTORICAL_FLATFILE_UPDATE_ENABLED",
@@ -331,10 +349,6 @@ impl GatewayConfig {
             ),
             qmd_shutdown_token: env_string("QMD_SHUTDOWN_TOKEN", ""),
             qmd_startup_maintenance_enabled: env_bool("QMD_STARTUP_MAINTENANCE_ENABLED", true),
-            replay_enabled: env_bool("QMD_REPLAY_ENABLED", false),
-            replay_date: env_string("QMD_REPLAY_DATE", ""),
-            replay_max_rows: env_usize("QMD_REPLAY_MAX_ROWS", 1_000_000),
-            replay_symbols: env_list("QMD_REPLAY_SYMBOLS"),
             market_holidays_refresh_seconds: env_u64("QMD_MARKET_HOLIDAYS_REFRESH_SECONDS", 3_600),
             market_holidays_url: env_string(
                 "QMD_MARKET_HOLIDAYS_URL",
@@ -419,16 +433,7 @@ impl GatewayConfig {
     }
 
     pub fn historical_clickhouse_password(&self) -> String {
-        env_string_any(
-            &[
-                "QMD_HISTORICAL_CLICKHOUSE_PASSWORD",
-                "CLICKHOUSE_WORKSTATION_PASSWORD",
-                "QMD_CLICKHOUSE_PASSWORD",
-                "REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD",
-                "CLICKHOUSE_PASSWORD",
-            ],
-            "",
-        )
+        HistoricalClickHouseConnection::from_env().password
     }
 
     pub fn flatfile_secret_key(&self) -> String {

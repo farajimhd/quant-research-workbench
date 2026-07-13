@@ -1,52 +1,28 @@
 #![recursion_limit = "512"]
 
-mod api;
-mod bars;
-mod clickhouse;
-mod compact_event;
-mod config;
-mod event;
-mod flatfile;
-mod gapfill;
-mod indicator_catalog;
-mod indicators;
-mod intraday_bars;
-mod live_market_state;
-mod maintenance;
-mod market_calendar;
-mod massive;
-mod metrics;
-mod replay;
-mod scanner;
-mod session;
-mod signal_catalog;
-mod state;
-mod timefmt;
-
-use crate::api::{app, AppState};
-use crate::bars::{spawn_bar_engines, SharedBarStore};
-use crate::clickhouse::ClickHouseWriter;
-use crate::compact_event::{
+use chrono::Utc;
+use qmd_core::api::{app, AppState};
+use qmd_core::bars::{spawn_bar_engines, SharedBarStore};
+use qmd_core::clickhouse::ClickHouseWriter;
+use qmd_core::compact_event::{
     CompactEventClickHouseWriter, CompactEventReferences, LiveCompactEvent, SharedCompactEventStore,
 };
-use crate::config::{load_env_files, GatewayConfig};
-use crate::event::MarketEvent;
-use crate::gapfill::{run_gap_fill_service, run_startup_maintenance};
-use crate::indicators::{
+use qmd_core::config::{load_env_files, GatewayConfig};
+use qmd_core::event::MarketEvent;
+use qmd_core::gapfill::{run_gap_fill_service, run_startup_maintenance};
+use qmd_core::indicators::{
     spawn_indicator_engines, IndicatorClickHouseWriter, IndicatorRow, SharedIndicatorStore,
 };
-use crate::intraday_bars::spawn_intraday_bar_service;
-use crate::live_market_state::{
+use qmd_core::intraday_bars::spawn_intraday_bar_service;
+use qmd_core::live_market_state::{
     spawn_live_market_state_service, LiveSymbolMarketStateEvent, SharedLiveMarketStateStore,
 };
-use crate::maintenance::SharedMaintenanceState;
-use crate::market_calendar::{run_market_calendar_refresh, MarketCalendarClient};
-use crate::massive::{run_massive_ingest, MarketEventFanout};
-use crate::metrics::SharedMetrics;
-use crate::replay::run_replay_service;
-use crate::scanner::{spawn_scanner_primitive_engine, ScannerPrimitive, SharedScannerStore};
-use crate::state::SharedMarketState;
-use chrono::Utc;
+use qmd_core::maintenance::SharedMaintenanceState;
+use qmd_core::market_calendar::{run_market_calendar_refresh, MarketCalendarClient};
+use qmd_core::massive::{run_massive_ingest, MarketEventFanout};
+use qmd_core::metrics::SharedMetrics;
+use qmd_core::scanner::{spawn_scanner_primitive_engine, ScannerPrimitive, SharedScannerStore};
+use qmd_core::state::SharedMarketState;
 use std::net::SocketAddr;
 use std::{error::Error, io};
 use tokio::sync::{broadcast, mpsc, watch};
@@ -359,14 +335,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             market_calendar.clone(),
         )));
     }
-    producer_handles.push(tokio::spawn(run_replay_service(
-        config.clone(),
-        metrics.clone(),
-        market.clone(),
-        bar_router.clone(),
-        indicator_router.clone(),
-    )));
-
     server.await??;
     eprintln!("QMD shutdown requested; stopping producers and draining writer batches.");
     market_calendar_handle.abort();

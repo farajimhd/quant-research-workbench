@@ -43,7 +43,7 @@ pub struct LiveCompactEvent {
 }
 
 impl LiveCompactEvent {
-    fn event_type(&self) -> u8 {
+    pub fn event_type(&self) -> u8 {
         self.event_meta & 0x01
     }
 
@@ -54,6 +54,118 @@ impl LiveCompactEvent {
         self.condition_token_4 = tokens[3];
         self.condition_token_5 = tokens[4];
         self
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct CompactEventDecoder {
+    quote_conditions: HashMap<u8, u16>,
+    quote_indicators: HashMap<u8, u16>,
+    tapes: HashMap<u8, u8>,
+    trade_conditions: HashMap<u8, u16>,
+}
+
+impl CompactEventDecoder {
+    pub fn new(
+        quote_conditions: impl IntoIterator<Item = (u8, u16)>,
+        trade_conditions: impl IntoIterator<Item = (u8, u16)>,
+        quote_indicators: impl IntoIterator<Item = (u8, u16)>,
+        tapes: impl IntoIterator<Item = (u8, u8)>,
+    ) -> Self {
+        Self {
+            quote_conditions: quote_conditions.into_iter().collect(),
+            quote_indicators: quote_indicators.into_iter().collect(),
+            tapes: tapes.into_iter().collect(),
+            trade_conditions: trade_conditions.into_iter().collect(),
+        }
+    }
+
+    pub fn decode(&self, event: &LiveCompactEvent) -> MarketEvent {
+        let primary_scale = if event.event_meta & 0x02 != 0 {
+            10_000.0
+        } else {
+            100.0
+        };
+        let secondary_scale = if event.event_meta & 0x04 != 0 {
+            10_000.0
+        } else {
+            100.0
+        };
+        let tokens = [
+            event.condition_token_1,
+            event.condition_token_2,
+            event.condition_token_3,
+            event.condition_token_4,
+            event.condition_token_5,
+        ];
+        let encoded_tape = (event.event_meta >> 3) & 0x07;
+        let tape = self
+            .tapes
+            .get(&encoded_tape)
+            .copied()
+            .unwrap_or(encoded_tape + 1);
+        let raw = json!({
+            "schema_version": event.schema_version,
+            "arrival_sequence": event.arrival_sequence,
+            "event_meta": event.event_meta,
+            "issue_flags": event.issue_flags,
+            "sip_timestamp_us": event.sip_timestamp_us,
+        });
+        if event.event_type() == TRADE_EVENT_TYPE {
+            let conditions = tokens
+                .into_iter()
+                .filter_map(|token| self.trade_conditions.get(&token).copied())
+                .collect();
+            MarketEvent::Trade(TradeEvent {
+                conditions,
+                exchange: u16::from(event.exchange_primary),
+                ingest_ts: event.ingest_ts,
+                participant_ts: None,
+                price: f64::from(event.price_primary_int) / primary_scale,
+                raw,
+                sequence: event.source_sequence,
+                size: f64::from(event.size_primary),
+                tape,
+                ticker: event.ticker.clone(),
+                trade_id: format!("compact-{}", event.arrival_sequence),
+                trf_id: 0,
+                trf_ts: None,
+                ts: Utc
+                    .timestamp_micros(event.sip_timestamp_us as i64)
+                    .single()
+                    .unwrap_or(event.ingest_ts),
+            })
+        } else {
+            let conditions = tokens[..4]
+                .iter()
+                .filter_map(|token| self.quote_conditions.get(token).copied())
+                .collect();
+            let indicators = self
+                .quote_indicators
+                .get(&tokens[4])
+                .copied()
+                .into_iter()
+                .collect();
+            MarketEvent::Quote(QuoteEvent {
+                ask_exchange: u16::from(event.exchange_primary),
+                ask_price: f64::from(event.price_primary_int) / primary_scale,
+                ask_size: event.size_primary.max(0.0).round().min(u32::MAX as f32) as u32,
+                bid_exchange: u16::from(event.exchange_secondary),
+                bid_price: f64::from(event.price_secondary_int) / secondary_scale,
+                bid_size: event.size_secondary.max(0.0).round().min(u32::MAX as f32) as u32,
+                conditions,
+                indicators,
+                ingest_ts: event.ingest_ts,
+                raw,
+                sequence: event.source_sequence,
+                tape,
+                ticker: event.ticker.clone(),
+                ts: Utc
+                    .timestamp_micros(event.sip_timestamp_us as i64)
+                    .single()
+                    .unwrap_or(event.ingest_ts),
+            })
+        }
     }
 }
 
@@ -180,12 +292,28 @@ pub struct CompactEventReferences {
 
 impl CompactEventReferences {
     pub async fn load(config: &GatewayConfig) -> Result<Self, String> {
+        Self::load_from_clickhouse(
+            &config.historical_clickhouse_url,
+            &config.historical_clickhouse_user,
+            &config.historical_clickhouse_password(),
+            &config.historical_clickhouse_database,
+        )
+        .await
+    }
+
+    pub async fn load_from_clickhouse(
+        base_url: &str,
+        user: &str,
+        password: &str,
+        database: &str,
+    ) -> Result<Self, String> {
         let client = Client::new();
-        let database = config.historical_clickhouse_database.replace('`', "");
+        let database = database.replace('`', "");
         let token_sql = format!(
             "SELECT source_family, modifier_int, min(token_id) FROM {database}.event_condition_token_reference WHERE is_join_canonical = 1 GROUP BY source_family, modifier_int ORDER BY min(token_id) FORMAT TSV"
         );
-        let token_rows = historical_query(&client, config, &token_sql).await?;
+        let token_rows =
+            clickhouse_query(&client, base_url, user, password, None, &token_sql).await?;
         let mut quote_conditions = HashMap::new();
         let mut trade_conditions = HashMap::new();
         let mut quote_indicators = HashMap::new();
@@ -227,7 +355,8 @@ impl CompactEventReferences {
         let tape_sql = format!(
             "SELECT raw_id, dense_id FROM {database}.ref_stock_tapes WHERE raw_id IS NOT NULL AND dense_id_kind = 'actual' ORDER BY raw_id FORMAT TSV"
         );
-        let tape_rows = historical_query(&client, config, &tape_sql).await?;
+        let tape_rows =
+            clickhouse_query(&client, base_url, user, password, None, &tape_sql).await?;
         let mut tapes = HashMap::new();
         for row in tape_rows.lines() {
             let parts = row.split('\t').collect::<Vec<_>>();
@@ -254,6 +383,33 @@ impl CompactEventReferences {
             quote_indicators,
             tapes,
         })
+    }
+
+    pub fn decoder(&self) -> CompactEventDecoder {
+        CompactEventDecoder::new(
+            self.quote_conditions
+                .iter()
+                .filter_map(|(modifier, token)| {
+                    u16::try_from(*modifier)
+                        .ok()
+                        .map(|modifier| (*token, modifier))
+                }),
+            self.trade_conditions
+                .iter()
+                .filter_map(|(modifier, token)| {
+                    u16::try_from(*modifier)
+                        .ok()
+                        .map(|modifier| (*token, modifier))
+                }),
+            self.quote_indicators
+                .iter()
+                .filter_map(|(modifier, token)| {
+                    u16::try_from(*modifier)
+                        .ok()
+                        .map(|modifier| (*token, modifier))
+                }),
+            self.tapes.iter().map(|(raw, encoded)| (*encoded, *raw)),
+        )
     }
 
     fn quote_condition_id(&self, value: u16) -> u8 {
@@ -1194,22 +1350,6 @@ fn merge_tree_settings(storage_policy: &str) -> String {
     }
 }
 
-async fn historical_query(
-    client: &Client,
-    config: &GatewayConfig,
-    body: &str,
-) -> Result<String, String> {
-    clickhouse_query(
-        client,
-        &config.historical_clickhouse_url,
-        &config.historical_clickhouse_user,
-        &config.historical_clickhouse_password(),
-        None,
-        body,
-    )
-    .await
-}
-
 async fn clickhouse_query(
     client: &Client,
     base_url: &str,
@@ -1263,6 +1403,7 @@ mod tests {
 
     #[test]
     fn quote_sanitization_preserves_conditions() {
+        let refs = references();
         let quote = QuoteEvent {
             ask_exchange: 11,
             ask_price: 9.0,
@@ -1279,7 +1420,7 @@ mod tests {
             ticker: "TEST".to_string(),
             ts: Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
         };
-        let converted = compact_quote_event(&quote, &references()).unwrap().event;
+        let converted = compact_quote_event(&quote, &refs).unwrap().event;
         assert_eq!(converted.price_primary_int, 0);
         assert_eq!(converted.price_secondary_int, 0);
         assert_eq!(converted.size_primary, 0.0);
@@ -1288,6 +1429,14 @@ mod tests {
         assert_eq!(converted.condition_token_2, 12);
         assert_eq!(converted.condition_token_5, 31);
         assert_eq!((converted.event_meta >> 3) & 0x07, 2);
+        match refs.decoder().decode(&converted) {
+            MarketEvent::Quote(decoded) => {
+                assert_eq!(decoded.conditions, vec![12, 16]);
+                assert_eq!(decoded.indicators, vec![7]);
+                assert_eq!(decoded.tape, 3);
+            }
+            MarketEvent::Trade(_) => panic!("expected quote"),
+        }
     }
 
     #[test]

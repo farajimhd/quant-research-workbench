@@ -9,8 +9,8 @@ dependencies:
 | Mode | Market source | Broker | Clock |
 |---|---|---|---|
 | Live / Paper | live `qmd-gateway` | `IbkrClientPortalAdapter` | wall clock |
-| Replay | `qmd_history_gateway` | `SimulatedBrokerAdapter` | controllable historical clock |
-| Backtest | `qmd_history_gateway` | `SimulatedBrokerAdapter` | maximum-speed historical clock |
+| Replay | Rust `qmd_history_gateway` | `SimulatedBrokerAdapter` | controllable historical clock |
+| Backtest | Rust `qmd_history_gateway` | `SimulatedBrokerAdapter` | maximum-speed historical clock |
 | Backtest Debug | the exact backtest event window/cursor | `SimulatedBrokerAdapter` | stepped historical clock |
 
 The broker-facing contract retains Client Portal names such as `acctId`,
@@ -29,6 +29,12 @@ configuration, event cursor, simulation configuration, and checkpoints.
 
 Only strategies persisted with `automatic=true` can run in Backtest or
 Backtest Debug. Strategy definitions are immutable by `(strategy_id, revision)`.
+
+Live and historical market sources are separate Rust binaries. The existing
+QMD crate exports `qmd_core`, and both binaries compile against its canonical
+event decoder and enriched-bar engine. Historical condition/indicator tokens
+and tape ids are restored through the canonical ClickHouse reference tables
+before canonical events reach the runtime.
 
 ## Simulation
 

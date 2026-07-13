@@ -333,7 +333,7 @@ def render_header(state: PollState, *, compact: bool) -> Any:
     grid.add_column(ratio=3, overflow="fold")
     grid.add_column(ratio=2, justify="right", overflow="fold")
     grid.add_row(title, right)
-    mode = "replay" if config.get("replay_enabled") else "live"
+    mode = "live"
     grid.add_row(
         f"host {host}  mode {mode}  session {state.health.get('session_phase') or '-'}",
         f"snapshot {format_age(age)}  poll {state.refresh_seconds:.1f}s",

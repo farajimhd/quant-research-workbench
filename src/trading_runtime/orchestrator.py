@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from services.qmd_history_gateway.store import HistoricalCursor, HistoricalEventStore, row_to_market_event
 from src.data_provider.calendar import market_sessions
+from src.market_engine.historical_source import QmdHistoricalEventSource
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.runtime import AutomaticStrategy, RunConfig, RunMode, TradingRuntime
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, SimulationConfig
@@ -50,10 +50,10 @@ def historical_run_window(
 class HistoricalTradingRunner:
     """Runs replay/backtest/debug from the canonical historical event source."""
 
-    def __init__(self, store: HistoricalEventStore, journal: TradingJournal, *, batch_size: int = 10_000) -> None:
+    def __init__(self, gateway_base_url: str, journal: TradingJournal, *, batch_size: int = 10_000) -> None:
         if not 1 <= batch_size <= 100_000:
             raise ValueError("batch_size must be between 1 and 100000")
-        self.store = store
+        self.gateway_base_url = gateway_base_url.rstrip("/")
         self.journal = journal
         self.batch_size = batch_size
 
@@ -71,19 +71,16 @@ class HistoricalTradingRunner:
         broker = SimulatedBrokerAdapter(list(config.account_ids), simulation)
         runtime = TradingRuntime(config, broker, strategy, self.journal)
         await runtime.initialize()
-        cursor = HistoricalCursor()
-        while True:
-            rows, next_cursor = self.store.fetch_batch(
-                start=window.start,
-                end=window.end,
-                tickers=tickers,
-                cursor=cursor,
-                limit=self.batch_size,
-            )
-            for row in rows:
-                await runtime.process_event(row_to_market_event(row))
-            if not rows or next_cursor is None or len(rows) < self.batch_size:
-                break
-            cursor = next_cursor
+        source = QmdHistoricalEventSource(
+            self.gateway_base_url,
+            start=window.start,
+            end=window.end,
+            tickers=tickers,
+            batch_size=self.batch_size,
+        )
+        await source.health()
+        async for batch in source.stream():
+            for event in batch.events:
+                await runtime.process_event(event)
         await runtime.finish()
         return runtime

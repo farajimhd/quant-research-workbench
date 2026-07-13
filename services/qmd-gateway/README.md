@@ -2,6 +2,11 @@
 
 Standalone Rust market-data gateway for the quote/trade regime.
 
+This crate is also the source of the shared `qmd_core` Rust library. The live
+binary and `services/qmd_history_gateway` compile against the exact same event
+contract, compact decoder, and bar implementation. Live QMD remains the owner
+of these modules; the historical service does not copy them.
+
 Review documentation lives in [docs/README.md](docs/README.md). Start there for the architecture, configuration, data contracts, scanner/signal contracts, and operations guide.
 
 The gateway runs as one OS process. Inside that process, Tokio runs async tasks
@@ -139,10 +144,6 @@ Environment variables:
 - `QMD_PERSIST_INDICATORS`, default `false`
 - `QMD_SCANNER_PRIMITIVE_CHANNEL_CAPACITY`, default `250000`
 - `QMD_SCANNER_PRIMITIVE_HISTORY_LIMIT`, default `10000`
-- `QMD_REPLAY_ENABLED`, default `false`
-- `QMD_REPLAY_DATE`, optional `YYYY-MM-DD`
-- `QMD_REPLAY_SYMBOLS`, optional comma-separated tickers
-- `QMD_REPLAY_MAX_ROWS`, default `1000000`
 
 The service writes to:
 
@@ -514,14 +515,9 @@ Canonical intraday bars stream from `/stream/intraday-bars`. They are part of
 the required QMD persistence contract and do not depend on model readiness or
 an enable/persist feature flag.
 
-## Replay Mode
-
-Replay mode is disabled by default. When `QMD_REPLAY_ENABLED=true`, the gateway
-reads raw Massive rows from ClickHouse for `QMD_REPLAY_DATE` and optional
-`QMD_REPLAY_SYMBOLS`, then feeds them through the same in-memory market, bar,
-indicator, and scanner primitive pipeline. Replay does not re-persist raw events.
-
-This is intended for deterministic validation and later backtest integration.
+Replay and backtest are deliberately absent from this binary. They use the
+separate Rust `services/qmd_history_gateway` source so historical reads cannot
+contaminate live in-memory state or live persistence.
 
 ## Install Rust On Windows
 

@@ -1,6 +1,7 @@
 polars
 fastapi
 uvicorn[standard]
+websockets
 pandas
 pandas-market-calendars
 pyarrow

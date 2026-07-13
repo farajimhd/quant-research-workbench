@@ -267,19 +267,12 @@ The singular `q_live.events` cutover is non-destructive. Legacy
 for audit until rolling live coverage is verified; QMD does not query or drop
 them.
 
-## Replay Mode
+## Historical runtime
 
-Replay is for validation and future backtest integration.
-
-When `QMD_REPLAY_ENABLED=true`, the gateway reads raw rows from ClickHouse for `QMD_REPLAY_DATE` and optional `QMD_REPLAY_SYMBOLS`, orders them by timestamp, then sends them through:
-
-```text
-market state -> bars -> indicators -> scanner primitives
-```
-
-Replay does not re-write raw events. It can still write bars and optional indicators because it uses the normal bar/indicator pipeline.
-
-Use replay in a separate run from live trading unless you are deliberately testing live-tail behavior.
+Do not feed historical rows into the live process. Start the separate Rust
+historical gateway and point Replay, Backtest, or Backtest Debug at its URL.
+Both binaries compile against the same `qmd_core` event decoder and bar engine,
+but only live QMD owns Massive connectivity and `q_live` persistence.
 
 ## ClickHouse Tables
 

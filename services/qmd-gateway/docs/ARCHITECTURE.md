@@ -4,6 +4,10 @@
 
 `qmd-gateway` is the live market-data gateway for the quote/trade regime. It subscribes to Massive stock trades and quotes, builds live bars and indicators, emits Massive-only scanner primitives, and writes replayable market data to ClickHouse.
 
+The crate also exports the existing processing modules as `qmd_core`. The live
+binary and the separate Rust historical gateway depend on these exact modules;
+there is no copied event decoder or bar implementation.
+
 The gateway is deliberately narrow. It should be fast, observable, and replaceable. It should not know about trading accounts, broker orders, portfolio state, `conid`, float, short interest, logos, fundamentals, or the final UI scanner.
 
 ## Boundary
@@ -47,9 +51,19 @@ The gateway outputs market-data primitives. The app backend combines those primi
 | `intraday_bars.rs` | Required canonical intraday bars | Sanitized compact events | `/stream/intraday-bars`, `intraday_bars_v1` | Enriched scanner calculations |
 | `clickhouse.rs` | Optional raw Massive persistence | Market events | `live_massive_trades`, `live_massive_quotes` | Primary ML surface |
 | `gapfill.rs` | Startup live coverage audit, Massive REST tail repair, historical flatfile planning | Live compact event rows, Massive REST, historical continuity rows | Same event fan-out as websocket, gap-fill audit rows, coarse coverage manifest | Deep historical row generation |
-| `replay.rs` | Raw-data replay | ClickHouse raw rows | Same in-memory pipeline as live | Re-persist raw events |
 | `metrics.rs` | Operational counters | Hot-path observations | `/metrics` payload | External monitoring service |
 | `api.rs` | Local API and websocket streams | Shared stores | REST/websocket responses | UI-specific formatting |
+
+Historical source selection is outside this binary:
+
+```text
+Massive websocket -> qmd-gateway ---------+
+                                           +-> shared qmd_core event/bar contracts
+events_YYYY ------> qmd-history-gateway --+
+```
+
+This keeps live collection state isolated while making decoder and bar drift a
+Rust dependency/test failure.
 
 ## Live Data Flow
 

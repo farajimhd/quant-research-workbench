@@ -6,9 +6,9 @@ import unittest
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from services.qmd_history_gateway.store import historical_to_live_compact, row_to_market_event
 from src.backend.real_live_trading_service import ibkr_order_payload
 from src.market_engine.events import QuoteEvent
+from src.market_engine.historical_source import _validate_health, event_from_qmd_payload
 from src.trading_runtime.ibkr_schema import OrderRequest, OrderStatus
 from src.trading_runtime.clickhouse import TRADING_TABLE_DDL, _specialized_rows
 from src.trading_runtime.journal import TradingJournal
@@ -122,21 +122,41 @@ class JournalTests(unittest.TestCase):
 
 
 class HistoricalContractTests(unittest.TestCase):
-    def test_historical_event_mirrors_live_compact_and_decodes_quote(self) -> None:
-        row = {
-            "ticker": "AAPL", "ordinal": 42, "event_meta": 6, "sip_timestamp_us": int(TS.timestamp() * 1_000_000),
-            "price_primary_int": 1001234, "price_secondary_int": 1001200, "size_primary": 20, "size_secondary": 25,
-            "exchange_primary": 11, "exchange_secondary": 12, "condition_token_1": 3,
-            "condition_token_2": 0, "condition_token_3": 0, "condition_token_4": 0, "condition_token_5": 0,
-            "event_date": "2026-07-13",
-        }
-        compact = historical_to_live_compact(row)
-        event = row_to_market_event(row)
-        self.assertEqual(compact["schema_version"], 4)
-        self.assertEqual(compact["source_sequence"], 42)
+    def test_python_runtime_consumes_the_rust_market_event_contract(self) -> None:
+        event = event_from_qmd_payload(
+            {
+                "kind": "quote", "ticker": "AAPL", "sequence": 42, "tape": 3,
+                "ts": TS.isoformat(), "ingest_ts": TS.isoformat(), "conditions": [3], "indicators": [],
+                "ask_exchange": 11, "ask_price": 100.1234, "ask_size": 20,
+                "bid_exchange": 12, "bid_price": 100.12, "bid_size": 25,
+                "raw": {"schema_version": 4, "arrival_sequence": 42},
+            }
+        )
         self.assertIsInstance(event, QuoteEvent)
+        self.assertEqual(event.sequence, 42)
         self.assertAlmostEqual(event.ask_price, 100.1234)
         self.assertAlmostEqual(event.bid_price, 100.12)
+
+    def test_historical_stream_errors_are_not_treated_as_market_events(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "ClickHouse unavailable"):
+            event_from_qmd_payload(
+                {
+                    "error": "ClickHouse unavailable",
+                    "source": "historical_clickhouse",
+                    "terminal": True,
+                }
+            )
+
+    def test_historical_health_rejects_another_service_on_the_same_port(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "different service"):
+            _validate_health({"service": "news_gateway", "status": "ready"})
+        payload = {
+            "service": "qmd_history_gateway",
+            "host_role": "historical",
+            "status": "ready",
+            "running": True,
+        }
+        self.assertIs(_validate_health(payload), payload)
 
 
 class LiveOrderContractTests(unittest.TestCase):

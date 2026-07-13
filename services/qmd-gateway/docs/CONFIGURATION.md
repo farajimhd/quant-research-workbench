@@ -162,11 +162,8 @@ symbols from scratch.
 | `QMD_SCANNER_PRIMITIVE_HISTORY_LIMIT` | `10000` | Number of primitive events retained in memory. | Snapshot uses latest primitive by ticker/timeframe/key. |
 | `QMD_SCANNER_PRIMITIVE_CHANNEL_CAPACITY` | `250000` | Queue size for closed bars entering scanner primitive engine. | Raise if scanner primitive latency rises. |
 
-## Replay
+## Historical runtime
 
-| Env Var | Default | Meaning | Tuning Note |
-|---|---:|---|---|
-| `QMD_REPLAY_ENABLED` | `false` | Enable one-shot replay on process start. | Use for deterministic validation, not normal live trading. |
-| `QMD_REPLAY_DATE` | empty | Date to replay. Empty means today UTC. | Use `YYYY-MM-DD`. |
-| `QMD_REPLAY_SYMBOLS` | empty | Optional comma-separated tickers. | Empty means all symbols for the replay date. |
-| `QMD_REPLAY_MAX_ROWS` | `1000000` | Max raw rows read during replay. | Raise carefully; replay feeds live in-memory queues. |
+The live QMD binary has no replay configuration. Replay and backtest configure
+`services/qmd_history_gateway`, which depends on QMD's shared Rust library but
+uses only read-only `market_sip_compact.events_YYYY` sources.

@@ -1,23 +1,16 @@
 [package]
-name = "qmd-gateway"
+name = "qmd-history-gateway"
 version = "0.1.0"
 edition = "2021"
-default-run = "qmd-gateway"
-
-[lib]
-name = "qmd_core"
-path = "src/lib.rs"
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
 chrono = { version = "0.4", features = ["serde"] }
-chrono-tz = "0.10"
 futures-util = "0.3"
+qmd_core = { package = "qmd-gateway", path = "../qmd-gateway" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-ring = "0.17.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
-tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tower-http = { version = "0.6", features = ["cors"] }
 urlencoding = "2"
