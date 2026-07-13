@@ -45,6 +45,11 @@ daily archives remain the durable source.
 Interrupted runs reuse archive completion rows and any prior fully extracted
 parts that can be proven complete from their state journal or legacy successful
 extract log. Partial files are never treated as complete input.
+Failed ClickHouse part inserts are repaired before resume: the archive rebuild
+uses the latest part manifest to identify failed `(source_run_id, archive_date,
+dataset)` units, synchronously deletes and verifies only those date-scoped rows,
+then retries the complete dataset through Parquet. Successful datasets for the
+same archive remain checkpoints and are not rewritten.
 
 Focused text repair after parser/storage bugs:
 

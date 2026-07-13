@@ -75,6 +75,7 @@ class HistoricalFillProgress:
         self.archive_worker_states: dict[int, dict[str, object]] = {}
         self.archive_overall: dict[str, object] = {}
         self.archive_failure: dict[str, object] = {}
+        self.archive_cleanup: dict[str, object] = {}
         self._live = None
         self._render = None
 
@@ -143,6 +144,14 @@ class HistoricalFillProgress:
             tail_text = Text("\n".join(self.output_tail[-18:]) or "No stage output yet.", no_wrap=False)
             current = Text(f"run_root={self.run_root}\ncurrent_stage={self.current_stage or '-'}\ncommand={self.current_command or '-'}", no_wrap=False)
             sections = [table, Panel(current, title="Current")]
+            if self.current_stage == "archive-text-rebuild" and self.archive_cleanup:
+                cleanup = self.archive_cleanup
+                cleanup_text = Text(
+                    f"stage={cleanup.get('stage', '-')} failed_attempts={int(cleanup.get('attempts') or 0):,} "
+                    f"rows_removed={int(cleanup.get('rows') or 0):,} batches={int(cleanup.get('batches') or 0):,}",
+                    no_wrap=False,
+                )
+                sections.append(Panel(cleanup_text, title="Failed Insert Cleanup"))
             if self.archive_failure:
                 failure = self.archive_failure
                 failure_text = Text(
@@ -203,6 +212,8 @@ class HistoricalFillProgress:
                     self.archive_failure = payload
                     if self.current_stage:
                         self.status_by_stage[self.current_stage] = "stopping: failed"
+            elif payload.get("kind") == "cleanup":
+                self.archive_cleanup = payload
             self.refresh()
             return
         if clean:

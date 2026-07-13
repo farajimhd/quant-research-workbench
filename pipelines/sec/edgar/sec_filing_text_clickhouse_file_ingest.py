@@ -84,6 +84,17 @@ class InsertProfile:
     exception: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class PartManifestRecord:
+    run_id: str
+    dataset_name: str
+    target_table: str
+    part_index: int
+    part_path: str
+    status: str
+    expected_rows: int
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -341,8 +352,27 @@ ORDER BY (run_id, dataset_name, part_index, updated_at_utc)
 
 
 def load_latest_part_status(client: ClickHouseHttpClient, args: argparse.Namespace) -> dict[tuple[str, str, int], str]:
+    return {
+        (record.run_id, record.dataset_name, record.part_index): record.status
+        for record in load_latest_part_records(client, args, suppress_errors=True)
+    }
+
+
+def load_latest_part_records(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    *,
+    suppress_errors: bool = False,
+) -> list[PartManifestRecord]:
     sql = f"""
-SELECT run_id, dataset_name, part_index, argMax(status, updated_at_utc) AS status
+SELECT
+    run_id,
+    dataset_name,
+    part_index,
+    argMax(target_table, updated_at_utc) AS target_table,
+    argMax(part_path, updated_at_utc) AS part_path,
+    argMax(status, updated_at_utc) AS status,
+    argMax(expected_rows, updated_at_utc) AS expected_rows
 FROM {quote_ident(args.database)}.{quote_ident(args.part_manifest_table)}
 GROUP BY run_id, dataset_name, part_index
 FORMAT JSONEachRow
@@ -350,13 +380,25 @@ FORMAT JSONEachRow
     try:
         text = client.execute(sql)
     except Exception:
-        return {}
-    output: dict[tuple[str, str, int], str] = {}
+        if suppress_errors:
+            return []
+        raise
+    output: list[PartManifestRecord] = []
     for line in text.splitlines():
         if not line.strip():
             continue
         row = json.loads(line)
-        output[(str(row.get("run_id") or ""), str(row.get("dataset_name") or ""), int(row.get("part_index") or 0))] = str(row.get("status") or "")
+        output.append(
+            PartManifestRecord(
+                run_id=str(row.get("run_id") or ""),
+                dataset_name=str(row.get("dataset_name") or ""),
+                target_table=str(row.get("target_table") or ""),
+                part_index=int(row.get("part_index") or 0),
+                part_path=str(row.get("part_path") or ""),
+                status=str(row.get("status") or ""),
+                expected_rows=int(row.get("expected_rows") or 0),
+            )
+        )
     return output
 
 

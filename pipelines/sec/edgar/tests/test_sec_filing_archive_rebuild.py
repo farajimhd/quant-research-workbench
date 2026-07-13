@@ -192,6 +192,198 @@ class SecFilingArchiveRebuildTests(unittest.TestCase):
 
         self.assertEqual(recovered["sec_text_extract_20260712_120755"], {"2019-01-02"})
 
+    def test_failed_dataset_cleanup_is_date_scoped_synchronous_and_verified(self) -> None:
+        records = [
+            ingest.PartManifestRecord(
+                run_id="legacy_run",
+                dataset_name="text_source",
+                target_table="sec_filing_text_v3",
+                part_index=1,
+                part_path="D:/parts/sec_filing_text_v3_part_20190213_000001.jsonl.gz",
+                status="failed",
+                expected_rows=17164,
+            ),
+            ingest.PartManifestRecord(
+                run_id="legacy_run",
+                dataset_name="document",
+                target_table="sec_filing_document_v3",
+                part_index=1,
+                part_path="D:/parts/sec_filing_document_v3_part_20190213_000001.jsonl.gz",
+                status="ok",
+                expected_rows=18000,
+            ),
+        ]
+        checkpoints = rebuild.build_dataset_checkpoints(records, {"2019-02-13"})
+        retry_keys = rebuild.failed_dataset_keys(checkpoints, set())
+
+        class CleanupClient:
+            def __init__(self) -> None:
+                self.sql: list[str] = []
+                self.counts = iter((1155, 0))
+
+            def execute(self, sql: str) -> str:
+                self.sql.append(sql)
+                if sql.startswith("SELECT count()"):
+                    return str(next(self.counts))
+                return ""
+
+        client = CleanupClient()
+        args = SimpleNamespace(database="q_live", cleanup_date_batch_size=500)
+        summary = rebuild.cleanup_failed_dataset_rows(
+            client,
+            args,
+            checkpoints,
+            retry_keys,
+            progress_layout="text",
+        )
+
+        self.assertEqual(retry_keys, {("legacy_run", "text_source", "2019-02-13")})
+        self.assertEqual(summary, {"failed_dataset_attempts": 1, "rows_removed": 1155, "delete_batches": 1})
+        delete_sql = next(sql for sql in client.sql if sql.startswith("DELETE FROM"))
+        self.assertIn("`q_live`.`sec_filing_text_v3`", delete_sql)
+        self.assertIn("source_run_id = 'legacy_run'", delete_sql)
+        self.assertIn("toDate('2019-02-13')", delete_sql)
+        self.assertIn("lightweight_deletes_sync = 2", delete_sql)
+
+    def test_completed_archive_unit_blocks_stale_failed_part_cleanup(self) -> None:
+        record = ingest.PartManifestRecord(
+            run_id="legacy_run",
+            dataset_name="text_source",
+            target_table="sec_filing_text_v3",
+            part_index=1,
+            part_path="D:/parts/sec_filing_text_v3_part_20190213_000001.jsonl.gz",
+            status="failed",
+            expected_rows=10,
+        )
+        checkpoints = rebuild.build_dataset_checkpoints([record], {"2019-02-13"})
+
+        retry_keys = rebuild.failed_dataset_keys(checkpoints, {("legacy_run", "2019-02-13")})
+
+        self.assertEqual(retry_keys, set())
+
+    def test_recovery_preserves_successful_dataset_and_converts_only_failed_dataset(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            document_source = root / "sec_filing_document_v3_part_20190213_000001.jsonl.gz"
+            text_source = root / "sec_filing_text_v3_part_20190213_000001.jsonl.gz"
+            with gzip.open(document_source, "wt", encoding="utf-8") as handle:
+                handle.write("{}\n")
+            source_row = {column: "" for column in extractor.TEXT_SOURCE_COLUMNS}
+            source_row.update(
+                {
+                    "document_id": "doc",
+                    "sequence_number": 1,
+                    "source_archive_date": "2019-02-13",
+                    "source_text": "complete source text",
+                    "source_text_char_count": 20,
+                    "source_text_byte_count": 20,
+                    "inserted_at": "2019-02-13 12:00:00.000",
+                }
+            )
+            with gzip.open(text_source, "wt", encoding="utf-8") as handle:
+                handle.write(json.dumps(source_row) + "\n")
+            records = [
+                ingest.PartManifestRecord(
+                    "legacy_run", "document", "sec_filing_document_v3", 1, str(document_source), "ok", 7
+                ),
+                ingest.PartManifestRecord(
+                    "legacy_run", "text_source", "sec_filing_text_v3", 1, str(text_source), "failed", 1
+                ),
+            ]
+            checkpoints = rebuild.build_dataset_checkpoints(records, {"2019-02-13"})
+            retry_keys = rebuild.failed_dataset_keys(checkpoints, set())
+            task = {
+                "kind": "recovery",
+                "source_run_id": "legacy_run",
+                "archive_date": "2019-02-13",
+                "archive_path": str(root / "20190213.nc.tar.gz"),
+                "archive_index": 1,
+                "part_paths": {"document": str(document_source), "text_source": str(text_source)},
+            }
+            rebuild.annotate_recovery_tasks([task], checkpoints, retry_keys)
+            payload = {
+                "run_root": str(root / "run"),
+                "parquet_row_group_bytes": 1024,
+                "parquet_file_bytes": 2048,
+                "parquet_compression_level": 1,
+            }
+
+            result = rebuild.recovery_result(task, payload)
+
+            self.assertEqual(task["completed_dataset_rows"], {"document": 7})
+            self.assertEqual(result["document_rows"], 7)
+            self.assertEqual(result["text_source_rows"], 1)
+            self.assertEqual({item["dataset_name"] for item in result["part_files"]}, {"text_source"})
+            self.assertIn(str(document_source), result["cleanup_paths"])
+            self.assertIn(str(text_source), result["cleanup_paths"])
+            ingest_args = SimpleNamespace(parts_root_win=str(root), parts_root_ch="/mnt/test")
+            task["source_run_id"] = "legacy_run"
+            parts, _ = rebuild.build_and_preflight_parts(object(), ingest_args, task, result)
+            self.assertEqual(len(parts), 1)
+            self.assertEqual(result["document_rows"], 7)
+            self.assertEqual(result["text_source_rows"], 1)
+
+    def test_legacy_state_without_part_indexes_uses_dataset_checkpoint(self) -> None:
+        records = [
+            ingest.PartManifestRecord(
+                "legacy_run",
+                "document",
+                "sec_filing_document_v3",
+                10,
+                "D:/parts/sec_filing_document_v3_part_20190213_000010.jsonl.gz",
+                "ok",
+                7,
+            ),
+            ingest.PartManifestRecord(
+                "legacy_run",
+                "text_source",
+                "sec_filing_text_v3",
+                10,
+                "D:/parts/sec_filing_text_v3_part_20190213_000010.jsonl.gz",
+                "failed",
+                5,
+            ),
+        ]
+        checkpoints = rebuild.build_dataset_checkpoints(records, {"2019-02-13"})
+        retry_keys = rebuild.failed_dataset_keys(checkpoints, set())
+        task = {
+            "source_run_id": "legacy_run",
+            "archive_date": "2019-02-13",
+            "recovery_part_files": [
+                {"dataset_name": "document", "rows": 7, "format": "JSONEachRow", "path": "document.jsonl.gz"},
+                {"dataset_name": "text_source", "rows": 5, "format": "JSONEachRow", "path": "source.jsonl.gz"},
+            ],
+        }
+
+        rebuild.annotate_recovery_tasks([task], checkpoints, retry_keys)
+
+        self.assertEqual(task["completed_dataset_rows"], {"document": 7})
+
+    def test_dirty_dataset_forces_reinsert_of_previously_ok_shard(self) -> None:
+        part = ingest.PartFile(
+            run_id="legacy_run",
+            dataset_name="text_source",
+            target_table="sec_filing_text_v3",
+            part_index=2019021301,
+            windows_path=Path("D:/parts/source.parquet"),
+            clickhouse_path="/mnt/d/parts/source.parquet",
+            expected_rows=10,
+            expected_bytes=100,
+            columns=["document_id"],
+            structure="document_id String",
+        )
+        status = {(part.run_id, part.dataset_name, part.part_index): "ok"}
+
+        self.assertTrue(rebuild.should_skip_part(part, "2019-02-13", status, set()))
+        self.assertFalse(
+            rebuild.should_skip_part(
+                part,
+                "2019-02-13",
+                status,
+                {("legacy_run", "text_source", "2019-02-13")},
+            )
+        )
+
     def test_archive_progress_bar_is_stable_width(self) -> None:
         self.assertEqual(historical.archive_progress_bar(10, 20), "[######------] 10/20")
         self.assertEqual(historical.archive_progress_bar(0, 0), "[------------] 0/0")
@@ -296,6 +488,17 @@ class SecFilingArchiveRebuildTests(unittest.TestCase):
 
         self.assertEqual(progress.archive_failure["archive"], "20260701.nc.tar.gz")
         self.assertEqual(progress.status_by_stage["archive-text-rebuild"], "stopping: failed")
+
+    def test_historical_progress_tracks_failed_insert_cleanup(self) -> None:
+        progress = historical.HistoricalFillProgress("text", [], Path("run"))
+        progress.current_stage = "archive-text-rebuild"
+
+        progress.log_line(
+            'SEC_ARCHIVE_EVENT={"kind":"cleanup","stage":"done","attempts":374,"rows":1134938,"batches":1}'
+        )
+
+        self.assertEqual(progress.archive_cleanup["stage"], "done")
+        self.assertEqual(progress.archive_cleanup["rows"], 1134938)
 
     def test_historical_failure_panel_renders_in_compact_terminal(self) -> None:
         from rich.console import Console

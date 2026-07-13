@@ -6,15 +6,18 @@ each daily archive an independent extraction and insertion transaction.
 
 Each fixed worker lane performs:
 
-1. extract and parse one assigned daily archive;
-2. render every supported submitted text document without a text cap;
-3. write typed v3 Parquet shards with 256 MiB row groups and 1 GiB files;
-4. validate each non-empty shard from its Parquet footer without decoding it;
-5. insert filing, document, source text, rendered text, and skip rows;
-6. verify successful part-manifest status;
-7. record `sec_filing_archive_ingest_manifest_v3` completion;
-8. delete that archive's temporary parts;
-9. advance to the next archive assigned to the same lane.
+1. inspect the latest part and archive manifests;
+2. synchronously delete and verify rows from failed date-scoped dataset attempts;
+3. preserve successful datasets and schedule only failed or missing datasets for retry;
+4. extract and parse one assigned daily archive;
+5. render every supported submitted text document without a text cap;
+6. write typed v3 Parquet shards with 256 MiB row groups and 1 GiB files;
+7. validate each non-empty shard from its Parquet footer without decoding it;
+8. insert filing, document, source text, rendered text, and skip rows;
+9. verify successful part-manifest status;
+10. record `sec_filing_archive_ingest_manifest_v3` completion;
+11. delete that archive's temporary parts;
+12. advance to the next archive assigned to the same lane.
 
 The Rich historical-fill terminal shows one stable row per lane with Extract,
 Preflight, Insert, Verify, Cleanup, lane progress, row count, and current
@@ -59,8 +62,15 @@ state journal reuses complete Parquet shards left after an interruption between
 extraction and insertion. For legacy failed extractor runs, recovery only uses
 archive dates explicitly logged with `status=ok`; files from active or failed
 archives are not inserted. Retained legacy JSON parts are streamed once into
-bounded Parquet shards before insertion. Once the selected range completes, obsolete
-unmanifested temporary parts for that range are removed.
+bounded Parquet shards before insertion. Before worker lanes start, the rebuild
+groups manifest outcomes by `(source_run_id, archive_date, dataset)`. If any
+part in a date-scoped dataset failed, one batched synchronous lightweight delete
+removes that unit's partial rows and a follow-up count must reach zero. Every
+part in that unit is then reinserted, while unrelated datasets already marked
+`ok` are neither converted nor inserted again. Archive-manifest `ok` units are
+excluded from cleanup so a stale failed part record cannot delete a later
+successful repair. Once the selected range completes, obsolete unmanifested
+temporary parts for that range are removed.
 
 The original files under `D:/market-data/sec_core/daily_archives` are never
 deleted. They remain the source for future parser audits and repairs.
