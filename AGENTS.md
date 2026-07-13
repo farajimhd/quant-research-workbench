@@ -142,31 +142,37 @@ operations, and product UI work in this repository.
   jobs. Generated commands should include all required arguments so manual runs
   do not drift from the validated configuration.
 
-### Product And Terminal UX
+### Frontend And Terminal UX
 
-- Optimize for compact, readable information hierarchy. Avoid oversized titles,
-  redundant summaries, unused whitespace, raw dictionary dumps, and controls
-  that consume space without helping the current task.
-- Prefer a light, restrained financial visual system: Inter typography where
-  available, white or transparent surfaces, near-square corners, minimal
-  vertical borders, subtle headers, and no gradient backgrounds. Reserve strong
-  red, green, purple, and other colors for clear semantic meaning rather than
-  decoration.
-- Put primary status and actions where the user is already working. Show live
-  results as work progresses instead of redirecting the user to a disconnected
-  progress-only view.
-- Use consistent reusable components and stable column layouts. Keep key values
-  visible, align related metrics, group related information, and move secondary
-  details into dialogs, tooltips, or expandable areas.
-- Tables and charts should use the available viewport, remain readable at narrow
-  sizes, and expose active filters, timezones, legends, and status meanings.
-- Format displayed values according to their meaning without mutating the
-  underlying typed data used for sorting, filtering, queries, or calculations.
-  Human-readable labels and descriptions belong in presentation metadata rather
-  than replacing canonical field names in storage.
-- Verify visual changes from rendered screenshots at representative normal and
-  compact viewport sizes. Data being present somewhere is not enough if it is
-  clipped, misaligned, stale, or hard to interpret.
+- For browser-based interface design, implementation, review, or modification,
+  use the personal `design-frontend-ui` skill. If it is unavailable, follow the
+  committed reference at `docs/codex/skills/design-frontend-ui/SKILL.md`.
+- For terminal, CLI, console, progress, monitoring, or TUI design,
+  implementation, review, or modification, use the personal
+  `design-terminal-ui` skill. If it is unavailable, follow the committed
+  reference at `docs/codex/skills/design-terminal-ui/SKILL.md`.
+- Before designing either surface, trace the authoritative data source and
+  relevant contracts, understand field meaning and importance, determine why
+  the data is presented, and account for update rate, latency, freshness,
+  lifecycle, failure modes, and the interface's responsibility in the larger
+  workflow.
+- Treat the current interface as evidence of the product language, not an
+  immutable design authority. Preserve strong working patterns and improve weak
+  ones when evidence and design principles support the change.
+- When no interface exists, establish an initial design from the users, task,
+  data, workflow, risk, content density, platform, and product objective rather
+  than waiting for the user to specify routine visual choices.
+- Decorative color and multiple type families are acceptable when they have
+  clear, consistent roles and support hierarchy, comprehension, or product
+  identity without weakening semantic state or readability.
+- Format and position data according to its meaning and the comparisons or
+  decisions it supports. Avoid redundant labels when context is genuinely
+  self-evident, but retain labels needed for units, scope, time, status,
+  accessibility, or ambiguity reduction.
+- Validate frontend changes in the real browser at representative normal and
+  compact viewports. Validate terminal changes in normal and forced compact
+  dimensions, including relevant live, idle, degraded, failure, and recovery
+  states. A successful build or compile check alone is not UX validation.
 
 ### Validation And Handoff
 

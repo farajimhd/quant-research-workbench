@@ -1,0 +1,4 @@
+interface:
+  display_name: "Design Terminal UI"
+  short_description: "Design and verify operational terminal interfaces"
+  default_prompt: "Use $design-terminal-ui to design and verify this terminal interface."

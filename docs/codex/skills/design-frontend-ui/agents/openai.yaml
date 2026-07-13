@@ -1,0 +1,4 @@
+interface:
+  display_name: "Design Frontend UI"
+  short_description: "Design and verify browser product interfaces"
+  default_prompt: "Use $design-frontend-ui to design and verify this browser interface."
