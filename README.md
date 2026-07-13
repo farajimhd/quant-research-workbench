@@ -174,6 +174,27 @@ npm.cmd --prefix frontend run build
 .\scripts\run_backend.ps1 -NoReload
 ```
 
+For deterministic browser captures, start the runnable UI, then run a targeted
+review matrix (affected route, representative light/dark themes,
+minimum/default/maximum application scales, and normal/compact viewports):
+
+```powershell
+npm.cmd --prefix frontend run ui:review -- --page service-qmd
+```
+
+Run bounded full-product coverage with:
+
+```powershell
+npm.cmd --prefix frontend run ui:review:full
+```
+
+Use `-- --matrix exhaustive` only for shared theme, scale, layout, or component
+infrastructure changes. Captures and a JSON manifest are written under the
+system temporary directory by default, not into the repository. The launcher
+uses Python Playwright when available and otherwise re-runs itself through the
+configurable `UI_REVIEW_CONDA_ENV` environment, which defaults to the existing
+`ml4t` Conda environment. It does not install or download browsers.
+
 Individual gateway setup, environment variables, data contracts, and run
 commands are documented in each service or pipeline README. Secrets belong in
 environment variables or discovered local env files and must not be copied into

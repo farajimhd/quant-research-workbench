@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "ui:review": "python scripts/ui_review.py",
+    "ui:review:full": "python scripts/ui_review.py --mode full"
   },
   "dependencies": {
     "@vitejs/plugin-react": "5.2.0",

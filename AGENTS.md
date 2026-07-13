@@ -165,14 +165,35 @@ operations, and product UI work in this repository.
 - Decorative color and multiple type families are acceptable when they have
   clear, consistent roles and support hierarchy, comprehension, or product
   identity without weakening semantic state or readability.
+- For this frontend, `frontend/src/app/theme.ts` is the authority for registered
+  themes and semantic visual tokens. Define colors, surfaces, borders, shadows,
+  chart treatments, semantic states, and decorative treatments through that
+  theme system rather than component-local literals that drift between themes.
+- `frontend/src/app/components/Layout.tsx` is the authority for application UI
+  scale. Treat its supported `0.8`, `0.9`, `1`, `1.1`, and `1.25` scales as a
+  design dimension independent of viewport size. Layout, overlays, fixed and
+  sticky regions, charts, truncation, and interaction targets must remain usable
+  across the supported scales without local zoom workarounds.
 - Format and position data according to its meaning and the comparisons or
   decisions it supports. Avoid redundant labels when context is genuinely
   self-evident, but retain labels needed for units, scope, time, status,
   accessibility, or ambiguity reduction.
+- Treat a request for a `full review` as diagnosis-first unless it explicitly
+  includes implementation. Inventory routes or entry points, responsibilities,
+  data sources, shared UI authorities, states, themes or color modes, scale or
+  terminal dimensions, and interactions; return prioritized systemic findings
+  instead of requiring the user to annotate every screen. For `full review and
+  fix`, complete the audit before changing code, then rerun the review coverage.
 - Validate frontend changes in the real browser at representative normal and
-  compact viewports. Validate terminal changes in normal and forced compact
-  dimensions, including relevant live, idle, degraded, failure, and recovery
-  states. A successful build or compile check alone is not UX validation.
+  compact viewports, representative themes, and minimum/default/maximum UI
+  scales. Use `npm.cmd --prefix frontend run ui:review` for targeted deterministic
+  captures and `npm.cmd --prefix frontend run ui:review:full` for bounded
+  full-product coverage; use `-- --matrix exhaustive` when shared theme, scale,
+  layout, or component infrastructure changes. Inspect the resulting screenshots
+  and revise material defects before handoff. Validate terminal changes in
+  normal and forced compact dimensions, including relevant live, idle, degraded,
+  failure, and recovery states. A successful build or compile check alone is not
+  UX validation.
 
 ### Validation And Handoff
 

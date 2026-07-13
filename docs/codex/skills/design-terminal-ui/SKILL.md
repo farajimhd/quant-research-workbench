@@ -14,6 +14,26 @@ normal operation, high activity, degraded service, failure, and recovery.
 Do not organize the primary interface around program internals. Organize it
 around the operator's questions, decisions, risks, and next actions.
 
+## Choose the review scope before acting
+
+- A targeted review covers the affected command, service, or workflow plus the
+  shared renderer, status model, and lifecycle states it depends on.
+- A `full review`, `complete review`, or equivalent request is diagnosis-first.
+  Inventory the active run chain, operator responsibilities, data and status
+  sources, entry points, terminal modes, shared rendering primitives, themes or
+  style authorities, supported dimensions, lifecycle states, interruption, and
+  redirected-output behavior.
+- A full review does not authorize implementation by itself. Return prioritized
+  findings, evidence, systemic causes, affected entry points, and fix order
+  unless the user also asks to fix or implement them.
+- For a `full review and fix`, audit first, repair shared operational or
+  rendering authorities before local symptoms where appropriate, and rerun the
+  exercised modes and states after implementation.
+
+Group findings by operational or system cause rather than producing a long list
+of isolated visual annotations. Distinguish confirmed defects, UX judgment,
+operator questions, and unverified behavior.
+
 ## Start with the operation and its data
 
 Before choosing panels, tables, progress bars, or colors, determine:
@@ -187,7 +207,8 @@ meaning would become ambiguous.
 
 ## Render, inspect, and iterate
 
-After implementation:
+For review work, capture the current terminal before drawing conclusions. For
+implementation work, preserve a before capture when practical, then:
 
 1. Run the real terminal entry point.
 2. Exercise normal operation and relevant idle, degraded, failure, recovery, or
@@ -201,6 +222,13 @@ After implementation:
 7. Test graceful interruption when safe and relevant.
 8. Correct visible and operational defects before handoff.
 9. Report exactly which modes and states were inspected.
+
+For a full review, cover every active entry point and shared renderer with
+representative normal and compact dimensions, interactive and redirected output
+where applicable, all supported themes or color modes, and the important
+startup, active, idle, degraded, failure, recovery, interruption, and completion
+states. Use representative combinations unless shared layout or style
+infrastructure changed, in which case exercise the complete relevant matrix.
 
 A successful import or compile check is not evidence that the terminal UX works.
 

@@ -16,6 +16,28 @@ Do not treat successful compilation as design validation. Understand the
 product and its data, design the experience, render it, interact with it,
 critique it, and improve it before handoff.
 
+## Choose the review scope before acting
+
+Interpret the requested scope explicitly:
+
+- A targeted change or review covers the affected workflow, its shared
+  dependencies, relevant themes, supported global scales, viewports, states,
+  and data behavior.
+- A `full review`, `complete review`, or equivalent request is diagnosis-first.
+  Inventory the product routes, page responsibilities, authoritative data
+  contracts, shared components, design tokens, themes, global sizing system,
+  primary interactions, and important lifecycle states before judging screens.
+- A full review does not authorize implementation by itself. Report prioritized
+  findings, evidence, systemic causes, affected surfaces, and a recommended fix
+  order unless the user also asks to fix or implement them.
+- For a `full review and fix`, complete the audit first, then repair shared
+  authorities before page-level symptoms when that is the fundamental cause.
+  Rerun the full visual coverage after implementation.
+
+Group full-review findings by product or system cause rather than returning a
+long screen-by-screen annotation list. Distinguish confirmed defects, design
+judgment, product questions, and areas that could not be exercised.
+
 ## Start with product and data understanding
 
 Before choosing a layout or visual treatment, determine:
@@ -125,6 +147,38 @@ orientation, or comprehension. Ensure it remains coherent and does not compete
 with semantic state, reduce legibility, or make the interface depend on color
 alone.
 
+## Treat themes and global scale as design authorities
+
+Inspect the product's theme and sizing implementation before styling individual
+components. Treat theme and global scale as independent design dimensions from
+viewport size.
+
+- Define color, surfaces, typography roles, borders, radii, shadows, charts,
+  focus, semantic states, and decorative treatments through the product's
+  theme authority. Do not bypass it with component-local visual constants when
+  the decision should remain coherent across themes.
+- Decorative color is allowed, but its role and variants belong in the theme
+  system so it remains intentional across the product.
+- Derive third-party charts, editors, portals, and other independently rendered
+  surfaces from resolved theme values and update them when the theme changes.
+- Verify contrast, hierarchy, semantic distinction, and chart legibility in the
+  affected theme plus a representative theme of the opposite tone for targeted
+  work. Cover every registered theme in a full review. Test the full theme
+  Cartesian matrix when changing shared theme infrastructure.
+- Identify the single authority for global UI scale or density. Components,
+  overlays, fixed and sticky regions, chart sizing, hit targets, truncation,
+  and responsive calculations must honor it; do not compensate with local zoom
+  patches.
+- Verify minimum, default, and maximum supported UI scales for targeted work.
+  Cover every supported scale in a full review. Test the full scale Cartesian
+  matrix when changing shared scale infrastructure.
+- Keep browser zoom at 100 percent while validating application UI scale unless
+  browser accessibility zoom is itself in scope. A narrow viewport and a
+  smaller application scale are not interchangeable tests.
+- Prefer shared sizing tokens and scale-aware calculations. Fixed dimensions
+  remain valid when required by content, interaction, or platform constraints,
+  but they must be checked across supported scales rather than assumed safe.
+
 ## Choose typography from the product and data
 
 Choose type roles based on what the product must communicate:
@@ -196,20 +250,40 @@ constraints.
 
 ## Render, inspect, and iterate
 
-After implementation:
+For review work, capture the current rendered interface before drawing
+conclusions. For implementation work, preserve a before capture when practical,
+then run this loop:
 
-1. Run the real application and open the affected workflow in a browser.
-2. Exercise the primary interactions and relevant data states.
-3. Inspect representative normal and compact viewports.
-4. Capture screenshots or equivalent rendered evidence.
-5. Check attention order, hierarchy, density, labels, formatting, alignment,
+1. Run the real application and open the affected workflow in a browser. Prefer
+   the repository's deterministic browser-review harness when one exists.
+2. Capture the current state before editing and record the route, theme, global
+   scale, viewport, data state, and relevant interaction state.
+3. Implement the design using the product's shared authorities.
+4. Exercise the primary interactions and relevant data states.
+5. Capture the affected routes at representative normal and compact viewports,
+   minimum/default/maximum UI scales, and representative light/dark themes.
+6. Check attention order, hierarchy, density, labels, formatting, alignment,
    responsiveness, overflow, live-update stability, state visibility, and
-   interaction feedback.
-6. Compare the result with the product objective, data meaning, current product
+   interaction feedback. Inspect the screenshots themselves; capture alone is
+   not visual review.
+7. Compare the result with the product objective, data meaning, current product
    language, and any supplied references.
-7. Correct visible defects before handoff.
-8. Run the build and relevant automated or visual tests.
-9. Report what was inspected and what could not be verified.
+8. Correct visible defects and repeat the captures until no material issue found
+   in the exercised matrix remains.
+9. Run the build and relevant automated or visual tests.
+10. Report the routes, themes, scales, viewports, states, and interactions that
+    were inspected, with the evidence location and any unverified area.
+
+For a full review, use a bounded coverage matrix by default: every route at the
+default theme and scale, every theme on representative routes, every scale on
+representative light and dark themes, and normal plus compact viewports. Use the
+full route by theme by scale by viewport Cartesian matrix when shared theme,
+scale, layout, or component infrastructure is being changed or when evidence
+shows cross-axis defects.
+
+If a runnable browser is unavailable, perform code and contract checks but do
+not claim visual validation. Report the missing capability and exact unverified
+coverage.
 
 A successful build is not evidence that the interface is well designed.
 
@@ -230,5 +304,6 @@ judgment-based principles.
 Do not declare the interface complete until the product and data have been
 understood, the attention hierarchy supports the page's responsibility,
 relevant states are handled, representative viewports are usable, the rendered
-interface has been inspected, obvious defects found during inspection have been
-corrected, and remaining uncertainty is reported honestly.
+interface has been inspected across the relevant themes and global scales,
+obvious defects found during inspection have been corrected, and remaining
+uncertainty is reported honestly.
