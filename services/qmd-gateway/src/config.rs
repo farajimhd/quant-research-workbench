@@ -19,7 +19,6 @@ pub struct GatewayConfig {
     pub clickhouse_url: String,
     pub clickhouse_user: String,
     pub compact_event_channel_capacity: usize,
-    pub compact_event_continuity_table: String,
     pub compact_event_live_buffer_events_per_ticker: usize,
     pub compact_event_reorder_force_flush_ms: u64,
     pub compact_event_reorder_lag_ms: u64,
@@ -27,6 +26,12 @@ pub struct GatewayConfig {
     pub compact_event_table: String,
     pub compact_events_enabled: bool,
     pub event_channel_capacity: usize,
+    #[serde(skip_serializing)]
+    pub flatfile_access_key: String,
+    pub flatfile_credentials_present: bool,
+    pub flatfile_bucket: String,
+    pub flatfile_endpoint_url: String,
+    pub flatfile_region: String,
     pub flush_interval_ms: u64,
     pub gap_fill_enabled: bool,
     pub gap_fill_interval_ms: u64,
@@ -44,9 +49,7 @@ pub struct GatewayConfig {
     pub historical_clickhouse_url: String,
     pub historical_clickhouse_user: String,
     pub historical_flatfile_autorun: bool,
-    pub historical_flatfile_safe_lag_days: i64,
     pub historical_flatfile_update_enabled: bool,
-    pub historical_known_coverage_end_date: String,
     pub historical_pipeline_code_root: String,
     pub indicator_bar_channel_capacity: usize,
     pub indicator_channel_capacity: usize,
@@ -69,7 +72,7 @@ pub struct GatewayConfig {
     pub live_market_state_quote_halt_conditions: Vec<u16>,
     pub live_market_state_quote_resume_conditions: Vec<u16>,
     pub qmd_coverage_table: String,
-    pub qmd_flatfile_event_coverage_table: String,
+    pub qmd_flatfile_coverage_table: String,
     pub qmd_gap_fill_symbol_universe_table: String,
     pub qmd_gap_fill_universe_market_days: usize,
     pub qmd_host_role: String,
@@ -81,7 +84,16 @@ pub struct GatewayConfig {
     pub replay_date: String,
     pub replay_max_rows: usize,
     pub replay_symbols: Vec<String>,
-    pub reference_dir: String,
+    pub market_holidays_refresh_seconds: u64,
+    pub market_holidays_url: String,
+    pub market_status_enabled: bool,
+    pub market_status_refresh_seconds: u64,
+    pub market_status_url: String,
+    pub model_streaming_bar_channel_capacity: usize,
+    pub model_streaming_bar_shard_count: usize,
+    pub model_streaming_bar_timeframes: Vec<String>,
+    pub model_streaming_bars_enabled: bool,
+    pub model_streaming_bars_persist: bool,
     pub scanner_primitive_channel_capacity: usize,
     pub scanner_primitive_history_limit: usize,
     pub scanner_broadcast_ms: u64,
@@ -114,6 +126,14 @@ impl GatewayConfig {
             ],
             "",
         );
+        let flatfile_access_key =
+            env_string_any(&["QMD_FLATFILE_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"], "");
+        let flatfile_secret_key = env_string_any(
+            &["QMD_FLATFILE_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"],
+            "",
+        );
+        let flatfile_credentials_present =
+            !flatfile_access_key.is_empty() && !flatfile_secret_key.is_empty();
         Self {
             api_key_present: !massive_api_key.is_empty(),
             bar_channel_capacity: env_usize("QMD_BAR_CHANNEL_CAPACITY", 250_000),
@@ -160,10 +180,6 @@ impl GatewayConfig {
                 "QMD_COMPACT_EVENT_CHANNEL_CAPACITY",
                 250_000,
             ),
-            compact_event_continuity_table: env_string(
-                "QMD_COMPACT_EVENT_CONTINUITY_TABLE",
-                "live_event_ordinal_continuity",
-            ),
             compact_event_live_buffer_events_per_ticker: env_usize(
                 "QMD_COMPACT_EVENT_LIVE_BUFFER_EVENTS_PER_TICKER",
                 512,
@@ -180,6 +196,14 @@ impl GatewayConfig {
             compact_event_table: env_string("QMD_COMPACT_EVENT_TABLE", "events"),
             compact_events_enabled: env_bool("QMD_COMPACT_EVENTS_ENABLED", true),
             event_channel_capacity: env_usize("QMD_EVENT_CHANNEL_CAPACITY", 250_000),
+            flatfile_access_key,
+            flatfile_credentials_present,
+            flatfile_bucket: env_string_any(&["QMD_FLATFILE_BUCKET", "BUCKET"], "flatfiles"),
+            flatfile_endpoint_url: env_string_any(
+                &["QMD_FLATFILE_ENDPOINT_URL", "S3_ENDPOINT_URL"],
+                "https://files.massive.com",
+            ),
+            flatfile_region: env_string("QMD_FLATFILE_REGION", "us-east-1"),
             flush_interval_ms: env_u64("QMD_CLICKHOUSE_FLUSH_INTERVAL_MS", 5_000),
             gap_fill_enabled: env_bool("QMD_GAP_FILL_ENABLED", true),
             gap_fill_interval_ms: env_u64("QMD_GAP_FILL_INTERVAL_MS", 300_000),
@@ -226,15 +250,10 @@ impl GatewayConfig {
                 ],
                 "default",
             ),
-            historical_flatfile_autorun: env_bool("QMD_HISTORICAL_FLATFILE_AUTORUN", false),
-            historical_flatfile_safe_lag_days: env_i64("QMD_HISTORICAL_FLATFILE_SAFE_LAG_DAYS", 1),
+            historical_flatfile_autorun: env_bool("QMD_HISTORICAL_FLATFILE_AUTORUN", true),
             historical_flatfile_update_enabled: env_bool(
                 "QMD_HISTORICAL_FLATFILE_UPDATE_ENABLED",
                 true,
-            ),
-            historical_known_coverage_end_date: env_string(
-                "QMD_HISTORICAL_KNOWN_COVERAGE_END_DATE",
-                "2026-06-05",
             ),
             historical_pipeline_code_root: env_string(
                 "QMD_HISTORICAL_PIPELINE_CODE_ROOT",
@@ -290,9 +309,9 @@ impl GatewayConfig {
                 "QMD_LIVE_MARKET_STATE_QUOTE_RESUME_CONDITIONS",
             ),
             qmd_coverage_table: env_string("QMD_COVERAGE_TABLE", "qmd_market_coverage_manifest_v1"),
-            qmd_flatfile_event_coverage_table: env_string(
-                "QMD_FLATFILE_EVENT_COVERAGE_TABLE",
-                "qmd_flatfile_event_coverage_v1",
+            qmd_flatfile_coverage_table: env_string(
+                "QMD_FLATFILE_COVERAGE_TABLE",
+                "qmd_flatfile_coverage_v2",
             ),
             qmd_gap_fill_symbol_universe_table: env_string(
                 "QMD_GAP_FILL_SYMBOL_UNIVERSE_TABLE",
@@ -314,7 +333,28 @@ impl GatewayConfig {
             replay_date: env_string("QMD_REPLAY_DATE", ""),
             replay_max_rows: env_usize("QMD_REPLAY_MAX_ROWS", 1_000_000),
             replay_symbols: env_list("QMD_REPLAY_SYMBOLS"),
-            reference_dir: env_string("QMD_REFERENCE_DIR", &default_reference_dir()),
+            market_holidays_refresh_seconds: env_u64("QMD_MARKET_HOLIDAYS_REFRESH_SECONDS", 3_600),
+            market_holidays_url: env_string(
+                "QMD_MARKET_HOLIDAYS_URL",
+                "https://api.massive.com/v1/marketstatus/upcoming",
+            ),
+            market_status_enabled: env_bool("QMD_MARKET_STATUS_ENABLED", true),
+            market_status_refresh_seconds: env_u64("QMD_MARKET_STATUS_REFRESH_SECONDS", 10),
+            market_status_url: env_string(
+                "QMD_MARKET_STATUS_URL",
+                "https://api.massive.com/v1/marketstatus/now",
+            ),
+            model_streaming_bar_channel_capacity: env_usize(
+                "QMD_MODEL_STREAMING_BAR_CHANNEL_CAPACITY",
+                250_000,
+            ),
+            model_streaming_bar_shard_count: env_usize("QMD_MODEL_STREAMING_BAR_SHARD_COUNT", 8),
+            model_streaming_bar_timeframes: env_list_with_default(
+                "QMD_MODEL_STREAMING_BAR_TIMEFRAMES",
+                &["100ms"],
+            ),
+            model_streaming_bars_enabled: env_bool("QMD_MODEL_STREAMING_BARS_ENABLED", false),
+            model_streaming_bars_persist: env_bool("QMD_MODEL_STREAMING_BARS_PERSIST", false),
             scanner_primitive_channel_capacity: env_usize(
                 "QMD_SCANNER_PRIMITIVE_CHANNEL_CAPACITY",
                 250_000,
@@ -367,6 +407,13 @@ impl GatewayConfig {
                 "REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD",
                 "CLICKHOUSE_PASSWORD",
             ],
+            "",
+        )
+    }
+
+    pub fn flatfile_secret_key(&self) -> String {
+        env_string_any(
+            &["QMD_FLATFILE_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"],
             "",
         )
     }
@@ -526,17 +573,6 @@ fn env_list_with_default(name: &str, default: &[&str]) -> Vec<String> {
             .map(|value| value.to_ascii_lowercase())
             .collect()
     }
-}
-
-fn default_reference_dir() -> String {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("research")
-        .join("market_references")
-        .join("massive")
-        .to_string_lossy()
-        .to_string()
 }
 
 fn env_timeframe_limit_map(name: &str, default: &[(&str, usize)]) -> HashMap<String, usize> {

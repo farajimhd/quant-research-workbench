@@ -171,7 +171,7 @@ QMD does not depend on broker/reference tables for REST repair. It keeps a
 durable market-data symbol universe in `qmd_gap_fill_symbol_universe_v1`. If
 the queue is empty, QMD seeds it from the latest
 `QMD_GAP_FILL_UNIVERSE_MARKET_DAYS` sessions in the read-only
-`market_sip_compact.events` table. During streaming hours, it starts Massive
+year-specific `market_sip_compact.events_YYYY` tables. During streaming hours, it starts Massive
 websocket ingest immediately and adds newly observed live compact-event tickers
 to the queue as `not_gap_filled`. Repair uses the queue as its symbol source,
 updates each symbol to `in_progress`, then `completed`, `partial_page_limit`, or
@@ -181,7 +181,7 @@ scheduled repair loop retries every `QMD_GAP_FILL_AWAITING_SYMBOLS_RETRY_MS`.
 Recent REST repair covers the current market day plus
 `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` prior US market sessions, skipping weekends
 and common US equity market holidays. Older history should be read from
-`market_sip_compact.events`.
+`market_sip_compact.events_YYYY`.
 
 ## Startup Maintenance And Coverage
 
@@ -190,9 +190,7 @@ Startup maintenance is enabled by default with
 task starts. The gateway audits recent rows in the actual
 `q_live.events` table and checks:
 
-- duplicate `(ticker, ordinal)` rows
-- ticker-local ordinal holes
-- ticker-local rows whose ordinal order disagrees with timestamp/sequence order
+- duplicate canonical event identities after `FINAL`
 
 The structural audit is separate from time coverage. Recent time coverage is
 read from `qmd_live_event_coverage_v1`. Streaming writes are counted as covered
@@ -207,23 +205,30 @@ the current market day plus configured prior market sessions, then fill missing
 04:00-20:00 ET intervals. If Massive pagination reaches
 `QMD_RECENT_LIVE_MAX_PAGES_PER_INTERVAL`, the symbol is recorded as
 `partial_page_limit` instead of being marked clean. If the audit finds duplicate
-committed `(ticker, ordinal)` rows, the gateway records
-`needs_manual_rebuild` and refuses to silently rewrite existing rows. Ordinal
-holes and timestamp-order warnings remain visible in the manifest summary, but
-they do not block temporal REST repair.
+canonical identities, the gateway records `needs_manual_rebuild` and refuses to
+silently rewrite existing rows. Live events have no durable ordinal; reads use
+timestamp, sequence, event type, and arrival sequence.
 
 `qmd_market_coverage_manifest_v1` is a coarse per-run manifest. It records
 startup live repair checks, scheduled recent-live repair checks, and historical
 flatfile update plans. It should not have one row per symbol or per file.
 
-After-hours historical flatfile maintenance is only a planner from the gateway.
-It compares historical `events_ordinal_continuity` coverage with the configured
-safe lag, using a US equity market-session calendar so market holidays such as
-Juneteenth are not planned as missing flatfile days. The command it prints or launches uses
-`download_update_events.py` against the historical flatfile pipeline and
-explicitly targets `events` plus qmd-compatible `live_market_bars` for
-`1s,5s,1m,5m,1d,1w,1mo`. QMD does not insert live websocket rows into
-`market_sip_compact.events`.
+After 08:00 ET, QMD uses signed metadata requests to compare remote quote/trade
+objects with historical `events_ordinal_continuity`. Its cached Rust Massive
+calendar excludes weekends/full holidays and observes early closes. QMD invokes
+only the unchanged `download_update_events.py`: it launches asynchronously on
+the workstation after collection closes, or records the exact manual command on
+a laptop. It never inserts into `market_sip_compact.events_YYYY` itself.
+Trading-day planning targets T-2; weekends and full holidays target the most
+recent closed session so Friday can be caught up on Saturday. Confirmed remote
+objects are rechecked at most twice daily in bounded batches. Identity changes
+reopen the date, and confirmation is accepted only after the historical
+continuity timestamp advances beyond the recorded handoff.
+
+The singular `q_live.events` cutover is non-destructive. Legacy
+`q_live.events_YYYY` tables are stale after this release but remain available
+for audit until rolling live coverage is verified; QMD does not query or drop
+them.
 
 ## Replay Mode
 
@@ -254,7 +259,9 @@ Use replay in a separate run from live trading unless you are deliberately testi
 | `qmd_gap_fill_runs` | yes if gap fill enabled | Audit trail for gap-fill attempts. |
 | `qmd_market_coverage_manifest_v1` | yes if startup maintenance or historical planning is enabled | Coarse run-level live repair and historical flatfile planning manifest. |
 | `qmd_live_event_coverage_v1` | yes | Fine-grained recent q_live event coverage confirmations and repair intervals. |
-| `qmd_flatfile_event_coverage_v1` | yes | Historical flatfile event coverage bootstrap. |
+| `qmd_flatfile_coverage_v2` | yes | Per-session quote/trade remote and historical coverage. |
+| `qmd_compact_event_issue_v1` | yes | Overflow/unknown condition or tape audits. |
+| `live_model_microbars` | optional | Model-only microbars when streaming and persistence are enabled. |
 | `qmd_gap_fill_symbol_universe_v1` | yes | Durable ticker queue and per-symbol status source for recent q_live REST repair. |
 
 ## Common Checks
@@ -288,7 +295,7 @@ Before live use:
 | Gap fill records `awaiting_live_symbols` | The durable symbol universe is empty and no websocket compact symbols have arrived yet. Once websocket symbols arrive, repair should add them to `qmd_gap_fill_symbol_universe_v1` and retry on `QMD_GAP_FILL_AWAITING_SYMBOLS_RETRY_MS`. |
 | Gap fill records `no_symbols_available` | Outside streaming hours, no q_live or latest historical compact-event symbols were available for REST repair. |
 | Gap fill keeps writing many rows | Live ingest may be dropping compact events, or the gateway was offline for longer than expected. |
-| Startup maintenance records `needs_manual_rebuild` | Recent `q_live` committed ordinals are structurally inconsistent. Do not rely on automatic tail repair; inspect/rebuild the affected live event range. |
+| Startup maintenance records `needs_manual_rebuild` | Recent `q_live` canonical identities are inconsistent. Inspect/rebuild the affected live event range. |
 
 ## Security Notes
 

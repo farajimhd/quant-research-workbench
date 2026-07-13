@@ -100,25 +100,34 @@ when a requested range crosses the live/historical boundary:
 
 - QMD emits live normalized compact events and maintains the low-latency
   in-memory stream used by live scanners, bars, and model consumers.
-- `q_live.events_YYYY` is the QMD-owned recent event store. The default logical
-  name is `events`; physical tables are selected by UTC event year. QMD repairs
-  recent gaps with up to a three-day lookback.
+- `q_live.events` is the QMD-owned recent event store. It retains the current
+  market session plus three prior market sessions in daily partitions. QMD may
+  temporarily retain more when historical continuity has not confirmed that an
+  older session is archived.
 - `market_sip_compact.events_YYYY` is the read-only historical event store built
   from Massive flat files by
   `pipelines/market_sip/flatfiles/download_update_events.py` and its ingestion
-  path. Current QMD documentation also refers to a logical distributed
-  `market_sip_compact.events` source across the yearly tables.
-- A request spanning older and recent sessions must query both authorities,
-  normalize them to the same event contract, concatenate them, order by event
-  time/ordinal, and apply the appropriate deduplication boundary.
+  path.
+- Current-day and prior-session requests read `q_live.events`. Longer requests
+  add a non-overlapping recent segment to `market_sip_compact.events_YYYY` and
+  order the combined result by event time, source sequence, event type, and live
+  arrival sequence. Historical ordinals remain authoritative only inside the
+  historical segment; a consumer may assign a query-local ordinal afterward.
 - Closed live bars are persisted in `q_live` using schemas aligned with the
   historical `market_sip_compact` bar layouts, allowing chart consumers to join
   recent and older ranges.
 
-The repository code confirms the yearly physical table convention. Any
-deployment-specific retention claim such as “today plus the previous three
-trading days” still needs a live ClickHouse policy/row audit; it should not be
-treated as guaranteed solely from this README.
+After 08:00 Eastern, QMD discovers Massive quote and trade flatfiles and records
+per-object readiness in `q_live.qmd_flatfile_coverage_v2`. A workstation QMD
+can launch the unchanged historical updater after collection closes; a laptop
+QMD reports the exact workstation command. Neither QMD nor the app writes
+historical event tables directly. QMD also rechecks indexed object identity on
+a bounded cadence, so a changed remote flatfile reopens that session for an
+auditable updater rerun.
+
+Future live models can opt into QMD's `100ms` long-form `trade`, `quote_bid`,
+and `quote_ask` microbar stream. It is disabled by default and runs in isolated
+workers so the existing scanner/chart bar path is unchanged.
 
 ## News, SEC, Embeddings, and Forecast Flow
 

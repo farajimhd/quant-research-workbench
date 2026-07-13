@@ -41,7 +41,10 @@ The gateway outputs market-data primitives. The app backend combines those primi
 | `live_market_state.rs` | Live abnormal market-state overlay | Market events, closed bars | `/snapshot/live-market-state`, `/stream/live-market-state`, `live_symbol_market_event_v1` | Reference identity/routing decisions |
 | `indicators.rs` | Streaming tick and bar indicators | Market events, closed bars | Tick snapshots, `IndicatorRow` | Wide research feature generation |
 | `scanner.rs` | Massive-only scanner primitives | Closed bars | Primitive snapshot/stream | Broker/reference-aware signals |
-| `compact_event.rs` | Live compact event contract, live ring buffers, sorted persistence ordinals | Market events | `/stream/compact-events`, `/snapshot/compact-events/{ticker}`, `events` | Encoder chunk construction |
+| `compact_event.rs` | Historical-parity live encoding, ring buffers, bounded reorder, batched persistence/audits | Market events, ClickHouse references | `/stream/compact-events`, `/snapshot/compact-events/{ticker}`, `q_live.events` | Encoder chunk construction |
+| `market_calendar.rs` | Cached Rust Massive status/holiday authority | Massive status and upcoming-holiday APIs | Session and close decisions | Live event processing |
+| `flatfile.rs` | Signed remote flatfile discovery | Massive S3 metadata | Quote/trade readiness | Historical ingestion |
+| `model_bars.rs` | Optional isolated model microbars | Sanitized compact events | `/stream/model-microbars`, optional `live_model_microbars` | Scanner/chart bars |
 | `clickhouse.rs` | Optional raw Massive persistence | Market events | `live_massive_trades`, `live_massive_quotes` | Primary ML surface |
 | `gapfill.rs` | Startup live coverage audit, Massive REST tail repair, historical flatfile planning | Live compact event rows, Massive REST, historical continuity rows | Same event fan-out as websocket, gap-fill audit rows, coarse coverage manifest | Deep historical row generation |
 | `replay.rs` | Raw-data replay | ClickHouse raw rows | Same in-memory pipeline as live | Re-persist raw events |
@@ -74,7 +77,7 @@ Live compact events have two separate paths:
 ```text
 low-latency path:
   MarketEvent
-    -> compact LiveCompactEvent with arrival_sequence and ordinal=0
+    -> compact LiveCompactEvent with arrival_sequence
     -> /stream/compact-events
     -> per-ticker in-memory ring buffer
     -> /snapshot/compact-events/{ticker}?limit=128
@@ -83,17 +86,15 @@ persistence path:
   same compact LiveCompactEvent
     -> per-ticker reorder buffer
     -> sort by sip_timestamp_us, source_sequence, event_type, arrival_sequence
-    -> assign final ticker-local ordinal
-    -> batch insert q_live.events
-    -> append q_live.live_event_ordinal_continuity snapshots
+    -> batch insert the singular daily-partitioned q_live.events table
+    -> batch condition/tape overflow and unknown-code audit rows
 ```
 
 The live ML/app path does not wait for the persistence reorder watermark.
 Readers that need a model context should request a recent window from the
 in-memory buffer and sort by `sip_timestamp_us, source_sequence, event_type,
-arrival_sequence` before taking the latest 128 events. The ClickHouse ordinal is
-for durable replay/audit and is assigned only after the persistence buffer is
-sorted.
+arrival_sequence` before taking the latest 128 events. Live storage has no
+durable ordinal; historical ordinals remain local to `events_YYYY`.
 
 ## Bar Flow
 
@@ -169,7 +170,6 @@ Default durable writes:
 | Table | Written By | Default | Purpose |
 |---|---|---:|---|
 | `events` | `compact_event.rs` | yes | Live ML-serving event stream/table |
-| `live_event_ordinal_continuity` | `compact_event.rs` | yes | Append-only live ticker ordinal snapshots |
 | `live_massive_trades` | `clickhouse.rs` | no | Optional raw trade replay/debug source |
 | `live_massive_quotes` | `clickhouse.rs` | no | Optional raw quote replay/debug source |
 | `live_market_bars` | `bars.rs` | yes | Published bar history |
@@ -178,10 +178,12 @@ Default durable writes:
 | `qmd_gap_fill_runs` | `gapfill.rs` | yes | Gap-fill audit log |
 | `qmd_market_coverage_manifest_v1` | `gapfill.rs` | yes | Coarse startup repair and historical flatfile planning manifest |
 | `qmd_live_event_coverage_v1` | `compact_event.rs`, `bars.rs`, `gapfill.rs` | yes | Recent q_live coverage manifest for compact events and bars |
-| `qmd_flatfile_event_coverage_v1` | `gapfill.rs` | yes | Historical flatfile coverage manifest |
+| `qmd_flatfile_coverage_v2` | `gapfill.rs` | yes | Per-session, per-source remote and historical coverage |
+| `qmd_compact_event_issue_v1` | `compact_event.rs` | yes | Full-identity overflow/unknown condition or tape audits |
+| `live_model_microbars` | `model_bars.rs` | no | Optional model-only 100ms quote/trade-family bars |
 
 Startup maintenance audits recent `q_live.events` rows for
-structural ordinal issues before websocket ingest begins. It does not infer
+duplicate canonical identities before websocket ingest begins. It does not infer
 missing time coverage from min/max timestamps. Recent time gaps are detected
 from `qmd_live_event_coverage_v1`. Live streaming writes one compact-event
 confirmation row and one bar confirmation row per run. A time range is treated
@@ -195,17 +197,17 @@ as websocket ingest. The repair covers the current market day plus
 04:00-20:00 ET extended-hours window. During streaming hours, QMD starts the
 websocket first and repairs tickers only after they are discovered from live
 compact events. Outside streaming hours, it uses latest q_live symbols, then the
-latest historical `market_sip_compact.events` symbols if q_live is empty.
+latest historical `market_sip_compact.events_YYYY` symbols if q_live is empty.
 Intervals without a discovered ticker set remain open and are not marked clean.
-Structural ordinal corruption is recorded in the manifest and left for explicit
+Canonical identity corruption is recorded in the manifest and left for explicit
 rebuild; QMD does not rewrite committed historical rows silently.
 
-After-hours historical planning compares the read-only
-`market_sip_compact.events_ordinal_continuity` coverage with the configured
-safe lag and prints or launches the flatfile `download_update_events.py`
-command. Deeper historical history belongs to the read-only
-`market_sip_compact.events` table maintained by the flatfile pipelines. QMD live
-events are never merged into that historical table.
+After 08:00 ET, historical planning compares signed remote quote/trade object
+availability with read-only `market_sip_compact.events_ordinal_continuity`.
+The Rust calendar handles weekends, holidays, and early closes. QMD records an
+exact command on laptops or launches the unchanged updater asynchronously on
+the workstation after collection closes. Live events are never merged into the
+historical `events_YYYY` tables.
 
 `QMD_PERSIST_INDICATORS` defaults to `false` because the current bar-level indicators can be recomputed from `live_market_bars`. Enable it only when a run specifically needs a materialized indicator table.
 

@@ -194,7 +194,8 @@ SERVICE_DATABASE_TABLES: dict[str, list[dict[str, str]]] = {
         {"database": "q_live", "table": "live_market_bars", "role": "1d bars"},
         {"database": "q_live", "table": "live_symbol_market_event_v1", "role": "market state"},
         {"database": "q_live", "table": "qmd_live_event_coverage_v1", "role": "coverage"},
-        {"database": "q_live", "table": "qmd_flatfile_event_coverage_v1", "role": "flatfile coverage"},
+        {"database": "q_live", "table": "qmd_flatfile_coverage_v2", "role": "flatfile coverage"},
+        {"database": "q_live", "table": "live_model_microbars", "role": "optional model microbars"},
         {"database": "q_live", "table": "qmd_gap_fill_symbol_universe_v1", "role": "gap symbols"},
     ],
     "news": [

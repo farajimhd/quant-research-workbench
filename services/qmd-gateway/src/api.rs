@@ -9,7 +9,9 @@ use crate::live_market_state::{
     TickerLiveMarketStateSnapshot,
 };
 use crate::maintenance::{MaintenanceSnapshot, SharedMaintenanceState};
+use crate::market_calendar::{MarketCalendarClient, MarketSnapshot};
 use crate::metrics::{MetricsSnapshot, SharedMetrics};
+use crate::model_bars::ModelBarRow;
 use crate::scanner::{ScannerPrimitive, ScannerPrimitiveSnapshot, SharedScannerStore};
 use crate::session::session_phase;
 use crate::signal_catalog::{signal_catalog, SignalMethodEntry};
@@ -39,7 +41,9 @@ pub struct AppState {
     pub live_market_state_events: broadcast::Sender<LiveSymbolMarketStateEvent>,
     pub market: SharedMarketState,
     pub maintenance: SharedMaintenanceState,
+    pub market_calendar: MarketCalendarClient,
     pub metrics: SharedMetrics,
+    pub model_microbars: Option<broadcast::Sender<ModelBarRow>>,
     pub scanner: SharedScannerStore,
     pub scanner_events: broadcast::Sender<ScannerPrimitive>,
 }
@@ -59,6 +63,7 @@ struct BarsQuery {
 struct HealthPayload {
     config: GatewayConfig,
     metrics: StatusMetrics,
+    market_calendar: MarketSnapshot,
     running: bool,
     session_phase: String,
     status: String,
@@ -109,6 +114,7 @@ pub fn app(state: AppState) -> Router {
             get(ticker_live_market_state_snapshot),
         )
         .route("/stream/compact-events", get(compact_event_stream))
+        .route("/stream/model-microbars", get(model_microbar_stream))
         .route("/stream/events", get(event_stream))
         .route("/stream/live-market-state", get(live_market_state_stream))
         .route("/stream/scanner", get(scanner_stream))
@@ -124,6 +130,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<HealthPayload> {
     Json(HealthPayload {
         config: state.config.clone(),
         metrics: state.market.metrics().await,
+        market_calendar: state.market_calendar.snapshot(chrono::Utc::now()),
         running: state.config.api_key_present,
         session_phase: format!("{:?}", session_phase(chrono::Utc::now())),
         status: if state.config.api_key_present {
@@ -147,7 +154,7 @@ async fn status_snapshot(State(state): State<Arc<AppState>>) -> Json<StandardSta
     let metrics = state.metrics.snapshot();
     let maintenance = state.maintenance.snapshot().await;
     let market_metrics = state.market.metrics().await;
-    let session = format!("{:?}", session_phase(chrono::Utc::now()));
+    let market_calendar = state.market_calendar.snapshot(chrono::Utc::now());
     let running = state.config.api_key_present;
     let status = if !running {
         "DEGRADED"
@@ -171,7 +178,9 @@ async fn status_snapshot(State(state): State<Arc<AppState>>) -> Json<StandardSta
             "read_database": state.config.historical_clickhouse_database,
             "write_database": state.config.clickhouse_database,
             "snapshot_utc": chrono::Utc::now().to_rfc3339(),
-            "market_status": session,
+            "market_status": if market_calendar.active_collection_window { "active" } else { "closed" },
+            "market_calendar_source": market_calendar.source,
+            "market_calendar_reason": market_calendar.reason,
             "subscriptions": state.config.subscription_channels(),
         }),
         current_operation: json!({
@@ -319,10 +328,20 @@ async fn coverage_snapshot(
         Err(error) => errors.push(format!("live: {error}")),
     }
 
-    let flatfile_sql = event_coverage_snapshot_sql(
-        &state.config.qmd_flatfile_event_coverage_table,
-        "flatfile_coverage",
-        limit,
+    let flatfile_sql = format!(
+        r#"
+        SELECT updated_at_utc AS started_at, updated_at_utc AS finished_at,
+            'flatfile_events' AS coverage_kind,
+            concat(remote_status, '/', historical_status) AS status,
+            toDateTime64(session_date, 3, 'UTC') AS start_ts_utc,
+            toDateTime64(session_date + 1, 3, 'UTC') AS end_ts_utc,
+            source_kind AS action, historical_rows AS rows_written,
+            host_role, command,
+            toJSONString(map('remote_key', remote_key, 'remote_etag', remote_etag, 'error', error)) AS summary_json,
+            'flatfile_coverage' AS table_group
+        FROM {} FINAL ORDER BY session_date DESC, source_kind LIMIT {} FORMAT JSONEachRow
+    "#,
+        state.config.qmd_flatfile_coverage_table, limit
     );
     match coverage_query_rows(&state.config, &flatfile_sql).await {
         Ok(mut values) => rows.append(&mut values),
@@ -597,6 +616,45 @@ async fn compact_event_stream(
     ws.on_upgrade(move |socket| async move {
         stream_compact_events(socket, state).await;
     })
+}
+
+async fn model_microbar_stream(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| async move {
+        stream_model_microbars(socket, state).await;
+    })
+}
+
+async fn stream_model_microbars(mut socket: WebSocket, state: Arc<AppState>) {
+    let Some(sender) = &state.model_microbars else {
+        let _ = socket
+            .send(Message::Text(
+                r#"{"status":"disabled","feature":"model_microbars"}"#.into(),
+            ))
+            .await;
+        return;
+    };
+    let mut receiver = sender.subscribe();
+    loop {
+        match receiver.recv().await {
+            Ok(row) => {
+                let payload = serde_json::to_string(&row).unwrap_or_else(|_| "{}".to_string());
+                if socket.send(Message::Text(payload.into())).await.is_err() {
+                    break;
+                }
+            }
+            Err(broadcast::error::RecvError::Lagged(count)) => {
+                let warning =
+                    format!(r#"{{"warning":"model_microbar_stream_lagged","skipped":{count}}}"#);
+                if socket.send(Message::Text(warning.into())).await.is_err() {
+                    break;
+                }
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
+        }
+    }
 }
 
 async fn live_market_state_stream(

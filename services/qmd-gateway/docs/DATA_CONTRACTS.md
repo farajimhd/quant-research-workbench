@@ -6,7 +6,7 @@ This file documents the values produced by `qmd-gateway`. A **formula** is the e
 
 | Contract | Version Field | Current Version | Rule |
 |---|---|---:|---|
-| Live compact unified events | `schema_version` | `2` | Increment when the live unified event table semantics change. |
+| Live compact unified events | `schema_version` | `4` | Increment when the live unified event table semantics change. |
 | Raw Massive trades | `schema_version` | `1` | Increment when durable raw table semantics change. |
 | Raw Massive quotes | `schema_version` | `1` | Increment when durable raw table semantics change. |
 | Bars | `schema_version` | `2` | Increment when bar fields or formulas change. |
@@ -21,12 +21,12 @@ Once production data is written under a version, do not change that version's fi
 Table: `events`
 
 This is the durable live ML-serving event surface. It mirrors the historical
-`market_sip_compact.events` row shape closely enough that downstream encoders
+`market_sip_compact.events_YYYY` row shape so downstream encoders
 can build the same `header_uint8 + events_uint8` chunks from either historical
 or live rows. The gateway emits compact rows immediately on
 `/stream/compact-events` and keeps a bounded per-ticker memory buffer exposed by
 `/snapshot/compact-events/{ticker}?limit=128`. The historical
-`market_sip_compact.events` table remains flatfile-only; QMD live events are
+`market_sip_compact.events_YYYY` tables remain flatfile-only; QMD live events are
 not merged into it.
 
 Raw quote/trade tables are optional debug/replay support. They are not the
@@ -39,7 +39,6 @@ primary model-serving contract.
 | `ingest_ts` | Gateway receive/parse timestamp. |
 | `arrival_sequence` | Gateway-local monotonically increasing sequence. Used only as a deterministic tie-breaker for equal timestamp/sequence rows. |
 | `ticker` | Uppercase ticker. |
-| `ordinal` | Durable ticker-local event ordinal assigned only on sorted ClickHouse persistence flush. In-memory live stream rows may carry `0` before persistence. |
 | `event_meta` | Compact row metadata: bit 0 event type (`0 = quote`, `1 = trade`), bit 1 primary price scale, bit 2 secondary price scale, bits 3-5 tape, bits 6-7 reserved. |
 | `sip_timestamp_us` | SIP timestamp in UTC microseconds. Massive websocket timestamps are millisecond precision, so live rows currently land on millisecond boundaries. |
 | `price_primary_int` | Quote: ask price integer. Trade: trade price integer. |
@@ -48,7 +47,7 @@ primary model-serving contract.
 | `size_secondary` | Quote: bid size. Trade: `0`. |
 | `exchange_primary` | Quote: ask exchange. Trade: trade exchange. |
 | `exchange_secondary` | Quote: bid exchange. Trade: `0`. |
-| `condition_token_1` ... `condition_token_5` | Five explicit 8-bit condition/indicator token slots. Unknown or absent tokens are `0`; overflow/unknown counts are audit metrics, not persisted model features. |
+| `condition_token_1` ... `condition_token_5` | Quote: first four conditions plus first indicator. Trade: first five conditions. Tokens use the canonical historical reference; absent/unknown values encode as `0`. Overflow/unknown input is logged and audited with full identity while the first five slots continue. |
 | `source_sequence` | Massive sequence number from the original quote/trade event. |
 | `issue_flags` | Reserved for future issue classification. Current compact writer drops structurally invalid events before emit/insert, so persisted rows use `0`. |
 
@@ -58,24 +57,20 @@ Live ordering contract:
 sip_timestamp_us, source_sequence, event_type, arrival_sequence
 ```
 
-The in-memory live buffer is optimized for low-latency inference and does not
-wait for final DB ordinals. The persistence path uses a short per-ticker reorder
-buffer, assigns final ordinals in the order above, inserts
-`events`, and periodically appends
-`live_event_ordinal_continuity` snapshots.
+The in-memory and persisted live paths use the same ordering tuple. Persistence
+keeps a short per-ticker reorder buffer and inserts `q_live.events` without a
+durable ordinal. Cross-store consumers sort each segment under its own contract,
+concatenate a non-overlapping boundary, and may assign a query-local ordinal.
 
-Continuity table: `live_event_ordinal_continuity`
+## Optional Model Microbars
 
-| Field | Meaning |
-|---|---|
-| `ticker` | Uppercase ticker. |
-| `next_ordinal` | Next durable ordinal to assign after the latest persisted row. |
-| `last_ordinal` | Last durable ordinal assigned for the ticker. |
-| `last_sip_timestamp_us` | SIP timestamp of the last durable row. |
-| `last_source_sequence` | Massive sequence number of the last durable row. |
-| `last_event_type` | Event type of the last durable row. |
-| `updated_at` | Snapshot write time. |
-| `schema_version` | Live compact event contract version. |
+`/stream/model-microbars` and optional table `live_model_microbars` expose the
+same long-form base-bar families used by `research/mlops/packed_market`:
+`trade`, `quote_bid`, and `quote_ask`. Rows use New York local-session buckets
+and contain `label_resolution_us`, `bucket_index`, OHLC, size
+sum/open/close/high/low, event count, first/last event timestamps, and session
+bar bounds. Invalid zeroed prices do not enter a family bar. The default
+resolution is 100,000 microseconds (`100ms`).
 
 Coverage manifest: `qmd_market_coverage_manifest_v1`
 
@@ -189,23 +184,17 @@ promoting all prices to 64-bit floats.
 
 Condition packing:
 
-```text
-quote conditions:
-bits 0-7    quote condition 1 dense_id
-bits 8-15   quote condition 2 dense_id
-bits 16-23  quote condition 3 dense_id
-bits 24-31  quote condition 4 dense_id
+Each `condition_token_N` column is one independent `UInt8`; tokens are not
+bit-packed. Quotes use condition slots 1-4 and the first quote indicator in slot
+5. Trades use conditions 1-5.
 
-trade conditions:
-bits 0-5    trade condition 1 dense_id
-bits 6-11   trade condition 2 dense_id
-bits 12-17  trade condition 3 dense_id
-bits 18-23  trade condition 4 dense_id
-bits 24-29  trade condition 5 dense_id
-```
-
-Dense IDs are loaded from `conditions_indicators_glossary.json` under
-`QMD_REFERENCE_DIR`. Missing or unknown codes encode as `0`.
+Tokens are loaded from
+`market_sip_compact.event_condition_token_reference`; tape ids are loaded from
+`market_sip_compact.ref_stock_tapes` and converted from source `1..3` to encoded
+`0..2`, exactly as `download_update_events.py` does. Missing/unknown codes encode
+as `0` and produce a structured `qmd_compact_event_issue_v1` audit row. More
+than five usable slots also produces a warning/audit row, persists the first
+five, and continues.
 
 ## Raw Massive Trade Row
 

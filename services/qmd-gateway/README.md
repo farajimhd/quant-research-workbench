@@ -34,7 +34,7 @@ persistence path: Massive -> compact reorder buffers -> ClickHouse batch inserts
 ```
 
 ClickHouse writes must never block the live trading decision path.
-The historical `market_sip_compact.events` table remains flatfile-only. Live
+The historical `market_sip_compact.events_YYYY` tables remain flatfile-only. Live
 QMD events are written only to the app-owned `q_live` database.
 
 ## Service Policy Alignment
@@ -51,12 +51,11 @@ during full-market `T.*` and `Q.*` subscription bursts. If a required processor
 falls behind, the correct behavior is to backpressure into the gateway's
 overflow policy rather than silently losing canonical market data.
 
-QMD keeps its own market-session scheduler because live quote/trade collection
-is the most latency-sensitive service. Historical flatfile refresh, gap repair,
-and heavy maintenance work should run outside the active collection window by
-default. The standard active collection window is `04:00-20:00` Eastern Time,
-matching premarket, regular market, and after-hours handling used by the News
-and SEC gateways.
+QMD implements the shared Massive market-status/holiday policy directly in
+Rust. Cached `/v1/marketstatus/now` and `/v1/marketstatus/upcoming` responses
+cover weekends, full holidays, early closes, and the `04:00-20:00` Eastern
+collection window. A local New York schedule is used only while Massive is
+temporarily unavailable.
 
 ## Configuration
 
@@ -78,18 +77,15 @@ Environment variables:
 - `QMD_EVENT_CHANNEL_CAPACITY`, default `250000`
 - `QMD_COMPACT_EVENTS_ENABLED`, default `true`
 - `QMD_PERSIST_COMPACT_EVENTS`, default `true`
-- `QMD_COMPACT_EVENT_TABLE`, default `events`. The default is a logical table
-  name: compact live rows are written to `events_YYYY` by UTC event date, while
-  `QMD_COMPACT_EVENT_CONTINUITY_TABLE` remains the global ticker ordinal
-  continuity table. Pass a fixed non-default table only for an isolated test
-  writer.
-- `QMD_COMPACT_EVENT_CONTINUITY_TABLE`, default `live_event_ordinal_continuity`
+- `QMD_COMPACT_EVENT_TABLE`, default `events`; the singular `q_live.events`
+  table is partitioned by event date
 - `QMD_COMPACT_EVENT_CHANNEL_CAPACITY`, default `250000`
 - `QMD_COMPACT_EVENT_LIVE_BUFFER_EVENTS_PER_TICKER`, default `512`
 - `QMD_COMPACT_EVENT_REORDER_LAG_MS`, default `500`
 - `QMD_COMPACT_EVENT_REORDER_FORCE_FLUSH_MS`, default `2000`
 - `QMD_COMPACT_EVENT_REORDER_MAX_EVENTS_PER_TICKER`, default `4096`
-- `QMD_REFERENCE_DIR`, default resolves to repo `research/market_references/massive`
+- compact condition/indicator tokens and tape ids load from the canonical
+  `market_sip_compact` reference tables; QMD fails preflight on reference drift
 - `QMD_PERSIST_RAW_EVENTS`, default `false`
 - `QMD_LIVE_MARKET_STATE_ENABLED`, default `true`
 - `QMD_LIVE_MARKET_STATE_TABLE`, default `live_symbol_market_event_v1`
@@ -116,16 +112,22 @@ Environment variables:
 - `QMD_STARTUP_MAINTENANCE_ENABLED`, default `true`
 - `QMD_COVERAGE_TABLE`, default `qmd_market_coverage_manifest_v1`
 - `QMD_LIVE_EVENT_COVERAGE_TABLE`, default `qmd_live_event_coverage_v1`
-- `QMD_FLATFILE_EVENT_COVERAGE_TABLE`, default `qmd_flatfile_event_coverage_v1`
+- `QMD_FLATFILE_COVERAGE_TABLE`, default `qmd_flatfile_coverage_v2`
 - `QMD_GAP_FILL_SYMBOL_UNIVERSE_TABLE`, default `qmd_gap_fill_symbol_universe_v1`
 - `QMD_GAP_FILL_UNIVERSE_MARKET_DAYS`, default `5`
 - `QMD_HOST_ROLE`, default `auto`; use `workstation` or `laptop` to override
 - `QMD_HISTORICAL_CLICKHOUSE_DATABASE`, default `market_sip_compact`
 - `QMD_HISTORICAL_FLATFILE_UPDATE_ENABLED`, default `true`
-- `QMD_HISTORICAL_FLATFILE_AUTORUN`, default `false`
-- `QMD_HISTORICAL_FLATFILE_SAFE_LAG_DAYS`, default `1`
-- `QMD_HISTORICAL_KNOWN_COVERAGE_END_DATE`, default `2026-06-05`
+- `QMD_HISTORICAL_FLATFILE_AUTORUN`, default `true`; effective only on the
+  workstation after the active collection window closes
 - `QMD_HISTORICAL_PIPELINE_CODE_ROOT`, default `D:\TradingML\codes\quant_research_workbench_pipelines`
+- `QMD_MARKET_STATUS_ENABLED`, default `true`
+- `QMD_MARKET_STATUS_URL`, default Massive `/v1/marketstatus/now`
+- `QMD_MARKET_HOLIDAYS_URL`, default Massive `/v1/marketstatus/upcoming`
+- `QMD_FLATFILE_ENDPOINT_URL`, `QMD_FLATFILE_BUCKET`, and `QMD_FLATFILE_REGION`
+- `QMD_MODEL_STREAMING_BARS_ENABLED`, default `false`
+- `QMD_MODEL_STREAMING_BAR_TIMEFRAMES`, default `100ms`
+- `QMD_MODEL_STREAMING_BARS_PERSIST`, default `false`
 - `QMD_INDICATOR_CHANNEL_CAPACITY`, default `250000`
 - `QMD_INDICATOR_BAR_CHANNEL_CAPACITY`, default `250000`
 - `QMD_INDICATOR_HISTORY_LIMIT`, default `1000`
@@ -143,7 +145,6 @@ Environment variables:
 The service writes to:
 
 - `events`
-- `live_event_ordinal_continuity`
 - `live_massive_trades`, only when `QMD_PERSIST_RAW_EVENTS=true`
 - `live_massive_quotes`, only when `QMD_PERSIST_RAW_EVENTS=true`
 - `live_market_bars`
@@ -153,7 +154,9 @@ The service writes to:
 - `qmd_gap_fill_runs`
 - `qmd_market_coverage_manifest_v1`
 - `qmd_live_event_coverage_v1`
-- `qmd_flatfile_event_coverage_v1`
+- `qmd_flatfile_coverage_v2`
+- `qmd_compact_event_issue_v1`
+- `live_model_microbars`, only when model microbar persistence is enabled
 - `qmd_gap_fill_symbol_universe_v1`
 
 The lowest-latency live ML path should consume the in-memory compact event
@@ -161,17 +164,16 @@ buffer through `/snapshot/compact-events/{ticker}?limit=128` or the websocket
 stream `/stream/compact-events`. ClickHouse is the durability/audit path. Raw
 quote/trade persistence is intentionally optional and is not part of the default
 coverage repair contract. The compact event row is the durable live equivalent
-of the historical `market_sip_compact.events` training table.
+of the historical `market_sip_compact.events_YYYY` training tables.
 
 ## After-Hours Maintenance
 
 The QMD maintenance source of truth for historical event availability is
-`market_sip_compact.events` plus `market_sip_compact.events_ordinal_continuity`.
+`market_sip_compact.events_YYYY` plus `market_sip_compact.events_ordinal_continuity`.
 QMD owns its own coverage checks, recent REST repair, historical flatfile
 planning, and retention cleanup. It intentionally does not copy historical rows
 directly into `q_live`. Recent `q_live` event gaps must be repaired through the
-QMD replay/fanout path so `events`, `live_event_ordinal_continuity`, and the
-bar layouts remain consistent.
+QMD replay/fanout path so `events` and the bar layouts remain consistent.
 
 During active streaming hours, recent q_live REST repair starts from symbols
 kept in the durable gap-fill symbol universe. If the universe is empty, QMD
@@ -417,7 +419,7 @@ slate has gaps but no live ticker has arrived yet, QMD reports
 `awaiting_live_symbols` and leaves the gap open. Outside streaming hours, it
 uses the latest symbols from `q_live.events`; if q_live has no
 symbols, it falls back to the latest symbol set in the read-only
-`market_sip_compact.events` table. q_live gap detection does not infer missing
+year-specific `market_sip_compact.events_YYYY` tables. q_live gap detection does not infer missing
 data from
 `min/max/count` in `events`; it subtracts confirmed intervals in
 `qmd_live_event_coverage_v1` from required 04:00-20:00 ET market-session
@@ -428,46 +430,63 @@ the current market day plus `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` prior US market
 sessions, default `3`. Any uncovered interval inside those session windows is
 treated as a gap, except for intervals shorter than
 `QMD_GAP_FILL_MIN_GAP_SECONDS`. Repair rows are converted to the normal fanout
-path so compact events, continuity, bars, in-memory state, streams, indicators,
+path so compact events, bars, in-memory state, streams, indicators,
 and scanner primitives see the same data. Raw `live_massive_trades` and
 `live_massive_quotes` are excluded from this contract unless raw persistence is
 explicitly enabled for a separate debug workflow.
 Deeper historical event history should be read from the read-only
-`market_sip_compact.events` table, which is maintained by the flatfile pipelines
-up to the prior day.
+year-specific `market_sip_compact.events_YYYY` tables, which are maintained only
+by `download_update_events.py`.
 
 At startup, when `QMD_STARTUP_MAINTENANCE_ENABLED=true`, the gateway audits the
 recent `q_live.events` rows directly for structural event-table
-problems. The audit reports duplicate ticker ordinals, ordinal holes, and
-out-of-order ticker-local rows. Time coverage is then read from
+problems. The audit checks duplicate canonical event identities after `FINAL`.
+Time coverage is then read from
 `qmd_live_event_coverage_v1`, not inferred from event-table min/max timestamps.
 If recent rows are structurally sound, the gateway runs bounded Massive REST
 coverage repair before opening the websocket. Startup repair uses the same
 current-plus-prior-session window as recurring repair.
-If committed rows have duplicate `(ticker, ordinal)` keys, the gateway records
+If committed rows have duplicate canonical identities, the gateway records
 `needs_manual_rebuild` in the coverage manifest and does not silently rewrite
-existing rows. Ordinal holes and timestamp-order warnings are reported in the
-manifest summary but do not block temporal REST repair.
+existing rows. Durable live ordinals do not exist; live reads order by
+`(sip_timestamp_us, source_sequence, event_type, arrival_sequence)`.
 
 The legacy `qmd_market_coverage_manifest_v1` table is coarse and run-scoped. It
 records startup audits, repair summaries, and historical flatfile update plans.
 It is not the source of truth for recent live holes. The live source of truth is
 `qmd_live_event_coverage_v1`: compact-event and bar writers publish separate
 confirmation rows, and QMD counts only their overlap or explicit completed
-repair rows. The flatfile source of truth is
-`qmd_flatfile_event_coverage_v1`: on first startup, QMD bootstraps one
-2019-forward coverage row from the latest `market_sip_compact`
-`events_ordinal_continuity.source_date`. Historical quote/trade flatfiles remain
-disk-only; the planned updater writes yearly unified `events_YYYY` tables plus
-daily macro bars. After hours, the gateway can plan the
-`download_update_events.py` command for missing historical flatfile days, using
-a US equity market-session calendar so weekends and market holidays are
-skipped. The generated command passes the logical `--events-table events`; the
-Python updater routes each source day to `events_YYYY` and builds `1d` macro
-bars incrementally. On a workstation host with
-`QMD_HISTORICAL_FLATFILE_AUTORUN=true`, it launches that command
-asynchronously; otherwise it prints the command for manual workstation
-execution.
+repair rows. The flatfile source of truth is `qmd_flatfile_coverage_v2`, keyed
+by session and source kind. After 08:00 ET, QMD performs signed metadata checks
+for both Massive quote and trade objects and records key, ETag, size, readiness,
+historical confirmation, host, command, and errors. Confirmed objects are
+rechecked on a bounded 12-hour cadence; a changed key, ETag, modification time,
+or size reopens that session and triggers the same historical updater handoff.
+Confirmation requires historical continuity to advance after the handoff, so a
+stale pre-existing row cannot falsely close the repair. The old
+`qmd_flatfile_event_coverage_v1` table is dropped during startup migration.
+QMD never writes `market_sip_compact`; it only invokes the unchanged
+`download_update_events.py` command. A workstation launches it asynchronously
+after the cached Massive calendar says collection is closed. A laptop records
+`manual_action_required` and the exact workstation command. Weekend checks can
+therefore ingest Friday after both objects become available Saturday morning.
+On trading days, historical coverage is required only through T-2 because the
+current session and T-1 remain authoritative in `q_live.events`.
+
+Retention keeps the current session plus three prior market sessions in the
+single daily-partitioned `q_live.events` table. Deletion occurs only after
+historical continuity confirms the older session; otherwise QMD records
+`retention_blocked_historical_gap` and temporarily retains the rows.
+Legacy `q_live.events_YYYY` tables are no longer read or written. They are left
+untouched for the production cutover audit and may be dropped only after the
+singular table's repaired rolling coverage has been verified.
+
+Optional model microbars are a separate compact-event consumer. When
+`QMD_MODEL_STREAMING_BARS_ENABLED=false`, no model-bar workers, buffers, or
+writes exist. When enabled, the default `100ms` quote/trade-family bars use the
+same sanitized compact values and bounded-lateness ordering as live events.
+They stream from `/stream/model-microbars`; persistence is independently
+controlled by `QMD_MODEL_STREAMING_BARS_PERSIST`.
 
 ## Replay Mode
 

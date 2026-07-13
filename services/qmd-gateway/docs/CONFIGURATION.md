@@ -32,22 +32,21 @@ Settings are read from environment variables at process start. The gateway also 
 | `QMD_EVENT_CHANNEL_CAPACITY` | `250000` | Queue size for optional raw ClickHouse persistence. | Relevant only when `QMD_PERSIST_RAW_EVENTS=true`. |
 | `QMD_COMPACT_EVENTS_ENABLED` | `true` | Enable compact unified event conversion and websocket streaming. | Keep enabled for live ML consumers. |
 | `QMD_COMPACT_EVENT_CHANNEL_CAPACITY` | `250000` | Queue size for compact event conversion/persistence. | If downstream work cannot keep up, live ingest backpressures rather than discarding compact events. |
-| `QMD_COMPACT_EVENT_TABLE` | `events` | ClickHouse table for compact live events. | Keep the live table name aligned with the historical `market_sip_compact.events` contract. |
-| `QMD_COMPACT_EVENT_CONTINUITY_TABLE` | `live_event_ordinal_continuity` | Append-only live ordinal continuity snapshots. | Used to audit and bootstrap ticker-local live ordinals. |
+| `QMD_COMPACT_EVENT_TABLE` | `events` | Singular ClickHouse table for compact live events. | Encoding stays aligned with historical `market_sip_compact.events_YYYY`; the physical live table is not yearly. |
 | `QMD_COMPACT_EVENT_LIVE_BUFFER_EVENTS_PER_TICKER` | `512` | Recent compact events retained in memory per ticker for ML/app snapshots. | Must be at least the largest live inference context, e.g. 128. |
-| `QMD_COMPACT_EVENT_REORDER_LAG_MS` | `500` | Per-ticker persistence reorder watermark lag before assigning final DB ordinals. | Higher values improve late-arrival ordering but delay durable writes. |
+| `QMD_COMPACT_EVENT_REORDER_LAG_MS` | `500` | Per-ticker persistence reorder watermark lag. | Higher values improve late-arrival ordering but delay durable writes. |
 | `QMD_COMPACT_EVENT_REORDER_FORCE_FLUSH_MS` | `2000` | Maximum persistence wait before flushing reorder buffers. | Keeps DB lag bounded. |
 | `QMD_COMPACT_EVENT_REORDER_MAX_EVENTS_PER_TICKER` | `4096` | Per-ticker persistence reorder buffer cap. | Protects memory during liquid bursts. |
 | `QMD_PERSIST_COMPACT_EVENTS` | `true` | Persist compact live events to ClickHouse. | Disable only for stream-only tests. |
 | `QMD_PERSIST_RAW_EVENTS` | `false` | Persist raw quote/trade rows. | Enable only for debug/replay/gap-fill workflows. |
-| `QMD_REFERENCE_DIR` | repo `research/market_references/massive` | Massive reference files used for condition packing. | Must contain `conditions_indicators_glossary.json`. |
+| Canonical references | historical ClickHouse | Condition, indicator, and tape encoding tables. | Startup fails if the DB reference contract is missing or disagrees with the updater. |
 | `QMD_BAR_CHANNEL_CAPACITY` | `250000` | Queue size for bar aggregation shards. | If latency rises, raise this or increase bar shards. |
 | `QMD_INDICATOR_CHANNEL_CAPACITY` | `250000` | Queue size for tick-indicator event shards. | If latency rises, raise this or increase indicator shards. |
 | `QMD_INDICATOR_BAR_CHANNEL_CAPACITY` | `250000` | Queue size for closed bars sent to indicator engine. | Relevant when many timeframes close at once. |
 | `QMD_SCANNER_PRIMITIVE_CHANNEL_CAPACITY` | `250000` | Queue size for closed bars sent to scanner primitive engine. | Relevant when scanner primitive evaluation lags. |
 | `QMD_LIVE_MARKET_STATE_CHANNEL_CAPACITY` | `250000` | Queue size for quote/trade events and closed bars entering the abnormal market-state overlay. | Required path; if full, live ingest/bar finalization backpressures rather than dropping state evaluation. |
 
-Required data-path queues use awaited sends. A full queue applies backpressure instead of dropping canonical quote/trade work. Compact live inference does not wait for DB ordinals: the ML/app path reads the in-memory per-ticker buffer, while final ticker-local ordinals are assigned only when sorted rows are flushed to `q_live`.
+Required data-path queues use awaited sends. A full queue applies backpressure instead of dropping canonical quote/trade work. Compact live inference reads the in-memory per-ticker buffer; both memory and the ordinal-free live table use the timestamp/sequence/type/arrival ordering contract.
 
 ## Live Abnormal Market State
 
@@ -80,6 +79,11 @@ are live-tradability blocking until their close transition is observed.
 | `QMD_BAR_TIMEFRAMES` | `1s,10s,30s,1m,5m,1h` | Timeframes built from quotes/trades. | Timeframes are aligned to the top of their interval. |
 | `QMD_BAR_HISTORY_LIMIT` | `1000` | In-memory closed bars retained per ticker/timeframe. | Deeper history should come from ClickHouse. |
 | `QMD_BAR_SHARD_COUNT` | `8` | Number of bar worker shards. | Increase if bar latency rises. |
+
+Model-only microbars are disabled by default. `QMD_MODEL_STREAMING_BARS_ENABLED`
+starts isolated workers, `QMD_MODEL_STREAMING_BAR_TIMEFRAMES` defaults to
+`100ms`, and `QMD_MODEL_STREAMING_BARS_PERSIST` independently enables the
+`live_model_microbars` writer. Disabled means no workers, buffers, or writes.
 
 ## Indicators
 
@@ -116,7 +120,7 @@ are live-tradability blocking until their close transition is observed.
 | `QMD_STARTUP_MAINTENANCE_ENABLED` | `true` | Audit and repair recent `q_live` event coverage before live websocket ingest starts. | Disable only for isolated tests. |
 | `QMD_COVERAGE_TABLE` | `qmd_market_coverage_manifest_v1` | Coarse run-level coverage manifest table in `q_live`. | Records startup audits, recent live repairs, and historical flatfile update plans; not used as the fine-grained source of truth for live holes. |
 | `QMD_LIVE_EVENT_COVERAGE_TABLE` | `qmd_live_event_coverage_v1` | Durable q_live compact-event coverage intervals. | Recent gap detection subtracts these intervals from required market sessions. |
-| `QMD_FLATFILE_EVENT_COVERAGE_TABLE` | `qmd_flatfile_event_coverage_v1` | Historical flatfile coverage intervals. | First startup bootstraps one 2019-forward row from `market_sip_compact.events_ordinal_continuity`. |
+| `QMD_FLATFILE_COVERAGE_TABLE` | `qmd_flatfile_coverage_v2` | Per-session quote/trade remote object and historical coverage. | The obsolete v1 bootstrap table is dropped at startup. |
 | `QMD_GAP_FILL_SYMBOL_UNIVERSE_TABLE` | `qmd_gap_fill_symbol_universe_v1` | Durable ticker queue used by recent q_live REST repair. | Seeded from recent flatfile symbols and extended by websocket-discovered tickers. |
 | `QMD_GAP_FILL_UNIVERSE_MARKET_DAYS` | `5` | Number of latest historical market sessions used to seed the symbol universe when the queue is empty. | Keeps startup repair broad without depending on broker/reference tables. |
 | `QMD_RUN_ID` | generated | Optional stable id for one gateway run. | Normally leave generated; used as the live coverage row id suffix. |
@@ -127,9 +131,11 @@ are live-tradability blocking until their close transition is observed.
 | `QMD_HISTORICAL_CLICKHOUSE_USER` | `CLICKHOUSE_WORKSTATION_USER`, then q_live user fallbacks | Historical ClickHouse read user. | Should have read access to `market_sip_compact.events_ordinal_continuity`. |
 | `QMD_HISTORICAL_CLICKHOUSE_PASSWORD` | `CLICKHOUSE_WORKSTATION_PASSWORD`, then q_live password fallbacks | Historical ClickHouse read password. | Secret presence only is exposed in `/config`. |
 | `QMD_HISTORICAL_FLATFILE_UPDATE_ENABLED` | `true` | Plan after-hours flatfile event updates for historical gaps. | Keeps historical update work away from websocket peak time. |
-| `QMD_HISTORICAL_FLATFILE_AUTORUN` | `false` | Launch the flatfile update command automatically on workstation hosts. | Keep false if you want the command printed but not started. |
-| `QMD_HISTORICAL_FLATFILE_SAFE_LAG_DAYS` | `1` | Latest historical day considered safe for flatfile update planning. | Massive flatfiles arrive after the trading day; keep at least one day lag. |
-| `QMD_HISTORICAL_KNOWN_COVERAGE_END_DATE` | `2026-06-05` | Fallback historical coverage date if the continuity table query fails. | Coarse seed only; normal operation reads `events_ordinal_continuity`. |
+| `QMD_HISTORICAL_FLATFILE_AUTORUN` | `true` | Launch the unchanged updater on a workstation after collection closes. | Laptop hosts always record the exact manual command. |
+| `QMD_MARKET_STATUS_URL` | Massive `/v1/marketstatus/now` | Cached current exchange state. | Used with holidays for close/early-close decisions. |
+| `QMD_MARKET_HOLIDAYS_URL` | Massive `/v1/marketstatus/upcoming` | Cached full-holiday and early-close calendar. | Local New York schedule is fallback only. |
+| `QMD_FLATFILE_ENDPOINT_URL` | `https://files.massive.com` | Massive S3-compatible flatfile endpoint. | Signed metadata discovery starts after 08:00 ET. |
+| `QMD_FLATFILE_ACCESS_KEY_ID` / `QMD_FLATFILE_SECRET_ACCESS_KEY` | shared AWS env fallbacks | Credentials for metadata-only remote discovery. | Secret values are never serialized by `/config`. |
 | `QMD_HISTORICAL_PIPELINE_CODE_ROOT` | `D:\TradingML\codes\quant_research_workbench_pipelines` | Workstation path used to build the flatfile update command. | Must point to the synced pipeline code that updates historical `events` and qmd-compatible `live_market_bars`. |
 
 Recent live repair converts Massive REST rows to the same normalized

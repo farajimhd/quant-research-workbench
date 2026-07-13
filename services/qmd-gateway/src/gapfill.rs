@@ -1,14 +1,16 @@
 use crate::compact_event::SharedCompactEventStore;
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
+use crate::flatfile::FlatfileDiscovery;
 use crate::maintenance::SharedMaintenanceState;
+use crate::market_calendar::MarketCalendarClient;
 use crate::massive::{fanout_market_event, MarketEventFanout};
 use crate::metrics::TimingTarget;
 use crate::session::{is_streaming_phase, session_phase};
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{
-    DateTime, Datelike, Duration as ChronoDuration, NaiveDate, NaiveDateTime, TimeZone, Utc,
-    Weekday,
+    DateTime, Datelike, Duration as ChronoDuration, NaiveDate, NaiveDateTime, TimeZone, Timelike,
+    Utc,
 };
 use chrono_tz::America::New_York;
 use futures_util::stream::{self, StreamExt};
@@ -24,11 +26,12 @@ pub async fn run_startup_maintenance(
     fanout: MarketEventFanout,
     maintenance: SharedMaintenanceState,
     live_compact_store: SharedCompactEventStore,
+    calendar: MarketCalendarClient,
 ) {
     if !config.gap_fill_enabled || !config.qmd_startup_maintenance_enabled {
         return;
     }
-    let filler = GapFillService::new(config, fanout, maintenance, live_compact_store);
+    let filler = GapFillService::new(config, fanout, maintenance, live_compact_store, calendar);
     eprintln!("QMD startup maintenance: checking recent q_live event coverage.");
     if let Err(error) = filler.run_startup_maintenance().await {
         filler.fanout.metrics.inc_gap_fill_failure();
@@ -45,11 +48,12 @@ pub async fn run_gap_fill_service(
     fanout: MarketEventFanout,
     maintenance: SharedMaintenanceState,
     live_compact_store: SharedCompactEventStore,
+    calendar: MarketCalendarClient,
 ) {
     if !config.gap_fill_enabled {
         return;
     }
-    let filler = GapFillService::new(config, fanout, maintenance, live_compact_store);
+    let filler = GapFillService::new(config, fanout, maintenance, live_compact_store, calendar);
     let mut delay_ms = filler.next_gap_fill_delay_ms("startup");
     loop {
         sleep(Duration::from_millis(delay_ms)).await;
@@ -90,9 +94,7 @@ pub async fn run_gap_fill_service(
 
 #[derive(Default)]
 struct LiveEventAudit {
-    duplicate_ticker_ordinal_rows: u64,
-    hole_ticker_count: u64,
-    out_of_order_ticker_count: u64,
+    duplicate_event_rows: u64,
     recent_rows: u64,
     ticker_count: u64,
 }
@@ -121,6 +123,17 @@ struct CoverageRow {
     end: DateTime<Utc>,
     start: DateTime<Utc>,
     status: String,
+}
+
+#[derive(Clone, Debug)]
+struct FlatfileCoverageState {
+    historical_rows: u64,
+    historical_status: String,
+    remote_content_length: u64,
+    remote_etag: String,
+    remote_key: String,
+    remote_last_modified: String,
+    updated_at_utc: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug)]
@@ -179,6 +192,8 @@ struct GapFillService {
     fanout: MarketEventFanout,
     live_compact_store: SharedCompactEventStore,
     maintenance: SharedMaintenanceState,
+    calendar: MarketCalendarClient,
+    flatfiles: FlatfileDiscovery,
 }
 
 impl GapFillService {
@@ -187,17 +202,22 @@ impl GapFillService {
         fanout: MarketEventFanout,
         maintenance: SharedMaintenanceState,
         live_compact_store: SharedCompactEventStore,
+        calendar: MarketCalendarClient,
     ) -> Self {
+        let flatfiles = FlatfileDiscovery::new(config.clone());
         Self {
             client: Client::new(),
             config,
             fanout,
             live_compact_store,
             maintenance,
+            calendar,
+            flatfiles,
         }
     }
 
     async fn run_startup_maintenance(&self) -> Result<(), String> {
+        self.calendar.refresh(Utc::now()).await;
         self.initialize_tables().await?;
         let started_at = Utc::now();
         let phase = format!("{:?}", session_phase(started_at));
@@ -214,14 +234,10 @@ impl GapFillService {
             .await;
         let audit = self.audit_recent_live_events().await?;
         eprintln!(
-            "QMD startup q_live audit: rows={} tickers={} duplicate_ordinals={} ordinal_hole_tickers={} out_of_order_tickers={}",
-            audit.recent_rows,
-            audit.ticker_count,
-            audit.duplicate_ticker_ordinal_rows,
-            audit.hole_ticker_count,
-            audit.out_of_order_ticker_count
+            "QMD startup q_live audit: rows={} tickers={} duplicate_canonical_events={}",
+            audit.recent_rows, audit.ticker_count, audit.duplicate_event_rows,
         );
-        let mut status = if audit.duplicate_ticker_ordinal_rows == 0 {
+        let mut status = if audit.duplicate_event_rows == 0 {
             "ok"
         } else {
             "needs_manual_rebuild"
@@ -248,7 +264,7 @@ impl GapFillService {
                 status = repair.status.as_str();
             }
         } else {
-            message = "Recent q_live event table has duplicate ticker ordinals. Not rewriting committed ordinals automatically.".to_string();
+            message = "Recent q_live event table has duplicate canonical event identities after FINAL; a validated rebuild is required.".to_string();
         }
         self.record_coverage_run(
             started_at,
@@ -264,9 +280,7 @@ impl GapFillService {
                 "phase": phase,
                 "recent_rows": audit.recent_rows,
                 "ticker_count": audit.ticker_count,
-                "duplicate_ticker_ordinal_rows": audit.duplicate_ticker_ordinal_rows,
-                "hole_ticker_count": audit.hole_ticker_count,
-                "out_of_order_ticker_count": audit.out_of_order_ticker_count,
+                "duplicate_event_rows": audit.duplicate_event_rows,
                 "message": message,
                 "symbols_checked": repair.symbols_checked,
                 "symbols_repaired": repair.symbols_repaired,
@@ -287,6 +301,7 @@ impl GapFillService {
             self.plan_historical_flatfile_update(started_at, "startup_historical_check", true)
                 .await?;
         }
+        self.enforce_live_retention(started_at).await?;
         self.maintenance
             .finish(
                 status,
@@ -317,6 +332,7 @@ impl GapFillService {
     }
 
     async fn run_once(&self, mode: &str) -> Result<u64, String> {
+        self.calendar.refresh(Utc::now()).await;
         let _timing = self.fanout.metrics.timing(TimingTarget::GapFillRun);
         self.fanout.metrics.inc_gap_fill_run();
         self.initialize_tables().await?;
@@ -387,7 +403,7 @@ impl GapFillService {
             }),
         )
         .await?;
-        if !is_streaming_phase(Utc::now()) && self.config.historical_flatfile_update_enabled {
+        if self.config.historical_flatfile_update_enabled {
             self.maintenance
                 .set_message(
                     "running",
@@ -397,6 +413,7 @@ impl GapFillService {
             self.plan_historical_flatfile_update(started_at, mode, false)
                 .await?;
         }
+        self.enforce_live_retention(started_at).await?;
         self.maintenance
             .finish(
                 &repair.status,
@@ -898,7 +915,9 @@ impl GapFillService {
         let min_gap = ChronoDuration::seconds(self.config.gap_fill_min_gap_seconds.max(1));
         let mut gaps = Vec::new();
         for date in market_dates {
-            let Some((session_start, session_end)) = market_session_window_utc(*date, now) else {
+            let Some((session_start, session_end)) =
+                self.calendar.collection_window_utc(*date, now)
+            else {
                 continue;
             };
             if session_end <= session_start {
@@ -1282,7 +1301,6 @@ impl GapFillService {
                     "reason": interval.reason,
                     "persistence_contract": [
                         self.config.compact_event_table.as_str(),
-                        "q_live.live_event_ordinal_continuity",
                         "q_live.live_market_bars"
                     ],
                     "symbols_attempted": stats.symbols_attempted,
@@ -1335,19 +1353,15 @@ impl GapFillService {
             .recent_live_prior_market_days
             .max(0)
             .saturating_add(1) as usize;
-        let mut cursor = today;
-        let mut dates = Vec::new();
-        while dates.len() < target_count {
-            if is_market_session_date(cursor) {
-                dates.push(cursor);
-            }
-            cursor -= ChronoDuration::days(1);
-        }
-        dates.reverse();
+        let dates = self.calendar.prior_sessions(today, target_count);
         let start = dates
             .first()
             .copied()
-            .and_then(|date| market_session_window_utc(date, now).map(|(start, _)| start))
+            .and_then(|date| {
+                self.calendar
+                    .collection_window_utc(date, now)
+                    .map(|(start, _)| start)
+            })
             .unwrap_or_else(Utc::now);
         (start, now, dates)
     }
@@ -1359,69 +1373,56 @@ impl GapFillService {
         let (window_start, _, _) = self.recent_live_window();
         let start_date = window_start.date_naive();
         let start_us = window_start.timestamp_micros();
-        let table = live_event_table_expr(&self.config, start_date, Utc::now().date_naive());
         let sql = format!(
             r#"
             WITH recent AS
             (
                 SELECT
                     ticker,
-                    ordinal,
                     sip_timestamp_us,
                     source_sequence,
                     bitAnd(event_meta, 1) AS event_type,
-                    arrival_sequence
-                FROM {table}
+                    event_meta,
+                    price_primary_int,
+                    price_secondary_int,
+                    size_primary,
+                    size_secondary,
+                    exchange_primary,
+                    exchange_secondary,
+                    condition_token_1,
+                    condition_token_2,
+                    condition_token_3,
+                    condition_token_4,
+                    condition_token_5
+                FROM {table} FINAL
                 WHERE event_date >= toDate('{start_date}')
                   AND sip_timestamp_us >= {start_us}
                   AND ticker != ''
-            ),
-            ticker_ranges AS
-            (
-                SELECT
-                    ticker,
-                    count() AS rows,
-                    min(ordinal) AS min_ordinal,
-                    max(ordinal) AS max_ordinal
-                FROM recent
-                GROUP BY ticker
-            ),
-            order_checks AS
-            (
-                SELECT
-                    ticker,
-                    countIf(
-                        has_prev = 1
-                        AND tuple(sip_timestamp_us, source_sequence, event_type, arrival_sequence)
-                            < tuple(prev_sip_timestamp_us, prev_source_sequence, prev_event_type, prev_arrival_sequence)
-                    ) AS order_errors
-                FROM
-                (
-                    SELECT
-                        ticker,
-                        ordinal,
-                        sip_timestamp_us,
-                        source_sequence,
-                        event_type,
-                        arrival_sequence,
-                        lagInFrame(sip_timestamp_us, 1, sip_timestamp_us) OVER (PARTITION BY ticker ORDER BY ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS prev_sip_timestamp_us,
-                        lagInFrame(source_sequence, 1, source_sequence) OVER (PARTITION BY ticker ORDER BY ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS prev_source_sequence,
-                        lagInFrame(event_type, 1, event_type) OVER (PARTITION BY ticker ORDER BY ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS prev_event_type,
-                        lagInFrame(arrival_sequence, 1, arrival_sequence) OVER (PARTITION BY ticker ORDER BY ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS prev_arrival_sequence,
-                        row_number() OVER (PARTITION BY ticker ORDER BY ordinal) > 1 AS has_prev
-                    FROM recent
-                )
-                GROUP BY ticker
             )
             SELECT
                 (SELECT count() FROM recent) AS recent_rows,
                 (SELECT uniqExact(ticker) FROM recent) AS ticker_count,
-                (SELECT count() - uniqExact(ticker, ordinal) FROM recent) AS duplicate_ticker_ordinal_rows,
-                (SELECT count() FROM ticker_ranges WHERE rows != max_ordinal - min_ordinal + 1) AS hole_ticker_count,
-                (SELECT count() FROM order_checks WHERE order_errors > 0) AS out_of_order_ticker_count
+                (SELECT count() - uniqExact(tuple(
+                    ticker,
+                    sip_timestamp_us,
+                    source_sequence,
+                    event_type,
+                    event_meta,
+                    price_primary_int,
+                    price_secondary_int,
+                    size_primary,
+                    size_secondary,
+                    exchange_primary,
+                    exchange_secondary,
+                    condition_token_1,
+                    condition_token_2,
+                    condition_token_3,
+                    condition_token_4,
+                    condition_token_5
+                )) FROM recent) AS duplicate_event_rows
             FORMAT JSONEachRow
             "#,
-            table = table,
+            table = self.config.compact_event_table,
             start_date = start_date,
             start_us = start_us,
         );
@@ -1431,16 +1432,8 @@ impl GapFillService {
         };
         let value: Value = serde_json::from_str(line).map_err(|error| error.to_string())?;
         Ok(LiveEventAudit {
-            duplicate_ticker_ordinal_rows: value
-                .get("duplicate_ticker_ordinal_rows")
-                .and_then(json_u64)
-                .unwrap_or(0),
-            hole_ticker_count: value
-                .get("hole_ticker_count")
-                .and_then(json_u64)
-                .unwrap_or(0),
-            out_of_order_ticker_count: value
-                .get("out_of_order_ticker_count")
+            duplicate_event_rows: value
+                .get("duplicate_event_rows")
                 .and_then(json_u64)
                 .unwrap_or(0),
             recent_rows: value.get("recent_rows").and_then(json_u64).unwrap_or(0),
@@ -1452,64 +1445,227 @@ impl GapFillService {
         &self,
         started_at: DateTime<Utc>,
         mode: &str,
-        record_up_to_date: bool,
+        _record_up_to_date: bool,
     ) -> Result<(), String> {
-        let Some(target_end) = self.historical_safe_target_date() else {
-            return Ok(());
-        };
-        let latest = self
-            .latest_historical_event_date()
-            .await
-            .unwrap_or_else(|error| {
-                eprintln!("Historical flatfile coverage query failed: {error}");
-                self.config.historical_known_coverage_end_date.clone()
-            });
-        if latest >= target_end.to_string() {
-            eprintln!(
-                "Historical flatfile coverage is up to date: latest={} target={}",
-                latest, target_end
-            );
-            if record_up_to_date {
-                let host_role = self.host_role();
-                self.record_coverage_run(
-                    started_at,
-                    "historical_flatfile_events",
-                    "up_to_date",
-                    date_start_utc(target_end),
-                    date_start_utc(target_end) + ChronoDuration::days(1),
-                    mode,
-                    0,
-                    &host_role,
-                    "",
-                    &json!({
-                        "latest_historical_event_date": latest,
-                        "target_end_date": target_end.to_string(),
-                        "autorun": self.config.historical_flatfile_autorun,
-                        "message": "historical flatfile coverage is current through the safe target date",
-                    }),
-                )
-                .await?;
-            }
+        let now = Utc::now();
+        let local = now.with_timezone(&New_York);
+        if local.hour() < 8 {
             return Ok(());
         }
-        let Some(start_date) = next_date(&latest) else {
+        let snapshot = self.calendar.snapshot(now);
+        let latest = self.latest_historical_event_date().await?;
+        self.confirm_flatfile_coverage(&latest).await?;
+        let latest_date =
+            NaiveDate::parse_from_str(&latest, "%Y-%m-%d").map_err(|error| error.to_string())?;
+        let local_date = local.date_naive();
+        let target_date = if self.calendar.is_session_date(local_date) {
+            self.calendar
+                .prior_sessions(local_date, 3)
+                .first()
+                .copied()
+                .ok_or("could not determine the T-2 historical target session")?
+        } else {
+            self.calendar
+                .prior_sessions(local_date, 1)
+                .last()
+                .copied()
+                .ok_or("could not determine the latest closed historical target session")?
+        };
+
+        let mut candidates = BTreeSet::new();
+        let Some(mut cursor) = next_date(&latest) else {
             return Ok(());
         };
+        while cursor <= target_date {
+            if self.calendar.is_session_date(cursor) {
+                candidates.insert(cursor);
+            }
+            cursor += ChronoDuration::days(1);
+        }
+
+        // Recheck a bounded set of indexed objects twice daily. A changed
+        // object identity is a historical rebuild trigger even when the
+        // session was already confirmed.
+        let recheck = self
+            .query(
+                &format!(
+                    "SELECT DISTINCT toString(session_date) FROM {} FINAL WHERE session_date <= toDate('{}') AND updated_at_utc <= now() - INTERVAL 12 HOUR ORDER BY session_date LIMIT 16 FORMAT TSV",
+                    self.config.qmd_flatfile_coverage_table, target_date
+                ),
+                true,
+            )
+            .await?;
+        for value in recheck.lines().filter(|value| !value.trim().is_empty()) {
+            if let Ok(date) = NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d") {
+                candidates.insert(date);
+            }
+        }
+
+        if candidates.is_empty() {
+            return Ok(());
+        }
+
+        let host_role = self.host_role();
+        let mut ready_dates = BTreeSet::new();
+        let mut ready_objects = BTreeMap::new();
+        for date in candidates {
+            let mut both_ready = true;
+            let mut needs_update = date > latest_date;
+            for kind in ["quote", "trade"] {
+                let prior = self.flatfile_coverage_state(date, kind).await?;
+                match self.flatfiles.discover(date, kind).await {
+                    Ok(Some(object)) => {
+                        let changed = prior
+                            .as_ref()
+                            .map(|value| remote_object_changed(value, &object))
+                            .unwrap_or(false);
+                        let historical_status = if changed {
+                            "remote_changed"
+                        } else {
+                            prior
+                                .as_ref()
+                                .map(|value| value.historical_status.as_str())
+                                .unwrap_or("not_confirmed")
+                        };
+                        let historical_rows = prior
+                            .as_ref()
+                            .map(|value| value.historical_rows)
+                            .unwrap_or(0);
+                        needs_update |= changed || historical_status != "confirmed";
+                        let pending_request = !changed
+                            && matches!(
+                                historical_status,
+                                "launched" | "launch_in_progress" | "manual_action_required"
+                            );
+                        if !pending_request {
+                            self.record_flatfile_coverage(
+                                date,
+                                kind,
+                                "remote_ready",
+                                Some(&object),
+                                latest.as_str(),
+                                historical_status,
+                                historical_rows,
+                                &host_role,
+                                "",
+                                "",
+                            )
+                            .await?;
+                        }
+                        ready_objects.insert((date, kind.to_string()), object);
+                    }
+                    Ok(None) => {
+                        both_ready = false;
+                        self.record_flatfile_coverage(
+                            date,
+                            kind,
+                            "remote_missing",
+                            None,
+                            latest.as_str(),
+                            prior
+                                .as_ref()
+                                .map(|value| value.historical_status.as_str())
+                                .unwrap_or("not_confirmed"),
+                            prior
+                                .as_ref()
+                                .map(|value| value.historical_rows)
+                                .unwrap_or(0),
+                            &host_role,
+                            "",
+                            "",
+                        )
+                        .await?;
+                    }
+                    Err(error) => {
+                        both_ready = false;
+                        self.record_flatfile_coverage(
+                            date,
+                            kind,
+                            "discovery_failed",
+                            None,
+                            latest.as_str(),
+                            prior
+                                .as_ref()
+                                .map(|value| value.historical_status.as_str())
+                                .unwrap_or("not_confirmed"),
+                            prior
+                                .as_ref()
+                                .map(|value| value.historical_rows)
+                                .unwrap_or(0),
+                            &host_role,
+                            "",
+                            &error,
+                        )
+                        .await?;
+                    }
+                }
+            }
+            if both_ready && needs_update {
+                ready_dates.insert(date);
+            }
+        }
+
+        let Some(start_date) = ready_dates.first().copied() else {
+            return Ok(());
+        };
+        let target_end = *ready_dates.last().expect("ready dates is non-empty");
         let command =
             self.historical_update_command(&start_date.to_string(), &target_end.to_string());
-        eprintln!("Historical flatfile update needed: {start_date} to {target_end}");
-        eprintln!("Run command: {command}");
-        let mut status = "planned";
-        let host_role = self.host_role();
-        if host_role == "workstation" && self.config.historical_flatfile_autorun {
-            match spawn_command(&command) {
-                Ok(()) => {
-                    status = "launched";
-                    eprintln!("Historical flatfile update launched asynchronously.");
+        eprintln!(
+            "Historical flatfile update needed: {start_date} to {target_end}; command: {command}"
+        );
+        let mut status = if snapshot.active_collection_window {
+            "waiting_for_market_close"
+        } else {
+            "manual_action_required"
+        };
+        let recent_request = self.query(&format!(
+            "SELECT count() FROM {} FINAL WHERE session_date >= toDate('{}') AND session_date <= toDate('{}') AND historical_status IN ('launched', 'launch_in_progress', 'manual_action_required') AND updated_at_utc >= now() - INTERVAL 12 HOUR FORMAT TSV",
+            self.config.qmd_flatfile_coverage_table, start_date, target_end,
+        ), true).await?.trim().parse::<u64>().unwrap_or(0) > 0;
+        if host_role == "workstation"
+            && self.config.historical_flatfile_autorun
+            && !snapshot.active_collection_window
+            && snapshot.market_closed
+        {
+            if recent_request {
+                status = "launch_in_progress";
+            } else {
+                match spawn_command(&command) {
+                    Ok(()) => {
+                        status = "launched";
+                        eprintln!("Historical flatfile update launched asynchronously.");
+                    }
+                    Err(error) => {
+                        status = "launch_failed";
+                        eprintln!("Historical flatfile update launch failed: {error}");
+                    }
                 }
-                Err(error) => {
-                    status = "launch_failed";
-                    eprintln!("Historical flatfile update launch failed: {error}");
+            }
+        } else if recent_request && !snapshot.active_collection_window {
+            status = "manual_action_required";
+        }
+
+        // Keep the original request timestamp stable so confirmation can prove
+        // that historical continuity advanced after the request.
+        if !recent_request || snapshot.active_collection_window {
+            for date in &ready_dates {
+                for kind in ["quote", "trade"] {
+                    if let Some(object) = ready_objects.get(&(*date, kind.to_string())) {
+                        self.record_flatfile_coverage(
+                            *date,
+                            kind,
+                            "remote_ready",
+                            Some(&object),
+                            latest.as_str(),
+                            status,
+                            0,
+                            &host_role,
+                            &command,
+                            "",
+                        )
+                        .await?;
+                    }
                 }
             }
         }
@@ -1527,9 +1683,204 @@ impl GapFillService {
                 "latest_historical_event_date": latest,
                 "target_end_date": target_end.to_string(),
                 "autorun": self.config.historical_flatfile_autorun,
+                "calendar_source": snapshot.source,
+                "calendar_reason": snapshot.reason,
             }),
         )
         .await
+    }
+
+    async fn enforce_live_retention(&self, started_at: DateTime<Utc>) -> Result<(), String> {
+        if !self.config.compact_events_enabled {
+            return Ok(());
+        }
+        let today = Utc::now().with_timezone(&New_York).date_naive();
+        let sessions = self.calendar.prior_sessions(
+            today,
+            self.config.recent_live_prior_market_days.max(0) as usize + 1,
+        );
+        let Some(cutoff) = sessions.first().copied() else {
+            return Ok(());
+        };
+        let latest = self.latest_historical_event_date().await?;
+        let old_sessions = self
+            .query(
+                &format!(
+                    "SELECT toString(toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York'))) AS session_date, count() FROM {} FINAL WHERE session_date < toDate('{}') GROUP BY session_date ORDER BY session_date FORMAT TSV",
+                    self.config.compact_event_table, cutoff,
+                ),
+                true,
+            )
+            .await?;
+        let session_rows = old_sessions
+            .lines()
+            .filter_map(|line| {
+                let (date, count) = line.split_once('\t')?;
+                Some((
+                    NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?,
+                    count.parse::<u64>().ok()?,
+                ))
+            })
+            .collect::<Vec<_>>();
+        let older_rows = session_rows.iter().map(|(_, count)| count).sum::<u64>();
+        if older_rows == 0 {
+            return Ok(());
+        }
+        let mut blocked_rows = 0u64;
+        let mut blocked_sessions = Vec::new();
+        for (date, count) in &session_rows {
+            let continuity_rows = self
+                .query_historical(&format!(
+                    "SELECT count() FROM {}.events_ordinal_continuity FINAL WHERE source_date = toDate('{}') FORMAT TSV",
+                    self.config.historical_clickhouse_database.replace('`', ""),
+                    date,
+                ))
+                .await?
+                .trim()
+                .parse::<u64>()
+                .unwrap_or(0);
+            if continuity_rows == 0 {
+                blocked_rows = blocked_rows.saturating_add(*count);
+                blocked_sessions.push(date.to_string());
+            }
+        }
+        if blocked_rows > 0 {
+            self.record_coverage_run(started_at, "q_live_retention", "retention_blocked_historical_gap", date_start_utc(cutoff), Utc::now(), "retention", 0, &self.host_role(), "", &json!({"cutoff": cutoff.to_string(), "latest_historical": latest, "blocked_rows": blocked_rows, "blocked_sessions": blocked_sessions})).await?;
+            return Ok(());
+        }
+        self.query(
+            &format!(
+                "ALTER TABLE {} DELETE WHERE toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York')) < toDate('{}')",
+                self.config.compact_event_table, cutoff
+            ),
+            true,
+        )
+        .await?;
+        self.record_coverage_run(started_at, "q_live_retention", "retention_applied", date_start_utc(cutoff), Utc::now(), "retention", 0, &self.host_role(), "", &json!({"retained_sessions": sessions.iter().map(ToString::to_string).collect::<Vec<_>>(), "historical_confirmed_through": latest})).await
+    }
+
+    async fn confirm_flatfile_coverage(&self, latest: &str) -> Result<(), String> {
+        let dates = self.query(&format!(
+            "SELECT DISTINCT toString(session_date) FROM {} FINAL WHERE session_date <= toDate('{}') AND historical_status != 'confirmed' ORDER BY session_date FORMAT TSV",
+            self.config.qmd_flatfile_coverage_table, escape_sql_string(latest),
+        ), true).await?;
+        for value in dates.lines().filter(|value| !value.trim().is_empty()) {
+            let date = NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d")
+                .map_err(|error| error.to_string())?;
+            let historical_table = format!(
+                "{}.events_{}",
+                self.config.historical_clickhouse_database.replace('`', ""),
+                date.year()
+            );
+            for (kind, event_type) in [("quote", 0), ("trade", 1)] {
+                let Some(state) = self.flatfile_coverage_state(date, kind).await? else {
+                    continue;
+                };
+                let continuity_updated = self
+                    .query_historical(&format!(
+                        "SELECT max(updated_at) FROM {}.events_ordinal_continuity WHERE source_date = toDate('{}') FORMAT TSV",
+                        self.config.historical_clickhouse_database.replace('`', ""),
+                        date,
+                    ))
+                    .await?;
+                let Some(continuity_updated) =
+                    parse_clickhouse_datetime64(continuity_updated.trim())
+                else {
+                    continue;
+                };
+                if continuity_updated <= state.updated_at_utc {
+                    continue;
+                }
+                let count = self.query_historical(&format!(
+                    "SELECT count() FROM {} WHERE toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York')) = toDate('{}') AND bitAnd(event_meta, 1) = {} FORMAT TSV",
+                    historical_table, date, event_type,
+                )).await?.trim().parse::<u64>().unwrap_or(0);
+                self.query(
+                    &format!(
+                        r#"
+                    INSERT INTO {table}
+                    SELECT session_date, source_kind, remote_status, remote_key, remote_etag,
+                        remote_last_modified, remote_content_length, 'confirmed', {count},
+                        toDate('{latest}'), host_role, command, error, now64(3)
+                    FROM {table} FINAL
+                    WHERE session_date = toDate('{date}') AND source_kind = '{kind}'
+                    ORDER BY updated_at_utc DESC LIMIT 1
+                "#,
+                        table = self.config.qmd_flatfile_coverage_table,
+                        count = count,
+                        latest = escape_sql_string(latest),
+                        date = date,
+                        kind = kind
+                    ),
+                    true,
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn flatfile_coverage_state(
+        &self,
+        date: NaiveDate,
+        kind: &str,
+    ) -> Result<Option<FlatfileCoverageState>, String> {
+        let body = self
+            .query(
+                &format!(
+                    r#"
+                    SELECT remote_key, remote_etag, remote_last_modified,
+                        remote_content_length, historical_status, historical_rows,
+                        updated_at_utc
+                    FROM {} FINAL
+                    WHERE session_date = toDate('{}') AND source_kind = '{}'
+                    LIMIT 1
+                    FORMAT JSONEachRow
+                    "#,
+                    self.config.qmd_flatfile_coverage_table,
+                    date,
+                    escape_sql_string(kind),
+                ),
+                true,
+            )
+            .await?;
+        let Some(line) = body.lines().find(|line| !line.trim().is_empty()) else {
+            return Ok(None);
+        };
+        let row: Value = serde_json::from_str(line).map_err(|error| error.to_string())?;
+        let updated_at_utc = row
+            .get("updated_at_utc")
+            .and_then(Value::as_str)
+            .and_then(parse_clickhouse_datetime64)
+            .ok_or_else(|| format!("invalid flatfile coverage timestamp for {date} {kind}"))?;
+        Ok(Some(FlatfileCoverageState {
+            historical_rows: row.get("historical_rows").and_then(json_u64).unwrap_or(0),
+            historical_status: row
+                .get("historical_status")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            remote_content_length: row
+                .get("remote_content_length")
+                .and_then(json_u64)
+                .unwrap_or(0),
+            remote_etag: row
+                .get("remote_etag")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            remote_key: row
+                .get("remote_key")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            remote_last_modified: row
+                .get("remote_last_modified")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            updated_at_utc,
+        }))
     }
 
     fn rest_url(
@@ -1608,17 +1959,14 @@ impl GapFillService {
         )
         .await
         .map(|_| ())?;
-        self.query(
-            &self.create_event_coverage_table_sql(&self.config.qmd_flatfile_event_coverage_table),
-            true,
-        )
-        .await
-        .map(|_| ())?;
+        self.query(&self.create_flatfile_coverage_table_sql(), true)
+            .await?;
+        self.query("DROP TABLE IF EXISTS qmd_flatfile_event_coverage_v1", true)
+            .await?;
         self.query(&self.create_gap_fill_symbol_universe_table_sql(), true)
             .await
             .map(|_| ())?;
-        self.ensure_current_live_coverage_open(Utc::now()).await?;
-        self.bootstrap_flatfile_event_coverage().await
+        self.ensure_current_live_coverage_open(Utc::now()).await
     }
 
     fn create_gap_fill_symbol_universe_table_sql(&self) -> String {
@@ -1676,6 +2024,76 @@ impl GapFillService {
             table = table,
             settings = merge_tree_settings(&self.config.clickhouse_storage_policy),
         )
+    }
+
+    fn create_flatfile_coverage_table_sql(&self) -> String {
+        format!(
+            r#"
+            CREATE TABLE IF NOT EXISTS {table}
+            (
+                session_date Date,
+                source_kind LowCardinality(String),
+                remote_status LowCardinality(String),
+                remote_key String,
+                remote_etag String,
+                remote_last_modified String,
+                remote_content_length UInt64,
+                historical_status LowCardinality(String),
+                historical_rows UInt64,
+                historical_confirmed_through Nullable(Date),
+                host_role LowCardinality(String),
+                command String,
+                error String,
+                updated_at_utc DateTime64(3, 'UTC')
+            )
+            ENGINE = ReplacingMergeTree(updated_at_utc)
+            PARTITION BY toYYYYMM(session_date)
+            ORDER BY (session_date, source_kind)
+            {settings}
+        "#,
+            table = self.config.qmd_flatfile_coverage_table,
+            settings = merge_tree_settings(&self.config.clickhouse_storage_policy)
+        )
+    }
+
+    async fn record_flatfile_coverage(
+        &self,
+        session_date: NaiveDate,
+        source_kind: &str,
+        remote_status: &str,
+        object: Option<&crate::flatfile::RemoteFlatfile>,
+        historical_confirmed_through: &str,
+        historical_status: &str,
+        historical_rows: u64,
+        host_role: &str,
+        command: &str,
+        error: &str,
+    ) -> Result<(), String> {
+        let row = json!({
+            "session_date": session_date.to_string(),
+            "source_kind": source_kind,
+            "remote_status": remote_status,
+            "remote_key": object.map(|value| value.key.as_str()).unwrap_or(""),
+            "remote_etag": object.map(|value| value.etag.as_str()).unwrap_or(""),
+            "remote_last_modified": object.map(|value| value.last_modified.as_str()).unwrap_or(""),
+            "remote_content_length": object.map(|value| value.content_length).unwrap_or(0),
+            "historical_status": historical_status,
+            "historical_rows": historical_rows,
+            "historical_confirmed_through": historical_confirmed_through,
+            "host_role": host_role,
+            "command": command,
+            "error": error,
+            "updated_at_utc": clickhouse_datetime64(&Utc::now()),
+        });
+        self.query(
+            &format!(
+                "INSERT INTO {} FORMAT JSONEachRow\n{}",
+                self.config.qmd_flatfile_coverage_table, row
+            ),
+            true,
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn record_run(
@@ -1784,58 +2202,6 @@ impl GapFillService {
         .await
     }
 
-    async fn bootstrap_flatfile_event_coverage(&self) -> Result<(), String> {
-        let sql = format!(
-            "SELECT count() FROM {} FINAL WHERE coverage_kind = 'flatfile_events' FORMAT TSV",
-            self.config.qmd_flatfile_event_coverage_table
-        );
-        let existing = self
-            .query(&sql, true)
-            .await
-            .ok()
-            .and_then(|text| text.trim().parse::<u64>().ok())
-            .unwrap_or(0);
-        if existing > 0 {
-            return Ok(());
-        }
-        let latest = self.latest_historical_event_date().await?;
-        let Some(latest_date) = NaiveDate::parse_from_str(&latest, "%Y-%m-%d").ok() else {
-            return Err(format!(
-                "could not parse latest historical event source_date '{latest}'"
-            ));
-        };
-        let Some(start_date) = NaiveDate::from_ymd_opt(2019, 1, 1) else {
-            return Err("could not construct 2019-01-01 flatfile coverage start".to_string());
-        };
-        if latest_date < start_date {
-            return Ok(());
-        }
-        let coverage_start = date_start_utc(start_date);
-        let coverage_end = date_start_utc(latest_date) + ChronoDuration::days(1);
-        let now = Utc::now();
-        self.record_event_coverage_snapshot(
-            &self.config.qmd_flatfile_event_coverage_table,
-            "flatfile_events",
-            "flatfile_bootstrap_2019_forward",
-            "market_sip_compact",
-            "coverage_bootstrap",
-            coverage_start,
-            coverage_end,
-            0,
-            0,
-            0,
-            0,
-            now,
-            Some(now),
-            &json!({
-                "historical_database": self.config.historical_clickhouse_database,
-                "latest_historical_event_date": latest,
-                "coverage_rule": "source-of-truth bootstrap from market_sip_compact, no lookback before 2019",
-            }),
-        )
-        .await
-    }
-
     async fn record_event_coverage_snapshot(
         &self,
         table: &str,
@@ -1880,12 +2246,15 @@ impl GapFillService {
 
     async fn latest_historical_event_date(&self) -> Result<String, String> {
         let sql = format!(
-            "SELECT max(source_date) FROM {}.events_ordinal_continuity FORMAT TSV",
+            "SELECT max(source_date) FROM {}.events_ordinal_continuity FINAL FORMAT TSV",
             self.config.historical_clickhouse_database.replace('`', "")
         );
         let value = self.query_historical(&sql).await?.trim().to_string();
         if value.is_empty() || value == "0000-00-00" {
-            Ok(self.config.historical_known_coverage_end_date.clone())
+            Err(
+                "market_sip_compact.events_ordinal_continuity has no confirmed source_date"
+                    .to_string(),
+            )
         } else {
             Ok(value)
         }
@@ -1903,12 +2272,6 @@ impl GapFillService {
             start_date,
             end_date,
         )
-    }
-
-    fn historical_safe_target_date(&self) -> Option<NaiveDate> {
-        let today = Utc::now().date_naive();
-        let lag = self.config.historical_flatfile_safe_lag_days.max(1);
-        Some(previous_market_session(today - ChronoDuration::days(lag)))
     }
 
     fn host_role(&self) -> String {
@@ -1988,11 +2351,14 @@ fn should_run_session_catch_up(mode: &str) -> bool {
     matches!(mode, "auto" | "session" | "session_catch_up")
 }
 
-fn previous_market_session(mut date: NaiveDate) -> NaiveDate {
-    while !is_market_session_date(date) {
-        date -= ChronoDuration::days(1);
-    }
-    date
+fn remote_object_changed(
+    prior: &FlatfileCoverageState,
+    current: &crate::flatfile::RemoteFlatfile,
+) -> bool {
+    prior.remote_key != current.key
+        || prior.remote_etag != current.etag
+        || prior.remote_last_modified != current.last_modified
+        || prior.remote_content_length != current.content_length
 }
 
 fn next_date(value: &str) -> Option<NaiveDate> {
@@ -2018,56 +2384,43 @@ fn parse_clickhouse_datetime64(value: &str) -> Option<DateTime<Utc>> {
         })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::flatfile::RemoteFlatfile;
+
+    fn coverage_state() -> FlatfileCoverageState {
+        FlatfileCoverageState {
+            historical_rows: 10,
+            historical_status: "confirmed".to_string(),
+            remote_content_length: 100,
+            remote_etag: "etag-a".to_string(),
+            remote_key: "quotes.csv.gz".to_string(),
+            remote_last_modified: "yesterday".to_string(),
+            updated_at_utc: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn remote_identity_change_reopens_flatfile_coverage() {
+        let mut current = RemoteFlatfile {
+            content_length: 100,
+            etag: "etag-a".to_string(),
+            key: "quotes.csv.gz".to_string(),
+            last_modified: "yesterday".to_string(),
+        };
+        assert!(!remote_object_changed(&coverage_state(), &current));
+        current.etag = "etag-b".to_string();
+        assert!(remote_object_changed(&coverage_state(), &current));
+    }
+}
+
 fn live_event_table_expr(
     config: &GatewayConfig,
-    start_date: NaiveDate,
-    end_date: NaiveDate,
+    _start_date: NaiveDate,
+    _end_date: NaiveDate,
 ) -> String {
-    if config.compact_event_table != "events" && !config.compact_event_table.contains("{year}") {
-        return config.compact_event_table.clone();
-    }
-    let tables = (start_date.year()..=end_date.year())
-        .map(|year| compact_event_table_for_year(config, year))
-        .collect::<Vec<_>>();
-    if tables.len() == 1 {
-        return tables[0].clone();
-    }
-    let pattern = format!(
-        "^({})$",
-        tables
-            .iter()
-            .map(|table| regex_escape(table))
-            .collect::<Vec<_>>()
-            .join("|")
-    );
-    format!(
-        "merge(currentDatabase(), '{}')",
-        escape_sql_string(&pattern)
-    )
-}
-
-fn compact_event_table_for_year(config: &GatewayConfig, year: i32) -> String {
-    if config.compact_event_table == "events" {
-        format!("events_{year}")
-    } else {
-        config
-            .compact_event_table
-            .replace("{year}", &year.to_string())
-    }
-}
-
-fn regex_escape(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for ch in value.chars() {
-        if matches!(
-            ch,
-            '.' | '+' | '*' | '?' | '^' | '$' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\'
-        ) {
-            out.push('\\');
-        }
-        out.push(ch);
-    }
-    out
+    config.compact_event_table.clone()
 }
 
 fn escape_sql_string(value: &str) -> String {
@@ -2082,50 +2435,6 @@ fn merge_tree_settings(storage_policy: &str) -> String {
             "SETTINGS index_granularity = 8192, storage_policy = '{}'",
             storage_policy.trim().replace('\'', "\\'")
         )
-    }
-}
-
-fn market_session_window_utc(
-    market_date: NaiveDate,
-    now: DateTime<Utc>,
-) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
-    if !is_market_session_date(market_date) {
-        return None;
-    }
-    let start = New_York
-        .with_ymd_and_hms(
-            market_date.year(),
-            market_date.month(),
-            market_date.day(),
-            4,
-            0,
-            0,
-        )
-        .single()?
-        .with_timezone(&Utc);
-    let scheduled_end = New_York
-        .with_ymd_and_hms(
-            market_date.year(),
-            market_date.month(),
-            market_date.day(),
-            20,
-            0,
-            0,
-        )
-        .single()?
-        .with_timezone(&Utc);
-    if now <= start {
-        return None;
-    }
-    let end = if now < scheduled_end {
-        now
-    } else {
-        scheduled_end
-    };
-    if end <= start {
-        None
-    } else {
-        Some((start, end))
     }
 }
 
@@ -2191,77 +2500,6 @@ fn parse_symbol_lines(text: &str) -> Vec<String> {
         })
         .filter(|symbol| !symbol.is_empty())
         .collect()
-}
-
-fn is_market_session_date(date: NaiveDate) -> bool {
-    date.weekday().number_from_monday() <= 5 && !is_us_market_holiday(date)
-}
-
-fn is_us_market_holiday(date: NaiveDate) -> bool {
-    let year = date.year();
-    fixed_holiday_observed(date, year, 1, 1)
-        || fixed_holiday_observed(date, year + 1, 1, 1)
-        || nth_weekday(year, 1, Weekday::Mon, 3) == Some(date)
-        || nth_weekday(year, 2, Weekday::Mon, 3) == Some(date)
-        || Some(date) == easter_sunday(year).map(|day| day - ChronoDuration::days(2))
-        || last_weekday(year, 5, Weekday::Mon) == Some(date)
-        || (year >= 2022 && fixed_holiday_observed(date, year, 6, 19))
-        || fixed_holiday_observed(date, year, 7, 4)
-        || nth_weekday(year, 9, Weekday::Mon, 1) == Some(date)
-        || nth_weekday(year, 11, Weekday::Thu, 4) == Some(date)
-        || fixed_holiday_observed(date, year, 12, 25)
-}
-
-fn fixed_holiday_observed(date: NaiveDate, year: i32, month: u32, day: u32) -> bool {
-    let Some(actual) = NaiveDate::from_ymd_opt(year, month, day) else {
-        return false;
-    };
-    let observed = match actual.weekday() {
-        Weekday::Sat => actual - ChronoDuration::days(1),
-        Weekday::Sun => actual + ChronoDuration::days(1),
-        _ => actual,
-    };
-    date == observed
-}
-
-fn nth_weekday(year: i32, month: u32, weekday: Weekday, nth: u32) -> Option<NaiveDate> {
-    let mut date = NaiveDate::from_ymd_opt(year, month, 1)?;
-    while date.weekday() != weekday {
-        date += ChronoDuration::days(1);
-    }
-    Some(date + ChronoDuration::days((nth.saturating_sub(1) * 7) as i64))
-        .filter(|value| value.month() == month)
-}
-
-fn last_weekday(year: i32, month: u32, weekday: Weekday) -> Option<NaiveDate> {
-    let next_month = if month == 12 {
-        NaiveDate::from_ymd_opt(year + 1, 1, 1)?
-    } else {
-        NaiveDate::from_ymd_opt(year, month + 1, 1)?
-    };
-    let mut date = next_month - ChronoDuration::days(1);
-    while date.weekday() != weekday {
-        date -= ChronoDuration::days(1);
-    }
-    Some(date)
-}
-
-fn easter_sunday(year: i32) -> Option<NaiveDate> {
-    let a = year % 19;
-    let b = year / 100;
-    let c = year % 100;
-    let d = b / 4;
-    let e = b % 4;
-    let f = (b + 8) / 25;
-    let g = (b - f + 1) / 3;
-    let h = (19 * a + b - d - g + 15) % 30;
-    let i = c / 4;
-    let k = c % 4;
-    let l = (32 + 2 * e + 2 * i - h - k) % 7;
-    let m = (a + 11 * h + 22 * l) / 451;
-    let month = (h + l - 7 * m + 114) / 31;
-    let day = ((h + l - 7 * m + 114) % 31) + 1;
-    NaiveDate::from_ymd_opt(year, month as u32, day as u32)
 }
 
 fn spawn_command(command: &str) -> Result<(), String> {

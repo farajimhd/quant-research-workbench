@@ -161,7 +161,18 @@ def poll_once(
     state.coverage = get_json(state, "/snapshot/coverage?limit=8", timeout) or {}
     update_rates(state, metrics, now)
     state.metrics = metrics
-    if not disable_market_status and now - state.last_market_status_poll >= max(1.0, market_status_seconds):
+    calendar = state.health.get("market_calendar") if isinstance(state.health, dict) else None
+    if isinstance(calendar, dict):
+        state.market_status = {
+            "market": "open" if calendar.get("active_collection_window") else "closed",
+            "source": calendar.get("source"),
+            "reason": calendar.get("reason"),
+            "stale": bool(calendar.get("stale")),
+            "statusAgeSeconds": calendar.get("status_age_seconds"),
+            "activeCollectionWindow": bool(calendar.get("active_collection_window")),
+        }
+        state.market_status_error = ""
+    elif not disable_market_status and now - state.last_market_status_poll >= max(1.0, market_status_seconds):
         state.market_status = get_market_status(state, timeout) or {}
         state.last_market_status_poll = now
     state.samples = {}
@@ -354,6 +365,16 @@ def render_dependencies(state: PollState) -> Any:
             ok_label(bool(config.get("historical_clickhouse_database"))),
             str(config.get("historical_clickhouse_database") or "-"),
         ),
+        (
+            "Flatfile discovery",
+            ok_label(bool(config.get("flatfile_credentials_present"))),
+            str(config.get("flatfile_endpoint_url") or "credentials missing"),
+        ),
+        (
+            "Model microbars",
+            "ON" if config.get("model_streaming_bars_enabled") else "OFF",
+            ",".join(config.get("model_streaming_bar_timeframes") or []) or "disabled",
+        ),
     ]
     return Panel(status_table(rows), title="Dependencies", box=box.ROUNDED, border_style="green", padding=(0, 1))
 
@@ -438,6 +459,9 @@ def render_maintenance(state: PollState) -> Any:
         details = summary.get("message") or summary.get("latest_historical_event_date") or ""
         if summary.get("target_end_date"):
             details = f"{details} -> target {summary.get('target_end_date')}".strip()
+        command = str(row.get("command") or "").strip()
+        if command and "manual_action_required" in str(row.get("status") or ""):
+            details = f"Run on workstation: {command}"
         table.add_row(
             str(row.get("coverage_kind") or "-"),
             status_text(str(row.get("status") or "-")),
@@ -490,7 +514,7 @@ def render_recent_events(state: PollState, watch: list[str]) -> Any:
     table.add_column("VAN", width=8, no_wrap=True)
     table.add_column("Ticker", width=8, no_wrap=True)
     table.add_column("Type", width=5, no_wrap=True)
-    table.add_column("Ordinal", justify="right", width=10, no_wrap=True)
+    table.add_column("Arrival", justify="right", width=10, no_wrap=True)
     table.add_column("SIP", width=19, no_wrap=True)
     table.add_column("Seq", justify="right", width=12, no_wrap=True)
     table.add_column("Primary", justify="right", width=12, no_wrap=True)
@@ -506,7 +530,7 @@ def render_recent_events(state: PollState, watch: list[str]) -> Any:
                 clock(event_dt.astimezone(VANCOUVER)) if event_dt else "-",
                 ticker,
                 event_type,
-                format_int(row.get("ordinal")),
+                format_int(row.get("arrival_sequence")),
                 short_time(row.get("sip_timestamp_us")),
                 format_int(row.get("source_sequence")),
                 format_int(row.get("price_primary_int")),
@@ -616,6 +640,11 @@ def operation_message(state: PollState) -> str:
     status = str(health.get("status") or "")
     if status != "running":
         return status or "Gateway is not reporting running state."
+    for row in coverage_rows(state):
+        if "manual_action_required" in str(row.get("status") or ""):
+            command = str(row.get("command") or "").strip()
+            if command:
+                return f"Historical gap ready; run on workstation: {command}"
     event_rate = as_float(state.rates.get("ingest_events_per_sec"))
     if event_rate > 0:
         return f"Ingesting Massive quotes/trades at {event_rate:,.1f} events/sec."
@@ -647,7 +676,12 @@ def market_detail(state: PollState) -> str:
     exchanges = payload.get("exchanges") if isinstance(payload.get("exchanges"), dict) else {}
     exchange_status = ", ".join(f"{key}:{value}" for key, value in exchanges.items()) or "-"
     server_time = str(payload.get("serverTime") or "-")
-    return f"{market_label(state)} server={server_time} exchanges={exchange_status}"
+    source = str(payload.get("source") or "-")
+    reason = str(payload.get("reason") or "-")
+    age = payload.get("statusAgeSeconds")
+    stale = " stale" if payload.get("stale") else ""
+    age_text = f" age={format_int(age)}s" if age is not None else ""
+    return f"{market_label(state)} source={source} reason={reason}{age_text}{stale} server={server_time} exchanges={exchange_status}"
 
 
 def status_text(value: str) -> str:

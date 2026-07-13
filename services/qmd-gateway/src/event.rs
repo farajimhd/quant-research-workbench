@@ -1,5 +1,5 @@
 use chrono::{DateTime, TimeZone, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 
 #[derive(Clone, Debug, Serialize)]
@@ -43,12 +43,6 @@ pub struct QuoteEvent {
     pub tape: u8,
     pub ticker: String,
     pub ts: DateTime<Utc>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct MassiveMessage {
-    #[serde(flatten)]
-    pub value: Value,
 }
 
 impl MarketEvent {
@@ -103,6 +97,7 @@ pub fn massive_status_message(text: &str) -> Option<String> {
 }
 
 fn parse_massive_item(item: Value, ingest_ts: DateTime<Utc>) -> Option<MarketEvent> {
+    let ts = optional_millis_field(&item, "t")?;
     match string_field(&item, "ev").as_str() {
         "T" => Some(MarketEvent::Trade(TradeEvent {
             conditions: u16_array_field(&item, "c"),
@@ -118,7 +113,7 @@ fn parse_massive_item(item: Value, ingest_ts: DateTime<Utc>) -> Option<MarketEve
             trade_id: string_field(&item, "i"),
             trf_id: u16_field(&item, "trfi"),
             trf_ts: optional_millis_field(&item, "trft"),
-            ts: optional_millis_field(&item, "t").unwrap_or(ingest_ts),
+            ts,
         })),
         "Q" => Some(MarketEvent::Quote(QuoteEvent {
             ask_exchange: u16_field(&item, "ax"),
@@ -134,7 +129,7 @@ fn parse_massive_item(item: Value, ingest_ts: DateTime<Utc>) -> Option<MarketEve
             sequence: u64_field(&item, "q"),
             tape: u8_field(&item, "z"),
             ticker: string_field(&item, "sym").to_ascii_uppercase(),
-            ts: optional_millis_field(&item, "t").unwrap_or(ingest_ts),
+            ts,
         })),
         _ => None,
     }
@@ -186,4 +181,29 @@ fn u16_array_field(item: &Value, key: &str) -> Vec<u16> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_sip_timestamp_is_structurally_rejected() {
+        let payload = r#"[{"ev":"T","sym":"TEST","q":1,"p":10.0,"s":1}]"#;
+        assert!(parse_massive_payload(payload).unwrap().is_empty());
+    }
+
+    #[test]
+    fn zero_sequence_reaches_compact_structural_validation() {
+        let payload = r#"[{"ev":"T","sym":"TEST","t":1700000000000,"q":0,"p":10.0,"s":1}]"#;
+        let rows = parse_massive_payload(payload).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            match &rows[0] {
+                MarketEvent::Trade(row) => row.sequence,
+                _ => 1,
+            },
+            0
+        );
+    }
 }
