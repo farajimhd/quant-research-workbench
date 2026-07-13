@@ -325,6 +325,11 @@ class TextEmbedGateway:
             create_news_embedding_table_sql(self.config.target_database, self.config.news_embedding_table, self.config.storage_policy),
             create_sec_embedding_table_sql(self.config.target_database, self.config.sec_embedding_table, self.config.storage_policy),
             create_coverage_table_sql(self.config.target_database, self.config.coverage_table, self.config.storage_policy),
+            f"ALTER TABLE {quote_ident(self.config.target_database)}.{quote_ident(self.config.sec_token_table)} MODIFY COLUMN token_chunk_index UInt16",
+            f"ALTER TABLE {quote_ident(self.config.target_database)}.{quote_ident(self.config.sec_embedding_table)} MODIFY COLUMN token_chunk_index UInt16",
+            f"ALTER TABLE {quote_ident(self.config.target_database)}.{quote_ident(self.config.sec_token_table)} ADD COLUMN IF NOT EXISTS accepted_at_source LowCardinality(String) AFTER text_kind, ADD COLUMN IF NOT EXISTS event_time_quality LowCardinality(String) AFTER accepted_at_source",
+            f"ALTER TABLE {quote_ident(self.config.target_database)}.{quote_ident(self.config.sec_embedding_table)} ADD COLUMN IF NOT EXISTS accepted_at_source LowCardinality(String) AFTER text_kind, ADD COLUMN IF NOT EXISTS event_time_quality LowCardinality(String) AFTER accepted_at_source",
+            f"ALTER TABLE {quote_ident(self.config.target_database)}.{quote_ident(self.config.coverage_table)} MODIFY COLUMN token_chunk_index UInt16",
         ]
         for statement in statements:
             self.client.execute(statement)
@@ -1467,7 +1472,7 @@ CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
     timestamp_us UInt64 CODEC(T64, ZSTD(1)),
     event_time DateTime64(9, 'UTC') CODEC(Delta, ZSTD(1)),
     source_id String,
-    token_chunk_index UInt8,
+    token_chunk_index UInt16,
     tokenizer_model LowCardinality(String),
     embedding_model LowCardinality(String),
     embedding_pooling LowCardinality(String),

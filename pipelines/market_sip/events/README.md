@@ -310,16 +310,18 @@ SEC tokenization reads each `sec_filing_text_rendered_v3` document row directly,
 without a prefix cap and without concatenating documents from the same filing.
 It joins `sec_filing_document_v3`, `sec_filing_v3`, and the event-valid
 `id_sec_market_bridge_v3` relation to attach sequence, acceptance time, and
-ticker identity. Tokenization currently uses up to eight 1024-token rows per
-rendered document as a temporary safety policy pending corpus length statistics.
-Both token tables include `token_chunk_index`, `token_start`, and `token_end`,
-so multiple chunks do not collapse under the same replacing key.
+ticker identity. Date-only acceptance fallbacks are excluded because they are
+not valid event times for temporal learning. Every eligible rendered document is
+split into complete 1024-token chunks with no chunk-count cap. SEC chunk indexes
+are `UInt16`; the audited corpus included documents requiring hundreds of chunks.
+Both token tables include `token_chunk_index`, `token_start`, and `token_end`, so
+multiple chunks do not collapse under the same replacing key.
 
 Embeddings are also chunk-level, not item-level. The LLM is run independently for
 each stored chunk:
 
 - news: up to `2` embeddings per ticker/article row
-- SEC text: up to `8` embeddings per filing text row
+- SEC text: one embedding for every complete 1024-token document chunk
 
 The embedding rows repeat the token metadata and store:
 

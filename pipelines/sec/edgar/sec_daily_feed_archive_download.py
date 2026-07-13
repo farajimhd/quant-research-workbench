@@ -65,6 +65,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--start-date", help="Inclusive archive date, YYYY-MM-DD. Defaults to 2019-01-01.")
     parser.add_argument("--end-date", help="Exclusive archive date, YYYY-MM-DD. Defaults to tomorrow in UTC.")
+    parser.add_argument(
+        "--require-through-date",
+        default="",
+        help=(
+            "Require the archive for this exact YYYY-MM-DD date to appear in the SEC listing. "
+            "Exit nonzero before downloading when the terminal archive is not published yet."
+        ),
+    )
     parser.add_argument("--infer-from-clickhouse", action="store_true", help="Infer date range from q_live.sec_filing_v3 instead of using the default 2019-to-now range.")
     parser.add_argument("--target-database", default=os.environ.get("QLIVE_MIGRATION_TARGET_DATABASE", DEFAULT_TARGET_DATABASE))
     parser.add_argument("--target-table", default=os.environ.get("QLIVE_MIGRATION_SEC_FILING_TABLE", DEFAULT_TARGET_TABLE))
@@ -119,6 +127,7 @@ def main() -> None:
         max(0.1, args.retry_base_seconds),
         limiter,
     )
+    required_through_date = parse_date(args.require_through_date) if args.require_through_date else None
     if args.limit_days:
         days = days[: max(0, args.limit_days)]
     specs = [daily_archive_spec(day, artifact_root) for day in days]
@@ -126,6 +135,30 @@ def main() -> None:
     run_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     manifest_path = output_root / f"sec_daily_feed_archives_{run_id}.jsonl"
     summary_path = output_root / f"sec_daily_feed_archives_summary_{run_id}.json"
+
+    if required_through_date is not None and required_through_date not in set(days):
+        write_manifest(manifest_path, [])
+        summary = build_summary(run_id, [], 0.0, manifest_path)
+        summary.update(
+            {
+                "mode": "daily_feed_archive_download_only",
+                "status": "incomplete_source_coverage",
+                "date_source": date_source,
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "required_through_date": required_through_date.isoformat(),
+                "required_through_date_available": False,
+                "latest_available_archive_date": days[-1].isoformat() if days else None,
+                "available_archive_days": len(days),
+                "artifact_root": str(artifact_root),
+                "output_root": str(output_root),
+            }
+        )
+        summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+        print("manifest_path=" + str(manifest_path), flush=True)
+        print("summary_path=" + str(summary_path), flush=True)
+        print("summary=" + json.dumps(summary, sort_keys=True), flush=True)
+        raise SystemExit(3)
 
     print_header(
         {
@@ -137,6 +170,8 @@ def main() -> None:
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
             "available_archive_days": len(days),
+            "required_through_date": required_through_date.isoformat() if required_through_date else "",
+            "required_through_date_available": required_through_date is None or required_through_date in set(days),
             "planned_downloads": len(specs),
             "download_concurrency": max(1, args.download_concurrency),
             "request_min_interval_seconds": max(0.0, args.sec_request_min_interval_seconds),
@@ -173,6 +208,8 @@ def main() -> None:
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
             "available_archive_days": len(days),
+            "required_through_date": required_through_date.isoformat() if required_through_date else "",
+            "required_through_date_available": required_through_date is None or required_through_date in set(days),
             "artifact_root": str(artifact_root),
             "output_root": str(output_root),
         }
@@ -203,6 +240,12 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--start-date must be earlier than tomorrow in UTC when --end-date is omitted.")
     if args.end_date and not args.start_date and parse_date(args.end_date) <= DEFAULT_START_DATE:
         raise SystemExit("--end-date must be later than 2019-01-01 when --start-date is omitted.")
+    if args.require_through_date:
+        required = parse_date(args.require_through_date)
+        if args.start_date and required < parse_date(args.start_date):
+            raise SystemExit("--require-through-date must be on or after --start-date.")
+        if args.end_date and required >= parse_date(args.end_date):
+            raise SystemExit("--require-through-date must be before --end-date.")
     if args.download_concurrency < 1:
         raise SystemExit("--download-concurrency must be >= 1.")
 

@@ -33,7 +33,8 @@ This unified gap-fill entry point refreshes SEC bulk `submissions` and
 `companyfacts`, mirrors those bulk files into `sec_core`, derives canonical
 filing parents and XBRL rows from that mirror, downloads missing daily archives,
 validates them, extracts normalized filing/document/text rows, inserts them,
-runs API fallback for missing recent XBRL, repairs XBRL relationships, rebuilds
+repairs date-only parent timestamps from preserved raw SEC UTC acceptance
+metadata, runs API fallback for missing recent XBRL, repairs XBRL relationships, rebuilds
 `id_sec_market_bridge_v3`, builds SEC context tables in `market_sip_compact`,
 audits the result, and writes coverage rows.
 
@@ -70,6 +71,9 @@ not depend on ambient shell defaults. `--resume-from-coverage` is enabled by def
 `sec_stage_<stage_name>` rows after each successful stage. If a run fails, rerun
 the same command; completed stages for the same date range are skipped, and the
 final semantic coverage rows are written only after the whole run succeeds.
+The downloader requires the terminal completed weekday archive to exist in the
+SEC listing. It exits before extraction instead of recording requested-range
+coverage when that archive has not been published yet.
 Archive extraction/insertion stops all worker lanes after the first failure and
 keeps the first archive exception visible in the Rich terminal. Uncapped source
 and rendered text use 256 MiB Parquet row groups, 1 GiB files, eight concurrent
@@ -82,6 +86,18 @@ the downloader manifest: if an archive scan fails, it redownloads that archive
 from the SEC source URL and rescans it before returning a failed status. This is
 important on reruns where `daily-archive-download` is skipped by coverage but a
 previously reused `.nc.tar.gz` later proves truncated.
+
+Incremental edge recovery does not rerun the historical corpus. For example,
+after July 10 was published later than the original run, use:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_gap_fill.py --start-date 2026-07-10 --end-date 2026-07-11 --execute
+```
+
+Coverage skips completed bulk/XBRL stages, archive extraction selects only that
+one-day range, and the archive manifest prevents completed archives from being
+rewritten. Acceptance metadata, the bridge, context tables, and the final audit
+are reconciled after the new archive is inserted.
 
 Legacy manual historical orchestration path:
 

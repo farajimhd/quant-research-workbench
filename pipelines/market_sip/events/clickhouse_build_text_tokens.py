@@ -49,7 +49,7 @@ DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 DEFAULT_NEWS_MAX_TOKENS = 1024
 DEFAULT_NEWS_MAX_CHUNKS = 2
 DEFAULT_SEC_CHUNK_TOKENS = 1024
-DEFAULT_SEC_MAX_CHUNKS = 8
+DEFAULT_SEC_MAX_CHUNKS = 0
 DEFAULT_EMBEDDING_BATCH_SIZE = 16
 DEFAULT_EMBEDDING_INSERT_BATCH_SIZE = 64
 
@@ -439,8 +439,26 @@ def build_tokens(
     if "sec" in sources:
         if not embedding_from_tokens:
             schema_sql.append(create_sec_token_table_sql(args.target_database, args.sec_token_table, args.storage_policy))
+            schema_sql.append(
+                f"ALTER TABLE {quote_ident(args.target_database)}.{quote_ident(args.sec_token_table)} "
+                "MODIFY COLUMN token_chunk_index UInt16"
+            )
+            schema_sql.append(
+                f"ALTER TABLE {quote_ident(args.target_database)}.{quote_ident(args.sec_token_table)} "
+                "ADD COLUMN IF NOT EXISTS accepted_at_source LowCardinality(String) AFTER text_kind, "
+                "ADD COLUMN IF NOT EXISTS event_time_quality LowCardinality(String) AFTER accepted_at_source"
+            )
         if args.build_embeddings:
             schema_sql.append(create_sec_embedding_table_sql(args.target_database, args.sec_embedding_table, args.storage_policy))
+            schema_sql.append(
+                f"ALTER TABLE {quote_ident(args.target_database)}.{quote_ident(args.sec_embedding_table)} "
+                "MODIFY COLUMN token_chunk_index UInt16"
+            )
+            schema_sql.append(
+                f"ALTER TABLE {quote_ident(args.target_database)}.{quote_ident(args.sec_embedding_table)} "
+                "ADD COLUMN IF NOT EXISTS accepted_at_source LowCardinality(String) AFTER text_kind, "
+                "ADD COLUMN IF NOT EXISTS event_time_quality LowCardinality(String) AFTER accepted_at_source"
+            )
     if args.drop_target_tables:
         drops = []
         if "news" in sources:
@@ -733,10 +751,12 @@ CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
     text_rank UInt8,
     document_id String,
     text_kind LowCardinality(String),
+    accepted_at_source LowCardinality(String),
+    event_time_quality LowCardinality(String),
     quality_flags String CODEC(ZSTD(3)),
     tokenizer_model LowCardinality(String),
     max_tokens UInt16,
-    token_chunk_index UInt8,
+    token_chunk_index UInt16,
     token_start UInt32,
     token_end UInt32,
     original_token_count UInt32,
@@ -815,6 +835,8 @@ CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
     text_rank UInt8,
     document_id String,
     text_kind LowCardinality(String),
+    accepted_at_source LowCardinality(String),
+    event_time_quality LowCardinality(String),
     quality_flags String CODEC(ZSTD(3)),
     tokenizer_model LowCardinality(String),
     embedding_model LowCardinality(String),
@@ -822,7 +844,7 @@ CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
     embedding_dtype LowCardinality(String),
     embedding_dim UInt16,
     max_tokens UInt16,
-    token_chunk_index UInt8,
+    token_chunk_index UInt16,
     token_start UInt32,
     token_end UInt32,
     original_token_count UInt32,
@@ -916,6 +938,8 @@ SELECT
     text_rank,
     document_id,
     text_kind,
+    accepted_at_source,
+    event_time_quality,
     quality_flags,
     tokenizer_model,
     max_tokens,
@@ -1008,6 +1032,8 @@ SELECT
     text_rank,
     document_id,
     text_kind,
+    accepted_at_source,
+    event_time_quality,
     text,
     source_text_char_count,
     toUInt8(0) AS text_prefix_truncated,
@@ -1060,6 +1086,7 @@ mapped_filings AS
         f.cik AS cik,
         f.accession_number AS accession_number,
         ifNull(f.form_type, '') AS form_type,
+        f.accepted_at_source AS accepted_at_source,
         b.bridge_id AS bridge_id,
         b.issuer_id AS issuer_id,
         b.security_id AS security_id,
@@ -1073,6 +1100,7 @@ mapped_filings AS
        AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
        AND (b.valid_to_date_exclusive IS NULL OR b.valid_to_date_exclusive > toDate(f.accepted_at_utc))
     WHERE f.accepted_at_utc IS NOT NULL
+      AND f.accepted_at_source NOT IN ('archive_filing_date_midnight', 'archive_date_midnight', 'filing_date_midnight_fallback')
       AND f.accepted_at_utc >= {start_sql}
       AND f.accepted_at_utc < {end_sql}
 ),
@@ -1085,6 +1113,8 @@ sec_rendered_source AS
         f.cik AS cik,
         f.accession_number AS accession_number,
         f.form_type AS form_type,
+        f.accepted_at_source AS accepted_at_source,
+        'exact' AS event_time_quality,
         toUInt8(least(toUInt32(d.sequence_number), 255)) AS text_rank,
         r.document_id AS document_id,
         ifNull(r.text_kind, '') AS text_kind,
@@ -1307,11 +1337,11 @@ def make_sec_chunks(token_ids: list[int], *, chunk_tokens: int, max_chunks: int)
 
 def make_text_chunks(token_ids: list[int], *, chunk_tokens: int, max_chunks: int) -> list[TokenChunk]:
     chunk_tokens = max(1, int(chunk_tokens))
-    max_chunks = max(1, int(max_chunks))
+    max_chunks = int(max_chunks)
     original_count = len(token_ids)
     chunks_needed = max(1, (original_count + chunk_tokens - 1) // chunk_tokens)
-    chunks_to_store = min(max_chunks, chunks_needed)
-    max_total_tokens = chunk_tokens * max_chunks
+    chunks_to_store = chunks_needed if max_chunks <= 0 else min(max_chunks, chunks_needed)
+    max_total_tokens = original_count if max_chunks <= 0 else chunk_tokens * max_chunks
     return [
         make_token_chunk(
             token_ids,
@@ -1386,6 +1416,7 @@ def sec_model_text(row: dict[str, Any]) -> str:
         f"cik: {row.get('cik', '') or ''}",
         f"accession: {row.get('accession_number', '') or ''}",
         f"accepted_at_utc: {row.get('accepted_at_utc', '') or ''}",
+        f"accepted_at_source: {row.get('accepted_at_source', '') or ''}",
         f"text_kind: {row.get('text_kind', '') or ''}",
         str(row.get("text", "") or ""),
     ]
@@ -1436,6 +1467,8 @@ def sec_token_row(args: argparse.Namespace, row: dict[str, Any], text: str, chun
         "text_rank": int(row.get("text_rank", 0) or 0),
         "document_id": str(row.get("document_id", "") or ""),
         "text_kind": str(row.get("text_kind", "") or ""),
+        "accepted_at_source": str(row.get("accepted_at_source", "") or ""),
+        "event_time_quality": str(row.get("event_time_quality", "") or ""),
         "quality_flags": str(row.get("quality_flags", "") or ""),
         "tokenizer_model": str(args.tokenizer_model),
         "max_tokens": int(args.sec_chunk_tokens),
@@ -1502,6 +1535,8 @@ def sec_embedding_row(args: argparse.Namespace, row: dict[str, Any], text: str, 
         "text_rank": int(row.get("text_rank", 0) or 0),
         "document_id": str(row.get("document_id", "") or ""),
         "text_kind": str(row.get("text_kind", "") or ""),
+        "accepted_at_source": str(row.get("accepted_at_source", "") or ""),
+        "event_time_quality": str(row.get("event_time_quality", "") or ""),
         "quality_flags": str(row.get("quality_flags", "") or ""),
         "tokenizer_model": str(args.tokenizer_model),
         "embedding_model": str(model.model_name),
@@ -1571,6 +1606,8 @@ def sec_embedding_row_from_token(args: argparse.Namespace, row: dict[str, Any], 
         "text_rank": int(row.get("text_rank", 0) or 0),
         "document_id": str(row.get("document_id", "") or ""),
         "text_kind": str(row.get("text_kind", "") or ""),
+        "accepted_at_source": str(row.get("accepted_at_source", "") or ""),
+        "event_time_quality": str(row.get("event_time_quality", "") or ""),
         "quality_flags": str(row.get("quality_flags", "") or ""),
         "tokenizer_model": str(row.get("tokenizer_model", "") or args.tokenizer_model),
         "embedding_model": str(model.model_name),

@@ -360,6 +360,21 @@ def default_end_date() -> str:
     return (datetime.now(UTC).date() + timedelta(days=1)).isoformat()
 
 
+def required_archive_through_date(end_date: str, *, today_utc: date | None = None) -> date:
+    today = today_utc or datetime.now(UTC).date()
+    candidate = min(parse_date(end_date) - timedelta(days=1), today - timedelta(days=1))
+    while candidate.weekday() >= 5:
+        candidate -= timedelta(days=1)
+    return candidate
+
+
+def required_archive_is_local(args: argparse.Namespace) -> bool:
+    required = required_archive_through_date(args.end_date)
+    quarter = ((required.month - 1) // 3) + 1
+    path = Path(args.artifact_root_win) / "daily_archives" / str(required.year) / f"QTR{quarter}" / f"{required:%Y%m%d}.nc.tar.gz"
+    return path.is_file() and path.stat().st_size > 0
+
+
 def main() -> None:
     args = parse_args()
     start_date = parse_date(args.start_date)
@@ -451,7 +466,9 @@ def main() -> None:
 
 def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageCommand]:
     archive_root = str(Path(args.artifact_root_win) / "daily_archives")
+    context_start_date = DEFAULT_START_DATE
     context_end_date = (parse_date(args.end_date) - timedelta(days=1)).isoformat()
+    required_archive_date = required_archive_through_date(args.end_date).isoformat()
     return [
         StageCommand(
             "bulk-download",
@@ -553,6 +570,8 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                     args.start_date,
                     "--end-date",
                     args.end_date,
+                    "--require-through-date",
+                    required_archive_date,
                     "--artifact-root-win",
                     args.artifact_root_win,
                     "--output-root-win",
@@ -671,6 +690,31 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
             (stage_coverage_kind("archive-text-rebuild"),),
         ),
         StageCommand(
+            "acceptance-raw-metadata-repair",
+            add_execute_flag(
+                [
+                    args.python_executable,
+                    script("pipelines/sec/edgar/sec_acceptance_raw_metadata_repair.py"),
+                    "--target-database",
+                    args.write_database,
+                    "--target-table",
+                    "sec_filing_v3",
+                    "--mirror-database",
+                    args.bulk_mirror_database,
+                    "--mirror-table",
+                    "sec_bulk_mirror_filing_v3",
+                    "--legacy-database",
+                    args.read_database,
+                    "--legacy-table",
+                    "sec_filing_v2",
+                ],
+                args,
+            ),
+            logs_root / "acceptance-raw-metadata-repair.log",
+            True,
+            (stage_coverage_kind("acceptance-raw-metadata-repair"),),
+        ),
+        StageCommand(
             "xbrl-companyfacts-catchup",
             add_execute_flag(
                 [
@@ -767,7 +811,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                     "--source-xbrl-frame-observation-table",
                     "sec_xbrl_frame_observation_v3",
                     "--start-date",
-                    args.start_date,
+                    context_start_date,
                     "--end-date",
                     context_end_date,
                     "--sec-text-buckets",
@@ -944,8 +988,18 @@ def stage_coverage_kind(stage: str) -> str:
 
 
 def stage_already_completed(args: argparse.Namespace, command: StageCommand) -> bool:
-    if command.stage == "archive-text-rebuild":
-        # Archive manifests are table-generation aware and are the authoritative resume state.
+    if command.stage in {
+        "archive-text-rebuild",
+        "validate-downloaded",
+        "acceptance-raw-metadata-repair",
+        "sec-bridge-rebuild",
+        "sec-context-build",
+        "integrity-audit",
+    }:
+        # These stages reconcile mutable source state and are intentionally idempotent.
+        return False
+    if command.stage == "daily-archive-download" and not required_archive_is_local(args):
+        # Requested-range coverage is not authoritative when the terminal archive was not present.
         return False
     if not command.coverage_kinds:
         return False

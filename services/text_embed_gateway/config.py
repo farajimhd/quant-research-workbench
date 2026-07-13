@@ -117,7 +117,7 @@ class TextEmbedGatewayConfig:
             news_max_tokens=env_int("TEXT_EMBED_NEWS_MAX_TOKENS", 1024),
             news_max_chunks=env_int("TEXT_EMBED_NEWS_MAX_CHUNKS", 2),
             sec_chunk_tokens=env_int("TEXT_EMBED_SEC_CHUNK_TOKENS", 1024),
-            sec_max_chunks=env_int("TEXT_EMBED_SEC_MAX_CHUNKS", 8),
+            sec_max_chunks=env_int("TEXT_EMBED_SEC_MAX_CHUNKS", 0),
             news_body_prefix_chars=env_int("TEXT_EMBED_NEWS_BODY_PREFIX_CHARS", 12_000),
             news_external_prefix_chars=env_int("TEXT_EMBED_NEWS_EXTERNAL_PREFIX_CHARS", 12_000),
             news_pdf_prefix_chars=env_int("TEXT_EMBED_NEWS_PDF_PREFIX_CHARS", 12_000),

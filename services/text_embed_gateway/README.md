@@ -97,6 +97,8 @@ TEXT_EMBED_WEEKEND_POLL_SECONDS=300
 TEXT_EMBED_LIVE_LOOKBACK_MINUTES=180
 TEXT_EMBED_HISTORICAL_LOOKBACK_DAYS=60
 TEXT_EMBED_HISTORICAL_BATCH_LIMIT=512
+TEXT_EMBED_SEC_CHUNK_TOKENS=1024
+TEXT_EMBED_SEC_MAX_CHUNKS=0
 TEXT_EMBED_RECENT_STATUS_RETENTION_HOURS=2
 ```
 
@@ -155,8 +157,10 @@ q_live.sec_filing_text_rendered_v3
 `sec_filing_text_rendered_v3` is the authoritative normalized input. The
 embedding gateway does not run a second renderer. Each rendered document row is
 an independent source item; documents from the same filing are not concatenated.
-The existing safety chunk policy remains in place until corpus length statistics
-determine the final embedding context policy.
+SEC documents are split into complete 1024-token chunks. A max-chunks value of
+`0` means unlimited, so the gateway does not discard a document tail. Rows with
+date-only fallback acceptance times remain blocked until their raw SEC event
+timestamp is repaired.
 
 `id_sec_market_bridge_v3` is read-only here and should be maintained by the
 reference gateway. If a SEC filing text row has no valid bridge yet, the gateway
