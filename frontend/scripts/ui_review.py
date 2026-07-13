@@ -26,6 +26,7 @@ THEMES = (
 SCALES = (0.8, 0.9, 1.0, 1.1, 1.25)
 PAGES = (
     "real-live-trading",
+    "replay-trading",
     "services-dashboard",
     "service-qmd",
     "service-news",
@@ -38,7 +39,7 @@ VIEWPORTS = {
     "normal": {"width": 1600, "height": 1000},
     "compact": {"width": 1280, "height": 720},
 }
-REPRESENTATIVE_PAGES = ("real-live-trading", "services-dashboard")
+REPRESENTATIVE_PAGES = ("real-live-trading", "replay-trading", "services-dashboard")
 REPRESENTATIVE_THEMES = ("light", "dark")
 TARGETED_SCALES = (0.8, 1.0, 1.25)
 
@@ -195,6 +196,25 @@ def capture(args: argparse.Namespace) -> int:
                     + json.dumps(scale_value)
                     + ");"
                 )
+                if args.seed_core_containers and args.canvas_id and scenario["page"] in {"real-live-trading", "replay-trading"}:
+                    viewport_width = scenario["viewport"]["width"]
+                    viewport_height = scenario["viewport"]["height"]
+                    width = max(1180, viewport_width - 112)
+                    height = max(780, viewport_height - 86)
+                    content_top = 108
+                    content_height = max(560, height - content_top - 12)
+                    left_width = min(round(width * 0.44), max(480, round(width * 0.38)))
+                    top_height = min(210, max(180, content_height - 290))
+                    layouts = {
+                        "portfolio": {"fullscreen": False, "h": top_height, "minimized": False, "w": left_width, "x": 12, "y": content_top, "z": 1},
+                        "scanner": {"fullscreen": False, "h": max(280, content_height - top_height - 10), "minimized": False, "w": left_width, "x": 12, "y": content_top + top_height + 10, "z": 2},
+                        "chart": {"fullscreen": False, "h": content_height, "minimized": False, "w": max(520, width - left_width - 34), "x": left_width + 22, "y": content_top, "z": 3},
+                    }
+                    storage_prefix = "quant-research-workbench.real-live-trading.layout" if scenario["page"] == "real-live-trading" else "quant-research-workbench.live-trading.layout"
+                    storage_payload = {"chartWindows": [], "layoutVersion": 4, "layouts": layouts, "windows": ["portfolio", "scanner"]}
+                    context.add_init_script(
+                        "localStorage.setItem(" + json.dumps(f"{storage_prefix}.{args.canvas_id}") + ", " + json.dumps(json.dumps(storage_payload)) + ");"
+                    )
                 page = context.new_page()
                 console_errors: list[str] = []
                 page_errors: list[str] = []
@@ -218,7 +238,11 @@ def capture(args: argparse.Namespace) -> int:
                     f"__{scenario['viewport_name']}.png"
                 )
                 screenshot_path = output_dir / filename
-                result = {**scenario, "url": f"{base_url}/#{scenario['page']}"}
+                canvas_query = ""
+                if args.canvas_id and scenario["page"] in {"real-live-trading", "replay-trading"}:
+                    query_key = "liveCanvas" if scenario["page"] == "real-live-trading" else "replayCanvas"
+                    canvas_query = f"?{query_key}={args.canvas_id}"
+                result = {**scenario, "url": f"{base_url}/{canvas_query}#{scenario['page']}"}
                 try:
                     page.goto(
                         result["url"], wait_until="domcontentloaded",
@@ -239,6 +263,19 @@ def capture(args: argparse.Namespace) -> int:
                             documentWidth: root.scrollWidth,
                             viewportWidth: root.clientWidth,
                             horizontalOverflow: root.scrollWidth > root.clientWidth + 1,
+                            overflowingElements: Array.from(document.querySelectorAll('body *'))
+                                .map((element) => {
+                                    const rect = element.getBoundingClientRect();
+                                    return { className: element.className || element.tagName, right: Math.round(rect.right), width: Math.round(rect.width) };
+                                })
+                                .filter((entry) => entry.right > root.clientWidth + 1)
+                                .sort((a, b) => b.right - a.right)
+                                .slice(0, 8),
+                            scrollOverflowElements: Array.from(document.querySelectorAll('body *'))
+                                .map((element) => ({ className: element.className || element.tagName, clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }))
+                                .filter((entry) => entry.scrollWidth > entry.clientWidth + 1)
+                                .sort((a, b) => b.scrollWidth - a.scrollWidth)
+                                .slice(0, 8),
                             resolvedTheme: [
                                 'light', 'slate', 'parchment', 'dawn', 'harbor',
                                 'dark', 'forest', 'graphite', 'ember', 'amethyst',
@@ -322,6 +359,8 @@ def parser() -> argparse.ArgumentParser:
         description="Capture route, theme, scale, and viewport evidence for UX review."
     )
     result.add_argument("--url", default="http://127.0.0.1:5173")
+    result.add_argument("--canvas-id", help="open trading routes directly in the named child canvas")
+    result.add_argument("--seed-core-containers", action="store_true", help="seed portfolio and scanner containers for child-canvas review")
     result.add_argument("--mode", choices=("targeted", "full"), default="targeted")
     result.add_argument("--matrix", choices=("bounded", "exhaustive"), default="bounded")
     result.add_argument("--page", action="append", choices=PAGES)

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type PointerEvent, type ReactNode, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import {
   Activity,
   BarChart3,
@@ -9,16 +9,11 @@ import {
   CircleDollarSign,
   ClipboardList,
   Clock3,
-  Eye,
-  ExternalLink,
   Flame,
   FolderOpen,
   Info,
   LayoutGrid,
-  Maximize2,
   Megaphone,
-  Minimize2,
-  Move,
   Newspaper,
   Play,
   RefreshCw,
@@ -36,9 +31,19 @@ import type { Time } from "lightweight-charts";
 import { api, query } from "../api/client";
 import { ChartPanel, type ChartCatalogItem, type ChartDisplayItem, type ChartPayload, type LiveEntryLine } from "../app/components/ChartPanel";
 import { DataTable, type BackendQueryPreset, type BackendTableQuery } from "../app/components/DataTable";
-import type { UiScale } from "../app/components/Layout";
 import { PageIntro } from "../app/components/PageIntro";
 import { Tabs } from "../app/components/Tabs";
+import {
+  WorkspaceCanvasManager,
+  WorkspaceWindow,
+  WorkspaceWindowManager,
+  buildSplitWorkspaceLayouts,
+  buildWorkspaceWindowSummaries,
+  workspaceMinHeight as calculateWorkspaceMinHeight,
+  type WorkspaceCanvasTarget as LiveCanvasTarget,
+  type WorkspaceWindowId as WindowId,
+  type WorkspaceWindowLayout as WindowLayout,
+} from "../app/components/WorkspaceCanvas";
 
 type Scope = {
   processed_root: string;
@@ -264,18 +269,6 @@ type ScannerQueryGroup = {
   query: BackendTableQuery;
 };
 
-type WindowId = string;
-
-type WindowLayout = {
-  fullscreen: boolean;
-  h: number;
-  minimized: boolean;
-  w: number;
-  x: number;
-  y: number;
-  z: number;
-};
-
 type ChartWindow = {
   id: WindowId;
   row: Record<string, unknown>;
@@ -291,22 +284,6 @@ type SavedCanvasLayout = {
 };
 
 type LiveClockMode = "idle" | "loading_data" | "ready" | "seeking" | "running" | "paused" | "complete";
-
-type LiveWindowSummary = {
-  fullscreen: boolean;
-  id: WindowId;
-  minimized: boolean;
-  title: string;
-  type: "core" | "chart";
-  z: number;
-};
-
-type LiveCanvasTarget = {
-  color: string;
-  id: string;
-  isCurrent: boolean;
-  label: string;
-};
 
 type DecisionState = "approved" | "skipped" | "watching";
 
@@ -551,27 +528,11 @@ const DEFAULT_SCANNER_QUERY_GROUPS: ScannerQueryGroup[] = [
 ];
 
 function buildDefaultCanvasLayout(childCanvas: boolean): { chartWindows: ChartWindow[]; layouts: Record<WindowId, WindowLayout>; windows: WindowId[] } {
-  const width = Math.max(1180, window.innerWidth - 112);
-  const height = Math.max(780, window.innerHeight - 86);
-  const gap = 10;
-  const margin = 12;
-  const metricsH = LIVE_METRICS_DOCK_HEIGHT;
-  const mainY = margin + metricsH + gap;
-  const availableH = Math.max(420, height - mainY - margin);
-  const leftW = Math.max(250, Math.round(width * 0.2));
-  const portfolioH = Math.min(LIVE_PORTFOLIO_DEFAULT_HEIGHT, Math.max(170, Math.round(availableH * 0.34)));
-  const scannerH = Math.max(240, availableH - portfolioH - gap);
-  const chartX = margin + leftW + gap;
-  const chartW = Math.round(width * 0.58);
-  const layouts: Record<WindowId, WindowLayout> = {
-    portfolio: { fullscreen: false, h: portfolioH, minimized: false, w: leftW, x: margin, y: mainY, z: 3 },
-    scanner: { fullscreen: false, h: scannerH, minimized: false, w: leftW, x: margin, y: mainY + portfolioH + gap, z: 1 },
-    chart: { fullscreen: false, h: availableH, minimized: false, w: chartW, x: chartX, y: mainY, z: 4 },
-  };
+  const layouts = buildSplitWorkspaceLayouts({ bottomId: "scanner", primaryId: "chart", topHeight: LIVE_PORTFOLIO_DEFAULT_HEIGHT, topId: "portfolio", topInset: LIVE_METRICS_DOCK_HEIGHT, viewportHeight: window.innerHeight, viewportWidth: window.innerWidth });
   return { chartWindows: [], layouts, windows: childCanvas ? [] : [...CORE_WINDOW_IDS] };
 }
 
-export function RealLiveTradingPage({ onScalePreferenceChange, onTopbarCenterChange }: { onScalePreferenceChange?: Dispatch<SetStateAction<UiScale | undefined>>; onTopbarCenterChange?: Dispatch<SetStateAction<ReactNode>> }) {
+export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange?: Dispatch<SetStateAction<ReactNode>> }) {
   const canvasId = useMemo(() => new URLSearchParams(window.location.search).get("liveCanvas") || "main", []);
   const isChildCanvas = canvasId !== "main";
   const initialCanvas = useMemo(() => readStoredCanvas(canvasId, isChildCanvas), [canvasId, isChildCanvas]);
@@ -643,10 +604,6 @@ export function RealLiveTradingPage({ onScalePreferenceChange, onTopbarCenterCha
   useEffect(() => {
     liveClockModeRef.current = liveClockMode;
   }, [liveClockMode]);
-
-  useEffect(() => {
-    onScalePreferenceChange?.(started ? 0.8 : 1);
-  }, [onScalePreferenceChange, started]);
 
   useEffect(() => {
     let active = true;
@@ -806,12 +763,12 @@ export function RealLiveTradingPage({ onScalePreferenceChange, onTopbarCenterCha
   );
   const canvasTargets = useMemo(() => listKnownLiveCanvases(canvasId), [canvasId, canvasTargetsVersion]);
   const topbarWorkspaceInfo = useMemo(() => {
-    const knownPageCount = canvasTargets.length || 1;
+    const knownCanvasCount = canvasTargets.length || 1;
     const canvasLabel = isChildCanvas ? `Child canvas ${canvasId.replace(/^canvas-/, "")}` : "Main canvas";
     const layoutLabel = selectedLayoutName || layoutName || "Unsaved layout";
-    const pageLabel = `${knownPageCount} page${knownPageCount === 1 ? "" : "s"}`;
+    const pageLabel = `${knownCanvasCount} canvas${knownCanvasCount === 1 ? "" : "es"}`;
     const windowNames = liveWindowSummaries.map((windowItem) => windowItem.title);
-    const windowLabel = windowNames.length ? windowNames.slice(0, 4).join(", ") : "No windows";
+    const windowLabel = windowNames.length ? windowNames.slice(0, 4).join(", ") : "No containers";
     const extraWindowCount = Math.max(0, windowNames.length - 4);
     return {
       detail: `${layoutLabel} - ${pageLabel} - ${windowLabel}${extraWindowCount ? ` +${extraWindowCount}` : ""}`,
@@ -1369,7 +1326,7 @@ export function RealLiveTradingPage({ onScalePreferenceChange, onTopbarCenterCha
                     <Save size={15} /> Save Layout
                   </button>
                   <button className="button secondary" onClick={() => setOpenWindows((current) => Array.from(new Set([...current, ...CORE_WINDOW_IDS])))} type="button">
-                    <FolderOpen size={15} /> Core Windows
+                    <FolderOpen size={15} /> Core Containers
                   </button>
                   <button className="button secondary" onClick={() => createChildCanvas()} type="button">
                     <LayoutGrid size={15} /> Child Canvas
@@ -1377,13 +1334,13 @@ export function RealLiveTradingPage({ onScalePreferenceChange, onTopbarCenterCha
                 </div>
               }
             />
-            <LiveCanvasManager
+            <WorkspaceCanvasManager
               canvases={canvasTargets}
               onCreate={() => createChildCanvas()}
               onOpen={openCanvasInNewTab}
               onRemove={removeCanvas}
             />
-            <LiveWindowManager
+            <WorkspaceWindowManager
               canvasTargets={canvasTargets}
               windows={liveWindowSummaries}
               onClose={closeWindow}
@@ -1423,7 +1380,7 @@ export function RealLiveTradingPage({ onScalePreferenceChange, onTopbarCenterCha
           </button>
         </div>
       </section>
-      <section className={headerCollapsed ? "live-workspace compact" : "live-workspace"} aria-label="Live trading workspace" style={{ minHeight: workspaceMinHeight }}>
+      <section className={headerCollapsed ? "live-workspace compact" : "live-workspace"} aria-label="Live trading workspace" data-workspace-canvas style={{ minHeight: workspaceMinHeight }}>
         <MetricsDock metrics={portfolioMetrics} />
         {!openWindows.length ? <div className="live-empty-canvas">This canvas is empty. Open scanner rows here or pop containers into this canvas from another tab.</div> : null}
         {openWindows.map((windowId) => {
@@ -1912,251 +1869,6 @@ function LiveCheckCard({ check }: { check: RealLivePreflightCheck }) {
       </div>
       {check.message ? <p>{check.message}</p> : null}
     </article>
-  );
-}
-
-function WorkspaceWindow({
-  canvasTargets,
-  children,
-  icon,
-  id,
-  layout,
-  onClose,
-  onFocus,
-  onLayoutChange,
-  onMoveToCanvas,
-  onPopOut,
-  title,
-}: {
-  canvasTargets: LiveCanvasTarget[];
-  children: ReactNode;
-  icon: ReactNode;
-  id: WindowId;
-  layout: WindowLayout;
-  onClose: (id: WindowId) => void;
-  onFocus: (id: WindowId) => void;
-  onLayoutChange: (id: WindowId, patch: Partial<WindowLayout>) => void;
-  onMoveToCanvas: (id: WindowId, canvasId: string) => void;
-  onPopOut: (id: WindowId) => void;
-  title: string;
-}) {
-  const style = layout.fullscreen
-    ? { height: "calc(100% - 24px)", left: 12, top: 12, width: "calc(100% - 24px)", zIndex: 1000 + layout.z }
-    : { height: layout.minimized ? 34 : layout.h, left: layout.x, top: layout.y, width: layout.w, zIndex: layout.z };
-
-  function startDrag(event: PointerEvent<HTMLDivElement>) {
-    if (layout.fullscreen) return;
-    const originX = event.clientX;
-    const originY = event.clientY;
-    const startX = layout.x;
-    const startY = layout.y;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    const target = event.currentTarget;
-    const move = (moveEvent: globalThis.PointerEvent) => {
-      onLayoutChange(id, { x: Math.max(0, startX + moveEvent.clientX - originX), y: Math.max(0, startY + moveEvent.clientY - originY) });
-    };
-    const stop = () => {
-      target.removeEventListener("pointermove", move);
-      target.removeEventListener("pointerup", stop);
-      target.removeEventListener("pointercancel", stop);
-    };
-    target.addEventListener("pointermove", move);
-    target.addEventListener("pointerup", stop);
-    target.addEventListener("pointercancel", stop);
-  }
-
-  function startResize(event: PointerEvent<HTMLDivElement>) {
-    if (layout.fullscreen || layout.minimized) return;
-    event.stopPropagation();
-    const originX = event.clientX;
-    const originY = event.clientY;
-    const startW = layout.w;
-    const startH = layout.h;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    const target = event.currentTarget;
-    const move = (moveEvent: globalThis.PointerEvent) => {
-      onLayoutChange(id, {
-        h: Math.max(240, startH + moveEvent.clientY - originY),
-        w: Math.max(320, startW + moveEvent.clientX - originX),
-      });
-    };
-    const stop = () => {
-      target.removeEventListener("pointermove", move);
-      target.removeEventListener("pointerup", stop);
-      target.removeEventListener("pointercancel", stop);
-    };
-    target.addEventListener("pointermove", move);
-    target.addEventListener("pointerup", stop);
-    target.addEventListener("pointercancel", stop);
-  }
-
-  return (
-    <section className="live-window" data-window-kind={id.startsWith("chart-") ? "chart" : id} style={style} onPointerDown={() => onFocus(id)}>
-      <div className="live-window-header" onPointerDown={startDrag}>
-        <div className="live-window-title">
-          <Move size={13} />
-          {icon}
-          <strong>{title}</strong>
-        </div>
-        <div className="live-window-actions" onPointerDown={(event) => event.stopPropagation()}>
-          <div className="live-canvas-target-row" aria-label={`Move ${title} to canvas`}>
-            {canvasTargets.map((target) => (
-              <button
-                className={target.isCurrent ? "live-canvas-target active" : "live-canvas-target"}
-                key={target.id}
-                onClick={() => onMoveToCanvas(id, target.id)}
-                style={{ "--canvas-color": target.color } as CSSProperties}
-                title={target.isCurrent ? `Current: ${target.label}` : `Move to ${target.label}`}
-                type="button"
-              >
-                {target.label.replace("Canvas ", "C").replace("Main", "M")}
-              </button>
-            ))}
-          </div>
-          <button className="toolbar-button compact" onClick={() => onPopOut(id)} title="Move to new child canvas" type="button">
-            <ExternalLink size={12} />
-          </button>
-          <button className="toolbar-button compact" onClick={() => onLayoutChange(id, { minimized: !layout.minimized })} title={layout.minimized ? "Restore" : "Minimize"} type="button">
-            <Minimize2 size={12} />
-          </button>
-          <button className="toolbar-button compact" onClick={() => onLayoutChange(id, { fullscreen: !layout.fullscreen, minimized: false })} title={layout.fullscreen ? "Exit fullscreen" : "Fullscreen"} type="button">
-            {layout.fullscreen ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
-          </button>
-          <button className="toolbar-button compact" onClick={() => onClose(id)} title="Close" type="button">
-            <X size={12} />
-          </button>
-        </div>
-      </div>
-      {!layout.minimized ? <div className="live-window-body">{children}</div> : null}
-      {!layout.minimized ? <div className="live-window-resize" onPointerDown={startResize} /> : null}
-    </section>
-  );
-}
-
-function LiveWindowManager({
-  canvasTargets,
-  onClose,
-  onFocus,
-  onMinimize,
-  onMoveToCanvas,
-  onPopOut,
-  onShowCoreWindows,
-  windows,
-}: {
-  canvasTargets: LiveCanvasTarget[];
-  onClose: (id: WindowId) => void;
-  onFocus: (id: WindowId) => void;
-  onMinimize: (id: WindowId, minimized: boolean) => void;
-  onMoveToCanvas: (id: WindowId, canvasId: string) => void;
-  onPopOut: (id: WindowId) => void;
-  onShowCoreWindows: () => void;
-  windows: LiveWindowSummary[];
-}) {
-  return (
-    <section className="live-window-manager" aria-label="Open workspace windows">
-      <div className="live-window-manager-heading">
-        <div>
-          <span>Open Windows</span>
-          <strong>{windows.length ? `${windows.length} active` : "No active windows"}</strong>
-        </div>
-        <button className="button secondary compact" onClick={onShowCoreWindows} type="button">
-          <FolderOpen size={14} /> Core Windows
-        </button>
-      </div>
-      {windows.length ? (
-        <div className="live-window-chip-grid">
-          {windows.map((windowItem) => (
-            <article className="live-window-chip" data-type={windowItem.type} key={windowItem.id}>
-              <button className="live-window-chip-main" onClick={() => onFocus(windowItem.id)} type="button">
-                {windowItem.type === "chart" ? <BarChart3 size={14} /> : <LayoutGrid size={14} />}
-                <span>{windowItem.title}</span>
-                <small>{windowItem.minimized ? "Minimized" : windowItem.fullscreen ? "Fullscreen" : `Layer ${windowItem.z}`}</small>
-              </button>
-              <div className="live-window-chip-actions">
-                <div className="live-canvas-target-row" aria-label={`Move ${windowItem.title} to canvas`}>
-                  {canvasTargets.map((target) => (
-                    <button
-                      className={target.isCurrent ? "live-canvas-target active" : "live-canvas-target"}
-                      key={target.id}
-                      onClick={() => onMoveToCanvas(windowItem.id, target.id)}
-                      style={{ "--canvas-color": target.color } as CSSProperties}
-                      title={target.isCurrent ? `Current: ${target.label}` : `Move to ${target.label}`}
-                      type="button"
-                    >
-                      {target.label.replace("Canvas ", "C").replace("Main", "M")}
-                    </button>
-                  ))}
-                </div>
-                <button className="toolbar-button compact" onClick={() => onFocus(windowItem.id)} title="Show window" type="button">
-                  <Eye size={13} />
-                </button>
-                <button className="toolbar-button compact" onClick={() => onMinimize(windowItem.id, !windowItem.minimized)} title={windowItem.minimized ? "Restore window" : "Minimize window"} type="button">
-                  {windowItem.minimized ? <Maximize2 size={13} /> : <Minimize2 size={13} />}
-                </button>
-                <button className="toolbar-button compact" onClick={() => onPopOut(windowItem.id)} title="Move to new child canvas" type="button">
-                  <ExternalLink size={13} />
-                </button>
-                <button className="toolbar-button compact" onClick={() => onClose(windowItem.id)} title="Close window" type="button">
-                  <X size={13} />
-                </button>
-              </div>
-            </article>
-          ))}
-        </div>
-      ) : (
-        <div className="live-empty-positions">No open windows on this canvas.</div>
-      )}
-    </section>
-  );
-}
-
-function LiveCanvasManager({
-  canvases,
-  onCreate,
-  onOpen,
-  onRemove,
-}: {
-  canvases: LiveCanvasTarget[];
-  onCreate: () => void;
-  onOpen: (canvasId: string) => void;
-  onRemove: (canvasId: string) => void;
-}) {
-  return (
-    <section className="live-canvas-manager" aria-label="Workspace canvases">
-      <div className="live-window-manager-heading">
-        <div>
-          <span>Canvases</span>
-          <strong>{canvases.length} page{canvases.length === 1 ? "" : "s"}</strong>
-        </div>
-        <button className="button secondary compact" onClick={onCreate} type="button">
-          <LayoutGrid size={14} /> New Canvas
-        </button>
-      </div>
-      <div className="live-canvas-chip-grid">
-        {canvases.map((canvas) => (
-          <article className={canvas.isCurrent ? "live-canvas-chip active" : "live-canvas-chip"} key={canvas.id} style={{ "--canvas-color": canvas.color } as CSSProperties}>
-            <button className="live-canvas-chip-main" onClick={() => onOpen(canvas.id)} type="button" title={`Open ${canvas.label} in a new tab`}>
-              <span>{canvas.label}</span>
-              <small>{canvas.isCurrent ? "Current page" : canvas.id}</small>
-            </button>
-            <div className="live-window-chip-actions">
-              <button className="toolbar-button compact" onClick={() => onOpen(canvas.id)} title="Open canvas in new tab" type="button">
-                <ExternalLink size={13} />
-              </button>
-              <button
-                className="toolbar-button compact"
-                disabled={canvas.id === "main" || canvas.isCurrent}
-                onClick={() => onRemove(canvas.id)}
-                title={canvas.id === "main" ? "Main canvas cannot be removed" : canvas.isCurrent ? "Current canvas cannot be removed from itself" : "Remove canvas"}
-                type="button"
-              >
-                <X size={13} />
-              </button>
-            </div>
-          </article>
-        ))}
-      </div>
-    </section>
   );
 }
 
@@ -4109,32 +3821,15 @@ function gateToneFromStatus(status: string): GateProgressStep["tone"] {
   return "info";
 }
 
-function buildLiveWindowSummaries(openWindows: WindowId[], chartWindows: ChartWindow[], layouts: Record<WindowId, WindowLayout>): LiveWindowSummary[] {
-  return openWindows
-    .map((id) => {
-      const chart = chartWindows.find((item) => item.id === id);
-      const layout = layouts[id];
-      return {
-        fullscreen: Boolean(layout?.fullscreen),
-        id,
-        minimized: Boolean(layout?.minimized),
-        title: chart?.ticker ?? coreWindowTitle(id),
-        type: chart ? "chart" as const : "core" as const,
-        z: layout?.z ?? 0,
-      };
-    })
-    .sort((a, b) => b.z - a.z);
+function buildLiveWindowSummaries(openWindows: WindowId[], chartWindows: ChartWindow[], layouts: Record<WindowId, WindowLayout>) {
+  return buildWorkspaceWindowSummaries(openWindows, layouts, (id) => {
+    const chart = chartWindows.find((item) => item.id === id);
+    return { kind: chart ? "chart" : "core", title: chart?.ticker ?? coreWindowTitle(id) };
+  });
 }
 
 function liveWorkspaceMinHeight(openWindows: WindowId[], layouts: Record<WindowId, WindowLayout>, compact: boolean) {
-  const viewportHeight = typeof window === "undefined" ? 1024 : window.innerHeight;
-  const baseHeight = Math.max(viewportHeight, compact ? 960 : 900);
-  return openWindows.reduce((height, id) => {
-    const layout = layouts[id];
-    if (!layout || layout.fullscreen) return height;
-    const windowHeight = layout.minimized ? 34 : layout.h;
-    return Math.max(height, layout.y + windowHeight + 24);
-  }, baseHeight);
+  return calculateWorkspaceMinHeight(openWindows, layouts, compact);
 }
 
 function coreWindowTitle(id: WindowId) {

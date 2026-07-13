@@ -1,38 +1,32 @@
 import type { ReactNode } from "react";
-import { Activity, BrainCircuit, Check, ChevronLeft, ChevronRight, DatabaseZap, FileText, Landmark, Newspaper, Palette, RadioTower, ServerCog, Wifi } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Activity, Check, ChevronLeft, ChevronRight, History, Palette, ServerCog, Wifi } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { buildMenuItemButtonClassName, buildThemeMenuItemButtonClassName } from "../selectionStyles";
 import { APP_THEMES, DEFAULT_THEME_ID, applyThemeDefinition, isAppThemeId, type AppThemeDefinition, type AppThemeId } from "../theme";
 
-export type PageKey = "real-live-trading" | "services-dashboard" | "service-qmd" | "service-news" | "service-sec" | "service-text-embed" | "service-reference" | "service-ibkr";
+export type PageKey = "real-live-trading" | "replay-trading" | "services-dashboard" | "service-qmd" | "service-news" | "service-sec" | "service-text-embed" | "service-reference" | "service-ibkr";
 export type UiScale = 0.8 | 0.9 | 1 | 1.1 | 1.25;
 
 type LayoutProps = {
   page: PageKey;
   onPageChange: (page: PageKey) => void;
   children: ReactNode;
-  scaleOverride?: UiScale;
   topbarCenter?: ReactNode;
 };
 
 const navGroups = [
   {
-    label: "Live Trading",
+    label: "Trading Workspaces",
     items: [
-      { key: "real-live-trading" as PageKey, label: "Live", icon: Wifi }
+      { key: "real-live-trading" as PageKey, label: "Live", icon: Wifi },
+      { key: "replay-trading" as PageKey, label: "Replay", icon: History }
     ]
   },
   {
-    label: "Services",
+    label: "System",
     items: [
-      { key: "services-dashboard" as PageKey, label: "Dashboard", icon: ServerCog },
-      { key: "service-qmd" as PageKey, label: "QMD", icon: RadioTower },
-      { key: "service-news" as PageKey, label: "News", icon: Newspaper },
-      { key: "service-sec" as PageKey, label: "SEC", icon: FileText },
-      { key: "service-text-embed" as PageKey, label: "Embeddings", icon: BrainCircuit },
-      { key: "service-reference" as PageKey, label: "Reference", icon: DatabaseZap },
-      { key: "service-ibkr" as PageKey, label: "IBKR", icon: Landmark }
+      { key: "services-dashboard" as PageKey, label: "Service Health", icon: ServerCog }
     ]
   }
 ];
@@ -45,12 +39,10 @@ export function Layout({
   children,
   onPageChange,
   page,
-  scaleOverride,
   topbarCenter
 }: LayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
-  const lastAppliedScaleOverrideRef = useRef<UiScale | undefined>(undefined);
   const [themeId, setThemeId] = useState<AppThemeId>(() => {
     const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
     return stored && isAppThemeId(stored) ? stored : DEFAULT_THEME_ID;
@@ -65,16 +57,6 @@ export function Layout({
   }, [themeId]);
 
   useEffect(() => {
-    if (scaleOverride === undefined) {
-      lastAppliedScaleOverrideRef.current = undefined;
-      return;
-    }
-    if (scaleOverride === lastAppliedScaleOverrideRef.current) return;
-    lastAppliedScaleOverrideRef.current = scaleOverride;
-    setUiScale(scaleOverride);
-  }, [scaleOverride]);
-
-  useEffect(() => {
     document.documentElement.style.setProperty("--app-zoom", String(uiScale));
     document.documentElement.style.setProperty("--app-zoom-inverse", String(1 / uiScale));
     document.documentElement.style.setProperty("--app-zoomed-viewport-height", `${100 / uiScale}vh`);
@@ -85,7 +67,7 @@ export function Layout({
   }, [uiScale]);
 
   useEffect(() => {
-    if (page === "real-live-trading") setCollapsed(true);
+    if (page === "real-live-trading" || page === "replay-trading") setCollapsed(true);
   }, [page]);
 
   function selectTheme(nextThemeId: AppThemeId) {
@@ -147,16 +129,20 @@ export function Layout({
                   {group.items.map((item) => {
                     const Icon = item.icon;
                     return (
-                      <button
+                      <a
+                        aria-current={page === item.key ? "page" : undefined}
                         className={buildMenuItemButtonClassName(page === item.key)}
+                        href={`#${item.key}`}
                         key={item.key}
-                        onClick={() => onPageChange(item.key)}
-                        type="button"
+                        onClick={(event) => {
+                          event.preventDefault();
+                          onPageChange(item.key);
+                        }}
                         title={item.label}
                       >
                         <Icon size={17} />
                         {!collapsed ? <span>{item.label}</span> : null}
-                      </button>
+                      </a>
                     );
                   })}
                 </div>

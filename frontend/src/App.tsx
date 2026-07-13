@@ -1,10 +1,11 @@
 import { useEffect, useState, type ReactNode } from "react";
 
-import { Layout, type PageKey, type UiScale } from "./app/components/Layout";
+import { Layout, type PageKey } from "./app/components/Layout";
+import { LiveTradingPage } from "./pages/LiveTradingPage";
 import { RealLiveTradingPage } from "./pages/RealLiveTradingPage";
 import { ServicesPage, type ServicePageMode } from "./pages/ServicesPage";
 
-const validPages: PageKey[] = ["real-live-trading", "services-dashboard", "service-qmd", "service-news", "service-sec", "service-text-embed", "service-reference", "service-ibkr"];
+const validPages: PageKey[] = ["real-live-trading", "replay-trading", "services-dashboard", "service-qmd", "service-news", "service-sec", "service-text-embed", "service-reference", "service-ibkr"];
 
 export function App() {
   const [page, setPage] = useState<PageKey>(() => {
@@ -13,13 +14,20 @@ export function App() {
   });
   const [visitedPages, setVisitedPages] = useState<Set<PageKey>>(() => new Set([page]));
   const [topbarCenter, setTopbarCenter] = useState<ReactNode>(null);
-  const [realLiveScale, setRealLiveScale] = useState<UiScale | undefined>(undefined);
 
   useEffect(() => {
-    window.location.hash = page;
-    if (page !== "real-live-trading") {
+    const syncPageFromHash = () => {
+      const hashPage = window.location.hash.replace("#", "") as PageKey;
+      if (validPages.includes(hashPage)) setPage(hashPage);
+    };
+    window.addEventListener("hashchange", syncPageFromHash);
+    return () => window.removeEventListener("hashchange", syncPageFromHash);
+  }, []);
+
+  useEffect(() => {
+    if (window.location.hash !== `#${page}`) window.location.hash = page;
+    if (page !== "real-live-trading" && page !== "replay-trading") {
       setTopbarCenter(null);
-      setRealLiveScale(undefined);
     }
     setVisitedPages((current) => {
       if (current.has(page)) return current;
@@ -28,9 +36,12 @@ export function App() {
   }, [page]);
 
   return (
-    <Layout page={page} onPageChange={setPage} scaleOverride={realLiveScale} topbarCenter={topbarCenter}>
+    <Layout page={page} onPageChange={setPage} topbarCenter={topbarCenter}>
       <div aria-hidden={page !== "real-live-trading"} className={page === "real-live-trading" ? "page-cache-panel active" : "page-cache-panel"}>
-        {page === "real-live-trading" || visitedPages.has("real-live-trading") ? <RealLiveTradingPage onScalePreferenceChange={page === "real-live-trading" ? setRealLiveScale : undefined} onTopbarCenterChange={page === "real-live-trading" ? setTopbarCenter : undefined} /> : null}
+        {page === "real-live-trading" || visitedPages.has("real-live-trading") ? <RealLiveTradingPage onTopbarCenterChange={page === "real-live-trading" ? setTopbarCenter : undefined} /> : null}
+      </div>
+      <div aria-hidden={page !== "replay-trading"} className={page === "replay-trading" ? "page-cache-panel active" : "page-cache-panel"}>
+        {page === "replay-trading" || visitedPages.has("replay-trading") ? <LiveTradingPage onTopbarCenterChange={page === "replay-trading" ? setTopbarCenter : undefined} /> : null}
       </div>
       {servicePageMode(page) ? (
         <div className="page-cache-panel active">
