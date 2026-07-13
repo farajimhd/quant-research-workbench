@@ -74,6 +74,7 @@ class HistoricalFillProgress:
         self.output_tail: list[str] = []
         self.archive_worker_states: dict[int, dict[str, object]] = {}
         self.archive_overall: dict[str, object] = {}
+        self.archive_failure: dict[str, object] = {}
         self._live = None
         self._render = None
 
@@ -142,6 +143,14 @@ class HistoricalFillProgress:
             tail_text = Text("\n".join(self.output_tail[-18:]) or "No stage output yet.", no_wrap=False)
             current = Text(f"run_root={self.run_root}\ncurrent_stage={self.current_stage or '-'}\ncommand={self.current_command or '-'}", no_wrap=False)
             sections = [table, Panel(current, title="Current")]
+            if self.archive_failure:
+                failure = self.archive_failure
+                failure_text = Text(
+                    f"lane={failure.get('lane', '-')} archive={failure.get('archive', '-')}\n"
+                    f"{failure.get('error') or 'Archive worker failed without an error message.'}",
+                    no_wrap=False,
+                )
+                sections.append(Panel(failure_text, title="Archive Failure - Stopping", border_style="red"))
             if archive_table is not None:
                 overall_total = int(self.archive_overall.get("total") or 0)
                 already = int(self.archive_overall.get("already_completed") or 0)
@@ -190,6 +199,10 @@ class HistoricalFillProgress:
                 lane = int(payload.get("lane") or 0)
                 if lane:
                     self.archive_worker_states[lane] = payload
+                if payload.get("stage") == "failed" and not self.archive_failure:
+                    self.archive_failure = payload
+                    if self.current_stage:
+                        self.status_by_stage[self.current_stage] = "stopping: failed"
             self.refresh()
             return
         if clean:
@@ -215,7 +228,7 @@ class HistoricalFillProgress:
 def archive_stage_cell(name: str, active_stage: str, durations: dict[str, object]) -> str:
     if name in durations:
         return f"{float(durations[name]):.1f}s"
-    order = {"extract": 0, "preflight": 1, "insert": 2, "verify": 3, "cleanup": 4, "done": 5, "failed": -1}
+    order = {"extract": 0, "preflight": 1, "insert": 2, "verify": 3, "cleanup": 4, "done": 5, "failed": -1, "cancelled": -1}
     if active_stage == name:
         return "active"
     if order.get(active_stage, -1) > order[name]:
@@ -312,6 +325,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--text-ingest-max-memory-usage", default=os.environ.get("SEC_TEXT_FILE_INGEST_MAX_MEMORY", "64G"))
     parser.add_argument("--text-worker-insert-max-threads", type=int, default=int(os.environ.get("SEC_ARCHIVE_INSERT_MAX_THREADS", "4")))
     parser.add_argument("--text-worker-insert-max-memory-usage", default=os.environ.get("SEC_ARCHIVE_INSERT_MAX_MEMORY", "16G"))
+    parser.add_argument("--text-input-max-block-rows", type=int, default=int(os.environ.get("SEC_ARCHIVE_INPUT_MAX_BLOCK_ROWS", "16")))
+    parser.add_argument("--text-insert-concurrency", type=int, default=int(os.environ.get("SEC_ARCHIVE_TEXT_INSERT_CONCURRENCY", "2")))
     parser.add_argument("--text-archive-manifest-table", default=env_string("SEC_ARCHIVE_INGEST_MANIFEST_TABLE", "sec_filing_archive_ingest_manifest_v3"))
     parser.add_argument("--limit-days", type=int, default=0)
     parser.add_argument("--limit-archives", type=int, default=0)
@@ -621,6 +636,11 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                     str(max(1, args.text_worker_insert_max_threads)),
                     "--insert-max-memory-usage",
                     str(args.text_worker_insert_max_memory_usage),
+                    "--no-input-format-parallel-parsing",
+                    "--input-max-block-rows",
+                    str(max(1, args.text_input_max_block_rows)),
+                    "--text-insert-concurrency",
+                    str(max(1, args.text_insert_concurrency)),
                     "--archive-manifest-table",
                     args.text_archive_manifest_table,
                     "--compress-parts",

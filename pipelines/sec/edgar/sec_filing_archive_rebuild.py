@@ -65,6 +65,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=int(os.environ.get("SEC_ARCHIVE_REBUILD_WORKERS", "32")))
     parser.add_argument("--insert-max-threads", type=int, default=int(os.environ.get("SEC_ARCHIVE_INSERT_MAX_THREADS", "4")))
     parser.add_argument("--insert-max-memory-usage", default=os.environ.get("SEC_ARCHIVE_INSERT_MAX_MEMORY", "16G"))
+    parser.add_argument(
+        "--input-format-parallel-parsing",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable parallel JSONEachRow parsing. Disabled by default for uncapped SEC source-text rows.",
+    )
+    parser.add_argument("--input-max-block-rows", type=int, default=int(os.environ.get("SEC_ARCHIVE_INPUT_MAX_BLOCK_ROWS", "16")))
+    parser.add_argument("--text-insert-concurrency", type=int, default=int(os.environ.get("SEC_ARCHIVE_TEXT_INSERT_CONCURRENCY", "2")))
     parser.add_argument("--part-manifest-table", default=os.environ.get("SEC_TEXT_FILE_INGEST_MANIFEST_TABLE", file_ingest.DEFAULT_PART_MANIFEST_TABLE))
     parser.add_argument("--archive-manifest-table", default=os.environ.get("SEC_ARCHIVE_INGEST_MANIFEST_TABLE", DEFAULT_ARCHIVE_MANIFEST_TABLE))
     parser.add_argument("--storage-policy", default=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY", os.environ.get("CLICKHOUSE_STORAGE_POLICY", "")))
@@ -158,7 +166,8 @@ def main() -> None:
     )
     payloads = [lane_payload(args, source_run_id, run_root, lane_index + 1, lane) for lane_index, lane in enumerate(lanes)]
     results = run_lanes(payloads, args.progress_layout)
-    failed = [item for result in results for item in result.get("archives", []) if item.get("status") != "ok"]
+    failed = [item for result in results for item in result.get("archives", []) if item.get("status") == "failed"]
+    cancelled = [item for result in results for item in result.get("archives", []) if item.get("status") == "cancelled"]
     completed = sum(int(result.get("completed") or 0) for result in results)
     write_run_summary(run_root, args, source_run_id, len(archives), already_completed + completed, results, loaded_env)
     if not failed and args.cleanup_parts:
@@ -166,10 +175,10 @@ def main() -> None:
     cleanup_empty_part_directories(Path(args.output_root_win))
     print(
         f"archive_rebuild_done completed={already_completed + completed:,}/{len(archives):,} "
-        f"failed={len(failed):,} run_root={run_root}",
+        f"failed={len(failed):,} cancelled={len(cancelled):,} run_root={run_root}",
         flush=True,
     )
-    if failed:
+    if failed or cancelled:
         raise SystemExit(1)
 
 
@@ -183,6 +192,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--start-date must be earlier than --end-date")
     if int(args.workers) < 1:
         raise SystemExit("--workers must be positive")
+    if int(args.input_max_block_rows) < 1:
+        raise SystemExit("--input-max-block-rows must be positive")
+    if int(args.text_insert_concurrency) < 1:
+        raise SystemExit("--text-insert-concurrency must be positive")
 
 
 def bounded_worker_count(requested: int, task_count: int) -> int:
@@ -238,6 +251,9 @@ def lane_payload(args: argparse.Namespace, source_run_id: str, run_root: Path, l
         "storage_policy": args.storage_policy,
         "insert_max_threads": max(1, int(args.insert_max_threads)),
         "insert_max_memory_usage": args.insert_max_memory_usage,
+        "input_format_parallel_parsing": bool(args.input_format_parallel_parsing),
+        "input_max_block_rows": max(1, int(args.input_max_block_rows)),
+        "text_insert_concurrency": max(1, int(args.text_insert_concurrency)),
         "max_filings_per_archive": max(0, int(args.max_filings_per_archive)),
         "sample_limit_per_archive": max(0, int(args.sample_limit_per_archive)),
         "sample_text_chars": max(0, int(args.sample_text_chars)),
@@ -256,8 +272,12 @@ def run_lanes(payloads: list[dict[str, Any]], progress_layout: str) -> list[dict
     results: list[dict[str, Any]] = []
     with multiprocessing.Manager() as manager:
         event_queue = manager.Queue()
+        stop_event = manager.Event()
+        text_insert_semaphore = manager.BoundedSemaphore(max(1, int(payloads[0].get("text_insert_concurrency", 2))))
         for payload in payloads:
             payload["event_queue"] = event_queue
+            payload["stop_event"] = stop_event
+            payload["text_insert_semaphore"] = text_insert_semaphore
         with concurrent.futures.ProcessPoolExecutor(max_workers=len(payloads)) as pool:
             futures = [pool.submit(process_lane, payload) for payload in payloads]
             while futures:
@@ -282,12 +302,16 @@ def process_lane(payload: dict[str, Any]) -> dict[str, Any]:
     lane = int(payload["lane"])
     tasks = list(payload["tasks"])
     event_queue = payload["event_queue"]
+    stop_event = payload["stop_event"]
+    text_insert_semaphore = payload["text_insert_semaphore"]
     client = ClickHouseHttpClient(payload["clickhouse_url"], payload["user"], payload["password"])
     args = ingest_namespace(SimpleNamespace(**payload))
     latest_part_status = file_ingest.load_latest_part_status(client, args)
     archive_results: list[dict[str, Any]] = []
     completed = 0
     for position, task in enumerate(tasks, start=1):
+        if stop_event.is_set():
+            break
         archive_started = time.perf_counter()
         stages: dict[str, float] = {}
         part_paths: list[Path] = []
@@ -300,26 +324,56 @@ def process_lane(payload: dict[str, Any]) -> dict[str, Any]:
                 extraction_started = time.perf_counter()
                 result = extractor.process_archive_worker(extractor_payload(payload, task))
                 stages["extract"] = time.perf_counter() - extraction_started
+                if result.get("status") == "cancelled":
+                    cleanup_result_parts(result)
+                    archive_results.append(cancelled_archive_row(event_queue, lane, task, position, len(tasks), stages, archive_started))
+                    break
                 if result.get("status") != "ok":
                     cleanup_result_parts(result)
                     raise RuntimeError(f"archive extraction failed: {result.get('errors')}")
                 write_json(Path(task["state_path"]), {"status": "extracted", "task": task, "result": result})
             part_paths = [Path(item["path"]) for item in result.get("part_files", [])]
+            if stop_event.is_set():
+                archive_results.append(cancelled_archive_row(event_queue, lane, task, position, len(tasks), stages, archive_started, result))
+                break
             emit_lane(event_queue, lane, task, position, len(tasks), "preflight", stages, result=result)
             parts, preflight_seconds = build_and_preflight_parts(client, args, task, result)
             stages["preflight"] = preflight_seconds
+            if stop_event.is_set():
+                archive_results.append(cancelled_archive_row(event_queue, lane, task, position, len(tasks), stages, archive_started, result))
+                break
             emit_lane(event_queue, lane, task, position, len(tasks), "insert", stages, result=result)
             insert_started = time.perf_counter()
+            cancelled = False
             for part in parts:
+                if stop_event.is_set():
+                    cancelled = True
+                    break
                 key = (part.run_id, part.dataset_name, part.part_index)
                 if latest_part_status.get(key) == "ok":
                     continue
-                profile = file_ingest.insert_one_part(client, args, part)
+                acquired = False
+                if part.dataset_name in {"text_source", "text"}:
+                    while not stop_event.is_set():
+                        if text_insert_semaphore.acquire(timeout=0.25):
+                            acquired = True
+                            break
+                    if not acquired:
+                        cancelled = True
+                        break
+                try:
+                    profile = file_ingest.insert_one_part(client, args, part)
+                finally:
+                    if acquired:
+                        text_insert_semaphore.release()
                 file_ingest.insert_part_manifest(client, args, part, profile)
                 if profile.status != "ok":
                     raise RuntimeError(profile.exception)
                 latest_part_status[key] = "ok"
             stages["insert"] = time.perf_counter() - insert_started
+            if cancelled or stop_event.is_set():
+                archive_results.append(cancelled_archive_row(event_queue, lane, task, position, len(tasks), stages, archive_started, result))
+                break
             emit_lane(event_queue, lane, task, position, len(tasks), "verify", stages, result=result)
             verify_started = time.perf_counter()
             verify_parts_inserted(parts, latest_part_status)
@@ -340,13 +394,31 @@ def process_lane(payload: dict[str, Any]) -> dict[str, Any]:
             emit_lane(event_queue, lane, task, position, len(tasks), "done", stages, result=result, status="ok")
         except Exception as exc:  # noqa: BLE001
             error = repr(exc)
+            stop_event.set()
             try:
                 insert_archive_manifest(client, payload, task, {}, status="failed", error=error)
             except Exception:
                 pass
             archive_results.append(archive_result_row(task, {}, stages, time.perf_counter() - archive_started, "failed", error))
             emit_lane(event_queue, lane, task, position, len(tasks), "failed", stages, status="failed", error=error)
+            break
     return {"lane": lane, "assigned": len(tasks), "completed": completed, "archives": archive_results}
+
+
+def cancelled_archive_row(
+    event_queue: Any,
+    lane: int,
+    task: dict[str, Any],
+    position: int,
+    total: int,
+    stages: dict[str, float],
+    archive_started: float,
+    result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    error = "cancelled after peer archive failure"
+    result = result or {}
+    emit_lane(event_queue, lane, task, position, total, "cancelled", stages, result=result, status="cancelled", error=error)
+    return archive_result_row(task, result, stages, time.perf_counter() - archive_started, "cancelled", error)
 
 
 def extractor_payload(payload: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
@@ -359,6 +431,7 @@ def extractor_payload(payload: dict[str, Any], task: dict[str, Any]) -> dict[str
         "clickhouse_url": payload["clickhouse_url"],
         "user": payload["user"],
         "password": payload["password"],
+        "stop_event": payload.get("stop_event"),
         "max_filings_per_archive": payload["max_filings_per_archive"],
         "sample_limit": payload["sample_limit_per_archive"],
         "sample_text_chars": payload["sample_text_chars"],
@@ -379,6 +452,8 @@ def ingest_namespace(args: Any) -> SimpleNamespace:
         parts_root_ch=getattr(args, "parts_root_ch", DEFAULT_PARTS_ROOT_CH),
         max_threads=max(1, int(getattr(args, "insert_max_threads", 4))),
         max_memory_usage=str(getattr(args, "insert_max_memory_usage", "16G")),
+        input_format_parallel_parsing=bool(getattr(args, "input_format_parallel_parsing", False)),
+        input_max_block_rows=max(1, int(getattr(args, "input_max_block_rows", 16))),
         execute=True,
         force=False,
         retry_failed=True,
@@ -681,7 +756,7 @@ def emit_lane(
             "rows": sum(int(result.get(key) or 0) for key in ("document_rows", "text_source_rows", "text_rows", "skip_rows")),
             "temp_bytes": temp_bytes,
             "status": status,
-            "error": error[:500],
+            "error": error[:2000],
             "recovery": task["kind"] == "recovery",
         }
     )
@@ -690,7 +765,7 @@ def emit_lane(
 def emit_event(layout: str, payload: dict[str, Any]) -> None:
     if layout == "events":
         print(EVENT_PREFIX + json.dumps(payload, separators=(",", ":"), ensure_ascii=True), flush=True)
-    elif payload.get("kind") == "lane" and payload.get("stage") in {"done", "failed"}:
+    elif payload.get("kind") == "lane" and payload.get("stage") in {"done", "failed", "cancelled"}:
         print(
             f"lane={payload['lane']} archive={payload['archive']} progress={payload['position']}/{payload['total']} "
             f"status={payload['status']} rows={payload['rows']}",
@@ -782,7 +857,8 @@ def write_run_summary(
         "end_date": args.end_date,
         "archive_count": archive_count,
         "archives_completed": completed,
-        "archives_failed": sum(1 for row in archives if row.get("status") != "ok"),
+        "archives_failed": sum(1 for row in archives if row.get("status") == "failed"),
+        "archives_cancelled": sum(1 for row in archives if row.get("status") == "cancelled"),
         "workers": bounded_worker_count(args.workers, archive_count),
         "cleanup_parts": bool(args.cleanup_parts),
         "compress_parts": bool(args.compress_parts),

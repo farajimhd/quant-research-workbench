@@ -21,6 +21,19 @@ Preflight, Insert, Verify, Cleanup, lane progress, row count, and current
 temporary size columns. An overall archive progress bar includes archives
 already completed by an earlier run.
 
+The rebuild fails fast on the first archive error. The terminal retains a red
+failure panel with the archive, lane, and exception; all lanes stop taking new
+archives, active extractors stop at the next filing-member boundary, and fully
+written parts remain eligible for resume. Peer-cancelled archives are reported
+separately from the original failure.
+
+Complete SEC source text can produce JSONEachRow records far wider than
+ClickHouse's parallel parser chunk. The archive path therefore defaults to
+`--no-input-format-parallel-parsing --input-max-block-rows 16` and permits only
+two concurrent source/rendered-text inserts. Extraction still uses all 32
+workers; only the memory-sensitive ClickHouse text inserts are serialized by
+`--text-insert-concurrency 2`.
+
 Run through the unified historical fill:
 
 ```powershell
@@ -35,6 +48,9 @@ python pipelines\sec\edgar\sec_filing_archive_rebuild.py `
   --start-date 2019-01-01 `
   --end-date 2026-07-12 `
   --workers 32 `
+  --no-input-format-parallel-parsing `
+  --input-max-block-rows 16 `
+  --text-insert-concurrency 2 `
   --execute
 ```
 

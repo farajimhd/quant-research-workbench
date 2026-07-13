@@ -100,6 +100,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--parts-root-ch", default=os.environ.get("SEC_TEXT_PARTS_ROOT_CH") or os.environ.get("TD__DATABASE__CLICKHOUSE__FILE_ROOT") or str(DEFAULT_PARTS_ROOT_CH))
     parser.add_argument("--max-threads", type=int, default=int(os.environ.get("SEC_TEXT_FILE_INGEST_MAX_THREADS", "24")))
     parser.add_argument("--max-memory-usage", default=os.environ.get("SEC_TEXT_FILE_INGEST_MAX_MEMORY", "0"))
+    parser.add_argument(
+        "--input-format-parallel-parsing",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable parallel JSONEachRow parsing. Disabled by default because complete SEC source-text rows can exceed the parser chunk limit.",
+    )
+    parser.add_argument(
+        "--input-max-block-rows",
+        type=int,
+        default=int(os.environ.get("SEC_TEXT_FILE_INGEST_MAX_BLOCK_ROWS", "16")),
+        help="Maximum parsed rows per ClickHouse input block. Keep small for wide uncapped SEC text rows.",
+    )
     parser.add_argument("--limit-parts", type=int, default=int(os.environ.get("SEC_TEXT_FILE_INGEST_LIMIT_PARTS", "0")))
     parser.add_argument("--dataset", choices=["all", "filing", "document", "text_source", "text", "skip"], default="all")
     parser.add_argument("--execute", action="store_true", help="Actually insert rows. Without this, only validate and print SQL.")
@@ -455,7 +467,10 @@ def settings_sql(args: argparse.Namespace) -> str:
     settings = [
         "input_format_skip_unknown_fields = 0",
         "date_time_input_format = 'best_effort'",
+        f"input_format_parallel_parsing = {1 if bool(getattr(args, 'input_format_parallel_parsing', False)) else 0}",
     ]
+    if int(getattr(args, "input_max_block_rows", 16)) > 0:
+        settings.append(f"max_block_size = {int(getattr(args, 'input_max_block_rows', 16))}")
     if args.max_threads > 0:
         settings.append(f"max_threads = {int(args.max_threads)}")
     if str(args.max_memory_usage) != "0":

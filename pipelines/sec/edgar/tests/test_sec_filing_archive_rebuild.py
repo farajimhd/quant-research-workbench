@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import tempfile
 import tarfile
 import unittest
@@ -14,6 +15,19 @@ from pipelines.sec.edgar import sec_historical_gap_fill as historical
 
 
 class SecFilingArchiveRebuildTests(unittest.TestCase):
+    def test_sec_file_ingest_disables_parallel_json_parsing_by_default(self) -> None:
+        settings = ingest.settings_sql(SimpleNamespace(max_threads=4, max_memory_usage="16G"))
+
+        self.assertIn("input_format_parallel_parsing = 0", settings)
+        self.assertIn("max_block_size = 16", settings)
+
+    def test_sec_file_ingest_can_explicitly_enable_parallel_json_parsing(self) -> None:
+        settings = ingest.settings_sql(
+            SimpleNamespace(max_threads=4, max_memory_usage="16G", input_format_parallel_parsing=True)
+        )
+
+        self.assertIn("input_format_parallel_parsing = 1", settings)
+
     def test_partition_tasks_assigns_balanced_fixed_lanes(self) -> None:
         tasks = [{"archive_date": f"day-{index}"} for index in range(300)]
 
@@ -92,6 +106,124 @@ class SecFilingArchiveRebuildTests(unittest.TestCase):
 
         self.assertEqual(command[-1], "--execute")
 
+    def test_historical_archive_stage_disables_parallel_json_parsing(self) -> None:
+        with mock.patch.object(historical.sys, "argv", ["sec_historical_gap_fill.py"]):
+            args = historical.parse_args()
+
+        stage = next(command for command in historical.build_commands(args, Path("logs")) if command.stage == "archive-text-rebuild")
+
+        self.assertIn("--no-input-format-parallel-parsing", stage.command)
+        self.assertEqual(stage.command[stage.command.index("--input-max-block-rows") + 1], "16")
+        self.assertEqual(stage.command[stage.command.index("--text-insert-concurrency") + 1], "2")
+
+    def test_archive_lane_stops_after_first_failure(self) -> None:
+        class FakeEvent:
+            def __init__(self) -> None:
+                self.value = False
+
+            def is_set(self) -> bool:
+                return self.value
+
+            def set(self) -> None:
+                self.value = True
+
+        class FakeQueue:
+            def __init__(self) -> None:
+                self.items: list[dict[str, object]] = []
+
+            def put(self, item: dict[str, object]) -> None:
+                self.items.append(item)
+
+        tasks = [
+            {
+                "kind": "extract",
+                "archive_key": f"key-{index}",
+                "archive_date": f"2026-07-0{index}",
+                "archive_path": f"D:/archives/2026070{index}.nc.tar.gz",
+                "state_path": f"D:/states/{index}.json",
+            }
+            for index in (1, 2)
+        ]
+        stop_event = FakeEvent()
+        event_queue = FakeQueue()
+        payload = {
+            "lane": 1,
+            "tasks": tasks,
+            "event_queue": event_queue,
+            "stop_event": stop_event,
+            "text_insert_semaphore": object(),
+            "clickhouse_url": "http://localhost",
+            "user": "default",
+            "password": "",
+            "database": "q_live",
+            "part_manifest_table": "parts",
+            "archive_manifest_table": "archives",
+            "insert_max_threads": 1,
+            "insert_max_memory_usage": "1G",
+        }
+        failed_result = {"status": "failed", "errors": [{"reason": "test failure"}], "part_files": []}
+
+        with (
+            mock.patch.object(rebuild, "ClickHouseHttpClient", return_value=object()),
+            mock.patch.object(rebuild.file_ingest, "load_latest_part_status", return_value={}),
+            mock.patch.object(rebuild, "extractor_payload", return_value={}),
+            mock.patch.object(rebuild.extractor, "process_archive_worker", return_value=failed_result) as process_archive,
+            mock.patch.object(rebuild, "insert_archive_manifest"),
+        ):
+            result = rebuild.process_lane(payload)
+
+        self.assertTrue(stop_event.is_set())
+        self.assertEqual(process_archive.call_count, 1)
+        self.assertEqual(len(result["archives"]), 1)
+        self.assertEqual(result["archives"][0]["status"], "failed")
+        self.assertEqual(event_queue.items[-1]["stage"], "failed")
+
+    def test_historical_progress_retains_first_archive_failure(self) -> None:
+        progress = historical.HistoricalFillProgress("text", [], Path("run"))
+        progress.current_stage = "archive-text-rebuild"
+
+        progress.log_line(
+            'SEC_ARCHIVE_EVENT={"kind":"lane","lane":7,"archive":"20260701.nc.tar.gz",'
+            '"stage":"failed","error":"oversized row","status":"failed"}'
+        )
+
+        self.assertEqual(progress.archive_failure["archive"], "20260701.nc.tar.gz")
+        self.assertEqual(progress.status_by_stage["archive-text-rebuild"], "stopping: failed")
+
+    def test_historical_failure_panel_renders_in_compact_terminal(self) -> None:
+        from rich.console import Console
+
+        class FakeLive:
+            current: object | None = None
+
+            def __init__(self, renderable: object, **_kwargs: object) -> None:
+                FakeLive.current = renderable
+
+            def __enter__(self) -> "FakeLive":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def update(self, renderable: object) -> None:
+                FakeLive.current = renderable
+
+        command = historical.StageCommand("archive-text-rebuild", ["python", "worker.py"], Path("worker.log"), True)
+        with mock.patch("rich.live.Live", FakeLive):
+            with historical.HistoricalFillProgress("rich", [command], Path("run")) as progress:
+                progress.current_stage = "archive-text-rebuild"
+                progress.log_line(
+                    'SEC_ARCHIVE_EVENT={"kind":"lane","lane":3,"archive":"20260701.nc.tar.gz",'
+                    '"stage":"failed","error":"oversized row","status":"failed"}'
+                )
+
+        for width in (80, 180):
+            console = Console(record=True, width=width, height=30, force_terminal=False, file=io.StringIO())
+            console.print(FakeLive.current)
+            rendered = console.export_text()
+            self.assertIn("Archive Failure - Stopping", rendered)
+            self.assertIn("oversized row", rendered)
+
     def test_archive_worker_writes_complete_gzip_parts(self) -> None:
         class FakeClickHouseClient:
             def __init__(self, *_args: object, **_kwargs: object) -> None:
@@ -153,6 +285,21 @@ ACCEPTANCE-DATETIME: 20260701120000
             with extractor.gzip.open(source_path, "rt", encoding="utf-8") as handle:
                 row = handle.readline()
             self.assertIn("Complete submitted text.", row)
+
+            class SetEvent:
+                def is_set(self) -> bool:
+                    return True
+
+            cancelled_payload = {
+                **payload,
+                "parts_root": str(root / "cancelled-parts"),
+                "stop_event": SetEvent(),
+            }
+            with mock.patch.object(extractor, "ClickHouseHttpClient", FakeClickHouseClient):
+                cancelled = extractor.process_archive_worker(cancelled_payload)
+
+            self.assertEqual(cancelled["status"], "cancelled")
+            self.assertEqual(cancelled["document_rows"], 0)
 
 
 if __name__ == "__main__":

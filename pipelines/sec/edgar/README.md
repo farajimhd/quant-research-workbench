@@ -64,6 +64,11 @@ not depend on ambient shell defaults. `--resume-from-coverage` is enabled by def
 `sec_stage_<stage_name>` rows after each successful stage. If a run fails, rerun
 the same command; completed stages for the same date range are skipped, and the
 final semantic coverage rows are written only after the whole run succeeds.
+Archive extraction/insertion stops all worker lanes after the first failure and
+keeps the first archive exception visible in the Rich terminal. Uncapped SEC
+source-text JSON uses serial parsing, 16-row input blocks, and two concurrent
+wide-text inserts so large valid filings do not hit ClickHouse's parallel
+parser limit or create unbounded aggregate memory pressure.
 The validation stage is self-healing for corrupt daily archives selected from
 the downloader manifest: if an archive scan fails, it redownloads that archive
 from the SEC source URL and rescans it before returning a failed status. This is

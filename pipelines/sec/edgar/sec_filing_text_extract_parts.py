@@ -520,6 +520,10 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
             tarfile.open(archive, "r:gz") as tar,
         ):
             for member in tar:
+                stop_event = payload.get("stop_event")
+                if stop_event is not None and stop_event.is_set():
+                    stats["status"] = "cancelled"
+                    break
                 if not member.isfile() or not member.name.lower().endswith(".nc"):
                     continue
                 if payload["max_filings_per_archive"] and stats["filings"] >= payload["max_filings_per_archive"]:
