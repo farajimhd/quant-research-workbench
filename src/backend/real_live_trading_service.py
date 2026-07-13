@@ -4,6 +4,7 @@ import json
 import os
 import re
 import ssl
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -20,12 +21,14 @@ from src.backend.qmd_gateway_client import qmd_scanner_snapshot
 from src.backend.real_live_market_data.clickhouse import ClickHouseHttpClient, quote_identifier
 from src.backend.real_live_market_data.config import market_gateway_config
 from src.market_engine.broker import AccountSnapshot, ExecutionFill, OrderSnapshot, PortfolioPosition
+from src.trading_runtime.ibkr_schema import OrderRequest as IbkrOrderRequest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NEW_YORK = ZoneInfo("America/New_York")
 DEFAULT_IBKR_BASE_URL = "https://localhost:5000/v1/api"
 DEFAULT_MASSIVE_BASE_URL = "https://api.massive.com"
+IBKR_ORDER_LANE = threading.RLock()
 
 
 @dataclass(frozen=True)
@@ -322,8 +325,13 @@ def submit_real_live_order_for_account(account: RealLiveAccount, order: dict[str
     payload = {"orders": [ibkr_order]}
     path = f"/iserver/account/{urllib.parse.quote(account.account_id, safe='')}/orders"
     if preview:
+        ibkr_get_json(
+            f"/iserver/marketdata/snapshot?conids={ibkr_order['conid']}&fields=31,84,86",
+            timeout=10,
+        )
         path += "/whatif"
-    result = ibkr_post_json(path, payload, timeout=10)
+    with IBKR_ORDER_LANE:
+        result = ibkr_post_json(path, payload, timeout=10)
     return {
         "account_key": account.account_key,
         "account_type": account.account_key,
@@ -381,24 +389,28 @@ def ibkr_order_payload(order: dict[str, Any], account_id: str) -> dict[str, Any]
     if quantity <= 0:
         raise ValueError("Order quantity must be positive.")
     order_type = normalize_order_type(str(order.get("order_type") or "LMT"))
-    payload: dict[str, Any] = {
-        "acctId": account_id,
-        "cOID": str(order.get("client_order_id") or ""),
-        "conid": int(order["conid"]) if order.get("conid") else lookup_ibkr_stock_conid(symbol),
-        "ticker": symbol,
-        "secType": "STK",
-        "orderType": order_type,
-        "side": side,
-        "quantity": quantity,
-        "tif": str(order.get("time_in_force") or "DAY").upper(),
-        "outsideRTH": bool(order.get("outside_rth", True)),
-    }
-    limit_price = float(order.get("limit_price") or 0)
-    if order_type == "LMT":
-        if limit_price <= 0:
-            raise ValueError("Limit orders require limit_price.")
-        payload["price"] = round(limit_price, 4)
-    return payload
+    conid = int(order["conid"]) if order.get("conid") else lookup_ibkr_stock_conid(symbol)
+    request = IbkrOrderRequest(
+        acctId=account_id,
+        cOID=str(order.get("client_order_id") or ""),
+        conid=conid,
+        ticker=symbol,
+        secType=f"{conid}:STK",
+        orderType=order_type,
+        side=side,
+        quantity=quantity,
+        tif=str(order.get("time_in_force") or "DAY").upper(),
+        outsideRTH=bool(order.get("outside_rth", True)),
+        price=_positive_optional(order.get("limit_price") or order.get("price")),
+        auxPrice=_positive_optional(order.get("stop_price") or order.get("aux_price")),
+        parentId=str(order.get("parent_id") or "") or None,
+        isSingleGroup=bool(order.get("is_single_group", False)),
+        manualIndicator=bool(order.get("manual_indicator", False)),
+        extOperator=str(order.get("ext_operator") or "") or None,
+        trailingAmt=_positive_optional(order.get("trailing_amount")),
+        trailingType=str(order.get("trailing_type") or "") or None,
+    )
+    return request.to_cpapi()
 
 
 def normalize_live_order_intent(order: dict[str, Any]) -> dict[str, Any]:
@@ -426,11 +438,16 @@ def normalize_live_order_intent(order: dict[str, Any]) -> dict[str, Any]:
             "time_in_force": str(normalized.get("time_in_force") or "DAY").upper(),
         }
     )
-    if order_type == "LMT":
+    if order_type in {"LMT", "STOP_LIMIT", "TRAILLMT"}:
         limit_price = float(normalized.get("limit_price") or 0)
         if limit_price <= 0:
-            raise ValueError("Limit orders require limit_price.")
+            raise ValueError(f"{order_type} orders require limit_price.")
         normalized["limit_price"] = round(limit_price, 4)
+    if order_type in {"STP", "STOP_LIMIT"}:
+        stop_price = float(normalized.get("stop_price") or normalized.get("aux_price") or 0)
+        if stop_price <= 0:
+            raise ValueError(f"{order_type} orders require stop_price.")
+        normalized["stop_price"] = round(stop_price, 4)
     return normalized
 
 
@@ -440,9 +457,53 @@ def normalize_order_type(value: str) -> str:
         return "LMT"
     if normalized == "MARKET":
         return "MKT"
-    if normalized not in {"LMT", "MKT"}:
-        raise ValueError("Only LMT and MKT orders are supported by the live page for now.")
+    if normalized == "STOP":
+        normalized = "STP"
+    if normalized == "STOP LIMIT":
+        normalized = "STOP_LIMIT"
+    if normalized not in {"LMT", "MKT", "STP", "STOP_LIMIT", "MIDPRICE", "TRAIL", "TRAILLMT"}:
+        raise ValueError(f"Unsupported IBKR order type: {value}")
     return normalized
+
+
+def _positive_optional(value: Any) -> float | None:
+    number = float(value or 0)
+    return round(number, 4) if number > 0 else None
+
+
+def reply_real_live_order(reply_id: str, confirmed: bool) -> dict[str, Any]:
+    reply_id = str(reply_id or "").strip()
+    if not reply_id:
+        raise ValueError("IBKR reply id is required.")
+    with IBKR_ORDER_LANE:
+        response = ibkr_post_json(
+            f"/iserver/reply/{urllib.parse.quote(reply_id, safe='')}",
+            {"confirmed": bool(confirmed)},
+            timeout=10,
+        )
+    return {"reply_id": reply_id, "confirmed": bool(confirmed), "broker_response": response, "requires_reply": response_requires_reply(response)}
+
+
+def modify_real_live_order(account_key: str, order_id: str, order: dict[str, Any]) -> dict[str, Any]:
+    account = resolve_real_live_accounts([account_key])[0]
+    if not account.account_id:
+        raise RuntimeError(f"Missing configured IBKR {account.label} account id.")
+    normalized = normalize_live_order_intent(order)
+    payload = ibkr_order_payload(normalized, account.account_id)
+    path = f"/iserver/account/{urllib.parse.quote(account.account_id, safe='')}/order/{urllib.parse.quote(str(order_id), safe='')}"
+    with IBKR_ORDER_LANE:
+        response = ibkr_post_json(path, payload, timeout=10)
+    return {"account": public_account(account), "order_id": str(order_id), "broker_response": response, "requires_reply": response_requires_reply(response)}
+
+
+def cancel_real_live_order(account_key: str, order_id: str) -> dict[str, Any]:
+    account = resolve_real_live_accounts([account_key])[0]
+    if not account.account_id:
+        raise RuntimeError(f"Missing configured IBKR {account.label} account id.")
+    path = f"/iserver/account/{urllib.parse.quote(account.account_id, safe='')}/order/{urllib.parse.quote(str(order_id), safe='')}"
+    with IBKR_ORDER_LANE:
+        response = ibkr_delete_json(path, timeout=10)
+    return {"account": public_account(account), "order_id": str(order_id), "broker_response": response}
 
 
 def normalize_submitted_order(order: dict[str, Any], response: Any, account: RealLiveAccount | None = None) -> dict[str, Any]:
@@ -1071,6 +1132,10 @@ def ibkr_get_optional(path: str, *, timeout: int) -> tuple[Any, str]:
 
 def ibkr_post_json(path: str, payload: dict[str, Any], *, timeout: int) -> Any:
     return http_json("POST", f"{ibkr_base_url()}{path}", payload=payload, timeout=timeout, allow_self_signed=True)
+
+
+def ibkr_delete_json(path: str, *, timeout: int) -> Any:
+    return http_json("DELETE", f"{ibkr_base_url()}{path}", timeout=timeout, allow_self_signed=True)
 
 
 def http_json(method: str, url: str, payload: dict[str, Any] | None = None, *, timeout: int, allow_self_signed: bool = False) -> Any:

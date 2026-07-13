@@ -68,11 +68,14 @@ from src.backend.progress_model import build_progress_model
 from src.backend.qmd_gateway_client import qmd_bars, qmd_catalogs, qmd_indicators, qmd_status
 from src.backend.real_live_trading_service import (
     apply_tradable_filter_to_scanner_payload,
+    cancel_real_live_order,
     configured_real_live_accounts,
+    modify_real_live_order,
     public_account,
     real_live_portfolio,
     real_live_preflight,
     real_live_scanner_snapshot,
+    reply_real_live_order,
     submit_real_live_order,
 )
 from src.backend.real_live_market_data import (
@@ -84,6 +87,7 @@ from src.backend.real_live_market_data import (
     market_gateway_universe_preview,
 )
 from src.backend.real_live_market_data.config import market_gateway_config
+from src.backend.trading_runtime_service import get_strategy_definition, list_strategy_definitions, save_strategy_definition
 from src.data_provider.calendar import market_sessions, scan_market_source
 from src.data_provider.catalog import provider_catalog, save_presentation_override
 from src.data_provider.config import (
@@ -389,6 +393,26 @@ class RealLiveOrderSubmit(BaseModel):
     account_keys: list[str] = Field(default_factory=list)
     order: dict[str, Any] = Field(default_factory=dict)
     preview: bool = False
+
+
+class RealLiveOrderReply(BaseModel):
+    reply_id: str
+    confirmed: bool
+
+
+class RealLiveOrderModify(BaseModel):
+    account_key: str
+    order: dict[str, Any] = Field(default_factory=dict)
+
+
+class StrategyDefinitionSubmit(BaseModel):
+    strategy_id: str
+    revision: int = Field(default=0, ge=0)
+    name: str
+    implementation: str
+    automatic: bool = True
+    enabled: bool = True
+    config: dict[str, Any] = Field(default_factory=dict)
 
 
 def parse_date_param(value: date | None, fallback: str) -> date:
@@ -4119,6 +4143,60 @@ def real_live_trading_portfolio(account_type: str = "paper", account_keys: str =
 def real_live_trading_orders(payload: RealLiveOrderSubmit) -> dict[str, Any]:
     try:
         return submit_real_live_order(payload.account_type, payload.order, preview=payload.preview, account_keys=payload.account_keys)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/trading/strategies")
+def trading_strategies(latest_only: bool = True) -> dict[str, Any]:
+    rows = list_strategy_definitions(latest_only=latest_only)
+    return {"rows": rows, "row_count": len(rows)}
+
+
+@app.get("/api/trading/strategies/{strategy_id}")
+def trading_strategy(strategy_id: str, revision: int | None = None) -> dict[str, Any]:
+    try:
+        return get_strategy_definition(strategy_id, revision)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown strategy: {strategy_id}") from exc
+
+
+@app.post("/api/trading/strategies")
+def trading_strategy_save(payload: StrategyDefinitionSubmit) -> dict[str, Any]:
+    try:
+        return save_strategy_definition(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/real-live-trading/orders/reply")
+def real_live_trading_order_reply(payload: RealLiveOrderReply) -> dict[str, Any]:
+    try:
+        return reply_real_live_order(payload.reply_id, payload.confirmed)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/real-live-trading/orders/{order_id}")
+def real_live_trading_order_modify(order_id: str, payload: RealLiveOrderModify) -> dict[str, Any]:
+    try:
+        return modify_real_live_order(payload.account_key, order_id, payload.order)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.delete("/api/real-live-trading/orders/{order_id}")
+def real_live_trading_order_cancel(order_id: str, account_key: str) -> dict[str, Any]:
+    try:
+        return cancel_real_live_order(account_key, order_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

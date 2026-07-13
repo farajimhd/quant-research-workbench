@@ -74,12 +74,15 @@ paper or live accounts.
 | Area | Current authority | Role and current status |
 |---|---|---|
 | Operator UI | `frontend/src`, `src/backend` | React/Vite UI served by FastAPI. The routed surface currently exposes real-live trading and service operations; simulation, strategy, data, and research pages exist but are disconnected. |
-| Strategy definitions | `src/strategies` | Versioned scanner and trading logic registered through `src/strategies/registry.py`. |
-| Backtesting | `src/backtest` | Event ordering, fills, fees, portfolio state, results, observability, and step debugging. |
-| Prepared-data provider | `src/data_provider` | Builds and validates reusable historical bar/feature artifacts used by the current backtest and replay paths. |
-| Live market engine | `src/market_engine` | Shared event, bar, scanner, broker, source, and storage contracts. |
+| Strategy definitions | `src/strategies`, `src/trading_runtime/journal.py` | Versioned implementation code plus persisted, immutable strategy revisions and configuration. Only automatic revisions are eligible for backtest. |
+| Trading runtime | `src/trading_runtime` | IBKR Client Portal-shaped order, execution, account, position, portfolio, risk, journal, live-adapter, simulated-broker, and historical orchestration authorities shared by live, paper, replay, backtest, and debug. |
+| Legacy backtesting | `src/backtest` | Existing prepared-bar strategy host and artifacts. Its `BarFillModel` and `Portfolio` remain only on the legacy job routes while those strategies are migrated; they are not the new brokerage authority. |
+| Prepared-data provider | `src/data_provider` | Existing historical feature artifacts. New historical execution and bar calculation use canonical events; feature migration remains separate from brokerage semantics. |
+| Shared market engine | `src/market_engine` | Canonical event and event-derived bar contracts used by historical and live consumers. |
 | Live and recent market data | `services/qmd-gateway` | Rust gateway for Massive quotes/trades, compact events, always-on canonical intraday bars, indicators, scanner primitives, recent gap repair, and local streams/APIs. |
+| Historical market-data API | `services/qmd_history_gateway` | Read-only QMD-compatible compact-event and event-derived bar API for Replay, Backtest, and Backtest Debug. It reads `market_sip_compact.events_YYYY`; it never connects to Massive. |
 | Historical market data | `pipelines/market_sip` | Massive flat-file download, compact event ingestion, validation, repairs, and derived event/bar builders. |
+| Trading audit persistence | `services/trading_journal_gateway` | Mirrors the crash-safe local trading outbox into typed ClickHouse `q_live.tr_*` tables without making ClickHouse the order-command queue. |
 | News | `services/news_gateway`, `pipelines/news/benzinga` | Live Benzinga acquisition plus historical ingestion, normalization, persistence, coverage, and repair. |
 | SEC filings | `services/sec_gateway`, `pipelines/sec/edgar` | Live SEC feed handling plus historical filing/document/XBRL extraction and rebuilding. |
 | Text embeddings | `services/text_embed_gateway` | Tokenizes and embeds news and SEC text, persists model-ready outputs, and reconciles coverage. |
@@ -95,8 +98,7 @@ is active even though it is not a standalone product service.
 
 ## Market Event Data Contract
 
-Market-event consumers must select sources by trading date and combine them
-when a requested range crosses the live/historical boundary:
+Market-event consumers select the source by runtime mode:
 
 - QMD emits live normalized compact events and maintains the low-latency
   in-memory stream used by live scanners, bars, and model consumers.
@@ -108,11 +110,14 @@ when a requested range crosses the live/historical boundary:
   from Massive flat files by
   `pipelines/market_sip/flatfiles/download_update_events.py` and its ingestion
   path.
-- Current-day and prior-session requests read `q_live.events`. Longer requests
-  add a non-overlapping recent segment to `market_sip_compact.events_YYYY` and
-  order the combined result by event time, source sequence, event type, and live
-  arrival sequence. Historical ordinals remain authoritative only inside the
-  historical segment; a consumer may assign a query-local ordinal afterward.
+- Live and paper trading read only QMD's live stream. QMD is not a replay or
+  backtest source.
+- Replay, Backtest, and Backtest Debug read only the historical gateway. It
+  orders yearly-table rows by `(sip_timestamp_us, ticker, ordinal)` and mirrors
+  the live compact-event schema using the historical ordinal as the stable
+  historical source/arrival sequence.
+- Historical bars are calculated from those events in the gateway/runtime. No
+  historical bar table is an execution source of truth.
 - `q_live.intraday_bars_v1` is the single rolling live bar table. Sparse
   `trade`, `quote_bid`, and `quote_ask` bars are built at `100ms`, then rolled
   up from closed base bars to `1s`, `5s`, `10s`, `30s`, `1m`, `5m`, and `1h`.
@@ -158,7 +163,9 @@ SEC Gateway  --> q_live filing/text/XBRL -------+--> Text Embed Gateway
                                                      v
 Packed Market Model research --> Market AI (future) --> strategy forecasts
 
-IBKR Supervisor --> accounts/session --> real-live trading --> broker orders
+IBKR Supervisor --> accounts/session --> IBKR adapter ----+
+Historical events --> simulated IBKR-shaped broker -------+--> shared trading runtime
+                                                              |--> q_live.tr_* audit
 Reference Gateway --> identity/tradability -----------^
 ```
 
@@ -255,21 +262,23 @@ required before the workbench is a complete end-to-end application:
    v3 cutover, align its point-in-time market identity links, regenerate derived
    text products, and audit coverage and integrity before dependent services use
    the new data.
-2. **Implement one live and historical market-data path.** Put QMD recent data
-   and historical SIP data behind the same ordered, deduplicated contract used
-   by charts, scanners, replay, backtests, and model consumers.
+2. **Finish consumer migration to the shared market-data contract.** The
+   separate live-QMD and historical-gateway authorities now expose compatible
+   compact events and event-derived bars. Migrate the remaining legacy
+   prepared-bar backtest/replay consumers and certify parity.
 3. **Finish causal model selection and production forecast serving.** Complete
    the intended packed-model inputs and validation, approve a checkpoint and
    prediction contract, and implement the currently disabled `market-ai`
    service for replay and live forecasts.
-4. **Select strategies and build a shared trading runtime.** Promote strategies
-   only after evidence-based evaluation, and reuse the same scanning, risk,
-   entry, position-management, exit, re-entry, and account-routing logic across
-   backtest, simulation, assisted, and automatic trading.
-5. **Complete the brokerage execution lifecycle.** Connect the live UI to
-   broker preview and submission, handle confirmations, changes, cancellation,
-   fills, and reconciliation, and validate safe paper and live multi-account
-   routing through the IBKR supervisor.
+4. **Migrate and select strategies on the shared runtime.** The IBKR-shaped
+   runtime, simulated broker, central risk checks, strategy revision store, and
+   historical runner exist. Remove the legacy strategy host's fill/portfolio
+   authority as each feature-dependent automatic strategy is moved to
+   event-derived bars, then promote strategies only after evidence-based tests.
+5. **Certify the brokerage execution lifecycle.** Preview, submission,
+   warning replies, modification, cancellation, account-specific routing, and
+   normalized portfolio resources now have shared contracts. Add authenticated
+   paper-session websocket/reconciliation acceptance tests before live use.
 6. **Unify the operator workflow.** Reconnect, merge, or deliberately replace
    the disconnected simulation, strategy, backtest, market-data, and research
    pages so operators can move from research to deployment in one workspace.
