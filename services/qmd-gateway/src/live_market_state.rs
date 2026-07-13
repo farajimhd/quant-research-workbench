@@ -10,7 +10,8 @@ use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
-use tokio::time::{interval, Duration};
+use tokio::task::JoinHandle;
+use tokio::time::{interval, sleep, Duration};
 
 pub const LIVE_MARKET_STATE_SCHEMA_VERSION: u16 = 1;
 
@@ -201,17 +202,17 @@ pub fn spawn_live_market_state_service(
     store: SharedLiveMarketStateStore,
     metrics: SharedMetrics,
     event_sender: broadcast::Sender<LiveSymbolMarketStateEvent>,
-) -> LiveMarketStateRouter {
+) -> (LiveMarketStateRouter, JoinHandle<()>) {
     let (sender, receiver) =
         mpsc::channel::<LiveMarketStateInput>(config.live_market_state_channel_capacity.max(1));
-    tokio::spawn(run_live_market_state_service(
+    let task = tokio::spawn(run_live_market_state_service(
         config,
         store,
         metrics,
         event_sender,
         receiver,
     ));
-    LiveMarketStateRouter { sender }
+    (LiveMarketStateRouter { sender }, task)
 }
 
 async fn run_live_market_state_service(
@@ -223,9 +224,15 @@ async fn run_live_market_state_service(
 ) {
     let writer = LiveMarketStateClickHouseWriter::new(config.clone());
     if let Err(error) = writer.initialize().await {
+        metrics.record_lane_failure("live_market_state", &error);
         eprintln!("qmd live-market-state ClickHouse preflight failed: {error}");
         return;
     }
+    metrics.set_lane_state(
+        "live_market_state",
+        "healthy",
+        "Abnormal market-state writer initialized; normal state is intentionally sparse.",
+    );
     let mut active = HashMap::<StateKey, LiveSymbolMarketStateEvent>::new();
     let mut batch = Vec::<LiveSymbolMarketStateEvent>::new();
     let mut flush_interval = interval(Duration::from_millis(config.flush_interval_ms));
@@ -251,7 +258,12 @@ async fn run_live_market_state_service(
                         }
                     }
                     None => {
-                        flush_live_market_state_batch(&writer, &metrics, &mut batch).await;
+                        while !batch.is_empty() {
+                            flush_live_market_state_batch(&writer, &metrics, &mut batch).await;
+                            if !batch.is_empty() {
+                                sleep(Duration::from_millis(250)).await;
+                            }
+                        }
                         return;
                     }
                 }
@@ -260,6 +272,7 @@ async fn run_live_market_state_service(
                 flush_live_market_state_batch(&writer, &metrics, &mut batch).await;
             }
         }
+        metrics.set_lane_pending("live_market_state", (batch.len() + receiver.len()) as u64);
     }
 }
 
@@ -271,13 +284,22 @@ async fn flush_live_market_state_batch(
     if batch.is_empty() {
         return;
     }
+    metrics.set_lane_pending("live_market_state", batch.len() as u64);
     match writer.insert(batch).await {
         Ok(()) => {
-            metrics.inc_live_market_state_persisted(batch.len() as u64);
+            let count = batch.len() as u64;
+            metrics.inc_live_market_state_persisted(count);
             batch.clear();
+            metrics.record_lane_success(
+                "live_market_state",
+                count,
+                "Committed abnormal market-state transitions.",
+            );
+            metrics.set_lane_pending("live_market_state", 0);
         }
         Err(error) => {
             metrics.inc_live_market_state_persist_failed();
+            metrics.record_lane_failure("live_market_state", &error);
             eprintln!("ClickHouse live-market-state insert failed: {error}");
         }
     }

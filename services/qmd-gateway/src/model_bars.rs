@@ -1,5 +1,6 @@
 use crate::compact_event::LiveCompactEvent;
 use crate::config::GatewayConfig;
+use crate::metrics::SharedMetrics;
 use chrono::{Datelike, Timelike, Utc};
 use chrono_tz::America::New_York;
 use reqwest::Client;
@@ -7,7 +8,8 @@ use serde::Serialize;
 use serde_json::json;
 use std::collections::HashMap;
 use tokio::sync::{broadcast, mpsc};
-use tokio::time::{interval, timeout, Duration};
+use tokio::task::JoinHandle;
+use tokio::time::{interval, sleep, timeout, Duration};
 
 const SESSION_START_US: i64 = 4 * 60 * 60 * 1_000_000;
 const SESSION_END_US: i64 = 20 * 60 * 60 * 1_000_000;
@@ -17,10 +19,16 @@ pub struct ModelBarRouter {
     senders: Vec<mpsc::Sender<LiveCompactEvent>>,
 }
 
-#[derive(Clone)]
 pub struct ModelBarService {
     pub router: ModelBarRouter,
     pub rows: broadcast::Sender<ModelBarRow>,
+    tasks: Vec<JoinHandle<()>>,
+}
+
+impl ModelBarService {
+    pub fn into_tasks(self) -> Vec<JoinHandle<()>> {
+        self.tasks
+    }
 }
 
 impl ModelBarRouter {
@@ -125,6 +133,7 @@ impl ModelBarRow {
 
 pub async fn spawn_model_bar_service(
     config: GatewayConfig,
+    metrics: SharedMetrics,
 ) -> Result<Option<ModelBarService>, String> {
     if !config.model_streaming_bars_enabled {
         return Ok(None);
@@ -139,11 +148,16 @@ pub async fn spawn_model_bar_service(
     }
     let (row_sender, row_receiver) = mpsc::channel(config.model_streaming_bar_channel_capacity);
     let (broadcast_sender, _) = broadcast::channel(10_000);
-    let writer = ModelBarWriter::new(config.clone());
+    let writer = ModelBarWriter::new(config.clone(), metrics);
     if config.model_streaming_bars_persist {
         writer.initialize().await?;
+        writer.metrics.set_lane_state(
+            "model_microbars",
+            "healthy",
+            "Model microbar writer initialized; awaiting rows.",
+        );
     }
-    tokio::spawn(writer.run(row_receiver));
+    let mut tasks = vec![tokio::spawn(writer.run(row_receiver))];
     let mut senders = Vec::new();
     let lateness_us = config.compact_event_reorder_lag_ms.saturating_mul(1_000) as i64;
     for _ in 0..config.model_streaming_bar_shard_count.max(1) {
@@ -153,7 +167,7 @@ pub async fn spawn_model_bar_service(
         let live_rows = broadcast_sender.clone();
         let shard_resolutions = resolutions.clone();
         let shard_lateness_us = lateness_us;
-        tokio::spawn(async move {
+        tasks.push(tokio::spawn(async move {
             let mut bars: HashMap<(String, String, i64, i64, &'static str), ModelBarRow> =
                 HashMap::new();
             let mut max_seen: HashMap<(String, String, i64, &'static str), i64> = HashMap::new();
@@ -247,13 +261,14 @@ pub async fn spawn_model_bar_service(
                     return;
                 }
             }
-        });
+        }));
         senders.push(sender);
     }
     drop(row_sender);
     Ok(Some(ModelBarService {
         router: ModelBarRouter { senders },
         rows: broadcast_sender,
+        tasks,
     }))
 }
 
@@ -290,13 +305,15 @@ async fn flush_wall_ready(
 struct ModelBarWriter {
     client: Client,
     config: GatewayConfig,
+    metrics: SharedMetrics,
 }
 
 impl ModelBarWriter {
-    fn new(config: GatewayConfig) -> Self {
+    fn new(config: GatewayConfig, metrics: SharedMetrics) -> Self {
         Self {
             client: Client::new(),
             config,
+            metrics,
         }
     }
     async fn initialize(&self) -> Result<(), String> {
@@ -316,18 +333,33 @@ impl ModelBarWriter {
         let mut tick = interval(Duration::from_millis(self.config.flush_interval_ms));
         loop {
             tokio::select! {
-                row = receiver.recv() => match row { Some(row) => if self.config.model_streaming_bars_persist { batch.push(row); }, None => { self.flush(&mut batch).await; return; } },
+                row = receiver.recv() => match row {
+                    Some(row) => if self.config.model_streaming_bars_persist { batch.push(row); },
+                    None => {
+                        while !batch.is_empty() {
+                            self.flush(&mut batch).await;
+                            if !batch.is_empty() {
+                                sleep(Duration::from_millis(250)).await;
+                            }
+                        }
+                        return;
+                    }
+                },
                 _ = tick.tick() => self.flush(&mut batch).await,
             }
             if batch.len() >= self.config.max_clickhouse_batch {
                 self.flush(&mut batch).await;
             }
+            self.metrics
+                .set_lane_pending("model_microbars", (batch.len() + receiver.len()) as u64);
         }
     }
     async fn flush(&self, rows: &mut Vec<ModelBarRow>) {
         if rows.is_empty() {
             return;
         }
+        self.metrics
+            .set_lane_pending("model_microbars", rows.len() as u64);
         let body = rows.iter().map(|row| json!({
             "ticker": row.ticker, "local_date": row.local_date, "label_resolution_us": row.label_resolution_us,
             "bucket_index": row.bucket_index, "bar_family": row.bar_family,
@@ -343,9 +375,15 @@ impl ModelBarWriter {
             ))
             .await
         {
+            self.metrics.record_lane_failure("model_microbars", &error);
             eprintln!("Model microbar insert failed: {error}");
+            return;
         }
+        let count = rows.len() as u64;
         rows.clear();
+        self.metrics
+            .record_lane_success("model_microbars", count, "Committed model microbars.");
+        self.metrics.set_lane_pending("model_microbars", 0);
     }
     async fn query(&self, body: &str) -> Result<String, String> {
         let mut request = self

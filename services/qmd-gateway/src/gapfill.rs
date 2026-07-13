@@ -17,7 +17,6 @@ use futures_util::stream::{self, StreamExt};
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path as FsPath;
 use std::process::Command;
 use tokio::time::{sleep, Duration};
 
@@ -2275,26 +2274,7 @@ impl GapFillService {
     }
 
     fn host_role(&self) -> String {
-        if self.config.qmd_host_role != "auto" {
-            return self.config.qmd_host_role.clone();
-        }
-        let computer = std::env::var("COMPUTERNAME")
-            .or_else(|_| std::env::var("HOSTNAME"))
-            .unwrap_or_default()
-            .to_ascii_uppercase();
-        let pipeline_root_exists = FsPath::new(&self.config.historical_pipeline_code_root).exists();
-        if computer.contains("DESKTOP-SAAI85T")
-            || (pipeline_root_exists
-                && self
-                    .config
-                    .historical_pipeline_code_root
-                    .to_ascii_lowercase()
-                    .starts_with("d:\\tradingml"))
-        {
-            "workstation".to_string()
-        } else {
-            "laptop".to_string()
-        }
+        self.config.resolved_host_role()
     }
 
     async fn query(&self, body: &str, use_database: bool) -> Result<String, String> {

@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 #[derive(Clone)]
@@ -50,6 +51,45 @@ struct MetricsInner {
     parse_failures: AtomicU64,
     scanner_candidates_emitted: AtomicU64,
     service_start_unix_ms: AtomicI64,
+    operational: RwLock<OperationalState>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct OperationalLaneSnapshot {
+    pub key: String,
+    pub label: String,
+    pub kind: String,
+    pub enabled: bool,
+    pub required: bool,
+    pub state: String,
+    pub detail: String,
+    pub pending_rows: u64,
+    pub max_pending_rows: u64,
+    pub successful_rows: u64,
+    pub failures: u64,
+    pub consecutive_failures: u64,
+    pub last_success_utc: Option<DateTime<Utc>>,
+    pub last_failure_utc: Option<DateTime<Utc>>,
+    pub last_transition_utc: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct OperationalRecoverySnapshot {
+    pub area: String,
+    pub message: String,
+    pub recovered_at_utc: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct OperationalSnapshot {
+    pub lanes: Vec<OperationalLaneSnapshot>,
+    pub recent_recoveries: Vec<OperationalRecoverySnapshot>,
+}
+
+#[derive(Default)]
+struct OperationalState {
+    lanes: BTreeMap<String, OperationalLaneSnapshot>,
+    recent_recoveries: VecDeque<OperationalRecoverySnapshot>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -153,7 +193,133 @@ impl SharedMetrics {
                 parse_failures: AtomicU64::new(0),
                 scanner_candidates_emitted: AtomicU64::new(0),
                 service_start_unix_ms: AtomicI64::new(Utc::now().timestamp_millis()),
+                operational: RwLock::new(OperationalState::default()),
             }),
+        }
+    }
+
+    pub fn register_lane(&self, key: &str, label: &str, kind: &str, enabled: bool, required: bool) {
+        let now = Utc::now();
+        let mut state = self
+            .inner
+            .operational
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.lanes.insert(
+            key.to_string(),
+            OperationalLaneSnapshot {
+                key: key.to_string(),
+                label: label.to_string(),
+                kind: kind.to_string(),
+                enabled,
+                required,
+                state: if enabled { "starting" } else { "disabled" }.to_string(),
+                detail: if enabled {
+                    "Awaiting first successful operation."
+                } else {
+                    "Disabled by configuration."
+                }
+                .to_string(),
+                pending_rows: 0,
+                max_pending_rows: 0,
+                successful_rows: 0,
+                failures: 0,
+                consecutive_failures: 0,
+                last_success_utc: None,
+                last_failure_utc: None,
+                last_transition_utc: now,
+            },
+        );
+    }
+
+    pub fn set_lane_state(&self, key: &str, lane_state: &str, detail: &str) {
+        let now = Utc::now();
+        let mut state = self
+            .inner
+            .operational
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(lane) = state.lanes.get_mut(key) else {
+            return;
+        };
+        if lane.state != lane_state || lane.detail != detail {
+            lane.last_transition_utc = now;
+        }
+        lane.state = lane_state.to_string();
+        lane.detail = detail.to_string();
+    }
+
+    pub fn set_lane_pending(&self, key: &str, pending_rows: u64) {
+        let mut state = self
+            .inner
+            .operational
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(lane) = state.lanes.get_mut(key) {
+            lane.pending_rows = pending_rows;
+            lane.max_pending_rows = lane.max_pending_rows.max(pending_rows);
+        }
+    }
+
+    pub fn record_lane_success(&self, key: &str, rows: u64, detail: &str) {
+        let now = Utc::now();
+        let mut state = self
+            .inner
+            .operational
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(lane) = state.lanes.get_mut(key) else {
+            return;
+        };
+        let recovered = lane.consecutive_failures > 0;
+        let label = lane.label.clone();
+        lane.state = "healthy".to_string();
+        lane.detail = detail.to_string();
+        lane.successful_rows = lane.successful_rows.saturating_add(rows);
+        lane.consecutive_failures = 0;
+        lane.last_success_utc = Some(now);
+        lane.last_transition_utc = now;
+        if recovered {
+            state
+                .recent_recoveries
+                .push_back(OperationalRecoverySnapshot {
+                    area: label,
+                    message: detail.to_string(),
+                    recovered_at_utc: now,
+                });
+            while state.recent_recoveries.len() > 12 {
+                state.recent_recoveries.pop_front();
+            }
+        }
+    }
+
+    pub fn record_lane_failure(&self, key: &str, error: &str) {
+        let now = Utc::now();
+        let mut state = self
+            .inner
+            .operational
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(lane) = state.lanes.get_mut(key) else {
+            return;
+        };
+        lane.state = "failed".to_string();
+        lane.detail = truncate_error(error);
+        lane.failures = lane.failures.saturating_add(1);
+        lane.consecutive_failures = lane.consecutive_failures.saturating_add(1);
+        lane.last_failure_utc = Some(now);
+        lane.last_transition_utc = now;
+    }
+
+    pub fn operational_snapshot(&self) -> OperationalSnapshot {
+        let state = self
+            .inner
+            .operational
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        OperationalSnapshot {
+            lanes: state.lanes.values().cloned().collect(),
+            recent_recoveries: state.recent_recoveries.iter().cloned().collect(),
         }
     }
 
@@ -388,6 +554,39 @@ impl SharedMetrics {
 
     fn set(&self, value: &AtomicU64, count: u64) {
         value.store(count, Ordering::Relaxed);
+    }
+}
+
+fn truncate_error(value: &str) -> String {
+    const LIMIT: usize = 400;
+    let value = value.trim();
+    if value.chars().count() <= LIMIT {
+        return value.to_string();
+    }
+    value.chars().take(LIMIT - 3).collect::<String>() + "..."
+}
+
+#[cfg(test)]
+mod operational_tests {
+    use super::SharedMetrics;
+
+    #[test]
+    fn operational_lane_records_failure_and_recovery() {
+        let metrics = SharedMetrics::new();
+        metrics.register_lane("compact", "Compact persistence", "writer", true, true);
+        metrics.set_lane_pending("compact", 25);
+        metrics.record_lane_failure("compact", "ClickHouse unavailable");
+        let failed = metrics.operational_snapshot();
+        assert_eq!(failed.lanes[0].state, "failed");
+        assert_eq!(failed.lanes[0].pending_rows, 25);
+        assert_eq!(failed.lanes[0].failures, 1);
+
+        metrics.record_lane_success("compact", 25, "Committed compact events.");
+        metrics.set_lane_pending("compact", 0);
+        let recovered = metrics.operational_snapshot();
+        assert_eq!(recovered.lanes[0].state, "healthy");
+        assert_eq!(recovered.lanes[0].successful_rows, 25);
+        assert_eq!(recovered.recent_recoveries.len(), 1);
     }
 }
 

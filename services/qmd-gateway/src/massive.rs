@@ -35,11 +35,20 @@ pub async fn run_massive_ingest(config: GatewayConfig, fanout: MarketEventFanout
         eprintln!("No Massive subscriptions configured.");
         return;
     }
+    fanout.metrics.set_lane_state(
+        "massive_feed",
+        "connecting",
+        "Connecting to the Massive stock websocket.",
+    );
     loop {
         match connect_async(&config.massive_ws_url).await {
             Ok((mut websocket, _response)) => {
                 let auth = json!({"action": "auth", "params": config.massive_api_key}).to_string();
                 if let Err(error) = websocket.send(Message::Text(auth.into())).await {
+                    fanout.metrics.record_lane_failure(
+                        "massive_feed",
+                        &format!("Authentication send failed: {error}"),
+                    );
                     eprintln!("Massive auth send failed: {error}");
                     sleep(Duration::from_secs(3)).await;
                     continue;
@@ -47,10 +56,19 @@ pub async fn run_massive_ingest(config: GatewayConfig, fanout: MarketEventFanout
                 let subscribe =
                     json!({"action": "subscribe", "params": subscriptions.join(",")}).to_string();
                 if let Err(error) = websocket.send(Message::Text(subscribe.into())).await {
+                    fanout.metrics.record_lane_failure(
+                        "massive_feed",
+                        &format!("Subscription send failed: {error}"),
+                    );
                     eprintln!("Massive subscribe send failed: {error}");
                     sleep(Duration::from_secs(3)).await;
                     continue;
                 }
+                fanout.metrics.record_lane_success(
+                    "massive_feed",
+                    0,
+                    "Authenticated and subscribed to the configured quote/trade channels.",
+                );
                 while let Some(message) = websocket.next().await {
                     match message {
                         Ok(Message::Text(text)) => {
@@ -75,12 +93,20 @@ pub async fn run_massive_ingest(config: GatewayConfig, fanout: MarketEventFanout
                         }
                         Ok(Message::Close(frame)) => {
                             fanout.metrics.inc_massive_disconnect();
+                            fanout.metrics.record_lane_failure(
+                                "massive_feed",
+                                &format!("Websocket closed: {frame:?}"),
+                            );
                             eprintln!("Massive websocket closed: {frame:?}");
                             break;
                         }
                         Ok(_) => {}
                         Err(error) => {
                             fanout.metrics.inc_massive_disconnect();
+                            fanout.metrics.record_lane_failure(
+                                "massive_feed",
+                                &format!("Websocket error: {error}"),
+                            );
                             eprintln!("Massive websocket error: {error}");
                             break;
                         }
@@ -89,6 +115,9 @@ pub async fn run_massive_ingest(config: GatewayConfig, fanout: MarketEventFanout
             }
             Err(error) => {
                 fanout.metrics.inc_massive_connect_failure();
+                fanout
+                    .metrics
+                    .record_lane_failure("massive_feed", &format!("Connection failed: {error}"));
                 eprintln!("Massive websocket connect failed: {error}");
             }
         }

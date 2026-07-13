@@ -154,6 +154,8 @@ New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
 $runStamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $stdoutLog = Join-Path $logRoot "qmd_gateway_$runStamp.out.log"
 $stderrLog = Join-Path $logRoot "qmd_gateway_$runStamp.err.log"
+$shutdownToken = [Guid]::NewGuid().ToString("N")
+$env:QMD_SHUTDOWN_TOKEN = $shutdownToken
 
 Write-Host "Building qmd-gateway..."
 cargo build --manifest-path $manifest
@@ -197,14 +199,29 @@ try {
 }
 finally {
     if ($gatewayProcess -and -not $gatewayProcess.HasExited) {
-        Write-Host "Stopping qmd-gateway process $($gatewayProcess.Id)..."
-        $gatewayProcess.CloseMainWindow() | Out-Null
-        Start-Sleep -Milliseconds 500
+        Write-Host "Requesting graceful qmd-gateway shutdown for process $($gatewayProcess.Id)..."
+        try {
+            Invoke-RestMethod `
+                -Uri "$baseUrl/admin/shutdown" `
+                -Method Post `
+                -Headers @{ "X-QMD-Shutdown-Token" = $shutdownToken } `
+                -TimeoutSec 3 | Out-Null
+            $gatewayProcess.WaitForExit(20000) | Out-Null
+        }
+        catch {
+            Write-Warning "Graceful qmd-gateway shutdown request failed: $($_.Exception.Message)"
+        }
     }
     if ($gatewayProcess -and -not $gatewayProcess.HasExited) {
+        Write-Warning "qmd-gateway did not drain within 20 seconds; forcing process termination."
         Stop-Process -Id $gatewayProcess.Id -Force -ErrorAction SilentlyContinue
         $gatewayProcess.WaitForExit(5000) | Out-Null
     }
+    if ($gatewayProcess -and $gatewayProcess.HasExited -and $gatewayProcess.ExitCode -ne 0) {
+        Write-Warning "qmd-gateway exited with code $($gatewayProcess.ExitCode); inspect $stderrLog for a startup or writer-drain failure."
+        $terminalExitCode = $gatewayProcess.ExitCode
+    }
+    Remove-Item Env:QMD_SHUTDOWN_TOKEN -ErrorAction SilentlyContinue
 }
 
 exit $terminalExitCode

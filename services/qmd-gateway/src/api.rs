@@ -10,7 +10,7 @@ use crate::live_market_state::{
 };
 use crate::maintenance::{MaintenanceSnapshot, SharedMaintenanceState};
 use crate::market_calendar::{MarketCalendarClient, MarketSnapshot};
-use crate::metrics::{MetricsSnapshot, SharedMetrics};
+use crate::metrics::{MetricsSnapshot, OperationalSnapshot, SharedMetrics};
 use crate::model_bars::ModelBarRow;
 use crate::scanner::{ScannerPrimitive, ScannerPrimitiveSnapshot, SharedScannerStore};
 use crate::session::session_phase;
@@ -18,14 +18,15 @@ use crate::signal_catalog::{signal_catalog, SignalMethodEntry};
 use crate::state::{ScannerSnapshot, SharedMarketState, StatusMetrics, SymbolSnapshot};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tokio::time::{interval, Duration};
 use tower_http::cors::CorsLayer;
 
@@ -46,6 +47,7 @@ pub struct AppState {
     pub model_microbars: Option<broadcast::Sender<ModelBarRow>>,
     pub scanner: SharedScannerStore,
     pub scanner_events: broadcast::Sender<ScannerPrimitive>,
+    pub shutdown: watch::Sender<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,10 +70,15 @@ struct HealthPayload {
     session_phase: String,
     status: String,
     subscriptions: Vec<String>,
+    host_role: String,
+    operational: OperationalSnapshot,
 }
 
 #[derive(Debug, Serialize)]
 struct StandardStatusPayload {
+    attention: Vec<Value>,
+    live_pipeline: Vec<Value>,
+    downstream_products: Vec<Value>,
     header: Value,
     current_operation: Value,
     configuration: Value,
@@ -88,6 +95,7 @@ pub fn app(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/config", get(config))
         .route("/metrics", get(metrics_snapshot))
+        .route("/admin/shutdown", post(request_shutdown))
         .route("/snapshot/status", get(status_snapshot))
         .route("/snapshot/maintenance", get(maintenance_snapshot))
         .route("/snapshot/coverage", get(coverage_snapshot))
@@ -127,19 +135,52 @@ pub fn app(state: AppState) -> Router {
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<HealthPayload> {
+    let market_calendar = state.market_calendar.snapshot(chrono::Utc::now());
+    let maintenance = state.maintenance.snapshot().await;
+    let operational = state.metrics.operational_snapshot();
+    let status = qmd_status(&market_calendar, &maintenance, &operational);
     Json(HealthPayload {
         config: state.config.clone(),
         metrics: state.market.metrics().await,
-        market_calendar: state.market_calendar.snapshot(chrono::Utc::now()),
-        running: state.config.api_key_present,
+        market_calendar,
+        running: true,
         session_phase: format!("{:?}", session_phase(chrono::Utc::now())),
-        status: if state.config.api_key_present {
-            "running".to_string()
-        } else {
-            "api_only_missing_massive_key".to_string()
-        },
+        status,
         subscriptions: state.config.subscription_channels(),
+        host_role: state.config.resolved_host_role(),
+        operational,
     })
+}
+
+async fn request_shutdown(State(state): State<Arc<AppState>>, headers: HeaderMap) -> StatusCode {
+    let expected = state.config.qmd_shutdown_token.trim();
+    let supplied = headers
+        .get("x-qmd-shutdown-token")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if !valid_shutdown_token(expected, supplied) {
+        return StatusCode::FORBIDDEN;
+    }
+    match state.shutdown.send(true) {
+        Ok(()) => StatusCode::ACCEPTED,
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE,
+    }
+}
+
+fn valid_shutdown_token(expected: &str, supplied: &str) -> bool {
+    !expected.is_empty() && supplied == expected
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::valid_shutdown_token;
+
+    #[test]
+    fn shutdown_requires_the_configured_non_empty_token() {
+        assert!(valid_shutdown_token("run-token", "run-token"));
+        assert!(!valid_shutdown_token("run-token", "wrong"));
+        assert!(!valid_shutdown_token("", ""));
+    }
 }
 
 async fn config(State(state): State<Arc<AppState>>) -> Json<GatewayConfig> {
@@ -155,23 +196,20 @@ async fn status_snapshot(State(state): State<Arc<AppState>>) -> Json<StandardSta
     let maintenance = state.maintenance.snapshot().await;
     let market_metrics = state.market.metrics().await;
     let market_calendar = state.market_calendar.snapshot(chrono::Utc::now());
-    let running = state.config.api_key_present;
-    let status = if !running {
-        "DEGRADED"
-    } else if maintenance.active {
-        "CATCHING_UP"
-    } else {
-        "RUNNING"
-    };
+    let operational = state.metrics.operational_snapshot();
+    let status = qmd_status(&market_calendar, &maintenance, &operational);
     let queue_drops = metrics.events_broadcast_dropped
         + metrics.bar_events_dropped
         + metrics.indicator_events_dropped
         + metrics.compact_event_queue_dropped
         + metrics.clickhouse_events_dropped;
     Json(StandardStatusPayload {
+        attention: build_attention(&operational, &maintenance, queue_drops),
+        live_pipeline: build_live_pipeline(&operational, &metrics),
+        downstream_products: build_downstream_products(&state.config, &operational, &metrics),
         header: json!({
             "service": "qmd_gateway",
-            "status": status,
+            "status": status.to_ascii_uppercase(),
             "bind": state.config.bind,
             "mode": state.config.gap_fill_mode,
             "execute": true,
@@ -182,6 +220,7 @@ async fn status_snapshot(State(state): State<Arc<AppState>>) -> Json<StandardSta
             "market_calendar_source": market_calendar.source,
             "market_calendar_reason": market_calendar.reason,
             "subscriptions": state.config.subscription_channels(),
+            "host_role": state.config.resolved_host_role(),
         }),
         current_operation: json!({
             "phase": if maintenance.active { maintenance.phase.clone() } else { "streaming".to_string() },
@@ -204,9 +243,9 @@ async fn status_snapshot(State(state): State<Arc<AppState>>) -> Json<StandardSta
         tasks: vec![
             json!({
                 "task": "websocket ingest",
-                "status": if running { "running" } else { "blocked" },
+                "status": lane_state(&operational, "massive_feed"),
                 "rows": metrics.ingest_events,
-                "message": if running { "Massive websocket ingest active or waiting for session." } else { "MASSIVE_API_KEY missing." },
+                "message": lane_detail(&operational, "massive_feed"),
             }),
             json!({
                 "task": "maintenance and gap fill",
@@ -250,8 +289,140 @@ async fn status_snapshot(State(state): State<Arc<AppState>>) -> Json<StandardSta
         service_specific: json!({
             "market": market_metrics,
             "maintenance": maintenance,
+            "operational": operational,
+            "recent_sessions": state.market_calendar.prior_sessions(
+                chrono::Utc::now().with_timezone(&chrono_tz::America::New_York).date_naive(),
+                state.config.recent_live_prior_market_days.max(0) as usize + 1,
+            ),
+            "host_role": state.config.resolved_host_role(),
         }),
     })
+}
+
+fn qmd_status(
+    market: &MarketSnapshot,
+    maintenance: &MaintenanceSnapshot,
+    operational: &OperationalSnapshot,
+) -> String {
+    if operational
+        .lanes
+        .iter()
+        .any(|lane| lane.enabled && lane.required && lane.state == "failed")
+    {
+        return "degraded".to_string();
+    }
+    if maintenance.status.contains("manual")
+        || maintenance.status.contains("needs_manual")
+        || maintenance.status.contains("retention_blocked")
+    {
+        return "action_required".to_string();
+    }
+    if maintenance.active {
+        return "catching_up".to_string();
+    }
+    if !market.active_collection_window {
+        return "closed".to_string();
+    }
+    match lane_state(operational, "massive_feed") {
+        "healthy" => "running".to_string(),
+        "starting" | "connecting" => "starting".to_string(),
+        _ => "degraded".to_string(),
+    }
+}
+
+fn lane<'a>(
+    operational: &'a OperationalSnapshot,
+    key: &str,
+) -> Option<&'a crate::metrics::OperationalLaneSnapshot> {
+    operational.lanes.iter().find(|lane| lane.key == key)
+}
+
+fn lane_state<'a>(operational: &'a OperationalSnapshot, key: &str) -> &'a str {
+    lane(operational, key)
+        .map(|value| value.state.as_str())
+        .unwrap_or("unknown")
+}
+
+fn lane_detail<'a>(operational: &'a OperationalSnapshot, key: &str) -> &'a str {
+    lane(operational, key)
+        .map(|value| value.detail.as_str())
+        .unwrap_or("No operational state reported.")
+}
+
+fn build_attention(
+    operational: &OperationalSnapshot,
+    maintenance: &MaintenanceSnapshot,
+    queue_drops: u64,
+) -> Vec<Value> {
+    let mut items = operational
+        .lanes
+        .iter()
+        .filter(|lane| lane.enabled && lane.state == "failed")
+        .map(|lane| {
+            json!({
+                "severity": if lane.required { "critical" } else { "warning" },
+                "area": lane.label,
+                "since_utc": lane.last_failure_utc,
+                "message": lane.detail,
+                "impact": if lane.required { "A required live-data path is impaired." } else { "An optional product is impaired." },
+                "action": "Inspect the writer error and ClickHouse/network health; the current batch remains pending for retry.",
+            })
+        })
+        .collect::<Vec<_>>();
+    if queue_drops > 0 {
+        items.push(json!({
+            "severity": "critical",
+            "area": "Required queue path",
+            "message": format!("{queue_drops} receiver-closed event(s) were recorded."),
+            "impact": "One or more required consumers stopped accepting work.",
+            "action": "Inspect the failed worker and restart only after its cause is understood.",
+        }));
+    }
+    if maintenance.errors > 0 {
+        items.push(json!({
+            "severity": "warning",
+            "area": "Coverage repair",
+            "message": maintenance.message,
+            "impact": "One or more recent coverage intervals remain incomplete.",
+            "action": "Inspect the active interval and page-limit/error counts.",
+        }));
+    }
+    items
+}
+
+fn build_live_pipeline(operational: &OperationalSnapshot, metrics: &MetricsSnapshot) -> Vec<Value> {
+    let normalize_state = match lane_state(operational, "massive_feed") {
+        "healthy" => "healthy",
+        "failed" => "blocked",
+        "disabled" => "disabled",
+        _ => "waiting",
+    };
+    vec![
+        json!({"key": "massive_feed", "label": "Massive feed", "state": lane_state(operational, "massive_feed"), "detail": lane_detail(operational, "massive_feed"), "rows": metrics.ingest_events, "last_event_utc": metrics.last_event_ts, "lag_ms": metrics.last_event_lag_ms}),
+        json!({"key": "normalize", "label": "Normalize / encode", "state": normalize_state, "rows": metrics.compact_events_emitted, "rejected": metrics.compact_event_rejected, "detail": "Uses the compact event reference-table encoding contract; consumers should alert if rejects are actively rising."}),
+        json!({"key": "compact_events", "label": "q_live.events", "lane": lane(operational, "compact_events"), "rows": metrics.compact_events_persisted, "reorder_pending": metrics.compact_events_reorder_pending}),
+        json!({"key": "bars", "label": "Live bars", "lane": lane(operational, "bars"), "rows": metrics.bar_rows_emitted}),
+    ]
+}
+
+fn build_downstream_products(
+    config: &GatewayConfig,
+    operational: &OperationalSnapshot,
+    metrics: &MetricsSnapshot,
+) -> Vec<Value> {
+    let scanner_state = match lane_state(operational, "bars") {
+        "healthy" => "healthy",
+        "failed" => "degraded",
+        "disabled" => "disabled",
+        _ => "waiting",
+    };
+    vec![
+        json!({"product": "Bars", "enabled": true, "state": lane_state(operational, "bars"), "rows": metrics.bar_rows_emitted, "detail": lane_detail(operational, "bars")}),
+        json!({"product": "Indicators", "enabled": config.persist_indicators, "state": lane_state(operational, "indicators"), "detail": lane_detail(operational, "indicators")}),
+        json!({"product": "Scanner primitives", "enabled": true, "state": scanner_state, "rows": metrics.scanner_candidates_emitted, "detail": "Zero candidates is normal when no primitive threshold is met."}),
+        json!({"product": "Abnormal market state", "enabled": config.live_market_state_enabled, "state": lane_state(operational, "live_market_state"), "rows": metrics.live_market_state_events_persisted, "detail": lane_detail(operational, "live_market_state")}),
+        json!({"product": "Model microbars", "enabled": config.model_streaming_bars_enabled, "persist": config.model_streaming_bars_persist, "state": lane_state(operational, "model_microbars"), "detail": lane_detail(operational, "model_microbars")}),
+    ]
 }
 
 async fn maintenance_snapshot(State(state): State<Arc<AppState>>) -> Json<MaintenanceSnapshot> {
@@ -361,12 +532,10 @@ async fn coverage_snapshot(
             .unwrap_or_default();
         right_key.cmp(left_key)
     });
-    rows.truncate(limit);
-
     if errors.is_empty() {
-        Json(json!({ "rows": rows }))
+        Json(json!({ "rows": rows, "per_group_limit": limit }))
     } else {
-        Json(json!({ "rows": rows, "error": errors.join("; ") }))
+        Json(json!({ "rows": rows, "per_group_limit": limit, "error": errors.join("; ") }))
     }
 }
 

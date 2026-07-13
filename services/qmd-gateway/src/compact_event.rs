@@ -10,7 +10,7 @@ use serde_json::json;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
-use tokio::time::{interval, Duration, Instant};
+use tokio::time::{interval, sleep, Duration, Instant};
 
 pub const LIVE_COMPACT_EVENT_SCHEMA_VERSION: u16 = 4;
 pub const QUOTE_EVENT_TYPE: u8 = 0;
@@ -429,8 +429,13 @@ impl CompactEventClickHouseWriter {
                                 reorder_lag_us,
                                 true,
                             );
-                            self.flush_persisted(&mut batch).await;
-                            self.flush_issues(&mut issue_batch).await;
+                            while !batch.is_empty() || !issue_batch.is_empty() {
+                                self.flush_persisted(&mut batch).await;
+                                self.flush_issues(&mut issue_batch).await;
+                                if !batch.is_empty() || !issue_batch.is_empty() {
+                                    sleep(Duration::from_millis(250)).await;
+                                }
+                            }
                             return;
                         }
                     }
@@ -451,6 +456,14 @@ impl CompactEventClickHouseWriter {
                     self.flush_issues(&mut issue_batch).await;
                 }
             }
+            self.metrics.set_lane_pending(
+                "compact_events",
+                reorder_pending_count
+                    .saturating_add(batch.len() as u64)
+                    .saturating_add(receiver.len() as u64),
+            );
+            self.metrics
+                .set_lane_pending("compact_audit", issue_batch.len() as u64);
         }
     }
 
@@ -487,6 +500,8 @@ impl CompactEventClickHouseWriter {
         if batch.is_empty() || !self.config.persist_compact_events {
             return;
         }
+        self.metrics
+            .set_lane_pending("compact_events", batch.len() as u64);
         batch.sort_by(|left, right| {
             left.ticker
                 .cmp(&right.ticker)
@@ -494,18 +509,48 @@ impl CompactEventClickHouseWriter {
         });
         match self.insert_events(batch).await {
             Ok(()) => {
-                self.metrics
-                    .inc_compact_events_persisted(batch.len() as u64);
-                self.record_live_event_coverage("compact_persisted", batch, "", 0)
+                let count = batch.len() as u64;
+                self.metrics.inc_compact_events_persisted(count);
+                let coverage_result = self
+                    .record_live_event_coverage("compact_persisted", batch, "", 0)
                     .await;
+                batch.clear();
+                self.metrics.record_lane_success(
+                    "compact_events",
+                    count,
+                    "Committed normalized compact events to q_live.events.",
+                );
+                self.metrics.set_lane_pending("compact_events", 0);
+                match coverage_result {
+                    Ok(()) => self.metrics.record_lane_success(
+                        "coverage_ledger",
+                        1,
+                        "Recorded compact-event coverage confirmation.",
+                    ),
+                    Err(error) => {
+                        self.metrics.record_lane_failure("coverage_ledger", &error);
+                        eprintln!("ClickHouse qmd live coverage update failed: {error}");
+                    }
+                }
             }
             Err(error) => {
-                self.record_live_event_coverage("failed", batch, &error, 1)
-                    .await;
+                match self
+                    .record_live_event_coverage("failed", batch, &error, 1)
+                    .await
+                {
+                    Ok(()) => self.metrics.record_lane_success(
+                        "coverage_ledger",
+                        1,
+                        "Recorded the compact persistence failure for coverage recovery.",
+                    ),
+                    Err(coverage_error) => self
+                        .metrics
+                        .record_lane_failure("coverage_ledger", &coverage_error),
+                }
+                self.metrics.record_lane_failure("compact_events", &error);
                 eprintln!("ClickHouse compact event insert failed: {error}");
             }
         }
-        batch.clear();
     }
 
     async fn insert_events(&self, rows: &[LiveCompactEvent]) -> Result<(), String> {
@@ -690,9 +735,15 @@ impl CompactEventClickHouseWriter {
     }
 
     async fn flush_issues(&self, rows: &mut Vec<(LiveCompactEvent, CompactEventIssue)>) {
-        if rows.is_empty() || !self.config.persist_compact_events {
+        if rows.is_empty() {
             return;
         }
+        if !self.config.persist_compact_events {
+            rows.clear();
+            return;
+        }
+        self.metrics
+            .set_lane_pending("compact_audit", rows.len() as u64);
         let observed_at = clickhouse_datetime64(&Utc::now());
         let body = rows
             .iter()
@@ -726,9 +777,18 @@ impl CompactEventClickHouseWriter {
             )
             .await
         {
+            self.metrics.record_lane_failure("compact_audit", &error);
             eprintln!("Compact event issue audit insert failed: {error}");
+            return;
         }
+        let count = rows.len() as u64;
         rows.clear();
+        self.metrics.record_lane_success(
+            "compact_audit",
+            count,
+            "Committed compact-event warning audit rows.",
+        );
+        self.metrics.set_lane_pending("compact_audit", 0);
     }
 
     fn create_live_coverage_table_sql(&self) -> String {
@@ -767,9 +827,9 @@ impl CompactEventClickHouseWriter {
         rows: &[LiveCompactEvent],
         error: &str,
         error_count: u64,
-    ) {
+    ) -> Result<(), String> {
         if rows.is_empty() {
-            return;
+            return Ok(());
         }
         let now = Utc::now();
         let min_ts = rows
@@ -802,18 +862,15 @@ impl CompactEventClickHouseWriter {
             "completed_at_utc": if status == "failed" { Some(clickhouse_datetime64(&now)) } else { None },
             "metadata_json": json!({"run_id": self.config.qmd_run_id, "error": error}).to_string(),
         });
-        if let Err(error) = self
-            .query(
-                &format!(
-                    "INSERT INTO {} FORMAT JSONEachRow\n{row}",
-                    self.config.qmd_live_event_coverage_table
-                ),
-                true,
-            )
-            .await
-        {
-            eprintln!("ClickHouse qmd live coverage update failed: {error}");
-        }
+        self.query(
+            &format!(
+                "INSERT INTO {} FORMAT JSONEachRow\n{row}",
+                self.config.qmd_live_event_coverage_table
+            ),
+            true,
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn execute(&self, sql: &str, use_database: bool) -> Result<(), String> {

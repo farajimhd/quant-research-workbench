@@ -1,10 +1,11 @@
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
+use crate::metrics::SharedMetrics;
 use crate::timefmt::{clickhouse_datetime64, clickhouse_datetime64_opt};
 use reqwest::Client;
 use serde_json::json;
 use tokio::sync::mpsc;
-use tokio::time::{interval, Duration};
+use tokio::time::{interval, sleep, Duration};
 
 pub const RAW_EVENT_SCHEMA_VERSION: u16 = 1;
 
@@ -12,13 +13,15 @@ pub const RAW_EVENT_SCHEMA_VERSION: u16 = 1;
 pub struct ClickHouseWriter {
     client: Client,
     config: GatewayConfig,
+    metrics: SharedMetrics,
 }
 
 impl ClickHouseWriter {
-    pub fn new(config: GatewayConfig) -> Self {
+    pub fn new(config: GatewayConfig, metrics: SharedMetrics) -> Self {
         Self {
             client: Client::new(),
             config,
+            metrics,
         }
     }
 
@@ -111,7 +114,12 @@ impl ClickHouseWriter {
                         Some(MarketEvent::Trade(trade)) => trade_batch.push(trade),
                         Some(MarketEvent::Quote(quote)) => quote_batch.push(quote),
                         None => {
-                            self.flush(&mut trade_batch, &mut quote_batch).await;
+                            while !trade_batch.is_empty() || !quote_batch.is_empty() {
+                                self.flush(&mut trade_batch, &mut quote_batch).await;
+                                if !trade_batch.is_empty() || !quote_batch.is_empty() {
+                                    sleep(Duration::from_millis(250)).await;
+                                }
+                            }
                             return;
                         }
                     }
@@ -123,24 +131,40 @@ impl ClickHouseWriter {
                     self.flush(&mut trade_batch, &mut quote_batch).await;
                 }
             }
+            self.metrics.set_lane_pending(
+                "raw_events",
+                (trade_batch.len() + quote_batch.len() + receiver.len()) as u64,
+            );
         }
     }
 
     async fn flush(&self, trades: &mut Vec<TradeEvent>, quotes: &mut Vec<QuoteEvent>) {
+        self.metrics
+            .set_lane_pending("raw_events", (trades.len() + quotes.len()) as u64);
         if !trades.is_empty() {
+            let count = trades.len() as u64;
             if let Err(error) = self.insert_trades(trades).await {
+                self.metrics.record_lane_failure("raw_events", &error);
                 eprintln!("ClickHouse trade insert failed: {error}");
             } else {
                 trades.clear();
+                self.metrics
+                    .record_lane_success("raw_events", count, "Committed raw trade rows.");
             }
         }
         if !quotes.is_empty() {
+            let count = quotes.len() as u64;
             if let Err(error) = self.insert_quotes(quotes).await {
+                self.metrics.record_lane_failure("raw_events", &error);
                 eprintln!("ClickHouse quote insert failed: {error}");
             } else {
                 quotes.clear();
+                self.metrics
+                    .record_lane_success("raw_events", count, "Committed raw quote rows.");
             }
         }
+        self.metrics
+            .set_lane_pending("raw_events", (trades.len() + quotes.len()) as u64);
     }
 
     async fn insert_trades(&self, rows: &[TradeEvent]) -> Result<(), String> {

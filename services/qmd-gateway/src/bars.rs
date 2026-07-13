@@ -12,7 +12,7 @@ use serde_json::json;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
-use tokio::time::{interval, Duration};
+use tokio::time::{interval, sleep, Duration};
 
 pub const BAR_SCHEMA_VERSION: u16 = 2;
 const ESTIMATED_LULD_WINDOW_SECONDS: i64 = 300;
@@ -1188,13 +1188,15 @@ async fn send_finalized_bars(
 pub struct BarClickHouseWriter {
     client: Client,
     config: GatewayConfig,
+    metrics: SharedMetrics,
 }
 
 impl BarClickHouseWriter {
-    pub fn new(config: GatewayConfig) -> Self {
+    pub fn new(config: GatewayConfig, metrics: SharedMetrics) -> Self {
         Self {
             client: Client::new(),
             config,
+            metrics,
         }
     }
 
@@ -1362,7 +1364,12 @@ impl BarClickHouseWriter {
                     match row {
                         Some(row) => batch.push(row),
                         None => {
-                            self.flush(&mut batch).await;
+                            while !batch.is_empty() {
+                                self.flush(&mut batch).await;
+                                if !batch.is_empty() {
+                                    sleep(Duration::from_millis(250)).await;
+                                }
+                            }
                             return;
                         }
                     }
@@ -1374,6 +1381,8 @@ impl BarClickHouseWriter {
                     self.flush(&mut batch).await;
                 }
             }
+            self.metrics
+                .set_lane_pending("bars", (batch.len() + receiver.len()) as u64);
         }
     }
 
@@ -1381,15 +1390,29 @@ impl BarClickHouseWriter {
         if batch.is_empty() {
             return;
         }
+        self.metrics.set_lane_pending("bars", batch.len() as u64);
         if let Err(error) = self.insert_bars(batch).await {
+            self.metrics.record_lane_failure("bars", &error);
             eprintln!("ClickHouse bar insert failed: {error}");
             return;
         }
-        if let Err(error) = self.record_live_event_coverage(batch).await {
-            eprintln!("ClickHouse qmd bar coverage update failed: {error}");
-            return;
-        }
+        let coverage_result = self.record_live_event_coverage(batch).await;
+        let count = batch.len() as u64;
         batch.clear();
+        self.metrics
+            .record_lane_success("bars", count, "Committed closed live bars.");
+        self.metrics.set_lane_pending("bars", 0);
+        match coverage_result {
+            Ok(()) => self.metrics.record_lane_success(
+                "coverage_ledger",
+                1,
+                "Recorded bar coverage confirmation.",
+            ),
+            Err(error) => {
+                self.metrics.record_lane_failure("coverage_ledger", &error);
+                eprintln!("ClickHouse qmd bar coverage update failed: {error}");
+            }
+        }
     }
 
     async fn insert_bars(&self, rows: &[BarRow]) -> Result<(), String> {

@@ -1,6 +1,7 @@
 use crate::bars::BarRow;
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
+use crate::metrics::SharedMetrics;
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
@@ -9,7 +10,7 @@ use serde_json::json;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
-use tokio::time::{interval, Duration};
+use tokio::time::{interval, sleep, Duration};
 
 pub const INDICATOR_SCHEMA_VERSION: u16 = 1;
 
@@ -790,13 +791,15 @@ async fn run_indicator_engine(
 pub struct IndicatorClickHouseWriter {
     client: Client,
     config: GatewayConfig,
+    metrics: SharedMetrics,
 }
 
 impl IndicatorClickHouseWriter {
-    pub fn new(config: GatewayConfig) -> Self {
+    pub fn new(config: GatewayConfig, metrics: SharedMetrics) -> Self {
         Self {
             client: Client::new(),
             config,
+            metrics,
         }
     }
 
@@ -869,7 +872,12 @@ impl IndicatorClickHouseWriter {
                     match row {
                         Some(row) => batch.push(row),
                         None => {
-                            self.flush(&mut batch).await;
+                            while !batch.is_empty() {
+                                self.flush(&mut batch).await;
+                                if !batch.is_empty() {
+                                    sleep(Duration::from_millis(250)).await;
+                                }
+                            }
                             return;
                         }
                     }
@@ -881,6 +889,8 @@ impl IndicatorClickHouseWriter {
                     self.flush(&mut batch).await;
                 }
             }
+            self.metrics
+                .set_lane_pending("indicators", (batch.len() + receiver.len()) as u64);
         }
     }
 
@@ -888,10 +898,20 @@ impl IndicatorClickHouseWriter {
         if batch.is_empty() {
             return;
         }
+        self.metrics
+            .set_lane_pending("indicators", batch.len() as u64);
         if let Err(error) = self.insert_indicators(batch).await {
+            self.metrics.record_lane_failure("indicators", &error);
             eprintln!("ClickHouse indicator insert failed: {error}");
         } else {
+            let count = batch.len() as u64;
             batch.clear();
+            self.metrics.record_lane_success(
+                "indicators",
+                count,
+                "Committed closed indicator rows.",
+            );
+            self.metrics.set_lane_pending("indicators", 0);
         }
     }
 

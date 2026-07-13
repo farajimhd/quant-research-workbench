@@ -46,6 +46,11 @@ By default this builds the Rust service, starts it in the background, waits for
 stdout/stderr are written under `.tmp/qmd-gateway/` so service logs do not
 corrupt the dashboard.
 
+The monitor polls independent snapshots concurrently. A failed request retains
+the last successful value and timestamp, marks that source stale, coalesces
+repeated failures, and records recovery when polling succeeds again. Coverage
+is polled on a slower cadence than health/metrics because it queries ClickHouse.
+
 The API binds before startup maintenance completes. This lets `/health` and the
 terminal come up during long REST repair after a coverage reset. Massive
 websocket ingest still starts only after startup maintenance returns.
@@ -65,7 +70,33 @@ Useful launcher options:
 
 `-NoTerminal` preserves the old direct `cargo run` behavior. In that mode, stop
 the gateway with `Ctrl+C`; the API server handles graceful shutdown on `Ctrl+C`.
-In monitor mode, exiting the monitor stops the background gateway process.
+In monitor mode, exiting the monitor sends a token-protected local shutdown
+request. The gateway stops producers, allows writer channels to close and flush,
+and waits up to 15 seconds for writer drain. The launcher waits up to 20 seconds
+before using a clearly reported forced-stop fallback. A failed final batch is
+retained and retried throughout the drain window, so an unavailable ClickHouse
+cannot be reported as a successful graceful stop. Drain timeout or writer-task
+failure produces a nonzero gateway and launcher exit code with the cause in the
+gateway stderr log.
+
+### Terminal information hierarchy
+
+The persistent header reports derived service status, market collection state,
+resolved laptop/workstation role, live/replay mode, exchange session, snapshot
+age, and the read-only historical and writable live databases.
+
+Below it, information is ordered by operator decision:
+
+1. active failures or required workstation/manual action;
+2. the Massive-to-`q_live.events`-to-bars live pipeline;
+3. current plus three prior live-session coverage;
+4. Massive flatfile readiness and historical confirmation;
+5. downstream products, or active repair progress when maintenance is running.
+
+At compact width/height, only the header, actions, four live pipeline stages,
+coverage/historical summaries, and active repair remain. Zero-valued internal
+diagnostic counters and raw compact-event samples do not consume the primary
+screen.
 
 ## Health And Snapshot Endpoints
 
@@ -74,7 +105,10 @@ In monitor mode, exiting the monitor stops the background gateway process.
 | `GET /health` | Basic running state, subscriptions, session phase, and market-state metrics. |
 | `GET /config` | Effective configuration after env parsing. Do not expose publicly because it includes structure and presence flags. |
 | `GET /metrics` | Operational counters and lag values. |
+| `GET /snapshot/status` | Derived QMD status, operational lanes, active attention items, live-pipeline stages, recent sessions, and downstream products. |
 | `GET /snapshot/maintenance` | In-flight startup maintenance, gap-fill, and backfill progress state. |
+| `GET /snapshot/coverage?limit=40` | Recent live coverage, historical handoff, flatfile identity/readiness, retention, and exact manual commands. The limit is applied independently to each coverage source so one high-rate group cannot hide another. |
+| `POST /admin/shutdown` | Token-protected launcher-only graceful shutdown request. Requires `X-QMD-Shutdown-Token`. |
 | `GET /indicator-catalog` | Indicator family contract. |
 | `GET /signal-catalog` | Signal method contract. |
 | `GET /snapshot/scanner?limit=250` | Simple latest market-state scanner snapshot. |
@@ -142,7 +176,9 @@ continue independently.
 
 ClickHouse writers retry their current in-memory batch after insert failures.
 Compact events, bars, indicators, and optional raw rows are not cleared from the
-writer batch until ClickHouse confirms the insert.
+writer batch until ClickHouse confirms the insert. Persistence and coverage
+confirmation are separate operational lanes: a committed event/bar batch is not
+reinserted merely because its coverage-ledger update failed.
 
 ## Gap Fill Modes
 

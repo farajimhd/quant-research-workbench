@@ -129,6 +129,14 @@ Future live models can opt into QMD's `100ms` long-form `trade`, `quote_bid`,
 and `quote_ask` microbar stream. It is disabled by default and runs in isolated
 workers so the existing scanner/chart bar path is unchanged.
 
+QMD's terminal follows the same boundary. Its primary surface shows the live
+Massive-to-`q_live.events` pipeline, confirmed recent event/bar coverage,
+historical flatfile handoff into read-only `market_sip_compact`, downstream
+products, and only actionable failures or workstation commands. It retains
+timestamped last-good state during monitor/API interruptions and exposes writer
+backlog, commit, failure, and recovery state from the Rust service rather than
+inferring health from configured endpoints.
+
 ## News, SEC, Embeddings, and Forecast Flow
 
 ```text

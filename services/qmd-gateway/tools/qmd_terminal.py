@@ -1,8 +1,8 @@
 #!/usr/bin/env python
-"""Rich terminal monitor for qmd-gateway.
+"""Operational terminal for the Rust qmd-gateway.
 
-The monitor is intentionally a separate process. It reads the gateway's local
-HTTP endpoints and never sits in the websocket ingest or ClickHouse write path.
+The monitor is a separate process. It reads local HTTP snapshots and never
+participates in websocket ingest, normalization, or ClickHouse persistence.
 """
 
 from __future__ import annotations
@@ -15,7 +15,8 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -26,8 +27,6 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from services.gateway_core.market_calendar import MassiveMarketHoursClient  # noqa: E402
-
 try:
     from rich import box
     from rich.columns import Columns
@@ -36,8 +35,8 @@ try:
     from rich.table import Table
     from rich.text import Text
 
-    from services.gateway_core.rich_renderer import render_standard_snapshot, standard_live, status_color, style_status
-except Exception:  # pragma: no cover - fallback is for environments without rich.
+    from services.gateway_core.rich_renderer import standard_live, status_color, style_status
+except Exception:  # pragma: no cover - the plain monitor remains available.
     box = None
     Columns = None
     Group = None
@@ -47,31 +46,76 @@ except Exception:  # pragma: no cover - fallback is for environments without ric
     standard_live = None
     status_color = None
     style_status = None
-    render_standard_snapshot = None
 
 
 EASTERN = ZoneInfo("America/New_York")
 VANCOUVER = ZoneInfo("America/Vancouver")
+PRIMARY_SOURCES = ("health", "status", "metrics", "maintenance")
+
+
+@dataclass
+class PollIssue:
+    source: str
+    message: str
+    first_seen_utc: datetime
+    last_seen_utc: datetime
+    count: int = 1
+
+
+@dataclass
+class Recovery:
+    source: str
+    message: str
+    recovered_at_utc: datetime
 
 
 @dataclass
 class PollState:
     base_url: str
-    errors: list[str] = field(default_factory=list)
+    refresh_seconds: float = 1.0
+    coverage_seconds: float = 10.0
     health: dict[str, Any] = field(default_factory=dict)
     status: dict[str, Any] = field(default_factory=dict)
     metrics: dict[str, Any] = field(default_factory=dict)
     maintenance: dict[str, Any] = field(default_factory=dict)
     coverage: dict[str, Any] = field(default_factory=dict)
-    market_status: dict[str, Any] = field(default_factory=dict)
-    market_status_error: str = ""
     samples: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
-    prior_metrics: dict[str, Any] = field(default_factory=dict)
-    prior_poll_ts: float = 0.0
-    last_market_status_poll: float = 0.0
+    source_updated_at: dict[str, datetime] = field(default_factory=dict)
+    poll_issues: dict[str, PollIssue] = field(default_factory=dict)
+    recoveries: list[Recovery] = field(default_factory=list)
     rates: dict[str, float] = field(default_factory=dict)
-    refresh_seconds: float = 1.0
+    prior_metrics: dict[str, Any] = field(default_factory=dict)
+    prior_metrics_ts: float = 0.0
+    last_coverage_poll: float = 0.0
     updated_at: datetime | None = None
+
+    def record_success(self, source: str, payload: Any, now: datetime) -> None:
+        issue = self.poll_issues.pop(source, None)
+        if issue is not None:
+            self.recoveries.append(
+                Recovery(
+                    source=source,
+                    message=f"Recovered after {issue.count} failed poll(s).",
+                    recovered_at_utc=now,
+                )
+            )
+            self.recoveries = self.recoveries[-12:]
+        self.source_updated_at[source] = now
+        if source.startswith("sample:"):
+            ticker = source.split(":", 1)[1]
+            self.samples[ticker] = payload if isinstance(payload, list) else []
+        elif source in {"health", "status", "metrics", "maintenance", "coverage"}:
+            if isinstance(payload, dict):
+                setattr(self, source, payload)
+
+    def record_failure(self, source: str, message: str, now: datetime) -> None:
+        existing = self.poll_issues.get(source)
+        if existing is None:
+            self.poll_issues[source] = PollIssue(source, message, now, now)
+        else:
+            existing.message = message
+            existing.last_seen_utc = now
+            existing.count += 1
 
 
 def main() -> int:
@@ -79,69 +123,74 @@ def main() -> int:
     state = PollState(
         base_url=args.base_url.rstrip("/"),
         refresh_seconds=max(0.25, float(args.refresh_seconds)),
+        coverage_seconds=max(2.0, float(args.coverage_seconds)),
     )
     watch = [item.strip().upper() for item in args.watch.split(",") if item.strip()]
-    if standard_live is None:
+    interactive = bool(sys.stdout.isatty()) and not args.plain
+
+    if args.json:
+        poll_once(state, watch, args.event_limit, args.timeout_seconds, details=args.details)
+        print(json.dumps(machine_payload(state), sort_keys=True, default=str), flush=True)
+        return 0 if state.health else 2
+    if standard_live is None or not interactive:
         return run_plain(args, state, watch)
-    with standard_live(
-        render_dashboard(state, watch),
-        screen=not args.no_screen,
-        refresh_seconds=state.refresh_seconds,
-    ) as live:
-        while True:
-            poll_once(
-                state,
-                watch,
-                args.event_limit,
-                args.timeout_seconds,
-                args.market_status_seconds,
-                args.disable_market_status,
-            )
-            live.update(render_dashboard(state, watch), refresh=True)
-            time.sleep(state.refresh_seconds)
+    return run_rich(args, state, watch)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Render a live qmd-gateway Rich terminal dashboard.")
-    parser.add_argument("--base-url", default="http://127.0.0.1:8795", help="qmd-gateway HTTP base URL.")
-    parser.add_argument("--watch", default="AAPL,NVDA,TSLA", help="Comma-separated tickers for compact event samples.")
-    parser.add_argument("--event-limit", type=int, default=6, help="Recent compact events per watched ticker.")
-    parser.add_argument("--refresh-seconds", type=float, default=1.0, help="Dashboard refresh interval.")
-    parser.add_argument("--timeout-seconds", type=float, default=2.0, help="HTTP request timeout.")
-    parser.add_argument(
-        "--market-status-seconds",
-        type=float,
-        default=10.0,
-        help="Massive market-status polling interval for the terminal.",
-    )
-    parser.add_argument("--disable-market-status", action="store_true", help="Do not call Massive market status.")
-    parser.add_argument("--no-screen", action="store_true", help="Do not use Rich alternate-screen mode.")
+    parser = argparse.ArgumentParser(description="Render the qmd-gateway operational dashboard.")
+    parser.add_argument("--base-url", default="http://127.0.0.1:8795")
+    parser.add_argument("--watch", default="AAPL,NVDA,TSLA")
+    parser.add_argument("--event-limit", type=int, default=6)
+    parser.add_argument("--refresh-seconds", type=float, default=1.0)
+    parser.add_argument("--coverage-seconds", type=float, default=10.0)
+    parser.add_argument("--timeout-seconds", type=float, default=2.0)
+    parser.add_argument("--details", action="store_true", help="Poll diagnostic compact-event samples.")
+    parser.add_argument("--no-screen", action="store_true")
+    parser.add_argument("--plain", action="store_true", help="Use human-readable non-interactive output.")
+    parser.add_argument("--json", action="store_true", help="Emit one machine-readable snapshot and exit.")
+    parser.add_argument("--once", action="store_true", help="Render one snapshot and exit.")
     return parser.parse_args()
 
 
+def run_rich(args: argparse.Namespace, state: PollState, watch: list[str]) -> int:
+    try:
+        poll_once(state, watch, args.event_limit, args.timeout_seconds, details=args.details)
+        if args.once:
+            from rich.console import Console
+
+            Console(no_color=bool(os.environ.get("NO_COLOR"))).print(render_dashboard(state))
+            return 0 if state.health else 2
+        with standard_live(
+            render_dashboard(state),
+            screen=not args.no_screen,
+            refresh_seconds=state.refresh_seconds,
+        ) as live:
+            while True:
+                poll_once(state, watch, args.event_limit, args.timeout_seconds, details=args.details)
+                live.update(render_dashboard(state), refresh=True)
+                time.sleep(state.refresh_seconds)
+    except KeyboardInterrupt:
+        return 130
+
+
 def run_plain(args: argparse.Namespace, state: PollState, watch: list[str]) -> int:
-    print("rich is not installed; falling back to plain qmd monitor output.", flush=True)
-    while True:
-        poll_once(
-            state,
-            watch,
-            args.event_limit,
-            args.timeout_seconds,
-            args.market_status_seconds,
-            args.disable_market_status,
-        )
-        payload = {
-            "updated_at": state.updated_at.isoformat() if state.updated_at else "",
-            "health": state.health,
-            "metrics": state.metrics,
-            "maintenance": state.maintenance,
-            "coverage": state.coverage,
-            "market_status": state.market_status,
-            "rates": state.rates,
-            "errors": state.errors[-5:],
-        }
-        print(json.dumps(payload, sort_keys=True), flush=True)
-        time.sleep(state.refresh_seconds)
+    last_line = ""
+    last_print = 0.0
+    try:
+        while True:
+            poll_once(state, watch, args.event_limit, args.timeout_seconds, details=args.details)
+            line = plain_summary(state)
+            now = time.monotonic()
+            if line != last_line or now - last_print >= 60:
+                print(line, flush=True)
+                last_line = line
+                last_print = now
+            if args.once:
+                return 0 if state.health else 2
+            time.sleep(state.refresh_seconds)
+    except KeyboardInterrupt:
+        return 130
 
 
 def poll_once(
@@ -149,620 +198,667 @@ def poll_once(
     watch: list[str],
     event_limit: int,
     timeout: float,
-    market_status_seconds: float,
-    disable_market_status: bool,
+    *,
+    details: bool,
 ) -> None:
-    now = time.perf_counter()
-    state.updated_at = datetime.now(UTC)
-    state.health = get_json(state, "/health", timeout) or {}
-    state.status = get_json(state, "/snapshot/status", timeout) or {}
-    metrics = get_json(state, "/metrics", timeout) or {}
-    state.maintenance = get_json(state, "/snapshot/maintenance", timeout) or {}
-    state.coverage = get_json(state, "/snapshot/coverage?limit=8", timeout) or {}
-    update_rates(state, metrics, now)
-    state.metrics = metrics
-    calendar = state.health.get("market_calendar") if isinstance(state.health, dict) else None
-    if isinstance(calendar, dict):
-        state.market_status = {
-            "market": "open" if calendar.get("active_collection_window") else "closed",
-            "source": calendar.get("source"),
-            "reason": calendar.get("reason"),
-            "stale": bool(calendar.get("stale")),
-            "statusAgeSeconds": calendar.get("status_age_seconds"),
-            "activeCollectionWindow": bool(calendar.get("active_collection_window")),
+    started = time.monotonic()
+    now = datetime.now(UTC)
+    requests: dict[str, str] = {
+        "health": "/health",
+        "status": "/snapshot/status",
+        "metrics": "/metrics",
+        "maintenance": "/snapshot/maintenance",
+    }
+    if started - state.last_coverage_poll >= state.coverage_seconds:
+        requests["coverage"] = "/snapshot/coverage?limit=40"
+        state.last_coverage_poll = started
+    if details:
+        for ticker in watch:
+            requests[f"sample:{ticker}"] = (
+                f"/snapshot/compact-events/{ticker}?limit={max(1, event_limit)}"
+            )
+
+    results: dict[str, Any] = {}
+    failures: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=min(8, len(requests))) as pool:
+        futures = {
+            pool.submit(fetch_json, state.base_url + path, timeout): source
+            for source, path in requests.items()
         }
-        state.market_status_error = ""
-    elif not disable_market_status and now - state.last_market_status_poll >= max(1.0, market_status_seconds):
-        state.market_status = get_market_status(state, timeout) or {}
-        state.last_market_status_poll = now
-    state.samples = {}
-    for ticker in watch:
-        rows = get_json(state, f"/snapshot/compact-events/{ticker}?limit={max(1, event_limit)}", timeout)
-        state.samples[ticker] = rows if isinstance(rows, list) else []
+        for future in as_completed(futures):
+            source = futures[future]
+            try:
+                results[source] = future.result()
+            except Exception as exc:  # noqa: BLE001 - the error is normalized for the monitor.
+                failures[source] = str(exc)
+
+    for source, payload in results.items():
+        state.record_success(source, payload, now)
+    for source, message in failures.items():
+        state.record_failure(source, message, now)
+    if "metrics" in results and isinstance(results["metrics"], dict):
+        update_rates(state, results["metrics"], started)
+    state.updated_at = now
 
 
-def get_json(state: PollState, path: str, timeout: float) -> Any:
-    url = state.base_url + path
+def fetch_json(url: str, timeout: float) -> Any:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"HTTP {exc.code}: {exc.reason}") from exc
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-        message = f"{datetime.now().strftime('%H:%M:%S')} {path}: {exc}"
-        state.errors.append(message)
-        state.errors = state.errors[-20:]
-        return None
-
-
-def get_market_status(state: PollState, timeout: float) -> dict[str, Any] | None:
-    api_key = os.environ.get("MASSIVE_API_KEY", "").strip()
-    if not api_key:
-        state.market_status_error = "MASSIVE_API_KEY missing in terminal environment"
-        return None
-    try:
-        snapshot = MassiveMarketHoursClient.from_env(
-            service_prefix="QMD",
-            api_key=api_key,
-            refresh_seconds=max(1.0, timeout),
-        ).snapshot(force=True)
-        state.market_status_error = snapshot.error
-        return {
-            "market": snapshot.market or snapshot.session,
-            "earlyHours": snapshot.early_hours,
-            "afterHours": snapshot.after_hours,
-            "serverTime": snapshot.server_time,
-            "source": snapshot.source,
-            "reason": snapshot.reason,
-            "holidayStatus": snapshot.holiday_status,
-            "holidayName": snapshot.holiday_name,
-            "activeCollectionWindow": snapshot.active_collection_window,
-        }
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, RuntimeError) as exc:
-        state.market_status_error = str(exc)
-        state.errors.append(f"{datetime.now().strftime('%H:%M:%S')} market-status: {exc}")
-        state.errors = state.errors[-20:]
-        return None
+        raise RuntimeError(str(exc)) from exc
 
 
 def update_rates(state: PollState, metrics: dict[str, Any], now: float) -> None:
-    elapsed = now - state.prior_poll_ts if state.prior_poll_ts else 0.0
-    rate_keys = [
+    elapsed = now - state.prior_metrics_ts if state.prior_metrics_ts else 0.0
+    keys = (
         "ingest_events",
         "ingest_trades",
         "ingest_quotes",
         "compact_events_emitted",
         "compact_events_persisted",
+        "compact_event_rejected",
         "bar_rows_emitted",
         "scanner_candidates_emitted",
-        "live_market_state_events_emitted",
         "live_market_state_events_persisted",
-    ]
-    rates: dict[str, float] = {}
+    )
     if elapsed > 0:
-        for key in rate_keys:
-            current = as_float(metrics.get(key))
-            prior = as_float(state.prior_metrics.get(key))
-            rates[key + "_per_sec"] = max(0.0, (current - prior) / elapsed)
-    state.rates = rates
+        state.rates = {
+            f"{key}_per_sec": max(
+                0.0,
+                (as_float(metrics.get(key)) - as_float(state.prior_metrics.get(key))) / elapsed,
+            )
+            for key in keys
+        }
     state.prior_metrics = dict(metrics)
-    state.prior_poll_ts = now
+    state.prior_metrics_ts = now
 
 
-def render_dashboard(state: PollState, watch: list[str]) -> Any:
-    _, terminal_height = shutil.get_terminal_size((120, 40))
-    compact = terminal_height < 38
-    messages = render_messages(state, limit=4 if compact else 6)
+def render_dashboard(state: PollState) -> Any:
+    width, height = shutil.get_terminal_size((120, 40))
+    compact = height < 42 or width < 100
+    narrow = width < 120
     if compact:
         return Group(
-            render_standard_or_header(state),
-            render_current_operation(state),
-            messages,
-            Columns(
-                [render_dependencies(state), render_runtime(state)],
-                equal=True,
-                expand=True,
-            ),
-            render_maintenance_progress(state),
+            render_header(state, compact=True),
+            render_attention(state, compact=True),
+            render_operational_core(state, narrow=True),
         )
-    return Group(
-        render_standard_or_header(state),
-        render_current_operation(state),
-        messages,
+
+    lower = render_maintenance(state, narrow=narrow) if maintenance_active(state) else render_products(state, narrow=narrow)
+    coverage_narrow = width < 160
+    parts: list[Any] = [
+        render_header(state, compact=False),
+        render_attention(state, compact=False),
+        render_pipeline(state, narrow=narrow),
         Columns(
-            [render_dependencies(state), render_runtime(state)],
+            [
+                render_recent_coverage(state, narrow=coverage_narrow),
+                render_historical_sync(state, narrow=coverage_narrow),
+            ],
             equal=True,
             expand=True,
         ),
-        render_maintenance_progress(state),
-        render_maintenance(state),
-        Columns(
-            [render_backpressure(state), render_compact_events(state)],
-            equal=True,
-            expand=True,
-        ),
-        render_recent_events(state, watch),
-    )
+        lower,
+    ]
+    if maintenance_active(state) and height >= 48:
+        parts.append(render_products(state, narrow=narrow))
+    return Group(*parts)
 
 
-def render_standard_or_header(state: PollState) -> Any:
-    if render_standard_snapshot is not None and state.status:
-        return render_standard_snapshot(state.status)
-    return render_header(state)
-
-
-def render_header(state: PollState) -> Any:
-    health = state.health or {}
-    metrics = state.metrics or {}
-    config = health.get("config") if isinstance(health.get("config"), dict) else {}
-    status = str(health.get("status") or "waiting")
-    status_style = status_color(status)
+def render_header(state: PollState, *, compact: bool) -> Any:
+    status = overall_status(state)
+    color = color_for(status)
+    header = state.status.get("header") if isinstance(state.status.get("header"), dict) else {}
+    calendar = state.health.get("market_calendar") if isinstance(state.health.get("market_calendar"), dict) else {}
+    config = state.health.get("config") if isinstance(state.health.get("config"), dict) else {}
     now = state.updated_at or datetime.now(UTC)
-    left = Text.assemble(
-        ("Python QMD Gateway  ", "bold"),
-        (status.upper(), f"bold {status_style}"),
-        "\n",
-        ("bind ", "dim"),
-        str(config.get("bind") or "-"),
-        ("  db ", "dim"),
-        str(config.get("clickhouse_database") or "-"),
-        ("  session ", "dim"),
-        str(health.get("session_phase") or "-"),
+    age = source_age(state, "status")
+    host = str(header.get("host_role") or state.health.get("host_role") or "-")
+    market = "COLLECTING" if calendar.get("active_collection_window") else "CLOSED"
+    if calendar.get("stale"):
+        market += " / CALENDAR STALE"
+    title = Text.assemble(
+        ("QMD Gateway  ", "bold"),
+        (status.replace("_", " ").upper(), f"bold {color}"),
+        (f"   {market}", "bold cyan"),
     )
-    right = Text.assemble(
-        ("UTC ", "dim"),
-        clock(now),
-        ("   ET ", "dim"),
-        clock(now.astimezone(EASTERN)),
-        ("   VAN ", "dim"),
-        clock(now.astimezone(VANCOUVER)),
-        "\n",
-        ("poll ", "dim"),
-        f"{state.refresh_seconds:.1f}s",
-        ("   uptime ", "dim"),
-        format_ms(metrics.get("process_uptime_ms")),
-        ("   market ", "dim"),
-        market_label(state),
-    )
+    right = f"ET {clock(now.astimezone(EASTERN))}  UTC {clock(now)}"
+    if not compact:
+        right += f"  VAN {clock(now.astimezone(VANCOUVER))}"
     grid = Table.grid(expand=True)
-    grid.add_column(ratio=1)
-    grid.add_column(justify="right", ratio=1)
-    grid.add_row(left, right)
-    return Panel(grid, box=box.ROUNDED, border_style=status_style, padding=(0, 1))
-
-
-def render_current_operation(state: PollState) -> Any:
-    health = state.health or {}
-    metrics = state.metrics or {}
-    config = health.get("config") if isinstance(health.get("config"), dict) else {}
-    rows = [
-        ("Phase", str(health.get("session_phase") or "-")),
-        ("Market", market_detail(state)),
-        ("Subscriptions", ", ".join(health.get("subscriptions") or []) or "-"),
-        ("Message", operation_message(state)),
-        (
-            "Historical",
-            "enabled" if config.get("historical_flatfile_update_enabled") else "disabled",
-        ),
-        ("Last event lag", format_ms(metrics.get("last_event_lag_ms"))),
-    ]
-    return Panel(detail_table(rows), title="Current Operation", box=box.ROUNDED, border_style="cyan", padding=(0, 1))
-
-
-def render_dependencies(state: PollState) -> Any:
-    health = state.health or {}
-    config = health.get("config") if isinstance(health.get("config"), dict) else {}
-    market_ok = bool(state.market_status) and not state.market_status_error
-    rows = [
-        ("Local API", ok_label(bool(health)), state.base_url),
-        ("Massive API key", ok_label(bool(config.get("api_key_present"))), "required for websocket and status"),
-        ("Massive market status", ok_label(market_ok), state.market_status_error or market_label(state)),
-        (
-            "ClickHouse",
-            ok_label(bool(config.get("clickhouse_url"))),
-            f"{config.get('clickhouse_url') or '-'} db={config.get('clickhouse_database') or '-'}",
-        ),
-        (
-            "Historical source",
-            ok_label(bool(config.get("historical_clickhouse_database"))),
-            str(config.get("historical_clickhouse_database") or "-"),
-        ),
-        (
-            "Flatfile discovery",
-            ok_label(bool(config.get("flatfile_credentials_present"))),
-            str(config.get("flatfile_endpoint_url") or "credentials missing"),
-        ),
-        (
-            "Model microbars",
-            "ON" if config.get("model_streaming_bars_enabled") else "OFF",
-            ",".join(config.get("model_streaming_bar_timeframes") or []) or "disabled",
-        ),
-    ]
-    return Panel(status_table(rows), title="Dependencies", box=box.ROUNDED, border_style="green", padding=(0, 1))
-
-
-def render_runtime(state: PollState) -> Any:
-    metrics = state.metrics or {}
-    rows = [
-        ("Status", str((state.health or {}).get("status") or "waiting"), state.updated_at.strftime("%Y-%m-%d %H:%M:%S") if state.updated_at else "-"),
-        ("Events", format_int(metrics.get("ingest_events")), format_rate(state.rates.get("ingest_events_per_sec"))),
-        ("Trades", format_int(metrics.get("ingest_trades")), format_rate(state.rates.get("ingest_trades_per_sec"))),
-        ("Quotes", format_int(metrics.get("ingest_quotes")), format_rate(state.rates.get("ingest_quotes_per_sec"))),
-        ("Compact written", format_int(metrics.get("compact_events_persisted")), format_rate(state.rates.get("compact_events_persisted_per_sec"))),
-        ("Bars emitted", format_int(metrics.get("bar_rows_emitted")), format_rate(state.rates.get("bar_rows_emitted_per_sec"))),
-        ("Scanner rows", format_int(metrics.get("scanner_candidates_emitted")), format_rate(state.rates.get("scanner_candidates_emitted_per_sec"))),
-        ("Live state events", format_int(metrics.get("live_market_state_events_emitted")), format_rate(state.rates.get("live_market_state_events_emitted_per_sec"))),
-        ("Live state persisted", format_int(metrics.get("live_market_state_events_persisted")), format_rate(state.rates.get("live_market_state_events_persisted_per_sec"))),
-        ("Gap fill runs", format_int(metrics.get("gap_fill_runs")), f"failures={format_int(metrics.get('gap_fill_failures'))}"),
-    ]
-    return Panel(metric_table(rows), title="Runtime", box=box.ROUNDED, border_style="yellow", padding=(0, 1))
-
-
-def render_maintenance_progress(state: PollState) -> Any:
-    maintenance = state.maintenance if isinstance(state.maintenance, dict) else {}
-    total_jobs = int(as_float(maintenance.get("total_jobs")))
-    completed_jobs = int(as_float(maintenance.get("completed_jobs")))
-    total_symbols = int(as_float(maintenance.get("total_symbols")))
-    completed_symbols = int(as_float(maintenance.get("completed_symbols")))
-    active = bool(maintenance.get("active"))
-    status = str(maintenance.get("status") or "idle")
-    color = "cyan" if active else ("green" if status in {"idle", "up_to_date", "repair_completed"} else status_color(status))
-    active_symbols = maintenance.get("active_symbols") if isinstance(maintenance.get("active_symbols"), list) else []
-    current_interval = "-".join(
-        item
-        for item in [
-            short_time(maintenance.get("current_interval_start_utc")),
-            short_time(maintenance.get("current_interval_end_utc")),
-        ]
-        if item and item != "-"
-    ) or "-"
-    rows = [
-        ("State", status_text(status), "active" if active else "idle"),
-        ("Mode", str(maintenance.get("mode") or "-"), str(maintenance.get("phase") or "-")),
-        ("Jobs", progress_bar(completed_jobs, total_jobs), f"{format_int(completed_jobs)}/{format_int(total_jobs)}"),
-        ("Symbols", progress_bar(completed_symbols, total_symbols), f"{format_int(completed_symbols)}/{format_int(total_symbols)}"),
-        ("Rows", format_int(maintenance.get("rows_written")), f"errors={format_int(maintenance.get('errors'))} page_limit={format_int(maintenance.get('page_limited_symbols'))}"),
-        ("Current", str(maintenance.get("current_symbol") or "-"), current_interval),
-        ("Active", ", ".join(str(item) for item in active_symbols[:8]) or "-", str(maintenance.get("current_interval_reason") or "-")),
-        ("Message", str(maintenance.get("message") or "-"), updated_label(maintenance.get("updated_at_utc"))),
-    ]
-    table = metric_table(
-        rows,
-        value_heading="Value",
-        last_heading="Detail",
-        metric_width=12,
-        value_width=None,
-        last_width=None,
-        value_ratio=3,
-        last_ratio=2,
-        value_no_wrap=False,
-        last_no_wrap=False,
-        value_overflow="fold",
-        last_overflow="fold",
-        value_justify="left",
-        last_justify="left",
+    grid.add_column(ratio=3, overflow="fold")
+    grid.add_column(ratio=2, justify="right", overflow="fold")
+    grid.add_row(title, right)
+    mode = "replay" if config.get("replay_enabled") else "live"
+    grid.add_row(
+        f"host {host}  mode {mode}  session {state.health.get('session_phase') or '-'}",
+        f"snapshot {format_age(age)}  poll {state.refresh_seconds:.1f}s",
     )
-    return Panel(table, title="Maintenance Progress", box=box.ROUNDED, border_style=color, padding=(0, 1))
-
-
-def render_maintenance(state: PollState) -> Any:
-    rows = coverage_rows(state)
-    table = Table(box=box.SIMPLE, expand=True, show_edge=False, padding=(0, 1))
-    table.add_column("Kind", style="bold cyan", ratio=2)
-    table.add_column("Status", width=20, no_wrap=True)
-    table.add_column("Window", ratio=3)
-    table.add_column("Action", ratio=2)
-    table.add_column("Details", ratio=4, overflow="fold")
-    if not rows:
-        error = state.coverage.get("error") if isinstance(state.coverage, dict) else ""
-        table.add_row("-", "waiting", "-", "-", str(error or "No coverage rows returned yet."))
-    for row in rows:
-        summary = parse_summary(row.get("summary_json"))
-        details = summary.get("message") or summary.get("latest_historical_event_date") or ""
-        if summary.get("target_end_date"):
-            details = f"{details} -> target {summary.get('target_end_date')}".strip()
-        command = str(row.get("command") or "").strip()
-        if command and "manual_action_required" in str(row.get("status") or ""):
-            details = f"Run on workstation: {command}"
-        table.add_row(
-            str(row.get("coverage_kind") or "-"),
-            status_text(str(row.get("status") or "-")),
-            f"{short_time(row.get('start_ts_utc'))} to {short_time(row.get('end_ts_utc'))}",
-            str(row.get("action") or "-"),
-            details or f"rows={format_int(row.get('rows_written'))}",
+    if not compact:
+        grid.add_row(
+            f"read {config.get('historical_clickhouse_database') or '-'} (RO)  "
+            f"write {config.get('clickhouse_database') or '-'}.{config.get('compact_event_table') or 'events'}",
+            f"calendar {calendar.get('source') or '-'}  {calendar.get('reason') or ''}",
         )
-    return Panel(table, title="Maintenance Coverage", box=box.ROUNDED, border_style="green", padding=(0, 1))
+    return Panel(grid, box=box.ROUNDED, border_style=color, padding=(0, 1))
 
 
-def render_backpressure(state: PollState) -> Any:
-    metrics = state.metrics or {}
-    rows = [
-        ("Event broadcast", "events_broadcast_dropped"),
-        ("Compact writer queue", "compact_event_queue_dropped"),
-        ("Compact broadcast", "compact_event_broadcast_dropped"),
-        ("Bar input queue", "bar_events_dropped"),
-        ("Bar writer queue", "bar_rows_writer_dropped"),
-        ("Bar indicator queue", "bar_rows_indicator_dropped"),
-        ("Bar scanner queue", "bar_rows_scanner_dropped"),
-        ("Indicator queue", "indicator_events_dropped"),
-        ("Live state broadcast", "live_market_state_broadcast_dropped"),
-        ("Live state insert failures", "live_market_state_persist_failures"),
-        ("Raw CH queue", "clickhouse_events_dropped"),
-    ]
-    total = sum(int(as_float(metrics.get(key))) for _, key in rows)
-    table_rows = [(label, format_int(metrics.get(key)), "0 expected") for label, key in rows]
-    color = "green" if total == 0 else "red"
-    return Panel(metric_table(table_rows, value_heading="Count", last_heading="Target"), title="Queue Health", box=box.ROUNDED, border_style=color, padding=(0, 1))
-
-
-def render_compact_events(state: PollState) -> Any:
-    metrics = state.metrics or {}
-    rows = [
-        ("Emitted", format_int(metrics.get("compact_events_emitted")), format_rate(state.rates.get("compact_events_emitted_per_sec"))),
-        ("Persisted", format_int(metrics.get("compact_events_persisted")), format_rate(state.rates.get("compact_events_persisted_per_sec"))),
-        ("Reorder pending", format_int(metrics.get("compact_events_reorder_pending")), "-"),
-        ("Reorder buffered", format_int(metrics.get("compact_events_reorder_buffered")), "-"),
-        ("Reorder flushed", format_int(metrics.get("compact_events_reorder_flushed")), "-"),
-        ("Forced flushes", format_int(metrics.get("compact_event_reorder_forced_flushes")), "-"),
-        ("Late arrivals", format_int(metrics.get("compact_event_reorder_late_arrivals")), "-"),
-        ("Rejected", format_int(metrics.get("compact_event_rejected")), "-"),
-    ]
-    return Panel(metric_table(rows), title="Compact Events", box=box.ROUNDED, border_style="magenta", padding=(0, 1))
-
-
-def render_recent_events(state: PollState, watch: list[str]) -> Any:
-    table = Table(box=box.ROUNDED, expand=True, header_style="bold cyan")
-    table.add_column("ET", width=8, no_wrap=True)
-    table.add_column("VAN", width=8, no_wrap=True)
-    table.add_column("Ticker", width=8, no_wrap=True)
-    table.add_column("Type", width=5, no_wrap=True)
-    table.add_column("Arrival", justify="right", width=10, no_wrap=True)
-    table.add_column("SIP", width=19, no_wrap=True)
-    table.add_column("Seq", justify="right", width=12, no_wrap=True)
-    table.add_column("Primary", justify="right", width=12, no_wrap=True)
-    table.add_column("Size", justify="right", width=10, no_wrap=True)
-    added = 0
-    for ticker in watch:
-        rows = state.samples.get(ticker, [])
-        for row in rows[-3:]:
-            event_type = "Q" if (int(as_float(row.get("event_meta"))) & 1) == 0 else "T"
-            event_dt = us_to_dt(row.get("sip_timestamp_us"))
-            table.add_row(
-                clock(event_dt.astimezone(EASTERN)) if event_dt else "-",
-                clock(event_dt.astimezone(VANCOUVER)) if event_dt else "-",
-                ticker,
-                event_type,
-                format_int(row.get("arrival_sequence")),
-                short_time(row.get("sip_timestamp_us")),
-                format_int(row.get("source_sequence")),
-                format_int(row.get("price_primary_int")),
-                format_int(row.get("size_primary")),
-            )
-            added += 1
-    if added == 0:
-        table.add_row("-", "-", "-", "-", "-", "-", "-", "-", "-")
-    return Panel(table, title=f"Recent Compact Events ({added})", box=box.ROUNDED, border_style="blue", padding=(0, 1))
-
-
-def render_messages(state: PollState, *, limit: int = 6) -> Any:
-    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
-    table.add_column("Message", overflow="fold")
-    if state.errors:
-        for message in state.errors[-max(1, limit):]:
-            table.add_row(message)
-        color = "red"
-    else:
-        table.add_row("No monitor errors.")
+def render_attention(state: PollState, *, compact: bool) -> Any:
+    rows = attention_rows(state)
+    limit = 2 if compact else 4
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False, padding=(0, 1))
+    table.add_column("State", width=10, no_wrap=True)
+    table.add_column("Area", width=18 if not compact else 14, no_wrap=True, overflow="ellipsis")
+    table.add_column("Message / Action", overflow="ellipsis" if compact else "fold")
+    if not rows:
+        table.add_row(status_text("ok"), "All required paths", "No active action. Last trustworthy snapshots are current.")
         color = "green"
-    return Panel(table, title="Messages", box=box.ROUNDED, border_style=color, padding=(0, 1))
+    else:
+        for row in rows[:limit]:
+            message = str(row.get("message") or "-")
+            action = str(row.get("action") or "").strip()
+            detail = f"{message}  Action: {action}" if action else message
+            table.add_row(
+                status_text(str(row.get("severity") or row.get("status") or "warning")),
+                truncate(row.get("area") or row.get("source") or "monitor", 18 if compact else 32),
+                truncate(detail, 90 if compact else 280),
+            )
+        hidden = max(0, len(rows) - limit)
+        if hidden:
+            table.add_row("", "more", f"{hidden} additional active item(s); see the gateway stderr log or status API.")
+        color = "red" if any(str(row.get("severity")) == "critical" for row in rows) else "yellow"
+    return Panel(table, title="Attention / Required Action", box=box.ROUNDED, border_style=color, padding=(0, 1))
 
 
-def detail_table(rows: list[tuple[str, str]]) -> Any:
-    table = Table.grid(expand=True)
-    table.add_column("Label", width=16, style="bold cyan")
-    table.add_column("Value", ratio=1, overflow="fold")
-    for label, value in rows:
-        table.add_row(label, value)
-    return table
-
-
-def status_table(rows: list[tuple[str, str, str]]) -> Any:
+def render_pipeline(state: PollState, *, narrow: bool) -> Any:
     table = Table(box=box.SIMPLE, expand=True, show_edge=False, padding=(0, 1))
-    table.add_column("Check", style="bold cyan", width=20)
-    table.add_column("Result", width=8, no_wrap=True)
-    table.add_column("Details", ratio=1, overflow="fold")
-    for check, result, details in rows:
-        table.add_row(check, result, details)
-    return table
+    table.add_column("Stage", width=19, no_wrap=True)
+    table.add_column("State", width=12, no_wrap=True)
+    table.add_column("Rate", width=18, no_wrap=True)
+    table.add_column("Freshness", width=14, no_wrap=True)
+    if not narrow:
+        table.add_column("Pending", justify="right", width=10, no_wrap=True)
+    table.add_column("Integrity / Detail", overflow="fold")
+    for row in pipeline_rows(state):
+        values = [
+            row["stage"],
+            status_text(row["state"]),
+            row["rate"],
+            row["freshness"],
+        ]
+        if not narrow:
+            values.append(row["pending"])
+        values.append(row["detail"])
+        table.add_row(*values)
+    return Panel(table, title="Live Event Pipeline", box=box.ROUNDED, border_style=color_for(overall_status(state)), padding=(0, 1))
 
 
-def metric_table(
-    rows: list[tuple[str, str, str]],
-    value_heading: str = "Total",
-    last_heading: str = "Last",
-    metric_width: int = 22,
-    value_width: int | None = 14,
-    last_width: int | None = 16,
-    value_ratio: int | None = None,
-    last_ratio: int | None = None,
-    value_no_wrap: bool = True,
-    last_no_wrap: bool = True,
-    value_overflow: str = "ellipsis",
-    last_overflow: str = "ellipsis",
-    value_justify: str = "right",
-    last_justify: str = "right",
-) -> Any:
+def render_operational_core(state: PollState, *, narrow: bool) -> Any:
     table = Table(box=box.SIMPLE, expand=True, show_edge=False, padding=(0, 1))
-    table.add_column("Metric", style="bold cyan", width=metric_width, no_wrap=True)
-    table.add_column(
-        value_heading,
-        justify=value_justify,
-        width=value_width,
-        ratio=value_ratio,
-        no_wrap=value_no_wrap,
-        overflow=value_overflow,
-    )
-    table.add_column(
-        last_heading,
-        justify=last_justify,
-        width=last_width,
-        ratio=last_ratio,
-        no_wrap=last_no_wrap,
-        overflow=last_overflow,
-    )
-    for metric, total, last in rows:
-        table.add_row(metric, total, last)
-    return table
+    table.add_column("Path", width=18, no_wrap=True)
+    table.add_column("State", width=11, no_wrap=True)
+    table.add_column("Now", overflow="ellipsis")
+    for row in pipeline_rows(state):
+        table.add_row(row["stage"], status_text(row["state"]), f"{row['rate']}  {row['freshness']}  pending {row['pending']}")
+    recent = recent_coverage_summary(state)
+    historical = historical_summary(state)
+    table.add_row("Recent coverage", status_text(recent[0]), truncate(recent[1], 80))
+    table.add_row("Historical sync", status_text(historical[0]), truncate(historical[1], 80))
+    if maintenance_active(state):
+        maintenance = state.maintenance
+        table.add_row(
+            "Active repair",
+            status_text(str(maintenance.get("status") or "running")),
+            truncate(
+                f"{maintenance.get('phase') or '-'}: {maintenance.get('message') or '-'}; "
+                f"jobs {format_int(maintenance.get('completed_jobs'))}/{format_int(maintenance.get('total_jobs'))}",
+                80,
+            ),
+        )
+    return Panel(table, title="Operational Core", box=box.ROUNDED, border_style=color_for(overall_status(state)), padding=(0, 1))
+
+
+def render_recent_coverage(state: PollState, *, narrow: bool) -> Any:
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False, padding=(0, 1))
+    table.add_column("Session", width=10, no_wrap=True)
+    table.add_column("Events", width=13, no_wrap=True)
+    table.add_column("Bars", width=13, no_wrap=True)
+    if not narrow:
+        table.add_column("Repair / Retention", overflow="fold")
+    sessions = required_sessions(state)
+    if not sessions:
+        table.add_row("-", "waiting", "waiting", *( ["No session contract reported."] if not narrow else [] ))
+    for session in sessions[-4:]:
+        event_state, bar_state, detail = live_session_state(state, session)
+        values = [session, status_text(event_state), status_text(bar_state)]
+        if not narrow:
+            values.append(detail)
+        table.add_row(*values)
+    return Panel(table, title="Recent Live Coverage — q_live.events", box=box.ROUNDED, border_style="cyan", padding=(0, 1))
+
+
+def render_historical_sync(state: PollState, *, narrow: bool) -> Any:
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False, padding=(0, 1))
+    table.add_column("Session", width=10, no_wrap=True)
+    table.add_column("Quotes", width=14, no_wrap=True)
+    table.add_column("Trades", width=14, no_wrap=True)
+    if not narrow:
+        table.add_column("Historical / Action", overflow="fold")
+    groups = flatfile_groups(state)
+    if not groups:
+        table.add_row("-", "waiting", "waiting", *( ["No flatfile coverage snapshot yet."] if not narrow else [] ))
+    for session, sources in list(groups.items())[-4:]:
+        quote = sources.get("quote", {})
+        trade = sources.get("trade", {})
+        detail = historical_action(quote, trade)
+        values = [session, status_text(source_status(quote)), status_text(source_status(trade))]
+        if not narrow:
+            values.append(detail)
+        table.add_row(*values)
+    return Panel(table, title="Historical Sync — market_sip_compact (RO)", box=box.ROUNDED, border_style="magenta", padding=(0, 1))
+
+
+def render_products(state: PollState, *, narrow: bool) -> Any:
+    products = state.status.get("downstream_products")
+    products = products if isinstance(products, list) else []
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False, padding=(0, 1))
+    table.add_column("Product", width=24, no_wrap=True)
+    table.add_column("State", width=12, no_wrap=True)
+    table.add_column("Rows", justify="right", width=12, no_wrap=True)
+    table.add_column("Meaning", overflow="fold")
+    for item in products:
+        if not isinstance(item, dict):
+            continue
+        enabled = bool(item.get("enabled", True))
+        status = str(item.get("state") or ("healthy" if enabled else "disabled"))
+        detail = str(item.get("detail") or "-")
+        if item.get("product") == "Model microbars" and not enabled:
+            detail = "Disabled until a production model enables the isolated stream."
+        table.add_row(
+            str(item.get("product") or "-"),
+            status_text(status),
+            format_int(item.get("rows")) if item.get("rows") is not None else "-",
+            truncate(detail, 120 if narrow else 240),
+        )
+    if not products:
+        table.add_row("Downstream products", status_text("waiting"), "-", "No product status reported.")
+    return Panel(table, title="Downstream Products", box=box.ROUNDED, border_style="blue", padding=(0, 1))
+
+
+def render_maintenance(state: PollState, *, narrow: bool) -> Any:
+    value = state.maintenance if isinstance(state.maintenance, dict) else {}
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False, padding=(0, 1))
+    table.add_column("Stage", width=18, no_wrap=True)
+    table.add_column("Progress", width=24 if not narrow else 16, no_wrap=True)
+    table.add_column("Current durable unit", overflow="fold")
+    total_jobs = int(as_float(value.get("total_jobs")))
+    completed_jobs = int(as_float(value.get("completed_jobs")))
+    total_symbols = int(as_float(value.get("total_symbols")))
+    completed_symbols = int(as_float(value.get("completed_symbols")))
+    table.add_row("Mode / phase", f"{value.get('mode') or '-'} / {value.get('phase') or '-'}", str(value.get("message") or "-"))
+    table.add_row("Intervals", count_progress(completed_jobs, total_jobs), interval_detail(value))
+    table.add_row("Symbols", count_progress(completed_symbols, total_symbols), ", ".join(value.get("active_symbols") or []) or "-")
+    table.add_row("Durability", f"rows {format_int(value.get('rows_written'))}", f"errors {format_int(value.get('errors'))}  page limits {format_int(value.get('page_limited_symbols'))}")
+    return Panel(table, title="Active Coverage Repair", box=box.ROUNDED, border_style=color_for(str(value.get("status") or "running")), padding=(0, 1))
+
+
+def pipeline_rows(state: PollState) -> list[dict[str, str]]:
+    metrics = state.metrics or {}
+    lanes = operational_lanes(state)
+    feed = lanes.get("massive_feed", {})
+    compact = lanes.get("compact_events", {})
+    bars = lanes.get("bars", {})
+    event_age = as_float(metrics.get("last_event_lag_ms")) / 1000 if metrics.get("last_event_lag_ms") is not None else None
+    return [
+        {
+            "stage": "Massive feed",
+            "state": str(feed.get("state") or "waiting"),
+            "rate": f"Q {format_rate(state.rates.get('ingest_quotes_per_sec'))}  T {format_rate(state.rates.get('ingest_trades_per_sec'))}",
+            "freshness": format_age(event_age),
+            "pending": "-",
+            "detail": f"reconnect failures {format_int(metrics.get('massive_connect_failures'))}; disconnects {format_int(metrics.get('massive_disconnects'))}",
+        },
+        {
+            "stage": "Normalize / encode",
+            "state": "warning" if as_float(state.rates.get("compact_event_rejected_per_sec")) > 0 else ("healthy" if feed.get("state") == "healthy" else "waiting"),
+            "rate": format_rate(state.rates.get("compact_events_emitted_per_sec")),
+            "freshness": format_age(event_age),
+            "pending": format_int(metrics.get("compact_events_reorder_pending")),
+            "detail": f"rejected {format_int(metrics.get('compact_event_rejected'))}; late {format_int(metrics.get('compact_event_reorder_late_arrivals'))}; forced {format_int(metrics.get('compact_event_reorder_forced_flushes'))}",
+        },
+        {
+            "stage": "q_live.events",
+            "state": str(compact.get("state") or "disabled"),
+            "rate": format_rate(state.rates.get("compact_events_persisted_per_sec")),
+            "freshness": lane_freshness(compact),
+            "pending": format_int(compact.get("pending_rows")),
+            "detail": f"persisted {format_int(metrics.get('compact_events_persisted'))}; failures {format_int(compact.get('failures'))}",
+        },
+        {
+            "stage": "Live bars",
+            "state": str(bars.get("state") or "waiting"),
+            "rate": format_rate(state.rates.get("bar_rows_emitted_per_sec")),
+            "freshness": lane_freshness(bars),
+            "pending": format_int(bars.get("pending_rows")),
+            "detail": f"emitted {format_int(metrics.get('bar_rows_emitted'))}; failures {format_int(bars.get('failures'))}",
+        },
+    ]
+
+
+def attention_rows(state: PollState) -> list[dict[str, Any]]:
+    rows = state.status.get("attention")
+    result = [dict(item) for item in rows if isinstance(item, dict)] if isinstance(rows, list) else []
+    for row in coverage_rows(state):
+        status = str(row.get("status") or "")
+        if "manual_action_required" in status or "needs_manual_rebuild" in status or "retention_blocked" in status:
+            command = str(row.get("command") or "").strip()
+            result.append(
+                {
+                    "severity": "critical" if "rebuild" in status else "warning",
+                    "area": "Historical handoff" if command else "Recent coverage",
+                    "message": status.replace("_", " "),
+                    "action": f"Run on workstation: {command}" if command else coverage_detail(row),
+                }
+            )
+    coverage_error = state.coverage.get("error") if isinstance(state.coverage, dict) else ""
+    if coverage_error:
+        result.append({"severity": "warning", "area": "Coverage snapshot", "message": coverage_error})
+    recent_state, recent_detail = recent_coverage_summary(state)
+    if recent_state == "warning":
+        result.append(
+            {
+                "severity": "warning",
+                "area": "Recent live coverage",
+                "message": recent_detail,
+                "action": "Allow the scheduled recent-window repair to complete; inspect maintenance if the gap persists.",
+            }
+        )
+    for issue in sorted(state.poll_issues.values(), key=lambda item: item.last_seen_utc, reverse=True):
+        result.append(
+            {
+                "severity": "critical" if issue.source in PRIMARY_SOURCES else "warning",
+                "area": f"Monitor {issue.source}",
+                "message": f"{issue.message} ({issue.count} consecutive poll failure(s)); last good {format_age(source_age(state, issue.source))} ago.",
+            }
+        )
+    return dedupe_attention(result)
+
+
+def dedupe_attention(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        key = (str(row.get("area") or row.get("source")), str(row.get("message")))
+        if key not in seen:
+            seen.add(key)
+            out.append(row)
+    return out
+
+
+def operational_lanes(state: PollState) -> dict[str, dict[str, Any]]:
+    operational = None
+    specific = state.status.get("service_specific") if isinstance(state.status.get("service_specific"), dict) else {}
+    if isinstance(specific.get("operational"), dict):
+        operational = specific.get("operational")
+    elif isinstance(state.health.get("operational"), dict):
+        operational = state.health.get("operational")
+    lanes = operational.get("lanes") if isinstance(operational, dict) else []
+    return {
+        str(item.get("key")): item
+        for item in lanes
+        if isinstance(item, dict) and item.get("key")
+    }
+
+
+def required_sessions(state: PollState) -> list[str]:
+    specific = state.status.get("service_specific") if isinstance(state.status.get("service_specific"), dict) else {}
+    values = specific.get("recent_sessions")
+    return [str(value) for value in values] if isinstance(values, list) else []
+
+
+def live_session_state(state: PollState, session: str) -> tuple[str, str, str]:
+    rows = [row for row in coverage_rows(state) if row.get("table_group") == "live_coverage" and interval_contains_session(row, session)]
+    current = bool(required_sessions(state) and session == required_sessions(state)[-1])
+    collecting = current and bool((state.health.get("market_calendar") or {}).get("active_collection_window"))
+    event_statuses = [str(row.get("status") or "") for row in rows if "compact" in str(row.get("action") or "")]
+    bar_statuses = [str(row.get("status") or "") for row in rows if "bar" in str(row.get("action") or "")]
+    repair = [str(row.get("status") or "") for row in rows if "repair" in str(row.get("status") or "")]
+    event_state = "collecting" if collecting else ("covered" if any("persisted" in value or "completed" in value for value in event_statuses + repair) else "no evidence")
+    bar_state = "collecting" if collecting else ("covered" if any("persisted" in value or "completed" in value for value in bar_statuses + repair) else "no evidence")
+    detail = ", ".join(sorted(set(repair))) or ("live collection active" if collecting else "awaiting confirmed event/bar overlap")
+    return event_state, bar_state, detail
+
+
+def recent_coverage_summary(state: PollState) -> tuple[str, str]:
+    sessions = required_sessions(state)
+    if not sessions:
+        return "waiting", "No required-session contract reported."
+    states = [(session, *live_session_state(state, session)) for session in sessions[-4:]]
+    missing = [session for session, events, bars, _ in states[:-1] if events == "no evidence" or bars == "no evidence"]
+    if missing:
+        return "warning", f"No confirmed event/bar overlap for {', '.join(missing)}."
+    return "healthy", f"{len(states)} required session(s) represented; current session may still be collecting."
+
+
+def flatfile_groups(state: PollState) -> dict[str, dict[str, dict[str, Any]]]:
+    groups: dict[str, dict[str, dict[str, Any]]] = {}
+    for row in coverage_rows(state):
+        if row.get("table_group") != "flatfile_coverage":
+            continue
+        session = str(row.get("start_ts_utc") or "")[:10]
+        source = str(row.get("action") or "")
+        if session and source:
+            groups.setdefault(session, {})[source] = row
+    return dict(sorted(groups.items()))
+
+
+def source_status(row: dict[str, Any]) -> str:
+    if not row:
+        return "waiting"
+    status = str(row.get("status") or "")
+    if status == "remote_ready/confirmed":
+        return "confirmed"
+    if "manual_action_required" in status:
+        return "action required"
+    if "missing" in status or "failed" in status:
+        return "warning"
+    if status in {"remote_ready/not_confirmed", "remote_changed", "launched", "launch_in_progress"}:
+        return "waiting"
+    return status or "waiting"
+
+
+def historical_action(quote: dict[str, Any], trade: dict[str, Any]) -> str:
+    rows = [row for row in (quote, trade) if row]
+    command = next((str(row.get("command") or "").strip() for row in rows if row.get("command")), "")
+    statuses = ", ".join(sorted({str(row.get("status") or "waiting") for row in rows}))
+    host = next((str(row.get("host_role") or "") for row in rows if row.get("host_role")), "-")
+    if command and any("manual_action_required" in str(row.get("status")) for row in rows):
+        return f"{host}: run {command}"
+    return f"{host}: {statuses or 'waiting'}"
+
+
+def historical_summary(state: PollState) -> tuple[str, str]:
+    groups = flatfile_groups(state)
+    if not groups:
+        return "waiting", "No remote/historical coverage snapshot yet."
+    actions = []
+    unconfirmed = []
+    for session, sources in groups.items():
+        statuses = [str(row.get("status") or "") for row in sources.values()]
+        if any("manual_action_required" in status for status in statuses):
+            actions.append(session)
+        if not statuses or not all(status.endswith("/confirmed") for status in statuses):
+            unconfirmed.append(session)
+    if actions:
+        return "action required", f"Workstation update required for {', '.join(actions)}."
+    if unconfirmed:
+        return "waiting", f"Awaiting confirmation for {', '.join(unconfirmed)}."
+    return "healthy", f"Latest {len(groups)} indexed session(s) confirmed."
 
 
 def coverage_rows(state: PollState) -> list[dict[str, Any]]:
-    coverage = state.coverage if isinstance(state.coverage, dict) else {}
-    rows = coverage.get("rows")
-    return rows if isinstance(rows, list) else []
+    rows = state.coverage.get("rows") if isinstance(state.coverage, dict) else []
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 
-def parse_summary(raw: Any) -> dict[str, Any]:
-    if not isinstance(raw, str) or not raw.strip():
-        return {}
-    try:
-        value = json.loads(raw)
-        return value if isinstance(value, dict) else {}
-    except json.JSONDecodeError:
-        return {}
+def interval_contains_session(row: dict[str, Any], session: str) -> bool:
+    start = str(row.get("start_ts_utc") or "")[:10]
+    end = str(row.get("end_ts_utc") or "")[:10]
+    return bool(start and start <= session and (not end or session <= end))
 
 
-def operation_message(state: PollState) -> str:
-    maintenance = state.maintenance if isinstance(state.maintenance, dict) else {}
-    if maintenance.get("active"):
-        return str(maintenance.get("message") or "Maintenance is running.")
-    health = state.health or {}
+def coverage_detail(row: dict[str, Any]) -> str:
+    raw = row.get("summary_json")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return str(parsed.get("message") or parsed.get("error") or parsed)
+        except json.JSONDecodeError:
+            pass
+    return str(row.get("status") or "Inspect coverage state.")
+
+
+def maintenance_active(state: PollState) -> bool:
+    return bool((state.maintenance or {}).get("active"))
+
+
+def overall_status(state: PollState) -> str:
+    if any(issue.source in PRIMARY_SOURCES for issue in state.poll_issues.values()):
+        return "stale" if state.health or state.status else "failed"
+    header = state.status.get("header") if isinstance(state.status.get("header"), dict) else {}
+    return str(header.get("status") or state.health.get("status") or "starting").lower()
+
+
+def source_age(state: PollState, source: str) -> float | None:
+    updated = state.source_updated_at.get(source)
+    if updated is None:
+        return None
+    return max(0.0, (datetime.now(UTC) - updated).total_seconds())
+
+
+def lane_freshness(lane: dict[str, Any]) -> str:
+    value = parse_datetime(lane.get("last_success_utc"))
+    if value is None:
+        return "no commit yet"
+    return format_age(max(0.0, (datetime.now(UTC) - value).total_seconds()))
+
+
+def interval_detail(value: dict[str, Any]) -> str:
+    symbol = str(value.get("current_symbol") or "-")
+    start = short_datetime(value.get("current_interval_start_utc"))
+    end = short_datetime(value.get("current_interval_end_utc"))
+    reason = str(value.get("current_interval_reason") or "-")
+    return f"{symbol} {start} to {end} ({reason})"
+
+
+def plain_summary(state: PollState) -> str:
     metrics = state.metrics or {}
-    if not health:
-        return "Waiting for qmd-gateway HTTP API."
-    status = str(health.get("status") or "")
-    if status != "running":
-        return status or "Gateway is not reporting running state."
-    for row in coverage_rows(state):
-        if "manual_action_required" in str(row.get("status") or ""):
-            command = str(row.get("command") or "").strip()
-            if command:
-                return f"Historical gap ready; run on workstation: {command}"
-    event_rate = as_float(state.rates.get("ingest_events_per_sec"))
-    if event_rate > 0:
-        return f"Ingesting Massive quotes/trades at {event_rate:,.1f} events/sec."
-    lag = as_float(metrics.get("last_event_lag_ms"))
-    if lag > 0:
-        return f"Connected; last event lag is {format_ms(lag)}."
-    return "Connected; waiting for Massive events."
+    feed = operational_lanes(state).get("massive_feed", {})
+    compact = operational_lanes(state).get("compact_events", {})
+    coverage = recent_coverage_summary(state)
+    historical = historical_summary(state)
+    return (
+        f"{datetime.now(UTC).isoformat(timespec='seconds')} "
+        f"status={overall_status(state)} feed={feed.get('state', 'waiting')} "
+        f"quotes={format_rate(state.rates.get('ingest_quotes_per_sec'))} "
+        f"trades={format_rate(state.rates.get('ingest_trades_per_sec'))} "
+        f"event_age={format_age(as_float(metrics.get('last_event_lag_ms')) / 1000 if metrics.get('last_event_lag_ms') is not None else None)} "
+        f"q_live={compact.get('state', 'disabled')} pending={format_int(compact.get('pending_rows'))} "
+        f"coverage={coverage[0]} historical={historical[0]} actions={len(attention_rows(state))}"
+    )
 
 
-def market_label(state: PollState) -> str:
-    payload = state.market_status or {}
-    if not payload:
-        return "unknown"
-    market = str(payload.get("market") or "-")
-    early = bool(payload.get("earlyHours"))
-    after = bool(payload.get("afterHours"))
-    flags = []
-    if early:
-        flags.append("early")
-    if after:
-        flags.append("after")
-    return market + (f" ({', '.join(flags)})" if flags else "")
-
-
-def market_detail(state: PollState) -> str:
-    payload = state.market_status or {}
-    if not payload:
-        return state.market_status_error or "not checked yet"
-    exchanges = payload.get("exchanges") if isinstance(payload.get("exchanges"), dict) else {}
-    exchange_status = ", ".join(f"{key}:{value}" for key, value in exchanges.items()) or "-"
-    server_time = str(payload.get("serverTime") or "-")
-    source = str(payload.get("source") or "-")
-    reason = str(payload.get("reason") or "-")
-    age = payload.get("statusAgeSeconds")
-    stale = " stale" if payload.get("stale") else ""
-    age_text = f" age={format_int(age)}s" if age is not None else ""
-    return f"{market_label(state)} source={source} reason={reason}{age_text}{stale} server={server_time} exchanges={exchange_status}"
+def machine_payload(state: PollState) -> dict[str, Any]:
+    return {
+        "updated_at_utc": state.updated_at,
+        "overall_status": overall_status(state),
+        "health": state.health,
+        "status": state.status,
+        "metrics": state.metrics,
+        "maintenance": state.maintenance,
+        "coverage": state.coverage,
+        "rates": state.rates,
+        "poll_issues": {key: asdict(value) for key, value in state.poll_issues.items()},
+        "recoveries": [asdict(value) for value in state.recoveries],
+    }
 
 
 def status_text(value: str) -> str:
-    if style_status is None:
-        return value
-    return style_status(value)
+    return style_status(value) if style_status is not None else value.upper()
 
 
-def ok_label(ok: bool) -> str:
-    return "[green]OK[/green]" if ok else "[red]FAIL[/red]"
-
-
-def as_float(value: Any) -> float:
-    try:
-        if value is None:
-            return 0.0
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def format_int(value: Any) -> str:
-    return f"{int(as_float(value)):,}"
+def color_for(value: str) -> str:
+    if status_color is not None:
+        return status_color(value)
+    value = value.lower()
+    if value in {"failed", "degraded", "critical"}:
+        return "red"
+    if value in {"warning", "stale", "action_required", "action required", "waiting"}:
+        return "yellow"
+    return "green"
 
 
 def format_rate(value: Any) -> str:
     return f"{as_float(value):,.1f}/s"
 
 
-def progress_bar(completed: int, total: int, width: int = 24) -> str:
+def format_int(value: Any) -> str:
+    return f"{int(as_float(value)):,}"
+
+
+def format_age(seconds: float | None) -> str:
+    if seconds is None:
+        return "unknown"
+    if seconds < 1:
+        return f"{seconds * 1000:.0f}ms"
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    if seconds < 3600:
+        return f"{seconds / 60:.1f}m"
+    return f"{seconds / 3600:.1f}h"
+
+
+def count_progress(completed: int, total: int) -> str:
     if total <= 0:
-        return "[dim]" + ("-" * width) + "[/dim] unknown"
-    completed = max(0, min(completed, total))
-    filled = int(round(width * completed / total))
-    pct = 100.0 * completed / total
-    return f"[green]{'#' * filled}[/green][dim]{'-' * (width - filled)}[/dim] {pct:5.1f}%"
+        return f"{completed:,} completed; total not established"
+    return f"{completed:,}/{total:,} ({100 * min(completed, total) / total:.1f}%)"
 
 
-def format_ms(value: Any) -> str:
-    number = as_float(value)
-    if number <= 0:
-        return "-"
-    if number >= 60_000:
-        return f"{number / 60_000:,.1f}m"
-    if number >= 1_000:
-        return f"{number / 1_000:,.1f}s"
-    return f"{number:,.0f}ms"
+def as_float(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def truncate(value: Any, limit: int) -> str:
+    text = str(value or "-").strip()
+    return text if len(text) <= limit else text[: max(0, limit - 3)].rstrip() + "..."
 
 
 def clock(value: datetime) -> str:
     return value.strftime("%H:%M:%S")
 
 
-def short_time(value: Any) -> str:
-    event_dt = us_to_dt(value)
-    if event_dt:
-        return event_dt.strftime("%Y-%m-%d %H:%M:%S")
-    raw = str(value or "-")
-    if "T" in raw:
-        return raw.replace("T", " ").replace("Z", "")[:19]
-    return raw
-
-
-def updated_label(value: Any) -> str:
-    raw = short_time(value)
-    return f"updated {raw}" if raw and raw != "-" else "-"
-
-
-def us_to_dt(value: Any) -> datetime | None:
-    number = as_float(value)
-    if number <= 0:
+def parse_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC)
+    if not value:
         return None
     try:
-        return datetime.fromtimestamp(number / 1_000_000, UTC)
-    except (OverflowError, OSError, ValueError):
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError:
         return None
+
+
+def short_datetime(value: Any) -> str:
+    parsed = parse_datetime(value)
+    return parsed.astimezone(EASTERN).strftime("%m-%d %H:%M ET") if parsed else "-"
 
 
 if __name__ == "__main__":
-    try:
-        raise SystemExit(main())
-    except KeyboardInterrupt:
-        print("\nqmd terminal stopped.", file=sys.stderr)
-        raise SystemExit(130)
+    raise SystemExit(main())

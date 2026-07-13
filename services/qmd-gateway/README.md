@@ -379,7 +379,35 @@ The `/metrics` endpoint exposes operational counters for:
 The `/snapshot/maintenance` endpoint exposes in-flight startup maintenance and
 gap-fill progress: active status, mode, total jobs, completed jobs, active
 symbols, current interval, repaired rows, page-limit count, and errors. The Rich
-terminal renders this as the `Maintenance Progress` panel.
+terminal renders this only while maintenance is active. Idle `0/0` progress is
+not presented as meaningful work.
+
+`/snapshot/status` also exposes QMD-specific operational lanes for the Massive
+feed, `q_live.events`, live bars, the live coverage ledger, optional raw and
+indicator writers, the compact-event warning audit, abnormal market-state persistence, and optional model
+microbars. Each enabled lane reports current state, pending and high-water rows,
+successful rows, failure counts, last success/failure timestamps, and a bounded
+error detail. Writer failures retain the current batch for retry and are shown
+as active terminal actions; a later successful commit records recovery.
+
+The terminal is organized around the gateway's data contracts rather than its
+internal tasks:
+
+- `Attention / Required Action`: active writer/feed failures, stale monitor
+  sources, recent-coverage problems, retention blocks, and exact laptop-to-
+  workstation historical commands.
+- `Live Event Pipeline`: Massive quote/trade arrival, normalization/encoding,
+  durable `q_live.events` commits, and closed live bars.
+- `Recent Live Coverage`: current plus three prior market sessions using the
+  confirmed event/bar coverage ledger.
+- `Historical Sync`: remote quote/trade object readiness and read-only
+  `market_sip_compact` confirmation.
+- `Downstream Products`: bars, indicators, scanner primitives, sparse abnormal
+  market state, and the opt-in model microbar path.
+
+Short/narrow terminals retain only the header, required actions, live pipeline,
+coverage/handoff summary, and active repair. Diagnostic event samples are
+polled only with the terminal's `--details` option.
 
 Required processing and persistence queues use awaited sends. If a required
 queue is full, live ingest backpressures instead of dropping canonical work. UI
@@ -517,6 +545,25 @@ cargo --version
 ```powershell
 .\scripts\run_qmd_gateway.ps1
 ```
+
+The launcher creates a per-run shutdown token. Exiting the monitor sends a
+token-protected local shutdown request, stops live producers, and gives writer
+queues up to 15 seconds to drain before the launcher applies its 20-second
+forced-stop fallback. Gateway stdout/stderr remain under `.tmp/qmd-gateway/`.
+Failed final batches continue retrying within that drain window; they are never
+cleared merely because shutdown was requested.
+
+Useful terminal modes:
+
+```powershell
+python .\services\qmd-gateway\tools\qmd_terminal.py --once
+python .\services\qmd-gateway\tools\qmd_terminal.py --plain --once
+python .\services\qmd-gateway\tools\qmd_terminal.py --json
+python .\services\qmd-gateway\tools\qmd_terminal.py --details
+```
+
+Redirected stdout automatically uses bounded human-readable summaries without
+cursor-control sequences. `--json` is the explicit one-snapshot machine format.
 
 Check only:
 

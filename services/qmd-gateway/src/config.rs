@@ -79,6 +79,8 @@ pub struct GatewayConfig {
     pub qmd_live_event_coverage_table: String,
     pub qmd_run_id: String,
     pub qmd_run_started_at_utc: String,
+    #[serde(skip_serializing)]
+    pub qmd_shutdown_token: String,
     pub qmd_startup_maintenance_enabled: bool,
     pub replay_enabled: bool,
     pub replay_date: String,
@@ -328,6 +330,7 @@ impl GatewayConfig {
                 "QMD_RUN_STARTED_AT_UTC",
                 &Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             ),
+            qmd_shutdown_token: env_string("QMD_SHUTDOWN_TOKEN", ""),
             qmd_startup_maintenance_enabled: env_bool("QMD_STARTUP_MAINTENANCE_ENABLED", true),
             replay_enabled: env_bool("QMD_REPLAY_ENABLED", false),
             replay_date: env_string("QMD_REPLAY_DATE", ""),
@@ -384,6 +387,28 @@ impl GatewayConfig {
             return channels;
         }
         Vec::new()
+    }
+
+    pub fn resolved_host_role(&self) -> String {
+        if self.qmd_host_role != "auto" {
+            return self.qmd_host_role.clone();
+        }
+        let computer = env::var("COMPUTERNAME")
+            .or_else(|_| env::var("HOSTNAME"))
+            .unwrap_or_default()
+            .to_ascii_uppercase();
+        let pipeline_root_exists = Path::new(&self.historical_pipeline_code_root).exists();
+        if computer.contains("DESKTOP-SAAI85T")
+            || (pipeline_root_exists
+                && self
+                    .historical_pipeline_code_root
+                    .to_ascii_lowercase()
+                    .starts_with("d:\\tradingml"))
+        {
+            "workstation".to_string()
+        } else {
+            "laptop".to_string()
+        }
     }
 
     pub fn clickhouse_password(&self) -> String {

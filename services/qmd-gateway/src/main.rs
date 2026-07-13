@@ -49,7 +49,8 @@ use crate::state::SharedMarketState;
 use chrono::Utc;
 use std::net::SocketAddr;
 use std::{error::Error, io};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
+use tokio::time::{timeout, Duration};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -68,6 +69,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     preflight_config(&config).map_err(startup_error)?;
     let bind: SocketAddr = config.bind.parse()?;
     let metrics = SharedMetrics::new();
+    metrics.register_lane("massive_feed", "Massive feed", "feed", true, true);
+    metrics.register_lane(
+        "compact_events",
+        "q_live.events persistence",
+        "writer",
+        config.compact_events_enabled && config.persist_compact_events,
+        config.compact_events_enabled && config.persist_compact_events,
+    );
+    metrics.register_lane("bars", "Live bar persistence", "writer", true, true);
+    metrics.register_lane(
+        "coverage_ledger",
+        "Live coverage ledger",
+        "coverage",
+        true,
+        true,
+    );
+    metrics.register_lane(
+        "compact_audit",
+        "Compact-event warning audit",
+        "audit",
+        config.compact_events_enabled && config.persist_compact_events,
+        config.compact_events_enabled && config.persist_compact_events,
+    );
+    metrics.register_lane(
+        "raw_events",
+        "Raw event persistence",
+        "writer",
+        config.persist_raw_events,
+        false,
+    );
+    metrics.register_lane(
+        "indicators",
+        "Indicator persistence",
+        "writer",
+        config.persist_indicators,
+        false,
+    );
+    metrics.register_lane(
+        "live_market_state",
+        "Abnormal market-state persistence",
+        "writer",
+        config.live_market_state_enabled,
+        config.live_market_state_enabled,
+    );
+    metrics.register_lane(
+        "model_microbars",
+        "Model microbar persistence",
+        "writer",
+        config.model_streaming_bars_enabled && config.model_streaming_bars_persist,
+        false,
+    );
     let market = SharedMarketState::new();
     let bars = SharedBarStore::new(
         config.bar_timeframes.clone(),
@@ -85,7 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let maintenance = SharedMaintenanceState::new();
     let market_calendar = MarketCalendarClient::new(config.clone());
     market_calendar.refresh(Utc::now()).await;
-    tokio::spawn(run_market_calendar_refresh(market_calendar.clone()));
+    let market_calendar_handle = tokio::spawn(run_market_calendar_refresh(market_calendar.clone()));
     let compact_event_store =
         SharedCompactEventStore::new(config.compact_event_live_buffer_events_per_ticker);
     let (writer_sender, writer_receiver) =
@@ -102,7 +154,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (scanner_sender, _scanner_receiver) = broadcast::channel::<ScannerPrimitive>(10_000);
     let (live_market_state_sender, _live_market_state_receiver) =
         broadcast::channel::<LiveSymbolMarketStateEvent>(10_000);
-    let model_bar_service = spawn_model_bar_service(config.clone())
+    let model_bar_service = spawn_model_bar_service(config.clone(), metrics.clone())
         .await
         .map_err(|error| {
             startup_error(format!(
@@ -110,14 +162,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             ))
         })?;
 
+    let mut writer_handles = Vec::new();
     if config.persist_raw_events {
-        let writer = ClickHouseWriter::new(config.clone());
+        let writer = ClickHouseWriter::new(config.clone(), metrics.clone());
         writer.initialize().await.map_err(|error| {
             startup_error(format!(
                 "qmd-gateway raw event ClickHouse preflight failed: {error}"
             ))
         })?;
-        tokio::spawn(writer.run(writer_receiver));
+        metrics.set_lane_state(
+            "raw_events",
+            "healthy",
+            "Raw quote/trade writer initialized; awaiting rows.",
+        );
+        writer_handles.push(tokio::spawn(writer.run(writer_receiver)));
     } else {
         drop(writer_receiver);
         eprintln!(
@@ -147,30 +205,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 "qmd-gateway compact event ClickHouse preflight failed: {error}"
             ))
         })?;
-        tokio::spawn(compact_writer.run(compact_writer_receiver));
+        if config.persist_compact_events {
+            metrics.set_lane_state(
+                "compact_events",
+                "healthy",
+                "q_live.events writer initialized; awaiting rows.",
+            );
+            metrics.set_lane_state(
+                "compact_audit",
+                "healthy",
+                "Compact-event warning audit initialized; normal state is sparse.",
+            );
+        }
+        writer_handles.push(tokio::spawn(compact_writer.run(compact_writer_receiver)));
     } else {
         drop(compact_writer_receiver);
         eprintln!(
             "Compact event stream is disabled. Set QMD_COMPACT_EVENTS_ENABLED=true to enable it."
         );
     }
-    let bar_writer = BarClickHouseWriter::new(config.clone());
+    let bar_writer = BarClickHouseWriter::new(config.clone(), metrics.clone());
     bar_writer.initialize().await.map_err(|error| {
         startup_error(format!(
             "qmd-gateway bar ClickHouse preflight failed: {error}"
         ))
     })?;
-    let indicator_writer = IndicatorClickHouseWriter::new(config.clone());
+    metrics.set_lane_state(
+        "bars",
+        "healthy",
+        "Live bar writer initialized; awaiting closed bars.",
+    );
+    metrics.set_lane_state(
+        "coverage_ledger",
+        "healthy",
+        "Live event/bar coverage ledger initialized.",
+    );
+    let indicator_writer = IndicatorClickHouseWriter::new(config.clone(), metrics.clone());
     if config.persist_indicators {
         indicator_writer.initialize().await.map_err(|error| {
             startup_error(format!(
                 "qmd-gateway indicator ClickHouse preflight failed: {error}"
             ))
         })?;
+        metrics.set_lane_state(
+            "indicators",
+            "healthy",
+            "Indicator writer initialized; awaiting rows.",
+        );
     }
 
-    tokio::spawn(bar_writer.run(bar_writer_receiver));
-    tokio::spawn(indicator_writer.run(indicator_writer_receiver));
+    writer_handles.push(tokio::spawn(bar_writer.run(bar_writer_receiver)));
+    writer_handles.push(tokio::spawn(
+        indicator_writer.run(indicator_writer_receiver),
+    ));
     let indicator_router = spawn_indicator_engines(
         indicators.clone(),
         config.indicator_channel_capacity,
@@ -183,7 +270,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         metrics.clone(),
         scanner_sender.clone(),
     );
-    let live_market_state_router = spawn_live_market_state_service(
+    let (live_market_state_router, live_market_state_task) = spawn_live_market_state_service(
         config.clone(),
         live_market_state.clone(),
         metrics.clone(),
@@ -218,6 +305,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         metrics: metrics.clone(),
     };
 
+    let (shutdown_sender, mut shutdown_receiver) = watch::channel(false);
     let app = app(AppState {
         bars,
         compact_event_store: compact_event_store.clone(),
@@ -236,14 +324,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .map(|service| service.rows.clone()),
         scanner,
         scanner_events: scanner_sender,
+        shutdown: shutdown_sender,
     });
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     eprintln!("qmd-gateway API listening on {bind}; startup maintenance may still be running.");
     let server = tokio::spawn(async move {
         axum::serve(listener, app)
-            .with_graceful_shutdown(async {
-                let _ = tokio::signal::ctrl_c().await;
+            .with_graceful_shutdown(async move {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = shutdown_receiver.changed() => {}
+                }
             })
             .await
     });
@@ -251,15 +343,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let active_collection_window = market_calendar
         .snapshot(Utc::now())
         .active_collection_window;
+    let mut producer_handles = Vec::new();
     if active_collection_window {
-        tokio::spawn(run_massive_ingest(config.clone(), event_fanout.clone()));
-        tokio::spawn(run_startup_maintenance(
+        producer_handles.push(tokio::spawn(run_massive_ingest(
+            config.clone(),
+            event_fanout.clone(),
+        )));
+        producer_handles.push(tokio::spawn(run_startup_maintenance(
             config.clone(),
             event_fanout.clone(),
             maintenance.clone(),
             compact_event_store.clone(),
             market_calendar.clone(),
-        ));
+        )));
     } else {
         run_startup_maintenance(
             config.clone(),
@@ -269,26 +365,73 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             market_calendar.clone(),
         )
         .await;
-        tokio::spawn(run_massive_ingest(config.clone(), event_fanout.clone()));
+        producer_handles.push(tokio::spawn(run_massive_ingest(
+            config.clone(),
+            event_fanout.clone(),
+        )));
     }
     if config.gap_fill_enabled {
-        tokio::spawn(run_gap_fill_service(
+        producer_handles.push(tokio::spawn(run_gap_fill_service(
             config.clone(),
             event_fanout.clone(),
             maintenance.clone(),
             compact_event_store.clone(),
             market_calendar.clone(),
-        ));
+        )));
     }
-    tokio::spawn(run_replay_service(
+    producer_handles.push(tokio::spawn(run_replay_service(
         config.clone(),
         metrics.clone(),
         market.clone(),
         bar_router.clone(),
         indicator_router.clone(),
-    ));
+    )));
 
     server.await??;
+    eprintln!("QMD shutdown requested; stopping producers and draining writer batches.");
+    market_calendar_handle.abort();
+    for handle in &producer_handles {
+        handle.abort();
+    }
+    for handle in producer_handles {
+        let _ = handle.await;
+    }
+    drop(event_fanout);
+    drop(bar_router);
+    drop(indicator_router);
+    drop(scanner_router);
+    drop(live_market_state_router);
+    writer_handles.push(live_market_state_task);
+    if let Some(service) = model_bar_service {
+        writer_handles.extend(service.into_tasks());
+    }
+    match timeout(Duration::from_secs(15), async {
+        let mut failures = Vec::new();
+        for handle in writer_handles {
+            if let Err(error) = handle.await {
+                failures.push(error.to_string());
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
+    })
+    .await
+    {
+        Ok(Ok(())) => eprintln!("QMD writer queues drained; shutdown complete."),
+        Ok(Err(error)) => {
+            return Err(startup_error(format!(
+                "QMD shutdown encountered writer task failures: {error}"
+            )))
+        }
+        Err(_) => {
+            return Err(startup_error(
+                "QMD writer drain exceeded 15 seconds; runtime shutdown stopped remaining tasks.",
+            ))
+        }
+    }
     Ok(())
 }
 
