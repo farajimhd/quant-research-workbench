@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import os
+import json
+import urllib.request
+from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from src.trading_runtime.journal import TradingJournal
+from src.trading_runtime.orchestrator import historical_run_window
+from src.trading_runtime.runtime import RunMode
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -49,3 +54,75 @@ def get_strategy_definition(strategy_id: str, revision: int | None = None) -> di
     if result is None:
         raise KeyError(strategy_id)
     return result
+
+
+def historical_gateway_base_url() -> str:
+    configured = os.environ.get("QMD_HISTORY_GATEWAY_URL", "").strip()
+    if configured:
+        return configured.rstrip("/")
+    bind = os.environ.get("QMD_HISTORY_BIND", "127.0.0.1:8801").strip()
+    if bind.startswith("http://") or bind.startswith("https://"):
+        return bind.rstrip("/")
+    host, separator, port = bind.rpartition(":")
+    resolved_host = host if separator else bind
+    resolved_port = port if separator else "8801"
+    if resolved_host in {"0.0.0.0", "::", "[::]"}:
+        resolved_host = "127.0.0.1"
+    return f"http://{resolved_host}:{resolved_port}"
+
+
+def historical_gateway_snapshot() -> dict[str, Any]:
+    base_url = historical_gateway_base_url()
+    try:
+        with urllib.request.urlopen(f"{base_url}/health", timeout=3) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        ready = (
+            payload.get("service") == "qmd_history_gateway"
+            and payload.get("host_role") == "historical"
+            and payload.get("status") == "ready"
+            and payload.get("running") is True
+        )
+        return {
+            "base_url": base_url,
+            "online": True,
+            "ready": ready,
+            "status": "ready" if ready else "degraded",
+            "health": payload,
+        }
+    except Exception as exc:
+        return {
+            "base_url": base_url,
+            "online": False,
+            "ready": False,
+            "status": "offline",
+            "error": str(exc),
+            "health": {},
+        }
+
+
+def historical_window_preview(
+    *,
+    mode: str,
+    anchor_date: date,
+    session_count: int,
+    replay_end_date: date | None,
+) -> dict[str, Any]:
+    resolved_mode = RunMode(mode)
+    window = historical_run_window(
+        resolved_mode,
+        anchor_date,
+        session_count=session_count,
+        replay_end_date=replay_end_date,
+    )
+    return {
+        "mode": resolved_mode.value,
+        "anchor_date": anchor_date.isoformat(),
+        "anchor_semantics": "inclusive" if resolved_mode == RunMode.REPLAY else "exclusive",
+        "start": window.start.isoformat(),
+        "end": window.end.isoformat(),
+        "sessions": [session.isoformat() for session in window.sessions],
+        "session_count": len(window.sessions),
+        "source": "qmd_history_gateway",
+        "source_url": historical_gateway_base_url(),
+        "broker": "simulated_ibkr",
+    }

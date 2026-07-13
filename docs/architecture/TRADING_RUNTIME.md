@@ -69,3 +69,13 @@ jobs still execute `src/backtest` while feature-dependent strategy inputs are
 migrated from prepared provider bars to event-derived bars. Until that cutover
 is complete, those routes are legacy research paths and must not be treated as
 proof of replay/live brokerage parity.
+
+The routed Replay and Backtest setup pages resolve historical windows through
+`/api/trading/historical-window`, check the Rust gateway through
+`/api/trading/historical-gateway`, and use the shared source-aware container
+workspace. Container definitions explicitly bind market, broker, strategy,
+news, SEC, XBRL, and journal sources by mode. Live news/SEC containers use a
+gateway-plus-history policy; historical modes use persisted point-in-time data.
+The frontend keeps run start disabled until the runtime-compatible strategy
+loader and historical run-controller API exist rather than invoking the legacy
+prepared-bar routes.

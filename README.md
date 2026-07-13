@@ -39,14 +39,16 @@ yet a distinct, complete subsystem in the repository.
 
 ### Simulation trading
 
-Simulation trading replays a historical session as a configurable trading day.
-The existing replay workspace can pace the market clock normally, step it, or
-fast-forward to the next scanner signal. It combines scanner rows, chart data,
-and historical Benzinga news at the simulated timestamp.
+Replay and Backtest are routed trading workspaces. Their setup pages use the
+Rust historical gateway, resolve exchange-session windows through the shared
+runtime calendar, configure an IBKR-shaped simulated account, and open the
+shared source-aware container canvas. Replay includes its anchor date;
+Backtest selects exchange sessions before its exclusive anchor date.
 
-The replay implementation currently exists in `frontend/src/pages/LiveTradingPage.tsx`
-and `/api/live-trading/*` backend routes, but the page is not in the active
-navigation. It is retained because it directly implements the target product.
+The earlier prepared-data replay remains in
+`frontend/src/pages/LiveTradingPage.tsx` and `/api/live-trading/*` only as a
+legacy implementation while its scanner/strategy features are migrated. The
+routed historical pages do not silently fall back to it.
 
 ### Backtesting and debugging
 
@@ -56,10 +58,12 @@ owns preparation and validation of bars, features, indicators, and supervision
 data; backtests consume those provider-built artifacts rather than rebuilding
 market data during a run.
 
-Backtest and strategy pages remain in the frontend source but are not currently
-routed by `frontend/src/App.tsx`. The backend APIs and engine are still present.
-This is an integration gap, not sufficient evidence that the capability is
-stale.
+The routed Backtest setup and container workspace use the new historical
+contracts. Starting a new-runtime backtest remains blocked until strategies are
+migrated into the persisted event-runtime contract and the shared historical
+run-controller API is implemented. The old `/api/backtests/*` jobs and the
+disconnected `StrategyPage.tsx` continue to represent the legacy prepared-bar
+research engine; they are not presented as runtime parity.
 
 ### Live trading
 

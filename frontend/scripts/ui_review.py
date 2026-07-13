@@ -27,8 +27,10 @@ SCALES = (0.8, 0.9, 1.0, 1.1, 1.25)
 PAGES = (
     "real-live-trading",
     "replay-trading",
+    "backtest-trading",
     "services-dashboard",
     "service-qmd",
+    "service-qmd-history",
     "service-news",
     "service-sec",
     "service-text-embed",
@@ -39,7 +41,7 @@ VIEWPORTS = {
     "normal": {"width": 1600, "height": 1000},
     "compact": {"width": 1280, "height": 720},
 }
-REPRESENTATIVE_PAGES = ("real-live-trading", "replay-trading", "services-dashboard")
+REPRESENTATIVE_PAGES = ("real-live-trading", "replay-trading", "backtest-trading", "services-dashboard")
 REPRESENTATIVE_THEMES = ("light", "dark")
 TARGETED_SCALES = (0.8, 1.0, 1.25)
 
@@ -196,7 +198,7 @@ def capture(args: argparse.Namespace) -> int:
                     + json.dumps(scale_value)
                     + ");"
                 )
-                if args.seed_core_containers and args.canvas_id and scenario["page"] in {"real-live-trading", "replay-trading"}:
+                if args.seed_core_containers and args.canvas_id and scenario["page"] == "real-live-trading":
                     viewport_width = scenario["viewport"]["width"]
                     viewport_height = scenario["viewport"]["height"]
                     width = max(1180, viewport_width - 112)
@@ -210,7 +212,7 @@ def capture(args: argparse.Namespace) -> int:
                         "scanner": {"fullscreen": False, "h": max(280, content_height - top_height - 10), "minimized": False, "w": left_width, "x": 12, "y": content_top + top_height + 10, "z": 2},
                         "chart": {"fullscreen": False, "h": content_height, "minimized": False, "w": max(520, width - left_width - 34), "x": left_width + 22, "y": content_top, "z": 3},
                     }
-                    storage_prefix = "quant-research-workbench.real-live-trading.layout" if scenario["page"] == "real-live-trading" else "quant-research-workbench.live-trading.layout"
+                    storage_prefix = "quant-research-workbench.real-live-trading.layout"
                     storage_payload = {"chartWindows": [], "layoutVersion": 4, "layouts": layouts, "windows": ["portfolio", "scanner"]}
                     context.add_init_script(
                         "localStorage.setItem(" + json.dumps(f"{storage_prefix}.{args.canvas_id}") + ", " + json.dumps(json.dumps(storage_payload)) + ");"
@@ -239,9 +241,12 @@ def capture(args: argparse.Namespace) -> int:
                 )
                 screenshot_path = output_dir / filename
                 canvas_query = ""
-                if args.canvas_id and scenario["page"] in {"real-live-trading", "replay-trading"}:
-                    query_key = "liveCanvas" if scenario["page"] == "real-live-trading" else "replayCanvas"
-                    canvas_query = f"?{query_key}={args.canvas_id}"
+                if args.canvas_id and scenario["page"] == "real-live-trading":
+                    canvas_query = f"?liveCanvas={args.canvas_id}"
+                elif args.seed_core_containers and scenario["page"] == "replay-trading":
+                    canvas_query = "?historicalWorkspace=replay"
+                elif args.seed_core_containers and scenario["page"] == "backtest-trading":
+                    canvas_query = "?historicalWorkspace=backtest"
                 result = {**scenario, "url": f"{base_url}/{canvas_query}#{scenario['page']}"}
                 try:
                     page.goto(

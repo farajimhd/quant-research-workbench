@@ -8,7 +8,7 @@ import { Modal } from "../app/components/Modal";
 import { displayName, formatCell, formatCompactNumber, formatDuration } from "../app/format";
 
 export type ServicePageMode = "dashboard" | ServiceId;
-export type ServiceId = "ibkr" | "news" | "qmd" | "reference" | "sec" | "text-embed";
+export type ServiceId = "ibkr" | "news" | "qmd" | "qmd-history" | "reference" | "sec" | "text-embed";
 
 type ServiceRegistry = {
   base_url: string;
@@ -88,7 +88,7 @@ type ServiceRuntimeLogRow = {
   ts_utc?: string;
 };
 
-const SERVICE_IDS: ServiceId[] = ["qmd", "news", "sec", "text-embed", "reference", "ibkr"];
+const SERVICE_IDS: ServiceId[] = ["qmd", "qmd-history", "news", "sec", "text-embed", "reference", "ibkr"];
 const EXCHANGE_TIME_ZONE = "America/New_York";
 const VANCOUVER_TIME_ZONE = "America/Vancouver";
 
@@ -4525,6 +4525,19 @@ function serviceActivitySpec(service: ServiceStatusPayload): ServiceActivitySpec
       title: "Scanner And Market Event Activity",
     };
   }
+  if (service.registry.id === "qmd-history") {
+    return {
+      description: "Historical gateway readiness, source identity, deterministic event-window serving, and request limits.",
+      status,
+      summary: [
+        { label: "Source", value: firstString(service.health, ["source"]) || "events_YYYY" },
+        { label: "Role", value: firstString(service.health, ["host_role"]) || "historical" },
+        { label: "Running", value: service.health.running === true ? "yes" : "no", tone: service.health.running === true ? "good" : "bad" },
+        metricSummary(metrics, "Failures", ["failure_count", "failures", "errors"], "bad"),
+      ],
+      title: "Historical Query Activity",
+    };
+  }
   if (service.registry.id === "sec") {
     return {
       description: "Recent SEC feed filings, duplicate skips, filing text/XBRL extraction, and write status.",
@@ -4668,6 +4681,11 @@ function serviceActivitySubject(service: ServiceStatusPayload, row: Record<strin
     const primitive = firstString(row, ["primitive_key", "condition", "state", "event_type", "type"]);
     return [ticker, primitive].filter(Boolean).join(" / ") || `Market activity ${index + 1}`;
   }
+  if (service.registry.id === "qmd-history") {
+    const source = firstString(row, ["source", "service"]);
+    const role = firstString(row, ["host_role", "status"]);
+    return [source, role].filter(Boolean).join(" / ") || `Historical request ${index + 1}`;
+  }
   if (service.registry.id === "sec") {
     const form = firstString(row, ["form_type", "form", "type"]);
     const accession = firstString(row, ["accession_number", "accession"]);
@@ -4693,6 +4711,7 @@ function serviceActivityKind(service: ServiceStatusPayload, row: Record<string, 
   const explicit = firstString(row, ["kind", "type", "category", "source", "event"]);
   if (explicit) return explicit;
   if (service.registry.id === "qmd") return "scanner primitive";
+  if (service.registry.id === "qmd-history") return "historical gateway";
   if (service.registry.id === "sec") return "filing feed";
   if (service.registry.id === "text-embed") return "embedding work";
   if (service.registry.id === "reference") return "reference sync";
@@ -6191,6 +6210,27 @@ function serviceResponsibilitySpecs(serviceId: ServiceId): ServiceResponsibility
         id: "persist",
         match: [/clickhouse|persist|insert|write|database|table|writer|flush|sink/],
         title: "Database Persistence",
+      },
+      common.other,
+    ],
+    "qmd-history": [
+      {
+        description: "Read-only ClickHouse event-window queries, canonical decoding, and deterministic stream ordering.",
+        id: "historical_events",
+        match: [/historical|event|compact|clickhouse|query|window|stream|order|ordinal|timestamp/],
+        title: "Historical Event Serving",
+      },
+      {
+        description: "Event-derived bars calculated through the same shared Rust QMD core used by the live gateway.",
+        id: "bars",
+        match: [/bar|timeframe|indicator|enriched|aggregate|qmd_core|decoder/],
+        title: "Event-Derived Bars",
+      },
+      {
+        description: "Reference-token validation, source preflight, request limits, and read-only service health.",
+        id: "integrity",
+        match: [/health|preflight|reference|condition|tape|limit|config|ready|error/],
+        title: "Source Integrity And Readiness",
       },
       common.other,
     ],

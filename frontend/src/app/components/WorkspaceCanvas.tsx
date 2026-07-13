@@ -44,13 +44,24 @@ export type WorkspaceCanvasTarget = {
   label: string;
 };
 
+export type WorkspaceWindowStatus = "connecting" | "error" | "idle" | "ready" | "stale";
+
+export type WorkspaceWindowMeta = {
+  detail?: string;
+  freshness?: string;
+  sourceLabel: string;
+  status: WorkspaceWindowStatus;
+};
+
 type WorkspaceWindowProps = {
+  canPopOut?: boolean;
   canvasTargets: WorkspaceCanvasTarget[];
   children: ReactNode;
   icon: ReactNode;
   id: WorkspaceWindowId;
   kind?: string;
   layout: WorkspaceWindowLayout;
+  meta?: WorkspaceWindowMeta;
   onClose: (id: WorkspaceWindowId) => void;
   onFocus: (id: WorkspaceWindowId) => void;
   onLayoutChange: (id: WorkspaceWindowId, patch: Partial<WorkspaceWindowLayout>) => void;
@@ -65,12 +76,14 @@ const KEYBOARD_MOVE_STEP = 10;
 const KEYBOARD_MOVE_STEP_LARGE = 40;
 
 export function WorkspaceWindow({
+  canPopOut = true,
   canvasTargets,
   children,
   icon,
   id,
   kind,
   layout,
+  meta,
   onClose,
   onFocus,
   onLayoutChange,
@@ -80,7 +93,7 @@ export function WorkspaceWindow({
 }: WorkspaceWindowProps) {
   const style = layout.fullscreen
     ? { height: "calc(100% - 24px)", left: 12, top: 12, width: "calc(100% - 24px)", zIndex: 1000 + layout.z }
-    : { height: layout.minimized ? 34 : layout.h, left: layout.x, top: layout.y, width: layout.w, zIndex: layout.z };
+    : { height: layout.minimized ? 44 : layout.h, left: layout.x, top: layout.y, width: layout.w, zIndex: layout.z };
 
   function horizontalBounds(element: HTMLElement) {
     const workspace = element.closest<HTMLElement>("[data-workspace-canvas]");
@@ -184,13 +197,19 @@ export function WorkspaceWindow({
         <div className="workspace-window-title live-window-title">
           <Move aria-hidden="true" size={13} />
           {icon}
-          <strong>{title}</strong>
+          <div className="workspace-window-heading">
+            <strong>{title}</strong>
+            {meta ? <small title={meta.detail}>{meta.sourceLabel}{meta.freshness ? ` · ${meta.freshness}` : ""}</small> : null}
+          </div>
+          {meta ? <span aria-label={`Source status: ${meta.status}`} className="workspace-window-source-status" data-status={meta.status}>{meta.status}</span> : null}
         </div>
         <div className="workspace-window-actions live-window-actions" onPointerDown={(event) => event.stopPropagation()}>
-          <CanvasTargetButtons canvasTargets={canvasTargets} onMove={(canvasId) => onMoveToCanvas(id, canvasId)} title={title} />
-          <button aria-label={`Move ${title} to a new canvas`} className="toolbar-button compact" onClick={() => onPopOut(id)} title="Move to new child canvas" type="button">
-            <ExternalLink size={12} />
-          </button>
+          {canvasTargets.length > 1 ? <CanvasTargetSelect canvasTargets={canvasTargets} onMove={(canvasId) => onMoveToCanvas(id, canvasId)} title={title} /> : null}
+          {canPopOut ? (
+            <button aria-label={`Move ${title} to a new canvas`} className="toolbar-button compact" onClick={() => onPopOut(id)} title="Move to new child canvas" type="button">
+              <ExternalLink size={12} />
+            </button>
+          ) : null}
           <button aria-label={layout.minimized ? `Restore ${title}` : `Minimize ${title}`} className="toolbar-button compact" onClick={() => onLayoutChange(id, { minimized: !layout.minimized })} title={layout.minimized ? "Restore" : "Minimize"} type="button">
             <Minimize2 size={12} />
           </button>
@@ -342,6 +361,24 @@ function CanvasTargetButtons({ canvasTargets, onMove, title }: { canvasTargets: 
   );
 }
 
+function CanvasTargetSelect({ canvasTargets, onMove, title }: { canvasTargets: WorkspaceCanvasTarget[]; onMove: (canvasId: string) => void; title: string }) {
+  const current = canvasTargets.find((target) => target.isCurrent);
+  return (
+    <label className="workspace-canvas-select" title={`Move ${title} to another canvas`}>
+      <span className="sr-only">Move {title} to canvas</span>
+      <select
+        aria-label={`Move ${title} to canvas`}
+        onChange={(event) => {
+          if (event.target.value && event.target.value !== current?.id) onMove(event.target.value);
+        }}
+        value={current?.id ?? ""}
+      >
+        {canvasTargets.map((target) => <option key={target.id} value={target.id}>{target.label}</option>)}
+      </select>
+    </label>
+  );
+}
+
 export function buildWorkspaceWindowSummaries(
   openWindows: WorkspaceWindowId[],
   layouts: Record<WorkspaceWindowId, WorkspaceWindowLayout>,
@@ -373,7 +410,7 @@ export function workspaceMinHeight(
   return openWindows.reduce((height, id) => {
     const layout = layouts[id];
     if (!layout || layout.fullscreen) return height;
-    const windowHeight = layout.minimized ? 34 : layout.h;
+    const windowHeight = layout.minimized ? 44 : layout.h;
     return Math.max(height, layout.y + windowHeight + 24);
   }, baseHeight);
 }

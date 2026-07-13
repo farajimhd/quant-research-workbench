@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
-import { Activity, Check, ChevronLeft, ChevronRight, History, Palette, ServerCog, Wifi } from "lucide-react";
+import { Activity, Check, ChevronLeft, ChevronRight, FlaskConical, History, Palette, ServerCog, Wifi } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { buildMenuItemButtonClassName, buildThemeMenuItemButtonClassName } from "../selectionStyles";
 import { APP_THEMES, DEFAULT_THEME_ID, applyThemeDefinition, isAppThemeId, type AppThemeDefinition, type AppThemeId } from "../theme";
 
-export type PageKey = "real-live-trading" | "replay-trading" | "services-dashboard" | "service-qmd" | "service-news" | "service-sec" | "service-text-embed" | "service-reference" | "service-ibkr";
+export type PageKey = "real-live-trading" | "replay-trading" | "backtest-trading" | "services-dashboard" | "service-qmd" | "service-qmd-history" | "service-news" | "service-sec" | "service-text-embed" | "service-reference" | "service-ibkr";
 export type UiScale = 0.8 | 0.9 | 1 | 1.1 | 1.25;
 
 type LayoutProps = {
@@ -20,7 +20,8 @@ const navGroups = [
     label: "Trading Workspaces",
     items: [
       { key: "real-live-trading" as PageKey, label: "Live", icon: Wifi },
-      { key: "replay-trading" as PageKey, label: "Replay", icon: History }
+      { key: "replay-trading" as PageKey, label: "Replay", icon: History },
+      { key: "backtest-trading" as PageKey, label: "Backtest", icon: FlaskConical }
     ]
   },
   {
@@ -67,7 +68,7 @@ export function Layout({
   }, [uiScale]);
 
   useEffect(() => {
-    if (page === "real-live-trading" || page === "replay-trading") setCollapsed(true);
+    if (page === "real-live-trading") setCollapsed(true);
   }, [page]);
 
   function selectTheme(nextThemeId: AppThemeId) {

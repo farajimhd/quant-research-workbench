@@ -1,11 +1,11 @@
 import { useEffect, useState, type ReactNode } from "react";
 
 import { Layout, type PageKey } from "./app/components/Layout";
-import { LiveTradingPage } from "./pages/LiveTradingPage";
+import { HistoricalTradingPage } from "./pages/HistoricalTradingPage";
 import { RealLiveTradingPage } from "./pages/RealLiveTradingPage";
 import { ServicesPage, type ServicePageMode } from "./pages/ServicesPage";
 
-const validPages: PageKey[] = ["real-live-trading", "replay-trading", "services-dashboard", "service-qmd", "service-news", "service-sec", "service-text-embed", "service-reference", "service-ibkr"];
+const validPages: PageKey[] = ["real-live-trading", "replay-trading", "backtest-trading", "services-dashboard", "service-qmd", "service-qmd-history", "service-news", "service-sec", "service-text-embed", "service-reference", "service-ibkr"];
 
 export function App() {
   const [page, setPage] = useState<PageKey>(() => {
@@ -26,7 +26,7 @@ export function App() {
 
   useEffect(() => {
     if (window.location.hash !== `#${page}`) window.location.hash = page;
-    if (page !== "real-live-trading" && page !== "replay-trading") {
+    if (page !== "real-live-trading") {
       setTopbarCenter(null);
     }
     setVisitedPages((current) => {
@@ -41,7 +41,10 @@ export function App() {
         {page === "real-live-trading" || visitedPages.has("real-live-trading") ? <RealLiveTradingPage onTopbarCenterChange={page === "real-live-trading" ? setTopbarCenter : undefined} /> : null}
       </div>
       <div aria-hidden={page !== "replay-trading"} className={page === "replay-trading" ? "page-cache-panel active" : "page-cache-panel"}>
-        {page === "replay-trading" || visitedPages.has("replay-trading") ? <LiveTradingPage onTopbarCenterChange={page === "replay-trading" ? setTopbarCenter : undefined} /> : null}
+        {page === "replay-trading" || visitedPages.has("replay-trading") ? <HistoricalTradingPage mode="replay" /> : null}
+      </div>
+      <div aria-hidden={page !== "backtest-trading"} className={page === "backtest-trading" ? "page-cache-panel active" : "page-cache-panel"}>
+        {page === "backtest-trading" || visitedPages.has("backtest-trading") ? <HistoricalTradingPage mode="backtest" /> : null}
       </div>
       {servicePageMode(page) ? (
         <div className="page-cache-panel active">
@@ -55,6 +58,7 @@ export function App() {
 function servicePageMode(page: PageKey): ServicePageMode | null {
   if (page === "services-dashboard") return "dashboard";
   if (page === "service-qmd") return "qmd";
+  if (page === "service-qmd-history") return "qmd-history";
   if (page === "service-news") return "news";
   if (page === "service-sec") return "sec";
   if (page === "service-text-embed") return "text-embed";

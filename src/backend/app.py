@@ -87,7 +87,13 @@ from src.backend.real_live_market_data import (
     market_gateway_universe_preview,
 )
 from src.backend.real_live_market_data.config import market_gateway_config
-from src.backend.trading_runtime_service import get_strategy_definition, list_strategy_definitions, save_strategy_definition
+from src.backend.trading_runtime_service import (
+    get_strategy_definition,
+    historical_gateway_snapshot,
+    historical_window_preview,
+    list_strategy_definitions,
+    save_strategy_definition,
+)
 from src.data_provider.calendar import market_sessions, scan_market_source
 from src.data_provider.catalog import provider_catalog, save_presentation_override
 from src.data_provider.config import (
@@ -201,6 +207,7 @@ SERVICE_DATABASE_TABLES: dict[str, list[dict[str, str]]] = {
         {"database": "q_live", "table": "qmd_flatfile_coverage_v2", "role": "flatfile coverage"},
         {"database": "q_live", "table": "qmd_gap_fill_symbol_universe_v1", "role": "gap symbols"},
     ],
+    "qmd-history": [],
     "news": [
         {"database": "q_live", "table": "benzinga_news_normalized_v1", "role": "normalized news"},
         {"database": "q_live", "table": "benzinga_news_ticker_v1", "role": "ticker links"},
@@ -250,6 +257,15 @@ SERVICE_REGISTRY: dict[str, dict[str, str]] = {
         "default_bind": "127.0.0.1:8795",
         "description": "Massive quote/trade ingest, recent gap repair, live bars, scanner primitives, and market-state publication.",
         "recent_path": "/snapshot/scanner-primitives?limit=25",
+    },
+    "qmd-history": {
+        "id": "qmd-history",
+        "label": "QMD History",
+        "kind": "historical market data",
+        "bind_env": "QMD_HISTORY_BIND",
+        "default_bind": "127.0.0.1:8801",
+        "description": "Read-only canonical historical events and event-derived bars for Replay, Backtest, and Backtest Debug.",
+        "recent_path": "/health",
     },
     "news": {
         "id": "news",
@@ -413,6 +429,13 @@ class StrategyDefinitionSubmit(BaseModel):
     automatic: bool = True
     enabled: bool = True
     config: dict[str, Any] = Field(default_factory=dict)
+
+
+class HistoricalWindowPreviewRequest(BaseModel):
+    mode: str
+    anchor_date: date
+    session_count: int = Field(default=1, ge=1, le=260)
+    replay_end_date: date | None = None
 
 
 def parse_date_param(value: date | None, fallback: str) -> date:
@@ -1160,6 +1183,7 @@ def service_log_roots(service_id: str) -> list[Path]:
     data_roots = service_data_roots()
     roots_by_service: dict[str, list[Path]] = {
         "qmd": [PROJECT_ROOT / ".tmp" / "qmd-gateway"],
+        "qmd-history": [PROJECT_ROOT / ".tmp" / "qmd-history-gateway"],
         "news": env_paths("NEWS_GATEWAY_LOG_ROOT_WIN") + [root / "prepared" / "news_gateway" / "logs" for root in data_roots],
         "sec": env_paths("SEC_GATEWAY_LOG_ROOT_WIN") + [root / "prepared" / "sec_gateway" / "logs" for root in data_roots],
         "text-embed": env_paths("TEXT_EMBED_GATEWAY_LOG_ROOT_WIN") + [root / "prepared" / "text_embed_gateway" / "logs" for root in data_roots],
@@ -4153,6 +4177,26 @@ def real_live_trading_orders(payload: RealLiveOrderSubmit) -> dict[str, Any]:
 def trading_strategies(latest_only: bool = True) -> dict[str, Any]:
     rows = list_strategy_definitions(latest_only=latest_only)
     return {"rows": rows, "row_count": len(rows)}
+
+
+@app.get("/api/trading/historical-gateway")
+def trading_historical_gateway() -> dict[str, Any]:
+    return historical_gateway_snapshot()
+
+
+@app.post("/api/trading/historical-window")
+def trading_historical_window(payload: HistoricalWindowPreviewRequest) -> dict[str, Any]:
+    if payload.mode not in {"replay", "backtest", "backtest_debug"}:
+        raise HTTPException(status_code=400, detail="mode must be replay, backtest, or backtest_debug")
+    try:
+        return historical_window_preview(
+            mode=payload.mode,
+            anchor_date=payload.anchor_date,
+            session_count=payload.session_count,
+            replay_end_date=payload.replay_end_date,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/trading/strategies/{strategy_id}")
