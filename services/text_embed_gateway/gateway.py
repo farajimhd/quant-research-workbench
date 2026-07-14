@@ -130,6 +130,11 @@ class TextEmbedMetrics:
     cancelled_queries: int = 0
     failures: int = 0
     last_error: str = ""
+    last_error_status: str = ""
+    last_error_seen_at_utc: str = ""
+    last_error_resolved_at_utc: str = ""
+    last_error_mode: str = ""
+    last_error_source: str = ""
     last_processed_source: str = ""
     last_processed_mode: str = ""
     last_processed_rows: int = 0
@@ -257,7 +262,7 @@ class TextEmbedGateway:
             self._log("service_started")
         except Exception as exc:  # noqa: BLE001
             self.metrics.failures += 1
-            self.metrics.last_error = repr(exc)
+            self._record_error(repr(exc))
             self._set_phase("failed", repr(exc))
             self.logger.exception("service_start_failed", exc)
             raise
@@ -271,7 +276,7 @@ class TextEmbedGateway:
             if cancelled:
                 self._log("active_clickhouse_queries_cancelled", count=cancelled)
         except Exception as exc:  # noqa: BLE001
-            self.metrics.last_error = repr(exc)
+            self._record_error(repr(exc))
             self.logger.exception("cancel_active_queries_failed", exc)
         if self._poll_task is not None:
             try:
@@ -369,7 +374,7 @@ class TextEmbedGateway:
                 raise
             except Exception as exc:  # noqa: BLE001
                 self.metrics.failures += 1
-                self.metrics.last_error = repr(exc)
+                self._record_error(repr(exc))
                 self._set_phase("error", repr(exc))
                 self.logger.exception("poll_cycle_failed", exc)
                 try:
@@ -392,6 +397,7 @@ class TextEmbedGateway:
         cycle_detected = 0
         cycle_completed = 0
         cycle_remaining = 0
+        cycle_had_error = False
         for source in ("news", "sec"):
             if self._stop_event.is_set():
                 break
@@ -474,8 +480,9 @@ class TextEmbedGateway:
                     window_end=self.metrics.gap_window_end_utc,
                 )
             except Exception as exc:  # noqa: BLE001
+                cycle_had_error = True
                 self.metrics.failures += 1
-                self.metrics.last_error = f"{source}: {exc!r}"
+                self._record_error(f"{source}: {exc!r}", mode=mode, source=source)
                 self._remember(source=source, mode=mode, stage="error", rows=0, seconds=0.0)
                 self.logger.exception("source_cycle_failed", exc, source=source, mode=mode)
         self._record_mode_cycle(
@@ -496,6 +503,8 @@ class TextEmbedGateway:
             gaps_remaining=cycle_remaining,
             seconds=round(float(getattr(self.metrics, f"{'live' if mode == 'live' else 'historical'}_last_cycle_seconds")), 3),
         )
+        if not cycle_had_error:
+            self._resolve_last_error(reason=f"{mode}_cycle_completed", mode=mode)
 
     def _time_ranges(self, mode: str) -> dict[str, tuple[datetime, datetime]]:
         now = datetime.now(UTC)
@@ -979,6 +988,25 @@ class TextEmbedGateway:
         self.metrics.next_poll_at_utc = utc_text(now + timedelta(seconds=max(0.25, sleep_seconds)))
         self.metrics.poll_cadence_reason = "error_backoff"
         self.metrics.poll_cadence_label = f"{sleep_seconds:.0f}s error backoff"
+
+    def _record_error(self, message: str, *, mode: str = "", source: str = "") -> None:
+        self.metrics.last_error = str(message)
+        self.metrics.last_error_status = "active"
+        self.metrics.last_error_seen_at_utc = utc_now_text()
+        self.metrics.last_error_resolved_at_utc = ""
+        self.metrics.last_error_mode = mode
+        self.metrics.last_error_source = source
+
+    def _resolve_last_error(self, *, reason: str, mode: str = "", source: str = "") -> None:
+        if not self.metrics.last_error or self.metrics.last_error_status == "resolved":
+            return
+        if self.metrics.last_error_mode and mode != self.metrics.last_error_mode:
+            return
+        if self.metrics.last_error_source and source and source != self.metrics.last_error_source:
+            return
+        self.metrics.last_error_status = "resolved"
+        self.metrics.last_error_resolved_at_utc = utc_now_text()
+        self._log("last_error_resolved", reason=reason, last_error=self.metrics.last_error)
 
     def _poll_interval_seconds(self, status: MarketHoursSnapshot) -> float:
         if status.active_collection_window:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from copy import deepcopy
 import asyncio
 import signal
 import subprocess
@@ -17,12 +18,13 @@ from typing import Any, TextIO
 from services.gateway_policy import active_collection_window
 from services.gateway_core.dashboard import build_dashboard_snapshot
 from services.gateway_core.health import build_health_payload
-from services.gateway_core.rich_renderer import render_standard_snapshot, standard_live
+from services.gateway_core.rich_renderer import standard_live
 from services.gateway_core.uvicorn_logging import quiet_uvicorn_log_config, suppress_uvicorn_access_logger
 from services.reference_gateway.config import ReferenceGatewayConfig
 from services.reference_gateway.memory import memory_snapshot
 from services.reference_gateway.preflight import run_preflight
 from services.reference_gateway.runtime_log import RUNTIME_LOG_ENV, RuntimeLogger, new_runtime_log_path
+from services.reference_gateway.terminal import render_reference_snapshot_dashboard
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +138,37 @@ class ReferenceDaemonState:
             rows = list(self.recent_cycles)[-max(1, min(limit, 250)) :]
         return {"rows": rows, "runtime_log_path": self.runtime_log_path}
 
+    def dashboard_snapshot(self) -> dict[str, Any]:
+        metrics = self.metrics()
+        latest_complete = latest_runtime_snapshot(self.runtime_log_path)
+        current = build_dashboard_snapshot(
+            service_name="reference_gateway",
+            config=self.config,
+            metrics=metrics,
+            recent_items=self.recent_snapshot(25),
+            service_specific={
+                "daemon_mode": True,
+                "last_cycle": self.last_cycle,
+                "runtime_log_path": self.runtime_log_path,
+            },
+        )
+        if not latest_complete:
+            return current
+        snapshot = deepcopy(latest_complete)
+        snapshot["header"] = {**snapshot.get("header", {}), **current["header"], "run_mode": "daemon"}
+        snapshot["current_operation"] = current["current_operation"]
+        snapshot["runtime"] = {**snapshot.get("runtime", {}), **current["runtime"]}
+        snapshot["error_state"] = current["error_state"]
+        snapshot["warnings_errors"] = current["warnings_errors"]
+        specific = snapshot.get("service_specific") if isinstance(snapshot.get("service_specific"), dict) else {}
+        snapshot["service_specific"] = {
+            **specific,
+            "daemon_mode": True,
+            "last_cycle": self.last_cycle,
+            "runtime_log_path": self.runtime_log_path,
+        }
+        return snapshot
+
 
 class ReferenceDaemonTerminalSession:
     def __init__(self, state: ReferenceDaemonState) -> None:
@@ -170,19 +203,7 @@ class ReferenceDaemonTerminalSession:
         self.started = False
 
     def _render(self) -> Any:
-        return render_standard_snapshot(
-            build_dashboard_snapshot(
-                service_name="reference_gateway",
-                config=self.state.config,
-                metrics=self.state.metrics(),
-                recent_items=self.state.recent_snapshot(25),
-                service_specific={
-                    "daemon_mode": True,
-                    "last_cycle": self.state.last_cycle,
-                    "runtime_log_path": self.state.runtime_log_path,
-                },
-            )
-        )
+        return render_reference_snapshot_dashboard(self.state.dashboard_snapshot())
 
 
 def run_reference_daemon(config: ReferenceGatewayConfig, base_args: list[str]) -> None:
@@ -534,6 +555,33 @@ def utc_now() -> str:
 def latest_runtime_event(path: str) -> dict[str, Any]:
     rows = latest_runtime_events(path, limit=1)
     return rows[-1] if rows else {}
+
+
+def latest_runtime_snapshot(path: str) -> dict[str, Any]:
+    if not path:
+        return {}
+    log_path = Path(path)
+    if not log_path.exists():
+        return {}
+    try:
+        with log_path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - 262_144), os.SEEK_SET)
+            text = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return {}
+    lines = text.splitlines()
+    if lines and not lines[0].startswith("{"):
+        lines = lines[1:]
+    for line in reversed(lines):
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("event") == "standard_status_snapshot" and isinstance(payload.get("snapshot"), dict):
+            return dict(payload["snapshot"])
+    return {}
 
 
 def latest_runtime_events(path: str, *, limit: int) -> list[dict[str, Any]]:

@@ -31,29 +31,18 @@ The gateway does not retain SEC filings, article bodies, PDFs, enriched text, or
 embedding arrays in memory after a batch is written. The terminal keeps only a
 small TTL-bounded status history.
 
-The Rich terminal separates progress into several panels:
+The height-bounded Rich terminal keeps the exact mode/source/stage/window and
+last extraction in `Work Focus`, then presents one stable `Mode And Source
+Coverage` matrix for Live News, Live SEC, Historical News, and Historical SEC.
+The matrix combines available embeddings, detected gaps, completed work,
+remaining work, last-cycle time, and window without allowing a zero live cycle
+to erase historical state. `Embedding Timing` remains visible when terminal
+height permits. Compact terminals combine focus and the four coverage rows into
+one panel so current work stays above the fold.
 
-- `Cumulative Rows`: total source rows fetched, token rows fetched, embeddings
-  written, coverage rows, and current active ClickHouse queries.
-- `Work Focus`: shows the current mode/source/stage/window being processed and
-  the last embedding extraction batch, including sequence count, token count,
-  inference seconds, insert seconds, and sequences/second.
-- `Current Operation`: shows `WORKING` while a query/embed/persist stage is
-  running and `WAITING` between cycles, including the next poll time and the
-  active/closed/weekend cadence.
-- `Cycle Summary`: keeps the last recent live cycle and the last historical
-  gap-fill cycle visible at the same time, including window, detected gaps,
-  completed gaps, remaining gaps, rows written, and cycle seconds.
-- `Coverage Report`: keeps separate stable rows for Live News, Live SEC,
-  Historical News, and Historical SEC. Each row reports available source text,
-  token chunks, embedding chunks, source gaps, embedding gaps, rows processed
-  in the last cycle for that mode, remaining rows, and the source availability
-  period.
-- `Gap Summary`: shows source, embedding, and SEC bridge-mapping gaps by mode/source
-  so a zero live poll does not erase the last historical gap-fill state.
-- `Embedding Timing`: reports live and historical inference batches, sequences,
-  average inference seconds, last inference seconds, average ms/sequence,
-  sequences/second, tokens/second, insert seconds, and batch seconds.
+Runtime errors now have explicit active and resolved timestamps plus mode/source
+scope. A successful historical cycle cannot clear an active live-cycle error;
+recovery is shown only after the matching mode completes successfully.
 
 For each gap cycle, the gateway reports the current scanned UTC window,
 detected gaps, completed rows in that cycle, an estimated remaining count, and

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -13,7 +12,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from services.gateway_core.dashboard import build_dashboard_snapshot
-from services.gateway_core.rich_renderer import render_standard_snapshot, standard_live, status_color, style_status, status_label
+from services.gateway_core.rich_renderer import layout_profile, render_operational_dashboard, standard_live, status_color, style_status, status_label
 from services.reference_gateway.audit import ReferenceAuditReport
 from services.reference_gateway.config import ReferenceGatewayConfig
 from services.reference_gateway.policy import ReferenceWritePolicy
@@ -85,38 +84,18 @@ def render_reference_run(record: ReferenceRunRecord, *, console: Console | None 
 
 
 def render_reference_dashboard(record: ReferenceRunRecord) -> Group:
-    terminal_width, terminal_height = shutil.get_terminal_size((140, 44))
-    compact = terminal_height < 34
-    narrow = terminal_width < 190
-    roomy = terminal_width >= 190 and terminal_height >= 62
-    if compact:
-        return Group(
-            render_standard_snapshot(reference_standard_snapshot(record)),
-            source_sync_panel(record, compact=True),
-            source_coverage_panel(record, limit=8),
-            reference_tables_panel(record, limit=6, detail_rows=False),
-            guardrail_maintenance_panel(record, compact=True),
-            audit_aggregate_panel(record, limit=3),
-        )
-    if narrow or not roomy:
-        return Group(
-            render_standard_snapshot(reference_standard_snapshot(record)),
-            source_sync_panel(record, compact=True),
-            source_coverage_panel(record, limit=12),
-            reference_tables_panel(record, limit=9, detail_rows=False),
-            guardrail_maintenance_panel(record, compact=True),
-            operations_panel(record.operations, limit=8),
-            audit_aggregate_panel(record, limit=4),
-        )
-    return Group(
-        render_standard_snapshot(reference_standard_snapshot(record)),
-        source_sync_panel(record, compact=False),
-        source_coverage_panel(record, limit=20),
-        reference_tables_panel(record, limit=12, detail_rows=True),
-        guardrail_maintenance_panel(record, compact=False),
-        operations_panel(record.operations, limit=10),
-        audit_aggregate_panel(record, limit=4),
-        audit_findings_panel(record, limit=6),
+    return render_reference_snapshot_dashboard(reference_standard_snapshot(record))
+
+
+def render_reference_snapshot_dashboard(snapshot: dict[str, Any]) -> Group:
+    profile = layout_profile()
+    return render_operational_dashboard(
+        snapshot,
+        primary=reference_priority_panel(snapshot, compact=False),
+        compact_primary=reference_priority_panel(snapshot, compact=True),
+        secondary=reference_source_panel(snapshot),
+        recent=reference_operations_panel(snapshot),
+        profile=profile,
     )
 
 
@@ -143,6 +122,13 @@ def reference_standard_snapshot(record: ReferenceRunRecord) -> dict[str, Any]:
         metrics=metrics,
         sources_sinks=sources,
         service_specific={
+            "write_policy": {
+                "status": "allowed" if record.write_policy.writes_allowed else "blocked",
+                "reason": record.write_policy.reason,
+                "active_collection_window": record.write_policy.active_collection_window,
+            },
+            "operations": metrics["tasks"],
+            "audit": record.audit.public_dict() if record.audit is not None else {},
             "source_states": sources,
             "table_states": [
                 {
@@ -157,6 +143,81 @@ def reference_standard_snapshot(record: ReferenceRunRecord) -> dict[str, Any]:
             ],
         },
     )
+
+
+def reference_priority_panel(snapshot: dict[str, Any], *, compact: bool) -> Panel:
+    specific = snapshot.get("service_specific") if isinstance(snapshot.get("service_specific"), dict) else {}
+    write_policy = specific.get("write_policy") if isinstance(specific.get("write_policy"), dict) else {}
+    audit = specific.get("audit") if isinstance(specific.get("audit"), dict) else {}
+    sources = snapshot.get("sources_sinks") if isinstance(snapshot.get("sources_sinks"), list) else []
+    tables = specific.get("table_states") if isinstance(specific.get("table_states"), list) else []
+    operations = specific.get("operations") if isinstance(specific.get("operations"), list) else snapshot.get("tasks") if isinstance(snapshot.get("tasks"), list) else []
+    unhealthy_sources = [row for row in sources if isinstance(row, dict) and str(row.get("status") or "").lower() not in {"ok", "planned"}]
+    unhealthy_tables = [row for row in tables if isinstance(row, dict) and str(row.get("status") or "").lower() not in {"ok"}]
+    failed_checks = [row for row in audit.get("checks", []) if isinstance(row, dict) and str(row.get("status") or "").lower() != "ok"] if isinstance(audit.get("checks"), list) else []
+    latest = operations[-1] if operations else {}
+    policy_status = write_policy.get("status")
+    if not policy_status and "writes_allowed" in write_policy:
+        policy_status = "allowed" if write_policy.get("writes_allowed") else "blocked"
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Decision", style="cyan", no_wrap=True, width=17 if compact else 22)
+    table.add_column("State", no_wrap=True, width=12)
+    table.add_column("Evidence / Action", overflow="fold", ratio=1)
+    table.add_row("Write policy", style_status(policy_status or "waiting"), f"{write_policy.get('reason') or 'not reported'}; active market window={write_policy.get('active_collection_window', '-')}" )
+    table.add_row("Integrity audit", style_status(audit.get("status") or "not_started"), f"failed checks {len(failed_checks):,}; {', '.join(str(row.get('name') or '-') for row in failed_checks[:3]) or 'no failed checks reported'}")
+    table.add_row("Source coverage", style_status("warning" if unhealthy_sources else "ok" if sources else "waiting"), f"{len(unhealthy_sources):,} stale/missing/failed of {len(sources):,}; {', '.join(str(row.get('name') or '-') for row in unhealthy_sources[:3]) or 'all reported sources healthy'}")
+    table.add_row("Canonical tables", style_status("warning" if unhealthy_tables else "ok" if tables else "waiting"), f"{len(unhealthy_tables):,} partial/missing of {len(tables):,}; {', '.join(str(row.get('group') or row.get('name') or '-') for row in unhealthy_tables[:3]) or 'all reported groups healthy'}")
+    table.add_row("Latest operation", style_status(latest.get("status") or "waiting"), f"{latest.get('name') or '-'}; {latest.get('message') or latest.get('detail') or 'not reported'}")
+    return Panel(table, title="Reference Integrity And Guardrails", box=box.ROUNDED, border_style="yellow" if unhealthy_sources or unhealthy_tables or failed_checks else "green", padding=(0, 1))
+
+
+def reference_source_panel(snapshot: dict[str, Any]) -> Panel:
+    sources = snapshot.get("sources_sinks") if isinstance(snapshot.get("sources_sinks"), list) else []
+    ordered = sorted(
+        (row for row in sources if isinstance(row, dict)),
+        key=lambda row: (str(row.get("status") or "").lower() in {"ok", "planned"}, str(row.get("name") or "")),
+    )
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Source", style="cyan", no_wrap=True, width=28)
+    table.add_column("State", no_wrap=True, width=12)
+    table.add_column("Coverage / Rows", no_wrap=True, width=28)
+    table.add_column("Target / Freshness", overflow="fold", ratio=1)
+    for row in ordered[:6]:
+        table.add_row(str(row.get("name") or "-"), style_status(row.get("status") or "-"), f"{row.get('coverage') or '-'}; rows {row.get('rows') if row.get('rows') is not None else '-'}", f"{row.get('targets') or '-'}; {row.get('detail') or '-'}")
+    if not ordered:
+        table.add_row("sources", style_status("waiting"), "-", "No completed source snapshot yet; retaining the last trustworthy daemon state when available.")
+    hidden = max(0, len(ordered) - 6)
+    if hidden:
+        table.add_row("more", "-", f"{hidden:,} hidden", "Healthy source details remain available in /snapshot/status and the run report.")
+    return Panel(table, title="Source Coverage And Freshness", box=box.ROUNDED, border_style=source_state_color_from_rows(ordered), padding=(0, 1))
+
+
+def reference_operations_panel(snapshot: dict[str, Any]) -> Panel:
+    specific = snapshot.get("service_specific") if isinstance(snapshot.get("service_specific"), dict) else {}
+    operations = specific.get("operations") if isinstance(specific.get("operations"), list) else snapshot.get("tasks") if isinstance(snapshot.get("tasks"), list) else []
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Operation", style="cyan", no_wrap=True, width=30)
+    table.add_column("State", no_wrap=True, width=12)
+    table.add_column("Rows / Sec", no_wrap=True, width=16)
+    table.add_column("Outcome", overflow="fold", ratio=1)
+    for row in operations[-5:]:
+        if not isinstance(row, dict):
+            continue
+        seconds_value = row.get("seconds")
+        timing = f"{float(seconds_value):.2f}s" if seconds_value not in {None, ""} else "-"
+        table.add_row(str(row.get("name") or row.get("task") or "-"), style_status(row.get("status") or "-"), f"{row.get('rows') if row.get('rows') is not None else '-'} / {timing}", str(row.get("message") or row.get("detail") or "-"))
+    if not operations:
+        table.add_row("cycle", style_status("waiting"), "-", "No operation has reported yet.")
+    return Panel(table, title="Recent Cycle Operations", box=box.ROUNDED, border_style="cyan", padding=(0, 1))
+
+
+def source_state_color_from_rows(rows: list[dict[str, Any]]) -> str:
+    statuses = {str(row.get("status") or "").lower() for row in rows}
+    if statuses & {"failed", "error"}:
+        return "red"
+    if statuses & {"stale", "missing", "warning"}:
+        return "yellow"
+    return "green" if rows else "cyan"
 
 
 def header_panel(record: ReferenceRunRecord) -> Panel:

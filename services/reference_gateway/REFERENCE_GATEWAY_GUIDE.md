@@ -344,24 +344,18 @@ Check:
 
 Implemented.
 
-When Rich output is enabled, one-shot gateway cycles now render a live terminal
-dashboard and refresh it after each major operation. The dashboard is organized
-into stable panels:
+Daemon and one-shot modes now use the same height-bounded operational design.
+The child emits a complete standard status snapshot containing source coverage,
+canonical-table state, write policy, operations, and audit results. The daemon
+retains that last trustworthy completed snapshot while overlaying the active
+child operation and daemon-cycle state.
 
-- header with UTC, ET, Vancouver time, mode, read/write DBs, policy, data root,
-  and report path
-- current operation
-- dependency status
-- runtime summary
-- source-sync counters
-- integrity guardrail status
-- maintenance state
-- operation log
-- prioritized audit findings
-
-The compact layout keeps the current operation, summary, maintenance, and audit
-findings visible in shorter consoles. Long values fold inside their panels
-instead of changing column counts.
+The terminal keeps current operation, active failures, write policy, integrity
+audit, unhealthy source coverage, and partial/missing table groups above the
+fold. Healthy source details and recent operations are added only when terminal
+height permits. Compact mode removes secondary inventories rather than wrapping
+them below the visible viewport. Full detail remains available through
+`/snapshot/status`, runtime JSONL, and the audit report.
 
 Runtime JSONL logs now include structured `audit_completed` and
 `source_sync_completed` events in addition to per-operation events. These events

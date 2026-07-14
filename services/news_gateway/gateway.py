@@ -72,6 +72,8 @@ class GatewayMetrics:
     skipped_existing: int = 0
     raw_saved: int = 0
     last_poll_at_utc: str = ""
+    last_success_at_utc: str = ""
+    last_publish_at_utc: str = ""
     last_error: str = ""
     last_error_status: str = ""
     last_error_seen_at_utc: str = ""
@@ -1228,6 +1230,8 @@ class NewsGateway:
                 else:
                     self.metrics.publish_status = "idle"
         self.metrics.publish_completed_jobs += 1
+        self.metrics.last_publish_at_utc = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+        self.metrics.last_success_at_utc = self.metrics.last_publish_at_utc
         self.metrics.publish_last_message = (
             f"Publish completed for {poll_id}: "
             f"inserted={getattr(summary, 'normalized_rows_inserted', 0):,}, "

@@ -244,6 +244,138 @@ def render_standard_snapshot(snapshot: dict[str, Any]) -> Group:
     return Group(*parts)
 
 
+def render_operational_dashboard(
+    snapshot: dict[str, Any],
+    *,
+    primary: Any,
+    compact_primary: Any | None = None,
+    secondary: Any | None = None,
+    recent: Any | None = None,
+    profile: dict[str, Any] | None = None,
+) -> Group:
+    """Render a height-bounded service dashboard around operator priorities.
+
+    The legacy standard snapshot remains available for diagnostic/status
+    surfaces. Long-running service terminals should use this shell so current
+    work, active failures, and the service-specific durable lifecycle stay
+    above secondary inventories.
+    """
+
+    selected_profile = profile or layout_profile()
+    compact = bool(selected_profile["compact"] or selected_profile["width"] < 110)
+    parts: list[Any] = [
+        _operational_header(snapshot, compact=compact),
+        _operational_current(snapshot, compact=compact),
+    ]
+    alerts = _operational_alerts(snapshot, compact=compact)
+    if alerts is not None:
+        parts.append(alerts)
+    parts.append(compact_primary if compact and compact_primary is not None else primary)
+    if not compact and secondary is not None:
+        parts.append(secondary)
+    if not compact and selected_profile["height"] >= 40 and recent is not None:
+        parts.append(recent)
+    return Group(*parts)
+
+
+def _operational_header(snapshot: dict[str, Any], *, compact: bool) -> Panel:
+    header = snapshot.get("header") if isinstance(snapshot.get("header"), dict) else {}
+    service = str(header.get("service") or "-").replace("_", " ").title()
+    status = header.get("status", "-")
+    color = status_style(status)
+    now = parse_utc_datetime(header.get("snapshot_utc"))
+    identity = "  ".join(
+        part
+        for part in (
+            label_value("mode", header.get("mode")),
+            label_value("run", header.get("run_mode")),
+            label_value("bind", header.get("bind")),
+            label_value("market", compact_market_label(header)),
+        )
+        if part
+    )
+    databases = "  ".join(
+        part
+        for part in (
+            label_value("read", header.get("read_database")),
+            label_value("write", header.get("write_database")),
+        )
+        if part
+    )
+    grid = Table.grid(expand=True)
+    grid.add_column(ratio=3, overflow="fold")
+    grid.add_column(ratio=2, justify="right", overflow="fold")
+    grid.add_row(f"[bold]{service}[/bold]  [{color}]{status_label(status)}[/{color}]", time_triplet(now))
+    grid.add_row(identity or databases or "-", "" if compact else databases)
+    return Panel(grid, box=box.ROUNDED, border_style=color, padding=(0, 1))
+
+
+def _operational_current(snapshot: dict[str, Any], *, compact: bool) -> Panel:
+    op = snapshot.get("current_operation") if isinstance(snapshot.get("current_operation"), dict) else {}
+    status = op.get("status", "running")
+    color = status_style(status)
+    phase = status_label(op.get("phase", "-"))
+    message = truncate(op.get("message") or "No active operation message.", 180 if compact else 280)
+    next_action = truncate(op.get("next_action") or "-", 64)
+    grid = Table.grid(expand=True)
+    grid.add_column(style="cyan", no_wrap=True, width=9)
+    grid.add_column(ratio=1, overflow="fold")
+    grid.add_column(style="cyan", no_wrap=True, width=7)
+    grid.add_column(ratio=1, overflow="fold")
+    grid.add_row("Focus", phase, "Status", styled_status(status))
+    if compact:
+        grid.add_row("Detail", message, "Next", next_action)
+    else:
+        grid.add_row("Detail", message, "Next", next_action)
+        if op.get("started_at"):
+            grid.add_row("Since", str(op.get("started_at")), "", "")
+    return Panel(grid, title="Current Operation", box=box.ROUNDED, border_style=color, padding=(0, 1))
+
+
+def _operational_alerts(snapshot: dict[str, Any], *, compact: bool) -> Panel | None:
+    dependencies = snapshot.get("dependencies") if isinstance(snapshot.get("dependencies"), list) else []
+    error = snapshot.get("error_state") if isinstance(snapshot.get("error_state"), dict) else {}
+    warnings = snapshot.get("warnings_errors") if isinstance(snapshot.get("warnings_errors"), dict) else {}
+    rows: list[tuple[str, str, str]] = []
+    healthy = {"ok", "healthy", "ready", "running", "completed", "pass", "success"}
+    for item in dependencies:
+        if not isinstance(item, dict):
+            continue
+        status = normalize_status(item.get("status"))
+        if status in healthy:
+            continue
+        rows.append(
+            (
+                clean_name(item, "name", "check", default="dependency"),
+                status or "waiting",
+                format_detail(item, preferred=("message", "detail"), limit=180),
+            )
+        )
+    active_count = sum(
+        int(error.get(key) or 0)
+        for key in ("active_critical_count", "active_error_count", "active_warning_count", "retrying_count")
+        if is_int_like(error.get(key))
+    )
+    if active_count:
+        detail = format_error_detail(error)
+        active_errors = error.get("latest_active_errors")
+        if isinstance(active_errors, list) and active_errors and isinstance(active_errors[0], dict):
+            detail = format_detail(active_errors[0], preferred=("message", "safe_detail"), limit=220)
+        rows.append(("runtime", "failed" if int(error.get("active_critical_count") or 0) else "warning", detail))
+    market_error = str(warnings.get("market_status_error") or "").strip()
+    if market_error:
+        rows.append(("market status", "warning", truncate(market_error, 180)))
+    if not rows:
+        return None
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Area", style="cyan", no_wrap=True, width=18 if not compact else 14)
+    table.add_column("State", no_wrap=True, width=12)
+    table.add_column("Action / Detail", overflow="fold", ratio=1)
+    for area, status, detail in rows[: 3 if compact else 6]:
+        table.add_row(area, styled_status(status), detail)
+    return Panel(table, title="Attention Required", box=box.ROUNDED, border_style=status_style(aggregate_status_plain([{"status": row[1]} for row in rows])), padding=(0, 1))
+
+
 def _snapshot_header(snapshot: dict[str, Any]) -> Panel:
     header = snapshot.get("header") if isinstance(snapshot.get("header"), dict) else {}
     service = str(header.get("service") or "-").replace("_", " ").title()

@@ -50,8 +50,8 @@ def build_dashboard_snapshot(
         "dependencies": dependencies or preflight_dependencies(metrics),
         "runtime": runtime_summary(metrics),
         "daily_summary": daily_summary(metrics),
-        "tasks": task_summary(metrics),
-        "task_table_progress": table_progress(metrics),
+        "tasks": [dict(item) for item in metrics.get("tasks", []) if isinstance(item, dict)] if isinstance(metrics.get("tasks"), list) else task_summary(metrics),
+        "task_table_progress": [dict(item) for item in metrics.get("table_progress", []) if isinstance(item, dict)] if isinstance(metrics.get("table_progress"), list) else table_progress(metrics),
         "configured_tables": configured_tables(config_public, read_database=read_db, write_database=write_db),
         "queues": queue_summary(metrics),
         "coverage": coverage_summary(metrics),
@@ -89,22 +89,21 @@ def service_status(metrics: dict[str, Any]) -> str:
     phase = str(metrics.get("current_phase") or "").lower()
     explicit_status = str(metrics.get("status") or "").lower()
     preflight = str(metrics.get("preflight_status") or "").lower()
-    if phase == "failed" or preflight == "failed":
+    last_error_status = str(metrics.get("last_error_status") or "").lower()
+    if explicit_status in {"failed", "blocked"} or phase == "failed" or preflight == "failed":
         return "FAILED"
     provider_cooldown = float(metrics.get("sec_request_cooldown_remaining_seconds") or metrics.get("provider_cooldown_remaining_seconds") or 0.0)
     provider_cooldown_reason = str(metrics.get("sec_request_cooldown_reason") or metrics.get("provider_cooldown_reason") or "").lower()
     if phase == "provider_cooldown" or provider_cooldown > 0:
         return "DEGRADED" if provider_cooldown_reason in {"sec_http_403", "sec_http_429"} else "CATCHING_UP"
+    if explicit_status in {"degraded", "warning"} or phase == "error" or last_error_status == "active":
+        return "DEGRADED"
     if phase in {"preflight", "coverage_bootstrap", "gap_planning"}:
         return "PREFLIGHT" if phase == "preflight" else "CATCHING_UP"
     if phase in {"idle", "waiting"}:
         return "IDLE"
     if phase:
         return "RUNNING"
-    if explicit_status in {"failed", "blocked"}:
-        return explicit_status.upper()
-    if explicit_status in {"degraded", "warning"}:
-        return "DEGRADED"
     if explicit_status in {"running", "ok", "healthy", "ready"}:
         return "RUNNING"
     return "STARTING"

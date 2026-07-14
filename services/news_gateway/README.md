@@ -319,27 +319,20 @@ When stdout is interactive, the service starts a Rich dashboard. It is a separat
 async task and only reads in-memory metrics plus recent-news state. It does not
 call Massive, ClickHouse, or disk, and it does not run in the polling/write path.
 
-Dashboard content:
+The height-bounded dashboard is organized around the durable news lifecycle:
 
-- dependency preflight status and timing
-- service status and current poll interval
-- total and last-cycle provider rows
-- processed rows, written rows, skipped existing rows
-- raw payload save count
-- failures and last error
-- startup gap status, generated workstation script, manifest, and first command
-  when a manual fill is needed
-- fixed background progress rows for provider bootstrap probes and concurrent
-  startup gap-fill chunks, including completed/total counts and in-flight work
-- live news background queue, active enrichment batches, pending/completed
-  articles, failed articles, URL tasks, and enriched URL count
-- database publish status, active publish jobs, pending rows, and completed or
-  failed publish job counts
-- current operation phase and message, including bootstrap, provider fetch,
-  processing, writing, and gap-fill chunks
-- recent news table with fixed columns for market time, Vancouver time, UTC
-  time, tickers, title, quality flags, and compact enrichment/PDF/canonical
-  processing status
+- the exact current operation, next action, and any active dependency/runtime
+  failure remain at the top
+- `News Processing Pipeline` keeps provider polling, coverage work, background
+  enrichment, and database publish state in fixed rows
+- `Cycle And Freshness` shows the market-aware cadence, last-cycle outcome,
+  durable totals, and bounded memory state
+- recent news outcomes appear only when terminal height permits
+- compact terminals retain the header, current operation, active warnings, and
+  pipeline while removing secondary history before it can fall below the fold
+
+The last successful database publish timestamp is tracked separately from the
+last provider poll so a healthy polling phase cannot hide stale durable output.
 
 Controls:
 

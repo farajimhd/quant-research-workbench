@@ -34,6 +34,13 @@ start service
 -> show Rich terminal status and expose HTTP/websocket snapshots
 ```
 
+The height-bounded terminal follows the durable filing lifecycle: feed poll,
+bounded filing-worker queue, active accessions, completed/written/skipped/failed
+outcomes, coverage, write audit, and XBRL-context integrity. It records the last
+successful filing outcome separately from the last durable write. Compact
+terminals retain the current operation and pipeline; integrity and recent filing
+history are added only when height permits.
+
 The gateway does not own global ticker/reference mappings.
 `reference_gateway` maintains `q_live.id_sec_market_bridge_v3`. The SEC gateway
 uses that point-in-time mapping after each XBRL source write to maintain

@@ -12,7 +12,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from services.gateway_core.dashboard import build_dashboard_snapshot
-from services.gateway_core.rich_renderer import render_standard_snapshot, standard_live, status_color
+from services.gateway_core.rich_renderer import layout_profile, render_operational_dashboard, standard_live, status_color, style_status
 
 if TYPE_CHECKING:
     from services.news_gateway.gateway import NewsGateway
@@ -39,17 +39,88 @@ async def run_terminal_dashboard(gateway: "NewsGateway") -> None:
 
 def render_dashboard(gateway: "NewsGateway", news_snapshot: dict[str, Any]) -> Group:
     metrics = gateway.snapshot_metrics()
+    profile = layout_profile()
     standard = build_dashboard_snapshot(
         service_name="news_gateway",
         config=gateway.config,
         metrics=metrics,
         recent_items=news_snapshot,
     )
-    return Group(
-        render_standard_snapshot(standard),
-        progress_panel(metrics),
-        news_table(news_snapshot),
+    return render_operational_dashboard(
+        standard,
+        primary=news_pipeline_panel(metrics, compact=False),
+        compact_primary=news_pipeline_panel(metrics, compact=True),
+        secondary=news_cycle_panel(gateway, metrics),
+        recent=news_recent_panel(news_snapshot),
+        profile=profile,
     )
+
+
+def news_pipeline_panel(metrics: dict[str, Any], *, compact: bool) -> Panel:
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Stage", style="cyan", no_wrap=True, width=14 if compact else 20)
+    table.add_column("State", no_wrap=True, width=12)
+    table.add_column("Progress", no_wrap=True, width=20 if compact else 30)
+    table.add_column("Last trustworthy result", overflow="fold", ratio=1)
+    bootstrap_total = int(metrics.get("bootstrap_probe_total") or 0)
+    bootstrap_done = int(metrics.get("bootstrap_probe_completed") or 0)
+    gap_total = int(metrics.get("gap_fill_total_chunks") or 0)
+    gap_done = int(metrics.get("gap_fill_flushed_chunks") or 0)
+    background_active = int(metrics.get("background_active_batches") or 0)
+    background_queue = int(metrics.get("background_queue_size") or 0)
+    table.add_row(
+        "Provider poll",
+        style_status(metrics.get("last_cycle_status") or metrics.get("current_phase") or "waiting"),
+        f"runs {fmt(metrics.get('poll_runs'))}; rows {fmt(metrics.get('provider_rows'))}",
+        f"last {compact_time(str(metrics.get('last_poll_at_utc') or ''))}; {metrics.get('current_market_session') or '-'}",
+    )
+    coverage_state = "running" if (bootstrap_total and bootstrap_done < bootstrap_total) or (gap_total and gap_done < gap_total) else (metrics.get("gap_status") or "idle")
+    table.add_row(
+        "Coverage",
+        style_status(coverage_state),
+        f"probes {progress_count(bootstrap_done, bootstrap_total)}; gaps {progress_count(gap_done, gap_total)}",
+        truncate(str(metrics.get("gap_message") or "No active coverage job."), 180),
+    )
+    table.add_row(
+        "Enrichment",
+        style_status("running" if background_active or background_queue else "idle"),
+        f"queue {background_queue}; active {background_active}; pending {fmt(metrics.get('background_pending_articles'))}",
+        f"done {fmt(metrics.get('background_completed_articles'))}; failed {fmt(metrics.get('background_failed_articles'))}; {metrics.get('background_last_message') or '-'}",
+    )
+    table.add_row(
+        "Database publish",
+        style_status(metrics.get("publish_status") or "idle"),
+        f"active {fmt(metrics.get('publish_active_jobs'))}; pending {fmt(metrics.get('publish_pending_rows'))}",
+        f"jobs {fmt(metrics.get('publish_completed_jobs'))} done/{fmt(metrics.get('publish_failed_jobs'))} failed; last {compact_time(str(metrics.get('last_publish_at_utc') or ''))}; {metrics.get('publish_last_message') or '-'}",
+    )
+    return Panel(table, title="News Processing Pipeline", box=box.ROUNDED, border_style="cyan", padding=(0, 1))
+
+
+def news_cycle_panel(gateway: "NewsGateway", metrics: dict[str, Any]) -> Panel:
+    strategy = gateway.current_poll_strategy()
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Decision", style="cyan", no_wrap=True, width=20)
+    table.add_column("Current", no_wrap=True, width=24)
+    table.add_column("Evidence", overflow="fold", ratio=1)
+    table.add_row("Market cadence", f"{float(metrics.get('current_poll_seconds') or strategy.poll_seconds):.1f}s", f"session {metrics.get('current_market_session') or strategy.session}; lookback {int(metrics.get('current_lookback_minutes') or strategy.lookback_minutes)}m")
+    table.add_row("Last cycle", style_status(metrics.get("last_cycle_status") or "waiting"), f"provider {fmt(metrics.get('last_cycle_provider_rows'))}; unique {fmt(metrics.get('last_cycle_unique_news_rows'))}; duplicate {fmt(metrics.get('last_cycle_duplicate_news_rows'))}; written {fmt(metrics.get('last_cycle_written_rows'))}; {float(metrics.get('last_cycle_wall_seconds') or 0.0):.2f}s")
+    table.add_row("Durable totals", fmt(metrics.get("written_rows")), f"unique {fmt(metrics.get('unique_news_rows'))}; skipped existing {fmt(metrics.get('skipped_existing'))}; failed rows {fmt(metrics.get('failed_rows'))}")
+    table.add_row("Memory state", fmt(metrics.get("memory_recent_rows")), f"seen ids {fmt(metrics.get('memory_seen_ids'))}; ticker keys {fmt(metrics.get('memory_ticker_keys'))}; metadata TTL {float(metrics.get('memory_metadata_retention_hours') or 0.0):.1f}h")
+    return Panel(table, title="Cycle And Freshness", box=box.ROUNDED, border_style="green" if not metrics.get("poll_failures") else "yellow", padding=(0, 1))
+
+
+def news_recent_panel(snapshot: dict[str, Any]) -> Panel:
+    rows = list(snapshot.get("rows") or [])[:5]
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("UTC", no_wrap=True, width=16)
+    table.add_column("Tickers", no_wrap=True, width=16)
+    table.add_column("Process", no_wrap=True, width=20)
+    table.add_column("Headline", overflow="fold", ratio=1)
+    for row in rows:
+        table.add_row(compact_time(str(row.get("published_at_utc") or ""))[:16], truncate(", ".join(row.get("tickers") or []) or "-", 16), processing_status(row), truncate(str(row.get("title") or "-"), 180))
+    if not rows:
+        table.add_row("-", "-", style_status("waiting"), "No news outcome recorded yet.")
+    return Panel(table, title="Recent News Outcomes", box=box.ROUNDED, border_style="cyan", padding=(0, 1))
 
 
 def header_panel(gateway: "NewsGateway", metrics: dict[str, Any], now: str) -> Panel:

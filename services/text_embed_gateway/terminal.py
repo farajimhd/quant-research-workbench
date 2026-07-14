@@ -11,7 +11,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from services.gateway_core.dashboard import build_dashboard_snapshot
-from services.gateway_core.rich_renderer import render_standard_snapshot, standard_live, status_color, style_status, status_label
+from services.gateway_core.rich_renderer import layout_profile, render_operational_dashboard, standard_live, status_color, style_status, status_label
 
 if TYPE_CHECKING:
     from services.text_embed_gateway.gateway import TextEmbedGateway
@@ -31,23 +31,59 @@ async def run_terminal_dashboard(gateway: "TextEmbedGateway") -> None:
 
 def render_dashboard(gateway: "TextEmbedGateway") -> Group:
     metrics = gateway.snapshot_metrics()
+    profile = layout_profile()
     standard = build_dashboard_snapshot(
         service_name="text_embed_gateway",
         config=gateway.config,
         metrics=metrics,
         recent_items=gateway.recent_snapshot(12),
     )
-    return Group(
-        render_standard_snapshot(standard),
-        work_focus_panel(metrics),
-        progress_panel(metrics),
-        cycle_summary_panel(metrics),
-        coverage_report_panel(metrics),
-        gap_summary_panel(metrics),
-        timing_panel(metrics),
-        runtime_panel(gateway, metrics),
-        recent_table(gateway.recent_snapshot(12)),
+    return render_operational_dashboard(
+        standard,
+        primary=work_focus_panel(metrics),
+        compact_primary=compact_embedding_panel(metrics),
+        secondary=coverage_matrix_panel(metrics),
+        recent=timing_panel(metrics),
+        profile=profile,
     )
+
+
+def compact_embedding_panel(metrics: dict[str, Any]) -> Panel:
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Mode / Source", style="cyan", no_wrap=True, width=16)
+    table.add_column("Stage / State", no_wrap=True, width=16)
+    table.add_column("Progress / Detail", overflow="fold", ratio=1)
+    focus = " / ".join(
+        part for part in (mode_label(str(metrics.get("active_mode") or "")), source_label(str(metrics.get("active_source") or ""))) if part != "-"
+    ) or "Service"
+    table.add_row(focus, style_status(metrics.get("active_stage") or metrics.get("current_phase") or "waiting"), active_detail(metrics))
+    for mode, source, report in report_rows(source_reports(metrics), include_empty=True):
+        detected = int(report.get("source_detected") or 0) + int(report.get("embedding_detected") or 0) + int(report.get("context_detected") or 0)
+        completed = int(report.get("source_completed") or 0) + int(report.get("embedding_completed") or 0) + int(report.get("context_completed") or 0)
+        remaining = int(report.get("source_remaining") or 0) + int(report.get("embedding_remaining") or 0) + int(report.get("context_remaining") or 0) + int(report.get("context_blocked") or 0)
+        state = "warning" if remaining else "ok" if report else "waiting"
+        table.add_row(f"{mode_label(mode)} / {source_label(source)}", style_status(state), f"detected {detected:,}; done {completed:,}; remaining {remaining:,}")
+    return Panel(table, title="Embedding Work And Coverage", box=box.ROUNDED, border_style="cyan", padding=(0, 1))
+
+
+def coverage_matrix_panel(metrics: dict[str, Any]) -> Panel:
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Mode / Source", style="cyan", no_wrap=True, width=18)
+    table.add_column("Available", justify="right", no_wrap=True, width=12)
+    table.add_column("Missing", justify="right", no_wrap=True, width=12)
+    table.add_column("Completed", justify="right", no_wrap=True, width=12)
+    table.add_column("Remaining", justify="right", no_wrap=True, width=12)
+    table.add_column("Last cycle / Window", overflow="fold", ratio=1)
+    reports = source_reports(metrics)
+    for mode, source, report in report_rows(reports, include_empty=True):
+        available = int(report.get("available_embedding_rows") or 0)
+        detected = int(report.get("source_detected") or 0) + int(report.get("embedding_detected") or 0) + int(report.get("context_detected") or 0)
+        completed = int(report.get("source_completed") or 0) + int(report.get("embedding_completed") or 0) + int(report.get("context_completed") or 0)
+        remaining = int(report.get("source_remaining") or 0) + int(report.get("embedding_remaining") or 0) + int(report.get("context_remaining") or 0) + int(report.get("context_blocked") or 0)
+        cycle_at = compact_time(str(metrics.get(f"{mode}_last_cycle_at_utc") or ""))
+        window = str(metrics.get(f"{mode}_last_window_utc") or report.get("available_period") or "-").replace("T", " ").replace("Z", "")
+        table.add_row(f"{mode_label(mode)} / {source_label(source)}", fmt(available), fmt(detected), fmt(completed), fmt(remaining), f"{cycle_at}; {window}")
+    return Panel(table, title="Mode And Source Coverage", box=box.ROUNDED, border_style="magenta", padding=(0, 1))
 
 
 def header_panel(gateway: "TextEmbedGateway", metrics: dict[str, Any]) -> Panel:

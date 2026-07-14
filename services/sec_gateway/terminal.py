@@ -11,7 +11,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from services.gateway_core.dashboard import build_dashboard_snapshot
-from services.gateway_core.rich_renderer import render_standard_snapshot
+from services.gateway_core.rich_renderer import layout_profile, render_operational_dashboard
 from services.gateway_core.rich_renderer import standard_live, style_status
 
 if TYPE_CHECKING:
@@ -32,16 +32,94 @@ async def run_terminal_dashboard(gateway: "SecGateway") -> None:
 
 def render_dashboard(gateway: "SecGateway") -> Group:
     metrics = gateway.snapshot_metrics()
+    profile = layout_profile()
     standard = build_dashboard_snapshot(
         service_name="sec_gateway",
         config=gateway.config,
         metrics=metrics,
         recent_items=gateway.recent_snapshot(12),
     )
-    return Group(
-        render_standard_snapshot(standard),
-        recent_table(gateway.recent_snapshot(12)),
+    return render_operational_dashboard(
+        standard,
+        primary=sec_pipeline_panel(gateway, metrics, compact=False),
+        compact_primary=sec_pipeline_panel(gateway, metrics, compact=True),
+        secondary=sec_integrity_panel(metrics),
+        recent=sec_recent_panel(gateway.recent_snapshot(5)),
+        profile=profile,
     )
+
+
+def sec_pipeline_panel(gateway: "SecGateway", metrics: dict[str, Any], *, compact: bool) -> Panel:
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Stage", style="cyan", no_wrap=True, width=14 if compact else 18)
+    table.add_column("State", no_wrap=True, width=12)
+    table.add_column("Progress", no_wrap=True, width=20 if compact else 28)
+    table.add_column("Last trustworthy result", overflow="fold", ratio=1)
+    active_accessions = metrics.get("live_worker_accessions") if isinstance(metrics.get("live_worker_accessions"), dict) else {}
+    active_text = ", ".join(str(value) for value in list(active_accessions.values())[:3]) or "none"
+    table.add_row(
+        "Feed poll",
+        style_status(str(metrics.get("current_phase") or "waiting")),
+        f"runs {fmt(metrics.get('poll_runs'))}; items {fmt(metrics.get('feed_items'))}",
+        f"last {full_time_text(metrics.get('last_poll_at_utc'))}; cadence {gateway.current_poll_seconds():.1f}s",
+    )
+    table.add_row(
+        "Filing workers",
+        style_status("running" if metrics.get("live_active_workers") else "idle"),
+        f"active {fmt(metrics.get('live_active_workers'))}/{fmt(metrics.get('live_workers'))}; queue {fmt(metrics.get('live_queue_size'))}/{fmt(metrics.get('live_queue_max_items'))}",
+        f"accessions {active_text}",
+    )
+    table.add_row(
+        "Durable outcome",
+        style_status("warning" if metrics.get("live_worker_failures") else "ok"),
+        f"done {fmt(metrics.get('live_completed_filings'))}; written {fmt(metrics.get('written_filings'))}",
+        f"skipped {fmt(metrics.get('skipped_existing'))}; failed {fmt(metrics.get('live_worker_failures'))}; last write {compact_datetime(metrics.get('last_write_at_utc'))}",
+    )
+    table.add_row(
+        "Latest filing",
+        style_status("ok" if metrics.get("last_accession") else "waiting"),
+        f"{metrics.get('last_form_type') or '-'}  {metrics.get('last_accession') or '-'}",
+        f"completed {compact_datetime(metrics.get('last_success_at_utc'))}; {metrics.get('last_worker_message') or '-'}",
+    )
+    return Panel(table, title="SEC Filing Pipeline", box=box.ROUNDED, border_style="cyan", padding=(0, 1))
+
+
+def sec_integrity_panel(metrics: dict[str, Any]) -> Panel:
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Guardrail", style="cyan", no_wrap=True, width=20)
+    table.add_column("State", no_wrap=True, width=14)
+    table.add_column("Evidence / Action", overflow="fold", ratio=1)
+    table.add_row("Preflight", style_status(metrics.get("preflight_status")), str(metrics.get("preflight_checked_at_utc") or "not checked"))
+    table.add_row("Coverage", style_status(metrics.get("gap_status")), f"intervals {fmt(metrics.get('coverage_interval_count'))}; {metrics.get('gap_message') or '-'}")
+    table.add_row("Write audit", style_status(metrics.get("audit_status")), str(metrics.get("audit_message") or "not reported"))
+    table.add_row(
+        "XBRL context",
+        style_status("warning" if metrics.get("xbrl_context_pending_rows") or metrics.get("xbrl_context_sync_failures") else "ok"),
+        f"rows {fmt(metrics.get('xbrl_context_rows'))}; pending {fmt(metrics.get('xbrl_context_pending_rows'))}; failures {fmt(metrics.get('xbrl_context_sync_failures'))}",
+    )
+    if float(metrics.get("sec_request_cooldown_remaining_seconds") or 0.0) > 0:
+        table.add_row("Provider cooldown", style_status("degraded"), f"{float(metrics.get('sec_request_cooldown_remaining_seconds') or 0.0):.0f}s; {metrics.get('sec_request_cooldown_reason') or '-'}")
+    return Panel(table, title="Coverage And Integrity", box=box.ROUNDED, border_style="green" if not metrics.get("xbrl_context_sync_failures") else "yellow", padding=(0, 1))
+
+
+def sec_recent_panel(snapshot: dict[str, Any]) -> Panel:
+    rows = snapshot.get("rows") or []
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("UTC", no_wrap=True, width=17)
+    table.add_column("Form", no_wrap=True, width=9)
+    table.add_column("Accession", no_wrap=True, width=22)
+    table.add_column("State", no_wrap=True, width=14)
+    table.add_column("Title", overflow="fold", ratio=1)
+    for row in rows[:5]:
+        table.add_row(utc_short(parse_utc(row.get("updated_at_utc"))) if parse_utc(row.get("updated_at_utc")) else "-", str(row.get("form_type") or "-"), str(row.get("accession_number") or "-"), style_status(row.get("status") or "-"), str(row.get("title") or "-"))
+    if not rows:
+        table.add_row("-", "-", "-", style_status("waiting"), "No filing outcome recorded yet.")
+    return Panel(table, title="Recent Filing Outcomes", box=box.ROUNDED, border_style="cyan", padding=(0, 1))
+
+
+def compact_datetime(value: Any) -> str:
+    parsed = parse_utc(value)
+    return parsed.strftime("%Y-%m-%d %H:%M:%S UTC") if parsed else "-"
 
 
 def header_panel(gateway: "SecGateway", metrics: dict[str, Any]) -> Panel:

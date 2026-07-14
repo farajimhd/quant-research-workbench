@@ -111,6 +111,14 @@ def error_summary_from_metrics(metrics: dict[str, Any], *, service: str) -> dict
             if provider_cooldown_reason in {"sec_http_403", "sec_http_429"}:
                 summary.active_error_count = 1
             summary.latest_active_errors.append(record.public_dict())
+        elif last_error_status == "active":
+            if record.retryable:
+                summary.retrying_count = 1
+            elif poll_failures or failed_rows:
+                summary.active_error_count = 1
+            else:
+                summary.active_warning_count = 1
+            summary.latest_active_errors.append(record.public_dict())
         elif record.retryable:
             summary.resolved_this_run_count = 1
             summary.latest_resolved_errors.append(

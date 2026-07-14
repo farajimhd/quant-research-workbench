@@ -64,6 +64,8 @@ class SecGatewayMetrics:
     last_error_resolved_at_utc: str = ""
     last_accession: str = ""
     last_form_type: str = ""
+    last_success_at_utc: str = ""
+    last_write_at_utc: str = ""
     gap_status: str = "not_started"
     gap_message: str = ""
     gap_count: int = 0
@@ -95,6 +97,7 @@ class SecGatewayMetrics:
     live_queued_filings: int = 0
     live_completed_filings: int = 0
     live_worker_failures: int = 0
+    live_worker_accessions: dict[str, str] = field(default_factory=dict)
     last_worker_message: str = ""
     coverage_interval_count: int = 0
     pending_shutdown_jobs: int = 0
@@ -336,6 +339,7 @@ class SecGateway:
 
     async def _process_live_job(self, worker_index: int, job: SecLiveJob) -> None:
         self.metrics.live_active_workers += 1
+        self.metrics.live_worker_accessions[str(worker_index)] = job.item.accession_number
         self.metrics.live_queue_size = self._live_queue.qsize()
         self.metrics.last_worker_message = f"Worker {worker_index} processing {job.item.accession_number}."
         self._log(
@@ -366,6 +370,7 @@ class SecGateway:
                 cik=job.item.cik,
             )
         finally:
+            self.metrics.live_worker_accessions.pop(str(worker_index), None)
             async with self._inflight_lock:
                 self._inflight_accessions.discard(job.item.accession_number)
             self.metrics.live_active_workers = max(0, self.metrics.live_active_workers - 1)
@@ -386,6 +391,9 @@ class SecGateway:
         self.metrics.live_completed_filings += 1
         self.metrics.last_accession = outcome.item.accession_number
         self.metrics.last_form_type = outcome.item.form_type
+        self.metrics.last_success_at_utc = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+        if not result.skipped_existing and result.filing_rows:
+            self.metrics.last_write_at_utc = self.metrics.last_success_at_utc
         self.metrics.last_worker_message = (
             f"Worker {worker_index} completed {outcome.item.accession_number}: "
             f"{'skipped existing' if result.skipped_existing else 'written'}."
