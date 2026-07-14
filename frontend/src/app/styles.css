@@ -20422,6 +20422,24 @@ button {
   white-space: nowrap;
 }
 
+.canvas-manager-open {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--foreground);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  gap: 3px;
+  min-height: 20px;
+  padding: 0 2px;
+}
+
+.canvas-manager-open:hover,
+.canvas-manager-open:focus-visible {
+  color: var(--primary);
+}
+
 .canvas-manager-items small {
   color: var(--muted-foreground);
 }
@@ -20603,13 +20621,18 @@ button {
 
 .canvas-container-configure {
   border-radius: 2px;
-  font-size: 0;
-  gap: 0;
+  font-size: 8px;
+  gap: 2px;
   min-height: 20px;
-  padding: 0;
+  padding: 0 3px;
   right: 1px;
   top: 1px;
-  width: 20px;
+  width: auto;
+}
+
+.canvas-container-configure span {
+  font-weight: 850;
+  white-space: nowrap;
 }
 
 .canvas-container-content {
@@ -20665,6 +20688,30 @@ button {
   font-size: 9px;
   font-weight: 800;
   gap: 3px;
+  flex-wrap: wrap;
+}
+
+.canvas-link-context small {
+  color: var(--muted-foreground);
+  flex-basis: 100%;
+  font-size: 8px;
+  font-weight: 650;
+}
+
+.canvas-link-guide {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+}
+
+.canvas-link-guide strong {
+  font-size: 9px;
+}
+
+.canvas-link-guide p {
+  color: var(--muted-foreground);
+  font-size: 8px;
+  line-height: 1.25;
+  margin: 1px 0 0;
 }
 
 .canvas-preview-table th,

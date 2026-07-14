@@ -53,12 +53,16 @@ rows are point-in-time ClickHouse reads, and broker/runtime-only state is an
 explicit IBKR-shaped configuration fixture. Per-container controls and the
 single global default layout are persisted in browser storage. A canvas
 registry on this page creates, opens, and removes focused child canvases.
-Containers may be moved between registered canvases or opened as linked copies;
-link channels share symbol and interval context across tabs. Child canvases use
-a chromeless route, and each container owns its own settings overlay plus
-minimize, maximize, reset, close, and linked-open controls. The existing Live
-page still retains its legacy canvas state until the planned Live migration; it
-does not yet consume this global profile.
+New managed canvases inherit the saved default layout, or the current main
+layout when no default has been saved, so they never open as empty pages.
+Containers may be moved between registered canvases or opened as linked copies.
+Each container exposes `Link A`, `Link B`, `Link C`, or `Link` internally;
+choosing the same group shares symbol and interval context across tabs. Child
+canvases use a chromeless route, and each container owns its own settings
+overlay plus distinct minimize, restore, maximize, fullscreen-exit, reset,
+close, and linked-open controls. The existing Live page still retains its
+legacy canvas state until the planned Live migration; it does not yet consume
+this global profile.
 
 The earlier prepared-data replay remains in
 `frontend/src/pages/LiveTradingPage.tsx` and `/api/live-trading/*` only as a

@@ -36,6 +36,13 @@ service:
 .\scripts\run_qmd_history_gateway.ps1
 ```
 
+The launcher is idempotent. Before building or starting another process, it
+resolves `QMD_HISTORY_BIND` and checks `/health`. If the expected historical
+gateway is already running and ready, it reports that state and exits
+successfully. If the address belongs to another service, or the port is open
+without a ready historical `/health` response, it stops with an actionable
+address-conflict message instead of attempting a duplicate bind.
+
 Configuration uses `QMD_HISTORY_CLICKHOUSE_URL`, `QMD_HISTORY_DATABASE`,
 `QMD_HISTORY_TABLE_PREFIX`, `QMD_HISTORY_CLICKHOUSE_USER`,
 `QMD_HISTORY_CLICKHOUSE_PASSWORD`, `QMD_HISTORY_BIND`,

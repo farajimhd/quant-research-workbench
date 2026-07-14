@@ -6,8 +6,10 @@ import {
   LayoutGrid,
   Link2,
   Maximize2,
+  Minus,
   Minimize2,
   Move,
+  PanelTopOpen,
   RotateCcw,
   X,
 } from "lucide-react";
@@ -224,8 +226,8 @@ export function WorkspaceWindow({
           {onReset ? <button aria-label={`Reset ${title} to its default layout`} className="toolbar-button compact" onClick={() => onReset(id)} title="Reset container layout" type="button">
             <RotateCcw size={12} />
           </button> : null}
-          <button aria-label={layout.minimized ? `Restore ${title}` : `Minimize ${title}`} className="toolbar-button compact" onClick={() => onLayoutChange(id, { minimized: !layout.minimized })} title={layout.minimized ? "Restore" : "Minimize"} type="button">
-            <Minimize2 size={12} />
+          <button aria-label={layout.minimized ? `Restore ${title}` : `Minimize ${title}`} className="toolbar-button compact" onClick={() => onLayoutChange(id, { minimized: !layout.minimized })} title={layout.minimized ? "Restore from title bar" : "Minimize to title bar"} type="button">
+            {layout.minimized ? <PanelTopOpen size={12} /> : <Minus size={12} />}
           </button>
           <button aria-label={layout.fullscreen ? `Exit fullscreen ${title}` : `Fullscreen ${title}`} className="toolbar-button compact" onClick={() => onLayoutChange(id, { fullscreen: !layout.fullscreen, minimized: false })} title={layout.fullscreen ? "Exit fullscreen" : "Fullscreen"} type="button">
             {layout.fullscreen ? <Minimize2 size={12} /> : <Maximize2 size={12} />}

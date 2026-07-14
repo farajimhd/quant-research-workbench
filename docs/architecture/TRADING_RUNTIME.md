@@ -88,12 +88,16 @@ configuration under `Configuration -> Canvas`. The main canvas owns the
 persisted user-selected default layout and a registry of focused child canvases;
 Replay and Backtest do not expose mode-specific canvas designers. Containers
 may move between registered canvases or open as linked copies in a new tab.
-Link channels A, B, and C persist a shared symbol and bar-interval context so
-linked containers continue to track the same context across tabs. Focus canvas
-routes deliberately omit the application sidebar. The current Live page still
-uses its legacy canvas persistence until the planned migration, so it does not
-yet consume the new global profile. Once migrated, run pages may toggle
-compatible features for an active run without owning another layout authority.
+New managed canvases inherit the saved default layout, falling back to the
+current main layout, and their names are direct open actions in the registry.
+Link groups A, B, and C persist a shared symbol and bar-interval context so
+containers assigned to the same group continue to track the same context across
+tabs. Group selection and current group membership are shown inside each
+container's configuration surface. Focus canvas routes deliberately omit the
+application sidebar. The current Live page still uses its legacy canvas
+persistence until the planned migration, so it does not yet consume the new
+global profile. Once migrated, run pages may toggle compatible features for an
+active run without owning another layout authority.
 
 The configuration page uses a selectable New York point-in-time preview that
 defaults to 09:45. Chart and scanner content is calculated by QMD History from
@@ -105,5 +109,6 @@ resources could truthfully be read. Changing a container setting changes the
 rendered preview and persists independently from the global window geometry.
 The setting control is rendered inside its container; it never creates a
 page-level configuration sidebar. Container title bars are deliberately dense
-and expose linked-open, reset, minimize, maximize, and close actions without
-adding vertical page chrome.
+and expose linked-open, reset, title-bar minimize, fullscreen maximize, and
+close actions without adding vertical page chrome. Title-bar minimize/restore
+and fullscreen maximize/exit use distinct icons and accessible names.

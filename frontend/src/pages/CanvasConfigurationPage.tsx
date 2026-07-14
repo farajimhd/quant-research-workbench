@@ -1,4 +1,4 @@
-import { ExternalLink, Link2, Plus, RefreshCw, Save, Settings2, Trash2, X } from "lucide-react";
+import { ExternalLink, Link2, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
@@ -73,10 +73,10 @@ const DEFAULT_SETTINGS: ContainerSettings = {
 };
 
 const LINK_OPTIONS: Array<{ label: string; value: CanvasLinkGroupId }> = [
-  { label: "Not linked", value: "none" },
-  { label: "A · Market context", value: "A" },
-  { label: "B · Execution context", value: "B" },
-  { label: "C · Custom context", value: "C" },
+  { label: "None · independent", value: "none" },
+  { label: "Group A · Market context", value: "A" },
+  { label: "Group B · Execution context", value: "B" },
+  { label: "Group C · Custom context", value: "C" },
 ];
 
 export function CanvasConfigurationPage() {
@@ -182,11 +182,21 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
 
   function openNewCanvas(containerId?: WorkspaceContainerId, sourceLayout?: WorkspaceWindowLayout) {
     const created = createCanvasRecord(registry, containerId ? `${containerTitle(containerId)} focus` : undefined);
-    const state: CanvasWorkspaceState = {
-      layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
-      layouts: containerId ? { [containerId]: focusLayout(sourceLayout) } : {},
-      openIds: containerId ? [containerId] : [],
-    };
+    const sourceState = registry.defaultState ?? workspaceState;
+    const inheritedIds = sourceState?.openIds.length ? sourceState.openIds : ALL_CONTAINER_IDS;
+    const state: CanvasWorkspaceState = containerId
+      ? {
+          layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
+          layouts: { [containerId]: focusLayout(sourceLayout) },
+          openIds: [containerId],
+        }
+      : {
+          layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
+          layouts: sourceState
+            ? normalizeInheritedLayouts(sourceState.layouts, inheritedIds)
+            : createFocusLayouts(inheritedIds),
+          openIds: [...inheritedIds],
+        };
     writeCanvasWorkspaceState(created.canvas.id, state);
     setRegistry(created.registry);
     window.open(focusCanvasUrl(created.canvas.id), "_blank", "noopener,noreferrer");
@@ -247,10 +257,6 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
         definitionsOverride={TRADING_WORKSPACE_CONTAINERS}
         historicalSourceReady={!error}
         layoutPreset={manager ? "global" : "focus"}
-        linkLabelForContainer={(definition) => {
-          const group = registry.linkAssignments[definition.id] ?? "none";
-          return group === "none" ? undefined : group;
-        }}
         metaForContainer={metaForContainer}
         mode="replay"
         onMoveContainerToCanvas={moveContainer}
@@ -259,10 +265,14 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
         renderContainer={(definition) => {
           const group = registry.linkAssignments[definition.id] ?? "none";
           const linkContext = group === "none" ? settings.chart : registry.linkContexts[group];
+          const linkedContainers = group === "none" ? [] : TRADING_WORKSPACE_CONTAINERS
+            .filter((candidate) => candidate.id !== definition.id && registry.linkAssignments[candidate.id] === group)
+            .map((candidate) => candidate.title);
           return <ContainerPreview
             definition={definition}
             linkContext={linkContext}
             linkGroup={group}
+            linkedContainers={linkedContainers}
             loading={loading}
             onLinkChange={(nextGroup) => setContainerLink(definition.id, nextGroup)}
             onLinkContextChange={(patch) => { if (group !== "none") updateLinkContext(group, patch); }}
@@ -282,13 +292,14 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
 }
 
 function CanvasManager({ onCreate, onOpen, onRemove, registry }: { onCreate: () => void; onOpen: (id: string) => void; onRemove: (id: string) => void; registry: CanvasRegistry }) {
-  return <section aria-label="Canvas manager" className="canvas-manager-strip"><strong>Canvases</strong><div className="canvas-manager-items">{registry.canvases.map((canvas) => <article key={canvas.id} data-main={canvas.id === MAIN_CANVAS_ID ? "true" : "false"}><span>{canvas.label}</span>{canvas.id !== MAIN_CANVAS_ID ? <><button aria-label={`Open ${canvas.label}`} className="toolbar-button compact" onClick={() => onOpen(canvas.id)} title="Open focus canvas" type="button"><ExternalLink size={12} /></button><button aria-label={`Remove ${canvas.label}`} className="toolbar-button compact" onClick={() => onRemove(canvas.id)} title="Remove canvas" type="button"><Trash2 size={12} /></button></> : <small>default authority</small>}</article>)}</div><button className="button secondary compact" onClick={onCreate} type="button"><Plus size={13} /> New canvas</button></section>;
+  return <section aria-label="Canvas manager" className="canvas-manager-strip"><strong>Canvases</strong><div className="canvas-manager-items">{registry.canvases.map((canvas) => <article key={canvas.id} data-main={canvas.id === MAIN_CANVAS_ID ? "true" : "false"}>{canvas.id === MAIN_CANVAS_ID ? <><span>{canvas.label}</span><small>default authority</small></> : <><button aria-label={`Open ${canvas.label}`} className="canvas-manager-open" onClick={() => onOpen(canvas.id)} title="Open canvas in a new page" type="button"><span>{canvas.label}</span><ExternalLink size={11} /></button><button aria-label={`Remove ${canvas.label}`} className="toolbar-button compact" onClick={() => onRemove(canvas.id)} title="Remove canvas" type="button"><Trash2 size={12} /></button></>}</article>)}</div><button className="button secondary compact" onClick={onCreate} type="button"><Plus size={13} /> New canvas</button></section>;
 }
 
-function ContainerPreview({ definition, linkContext, linkGroup, loading, onLinkChange, onLinkContextChange, preview, settings, setSettings }: {
+function ContainerPreview({ definition, linkContext, linkGroup, linkedContainers, loading, onLinkChange, onLinkContextChange, preview, settings, setSettings }: {
   definition: WorkspaceContainerDefinition;
   linkContext: CanvasLinkContext;
   linkGroup: CanvasLinkGroupId;
+  linkedContainers: string[];
   loading: boolean;
   onLinkChange: (group: CanvasLinkGroupId) => void;
   onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void;
@@ -298,8 +309,8 @@ function ContainerPreview({ definition, linkContext, linkGroup, loading, onLinkC
 }) {
   const [configOpen, setConfigOpen] = useState(false);
   return <div className="canvas-container-preview">
-    <button aria-expanded={configOpen} className="canvas-container-configure" onClick={() => setConfigOpen((value) => !value)} type="button">{configOpen ? <X size={12} /> : <Settings2 size={12} />}{configOpen ? "Close" : "Configure"}</button>
-    {configOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} configuration`}><label><span>Link channel</span><select aria-label={`${definition.title} link channel`} onChange={(event) => onLinkChange(event.target.value as CanvasLinkGroupId)} value={linkGroup}>{LINK_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>{linkGroup !== "none" ? <div className="canvas-link-context"><Link2 size={12} /><span>{linkContext.symbol} · {linkContext.timeframe}</span></div> : null}{containerFields(definition.id, settings, linkContext, setSettings, onLinkContextChange)}</div> : null}
+    <button aria-expanded={configOpen} aria-label={`Configure and link ${definition.title}`} className="canvas-container-configure" onClick={() => setConfigOpen((value) => !value)} title={linkGroup === "none" ? "Configure container and choose a link group" : `Linked to Group ${linkGroup}; configure or change group`} type="button">{configOpen ? <X size={12} /> : <Link2 size={12} />}<span>{configOpen ? "Close" : linkGroup === "none" ? "Link" : `Link ${linkGroup}`}</span></button>
+    {configOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} configuration`}><div className="canvas-link-guide"><strong>Link containers</strong><p>Choose the same group in each container to share symbol and interval across canvases.</p></div><label><span>Linked group</span><select aria-label={`${definition.title} link group`} onChange={(event) => onLinkChange(event.target.value as CanvasLinkGroupId)} value={linkGroup}>{LINK_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>{linkGroup !== "none" ? <div className="canvas-link-context"><Link2 size={12} /><span>Group {linkGroup} · {linkContext.symbol} · {linkContext.timeframe}</span><small>{linkedContainers.length ? `With ${linkedContainers.join(", ")}` : "No other container uses this group yet"}</small></div> : null}{containerFields(definition.id, settings, linkContext, setSettings, onLinkContextChange)}</div> : null}
     <div className={configOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{loading && !preview ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div> : renderPreview(definition.id, preview, settings, setSettings, linkGroup, onLinkContextChange, linkContext)}</div>
   </div>;
 }
@@ -382,5 +393,9 @@ function previewRowKey(row: PreviewRow, columns: string[], index: number) { retu
 function money(value: unknown) { return typeof value === "number" ? new Intl.NumberFormat("en-US", { currency: "USD", style: "currency" }).format(value) : "—"; }
 function formatCell(value: unknown, column: string) { if (value === null || value === undefined || value === "") return "—"; if (column.includes("time") || column.includes("at_utc")) { const date = new Date(String(value)); return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" }).format(date); } if (typeof value === "number") return new Intl.NumberFormat("en-US", { maximumFractionDigits: column.includes("pct") ? 2 : 4 }).format(value); if (Array.isArray(value)) return value.join(", "); return String(value); }
 function containerTitle(id: WorkspaceContainerId) { return TRADING_WORKSPACE_CONTAINERS.find((definition) => definition.id === id)?.title ?? id; }
+function normalizeInheritedLayouts(layouts: Record<string, WorkspaceWindowLayout>, ids: WorkspaceContainerId[]) {
+  const fallback = createFocusLayouts(ids);
+  return Object.fromEntries(ids.map((id) => [id, { ...(layouts[id] ?? fallback[id]), fullscreen: false, minimized: false }]));
+}
 function focusLayout(source?: WorkspaceWindowLayout): WorkspaceWindowLayout { const scale = Number(window.localStorage.getItem("quant-research-workbench.ui-scale")) || 1; return { fullscreen: true, h: Math.max(320, Math.floor(window.innerHeight / scale) - 62), minimized: false, w: Math.max(680, Math.floor(window.innerWidth / scale)), x: 0, y: 0, z: Math.max(1, source?.z ?? 1) }; }
 function offsetLayout(source: WorkspaceWindowLayout, index: number): WorkspaceWindowLayout { const offset = (index % 6) * 18; return { ...source, fullscreen: false, minimized: false, x: offset, y: offset, z: index + 1 }; }

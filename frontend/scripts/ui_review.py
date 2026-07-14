@@ -173,7 +173,11 @@ def slug_scale(scale: float) -> str:
     return str(scale).replace(".", "p")
 
 
-def validate_canvas_interactions(page: Any, scenario: dict[str, Any]) -> list[str]:
+def validate_canvas_interactions(
+    page: Any,
+    scenario: dict[str, Any],
+    interaction_screenshot: Path | None = None,
+) -> list[str]:
     """Exercise the Canvas behaviors that static screenshots cannot prove."""
     issues: list[str] = []
     if scenario["page"] == "canvas-focus":
@@ -204,25 +208,55 @@ def validate_canvas_interactions(page: Any, scenario: dict[str, Any]) -> list[st
     if chart.count() != 1:
         return ["main canvas does not render exactly one Chart container"]
     try:
-        chart.get_by_role("button", name="Configure").click()
+        link_button = chart.get_by_role("button", name="Configure and link Chart")
+        if "Link A" not in link_button.inner_text():
+            issues.append("Chart does not expose its current link group at the point of use")
+        link_button.click()
         if chart.get_by_label("Chart configuration").count() != 1:
             issues.append("Chart configuration is not contained inside the Chart container")
         if page.locator(".canvas-config-drawer").count():
             issues.append("container configuration created a page-level drawer")
-        chart.get_by_label("Chart link channel").select_option("C")
+        if "Choose the same group" not in chart.get_by_label("Chart configuration").inner_text():
+            issues.append("Chart configuration does not explain how containers are linked")
+        if "With Scanner" not in chart.get_by_label("Chart configuration").inner_text():
+            issues.append("Chart configuration does not identify containers in its current link group")
+        if interaction_screenshot:
+            page.screenshot(path=str(interaction_screenshot), full_page=True)
+        chart.get_by_label("Chart link group").select_option("C")
         page.wait_for_timeout(100)
-        if "C" not in chart.locator(".workspace-window-link").inner_text():
+        link_button.click()
+        if "Link C" not in chart.get_by_role("button", name="Configure and link Chart").inner_text():
             issues.append("changing a container link channel did not update its link state")
 
-        chart.get_by_role("button", name="Minimize Chart").click()
+        minimize = chart.get_by_role("button", name="Minimize Chart")
+        if minimize.locator(".lucide-minus").count() != 1:
+            issues.append("minimize action does not use the dedicated minus icon")
+        minimize.click()
         if chart.get_by_role("button", name="Restore Chart").count() != 1:
             issues.append("Chart did not enter the minimized state")
+        elif chart.get_by_role("button", name="Restore Chart").locator(".lucide-panel-top-open").count() != 1:
+            issues.append("restore action does not use a distinct restore icon")
         chart.get_by_role("button", name="Restore Chart").click()
         chart.get_by_role("button", name="Fullscreen Chart").click()
         if chart.get_by_role("button", name="Exit fullscreen Chart").count() != 1:
             issues.append("Chart did not enter the maximized state")
+        elif chart.get_by_role("button", name="Exit fullscreen Chart").locator(".lucide-minimize-2").count() != 1:
+            issues.append("fullscreen exit does not use the inward-arrow icon")
+        if chart.get_by_role("button", name="Minimize Chart").locator(".lucide-minus").count() != 1:
+            issues.append("fullscreen and title-bar minimize actions are visually ambiguous")
         chart.get_by_role("button", name="Exit fullscreen Chart").click()
         chart.get_by_role("button", name="Reset Chart to its default layout").click()
+
+        with page.expect_popup(timeout=5000) as blank_canvas_popup_info:
+            page.get_by_role("button", name="New canvas", exact=True).click()
+        blank_canvas_popup = blank_canvas_popup_info.value
+        blank_canvas_popup.locator(".app-shell").wait_for(state="visible", timeout=5000)
+        blank_canvas_popup.locator(".workspace-window").first.wait_for(state="visible", timeout=5000)
+        if "#canvas-focus" not in blank_canvas_popup.url or blank_canvas_popup.locator(".sidebar").count():
+            issues.append("new managed canvas did not open in a chromeless canvas page")
+        if blank_canvas_popup.locator(".workspace-window").count() < 1:
+            issues.append("new managed canvas opened without inheriting any containers")
+        blank_canvas_popup.close()
 
         with page.expect_popup(timeout=5000) as popup_info:
             chart.get_by_role("button", name="Open linked Chart in a new canvas").click()
@@ -233,8 +267,10 @@ def validate_canvas_interactions(page: Any, scenario: dict[str, Any]) -> list[st
         if popup.get_by_role("region", name="Chart", exact=True).count() != 1:
             issues.append("linked focus canvas does not contain the source Chart")
         popup.close()
-        if page.locator(".canvas-manager-items article").count() < 2:
-            issues.append("main Canvas manager did not register the new focus canvas")
+        if page.locator(".canvas-manager-items article").count() < 3:
+            issues.append("main Canvas manager did not register managed and linked canvases")
+        if page.locator(".canvas-manager-open").count() < 2:
+            issues.append("registered canvases do not expose their names as open actions")
     except Exception as exc:
         issues.append(f"Canvas interaction check failed: {exc}")
     return issues
@@ -431,11 +467,22 @@ def capture(args: argparse.Namespace) -> int:
                             f"document overflows horizontally ({metrics['documentWidth']} > "
                             f"{metrics['viewportWidth']})"
                         )
-                    issues.extend(validate_canvas_interactions(page, scenario))
+                    interaction_screenshot = screenshot_path.with_name(
+                        f"{screenshot_path.stem}__link-config.png"
+                    ) if (
+                        scenario["page"] == "canvas-configuration"
+                        and scenario["theme"] == "light"
+                        and scenario["scale"] == 1.0
+                        and scenario["viewport_name"] == "normal"
+                    ) else None
+                    issues.extend(validate_canvas_interactions(
+                        page, scenario, interaction_screenshot,
+                    ))
                     objective_issues += len(issues)
                     result.update({
                         "status": "captured",
                         "screenshot": str(screenshot_path),
+                        "interaction_screenshot": str(interaction_screenshot) if interaction_screenshot else None,
                         "metrics": metrics,
                         "issues": issues,
                     })
