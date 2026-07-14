@@ -1,5 +1,7 @@
 use crate::config::HistoricalGatewayConfig;
-use crate::source::{EventCoverage, EventWindow, HistoricalCursor, HistoricalEventSource};
+use crate::source::{
+    EventCoverage, EventWindow, HistoricalCursor, HistoricalEventSource, LatestEventCoverage,
+};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -71,6 +73,7 @@ pub fn app(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/config", get(config))
         .route("/coverage", get(coverage))
+        .route("/coverage/latest", get(latest_coverage))
         .route(
             "/snapshot/compact-events/{ticker}",
             get(compact_event_snapshot),
@@ -107,6 +110,17 @@ async fn coverage(
     state
         .source
         .coverage(&window)
+        .await
+        .map(Json)
+        .map_err(service_error)
+}
+
+async fn latest_coverage(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<LatestEventCoverage>, ApiError> {
+    state
+        .source
+        .latest_coverage()
         .await
         .map(Json)
         .map_err(service_error)

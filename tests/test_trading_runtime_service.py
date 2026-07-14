@@ -6,12 +6,19 @@ from unittest.mock import patch
 
 from src.backend.trading_runtime_service import (
     historical_bar_chunk,
+    historical_latest_coverage,
     historical_preflight,
     historical_window_preview,
 )
 
 
 class HistoricalTradingServiceTests(unittest.TestCase):
+    @patch("src.backend.trading_runtime_service._historical_gateway_get", return_value={"session_date": "2026-07-10", "event_count": 10})
+    def test_latest_coverage_comes_from_history_gateway(self, gateway_get) -> None:
+        payload = historical_latest_coverage()
+        self.assertEqual(payload["session_date"], "2026-07-10")
+        gateway_get.assert_called_once_with("/coverage/latest", {}, timeout=15)
+
     def test_replay_window_is_always_exactly_one_day(self) -> None:
         payload = historical_window_preview(
             mode="replay",

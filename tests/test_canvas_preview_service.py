@@ -8,9 +8,10 @@ from src.backend.canvas_preview_service import canvas_preview_payload
 
 
 class CanvasPreviewServiceTests(unittest.TestCase):
+    @patch("src.backend.canvas_preview_service.historical_day_coverage", return_value={"event_count": 1000, "ticker_count": 100})
     @patch("src.backend.canvas_preview_service._clickhouse_rows", return_value=[{"title": "context"}])
     @patch("src.backend.canvas_preview_service.historical_bar_chunk")
-    def test_preview_is_anchored_at_selected_clock(self, bars_mock, _clickhouse_mock) -> None:
+    def test_preview_is_anchored_at_selected_clock(self, bars_mock, _clickhouse_mock, _coverage_mock) -> None:
         bars_mock.return_value = {
             "bars": [
                 {"bar_start": "2026-07-10T13:44:00Z", "open": 100.0, "close": 101.0, "volume": 50, "trade_count": 4, "quote_count": 8}
@@ -27,6 +28,7 @@ class CanvasPreviewServiceTests(unittest.TestCase):
         self.assertEqual(payload["as_of"], "2026-07-10T09:45:00-04:00")
         self.assertEqual(payload["chart"]["symbol"], "AAPL")
         self.assertEqual(payload["chart"]["bars"][-1]["bar_start"], "2026-07-10T13:44:00Z")
+        self.assertEqual(payload["coverage"]["event_count"], 1000)
         self.assertEqual(len(payload["scanner"]), 6)
         self.assertTrue(payload["portfolio"]["fixture"])
         self.assertEqual(payload["orders"][0]["acctId"], "DU0000000")

@@ -14,7 +14,7 @@ from research.mlops.clickhouse import (
     default_clickhouse_user,
     sql_string,
 )
-from src.backend.trading_runtime_service import historical_bar_chunk
+from src.backend.trading_runtime_service import historical_bar_chunk, historical_day_coverage
 
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -41,6 +41,7 @@ def canvas_preview_payload(
     cutoff = as_of.astimezone(UTC)
 
     jobs: dict[str, Callable[[], Any]] = {
+        "coverage": lambda: historical_day_coverage(session_date),
         "chart": lambda: historical_bar_chunk(
             anchor_date=session_date,
             ticker=symbol,
@@ -82,6 +83,7 @@ def canvas_preview_payload(
 
     return {
         "as_of": as_of.isoformat(),
+        "coverage": results.get("coverage", {}),
         "chart": {
             "bars": chart_bars,
             "indicators": chart_payload.get("indicators", []) if isinstance(chart_payload, dict) else [],

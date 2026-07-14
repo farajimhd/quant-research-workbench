@@ -27,6 +27,14 @@ pub struct EventCoverage {
     pub ticker_count: u64,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct LatestEventCoverage {
+    pub coverage_table: String,
+    pub event_count: u64,
+    pub session_date: Option<String>,
+    pub ticker_count: u64,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct HistoricalCursor {
     pub ordinal: u64,
@@ -66,6 +74,13 @@ struct EventCoverageRow {
     event_count: u64,
     first_sip_timestamp_us: u64,
     last_sip_timestamp_us: u64,
+    ticker_count: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct LatestEventCoverageRow {
+    event_count: u64,
+    session_date: String,
     ticker_count: u64,
 }
 
@@ -180,7 +195,10 @@ impl HistoricalEventSource {
         validate_window(window)?;
         let last_inclusive = window.end - chrono::Duration::microseconds(1);
         let years = (window.start.year()..=last_inclusive.year()).collect::<Vec<_>>();
-        let coverage_table = format!("{}.events_ordinal_continuity", self.config.clickhouse_database);
+        let coverage_table = format!(
+            "{}.events_ordinal_continuity",
+            self.config.clickhouse_database
+        );
         let sql = format!(
             r#"SELECT
                 sum(event_count) AS event_count,
@@ -213,10 +231,57 @@ impl HistoricalEventSource {
             last_sip_timestamp_us: row.last_sip_timestamp_us,
             source_tables: years
                 .iter()
-                .map(|year| format!("{}.{}{}", self.config.clickhouse_database, self.config.table_prefix, year))
+                .map(|year| {
+                    format!(
+                        "{}.{}{}",
+                        self.config.clickhouse_database, self.config.table_prefix, year
+                    )
+                })
                 .collect(),
             start: window.start,
             ticker_count: row.ticker_count,
+        })
+    }
+
+    pub async fn latest_coverage(&self) -> Result<LatestEventCoverage, String> {
+        let coverage_table = format!(
+            "{}.events_ordinal_continuity",
+            self.config.clickhouse_database
+        );
+        let sql = format!(
+            r#"SELECT
+                toString(source_date) AS session_date,
+                sum(canonical_event_count) AS event_count,
+                uniqExact(ticker) AS ticker_count
+            FROM (
+                SELECT
+                    ticker,
+                    source_date,
+                    argMax(event_count, tuple(build_step, updated_at)) AS canonical_event_count
+                FROM {coverage_table}
+                GROUP BY ticker, source_date
+            )
+            WHERE canonical_event_count > 0
+            GROUP BY source_date
+            ORDER BY source_date DESC
+            LIMIT 1
+            FORMAT JSONEachRow"#,
+        );
+        let text = self.query(&sql).await?;
+        let row = text
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str::<LatestEventCoverageRow>(line).map_err(|error| {
+                    format!("invalid latest historical coverage response: {error}")
+                })
+            })
+            .transpose()?;
+        Ok(LatestEventCoverage {
+            coverage_table,
+            event_count: row.as_ref().map_or(0, |value| value.event_count),
+            session_date: row.as_ref().map(|value| value.session_date.clone()),
+            ticker_count: row.map_or(0, |value| value.ticker_count),
         })
     }
 

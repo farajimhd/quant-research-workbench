@@ -91,6 +91,7 @@ from src.backend.real_live_market_data.config import market_gateway_config
 from src.backend.trading_runtime_service import (
     get_strategy_definition,
     historical_bar_chunk,
+    historical_latest_coverage,
     historical_gateway_snapshot,
     historical_preflight,
     historical_window_preview,
@@ -4268,6 +4269,19 @@ def trading_canvas_preview(payload: CanvasPreviewRequest) -> dict[str, Any]:
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/trading/canvas-context")
+def trading_canvas_context() -> dict[str, Any]:
+    try:
+        coverage = historical_latest_coverage()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "preview_time": "09:45",
+        "session_date": coverage.get("session_date"),
+        "coverage": coverage,
+    }
 
 
 @app.get("/api/trading/strategies/{strategy_id}")

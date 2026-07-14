@@ -303,6 +303,30 @@ def historical_bar_chunk(
     }
 
 
+def historical_latest_coverage() -> dict[str, Any]:
+    payload = _historical_gateway_get("/coverage/latest", {}, timeout=15)
+    if not isinstance(payload, dict):
+        raise RuntimeError("QMD History latest coverage response must be an object")
+    return payload
+
+
+def historical_day_coverage(anchor_date: date) -> dict[str, Any]:
+    window = historical_window_preview(
+        mode=RunMode.REPLAY.value,
+        anchor_date=anchor_date,
+        session_count=1,
+        replay_end_date=anchor_date,
+    )
+    payload = _historical_gateway_get(
+        "/coverage",
+        {"start": window["start"], "end": window["end"]},
+        timeout=15,
+    )
+    if not isinstance(payload, dict):
+        raise RuntimeError("QMD History day coverage response must be an object")
+    return payload
+
+
 def _historical_gateway_get(path: str, params: dict[str, Any], *, timeout: float) -> Any:
     query = urllib.parse.urlencode(params)
     url = f"{historical_gateway_base_url()}{path}?{query}"

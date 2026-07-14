@@ -35,6 +35,7 @@ type PreviewRow = Record<string, unknown>;
 type CanvasPreview = {
   as_of: string;
   chart: { bars: HistoricalBar[]; indicators: HistoricalIndicator[]; symbol: string; timeframe: string };
+  coverage: { event_count?: number; ticker_count?: number };
   errors: Record<string, string>;
   fills: PreviewRow[];
   journal: PreviewRow[];
@@ -46,6 +47,7 @@ type CanvasPreview = {
   strategy: { automatic: boolean; revision: number; signals: PreviewRow[]; state: string; strategy_id: string };
   xbrl: PreviewRow[];
 };
+type CanvasContext = { coverage: { event_count: number; session_date: string | null; ticker_count: number }; preview_time: string; session_date: string | null };
 
 type ContainerSettings = {
   chart: { showVolume: boolean; symbol: string; timeframe: CanvasLinkContext["timeframe"]; visibleIndicators: string[] };
@@ -139,6 +141,8 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
   const [settings, setSettings] = useState<ContainerSettings>(readSettings);
   const [previewContext, setPreviewContext] = useState<CanvasPreviewContext>(readPreviewContext);
   const [preview, setPreview] = useState<CanvasPreview | null>(null);
+  const [contextReady, setContextReady] = useState(false);
+  const [contextError, setContextError] = useState("");
   const [workspaceState, setWorkspaceState] = useState<CanvasWorkspaceState | null>(initialCanvasState);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -195,6 +199,25 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
 
   useEffect(() => {
     let cancelled = false;
+    api<CanvasContext>("/api/trading/canvas-context", { timeoutMs: 20000 })
+      .then((payload) => {
+        if (cancelled) return;
+        if (!payload.session_date) {
+          setContextError("QMD History has no covered market day.");
+          setLoading(false);
+          return;
+        }
+        setPreviewContext({ previewTime: payload.preview_time || "09:45", sessionDate: payload.session_date });
+        setContextError("");
+      })
+      .catch((reason) => { if (!cancelled) { setContextError(`Historical coverage unavailable: ${reason instanceof Error ? reason.message : String(reason)}`); setLoading(false); } })
+      .finally(() => { if (!cancelled) setContextReady(true); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!contextReady || contextError) return;
+    let cancelled = false;
     setLoading(true);
     setError("");
     api<CanvasPreview>("/api/trading/canvas-preview", {
@@ -210,7 +233,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
       .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [activeLinkContext.symbol, activeLinkContext.timeframe, previewContext.previewTime, previewContext.sessionDate]);
+  }, [activeLinkContext.symbol, activeLinkContext.timeframe, contextError, contextReady, previewContext.previewTime, previewContext.sessionDate]);
 
   const metaForContainer = useMemo(() => (definition: WorkspaceContainerDefinition): WorkspaceWindowMeta => {
     const sourceError = preview?.errors[definition.id] ?? preview?.errors[definition.id === "news" ? "news" : definition.id === "sec" ? "sec" : definition.id === "xbrl" ? "xbrl" : ""];
@@ -313,7 +336,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
         {manager ? <div className="canvas-toolbar-actions"><button className="button secondary compact canvas-set-default" disabled={!workspaceState} onClick={saveDefaultLayout} type="button"><Save size={13} /> {defaultSaved ? "Default saved" : "Set default"}</button><button aria-expanded={managementOpen} aria-label="Canvas management" className="button secondary compact canvas-management-toggle" onClick={() => setManagementOpen((open) => !open)} type="button"><PanelRightOpen size={13} /> Manage</button></div> : null}
       </header>
 
-      {error ? <div className="canvas-inline-error">{error}</div> : null}
+      {contextError || error ? <div className="canvas-inline-error">{contextError || error}</div> : null}
 
       <TradingWorkspace
         canPopOut
@@ -476,7 +499,11 @@ function ChartPreview({ linkContext, loading, onLinkContextChange, preview, sett
     onLinkContextChange({ symbol, timeframe });
   }
   const previewDate = preview?.as_of.slice(0, 10);
-  return <ChartPanel displayItemOptions={CHART_INDICATORS} emptyMessage="No bars at this clock." enableFullscreen={false} featureOptions={[]} indicatorOptions={[]} initialFitMode="recent" loading={loading} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), linkContext.timeframe)} onTimeframeChange={(timeframe) => updateChart(linkContext.symbol, timeframe as CanvasLinkContext["timeframe"])} onVisibleColumnsChange={(visibleIndicators) => setSettings((current) => ({ ...current, chart: { ...current.chart, visibleIndicators } }))} payload={payload} periodEnd={previewDate} periodStart={previewDate} ticker={linkContext.symbol} timeframe={linkContext.timeframe} timeframes={HISTORICAL_TIMEFRAMES} visibleColumns={settings.chart.visibleIndicators} />;
+  const covered = Number(preview?.coverage.event_count ?? 0) > 0;
+  const emptyMessage = preview && !covered
+    ? `No QMD History coverage for ${formatPreviewDate(previewDate)}.`
+    : `No ${linkContext.symbol} bars by ${preview?.as_of.slice(11, 16) || "09:45"} ET.`;
+  return <ChartPanel displayItemOptions={CHART_INDICATORS} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={preview?.errors.chart} featureOptions={[]} indicatorOptions={[]} initialFitMode="recent" loading={loading} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), linkContext.timeframe)} onTimeframeChange={(timeframe) => updateChart(linkContext.symbol, timeframe as CanvasLinkContext["timeframe"])} onVisibleColumnsChange={(visibleIndicators) => setSettings((current) => ({ ...current, chart: { ...current.chart, visibleIndicators } }))} payload={payload} periodEnd={previewDate} periodStart={previewDate} ticker={linkContext.symbol} timeframe={linkContext.timeframe} timeframes={HISTORICAL_TIMEFRAMES} visibleColumns={settings.chart.visibleIndicators} />;
 }
 
 function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscillator" | "price"): ChartPayload["overlay_series"] {
@@ -580,6 +607,7 @@ function labelFor(value: string) { return value.replace(/_/g, " ").replace(/([a-
 function statusLabel(value: WorkspaceWindowStatus) { return value.charAt(0).toUpperCase() + value.slice(1); }
 function previewRowKey(row: PreviewRow, columns: string[], index: number) { return `${columns.map((column) => String(row[column] ?? "")).join("|")}|${index}`; }
 function money(value: unknown) { return typeof value === "number" ? new Intl.NumberFormat("en-US", { currency: "USD", style: "currency" }).format(value) : "—"; }
+function formatPreviewDate(value?: string) { if (!value) return "this date"; return new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(new Date(`${value}T12:00:00Z`)); }
 function formatCell(value: unknown, column: string) { if (value === null || value === undefined || value === "") return "—"; if (column.includes("time") || column.includes("at_utc")) { const date = new Date(String(value)); return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" }).format(date); } if (typeof value === "number") return new Intl.NumberFormat("en-US", { maximumFractionDigits: column.includes("pct") ? 2 : 4 }).format(value); if (Array.isArray(value)) return value.join(", "); return String(value); }
 function containerTitle(id: WorkspaceContainerId) { return TRADING_WORKSPACE_CONTAINERS.find((definition) => definition.id === id)?.title ?? id; }
 function validContainerId(value: string | null): WorkspaceContainerId | undefined { return TRADING_WORKSPACE_CONTAINERS.some((definition) => definition.id === value) ? value as WorkspaceContainerId : undefined; }

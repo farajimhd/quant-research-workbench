@@ -66,6 +66,7 @@ and `1h`.
 - `GET /health`
 - `GET /config`
 - `GET /coverage?start=...&end=...`
+- `GET /coverage/latest` (latest market day with canonical event coverage)
 - `GET /snapshot/compact-events/{ticker}?start=...&end=...&limit=...`
 - `GET /snapshot/bars/{ticker}?start=...&end=...&timeframe=1m&limit=...` (bars plus canonical QMD bar indicators)
 - `WS /stream/compact-events?start=...&end=...&tickers=AAPL,MSFT`

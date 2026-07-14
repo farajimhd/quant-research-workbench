@@ -20482,6 +20482,7 @@ button {
   align-items: center;
   background: transparent;
   border: 0;
+  border-left: 1px solid var(--border);
   border-radius: 0;
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);
