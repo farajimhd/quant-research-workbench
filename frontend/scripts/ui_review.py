@@ -208,6 +208,13 @@ def validate_canvas_interactions(
     if chart.count() != 1:
         return ["main canvas does not render exactly one Chart container"]
     try:
+        sidebar_toggle = page.get_by_role("button", name="Toggle sidebar")
+        toggle_box = sidebar_toggle.bounding_box()
+        if not toggle_box or not page.evaluate(
+            "([x, y]) => Boolean(document.elementFromPoint(x, y)?.closest('.collapse-button'))",
+            [toggle_box["x"] + toggle_box["width"] / 2, toggle_box["y"] + toggle_box["height"] / 2],
+        ):
+            issues.append("Sidebar collapse arrow renders below a canvas container")
         clock = page.get_by_label("Preview clock")
         zones = page.get_by_label("Preview time zones")
         if clock.count() != 1 or zones.count() != 1:

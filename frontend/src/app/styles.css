@@ -298,6 +298,7 @@ button {
 .sidebar {
   position: sticky;
   top: 64px;
+  z-index: 200;
   height: calc(var(--app-zoomed-viewport-height) - 64px);
   align-self: start;
   border-right: 1px solid var(--shell-border);
