@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, CalendarDays, CheckCircle2, Clock3, Loader2, MapPin, RadioTower, RefreshCcw, Search, Settings2, WifiOff, X } from "lucide-react";
+import { Activity, AlertTriangle, ArrowUpRight, CheckCircle2, Clock3, Layers3, Loader2, RadioTower, RefreshCcw, Search, Settings2, WifiOff, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 import { api } from "../api/client";
@@ -6,6 +6,7 @@ import { Button } from "../app/components/Button";
 import { DataTable } from "../app/components/DataTable";
 import { Modal } from "../app/components/Modal";
 import { displayName, formatCell, formatCompactNumber, formatDuration } from "../app/format";
+import "./ServicesOverview.css";
 
 export type ServicePageMode = "dashboard" | ServiceId;
 export type ServiceId = "ibkr" | "news" | "qmd" | "qmd-history" | "reference" | "sec" | "text-embed";
@@ -188,13 +189,13 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
         <div>
           <span className="page-kicker">Services</span>
           <h1>{selected ? selected.registry.label : "Service Dashboard"}</h1>
-          <p>{selected ? selected.registry.description : "Live status, current focus, coverage, and processing state across the running gateway services."}</p>
+          <p>{selected ? selected.registry.description : "Live health, current focus, responsibility progress, freshness, and active attention across every gateway."}</p>
         </div>
         <div className="services-header-actions">
           <span className="services-refresh-note">Updated {payload?.checked_at_utc ? formatTime(payload.checked_at_utc) : "-"}</span>
           <Button onClick={() => window.location.reload()} variant="secondary"><RefreshCcw size={15} /> Refresh</Button>
         </div>
-        <ServicesTopSummary now={now} services={services} />
+        <ServicesTopSummary checkedAt={payload?.checked_at_utc ?? ""} now={now} services={services} />
       </section>
       {selected ? (
         <div className="service-detail-shell">
@@ -203,7 +204,7 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
       ) : error && !services.length ? (
         <ServicePageApiFailure message={error} />
       ) : (
-        <ServicesDashboard services={services} onNavigate={onNavigate} />
+        <ServicesDashboard now={now} services={services} onNavigate={onNavigate} />
       )}
       {showBlockingLoader ? (
         <div className="services-page-loading-overlay" aria-label="Loading service data">
@@ -240,26 +241,28 @@ function mergeServiceDetailPayload(next: ServiceStatusPayload, current: ServiceS
   };
 }
 
-function ServicesTopSummary({ now, services }: { now: Date; services: ServiceStatusPayload[] }) {
+function ServicesTopSummary({ checkedAt, now, services }: { checkedAt: string; now: Date; services: ServiceStatusPayload[] }) {
   const counts = countStatuses(services);
   const market = fleetMarketStatus(services);
-  const tiles = [
-    { label: "ET", value: formatZoneTime(now, "America/New_York"), sub: formatZoneDate(now, "America/New_York"), icon: Clock3, className: "market-time" },
-    { label: "Vancouver", value: formatZoneTime(now, "America/Vancouver"), sub: formatZoneDate(now, "America/Vancouver"), icon: MapPin },
-    { label: "UTC", value: formatZoneTime(now, "UTC"), sub: formatZoneDate(now, "UTC"), icon: CalendarDays },
-    { label: "Market", value: market.status, sub: market.detail, icon: Activity, className: marketTileClass(market.status, market.detail) },
-    { label: "Fleet", value: `${counts.online}/${services.length || 0} online`, sub: `${counts.active} active, ${counts.degraded} degraded, ${counts.offline} not started`, icon: RadioTower },
+  const work = fleetWorkSummary(services);
+  const stale = services.filter((service) => serviceFreshness(service, now).tone === "stale").length;
+  const summaries = [
+    { label: "Fleet", value: `${counts.online}/${services.length || 0} online`, detail: `${counts.degraded} need attention`, icon: RadioTower, tone: counts.degraded ? "warn" : "ok" },
+    { label: "Responsibilities", value: `${work.active} active`, detail: `${work.warning} warning · ${work.completed} complete`, icon: Layers3, tone: work.warning ? "warn" : work.active ? "active" : "ok" },
+    { label: "Market", value: displayName(market.status), detail: market.detail, icon: Activity, tone: marketTileClass(market.status, market.detail).replace("market-", "") },
+    { label: "Freshness", value: stale ? `${stale} stale` : "Live", detail: checkedAt ? `Updated ${relativeServiceAge(checkedAt, now)}` : "Waiting for first fleet check", icon: RefreshCcw, tone: stale ? "warn" : checkedAt ? "ok" : "idle" },
+    { label: "Clock", value: `${formatZoneTime(now, EXCHANGE_TIME_ZONE)} ET`, detail: `${formatZoneTime(now, "UTC")} UTC · ${formatZoneDate(now, EXCHANGE_TIME_ZONE)}`, icon: Clock3, tone: "neutral" },
   ];
   return (
-    <div className="services-top-summary" aria-label="Service fleet summary">
-      {tiles.map((tile) => {
-        const Icon = tile.icon;
+    <div className="service-fleet-summary" aria-label="Service fleet summary">
+      {summaries.map((summary) => {
+        const Icon = summary.icon;
         return (
-          <div className={`services-top-tile ${tile.className ?? ""}`} key={tile.label}>
-            <Icon size={16} />
-            <span>{tile.label}</span>
-            <strong>{tile.value}</strong>
-            <small>{tile.sub || "-"}</small>
+          <div className={`service-fleet-summary-item tone-${summary.tone}`} key={summary.label}>
+            <Icon aria-hidden="true" size={15} />
+            <span>{summary.label}</span>
+            <strong>{summary.value}</strong>
+            <small title={summary.detail}>{summary.detail}</small>
           </div>
         );
       })}
@@ -267,39 +270,85 @@ function ServicesTopSummary({ now, services }: { now: Date; services: ServiceSta
   );
 }
 
-function ServicesDashboard({ onNavigate, services }: { onNavigate: (mode: ServicePageMode) => void; services: ServiceStatusPayload[] }) {
+function ServicesDashboard({ now, onNavigate, services }: { now: Date; onNavigate: (mode: ServicePageMode) => void; services: ServiceStatusPayload[] }) {
   return (
-    <>
-      <section className="services-card-grid">
-        {services.map((service) => (
-          <button className={`service-card ${statusInfo(service).className}`} key={service.registry.id} onClick={() => onNavigate(service.registry.id)} type="button">
-            <div className="service-card-topline">
-              <div className="service-card-title-lockup">
-                <ServiceIcon service={service} />
-                <span>{displayName(service.registry.kind)}</span>
-              </div>
-              <ServiceStatusBadge status={service.status} online={service.online} />
-            </div>
-            <h2>{service.registry.label}</h2>
-            <p className="service-card-message">{cardMessage(service)}</p>
-            <div className="service-card-facts">
-              <ServiceFact label="Endpoint" value={service.registry.base_url} />
-              <ServiceFact label="Phase" value={phaseText(service)} />
-              <ServiceFact label="Runtime" value={runtimeText(service)} />
-              <ServiceFact label="Coverage" value={coverageText(service)} />
-            </div>
-          </button>
-        ))}
-      </section>
-    </>
+    <section className="service-fleet-grid" aria-label="Gateway live responsibility status">
+      {services.map((service) => (
+        <ServiceFleetCard key={service.registry.id} now={now} onOpen={() => onNavigate(service.registry.id)} service={service} />
+      ))}
+    </section>
   );
 }
 
-function ServiceFact({ label, value }: { label: string; value: string }) {
+function ServiceFleetCard({ now, onOpen, service }: { now: Date; onOpen: () => void; service: ServiceStatusPayload }) {
+  const info = statusInfo(service);
+  const groups = visibleServiceWorkGroups(serviceWorkGroups(service), service.registry.id);
+  const freshness = serviceFreshness(service, now);
+  const attention = serviceAttentionSummary(service, groups);
   return (
-    <div>
-      <span>{label}</span>
-      <strong title={value}>{value || "-"}</strong>
+    <article className={`service-fleet-card ${info.className}`}>
+      <button aria-label={`Open ${service.registry.label} details`} className="service-fleet-open" onClick={onOpen} type="button">
+        <div className="service-fleet-card-header">
+          <div className="service-fleet-identity">
+            <ServiceIcon service={service} />
+            <div>
+              <span>{displayName(service.registry.kind)}</span>
+              <h2>{service.registry.label}</h2>
+            </div>
+          </div>
+          <div className="service-fleet-state">
+            <ServiceStatusBadge status={service.status} online={service.online} />
+            <span className={`service-fleet-freshness ${freshness.tone}`}>{freshness.label}</span>
+          </div>
+        </div>
+
+        <div className="service-fleet-focus">
+          <div>
+            <span>Current focus</span>
+            <strong>{displayName(phaseText(service))}</strong>
+          </div>
+          <p title={cardMessage(service)}>{cardMessage(service)}</p>
+        </div>
+
+        <div className="service-fleet-responsibilities">
+          <div className="service-fleet-section-label">
+            <span>Responsibilities</span>
+            <small>{groups.length} live areas</small>
+          </div>
+          {groups.map((group) => <ServiceFleetResponsibility group={group} key={group.id} />)}
+        </div>
+
+        <div className="service-fleet-card-footer">
+          <span className={`service-fleet-attention ${attention.tone}`}>{attention.label}</span>
+          <span className="service-fleet-open-label">Inspect service <ArrowUpRight aria-hidden="true" size={14} /></span>
+        </div>
+      </button>
+    </article>
+  );
+}
+
+function ServiceFleetResponsibility({ group }: { group: ServiceWorkGroup }) {
+  const primary = groupPrimaryRow(group);
+  const progress = responsibilityProgress(primary, group);
+  const tone = workStatusClass(group.status);
+  return (
+    <div className={`service-fleet-responsibility ${tone}`}>
+      <span aria-hidden="true" className="service-fleet-responsibility-dot" />
+      <div className="service-fleet-responsibility-copy">
+        <div>
+          <strong>{group.title}</strong>
+          <span className={`service-work-status ${tone}`}>{responsibilityStatusLabel(group)}</span>
+        </div>
+        <small title={primary.detail}>{primary.name}</small>
+      </div>
+      <div className="service-fleet-progress">
+        <span>{progress.label}</span>
+        {progress.percent !== undefined ? (
+          <div aria-label={`${group.title} ${progress.label}`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={progress.percent} role="progressbar">
+            <i style={{ width: `${progress.percent}%` }} />
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -5969,7 +6018,7 @@ function currentMessage(service: ServiceStatusPayload) {
 }
 
 function cardMessage(service: ServiceStatusPayload) {
-  if (!service.online) return offlineReason(service) || "Service endpoint is not responding.";
+  if (!service.online) return friendlyServiceError(offlineReason(service)) || "Service endpoint is not responding.";
   return currentMessage(service) || service.registry.description;
 }
 
@@ -5977,11 +6026,12 @@ function offlineReason(service: ServiceStatusPayload) {
   return String(service.errors?.snapshot || service.errors?.health || service.errors?.metrics || "");
 }
 
-function coverageText(service: ServiceStatusPayload) {
-  const coverage = service.snapshot?.coverage;
-  if (!coverage || typeof coverage !== "object") return "-";
-  const record = coverage as Record<string, unknown>;
-  return String(record.message || record.status || record.active_window_utc || "-");
+function friendlyServiceError(value: string) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (/timed?\s*out/i.test(text)) return "Endpoint timed out. Confirm the gateway process and bind address.";
+  if (/refused|actively refused|connection reset/i.test(text)) return "Endpoint refused the connection. Confirm the gateway process is running.";
+  return humanizeWorkDetail(text);
 }
 
 function runtimeText(service: ServiceStatusPayload) {
@@ -6014,6 +6064,16 @@ function serviceRunTiming(service: ServiceStatusPayload) {
 function serviceWorkRows(service: ServiceStatusPayload): ServiceWorkRow[] {
   const snapshot = service.snapshot ?? {};
   const rows: ServiceWorkRow[] = [];
+  if (isRecord(service.current_operation) && Object.keys(service.current_operation).length) {
+    rows.push(serviceWorkRow(
+      {
+        ...service.current_operation,
+        name: service.current_operation.phase || service.current_operation.status || "current operation",
+      },
+      "current operation",
+      "live",
+    ));
+  }
   if (isRecord(snapshot.coverage)) rows.push(serviceWorkRow({ ...snapshot.coverage, name: "coverage manifest" }, "coverage", "live"));
   rows.push(...arrayRows(snapshot.tasks).map((row) => serviceWorkRow(row, "task", "live")));
   rows.push(...arrayRows(snapshot.task_table_progress).map((row) => serviceWorkRow(row, "table", "live")));
@@ -6510,6 +6570,87 @@ function debugObjectValue(value: unknown) {
 function debugObjectValueWide(value: unknown) {
   if (Array.isArray(value) || isRecord(value)) return true;
   return String(value ?? "").length > 100;
+}
+
+function fleetWorkSummary(services: ServiceStatusPayload[]) {
+  return services.reduce(
+    (summary, service) => {
+      for (const group of visibleServiceWorkGroups(serviceWorkGroups(service), service.registry.id)) {
+        summary.active += group.activeCount;
+        summary.completed += group.completedCount;
+        summary.warning += group.warningCount;
+      }
+      return summary;
+    },
+    { active: 0, completed: 0, warning: 0 },
+  );
+}
+
+function serviceFreshness(service: ServiceStatusPayload, now: Date): { label: string; tone: "error" | "fresh" | "idle" | "stale" } {
+  if (!service.online) return { label: "Endpoint offline", tone: "error" };
+  const snapshotAt = stringMetric(service.header, ["snapshot_utc", "checked_at_utc", "updated_at_utc"]) || service.checked_at_utc;
+  const parsed = parseServiceTimestamp(snapshotAt);
+  if (!Number.isFinite(parsed)) return { label: "Freshness unknown", tone: "idle" };
+  const ageSeconds = Math.max(0, (now.getTime() - parsed) / 1000);
+  if (ageSeconds <= 15) return { label: "Live now", tone: "fresh" };
+  if (ageSeconds <= 60) return { label: `${Math.floor(ageSeconds)}s old`, tone: "idle" };
+  return { label: `Stale · ${relativeServiceAge(snapshotAt, now)}`, tone: "stale" };
+}
+
+function relativeServiceAge(value: string, now: Date) {
+  const parsed = parseServiceTimestamp(value);
+  if (!Number.isFinite(parsed)) return "unknown";
+  const seconds = Math.max(0, Math.floor((now.getTime() - parsed) / 1000));
+  if (seconds < 5) return "now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ago`;
+}
+
+function serviceAttentionSummary(service: ServiceStatusPayload, groups: ServiceWorkGroup[]): { label: string; tone: "error" | "ok" | "warn" } {
+  if (!service.online) return { label: friendlyServiceError(offlineReason(service)) || "Endpoint is not reachable", tone: "error" };
+  const errorState = isRecord(service.snapshot?.error_state) ? service.snapshot.error_state : {};
+  const activeErrors = ["active_critical_count", "active_error_count", "active_warning_count", "retrying_count"]
+    .reduce((total, key) => total + numericMetric(errorState, [key]), 0);
+  const dependencies = arrayRows(service.snapshot?.dependencies);
+  const unhealthyDependencies = dependencies.filter((row) => !["ok", "healthy", "ready", "running", "completed", "pass", "success"].includes(normalizedStatus(String(row.status || row.state || ""))));
+  const responsibilityWarnings = groups.reduce((count, group) => count + group.warningCount, 0);
+  if (activeErrors) return { label: `${activeErrors} active runtime ${activeErrors === 1 ? "issue" : "issues"}`, tone: "error" };
+  if (unhealthyDependencies.length) return { label: `${unhealthyDependencies.length} unhealthy ${unhealthyDependencies.length === 1 ? "dependency" : "dependencies"}`, tone: "warn" };
+  if (responsibilityWarnings) return { label: `${responsibilityWarnings} responsibility ${responsibilityWarnings === 1 ? "warning" : "warnings"}`, tone: "warn" };
+  const info = statusInfo(service);
+  if (info.tone === "warn" || info.tone === "error") return { label: info.description, tone: info.tone === "error" ? "error" : "warn" };
+  return { label: "No active alerts", tone: "ok" };
+}
+
+function responsibilityProgress(primary: ServiceWorkRow, group: ServiceWorkGroup): { label: string; percent?: number } {
+  const explicit = String(primary.progress || "").trim();
+  const normalized = explicit.replaceAll(",", "");
+  const percentMatch = normalized.match(/^(\d+(?:\.\d+)?)\s*%$/);
+  if (percentMatch) {
+    const percent = Math.max(0, Math.min(100, Number(percentMatch[1])));
+    return { label: explicit, percent };
+  }
+  const fractionMatch = normalized.match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/);
+  if (fractionMatch && Number(fractionMatch[2]) > 0) {
+    const percent = Math.max(0, Math.min(100, Math.round((Number(fractionMatch[1]) / Number(fractionMatch[2])) * 100)));
+    return { label: explicit, percent };
+  }
+  if (explicit && explicit !== "-") return { label: explicit };
+  if (!group.rows.length) return { label: "No live report" };
+  if (group.warningCount) return { label: `${group.warningCount} warning` };
+  if (group.activeCount) return { label: `${group.activeCount} active` };
+  return { label: `${group.completedCount}/${group.rows.length} tasks done` };
+}
+
+function responsibilityStatusLabel(group: ServiceWorkGroup) {
+  if (!group.rows.length) return "not reported";
+  if (group.warningCount) return group.warningCount === 1 ? "1 issue" : `${group.warningCount} issues`;
+  if (group.activeCount) return group.activeCount === 1 ? "1 active" : `${group.activeCount} active`;
+  if (group.completedCount === group.rows.length) return "complete";
+  return displayName(group.status || "waiting");
 }
 
 function parseServiceTimestamp(value: string) {
