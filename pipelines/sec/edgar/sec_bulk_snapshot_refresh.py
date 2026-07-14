@@ -13,6 +13,8 @@ from research.mlops.clickhouse import parse_size_bytes, quote_ident, sql_string,
 TICKER_SOURCES = {"company_tickers", "company_tickers_exchange", "company_tickers_mf"}
 SNAPSHOT_MANIFEST_TABLE = "sec_bulk_mirror_snapshot_manifest_v3"
 LEGACY_MEMBER_MANIFEST_TABLE = "sec_bulk_mirror_member_manifest_v3"
+CLICKHOUSE_JSON_MIN_INTEGER = -(2**63)
+CLICKHOUSE_JSON_MAX_INTEGER = 2**64 - 1
 
 
 def refresh_selected_snapshots(
@@ -64,6 +66,8 @@ def refresh_archive_snapshot(
     record_manifest(client, args.database, artifact, run_id, "loading", expected_members=expected_members)
     create_raw_stage(client, args.database, raw_table, args.storage_policy)
     stage_tables: list[str] = []
+    compatibility_repaired_members = 0
+    compatibility_repaired_values = 0
     succeeded = False
     try:
         archive_path = archive_clickhouse_path(args, artifact)
@@ -73,19 +77,41 @@ def refresh_archive_snapshot(
             source_name,
             "load raw JSON members",
             f"""
-            INSERT INTO {table(args.database, raw_table)} (member_name, raw_json)
-            SELECT _file, json
+            INSERT INTO {table(args.database, raw_table)} (member_name, parse_json, compatibility_repaired)
+            SELECT _file, json, toUInt8(0)
             FROM file({sql_string(archive_path)}, 'JSONAsString')
             {limit_sql}
             SETTINGS {query_settings(args)}
             """,
         )
         raw_rows = scalar_int(client, f"SELECT count() FROM {table(args.database, raw_table)}")
-        invalid_json = scalar_int(client, f"SELECT countIf(NOT isValidJSON(raw_json)) FROM {table(args.database, raw_table)}")
+        source_invalid_json = scalar_int(
+            client, f"SELECT countIf(NOT isValidJSON(parse_json)) FROM {table(args.database, raw_table)} FINAL"
+        )
+        if source_invalid_json:
+            if source_name != "companyfacts":
+                raise RuntimeError(f"{source_name} source contains {source_invalid_json:,} invalid JSON members")
+            compatibility_repaired_members, compatibility_repaired_values = repair_companyfacts_parse_stage(
+                client, args.database, raw_table, source_invalid_json
+            )
+        compatibility_repaired_members = scalar_int(
+            client, f"SELECT countIf(compatibility_repaired = 1) FROM {table(args.database, raw_table)} FINAL"
+        )
+        invalid_json = scalar_int(
+            client, f"SELECT countIf(NOT isValidJSON(parse_json)) FROM {table(args.database, raw_table)} FINAL"
+        )
         if raw_rows != expected_members or invalid_json:
             raise RuntimeError(
-                f"{source_name} raw staging validation failed: rows={raw_rows:,} expected={expected_members:,} invalid_json={invalid_json:,}"
+                f"{source_name} parse staging validation failed: rows={raw_rows:,} expected={expected_members:,} "
+                f"source_invalid_json={source_invalid_json:,} compatibility_repaired_members={compatibility_repaired_members:,} "
+                f"compatibility_repaired_values={compatibility_repaired_values:,} invalid_json={invalid_json:,}"
             )
+        print(
+            f"snapshot source={source_name} stage=validate parse JSON status=completed rows={raw_rows:,} "
+            f"source_invalid_json={source_invalid_json:,} compatibility_repaired_members={compatibility_repaired_members:,} "
+            f"compatibility_repaired_values={compatibility_repaired_values:,} invalid_json=0",
+            flush=True,
+        )
         counts = builder(client, args, artifact, run_id, raw_table)
         stage_tables = list(counts)
         if limit:
@@ -97,6 +123,8 @@ def refresh_archive_snapshot(
                 run_id,
                 "validated_debug",
                 expected_members=expected_members,
+                compatibility_repaired_members=compatibility_repaired_members,
+                compatibility_repaired_values=compatibility_repaired_values,
                 staged_rows=sum(counts.values()),
             )
         else:
@@ -113,6 +141,8 @@ def refresh_archive_snapshot(
                     run_id,
                     "active",
                     expected_members=expected_members,
+                    compatibility_repaired_members=compatibility_repaired_members,
+                    compatibility_repaired_values=compatibility_repaired_values,
                     staged_rows=sum(counts.values()),
                     active_rows=sum(counts.values()),
                 ),
@@ -123,6 +153,8 @@ def refresh_archive_snapshot(
             "source_file_id": artifact.source_file_id,
             "inserted_rows": sum(counts.values()),
             "member_rows": raw_rows,
+            "compatibility_repaired_members": compatibility_repaired_members,
+            "compatibility_repaired_values": compatibility_repaired_values,
             "cutover": not bool(limit),
             "wall_seconds": round(time.perf_counter() - started, 3),
             "status": "ok",
@@ -133,7 +165,17 @@ def refresh_archive_snapshot(
         return sum(counts.values())
     except Exception as exc:
         try:
-            record_manifest(client, args.database, artifact, run_id, "failed", expected_members=expected_members, error=summarize_error(exc))
+            record_manifest(
+                client,
+                args.database,
+                artifact,
+                run_id,
+                "failed",
+                expected_members=expected_members,
+                compatibility_repaired_members=compatibility_repaired_members,
+                compatibility_repaired_values=compatibility_repaired_values,
+                error=summarize_error(exc),
+            )
         except Exception as manifest_exc:  # noqa: BLE001
             print(f"snapshot_failure_manifest_error source={source_name} error={summarize_error(manifest_exc)}", flush=True)
         append_report(report_path, {"run_id": run_id, "source": source_name, "status": "failed", "error": repr(exc)})
@@ -156,7 +198,7 @@ def build_submissions_tables(client: Any, args: Any, artifact: Any, run_id: str,
         "sec_bulk_mirror_filing_v3",
     ]
     create_replacement_tables(client, args.database, bases, run_id, args.storage_policy)
-    raw = table(args.database, raw_table)
+    raw = parse_stage_source(args.database, raw_table)
     company_stage, file_stage, filing_stage = (table(args.database, stage_name(base, run_id)) for base in bases)
     now = now_sql()
     cik = cik_sql("raw_json", "member_name")
@@ -301,7 +343,7 @@ def build_companyfacts_tables(client: Any, args: Any, artifact: Any, run_id: str
     base = "sec_bulk_mirror_xbrl_fact_v3"
     create_replacement_tables(client, args.database, [base], run_id, args.storage_policy)
     stage = table(args.database, stage_name(base, run_id))
-    raw = table(args.database, raw_table)
+    raw = parse_stage_source(args.database, raw_table)
     now = now_sql()
     cik = cik_sql("raw_json", "member_name")
     fact_type = (
@@ -578,9 +620,10 @@ def create_raw_stage(client: Any, database: str, raw_table: str, storage_policy:
         CREATE TABLE {table(database, raw_table)}
         (
             member_name String,
-            raw_json String
+            parse_json String,
+            compatibility_repaired UInt8
         )
-        ENGINE = MergeTree
+        ENGINE = ReplacingMergeTree(compatibility_repaired)
         ORDER BY member_name
         SETTINGS {settings}
         """
@@ -595,6 +638,8 @@ def record_manifest(
     status: str,
     *,
     expected_members: int = 0,
+    compatibility_repaired_members: int = 0,
+    compatibility_repaired_values: int = 0,
     staged_rows: int = 0,
     active_rows: int = 0,
     error: str = "",
@@ -608,6 +653,8 @@ def record_manifest(
         "sha256": artifact.sha256,
         "byte_size": artifact.byte_size,
         "expected_members": expected_members,
+        "compatibility_repaired_members": compatibility_repaired_members,
+        "compatibility_repaired_values": compatibility_repaired_values,
         "staged_rows": staged_rows,
         "active_rows": active_rows,
         "status": status,
@@ -625,6 +672,74 @@ def execute_stage(client: Any, source: str, stage: str, sql: str) -> None:
     print(f"snapshot source={source} stage={stage} status=active", flush=True)
     client.execute(sql)
     print(f"snapshot source={source} stage={stage} status=completed wall_seconds={time.perf_counter() - started:.1f}", flush=True)
+
+
+def repair_companyfacts_parse_stage(client: Any, database: str, raw_table: str, expected_invalid: int) -> tuple[int, int]:
+    stage = table(database, raw_table)
+    response = client.execute(
+        f"SELECT member_name, parse_json FROM {stage} FINAL WHERE NOT isValidJSON(parse_json) FORMAT JSONEachRow"
+    )
+    rows: list[dict[str, Any]] = []
+    repaired_values = 0
+    for line in response.splitlines():
+        if not line.strip():
+            continue
+        source_row = json.loads(line)
+        normalized_json, value_count = normalize_companyfacts_json(source_row["parse_json"])
+        if value_count == 0:
+            raise RuntimeError(
+                f"companyfacts member {source_row['member_name']} is invalid JSON for an unsupported reason; "
+                "no oversized integer fact values were found"
+            )
+        rows.append(
+            {
+                "member_name": source_row["member_name"],
+                "parse_json": normalized_json,
+                "compatibility_repaired": 1,
+            }
+        )
+        repaired_values += value_count
+    if len(rows) != expected_invalid:
+        raise RuntimeError(
+            f"companyfacts invalid-member fetch mismatch: expected={expected_invalid:,} fetched={len(rows):,}"
+        )
+    payload = "\n".join(json.dumps(row, ensure_ascii=False, separators=(",", ":")) for row in rows)
+    client.execute(
+        f"INSERT INTO {stage} (member_name, parse_json, compatibility_repaired) FORMAT JSONEachRow\n{payload}"
+    )
+    return len(rows), repaired_values
+
+
+def normalize_companyfacts_json(raw_json: str) -> tuple[str, int]:
+    document = json.loads(raw_json)
+    repaired_values = 0
+
+    def visit(value: Any) -> Any:
+        nonlocal repaired_values
+        if isinstance(value, dict):
+            normalized: dict[str, Any] = {}
+            for key, child in value.items():
+                if (
+                    key == "val"
+                    and isinstance(child, int)
+                    and not isinstance(child, bool)
+                    and (child < CLICKHOUSE_JSON_MIN_INTEGER or child > CLICKHOUSE_JSON_MAX_INTEGER)
+                ):
+                    normalized[key] = float(child)
+                    repaired_values += 1
+                else:
+                    normalized[key] = visit(child)
+            return normalized
+        if isinstance(value, list):
+            return [visit(child) for child in value]
+        return value
+
+    normalized_document = visit(document)
+    return json.dumps(normalized_document, ensure_ascii=False, separators=(",", ":"), allow_nan=False), repaired_values
+
+
+def parse_stage_source(database: str, raw_table: str) -> str:
+    return f"(SELECT member_name, parse_json AS raw_json FROM {table(database, raw_table)} FINAL)"
 
 
 def count_json_members(path: Path) -> int:

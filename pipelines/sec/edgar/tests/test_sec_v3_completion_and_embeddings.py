@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 import sys
 import zipfile
@@ -134,6 +135,27 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
         self.assertIn("sec_bulk_mirror_snapshot_manifest_v3", ddl)
         self.assertNotIn("sec_bulk_mirror_member_manifest_v3", ddl)
         self.assertIn("ifNull(accession_number, ''), fact_id", ddl)
+        self.assertIn("compatibility_repaired_members UInt64", ddl)
+        self.assertIn("compatibility_repaired_values UInt64", ddl)
+
+    def test_companyfacts_json_normalizer_repairs_only_oversized_fact_values(self) -> None:
+        oversized = 999_999_999_999_000_000_000
+        source = json.dumps(
+            {
+                "cik": oversized,
+                "facts": {"us-gaap": {"Shares": {"units": {"shares": [{"val": oversized}, {"val": 10}]}}}},
+                "description": f'embedded \\"val\\": {oversized}',
+            }
+        )
+
+        normalized, repaired_values = snapshot_refresh.normalize_companyfacts_json(source)
+        parsed = json.loads(normalized)
+
+        self.assertEqual(repaired_values, 1)
+        self.assertEqual(parsed["cik"], oversized)
+        self.assertEqual(parsed["facts"]["us-gaap"]["Shares"]["units"]["shares"][0]["val"], float(oversized))
+        self.assertEqual(parsed["facts"]["us-gaap"]["Shares"]["units"]["shares"][1]["val"], 10)
+        self.assertEqual(parsed["description"], f'embedded \\"val\\": {oversized}')
 
     def test_bulk_snapshot_header_has_no_legacy_member_manifest_dependency(self) -> None:
         args = SimpleNamespace(

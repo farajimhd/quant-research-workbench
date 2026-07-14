@@ -255,6 +255,14 @@ def create_database_and_tables(client: ClickHouseHttpClient, database: str, stor
         snapshot_manifest_table_sql(database, storage_policy),
     ]:
         client.execute(sql)
+    client.execute(
+        f"ALTER TABLE {quote_ident(database)}.{quote_ident(SNAPSHOT_MANIFEST_TABLE)} "
+        "ADD COLUMN IF NOT EXISTS compatibility_repaired_members UInt64 AFTER expected_members"
+    )
+    client.execute(
+        f"ALTER TABLE {quote_ident(database)}.{quote_ident(SNAPSHOT_MANIFEST_TABLE)} "
+        "ADD COLUMN IF NOT EXISTS compatibility_repaired_values UInt64 AFTER compatibility_repaired_members"
+    )
 
 
 def insert_raw_source_rows(client: ClickHouseHttpClient, database: str, artifacts: list[SourceArtifact], retry: InsertRetryConfig) -> None:
@@ -1137,6 +1145,8 @@ CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(SNAPSHOT_MANIFES
     sha256 String,
     byte_size UInt64,
     expected_members UInt64,
+    compatibility_repaired_members UInt64,
+    compatibility_repaired_values UInt64,
     staged_rows UInt64,
     active_rows UInt64,
     status LowCardinality(String),
