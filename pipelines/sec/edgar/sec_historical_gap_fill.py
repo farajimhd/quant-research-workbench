@@ -313,7 +313,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--parts-root-ch", default=env_string("SEC_TEXT_PARTS_ROOT_CH", DEFAULT_PARTS_ROOT_CH))
     parser.add_argument("--bulk-sources", default="submissions,companyfacts")
     parser.add_argument("--bulk-download-concurrency", type=int, default=2)
-    parser.add_argument("--bulk-ingest-batch-size", type=int, default=100000)
+    parser.add_argument("--bulk-file-root-ch", default=env_string("SEC_CORE_ARTIFACT_ROOT_CH", "/mnt/d/market-data"))
+    parser.add_argument("--bulk-ingest-max-threads", type=int, default=int(os.environ.get("SEC_BULK_CLICKHOUSE_MAX_THREADS", "32")))
+    parser.add_argument("--bulk-ingest-max-memory", default=os.environ.get("SEC_BULK_CLICKHOUSE_MAX_MEMORY", "96G"))
+    parser.add_argument("--bulk-minimum-row-ratio", type=float, default=float(os.environ.get("SEC_BULK_MINIMUM_ROW_RATIO", "0.95")))
     parser.add_argument("--bulk-insert-max-retries", type=int, default=int(os.environ.get("SEC_BULK_INSERT_MAX_RETRIES", "12")))
     parser.add_argument("--bulk-insert-retry-base-seconds", type=float, default=float(os.environ.get("SEC_BULK_INSERT_RETRY_BASE_SECONDS", "5.0")))
     parser.add_argument("--bulk-insert-retry-max-seconds", type=float, default=float(os.environ.get("SEC_BULK_INSERT_RETRY_MAX_SECONDS", "120.0")))
@@ -519,8 +522,14 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                     args.artifact_root_win,
                     "--output-root-win",
                     args.core_output_root_win,
-                    "--batch-size",
-                    str(max(1, args.bulk_ingest_batch_size)),
+                    "--clickhouse-file-root",
+                    args.bulk_file_root_ch,
+                    "--max-threads",
+                    str(max(1, args.bulk_ingest_max_threads)),
+                    "--max-memory-usage",
+                    args.bulk_ingest_max_memory,
+                    "--minimum-row-ratio",
+                    str(args.bulk_minimum_row_ratio),
                     "--insert-max-retries",
                     str(max(0, args.bulk_insert_max_retries)),
                     "--insert-retry-base-seconds",
@@ -859,7 +868,7 @@ def add_execute_flag(command: list[str], args: argparse.Namespace, *, dry_run_fl
             out.append("--allow-g-drive")
     if "sec_bulk_clickhouse_ingest.py" in command_text:
         if args.bulk_limit_ciks:
-            out.extend(["--limit-ciks", str(args.bulk_limit_ciks)])
+            out.extend(["--limit-members", str(args.bulk_limit_ciks)])
         if args.allow_g_drive:
             out.append("--allow-g-drive")
     if "sec_daily_feed_archive_download.py" in command_text:

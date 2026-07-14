@@ -141,7 +141,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--bulk-sources", default="company_tickers,company_tickers_exchange,company_tickers_mf,submissions,companyfacts")
     parser.add_argument("--bulk-download-concurrency", type=int, default=2)
-    parser.add_argument("--bulk-ingest-batch-size", type=int, default=50000)
+    parser.add_argument("--bulk-file-root-ch", default=os.environ.get("SEC_CORE_ARTIFACT_ROOT_CH", "/mnt/d/market-data"))
+    parser.add_argument("--bulk-ingest-max-threads", type=int, default=int(os.environ.get("SEC_BULK_CLICKHOUSE_MAX_THREADS", "32")))
+    parser.add_argument("--bulk-ingest-max-memory", default=os.environ.get("SEC_BULK_CLICKHOUSE_MAX_MEMORY", "96G"))
+    parser.add_argument("--bulk-minimum-row-ratio", type=float, default=float(os.environ.get("SEC_BULK_MINIMUM_ROW_RATIO", "0.95")))
     parser.add_argument("--bulk-limit-ciks", type=int, default=0)
     parser.add_argument("--archive-download-concurrency", type=int, default=2)
     parser.add_argument("--sec-request-min-interval-seconds", type=float, default=0.11)
@@ -339,10 +342,16 @@ def build_stage_command(args: argparse.Namespace, stage: str, context: RunContex
             args.core_output_root_win,
             "--sources",
             args.bulk_sources,
-            "--batch-size",
-            str(args.bulk_ingest_batch_size),
+            "--clickhouse-file-root",
+            args.bulk_file_root_ch,
+            "--max-threads",
+            str(max(1, args.bulk_ingest_max_threads)),
+            "--max-memory-usage",
+            args.bulk_ingest_max_memory,
+            "--minimum-row-ratio",
+            str(args.bulk_minimum_row_ratio),
         ]
-        add_positive(command, "--limit-ciks", args.bulk_limit_ciks)
+        add_positive(command, "--limit-members", args.bulk_limit_ciks)
         if not args.execute:
             command.append("--dry-run")
         return StageCommand(stage, command, str(REPO_ROOT), True, False, log_path)

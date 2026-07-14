@@ -21,6 +21,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from research.mlops.clickhouse import (  # noqa: E402
+    DEFAULT_CLICKHOUSE_FILE_ROOT,
     ClickHouseHttpClient,
     default_clickhouse_password,
     default_clickhouse_url,
@@ -36,6 +37,7 @@ from pipelines.sec.edgar.sec_initial_fill_download import (  # noqa: E402
     sha256_file,
 )
 from pipelines.sec.edgar.sec_pipeline.submissions import parse_acceptance_datetime  # noqa: E402
+from pipelines.sec.edgar.sec_bulk_snapshot_refresh import refresh_selected_snapshots  # noqa: E402
 
 
 DEFAULT_DATABASE = "sec_core"
@@ -46,6 +48,7 @@ DEFAULT_INSERT_MAX_RETRIES = 12
 DEFAULT_INSERT_RETRY_BASE_SECONDS = 5.0
 DEFAULT_INSERT_RETRY_MAX_SECONDS = 120.0
 MEMBER_MANIFEST_TABLE = "sec_bulk_mirror_member_manifest_v3"
+SNAPSHOT_MANIFEST_TABLE = "sec_bulk_mirror_snapshot_manifest_v3"
 SUBMISSIONS_FRAGMENT_PARSER_VERSION = "2"
 SOURCE_URLS = {
     "submissions": f"{SEC_BULK_BASE_URL}/bulkdata/submissions.zip",
@@ -86,6 +89,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--artifact-root-win", default=os.environ.get("SEC_CORE_ARTIFACT_ROOT_WIN", str(DEFAULT_ARTIFACT_ROOT_WIN)))
     parser.add_argument("--output-root-win", default=os.environ.get("SEC_CORE_OUTPUT_ROOT_WIN", str(DEFAULT_OUTPUT_ROOT_WIN)))
     parser.add_argument(
+        "--clickhouse-file-root",
+        default=os.environ.get("SEC_CORE_ARTIFACT_ROOT_CH", DEFAULT_CLICKHOUSE_FILE_ROOT),
+        help="ClickHouse-visible equivalent of the Windows artifact root's market-data parent.",
+    )
+    parser.add_argument(
         "--sources",
         default="company_tickers,company_tickers_exchange,company_tickers_mf,submissions,companyfacts",
         help="Comma-separated subset of company_tickers,company_tickers_exchange,company_tickers_mf,submissions,companyfacts.",
@@ -102,13 +110,18 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=float(os.environ.get("SEC_BULK_INSERT_RETRY_MAX_SECONDS", str(DEFAULT_INSERT_RETRY_MAX_SECONDS))),
     )
-    parser.add_argument("--limit-ciks", type=int, default=0, help="Debug cap for submissions/companyfacts CIK JSON files.")
     parser.add_argument(
-        "--disable-member-manifest",
-        action="store_true",
-        default=os.environ.get("SEC_BULK_MEMBER_MANIFEST_ENABLED", "true").strip().lower() in {"0", "false", "no", "off"},
-        help="Fallback to the legacy full ZIP parse/insert path instead of skipping completed ZIP members.",
+        "--limit-members",
+        "--limit-ciks",
+        dest="limit_ciks",
+        type=int,
+        default=0,
+        help="Diagnostic cap on ZIP JSON members. Bounded runs never replace active mirrors.",
     )
+    parser.add_argument("--max-threads", type=int, default=int(os.environ.get("SEC_BULK_CLICKHOUSE_MAX_THREADS", "32")))
+    parser.add_argument("--max-memory-usage", default=os.environ.get("SEC_BULK_CLICKHOUSE_MAX_MEMORY", "96G"))
+    parser.add_argument("--minimum-row-ratio", type=float, default=float(os.environ.get("SEC_BULK_MINIMUM_ROW_RATIO", "0.95")))
+    parser.add_argument("--keep-failed-staging", action="store_true", help="Retain failed staging tables for diagnosis instead of deleting them.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--allow-g-drive", action="store_true")
     return parser.parse_args()
@@ -139,32 +152,7 @@ def main() -> None:
     )
     create_database_and_tables(client, args.database, args.storage_policy)
     insert_raw_source_rows(client, args.database, artifacts, retry)
-    if not args.disable_member_manifest:
-        bootstrap_member_manifests(client, args.database, artifacts, retry)
-
-    totals: dict[str, int] = {}
-    for artifact in artifacts:
-        started = time.perf_counter()
-        if artifact.source_name in {"company_tickers", "company_tickers_exchange", "company_tickers_mf"}:
-            rows = parse_ticker_mapping(artifact)
-            inserted = insert_rows(client, args.database, "sec_bulk_mirror_company_ticker_v3", rows, retry)
-        elif artifact.source_name == "submissions":
-            inserted = ingest_submissions_zip(client, args.database, artifact, args.batch_size, args.limit_ciks, retry, not args.disable_member_manifest)
-        elif artifact.source_name == "companyfacts":
-            inserted = ingest_companyfacts_zip(client, args.database, artifact, args.batch_size, args.limit_ciks, retry, not args.disable_member_manifest)
-        else:
-            inserted = 0
-        totals[artifact.source_name] = inserted
-        row = {
-            "run_id": run_id,
-            "source": artifact.source_name,
-            "source_file_id": artifact.source_file_id,
-            "inserted_rows": inserted,
-            "wall_seconds": round(time.perf_counter() - started, 3),
-            "status": "ok",
-        }
-        write_report(report_path, row)
-        print(json.dumps(row, sort_keys=True), flush=True)
+    totals = refresh_selected_snapshots(client, args, artifacts, run_id, report_path, retry)
 
     summary = {"run_id": run_id, "status": "ok", "totals": totals, "report_path": str(report_path)}
     write_report(report_path, summary)
@@ -196,6 +184,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--insert-retry-base-seconds must be >= 0")
     if args.insert_retry_max_seconds < 0:
         raise SystemExit("--insert-retry-max-seconds must be >= 0")
+    if args.max_threads < 1:
+        raise SystemExit("--max-threads must be >= 1")
+    if not 0 < args.minimum_row_ratio <= 1:
+        raise SystemExit("--minimum-row-ratio must be in (0, 1]")
     if not args.allow_g_drive:
         for label, raw_path in [("artifact root", args.artifact_root_win), ("output root", args.output_root_win)]:
             if is_g_drive_path(Path(raw_path)):
@@ -260,7 +252,7 @@ def create_database_and_tables(client: ClickHouseHttpClient, database: str, stor
         submission_file_ref_table_sql(database, storage_policy),
         filing_table_sql(database, storage_policy),
         xbrl_fact_table_sql(database, storage_policy),
-        member_manifest_table_sql(database, storage_policy),
+        snapshot_manifest_table_sql(database, storage_policy),
     ]:
         client.execute(sql)
 
@@ -1104,7 +1096,7 @@ CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_bulk_mirror_xbrl_fact_v3
 )
 ENGINE = ReplacingMergeTree(last_seen_at_utc)
 PARTITION BY toYYYYMM(ifNull(end_date, toDate('1970-01-01')))
-ORDER BY (cik, taxonomy, tag, unit, ifNull(end_date, toDate('1970-01-01')), ifNull(accession_number, ''))
+ORDER BY (cik, taxonomy, tag, unit, ifNull(end_date, toDate('1970-01-01')), ifNull(accession_number, ''), fact_id)
 SETTINGS {merge_tree_settings(storage_policy)}
 """
 
@@ -1130,6 +1122,30 @@ CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(MEMBER_MANIFEST_
 )
 ENGINE = ReplacingMergeTree(processed_at_utc)
 ORDER BY (source_name, source_file_id, member_name, member_signature)
+SETTINGS {merge_tree_settings(storage_policy)}
+"""
+
+
+def snapshot_manifest_table_sql(database: str, storage_policy: str) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(SNAPSHOT_MANIFEST_TABLE)}
+(
+    source_name LowCardinality(String),
+    source_kind LowCardinality(String),
+    source_file_id String,
+    run_id String,
+    sha256 String,
+    byte_size UInt64,
+    expected_members UInt64,
+    staged_rows UInt64,
+    active_rows UInt64,
+    status LowCardinality(String),
+    processed_at_utc DateTime64(9, 'UTC'),
+    error String
+)
+ENGINE = ReplacingMergeTree(processed_at_utc)
+PARTITION BY toYYYYMM(processed_at_utc)
+ORDER BY (source_name, source_file_id, run_id)
 SETTINGS {merge_tree_settings(storage_policy)}
 """
 

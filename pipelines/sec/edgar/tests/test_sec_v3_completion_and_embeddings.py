@@ -11,6 +11,7 @@ from unittest import mock
 from pipelines.market_sip.events import clickhouse_build_text_tokens as tokens
 from pipelines.sec.edgar import sec_acceptance_raw_metadata_repair as acceptance_repair
 from pipelines.sec.edgar import sec_bulk_clickhouse_ingest as bulk_ingest
+from pipelines.sec.edgar import sec_bulk_snapshot_refresh as snapshot_refresh
 from pipelines.sec.edgar import sec_historical_gap_fill as historical
 from pipelines.sec.edgar.sec_pipeline import submissions
 
@@ -120,6 +121,56 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
 
         self.assertEqual(parent_v1, parent_v2)
         self.assertNotEqual(fragment_v1, fragment_v2)
+
+    def test_bulk_snapshot_uses_snapshot_manifest_and_preserves_xbrl_fact_identity(self) -> None:
+        statements: list[str] = []
+        client = SimpleNamespace(execute=statements.append)
+
+        bulk_ingest.create_database_and_tables(client, "sec_core", "")
+
+        ddl = "\n".join(statements)
+        self.assertIn("sec_bulk_mirror_snapshot_manifest_v3", ddl)
+        self.assertNotIn("sec_bulk_mirror_member_manifest_v3", ddl)
+        self.assertIn("ifNull(accession_number, ''), fact_id", ddl)
+
+    def test_partial_ticker_snapshot_is_rejected_before_replacement(self) -> None:
+        artifact = bulk_ingest.SourceArtifact("company_tickers", "company_tickers", "url", Path("x.json"), "id", 1, "sha")
+        args = SimpleNamespace()
+
+        with self.assertRaisesRegex(RuntimeError, "requires all ticker snapshots"):
+            snapshot_refresh.refresh_selected_snapshots(SimpleNamespace(), args, [artifact], "run", Path("report"), None)
+
+    def test_snapshot_cutover_rolls_back_when_activation_manifest_fails(self) -> None:
+        class FakeClient:
+            def __init__(self) -> None:
+                self.exchanges: list[str] = []
+
+            def execute(self, sql: str) -> str:
+                if sql.startswith("SELECT count()"):
+                    return "100\n"
+                if sql.startswith("EXCHANGE TABLES"):
+                    self.exchanges.append(sql)
+                    return ""
+                if sql.startswith("DROP TABLE"):
+                    return ""
+                raise AssertionError(sql)
+
+        client = FakeClient()
+        args = SimpleNamespace(database="sec_core", minimum_row_ratio=0.95)
+
+        with self.assertRaisesRegex(RuntimeError, "manifest failed"):
+            snapshot_refresh.validate_and_cut_over(
+                client,
+                args,
+                ["mirror_a", "mirror_b"],
+                {"mirror_a": 100, "mirror_b": 100},
+                run_id="test",
+                on_active=lambda: (_ for _ in ()).throw(RuntimeError("manifest failed")),
+            )
+
+        self.assertEqual(len(client.exchanges), 4)
+        self.assertEqual(client.exchanges[0], client.exchanges[-1])
+        self.assertEqual(client.exchanges[1], client.exchanges[-2])
 
     def test_sec_acceptance_parser_distinguishes_api_utc_and_sgml_eastern(self) -> None:
         self.assertEqual(
