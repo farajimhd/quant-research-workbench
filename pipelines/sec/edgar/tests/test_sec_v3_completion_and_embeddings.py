@@ -153,9 +153,28 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
 
         self.assertEqual(repaired_values, 1)
         self.assertEqual(parsed["cik"], oversized)
-        self.assertEqual(parsed["facts"]["us-gaap"]["Shares"]["units"]["shares"][0]["val"], float(oversized))
+        self.assertEqual(parsed["facts"]["us-gaap"]["Shares"]["units"]["shares"][0]["val"], str(oversized))
         self.assertEqual(parsed["facts"]["us-gaap"]["Shares"]["units"]["shares"][1]["val"], 10)
         self.assertEqual(parsed["description"], f'embedded \\"val\\": {oversized}')
+
+    def test_companyfacts_repaired_sql_uses_structured_observation_extraction(self) -> None:
+        args = SimpleNamespace(max_threads=32, max_memory_usage="96G")
+        artifact = SimpleNamespace(source_file_id="source")
+        sql = snapshot_refresh.companyfacts_insert_sql(
+            stage="stage",
+            raw="raw",
+            artifact=artifact,
+            now="now64(9, 'UTC')",
+            args=args,
+            fact_type="Tuple(val Nullable(Float64))",
+            compatibility_repaired=True,
+        )
+
+        self.assertIn("JSONExtractArrayRaw(unit_pair.2)", sql)
+        self.assertIn("JSON_VALUE(fact_json, '$.val')", sql)
+        self.assertIn("toFloat64OrNull", sql)
+        self.assertIn("compatibility_repaired = 1", sql)
+        self.assertNotIn("ARRAY JOIN JSONExtract(unit_pair.2", sql)
 
     def test_bulk_snapshot_header_has_no_legacy_member_manifest_dependency(self) -> None:
         args = SimpleNamespace(

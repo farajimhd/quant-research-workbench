@@ -354,7 +354,105 @@ def build_companyfacts_tables(client: Any, args: Any, artifact: Any, run_id: str
         client,
         "companyfacts",
         "build XBRL facts",
-        f"""
+        companyfacts_insert_sql(
+            stage=stage,
+            raw=raw,
+            artifact=artifact,
+            now=now,
+            args=args,
+            fact_type=fact_type,
+            compatibility_repaired=False,
+        ),
+    )
+    repaired_members = scalar_int(client, f"SELECT countIf(compatibility_repaired = 1) FROM {raw}")
+    if repaired_members:
+        repaired_source = f"(SELECT * FROM {raw} WHERE compatibility_repaired = 1)"
+        expected_repaired_rows = scalar_int(
+            client,
+            f"""
+            SELECT sum(JSONLength(unit_pair.2))
+            FROM {repaired_source}
+            ARRAY JOIN JSONExtractKeysAndValuesRaw(JSONExtractRaw(raw_json, 'facts')) AS taxonomy_pair
+            ARRAY JOIN JSONExtractKeysAndValuesRaw(taxonomy_pair.2) AS tag_pair
+            ARRAY JOIN JSONExtractKeysAndValuesRaw(JSONExtractRaw(tag_pair.2, 'units')) AS unit_pair
+            """,
+        )
+        execute_stage(
+            client,
+            "companyfacts",
+            "build compatibility-repaired XBRL facts",
+            companyfacts_insert_sql(
+                stage=stage,
+                raw=raw,
+                artifact=artifact,
+                now=now,
+                args=args,
+                fact_type=fact_type,
+                compatibility_repaired=True,
+            ),
+        )
+        repaired_rows, repaired_ciks = tsv_ints(
+            client.execute(
+                f"SELECT count(), uniqExact(cik) FROM {stage} WHERE cik IN "
+                f"(SELECT {cik} FROM {repaired_source}) FORMAT TSV"
+            )
+        )
+        if repaired_ciks != repaired_members or repaired_rows != expected_repaired_rows:
+            raise RuntimeError(
+                "companyfacts compatibility extraction lost repaired members: "
+                f"expected_ciks={repaired_members:,} inserted_ciks={repaired_ciks:,} "
+                f"expected_rows={expected_repaired_rows:,} inserted_rows={repaired_rows:,}"
+            )
+        print(
+            "snapshot source=companyfacts stage=validate compatibility extraction status=completed "
+            f"members={repaired_ciks:,} observations={repaired_rows:,}",
+            flush=True,
+        )
+    missing = scalar_int(client, f"SELECT countIf(cik = '' OR tag = '' OR unit = '' OR value IS NULL) FROM {stage}")
+    if missing:
+        raise RuntimeError(f"companyfacts normalized staging contains {missing:,} rows missing required values or identity")
+    rows, unique_ids = tsv_ints(client.execute(f"SELECT count(), uniqExact(fact_id) FROM {stage} FORMAT TSV"))
+    if rows != unique_ids:
+        raise RuntimeError(f"companyfacts fact identity collision: rows={rows:,} unique_fact_ids={unique_ids:,}")
+    return {base: rows}
+
+
+def companyfacts_insert_sql(
+    *,
+    stage: str,
+    raw: str,
+    artifact: Any,
+    now: str,
+    args: Any,
+    fact_type: str,
+    compatibility_repaired: bool,
+) -> str:
+    cik = cik_sql("raw_json", "member_name")
+    if compatibility_repaired:
+        observation_join = "ARRAY JOIN JSONExtractArrayRaw(unit_pair.2) AS fact_json"
+        value = json_value_float_sql("fact_json", "val")
+        accession_number = json_value_nullable_string_sql("fact_json", "accn")
+        fy = json_value_uint16_sql("fact_json", "fy")
+        fp = json_value_nullable_string_sql("fact_json", "fp")
+        form_type = json_value_nullable_string_sql("fact_json", "form")
+        filed = json_value_nullable_string_sql("fact_json", "filed")
+        frame = json_value_nullable_string_sql("fact_json", "frame")
+        start = json_value_nullable_string_sql("fact_json", "start")
+        end = json_value_nullable_string_sql("fact_json", "end")
+        repaired_filter = "1"
+    else:
+        observation_join = f"ARRAY JOIN JSONExtract(unit_pair.2, {sql_string(f'Array({fact_type})')}) AS fact"
+        value = "fact.1"
+        accession_number = "nullIf(ifNull(fact.2, ''), '')"
+        fy = "fact.3"
+        fp = "nullIf(ifNull(fact.4, ''), '')"
+        form_type = "nullIf(ifNull(fact.5, ''), '')"
+        filed = "nullIf(ifNull(fact.6, ''), '')"
+        frame = "nullIf(ifNull(fact.7, ''), '')"
+        start = "nullIf(ifNull(fact.8, ''), '')"
+        end = "nullIf(ifNull(fact.9, ''), '')"
+        repaired_filter = "0"
+    return f"""
         INSERT INTO {stage}
         WITH
             {cik} AS cik,
@@ -363,10 +461,10 @@ def build_companyfacts_tables(client: Any, args: Any, artifact: Any, run_id: str
             tag_pair.1 AS tag,
             tag_pair.2 AS tag_json,
             unit_pair.1 AS unit,
-            nullIf(ifNull(fact.2, ''), '') AS accession_number,
-            toDateOrNull(nullIf(ifNull(fact.8, ''), '')) AS start_date,
-            toDateOrNull(nullIf(ifNull(fact.9, ''), '')) AS end_date,
-            nullIf(ifNull(fact.7, ''), '') AS frame,
+            {accession_number} AS accession_number,
+            toDateOrNull({start}) AS start_date,
+            toDateOrNull({end}) AS end_date,
+            {frame} AS frame,
             '{{}}' AS dimensions_json
         SELECT
             hex(SHA256(toJSONString(tuple(cik, taxonomy, tag, unit, start_date, end_date, accession_number, frame, map())))) AS fact_id,
@@ -377,34 +475,39 @@ def build_companyfacts_tables(client: Any, args: Any, artifact: Any, run_id: str
             JSONExtractString(tag_json, 'label') AS label,
             JSONExtractString(tag_json, 'description') AS description,
             unit,
-            fact.1 AS value,
+            {value} AS value,
             start_date,
             end_date,
-            toDateOrNull(nullIf(ifNull(fact.6, ''), '')) AS filed_date,
-            fact.3 AS fy,
-            nullIf(ifNull(fact.4, ''), '') AS fp,
-            nullIf(ifNull(fact.5, ''), '') AS form_type,
+            toDateOrNull({filed}) AS filed_date,
+            {fy} AS fy,
+            {fp} AS fp,
+            {form_type} AS form_type,
             frame,
             accession_number,
             dimensions_json,
             {sql_string(artifact.source_file_id)} AS source_file_id,
             {now} AS last_seen_at_utc
-        FROM {raw}
+        FROM (SELECT * FROM {raw} WHERE compatibility_repaired = {repaired_filter})
         ARRAY JOIN JSONExtractKeysAndValuesRaw(JSONExtractRaw(raw_json, 'facts')) AS taxonomy_pair
         ARRAY JOIN JSONExtractKeysAndValuesRaw(taxonomy_json) AS tag_pair
         ARRAY JOIN JSONExtractKeysAndValuesRaw(JSONExtractRaw(tag_json, 'units')) AS unit_pair
-        ARRAY JOIN JSONExtract(unit_pair.2, {sql_string(f'Array({fact_type})')}) AS fact
+        {observation_join}
         WHERE cik != '' AND tag != '' AND unit != ''
         SETTINGS max_partitions_per_insert_block = 1000, {query_settings(args)}
-        """,
-    )
-    missing = scalar_int(client, f"SELECT countIf(cik = '' OR tag = '' OR unit = '') FROM {stage}")
-    if missing:
-        raise RuntimeError(f"companyfacts normalized staging contains {missing:,} rows missing required identity")
-    rows, unique_ids = tsv_ints(client.execute(f"SELECT count(), uniqExact(fact_id) FROM {stage} FORMAT TSV"))
-    if rows != unique_ids:
-        raise RuntimeError(f"companyfacts fact identity collision: rows={rows:,} unique_fact_ids={unique_ids:,}")
-    return {base: rows}
+        """
+
+
+def json_value_nullable_string_sql(expression: str, key: str) -> str:
+    value = f"JSON_VALUE({expression}, {sql_string(f'$.{key}')})"
+    return f"nullIf(nullIf({value}, ''), 'null')"
+
+
+def json_value_float_sql(expression: str, key: str) -> str:
+    return f"toFloat64OrNull({json_value_nullable_string_sql(expression, key)})"
+
+
+def json_value_uint16_sql(expression: str, key: str) -> str:
+    return f"toUInt16OrNull({json_value_nullable_string_sql(expression, key)})"
 
 
 def refresh_ticker_snapshot(client: Any, args: Any, artifacts: list[Any], run_id: str, report_path: Path) -> dict[str, int]:
@@ -725,7 +828,7 @@ def normalize_companyfacts_json(raw_json: str) -> tuple[str, int]:
                     and not isinstance(child, bool)
                     and (child < CLICKHOUSE_JSON_MIN_INTEGER or child > CLICKHOUSE_JSON_MAX_INTEGER)
                 ):
-                    normalized[key] = float(child)
+                    normalized[key] = str(child)
                     repaired_values += 1
                 else:
                     normalized[key] = visit(child)
@@ -739,7 +842,10 @@ def normalize_companyfacts_json(raw_json: str) -> tuple[str, int]:
 
 
 def parse_stage_source(database: str, raw_table: str) -> str:
-    return f"(SELECT member_name, parse_json AS raw_json FROM {table(database, raw_table)} FINAL)"
+    return (
+        f"(SELECT member_name, parse_json AS raw_json, compatibility_repaired "
+        f"FROM {table(database, raw_table)} FINAL)"
+    )
 
 
 def count_json_members(path: Path) -> int:
