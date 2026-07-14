@@ -327,7 +327,8 @@ The height-bounded dashboard is organized around the durable news lifecycle:
   enrichment, and database publish state in fixed rows
 - `Cycle And Freshness` shows the market-aware cadence, last-cycle outcome,
   durable totals, and bounded memory state
-- recent news outcomes appear only when terminal height permits
+- recent news outcomes expand to consume the remaining measured terminal height
+  instead of stopping at a fixed row count
 - compact terminals retain the header, current operation, active warnings, and
   pipeline while removing secondary history before it can fall below the fold
 

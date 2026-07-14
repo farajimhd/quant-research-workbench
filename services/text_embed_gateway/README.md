@@ -40,6 +40,11 @@ to erase historical state. `Embedding Timing` remains visible when terminal
 height permits. Compact terminals combine focus and the four coverage rows into
 one panel so current work stays above the fold.
 
+When height remains after those operational panels, `Embedding Timing` and
+`Recent Embedding Work` expand into that space. The terminal measures the
+rendered layout and shows the maximum recent work rows that fit rather than a
+fixed number.
+
 Runtime errors now have explicit active and resolved timestamps plus mode/source
 scope. A successful historical cycle cannot clear an active live-cycle error;
 recovery is shown only after the matching mode completes successfully.

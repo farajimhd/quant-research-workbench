@@ -94,7 +94,8 @@ def render_reference_snapshot_dashboard(snapshot: dict[str, Any]) -> Group:
         primary=reference_priority_panel(snapshot, compact=False),
         compact_primary=reference_priority_panel(snapshot, compact=True),
         secondary=reference_source_panel(snapshot),
-        recent=reference_operations_panel(snapshot),
+        recent_factory=lambda limit: reference_operations_panel(snapshot, limit=limit),
+        recent_count=len(reference_operations(snapshot)),
         profile=profile,
     )
 
@@ -192,17 +193,20 @@ def reference_source_panel(snapshot: dict[str, Any]) -> Panel:
     return Panel(table, title="Source Coverage And Freshness", box=box.ROUNDED, border_style=source_state_color_from_rows(ordered), padding=(0, 1))
 
 
-def reference_operations_panel(snapshot: dict[str, Any]) -> Panel:
+def reference_operations(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     specific = snapshot.get("service_specific") if isinstance(snapshot.get("service_specific"), dict) else {}
-    operations = specific.get("operations") if isinstance(specific.get("operations"), list) else snapshot.get("tasks") if isinstance(snapshot.get("tasks"), list) else []
+    raw = specific.get("operations") if isinstance(specific.get("operations"), list) else snapshot.get("tasks") if isinstance(snapshot.get("tasks"), list) else []
+    return [row for row in raw if isinstance(row, dict)]
+
+
+def reference_operations_panel(snapshot: dict[str, Any], *, limit: int) -> Panel:
+    operations = reference_operations(snapshot)
     table = Table(box=box.SIMPLE, expand=True, show_edge=False)
     table.add_column("Operation", style="cyan", no_wrap=True, width=30)
     table.add_column("State", no_wrap=True, width=12)
     table.add_column("Rows / Sec", no_wrap=True, width=16)
     table.add_column("Outcome", overflow="fold", ratio=1)
-    for row in operations[-5:]:
-        if not isinstance(row, dict):
-            continue
+    for row in operations[-limit:]:
         seconds_value = row.get("seconds")
         timing = f"{float(seconds_value):.2f}s" if seconds_value not in {None, ""} else "-"
         table.add_row(str(row.get("name") or row.get("task") or "-"), style_status(row.get("status") or "-"), f"{row.get('rows') if row.get('rows') is not None else '-'} / {timing}", str(row.get("message") or row.get("detail") or "-"))

@@ -24,15 +24,17 @@ VANCOUVER_TZ = ZoneInfo("America/Vancouver")
 
 async def run_terminal_dashboard(gateway: "NewsGateway") -> None:
     refresh_seconds = max(0.25, gateway.config.terminal_refresh_seconds)
-    initial_snapshot: dict[str, Any] = {"rows": [], "limit": gateway.config.terminal_news_limit}
+    initial_limit = terminal_recent_limit(gateway)
+    initial_snapshot: dict[str, Any] = {"rows": [], "limit": initial_limit}
     with standard_live(
         render_dashboard(gateway, initial_snapshot),
         screen=gateway.config.terminal_screen_enabled,
         refresh_seconds=refresh_seconds,
     ) as live:
         while not gateway._stop_event.is_set():  # noqa: SLF001
-            snapshot = await gateway.state.recent_snapshot(gateway.config.terminal_news_limit)
-            snapshot["limit"] = gateway.config.terminal_news_limit
+            limit = terminal_recent_limit(gateway)
+            snapshot = await gateway.state.recent_snapshot(limit)
+            snapshot["limit"] = limit
             live.update(render_dashboard(gateway, snapshot), refresh=True)
             await asyncio.sleep(refresh_seconds)
 
@@ -51,7 +53,8 @@ def render_dashboard(gateway: "NewsGateway", news_snapshot: dict[str, Any]) -> G
         primary=news_pipeline_panel(metrics, compact=False),
         compact_primary=news_pipeline_panel(metrics, compact=True),
         secondary=news_cycle_panel(gateway, metrics),
-        recent=news_recent_panel(news_snapshot),
+        recent_factory=lambda limit: news_recent_panel(news_snapshot, limit=limit),
+        recent_count=len(news_snapshot.get("rows") or []),
         profile=profile,
     )
 
@@ -109,8 +112,8 @@ def news_cycle_panel(gateway: "NewsGateway", metrics: dict[str, Any]) -> Panel:
     return Panel(table, title="Cycle And Freshness", box=box.ROUNDED, border_style="green" if not metrics.get("poll_failures") else "yellow", padding=(0, 1))
 
 
-def news_recent_panel(snapshot: dict[str, Any]) -> Panel:
-    rows = list(snapshot.get("rows") or [])[:5]
+def news_recent_panel(snapshot: dict[str, Any], *, limit: int) -> Panel:
+    rows = list(snapshot.get("rows") or [])[:limit]
     table = Table(box=box.SIMPLE, expand=True, show_edge=False)
     table.add_column("UTC", no_wrap=True, width=16)
     table.add_column("Tickers", no_wrap=True, width=16)
@@ -121,6 +124,14 @@ def news_recent_panel(snapshot: dict[str, Any]) -> Panel:
     if not rows:
         table.add_row("-", "-", style_status("waiting"), "No news outcome recorded yet.")
     return Panel(table, title="Recent News Outcomes", box=box.ROUNDED, border_style="cyan", padding=(0, 1))
+
+
+def terminal_recent_limit(gateway: "NewsGateway") -> int:
+    profile = layout_profile()
+    return min(
+        max(1, int(gateway.config.recent_history_limit)),
+        max(1, int(gateway.config.terminal_news_limit), int(profile["height"])),
+    )
 
 
 def header_panel(gateway: "NewsGateway", metrics: dict[str, Any], now: str) -> Panel:

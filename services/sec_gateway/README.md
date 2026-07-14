@@ -39,7 +39,9 @@ bounded filing-worker queue, active accessions, completed/written/skipped/failed
 outcomes, coverage, write audit, and XBRL-context integrity. It records the last
 successful filing outcome separately from the last durable write. Compact
 terminals retain the current operation and pipeline; integrity and recent filing
-history are added only when height permits.
+history are added only when height permits. The renderer measures the fixed
+panels at the active terminal width and uses every remaining row for as many
+recent filing outcomes as fit, without a hard-coded display count.
 
 The gateway does not own global ticker/reference mappings.
 `reference_gateway` maintains `q_live.id_sec_market_bridge_v3`. The SEC gateway

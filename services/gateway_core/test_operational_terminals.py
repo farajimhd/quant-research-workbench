@@ -73,6 +73,62 @@ class OperationalTerminalTests(unittest.TestCase):
             self.assertNotIn("Attention Required", recovered)
             self.assertIn("RUNNING", recovered)
 
+    def test_recent_rows_expand_to_fill_available_height(self) -> None:
+        gateways = self._gateways()
+        sec_rows = [
+            {
+                "updated_at_utc": f"2026-07-14T10:{index:02d}:00Z",
+                "form_type": "8-K",
+                "accession_number": f"SECITEM{index:02d}",
+                "status": "completed",
+                "title": "Filed",
+            }
+            for index in range(60)
+        ]
+        news_rows = [
+            {
+                "published_at_utc": f"2026-07-14T10:{index:02d}:00Z",
+                "tickers": ["AAPL"],
+                "title": f"NEWSITEM{index:02d}",
+            }
+            for index in range(60)
+        ]
+        text_rows = [
+            {
+                "updated_at_utc": f"2026-07-14T10:{index:02d}:00Z",
+                "source": "sec",
+                "mode": "live",
+                "stage": f"TEXTITEM{index:02d}",
+                "rows": index,
+                "seconds": 0.1,
+            }
+            for index in range(60)
+        ]
+        gateways["sec"].recent_snapshot = lambda limit=12: {"rows": sec_rows[:limit], "limit": limit}
+        gateways["text"].recent_snapshot = lambda limit=12: {"rows": text_rows[:limit], "limit": limit}
+        gateways["reference"].operations = [
+            OperationRecord(f"REFITEM{index:02d}", "completed", "Done.", rows=index, seconds=0.1)
+            for index in range(60)
+        ]
+        cases = (
+            ("sec", lambda: render_sec(gateways["sec"]), "SECITEM"),
+            ("news", lambda: render_news(gateways["news"], {"rows": news_rows}), "NEWSITEM"),
+            ("text", lambda: render_text(gateways["text"]), "TEXTITEM"),
+            ("reference", lambda: render_reference_dashboard(gateways["reference"]), "REFITEM"),
+        )
+        counts: dict[tuple[str, int], int] = {}
+        for height in (24, 44, 60):
+            with patch.object(rich_renderer.shutil, "get_terminal_size", return_value=(160, height)):
+                for name, render, marker in cases:
+                    with self.subTest(name=name, height=height):
+                        output = render_text_output(render(), width=160, height=height)
+                        self.assertLessEqual(len(output.splitlines()), height, output)
+                        if height >= 44:
+                            self.assertGreaterEqual(len(output.splitlines()), height - 1, output)
+                        counts[(name, height)] = output.count(marker)
+        for name, _render, _marker in cases:
+            self.assertGreater(counts[(name, 60)], counts[(name, 44)], name)
+
     def test_text_error_recovery_requires_a_matching_mode(self) -> None:
         gateway = object.__new__(TextEmbedGateway)
         gateway.metrics = TextEmbedMetrics()

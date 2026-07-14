@@ -353,8 +353,10 @@ child operation and daemon-cycle state.
 The terminal keeps current operation, active failures, write policy, integrity
 audit, unhealthy source coverage, and partial/missing table groups above the
 fold. Healthy source details and recent operations are added only when terminal
-height permits. Compact mode removes secondary inventories rather than wrapping
-them below the visible viewport. Full detail remains available through
+height permits. The recent-operation panel uses every remaining measured row,
+so taller terminals automatically show more completed operations without a
+fixed display limit. Compact mode removes secondary inventories before they can
+push critical state below the viewport. Full detail remains available through
 `/snapshot/status`, runtime JSONL, and the audit report.
 
 Runtime JSONL logs now include structured `audit_completed` and

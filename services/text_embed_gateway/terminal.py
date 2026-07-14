@@ -32,11 +32,12 @@ async def run_terminal_dashboard(gateway: "TextEmbedGateway") -> None:
 def render_dashboard(gateway: "TextEmbedGateway") -> Group:
     metrics = gateway.snapshot_metrics()
     profile = layout_profile()
+    recent_snapshot = gateway.recent_snapshot(max(1, int(profile["height"])))
     standard = build_dashboard_snapshot(
         service_name="text_embed_gateway",
         config=gateway.config,
         metrics=metrics,
-        recent_items=gateway.recent_snapshot(12),
+        recent_items=recent_snapshot,
     )
     return render_operational_dashboard(
         standard,
@@ -44,6 +45,8 @@ def render_dashboard(gateway: "TextEmbedGateway") -> Group:
         compact_primary=compact_embedding_panel(metrics),
         secondary=coverage_matrix_panel(metrics),
         recent=timing_panel(metrics),
+        recent_factory=lambda limit: Group(timing_panel(metrics), recent_table(recent_snapshot, limit=limit)),
+        recent_count=len(recent_snapshot.get("rows") or []),
         profile=profile,
     )
 
@@ -346,8 +349,8 @@ def timing_panel(metrics: dict[str, Any]) -> Panel:
     return Panel(table, title="Embedding Timing", box=box.ROUNDED, border_style="yellow", padding=(0, 1))
 
 
-def recent_table(snapshot: dict[str, Any]) -> Table:
-    rows = snapshot.get("rows") or []
+def recent_table(snapshot: dict[str, Any], *, limit: int) -> Table:
+    rows = list(snapshot.get("rows") or [])[:limit]
     table = Table(title=f"Recent Embedding Work ({len(rows)})", box=box.ROUNDED, expand=True, header_style="bold cyan")
     table.add_column("UTC", no_wrap=True, width=17)
     table.add_column("Source", no_wrap=True, width=8)

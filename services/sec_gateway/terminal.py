@@ -33,18 +33,20 @@ async def run_terminal_dashboard(gateway: "SecGateway") -> None:
 def render_dashboard(gateway: "SecGateway") -> Group:
     metrics = gateway.snapshot_metrics()
     profile = layout_profile()
+    recent_snapshot = gateway.recent_snapshot(max(1, int(profile["height"])))
     standard = build_dashboard_snapshot(
         service_name="sec_gateway",
         config=gateway.config,
         metrics=metrics,
-        recent_items=gateway.recent_snapshot(12),
+        recent_items=recent_snapshot,
     )
     return render_operational_dashboard(
         standard,
         primary=sec_pipeline_panel(gateway, metrics, compact=False),
         compact_primary=sec_pipeline_panel(gateway, metrics, compact=True),
         secondary=sec_integrity_panel(metrics),
-        recent=sec_recent_panel(gateway.recent_snapshot(5)),
+        recent_factory=lambda limit: sec_recent_panel(recent_snapshot, limit=limit),
+        recent_count=len(recent_snapshot.get("rows") or []),
         profile=profile,
     )
 
@@ -102,7 +104,7 @@ def sec_integrity_panel(metrics: dict[str, Any]) -> Panel:
     return Panel(table, title="Coverage And Integrity", box=box.ROUNDED, border_style="green" if not metrics.get("xbrl_context_sync_failures") else "yellow", padding=(0, 1))
 
 
-def sec_recent_panel(snapshot: dict[str, Any]) -> Panel:
+def sec_recent_panel(snapshot: dict[str, Any], *, limit: int) -> Panel:
     rows = snapshot.get("rows") or []
     table = Table(box=box.SIMPLE, expand=True, show_edge=False)
     table.add_column("UTC", no_wrap=True, width=17)
@@ -110,7 +112,7 @@ def sec_recent_panel(snapshot: dict[str, Any]) -> Panel:
     table.add_column("Accession", no_wrap=True, width=22)
     table.add_column("State", no_wrap=True, width=14)
     table.add_column("Title", overflow="fold", ratio=1)
-    for row in rows[:5]:
+    for row in rows[:limit]:
         table.add_row(utc_short(parse_utc(row.get("updated_at_utc"))) if parse_utc(row.get("updated_at_utc")) else "-", str(row.get("form_type") or "-"), str(row.get("accession_number") or "-"), style_status(row.get("status") or "-"), str(row.get("title") or "-"))
     if not rows:
         table.add_row("-", "-", "-", style_status("waiting"), "No filing outcome recorded yet.")

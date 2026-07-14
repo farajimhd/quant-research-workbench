@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import shutil
 from datetime import UTC, datetime
-from typing import Any
+from io import StringIO
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from rich import box
-from rich.console import Group
+from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
@@ -251,6 +252,8 @@ def render_operational_dashboard(
     compact_primary: Any | None = None,
     secondary: Any | None = None,
     recent: Any | None = None,
+    recent_factory: Callable[[int], Any] | None = None,
+    recent_count: int = 0,
     profile: dict[str, Any] | None = None,
 ) -> Group:
     """Render a height-bounded service dashboard around operator priorities.
@@ -273,9 +276,53 @@ def render_operational_dashboard(
     parts.append(compact_primary if compact and compact_primary is not None else primary)
     if not compact and secondary is not None:
         parts.append(secondary)
-    if not compact and selected_profile["height"] >= 40 and recent is not None:
+    fitted_recent = _fit_recent_to_viewport(
+        parts,
+        recent_factory=recent_factory,
+        recent_count=recent_count,
+        width=int(selected_profile["width"]),
+        height=int(selected_profile["height"]),
+    )
+    if fitted_recent is not None:
+        parts.append(fitted_recent)
+    elif not compact and selected_profile["height"] >= 40 and recent is not None:
         parts.append(recent)
     return Group(*parts)
+
+
+def _fit_recent_to_viewport(
+    parts: list[Any],
+    *,
+    recent_factory: Callable[[int], Any] | None,
+    recent_count: int,
+    width: int,
+    height: int,
+) -> Any | None:
+    """Return the largest recent-items panel that fits the remaining viewport."""
+
+    if recent_factory is None or recent_count <= 0 or height <= 0:
+        return None
+    maximum = min(max(0, int(recent_count)), height)
+    low = 1
+    high = maximum
+    best: Any | None = None
+    while low <= high:
+        middle = (low + high) // 2
+        candidate = recent_factory(middle)
+        rendered = Group(*parts, candidate)
+        if _rendered_height(rendered, width=width) <= height:
+            best = candidate
+            low = middle + 1
+        else:
+            high = middle - 1
+    return best
+
+
+def _rendered_height(renderable: Any, *, width: int) -> int:
+    stream = StringIO()
+    console = Console(file=stream, force_terminal=False, color_system=None, width=max(20, width))
+    console.print(renderable)
+    return len(stream.getvalue().splitlines())
 
 
 def _operational_header(snapshot: dict[str, Any], *, compact: bool) -> Panel:
