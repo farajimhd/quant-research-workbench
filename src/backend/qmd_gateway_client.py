@@ -61,6 +61,14 @@ def qmd_status() -> dict[str, Any]:
     return payload
 
 
+def qmd_service_status() -> dict[str, Any]:
+    """Return QMD's standardized Service Core snapshot without altering health consumers."""
+    payload = qmd_get_json("/snapshot/status", timeout=2)
+    if not isinstance(payload, dict):
+        raise RuntimeError("QMD Service Core status response was not an object.")
+    return payload
+
+
 def qmd_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
     primitive_payload = qmd_get_json("/snapshot/scanner-primitives", {"limit": row_limit}, timeout=3)
     primitive_rows = primitive_payload.get("rows", []) if isinstance(primitive_payload, dict) else []

@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 
 import { Layout, type PageKey } from "./app/components/Layout";
+import { MarketStatusBadge, liveMarketStatus, type MarketStatus } from "./app/components/MarketStatusBadge";
 import { CanvasConfigurationPage, CanvasFocusPage } from "./pages/CanvasConfigurationPage";
 import { HistoricalTradingPage } from "./pages/HistoricalTradingPage";
 import { RealLiveTradingPage } from "./pages/RealLiveTradingPage";
@@ -15,6 +16,7 @@ export function App() {
   });
   const [visitedPages, setVisitedPages] = useState<Set<PageKey>>(() => new Set([page]));
   const [topbarCenter, setTopbarCenter] = useState<ReactNode>(null);
+  const [liveStatus, setLiveStatus] = useState<MarketStatus>(() => liveMarketStatus(null));
 
   useEffect(() => {
     const syncPageFromHash = () => {
@@ -41,9 +43,9 @@ export function App() {
   }
 
   return (
-    <Layout compactContent={page === "canvas-configuration"} page={page} onPageChange={setPage} topbarCenter={topbarCenter}>
+    <Layout compactContent={page === "canvas-configuration"} page={page} onPageChange={setPage} topbarCenter={topbarCenter} topbarStatus={page === "real-live-trading" ? <MarketStatusBadge value={liveStatus} /> : null}>
       <div aria-hidden={page !== "real-live-trading"} className={page === "real-live-trading" ? "page-cache-panel active" : "page-cache-panel"}>
-        {page === "real-live-trading" || visitedPages.has("real-live-trading") ? <RealLiveTradingPage onTopbarCenterChange={page === "real-live-trading" ? setTopbarCenter : undefined} /> : null}
+        {page === "real-live-trading" || visitedPages.has("real-live-trading") ? <RealLiveTradingPage onMarketStatusChange={page === "real-live-trading" ? setLiveStatus : undefined} onTopbarCenterChange={page === "real-live-trading" ? setTopbarCenter : undefined} /> : null}
       </div>
       <div aria-hidden={page !== "replay-trading"} className={page === "replay-trading" ? "page-cache-panel active" : "page-cache-panel"}>
         {page === "replay-trading" || visitedPages.has("replay-trading") ? <HistoricalTradingPage mode="replay" /> : null}

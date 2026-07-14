@@ -30,6 +30,7 @@ import type { Time } from "lightweight-charts";
 
 import { api, query } from "../api/client";
 import { ChartPanel, type ChartCatalogItem, type ChartDisplayItem, type ChartPayload, type LiveEntryLine } from "../app/components/ChartPanel";
+import { liveMarketStatus, type MarketStatus } from "../app/components/MarketStatusBadge";
 import { DataTable, type BackendQueryPreset, type BackendTableQuery } from "../app/components/DataTable";
 import { PageIntro } from "../app/components/PageIntro";
 import { Tabs } from "../app/components/Tabs";
@@ -532,7 +533,7 @@ function buildDefaultCanvasLayout(childCanvas: boolean): { chartWindows: ChartWi
   return { chartWindows: [], layouts, windows: childCanvas ? [] : [...CORE_WINDOW_IDS] };
 }
 
-export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange?: Dispatch<SetStateAction<ReactNode>> }) {
+export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange }: { onMarketStatusChange?: Dispatch<SetStateAction<MarketStatus>>; onTopbarCenterChange?: Dispatch<SetStateAction<ReactNode>> }) {
   const canvasId = useMemo(() => new URLSearchParams(window.location.search).get("liveCanvas") || "main", []);
   const isChildCanvas = canvasId !== "main";
   const initialCanvas = useMemo(() => readStoredCanvas(canvasId, isChildCanvas), [canvasId, isChildCanvas]);
@@ -683,6 +684,17 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
     if (payload.session_baseline) setSessionBaseline(payload.session_baseline);
     return payload;
   }, []);
+
+  useEffect(() => {
+    const serviceCore = gatewayStatus?.qmd_service_core;
+    onMarketStatusChange?.(liveMarketStatus(serviceCore && typeof serviceCore === "object" ? serviceCore as Record<string, unknown> : null));
+  }, [gatewayStatus, onMarketStatusChange]);
+
+  useEffect(() => {
+    if (!onMarketStatusChange) return;
+    const timer = window.setInterval(() => void loadGatewayStatus().catch(() => onMarketStatusChange(liveMarketStatus(null))), 10_000);
+    return () => window.clearInterval(timer);
+  }, [loadGatewayStatus, onMarketStatusChange]);
 
   useEffect(() => {
     if (started || isChildCanvas) return;

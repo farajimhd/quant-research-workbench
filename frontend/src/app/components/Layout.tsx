@@ -15,6 +15,7 @@ type LayoutProps = {
   onPageChange: (page: PageKey) => void;
   children: ReactNode;
   topbarCenter?: ReactNode;
+  topbarStatus?: ReactNode;
 };
 
 const navGroups = [
@@ -50,7 +51,8 @@ export function Layout({
   compactContent = false,
   onPageChange,
   page,
-  topbarCenter
+  topbarCenter,
+  topbarStatus
 }: LayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
@@ -99,6 +101,7 @@ export function Layout({
         </div>
         {topbarCenter ? <div className="topbar-center">{topbarCenter}</div> : null}
         <div className="topbar-actions">
+          {topbarStatus}
           <div className="theme-picker">
             <button className="icon-button" type="button" aria-label="Change theme" onClick={() => setThemeMenuOpen((value) => !value)}>
               <Palette size={18} />

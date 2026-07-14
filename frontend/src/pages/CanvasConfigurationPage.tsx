@@ -24,6 +24,7 @@ import {
   type CanvasWorkspaceState,
 } from "../app/canvasWorkspace";
 import { ChartPanel, type ChartPayload } from "../app/components/ChartPanel";
+import { MarketStatusBadge, historicalMarketStatus } from "../app/components/MarketStatusBadge";
 import { TRADING_WORKSPACE_LAYOUT_VERSION, TradingWorkspace, createFocusLayouts } from "../app/components/TradingWorkspace";
 import type { WorkspaceWindowLayout, WorkspaceWindowMeta, WorkspaceWindowStatus } from "../app/components/WorkspaceCanvas";
 import { TRADING_WORKSPACE_CONTAINERS, containerSupportsSymbolLink, type WorkspaceContainerDefinition, type WorkspaceContainerId } from "../app/tradingWorkspace";
@@ -105,6 +106,7 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
     ? settings.chart
     : registry.linkContexts[activeLinkGroup];
   const previewClocks = useMemo(() => previewClockReadings(previewContext), [previewContext]);
+  const marketStatus = useMemo(() => historicalMarketStatus(previewContext.sessionDate, previewContext.previewTime), [previewContext]);
 
   useEffect(() => {
     writeCanvasRegistry(registry);
@@ -254,6 +256,7 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
             {previewClocks.map((clock) => <span key={clock.label}><small>{clock.label}</small><strong>{clock.value}</strong></span>)}
           </div>
         </div>
+        <MarketStatusBadge value={marketStatus} />
         {manager ? <button className="button secondary compact canvas-set-default" disabled={!workspaceState} onClick={saveDefaultLayout} type="button"><Save size={13} /> {defaultSaved ? "Default saved" : "Set default"}</button> : null}
         {manager ? <button aria-expanded={managementOpen} aria-label="Canvas management" className="button secondary compact canvas-management-toggle" onClick={() => setManagementOpen((open) => !open)} type="button"><PanelRightOpen size={13} /> Manage</button> : null}
       </header>

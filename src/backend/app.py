@@ -66,7 +66,7 @@ from src.backend.market_data_service import (
 )
 from src.backend.news_service import ensure_benzinga_news_cache, news_at_payload
 from src.backend.progress_model import build_progress_model
-from src.backend.qmd_gateway_client import qmd_bars, qmd_catalogs, qmd_indicators, qmd_status
+from src.backend.qmd_gateway_client import qmd_bars, qmd_catalogs, qmd_indicators, qmd_service_status, qmd_status
 from src.backend.real_live_trading_service import (
     apply_tradable_filter_to_scanner_payload,
     cancel_real_live_order,
@@ -4088,6 +4088,10 @@ def real_live_market_gateway_status() -> dict[str, Any]:
         payload["qmd_gateway"] = qmd_status()
     except Exception as exc:
         payload["qmd_gateway"] = {"provider": "qmd-gateway", "status": "blocked", "message": str(exc)}
+    try:
+        payload["qmd_service_core"] = qmd_service_status()
+    except Exception as exc:
+        payload["qmd_service_core"] = {"error": str(exc)}
     return payload
 
 

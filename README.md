@@ -50,7 +50,10 @@ under `Configuration -> Canvas`; Replay and Backtest do not expose separate
 canvas designers. The configuration page defaults to a 09:45 New York preview
 and renders every container. Its read-only header keeps ET, browser-local, and
 UTC timestamps synchronized to the second without mixing ticker context into
-the clock. Canvas registry, container library, and layout reset controls live in
+the clock. The same compact header labels pre-market, regular, after-hours, or
+closed state from that ET preview clock. Replay follows its historical ET cursor,
+while Live reads the QMD Service Core market-status snapshot and reports an
+explicit unavailable state instead of substituting the browser clock. Canvas registry, container library, and layout reset controls live in
 a collapsible right management sidebar. The document clips horizontal overflow
 while the canvas remains its own horizontal scroll surface. Market data comes from QMD History, news/SEC/XBRL
 rows are point-in-time ClickHouse reads, and broker/runtime-only state is an

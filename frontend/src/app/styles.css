@@ -1173,6 +1173,30 @@ button {
   grid-template-columns: minmax(380px, 40%) minmax(0, 1fr);
 }
 
+.market-status-badge {
+  --market-status-color: var(--muted-foreground);
+  align-items: center;
+  background: color-mix(in oklab, var(--market-status-color) 12%, var(--card));
+  border: 1px solid color-mix(in oklab, var(--market-status-color) 42%, var(--border));
+  border-radius: 5px;
+  color: var(--market-status-color);
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  min-height: 26px;
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+
+.market-status-badge[data-market-status="open"] { --market-status-color: var(--success); }
+.market-status-badge[data-market-status="pre-market"] { --market-status-color: var(--warning); }
+.market-status-badge[data-market-status="after-hours"] { --market-status-color: var(--accent); }
+.market-status-badge[data-market-status="closed"] { --market-status-color: var(--muted-foreground); }
+.market-status-badge[data-market-status="unavailable"] { --market-status-color: var(--danger); }
+.market-status-badge span { color: var(--muted-foreground); font-size: 9px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.market-status-badge strong { color: var(--market-status-color); font-size: 11px; font-weight: 750; }
+.topbar-actions > .market-status-badge { min-height: 30px; }
+
 .sr-only {
   clip: rect(0, 0, 0, 0);
   clip-path: inset(50%);

@@ -83,6 +83,14 @@ and the shared run controller as required. Until those authorities are wired,
 the page reports the exact blockers and does not open an empty canvas or invoke
 the legacy prepared-bar routes.
 
+Market status has one UI contract with mode-specific authority. Replay,
+Backtest, and global Canvas preview derive pre-market (04:00-09:30), regular
+(09:30-16:00), after-hours (16:00-20:00), and closed state from their
+America/New_York clock. Active Replay advances the status with its event-derived
+cursor. Live does not infer state in the browser: the backend exposes QMD's
+standardized `/snapshot/status` Service Core payload alongside gateway health,
+and the top bar maps that payload or shows `Unavailable` when it cannot be read.
+
 Canvas layout and container testing for the new shared workspace are global
 configuration under `Configuration -> Canvas`. The main canvas owns the
 persisted user-selected default layout and a registry of focused child canvases;

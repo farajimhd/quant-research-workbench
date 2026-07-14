@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
 import { ChartPanel, type ChartPayload } from "../app/components/ChartPanel";
+import { MarketStatusBadge, historicalMarketStatus } from "../app/components/MarketStatusBadge";
 
 type HistoricalMode = "backtest" | "replay";
 type HistoricalView = "home" | "replay";
@@ -130,6 +131,7 @@ export function HistoricalTradingPage({ mode }: { mode: HistoricalMode }) {
           <h1>{mode === "replay" ? "Replay a trading day" : "Backtest a strategy"}</h1>
           <p>{mode === "replay" ? "Choose one exchange day; symbols and intervals are selected inside replay containers." : "Choose an exclusive anchor date and the prior sessions to evaluate."}</p>
         </div>
+        <MarketStatusBadge value={historicalMarketStatus(anchorDate)} />
       </header>
 
       {error ? <div className="historical-error-banner"><TriangleAlert size={18} /><div><strong>Preflight failed</strong><span>{error}</span></div></div> : null}
@@ -238,6 +240,7 @@ function ReplayPlayer({ onBack, preflight, sessionDate }: { onBack: () => void; 
 
   const visibleBars = bars.slice(0, Math.max(1, cursor));
   const current = visibleBars.at(-1);
+  const marketStatus = useMemo(() => historicalMarketStatus(sessionDate, current ? marketTimeText(current.bar_start) : "04:00:00"), [current, sessionDate]);
   const chartPayload = useMemo(() => barsToChartPayload(visibleBars), [visibleBars]);
   const loadedEnd = bars.at(-1)?.bar_start;
   const progress = bars.length ? Math.max(1, Math.round((cursor / bars.length) * 100)) : 0;
@@ -259,6 +262,7 @@ function ReplayPlayer({ onBack, preflight, sessionDate }: { onBack: () => void; 
         <button className="button secondary" onClick={onBack} type="button"><ArrowLeft size={17} /> Run setup</button>
         <div><span>One-day market replay</span><strong>{sessionDate}</strong></div>
         <div className="replay-source-proof"><CheckCircle2 size={17} /><div><span>QMD History verified</span><strong>{new Intl.NumberFormat("en-US").format(preflight.coverage.event_count ?? 0)} canonical events</strong></div></div>
+        <MarketStatusBadge value={marketStatus} />
       </header>
 
       <section className="replay-control-deck">
@@ -362,6 +366,10 @@ function formatWindow(window: HistoricalWindow) {
 
 function formatMarketTime(value: string) {
   return new Intl.DateTimeFormat("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" }).format(new Date(value));
+}
+
+function marketTimeText(value: string) {
+  return new Intl.DateTimeFormat("en-CA", { hour: "2-digit", hour12: false, minute: "2-digit", second: "2-digit", timeZone: "America/New_York" }).format(new Date(value));
 }
 
 function formatPrice(value?: number) {
