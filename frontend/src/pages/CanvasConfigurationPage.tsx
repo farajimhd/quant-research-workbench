@@ -166,7 +166,7 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasLinkContext["timefr
     if (!before || historyRequestRef.current || requestKeyRef.current !== requestKey) return;
     historyRequestRef.current = true;
     setState((current) => ({ ...current, historyError: "", loadingEarlier: true }));
-    api<QmdBarHistory>(`/api/trading/canvas-live-chart/history${query({ before, days: 1, row_limit: 20000, symbol: ticker, timeframe })}`, { timeoutMs: 20000 })
+    api<QmdBarHistory>(`/api/trading/canvas-live-chart/history${query({ before, days: 1, row_limit: 20000, symbol: ticker, timeframe })}`, { timeoutMs: 120000 })
       .then((payload) => {
         if (requestKeyRef.current !== requestKey) return;
         const hasRows = payload.history.length > 0;
