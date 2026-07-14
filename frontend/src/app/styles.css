@@ -20664,7 +20664,7 @@ button {
   gap: 2px;
 }
 
-.compact-window .workspace-window-title > svg:first-child {
+.compact-window .workspace-window-title > svg:first-of-type {
   width: 10px;
 }
 

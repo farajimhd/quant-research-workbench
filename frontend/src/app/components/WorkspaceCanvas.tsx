@@ -8,7 +8,6 @@ import {
   Maximize2,
   Minus,
   Minimize2,
-  Move,
   PanelTopOpen,
   RotateCcw,
   X,
@@ -216,7 +215,6 @@ export function WorkspaceWindow({
         tabIndex={0}
       >
         <div className="workspace-window-title live-window-title">
-          <Move aria-hidden="true" size={13} />
           {icon}
           <div className="workspace-window-heading">
             <strong>{title}</strong>
