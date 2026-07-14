@@ -189,7 +189,7 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
         <div>
           <span className="page-kicker">Services</span>
           <h1>{selected ? selected.registry.label : "Service Dashboard"}</h1>
-          <p>{selected ? selected.registry.description : "Live health, current focus, responsibility progress, freshness, and active attention across every gateway."}</p>
+          <p>{selected ? selected.registry.description : "Live health, current work, responsibility activity, freshness, and active attention across every gateway."}</p>
         </div>
         <div className="services-header-actions">
           <span className="services-refresh-note">Updated {payload?.checked_at_utc ? formatTime(payload.checked_at_utc) : "-"}</span>
@@ -248,7 +248,7 @@ function ServicesTopSummary({ checkedAt, now, services }: { checkedAt: string; n
   const stale = services.filter((service) => serviceFreshness(service, now).tone === "stale").length;
   const summaries = [
     { label: "Fleet", value: `${counts.online}/${services.length || 0} online`, detail: `${counts.degraded} need attention`, icon: RadioTower, tone: counts.degraded ? "warn" : "ok" },
-    { label: "Responsibilities", value: `${work.active} active`, detail: `${work.warning} warning · ${work.completed} complete`, icon: Layers3, tone: work.warning ? "warn" : work.active ? "active" : "ok" },
+    { label: "Responsibilities", value: `${work.active} active`, detail: `${work.warning} warning · ${work.completed} recent cycles`, icon: Layers3, tone: work.warning ? "warn" : work.active ? "active" : "ok" },
     { label: "Market", value: displayName(market.status), detail: market.detail, icon: Activity, tone: marketTileClass(market.status, market.detail).replace("market-", "") },
     { label: "Freshness", value: stale ? `${stale} stale` : "Live", detail: checkedAt ? `Updated ${relativeServiceAge(checkedAt, now)}` : "Waiting for first fleet check", icon: RefreshCcw, tone: stale ? "warn" : checkedAt ? "ok" : "idle" },
     { label: "Clock", value: `${formatZoneTime(now, EXCHANGE_TIME_ZONE)} ET`, detail: `${formatZoneTime(now, "UTC")} UTC · ${formatZoneDate(now, EXCHANGE_TIME_ZONE)}`, icon: Clock3, tone: "neutral" },
@@ -300,21 +300,18 @@ function ServiceFleetCard({ now, onOpen, service }: { now: Date; onOpen: () => v
             <ServiceStatusBadge status={service.status} online={service.online} />
             <span className={`service-fleet-freshness ${freshness.tone}`}>{freshness.label}</span>
           </div>
-        </div>
-
-        <div className="service-fleet-focus">
-          <div>
-            <span>Current focus</span>
+          <div className="service-fleet-focus">
+            <span className="service-fleet-focus-kicker">Current work</span>
             <strong>{displayName(phaseText(service))}</strong>
+            <p title={cardMessage(service)}>{cardMessage(service)}</p>
           </div>
-          <p title={cardMessage(service)}>{cardMessage(service)}</p>
+          <div className={`service-fleet-heartbeat ${service.online ? "is-live" : "is-offline"}`}>
+            <span aria-hidden="true" />
+            <b>{service.online ? `Active now · ${freshness.label}` : "No heartbeat"}</b>
+          </div>
         </div>
 
         <div className="service-fleet-responsibilities">
-          <div className="service-fleet-section-label">
-            <span>Responsibilities</span>
-            <small>{groups.length} live areas</small>
-          </div>
           {groups.map((group) => <ServiceFleetResponsibility group={group} key={group.id} />)}
         </div>
 
@@ -329,26 +326,18 @@ function ServiceFleetCard({ now, onOpen, service }: { now: Date; onOpen: () => v
 
 function ServiceFleetResponsibility({ group }: { group: ServiceWorkGroup }) {
   const primary = groupPrimaryRow(group);
-  const progress = responsibilityProgress(primary, group);
+  const activity = responsibilityActivity(primary, group);
   const tone = workStatusClass(group.status);
   return (
-    <div className={`service-fleet-responsibility ${tone}`}>
-      <span aria-hidden="true" className="service-fleet-responsibility-dot" />
+    <div className={`service-fleet-responsibility ${tone} activity-${activity.kind}`}>
       <div className="service-fleet-responsibility-copy">
         <div>
           <strong>{group.title}</strong>
           <span className={`service-work-status ${tone}`}>{responsibilityStatusLabel(group)}</span>
         </div>
-        <small title={primary.detail}>{primary.name}</small>
       </div>
-      <div className="service-fleet-progress">
-        <span>{progress.label}</span>
-        {progress.percent !== undefined ? (
-          <div aria-label={`${group.title} ${progress.label}`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={progress.percent} role="progressbar">
-            <i style={{ width: `${progress.percent}%` }} />
-          </div>
-        ) : null}
-      </div>
+      <small className="service-fleet-current-operation" title={primary.detail}>{primary.name}</small>
+      <strong className="service-fleet-activity">{activity.label}</strong>
     </div>
   );
 }
@@ -6625,31 +6614,21 @@ function serviceAttentionSummary(service: ServiceStatusPayload, groups: ServiceW
   return { label: "No active alerts", tone: "ok" };
 }
 
-function responsibilityProgress(primary: ServiceWorkRow, group: ServiceWorkGroup): { label: string; percent?: number } {
+function responsibilityActivity(primary: ServiceWorkRow, group: ServiceWorkGroup): { kind: "active" | "idle" | "recent" | "unreported" | "warning"; label: string } {
+  if (group.activeCount) return { kind: "active", label: group.activeCount === 1 ? "Active now" : `${group.activeCount} active now` };
+  if (group.warningCount) return { kind: "warning", label: `${group.warningCount} ${group.warningCount === 1 ? "issue needs" : "issues need"} attention` };
+  if (!group.rows.length) return { kind: "unreported", label: "Awaiting first report" };
+  if (group.completedCount) return { kind: "recent", label: group.lastAt ? `Last cycle completed · ${group.lastAt}` : "Last cycle completed" };
   const explicit = String(primary.progress || "").trim();
-  const normalized = explicit.replaceAll(",", "");
-  const percentMatch = normalized.match(/^(\d+(?:\.\d+)?)\s*%$/);
-  if (percentMatch) {
-    const percent = Math.max(0, Math.min(100, Number(percentMatch[1])));
-    return { label: explicit, percent };
-  }
-  const fractionMatch = normalized.match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/);
-  if (fractionMatch && Number(fractionMatch[2]) > 0) {
-    const percent = Math.max(0, Math.min(100, Math.round((Number(fractionMatch[1]) / Number(fractionMatch[2])) * 100)));
-    return { label: explicit, percent };
-  }
-  if (explicit && explicit !== "-") return { label: explicit };
-  if (!group.rows.length) return { label: "No live report" };
-  if (group.warningCount) return { label: `${group.warningCount} warning` };
-  if (group.activeCount) return { label: `${group.activeCount} active` };
-  return { label: `${group.completedCount}/${group.rows.length} tasks done` };
+  if (explicit && explicit !== "-") return { kind: "idle", label: `Latest report · ${explicit}` };
+  return { kind: "idle", label: "Waiting for next cycle" };
 }
 
 function responsibilityStatusLabel(group: ServiceWorkGroup) {
   if (!group.rows.length) return "not reported";
   if (group.warningCount) return group.warningCount === 1 ? "1 issue" : `${group.warningCount} issues`;
   if (group.activeCount) return group.activeCount === 1 ? "1 active" : `${group.activeCount} active`;
-  if (group.completedCount === group.rows.length) return "complete";
+  if (group.completedCount === group.rows.length) return "cycle complete";
   return displayName(group.status || "waiting");
 }
 
