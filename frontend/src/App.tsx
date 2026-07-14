@@ -1,12 +1,12 @@
 import { useEffect, useState, type ReactNode } from "react";
 
 import { Layout, type PageKey } from "./app/components/Layout";
-import { CanvasConfigurationPage } from "./pages/CanvasConfigurationPage";
+import { CanvasConfigurationPage, CanvasFocusPage } from "./pages/CanvasConfigurationPage";
 import { HistoricalTradingPage } from "./pages/HistoricalTradingPage";
 import { RealLiveTradingPage } from "./pages/RealLiveTradingPage";
 import { ServicesPage, type ServicePageMode } from "./pages/ServicesPage";
 
-const validPages: PageKey[] = ["real-live-trading", "replay-trading", "backtest-trading", "canvas-configuration", "services-dashboard", "service-qmd", "service-qmd-history", "service-news", "service-sec", "service-text-embed", "service-reference", "service-ibkr"];
+const validPages: PageKey[] = ["real-live-trading", "replay-trading", "backtest-trading", "canvas-configuration", "canvas-focus", "services-dashboard", "service-qmd", "service-qmd-history", "service-news", "service-sec", "service-text-embed", "service-reference", "service-ibkr"];
 
 export function App() {
   const [page, setPage] = useState<PageKey>(() => {
@@ -36,8 +36,12 @@ export function App() {
     });
   }, [page]);
 
+  if (page === "canvas-focus") {
+    return <Layout chromeless page={page} onPageChange={setPage}><CanvasFocusPage /></Layout>;
+  }
+
   return (
-    <Layout page={page} onPageChange={setPage} topbarCenter={topbarCenter}>
+    <Layout compactContent={page === "canvas-configuration"} page={page} onPageChange={setPage} topbarCenter={topbarCenter}>
       <div aria-hidden={page !== "real-live-trading"} className={page === "real-live-trading" ? "page-cache-panel active" : "page-cache-panel"}>
         {page === "real-live-trading" || visitedPages.has("real-live-trading") ? <RealLiveTradingPage onTopbarCenterChange={page === "real-live-trading" ? setTopbarCenter : undefined} /> : null}
       </div>

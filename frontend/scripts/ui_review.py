@@ -29,6 +29,7 @@ PAGES = (
     "replay-trading",
     "backtest-trading",
     "canvas-configuration",
+    "canvas-focus",
     "services-dashboard",
     "service-qmd",
     "service-qmd-history",
@@ -42,7 +43,7 @@ VIEWPORTS = {
     "normal": {"width": 1600, "height": 1000},
     "compact": {"width": 1280, "height": 720},
 }
-REPRESENTATIVE_PAGES = ("real-live-trading", "replay-trading", "backtest-trading", "canvas-configuration", "services-dashboard")
+REPRESENTATIVE_PAGES = ("real-live-trading", "replay-trading", "backtest-trading", "canvas-configuration", "canvas-focus", "services-dashboard")
 REPRESENTATIVE_THEMES = ("light", "dark")
 TARGETED_SCALES = (0.8, 1.0, 1.25)
 
@@ -172,6 +173,73 @@ def slug_scale(scale: float) -> str:
     return str(scale).replace(".", "p")
 
 
+def validate_canvas_interactions(page: Any, scenario: dict[str, Any]) -> list[str]:
+    """Exercise the Canvas behaviors that static screenshots cannot prove."""
+    issues: list[str] = []
+    if scenario["page"] == "canvas-focus":
+        if page.locator(".sidebar").count():
+            issues.append("focus canvas renders the application sidebar")
+        chart = page.get_by_role("region", name="Chart", exact=True)
+        if chart.count() != 1:
+            issues.append("focus canvas does not render exactly one Chart container")
+        else:
+            bounds = chart.bounding_box()
+            minimum_height = scenario["viewport"]["height"] - 92
+            if not bounds or bounds["height"] < minimum_height:
+                actual = round(bounds["height"]) if bounds else 0
+                issues.append(
+                    f"focus container does not fill the working page ({actual} < {minimum_height})"
+                )
+        return issues
+
+    if not (
+        scenario["page"] == "canvas-configuration"
+        and scenario["theme"] == "light"
+        and scenario["scale"] == 1.0
+        and scenario["viewport_name"] == "normal"
+    ):
+        return issues
+
+    chart = page.get_by_role("region", name="Chart", exact=True)
+    if chart.count() != 1:
+        return ["main canvas does not render exactly one Chart container"]
+    try:
+        chart.get_by_role("button", name="Configure").click()
+        if chart.get_by_label("Chart configuration").count() != 1:
+            issues.append("Chart configuration is not contained inside the Chart container")
+        if page.locator(".canvas-config-drawer").count():
+            issues.append("container configuration created a page-level drawer")
+        chart.get_by_label("Chart link channel").select_option("C")
+        page.wait_for_timeout(100)
+        if "C" not in chart.locator(".workspace-window-link").inner_text():
+            issues.append("changing a container link channel did not update its link state")
+
+        chart.get_by_role("button", name="Minimize Chart").click()
+        if chart.get_by_role("button", name="Restore Chart").count() != 1:
+            issues.append("Chart did not enter the minimized state")
+        chart.get_by_role("button", name="Restore Chart").click()
+        chart.get_by_role("button", name="Fullscreen Chart").click()
+        if chart.get_by_role("button", name="Exit fullscreen Chart").count() != 1:
+            issues.append("Chart did not enter the maximized state")
+        chart.get_by_role("button", name="Exit fullscreen Chart").click()
+        chart.get_by_role("button", name="Reset Chart to its default layout").click()
+
+        with page.expect_popup(timeout=5000) as popup_info:
+            chart.get_by_role("button", name="Open linked Chart in a new canvas").click()
+        popup = popup_info.value
+        popup.locator(".app-shell").wait_for(state="visible", timeout=5000)
+        if "#canvas-focus" not in popup.url or popup.locator(".sidebar").count():
+            issues.append("linked container did not open in a chromeless focus canvas")
+        if popup.get_by_role("region", name="Chart", exact=True).count() != 1:
+            issues.append("linked focus canvas does not contain the source Chart")
+        popup.close()
+        if page.locator(".canvas-manager-items article").count() < 2:
+            issues.append("main Canvas manager did not register the new focus canvas")
+    except Exception as exc:
+        issues.append(f"Canvas interaction check failed: {exc}")
+    return issues
+
+
 def capture(args: argparse.Namespace) -> int:
     from playwright.sync_api import sync_playwright
 
@@ -199,6 +267,37 @@ def capture(args: argparse.Namespace) -> int:
                     + json.dumps(scale_value)
                     + ");"
                 )
+                if scenario["page"] == "canvas-focus":
+                    focus_id = args.canvas_id or "review-focus"
+                    focus_layout = {
+                        "chart": {
+                            "fullscreen": True,
+                            "h": max(320, round(scenario["viewport"]["height"] / scenario["scale"]) - 62),
+                            "minimized": False,
+                            "w": max(680, round(scenario["viewport"]["width"] / scenario["scale"])),
+                            "x": 0,
+                            "y": 0,
+                            "z": 1,
+                        },
+                    }
+                    focus_state = {"layoutVersion": 3, "layouts": focus_layout, "openIds": ["chart"]}
+                    focus_registry = {
+                        "version": 1,
+                        "canvases": [{"id": "main", "label": "Main"}, {"id": focus_id, "label": "Chart focus"}],
+                        "linkAssignments": {"chart": "A"},
+                        "linkContexts": {
+                            "A": {"symbol": "AAPL", "timeframe": "1m"},
+                            "B": {"symbol": "MSFT", "timeframe": "1m"},
+                            "C": {"symbol": "NVDA", "timeframe": "5m"},
+                        },
+                    }
+                    context.add_init_script(
+                        "localStorage.setItem('quant-research-workbench.canvas.registry.v1', "
+                        + json.dumps(json.dumps(focus_registry))
+                        + "); localStorage.setItem("
+                        + json.dumps(f"quant-research-workbench.trading-workspace.canvas.{focus_id}.v1")
+                        + ", " + json.dumps(json.dumps(focus_state)) + ");"
+                    )
                 if args.seed_core_containers and args.canvas_id and scenario["page"] == "real-live-trading":
                     viewport_width = scenario["viewport"]["width"]
                     viewport_height = scenario["viewport"]["height"]
@@ -244,6 +343,8 @@ def capture(args: argparse.Namespace) -> int:
                 canvas_query = ""
                 if args.canvas_id and scenario["page"] == "real-live-trading":
                     canvas_query = f"?liveCanvas={args.canvas_id}"
+                elif scenario["page"] == "canvas-focus":
+                    canvas_query = f"?canvas={args.canvas_id or 'review-focus'}"
                 elif args.seed_core_containers and scenario["page"] == "replay-trading":
                     canvas_query = "?historicalWorkspace=replay"
                 elif args.seed_core_containers and scenario["page"] == "backtest-trading":
@@ -289,6 +390,19 @@ def capture(args: argparse.Namespace) -> int:
                             resolvedScale: shellStyle
                                 ? shellStyle.getPropertyValue('--app-zoom').trim()
                                 : null,
+                            canvasGeometry: ['.focus-app-main', '.canvas-focus-page', '.trading-workspace-shell', '.trading-workspace-canvas', '.workspace-window[data-window-kind="chart"]']
+                                .map((selector) => {
+                                    const element = document.querySelector(selector);
+                                    const rect = element?.getBoundingClientRect();
+                                    const style = element ? getComputedStyle(element) : null;
+                                    return {
+                                        selector,
+                                        height: rect ? Math.round(rect.height) : null,
+                                        top: rect ? Math.round(rect.top) : null,
+                                        computedHeight: style?.height || null,
+                                        inlineStyle: element?.getAttribute('style') || null,
+                                    };
+                                }),
                         };
                     }""")
                     page.screenshot(path=str(screenshot_path), full_page=True)
@@ -317,6 +431,7 @@ def capture(args: argparse.Namespace) -> int:
                             f"document overflows horizontally ({metrics['documentWidth']} > "
                             f"{metrics['viewportWidth']})"
                         )
+                    issues.extend(validate_canvas_interactions(page, scenario))
                     objective_issues += len(issues)
                     result.update({
                         "status": "captured",

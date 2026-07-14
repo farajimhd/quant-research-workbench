@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
+import type { CanvasWorkspaceState } from "../canvasWorkspace";
 import {
   containersForMode,
   defaultContainersForMode,
@@ -33,12 +34,20 @@ import {
 
 type TradingWorkspaceProps = {
   clockLabel: string;
+  canPopOut?: boolean;
+  canvasTargets?: WorkspaceCanvasTarget[];
+  compact?: boolean;
   defaultOpenIds?: WorkspaceContainerId[];
+  defaultStateOverride?: CanvasWorkspaceState | null;
   definitionsOverride?: readonly WorkspaceContainerDefinition[];
   historicalSourceReady: boolean;
-  layoutPreset?: "global" | "mode";
+  layoutPreset?: "focus" | "global" | "mode";
+  linkLabelForContainer?: (definition: WorkspaceContainerDefinition) => string | undefined;
   metaForContainer?: (definition: WorkspaceContainerDefinition) => WorkspaceWindowMeta;
   mode: TradingWorkspaceMode;
+  onMoveContainerToCanvas?: (id: WorkspaceContainerId, canvasId: string, layout: WorkspaceWindowLayout) => void;
+  onPopOutContainer?: (id: WorkspaceContainerId, layout: WorkspaceWindowLayout) => void;
+  onStateChange?: (state: CanvasWorkspaceState) => void;
   renderContainer?: (definition: WorkspaceContainerDefinition) => ReactNode;
   runLabel: string;
   runStatus: "completed" | "idle" | "running" | "unavailable";
@@ -49,17 +58,25 @@ type TradingWorkspaceProps = {
   workspaceBadge?: string;
 };
 
-const CANVAS_TARGETS: WorkspaceCanvasTarget[] = [{ color: "var(--primary)", id: "main", isCurrent: true, label: "Main" }];
-const LAYOUT_VERSION = 2;
+const DEFAULT_CANVAS_TARGETS: WorkspaceCanvasTarget[] = [{ color: "var(--primary)", id: "main", isCurrent: true, label: "Main" }];
+export const TRADING_WORKSPACE_LAYOUT_VERSION = 3;
 
 export function TradingWorkspace({
   clockLabel,
+  canPopOut = false,
+  canvasTargets = DEFAULT_CANVAS_TARGETS,
+  compact = false,
   defaultOpenIds,
+  defaultStateOverride,
   definitionsOverride,
   historicalSourceReady,
   layoutPreset = "mode",
+  linkLabelForContainer,
   metaForContainer,
   mode,
+  onMoveContainerToCanvas,
+  onPopOutContainer,
+  onStateChange,
   renderContainer,
   runLabel,
   runStatus,
@@ -81,8 +98,22 @@ export function TradingWorkspace({
   const [libraryOpen, setLibraryOpen] = useState(false);
 
   useEffect(() => {
-    window.localStorage.setItem(storageKey, JSON.stringify({ layoutVersion: LAYOUT_VERSION, layouts, openIds }));
-  }, [layouts, openIds, storageKey]);
+    const state = { layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts, openIds };
+    window.localStorage.setItem(storageKey, JSON.stringify(state));
+    onStateChange?.(state);
+  }, [layouts, onStateChange, openIds, storageKey]);
+
+  useEffect(() => {
+    const syncStoredState = (event: StorageEvent) => {
+      if (event.key !== storageKey || !event.newValue) return;
+      const next = parseWorkspaceState(event.newValue, definitions);
+      if (!next) return;
+      setOpenIds(next.openIds);
+      setLayouts(next.layouts);
+    };
+    window.addEventListener("storage", syncStoredState);
+    return () => window.removeEventListener("storage", syncStoredState);
+  }, [definitions, storageKey]);
 
   function focusContainer(id: WorkspaceContainerId) {
     const highest = Math.max(0, ...Object.values(layouts).map((layout) => layout.z));
@@ -95,8 +126,11 @@ export function TradingWorkspace({
       setLibraryOpen(false);
       return;
     }
-    setOpenIds((current) => [...current, id]);
-    setLayouts((current) => ({ ...current, [id]: createAddedLayout(current, openIds.length) }));
+    const nextIds = [...openIds, id];
+    setOpenIds(nextIds);
+    setLayouts((current) => layoutPreset === "focus"
+      ? createFocusLayouts(nextIds)
+      : { ...current, [id]: createAddedLayout(current, openIds.length) });
     setLibraryOpen(false);
   }
 
@@ -105,15 +139,35 @@ export function TradingWorkspace({
   }
 
   function resetLayout() {
+    if (defaultStateOverride) {
+      setOpenIds([...defaultStateOverride.openIds]);
+      setLayouts(cloneLayouts(defaultStateOverride.layouts));
+      return;
+    }
     const nextIds = defaultOpenIds ?? defaultContainersForMode(mode);
     setOpenIds(nextIds);
-    setLayouts(layoutPreset === "global" ? createGlobalLayouts(nextIds) : createHistoricalLayouts(mode, nextIds));
+    setLayouts(createLayoutsForPreset(layoutPreset, mode, nextIds));
   }
 
-  const minHeight = workspaceMinHeight(openIds, layouts, false);
+  function resetContainer(id: WorkspaceContainerId) {
+    const defaultLayout = defaultStateOverride?.layouts[id]
+      ?? createLayoutsForPreset(layoutPreset, mode, [id])[id]
+      ?? createAddedLayout({}, 0, layoutPreset === "focus");
+    setOpenIds((current) => current.includes(id) ? current : [...current, id]);
+    setLayouts((current) => ({ ...current, [id]: { ...defaultLayout, z: Math.max(1, defaultLayout.z) } }));
+  }
+
+  function moveContainer(id: WorkspaceContainerId, canvasId: string) {
+    const layout = layouts[id];
+    if (!layout || !onMoveContainerToCanvas) return;
+    onMoveContainerToCanvas(id, canvasId, layout);
+    setOpenIds((current) => current.filter((candidate) => candidate !== id));
+  }
+
+  const minHeight = workspaceMinHeight(openIds, layouts, compact);
 
   return (
-    <div className="trading-workspace-shell" data-workspace-mode={mode}>
+    <div className="trading-workspace-shell" data-library-open={libraryOpen ? "true" : "false"} data-workspace-mode={mode}>
       <section className="trading-workspace-command" aria-label="Workspace context and controls">
         <div className="trading-workspace-identity">
           <span className="trading-mode-badge" data-mode={mode}>{workspaceBadge ?? modeLabel(mode)}</span>
@@ -156,19 +210,22 @@ export function TradingWorkspace({
           const meta = metaForContainer?.(definition) ?? containerMeta(definition, mode, historicalSourceReady, runStatus);
           return (
             <WorkspaceWindow
-              canPopOut={false}
-              canvasTargets={CANVAS_TARGETS}
+              canPopOut={canPopOut}
+              canvasTargets={canvasTargets}
+              compact={compact}
               icon={containerIcon(id)}
               id={id}
               key={id}
               kind={id}
               layout={layout}
+              linkLabel={linkLabelForContainer?.(definition)}
               meta={meta}
               onClose={() => setOpenIds((current) => current.filter((candidate) => candidate !== id))}
               onFocus={() => focusContainer(id)}
               onLayoutChange={updateLayout}
-              onMoveToCanvas={() => undefined}
-              onPopOut={() => undefined}
+              onMoveToCanvas={(windowId, targetCanvasId) => moveContainer(windowId as WorkspaceContainerId, targetCanvasId)}
+              onPopOut={() => onPopOutContainer?.(id, layout)}
+              onReset={() => resetContainer(id)}
               title={definition.title}
             >
               {renderContainer ? renderContainer(definition) : <ContainerStandby definition={definition} meta={meta} mode={mode} />}
@@ -266,39 +323,72 @@ function readWorkspaceState(
   mode: TradingWorkspaceMode,
   definitions: WorkspaceContainerDefinition[],
   defaultOpenIds: WorkspaceContainerId[] | undefined,
-  layoutPreset: "global" | "mode",
-) {
+  layoutPreset: "focus" | "global" | "mode",
+): CanvasWorkspaceState {
   const defaultIds = defaultOpenIds ?? defaultContainersForMode(mode);
   try {
     const raw = window.localStorage.getItem(storageKey);
     if (!raw) throw new Error("no saved layout");
-    const parsed = JSON.parse(raw) as { layoutVersion?: number; layouts?: Record<string, WorkspaceWindowLayout>; openIds?: WorkspaceContainerId[] };
-    if (parsed.layoutVersion !== LAYOUT_VERSION || !parsed.layouts || !Array.isArray(parsed.openIds)) throw new Error("stale layout");
-    const validIds = parsed.openIds.filter((id) => definitions.some((definition) => definition.id === id));
-    return { layouts: parsed.layouts, openIds: validIds.length ? validIds : defaultIds };
+    const parsed = parseWorkspaceState(raw, definitions);
+    if (!parsed) throw new Error("stale layout");
+    return parsed;
   } catch {
-    return { layouts: layoutPreset === "global" ? createGlobalLayouts(defaultIds) : createHistoricalLayouts(mode, defaultIds), openIds: defaultIds };
+    return { layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: createLayoutsForPreset(layoutPreset, mode, defaultIds), openIds: defaultIds };
   }
+}
+
+function parseWorkspaceState(raw: string, definitions: WorkspaceContainerDefinition[]): CanvasWorkspaceState | null {
+  try {
+    const parsed = JSON.parse(raw) as Partial<CanvasWorkspaceState>;
+    if (parsed.layoutVersion !== TRADING_WORKSPACE_LAYOUT_VERSION || !parsed.layouts || !Array.isArray(parsed.openIds)) return null;
+    const openIds = parsed.openIds.filter((id) => definitions.some((definition) => definition.id === id));
+    const layouts = Object.fromEntries(openIds.flatMap((id) => parsed.layouts?.[id] ? [[id, parsed.layouts[id]]] : []));
+    return { layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts, openIds };
+  } catch {
+    return null;
+  }
+}
+
+function createLayoutsForPreset(preset: "focus" | "global" | "mode", mode: TradingWorkspaceMode, ids: WorkspaceContainerId[]) {
+  if (preset === "focus") return createFocusLayouts(ids);
+  return preset === "global" ? createGlobalLayouts(ids) : createHistoricalLayouts(mode, ids);
 }
 
 function createGlobalLayouts(ids: WorkspaceContainerId[]): Record<string, WorkspaceWindowLayout> {
   const width = availableWorkspaceWidth();
-  const margin = 12;
-  const gap = 10;
+  const margin = 0;
+  const gap = 2;
   const columnWidth = Math.floor((width - margin * 2 - gap) / 2);
   const placements: Record<WorkspaceContainerId, Omit<WorkspaceWindowLayout, "fullscreen" | "minimized" | "z">> = {
-    scanner: { h: 310, w: columnWidth, x: margin, y: 84 },
-    chart: { h: 450, w: columnWidth, x: margin + columnWidth + gap, y: 84 },
-    portfolio: { h: 300, w: columnWidth, x: margin, y: 404 },
-    orders: { h: 300, w: columnWidth, x: margin + columnWidth + gap, y: 544 },
-    fills: { h: 270, w: columnWidth, x: margin, y: 714 },
-    strategy: { h: 270, w: columnWidth, x: margin + columnWidth + gap, y: 854 },
-    news: { h: 340, w: columnWidth, x: margin, y: 994 },
-    sec: { h: 340, w: columnWidth, x: margin + columnWidth + gap, y: 1134 },
-    xbrl: { h: 340, w: columnWidth, x: margin, y: 1344 },
-    journal: { h: 340, w: columnWidth, x: margin + columnWidth + gap, y: 1484 },
+    scanner: { h: 250, w: columnWidth, x: margin, y: 0 },
+    chart: { h: 410, w: columnWidth, x: margin + columnWidth + gap, y: 0 },
+    portfolio: { h: 230, w: columnWidth, x: margin, y: 252 },
+    orders: { h: 230, w: columnWidth, x: margin + columnWidth + gap, y: 412 },
+    fills: { h: 220, w: columnWidth, x: margin, y: 484 },
+    strategy: { h: 220, w: columnWidth, x: margin + columnWidth + gap, y: 644 },
+    news: { h: 290, w: columnWidth, x: margin, y: 706 },
+    sec: { h: 290, w: columnWidth, x: margin + columnWidth + gap, y: 866 },
+    xbrl: { h: 290, w: columnWidth, x: margin, y: 998 },
+    journal: { h: 290, w: columnWidth, x: margin + columnWidth + gap, y: 1158 },
   };
   return Object.fromEntries(ids.map((id, index) => [id, { ...placements[id], fullscreen: false, minimized: false, z: index + 1 }]));
+}
+
+export function createFocusLayouts(ids: WorkspaceContainerId[]): Record<string, WorkspaceWindowLayout> {
+  const width = availableWorkspaceWidth(true);
+  const height = Math.max(320, availableWorkspaceHeight() - 62);
+  if (ids.length === 1) return { [ids[0]]: { fullscreen: true, h: height, minimized: false, w: width, x: 0, y: 0, z: 1 } };
+  const gap = 2;
+  const columnWidth = Math.floor((width - gap) / 2);
+  return Object.fromEntries(ids.map((id, index) => [id, {
+    fullscreen: false,
+    h: Math.max(280, Math.floor((height - gap) / Math.ceil(ids.length / 2))),
+    minimized: false,
+    w: columnWidth,
+    x: index % 2 === 0 ? 0 : columnWidth + gap,
+    y: Math.floor(index / 2) * (Math.max(280, Math.floor((height - gap) / Math.ceil(ids.length / 2))) + gap),
+    z: index + 1,
+  }]));
 }
 
 function createHistoricalLayouts(mode: TradingWorkspaceMode, ids: WorkspaceContainerId[]): Record<string, WorkspaceWindowLayout> {
@@ -329,21 +419,34 @@ function createHistoricalLayouts(mode: TradingWorkspaceMode, ids: WorkspaceConta
   }));
 }
 
-function createAddedLayout(layouts: Record<string, WorkspaceWindowLayout>, index: number): WorkspaceWindowLayout {
+function createAddedLayout(layouts: Record<string, WorkspaceWindowLayout>, index: number, focus = false): WorkspaceWindowLayout {
   const highest = Math.max(0, ...Object.values(layouts).map((layout) => layout.z));
-  const offset = (index % 5) * 24;
-  const width = availableWorkspaceWidth();
-  return { fullscreen: false, h: 360, minimized: false, w: Math.min(560, width - 72), x: 36 + offset, y: 108 + offset, z: highest + 1 };
+  const offset = (index % 5) * 18;
+  const width = availableWorkspaceWidth(focus);
+  return focus
+    ? { fullscreen: true, h: Math.max(320, availableWorkspaceHeight() - 62), minimized: false, w: width, x: 0, y: 0, z: highest + 1 }
+    : { fullscreen: false, h: 320, minimized: false, w: Math.min(560, width - 36), x: 18 + offset, y: 18 + offset, z: highest + 1 };
 }
 
-function availableWorkspaceWidth() {
+function availableWorkspaceWidth(noSidebar = false) {
   if (typeof window === "undefined") return 1180;
   const storedScale = Number(window.localStorage.getItem("quant-research-workbench.ui-scale"));
   const scale = Number.isFinite(storedScale) && storedScale > 0 ? storedScale : 1;
   const scaledViewportWidth = window.innerWidth / scale;
-  const expandedSidebarWidth = 256;
-  const contentPadding = 48;
-  return Math.max(680, Math.floor(scaledViewportWidth - expandedSidebarWidth - contentPadding));
+  const shellWidth = noSidebar ? 0 : 256;
+  const contentPadding = noSidebar ? 0 : 48;
+  return Math.max(680, Math.floor(scaledViewportWidth - shellWidth - contentPadding));
+}
+
+function availableWorkspaceHeight() {
+  if (typeof window === "undefined") return 900;
+  const storedScale = Number(window.localStorage.getItem("quant-research-workbench.ui-scale"));
+  const scale = Number.isFinite(storedScale) && storedScale > 0 ? storedScale : 1;
+  return Math.floor(window.innerHeight / scale);
+}
+
+function cloneLayouts(layouts: Record<string, WorkspaceWindowLayout>) {
+  return Object.fromEntries(Object.entries(layouts).map(([id, layout]) => [id, { ...layout }]));
 }
 
 function containerIcon(id: WorkspaceContainerId) {

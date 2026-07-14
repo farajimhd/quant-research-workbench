@@ -20279,3 +20279,433 @@ button {
   .canvas-preview-state { border-left: 0; padding-left: 0; }
   .canvas-metric-row { grid-template-columns: 1fr; }
 }
+
+/* Compact linked canvas system */
+
+.shell-content-inner.compact-content {
+  padding: 2px;
+}
+
+.focus-app-shell {
+  height: var(--app-zoomed-viewport-height);
+  min-height: var(--app-zoomed-viewport-height);
+  overflow: hidden;
+}
+
+.focus-app-main {
+  height: 100%;
+  min-width: 0;
+  overflow: auto;
+}
+
+.canvas-config-page {
+  gap: 2px;
+  max-width: none;
+}
+
+.canvas-focus-page {
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  width: 100%;
+}
+
+.canvas-focus-page .trading-workspace-shell {
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+
+.canvas-focus-page .trading-workspace-shell[data-library-open="true"] {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.canvas-focus-page .trading-workspace-canvas {
+  height: 100%;
+  min-height: 0 !important;
+}
+
+.canvas-config-toolbar {
+  border-radius: 0;
+  flex-wrap: nowrap;
+  gap: 4px;
+  min-height: 30px;
+  padding: 1px 3px;
+}
+
+.canvas-config-toolbar h1 {
+  flex: 1 1 auto;
+  font-size: 14px;
+  margin: 0;
+}
+
+.canvas-config-toolbar label {
+  gap: 3px;
+}
+
+.canvas-config-toolbar label span {
+  font-size: 8px;
+}
+
+.canvas-config-toolbar input {
+  border-radius: 3px;
+  font-size: 10px;
+  min-height: 24px;
+  padding: 1px 4px;
+}
+
+.canvas-preview-state {
+  font-size: 9px;
+  padding-left: 5px;
+}
+
+.canvas-back-link,
+.canvas-focus-title {
+  flex: 0 1 auto;
+  font-size: 10px;
+  margin: 0;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.canvas-back-link {
+  color: var(--primary);
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.canvas-manager-strip {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  display: flex;
+  gap: 3px;
+  min-height: 28px;
+  overflow-x: auto;
+  padding: 1px 3px;
+}
+
+.canvas-manager-strip > strong {
+  font-size: 9px;
+  margin-right: 2px;
+  text-transform: uppercase;
+}
+
+.canvas-manager-items {
+  align-items: center;
+  display: flex;
+  flex: 1 1 auto;
+  gap: 2px;
+  min-width: 0;
+}
+
+.canvas-manager-items article {
+  align-items: center;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  display: flex;
+  flex: 0 0 auto;
+  gap: 1px;
+  min-height: 22px;
+  padding: 0 2px 0 5px;
+}
+
+.canvas-manager-items article[data-main="true"] {
+  border-color: var(--primary);
+}
+
+.canvas-manager-items span,
+.canvas-manager-items small {
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.canvas-manager-items small {
+  color: var(--muted-foreground);
+}
+
+.canvas-config-page .trading-workspace-shell {
+  gap: 2px;
+}
+
+.canvas-config-page .trading-workspace-command {
+  border-radius: 0;
+  gap: 4px;
+  grid-template-columns: minmax(160px, 1fr) auto;
+  min-height: 28px;
+  padding: 1px 3px;
+}
+
+.canvas-config-page .trading-workspace-identity {
+  gap: 4px;
+}
+
+.canvas-config-page .trading-workspace-identity > div {
+  align-items: baseline;
+  display: flex;
+  gap: 4px;
+}
+
+.canvas-config-page .trading-workspace-identity strong {
+  font-size: 10px;
+}
+
+.canvas-config-page .trading-workspace-identity small {
+  font-size: 8px;
+}
+
+.canvas-config-page .trading-mode-badge {
+  border-radius: 3px;
+  font-size: 7px;
+  padding: 2px 4px;
+}
+
+.canvas-config-page .trading-workspace-actions {
+  gap: 2px;
+}
+
+.canvas-config-page .trading-workspace-actions .button,
+.canvas-config-toolbar .button,
+.canvas-manager-strip .button {
+  border-radius: 3px;
+  font-size: 9px;
+  min-height: 22px;
+  padding: 1px 5px;
+}
+
+.canvas-config-page .workspace-container-library {
+  border-radius: 0;
+  gap: 2px;
+  padding: 2px;
+}
+
+.canvas-config-page .workspace-container-library-grid {
+  gap: 2px;
+}
+
+.canvas-config-page .workspace-container-library-grid article {
+  border-radius: 2px;
+  gap: 3px;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  padding: 2px;
+}
+
+.canvas-config-page .workspace-library-icon {
+  border-radius: 2px;
+  height: 20px;
+  width: 20px;
+}
+
+.canvas-config-page .trading-workspace-canvas {
+  border-radius: 0;
+  min-height: 640px;
+}
+
+.canvas-config-page .trading-workspace-watermark {
+  display: none;
+}
+
+.workspace-window.live-window.compact-window {
+  border-radius: 0;
+  grid-template-rows: 24px minmax(0, 1fr);
+  min-height: 24px;
+}
+
+.compact-window .workspace-window-header.live-window-header {
+  gap: 1px;
+  min-height: 24px;
+  padding: 0 2px;
+}
+
+.compact-window .workspace-window-title.live-window-title {
+  gap: 2px;
+}
+
+.compact-window .workspace-window-title > svg:first-child {
+  width: 10px;
+}
+
+.compact-window .workspace-window-heading {
+  display: flex;
+  gap: 3px;
+  min-width: 40px;
+}
+
+.compact-window .workspace-window-heading strong {
+  font-size: 9px;
+  line-height: 1;
+}
+
+.compact-window .workspace-window-heading small {
+  align-self: center;
+  font-size: 7px;
+  line-height: 1;
+  max-width: 120px;
+}
+
+.workspace-window-link {
+  align-items: center;
+  color: var(--info);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 8px;
+  font-weight: 900;
+  gap: 1px;
+}
+
+.compact-window .workspace-window-source-status {
+  border-radius: 50%;
+  font-size: 0;
+  height: 7px;
+  padding: 0;
+  width: 7px;
+}
+
+.compact-window .workspace-window-actions.live-window-actions {
+  gap: 0;
+}
+
+.compact-window .workspace-window-actions .toolbar-button,
+.canvas-manager-strip .toolbar-button,
+.canvas-config-toolbar .toolbar-button {
+  border-radius: 2px;
+  height: 20px;
+  min-height: 20px;
+  padding: 0;
+  width: 20px;
+}
+
+.compact-window .workspace-canvas-select select {
+  border-radius: 2px;
+  font-size: 8px;
+  height: 20px;
+  max-width: 70px;
+  padding: 0 15px 0 2px;
+}
+
+.compact-window .workspace-window-body.live-window-body {
+  overflow: hidden;
+  padding: 0;
+}
+
+.compact-window .workspace-window-resize.live-window-resize {
+  bottom: 1px;
+  right: 1px;
+}
+
+.canvas-container-preview {
+  height: 100%;
+  overflow: hidden;
+  padding: 0;
+}
+
+.canvas-container-configure {
+  border-radius: 2px;
+  font-size: 0;
+  gap: 0;
+  min-height: 20px;
+  padding: 0;
+  right: 1px;
+  top: 1px;
+  width: 20px;
+}
+
+.canvas-container-content {
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: 0;
+}
+
+.canvas-container-settings {
+  align-content: start;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  display: grid;
+  gap: 4px;
+  max-height: calc(100% - 22px);
+  overflow: auto;
+  padding: 4px;
+  position: absolute;
+  right: 1px;
+  top: 22px;
+  width: min(250px, calc(100% - 2px));
+  z-index: 8;
+}
+
+.canvas-container-settings label:not(.canvas-check-field) {
+  display: grid;
+  gap: 2px;
+}
+
+.canvas-container-settings label > span {
+  color: var(--muted-foreground);
+  font-size: 8px;
+  font-weight: 800;
+}
+
+.canvas-container-settings input:not([type="checkbox"]),
+.canvas-container-settings select {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  color: var(--foreground);
+  font: inherit;
+  font-size: 9px;
+  min-height: 24px;
+  padding: 1px 3px;
+}
+
+.canvas-link-context {
+  align-items: center;
+  color: var(--info);
+  display: flex;
+  font-size: 9px;
+  font-weight: 800;
+  gap: 3px;
+}
+
+.canvas-preview-table th,
+.canvas-preview-table td {
+  padding: 3px 4px;
+}
+
+.canvas-metric-row {
+  gap: 2px;
+  margin: 0;
+}
+
+.canvas-metric-row > div,
+.canvas-strategy-preview > div:not(:last-child) {
+  border-radius: 2px;
+  gap: 1px;
+  padding: 3px 4px;
+}
+
+.canvas-strategy-preview,
+.canvas-news-preview {
+  gap: 2px;
+}
+
+.canvas-news-preview article {
+  gap: 1px;
+  padding: 2px 3px;
+}
+
+.canvas-symbol-link {
+  background: transparent;
+  border: 0;
+  color: var(--primary);
+  font: inherit;
+  font-weight: 900;
+  padding: 0;
+}
+
+@media (max-width: 820px) {
+  .shell-content-inner.compact-content { padding: 0; }
+  .canvas-config-toolbar { flex-wrap: wrap; }
+  .canvas-config-toolbar h1 { flex-basis: auto; }
+  .compact-window .workspace-window-heading small { display: none; }
+}

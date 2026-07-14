@@ -4,9 +4,11 @@ import {
   Eye,
   FolderOpen,
   LayoutGrid,
+  Link2,
   Maximize2,
   Minimize2,
   Move,
+  RotateCcw,
   X,
 } from "lucide-react";
 import type {
@@ -57,16 +59,19 @@ type WorkspaceWindowProps = {
   canPopOut?: boolean;
   canvasTargets: WorkspaceCanvasTarget[];
   children: ReactNode;
+  compact?: boolean;
   icon: ReactNode;
   id: WorkspaceWindowId;
   kind?: string;
   layout: WorkspaceWindowLayout;
+  linkLabel?: string;
   meta?: WorkspaceWindowMeta;
   onClose: (id: WorkspaceWindowId) => void;
   onFocus: (id: WorkspaceWindowId) => void;
   onLayoutChange: (id: WorkspaceWindowId, patch: Partial<WorkspaceWindowLayout>) => void;
   onMoveToCanvas: (id: WorkspaceWindowId, canvasId: string) => void;
   onPopOut: (id: WorkspaceWindowId) => void;
+  onReset?: (id: WorkspaceWindowId) => void;
   title: string;
 };
 
@@ -79,21 +84,26 @@ export function WorkspaceWindow({
   canPopOut = true,
   canvasTargets,
   children,
+  compact = false,
   icon,
   id,
   kind,
   layout,
+  linkLabel,
   meta,
   onClose,
   onFocus,
   onLayoutChange,
   onMoveToCanvas,
   onPopOut,
+  onReset,
   title,
 }: WorkspaceWindowProps) {
+  const edge = compact ? 0 : 12;
+  const minimizedHeight = compact ? 24 : 44;
   const style = layout.fullscreen
-    ? { height: "calc(100% - 24px)", left: 12, top: 12, width: "calc(100% - 24px)", zIndex: 1000 + layout.z }
-    : { height: layout.minimized ? 44 : layout.h, left: layout.x, top: layout.y, width: layout.w, zIndex: layout.z };
+    ? { height: `calc(100% - ${edge * 2}px)`, left: edge, top: edge, width: `calc(100% - ${edge * 2}px)`, zIndex: 1000 + layout.z }
+    : { height: layout.minimized ? minimizedHeight : layout.h, left: layout.x, top: layout.y, width: layout.w, zIndex: layout.z };
 
   function horizontalBounds(element: HTMLElement) {
     const workspace = element.closest<HTMLElement>("[data-workspace-canvas]");
@@ -181,7 +191,7 @@ export function WorkspaceWindow({
   return (
     <section
       aria-label={title}
-      className="workspace-window live-window"
+      className={compact ? "workspace-window live-window compact-window" : "workspace-window live-window"}
       data-window-kind={kind ?? (id.startsWith("chart-") ? "chart" : id)}
       style={style}
       onPointerDown={() => onFocus(id)}
@@ -201,15 +211,19 @@ export function WorkspaceWindow({
             <strong>{title}</strong>
             {meta ? <small title={meta.detail}>{meta.sourceLabel}{meta.freshness ? ` · ${meta.freshness}` : ""}</small> : null}
           </div>
+          {linkLabel ? <span className="workspace-window-link" title={`Linked context ${linkLabel}`}><Link2 size={10} /> {linkLabel}</span> : null}
           {meta ? <span aria-label={`Source status: ${meta.status}`} className="workspace-window-source-status" data-status={meta.status}>{meta.status}</span> : null}
         </div>
         <div className="workspace-window-actions live-window-actions" onPointerDown={(event) => event.stopPropagation()}>
           {canvasTargets.length > 1 ? <CanvasTargetSelect canvasTargets={canvasTargets} onMove={(canvasId) => onMoveToCanvas(id, canvasId)} title={title} /> : null}
           {canPopOut ? (
-            <button aria-label={`Move ${title} to a new canvas`} className="toolbar-button compact" onClick={() => onPopOut(id)} title="Move to new child canvas" type="button">
+            <button aria-label={`Open linked ${title} in a new canvas`} className="toolbar-button compact" onClick={() => onPopOut(id)} title="Open linked copy in a focus canvas" type="button">
               <ExternalLink size={12} />
             </button>
           ) : null}
+          {onReset ? <button aria-label={`Reset ${title} to its default layout`} className="toolbar-button compact" onClick={() => onReset(id)} title="Reset container layout" type="button">
+            <RotateCcw size={12} />
+          </button> : null}
           <button aria-label={layout.minimized ? `Restore ${title}` : `Minimize ${title}`} className="toolbar-button compact" onClick={() => onLayoutChange(id, { minimized: !layout.minimized })} title={layout.minimized ? "Restore" : "Minimize"} type="button">
             <Minimize2 size={12} />
           </button>
@@ -410,8 +424,8 @@ export function workspaceMinHeight(
   return openWindows.reduce((height, id) => {
     const layout = layouts[id];
     if (!layout || layout.fullscreen) return height;
-    const windowHeight = layout.minimized ? 44 : layout.h;
-    return Math.max(height, layout.y + windowHeight + 24);
+    const windowHeight = layout.minimized ? (compact ? 24 : 44) : layout.h;
+    return Math.max(height, layout.y + windowHeight + (compact ? 2 : 24));
   }, baseHeight);
 }
 

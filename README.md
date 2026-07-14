@@ -51,9 +51,14 @@ canvas designers. The configuration page defaults to a 09:45 New York preview
 and renders every container. Market data comes from QMD History, news/SEC/XBRL
 rows are point-in-time ClickHouse reads, and broker/runtime-only state is an
 explicit IBKR-shaped configuration fixture. Per-container controls and the
-single global layout are persisted in browser storage. The existing Live page
-still retains its legacy canvas state until the planned Live migration; it does
-not yet consume this global profile.
+single global default layout are persisted in browser storage. A canvas
+registry on this page creates, opens, and removes focused child canvases.
+Containers may be moved between registered canvases or opened as linked copies;
+link channels share symbol and interval context across tabs. Child canvases use
+a chromeless route, and each container owns its own settings overlay plus
+minimize, maximize, reset, close, and linked-open controls. The existing Live
+page still retains its legacy canvas state until the planned Live migration; it
+does not yet consume this global profile.
 
 The earlier prepared-data replay remains in
 `frontend/src/pages/LiveTradingPage.tsx` and `/api/live-trading/*` only as a

@@ -5,10 +5,12 @@ import { useEffect, useState } from "react";
 import { buildMenuItemButtonClassName, buildThemeMenuItemButtonClassName } from "../selectionStyles";
 import { APP_THEMES, DEFAULT_THEME_ID, applyThemeDefinition, isAppThemeId, type AppThemeDefinition, type AppThemeId } from "../theme";
 
-export type PageKey = "real-live-trading" | "replay-trading" | "backtest-trading" | "canvas-configuration" | "services-dashboard" | "service-qmd" | "service-qmd-history" | "service-news" | "service-sec" | "service-text-embed" | "service-reference" | "service-ibkr";
+export type PageKey = "real-live-trading" | "replay-trading" | "backtest-trading" | "canvas-configuration" | "canvas-focus" | "services-dashboard" | "service-qmd" | "service-qmd-history" | "service-news" | "service-sec" | "service-text-embed" | "service-reference" | "service-ibkr";
 export type UiScale = 0.8 | 0.9 | 1 | 1.1 | 1.25;
 
 type LayoutProps = {
+  chromeless?: boolean;
+  compactContent?: boolean;
   page: PageKey;
   onPageChange: (page: PageKey) => void;
   children: ReactNode;
@@ -44,6 +46,8 @@ const UI_SCALE_OPTIONS = [0.8, 0.9, 1, 1.1, 1.25] as const satisfies readonly Ui
 
 export function Layout({
   children,
+  chromeless = false,
+  compactContent = false,
   onPageChange,
   page,
   topbarCenter
@@ -80,6 +84,10 @@ export function Layout({
   function selectTheme(nextThemeId: AppThemeId) {
     setThemeId(nextThemeId);
     setThemeMenuOpen(false);
+  }
+
+  if (chromeless) {
+    return <div className="app-shell focus-app-shell"><main className="focus-app-main">{children}</main></div>;
   }
 
   return (
@@ -158,7 +166,7 @@ export function Layout({
           </nav>
         </aside>
         <main className="main">
-          <div className="shell-content-inner">{children}</div>
+          <div className={compactContent ? "shell-content-inner compact-content" : "shell-content-inner"}>{children}</div>
         </main>
       </div>
     </div>
