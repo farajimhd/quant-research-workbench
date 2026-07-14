@@ -33,7 +33,7 @@ from pipelines.sec.edgar.sec_acceptance_backfill_build import (  # noqa: E402
 DEFAULT_TARGET_DATABASE = "q_live"
 DEFAULT_TARGET_TABLE = "sec_filing_v3"
 DEFAULT_STAGE_DATABASE = "sec_core"
-DEFAULT_STAGE_TABLE = "sec_bulk_mirror_filing_acceptance_v3"
+DEFAULT_STAGE_TABLE = "sec_submissions_filing_overlay_v3"
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_acceptance_date_fallback_fill")
 DEFAULT_BATCH_SIZE = 5_000
 DATE_FALLBACK_SOURCE = "filing_date_midnight_fallback"

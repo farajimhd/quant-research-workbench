@@ -59,12 +59,17 @@ from pipelines.sec.edgar.sec_initial_fill_download import sha256_file  # noqa: E
 DEFAULT_TARGET_DATABASE = "q_live"
 DEFAULT_TARGET_TABLE = "sec_filing_v3"
 DEFAULT_STAGE_DATABASE = "sec_core"
-DEFAULT_STAGE_TABLE = "sec_bulk_mirror_filing_acceptance_v3"
+DEFAULT_STAGE_TABLE = "sec_submissions_filing_overlay_v3"
+DEFAULT_MIRROR_TABLE = "sec_bulk_mirror_filing_v3"
 DEFAULT_ARTIFACT_ROOT_WIN = Path("D:/market-data/sec_core")
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_acceptance_fragment_fill")
 DEFAULT_BATCH_SIZE = 25_000
 DEFAULT_REQUEST_MIN_INTERVAL_SECONDS = 0.11
 DATA_SEC_SUBMISSIONS_BASE_URL = "https://data.sec.gov/submissions"
+
+
+class SecSourceNotFound(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +169,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-table", default=os.environ.get("QLIVE_MIGRATION_SEC_FILING_TABLE", DEFAULT_TARGET_TABLE))
     parser.add_argument("--stage-database", default=os.environ.get("SEC_ACCEPTANCE_STAGE_DATABASE", DEFAULT_STAGE_DATABASE))
     parser.add_argument("--stage-table", default=os.environ.get("SEC_ACCEPTANCE_STAGE_TABLE", DEFAULT_STAGE_TABLE))
+    parser.add_argument("--mirror-table", default=os.environ.get("SEC_BULK_MIRROR_FILING_TABLE", DEFAULT_MIRROR_TABLE))
     parser.add_argument("--artifact-root-win", default=os.environ.get("SEC_CORE_ARTIFACT_ROOT_WIN", str(DEFAULT_ARTIFACT_ROOT_WIN)))
     parser.add_argument("--submissions-zip-win", default=os.environ.get("SEC_SUBMISSIONS_ZIP_WIN", ""))
     parser.add_argument("--output-root-win", default=os.environ.get("SEC_ACCEPTANCE_FRAGMENT_FILL_OUTPUT_ROOT_WIN", str(DEFAULT_OUTPUT_ROOT_WIN)))
@@ -189,6 +195,7 @@ def main() -> None:
     validate_identifier(args.target_table, "--target-table")
     validate_identifier(args.stage_database, "--stage-database")
     validate_identifier(args.stage_table, "--stage-table")
+    validate_identifier(args.mirror_table, "--mirror-table")
     if args.batch_size < 1:
         raise SystemExit("--batch-size must be >= 1")
     if args.download_workers < 1:
@@ -261,35 +268,54 @@ def resolve_submissions_zip(args: argparse.Namespace, artifact_root: Path) -> Pa
 def load_remaining_missing(client: ClickHouseHttpClient, args: argparse.Namespace) -> dict[str, dict[str, MissingFiling]]:
     target = f"{quote_ident(args.target_database)}.{quote_ident(args.target_table)}"
     stage = f"{quote_ident(args.stage_database)}.{quote_ident(args.stage_table)}"
+    mirror = f"{quote_ident(args.stage_database)}.{quote_ident(args.mirror_table)}"
+    if not table_exists(client, args.stage_database, args.mirror_table):
+        raise SystemExit(f"Required submissions mirror does not exist: {args.stage_database}.{args.mirror_table}")
     stage_exists = table_exists(client, args.stage_database, args.stage_table)
     stage_join = f"""
 LEFT JOIN
 (
-    SELECT cik, accession_number, 1 AS matched
+    SELECT
+        cik,
+        accession_number,
+        1 AS matched,
+        max(acceptance_datetime_raw IS NOT NULL AND endsWith(acceptance_datetime_raw, 'Z')) AS has_utc_acceptance
     FROM {stage} FINAL
-    WHERE acceptance_datetime_raw IS NOT NULL
-      AND endsWith(acceptance_datetime_raw, 'Z')
-      AND parseDateTime64BestEffortOrNull(acceptance_datetime_raw, 9, 'UTC') IS NOT NULL
+    GROUP BY cik, accession_number
 ) AS s
     ON q.cik = s.cik AND q.accession_number = s.accession_number
 """ if stage_exists else ""
-    unmatched_predicate = "AND s.matched = 0" if stage_exists else ""
+    stage_unmatched = "AND s.matched = 0" if stage_exists else ""
+    stage_missing_acceptance = "AND s.has_utc_acceptance = 0" if stage_exists else ""
     sql = f"""
 SELECT
     q.cik,
     q.accession_number,
     ifNull(toString(q.filing_date), '') AS filing_date,
     toString(q.form_type) AS form_type
-FROM
+FROM {target} AS q FINAL
+ANY LEFT JOIN
 (
-    SELECT *
-    FROM {target} FINAL
-    WHERE accepted_at_utc IS NULL
-       OR accepted_at_source IN ('archive_filing_date_midnight', 'archive_date_midnight', 'filing_date_midnight_fallback')
-) AS q
+    SELECT
+        cik,
+        accession_number,
+        1 AS matched,
+        max(acceptance_datetime_raw IS NOT NULL AND endsWith(acceptance_datetime_raw, 'Z')) AS has_utc_acceptance
+    FROM {mirror} FINAL
+    GROUP BY cik, accession_number
+) AS b
+    ON q.cik = b.cik AND q.accession_number = b.accession_number
 {stage_join}
-WHERE 1 = 1
-{unmatched_predicate}
+WHERE
+    (
+        (
+            q.accepted_at_utc IS NULL
+            OR q.accepted_at_source IN ('archive_filing_date_midnight', 'archive_date_midnight', 'filing_date_midnight_fallback')
+        )
+        AND b.has_utc_acceptance = 0
+        {stage_missing_acceptance}
+    )
+    OR (b.matched = 0 {stage_unmatched})
 ORDER BY q.cik, q.accession_number
 FORMAT TSV
 """
@@ -435,6 +461,7 @@ def run_direct_submission_jobs(
         "direct_jobs_planned": len(jobs),
         "direct_jobs_completed": 0,
         "direct_jobs_failed": 0,
+        "direct_jobs_not_found": 0,
         "direct_accepted_rows_written": 0,
         "direct_accepted_rows_inserted": 0,
         "direct_accepted_rows_missing_acceptance_datetime": 0,
@@ -461,8 +488,10 @@ def run_direct_submission_jobs(
                 result = future.result()
                 result_handle.write(json.dumps(direct_result_record(result), ensure_ascii=False, separators=(",", ":"), default=str) + "\n")
                 stats["direct_jobs_completed"] += 1
-                if result.status != "ok":
+                if result.status == "failed":
                     stats["direct_jobs_failed"] += 1
+                elif result.status == "not_found":
+                    stats["direct_jobs_not_found"] += 1
                 else:
                     fresh_payloads[result.job.cik] = Path(result.artifact_path)
                 for row in result.matched_rows:
@@ -524,6 +553,8 @@ def process_direct_submission_job(
             accepted_source="submissions_api_recent",
         )
         return DirectSubmissionResult(job, "ok", str(artifact), len(body), sha, tuple(rows), "", round(time.perf_counter() - started, 3))
+    except SecSourceNotFound as exc:
+        return DirectSubmissionResult(job, "not_found", str(artifact), 0, "", (), repr(exc), round(time.perf_counter() - started, 3))
     except Exception as exc:  # noqa: BLE001
         return DirectSubmissionResult(job, "failed", str(artifact), 0, "", (), repr(exc), round(time.perf_counter() - started, 3))
 
@@ -694,6 +725,8 @@ def fetch_url(url: str, user_agent: str, timeout_seconds: float, max_retries: in
                 return response.read()
         except error.HTTPError as exc:
             last_error = f"HTTP {exc.code}: {exc.reason}"
+            if exc.code == 404:
+                raise SecSourceNotFound(last_error) from exc
             if exc.code not in RETRY_HTTP_CODES or attempt >= max_retries:
                 raise RuntimeError(last_error) from exc
             retry_after = parse_retry_after(exc.headers.get("Retry-After"))

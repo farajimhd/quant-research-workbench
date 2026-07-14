@@ -46,7 +46,7 @@ from pipelines.sec.edgar.sec_pipeline.submissions import parse_acceptance_dateti
 DEFAULT_TARGET_DATABASE = "q_live"
 DEFAULT_TARGET_TABLE = "sec_filing_v3"
 DEFAULT_STAGE_DATABASE = "sec_core"
-DEFAULT_STAGE_TABLE = "sec_bulk_mirror_filing_acceptance_v3"
+DEFAULT_STAGE_TABLE = "sec_submissions_filing_overlay_v3"
 DEFAULT_ARTIFACT_ROOT_WIN = Path("D:/market-data/sec_core")
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_acceptance_header_fill")
 DEFAULT_BATCH_SIZE = 5_000

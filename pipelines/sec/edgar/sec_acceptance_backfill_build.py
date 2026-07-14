@@ -45,7 +45,7 @@ from pipelines.sec.edgar.sec_initial_fill_download import sha256_file  # noqa: E
 DEFAULT_TARGET_DATABASE = "q_live"
 DEFAULT_TARGET_TABLE = "sec_filing_v3"
 DEFAULT_STAGE_DATABASE = "sec_core"
-DEFAULT_STAGE_TABLE = "sec_bulk_mirror_filing_acceptance_v3"
+DEFAULT_STAGE_TABLE = "sec_submissions_filing_overlay_v3"
 DEFAULT_ARTIFACT_ROOT_WIN = Path("D:/market-data/sec_core")
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_acceptance_backfill")
 DEFAULT_BATCH_SIZE = 50_000
@@ -413,7 +413,7 @@ CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
     form_type LowCardinality(String),
     filing_date Nullable(Date),
     report_date Nullable(Date),
-    accepted_at_utc DateTime64(9, 'UTC'),
+    accepted_at_utc Nullable(DateTime64(9, 'UTC')),
     acceptance_datetime_raw Nullable(String),
     accepted_at_source LowCardinality(String),
     primary_document Nullable(String),
@@ -434,12 +434,11 @@ SETTINGS {", ".join(settings)}
 
 
 def insert_rows(client: ClickHouseHttpClient, database: str, table: str, rows: list[dict[str, Any]]) -> int:
-    valid_rows = [row for row in rows if row.get("accepted_at_utc")]
-    if not valid_rows:
+    if not rows:
         return 0
-    body = "\n".join(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) for row in valid_rows)
+    body = "\n".join(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) for row in rows)
     client.execute(f"INSERT INTO {quote_ident(database)}.{quote_ident(table)} SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n{body}")
-    return len(valid_rows)
+    return len(rows)
 
 
 def table_exists(client: ClickHouseHttpClient, database: str, table: str) -> bool:

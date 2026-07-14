@@ -71,6 +71,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--user", default=default_sec_clickhouse_user())
     parser.add_argument("--password", default=default_sec_clickhouse_password())
     parser.add_argument("--database", default=os.environ.get("SEC_INTEGRITY_DATABASE", DEFAULT_DATABASE))
+    parser.add_argument("--submissions-database", default=os.environ.get("SEC_BULK_MIRROR_DATABASE", "sec_core"))
+    parser.add_argument("--submissions-table", default="sec_bulk_mirror_filing_v3")
+    parser.add_argument("--submissions-overlay-table", default="sec_submissions_filing_overlay_v3")
     parser.add_argument("--output-root-win", default=os.environ.get("SEC_INTEGRITY_AUDIT_OUTPUT_ROOT_WIN", str(DEFAULT_OUTPUT_ROOT_WIN)))
     parser.add_argument("--archive-root-win", default=os.environ.get("SEC_DAILY_ARCHIVE_ROOT_WIN", str(DEFAULT_ARCHIVE_ROOT_WIN)))
     parser.add_argument("--archive-start-date", default=os.environ.get("SEC_ARCHIVE_START_DATE", "2019-01-01"))
@@ -91,6 +94,9 @@ def main() -> None:
     loaded_env = load_env_files(discover_env_files(REPO_ROOT), verbose=True)
     args = parse_args()
     validate_identifier(args.database, "--database")
+    validate_identifier(args.submissions_database, "--submissions-database")
+    validate_identifier(args.submissions_table, "--submissions-table")
+    validate_identifier(args.submissions_overlay_table, "--submissions-overlay-table")
     scope_start = parse_date_or_none(args.scope_start_date)
     if scope_start is None:
         raise SystemExit("--scope-start-date must be YYYY-MM-DD")
@@ -107,6 +113,15 @@ def main() -> None:
     checks.extend(check_required_tables(table_meta, args.require_v3_tables))
     if "sec_filing_v3" in table_meta:
         checks.extend(check_filing_parent(client, args.database, scope_start))
+        checks.extend(
+            check_submissions_relationships(
+                client,
+                args.database,
+                args.submissions_database,
+                args.submissions_table,
+                args.submissions_overlay_table,
+            )
+        )
     if "sec_filing_document_v3" in table_meta:
         checks.extend(check_document_v2_shape(column_map))
     if "sec_filing_text_v3" in table_meta:
@@ -238,6 +253,90 @@ def check_filing_parent(client: ClickHouseHttpClient, db: str, scope_start: date
         )
     )
     return rows
+
+
+def check_submissions_relationships(
+    client: ClickHouseHttpClient,
+    target_database: str,
+    submissions_database: str,
+    submissions_table: str,
+    overlay_table: str,
+) -> list[dict[str, Any]]:
+    if not table_exists(client, submissions_database, submissions_table):
+        return [
+            check(
+                "sec_filing_submissions_relationship_coverage",
+                "fail",
+                "authoritative SEC submissions mirror is missing",
+                table="sec_filing_v3",
+                details={"required_table": f"{submissions_database}.{submissions_table}"},
+            )
+        ]
+    overlay_union = ""
+    overlay_present = table_exists(client, submissions_database, overlay_table)
+    if overlay_present:
+        overlay_union = f"""
+        UNION ALL
+        SELECT cik, accession_number
+        FROM {qi(submissions_database)}.{qi(overlay_table)} FINAL
+        WHERE cik != '' AND accession_number != ''
+        """
+    details = query_one(
+        client,
+        f"""
+        WITH
+        authoritative AS
+        (
+            SELECT cik, accession_number
+            FROM
+            (
+                SELECT cik, accession_number
+                FROM {qi(submissions_database)}.{qi(submissions_table)} FINAL
+                WHERE cik != '' AND accession_number != ''
+                {overlay_union}
+            )
+            GROUP BY cik, accession_number
+        ),
+        authoritative_accessions AS
+        (
+            SELECT accession_number FROM authoritative GROUP BY accession_number
+        )
+        SELECT
+            count() AS filing_rows,
+            countIf(substring(q.accession_number, 1, 10) != q.cik) AS accession_prefix_differs_from_cik,
+            countIf(a.cik != '') AS confirmed_exact_relationships,
+            countIf(a.cik = '' AND aa.accession_number != '') AS accession_known_under_other_cik_only,
+            countIf(aa.accession_number = '') AS accession_absent_from_submissions,
+            countIf(
+                a.cik = ''
+                AND q.text_status IN ('archive_text_extracted', 'xbrl_parent_only')
+            ) AS separately_source_backed_relationships,
+            countIf(
+                a.cik = ''
+                AND q.text_status NOT IN ('archive_text_extracted', 'xbrl_parent_only')
+            ) AS unsupported_relationships
+        FROM {qi(target_database)}.sec_filing_v3 AS q FINAL
+        LEFT JOIN authoritative AS a
+            ON q.cik = a.cik AND q.accession_number = a.accession_number
+        LEFT JOIN authoritative_accessions AS aa
+            ON q.accession_number = aa.accession_number
+        FORMAT TSVWithNames
+        """,
+    )
+    unsupported = int(details["unsupported_relationships"])
+    separately_backed = int(details["separately_source_backed_relationships"])
+    details["submissions_table"] = f"{submissions_database}.{submissions_table}"
+    details["overlay_table"] = f"{submissions_database}.{overlay_table}"
+    details["overlay_present"] = overlay_present
+    return [
+        check(
+            "sec_filing_submissions_relationship_coverage",
+            "fail" if unsupported else ("warn" if separately_backed else "pass"),
+            "q_live filing CIK/accession relationships have an explicit submissions, archive-SGML, or XBRL authority",
+            table="sec_filing_v3",
+            details=details,
+        )
+    ]
 
 
 def check_document_v2_shape(column_map: dict[str, set[str]]) -> list[dict[str, Any]]:
@@ -684,6 +783,15 @@ def scalar_int(client: ClickHouseHttpClient, sql: str) -> int:
     if not text:
         return 0
     return int(text.splitlines()[0].split("\t")[0])
+
+
+def table_exists(client: ClickHouseHttpClient, database: str, name: str) -> bool:
+    return bool(
+        scalar_int(
+            client,
+            f"SELECT count() FROM system.tables WHERE database={sql_string(database)} AND name={sql_string(name)}",
+        )
+    )
 
 
 def check(name: str, status: str, message: str, *, table: str = "", details: dict[str, Any] | None = None) -> dict[str, Any]:

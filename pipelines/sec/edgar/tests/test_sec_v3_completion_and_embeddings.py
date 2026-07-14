@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 import sys
+import tarfile
 import zipfile
 from contextlib import redirect_stdout
 from datetime import date
@@ -14,9 +15,13 @@ from unittest import mock
 
 from pipelines.market_sip.events import clickhouse_build_text_tokens as tokens
 from pipelines.sec.edgar import sec_acceptance_raw_metadata_repair as acceptance_repair
+from pipelines.sec.edgar import sec_archive_identity_audit as archive_identity
 from pipelines.sec.edgar import sec_acceptance_fragment_fill as acceptance_fragment
+from pipelines.sec.edgar import sec_acceptance_backfill_build as acceptance_build
 from pipelines.sec.edgar import sec_bulk_clickhouse_ingest as bulk_ingest
+from pipelines.sec.edgar import sec_bulk_to_canonical as bulk_canonical
 from pipelines.sec.edgar import sec_bulk_snapshot_refresh as snapshot_refresh
+from pipelines.sec.edgar import sec_filing_parent_reconcile as parent_reconcile
 from pipelines.sec.edgar import sec_historical_gap_fill as historical
 from pipelines.sec.edgar import sec_filing_text_extract_parts as filing_extract
 from pipelines.sec.edgar.sec_bulk_sources import BULK_SOURCE_NAMES, DEFAULT_BULK_SOURCES, require_complete_bulk_sources
@@ -75,9 +80,19 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
 
         self.assertIn("acceptance-submissions-enrichment", commands)
         self.assertIn("--execute", commands["acceptance-submissions-enrichment"])
+        self.assertIn("filing-parent-reconcile", commands)
+        self.assertIn("--execute", commands["filing-parent-reconcile"])
+        self.assertIn("archive-identity-audit", commands)
+        stage_index = commands["bulk-canonicalize"].index("--stages") + 1
+        self.assertEqual(commands["bulk-canonicalize"][stage_index], "xbrl")
         repair = commands["acceptance-raw-metadata-repair"]
         self.assertIn("--enriched-table", repair)
-        self.assertIn("sec_bulk_mirror_filing_acceptance_v3", repair)
+        self.assertIn("sec_submissions_filing_overlay_v3", repair)
+
+    def test_bulk_canonicalizer_rejects_submission_parent_materialization(self) -> None:
+        self.assertEqual(bulk_canonical.parse_stages("xbrl"), ["xbrl"])
+        with self.assertRaisesRegex(SystemExit, "invalid --stages"):
+            bulk_canonical.parse_stages("parents,xbrl")
 
     def test_bulk_download_is_always_reconciled(self) -> None:
         command = historical.StageCommand("bulk-download", [], Path("bulk.log"), False, ("covered",))
@@ -100,7 +115,7 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
         self.assertIn("endsWith(acceptance_datetime_raw, 'Z')", cte)
         self.assertIn("parseDateTime64BestEffortOrNull", cte)
         self.assertIn("sec_core_submissions_bulk_raw_z_repair", cte)
-        self.assertIn("sec_bulk_mirror_filing_acceptance_v3", cte)
+        self.assertIn("sec_submissions_filing_overlay_v3", cte)
         self.assertIn("source_priority", cte)
         self.assertNotIn("sec_filing_v2", cte)
         self.assertIn("UNION ALL", cte)
@@ -112,7 +127,7 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
         self.assertIn("ALTER TABLE `q_live`.`sec_filing_v3`", delete_sql)
         self.assertIn("accepted_at_source IN", delete_sql)
         self.assertIn("FROM `sec_core`.`sec_bulk_mirror_filing_v3` FINAL", delete_sql)
-        self.assertIn("FROM `sec_core`.`sec_bulk_mirror_filing_acceptance_v3` FINAL", delete_sql)
+        self.assertIn("FROM `sec_core`.`sec_submissions_filing_overlay_v3` FINAL", delete_sql)
         self.assertIn("mutations_sync = 2", delete_sql)
 
     def test_direct_submissions_match_uses_requested_filing_cik_not_accession_prefix(self) -> None:
@@ -157,6 +172,30 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
         self.assertEqual(result.matched_rows[0]["acceptance_datetime_raw"], "2026-07-07T23:25:29.000Z")
         self.assertEqual(result.matched_rows[0]["accepted_at_source"], "submissions_api_recent")
 
+    def test_direct_submission_404_is_source_not_found_not_transport_failure(self) -> None:
+        job = acceptance_fragment.DirectSubmissionJob(
+            cik="0002056317",
+            url="https://data.sec.gov/submissions/CIK0002056317.json",
+            artifact_path="CIK0002056317.json",
+            wanted_accessions=("0002056317-25-000001",),
+        )
+        with mock.patch.object(
+            acceptance_fragment,
+            "fetch_url",
+            side_effect=acceptance_fragment.SecSourceNotFound("HTTP 404: Not Found"),
+        ):
+            result = acceptance_fragment.process_direct_submission_job(
+                job,
+                "test@example.com",
+                30.0,
+                0,
+                0.0,
+                acceptance_fragment.RateLimiter(0.0),
+            )
+
+        self.assertEqual(result.status, "not_found")
+        self.assertEqual(result.matched_rows, ())
+
     def test_archive_parser_uses_embedded_issuer_cik_not_accession_prefix(self) -> None:
         raw = b"""<SEC-DOCUMENT>0002143285-26-000002.txt
 <SEC-HEADER>
@@ -187,6 +226,80 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
 
         self.assertEqual(parsed["accession_number"], "0002143285-26-000002")
         self.assertEqual(parsed["cik"], "0000766421")
+
+    def test_archive_parent_resolution_never_falls_back_by_accession(self) -> None:
+        wrong_parent = filing_extract.FilingParent(
+            filing_id="owner-parent",
+            accession_number="0002143285-26-000002",
+            accession_number_compact="000214328526000002",
+            cik="0002143285",
+            form_type="3",
+            accepted_at_utc="2026-07-07 23:25:29",
+            primary_document="form3.xml",
+            primary_document_url="",
+            filing_detail_url="",
+        )
+        parents = {(wrong_parent.cik, wrong_parent.accession_number): wrong_parent}
+
+        resolved = filing_extract.resolve_parent(
+            parents,
+            {"cik": "0000766421", "accession_number": "0002143285-26-000002"},
+        )
+
+        self.assertIsNone(resolved)
+
+    def test_archive_identity_audit_compares_stored_and_sgml_cik(self) -> None:
+        raw = b"""<SEC-DOCUMENT>0002143285-26-000002.txt
+<SEC-HEADER><ACCESSION-NUMBER>0002143285-26-000002
+<ISSUER><COMPANY-DATA><CIK>0000766421
+</COMPANY-DATA></ISSUER></SEC-HEADER>
+<DOCUMENT><TYPE>3<SEQUENCE>1<FILENAME>form3.xml<TEXT>x</TEXT></DOCUMENT>
+"""
+        with tempfile.TemporaryDirectory() as temp_root:
+            archive_path = Path(temp_root) / "sample.nc.tar.gz"
+            source_path = Path(temp_root) / "sample.nc"
+            source_path.write_bytes(raw)
+            with tarfile.open(archive_path, "w:gz") as archive:
+                archive.add(source_path, arcname="./0002143285-26-000002.nc")
+            result = archive_identity.audit_archive(
+                str(archive_path),
+                {
+                    "0002143285-26-000002.nc": {
+                        "cik": "0000766421",
+                        "accession_number": "0002143285-26-000002",
+                    }
+                },
+            )
+
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(result["mismatched"], 0)
+
+    def test_direct_submission_overlay_preserves_relation_without_acceptance_time(self) -> None:
+        statements: list[str] = []
+        client = SimpleNamespace(execute=statements.append)
+        row = {
+            "acceptance_id": "id",
+            "cik": "0000766421",
+            "accession_number": "0002143285-26-000002",
+            "accepted_at_utc": None,
+        }
+
+        inserted = acceptance_build.insert_rows(client, "sec_core", "sec_submissions_filing_overlay_v3", [row])
+
+        self.assertEqual(inserted, 1)
+        self.assertIn('"accepted_at_utc":null', statements[0])
+        self.assertIn("sec_submissions_filing_overlay_v3", acceptance_build.stage_table_sql("sec_core", "sec_submissions_filing_overlay_v3", ""))
+        self.assertIn("accepted_at_utc Nullable", acceptance_build.stage_table_sql("sec_core", "sec_submissions_filing_overlay_v3", ""))
+
+    def test_parent_reconciliation_excludes_every_dependent_table(self) -> None:
+        sql = parent_reconcile.candidates_select_sql("q_live", "sec_filing_v3")
+
+        for table in parent_reconcile.DEPENDENT_TABLES:
+            self.assertIn(f"`q_live`.`{table}`", sql)
+        self.assertIn("assumeNotNull(p.cik) AS cik", sql)
+        self.assertIn("assumeNotNull(p.accession_number) AS accession_number", sql)
+        self.assertIn("p.text_status = 'submissions_bulk_parent'", sql)
+        self.assertIn("HAVING uniqExact(cik) = 1", sql)
 
     def test_bulk_submission_fragment_uses_top_level_arrays_without_blank_company_replacement(self) -> None:
         artifact = bulk_ingest.SourceArtifact(

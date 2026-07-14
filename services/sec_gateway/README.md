@@ -213,10 +213,11 @@ manifest disagree with the files and tables produced by the run.
 
 The unified fill command first refreshes SEC bulk `submissions`, `companyfacts`,
 `company_tickers`, `company_tickers_exchange`, and `company_tickers_mf`, mirrors
-those source snapshots into `sec_core`, derives canonical
-filing parents and XBRL rows from that mirror, then performs archive download,
-validation, text extraction, ClickHouse insert, API fallback for missing recent
-XBRL, XBRL relationship repair, audit, and coverage writes. The final audit
+those source snapshots into `sec_core`, retains submissions as accession-to-CIK
+relationships, derives XBRL rows from the bulk mirror, and derives filing parents
+from archive SGML. It then performs archive download, validation, text extraction,
+direct-submissions reconciliation, exact timestamp repair, SGML identity audit,
+XBRL fallback and repair, final integrity audit, and coverage writes. The final audit
 command gives the operator a short post-run verification surface before the
 result is trusted.
 
@@ -268,9 +269,10 @@ pipelines/sec/edgar/sec_historical_gap_fill.py
 ```
 
 That command is the canonical historical repair path. It downloads or reuses SEC
-daily archives, extracts filing parents and normalized filing text, refreshes
-companyfacts/XBRL, repairs XBRL relationships, runs the integrity audit, and
-writes coverage.
+daily archives, extracts filing parents and normalized filing text, reconciles
+submissions relationships and acceptance timestamps, verifies unresolved identities
+against SGML, refreshes companyfacts/XBRL, repairs XBRL relationships, runs the
+integrity audit, and writes coverage.
 
 When the coverage manifest is empty, the gateway bootstraps one compact
 `sec_historical_baseline` row from the existing source-of-truth SEC tables. That

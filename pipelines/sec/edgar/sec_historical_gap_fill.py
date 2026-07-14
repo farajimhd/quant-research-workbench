@@ -566,7 +566,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                     "--end-date",
                     args.end_date,
                     "--stages",
-                    "parents,xbrl",
+                    "xbrl",
                 ],
                 args,
             ),
@@ -704,6 +704,21 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
             (stage_coverage_kind("archive-text-rebuild"),),
         ),
         StageCommand(
+            "filing-parent-reconcile",
+            add_execute_flag(
+                [
+                    args.python_executable,
+                    script("pipelines/sec/edgar/sec_filing_parent_reconcile.py"),
+                    "--database",
+                    args.write_database,
+                ],
+                args,
+            ),
+            logs_root / "filing-parent-reconcile.log",
+            True,
+            (stage_coverage_kind("filing-parent-reconcile"),),
+        ),
+        StageCommand(
             "acceptance-submissions-enrichment",
             add_execute_flag(
                 [
@@ -716,7 +731,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                     "--stage-database",
                     args.bulk_mirror_database,
                     "--stage-table",
-                    "sec_bulk_mirror_filing_acceptance_v3",
+                    "sec_submissions_filing_overlay_v3",
                     "--artifact-root-win",
                     args.artifact_root_win,
                     "--output-root-win",
@@ -749,13 +764,31 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                     "--mirror-table",
                     "sec_bulk_mirror_filing_v3",
                     "--enriched-table",
-                    "sec_bulk_mirror_filing_acceptance_v3",
+                    "sec_submissions_filing_overlay_v3",
                 ],
                 args,
             ),
             logs_root / "acceptance-raw-metadata-repair.log",
             True,
             (stage_coverage_kind("acceptance-raw-metadata-repair"),),
+        ),
+        StageCommand(
+            "archive-identity-audit",
+            [
+                args.python_executable,
+                script("pipelines/sec/edgar/sec_archive_identity_audit.py"),
+                "--database",
+                args.write_database,
+                "--submissions-database",
+                args.bulk_mirror_database,
+                "--output-root-win",
+                str(Path(args.core_output_root_win) / "sec_archive_identity_audit"),
+                "--workers",
+                str(max(1, args.text_extract_workers)),
+            ],
+            logs_root / "archive-identity-audit.log",
+            True,
+            (stage_coverage_kind("archive-identity-audit"),),
         ),
         StageCommand(
             "xbrl-companyfacts-catchup",
@@ -926,6 +959,7 @@ def add_execute_flag(command: list[str], args: argparse.Namespace, *, dry_run_fl
     if args.execute:
         if (
             "sec_bulk_to_canonical.py" in command_text
+            or "sec_filing_parent_reconcile.py" in command_text
             or "sec_xbrl_companyfacts_catchup.py" in command_text
             or "sec_xbrl_integrity_repair.py" in command_text
             or "sec_acceptance_fragment_fill.py" in command_text
@@ -1037,9 +1071,11 @@ def stage_already_completed(args: argparse.Namespace, command: StageCommand) -> 
         "bulk-download",
         "bulk-ingest",
         "archive-text-rebuild",
+        "filing-parent-reconcile",
         "validate-downloaded",
         "acceptance-submissions-enrichment",
         "acceptance-raw-metadata-repair",
+        "archive-identity-audit",
         "sec-bridge-rebuild",
         "sec-context-build",
         "integrity-audit",

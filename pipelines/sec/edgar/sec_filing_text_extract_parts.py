@@ -565,14 +565,13 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
                     continue
                 stats["filings"] += 1
                 stats["form_types"][filing["form_type"]] += 1
-                parent = parents.get((filing["cik"], filing["accession_number"])) or parents.get(("", filing["accession_number"]))
+                parent = resolve_parent(parents, filing)
                 if parent is None:
                     stats["parent_missing_filings"] += 1
                     parent_row, parent = build_missing_parent_row(payload, archive, archive_date, archive_date_text, member.name, raw, filing, inserted_at)
                     writers["filing"].append(parent_row)
                     filing_parent_count += 1
                     parents[(parent.cik, parent.accession_number)] = parent
-                    parents[("", parent.accession_number)] = parent
                 for document in filing["documents"]:
                     stats["documents"] += 1
                     doc_row, text_source_row, text_row, skip_row, sample_row = build_rows(payload, archive, archive_date_text, member.name, parent, document, inserted_at)
@@ -660,8 +659,11 @@ def load_parent_map(client: ClickHouseHttpClient, db: str, archive_date: date, d
             primary_document_url=row["primary_document_url"],
             filing_detail_url=row["filing_detail_url"],
         )
-        parents[("", accession)] = parents[(cik, accession)]
     return parents
+
+
+def resolve_parent(parents: dict[tuple[str, str], FilingParent], filing: dict[str, Any]) -> FilingParent | None:
+    return parents.get((normalize_cik(filing.get("cik")), normalize_accession(filing.get("accession_number"))))
 
 
 def parse_filing(raw: bytes, member_name: str) -> dict[str, Any]:

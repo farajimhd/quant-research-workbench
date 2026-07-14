@@ -46,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-table", default=os.environ.get("SEC_FILING_TABLE", "sec_filing_v3"))
     parser.add_argument("--mirror-database", default=os.environ.get("SEC_BULK_MIRROR_DATABASE", "sec_core"))
     parser.add_argument("--mirror-table", default="sec_bulk_mirror_filing_v3")
-    parser.add_argument("--enriched-table", default="sec_bulk_mirror_filing_acceptance_v3")
+    parser.add_argument("--enriched-table", default="sec_submissions_filing_overlay_v3")
     parser.add_argument(
         "--max-partitions-per-insert-block",
         type=int,
@@ -119,7 +119,7 @@ def main() -> int:
     return 0
 
 
-def resolved_raw_cte_sql(database: str, table: str, enriched_table: str | None = "sec_bulk_mirror_filing_acceptance_v3") -> str:
+def resolved_raw_cte_sql(database: str, table: str, enriched_table: str | None = "sec_submissions_filing_overlay_v3") -> str:
     enriched_union = ""
     if enriched_table:
         enriched_union = f"""
@@ -237,7 +237,7 @@ def delete_replaced_fallbacks_sql(args: argparse.Namespace) -> str:
     sources = ", ".join(sql_string(value) for value in FALLBACK_SOURCES)
     target = f"{quote_ident(args.target_database)}.{quote_ident(args.target_table)}"
     mirror = f"{quote_ident(args.mirror_database)}.{quote_ident(args.mirror_table)}"
-    enriched = f"{quote_ident(args.mirror_database)}.{quote_ident(getattr(args, 'enriched_table', 'sec_bulk_mirror_filing_acceptance_v3'))}"
+    enriched = f"{quote_ident(args.mirror_database)}.{quote_ident(getattr(args, 'enriched_table', 'sec_submissions_filing_overlay_v3'))}"
     return f"""
 ALTER TABLE {target}
 DELETE WHERE accepted_at_source IN ({sources})

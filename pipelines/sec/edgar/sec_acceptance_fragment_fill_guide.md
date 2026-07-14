@@ -2,23 +2,24 @@
 
 `sec_acceptance_fragment_fill.py` is the targeted authoritative fallback after the nightly submissions bulk mirror and before `sec_acceptance_raw_metadata_repair.py`.
 
-The bulk ZIP is updated nightly, while each per-CIK submissions endpoint is updated throughout the day. This stage refreshes only CIKs whose canonical filing rows still have a date-only fallback, matches current filings, and then downloads only older fragment files referenced by the fresh per-CIK payload.
+The bulk ZIP is updated nightly, while each per-CIK submissions endpoint is updated throughout the day. This stage refreshes canonical filing relationships absent from the nightly mirror and date-only timestamps that still lack an exact UTC source, then downloads only required older fragments.
 
 ## What It Does
 
-1. Queries `q_live.sec_filing_v3` rows whose acceptance timestamp is missing or still uses a date-only fallback.
+1. Queries `q_live.sec_filing_v3` for `(CIK, accession)` relationships absent from both submissions sources or date-only timestamps without an exact UTC submissions value.
 
 2. Anti-joins against:
 
 ```text
-sec_core.sec_bulk_mirror_filing_acceptance_v3
+sec_core.sec_bulk_mirror_filing_v3
+sec_core.sec_submissions_filing_overlay_v3
 ```
 
 3. Downloads and validates `https://data.sec.gov/submissions/CIK##########.json` using the filing's parsed CIK, never the accession prefix.
 
 4. Matches exact `(CIK, accession_number)` keys in the current payload and persists the refreshed JSON under `bulk/submissions/current`.
 
-5. Uses the fresh payload's `filings.files` index to plan only fragments whose `filingFrom` / `filingTo` range overlaps unresolved filing dates. The bulk ZIP index is used only when a direct payload could not be obtained, and the run fails after writing diagnostics if any direct request failed.
+5. Uses the fresh payload's `filings.files` index to plan only fragments whose `filingFrom` / `filingTo` range overlaps unresolved filing dates. A direct 404 is recorded as authoritative source-not-found; transport and parse failures still fail the stage.
 
 6. Downloads fragment JSON files from:
 
@@ -26,10 +27,10 @@ sec_core.sec_bulk_mirror_filing_acceptance_v3
 https://data.sec.gov/submissions/<fragment-name>.json
 ```
 
-7. Parses matching accessions and appends only explicit UTC acceptance values to:
+7. Persists every confirmed direct or fragment relationship, including rows whose SEC payload omits `acceptanceDateTime`, to:
 
 ```text
-sec_core.sec_bulk_mirror_filing_acceptance_v3
+sec_core.sec_submissions_filing_overlay_v3
 ```
 
 8. Writes local diagnostics:
@@ -63,7 +64,7 @@ Full execute:
 python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_acceptance_fragment_fill.py --execute --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_acceptance_fragment_fill
 ```
 
-Then run `sec_acceptance_raw_metadata_repair.py --execute`. The unified `sec_historical_gap_fill.py --execute` command runs both stages in this order automatically.
+Then run `sec_acceptance_raw_metadata_repair.py --execute`. The unified `sec_historical_gap_fill.py --execute` command runs relationship reconciliation, timestamp repair, and archive SGML identity audit in order automatically.
 
 ## Useful Arguments
 

@@ -7,10 +7,10 @@ This package contains the SEC EDGAR historical workflow:
 - exact-file failed archive deletion;
 - acceptance timestamp repair helpers;
 - archive-derived acceptance timestamp repair for date-only parent rows;
-- submissions-bulk acceptance timestamp repair for date-only parent rows;
+- bulk plus rate-limited direct-submissions relationship reconciliation and exact UTC timestamp repair;
 - archive-derived filing document/text extraction and ClickHouse file ingest;
 - historical backfill orchestration over the stages that exist today;
-- versioned SEC bulk mirror ingestion for parent and historical-fragment submission members.
+- versioned SEC bulk mirror ingestion for current and historical-fragment submission relationships.
 
 Preferred current historical gap-fill path used by SEC Gateway:
 
@@ -31,14 +31,15 @@ default of 100 partitions in a single insert block.
 
 This unified gap-fill entry point refreshes SEC bulk `submissions`,
 `companyfacts`, `company_tickers`, `company_tickers_exchange`, and
-`company_tickers_mf`, mirrors those source snapshots into `sec_core`, derives canonical
-filing parents and XBRL rows from that mirror, downloads missing daily archives,
+`company_tickers_mf`, mirrors those source snapshots into `sec_core`, keeps submissions
+as accession-to-CIK relationships, derives XBRL rows from that mirror, downloads missing daily archives,
 validates them, extracts normalized filing/document/text rows, inserts them,
-repairs date-only parent timestamps from explicit UTC acceptance metadata in the nightly
-bulk mirror, then refreshes unresolved filing CIKs from the real-time per-CIK submissions
-API and its referenced history fragments before applying the same strict UTC repair. The
-CIK comes from the parsed filing relationship and is never inferred from the accession
-prefix. The pipeline then runs API fallback for missing recent XBRL, repairs XBRL relationships, rebuilds
+removes dependency-free submissions parents, repairs date-only parent timestamps from explicit
+UTC acceptance metadata, and refreshes unresolved filing CIKs from the real-time per-CIK
+submissions API and its referenced history fragments. The CIK comes from the parsed SGML
+relationship and is never inferred from the accession prefix or another entity sharing the
+accession. A parallel source audit verifies residual archive identities directly against SGML.
+The pipeline then runs API fallback for missing recent XBRL, repairs XBRL relationships, rebuilds
 `id_sec_market_bridge_v3`, builds SEC context tables in `market_sip_compact`,
 audits the result, and writes coverage rows.
 

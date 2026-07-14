@@ -6,7 +6,7 @@ import os
 import sys
 import time
 from dataclasses import asdict, dataclass
-from datetime import UTC, date, datetime, time as dt_time
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 
@@ -15,7 +15,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import (  # noqa: E402
-    FILING_TABLE,
     XBRL_COMPANY_FACT_TABLE,
     XBRL_CONCEPT_TABLE,
     XBRL_FRAME_OBSERVATION_TABLE,
@@ -46,8 +45,8 @@ class StageProfile:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Build canonical SEC parent and XBRL rows from the SEC bulk mirror. "
-            "This is the bulk-first bridge from sec_core to the configured SEC write database."
+            "Build canonical SEC XBRL rows from the SEC bulk mirror. Filing parents are "
+            "archive-SGML entities; submissions rows remain accession-to-CIK relationships."
         )
     )
     parser.add_argument("--source-database", default=os.environ.get("SEC_BULK_MIRROR_DATABASE", SEC_CORE_DATABASE))
@@ -55,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-database", default=os.environ.get("SEC_CLICKHOUSE_WRITE_DATABASE", os.environ.get("SEC_GATEWAY_WRITE_DATABASE", DEFAULT_TARGET_DATABASE)))
     parser.add_argument("--start-date", required=True, help="Inclusive accepted/filed date, YYYY-MM-DD.")
     parser.add_argument("--end-date", required=True, help="Exclusive accepted/filed date, YYYY-MM-DD.")
-    parser.add_argument("--stages", default="parents,xbrl", help="Comma-separated subset of parents,xbrl.")
+    parser.add_argument("--stages", default="xbrl", help="Comma-separated subset of xbrl.")
     parser.add_argument("--clickhouse-url", default=default_clickhouse_url())
     parser.add_argument("--user", default=default_clickhouse_user())
     parser.add_argument("--password", default=default_clickhouse_password())
@@ -118,9 +117,6 @@ def main() -> None:
     validate_tables(client, args.source_database, args.target_database)
     profiles: list[StageProfile] = []
     insert_settings = insert_settings_sql(args)
-    if "parents" in stages:
-        profiles.append(run_insert_stage(client, "parents", args.target_database, FILING_TABLE, parent_insert_sql(args, run_id), insert_settings))
-        append_jsonl(events_path, asdict(profiles[-1]))
     if "xbrl" in stages:
         for stage, table, sql in [
             ("xbrl_concepts", XBRL_CONCEPT_TABLE, xbrl_concept_insert_sql(args, run_id)),
@@ -136,10 +132,7 @@ def main() -> None:
 
 
 def validate_tables(client: ClickHouseHttpClient, source_database: str, target_database: str) -> None:
-    required_source = {
-        "sec_bulk_mirror_filing_v3",
-        "sec_bulk_mirror_xbrl_fact_v3",
-    }
+    required_source = {"sec_bulk_mirror_xbrl_fact_v3"}
     required_target = set(WRITE_TABLES)
     source_missing = missing_tables(client, source_database, required_source)
     target_missing = missing_tables(client, target_database, required_target)
@@ -197,46 +190,6 @@ def apply_insert_settings(sql: str, insert_settings: str) -> str:
 def table_rows(client: ClickHouseHttpClient, database: str, table: str) -> int:
     out = client.execute(f"SELECT count() FROM {quote_ident(database)}.{quote_ident(table)} FINAL FORMAT TSV").strip()
     return int(out or "0")
-
-
-def parent_insert_sql(args: argparse.Namespace, run_id: str) -> str:
-    source = quote_ident(args.source_database)
-    target = quote_ident(args.target_database)
-    start = start_dt(args.start_date)
-    end = start_dt(args.end_date)
-    run = sql_string(run_id)
-    return f"""
-    INSERT INTO {target}.{quote_ident(FILING_TABLE)}
-    SELECT
-        lower(hex(SHA256(concat('sec-filing-v2-submissions-bulk|', cik, '|', accession_number)))) AS filing_id,
-        accession_number,
-        accession_number_compact,
-        cik,
-        CAST(NULL, 'Nullable(String)') AS issuer_id,
-        coalesce(nullIf(f.company_name, ''), nullIf(c.entity_name, '')) AS company_name,
-        form_type,
-        filing_date,
-        report_date,
-        accepted_at_utc,
-        acceptance_datetime_raw,
-        ifNull(nullIf(accepted_at_source, ''), 'submissions_bulk') AS accepted_at_source,
-        primary_document,
-        primary_document_url,
-        filing_detail_url,
-        primary_document AS source_file_name,
-        filing_size,
-        items,
-        'submissions_bulk_parent' AS text_status,
-        {run} AS source_run_id,
-        lower(hex(SHA256(concat('sec-bulk-submission|', cik, '|', accession_number, '|', raw_submission_json)))) AS source_content_sha256,
-        now64(3, 'UTC') AS inserted_at
-    FROM (SELECT * FROM {source}.sec_bulk_mirror_filing_v3 FINAL) AS f
-    ANY LEFT JOIN (SELECT cik, entity_name FROM {source}.sec_bulk_mirror_company_v3 FINAL) AS c USING (cik)
-    WHERE f.accepted_at_utc >= toDateTime64({sql_string(start)}, 9, 'UTC')
-      AND f.accepted_at_utc < toDateTime64({sql_string(end)}, 9, 'UTC')
-      AND f.accession_number != ''
-      AND f.cik != ''
-    """
 
 
 def xbrl_concept_insert_sql(args: argparse.Namespace, run_id: str) -> str:
@@ -362,16 +315,11 @@ def xbrl_frame_observation_insert_sql(args: argparse.Namespace, run_id: str) -> 
 
 def parse_stages(value: str) -> list[str]:
     stages = [item.strip().lower() for item in value.split(",") if item.strip()]
-    valid = {"parents", "xbrl"}
+    valid = {"xbrl"}
     invalid = sorted(set(stages) - valid)
     if invalid:
         raise SystemExit(f"invalid --stages values: {invalid}")
-    return stages or ["parents", "xbrl"]
-
-
-def start_dt(value: str) -> str:
-    parsed = datetime.combine(parse_date(value), dt_time.min, tzinfo=UTC)
-    return parsed.strftime("%Y-%m-%d %H:%M:%S")
+    return stages or ["xbrl"]
 
 
 def parse_date(value: str) -> date:
