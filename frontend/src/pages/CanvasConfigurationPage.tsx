@@ -254,7 +254,7 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
             {previewClocks.map((clock) => <span key={clock.label}><small>{clock.label}</small><strong>{clock.value}</strong></span>)}
           </div>
         </div>
-        {manager ? <button className="button secondary compact" disabled={!workspaceState} onClick={saveDefaultLayout} type="button"><Save size={13} /> {defaultSaved ? "Default saved" : "Set default"}</button> : null}
+        {manager ? <button className="button secondary compact canvas-set-default" disabled={!workspaceState} onClick={saveDefaultLayout} type="button"><Save size={13} /> {defaultSaved ? "Default saved" : "Set default"}</button> : null}
         {manager ? <button aria-expanded={managementOpen} aria-label="Canvas management" className="button secondary compact canvas-management-toggle" onClick={() => setManagementOpen((open) => !open)} type="button"><PanelRightOpen size={13} /> Manage</button> : null}
       </header>
 

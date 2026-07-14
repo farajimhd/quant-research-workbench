@@ -20045,24 +20045,27 @@ button {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  min-width: 78px;
-  padding: 2px 5px;
+  min-width: 98px;
+  padding: 3px 7px;
 }
 
 .canvas-clock-zones > span:last-child { border-right: 0; }
+.canvas-clock-zones > span:nth-child(1) { background: color-mix(in oklab, var(--success) 9%, var(--surface)); color: var(--success); }
+.canvas-clock-zones > span:nth-child(2) { background: color-mix(in oklab, var(--info) 9%, var(--surface)); color: var(--info); }
+.canvas-clock-zones > span:nth-child(3) { background: color-mix(in oklab, var(--warning) 9%, var(--surface)); color: var(--warning); }
 
 .canvas-clock-zones small {
   color: var(--muted-foreground);
-  font-size: 7px;
+  font-size: 8px;
   font-weight: 800;
   line-height: 1;
   text-transform: uppercase;
 }
 
 .canvas-clock-zones strong {
-  font-size: 9px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
-  line-height: 1.35;
+  line-height: 1.25;
   white-space: nowrap;
 }
 
@@ -20372,7 +20375,7 @@ button {
   padding: 1px 4px;
 }
 
-.canvas-management-toggle { margin-left: auto; }
+.canvas-set-default { margin-left: auto; }
 
 .canvas-manager-strip {
   align-items: center;

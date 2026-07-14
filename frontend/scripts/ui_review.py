@@ -222,6 +222,16 @@ def validate_canvas_interactions(
                 issues.append("Preview clock exposes removed date/time editing controls")
             if any(len(value.inner_text().split(":")) < 3 for value in zones.locator("strong").all()):
                 issues.append("Preview clocks do not render seconds")
+            clock_colors = zones.locator("span").evaluate_all("elements => elements.map(element => getComputedStyle(element).color)")
+            if len(set(clock_colors)) != 3:
+                issues.append("ET, Local, and UTC clocks do not have distinct theme colors")
+            if any(float(value.evaluate("element => getComputedStyle(element).fontSize").replace("px", "")) < 11 for value in zones.locator("strong").all()):
+                issues.append("Preview datetime values are still undersized")
+        set_default = page.get_by_role("button", name="Set default")
+        manage_button = page.get_by_role("button", name="Canvas management", exact=True)
+        set_default_box, manage_box = set_default.bounding_box(), manage_button.bounding_box()
+        if not set_default_box or not manage_box or set_default_box["x"] >= manage_box["x"] or manage_box["x"] + manage_box["width"] < scenario["viewport"]["width"] - 18:
+            issues.append("Set default and Canvas management are not grouped on the far right")
         if page.locator(".trading-workspace-command").count():
             issues.append("Canvas still renders the duplicate Main workspace context row")
         if page.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth"):
