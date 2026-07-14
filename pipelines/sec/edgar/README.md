@@ -29,8 +29,9 @@ The bulk-to-canonical stage also defaults
 the full 2019+ rebuild can legitimately touch more than the ClickHouse server
 default of 100 partitions in a single insert block.
 
-This unified gap-fill entry point refreshes SEC bulk `submissions` and
-`companyfacts`, mirrors those bulk files into `sec_core`, derives canonical
+This unified gap-fill entry point refreshes SEC bulk `submissions`,
+`companyfacts`, `company_tickers`, `company_tickers_exchange`, and
+`company_tickers_mf`, mirrors those source snapshots into `sec_core`, derives canonical
 filing parents and XBRL rows from that mirror, downloads missing daily archives,
 validates them, extracts normalized filing/document/text rows, inserts them,
 repairs date-only parent timestamps exclusively from preserved raw SEC UTC acceptance
@@ -101,9 +102,10 @@ after July 10 was published later than the original run, use:
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_gap_fill.py --start-date 2026-07-10 --end-date 2026-07-11 --execute
 ```
 
-Coverage skips completed bulk downloads and XBRL stages, while bulk mirror ingest
-runs as an idempotent reconciliation. Its member manifest skips completed parent
-records and reprocesses only members whose parser-version signature changed.
+Bulk download and mirror ingest always run as idempotent snapshot reconciliation;
+date-range coverage cannot skip mutable SEC bulk inputs. The unified historical
+fill rejects a partial bulk-source list, while the component downloader and ingest
+scripts remain available for targeted repairs.
 Archive extraction selects only the requested one-day range, and the archive
 manifest prevents completed archives from being rewritten. Acceptance metadata,
 the bridge, context tables, and the final audit are reconciled afterward.

@@ -211,8 +211,9 @@ roots, worker counts, SEC request pacing, retry policy, text limits, and
 arguments by hand; changing the generated command can make the coverage
 manifest disagree with the files and tables produced by the run.
 
-The unified fill command first refreshes SEC bulk `submissions` and
-`companyfacts`, mirrors those bulk files into `sec_core`, derives canonical
+The unified fill command first refreshes SEC bulk `submissions`, `companyfacts`,
+`company_tickers`, `company_tickers_exchange`, and `company_tickers_mf`, mirrors
+those source snapshots into `sec_core`, derives canonical
 filing parents and XBRL rows from that mirror, then performs archive download,
 validation, text extraction, ClickHouse insert, API fallback for missing recent
 XBRL, XBRL relationship repair, audit, and coverage writes. The final audit

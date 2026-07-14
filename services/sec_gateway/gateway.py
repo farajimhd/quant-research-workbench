@@ -31,6 +31,7 @@ from pipelines.sec.edgar.sec_pipeline.http import SecHttpClient
 from pipelines.sec.edgar.sec_pipeline.live_pipeline import SecLiveFilingPipeline
 from pipelines.sec.edgar.sec_pipeline.rate_limit import SecRateLimiter
 from pipelines.sec.edgar.sec_pipeline.xbrl_context import SecXbrlContextSync
+from pipelines.sec.edgar.sec_bulk_sources import DEFAULT_BULK_SOURCES
 from research.mlops.clickhouse import ClickHouseHttpClient
 from services.news_gateway.run_logger import AsyncRunLogger
 from services.sec_gateway.config import SecGatewayConfig, WORKSTATION_SHARE_CODE_ROOT_WIN, xbrl_context_sync_config
@@ -509,7 +510,7 @@ class SecGateway:
                     "--parts-root-ch",
                     os.environ.get("SEC_TEXT_PARTS_ROOT_CH", "/mnt/d/market-data"),
                     "--bulk-sources",
-                    "submissions,companyfacts",
+                    DEFAULT_BULK_SOURCES,
                     "--bulk-download-concurrency",
                     "2",
                     "--bulk-ingest-batch-size",

@@ -16,6 +16,7 @@ from pipelines.sec.edgar import sec_acceptance_raw_metadata_repair as acceptance
 from pipelines.sec.edgar import sec_bulk_clickhouse_ingest as bulk_ingest
 from pipelines.sec.edgar import sec_bulk_snapshot_refresh as snapshot_refresh
 from pipelines.sec.edgar import sec_historical_gap_fill as historical
+from pipelines.sec.edgar.sec_bulk_sources import BULK_SOURCE_NAMES, DEFAULT_BULK_SOURCES, require_complete_bulk_sources
 from pipelines.sec.edgar.sec_pipeline import submissions
 
 
@@ -44,6 +45,21 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
         self.assertEqual(commands["sec-context-build"][context_start], "2019-01-01")
         self.assertIn("acceptance-raw-metadata-repair", commands)
         self.assertNotIn("sec_filing_v2", commands["acceptance-raw-metadata-repair"])
+        self.assertEqual(args.bulk_sources, DEFAULT_BULK_SOURCES)
+        for stage in ("bulk-download", "bulk-ingest"):
+            source_index = commands[stage].index("--sources") + 1
+            self.assertEqual(commands[stage][source_index], DEFAULT_BULK_SOURCES)
+
+    def test_historical_bulk_source_contract_rejects_partial_snapshots(self) -> None:
+        self.assertEqual(require_complete_bulk_sources("all"), DEFAULT_BULK_SOURCES)
+        self.assertEqual(tuple(DEFAULT_BULK_SOURCES.split(",")), BULK_SOURCE_NAMES)
+        with self.assertRaisesRegex(ValueError, "complete bulk snapshot"):
+            require_complete_bulk_sources("submissions,companyfacts")
+
+    def test_bulk_download_is_always_reconciled(self) -> None:
+        command = historical.StageCommand("bulk-download", [], Path("bulk.log"), False, ("covered",))
+
+        self.assertFalse(historical.stage_already_completed(SimpleNamespace(), command))
 
     def test_raw_acceptance_repair_uses_only_explicit_utc_source_values(self) -> None:
         cte = acceptance_repair.resolved_raw_cte_sql("sec_core", "sec_bulk_mirror_filing_v3")

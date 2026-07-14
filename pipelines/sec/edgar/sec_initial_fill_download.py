@@ -32,6 +32,7 @@ from pipelines.sec.edgar.sec_historical_feed_download import (  # noqa: E402
     sec_user_agent,
     sha256_file,
 )
+from pipelines.sec.edgar.sec_bulk_sources import DEFAULT_BULK_SOURCES, parse_bulk_sources  # noqa: E402
 
 
 DEFAULT_ARTIFACT_ROOT_WIN = Path("D:/market-data/sec_core")
@@ -368,7 +369,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--sources",
-        default="submissions,companyfacts,company_tickers,company_tickers_exchange,company_tickers_mf",
+        default=DEFAULT_BULK_SOURCES,
         help=(
             "Comma-separated bulk sources to download. Use 'all' for all bulk sources or 'none' "
             "when only daily archives are desired."
@@ -508,16 +509,10 @@ def build_specs(args: argparse.Namespace, artifact_root: Path, user_agent: str, 
 
 
 def parse_sources(raw: str) -> list[str]:
-    normalized = [item.strip().lower() for item in raw.split(",") if item.strip()]
-    if not normalized or normalized == ["none"]:
-        return []
-    if "all" in normalized:
-        return ["submissions", "companyfacts", "company_tickers", "company_tickers_exchange", "company_tickers_mf"]
-    allowed = {"submissions", "companyfacts", "company_tickers", "company_tickers_exchange", "company_tickers_mf"}
-    invalid = sorted(set(normalized) - allowed)
-    if invalid:
-        raise SystemExit(f"Unknown --sources values: {', '.join(invalid)}")
-    return normalized
+    try:
+        return parse_bulk_sources(raw, allow_none=True)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def bulk_source_spec(source_name: str, artifact_root: Path) -> SourceSpec:

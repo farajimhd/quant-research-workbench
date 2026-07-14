@@ -36,6 +36,7 @@ from pipelines.sec.edgar.sec_initial_fill_download import (  # noqa: E402
     is_g_drive_path,
     sha256_file,
 )
+from pipelines.sec.edgar.sec_bulk_sources import DEFAULT_BULK_SOURCES, parse_bulk_sources  # noqa: E402
 from pipelines.sec.edgar.sec_pipeline.submissions import parse_acceptance_datetime  # noqa: E402
 from pipelines.sec.edgar.sec_bulk_snapshot_refresh import refresh_selected_snapshots  # noqa: E402
 
@@ -95,7 +96,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--sources",
-        default="company_tickers,company_tickers_exchange,company_tickers_mf,submissions,companyfacts",
+        default=DEFAULT_BULK_SOURCES,
         help="Comma-separated subset of company_tickers,company_tickers_exchange,company_tickers_mf,submissions,companyfacts.",
     )
     parser.add_argument("--batch-size", type=int, default=int(os.environ.get("SEC_BULK_INGEST_BATCH_SIZE", str(DEFAULT_BATCH_SIZE))))
@@ -195,12 +196,10 @@ def validate_args(args: argparse.Namespace) -> None:
 
 
 def parse_sources(text: str) -> list[str]:
-    allowed = {"company_tickers", "company_tickers_exchange", "company_tickers_mf", "submissions", "companyfacts"}
-    sources = [item.strip() for item in text.split(",") if item.strip()]
-    invalid = sorted(set(sources) - allowed)
-    if invalid:
-        raise SystemExit(f"Invalid --sources: {invalid}; expected subset of {sorted(allowed)}")
-    return sources
+    try:
+        return parse_bulk_sources(text)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def discover_artifacts(root: Path, sources: list[str]) -> list[SourceArtifact]:

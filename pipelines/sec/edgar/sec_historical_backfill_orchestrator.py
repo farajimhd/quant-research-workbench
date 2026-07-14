@@ -18,6 +18,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
+from pipelines.sec.edgar.sec_bulk_sources import DEFAULT_BULK_SOURCES, require_complete_bulk_sources  # noqa: E402
 
 
 DEFAULT_ARTIFACT_ROOT_WIN = Path("D:/market-data/sec_core")
@@ -139,7 +140,7 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Existing sec_filing_text_extract_manifest.json. Required only when ingest stages run without text-extract.",
     )
-    parser.add_argument("--bulk-sources", default="company_tickers,company_tickers_exchange,company_tickers_mf,submissions,companyfacts")
+    parser.add_argument("--bulk-sources", default=DEFAULT_BULK_SOURCES)
     parser.add_argument("--bulk-download-concurrency", type=int, default=2)
     parser.add_argument("--bulk-file-root-ch", default=os.environ.get("SEC_CORE_ARTIFACT_ROOT_CH", "/mnt/d/market-data"))
     parser.add_argument("--bulk-ingest-max-threads", type=int, default=int(os.environ.get("SEC_BULK_CLICKHOUSE_MAX_THREADS", "32")))
@@ -284,6 +285,11 @@ def validate_args(args: argparse.Namespace, stages: list[str]) -> None:
     end = parse_iso_date(args.end_date)
     if end <= start:
         raise SystemExit("--end-date must be later than --start-date")
+    if {"bulk-download", "bulk-ingest"}.intersection(stages):
+        try:
+            args.bulk_sources = require_complete_bulk_sources(args.bulk_sources)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
     non_negative = [
         "limit_days",
         "limit_archives",

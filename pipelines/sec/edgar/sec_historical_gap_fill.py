@@ -16,6 +16,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from pipelines.sec.edgar.sec_pipeline.config import SecPipelineConfig, env_string  # noqa: E402
+from pipelines.sec.edgar.sec_bulk_sources import DEFAULT_BULK_SOURCES, require_complete_bulk_sources  # noqa: E402
 from pipelines.sec.edgar.sec_pipeline.coverage import (  # noqa: E402
     KIND_BULK_COMPANYFACTS,
     KIND_BULK_SUBMISSIONS,
@@ -311,7 +312,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--context-render-batch-rows", type=int, default=int(os.environ.get("SEC_CONTEXT_RENDER_BATCH_ROWS", "256")))
     parser.add_argument("--parts-root-win", default=env_string("SEC_TEXT_PARTS_ROOT_WIN", str(DEFAULT_PARTS_ROOT_WIN)))
     parser.add_argument("--parts-root-ch", default=env_string("SEC_TEXT_PARTS_ROOT_CH", DEFAULT_PARTS_ROOT_CH))
-    parser.add_argument("--bulk-sources", default="submissions,companyfacts")
+    parser.add_argument("--bulk-sources", default=DEFAULT_BULK_SOURCES)
     parser.add_argument("--bulk-download-concurrency", type=int, default=2)
     parser.add_argument("--bulk-file-root-ch", default=env_string("SEC_CORE_ARTIFACT_ROOT_CH", "/mnt/d/market-data"))
     parser.add_argument("--bulk-ingest-max-threads", type=int, default=int(os.environ.get("SEC_BULK_CLICKHOUSE_MAX_THREADS", "32")))
@@ -380,6 +381,10 @@ def required_archive_is_local(args: argparse.Namespace) -> bool:
 
 def main() -> None:
     args = parse_args()
+    try:
+        args.bulk_sources = require_complete_bulk_sources(args.bulk_sources)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     start_date = parse_date(args.start_date)
     end_date = parse_date(args.end_date)
     if end_date <= start_date:
@@ -994,6 +999,7 @@ def stage_coverage_kind(stage: str) -> str:
 
 def stage_already_completed(args: argparse.Namespace, command: StageCommand) -> bool:
     if command.stage in {
+        "bulk-download",
         "bulk-ingest",
         "archive-text-rebuild",
         "validate-downloaded",
