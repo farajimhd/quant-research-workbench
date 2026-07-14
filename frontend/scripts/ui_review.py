@@ -208,6 +208,42 @@ def validate_canvas_interactions(
     if chart.count() != 1:
         return ["main canvas does not render exactly one Chart container"]
     try:
+        clock = page.get_by_label("Preview clock")
+        zones = page.get_by_label("Preview time zones")
+        if clock.count() != 1 or zones.count() != 1:
+            issues.append("Canvas does not expose one editable three-zone preview clock")
+        else:
+            zone_text = zones.inner_text().lower()
+            if not all(label in zone_text for label in ("new york", "local", "utc")):
+                issues.append("Preview clock does not identify New York, Local, and UTC")
+            if "AAPL" in clock.inner_text():
+                issues.append("Preview clock incorrectly contains ticker context")
+            preview_time = page.get_by_label("Preview time in New York")
+            initial_utc = zones.locator("span").nth(2).inner_text()
+            preview_time.fill("10:15")
+            page.wait_for_timeout(150)
+            if preview_time.input_value() != "10:15" or zones.locator("span").nth(2).inner_text() == initial_utc:
+                issues.append("Editing New York preview time does not update synchronized zone readings")
+            preview_time.fill("09:45")
+        canvas = page.locator("[data-workspace-canvas]")
+        canvas_top = canvas.bounding_box()["y"]
+        page.get_by_role("button", name="Containers", exact=True).click()
+        library = page.get_by_role("region", name="Container library")
+        if library.count() != 1:
+            issues.append("Container library did not open")
+        else:
+            articles = library.locator("article")
+            if articles.count() != 10:
+                issues.append("Container library does not show the complete compact container list")
+            if articles.count() > 1:
+                first_box, second_box = articles.nth(0).bounding_box(), articles.nth(1).bounding_box()
+                if first_box and second_box and second_box["y"] <= first_box["y"]:
+                    issues.append("Container library is not organized as a vertical list")
+            if abs(canvas.bounding_box()["y"] - canvas_top) > 1:
+                issues.append("Opening the container library pushes the canvas down")
+            if interaction_screenshot:
+                page.screenshot(path=str(interaction_screenshot.with_name(interaction_screenshot.stem + "__library.png")), full_page=True)
+        page.get_by_role("button", name="Close container library").click()
         title_bar = chart.locator(".workspace-window-header")
         link_button = title_bar.get_by_role("button", name="Link Chart")
         if link_button.count() != 1:

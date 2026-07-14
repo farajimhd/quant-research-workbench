@@ -198,9 +198,10 @@ export function TradingWorkspace({
         </div>
       </section>
 
-      {libraryOpen ? (
+      {libraryOpen ? <>
+        <button aria-label="Close container library" className="workspace-container-library-scrim" onClick={() => setLibraryOpen(false)} type="button" />
         <WorkspaceContainerLibrary definitions={definitions} mode={mode} openIds={openIds} onAdd={addContainer} />
-      ) : null}
+      </> : null}
 
       <section className="trading-workspace-canvas live-workspace" data-workspace-canvas style={{ minHeight }}>
         <div className="trading-workspace-watermark" aria-hidden="true">
@@ -257,11 +258,8 @@ function WorkspaceContainerLibrary({
   return (
     <section className="workspace-container-library" aria-label="Container library">
       <header>
-        <div>
-          <span>Container library</span>
-          <strong>One container contract, mode-specific sources</strong>
-        </div>
-        <small>{definitions.length} compatible with {modeLabel(mode)}</small>
+        <strong>Containers</strong>
+        <small>{definitions.length} available</small>
       </header>
       <div className="workspace-container-library-grid">
         {definitions.map((definition) => {
@@ -272,7 +270,6 @@ function WorkspaceContainerLibrary({
               <div className="workspace-library-icon">{containerIcon(definition.id)}</div>
               <div className="workspace-library-copy">
                 <strong>{definition.title}</strong>
-                <p>{definition.description}</p>
                 <small>{binding.summary}</small>
               </div>
               <button className="button secondary compact" onClick={() => onAdd(definition.id)} type="button">
