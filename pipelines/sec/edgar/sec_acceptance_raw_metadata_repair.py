@@ -46,6 +46,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-table", default=os.environ.get("SEC_FILING_TABLE", "sec_filing_v3"))
     parser.add_argument("--mirror-database", default=os.environ.get("SEC_BULK_MIRROR_DATABASE", "sec_core"))
     parser.add_argument("--mirror-table", default="sec_bulk_mirror_filing_v3")
+    parser.add_argument(
+        "--max-partitions-per-insert-block",
+        type=int,
+        default=int(os.environ.get("SEC_ACCEPTANCE_REPAIR_MAX_PARTITIONS", "1000")),
+    )
+    parser.add_argument("--max-threads", type=int, default=int(os.environ.get("SEC_ACCEPTANCE_REPAIR_MAX_THREADS", "32")))
     parser.add_argument("--execute", action="store_true")
     return parser.parse_args()
 
@@ -63,6 +69,12 @@ def main() -> int:
     run_id = f"sec_acceptance_raw_metadata_repair_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
     resolved_cte = resolved_raw_cte_sql(args.mirror_database, args.mirror_table)
     before = query_summary(client, args, resolved_cte)
+    if int(before["target_partitions"]) > int(args.max_partitions_per_insert_block):
+        raise SystemExit(
+            "SEC acceptance repair requires "
+            f"{before['target_partitions']} target partitions, exceeding "
+            f"--max-partitions-per-insert-block={args.max_partitions_per_insert_block}."
+        )
     print("=" * 96, flush=True)
     print("SEC raw acceptance metadata repair", flush=True)
     print(f"run_id={run_id}", flush=True)
@@ -87,6 +99,7 @@ def main() -> int:
         "differing_rows_before": int(before["differing_rows"]),
         "equal_rows_before": int(before["equal_rows"]),
         "cross_partition_rows_before": int(before["cross_partition_rows"]),
+        "target_partitions_before": int(before["target_partitions"]),
         "unresolved_rows_before": int(before["unresolved_rows"]),
         "fallback_rows_after": int(after["fallback_rows"]),
         "repairable_rows_after": int(after["repairable_rows"]),
@@ -130,7 +143,8 @@ SELECT
     countIf(
         r.accepted_at_utc IS NOT NULL
         AND toYYYYMM(r.accepted_at_utc) != toYYYYMM(coalesce(f.accepted_at_utc, toDateTime64(ifNull(f.filing_date, toDate('1970-01-01')), 9, 'UTC')))
-    ) AS cross_partition_rows
+    ) AS cross_partition_rows,
+    uniqExactIf(toYYYYMM(r.accepted_at_utc), r.accepted_at_utc IS NOT NULL) AS target_partitions
 FROM {target} AS f FINAL
 LEFT JOIN resolved_raw AS r USING (cik, accession_number)
 WHERE f.accepted_at_source IN ({sources})
@@ -165,7 +179,10 @@ SELECT
 FROM {target} AS f FINAL
 INNER JOIN resolved_raw AS r USING (cik, accession_number)
 WHERE f.accepted_at_source IN ({sources})
-SETTINGS date_time_input_format = 'best_effort'
+SETTINGS
+    date_time_input_format = 'best_effort',
+    max_partitions_per_insert_block = {int(args.max_partitions_per_insert_block)},
+    max_threads = {max(1, int(args.max_threads))}
 """.strip()
 
 
@@ -205,6 +222,10 @@ def validate_identifier_args(args: argparse.Namespace) -> None:
         value = str(getattr(args, name))
         if not value or not value.replace("_", "").isalnum():
             raise SystemExit(f"Invalid --{name.replace('_', '-')}: {value!r}")
+    if int(args.max_partitions_per_insert_block) < 1:
+        raise SystemExit("--max-partitions-per-insert-block must be >= 1")
+    if int(args.max_threads) < 1:
+        raise SystemExit("--max-threads must be >= 1")
 
 
 if __name__ == "__main__":

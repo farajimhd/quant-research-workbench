@@ -48,6 +48,8 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
             target_table="sec_filing_v3",
             mirror_database="sec_core",
             mirror_table="sec_bulk_mirror_filing_v3",
+            max_partitions_per_insert_block=1000,
+            max_threads=32,
         )
         sql = acceptance_repair.insert_replacements_sql(args, cte, "repair-test")
         delete_sql = acceptance_repair.delete_replaced_fallbacks_sql(args)
@@ -60,6 +62,8 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
         self.assertIn("r.accepted_at_utc AS accepted_at_utc", sql)
         self.assertIn("r.acceptance_datetime_raw AS acceptance_datetime_raw", sql)
         self.assertIn("f.accepted_at_source IN", sql)
+        self.assertIn("max_partitions_per_insert_block = 1000", sql)
+        self.assertIn("max_threads = 32", sql)
         self.assertIn("ALTER TABLE `q_live`.`sec_filing_v3`", delete_sql)
         self.assertIn("accepted_at_source IN", delete_sql)
         self.assertIn("FROM `sec_core`.`sec_bulk_mirror_filing_v3` FINAL", delete_sql)

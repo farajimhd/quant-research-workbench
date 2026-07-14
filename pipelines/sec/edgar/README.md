@@ -38,6 +38,13 @@ metadata, runs API fallback for missing recent XBRL, repairs XBRL relationships,
 `id_sec_market_bridge_v3`, builds SEC context tables in `market_sip_compact`,
 audits the result, and writes coverage rows.
 
+The acceptance repair measures the number of corrected monthly target partitions
+before writing. Its default maintenance bound is 1,000 partitions, which permits
+the current 145-partition SEC history in one server-side insert while failing
+before mutation if an unexpectedly wider range is encountered. Replacement rows
+are inserted before matched date-only fallbacks are synchronously deleted, so
+cross-month corrections are restart-safe.
+
 Archive text rebuild is transactional per daily `.nc.tar.gz`: each fixed worker
 lane extracts and renders one archive into byte-bounded Parquet shards, validates
 their footers, inserts them through ClickHouse's parallel native Parquet reader,
