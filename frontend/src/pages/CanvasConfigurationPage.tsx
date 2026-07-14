@@ -1,4 +1,4 @@
-import { Check, ExternalLink, Link2, PanelRightOpen, Plus, Save, Settings2, Trash2, Unlink } from "lucide-react";
+import { Check, Clock3, ExternalLink, Globe2, Link2, MapPin, PanelRightOpen, Plus, Save, Settings2, Trash2, Unlink } from "lucide-react";
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 import { api } from "../api/client";
@@ -154,6 +154,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
     ? settings.chart
     : registry.linkContexts[activeLinkGroup];
   const previewClocks = useMemo(() => previewClockReadings(previewContext), [previewContext]);
+  const clockIcons = [Clock3, MapPin, Globe2];
   const marketStatus = useMemo(() => historicalMarketStatus(previewContext.sessionDate, previewContext.previewTime), [previewContext]);
 
   useEffect(() => {
@@ -301,12 +302,14 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
       <header className="canvas-config-toolbar">
         <div className="canvas-clock-control" aria-label="Preview clock">
           <div className="canvas-clock-zones" aria-label="Preview time zones">
-            {previewClocks.map((clock) => <span key={clock.label}><small>{clock.label}</small><strong>{clock.value}</strong></span>)}
+            {previewClocks.map((clock, index) => {
+              const Icon = clockIcons[index];
+              return <span key={clock.label}><Icon aria-hidden="true" size={15} /><span><small>{clock.label}</small><strong>{clock.value}</strong><em>{clock.detail}</em></span></span>;
+            })}
           </div>
         </div>
         <MarketStatusBadge value={marketStatus} />
-        {manager ? <button className="button secondary compact canvas-set-default" disabled={!workspaceState} onClick={saveDefaultLayout} type="button"><Save size={13} /> {defaultSaved ? "Default saved" : "Set default"}</button> : null}
-        {manager ? <button aria-expanded={managementOpen} aria-label="Canvas management" className="button secondary compact canvas-management-toggle" onClick={() => setManagementOpen((open) => !open)} type="button"><PanelRightOpen size={13} /> Manage</button> : null}
+        {manager ? <div className="canvas-toolbar-actions"><button className="button secondary compact canvas-set-default" disabled={!workspaceState} onClick={saveDefaultLayout} type="button"><Save size={13} /> {defaultSaved ? "Default saved" : "Set default"}</button><button aria-expanded={managementOpen} aria-label="Canvas management" className="button secondary compact canvas-management-toggle" onClick={() => setManagementOpen((open) => !open)} type="button"><PanelRightOpen size={13} /> Manage</button></div> : null}
       </header>
 
       {error ? <div className="canvas-inline-error">{error}</div> : null}
@@ -552,12 +555,12 @@ function previewClockReadings(context: CanvasPreviewContext) {
     const zone = timeZone ? { timeZone } : {};
     const date = new Intl.DateTimeFormat("en-US", { day: "2-digit", month: "short", year: "numeric", ...zone }).format(instant);
     const time = new Intl.DateTimeFormat("en-US", { hour: "2-digit", hour12: false, minute: "2-digit", second: "2-digit", ...zone }).format(instant);
-    return `${date} · ${time}`;
+    return { detail: date, value: time };
   };
   return [
-    { label: "ET", value: format("America/New_York") },
-    { label: "Local", value: format() },
-    { label: "UTC", value: format("UTC") },
+    { label: "ET", ...format("America/New_York") },
+    { label: "Local", ...format() },
+    { label: "UTC", ...format("UTC") },
   ];
 }
 function dateInTimeZone(date: string, time: string, timeZone: string) {
