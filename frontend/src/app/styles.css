@@ -20467,6 +20467,7 @@ button {
 
 .canvas-config-page .trading-workspace-shell {
   gap: 2px;
+  isolation: isolate;
   position: relative;
 }
 
@@ -20573,6 +20574,7 @@ button {
   min-height: 640px;
   max-width: 100%;
   overflow: auto;
+  z-index: 0;
 }
 
 .workspace-management-scrim {

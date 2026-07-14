@@ -234,6 +234,15 @@ def validate_canvas_interactions(
         management = page.get_by_role("complementary", name="Canvas management")
         if management.count() != 1:
             issues.append("Canvas management sidebar did not open")
+        else:
+            management_box = management.bounding_box()
+            if management_box:
+                top_layer_is_management = page.evaluate(
+                    "([x, y]) => Boolean(document.elementFromPoint(x, y)?.closest('[aria-label=\"Canvas management\"]'))",
+                    [management_box["x"] + management_box["width"] / 2, management_box["y"] + management_box["height"] / 2],
+                )
+                if not top_layer_is_management:
+                    issues.append("Canvas containers render above the management sidebar")
         library = page.get_by_role("region", name="Container library")
         if library.count() != 1:
             issues.append("Container library did not open")

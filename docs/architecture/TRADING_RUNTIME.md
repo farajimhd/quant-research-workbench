@@ -109,7 +109,9 @@ seconds. The clock is global canvas context and deliberately contains no ticker
 or editing controls. The header otherwise contains only Set default and a
 right-aligned management toggle. Canvas registry, compact container library,
 and layout reset controls live in its collapsible right sidebar, so opening
-management never changes canvas geometry. Document-level horizontal overflow is
+management never changes canvas geometry. The canvas forms an isolated stacking
+context so arbitrary container layer values cannot render above management.
+Document-level horizontal overflow is
 clipped while the canvas owns horizontal scrolling. Chart and scanner content is calculated by QMD History from
 canonical events. News, SEC, and XBRL content is read from their persisted
 tables with an as-of cutoff. Portfolio, orders, executions, strategy state, and
