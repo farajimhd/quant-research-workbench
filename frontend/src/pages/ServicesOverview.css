@@ -156,12 +156,14 @@
 .service-fleet-metric.tone-warn > strong { color: var(--badge-warning-fg); }
 
 .service-fleet-database {
-  background: transparent;
+  background: color-mix(in oklab, var(--surface-alt) 78%, var(--surface));
   border-top: 1px solid var(--surface-border);
+  border-radius: 0 0 7px 7px;
   display: grid;
   gap: 0;
   grid-template-columns: 1.2fr .75fr .75fr 1fr;
-  padding: 7px 18px 0 0;
+  margin: 0 -11px -8px;
+  padding: 7px 29px 8px 11px;
 }
 .service-fleet-database > div { display: grid; gap: 1px; min-width: 0; padding: 0 10px; }
 .service-fleet-database > div:first-child { padding-left: 0; }
