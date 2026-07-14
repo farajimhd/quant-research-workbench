@@ -1,4 +1,4 @@
-import { ExternalLink, Link2, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
+import { ExternalLink, Link2, Plus, RefreshCw, Save, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
@@ -99,6 +99,7 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
   const [defaultSaved, setDefaultSaved] = useState(false);
+  const [configurationContainerId, setConfigurationContainerId] = useState<WorkspaceContainerId | null>(null);
 
   const currentCanvas = registry.canvases.find((canvas) => canvas.id === canvasId) ?? { id: canvasId, label: canvasId === MAIN_CANVAS_ID ? "Main" : "Focus canvas" };
   const activeContainerId = workspaceState?.openIds.includes("chart") ? "chart" : workspaceState?.openIds[0] ?? "chart";
@@ -269,6 +270,7 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
             .filter((candidate) => candidate.id !== definition.id && registry.linkAssignments[candidate.id] === group)
             .map((candidate) => candidate.title);
           return <ContainerPreview
+            configOpen={configurationContainerId === definition.id}
             definition={definition}
             linkContext={linkContext}
             linkGroup={group}
@@ -285,6 +287,19 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
         runStatus={preview ? "running" : "idle"}
         showHealth={false}
         storageKeyOverride={canvasWorkspaceStorageKey(canvasId)}
+        titleBarActionsForContainer={(definition) => {
+          const group = registry.linkAssignments[definition.id] ?? "none";
+          const open = configurationContainerId === definition.id;
+          return <button
+            aria-expanded={open}
+            aria-label={`Configure and link ${definition.title}`}
+            className="workspace-window-link-action"
+            data-active={open ? "true" : "false"}
+            onClick={() => setConfigurationContainerId((current) => current === definition.id ? null : definition.id)}
+            title={group === "none" ? "Choose a link group" : `Linked to Group ${group}; configure or change group`}
+            type="button"
+          ><Link2 size={11} /><span>{group === "none" ? "Link" : `Link ${group}`}</span></button>;
+        }}
         workspaceBadge={manager ? "Main" : "Focus"}
       />
     </div>
@@ -295,7 +310,8 @@ function CanvasManager({ onCreate, onOpen, onRemove, registry }: { onCreate: () 
   return <section aria-label="Canvas manager" className="canvas-manager-strip"><strong>Canvases</strong><div className="canvas-manager-items">{registry.canvases.map((canvas) => <article key={canvas.id} data-main={canvas.id === MAIN_CANVAS_ID ? "true" : "false"}>{canvas.id === MAIN_CANVAS_ID ? <><span>{canvas.label}</span><small>default authority</small></> : <><button aria-label={`Open ${canvas.label}`} className="canvas-manager-open" onClick={() => onOpen(canvas.id)} title="Open canvas in a new page" type="button"><span>{canvas.label}</span><ExternalLink size={11} /></button><button aria-label={`Remove ${canvas.label}`} className="toolbar-button compact" onClick={() => onRemove(canvas.id)} title="Remove canvas" type="button"><Trash2 size={12} /></button></>}</article>)}</div><button className="button secondary compact" onClick={onCreate} type="button"><Plus size={13} /> New canvas</button></section>;
 }
 
-function ContainerPreview({ definition, linkContext, linkGroup, linkedContainers, loading, onLinkChange, onLinkContextChange, preview, settings, setSettings }: {
+function ContainerPreview({ configOpen, definition, linkContext, linkGroup, linkedContainers, loading, onLinkChange, onLinkContextChange, preview, settings, setSettings }: {
+  configOpen: boolean;
   definition: WorkspaceContainerDefinition;
   linkContext: CanvasLinkContext;
   linkGroup: CanvasLinkGroupId;
@@ -307,9 +323,7 @@ function ContainerPreview({ definition, linkContext, linkGroup, linkedContainers
   settings: ContainerSettings;
   setSettings: React.Dispatch<React.SetStateAction<ContainerSettings>>;
 }) {
-  const [configOpen, setConfigOpen] = useState(false);
   return <div className="canvas-container-preview">
-    <button aria-expanded={configOpen} aria-label={`Configure and link ${definition.title}`} className="canvas-container-configure" onClick={() => setConfigOpen((value) => !value)} title={linkGroup === "none" ? "Configure container and choose a link group" : `Linked to Group ${linkGroup}; configure or change group`} type="button">{configOpen ? <X size={12} /> : <Link2 size={12} />}<span>{configOpen ? "Close" : linkGroup === "none" ? "Link" : `Link ${linkGroup}`}</span></button>
     {configOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} configuration`}><div className="canvas-link-guide"><strong>Link containers</strong><p>Choose the same group in each container to share symbol and interval across canvases.</p></div><label><span>Linked group</span><select aria-label={`${definition.title} link group`} onChange={(event) => onLinkChange(event.target.value as CanvasLinkGroupId)} value={linkGroup}>{LINK_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>{linkGroup !== "none" ? <div className="canvas-link-context"><Link2 size={12} /><span>Group {linkGroup} · {linkContext.symbol} · {linkContext.timeframe}</span><small>{linkedContainers.length ? `With ${linkedContainers.join(", ")}` : "No other container uses this group yet"}</small></div> : null}{containerFields(definition.id, settings, linkContext, setSettings, onLinkContextChange)}</div> : null}
     <div className={configOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{loading && !preview ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div> : renderPreview(definition.id, preview, settings, setSettings, linkGroup, onLinkContextChange, linkContext)}</div>
   </div>;

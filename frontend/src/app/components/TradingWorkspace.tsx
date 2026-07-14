@@ -55,6 +55,7 @@ type TradingWorkspaceProps = {
   showHealth?: boolean;
   statusLabel?: string;
   storageKeyOverride?: string;
+  titleBarActionsForContainer?: (definition: WorkspaceContainerDefinition) => ReactNode;
   workspaceBadge?: string;
 };
 
@@ -84,6 +85,7 @@ export function TradingWorkspace({
   showHealth = true,
   statusLabel,
   storageKeyOverride,
+  titleBarActionsForContainer,
   workspaceBadge,
 }: TradingWorkspaceProps) {
   const definitions = useMemo(() => [...(definitionsOverride ?? containersForMode(mode))], [definitionsOverride, mode]);
@@ -218,6 +220,7 @@ export function TradingWorkspace({
               key={id}
               kind={id}
               layout={layout}
+              titleBarActions={titleBarActionsForContainer?.(definition)}
               linkLabel={linkLabelForContainer?.(definition)}
               meta={meta}
               onClose={() => setOpenIds((current) => current.filter((candidate) => candidate !== id))}

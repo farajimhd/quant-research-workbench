@@ -208,7 +208,10 @@ def validate_canvas_interactions(
     if chart.count() != 1:
         return ["main canvas does not render exactly one Chart container"]
     try:
-        link_button = chart.get_by_role("button", name="Configure and link Chart")
+        title_bar = chart.locator(".workspace-window-header")
+        link_button = title_bar.get_by_role("button", name="Configure and link Chart")
+        if link_button.count() != 1:
+            issues.append("Chart link action is not in the container title bar")
         if "Link A" not in link_button.inner_text():
             issues.append("Chart does not expose its current link group at the point of use")
         link_button.click()

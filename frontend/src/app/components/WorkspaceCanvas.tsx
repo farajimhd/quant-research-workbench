@@ -66,6 +66,7 @@ type WorkspaceWindowProps = {
   id: WorkspaceWindowId;
   kind?: string;
   layout: WorkspaceWindowLayout;
+  titleBarActions?: ReactNode;
   linkLabel?: string;
   meta?: WorkspaceWindowMeta;
   onClose: (id: WorkspaceWindowId) => void;
@@ -91,6 +92,7 @@ export function WorkspaceWindow({
   id,
   kind,
   layout,
+  titleBarActions,
   linkLabel,
   meta,
   onClose,
@@ -217,6 +219,7 @@ export function WorkspaceWindow({
           {meta ? <span aria-label={`Source status: ${meta.status}`} className="workspace-window-source-status" data-status={meta.status}>{meta.status}</span> : null}
         </div>
         <div className="workspace-window-actions live-window-actions" onPointerDown={(event) => event.stopPropagation()}>
+          {titleBarActions}
           {canvasTargets.length > 1 ? <CanvasTargetSelect canvasTargets={canvasTargets} onMove={(canvasId) => onMoveToCanvas(id, canvasId)} title={title} /> : null}
           {canPopOut ? (
             <button aria-label={`Open linked ${title} in a new canvas`} className="toolbar-button compact" onClick={() => onPopOut(id)} title="Open linked copy in a focus canvas" type="button">

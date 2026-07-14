@@ -20110,7 +20110,7 @@ button {
   position: relative;
 }
 
-.canvas-container-configure {
+.workspace-window-link-action {
   align-items: center;
   background: var(--surface-alt);
   border: 1px solid var(--border);
@@ -20121,15 +20121,12 @@ button {
   font-size: 9px;
   font-weight: 800;
   gap: 5px;
-  min-height: 24px;
-  padding: 3px 7px;
-  position: absolute;
-  right: 8px;
-  top: 5px;
-  z-index: 4;
+  min-height: 20px;
+  padding: 0 4px;
 }
 
-.canvas-container-configure:hover { border-color: var(--primary); color: var(--primary); }
+.workspace-window-link-action:hover,
+.workspace-window-link-action[data-active="true"] { border-color: var(--primary); color: var(--primary); }
 
 .canvas-preview-loading,
 .canvas-preview-empty {
@@ -20619,18 +20616,16 @@ button {
   padding: 0;
 }
 
-.canvas-container-configure {
+.workspace-window-link-action {
   border-radius: 2px;
   font-size: 8px;
   gap: 2px;
   min-height: 20px;
   padding: 0 3px;
-  right: 1px;
-  top: 1px;
   width: auto;
 }
 
-.canvas-container-configure span {
+.workspace-window-link-action span {
   font-weight: 850;
   white-space: nowrap;
 }
@@ -20648,12 +20643,12 @@ button {
   border: 1px solid var(--border);
   display: grid;
   gap: 4px;
-  max-height: calc(100% - 22px);
+  max-height: calc(100% - 2px);
   overflow: auto;
   padding: 4px;
   position: absolute;
   right: 1px;
-  top: 22px;
+  top: 1px;
   width: min(250px, calc(100% - 2px));
   z-index: 8;
 }
