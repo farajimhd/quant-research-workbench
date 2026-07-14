@@ -304,9 +304,7 @@ function ServicesDashboard({ now, onNavigate, services }: { now: Date; onNavigat
 
 function ServiceFleetCard({ now, onOpen, service }: { now: Date; onOpen: () => void; service: ServiceStatusPayload }) {
   const info = statusInfo(service);
-  const groups = visibleServiceWorkGroups(serviceWorkGroups(service), service.registry.id);
   const freshness = serviceFreshness(service, now);
-  const attention = serviceAttentionSummary(service, groups);
   const metrics = serviceFleetMetrics(service);
   const database = serviceFleetDatabaseSummary(service);
   const focus = serviceFleetFocus(service);
@@ -317,22 +315,16 @@ function ServiceFleetCard({ now, onOpen, service }: { now: Date; onOpen: () => v
           <div className="service-fleet-identity">
             <ServiceIcon service={service} />
             <div>
-              <span>{displayName(service.registry.kind)}</span>
               <h2>{service.registry.label}</h2>
             </div>
           </div>
           <div className="service-fleet-state">
             <ServiceStatusBadge status={service.status} online={service.online} />
-            <span className={`service-fleet-freshness ${freshness.tone}`}>{freshness.label}</span>
+            {service.online ? <span className={`service-fleet-freshness ${freshness.tone}`}>{freshness.label}</span> : null}
           </div>
           <div className="service-fleet-focus">
-            <span className="service-fleet-focus-kicker">Current work</span>
             <strong>{focus.phase}</strong>
             <p title={focus.message}>{focus.message}</p>
-          </div>
-          <div className={`service-fleet-heartbeat ${service.online ? "is-live" : "is-offline"}`}>
-            <span aria-hidden="true" />
-            <b>{service.online ? `Active now · ${freshness.label}` : "No heartbeat"}</b>
           </div>
         </div>
 
@@ -347,16 +339,12 @@ function ServiceFleetCard({ now, onOpen, service }: { now: Date; onOpen: () => v
         </div>
 
         <div className={`service-fleet-database ${database.tone}`}>
-          <div><span>Database</span><strong>{database.status}</strong><small>{database.detail}</small></div>
-          <div><span>Today</span><strong>{database.today}</strong><small>{database.product}</small></div>
-          <div><span>Overall</span><strong>{database.overall}</strong><small>{database.product}</small></div>
-          <div><span>Latest durable row</span><strong>{database.latest}</strong><small>{database.latestDetail}</small></div>
+          <div><span>Database · {database.product}</span><strong>{database.status}</strong></div>
+          <div><span>Today</span><strong>{database.today}</strong></div>
+          <div><span>Overall</span><strong>{database.overall}</strong></div>
+          <div><span>Latest</span><strong>{database.latest}</strong></div>
         </div>
-
-        <div className="service-fleet-card-footer">
-          <span className={`service-fleet-attention ${attention.tone}`}>{attention.label}</span>
-          <span className="service-fleet-open-label">Inspect service <ArrowUpRight aria-hidden="true" size={14} /></span>
-        </div>
+        <ArrowUpRight aria-hidden="true" className="service-fleet-open-icon" size={13} />
       </button>
     </article>
   );
@@ -4900,9 +4888,7 @@ type ServiceFleetMetric = {
 };
 
 type ServiceFleetDatabaseSummary = {
-  detail: string;
   latest: string;
-  latestDetail: string;
   overall: string;
   product: string;
   status: string;
@@ -4932,30 +4918,41 @@ function serviceFleetMetrics(service: ServiceStatusPayload): ServiceFleetMetric[
     const processed = number(["processed_rows"]);
     const duplicates = number(["duplicate_news_rows"]);
     const unique = number(["unique_news_rows"]) ?? (processed !== null && duplicates !== null ? Math.max(0, processed - duplicates) : null);
+    const enriched = number(["background_enriched_urls"]);
+    const required = number(["background_fetch_tasks"]);
+    const written = number(["written_rows"]);
+    const coverageDone = number(["gap_fill_flushed_chunks"]);
+    const coverageTotal = number(["gap_fill_total_chunks"]);
     return [
-      { label: "Unique / Polled", value: ratio(unique, polled), detail: "Usable unique stories compared with provider rows polled" },
-      { label: "Enriched / Required", value: ratio(number(["background_enriched_urls"]), number(["background_fetch_tasks"])), detail: "Article URLs enriched compared with URLs requiring retrieval" },
-      { label: "Inserted", value: compact(number(["written_rows"])), detail: "Normalized news rows durably written in this runtime" },
-      { label: "Coverage Filled", value: ratio(number(["gap_fill_flushed_chunks"]), number(["gap_fill_total_chunks"])), detail: "Bounded coverage chunks flushed for the active repair" },
+      { label: "Unique / Polled", value: ratio(unique, polled), detail: `${compact(duplicates)} repeat rows` },
+      { label: "Enriched / Required", value: ratio(enriched, required), detail: remainingLabel(enriched, required, "URLs"), tone: hasRemaining(enriched, required) ? "warn" : "neutral" },
+      { label: "Inserted", value: compact(written), detail: differenceLabel(written, unique, "unique not written"), tone: hasRemaining(written, unique) ? "warn" : "neutral" },
+      { label: "Coverage Filled", value: ratio(coverageDone, coverageTotal), detail: remainingLabel(coverageDone, coverageTotal, "chunks"), tone: hasRemaining(coverageDone, coverageTotal) ? "warn" : "neutral" },
     ];
   }
 
   if (service.registry.id === "sec") {
+    const processed = number(["processed_filings"]);
+    const feed = number(["feed_items"]);
+    const written = number(["written_filings"]);
+    const workerFailures = number(["live_worker_failures"]);
+    const contextPending = number(["xbrl_context_pending_rows"]);
+    const contextFailures = number(["xbrl_context_sync_failures"]);
     return [
-      { label: "Processed / Feed", value: ratio(number(["processed_filings"]), number(["feed_items"])), detail: "Filings processed compared with current-feed items observed" },
-      { label: "Written / Processed", value: ratio(number(["written_filings"]), number(["processed_filings"])), detail: "Canonical filings durably written compared with processed filings" },
-      { label: "Workers Active", value: ratio(number(["live_active_workers"]), number(["live_workers"])), detail: `Queue ${compact(number(["live_queue_size"]))} · failures ${compact(number(["live_worker_failures"]))}` },
-      { label: "XBRL Facts", value: compact(number(["xbrl_company_fact_rows"])), detail: `Context pending ${compact(number(["xbrl_context_pending_rows"]))} · sync failures ${compact(number(["xbrl_context_sync_failures"]))}` },
+      { label: "Processed / Feed", value: ratio(processed, feed), detail: remainingLabel(processed, feed, "filings"), tone: hasRemaining(processed, feed) ? "warn" : "neutral" },
+      { label: "Written / Processed", value: ratio(written, processed), detail: differenceLabel(written, processed, "not written"), tone: hasRemaining(written, processed) ? "warn" : "neutral" },
+      { label: "Workers Active", value: ratio(number(["live_active_workers"]), number(["live_workers"])), detail: `${compact(number(["live_queue_size"]))} queued · ${compact(workerFailures)} failed`, tone: (workerFailures ?? 0) > 0 ? "warn" : "neutral" },
+      { label: "XBRL Facts", value: compact(number(["xbrl_company_fact_rows"])), detail: `${compact(contextPending)} pending · ${compact(contextFailures)} failed`, tone: (contextPending ?? 0) + (contextFailures ?? 0) > 0 ? "warn" : "neutral" },
     ];
   }
 
   if (service.registry.id === "text-embed") {
     const coverage = textEmbedCoverageTotals(metrics);
     return [
-      { label: "Completed / Detected", value: ratio(coverage.completed, coverage.detected), detail: "Source, embedding, and SEC context gaps completed across live and historical modes" },
-      { label: "Remaining Gaps", value: compact(coverage.remaining), detail: "Detected work still remaining or blocked across all source reports", tone: coverage.remaining ? "warn" : "neutral" },
-      { label: "Embeddings Written", value: compact(number(["embedding_rows_written"])), detail: "Embedding rows durably written in this runtime" },
-      { label: "Last Throughput", value: number(["last_embedding_sequences_per_second"]) === null ? "—" : `${number(["last_embedding_sequences_per_second"])!.toFixed(1)}/s`, detail: detail(stringMetric(metrics, ["last_embedding_source", "active_source"]), "No completed embedding batch reported") },
+      { label: "Completed / Detected", value: ratio(coverage.completed, coverage.detected), detail: `${compact(coverage.remaining)} gaps remaining`, tone: coverage.remaining ? "warn" : "neutral" },
+      { label: "Embeddings Written", value: compact(number(["embedding_rows_written"])), detail: `${compact(number(["coverage_rows_written"]))} coverage rows` },
+      { label: "Last Batch", value: compact(number(["last_embedding_sequences"])), detail: detail(stringMetric(metrics, ["last_embedding_stage", "last_embedding_source"]), "not reported") },
+      { label: "Last Throughput", value: number(["last_embedding_sequences_per_second"]) === null ? "—" : `${number(["last_embedding_sequences_per_second"])!.toFixed(1)}/s`, detail: detail(stringMetric(metrics, ["last_embedding_source", "active_source"]), "not reported") },
     ];
   }
 
@@ -4966,18 +4963,18 @@ function serviceFleetMetrics(service: ServiceStatusPayload): ServiceFleetMetric[
     const present = tables.reduce((sum, row) => sum + optionalNumber(row.tables_present), 0);
     const total = tables.reduce((sum, row) => sum + optionalNumber(row.tables_total), 0);
     return [
-      { label: "Sources Healthy", value: ratio(sources.length ? healthySources : null, sources.length || null), detail: "Configured reference publications fetched without a reported source failure" },
-      { label: "Rows Fetched", value: compact(number(["source_rows_fetched"])), detail: "Rows fetched during the latest reference synchronization" },
-      { label: "Tables Present", value: ratio(tables.length ? present : null, tables.length ? total : null), detail: "Required reference tables present across table groups" },
-      { label: "Audit Failures", value: compact(number(["audit_failures"])), detail: detail(stringMetric(metrics, ["audit_status"]), "No reference audit reported"), tone: (number(["audit_failures"]) ?? 0) > 0 ? "warn" : "neutral" },
+      { label: "Sources Healthy", value: ratio(sources.length ? healthySources : null, sources.length || null), detail: `${Math.max(0, sources.length - healthySources)} need attention`, tone: sources.length > healthySources ? "warn" : "neutral" },
+      { label: "Rows Fetched", value: compact(number(["source_rows_fetched"])), detail: "latest sync" },
+      { label: "Tables Present", value: ratio(tables.length ? present : null, tables.length ? total : null), detail: `${Math.max(0, total - present)} missing`, tone: total > present ? "warn" : "neutral" },
+      { label: "Audit Failures", value: compact(number(["audit_failures"])), detail: detail(stringMetric(metrics, ["audit_status"]), "not reported"), tone: (number(["audit_failures"]) ?? 0) > 0 ? "warn" : "neutral" },
     ];
   }
 
   if (service.registry.id === "ibkr") {
     return [
-      { label: "Gateway Session", value: metricStatus(metrics, ["gateway_status"]), detail: "Client Portal process and listener state" },
-      { label: "Authentication", value: metricStatus(metrics, ["auth_status"]), detail: "Authenticated brokerage API session state" },
-      { label: "Account", value: metricStatus(metrics, ["account_status"]), detail: "Configured account discovery and readiness" },
+      { label: "Gateway Session", value: metricStatus(metrics, ["gateway_status"]), detail: "process + listener" },
+      { label: "Authentication", value: metricStatus(metrics, ["auth_status"]), detail: "session readiness" },
+      { label: "Account", value: metricStatus(metrics, ["account_status"]), detail: "routing readiness" },
       { label: "Keepalive", value: metricStatus(metrics, ["keepalive_status"]), detail: `${compact(number(["poll_runs"]))} tickles · ${compact(number(["poll_failures"]))} failures since supervisor start` },
     ];
   }
@@ -4985,10 +4982,10 @@ function serviceFleetMetrics(service: ServiceStatusPayload): ServiceFleetMetric[
   if (service.registry.id === "qmd-history") {
     const config = isRecord(service.health.config) ? service.health.config : {};
     return [
-      { label: "Historical Source", value: service.online ? "Ready" : "Unavailable", detail: stringMetric(service.health, ["source"]) || "Canonical compact-event source" },
-      { label: "Serving Mode", value: "Read only", detail: "Historical events, deterministic streams, and event-derived bars" },
-      { label: "Batch Size", value: compact(numericMetricOptional(config, ["batch_size"])), detail: "Configured rows per historical source batch" },
-      { label: "Request Limit", value: compact(numericMetricOptional(config, ["max_events_per_request"])), detail: "Maximum source events accepted for one bar request" },
+      { label: "Historical Source", value: service.online ? "Ready" : "Unavailable", detail: stringMetric(service.health, ["source"]) || "compact events" },
+      { label: "Serving Mode", value: "Read only", detail: "events + derived bars" },
+      { label: "Batch Size", value: compact(numericMetricOptional(config, ["batch_size"])), detail: "rows per source batch" },
+      { label: "Request Limit", value: compact(numericMetricOptional(config, ["max_events_per_request"])), detail: "events per bar request" },
     ];
   }
 
@@ -4997,14 +4994,17 @@ function serviceFleetMetrics(service: ServiceStatusPayload): ServiceFleetMetric[
   const queueDropParts = queueKeys.map((key) => number([key])).filter((value): value is number => value !== null);
   const queueDrops = number(["queue_drop_total"]) ?? (queueDropParts.length ? queueDropParts.reduce((sum, value) => sum + value, 0) : null);
   return [
-    { label: "Events Ingested", value: compact(number(["ingest_events"])), detail: `Quotes ${compact(number(["ingest_quotes"]))} · trades ${compact(number(["ingest_trades"]))}` },
-    { label: "Events Persisted", value: compact(number(["compact_events_persisted"])), detail: `Emitted ${compact(number(["compact_events_emitted"]))} · reorder pending ${compact(number(["compact_events_reorder_pending"]))}` },
-    { label: "Bars Persisted", value: compact(number(["intraday_bar_rows_persisted"])), detail: `Emitted ${compact(number(["intraday_bar_rows_emitted"]))} · repairs ${compact(number(["intraday_bar_repairs_completed"]))}` },
-    { label: "Repair / Queue", value: `${ratio(optionalNumberOrNull(coverage.completed_jobs), optionalNumberOrNull(coverage.total_jobs))} · ${compact(queueDrops)} drops`, detail: "Bounded recent-gap jobs and downstream queue integrity", tone: (queueDrops ?? 0) > 0 ? "warn" : "neutral" },
+    { label: "Events Ingested", value: compact(number(["ingest_events"])), detail: `${compact(number(["ingest_quotes"]))} quotes · ${compact(number(["ingest_trades"]))} trades` },
+    { label: "Events Persisted", value: compact(number(["compact_events_persisted"])), detail: `${compact(number(["compact_events_reorder_pending"]))} reorder pending` },
+    { label: "Bars Persisted", value: compact(number(["intraday_bar_rows_persisted"])), detail: `${compact(number(["intraday_bar_repairs_completed"]))} late repairs` },
+    { label: "Repair / Queue", value: ratio(optionalNumberOrNull(coverage.completed_jobs), optionalNumberOrNull(coverage.total_jobs)), detail: `${compact(queueDrops)} queue drops`, tone: (queueDrops ?? 0) > 0 ? "warn" : "neutral" },
   ];
 }
 
 function serviceFleetFocus(service: ServiceStatusPayload) {
+  if (!service.online) {
+    return { phase: "No heartbeat", message: "Endpoint timed out · verify process and bind." };
+  }
   if (service.registry.id === "qmd-history" && service.online) {
     return { phase: "Ready to serve", message: "Canonical history queries, deterministic streams, and event-derived bars are available." };
   }
@@ -5019,12 +5019,12 @@ function fleetDatabaseSummary(services: ServiceStatusPayload[]) {
 
 function serviceFleetDatabaseSummary(service: ServiceStatusPayload): ServiceFleetDatabaseSummary {
   if (service.registry.id === "qmd-history") {
-    return { detail: "Canonical market_sip_compact source", latest: "On request", latestDetail: "No local write contract", overall: "Read only", product: "Historical source", status: service.online ? "Source ready" : "Unavailable", today: "—", tone: service.online ? "good" : "warn" };
+    return { latest: "On request", overall: "Read only", product: "Historical source", status: service.online ? "Source ready" : "Unavailable", today: "—", tone: service.online ? "good" : "warn" };
   }
   const rows = service.database_tables?.rows ?? [];
   if (!rows.length) {
     const error = service.database_tables?.error?.trim();
-    return { detail: error || "Waiting for database inspection", latest: "—", latestDetail: "No table state", overall: "—", product: "Primary product", status: error ? "Check failed" : "Checking", today: "—", tone: error ? "warn" : "neutral" };
+    return { latest: "—", overall: "—", product: "Primary product", status: error ? "Check failed" : "Checking", today: "—", tone: error ? "warn" : "neutral" };
   }
   const roles = SERVICE_PRIMARY_DATABASE_ROLES[service.registry.id];
   const primary = rows.filter((row) => roles.includes(String(row.role || "").toLowerCase()));
@@ -5035,9 +5035,7 @@ function serviceFleetDatabaseSummary(service: ServiceStatusPayload): ServiceFlee
   const latestRow = [...selected].sort((left, right) => tableTimestamp(right.latest_update) - tableTimestamp(left.latest_update))[0];
   const product = selected.map((row) => row.role).filter(Boolean).join(" + ") || "Primary product";
   return {
-    detail: healthy === rows.length ? `${rows.length} configured tables available` : `${rows.length - healthy} missing or empty of ${rows.length}`,
     latest: latestRow?.latest_update && latestRow.latest_update !== "-" ? formatTime(latestRow.latest_update) : "—",
-    latestDetail: latestRow?.role || "Primary product",
     overall: overall === null ? "—" : formatCompactNumber(overall),
     product,
     status: `${healthy}/${rows.length} healthy`,
@@ -5072,6 +5070,21 @@ function arrayRecords(value: unknown) {
 function metricStatus(record: Record<string, unknown>, keys: string[]) {
   const value = stringMetric(record, keys);
   return value ? displayName(value) : "—";
+}
+
+function hasRemaining(completed: number | null, total: number | null) {
+  return completed !== null && total !== null && completed < total;
+}
+
+function remainingLabel(completed: number | null, total: number | null, unit: string) {
+  if (completed === null || total === null) return "not reported";
+  const remaining = Math.max(0, total - completed);
+  return remaining ? `${formatCompactNumber(remaining)} ${unit} remaining` : "caught up";
+}
+
+function differenceLabel(completed: number | null, total: number | null, label: string) {
+  if (completed === null || total === null) return "not reported";
+  return `${formatCompactNumber(Math.max(0, total - completed))} ${label}`;
 }
 
 function numericMetricOptional(record: Record<string, unknown>, keys: string[]) {
