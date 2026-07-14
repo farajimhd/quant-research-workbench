@@ -769,7 +769,7 @@ impl CompactEventClickHouseWriter {
         let actual = self
             .query(
                 &format!(
-                    "SELECT name, type FROM system.columns WHERE database = currentDatabase() AND table = '{}' ORDER BY position FORMAT TSV",
+                    "SELECT name, type FROM system.columns WHERE database = currentDatabase() AND table = '{}' ORDER BY position FORMAT TabSeparatedRaw",
                     escape_sql_string(&self.config.compact_event_table)
                 ),
                 true,

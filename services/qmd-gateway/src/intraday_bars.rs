@@ -569,7 +569,7 @@ impl IntradayBarWriter {
     async fn validate_schema(&self) -> Result<(), String> {
         let description = self
             .query(&format!(
-                "DESCRIBE TABLE {} FORMAT TabSeparated",
+                "DESCRIBE TABLE {} FORMAT TabSeparatedRaw",
                 self.config.intraday_bar_table
             ))
             .await?;
@@ -649,6 +649,17 @@ impl IntradayBarWriter {
     }
 
     async fn bootstrap_if_empty(&self) -> Result<(), String> {
+        let source_exists = parse_count(
+            &self
+                .query(&format!(
+                    "EXISTS TABLE {} FORMAT TabSeparated",
+                    self.config.compact_event_table
+                ))
+                .await?,
+        )?;
+        if source_exists == 0 {
+            return Ok(());
+        }
         let source_rows = parse_count(
             &self
                 .query(&format!(
@@ -713,12 +724,14 @@ impl IntradayBarWriter {
             r#"INSERT INTO {target}
             (schema_version, ticker, local_date, label_resolution_us, bucket_index, bar_family,
              open, close, high, low, size_sum, size_open, size_close, size_high, size_low,
-             event_count, first_event_timestamp_us, last_event_timestamp_us,
+            event_count, first_event_timestamp_us, last_event_timestamp_us,
              bar_start_session_us, bar_end_session_us)
             WITH
-              toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York')) AS local_date_value,
-              toInt64(toUnixTimestamp64Micro(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York'))
-                - toUnixTimestamp64Micro(toStartOfDay(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York')))) AS session_us,
+              fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)) AS event_ts_utc,
+              toTimeZone(event_ts_utc, 'America/New_York') AS event_ts_local,
+              toDate(event_ts_local) AS local_date_value,
+              toInt64(sip_timestamp_us)
+                - toUnixTimestamp64Micro(toDateTime64(toStartOfDay(event_ts_local), 6, 'America/New_York')) AS session_us,
               intDiv(session_us, {base}) AS bucket,
               tuple(sip_timestamp_us, source_sequence, bitAnd(event_meta, 1), arrival_sequence) AS event_order
             SELECT
