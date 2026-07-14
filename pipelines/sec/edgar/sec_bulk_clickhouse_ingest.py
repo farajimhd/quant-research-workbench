@@ -1262,8 +1262,16 @@ def print_header(args: argparse.Namespace, loaded_env_files: list[Path], artifac
     print(f"sources={args.sources}", flush=True)
     print(f"artifacts={len(artifacts)}", flush=True)
     print(f"storage_policy={args.storage_policy or '<default>'}", flush=True)
-    print(f"batch_size={args.batch_size} limit_ciks={args.limit_ciks} dry_run={args.dry_run}", flush=True)
-    print(f"member_manifest_enabled={not args.disable_member_manifest}", flush=True)
+    print(
+        "snapshot_mode=replace "
+        f"clickhouse_file_root={args.clickhouse_file_root} "
+        f"limit_members={args.limit_ciks} "
+        f"max_threads={args.max_threads} "
+        f"max_memory_usage={args.max_memory_usage} "
+        f"minimum_row_ratio={args.minimum_row_ratio} "
+        f"dry_run={args.dry_run}",
+        flush=True,
+    )
     print(f"report_path={report_path}", flush=True)
     print(
         "secret_status="

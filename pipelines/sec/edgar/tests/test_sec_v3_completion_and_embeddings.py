@@ -3,7 +3,9 @@ from __future__ import annotations
 import unittest
 import sys
 import zipfile
+from contextlib import redirect_stdout
 from datetime import date
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -132,6 +134,31 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
         self.assertIn("sec_bulk_mirror_snapshot_manifest_v3", ddl)
         self.assertNotIn("sec_bulk_mirror_member_manifest_v3", ddl)
         self.assertIn("ifNull(accession_number, ''), fact_id", ddl)
+
+    def test_bulk_snapshot_header_has_no_legacy_member_manifest_dependency(self) -> None:
+        args = SimpleNamespace(
+            database="sec_core",
+            artifact_root_win="D:/market-data/sec_core",
+            output_root_win="D:/market-data/prepared/sec_core",
+            sources="submissions,companyfacts",
+            storage_policy="live_market_ssd",
+            clickhouse_file_root="/mnt/d/market-data",
+            limit_ciks=0,
+            max_threads=32,
+            max_memory_usage="96G",
+            minimum_row_ratio=0.95,
+            dry_run=False,
+        )
+        output = StringIO()
+
+        with redirect_stdout(output):
+            bulk_ingest.print_header(args, [], [], Path("report.jsonl"))
+
+        rendered = output.getvalue()
+        self.assertIn("snapshot_mode=replace", rendered)
+        self.assertIn("limit_members=0", rendered)
+        self.assertNotIn("member_manifest_enabled", rendered)
+        self.assertNotIn("batch_size=", rendered)
 
     def test_partial_ticker_snapshot_is_rejected_before_replacement(self) -> None:
         artifact = bulk_ingest.SourceArtifact("company_tickers", "company_tickers", "url", Path("x.json"), "id", 1, "sha")
