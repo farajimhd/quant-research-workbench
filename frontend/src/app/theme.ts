@@ -391,7 +391,7 @@ function buildTheme({
   tone: AppThemeTone;
 }): AppThemeDefinition {
   const success = tone === "light" ? "#1f9d55" : themeId === "dark" ? "#4ade80" : "#56f1bb";
-  const warning = tone === "light" ? "#b86200" : "#ffd166";
+  const warning = tone === "light" ? "#6d28d9" : "#ffd166";
   const danger = tone === "light" ? "#c4324f" : "#ff8f8f";
   return {
     themeId,

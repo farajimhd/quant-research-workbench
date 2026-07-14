@@ -149,10 +149,6 @@
   font-weight: 700;
   line-height: 1.1;
 }
-.service-fleet-metric-ratio { align-items: baseline; display: flex; gap: .24em; }
-.service-fleet-metric-current { color: var(--fleet-metric-accent); }
-.service-fleet-metric-separator,
-.service-fleet-metric-total { color: var(--foreground); }
 .service-fleet-metric > small,
 .service-fleet-database small {
   color: var(--muted-foreground);
@@ -161,7 +157,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.service-fleet-metric.tone-warn > strong:not(.service-fleet-metric-ratio) { color: var(--badge-warning-fg); }
+.service-fleet-metric.tone-warn > .service-fleet-metric-value:not(.is-ratio) { color: var(--badge-warning-fg); }
 
 .service-fleet-database {
   background: color-mix(in oklab, var(--surface-alt) 78%, var(--surface));

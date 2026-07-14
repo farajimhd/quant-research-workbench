@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNod
 import { api } from "../api/client";
 import { Button } from "../app/components/Button";
 import { DataTable } from "../app/components/DataTable";
+import { MetricRatio } from "../app/components/MetricRatio";
 import { Modal } from "../app/components/Modal";
 import { displayName, formatCell, formatCompactNumber, formatDuration } from "../app/format";
 import "./ServicesOverview.css";
@@ -267,9 +268,16 @@ function ServicesTopSummary({ checkedAt, now, services }: { checkedAt: string; n
   const work = fleetWorkSummary(services);
   const databases = fleetDatabaseSummary(services);
   const stale = services.filter((service) => serviceFreshness(service, now).tone === "stale").length;
-  const summaries = [
-    { label: "Fleet", value: `${counts.online}/${services.length || 0} online`, detail: `${counts.degraded} need attention`, icon: RadioTower, tone: counts.degraded ? "neutral" : "ok" },
-    { label: "Databases", value: databases.total ? `${databases.healthy}/${databases.total} healthy` : "No contracts", detail: databases.total ? (databases.missing ? `${databases.missing} missing or empty` : "Configured tables available") : "Waiting for database contracts", icon: Layers3, tone: databases.total && !databases.missing ? "ok" : "neutral" },
+  const summaries: Array<{
+    detail: string;
+    icon: typeof RadioTower;
+    label: string;
+    ratio?: { accent: 1 | 2 | 3 | 4; current: number; suffix: string; total: number };
+    tone: string;
+    value?: string;
+  }> = [
+    { label: "Fleet", ratio: { accent: 1, current: counts.online, suffix: "online", total: services.length || 0 }, detail: `${counts.degraded} need attention`, icon: RadioTower, tone: counts.degraded ? "neutral" : "ok" },
+    { label: "Databases", value: databases.total ? undefined : "No contracts", ratio: databases.total ? { accent: 2, current: databases.healthy, suffix: "healthy", total: databases.total } : undefined, detail: databases.total ? (databases.missing ? `${databases.missing} missing or empty` : "Configured tables available") : "Waiting for database contracts", icon: Layers3, tone: databases.total && !databases.missing ? "ok" : "neutral" },
     { label: "Responsibilities", value: `${work.active} active`, detail: `${work.warning} warning · ${work.completed} recent cycles`, icon: Layers3, tone: work.warning ? "warn" : work.active ? "active" : "ok" },
     { label: "Market", value: displayName(market.status), detail: market.detail, icon: Activity, tone: marketTileClass(market.status, market.detail).replace("market-", "") },
     { label: "Freshness", value: stale ? `${stale} stale` : "Live", detail: checkedAt ? `Updated ${relativeServiceAge(checkedAt, now)}` : "Waiting for first fleet check", icon: RefreshCcw, tone: stale ? "warn" : checkedAt ? "ok" : "idle" },
@@ -283,7 +291,7 @@ function ServicesTopSummary({ checkedAt, now, services }: { checkedAt: string; n
           <div className={`service-fleet-summary-item tone-${summary.tone}`} key={summary.label}>
             <Icon aria-hidden="true" size={15} />
             <span>{summary.label}</span>
-            <strong>{summary.value}</strong>
+            <strong>{summary.ratio ? <MetricRatio {...summary.ratio} /> : summary.value}</strong>
             <small title={summary.detail}>{summary.detail}</small>
           </div>
         );
@@ -329,17 +337,11 @@ function ServiceFleetCard({ now, onOpen, service }: { now: Date; onOpen: () => v
         </div>
 
         <div className="service-fleet-metrics" aria-label={`${service.registry.label} objective metrics`}>
-          {metrics.map((metric) => (
+          {metrics.map((metric, index) => (
             <div className={`service-fleet-metric tone-${metric.tone ?? "neutral"}`} key={metric.label}>
               <span>{metric.label}</span>
-              <strong className={metric.valueParts ? "service-fleet-metric-ratio" : undefined}>
-                {metric.valueParts ? (
-                  <>
-                    <span className="service-fleet-metric-current">{metric.valueParts.current}</span>
-                    <span className="service-fleet-metric-separator">/</span>
-                    <span className="service-fleet-metric-total">{metric.valueParts.total}</span>
-                  </>
-                ) : metric.value}
+              <strong className={`service-fleet-metric-value${metric.valueParts ? " is-ratio" : ""}`}>
+                {metric.valueParts ? <MetricRatio accent={(index % 4 + 1) as 1 | 2 | 3 | 4} current={metric.valueParts.current} total={metric.valueParts.total} /> : metric.value}
               </strong>
               <small title={metric.detail}>{metric.detail}</small>
             </div>
@@ -347,7 +349,7 @@ function ServiceFleetCard({ now, onOpen, service }: { now: Date; onOpen: () => v
         </div>
 
         <div className={`service-fleet-database ${database.tone}`}>
-          <div><span>Database · {database.product}</span><strong>{database.status}</strong></div>
+          <div><span>Database · {database.product}</span><strong>{database.statusParts ? <MetricRatio accent={1} {...database.statusParts} /> : database.status}</strong></div>
           <div><span>Today</span><strong>{database.today}</strong></div>
           <div><span>Overall</span><strong>{database.overall}</strong></div>
           <div><span>Latest</span><strong>{database.latest}</strong></div>
@@ -4904,6 +4906,11 @@ type ServiceFleetDatabaseSummary = {
   overall: string;
   product: string;
   status: string;
+  statusParts?: {
+    current: string;
+    suffix: string;
+    total: string;
+  };
   today: string;
   tone: "good" | "neutral";
 };
@@ -5056,6 +5063,7 @@ function serviceFleetDatabaseSummary(service: ServiceStatusPayload): ServiceFlee
     overall: overall === null ? "—" : formatCompactNumber(overall),
     product,
     status: `${healthy}/${rows.length} healthy`,
+    statusParts: { current: String(healthy), suffix: "healthy", total: String(rows.length) },
     today: today === null ? "—" : formatCompactNumber(today),
     tone: healthy === rows.length ? "good" : "neutral",
   };

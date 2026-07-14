@@ -43,7 +43,7 @@
   --progress-track: #ececf0;
   --success: #067647;
   --danger: #d4183d;
-  --warning: #b54708;
+  --warning: #6d28d9;
   --info: #175cd3;
   --metric-accent-1: #008143;
   --metric-accent-2: #00758a;
@@ -65,9 +65,9 @@
   --badge-info-bg: #eff8ff;
   --badge-info-border: #b2ddff;
   --badge-info-fg: #175cd3;
-  --badge-warning-bg: #fffaeb;
-  --badge-warning-border: #fedf89;
-  --badge-warning-fg: #b54708;
+  --badge-warning-bg: #f5f3ff;
+  --badge-warning-border: #ddd6fe;
+  --badge-warning-fg: #6d28d9;
   --badge-muted-bg: #f2f4f7;
   --badge-muted-border: #eaecf0;
   --badge-muted-fg: #667085;
@@ -84,6 +84,21 @@
 * {
   box-sizing: border-box;
 }
+
+.metric-ratio {
+  --metric-ratio-accent: var(--metric-accent-1);
+  align-items: baseline;
+  display: inline-flex;
+  gap: 0.2em;
+}
+
+.metric-ratio[data-accent="2"] { --metric-ratio-accent: var(--metric-accent-2); }
+.metric-ratio[data-accent="3"] { --metric-ratio-accent: var(--metric-accent-3); }
+.metric-ratio[data-accent="4"] { --metric-ratio-accent: var(--metric-accent-4); }
+.metric-ratio-current { color: var(--metric-ratio-accent); }
+.metric-ratio-separator,
+.metric-ratio-total,
+.metric-ratio-suffix { color: var(--foreground); }
 
 @keyframes spin {
   to {
@@ -14789,8 +14804,8 @@ button {
 }
 
 .live-gate-readiness[data-tone="warning"] {
-  background: color-mix(in oklab, #f97316 5%, var(--surface));
-  border-color: color-mix(in oklab, #f97316 28%, var(--border));
+  background: color-mix(in oklab, var(--warning) 5%, var(--surface));
+  border-color: color-mix(in oklab, var(--warning) 28%, var(--border));
 }
 
 .live-gate-readiness[data-tone="danger"] {
@@ -14858,7 +14873,7 @@ button {
 }
 
 .live-gate-progress-step[data-tone="warning"] {
-  background: color-mix(in oklab, #f97316 4%, var(--surface));
+  background: color-mix(in oklab, var(--warning) 4%, var(--surface));
 }
 
 .live-gate-progress-step[data-tone="danger"] {
@@ -14888,7 +14903,7 @@ button {
 }
 
 .live-gate-progress-step[data-tone="warning"]::before {
-  background: color-mix(in oklab, #f97316 46%, var(--border));
+  background: color-mix(in oklab, var(--warning) 46%, var(--border));
 }
 
 .live-gate-progress-step[data-tone="danger"]::before {
@@ -14917,8 +14932,8 @@ button {
 }
 
 .live-gate-progress-step[data-tone="warning"] .live-gate-progress-index {
-  border-color: color-mix(in oklab, #f97316 42%, var(--border));
-  color: #c05621;
+  border-color: color-mix(in oklab, var(--warning) 42%, var(--border));
+  color: var(--warning);
 }
 
 .live-gate-progress-step[data-tone="danger"] .live-gate-progress-index {
@@ -14961,7 +14976,7 @@ button {
 }
 
 .live-gate-progress-step[data-tone="warning"] .live-gate-progress-body span {
-  color: #c05621;
+  color: var(--warning);
 }
 
 .live-gate-progress-step[data-tone="danger"] .live-gate-progress-body span {
@@ -15051,7 +15066,7 @@ button {
 }
 
 .live-gate-console[data-tone="warning"] .live-gate-status-strip > div:first-child strong {
-  color: #c05621;
+  color: var(--warning);
 }
 
 .live-gate-console[data-tone="danger"] .live-gate-status-strip > div:first-child strong {
@@ -15351,7 +15366,7 @@ button {
 }
 
 .live-gate-progress-summary[data-tone="warning"] > div:first-child strong {
-  color: #c05621;
+  color: var(--warning);
 }
 
 .live-gate-progress-summary-bar {
@@ -15379,7 +15394,7 @@ button {
 }
 
 .live-gate-progress-step[data-tone="warning"] .live-gate-progress-meter > div span {
-  background: #c05621;
+  background: var(--warning);
 }
 
 .live-gate-progress-step[data-tone="success"] .live-gate-progress-main em {
@@ -15393,8 +15408,8 @@ button {
 }
 
 .live-gate-progress-step[data-tone="warning"] .live-gate-progress-main em {
-  background: color-mix(in oklab, #c05621 13%, transparent);
-  color: #c05621;
+  background: color-mix(in oklab, var(--warning) 13%, transparent);
+  color: var(--warning);
 }
 
 .live-gate-progress-summary[data-tone="success"] .live-gate-progress-summary-bar span {
@@ -15587,8 +15602,8 @@ button {
 }
 
 .live-account-card em[data-mode="live"] {
-  background: color-mix(in oklab, #f97316 18%, transparent);
-  color: #f97316;
+  background: color-mix(in oklab, var(--warning) 18%, transparent);
+  color: var(--warning);
 }
 
 .live-account-card span:not(.live-account-card-top),
@@ -15611,8 +15626,8 @@ button {
 }
 
 .live-check-card[data-tone="warning"] strong {
-  background: color-mix(in oklab, #f97316 18%, transparent);
-  color: #f97316;
+  background: color-mix(in oklab, var(--warning) 18%, transparent);
+  color: var(--warning);
 }
 
 .live-check-card[data-tone="danger"] strong {

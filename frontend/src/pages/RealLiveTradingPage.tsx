@@ -32,6 +32,7 @@ import { api, query } from "../api/client";
 import { ChartPanel, type ChartCatalogItem, type ChartDisplayItem, type ChartPayload, type LiveEntryLine } from "../app/components/ChartPanel";
 import { liveMarketStatus, type MarketStatus } from "../app/components/MarketStatusBadge";
 import { DataTable, type BackendQueryPreset, type BackendTableQuery } from "../app/components/DataTable";
+import { MetricRatio } from "../app/components/MetricRatio";
 import { PageIntro } from "../app/components/PageIntro";
 import { Tabs } from "../app/components/Tabs";
 import {
@@ -1560,7 +1561,7 @@ function RealLiveTradingGate({
           </div>
           <div>
             <span>Progress</span>
-            <strong>{completedSteps}/{progressSteps.length}</strong>
+            <strong><MetricRatio accent={2} current={completedSteps} total={progressSteps.length} /></strong>
           </div>
           <div>
             <span>Accounts</span>
@@ -1611,7 +1612,7 @@ function RealLiveTradingGate({
               </div>
               <div>
                 <span>Done</span>
-                <strong>{completedSteps}/{progressSteps.length}</strong>
+                <strong><MetricRatio accent={2} current={completedSteps} total={progressSteps.length} /></strong>
               </div>
               <div>
                 <span>Active</span>
