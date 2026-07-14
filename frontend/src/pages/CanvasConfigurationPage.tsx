@@ -309,6 +309,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
           </div>
         </div>
         <MarketStatusBadge value={marketStatus} />
+        <div aria-label="Replay and Backtest Debug controls" className="canvas-mode-context-slot" />
         {manager ? <div className="canvas-toolbar-actions"><button className="button secondary compact canvas-set-default" disabled={!workspaceState} onClick={saveDefaultLayout} type="button"><Save size={13} /> {defaultSaved ? "Default saved" : "Set default"}</button><button aria-expanded={managementOpen} aria-label="Canvas management" className="button secondary compact canvas-management-toggle" onClick={() => setManagementOpen((open) => !open)} type="button"><PanelRightOpen size={13} /> Manage</button></div> : null}
       </header>
 

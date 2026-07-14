@@ -20405,7 +20405,7 @@ button {
 .canvas-config-toolbar {
   align-items: stretch;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(126px, .34fr) auto;
+  grid-template-columns: max-content max-content minmax(28px, 1fr) auto;
   gap: 0;
   min-height: 46px;
   padding: 0;
@@ -20419,9 +20419,9 @@ button {
 .canvas-clock-zones {
   display: grid;
   flex: 1 1 auto;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(3, max-content);
   min-width: 0;
-  width: 100%;
+  width: auto;
 }
 
 .canvas-clock-zones > span {
@@ -20433,7 +20433,7 @@ button {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);
   gap: 7px;
-  min-width: 0;
+  min-width: 138px;
   padding: 5px 12px;
 }
 
@@ -20514,12 +20514,14 @@ button {
   padding: 5px 6px;
 }
 
+.canvas-mode-context-slot {
+  min-width: 28px;
+}
+
 .canvas-toolbar-actions .canvas-set-default { margin-left: 0; }
 
 @media (max-width: 980px) {
-  .canvas-config-toolbar { grid-template-columns: minmax(0, 1fr) auto; }
-  .canvas-config-toolbar .market-status-badge { border-top: 1px solid var(--border); }
-  .canvas-toolbar-actions { grid-column: 2; grid-row: 1 / 3; }
+  .canvas-config-toolbar { grid-template-columns: max-content max-content minmax(12px, 1fr) auto; }
   .canvas-clock-zones > span { padding-inline: 7px; }
 }
 
