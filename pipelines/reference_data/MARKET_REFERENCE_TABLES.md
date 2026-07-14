@@ -21,6 +21,12 @@ market_sip_compact.ref_stock_tapes
 Quote and trade conditions come from Massive's conditions/indicators glossary,
 where the quote condition table and trade condition table are separate. Do not
 use the generic `/v3/reference/conditions` table as the training condition map.
+The trade token identity and dense ID still come from that glossary. Consolidated
+trade aggregation eligibility is a separate concern: the loader overlays
+`updates_high_low`, `updates_open_close`, and `updates_volume` from the committed
+`stock_conditions.json` API snapshot wherever Massive publishes those rules.
+This prevents blank glossary presentation cells from being interpreted as an
+authoritative `false`. Refresh both snapshots before loading the tables.
 
 Condition table schema:
 
@@ -37,6 +43,11 @@ update_last UInt8
 update_volume UInt8
 provider LowCardinality(String)
 ```
+
+For compatibility with the existing runtime schema, API
+`updates_open_close` is stored as `update_last`. QMD uses these three fields to
+decide whether each condition-qualified print can update intraday OHLC and
+volume; it does not use the generic API table for model token identity.
 
 Exchange/tape table schema:
 

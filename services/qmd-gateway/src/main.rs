@@ -95,11 +95,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.live_market_state_enabled,
         config.live_market_state_enabled,
     );
+    let compact_references = CompactEventReferences::load(&config)
+        .await
+        .map_err(|error| {
+            startup_error(format!(
+                "qmd-gateway market condition reference load failed: {error}"
+            ))
+        })?;
+    let trade_aggregation_rules = compact_references
+        .trade_aggregation_rules()
+        .map_err(startup_error)?;
     let market = SharedMarketState::new();
     let bars = SharedBarStore::new(
         config.bar_timeframes.clone(),
         config.bar_history_limit,
         config.bar_shard_count,
+        trade_aggregation_rules,
     );
     let indicators = SharedIndicatorStore::new(
         config.indicator_history_limit,
@@ -156,16 +167,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         );
     }
     if config.compact_events_enabled {
-        let references = CompactEventReferences::load(&config)
-            .await
-            .map_err(|error| {
-                startup_error(format!(
-                    "qmd-gateway compact reference load failed: {error}"
-                ))
-            })?;
         let compact_writer = CompactEventClickHouseWriter::new(
             config.clone(),
-            references,
+            compact_references,
             compact_event_sender.clone(),
             compact_event_store.clone(),
             metrics.clone(),

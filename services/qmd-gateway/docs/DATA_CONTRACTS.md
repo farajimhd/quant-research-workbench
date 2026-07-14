@@ -286,6 +286,16 @@ operational row consumed inside QMD.
 | `large_trade_volume` | trades | Sum of sizes for large trades. |
 | `large_trade_notional` | trades | Sum of `price * size` for large trades. Notional means dollar value. |
 
+Trade price and volume eligibility follows the consolidated Massive condition
+rules loaded through `event_condition_token_reference`. Multiple conditions are
+combined conservatively: a print updates a field only when every recognized
+condition permits that field, and unknown conditions do not alter OHLCV. Form T
+prints are price-eligible only outside the 09:30-16:00 New York regular session
+and only when every additional condition is fully price-eligible, matching
+Massive's extended-hours custom-bar behavior. A bucket with no
+price-eligible trade is omitted from price-bar snapshots rather than rendered as
+a zero or synthetic candle.
+
 ### Trade Rates And Movement
 
 | Field | Source | Formula Or Rule |

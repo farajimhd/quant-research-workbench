@@ -40,6 +40,12 @@ reference tables used by unified event construction:
 - `market_sip_compact.ref_misc_indicators`
 - `market_sip_compact.ref_luld_indicators`
 
+The glossary owns condition-domain identity and dense token ordering. For trade
+rows, the loader overlays consolidated OHLC/open-close/volume eligibility from
+the official `stock_conditions.json` API snapshot. Both files are therefore
+required inputs: blank update cells in the public glossary are not treated as
+authoritative false values when the API publishes an explicit rule.
+
 Each glossary reference table includes `source_row`, `modifier_int`, and
 `dense_id`. `source_row` preserves the visible row order from the Massive page
 and keeps rows distinguishable when a table domain has repeated numeric

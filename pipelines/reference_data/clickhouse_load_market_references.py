@@ -179,6 +179,49 @@ def json_rows(path: Path) -> tuple[str, list[dict[str, Any]]]:
     return reference_name, rows
 
 
+def official_trade_update_rules(reference_dir: Path) -> dict[int, tuple[int, int, int]]:
+    """Return consolidated price/volume eligibility from Massive's conditions API snapshot.
+
+    The glossary remains the token identity authority, but blank glossary update cells
+    are not equivalent to ``false``.  The conditions API is the authoritative source
+    for consolidated aggregate update rules.
+    """
+    path = reference_dir / "stock_conditions.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    rules: dict[int, tuple[int, int, int]] = {}
+    for row in payload.get("results", []):
+        if row.get("dense_id_kind") != "actual" or "trade" not in (row.get("data_types") or []):
+            continue
+        consolidated = (row.get("update_rules") or {}).get("consolidated")
+        if not isinstance(consolidated, dict):
+            continue
+        modifier = int(row["id"])
+        rules[modifier] = (
+            int(bool(consolidated.get("updates_high_low"))),
+            int(bool(consolidated.get("updates_open_close"))),
+            int(bool(consolidated.get("updates_volume"))),
+        )
+    if not rules:
+        raise ValueError(f"{path} contains no consolidated stock trade update rules")
+    return rules
+
+
+def condition_update_values(
+    row: dict[str, Any],
+    *,
+    table_name: str,
+    trade_rules: dict[int, tuple[int, int, int]],
+) -> tuple[int, int, int]:
+    modifier = int(row["modifier_int"])
+    if table_name == "trade_conditions" and modifier in trade_rules:
+        return trade_rules[modifier]
+    return (
+        yes_no_to_int(row.get("update_high_low")),
+        yes_no_to_int(row.get("update_last")),
+        yes_no_to_int(row.get("update_volume")),
+    )
+
+
 def glossary_condition_rows(path: Path, table_name: str) -> tuple[str, list[dict[str, Any]]]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     table = payload.get("tables", {}).get(table_name)
@@ -187,6 +230,7 @@ def glossary_condition_rows(path: Path, table_name: str) -> tuple[str, list[dict
     metadata = table.get("metadata", {})
     dense_bits = int(metadata.get("dense_combo_id_bits_with_unknown") or 0)
     reference_name = str(table_name)
+    trade_rules = official_trade_update_rules(path.parent)
     rows = [
         {
             "reference_name": reference_name,
@@ -204,6 +248,11 @@ def glossary_condition_rows(path: Path, table_name: str) -> tuple[str, list[dict
         }
     ]
     for dense_id, row in enumerate(table.get("rows", []), start=1):
+        update_high_low, update_last, update_volume = condition_update_values(
+            row,
+            table_name=table_name,
+            trade_rules=trade_rules,
+        )
         rows.append(
             {
                 "reference_name": reference_name,
@@ -214,9 +263,9 @@ def glossary_condition_rows(path: Path, table_name: str) -> tuple[str, list[dict
                 "dense_id_bits": dense_bits,
                 "condition": str(row.get("condition") or ""),
                 "sip_mapping": str(row.get("sip_mapping") or ""),
-                "update_high_low": yes_no_to_int(row.get("update_high_low")),
-                "update_last": yes_no_to_int(row.get("update_last")),
-                "update_volume": yes_no_to_int(row.get("update_volume")),
+                "update_high_low": update_high_low,
+                "update_last": update_last,
+                "update_volume": update_volume,
                 "provider": str(payload.get("provider") or "massive"),
             }
         )
@@ -258,6 +307,7 @@ def build_condition_token_rows(reference_dir: Path) -> list[dict[str, Any]]:
     ]
     token_id = 1
     seen_join_keys: set[tuple[str, int]] = set()
+    trade_rules = official_trade_update_rules(reference_dir)
     path = reference_dir / "conditions_indicators_glossary.json"
     for source_table, kind in GLOSSARY_REFERENCE_TABLES:
         payload, table = glossary_condition_payload(path, kind)
@@ -267,6 +317,11 @@ def build_condition_token_rows(reference_dir: Path) -> list[dict[str, Any]]:
         )
         for row in table_rows:
             modifier = int(row["modifier_int"])
+            update_high_low, update_last, update_volume = condition_update_values(
+                row,
+                table_name=kind,
+                trade_rules=trade_rules,
+            )
             join_key = (kind, modifier)
             is_canonical = 0 if join_key in seen_join_keys else 1
             seen_join_keys.add(join_key)
@@ -282,9 +337,9 @@ def build_condition_token_rows(reference_dir: Path) -> list[dict[str, Any]]:
                     "raw_modifier": str(row.get("modifier") or ""),
                     "condition": str(row.get("condition") or ""),
                     "sip_mapping": str(row.get("sip_mapping") or ""),
-                    "update_high_low": yes_no_to_int(row.get("update_high_low")),
-                    "update_last": yes_no_to_int(row.get("update_last")),
-                    "update_volume": yes_no_to_int(row.get("update_volume")),
+                    "update_high_low": update_high_low,
+                    "update_last": update_last,
+                    "update_volume": update_volume,
                     "provider": str(payload.get("provider") or "massive"),
                     "is_join_canonical": is_canonical,
                     "is_unknown": 0,

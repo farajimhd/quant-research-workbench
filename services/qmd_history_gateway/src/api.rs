@@ -173,13 +173,21 @@ async fn bar_snapshot(
         .clamp(1, state.config.max_events_per_request);
     let events =
         collect_events(&state.source, &window, state.config.batch_size, event_limit).await?;
-    let bars = SharedBarStore::new(vec![timeframe.clone()], bar_limit, 1);
+    let bars = SharedBarStore::new(
+        vec![timeframe.clone()],
+        bar_limit,
+        1,
+        state.source.trade_aggregation_rules(),
+    );
     let shard = bars.shard(0);
     for event in &events {
         shard.apply_event(&state.source.market_event(event)).await;
     }
     shard.finalize_due(window.end).await;
-    let snapshot = bars.snapshot(&ticker, &timeframe, bar_limit).await;
+    let snapshot = bars
+        .snapshot(&ticker, &timeframe, bar_limit)
+        .await
+        .price_bars();
     let mut indicator_bars = snapshot.history.clone();
     if let Some(current) = snapshot.current.clone() {
         indicator_bars.push(current);
@@ -311,7 +319,7 @@ async fn stream_bars(
     timeframe: String,
     batch_size: usize,
 ) {
-    let bars = SharedBarStore::new(vec![timeframe], 1, 1);
+    let bars = SharedBarStore::new(vec![timeframe], 1, 1, source.trade_aggregation_rules());
     let shard = bars.shard(0);
     let mut cursor: Option<HistoricalCursor> = None;
     loop {

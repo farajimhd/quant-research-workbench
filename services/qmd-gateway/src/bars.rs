@@ -13,6 +13,92 @@ use tokio::time::{interval, Duration};
 pub const BAR_SCHEMA_VERSION: u16 = 2;
 const ESTIMATED_LULD_WINDOW_SECONDS: i64 = 300;
 const ESTIMATED_LULD_NEAR_BAND_PCT: f64 = 1.0;
+const FORM_T_EXTENDED_HOURS_CONDITION: u16 = 12;
+const REGULAR_SESSION_START_SECONDS: u32 = 9 * 60 * 60 + 30 * 60;
+const REGULAR_SESSION_END_SECONDS: u32 = 16 * 60 * 60;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TradeUpdateRule {
+    pub update_high_low: bool,
+    pub update_last: bool,
+    pub update_volume: bool,
+}
+
+impl TradeUpdateRule {
+    pub const fn regular() -> Self {
+        Self {
+            update_high_low: true,
+            update_last: true,
+            update_volume: true,
+        }
+    }
+
+    const fn excluded() -> Self {
+        Self {
+            update_high_low: false,
+            update_last: false,
+            update_volume: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TradeAggregationRules {
+    by_condition: Arc<HashMap<u16, TradeUpdateRule>>,
+}
+
+impl TradeAggregationRules {
+    pub fn new(rules: impl IntoIterator<Item = (u16, TradeUpdateRule)>) -> Result<Self, String> {
+        let by_condition = rules.into_iter().collect::<HashMap<_, _>>();
+        if by_condition.get(&0).copied() != Some(TradeUpdateRule::regular()) {
+            return Err("trade condition 0 must be the canonical regular-sale update rule".into());
+        }
+        Ok(Self {
+            by_condition: Arc::new(by_condition),
+        })
+    }
+
+    fn resolve(&self, conditions: &[u16], timestamp: DateTime<Utc>) -> TradeUpdateRule {
+        if conditions.is_empty() {
+            return TradeUpdateRule::regular();
+        }
+        let local_seconds = timestamp
+            .with_timezone(&New_York)
+            .time()
+            .num_seconds_from_midnight();
+        let extended_hours =
+            !(REGULAR_SESSION_START_SECONDS..REGULAR_SESSION_END_SECONDS).contains(&local_seconds);
+        // Massive includes Form T in extended-hours custom bars only when every
+        // additional non-regular condition is itself fully price-eligible. A
+        // partial rule such as Prior Reference Price must not leak a Form T
+        // print into the bar high/low while remaining ineligible for open/close.
+        let form_t_price_eligible = extended_hours
+            && conditions.contains(&FORM_T_EXTENDED_HOURS_CONDITION)
+            && conditions.iter().all(|condition| {
+                if *condition == FORM_T_EXTENDED_HOURS_CONDITION || *condition == 0 {
+                    return true;
+                }
+                self.by_condition
+                    .get(condition)
+                    .is_some_and(|rule| rule.update_high_low && rule.update_last)
+            });
+        conditions
+            .iter()
+            .fold(TradeUpdateRule::regular(), |current, condition| {
+                if *condition == FORM_T_EXTENDED_HOURS_CONDITION && form_t_price_eligible {
+                    return current;
+                }
+                let Some(rule) = self.by_condition.get(condition) else {
+                    return TradeUpdateRule::excluded();
+                };
+                TradeUpdateRule {
+                    update_high_low: current.update_high_low && rule.update_high_low,
+                    update_last: current.update_last && rule.update_last,
+                    update_volume: current.update_volume && rule.update_volume,
+                }
+            })
+    }
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct BarSnapshot {
@@ -20,6 +106,23 @@ pub struct BarSnapshot {
     pub history: Vec<BarRow>,
     pub ticker: String,
     pub timeframe: String,
+}
+
+impl BarSnapshot {
+    pub fn price_bars(mut self) -> Self {
+        self.history.retain(valid_price_bar);
+        self.current = self.current.filter(valid_price_bar);
+        self
+    }
+}
+
+fn valid_price_bar(bar: &BarRow) -> bool {
+    [bar.open, bar.high, bar.low, bar.close]
+        .into_iter()
+        .all(|value| value.is_finite() && value > 0.0)
+        && bar.high >= bar.open.max(bar.close)
+        && bar.low <= bar.open.min(bar.close)
+        && bar.high >= bar.low
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -252,6 +355,7 @@ pub struct BarShardStore {
 struct BarStore {
     frames: Vec<BarFrame>,
     history_limit: usize,
+    trade_rules: TradeAggregationRules,
     luld: HashMap<String, EstimatedLuldState>,
     open: HashMap<BarKey, MutableBar>,
     closed: HashMap<BarKey, VecDeque<BarRow>>,
@@ -341,14 +445,19 @@ struct MutableBar {
 }
 
 impl SharedBarStore {
-    pub fn new(timeframes: Vec<String>, history_limit: usize, shard_count: usize) -> Self {
+    pub fn new(
+        timeframes: Vec<String>,
+        history_limit: usize,
+        shard_count: usize,
+        trade_rules: TradeAggregationRules,
+    ) -> Self {
         let frames = timeframes
             .into_iter()
             .filter_map(|label| parse_timeframe(&label))
             .collect::<Vec<_>>();
         let shard_count = shard_count.max(1);
         let shards = (0..shard_count)
-            .map(|_| BarShardStore::new(frames.clone(), history_limit))
+            .map(|_| BarShardStore::new(frames.clone(), history_limit, trade_rules.clone()))
             .collect::<Vec<_>>();
         Self {
             shards: Arc::new(shards),
@@ -387,11 +496,16 @@ impl BarEventRouter {
 }
 
 impl BarShardStore {
-    fn new(frames: Vec<BarFrame>, history_limit: usize) -> Self {
+    fn new(
+        frames: Vec<BarFrame>,
+        history_limit: usize,
+        trade_rules: TradeAggregationRules,
+    ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(BarStore {
                 frames,
                 history_limit,
+                trade_rules,
                 luld: HashMap::new(),
                 open: HashMap::new(),
                 closed: HashMap::new(),
@@ -444,10 +558,13 @@ impl BarStore {
         let mut finalized = Vec::new();
         let sym = event.ticker().to_ascii_uppercase();
         if let MarketEvent::Trade(trade) = event {
-            self.luld
-                .entry(sym.clone())
-                .or_default()
-                .observe_trade(trade.ts, trade.price);
+            let rule = self.trade_rules.resolve(&trade.conditions, trade.ts);
+            if rule.update_last {
+                self.luld
+                    .entry(sym.clone())
+                    .or_default()
+                    .observe_trade(trade.ts, trade.price);
+            }
         }
         for frame in self.frames.clone() {
             let start = aligned_start(event.ts(), frame.seconds);
@@ -499,7 +616,9 @@ impl BarStore {
                 )
             });
             match event {
-                MarketEvent::Trade(trade) => bar.apply_trade(trade),
+                MarketEvent::Trade(trade) => {
+                    bar.apply_trade(trade, self.trade_rules.resolve(&trade.conditions, trade.ts))
+                }
                 MarketEvent::Quote(quote) => bar.apply_quote(quote),
             }
             if let Some(luld) = self.luld.get_mut(&sym) {
@@ -878,20 +997,30 @@ impl MutableBar {
         }
     }
 
-    fn apply_trade(&mut self, trade: &TradeEvent) {
+    fn apply_trade(&mut self, trade: &TradeEvent, rule: TradeUpdateRule) {
         self.observe_event_time(trade.ts);
         if trade.price <= 0.0 || trade.size <= 0.0 {
             return;
         }
-        if self.open == 0.0 {
-            self.open = trade.price;
-            self.high = trade.price;
-            self.low = trade.price;
-        } else {
-            self.high = self.high.max(trade.price);
-            self.low = positive_min(self.low, trade.price);
+        if rule.update_last {
+            if self.open == 0.0 {
+                self.open = trade.price;
+            }
+            self.close = trade.price;
+            self.observe_trade_return(trade.price);
         }
-        self.close = trade.price;
+        if rule.update_high_low {
+            if self.high == 0.0 {
+                self.high = trade.price;
+                self.low = trade.price;
+            } else {
+                self.high = self.high.max(trade.price);
+                self.low = positive_min(self.low, trade.price);
+            }
+        }
+        if !rule.update_volume {
+            return;
+        }
         self.volume += trade.size;
         self.dollar_volume += trade.price * trade.size;
         self.trade_count += 1;
@@ -902,21 +1031,22 @@ impl MutableBar {
             self.large_trade_notional += trade.price * trade.size;
         }
         self.push_trade_size_sample(trade.size);
-        self.observe_trade_return(trade.price);
 
-        let side = self.classify_trade_side(trade.price);
-        if side >= 0 {
-            self.buy_trade_count += 1;
-            self.buy_volume += trade.size;
-            self.buy_dollar_volume += trade.price * trade.size;
-        } else {
-            self.sell_trade_count += 1;
-            self.sell_volume += trade.size;
-            self.sell_dollar_volume += trade.price * trade.size;
-        }
-        if self.last_mid > 0.0 {
-            self.effective_spread_sum +=
-                safe_div((trade.price - self.last_mid).abs() * 2.0, self.last_mid) * 10_000.0;
+        if rule.update_last {
+            let side = self.classify_trade_side(trade.price);
+            if side >= 0 {
+                self.buy_trade_count += 1;
+                self.buy_volume += trade.size;
+                self.buy_dollar_volume += trade.price * trade.size;
+            } else {
+                self.sell_trade_count += 1;
+                self.sell_volume += trade.size;
+                self.sell_dollar_volume += trade.price * trade.size;
+            }
+            if self.last_mid > 0.0 {
+                self.effective_spread_sum +=
+                    safe_div((trade.price - self.last_mid).abs() * 2.0, self.last_mid) * 10_000.0;
+            }
         }
     }
 
@@ -1273,6 +1403,139 @@ fn safe_div(numerator: f64, denominator: f64) -> f64 {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    fn trade(ts: DateTime<Utc>, price: f64, size: f64, conditions: Vec<u16>) -> TradeEvent {
+        TradeEvent {
+            conditions,
+            exchange: 11,
+            ingest_ts: ts,
+            participant_ts: None,
+            price,
+            raw: serde_json::Value::Null,
+            sequence: 1,
+            size,
+            tape: 3,
+            ticker: "AAPL".into(),
+            trade_id: "test".into(),
+            trf_id: 0,
+            trf_ts: None,
+            ts,
+        }
+    }
+
+    #[test]
+    fn volume_only_conditions_do_not_change_ohlc() {
+        let rules = TradeAggregationRules::new([
+            (0, TradeUpdateRule::regular()),
+            (
+                2,
+                TradeUpdateRule {
+                    update_high_low: false,
+                    update_last: false,
+                    update_volume: true,
+                },
+            ),
+            (
+                12,
+                TradeUpdateRule {
+                    update_high_low: false,
+                    update_last: false,
+                    update_volume: true,
+                },
+            ),
+            (
+                37,
+                TradeUpdateRule {
+                    update_high_low: false,
+                    update_last: false,
+                    update_volume: true,
+                },
+            ),
+        ])
+        .unwrap();
+        let start = Utc.with_ymd_and_hms(2026, 7, 10, 21, 20, 0).unwrap();
+        let mut bar = MutableBar::new(
+            "1m".into(),
+            "AAPL".into(),
+            start,
+            start + chrono::Duration::minutes(1),
+            60.0,
+        );
+
+        bar.apply_trade(
+            &trade(start, 315.10, 100.0, vec![0]),
+            rules.resolve(&[0], start),
+        );
+        bar.apply_trade(
+            &trade(
+                start + chrono::Duration::seconds(1),
+                331.7827,
+                27.0,
+                vec![12, 37],
+            ),
+            rules.resolve(&[12, 37], start + chrono::Duration::seconds(1)),
+        );
+        bar.apply_trade(
+            &trade(start + chrono::Duration::seconds(2), 315.16, 50.0, vec![0]),
+            rules.resolve(&[0], start + chrono::Duration::seconds(2)),
+        );
+
+        assert_eq!(bar.open, 315.10);
+        assert_eq!(bar.high, 315.16);
+        assert_eq!(bar.low, 315.10);
+        assert_eq!(bar.close, 315.16);
+        assert_eq!(bar.volume, 177.0);
+        assert_eq!(bar.trade_count, 3);
+    }
+
+    #[test]
+    fn form_t_prices_extended_hours_but_not_regular_session() {
+        let rules = TradeAggregationRules::new([
+            (0, TradeUpdateRule::regular()),
+            (
+                12,
+                TradeUpdateRule {
+                    update_high_low: false,
+                    update_last: false,
+                    update_volume: true,
+                },
+            ),
+            (
+                22,
+                TradeUpdateRule {
+                    update_high_low: true,
+                    update_last: false,
+                    update_volume: true,
+                },
+            ),
+            (41, TradeUpdateRule::regular()),
+        ])
+        .unwrap();
+        let extended = Utc.with_ymd_and_hms(2026, 7, 10, 21, 20, 0).unwrap();
+        let regular = Utc.with_ymd_and_hms(2026, 7, 10, 15, 20, 0).unwrap();
+
+        assert_eq!(rules.resolve(&[12], extended), TradeUpdateRule::regular());
+        assert_eq!(
+            rules.resolve(&[12, 22], extended),
+            TradeUpdateRule {
+                update_high_low: false,
+                update_last: false,
+                update_volume: true,
+            }
+        );
+        assert_eq!(
+            rules.resolve(&[12, 41], extended),
+            TradeUpdateRule::regular()
+        );
+        assert_eq!(
+            rules.resolve(&[12], regular),
+            TradeUpdateRule {
+                update_high_low: false,
+                update_last: false,
+                update_volume: true,
+            }
+        );
+    }
 
     #[test]
     fn estimated_luld_uses_rolling_five_minute_reference() {

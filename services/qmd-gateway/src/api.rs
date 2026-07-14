@@ -61,14 +61,6 @@ struct BarsQuery {
     timeframe: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct BarHistoryQuery {
-    before: Option<String>,
-    days: Option<usize>,
-    limit: Option<usize>,
-    timeframe: Option<String>,
-}
-
 #[derive(Debug, Serialize)]
 struct HealthPayload {
     config: GatewayConfig,
@@ -116,7 +108,6 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/snapshot/ticker/{ticker}", get(ticker_snapshot))
         .route("/snapshot/bars/{ticker}", get(bar_snapshot))
-        .route("/history/bars/{ticker}", get(bar_history_snapshot))
         .route(
             "/snapshot/compact-events/{ticker}",
             get(compact_event_snapshot),
@@ -674,122 +665,9 @@ async fn bar_snapshot(
                     .unwrap_or(500)
                     .min(state.config.bar_history_limit),
             )
-            .await,
+            .await
+            .price_bars(),
     )
-}
-
-async fn bar_history_snapshot(
-    State(state): State<Arc<AppState>>,
-    Path(ticker): Path<String>,
-    Query(query): Query<BarHistoryQuery>,
-) -> impl IntoResponse {
-    let ticker = ticker.trim().to_ascii_uppercase();
-    if ticker.is_empty()
-        || ticker.len() > 10
-        || !ticker
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '-'))
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "ticker must be a valid symbol" })),
-        );
-    }
-    let timeframe = query.timeframe.as_deref().unwrap_or("1m");
-    let resolution_us = match timeframe {
-        "1s" => 1_000_000_i64,
-        "10s" => 10_000_000_i64,
-        "30s" => 30_000_000_i64,
-        "1m" => 60_000_000_i64,
-        "5m" => 300_000_000_i64,
-        "1h" => 3_600_000_000_i64,
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "timeframe must be 1s, 10s, 30s, 1m, 5m, or 1h" })),
-            );
-        }
-    };
-    let before = query.before.unwrap_or_else(|| {
-        chrono::Utc::now()
-            .with_timezone(&chrono_tz::America::New_York)
-            .date_naive()
-            .to_string()
-    });
-    if chrono::NaiveDate::parse_from_str(&before, "%Y-%m-%d").is_err() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "before must be an ISO date" })),
-        );
-    }
-    let days = query.days.unwrap_or(1).clamp(1, 5);
-    let limit = query.limit.unwrap_or(20_000).clamp(1, 20_000);
-    let sql = format!(
-        r#"
-        WITH selected_dates AS
-        (
-            SELECT DISTINCT local_date
-            FROM {table} FINAL
-            WHERE ticker = '{ticker}'
-              AND label_resolution_us = {resolution_us}
-              AND bar_family = 'trade'
-              AND local_date < toDate('{before}')
-            ORDER BY local_date DESC
-            LIMIT {days}
-        )
-        SELECT
-            schema_version,
-            ticker AS sym,
-            toString(local_date) AS session_date,
-            '{timeframe}' AS timeframe,
-            formatDateTime(toTimeZone(addMicroseconds(toDateTime64(local_date, 6, 'America/New_York'), bar_start_session_us), 'UTC'), '%Y-%m-%dT%H:%i:%S.%fZ') AS bar_start,
-            formatDateTime(toTimeZone(addMicroseconds(toDateTime64(local_date, 6, 'America/New_York'), bar_end_session_us), 'UTC'), '%Y-%m-%dT%H:%i:%S.%fZ') AS bar_end,
-            true AS is_closed,
-            toFloat64(open) AS open,
-            toFloat64(high) AS high,
-            toFloat64(low) AS low,
-            toFloat64(close) AS close,
-            toFloat64(size_sum) AS volume,
-            event_count AS trade_count
-        FROM {table} FINAL
-        WHERE ticker = '{ticker}'
-          AND label_resolution_us = {resolution_us}
-          AND bar_family = 'trade'
-          AND local_date IN selected_dates
-        ORDER BY local_date, bucket_index
-        LIMIT {limit}
-        FORMAT JSONEachRow
-        "#,
-        table = state.config.intraday_bar_table,
-        ticker = ticker.replace('\\', "\\\\").replace('\'', "\\'"),
-        resolution_us = resolution_us,
-        before = before,
-        days = days,
-        timeframe = timeframe,
-        limit = limit,
-    );
-    match coverage_query_rows(&state.config, &sql).await {
-        Ok(rows) => {
-            let earliest_session_date = rows
-                .first()
-                .and_then(|row| row.get("session_date"))
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "before": before,
-                    "days": days,
-                    "earliest_session_date": earliest_session_date,
-                    "has_more": !rows.is_empty(),
-                    "history": rows,
-                    "ticker": ticker,
-                    "timeframe": timeframe,
-                })),
-            )
-        }
-        Err(error) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": error }))),
-    }
 }
 
 async fn compact_event_snapshot(
@@ -1142,7 +1020,8 @@ async fn stream_bars(
                 &timeframe,
                 limit.min(state.config.bar_history_limit),
             )
-            .await;
+            .await
+            .price_bars();
         match serde_json::to_string(&snapshot) {
             Ok(text) => {
                 if socket.send(Message::Text(text.into())).await.is_err() {

@@ -1,3 +1,4 @@
+use crate::bars::{TradeAggregationRules, TradeUpdateRule};
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::intraday_bars::IntradayBarRouter;
@@ -286,6 +287,7 @@ impl TickerReorderBuffer {
 pub struct CompactEventReferences {
     quote_conditions: HashMap<i16, u8>,
     trade_conditions: HashMap<i16, u8>,
+    trade_updates: HashMap<i16, TradeUpdateRule>,
     quote_indicators: HashMap<i16, u8>,
     tapes: HashMap<u8, u8>,
 }
@@ -352,6 +354,35 @@ impl CompactEventReferences {
             return Err("event_condition_token_reference is missing canonical quote, trade, or indicator rows".to_string());
         }
 
+        let trade_update_sql = format!(
+            "SELECT modifier_int, argMin(update_high_low, token_id), argMin(update_last, token_id), argMin(update_volume, token_id) FROM {database}.event_condition_token_reference WHERE source_family = 'trade_conditions' AND is_join_canonical = 1 GROUP BY modifier_int ORDER BY modifier_int FORMAT TSV"
+        );
+        let trade_update_rows =
+            clickhouse_query(&client, base_url, user, password, None, &trade_update_sql).await?;
+        let mut trade_updates = HashMap::new();
+        for row in trade_update_rows.lines() {
+            let parts = row.split('\t').collect::<Vec<_>>();
+            if parts.len() != 4 {
+                continue;
+            }
+            let modifier = parts[0].parse::<i16>().map_err(|error| error.to_string())?;
+            trade_updates.insert(
+                modifier,
+                TradeUpdateRule {
+                    update_high_low: parts[1] == "1",
+                    update_last: parts[2] == "1",
+                    update_volume: parts[3] == "1",
+                },
+            );
+        }
+        if trade_updates.len() != trade_conditions.len() {
+            return Err(format!(
+                "trade update rules disagree with canonical trade conditions: rules={} conditions={}",
+                trade_updates.len(),
+                trade_conditions.len()
+            ));
+        }
+
         let tape_sql = format!(
             "SELECT raw_id, dense_id FROM {database}.ref_stock_tapes WHERE raw_id IS NOT NULL AND dense_id_kind = 'actual' ORDER BY raw_id FORMAT TSV"
         );
@@ -380,6 +411,7 @@ impl CompactEventReferences {
         Ok(Self {
             quote_conditions,
             trade_conditions,
+            trade_updates,
             quote_indicators,
             tapes,
         })
@@ -410,6 +442,14 @@ impl CompactEventReferences {
                 }),
             self.tapes.iter().map(|(raw, encoded)| (*encoded, *raw)),
         )
+    }
+
+    pub fn trade_aggregation_rules(&self) -> Result<TradeAggregationRules, String> {
+        TradeAggregationRules::new(self.trade_updates.iter().filter_map(|(modifier, rule)| {
+            u16::try_from(*modifier)
+                .ok()
+                .map(|modifier| (modifier, *rule))
+        }))
     }
 
     fn quote_condition_id(&self, value: u16) -> u8 {
@@ -1396,6 +1436,13 @@ mod tests {
         CompactEventReferences {
             quote_conditions: [(12, 11), (16, 12)].into_iter().collect(),
             trade_conditions: [(2, 21), (5, 22)].into_iter().collect(),
+            trade_updates: [
+                (0, TradeUpdateRule::regular()),
+                (2, TradeUpdateRule::regular()),
+                (5, TradeUpdateRule::regular()),
+            ]
+            .into_iter()
+            .collect(),
             quote_indicators: [(7, 31)].into_iter().collect(),
             tapes: [(1, 0), (2, 1), (3, 2)].into_iter().collect(),
         }

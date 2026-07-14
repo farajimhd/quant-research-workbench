@@ -67,7 +67,7 @@ from src.backend.market_data_service import (
 )
 from src.backend.news_service import ensure_benzinga_news_cache, news_at_payload
 from src.backend.progress_model import build_progress_model
-from src.backend.qmd_gateway_client import qmd_bar_history, qmd_bars, qmd_catalogs, qmd_indicators, qmd_service_status, qmd_status, qmd_websocket_url
+from src.backend.qmd_gateway_client import qmd_bars, qmd_catalogs, qmd_indicators, qmd_service_status, qmd_status, qmd_websocket_url
 from src.backend.real_live_trading_service import (
     apply_tradable_filter_to_scanner_payload,
     cancel_real_live_order,
@@ -4307,7 +4307,7 @@ def trading_canvas_live_chart_history(
     symbol: str,
     timeframe: str = "1m",
     before: str | None = None,
-    days: int = Query(default=1, ge=1, le=5),
+    days: int = Query(default=1, ge=1, le=1),
     row_limit: int = Query(default=20_000, ge=1, le=20_000),
 ) -> dict[str, Any]:
     ticker = symbol.strip().upper()
@@ -4321,7 +4321,7 @@ def trading_canvas_live_chart_history(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="before must be an ISO date") from exc
     try:
-        return _canvas_live_chart_history(ticker=ticker, timeframe=timeframe, before=before, days=days, row_limit=row_limit)
+        return _canvas_live_chart_history(ticker=ticker, timeframe=timeframe, before=before, row_limit=row_limit)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -4331,12 +4331,8 @@ def _canvas_live_chart_history(
     ticker: str,
     timeframe: str,
     before: str | None,
-    days: int,
     row_limit: int,
 ) -> dict[str, Any]:
-    recent = qmd_bar_history(ticker, timeframe=timeframe, before=before, days=days, row_limit=row_limit)
-    if recent.get("history"):
-        return recent
     before_date = date.fromisoformat(before) if before else datetime.now(ZoneInfo(EXCHANGE_TIME_ZONE)).date()
     return historical_bar_history_before(
         before=before_date,

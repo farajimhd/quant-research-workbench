@@ -1,5 +1,6 @@
 use crate::config::HistoricalGatewayConfig;
 use chrono::{DateTime, Datelike, TimeZone, Utc};
+use qmd_core::bars::TradeAggregationRules;
 use qmd_core::compact_event::{
     CompactEventDecoder, CompactEventReferences, LiveCompactEvent,
     LIVE_COMPACT_EVENT_SCHEMA_VERSION,
@@ -47,6 +48,7 @@ pub struct HistoricalEventSource {
     client: Client,
     config: HistoricalGatewayConfig,
     decoder: CompactEventDecoder,
+    trade_rules: TradeAggregationRules,
 }
 
 #[derive(Debug, Deserialize)]
@@ -86,20 +88,20 @@ struct LatestEventCoverageRow {
 
 impl HistoricalEventSource {
     pub async fn initialize(config: HistoricalGatewayConfig) -> Result<Self, String> {
-        let mut source = Self {
+        let references = CompactEventReferences::load_from_clickhouse(
+            &config.clickhouse_url,
+            &config.clickhouse_user,
+            &config.clickhouse_password,
+            &config.clickhouse_database,
+        )
+        .await?;
+        let source = Self {
             client: Client::new(),
             config,
-            decoder: CompactEventDecoder::default(),
+            decoder: references.decoder(),
+            trade_rules: references.trade_aggregation_rules()?,
         };
         source.health().await?;
-        source.decoder = CompactEventReferences::load_from_clickhouse(
-            &source.config.clickhouse_url,
-            &source.config.clickhouse_user,
-            &source.config.clickhouse_password,
-            &source.config.clickhouse_database,
-        )
-        .await?
-        .decoder();
         Ok(source)
     }
 
@@ -109,6 +111,10 @@ impl HistoricalEventSource {
 
     pub fn market_event(&self, event: &LiveCompactEvent) -> MarketEvent {
         self.decoder.decode(event)
+    }
+
+    pub fn trade_aggregation_rules(&self) -> TradeAggregationRules {
+        self.trade_rules.clone()
     }
 
     pub async fn fetch_batch(
