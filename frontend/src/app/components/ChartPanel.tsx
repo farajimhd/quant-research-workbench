@@ -2241,7 +2241,7 @@ function rgbaFromHex(hex: string, opacity: number) {
 
 function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettings> {
   return {
-    color: series.color,
+    color: resolveChartColor(series.color),
     lineStyle: series.lineStyle ?? "solid",
     lineWidth: Math.max(1, Math.min(4, Math.round(series.lineWidth || 1))),
     showValue: true,
@@ -2253,7 +2253,7 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
   const defaults = defaultLegendSettings(series);
   const stored = settingsMap[key] ?? {};
   return {
-    color: stored.color || defaults.color,
+    color: resolveChartColor(stored.color || defaults.color),
     lineStyle: stored.lineStyle || defaults.lineStyle,
     lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? defaults.lineWidth))),
     showValue: stored.showValue ?? defaults.showValue,
@@ -2347,6 +2347,13 @@ function padCandleAutoscale(baseImplementation: () => AutoscaleInfo | null): Aut
 function seriesColorWithOpacity(series: ChartSeries, color: string) {
   if (series.style === "histogram" || series.opacity === undefined || series.opacity >= 0.99 || !validHexColor(color, "")) return color;
   return rgbaFromHex(color, series.opacity);
+}
+
+function resolveChartColor(color: string) {
+  const value = String(color || "").trim();
+  const variable = value.match(/^var\((--[a-z0-9-_]+)\)$/i);
+  if (!variable || typeof document === "undefined") return value || "#344054";
+  return window.getComputedStyle(document.documentElement).getPropertyValue(variable[1]).trim() || "#344054";
 }
 
 function seriesDataForSettings(series: ChartSeries, settings: Required<LegendSeriesSettings>) {

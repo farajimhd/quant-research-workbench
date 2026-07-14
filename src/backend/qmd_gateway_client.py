@@ -52,6 +52,17 @@ def qmd_get_json(path: str, params: dict[str, Any] | None = None, *, timeout: in
     return json.loads(text) if text.strip() else {}
 
 
+def qmd_websocket_url(path: str, params: dict[str, Any] | None = None) -> str:
+    if not qmd_enabled():
+        raise RuntimeError("QMD gateway is disabled by REAL_LIVE_QMD_GATEWAY_ENABLED.")
+    parsed = urllib.parse.urlsplit(qmd_base_url().rstrip("/"))
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("QMD gateway URL must use http or https.")
+    query = urllib.parse.urlencode({key: value for key, value in (params or {}).items() if value is not None})
+    target_path = f"{parsed.path.rstrip('/')}/{path.lstrip('/')}"
+    return urllib.parse.urlunsplit(("wss" if parsed.scheme == "https" else "ws", parsed.netloc, target_path, query, ""))
+
+
 def qmd_status() -> dict[str, Any]:
     payload = qmd_get_json("/health", timeout=2)
     if not isinstance(payload, dict):

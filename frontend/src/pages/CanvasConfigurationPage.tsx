@@ -1,7 +1,7 @@
 import { Check, Clock3, ExternalLink, Globe2, Link2, MapPin, PanelRightOpen, Plus, Save, Settings2, Trash2, Unlink } from "lucide-react";
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
-import { api } from "../api/client";
+import { api, query } from "../api/client";
 import {
   CANVAS_PREVIEW_CONTEXT_STORAGE_KEY,
   CANVAS_REGISTRY_STORAGE_KEY,
@@ -48,6 +48,23 @@ type CanvasPreview = {
   xbrl: PreviewRow[];
 };
 type CanvasContext = { coverage: { event_count: number; session_date: string | null; ticker_count: number }; preview_time: string; session_date: string | null };
+type QmdLiveBar = HistoricalBar & { session_date?: string };
+type QmdSnapshot<T> = { current?: T | null; history?: T[]; error?: string };
+type CanvasLiveChartResponse = {
+  bars: QmdSnapshot<QmdLiveBar>;
+  errors: Record<string, string>;
+  indicators: QmdSnapshot<HistoricalIndicator>;
+  source: string;
+  stream_interval_ms: number;
+};
+type CanvasLiveChartState = {
+  bars: QmdLiveBar[];
+  connected: boolean;
+  error: string;
+  indicators: HistoricalIndicator[];
+  lastUpdateAt: string;
+  loading: boolean;
+};
 
 type ContainerSettings = {
   chart: { showVolume: boolean; symbol: string; timeframe: CanvasLinkContext["timeframe"]; visibleIndicators: string[] };
@@ -124,6 +141,98 @@ function displayIndicator(id: string, title: string, group: string, sourceColumn
   return { category: pane === "price" ? "Price overlay" : "Oscillator pane", group, id, presentation: { chartRole: pane === "price" ? "overlay" : "oscillator", pane, selectable: true }, sourceColumns, title };
 }
 
+function useCanvasLiveChart(symbol: string, timeframe: CanvasLinkContext["timeframe"]): CanvasLiveChartState {
+  const [state, setState] = useState<CanvasLiveChartState>({ bars: [], connected: false, error: "", indicators: [], lastUpdateAt: "", loading: true });
+
+  useEffect(() => {
+    let active = true;
+    const sockets: Partial<Record<"bars" | "indicators", WebSocket>> = {};
+    const reconnectTimers: number[] = [];
+    const attempts = { bars: 0, indicators: 0 };
+    const ticker = symbol.trim().toUpperCase();
+    setState({ bars: [], connected: false, error: "", indicators: [], lastUpdateAt: "", loading: true });
+
+    const applySnapshot = (kind: "bars" | "indicators", payload: QmdSnapshot<QmdLiveBar> | QmdSnapshot<HistoricalIndicator>, live: boolean) => {
+      if (!active) return;
+      if (payload.error) {
+        if (kind === "bars") setState((current) => ({ ...current, connected: false, error: payload.error || "QMD live bars are unavailable.", loading: false }));
+        return;
+      }
+      const rows = qmdSnapshotRows(payload);
+      setState((current) => ({
+        ...current,
+        bars: kind === "bars" ? mergeRowsByTime(current.bars, rows as QmdLiveBar[]) : current.bars,
+        connected: kind === "bars" && live ? true : current.connected,
+        error: kind === "bars" ? "" : current.error,
+        indicators: kind === "indicators" ? mergeRowsByTime(current.indicators, rows as HistoricalIndicator[]) : current.indicators,
+        lastUpdateAt: kind === "bars" && live ? new Date().toISOString() : current.lastUpdateAt,
+        loading: kind === "bars" ? false : current.loading,
+      }));
+    };
+
+    api<CanvasLiveChartResponse>(`/api/trading/canvas-live-chart${query({ row_limit: 500, symbol: ticker, timeframe })}`, { timeoutMs: 5000 })
+      .then((payload) => {
+        applySnapshot("bars", payload.bars, false);
+        applySnapshot("indicators", payload.indicators, false);
+      })
+      .catch((reason) => {
+        if (!active) return;
+        setState((current) => ({ ...current, error: `QMD live chart unavailable: ${reason instanceof Error ? reason.message : String(reason)}`, loading: false }));
+      });
+
+    const connect = (kind: "bars" | "indicators") => {
+      if (!active) return;
+      const socket = new WebSocket(canvasLiveStreamUrl(kind, ticker, timeframe));
+      sockets[kind] = socket;
+      socket.onopen = () => {
+        attempts[kind] = 0;
+      };
+      socket.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(String(event.data)) as QmdSnapshot<QmdLiveBar> | QmdSnapshot<HistoricalIndicator>;
+          applySnapshot(kind, payload, true);
+        } catch {
+          if (kind === "bars") setState((current) => ({ ...current, connected: false, error: "QMD live bars returned invalid data.", loading: false }));
+        }
+      };
+      socket.onclose = () => {
+        if (!active) return;
+        if (kind === "bars") setState((current) => ({ ...current, connected: false, error: current.error || "QMD live bar stream disconnected; reconnecting.", loading: false }));
+        const delay = Math.min(5000, 500 * (2 ** attempts[kind]));
+        attempts[kind] += 1;
+        reconnectTimers.push(window.setTimeout(() => connect(kind), delay));
+      };
+    };
+
+    connect("bars");
+    connect("indicators");
+    return () => {
+      active = false;
+      reconnectTimers.forEach((timer) => window.clearTimeout(timer));
+      Object.values(sockets).forEach((socket) => socket?.close());
+    };
+  }, [symbol, timeframe]);
+
+  return state;
+}
+
+function qmdSnapshotRows<T extends { bar_start: string }>(payload: QmdSnapshot<T>): T[] {
+  return mergeRowsByTime(payload.history ?? [], payload.current ? [payload.current] : []);
+}
+
+function mergeRowsByTime<T extends { bar_start: string }>(existing: T[], incoming: T[]): T[] {
+  const rows = new Map(existing.map((row) => [row.bar_start, row]));
+  incoming.forEach((row) => {
+    if (row && typeof row.bar_start === "string" && row.bar_start) rows.set(row.bar_start, row);
+  });
+  return [...rows.values()].sort((left, right) => Date.parse(left.bar_start) - Date.parse(right.bar_start)).slice(-500);
+}
+
+function canvasLiveStreamUrl(kind: "bars" | "indicators", symbol: string, timeframe: string) {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}/api/trading/canvas-live-chart/stream/${kind}/${encodeURIComponent(symbol)}${query({ limit: 500, timeframe })}`;
+}
+
 export function CanvasConfigurationPage() {
   return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager />;
 }
@@ -157,6 +266,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
   const activeLinkContext = activeLinkGroup === "none"
     ? settings.chart
     : registry.linkContexts[activeLinkGroup];
+  const liveChart = useCanvasLiveChart(activeLinkContext.symbol, activeLinkContext.timeframe);
   const previewClocks = useMemo(() => previewClockReadings(previewContext), [previewContext]);
   const clockIcons = [Clock3, MapPin, Globe2];
   const marketStatus = useMemo(() => historicalMarketStatus(previewContext.sessionDate, previewContext.previewTime), [previewContext]);
@@ -236,14 +346,22 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
   }, [activeLinkContext.symbol, activeLinkContext.timeframe, contextError, contextReady, previewContext.previewTime, previewContext.sessionDate]);
 
   const metaForContainer = useMemo(() => (definition: WorkspaceContainerDefinition): WorkspaceWindowMeta => {
+    if (definition.id === "chart") {
+      return {
+        detail: liveChart.connected ? "Streaming canonical QMD bars and indicators." : liveChart.error || "Connecting to canonical QMD bars.",
+        freshness: liveChart.lastUpdateAt ? formatCell(liveChart.lastUpdateAt, "time") : liveChart.connected ? "Live" : "Connecting",
+        sourceLabel: liveChart.connected ? "QMD Live" : liveChart.bars.length ? "QMD Live disconnected" : liveChart.error ? "QMD Live unavailable" : "QMD Live",
+        status: liveChart.connected && liveChart.bars.length ? "ready" : liveChart.error ? "error" : "idle",
+      };
+    }
     const sourceError = preview?.errors[definition.id] ?? preview?.errors[definition.id === "news" ? "news" : definition.id === "sec" ? "sec" : definition.id === "xbrl" ? "xbrl" : ""];
     return {
       detail: `${definition.title} rendered at the shared configuration clock.`,
       freshness: previewContext.previewTime,
-      sourceLabel: sourceError ? "Unavailable" : definition.id === "chart" || definition.id === "scanner" ? "QMD History" : ["news", "sec", "xbrl"].includes(definition.id) ? "Point-in-time DB" : "IBKR preview",
+      sourceLabel: sourceError ? "Unavailable" : definition.id === "scanner" ? "QMD History" : ["news", "sec", "xbrl"].includes(definition.id) ? "Point-in-time DB" : "IBKR preview",
       status: sourceError ? "error" : preview ? "ready" : "idle",
     };
-  }, [preview, previewContext.previewTime]);
+  }, [liveChart, preview, previewContext.previewTime]);
 
   const canvasTargets = registry.canvases.map((canvas, index) => ({
     color: ["var(--primary)", "var(--info)", "var(--success)", "var(--warning)"][index % 4],
@@ -371,6 +489,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
             linkContext={linkContext}
             linkGroup={group}
             linkedContainers={linkedContainers}
+            liveChart={liveChart}
             loading={loading}
             onLinkChange={(nextGroup) => setContainerLink(definition.id, nextGroup)}
             onLinkContextChange={(patch) => { if (group !== "none") updateLinkContext(group, patch); }}
@@ -423,12 +542,13 @@ function CanvasManager({ onCreate, onOpen, onRemove, registry }: { onCreate: () 
   return <section aria-label="Canvas manager" className="canvas-manager-strip"><strong>Canvases</strong><div className="canvas-manager-items">{registry.canvases.map((canvas) => <article key={canvas.id} data-main={canvas.id === MAIN_CANVAS_ID ? "true" : "false"}>{canvas.id === MAIN_CANVAS_ID ? <><span>{canvas.label}</span><small>default authority</small></> : <><button aria-label={`Open ${canvas.label}`} className="canvas-manager-open" onClick={() => onOpen(canvas.id)} title="Open canvas in a new page" type="button"><span>{canvas.label}</span><ExternalLink size={11} /></button><button aria-label={`Remove ${canvas.label}`} className="toolbar-button compact" onClick={() => onRemove(canvas.id)} title="Remove canvas" type="button"><Trash2 size={12} /></button></>}</article>)}</div><button className="button secondary compact" onClick={onCreate} type="button"><Plus size={13} /> New canvas</button></section>;
 }
 
-function ContainerPreview({ definition, linkContext, linkGroup, linkedContainers, linkOpen, loading, onLinkChange, onLinkContextChange, preview, settings, settingsOpen, setSettings }: {
+function ContainerPreview({ definition, linkContext, linkGroup, linkedContainers, linkOpen, liveChart, loading, onLinkChange, onLinkContextChange, preview, settings, settingsOpen, setSettings }: {
   definition: WorkspaceContainerDefinition;
   linkContext: CanvasLinkContext;
   linkGroup: CanvasLinkGroupId;
   linkedContainers: LinkedContainerState[];
   linkOpen: boolean;
+  liveChart: CanvasLiveChartState;
   loading: boolean;
   onLinkChange: (group: CanvasLinkGroupId) => void;
   onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void;
@@ -441,7 +561,7 @@ function ContainerPreview({ definition, linkContext, linkGroup, linkedContainers
   return <div className="canvas-container-preview">
     {linkOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} link configuration`} data-canvas-link-popover={definition.id}><div className="canvas-link-guide"><strong>Link color</strong><small>Same color = linked</small></div><LinkColorPicker containerTitle={definition.title} onChange={onLinkChange} value={linkGroup} /><LinkedContainerList containerTitle={definition.title} containers={linkedContainers} /></div> : null}
     {settingsOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} settings`}>{containerFields(definition.id, settings, linkContext, setSettings, onLinkContextChange)}</div> : null}
-    <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{loading && !preview && definition.id !== "chart" ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div> : renderPreview(definition.id, preview, settings, setSettings, linkGroup, onLinkContextChange, linkContext, loading)}</div>
+    <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{loading && !preview && definition.id !== "chart" ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div> : renderPreview(definition.id, preview, settings, setSettings, linkGroup, onLinkContextChange, linkContext, liveChart, loading)}</div>
   </div>;
 }
 
@@ -467,8 +587,8 @@ function LinkColorPicker({ containerTitle, onChange, value }: { containerTitle: 
   </div>;
 }
 
-function renderPreview(id: WorkspaceContainerId, preview: CanvasPreview | null, settings: ContainerSettings, setSettings: React.Dispatch<React.SetStateAction<ContainerSettings>>, linkGroup: CanvasLinkGroupId, onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void, linkContext: CanvasLinkContext, loading = false) {
-  if (id === "chart") return <ChartPreview linkContext={linkContext} loading={loading} onLinkContextChange={onLinkContextChange} preview={preview} settings={settings} setSettings={setSettings} />;
+function renderPreview(id: WorkspaceContainerId, preview: CanvasPreview | null, settings: ContainerSettings, setSettings: React.Dispatch<React.SetStateAction<ContainerSettings>>, linkGroup: CanvasLinkGroupId, onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void, linkContext: CanvasLinkContext, liveChart: CanvasLiveChartState, loading = false) {
+  if (id === "chart") return <ChartPreview linkContext={linkContext} liveChart={liveChart} onLinkContextChange={onLinkContextChange} settings={settings} setSettings={setSettings} />;
   if (!preview) return <EmptyState label="No preview data" />;
   if (id === "scanner") return <PreviewTable columns={settings.scanner.showActivity ? ["symbol", "last", "change_pct", "volume", "trade_count"] : ["symbol", "last", "change_pct"]} onSymbolSelect={linkGroup === "none" ? undefined : (symbol) => onLinkContextChange({ symbol })} rows={preview.scanner.slice(0, settings.scanner.limit)} />;
   if (id === "portfolio") return <PortfolioPreview data={preview.portfolio} settings={settings.portfolio} />;
@@ -484,26 +604,26 @@ function renderPreview(id: WorkspaceContainerId, preview: CanvasPreview | null, 
   return <PreviewTable columns={["time", "category", "event", "detail"]} rows={preview.journal.slice(0, settings.journal.limit)} />;
 }
 
-function ChartPreview({ linkContext, loading, onLinkContextChange, preview, settings, setSettings }: { linkContext: CanvasLinkContext; loading: boolean; onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void; preview: CanvasPreview | null; settings: ContainerSettings; setSettings: React.Dispatch<React.SetStateAction<ContainerSettings>> }) {
-  const indicators = preview?.chart.indicators ?? [];
+function ChartPreview({ linkContext, liveChart, onLinkContextChange, settings, setSettings }: { linkContext: CanvasLinkContext; liveChart: CanvasLiveChartState; onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void; settings: ContainerSettings; setSettings: React.Dispatch<React.SetStateAction<ContainerSettings>> }) {
+  const indicators = liveChart.indicators;
   const payload = useMemo<ChartPayload>(() => ({
-    candles: (preview?.chart.bars ?? []).map((bar) => ({ close: bar.close, high: bar.high, low: bar.low, open: bar.open, time: Date.parse(bar.bar_start) / 1000 })),
+    candles: liveChart.bars.map((bar) => ({ close: bar.close, high: bar.high, low: bar.low, open: bar.open, time: Date.parse(bar.bar_start) / 1000 })),
     markers: [],
     oscillator_series: historicalIndicatorSeries(indicators, "oscillator"),
     overlay_series: historicalIndicatorSeries(indicators, "price"),
     regions: [],
-    volume: settings.chart.showVolume ? (preview?.chart.bars ?? []).map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
-  }), [indicators, preview?.chart.bars, settings.chart.showVolume]);
+    volume: settings.chart.showVolume ? liveChart.bars.map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
+  }), [indicators, liveChart.bars, settings.chart.showVolume]);
   function updateChart(symbol: string, timeframe: CanvasLinkContext["timeframe"]) {
     setSettings((current) => ({ ...current, chart: { ...current.chart, symbol, timeframe } }));
     onLinkContextChange({ symbol, timeframe });
   }
-  const previewDate = preview?.as_of.slice(0, 10);
-  const covered = Number(preview?.coverage.event_count ?? 0) > 0;
-  const emptyMessage = preview && !covered
-    ? `No QMD History coverage for ${formatPreviewDate(previewDate)}.`
-    : `No ${linkContext.symbol} bars by ${preview?.as_of.slice(11, 16) || "09:45"} ET.`;
-  return <ChartPanel displayItemOptions={CHART_INDICATORS} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={preview?.errors.chart} featureOptions={[]} indicatorOptions={[]} initialFitMode="recent" loading={loading} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), linkContext.timeframe)} onTimeframeChange={(timeframe) => updateChart(linkContext.symbol, timeframe as CanvasLinkContext["timeframe"])} onVisibleColumnsChange={(visibleIndicators) => setSettings((current) => ({ ...current, chart: { ...current.chart, visibleIndicators } }))} payload={payload} periodEnd={previewDate} periodStart={previewDate} ticker={linkContext.symbol} timeframe={linkContext.timeframe} timeframes={HISTORICAL_TIMEFRAMES} visibleColumns={settings.chart.visibleIndicators} />;
+  const latestBar = liveChart.bars[liveChart.bars.length - 1];
+  const sessionDate = latestBar?.session_date || latestBar?.bar_start.slice(0, 10);
+  const emptyMessage = liveChart.connected
+    ? `Waiting for the first live ${linkContext.symbol} ${linkContext.timeframe} bar.`
+    : "Start QMD Gateway to stream canonical live bars.";
+  return <ChartPanel displayItemOptions={CHART_INDICATORS} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error} featureOptions={[]} indicatorOptions={[]} initialFitMode="recent" loading={liveChart.loading} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), linkContext.timeframe)} onTimeframeChange={(timeframe) => updateChart(linkContext.symbol, timeframe as CanvasLinkContext["timeframe"])} onVisibleColumnsChange={(visibleIndicators) => setSettings((current) => ({ ...current, chart: { ...current.chart, visibleIndicators } }))} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} ticker={linkContext.symbol} timeframe={linkContext.timeframe} timeframes={HISTORICAL_TIMEFRAMES} visibleColumns={settings.chart.visibleIndicators} />;
 }
 
 function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscillator" | "price"): ChartPayload["overlay_series"] {

@@ -17,7 +17,8 @@ from typing import Annotated, Any
 from zoneinfo import ZoneInfo
 
 import polars as pl
-from fastapi import FastAPI, HTTPException, Query
+import websockets
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -66,7 +67,7 @@ from src.backend.market_data_service import (
 )
 from src.backend.news_service import ensure_benzinga_news_cache, news_at_payload
 from src.backend.progress_model import build_progress_model
-from src.backend.qmd_gateway_client import qmd_bars, qmd_catalogs, qmd_indicators, qmd_service_status, qmd_status
+from src.backend.qmd_gateway_client import qmd_bars, qmd_catalogs, qmd_indicators, qmd_service_status, qmd_status, qmd_websocket_url
 from src.backend.real_live_trading_service import (
     apply_tradable_filter_to_scanner_payload,
     cancel_real_live_order,
@@ -4269,6 +4270,69 @@ def trading_canvas_preview(payload: CanvasPreviewRequest) -> dict[str, Any]:
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/trading/canvas-live-chart")
+def trading_canvas_live_chart(symbol: str, timeframe: str = "1m", row_limit: int = Query(default=500, ge=1, le=5000)) -> dict[str, Any]:
+    ticker = symbol.strip().upper()
+    if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
+        raise HTTPException(status_code=400, detail="symbol must be a valid ticker")
+    if timeframe not in {"1s", "10s", "30s", "1m", "5m", "1h"}:
+        raise HTTPException(status_code=400, detail="timeframe must be 1s, 10s, 30s, 1m, 5m, or 1h")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        bars_future = executor.submit(qmd_bars, ticker, timeframe=timeframe, row_limit=row_limit)
+        indicators_future = executor.submit(qmd_indicators, ticker, timeframe=timeframe, row_limit=row_limit)
+        try:
+            bars = bars_future.result()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        errors: dict[str, str] = {}
+        try:
+            indicators = indicators_future.result()
+        except Exception as exc:
+            indicators = {"ticker": ticker, "timeframe": timeframe, "history": [], "current": None, "tick": None}
+            errors["indicators"] = str(exc)
+    return {
+        "bars": bars,
+        "errors": errors,
+        "indicators": indicators,
+        "source": "qmd-gateway",
+        "stream_interval_ms": 250,
+    }
+
+
+@app.websocket("/api/trading/canvas-live-chart/stream/{stream}/{symbol}")
+async def trading_canvas_live_chart_stream(websocket: WebSocket, stream: str, symbol: str) -> None:
+    await websocket.accept()
+    ticker = symbol.strip().upper()
+    timeframe = websocket.query_params.get("timeframe", "1m")
+    row_limit_text = websocket.query_params.get("limit", "500")
+    if stream not in {"bars", "indicators"} or not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker) or timeframe not in {"1s", "10s", "30s", "1m", "5m", "1h"}:
+        await websocket.send_json({"error": "Invalid live chart stream request."})
+        await websocket.close(code=1008)
+        return
+    try:
+        row_limit = max(1, min(int(row_limit_text), 5000))
+    except ValueError:
+        await websocket.send_json({"error": "limit must be an integer."})
+        await websocket.close(code=1008)
+        return
+    try:
+        upstream_url = qmd_websocket_url(f"/stream/{stream}/{ticker}", {"timeframe": timeframe, "limit": row_limit})
+        async with websockets.connect(upstream_url, ping_interval=20, ping_timeout=20, max_size=8 * 1024 * 1024) as upstream:
+            async for message in upstream:
+                if isinstance(message, bytes):
+                    await websocket.send_bytes(message)
+                else:
+                    await websocket.send_text(message)
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        try:
+            await websocket.send_json({"error": f"QMD live {stream} stream unavailable: {exc}"})
+            await websocket.close(code=1011)
+        except Exception:
+            return
 
 
 @app.get("/api/trading/canvas-context")
