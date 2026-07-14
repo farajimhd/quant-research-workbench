@@ -114,24 +114,35 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
 
   useEffect(() => {
     let cancelled = false;
-    async function load() {
+    let fastInFlight = false;
+    let fullInFlight = false;
+    async function load(full: boolean) {
+      if (full ? fullInFlight : fastInFlight) return;
+      if (full) fullInFlight = true;
+      else fastInFlight = true;
       try {
         setError("");
-        const next = await api<ServicesStatusPayload>("/api/services/status", { timeoutMs: 15000 });
+        const query = full ? "include_database_tables=true" : "include_database_tables=false";
+        const next = await api<ServicesStatusPayload>(`/api/services/status?${query}`, { timeoutMs: full ? 30000 : 15000 });
         if (cancelled) return;
-        setPayload(next);
+        setPayload((current) => mergeServicesPayload(next, current, full));
         setLoading(false);
       } catch (exc) {
         if (cancelled) return;
         setError(exc instanceof Error ? exc.message : String(exc));
         setLoading(false);
+      } finally {
+        if (full) fullInFlight = false;
+        else fastInFlight = false;
       }
     }
-    void load();
-    const timer = window.setInterval(load, 5000);
+    void load(true);
+    const fastTimer = window.setInterval(() => void load(false), 5000);
+    const fullTimer = window.setInterval(() => void load(true), 30000);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      window.clearInterval(fastTimer);
+      window.clearInterval(fullTimer);
     };
   }, []);
 
@@ -189,7 +200,7 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
         <div>
           <span className="page-kicker">Services</span>
           <h1>{selected ? selected.registry.label : "Service Dashboard"}</h1>
-          <p>{selected ? selected.registry.description : "Live health, current work, responsibility activity, freshness, and active attention across every gateway."}</p>
+          <p>{selected ? selected.registry.description : "Live gateway health, objective-specific work, database state, and today's durable output."}</p>
         </div>
         <div className="services-header-actions">
           <span className="services-refresh-note">Updated {payload?.checked_at_utc ? formatTime(payload.checked_at_utc) : "-"}</span>
@@ -241,13 +252,24 @@ function mergeServiceDetailPayload(next: ServiceStatusPayload, current: ServiceS
   };
 }
 
+function mergeServicesPayload(next: ServicesStatusPayload, current: ServicesStatusPayload | null, full: boolean): ServicesStatusPayload {
+  if (full || !current) return next;
+  const currentById = new Map(current.services.map((service) => [service.registry.id, service]));
+  return {
+    ...next,
+    services: next.services.map((service) => mergeServiceDetailPayload(service, currentById.get(service.registry.id) ?? null, false)),
+  };
+}
+
 function ServicesTopSummary({ checkedAt, now, services }: { checkedAt: string; now: Date; services: ServiceStatusPayload[] }) {
   const counts = countStatuses(services);
   const market = fleetMarketStatus(services);
   const work = fleetWorkSummary(services);
+  const databases = fleetDatabaseSummary(services);
   const stale = services.filter((service) => serviceFreshness(service, now).tone === "stale").length;
   const summaries = [
     { label: "Fleet", value: `${counts.online}/${services.length || 0} online`, detail: `${counts.degraded} need attention`, icon: RadioTower, tone: counts.degraded ? "warn" : "ok" },
+    { label: "Databases", value: databases.total ? `${databases.healthy}/${databases.total} healthy` : "No contracts", detail: databases.missing ? `${databases.missing} missing or empty` : "Configured tables available", icon: Layers3, tone: databases.missing ? "warn" : "ok" },
     { label: "Responsibilities", value: `${work.active} active`, detail: `${work.warning} warning · ${work.completed} recent cycles`, icon: Layers3, tone: work.warning ? "warn" : work.active ? "active" : "ok" },
     { label: "Market", value: displayName(market.status), detail: market.detail, icon: Activity, tone: marketTileClass(market.status, market.detail).replace("market-", "") },
     { label: "Freshness", value: stale ? `${stale} stale` : "Live", detail: checkedAt ? `Updated ${relativeServiceAge(checkedAt, now)}` : "Waiting for first fleet check", icon: RefreshCcw, tone: stale ? "warn" : checkedAt ? "ok" : "idle" },
@@ -285,6 +307,9 @@ function ServiceFleetCard({ now, onOpen, service }: { now: Date; onOpen: () => v
   const groups = visibleServiceWorkGroups(serviceWorkGroups(service), service.registry.id);
   const freshness = serviceFreshness(service, now);
   const attention = serviceAttentionSummary(service, groups);
+  const metrics = serviceFleetMetrics(service);
+  const database = serviceFleetDatabaseSummary(service);
+  const focus = serviceFleetFocus(service);
   return (
     <article className={`service-fleet-card ${info.className}`}>
       <button aria-label={`Open ${service.registry.label} details`} className="service-fleet-open" onClick={onOpen} type="button">
@@ -302,8 +327,8 @@ function ServiceFleetCard({ now, onOpen, service }: { now: Date; onOpen: () => v
           </div>
           <div className="service-fleet-focus">
             <span className="service-fleet-focus-kicker">Current work</span>
-            <strong>{displayName(phaseText(service))}</strong>
-            <p title={cardMessage(service)}>{cardMessage(service)}</p>
+            <strong>{focus.phase}</strong>
+            <p title={focus.message}>{focus.message}</p>
           </div>
           <div className={`service-fleet-heartbeat ${service.online ? "is-live" : "is-offline"}`}>
             <span aria-hidden="true" />
@@ -311,8 +336,21 @@ function ServiceFleetCard({ now, onOpen, service }: { now: Date; onOpen: () => v
           </div>
         </div>
 
-        <div className="service-fleet-responsibilities">
-          {groups.map((group) => <ServiceFleetResponsibility group={group} key={group.id} />)}
+        <div className="service-fleet-metrics" aria-label={`${service.registry.label} objective metrics`}>
+          {metrics.map((metric) => (
+            <div className={`service-fleet-metric tone-${metric.tone ?? "neutral"}`} key={metric.label}>
+              <span>{metric.label}</span>
+              <strong>{metric.value}</strong>
+              <small title={metric.detail}>{metric.detail}</small>
+            </div>
+          ))}
+        </div>
+
+        <div className={`service-fleet-database ${database.tone}`}>
+          <div><span>Database</span><strong>{database.status}</strong><small>{database.detail}</small></div>
+          <div><span>Today</span><strong>{database.today}</strong><small>{database.product}</small></div>
+          <div><span>Overall</span><strong>{database.overall}</strong><small>{database.product}</small></div>
+          <div><span>Latest durable row</span><strong>{database.latest}</strong><small>{database.latestDetail}</small></div>
         </div>
 
         <div className="service-fleet-card-footer">
@@ -321,24 +359,6 @@ function ServiceFleetCard({ now, onOpen, service }: { now: Date; onOpen: () => v
         </div>
       </button>
     </article>
-  );
-}
-
-function ServiceFleetResponsibility({ group }: { group: ServiceWorkGroup }) {
-  const primary = groupPrimaryRow(group);
-  const activity = responsibilityActivity(primary, group);
-  const tone = workStatusClass(group.status);
-  return (
-    <div className={`service-fleet-responsibility ${tone} activity-${activity.kind}`}>
-      <div className="service-fleet-responsibility-copy">
-        <div>
-          <strong>{group.title}</strong>
-          <span className={`service-work-status ${tone}`}>{responsibilityStatusLabel(group)}</span>
-        </div>
-      </div>
-      <small className="service-fleet-current-operation" title={primary.detail}>{primary.name}</small>
-      <strong className="service-fleet-activity">{activity.label}</strong>
-    </div>
   );
 }
 
@@ -4870,6 +4890,232 @@ function newsPollHistoryRow(service: ServiceStatusPayload): NewsPollHistoryRow |
     wallSeconds,
     writtenRows,
   };
+}
+
+type ServiceFleetMetric = {
+  detail: string;
+  label: string;
+  tone?: "good" | "neutral" | "warn";
+  value: string;
+};
+
+type ServiceFleetDatabaseSummary = {
+  detail: string;
+  latest: string;
+  latestDetail: string;
+  overall: string;
+  product: string;
+  status: string;
+  today: string;
+  tone: "good" | "neutral" | "warn";
+};
+
+const SERVICE_PRIMARY_DATABASE_ROLES: Record<ServiceId, string[]> = {
+  ibkr: ["supervisor events"],
+  news: ["normalized news"],
+  qmd: ["live events"],
+  "qmd-history": [],
+  reference: ["tradable universe"],
+  sec: ["filings"],
+  "text-embed": ["news embeddings", "sec embeddings"],
+};
+
+function serviceFleetMetrics(service: ServiceStatusPayload): ServiceFleetMetric[] {
+  const metrics = serviceMetricsRecord(service);
+  const number = (keys: string[]) => numericMetricOptional(metrics, keys);
+  const compact = (value: number | null) => value === null ? "—" : formatCompactNumber(value);
+  const ratio = (left: number | null, right: number | null) => left === null && right === null ? "—" : `${compact(left)} / ${compact(right)}`;
+  const detail = (text: string, fallback: string) => text.trim() || fallback;
+
+  if (service.registry.id === "news") {
+    const polled = number(["provider_rows", "processed_rows", "raw_saved"]);
+    const processed = number(["processed_rows"]);
+    const duplicates = number(["duplicate_news_rows"]);
+    const unique = number(["unique_news_rows"]) ?? (processed !== null && duplicates !== null ? Math.max(0, processed - duplicates) : null);
+    return [
+      { label: "Unique / Polled", value: ratio(unique, polled), detail: "Usable unique stories compared with provider rows polled" },
+      { label: "Enriched / Required", value: ratio(number(["background_enriched_urls"]), number(["background_fetch_tasks"])), detail: "Article URLs enriched compared with URLs requiring retrieval" },
+      { label: "Inserted", value: compact(number(["written_rows"])), detail: "Normalized news rows durably written in this runtime" },
+      { label: "Coverage Filled", value: ratio(number(["gap_fill_flushed_chunks"]), number(["gap_fill_total_chunks"])), detail: "Bounded coverage chunks flushed for the active repair" },
+    ];
+  }
+
+  if (service.registry.id === "sec") {
+    return [
+      { label: "Processed / Feed", value: ratio(number(["processed_filings"]), number(["feed_items"])), detail: "Filings processed compared with current-feed items observed" },
+      { label: "Written / Processed", value: ratio(number(["written_filings"]), number(["processed_filings"])), detail: "Canonical filings durably written compared with processed filings" },
+      { label: "Workers Active", value: ratio(number(["live_active_workers"]), number(["live_workers"])), detail: `Queue ${compact(number(["live_queue_size"]))} · failures ${compact(number(["live_worker_failures"]))}` },
+      { label: "XBRL Facts", value: compact(number(["xbrl_company_fact_rows"])), detail: `Context pending ${compact(number(["xbrl_context_pending_rows"]))} · sync failures ${compact(number(["xbrl_context_sync_failures"]))}` },
+    ];
+  }
+
+  if (service.registry.id === "text-embed") {
+    const coverage = textEmbedCoverageTotals(metrics);
+    return [
+      { label: "Completed / Detected", value: ratio(coverage.completed, coverage.detected), detail: "Source, embedding, and SEC context gaps completed across live and historical modes" },
+      { label: "Remaining Gaps", value: compact(coverage.remaining), detail: "Detected work still remaining or blocked across all source reports", tone: coverage.remaining ? "warn" : "neutral" },
+      { label: "Embeddings Written", value: compact(number(["embedding_rows_written"])), detail: "Embedding rows durably written in this runtime" },
+      { label: "Last Throughput", value: number(["last_embedding_sequences_per_second"]) === null ? "—" : `${number(["last_embedding_sequences_per_second"])!.toFixed(1)}/s`, detail: detail(stringMetric(metrics, ["last_embedding_source", "active_source"]), "No completed embedding batch reported") },
+    ];
+  }
+
+  if (service.registry.id === "reference") {
+    const sources = arrayRecords(metrics.source_statuses);
+    const tables = arrayRecords(metrics.table_progress);
+    const healthySources = sources.filter((row) => statusIsHealthy(String(row.status ?? ""))).length;
+    const present = tables.reduce((sum, row) => sum + optionalNumber(row.tables_present), 0);
+    const total = tables.reduce((sum, row) => sum + optionalNumber(row.tables_total), 0);
+    return [
+      { label: "Sources Healthy", value: ratio(sources.length ? healthySources : null, sources.length || null), detail: "Configured reference publications fetched without a reported source failure" },
+      { label: "Rows Fetched", value: compact(number(["source_rows_fetched"])), detail: "Rows fetched during the latest reference synchronization" },
+      { label: "Tables Present", value: ratio(tables.length ? present : null, tables.length ? total : null), detail: "Required reference tables present across table groups" },
+      { label: "Audit Failures", value: compact(number(["audit_failures"])), detail: detail(stringMetric(metrics, ["audit_status"]), "No reference audit reported"), tone: (number(["audit_failures"]) ?? 0) > 0 ? "warn" : "neutral" },
+    ];
+  }
+
+  if (service.registry.id === "ibkr") {
+    return [
+      { label: "Gateway Session", value: metricStatus(metrics, ["gateway_status"]), detail: "Client Portal process and listener state" },
+      { label: "Authentication", value: metricStatus(metrics, ["auth_status"]), detail: "Authenticated brokerage API session state" },
+      { label: "Account", value: metricStatus(metrics, ["account_status"]), detail: "Configured account discovery and readiness" },
+      { label: "Keepalive", value: metricStatus(metrics, ["keepalive_status"]), detail: `${compact(number(["poll_runs"]))} tickles · ${compact(number(["poll_failures"]))} failures since supervisor start` },
+    ];
+  }
+
+  if (service.registry.id === "qmd-history") {
+    const config = isRecord(service.health.config) ? service.health.config : {};
+    return [
+      { label: "Historical Source", value: service.online ? "Ready" : "Unavailable", detail: stringMetric(service.health, ["source"]) || "Canonical compact-event source" },
+      { label: "Serving Mode", value: "Read only", detail: "Historical events, deterministic streams, and event-derived bars" },
+      { label: "Batch Size", value: compact(numericMetricOptional(config, ["batch_size"])), detail: "Configured rows per historical source batch" },
+      { label: "Request Limit", value: compact(numericMetricOptional(config, ["max_events_per_request"])), detail: "Maximum source events accepted for one bar request" },
+    ];
+  }
+
+  const coverage = isRecord(service.snapshot.coverage) ? service.snapshot.coverage : {};
+  const queueKeys = ["events_broadcast_dropped", "bar_events_dropped", "indicator_events_dropped", "compact_event_queue_dropped", "clickhouse_events_dropped"];
+  const queueDropParts = queueKeys.map((key) => number([key])).filter((value): value is number => value !== null);
+  const queueDrops = number(["queue_drop_total"]) ?? (queueDropParts.length ? queueDropParts.reduce((sum, value) => sum + value, 0) : null);
+  return [
+    { label: "Events Ingested", value: compact(number(["ingest_events"])), detail: `Quotes ${compact(number(["ingest_quotes"]))} · trades ${compact(number(["ingest_trades"]))}` },
+    { label: "Events Persisted", value: compact(number(["compact_events_persisted"])), detail: `Emitted ${compact(number(["compact_events_emitted"]))} · reorder pending ${compact(number(["compact_events_reorder_pending"]))}` },
+    { label: "Bars Persisted", value: compact(number(["intraday_bar_rows_persisted"])), detail: `Emitted ${compact(number(["intraday_bar_rows_emitted"]))} · repairs ${compact(number(["intraday_bar_repairs_completed"]))}` },
+    { label: "Repair / Queue", value: `${ratio(optionalNumberOrNull(coverage.completed_jobs), optionalNumberOrNull(coverage.total_jobs))} · ${compact(queueDrops)} drops`, detail: "Bounded recent-gap jobs and downstream queue integrity", tone: (queueDrops ?? 0) > 0 ? "warn" : "neutral" },
+  ];
+}
+
+function serviceFleetFocus(service: ServiceStatusPayload) {
+  if (service.registry.id === "qmd-history" && service.online) {
+    return { phase: "Ready to serve", message: "Canonical history queries, deterministic streams, and event-derived bars are available." };
+  }
+  return { phase: displayName(phaseText(service)), message: cardMessage(service) };
+}
+
+function fleetDatabaseSummary(services: ServiceStatusPayload[]) {
+  const rows = services.flatMap((service) => service.database_tables?.rows ?? []);
+  const healthy = rows.filter((row) => String(row.status || "").toLowerCase() === "ok").length;
+  return { healthy, missing: rows.length - healthy, total: rows.length };
+}
+
+function serviceFleetDatabaseSummary(service: ServiceStatusPayload): ServiceFleetDatabaseSummary {
+  if (service.registry.id === "qmd-history") {
+    return { detail: "Canonical market_sip_compact source", latest: "On request", latestDetail: "No local write contract", overall: "Read only", product: "Historical source", status: service.online ? "Source ready" : "Unavailable", today: "—", tone: service.online ? "good" : "warn" };
+  }
+  const rows = service.database_tables?.rows ?? [];
+  if (!rows.length) {
+    const error = service.database_tables?.error?.trim();
+    return { detail: error || "Waiting for database inspection", latest: "—", latestDetail: "No table state", overall: "—", product: "Primary product", status: error ? "Check failed" : "Checking", today: "—", tone: error ? "warn" : "neutral" };
+  }
+  const roles = SERVICE_PRIMARY_DATABASE_ROLES[service.registry.id];
+  const primary = rows.filter((row) => roles.includes(String(row.role || "").toLowerCase()));
+  const selected = primary.length ? primary : rows.slice(0, 1);
+  const healthy = rows.filter((row) => String(row.status || "").toLowerCase() === "ok").length;
+  const today = sumTableCounts(selected, "rows_today");
+  const overall = sumTableCounts(selected, "rows");
+  const latestRow = [...selected].sort((left, right) => tableTimestamp(right.latest_update) - tableTimestamp(left.latest_update))[0];
+  const product = selected.map((row) => row.role).filter(Boolean).join(" + ") || "Primary product";
+  return {
+    detail: healthy === rows.length ? `${rows.length} configured tables available` : `${rows.length - healthy} missing or empty of ${rows.length}`,
+    latest: latestRow?.latest_update && latestRow.latest_update !== "-" ? formatTime(latestRow.latest_update) : "—",
+    latestDetail: latestRow?.role || "Primary product",
+    overall: overall === null ? "—" : formatCompactNumber(overall),
+    product,
+    status: `${healthy}/${rows.length} healthy`,
+    today: today === null ? "—" : formatCompactNumber(today),
+    tone: healthy === rows.length ? "good" : "warn",
+  };
+}
+
+function textEmbedCoverageTotals(metrics: Record<string, unknown>) {
+  const reports = isRecord(metrics.source_reports) ? metrics.source_reports : {};
+  let detected = 0;
+  let completed = 0;
+  let remaining = 0;
+  let found = false;
+  for (const mode of Object.values(reports)) {
+    if (!isRecord(mode)) continue;
+    for (const report of Object.values(mode)) {
+      if (!isRecord(report)) continue;
+      found = true;
+      detected += optionalNumber(report.source_detected) + optionalNumber(report.embedding_detected) + optionalNumber(report.context_detected);
+      completed += optionalNumber(report.source_completed) + optionalNumber(report.embedding_completed) + optionalNumber(report.context_completed);
+      remaining += optionalNumber(report.source_remaining) + optionalNumber(report.embedding_remaining) + optionalNumber(report.context_remaining) + optionalNumber(report.context_blocked);
+    }
+  }
+  return { completed: found ? completed : null, detected: found ? detected : null, remaining: found ? remaining : null };
+}
+
+function arrayRecords(value: unknown) {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function metricStatus(record: Record<string, unknown>, keys: string[]) {
+  const value = stringMetric(record, keys);
+  return value ? displayName(value) : "—";
+}
+
+function numericMetricOptional(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    if (record[key] === undefined || record[key] === null || record[key] === "") continue;
+    const value = Number(record[key]);
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+function optionalNumber(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function optionalNumberOrNull(value: unknown) {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function sumTableCounts(rows: ServiceDatabaseTableRow[], key: "rows" | "rows_today") {
+  let found = false;
+  const total = rows.reduce((sum, row) => {
+    const raw = row[key];
+    if (!raw || raw === "-") return sum;
+    const value = Number(raw.replaceAll(",", ""));
+    if (!Number.isFinite(value)) return sum;
+    found = true;
+    return sum + value;
+  }, 0);
+  return found ? total : null;
+}
+
+function tableTimestamp(value: string | undefined) {
+  if (!value || value === "-") return 0;
+  const normalized = value.includes("T") ? value : `${value.replace(" ", "T")}Z`;
+  const parsed = new Date(normalized).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function statusIsHealthy(value: string) {
+  return /^(ok|ready|healthy|completed|success|running|allowed)$/i.test(value.trim());
 }
 
 function serviceMetricsRecord(service: ServiceStatusPayload) {
