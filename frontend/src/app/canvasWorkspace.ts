@@ -1,4 +1,4 @@
-import type { WorkspaceContainerId } from "./tradingWorkspace";
+import { containerSupportsSymbolLink, type WorkspaceContainerId } from "./tradingWorkspace";
 import type { WorkspaceWindowLayout } from "./components/WorkspaceCanvas";
 
 export type CanvasLinkGroupId = "none" | "A" | "B" | "C" | "D" | "E" | "F" | "G";
@@ -62,15 +62,6 @@ const DEFAULT_LINK_CONTEXTS: CanvasRegistry["linkContexts"] = {
 
 const DEFAULT_LINK_ASSIGNMENTS: CanvasRegistry["linkAssignments"] = {
   chart: "A",
-  scanner: "A",
-  news: "A",
-  sec: "A",
-  xbrl: "A",
-  strategy: "B",
-  portfolio: "B",
-  orders: "B",
-  fills: "B",
-  journal: "B",
 };
 
 export function canvasWorkspaceStorageKey(canvasId: string) {
@@ -89,7 +80,7 @@ export function readCanvasRegistry(): CanvasRegistry {
     return {
       canvases,
       defaultState: parsed.defaultState,
-      linkAssignments: { ...DEFAULT_LINK_ASSIGNMENTS, ...(parsed.linkAssignments ?? {}) },
+      linkAssignments: normalizeLinkAssignments(parsed.linkAssignments),
       linkContexts: {
         A: normalizeLinkContext(parsed.linkContexts?.A, DEFAULT_LINK_CONTEXTS.A),
         B: normalizeLinkContext(parsed.linkContexts?.B, DEFAULT_LINK_CONTEXTS.B),
@@ -176,4 +167,18 @@ function normalizeLinkContext(value: CanvasLinkContext | undefined, fallback: Ca
     symbol: symbol || fallback.symbol,
     timeframe: value?.timeframe === "5m" ? "5m" : "1m",
   };
+}
+
+function normalizeLinkAssignments(value: CanvasRegistry["linkAssignments"] | undefined): CanvasRegistry["linkAssignments"] {
+  const candidates = { ...DEFAULT_LINK_ASSIGNMENTS, ...(value ?? {}) };
+  const assignments: CanvasRegistry["linkAssignments"] = {};
+  for (const [rawContainerId, rawGroup] of Object.entries(candidates)) {
+    const containerId = rawContainerId as WorkspaceContainerId;
+    if (containerSupportsSymbolLink(containerId) && isCanvasLinkGroupId(rawGroup)) assignments[containerId] = rawGroup;
+  }
+  return assignments;
+}
+
+function isCanvasLinkGroupId(value: unknown): value is CanvasLinkGroupId {
+  return value === "none" || CANVAS_LINK_GROUPS.some((group) => group.id === value);
 }

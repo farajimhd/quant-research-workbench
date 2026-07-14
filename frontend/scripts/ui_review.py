@@ -209,41 +209,55 @@ def validate_canvas_interactions(
         return ["main canvas does not render exactly one Chart container"]
     try:
         title_bar = chart.locator(".workspace-window-header")
-        link_button = title_bar.get_by_role("button", name="Configure and link Chart")
+        link_button = title_bar.get_by_role("button", name="Link Chart")
         if link_button.count() != 1:
             issues.append("Chart link action is not in the container title bar")
         if "Blue" not in link_button.inner_text():
             issues.append("Chart does not expose its current link color at the point of use")
         scanner = page.get_by_role("region", name="Scanner", exact=True)
         portfolio = page.get_by_role("region", name="Portfolio", exact=True)
+        news = page.get_by_role("region", name="News", exact=True)
         chart_tint = title_bar.evaluate("element => getComputedStyle(element).backgroundColor")
         scanner_tint = scanner.locator(".workspace-window-header").evaluate("element => getComputedStyle(element).backgroundColor")
         portfolio_tint = portfolio.locator(".workspace-window-header").evaluate("element => getComputedStyle(element).backgroundColor")
-        if chart.get_attribute("data-linked") != "true" or chart_tint != scanner_tint:
-            issues.append("containers with the same link color do not share the same title-bar tint")
-        if chart_tint == portfolio_tint:
-            issues.append("different link colors do not produce distinguishable title-bar tints")
+        if chart.get_attribute("data-linked") != "true":
+            issues.append("single-symbol Chart does not expose its linked state")
+        if chart_tint != scanner_tint or chart_tint != portfolio_tint:
+            issues.append("link color leaks from the link control into the whole title bar")
+        if scanner.get_attribute("data-linked") != "false" or scanner.get_by_role("button", name="Link Scanner").count():
+            issues.append("multi-symbol Scanner incorrectly exposes linking")
+        if news.get_attribute("data-linked") != "false" or news.get_by_role("button", name="Link News").count():
+            issues.append("generic News incorrectly exposes linking")
+        initial_link_border = link_button.evaluate("element => getComputedStyle(element).borderColor")
         link_button.click()
-        if chart.get_by_label("Chart configuration").count() != 1:
-            issues.append("Chart configuration is not contained inside the Chart container")
+        if chart.get_by_label("Chart link configuration").count() != 1:
+            issues.append("Chart link popover is not contained inside the Chart container")
         if page.locator(".canvas-config-drawer").count():
             issues.append("container configuration created a page-level drawer")
-        if "Same color = linked" not in chart.get_by_label("Chart configuration").inner_text():
+        if "Same color = linked" not in chart.get_by_label("Chart link configuration").inner_text():
             issues.append("Chart configuration does not explain the color-link model")
         color_picker = chart.get_by_label("Chart link color")
         if color_picker.locator(".canvas-link-color-choice").count() != 7:
             issues.append("Chart link picker does not expose exactly seven colors")
-        if "Linked with Scanner" not in chart.get_by_label("Chart configuration").inner_text():
-            issues.append("Chart configuration does not identify containers with the same color")
+        link_configuration_text = chart.get_by_label("Chart link configuration").inner_text()
+        if "Rows" in link_configuration_text:
+            issues.append("Chart link popover contains unrelated row configuration")
+        linked_list = chart.get_by_label("Chart linked containers")
+        if "Chart" not in linked_list.inner_text() or "AAPL" not in linked_list.inner_text():
+            issues.append("Chart link popover does not list the colored container and current ticker")
+        if "Scanner" in linked_list.inner_text():
+            issues.append("Chart link membership incorrectly includes multi-symbol Scanner")
         if interaction_screenshot:
             page.screenshot(path=str(interaction_screenshot), full_page=True)
         color_picker.get_by_role("button", name="Assign Chart to Violet").click()
         page.wait_for_timeout(100)
-        violet_tint = title_bar.evaluate("element => getComputedStyle(element).backgroundColor")
-        if violet_tint == scanner_tint:
-            issues.append("changing the Chart link color did not change its title-bar tint")
+        violet_link_border = link_button.evaluate("element => getComputedStyle(element).borderColor")
+        if violet_link_border == initial_link_border:
+            issues.append("changing the Chart link color did not change its link-control accent")
+        if title_bar.evaluate("element => getComputedStyle(element).backgroundColor") != chart_tint:
+            issues.append("changing link color changed the whole Chart title bar")
         link_button.click()
-        if "Violet" not in chart.get_by_role("button", name="Configure and link Chart").inner_text():
+        if "Violet" not in chart.get_by_role("button", name="Link Chart").inner_text():
             issues.append("changing a container link color did not update its title-bar state")
         link_button.click()
         chart.get_by_role("button", name="Unlink Chart").click()
@@ -251,6 +265,11 @@ def validate_canvas_interactions(
             issues.append("unlinking Chart did not remove its linked title-bar state")
         chart.get_by_role("button", name="Assign Chart to Violet").click()
         link_button.click()
+
+        scanner.get_by_role("button", name="Configure Scanner").click()
+        if scanner.get_by_label("Scanner settings").count() != 1 or "Rows" not in scanner.get_by_label("Scanner settings").inner_text():
+            issues.append("Scanner row configuration is not separated into its internal settings popover")
+        scanner.get_by_role("button", name="Configure Scanner").click()
 
         minimize = chart.get_by_role("button", name="Minimize Chart")
         if minimize.locator(".lucide-minus").count() != 1:

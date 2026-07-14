@@ -90,11 +90,14 @@ Replay and Backtest do not expose mode-specific canvas designers. Containers
 may move between registered canvases or open as linked copies in a new tab.
 New managed canvases inherit the saved default layout, falling back to the
 current main layout, and their names are direct open actions in the registry.
-Seven color groups persist a shared symbol and bar-interval context so
-containers with the same color continue to track the same context across tabs.
-Each container chooses Blue, Green, Amber, Violet, Rose, Cyan, or Orange from
-its title-bar popover; its title bar receives a low-opacity group tint and the
-popover identifies its same-color peers. Focus canvas routes deliberately omit the
+Seven neon color groups persist a shared symbol and bar-interval context for
+containers whose definition explicitly declares a `single-symbol` link scope.
+The current shared set enables Chart; generic Scanner, News, Orders, SEC/XBRL,
+portfolio, execution, strategy, and journal containers do not expose linking.
+The chain control alone carries the neon accent while title bars remain neutral.
+Its popover contains color selection and one status row per same-color container
+with the current ticker; ordinary container settings use a separate internal
+settings control. Focus canvas routes deliberately omit the
 application sidebar. The current Live page still uses its legacy canvas
 persistence until the planned migration, so it does not yet consume the new
 global profile. Once migrated, run pages may toggle compatible features for an

@@ -1,4 +1,4 @@
-import { Check, ExternalLink, Link2, Plus, RefreshCw, Save, Trash2, Unlink } from "lucide-react";
+import { Check, ExternalLink, Link2, Plus, RefreshCw, Save, Settings2, Trash2, Unlink } from "lucide-react";
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 import { api } from "../api/client";
@@ -26,8 +26,8 @@ import {
 } from "../app/canvasWorkspace";
 import { ChartPanel, type ChartPayload } from "../app/components/ChartPanel";
 import { TRADING_WORKSPACE_LAYOUT_VERSION, TradingWorkspace, createFocusLayouts } from "../app/components/TradingWorkspace";
-import type { WorkspaceWindowLayout, WorkspaceWindowMeta } from "../app/components/WorkspaceCanvas";
-import { TRADING_WORKSPACE_CONTAINERS, type WorkspaceContainerDefinition, type WorkspaceContainerId } from "../app/tradingWorkspace";
+import type { WorkspaceWindowLayout, WorkspaceWindowMeta, WorkspaceWindowStatus } from "../app/components/WorkspaceCanvas";
+import { TRADING_WORKSPACE_CONTAINERS, containerSupportsSymbolLink, type WorkspaceContainerDefinition, type WorkspaceContainerId } from "../app/tradingWorkspace";
 
 type HistoricalBar = { bar_start: string; close: number; high: number; low: number; open: number; volume: number };
 type PreviewRow = Record<string, unknown>;
@@ -60,6 +60,7 @@ type ContainerSettings = {
 };
 
 type CanvasPreviewContext = { previewTime: string; sessionDate: string };
+type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; title: string };
 
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const DEFAULT_SETTINGS: ContainerSettings = {
@@ -95,7 +96,8 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
   const [defaultSaved, setDefaultSaved] = useState(false);
-  const [configurationContainerId, setConfigurationContainerId] = useState<WorkspaceContainerId | null>(null);
+  const [linkPopoverContainerId, setLinkPopoverContainerId] = useState<WorkspaceContainerId | null>(null);
+  const [settingsContainerId, setSettingsContainerId] = useState<WorkspaceContainerId | null>(null);
 
   const currentCanvas = registry.canvases.find((canvas) => canvas.id === canvasId) ?? { id: canvasId, label: canvasId === MAIN_CANVAS_ID ? "Main" : "Focus canvas" };
   const activeContainerId = workspaceState?.openIds.includes("chart") ? "chart" : workspaceState?.openIds[0] ?? "chart";
@@ -174,6 +176,7 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
   }
 
   function setContainerLink(containerId: WorkspaceContainerId, group: CanvasLinkGroupId) {
+    if (!containerSupportsSymbolLink(containerId)) return;
     updateRegistry((current) => ({ ...current, linkAssignments: { ...current.linkAssignments, [containerId]: group } }));
   }
 
@@ -260,14 +263,15 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
         onPopOutContainer={openNewCanvas}
         onStateChange={setWorkspaceState}
         renderContainer={(definition) => {
-          const group = registry.linkAssignments[definition.id] ?? "none";
+          const linkable = definition.linkScope === "single-symbol";
+          const group = linkable ? registry.linkAssignments[definition.id] ?? "none" : "none";
           const linkContext = group === "none" ? settings.chart : registry.linkContexts[group];
-          const linkedContainers = group === "none" ? [] : TRADING_WORKSPACE_CONTAINERS
-            .filter((candidate) => candidate.id !== definition.id && registry.linkAssignments[candidate.id] === group)
-            .map((candidate) => candidate.title);
+          const linkedContainers: LinkedContainerState[] = group === "none" ? [] : TRADING_WORKSPACE_CONTAINERS
+            .filter((candidate) => candidate.linkScope === "single-symbol" && registry.linkAssignments[candidate.id] === group)
+            .map((candidate) => ({ status: metaForContainer(candidate).status, symbol: registry.linkContexts[group].symbol, title: candidate.title }));
           return <ContainerPreview
-            configOpen={configurationContainerId === definition.id}
             definition={definition}
+            linkOpen={linkPopoverContainerId === definition.id}
             linkContext={linkContext}
             linkGroup={group}
             linkedContainers={linkedContainers}
@@ -276,6 +280,7 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
             onLinkContextChange={(patch) => { if (group !== "none") updateLinkContext(group, patch); }}
             preview={preview}
             settings={settings}
+            settingsOpen={settingsContainerId === definition.id}
             setSettings={setSettings}
           />;
         }}
@@ -283,20 +288,33 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
         runStatus={preview ? "running" : "idle"}
         showHealth={false}
         storageKeyOverride={canvasWorkspaceStorageKey(canvasId)}
-        linkColorForContainer={(definition) => canvasLinkGroupDefinition(registry.linkAssignments[definition.id] ?? "none")?.color}
+        linkColorForContainer={(definition) => definition.linkScope === "single-symbol" ? canvasLinkGroupDefinition(registry.linkAssignments[definition.id] ?? "none")?.color : undefined}
         titleBarActionsForContainer={(definition) => {
-          const group = registry.linkAssignments[definition.id] ?? "none";
+          const linkable = definition.linkScope === "single-symbol";
+          const group = linkable ? registry.linkAssignments[definition.id] ?? "none" : "none";
           const groupDefinition = canvasLinkGroupDefinition(group);
-          const open = configurationContainerId === definition.id;
-          return <button
-            aria-expanded={open}
-            aria-label={`Configure and link ${definition.title}`}
-            className="workspace-window-link-action"
-            data-active={open ? "true" : "false"}
-            onClick={() => setConfigurationContainerId((current) => current === definition.id ? null : definition.id)}
-            title={groupDefinition ? `${groupDefinition.label} link group; configure or change color` : "Choose a link color"}
-            type="button"
-          ><Link2 size={11} />{groupDefinition ? <i aria-hidden="true" className="canvas-link-title-swatch" /> : null}<span>{groupDefinition?.label ?? "Link"}</span></button>;
+          const linkOpen = linkPopoverContainerId === definition.id;
+          const settingsOpen = settingsContainerId === definition.id;
+          return <>
+            {linkable ? <button
+              aria-expanded={linkOpen}
+              aria-label={`Link ${definition.title}`}
+              className="workspace-window-link-action"
+              data-active={linkOpen ? "true" : "false"}
+              onClick={() => { setSettingsContainerId(null); setLinkPopoverContainerId((current) => current === definition.id ? null : definition.id); }}
+              title={groupDefinition ? `${groupDefinition.label} link group; change color or unlink` : "Choose a link color"}
+              type="button"
+            ><Link2 size={11} />{groupDefinition ? <i aria-hidden="true" className="canvas-link-title-swatch" /> : null}<span>{groupDefinition?.label ?? "Link"}</span></button> : null}
+            <button
+              aria-expanded={settingsOpen}
+              aria-label={`Configure ${definition.title}`}
+              className="toolbar-button compact workspace-window-settings-action"
+              data-active={settingsOpen ? "true" : "false"}
+              onClick={() => { setLinkPopoverContainerId(null); setSettingsContainerId((current) => current === definition.id ? null : definition.id); }}
+              title={`Configure ${definition.title}`}
+              type="button"
+            ><Settings2 size={11} /></button>
+          </>;
         }}
         workspaceBadge={manager ? "Main" : "Focus"}
       />
@@ -308,23 +326,31 @@ function CanvasManager({ onCreate, onOpen, onRemove, registry }: { onCreate: () 
   return <section aria-label="Canvas manager" className="canvas-manager-strip"><strong>Canvases</strong><div className="canvas-manager-items">{registry.canvases.map((canvas) => <article key={canvas.id} data-main={canvas.id === MAIN_CANVAS_ID ? "true" : "false"}>{canvas.id === MAIN_CANVAS_ID ? <><span>{canvas.label}</span><small>default authority</small></> : <><button aria-label={`Open ${canvas.label}`} className="canvas-manager-open" onClick={() => onOpen(canvas.id)} title="Open canvas in a new page" type="button"><span>{canvas.label}</span><ExternalLink size={11} /></button><button aria-label={`Remove ${canvas.label}`} className="toolbar-button compact" onClick={() => onRemove(canvas.id)} title="Remove canvas" type="button"><Trash2 size={12} /></button></>}</article>)}</div><button className="button secondary compact" onClick={onCreate} type="button"><Plus size={13} /> New canvas</button></section>;
 }
 
-function ContainerPreview({ configOpen, definition, linkContext, linkGroup, linkedContainers, loading, onLinkChange, onLinkContextChange, preview, settings, setSettings }: {
-  configOpen: boolean;
+function ContainerPreview({ definition, linkContext, linkGroup, linkedContainers, linkOpen, loading, onLinkChange, onLinkContextChange, preview, settings, settingsOpen, setSettings }: {
   definition: WorkspaceContainerDefinition;
   linkContext: CanvasLinkContext;
   linkGroup: CanvasLinkGroupId;
-  linkedContainers: string[];
+  linkedContainers: LinkedContainerState[];
+  linkOpen: boolean;
   loading: boolean;
   onLinkChange: (group: CanvasLinkGroupId) => void;
   onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void;
   preview: CanvasPreview | null;
   settings: ContainerSettings;
+  settingsOpen: boolean;
   setSettings: React.Dispatch<React.SetStateAction<ContainerSettings>>;
 }) {
-  const groupDefinition = canvasLinkGroupDefinition(linkGroup);
+  const overlayOpen = linkOpen || settingsOpen;
   return <div className="canvas-container-preview">
-    {configOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} configuration`}><div className="canvas-link-guide"><strong>Link color</strong><small>Same color = linked</small></div><LinkColorPicker containerTitle={definition.title} onChange={onLinkChange} value={linkGroup} />{groupDefinition ? <div className="canvas-link-context"><i aria-hidden="true" className="canvas-link-context-swatch" /><span>{groupDefinition.label} · {linkContext.symbol} · {linkContext.timeframe}</span><small>{linkedContainers.length ? `Linked with ${linkedContainers.join(", ")}` : "No other container has this color"}</small></div> : null}{containerFields(definition.id, settings, linkContext, setSettings, onLinkContextChange)}</div> : null}
-    <div className={configOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{loading && !preview ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div> : renderPreview(definition.id, preview, settings, setSettings, linkGroup, onLinkContextChange, linkContext)}</div>
+    {linkOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} link configuration`}><div className="canvas-link-guide"><strong>Link color</strong><small>Same color = linked</small></div><LinkColorPicker containerTitle={definition.title} onChange={onLinkChange} value={linkGroup} /><LinkedContainerList containerTitle={definition.title} containers={linkedContainers} /></div> : null}
+    {settingsOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} settings`}>{containerFields(definition.id, settings, linkContext, setSettings, onLinkContextChange)}</div> : null}
+    <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{loading && !preview ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div> : renderPreview(definition.id, preview, settings, setSettings, linkGroup, onLinkContextChange, linkContext)}</div>
+  </div>;
+}
+
+function LinkedContainerList({ containerTitle, containers }: { containerTitle: string; containers: LinkedContainerState[] }) {
+  return <div aria-label={`${containerTitle} linked containers`} className="canvas-linked-container-list">
+    {containers.length ? containers.map((container) => <div className="canvas-linked-container-row" key={container.title}><span>{container.title}</span><strong>{container.symbol}</strong><em data-status={container.status}><i aria-hidden="true" />{statusLabel(container.status)}</em></div>) : <small>No containers use this color</small>}
   </div>;
 }
 
@@ -418,6 +444,7 @@ function readSettings(): ContainerSettings { try { const raw = window.localStora
 function readPreviewContext(): CanvasPreviewContext { try { const parsed = JSON.parse(window.localStorage.getItem(CANVAS_PREVIEW_CONTEXT_STORAGE_KEY) || "null") as CanvasPreviewContext | null; return parsed?.sessionDate && parsed?.previewTime ? parsed : { previewTime: "09:45", sessionDate: previousWeekdayIsoDate() }; } catch { return { previewTime: "09:45", sessionDate: previousWeekdayIsoDate() }; } }
 function previousWeekdayIsoDate() { const value = new Date(); value.setDate(value.getDate() - 1); while (value.getDay() === 0 || value.getDay() === 6) value.setDate(value.getDate() - 1); const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000); return local.toISOString().slice(0, 10); }
 function labelFor(value: string) { return value.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2"); }
+function statusLabel(value: WorkspaceWindowStatus) { return value.charAt(0).toUpperCase() + value.slice(1); }
 function previewRowKey(row: PreviewRow, columns: string[], index: number) { return `${columns.map((column) => String(row[column] ?? "")).join("|")}|${index}`; }
 function money(value: unknown) { return typeof value === "number" ? new Intl.NumberFormat("en-US", { currency: "USD", style: "currency" }).format(value) : "—"; }
 function formatCell(value: unknown, column: string) { if (value === null || value === undefined || value === "") return "—"; if (column.includes("time") || column.includes("at_utc")) { const date = new Date(String(value)); return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" }).format(date); } if (typeof value === "number") return new Intl.NumberFormat("en-US", { maximumFractionDigits: column.includes("pct") ? 2 : 4 }).format(value); if (Array.isArray(value)) return value.join(", "); return String(value); }

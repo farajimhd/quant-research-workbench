@@ -401,8 +401,8 @@ function buildTheme({
       card: palette.card,
       cardMuted: tone === "light" ? palette.secondary : palette.muted,
       canvasLinkGroups: tone === "light"
-        ? ["#2563eb", "#059669", "#b45309", "#7c3aed", "#db2777", "#0e7490", "#ea580c"]
-        : ["#60a5fa", "#34d399", "#fbbf24", "#a78bfa", "#f472b6", "#22d3ee", "#fb923c"],
+        ? ["#007dff", "#00c853", "#d6b000", "#8f00ff", "#ff1493", "#00a6a6", "#ff5a00"]
+        : ["#00c8ff", "#39ff14", "#ffee00", "#bf5fff", "#ff3bd4", "#00ffd5", "#ff7a00"],
       chromeBackground: withOpacity(palette.background, tone === "light" ? "0.95" : "0.92"),
       chromeBorder: palette.border,
       chromeMuted: palette.mutedForeground,

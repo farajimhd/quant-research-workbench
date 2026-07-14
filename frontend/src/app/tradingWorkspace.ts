@@ -31,6 +31,7 @@ export type WorkspaceContainerDefinition = {
   defaultOpen: Partial<Record<TradingWorkspaceMode, boolean>>;
   description: string;
   id: WorkspaceContainerId;
+  linkScope?: "single-symbol";
   modes: TradingWorkspaceMode[];
   sourceByMode: Partial<Record<TradingWorkspaceMode, WorkspaceSourceBinding>>;
   title: string;
@@ -153,6 +154,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
     id: "chart",
     title: "Chart",
     description: "Event-derived price, quote, volume, indicator, and execution context for the active symbol.",
+    linkScope: "single-symbol",
     modes: allModes,
     defaultOpen: { live: true, paper: true, replay: true, backtest_debug: true },
     sourceByMode: marketSourceByMode,
@@ -261,6 +263,10 @@ export function sourceBindingForContainer(definition: WorkspaceContainerDefiniti
   const binding = definition.sourceByMode[mode];
   if (!binding) throw new Error(`Container '${definition.id}' has no source binding for mode '${mode}'.`);
   return binding;
+}
+
+export function containerSupportsSymbolLink(containerId: WorkspaceContainerId): boolean {
+  return TRADING_WORKSPACE_CONTAINERS.some((definition) => definition.id === containerId && definition.linkScope === "single-symbol");
 }
 
 function sourceMap(live: WorkspaceSourceBinding, historical: WorkspaceSourceBinding): Partial<Record<TradingWorkspaceMode, WorkspaceSourceBinding>> {
