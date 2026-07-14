@@ -35,6 +35,7 @@ from pipelines.sec.edgar.sec_initial_fill_download import (  # noqa: E402
     is_g_drive_path,
     sha256_file,
 )
+from pipelines.sec.edgar.sec_pipeline.submissions import parse_acceptance_datetime  # noqa: E402
 
 
 DEFAULT_DATABASE = "sec_core"
@@ -45,6 +46,7 @@ DEFAULT_INSERT_MAX_RETRIES = 12
 DEFAULT_INSERT_RETRY_BASE_SECONDS = 5.0
 DEFAULT_INSERT_RETRY_MAX_SECONDS = 120.0
 MEMBER_MANIFEST_TABLE = "sec_bulk_mirror_member_manifest_v3"
+SUBMISSIONS_FRAGMENT_PARSER_VERSION = "2"
 SOURCE_URLS = {
     "submissions": f"{SEC_BULK_BASE_URL}/bulkdata/submissions.zip",
     "companyfacts": f"{SEC_BULK_BASE_URL}/xbrl/companyfacts.zip",
@@ -372,6 +374,8 @@ def existing_member_is_complete(
     completion_state: dict[str, Any],
 ) -> bool:
     if artifact.source_name == "submissions":
+        if is_submission_fragment_member(info.filename):
+            return False
         if cik not in completion_state.get("company_ciks", set()):
             return False
         data = json.loads(archive.read(info).decode("utf-8", errors="replace"))
@@ -406,16 +410,17 @@ def scalar_int(client: ClickHouseHttpClient, sql: str) -> int:
 
 
 def member_signature(artifact: SourceArtifact, info: zipfile.ZipInfo) -> str:
-    payload = "|".join(
-        [
-            artifact.source_name,
-            artifact.source_file_id,
-            info.filename,
-            str(info.CRC),
-            str(info.file_size),
-            str(info.compress_size),
-        ]
-    )
+    parts = [
+        artifact.source_name,
+        artifact.source_file_id,
+        info.filename,
+        str(info.CRC),
+        str(info.file_size),
+        str(info.compress_size),
+    ]
+    if artifact.source_name == "submissions" and is_submission_fragment_member(info.filename):
+        parts.append(f"fragment_parser_v{SUBMISSIONS_FRAGMENT_PARSER_VERSION}")
+    payload = "|".join(parts)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -458,6 +463,10 @@ def zip_member_modified_at(info: zipfile.ZipInfo) -> str | None:
 def cik_from_member_name(name: str) -> str:
     match = re.search(r"(\d{1,10})", Path(name).stem)
     return cik10(match.group(1)) if match else ""
+
+
+def is_submission_fragment_member(name: str) -> bool:
+    return "-submissions-" in Path(name).name.lower()
 
 
 def parse_ticker_mapping(artifact: SourceArtifact) -> list[dict[str, Any]]:
@@ -542,12 +551,22 @@ def ingest_submissions_zip(
                 continue
             data = json.loads(archive.read(info).decode("utf-8", errors="replace"))
             cik = cik10(data.get("cik") or data.get("cik_str") or cik_from_member_name(name))
-            company_batch.append(company_row(data, cik, artifact.source_file_id, now))
-            file_ref_batch.extend(submission_file_ref_rows(data, cik, artifact.source_file_id, now))
-            filing_rows = submission_filing_rows(data, cik, artifact, now)
+            company_rows, file_ref_rows, filing_rows = submission_member_rows(data, cik, artifact, now, member_name=name)
+            company_batch.extend(company_rows)
+            file_ref_batch.extend(file_ref_rows)
             filing_batch.extend(filing_rows)
             if use_member_manifest:
-                manifest_batch.append(member_manifest_row(artifact, info, cik, now, status="completed", rows_inserted=1 + len(filing_rows), error=""))
+                manifest_batch.append(
+                    member_manifest_row(
+                        artifact,
+                        info,
+                        cik,
+                        now,
+                        status="completed",
+                        rows_inserted=len(company_rows) + len(file_ref_rows) + len(filing_rows),
+                        error="",
+                    )
+                )
             processed += 1
             if len(company_batch) >= batch_size:
                 inserted += flush(client, database, "sec_bulk_mirror_company_v3", company_batch, retry)
@@ -586,6 +605,23 @@ def company_row(data: dict[str, Any], cik: str, source_file_id: str, now: str) -
     }
 
 
+def submission_member_rows(
+    data: dict[str, Any],
+    cik: str,
+    artifact: SourceArtifact,
+    now: str,
+    *,
+    member_name: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    if is_submission_fragment_member(member_name):
+        return [], [], submission_filing_rows(data, cik, artifact, now, member_name=member_name)
+    return (
+        [company_row(data, cik, artifact.source_file_id, now)],
+        submission_file_ref_rows(data, cik, artifact.source_file_id, now),
+        submission_filing_rows(data, cik, artifact, now, member_name=member_name),
+    )
+
+
 def submission_file_ref_rows(data: dict[str, Any], cik: str, source_file_id: str, now: str) -> list[dict[str, Any]]:
     rows = []
     for item in data.get("filings", {}).get("files", []) or []:
@@ -607,20 +643,41 @@ def submission_file_ref_rows(data: dict[str, Any], cik: str, source_file_id: str
 
 
 def expected_submission_filing_count(data: dict[str, Any]) -> int:
-    recent = data.get("filings", {}).get("recent", {}) or {}
+    recent = submission_filing_payload(data)
     accessions = recent.get("accessionNumber", [])
     if isinstance(accessions, list):
         return sum(1 for accession in accessions if clean_string(accession))
     return 0
 
 
-def submission_filing_rows(data: dict[str, Any], cik: str, artifact: SourceArtifact, now: str) -> list[dict[str, Any]]:
-    recent = data.get("filings", {}).get("recent", {}) or {}
+def submission_filing_payload(data: dict[str, Any]) -> dict[str, Any]:
+    filings = data.get("filings")
+    if isinstance(filings, dict):
+        recent = filings.get("recent")
+        if isinstance(recent, dict):
+            return recent
+    if isinstance(data.get("accessionNumber"), list):
+        return data
+    return {}
+
+
+def submission_filing_rows(
+    data: dict[str, Any],
+    cik: str,
+    artifact: SourceArtifact,
+    now: str,
+    *,
+    member_name: str = "",
+) -> list[dict[str, Any]]:
+    recent = submission_filing_payload(data)
     if not recent:
         return []
     lengths = [len(value) for value in recent.values() if isinstance(value, list)]
     count = max(lengths) if lengths else 0
     company_name = clean_string(data.get("name", ""))
+    is_fragment = is_submission_fragment_member(member_name)
+    source_kind = "submissions_bulk_fragment" if is_fragment else artifact.source_kind
+    accepted_source = "submissions_bulk_fragment" if is_fragment else "submissions_bulk"
     rows: list[dict[str, Any]] = []
     for index in range(count):
         accession = recent_value(recent, "accessionNumber", index)
@@ -639,7 +696,7 @@ def submission_filing_rows(data: dict[str, Any], cik: str, artifact: SourceArtif
             "report_date": nullable_date(recent_value(recent, "reportDate", index)),
             "accepted_at_utc": accepted_at_utc(accepted_raw),
             "acceptance_datetime_raw": accepted_raw or None,
-            "accepted_at_source": "submissions_bulk" if accepted_raw else "missing",
+            "accepted_at_source": accepted_source if accepted_raw else "missing",
             "primary_document": primary_document or None,
             "primary_document_url": filing_document_url(cik, accession_compact, primary_document) if primary_document else None,
             "filing_detail_url": filing_detail_url(cik, accession_compact),
@@ -649,7 +706,7 @@ def submission_filing_rows(data: dict[str, Any], cik: str, artifact: SourceArtif
             "act": nullable_string(recent_value(recent, "act", index)),
             "file_number": nullable_string(recent_value(recent, "fileNumber", index)),
             "film_number": nullable_string(recent_value(recent, "filmNumber", index)),
-            "source_kind": artifact.source_kind,
+            "source_kind": source_kind,
             "source_file_id": artifact.source_file_id,
             "raw_submission_json": compact_json({key: recent_value(recent, key, index) for key in recent}),
             "last_seen_at_utc": now,
@@ -1085,19 +1142,7 @@ def merge_tree_settings(storage_policy: str) -> str:
 
 
 def accepted_at_utc(raw: str) -> str | None:
-    text = clean_string(raw)
-    if not text:
-        return None
-    try:
-        if "T" in text:
-            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        else:
-            parsed = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f000Z")
-    except ValueError:
-        return None
+    return parse_acceptance_datetime(raw)
 
 
 def filing_document_url(cik: str, accession_compact: str, document: str) -> str:

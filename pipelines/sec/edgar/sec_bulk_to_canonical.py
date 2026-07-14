@@ -213,7 +213,7 @@ def parent_insert_sql(args: argparse.Namespace, run_id: str) -> str:
         accession_number_compact,
         cik,
         CAST(NULL, 'Nullable(String)') AS issuer_id,
-        nullIf(company_name, '') AS company_name,
+        coalesce(nullIf(f.company_name, ''), nullIf(c.entity_name, '')) AS company_name,
         form_type,
         filing_date,
         report_date,
@@ -230,11 +230,12 @@ def parent_insert_sql(args: argparse.Namespace, run_id: str) -> str:
         {run} AS source_run_id,
         lower(hex(SHA256(concat('sec-bulk-submission|', cik, '|', accession_number, '|', raw_submission_json)))) AS source_content_sha256,
         now64(3, 'UTC') AS inserted_at
-    FROM {source}.sec_bulk_mirror_filing_v3 FINAL
-    WHERE accepted_at_utc >= toDateTime64({sql_string(start)}, 9, 'UTC')
-      AND accepted_at_utc < toDateTime64({sql_string(end)}, 9, 'UTC')
-      AND accession_number != ''
-      AND cik != ''
+    FROM (SELECT * FROM {source}.sec_bulk_mirror_filing_v3 FINAL) AS f
+    ANY LEFT JOIN (SELECT cik, entity_name FROM {source}.sec_bulk_mirror_company_v3 FINAL) AS c USING (cik)
+    WHERE f.accepted_at_utc >= toDateTime64({sql_string(start)}, 9, 'UTC')
+      AND f.accepted_at_utc < toDateTime64({sql_string(end)}, 9, 'UTC')
+      AND f.accession_number != ''
+      AND f.cik != ''
     """
 
 

@@ -10,7 +10,7 @@ This package contains the SEC EDGAR historical workflow:
 - submissions-bulk acceptance timestamp repair for date-only parent rows;
 - archive-derived filing document/text extraction and ClickHouse file ingest;
 - historical backfill orchestration over the stages that exist today;
-- legacy bulk mirror ingest helpers retained for traceability.
+- versioned SEC bulk mirror ingestion for parent and historical-fragment submission members.
 
 Preferred current historical gap-fill path used by SEC Gateway:
 
@@ -33,7 +33,7 @@ This unified gap-fill entry point refreshes SEC bulk `submissions` and
 `companyfacts`, mirrors those bulk files into `sec_core`, derives canonical
 filing parents and XBRL rows from that mirror, downloads missing daily archives,
 validates them, extracts normalized filing/document/text rows, inserts them,
-repairs date-only parent timestamps from preserved raw SEC UTC acceptance
+repairs date-only parent timestamps exclusively from preserved raw SEC UTC acceptance
 metadata, runs API fallback for missing recent XBRL, repairs XBRL relationships, rebuilds
 `id_sec_market_bridge_v3`, builds SEC context tables in `market_sip_compact`,
 audits the result, and writes coverage rows.
@@ -94,10 +94,12 @@ after July 10 was published later than the original run, use:
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_gap_fill.py --start-date 2026-07-10 --end-date 2026-07-11 --execute
 ```
 
-Coverage skips completed bulk/XBRL stages, archive extraction selects only that
-one-day range, and the archive manifest prevents completed archives from being
-rewritten. Acceptance metadata, the bridge, context tables, and the final audit
-are reconciled after the new archive is inserted.
+Coverage skips completed bulk downloads and XBRL stages, while bulk mirror ingest
+runs as an idempotent reconciliation. Its member manifest skips completed parent
+records and reprocesses only members whose parser-version signature changed.
+Archive extraction selects only the requested one-day range, and the archive
+manifest prevents completed archives from being rewritten. Acceptance metadata,
+the bridge, context tables, and the final audit are reconciled afterward.
 
 Legacy manual historical orchestration path:
 

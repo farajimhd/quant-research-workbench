@@ -8,7 +8,7 @@ It is designed for the issue created by archive-derived parent rows from the fil
 - `archive_date_midnight`
 - `filing_date_midnight_fallback`
 
-It also repairs rows marked `archive_acceptance_datetime` by normalizing raw EDGAR `ACCEPTANCE-DATETIME` to UTC. Compact 14-digit header values are treated as UTC unless an explicit offset is present.
+It also repairs rows marked `archive_acceptance_datetime` by normalizing raw EDGAR `ACCEPTANCE-DATETIME` to UTC. Compact 14-digit SGML header values are interpreted in `America/New_York` and converted to UTC; explicit `Z` or offset-bearing values retain their declared timezone.
 
 ## What It Does
 

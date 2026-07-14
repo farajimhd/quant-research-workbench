@@ -703,10 +703,6 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                     args.bulk_mirror_database,
                     "--mirror-table",
                     "sec_bulk_mirror_filing_v3",
-                    "--legacy-database",
-                    args.read_database,
-                    "--legacy-table",
-                    "sec_filing_v2",
                 ],
                 args,
             ),
@@ -989,6 +985,7 @@ def stage_coverage_kind(stage: str) -> str:
 
 def stage_already_completed(args: argparse.Namespace, command: StageCommand) -> bool:
     if command.stage in {
+        "bulk-ingest",
         "archive-text-rebuild",
         "validate-downloaded",
         "acceptance-raw-metadata-repair",

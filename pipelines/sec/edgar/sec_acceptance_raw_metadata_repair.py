@@ -46,9 +46,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-table", default=os.environ.get("SEC_FILING_TABLE", "sec_filing_v3"))
     parser.add_argument("--mirror-database", default=os.environ.get("SEC_BULK_MIRROR_DATABASE", "sec_core"))
     parser.add_argument("--mirror-table", default="sec_bulk_mirror_filing_v3")
-    parser.add_argument("--legacy-database", default="q_live")
-    parser.add_argument("--legacy-table", default="sec_filing_v2")
-    parser.add_argument("--no-legacy-source", action="store_true")
     parser.add_argument("--execute", action="store_true")
     return parser.parse_args()
 
@@ -61,22 +58,16 @@ def main() -> int:
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
     require_table(client, args.target_database, args.target_table)
 
-    sources: list[tuple[str, str, int, str]] = []
-    if table_exists(client, args.mirror_database, args.mirror_table):
-        sources.append((args.mirror_database, args.mirror_table, 20, "sec_core_raw_z_acceptance_repair"))
-    if not args.no_legacy_source and table_exists(client, args.legacy_database, args.legacy_table):
-        sources.append((args.legacy_database, args.legacy_table, 10, "legacy_raw_z_acceptance_repair"))
-    if not sources:
-        raise SystemExit("No authoritative raw acceptance source table is available.")
+    require_table(client, args.mirror_database, args.mirror_table)
 
     run_id = f"sec_acceptance_raw_metadata_repair_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
-    resolved_cte = resolved_raw_cte_sql(sources)
+    resolved_cte = resolved_raw_cte_sql(args.mirror_database, args.mirror_table)
     before = query_summary(client, args, resolved_cte)
     print("=" * 96, flush=True)
     print("SEC raw acceptance metadata repair", flush=True)
     print(f"run_id={run_id}", flush=True)
     print(f"target={args.target_database}.{args.target_table}", flush=True)
-    print(f"sources={[f'{db}.{table}' for db, table, _, _ in sources]}", flush=True)
+    print(f"source={args.mirror_database}.{args.mirror_table}", flush=True)
     print(f"execute={args.execute}", flush=True)
     print(f"loaded_env_files={[str(path) for path in loaded_env]}", flush=True)
     print("secret_status=" + json.dumps(secret_status(["CLICKHOUSE_URL", "CLICKHOUSE_USER", "CLICKHOUSE_PASSWORD"]), sort_keys=True), flush=True)
@@ -85,13 +76,17 @@ def main() -> int:
 
     if args.execute and int(before["repairable_rows"]) > 0:
         client.execute(insert_replacements_sql(args, resolved_cte, run_id))
+        client.execute(delete_replaced_fallbacks_sql(args))
     after = query_summary(client, args, resolved_cte)
     summary = {
         "run_id": run_id,
         "execute": bool(args.execute),
-        "source_tables": [f"{db}.{table}" for db, table, _, _ in sources],
+        "source_table": f"{args.mirror_database}.{args.mirror_table}",
         "fallback_rows_before": int(before["fallback_rows"]),
         "repairable_rows_before": int(before["repairable_rows"]),
+        "differing_rows_before": int(before["differing_rows"]),
+        "equal_rows_before": int(before["equal_rows"]),
+        "cross_partition_rows_before": int(before["cross_partition_rows"]),
         "unresolved_rows_before": int(before["unresolved_rows"]),
         "fallback_rows_after": int(after["fallback_rows"]),
         "repairable_rows_after": int(after["repairable_rows"]),
@@ -102,38 +97,20 @@ def main() -> int:
     return 0
 
 
-def resolved_raw_cte_sql(sources: list[tuple[str, str, int, str]]) -> str:
-    source_sql = []
-    for database, table, priority, source_name in sources:
-        source_sql.append(
-            f"""
-SELECT
-    cik,
-    accession_number,
-    acceptance_datetime_raw AS raw_value,
-    toUInt8({priority}) AS source_priority,
-    {sql_string(source_name)} AS repaired_source
-FROM {quote_ident(database)}.{quote_ident(table)} FINAL
-WHERE acceptance_datetime_raw IS NOT NULL
-  AND endsWith(acceptance_datetime_raw, 'Z')
-  AND parseDateTime64BestEffortOrNull(acceptance_datetime_raw, 9, 'UTC') IS NOT NULL
-""".strip()
-        )
+def resolved_raw_cte_sql(database: str, table: str) -> str:
     return f"""
-raw_candidates AS
-(
-    {f' UNION ALL '.join(source_sql)}
-),
 resolved_raw AS
 (
     SELECT
         cik,
         accession_number,
-        tupleElement(argMax(tuple(raw_value, repaired_source), source_priority), 1) AS acceptance_datetime_raw,
-        tupleElement(argMax(tuple(raw_value, repaired_source), source_priority), 2) AS accepted_at_source,
+        acceptance_datetime_raw,
+        'sec_core_submissions_raw_z_repair' AS accepted_at_source,
         parseDateTime64BestEffortOrNull(acceptance_datetime_raw, 9, 'UTC') AS accepted_at_utc
-    FROM raw_candidates
-    GROUP BY cik, accession_number
+    FROM {quote_ident(database)}.{quote_ident(table)} FINAL
+    WHERE acceptance_datetime_raw IS NOT NULL
+      AND endsWith(acceptance_datetime_raw, 'Z')
+      AND parseDateTime64BestEffortOrNull(acceptance_datetime_raw, 9, 'UTC') IS NOT NULL
 )
 """.strip()
 
@@ -147,7 +124,13 @@ WITH {resolved_cte}
 SELECT
     count() AS fallback_rows,
     countIf(r.accepted_at_utc IS NOT NULL) AS repairable_rows,
-    countIf(r.accepted_at_utc IS NULL) AS unresolved_rows
+    countIf(r.accepted_at_utc IS NULL) AS unresolved_rows,
+    countIf(r.accepted_at_utc IS NOT NULL AND r.accepted_at_utc != f.accepted_at_utc) AS differing_rows,
+    countIf(r.accepted_at_utc IS NOT NULL AND r.accepted_at_utc = f.accepted_at_utc) AS equal_rows,
+    countIf(
+        r.accepted_at_utc IS NOT NULL
+        AND toYYYYMM(r.accepted_at_utc) != toYYYYMM(coalesce(f.accepted_at_utc, toDateTime64(ifNull(f.filing_date, toDate('1970-01-01')), 9, 'UTC')))
+    ) AS cross_partition_rows
 FROM {target} AS f FINAL
 LEFT JOIN resolved_raw AS r USING (cik, accession_number)
 WHERE f.accepted_at_source IN ({sources})
@@ -186,6 +169,25 @@ SETTINGS date_time_input_format = 'best_effort'
 """.strip()
 
 
+def delete_replaced_fallbacks_sql(args: argparse.Namespace) -> str:
+    sources = ", ".join(sql_string(value) for value in FALLBACK_SOURCES)
+    target = f"{quote_ident(args.target_database)}.{quote_ident(args.target_table)}"
+    mirror = f"{quote_ident(args.mirror_database)}.{quote_ident(args.mirror_table)}"
+    return f"""
+ALTER TABLE {target}
+DELETE WHERE accepted_at_source IN ({sources})
+  AND (cik, accession_number) IN
+  (
+      SELECT cik, accession_number
+      FROM {mirror} FINAL
+      WHERE acceptance_datetime_raw IS NOT NULL
+        AND endsWith(acceptance_datetime_raw, 'Z')
+        AND parseDateTime64BestEffortOrNull(acceptance_datetime_raw, 9, 'UTC') IS NOT NULL
+  )
+SETTINGS mutations_sync = 2, allow_nondeterministic_mutations = 1
+""".strip()
+
+
 def table_exists(client: ClickHouseHttpClient, database: str, table: str) -> bool:
     out = client.execute(
         f"SELECT count() FROM system.tables WHERE database={sql_string(database)} AND name={sql_string(table)} FORMAT TSV"
@@ -199,7 +201,7 @@ def require_table(client: ClickHouseHttpClient, database: str, table: str) -> No
 
 
 def validate_identifier_args(args: argparse.Namespace) -> None:
-    for name in ("target_database", "target_table", "mirror_database", "mirror_table", "legacy_database", "legacy_table"):
+    for name in ("target_database", "target_table", "mirror_database", "mirror_table"):
         value = str(getattr(args, name))
         if not value or not value.replace("_", "").isalnum():
             raise SystemExit(f"Invalid --{name.replace('_', '-')}: {value!r}")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 import sys
+import zipfile
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,7 +10,9 @@ from unittest import mock
 
 from pipelines.market_sip.events import clickhouse_build_text_tokens as tokens
 from pipelines.sec.edgar import sec_acceptance_raw_metadata_repair as acceptance_repair
+from pipelines.sec.edgar import sec_bulk_clickhouse_ingest as bulk_ingest
 from pipelines.sec.edgar import sec_historical_gap_fill as historical
+from pipelines.sec.edgar.sec_pipeline import submissions
 
 
 class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
@@ -36,26 +39,93 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
         context_start = commands["sec-context-build"].index("--start-date") + 1
         self.assertEqual(commands["sec-context-build"][context_start], "2019-01-01")
         self.assertIn("acceptance-raw-metadata-repair", commands)
+        self.assertNotIn("sec_filing_v2", commands["acceptance-raw-metadata-repair"])
 
     def test_raw_acceptance_repair_uses_only_explicit_utc_source_values(self) -> None:
-        cte = acceptance_repair.resolved_raw_cte_sql(
-            [
-                ("sec_core", "sec_bulk_mirror_filing_v3", 20, "sec_core_raw_z_acceptance_repair"),
-                ("q_live", "sec_filing_v2", 10, "legacy_raw_z_acceptance_repair"),
-            ]
+        cte = acceptance_repair.resolved_raw_cte_sql("sec_core", "sec_bulk_mirror_filing_v3")
+        args = SimpleNamespace(
+            target_database="q_live",
+            target_table="sec_filing_v3",
+            mirror_database="sec_core",
+            mirror_table="sec_bulk_mirror_filing_v3",
         )
-        sql = acceptance_repair.insert_replacements_sql(
-            SimpleNamespace(target_database="q_live", target_table="sec_filing_v3"),
-            cte,
-            "repair-test",
-        )
+        sql = acceptance_repair.insert_replacements_sql(args, cte, "repair-test")
+        delete_sql = acceptance_repair.delete_replaced_fallbacks_sql(args)
 
         self.assertIn("endsWith(acceptance_datetime_raw, 'Z')", cte)
         self.assertIn("parseDateTime64BestEffortOrNull", cte)
-        self.assertIn("argMax(tuple(raw_value, repaired_source), source_priority)", cte)
+        self.assertIn("sec_core_submissions_raw_z_repair", cte)
+        self.assertNotIn("sec_filing_v2", cte)
+        self.assertNotIn("UNION ALL", cte)
         self.assertIn("r.accepted_at_utc AS accepted_at_utc", sql)
         self.assertIn("r.acceptance_datetime_raw AS acceptance_datetime_raw", sql)
         self.assertIn("f.accepted_at_source IN", sql)
+        self.assertIn("ALTER TABLE `q_live`.`sec_filing_v3`", delete_sql)
+        self.assertIn("accepted_at_source IN", delete_sql)
+        self.assertIn("FROM `sec_core`.`sec_bulk_mirror_filing_v3` FINAL", delete_sql)
+        self.assertIn("mutations_sync = 2", delete_sql)
+
+    def test_bulk_submission_fragment_uses_top_level_arrays_without_blank_company_replacement(self) -> None:
+        artifact = bulk_ingest.SourceArtifact(
+            source_name="submissions",
+            source_kind="submissions_bulk",
+            source_url="https://www.sec.gov/submissions.zip",
+            path=Path("submissions.zip"),
+            source_file_id="source-id",
+            byte_size=1,
+            sha256="abc",
+        )
+        payload = {
+            "accessionNumber": ["0001181431-10-016632"],
+            "filingDate": ["2010-03-16"],
+            "reportDate": ["2010-03-16"],
+            "acceptanceDateTime": ["2010-03-16T18:43:23.000Z"],
+            "form": ["4"],
+            "primaryDocument": ["doc.xml"],
+        }
+
+        companies, file_refs, filings = bulk_ingest.submission_member_rows(
+            payload,
+            "0000005981",
+            artifact,
+            "2026-07-13 00:00:00.000000000",
+            member_name="CIK0000005981-submissions-001.json",
+        )
+
+        self.assertEqual(companies, [])
+        self.assertEqual(file_refs, [])
+        self.assertEqual(len(filings), 1)
+        self.assertEqual(filings[0]["accepted_at_utc"], "2010-03-16T18:43:23.000000000Z")
+        self.assertEqual(filings[0]["accepted_at_source"], "submissions_bulk_fragment")
+        self.assertEqual(filings[0]["source_kind"], "submissions_bulk_fragment")
+
+    def test_only_submission_fragment_signatures_change_with_parser_version(self) -> None:
+        artifact = bulk_ingest.SourceArtifact("submissions", "submissions_bulk", "url", Path("x.zip"), "id", 1, "sha")
+        parent = zipfile.ZipInfo("CIK0000005981.json")
+        fragment = zipfile.ZipInfo("CIK0000005981-submissions-001.json")
+        for info in (parent, fragment):
+            info.CRC = 1
+            info.file_size = 2
+            info.compress_size = 1
+        with mock.patch.object(bulk_ingest, "SUBMISSIONS_FRAGMENT_PARSER_VERSION", "1"):
+            parent_v1 = bulk_ingest.member_signature(artifact, parent)
+            fragment_v1 = bulk_ingest.member_signature(artifact, fragment)
+        with mock.patch.object(bulk_ingest, "SUBMISSIONS_FRAGMENT_PARSER_VERSION", "2"):
+            parent_v2 = bulk_ingest.member_signature(artifact, parent)
+            fragment_v2 = bulk_ingest.member_signature(artifact, fragment)
+
+        self.assertEqual(parent_v1, parent_v2)
+        self.assertNotEqual(fragment_v1, fragment_v2)
+
+    def test_sec_acceptance_parser_distinguishes_api_utc_and_sgml_eastern(self) -> None:
+        self.assertEqual(
+            submissions.parse_acceptance_datetime("2026-02-05T21:08:23.000Z"),
+            "2026-02-05T21:08:23.000000000Z",
+        )
+        self.assertEqual(submissions.parse_acceptance_datetime("20260205160823"), "2026-02-05T21:08:23.000000000Z")
+        self.assertEqual(submissions.parse_acceptance_datetime("20260317141633"), "2026-03-17T18:16:33.000000000Z")
+        self.assertIsNone(submissions.parse_acceptance_datetime("2026-03-17 18:16:33"))
+        self.assertIsNone(submissions.parse_acceptance_datetime("20261101013000"))
 
     def test_sec_chunks_are_complete_when_max_chunks_is_zero(self) -> None:
         chunks = tokens.make_sec_chunks(list(range(10_001)), chunk_tokens=1024, max_chunks=0)

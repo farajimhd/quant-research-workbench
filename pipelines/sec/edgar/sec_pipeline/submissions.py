@@ -6,6 +6,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 from typing import Any
 
 from pipelines.sec.edgar.sec_pipeline.http import SecHttpClient, SecHttpError
@@ -140,22 +141,38 @@ def value_at(payload: dict[str, Any], key: str, index: int) -> Any:
     return values[index]
 
 
+EDGAR_EASTERN = ZoneInfo("America/New_York")
+
+
 def parse_acceptance_datetime(value: Any) -> str | None:
     text = clean_string(value)
     if not text:
         return None
-    for candidate in (text, text.replace("Z", "+00:00")):
-        try:
-            parsed = datetime.fromisoformat(candidate)
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=UTC)
-            return format_utc_datetime64_json(parsed)
-        except ValueError:
-            pass
     digits = "".join(ch for ch in text if ch.isdigit())
-    if len(digits) >= 14:
-        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}T{digits[8:10]}:{digits[10:12]}:{digits[12:14]}.000000000Z"
-    return None
+    if text.isdigit() and len(digits) == 14:
+        return parse_sgml_acceptance_datetime(text)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return format_utc_datetime64_json(parsed)
+
+
+def parse_sgml_acceptance_datetime(value: str) -> str | None:
+    try:
+        wall_time = datetime.strptime(value, "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+    fold_zero = wall_time.replace(tzinfo=EDGAR_EASTERN, fold=0)
+    fold_one = wall_time.replace(tzinfo=EDGAR_EASTERN, fold=1)
+    if fold_zero.utcoffset() != fold_one.utcoffset():
+        return None
+    utc_value = fold_zero.astimezone(UTC)
+    if utc_value.astimezone(EDGAR_EASTERN).replace(tzinfo=None) != wall_time:
+        return None
+    return format_utc_datetime64_json(utc_value)
 
 
 def format_utc_datetime64_json(value: datetime) -> str:

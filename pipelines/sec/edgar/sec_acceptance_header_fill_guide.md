@@ -29,7 +29,9 @@ https://www.sec.gov/Archives/edgar/data/<cik>/<accession_compact>/<accession>.hd
 <ACCEPTANCE-DATETIME>YYYYMMDDHHMMSS
 ```
 
-5. Normalizes that timestamp to UTC. Compact 14-digit header values are treated as UTC unless an explicit offset is present.
+5. Normalizes that timestamp to UTC. Compact 14-digit SGML values are interpreted in `America/New_York`; ambiguous or nonexistent daylight-saving wall times are rejected instead of guessed.
+
+The SEC [Public Dissemination Technical Specification](https://www.sec.gov/info/edgar/specifications/pds_dissemination_spec.pdf) defines the acceptance time as Eastern. Same-accession comparisons with explicit Submissions API `Z` timestamps confirm five-hour winter and four-hour daylight-saving offsets.
 
 6. Appends valid rows to:
 

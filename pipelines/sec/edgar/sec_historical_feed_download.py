@@ -24,7 +24,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
-from pipelines.sec.edgar.sec_pipeline.submissions import parse_acceptance_datetime  # noqa: E402
+from pipelines.sec.edgar.sec_pipeline.submissions import EDGAR_EASTERN, parse_acceptance_datetime  # noqa: E402
 
 
 DEFAULT_ARTIFACT_ROOT_WIN = Path("D:/market-data/sec_edgar_feed")
@@ -1000,7 +1000,7 @@ def accepted_times(raw_value: str) -> tuple[str, str]:
     if not accepted_utc:
         return "", ""
     dt = datetime.fromisoformat(accepted_utc.replace("Z", "+00:00"))
-    return dt.isoformat(), accepted_utc
+    return dt.astimezone(EDGAR_EASTERN).isoformat(), accepted_utc
 
 
 def hdr_url_for_accession(accession: str) -> str:
