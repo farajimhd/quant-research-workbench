@@ -32,6 +32,8 @@ type AppThemeTokenMap = {
   border: string;
   card: string;
   cardMuted: string;
+  chartAfterHours: string;
+  chartPremarket: string;
   canvasLinkGroups: readonly [string, string, string, string, string, string, string];
   metricAccents: readonly [string, string, string, string];
   chromeBackground: string;
@@ -364,7 +366,9 @@ export function applyThemeDefinition(target: HTMLElement, themeId: AppThemeId = 
     "--badge-neutral-border": withOpacity(tokens.mutedForeground, theme.tone === "light" ? "0.18" : "0.28"),
     "--badge-neutral-fg": tokens.mutedForeground,
     "--chart-background": tokens.card,
+    "--chart-after-hours": tokens.chartAfterHours,
     "--chart-grid": mix(tokens.border, tokens.card, theme.tone === "light" ? 0.5 : 0.8),
+    "--chart-premarket": tokens.chartPremarket,
     "--chart-text": tokens.mutedForeground
   };
 
@@ -405,6 +409,8 @@ function buildTheme({
       border: palette.border,
       card: palette.card,
       cardMuted: tone === "light" ? palette.secondary : palette.muted,
+      chartAfterHours: tone === "light" ? "#78b8e8" : "#5ba8df",
+      chartPremarket: tone === "light" ? "#f2a65a" : "#f0a85f",
       canvasLinkGroups: tone === "light"
         ? ["#007dff", "#00c853", "#d6b000", "#8f00ff", "#ff1493", "#00a6a6", "#ff5a00"]
         : ["#00c8ff", "#39ff14", "#ffee00", "#bf5fff", "#ff3bd4", "#00ffd5", "#ff7a00"],

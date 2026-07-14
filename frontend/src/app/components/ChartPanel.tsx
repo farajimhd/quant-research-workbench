@@ -267,8 +267,8 @@ type ChartPanelProps = {
 };
 
 const defaultChartAppearanceSettings: ChartAppearanceSettings = {
-  afterHoursColor: "#BFDBFE",
-  afterHoursOpacity: 0.24,
+  afterHoursColor: "#78B8E8",
+  afterHoursOpacity: 0.16,
   borderDownColor: "#CB093F",
   borderUpColor: "#1DB914",
   borderVisible: true,
@@ -277,8 +277,8 @@ const defaultChartAppearanceSettings: ChartAppearanceSettings = {
   daySeparatorStyle: "dashed",
   daySeparatorsVisible: true,
   downColor: "#FD0E50",
-  premarketColor: "#FBBF24",
-  premarketOpacity: 0.22,
+  premarketColor: "#F2A65A",
+  premarketOpacity: 0.16,
   upColor: "#33E42A",
   wickUpColor: "#4DC746",
   wickDownColor: "#C52A55",
@@ -2131,9 +2131,11 @@ function saveChartAppearanceSettings(settings: ChartAppearanceSettings) {
 }
 
 function normalizeChartAppearanceSettings(settings: Partial<ChartAppearanceSettings>): ChartAppearanceSettings {
+  const afterHoursColor = validHexColor(settings.afterHoursColor, defaultChartAppearanceSettings.afterHoursColor);
+  const premarketColor = validHexColor(settings.premarketColor, defaultChartAppearanceSettings.premarketColor);
   return {
-    afterHoursColor: validHexColor(settings.afterHoursColor, defaultChartAppearanceSettings.afterHoursColor),
-    afterHoursOpacity: clampNumber(settings.afterHoursOpacity, 0, 0.6, defaultChartAppearanceSettings.afterHoursOpacity),
+    afterHoursColor: afterHoursColor.toUpperCase() === "#BFDBFE" ? defaultChartAppearanceSettings.afterHoursColor : afterHoursColor,
+    afterHoursOpacity: settings.afterHoursOpacity === 0.24 ? defaultChartAppearanceSettings.afterHoursOpacity : clampNumber(settings.afterHoursOpacity, 0, 0.6, defaultChartAppearanceSettings.afterHoursOpacity),
     borderDownColor: validHexColor(settings.borderDownColor, defaultChartAppearanceSettings.borderDownColor),
     borderUpColor: validHexColor(settings.borderUpColor, defaultChartAppearanceSettings.borderUpColor),
     borderVisible: typeof settings.borderVisible === "boolean" ? settings.borderVisible : defaultChartAppearanceSettings.borderVisible,
@@ -2143,8 +2145,8 @@ function normalizeChartAppearanceSettings(settings: Partial<ChartAppearanceSetti
     daySeparatorsVisible:
       typeof settings.daySeparatorsVisible === "boolean" ? settings.daySeparatorsVisible : defaultChartAppearanceSettings.daySeparatorsVisible,
     downColor: validHexColor(settings.downColor, defaultChartAppearanceSettings.downColor),
-    premarketColor: validHexColor(settings.premarketColor, defaultChartAppearanceSettings.premarketColor),
-    premarketOpacity: clampNumber(settings.premarketOpacity, 0, 0.6, defaultChartAppearanceSettings.premarketOpacity),
+    premarketColor: premarketColor.toUpperCase() === "#FBBF24" ? defaultChartAppearanceSettings.premarketColor : premarketColor,
+    premarketOpacity: settings.premarketOpacity === 0.22 ? defaultChartAppearanceSettings.premarketOpacity : clampNumber(settings.premarketOpacity, 0, 0.6, defaultChartAppearanceSettings.premarketOpacity),
     upColor: validHexColor(settings.upColor, defaultChartAppearanceSettings.upColor),
     wickDownColor: validHexColor(settings.wickDownColor, defaultChartAppearanceSettings.wickDownColor),
     wickUpColor: validHexColor(settings.wickUpColor, defaultChartAppearanceSettings.wickUpColor),
@@ -2980,8 +2982,13 @@ function priceZoneCoordinates(chart: IChartApi, zone: PriceZone, candles: Candle
 
 function sessionRegionColor(region: Region, settings: ChartAppearanceSettings) {
   const label = region.label.toLowerCase();
-  if (label.includes("pre")) return rgbaFromHex(settings.premarketColor, settings.premarketOpacity);
-  if (label.includes("after") || label.includes("post")) return rgbaFromHex(settings.afterHoursColor, settings.afterHoursOpacity);
+  const styles = window.getComputedStyle(document.documentElement);
+  const themedPremarket = styles.getPropertyValue("--chart-premarket").trim() || settings.premarketColor;
+  const themedAfterHours = styles.getPropertyValue("--chart-after-hours").trim() || settings.afterHoursColor;
+  const premarketColor = settings.premarketColor === defaultChartAppearanceSettings.premarketColor ? themedPremarket : settings.premarketColor;
+  const afterHoursColor = settings.afterHoursColor === defaultChartAppearanceSettings.afterHoursColor ? themedAfterHours : settings.afterHoursColor;
+  if (label.includes("pre")) return rgbaFromHex(premarketColor, settings.premarketOpacity);
+  if (label.includes("after") || label.includes("post")) return rgbaFromHex(afterHoursColor, settings.afterHoursOpacity);
   return region.color;
 }
 

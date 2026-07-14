@@ -29,7 +29,7 @@ import { TRADING_WORKSPACE_LAYOUT_VERSION, TradingWorkspace, createFocusLayouts 
 import type { WorkspaceWindowLayout, WorkspaceWindowMeta, WorkspaceWindowStatus } from "../app/components/WorkspaceCanvas";
 import { TRADING_WORKSPACE_CONTAINERS, containerSupportsSymbolLink, type WorkspaceContainerDefinition, type WorkspaceContainerId } from "../app/tradingWorkspace";
 
-type HistoricalBar = { bar_start: string; close: number; high: number; low: number; open: number; volume: number };
+type HistoricalBar = { bar_end?: string; bar_start: string; close: number; high: number; is_closed?: boolean; low: number; open: number; volume: number };
 type HistoricalIndicator = { bar_start: string } & Record<string, number | string>;
 type PreviewRow = Record<string, unknown>;
 type CanvasPreview = {
@@ -76,6 +76,7 @@ type CanvasLiveChartState = {
   loadEarlier: () => void;
   loading: boolean;
   loadingEarlier: boolean;
+  pointInTime: boolean;
 };
 
 type ContainerSettings = {
@@ -153,8 +154,9 @@ function displayIndicator(id: string, title: string, group: string, sourceColumn
   return { category: pane === "price" ? "Price overlay" : "Oscillator pane", group, id, presentation: { chartRole: pane === "price" ? "overlay" : "oscillator", pane, selectable: true }, sourceColumns, title };
 }
 
-function useCanvasLiveChart(symbol: string, timeframe: CanvasLinkContext["timeframe"]): CanvasLiveChartState {
-  const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier">>({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", indicators: [], lastUpdateAt: "", loading: true, loadingEarlier: false });
+function useCanvasLiveChart(symbol: string, timeframe: CanvasLinkContext["timeframe"], cutoffMs: number, sessionDate: string): CanvasLiveChartState {
+  const pointInTime = cutoffMs < Date.now() - timeframeDurationMs(timeframe);
+  const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier">>({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", indicators: [], lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime });
   const historyCursorRef = useRef("");
   const historyRequestRef = useRef(false);
   const requestKeyRef = useRef("");
@@ -173,7 +175,7 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasLinkContext["timefr
         if (payload.earliest_session_date) historyCursorRef.current = payload.earliest_session_date;
         setState((current) => ({
           ...current,
-          bars: mergeRowsByTime(payload.history, current.bars),
+          bars: mergeRowsByTime(closedRowsAtCutoff(payload.history, timeframe, cutoffMs), current.bars),
           canLoadEarlier: hasRows && payload.has_more,
           historyError: "",
         }));
@@ -186,7 +188,7 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasLinkContext["timefr
         historyRequestRef.current = false;
         if (requestKeyRef.current === requestKey) setState((current) => ({ ...current, loadingEarlier: false }));
       });
-  }, [symbol, timeframe]);
+  }, [cutoffMs, symbol, timeframe]);
 
   useEffect(() => {
     let active = true;
@@ -198,7 +200,7 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasLinkContext["timefr
     requestKeyRef.current = requestKey;
     historyCursorRef.current = "";
     historyRequestRef.current = false;
-    setState({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", indicators: [], lastUpdateAt: "", loading: true, loadingEarlier: false });
+    setState({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", indicators: [], lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime });
 
     const applySnapshot = (kind: "bars" | "indicators", payload: QmdSnapshot<QmdLiveBar> | QmdSnapshot<HistoricalIndicator>, live: boolean) => {
       if (!active) return;
@@ -206,7 +208,9 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasLinkContext["timefr
         if (kind === "bars") setState((current) => ({ ...current, connected: false, error: payload.error || "QMD live bars are unavailable.", loading: false }));
         return;
       }
-      const rows = qmdSnapshotRows(payload);
+      const rows = kind === "bars"
+        ? closedQmdSnapshotRows(payload as QmdSnapshot<QmdLiveBar>, timeframe, cutoffMs)
+        : closedQmdSnapshotRows(payload as QmdSnapshot<HistoricalIndicator>, timeframe, cutoffMs);
       setState((current) => ({
         ...current,
         bars: kind === "bars" ? mergeRowsByTime(current.bars, rows as QmdLiveBar[]) : current.bars,
@@ -218,35 +222,37 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasLinkContext["timefr
       }));
     };
 
-    api<CanvasLiveChartResponse>(`/api/trading/canvas-live-chart${query({ row_limit: 500, symbol: ticker, timeframe })}`, { timeoutMs: 5000 })
-      .then((payload) => {
-        if (!active) return;
-        const historicalRows = payload.historical_bars?.history ?? [];
-        historyCursorRef.current = payload.historical_bars?.earliest_session_date ?? "";
-        setState((current) => ({
-          ...current,
-          bars: mergeRowsByTime(current.bars, [...historicalRows, ...qmdSnapshotRows(payload.bars)]),
-          canLoadEarlier: historicalRows.length > 0 && Boolean(payload.historical_bars?.has_more),
-          error: payload.bars.error ?? "",
-          historyError: payload.errors.history ?? "",
-          loading: false,
-        }));
-        applySnapshot("indicators", payload.indicators, false);
-      })
-      .catch((reason) => {
-        if (!active) return;
-        setState((current) => ({ ...current, error: `QMD live chart unavailable: ${reason instanceof Error ? reason.message : String(reason)}`, loading: false }));
-      });
+    if (!pointInTime) {
+      api<CanvasLiveChartResponse>(`/api/trading/canvas-live-chart${query({ row_limit: 500, symbol: ticker, timeframe })}`, { timeoutMs: 5000 })
+        .then((payload) => {
+          if (!active) return;
+          const historicalRows = payload.historical_bars?.history ?? [];
+          historyCursorRef.current = payload.historical_bars?.earliest_session_date ?? "";
+          setState((current) => ({
+            ...current,
+            bars: mergeRowsByTime(closedRowsAtCutoff(historicalRows, timeframe, cutoffMs), [...closedQmdSnapshotRows(payload.bars, timeframe, cutoffMs), ...current.bars]),
+            canLoadEarlier: historicalRows.length > 0 && Boolean(payload.historical_bars?.has_more),
+            error: payload.bars.error ?? "",
+            historyError: payload.errors.history ?? "",
+            loading: false,
+          }));
+          applySnapshot("indicators", payload.indicators, false);
+        })
+        .catch((reason) => {
+          if (!active) return;
+          setState((current) => ({ ...current, error: `QMD live chart unavailable: ${reason instanceof Error ? reason.message : String(reason)}`, loading: false }));
+        });
+    }
 
     historyRequestRef.current = true;
     setState((current) => ({ ...current, loadingEarlier: true }));
-    api<QmdBarHistory>(`/api/trading/canvas-live-chart/history${query({ days: 1, row_limit: 20000, symbol: ticker, timeframe })}`, { timeoutMs: 120000 })
+    api<QmdBarHistory>(`/api/trading/canvas-live-chart/history${query({ before: nextIsoDate(sessionDate), days: 1, row_limit: 20000, symbol: ticker, timeframe })}`, { timeoutMs: 120000 })
       .then((payload) => {
         if (!active || requestKeyRef.current !== requestKey) return;
         historyCursorRef.current = payload.earliest_session_date;
         setState((current) => ({
           ...current,
-          bars: mergeRowsByTime(payload.history, current.bars),
+          bars: mergeRowsByTime(closedRowsAtCutoff(payload.history, timeframe, cutoffMs), current.bars),
           canLoadEarlier: payload.history.length > 0 && payload.has_more,
           historyError: "",
         }));
@@ -284,21 +290,48 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasLinkContext["timefr
       };
     };
 
-    connect("bars");
-    connect("indicators");
+    if (!pointInTime) {
+      connect("bars");
+      connect("indicators");
+    }
     return () => {
       active = false;
       if (requestKeyRef.current === requestKey) requestKeyRef.current = "";
       reconnectTimers.forEach((timer) => window.clearTimeout(timer));
       Object.values(sockets).forEach((socket) => socket?.close());
     };
-  }, [symbol, timeframe]);
+  }, [cutoffMs, pointInTime, sessionDate, symbol, timeframe]);
 
   return { ...state, loadEarlier };
 }
 
-function qmdSnapshotRows<T extends { bar_start: string }>(payload: QmdSnapshot<T>): T[] {
-  return mergeRowsByTime(payload.history ?? [], payload.current ? [payload.current] : []);
+function closedQmdSnapshotRows<T extends { bar_start: string }>(payload: QmdSnapshot<T>, timeframe: string, cutoffMs = Date.now()): T[] {
+  return closedRowsAtCutoff(payload.history ?? [], timeframe, cutoffMs);
+}
+
+function closedRowsAtCutoff<T extends { bar_start: string }>(rows: T[], timeframe: string, cutoffMs = Date.now()): T[] {
+  const durationMs = timeframeDurationMs(timeframe);
+  return rows.filter((row) => {
+    const closeMetadata = row as T & { bar_end?: string; is_closed?: boolean };
+    if (closeMetadata.is_closed === false) return false;
+    const startMs = Date.parse(row.bar_start);
+    const endMs = closeMetadata.bar_end ? Date.parse(closeMetadata.bar_end) : startMs + durationMs;
+    return Number.isFinite(startMs) && Number.isFinite(endMs) && endMs <= cutoffMs;
+  });
+}
+
+function timeframeDurationMs(timeframe: string): number {
+  const match = /^(\d+)(s|m|h)$/.exec(timeframe.trim().toLowerCase());
+  if (!match) return 60_000;
+  const value = Number(match[1]);
+  const unitMs = match[2] === "s" ? 1_000 : match[2] === "m" ? 60_000 : 3_600_000;
+  return value * unitMs;
+}
+
+function nextIsoDate(sessionDate: string) {
+  const instant = new Date(`${sessionDate}T12:00:00Z`);
+  instant.setUTCDate(instant.getUTCDate() + 1);
+  return instant.toISOString().slice(0, 10);
 }
 
 function mergeRowsByTime<T extends { bar_start: string }>(existing: T[], incoming: T[]): T[] {
@@ -307,6 +340,31 @@ function mergeRowsByTime<T extends { bar_start: string }>(existing: T[], incomin
     if (row && typeof row.bar_start === "string" && row.bar_start) rows.set(row.bar_start, row);
   });
   return [...rows.values()].sort((left, right) => Date.parse(left.bar_start) - Date.parse(right.bar_start)).slice(-50_000);
+}
+
+function extendedSessionRegions(bars: QmdLiveBar[]) {
+  const sessions = new Set(bars.map((bar) => marketSessionDate(bar.bar_start)).filter(Boolean));
+  return [...sessions].sort().flatMap((sessionDate) => [
+    {
+      color: "var(--chart-premarket)",
+      end: dateInTimeZone(sessionDate, "09:30", "America/New_York").getTime() / 1000,
+      label: "Premarket",
+      start: dateInTimeZone(sessionDate, "04:00", "America/New_York").getTime() / 1000,
+    },
+    {
+      color: "var(--chart-after-hours)",
+      end: dateInTimeZone(sessionDate, "20:00", "America/New_York").getTime() / 1000,
+      label: "After hours",
+      start: dateInTimeZone(sessionDate, "16:00", "America/New_York").getTime() / 1000,
+    },
+  ]);
+}
+
+function marketSessionDate(timestamp: string) {
+  const instant = new Date(timestamp);
+  if (Number.isNaN(instant.getTime())) return "";
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { day: "2-digit", month: "2-digit", timeZone: "America/New_York", year: "numeric" }).formatToParts(instant).filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
 function canvasLiveStreamUrl(kind: "bars" | "indicators", symbol: string, timeframe: string) {
@@ -347,7 +405,8 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
   const activeLinkContext = activeLinkGroup === "none"
     ? settings.chart
     : registry.linkContexts[activeLinkGroup];
-  const liveChart = useCanvasLiveChart(activeLinkContext.symbol, activeLinkContext.timeframe);
+  const chartCutoffMs = useMemo(() => dateInTimeZone(previewContext.sessionDate, previewContext.previewTime, "America/New_York").getTime(), [previewContext]);
+  const liveChart = useCanvasLiveChart(activeLinkContext.symbol, activeLinkContext.timeframe, chartCutoffMs, previewContext.sessionDate);
   const previewClocks = useMemo(() => previewClockReadings(previewContext), [previewContext]);
   const clockIcons = [Clock3, MapPin, Globe2];
   const marketStatus = useMemo(() => historicalMarketStatus(previewContext.sessionDate, previewContext.previewTime), [previewContext]);
@@ -429,12 +488,14 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
   const metaForContainer = useMemo(() => (definition: WorkspaceContainerDefinition): WorkspaceWindowMeta => {
     if (definition.id === "chart") {
       return {
-        detail: liveChart.connected
-          ? `Streaming canonical QMD data · ${new Intl.NumberFormat("en-US").format(liveChart.bars.length)} bars loaded${liveChart.loadingEarlier ? " · loading earlier" : ""}.`
-          : liveChart.error || "Connecting to canonical QMD bars.",
-        freshness: liveChart.lastUpdateAt ? formatCell(liveChart.lastUpdateAt, "time") : liveChart.connected ? "Live" : "Connecting",
-        sourceLabel: liveChart.connected ? "QMD Live" : liveChart.bars.length ? "QMD Live disconnected" : liveChart.error ? "QMD Live unavailable" : "QMD Live",
-        status: liveChart.connected && liveChart.bars.length ? "ready" : liveChart.error ? "error" : "idle",
+        detail: liveChart.pointInTime
+          ? `Point-in-time canonical QMD data · ${new Intl.NumberFormat("en-US").format(liveChart.bars.length)} closed bars through ${previewContext.previewTime}.`
+          : liveChart.connected
+            ? `Streaming canonical QMD data · ${new Intl.NumberFormat("en-US").format(liveChart.bars.length)} closed bars loaded${liveChart.loadingEarlier ? " · loading earlier" : ""}.`
+            : liveChart.error || "Connecting to canonical QMD bars.",
+        freshness: liveChart.pointInTime ? previewContext.previewTime : liveChart.lastUpdateAt ? formatCell(liveChart.lastUpdateAt, "time") : liveChart.connected ? "Live" : "Connecting",
+        sourceLabel: liveChart.pointInTime ? "QMD History" : liveChart.connected ? "QMD Live" : liveChart.bars.length ? "QMD Live disconnected" : liveChart.error ? "QMD Live unavailable" : "QMD Live",
+        status: liveChart.bars.length ? "ready" : liveChart.error ? "error" : "idle",
       };
     }
     const sourceError = preview?.errors[definition.id] ?? preview?.errors[definition.id === "news" ? "news" : definition.id === "sec" ? "sec" : definition.id === "xbrl" ? "xbrl" : ""];
@@ -694,7 +755,7 @@ function ChartPreview({ linkContext, liveChart, onLinkContextChange, settings, s
     markers: [],
     oscillator_series: historicalIndicatorSeries(indicators, "oscillator"),
     overlay_series: historicalIndicatorSeries(indicators, "price"),
-    regions: [],
+    regions: extendedSessionRegions(liveChart.bars),
     volume: settings.chart.showVolume ? liveChart.bars.map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
   }), [indicators, liveChart.bars, settings.chart.showVolume]);
   function updateChart(symbol: string, timeframe: CanvasLinkContext["timeframe"]) {
