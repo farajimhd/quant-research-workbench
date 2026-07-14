@@ -48,10 +48,11 @@ Backtest selects exchange sessions before its exclusive anchor date.
 The new shared-workspace layout and container presentation are configured once
 under `Configuration -> Canvas`; Replay and Backtest do not expose separate
 canvas designers. The configuration page defaults to a 09:45 New York preview
-and renders every container. Its editable clock keeps New York, browser-local,
-and UTC readings synchronized without mixing ticker context into the clock.
-The compact container library opens over the workspace as a single list, so it
-does not displace the canvas. Market data comes from QMD History, news/SEC/XBRL
+and renders every container. Its read-only header keeps ET, browser-local, and
+UTC timestamps synchronized to the second without mixing ticker context into
+the clock. Canvas registry, container library, and layout reset controls live in
+a collapsible right management sidebar. The document clips horizontal overflow
+while the canvas remains its own horizontal scroll surface. Market data comes from QMD History, news/SEC/XBRL
 rows are point-in-time ClickHouse reads, and broker/runtime-only state is an
 explicit IBKR-shaped configuration fixture. Per-container controls and the
 single global default layout are persisted in browser storage. A canvas

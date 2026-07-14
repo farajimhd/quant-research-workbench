@@ -20057,40 +20057,6 @@ button {
   min-width: 0;
 }
 
-.canvas-clock-inputs {
-  align-items: center;
-  display: flex;
-}
-
-.canvas-clock-inputs label {
-  align-items: center;
-  border-right: 1px solid var(--border);
-  display: grid;
-  gap: 0 3px;
-  grid-template-columns: auto minmax(0, 1fr);
-  padding: 2px 4px;
-}
-
-.canvas-clock-inputs label svg {
-  color: var(--muted-foreground);
-  grid-row: 1 / 3;
-}
-
-.canvas-clock-inputs label span {
-  line-height: 1;
-}
-
-.canvas-clock-inputs input {
-  background: transparent;
-  border: 0;
-  color: var(--foreground);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-  font-weight: 800;
-  min-height: 17px;
-  padding: 0;
-}
-
 .canvas-clock-zones {
   align-items: stretch;
   display: flex;
@@ -20153,26 +20119,6 @@ button {
   min-height: 32px;
   padding: 5px 8px;
 }
-
-.canvas-preview-state {
-  align-items: center;
-  color: var(--muted-foreground);
-  display: inline-flex;
-  font-size: 10px;
-  font-weight: 800;
-  gap: 4px;
-  white-space: nowrap;
-}
-
-.canvas-preview-state i {
-  background: currentColor;
-  border-radius: 50%;
-  height: 5px;
-  width: 5px;
-}
-
-.canvas-preview-state[data-state="ready"] { color: var(--success); }
-.canvas-preview-state[data-state="error"] { color: var(--danger); }
 
 .canvas-inline-error {
   background: var(--badge-danger-bg);
@@ -20374,6 +20320,8 @@ button {
 /* Compact linked canvas system */
 
 .shell-content-inner.compact-content {
+  max-width: 100%;
+  overflow-x: hidden;
   padding: 2px;
 }
 
@@ -20391,7 +20339,9 @@ button {
 
 .canvas-config-page {
   gap: 2px;
-  max-width: none;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .canvas-focus-page {
@@ -20445,33 +20395,7 @@ button {
   padding: 1px 4px;
 }
 
-.canvas-config-toolbar .canvas-clock-inputs input {
-  border-radius: 0;
-  min-height: 17px;
-  padding: 0;
-}
-
-.canvas-preview-state {
-  font-size: 9px;
-  padding-left: 0;
-}
-
-.canvas-back-link,
-.canvas-focus-title {
-  flex: 0 1 auto;
-  font-size: 10px;
-  margin: 0;
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.canvas-back-link {
-  color: var(--primary);
-  font-weight: 800;
-  text-decoration: none;
-}
+.canvas-management-toggle { margin-left: auto; }
 
 .canvas-manager-strip {
   align-items: center;
@@ -20647,7 +20571,71 @@ button {
 .canvas-config-page .trading-workspace-canvas {
   border-radius: 0;
   min-height: 640px;
+  max-width: 100%;
+  overflow: auto;
 }
+
+.workspace-management-scrim {
+  background: transparent;
+  border: 0;
+  inset: 0;
+  padding: 0;
+  position: absolute;
+  z-index: 44;
+}
+
+.workspace-management-sidebar {
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  box-shadow: -12px 0 28px color-mix(in oklab, var(--foreground) 14%, transparent);
+  display: grid;
+  gap: 4px;
+  max-height: min(680px, calc(100vh - 72px));
+  overflow-y: auto;
+  padding: 4px;
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: min(360px, 92%);
+  z-index: 45;
+}
+
+.workspace-management-sidebar > header {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  min-height: 26px;
+}
+
+.workspace-management-sidebar > header strong { font-size: 10px; }
+
+.workspace-management-sidebar .canvas-manager-strip {
+  align-items: stretch;
+  display: grid;
+  overflow: visible;
+  padding: 3px;
+}
+
+.workspace-management-sidebar .canvas-manager-items {
+  align-items: stretch;
+  display: grid;
+}
+
+.workspace-management-sidebar .canvas-manager-items article {
+  justify-content: space-between;
+  width: 100%;
+}
+
+.workspace-management-sidebar .workspace-container-library {
+  box-shadow: none;
+  max-height: none;
+  overflow: visible;
+  position: static;
+  width: auto;
+}
+
+.workspace-management-reset { justify-content: center; width: 100%; }
 
 .canvas-config-page .trading-workspace-watermark {
   display: none;
@@ -20980,7 +20968,7 @@ button {
   .shell-content-inner.compact-content { padding: 0; }
   .canvas-config-toolbar { flex-wrap: wrap; }
   .canvas-config-toolbar h1 { flex-basis: auto; }
-  .canvas-clock-control { order: 2; width: 100%; }
+  .canvas-clock-control { width: 100%; }
   .canvas-clock-zones { flex: 1 1 auto; }
   .canvas-clock-zones > span { flex: 1 1 0; min-width: 0; }
   .compact-window .workspace-window-heading small { display: none; }

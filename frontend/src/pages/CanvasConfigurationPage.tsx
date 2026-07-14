@@ -1,4 +1,4 @@
-import { CalendarDays, Check, Clock3, ExternalLink, Link2, Plus, RefreshCw, Save, Settings2, Trash2, Unlink } from "lucide-react";
+import { Check, ExternalLink, Link2, PanelRightOpen, Plus, Save, Settings2, Trash2, Unlink } from "lucide-react";
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 import { api } from "../api/client";
@@ -10,7 +10,6 @@ import {
   MAIN_CANVAS_ID,
   canvasLinkGroupDefinition,
   canvasWorkspaceStorageKey,
-  configurationCanvasUrl,
   createCanvasRecord,
   focusCanvasUrl,
   readCanvasRegistry,
@@ -94,8 +93,8 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
   const [initialCanvasState] = useState<CanvasWorkspaceState | null>(() => readCanvasWorkspaceState(canvasId));
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [refreshKey, setRefreshKey] = useState(0);
   const [defaultSaved, setDefaultSaved] = useState(false);
+  const [managementOpen, setManagementOpen] = useState(false);
   const [linkPopoverContainerId, setLinkPopoverContainerId] = useState<WorkspaceContainerId | null>(null);
   const [settingsContainerId, setSettingsContainerId] = useState<WorkspaceContainerId | null>(null);
 
@@ -146,7 +145,7 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
       .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [activeLinkContext.symbol, activeLinkContext.timeframe, previewContext.previewTime, previewContext.sessionDate, refreshKey]);
+  }, [activeLinkContext.symbol, activeLinkContext.timeframe, previewContext.previewTime, previewContext.sessionDate]);
 
   const metaForContainer = useMemo(() => (definition: WorkspaceContainerDefinition): WorkspaceWindowMeta => {
     const sourceError = preview?.errors[definition.id] ?? preview?.errors[definition.id === "news" ? "news" : definition.id === "sec" ? "sec" : definition.id === "xbrl" ? "xbrl" : ""];
@@ -236,38 +235,34 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
   return (
     <div className={manager ? "canvas-config-page" : "canvas-config-page canvas-focus-page"}>
       <header className="canvas-config-toolbar">
-        {manager ? <h1>Canvas</h1> : <a className="canvas-back-link" href={configurationCanvasUrl()}>All canvases</a>}
-        {!manager ? <strong className="canvas-focus-title">{currentCanvas.label}</strong> : null}
         <div className="canvas-clock-control" aria-label="Preview clock">
-          <div className="canvas-clock-inputs">
-            <label><CalendarDays aria-hidden="true" size={12} /><span>Trading date</span><input aria-label="Preview date" onChange={(event) => setPreviewContext((current) => ({ ...current, sessionDate: event.target.value }))} type="date" value={previewContext.sessionDate} /></label>
-            <label><Clock3 aria-hidden="true" size={12} /><span>New York</span><input aria-label="Preview time in New York" onChange={(event) => setPreviewContext((current) => ({ ...current, previewTime: event.target.value }))} step="60" type="time" value={previewContext.previewTime} /></label>
-          </div>
           <div className="canvas-clock-zones" aria-label="Preview time zones">
             {previewClocks.map((clock) => <span key={clock.label}><small>{clock.label}</small><strong>{clock.value}</strong></span>)}
           </div>
         </div>
-        <button aria-label="Refresh preview" className="toolbar-button compact" onClick={() => setRefreshKey((value) => value + 1)} title="Refresh preview" type="button"><RefreshCw size={13} /></button>
         {manager ? <button className="button secondary compact" disabled={!workspaceState} onClick={saveDefaultLayout} type="button"><Save size={13} /> {defaultSaved ? "Default saved" : "Set default"}</button> : null}
-        <span className="canvas-preview-state" data-state={error ? "error" : loading ? "loading" : "ready"}><i aria-hidden="true" />{error ? "Unavailable" : loading ? "Updating" : "Preview ready"}</span>
+        {manager ? <button aria-expanded={managementOpen} aria-label="Canvas management" className="button secondary compact canvas-management-toggle" onClick={() => setManagementOpen((open) => !open)} type="button"><PanelRightOpen size={13} /> Manage</button> : null}
       </header>
 
-      {manager ? <CanvasManager registry={registry} onCreate={() => openNewCanvas()} onOpen={(id) => window.open(focusCanvasUrl(id), "_blank", "noopener,noreferrer")} onRemove={removeCanvas} /> : null}
       {error ? <div className="canvas-inline-error">{error}</div> : null}
 
       <TradingWorkspace
         canPopOut
         canvasTargets={canvasTargets}
-        clockLabel={`${previewContext.sessionDate} · ${previewContext.previewTime} ET · ${previewClocks[1].value} local · ${previewClocks[2].value} UTC`}
+        clockLabel=""
+        commandBarVisible={false}
         compact
         defaultOpenIds={manager ? ALL_CONTAINER_IDS : initialCanvasState?.openIds ?? []}
         defaultStateOverride={manager ? registry.defaultState ?? null : initialCanvasState}
         definitionsOverride={TRADING_WORKSPACE_CONTAINERS}
         historicalSourceReady={!error}
         layoutPreset={manager ? "global" : "focus"}
+        managementContent={manager ? <CanvasManager registry={registry} onCreate={() => openNewCanvas()} onOpen={(id) => window.open(focusCanvasUrl(id), "_blank", "noopener,noreferrer")} onRemove={removeCanvas} /> : null}
+        managementOpen={manager && managementOpen}
         metaForContainer={metaForContainer}
         mode="replay"
         onMoveContainerToCanvas={moveContainer}
+        onManagementClose={() => setManagementOpen(false)}
         onPopOutContainer={openNewCanvas}
         onStateChange={setWorkspaceState}
         renderContainer={(definition) => {
@@ -453,9 +448,14 @@ function readPreviewContext(): CanvasPreviewContext { try { const parsed = JSON.
 function previousWeekdayIsoDate() { const value = new Date(); value.setDate(value.getDate() - 1); while (value.getDay() === 0 || value.getDay() === 6) value.setDate(value.getDate() - 1); const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000); return local.toISOString().slice(0, 10); }
 function previewClockReadings(context: CanvasPreviewContext) {
   const instant = dateInTimeZone(context.sessionDate, context.previewTime, "America/New_York");
-  const format = (timeZone?: string) => new Intl.DateTimeFormat("en-US", { day: "2-digit", hour: "2-digit", hour12: false, minute: "2-digit", month: "short", ...(timeZone ? { timeZone } : {}) }).format(instant).replace(",", " ·");
+  const format = (timeZone?: string) => {
+    const zone = timeZone ? { timeZone } : {};
+    const date = new Intl.DateTimeFormat("en-US", { day: "2-digit", month: "short", year: "numeric", ...zone }).format(instant);
+    const time = new Intl.DateTimeFormat("en-US", { hour: "2-digit", hour12: false, minute: "2-digit", second: "2-digit", ...zone }).format(instant);
+    return `${date} · ${time}`;
+  };
   return [
-    { label: "New York", value: format("America/New_York") },
+    { label: "ET", value: format("America/New_York") },
     { label: "Local", value: format() },
     { label: "UTC", value: format("UTC") },
   ];

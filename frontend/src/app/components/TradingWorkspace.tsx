@@ -58,6 +58,10 @@ type TradingWorkspaceProps = {
   storageKeyOverride?: string;
   titleBarActionsForContainer?: (definition: WorkspaceContainerDefinition) => ReactNode;
   workspaceBadge?: string;
+  commandBarVisible?: boolean;
+  managementContent?: ReactNode;
+  managementOpen?: boolean;
+  onManagementClose?: () => void;
 };
 
 const DEFAULT_CANVAS_TARGETS: WorkspaceCanvasTarget[] = [{ color: "var(--primary)", id: "main", isCurrent: true, label: "Main" }];
@@ -89,6 +93,10 @@ export function TradingWorkspace({
   storageKeyOverride,
   titleBarActionsForContainer,
   workspaceBadge,
+  commandBarVisible = true,
+  managementContent,
+  managementOpen = false,
+  onManagementClose,
 }: TradingWorkspaceProps) {
   const definitions = useMemo(() => [...(definitionsOverride ?? containersForMode(mode))], [definitionsOverride, mode]);
   const definitionById = useMemo(() => new Map(definitions.map((definition) => [definition.id, definition])), [definitions]);
@@ -128,6 +136,7 @@ export function TradingWorkspace({
     if (openIds.includes(id)) {
       focusContainer(id);
       setLibraryOpen(false);
+      onManagementClose?.();
       return;
     }
     const nextIds = [...openIds, id];
@@ -136,6 +145,7 @@ export function TradingWorkspace({
       ? createFocusLayouts(nextIds)
       : { ...current, [id]: createAddedLayout(current, openIds.length) });
     setLibraryOpen(false);
+    onManagementClose?.();
   }
 
   function updateLayout(id: string, patch: Partial<WorkspaceWindowLayout>) {
@@ -172,7 +182,7 @@ export function TradingWorkspace({
 
   return (
     <div className="trading-workspace-shell" data-library-open={libraryOpen ? "true" : "false"} data-workspace-mode={mode}>
-      <section className="trading-workspace-command" aria-label="Workspace context and controls">
+      {commandBarVisible ? <section className="trading-workspace-command" aria-label="Workspace context and controls">
         <div className="trading-workspace-identity">
           <span className="trading-mode-badge" data-mode={mode}>{workspaceBadge ?? modeLabel(mode)}</span>
           <div>
@@ -196,11 +206,21 @@ export function TradingWorkspace({
             <RefreshCcw size={14} /> Reset layout
           </button>
         </div>
-      </section>
+      </section> : null}
 
       {libraryOpen ? <>
         <button aria-label="Close container library" className="workspace-container-library-scrim" onClick={() => setLibraryOpen(false)} type="button" />
         <WorkspaceContainerLibrary definitions={definitions} mode={mode} openIds={openIds} onAdd={addContainer} />
+      </> : null}
+
+      {managementOpen ? <>
+        <button aria-label="Close canvas management" className="workspace-management-scrim" onClick={onManagementClose} type="button" />
+        <aside aria-label="Canvas management" className="workspace-management-sidebar">
+          <header><strong>Canvas management</strong><button aria-label="Close canvas management" className="toolbar-button compact" onClick={onManagementClose} type="button"><X size={13} /></button></header>
+          {managementContent}
+          <WorkspaceContainerLibrary definitions={definitions} mode={mode} openIds={openIds} onAdd={addContainer} />
+          <button className="button secondary compact workspace-management-reset" onClick={resetLayout} type="button"><RefreshCcw size={13} /> Reset layout</button>
+        </aside>
       </> : null}
 
       <section className="trading-workspace-canvas live-workspace" data-workspace-canvas style={{ minHeight }}>

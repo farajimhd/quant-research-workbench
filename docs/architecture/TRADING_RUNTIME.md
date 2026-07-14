@@ -103,11 +103,14 @@ persistence until the planned migration, so it does not yet consume the new
 global profile. Once migrated, run pages may toggle compatible features for an
 active run without owning another layout authority.
 
-The configuration page uses an editable New York point-in-time preview that
-defaults to 09:45 and derives synchronized browser-local and UTC readings from
-that instant. The clock is global canvas context and deliberately contains no
-ticker. Its compact container library is an overlay list rather than a layout
-row, so opening it never changes canvas geometry. Chart and scanner content is calculated by QMD History from
+The configuration page uses a fixed New York point-in-time preview that defaults
+to 09:45 and derives synchronized ET, browser-local, and UTC timestamps through
+seconds. The clock is global canvas context and deliberately contains no ticker
+or editing controls. The header otherwise contains only Set default and a
+right-aligned management toggle. Canvas registry, compact container library,
+and layout reset controls live in its collapsible right sidebar, so opening
+management never changes canvas geometry. Document-level horizontal overflow is
+clipped while the canvas owns horizontal scrolling. Chart and scanner content is calculated by QMD History from
 canonical events. News, SEC, and XBRL content is read from their persisted
 tables with an as-of cutoff. Portfolio, orders, executions, strategy state, and
 journal content use explicitly marked IBKR-shaped configuration fixtures,

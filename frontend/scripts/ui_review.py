@@ -211,23 +211,29 @@ def validate_canvas_interactions(
         clock = page.get_by_label("Preview clock")
         zones = page.get_by_label("Preview time zones")
         if clock.count() != 1 or zones.count() != 1:
-            issues.append("Canvas does not expose one editable three-zone preview clock")
+            issues.append("Canvas does not expose one three-zone preview clock")
         else:
             zone_text = zones.inner_text().lower()
-            if not all(label in zone_text for label in ("new york", "local", "utc")):
-                issues.append("Preview clock does not identify New York, Local, and UTC")
+            if not all(label in zone_text for label in ("et", "local", "utc")):
+                issues.append("Preview clock does not identify ET, Local, and UTC")
             if "AAPL" in clock.inner_text():
                 issues.append("Preview clock incorrectly contains ticker context")
-            preview_time = page.get_by_label("Preview time in New York")
-            initial_utc = zones.locator("span").nth(2).inner_text()
-            preview_time.fill("10:15")
-            page.wait_for_timeout(150)
-            if preview_time.input_value() != "10:15" or zones.locator("span").nth(2).inner_text() == initial_utc:
-                issues.append("Editing New York preview time does not update synchronized zone readings")
-            preview_time.fill("09:45")
+            if clock.locator("input").count() or "Trading date" in clock.inner_text() or "New York" in clock.inner_text():
+                issues.append("Preview clock exposes removed date/time editing controls")
+            if any(len(value.inner_text().split(":")) < 3 for value in zones.locator("strong").all()):
+                issues.append("Preview clocks do not render seconds")
+        if page.locator(".trading-workspace-command").count():
+            issues.append("Canvas still renders the duplicate Main workspace context row")
+        if page.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth"):
+            issues.append("Canvas page leaks horizontal scrolling to the document")
         canvas = page.locator("[data-workspace-canvas]")
+        if canvas.evaluate("element => getComputedStyle(element).overflowX") not in ("auto", "scroll"):
+            issues.append("Canvas is not its own horizontal scrolling surface")
         canvas_top = canvas.bounding_box()["y"]
-        page.get_by_role("button", name="Containers", exact=True).click()
+        page.get_by_role("button", name="Canvas management", exact=True).click()
+        management = page.get_by_role("complementary", name="Canvas management")
+        if management.count() != 1:
+            issues.append("Canvas management sidebar did not open")
         library = page.get_by_role("region", name="Container library")
         if library.count() != 1:
             issues.append("Container library did not open")
@@ -240,10 +246,10 @@ def validate_canvas_interactions(
                 if first_box and second_box and second_box["y"] <= first_box["y"]:
                     issues.append("Container library is not organized as a vertical list")
             if abs(canvas.bounding_box()["y"] - canvas_top) > 1:
-                issues.append("Opening the container library pushes the canvas down")
+                issues.append("Opening canvas management pushes the canvas down")
             if interaction_screenshot:
-                page.screenshot(path=str(interaction_screenshot.with_name(interaction_screenshot.stem + "__library.png")), full_page=True)
-        page.get_by_role("button", name="Close container library").click()
+                page.screenshot(path=str(interaction_screenshot.with_name(interaction_screenshot.stem + "__management.png")), full_page=True)
+        management.get_by_role("button", name="Close canvas management").click()
         title_bar = chart.locator(".workspace-window-header")
         link_button = title_bar.get_by_role("button", name="Link Chart")
         if link_button.count() != 1:
@@ -326,6 +332,7 @@ def validate_canvas_interactions(
         chart.get_by_role("button", name="Exit fullscreen Chart").click()
         chart.get_by_role("button", name="Reset Chart to its default layout").click()
 
+        page.get_by_role("button", name="Canvas management", exact=True).click()
         with page.expect_popup(timeout=5000) as blank_canvas_popup_info:
             page.get_by_role("button", name="New canvas", exact=True).click()
         blank_canvas_popup = blank_canvas_popup_info.value
@@ -336,6 +343,7 @@ def validate_canvas_interactions(
         if blank_canvas_popup.locator(".workspace-window").count() < 1:
             issues.append("new managed canvas opened without inheriting any containers")
         blank_canvas_popup.close()
+        page.get_by_role("complementary", name="Canvas management").get_by_role("button", name="Close canvas management").click()
 
         with page.expect_popup(timeout=5000) as popup_info:
             chart.get_by_role("button", name="Open linked Chart in a new canvas").click()
@@ -346,10 +354,12 @@ def validate_canvas_interactions(
         if popup.get_by_role("region", name="Chart", exact=True).count() != 1:
             issues.append("linked focus canvas does not contain the source Chart")
         popup.close()
+        page.get_by_role("button", name="Canvas management", exact=True).click()
         if page.locator(".canvas-manager-items article").count() < 3:
             issues.append("main Canvas manager did not register managed and linked canvases")
         if page.locator(".canvas-manager-open").count() < 2:
             issues.append("registered canvases do not expose their names as open actions")
+        page.get_by_role("complementary", name="Canvas management").get_by_role("button", name="Close canvas management").click()
     except Exception as exc:
         issues.append(f"Canvas interaction check failed: {exc}")
     return issues
