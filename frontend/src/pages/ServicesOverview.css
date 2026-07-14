@@ -179,7 +179,6 @@
 .service-fleet-database span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .service-fleet-database strong { font-size: 10px; font-variant-numeric: tabular-nums; font-weight: 720; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .service-fleet-database.good > div:first-child strong { color: var(--badge-success-fg); }
-.service-fleet-database.warn > div:first-child strong { color: var(--badge-warning-fg); }
 
 .service-fleet-open-icon { color: var(--muted-foreground); position: absolute; right: 10px; top: 10px; }
 

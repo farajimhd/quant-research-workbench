@@ -268,8 +268,8 @@ function ServicesTopSummary({ checkedAt, now, services }: { checkedAt: string; n
   const databases = fleetDatabaseSummary(services);
   const stale = services.filter((service) => serviceFreshness(service, now).tone === "stale").length;
   const summaries = [
-    { label: "Fleet", value: `${counts.online}/${services.length || 0} online`, detail: `${counts.degraded} need attention`, icon: RadioTower, tone: counts.degraded ? "warn" : "ok" },
-    { label: "Databases", value: databases.total ? `${databases.healthy}/${databases.total} healthy` : "No contracts", detail: databases.missing ? `${databases.missing} missing or empty` : "Configured tables available", icon: Layers3, tone: databases.missing ? "warn" : "ok" },
+    { label: "Fleet", value: `${counts.online}/${services.length || 0} online`, detail: `${counts.degraded} need attention`, icon: RadioTower, tone: counts.degraded ? "neutral" : "ok" },
+    { label: "Databases", value: databases.total ? `${databases.healthy}/${databases.total} healthy` : "No contracts", detail: databases.total ? (databases.missing ? `${databases.missing} missing or empty` : "Configured tables available") : "Waiting for database contracts", icon: Layers3, tone: databases.total && !databases.missing ? "ok" : "neutral" },
     { label: "Responsibilities", value: `${work.active} active`, detail: `${work.warning} warning · ${work.completed} recent cycles`, icon: Layers3, tone: work.warning ? "warn" : work.active ? "active" : "ok" },
     { label: "Market", value: displayName(market.status), detail: market.detail, icon: Activity, tone: marketTileClass(market.status, market.detail).replace("market-", "") },
     { label: "Freshness", value: stale ? `${stale} stale` : "Live", detail: checkedAt ? `Updated ${relativeServiceAge(checkedAt, now)}` : "Waiting for first fleet check", icon: RefreshCcw, tone: stale ? "warn" : checkedAt ? "ok" : "idle" },
@@ -4905,7 +4905,7 @@ type ServiceFleetDatabaseSummary = {
   product: string;
   status: string;
   today: string;
-  tone: "good" | "neutral" | "warn";
+  tone: "good" | "neutral";
 };
 
 const SERVICE_PRIMARY_DATABASE_ROLES: Record<ServiceId, string[]> = {
@@ -5036,12 +5036,12 @@ function fleetDatabaseSummary(services: ServiceStatusPayload[]) {
 
 function serviceFleetDatabaseSummary(service: ServiceStatusPayload): ServiceFleetDatabaseSummary {
   if (service.registry.id === "qmd-history") {
-    return { latest: "On request", overall: "Read only", product: "Historical source", status: service.online ? "Source ready" : "Unavailable", today: "—", tone: service.online ? "good" : "warn" };
+    return { latest: "On request", overall: "Read only", product: "Historical source", status: service.online ? "Source ready" : "Unavailable", today: "—", tone: service.online ? "good" : "neutral" };
   }
   const rows = service.database_tables?.rows ?? [];
   if (!rows.length) {
     const error = service.database_tables?.error?.trim();
-    return { latest: "—", overall: "—", product: "Primary product", status: error ? "Check failed" : "Checking", today: "—", tone: error ? "warn" : "neutral" };
+    return { latest: "—", overall: "—", product: "Primary product", status: error ? "Check failed" : "Checking", today: "—", tone: "neutral" };
   }
   const roles = SERVICE_PRIMARY_DATABASE_ROLES[service.registry.id];
   const primary = rows.filter((row) => roles.includes(String(row.role || "").toLowerCase()));
@@ -5057,7 +5057,7 @@ function serviceFleetDatabaseSummary(service: ServiceStatusPayload): ServiceFlee
     product,
     status: `${healthy}/${rows.length} healthy`,
     today: today === null ? "—" : formatCompactNumber(today),
-    tone: healthy === rows.length ? "good" : "warn",
+    tone: healthy === rows.length ? "good" : "neutral",
   };
 }
 
