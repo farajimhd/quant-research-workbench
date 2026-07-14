@@ -223,7 +223,7 @@ export function WorkspaceWindow({
             {meta ? <small title={meta.detail}>{meta.sourceLabel}{meta.freshness ? ` · ${meta.freshness}` : ""}</small> : null}
           </div>
           {linkLabel ? <span className="workspace-window-link" title={`Linked context ${linkLabel}`}><Link2 size={10} /> {linkLabel}</span> : null}
-          {meta ? <span aria-label={`Source status: ${meta.status}`} className="workspace-window-source-status" data-status={meta.status}>{meta.status}</span> : null}
+          {linkColor ? <span aria-label="Linked container color" className="workspace-window-link-marker" title="This container participates in the matching link color" /> : null}
         </div>
         <div className="workspace-window-actions live-window-actions" onPointerDown={(event) => event.stopPropagation()}>
           {titleBarActions}

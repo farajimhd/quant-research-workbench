@@ -119,6 +119,20 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
   }, [previewContext]);
 
   useEffect(() => {
+    if (!linkPopoverContainerId) return;
+    const dismissLinkPopover = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const popover = target.closest("[data-canvas-link-popover]");
+      const trigger = target.closest("[data-canvas-link-trigger]");
+      if (popover?.getAttribute("data-canvas-link-popover") === linkPopoverContainerId || trigger?.getAttribute("data-canvas-link-trigger") === linkPopoverContainerId) return;
+      setLinkPopoverContainerId(null);
+    };
+    document.addEventListener("pointerdown", dismissLinkPopover, true);
+    return () => document.removeEventListener("pointerdown", dismissLinkPopover, true);
+  }, [linkPopoverContainerId]);
+
+  useEffect(() => {
     const syncSharedCanvasState = (event: StorageEvent) => {
       if (event.key === CANVAS_REGISTRY_STORAGE_KEY) setRegistry(readCanvasRegistry());
       if (event.key === CANVAS_SETTINGS_STORAGE_KEY) setSettings(readSettings());
@@ -303,6 +317,7 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
               aria-expanded={linkOpen}
               aria-label={`Link ${definition.title}`}
               className="workspace-window-link-action"
+              data-canvas-link-trigger={definition.id}
               data-active={linkOpen ? "true" : "false"}
               onClick={() => { setSettingsContainerId(null); setLinkPopoverContainerId((current) => current === definition.id ? null : definition.id); }}
               title={groupDefinition ? `${groupDefinition.label} link group; change color or unlink` : "Choose a link color"}
@@ -345,7 +360,7 @@ function ContainerPreview({ definition, linkContext, linkGroup, linkedContainers
 }) {
   const overlayOpen = linkOpen || settingsOpen;
   return <div className="canvas-container-preview">
-    {linkOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} link configuration`}><div className="canvas-link-guide"><strong>Link color</strong><small>Same color = linked</small></div><LinkColorPicker containerTitle={definition.title} onChange={onLinkChange} value={linkGroup} /><LinkedContainerList containerTitle={definition.title} containers={linkedContainers} /></div> : null}
+    {linkOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} link configuration`} data-canvas-link-popover={definition.id}><div className="canvas-link-guide"><strong>Link color</strong><small>Same color = linked</small></div><LinkColorPicker containerTitle={definition.title} onChange={onLinkChange} value={linkGroup} /><LinkedContainerList containerTitle={definition.title} containers={linkedContainers} /></div> : null}
     {settingsOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} settings`}>{containerFields(definition.id, settings, linkContext, setSettings, onLinkContextChange)}</div> : null}
     <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{loading && !preview ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div> : renderPreview(definition.id, preview, settings, setSettings, linkGroup, onLinkContextChange, linkContext)}</div>
   </div>;

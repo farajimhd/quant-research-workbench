@@ -18468,38 +18468,15 @@ button {
   line-height: 1.1;
 }
 
-.workspace-window-source-status {
-  align-items: center;
-  border: 1px solid var(--badge-muted-border);
+.workspace-window-link-marker {
+  background: var(--workspace-link-color);
+  border: 1px solid color-mix(in oklab, var(--workspace-link-color) 76%, var(--border));
   border-radius: 999px;
-  color: var(--badge-muted-fg);
-  display: inline-flex;
+  box-shadow: 0 0 5px color-mix(in oklab, var(--workspace-link-color) 28%, transparent);
+  display: inline-block;
   flex: 0 0 auto;
-  font-size: 8px;
-  font-weight: 900;
-  letter-spacing: 0.05em;
-  line-height: 1;
-  padding: 4px 6px;
-  text-transform: uppercase;
-}
-
-.workspace-window-source-status[data-status="ready"] {
-  background: var(--badge-success-bg);
-  border-color: var(--badge-success-border);
-  color: var(--badge-success-fg);
-}
-
-.workspace-window-source-status[data-status="error"] {
-  background: var(--badge-danger-bg);
-  border-color: var(--badge-danger-border);
-  color: var(--badge-danger-fg);
-}
-
-.workspace-window-source-status[data-status="stale"],
-.workspace-window-source-status[data-status="connecting"] {
-  background: var(--badge-warning-bg);
-  border-color: var(--badge-warning-border);
-  color: var(--badge-warning-fg);
+  height: 7px;
+  width: 7px;
 }
 
 .workspace-window-actions.live-window-actions {
@@ -20689,14 +20666,6 @@ button {
   font-size: 8px;
   font-weight: 900;
   gap: 1px;
-}
-
-.compact-window .workspace-window-source-status {
-  border-radius: 50%;
-  font-size: 0;
-  height: 7px;
-  padding: 0;
-  width: 7px;
 }
 
 .compact-window .workspace-window-actions.live-window-actions {

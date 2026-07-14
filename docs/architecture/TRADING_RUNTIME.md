@@ -97,7 +97,9 @@ portfolio, execution, strategy, and journal containers do not expose linking.
 The chain control alone carries the neon accent while title bars remain neutral.
 Its popover contains color selection and one status row per same-color container
 with the current ticker; ordinary container settings use a separate internal
-settings control. Focus canvas routes deliberately omit the
+settings control. A compact title marker is rendered only for linked containers
+and uses that exact link-group color; source readiness never creates a competing
+title dot. Link popovers dismiss on outside pointer interaction. Focus canvas routes deliberately omit the
 application sidebar. The current Live page still uses its legacy canvas
 persistence until the planned migration, so it does not yet consume the new
 global profile. Once migrated, run pages may toggle compatible features for an

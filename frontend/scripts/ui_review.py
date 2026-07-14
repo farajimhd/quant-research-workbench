@@ -273,12 +273,19 @@ def validate_canvas_interactions(
         portfolio_tint = portfolio.locator(".workspace-window-header").evaluate("element => getComputedStyle(element).backgroundColor")
         if chart.get_attribute("data-linked") != "true":
             issues.append("single-symbol Chart does not expose its linked state")
+        chart_link_marker = chart.get_by_label("Linked container color")
+        if chart_link_marker.count() != 1:
+            issues.append("linked Chart does not expose one link-color marker")
+        elif chart_link_marker.evaluate("element => getComputedStyle(element).backgroundColor") != link_button.locator(".canvas-link-title-swatch").evaluate("element => getComputedStyle(element).backgroundColor"):
+            issues.append("Chart title marker does not match its link color")
         if chart_tint != scanner_tint or chart_tint != portfolio_tint:
             issues.append("link color leaks from the link control into the whole title bar")
         if scanner.get_attribute("data-linked") != "false" or scanner.get_by_role("button", name="Link Scanner").count():
             issues.append("multi-symbol Scanner incorrectly exposes linking")
         if news.get_attribute("data-linked") != "false" or news.get_by_role("button", name="Link News").count():
             issues.append("generic News incorrectly exposes linking")
+        if scanner.get_by_label("Linked container color").count() or news.get_by_label("Linked container color").count() or portfolio.get_by_label("Linked container color").count():
+            issues.append("non-linkable containers expose a title color marker")
         initial_link_border = link_button.evaluate("element => getComputedStyle(element).borderColor")
         link_button.click()
         if chart.get_by_label("Chart link configuration").count() != 1:
@@ -298,6 +305,11 @@ def validate_canvas_interactions(
             issues.append("Chart link popover does not list the colored container and current ticker")
         if "Scanner" in linked_list.inner_text():
             issues.append("Chart link membership incorrectly includes multi-symbol Scanner")
+        scanner.locator(".workspace-window-body").click(position={"x": 8, "y": 8})
+        if chart.get_by_label("Chart link configuration").count():
+            issues.append("Chart link popover remains open after clicking outside it")
+        link_button.click()
+        color_picker = chart.get_by_label("Chart link color")
         if interaction_screenshot:
             page.screenshot(path=str(interaction_screenshot), full_page=True)
         color_picker.get_by_role("button", name="Assign Chart to Violet").click()
