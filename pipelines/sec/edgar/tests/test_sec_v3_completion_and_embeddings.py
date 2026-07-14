@@ -56,6 +56,15 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "complete bulk snapshot"):
             require_complete_bulk_sources("submissions,companyfacts")
 
+    def test_acceptance_repair_executes_only_in_execute_mode(self) -> None:
+        command = ["python", "sec_acceptance_raw_metadata_repair.py"]
+
+        self.assertEqual(historical.add_execute_flag(command, SimpleNamespace(execute=False)), command)
+        self.assertEqual(
+            historical.add_execute_flag(command, SimpleNamespace(execute=True)),
+            [*command, "--execute"],
+        )
+
     def test_bulk_download_is_always_reconciled(self) -> None:
         command = historical.StageCommand("bulk-download", [], Path("bulk.log"), False, ("covered",))
 

@@ -895,6 +895,7 @@ def add_execute_flag(command: list[str], args: argparse.Namespace, *, dry_run_fl
             "sec_bulk_to_canonical.py" in command_text
             or "sec_xbrl_companyfacts_catchup.py" in command_text
             or "sec_xbrl_integrity_repair.py" in command_text
+            or "sec_acceptance_raw_metadata_repair.py" in command_text
             or "step_06_build_q_live_bridge_features.py" in command_text
             or "sec_filing_archive_rebuild.py" in command_text
         ):
