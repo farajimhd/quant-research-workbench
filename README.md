@@ -45,13 +45,15 @@ runtime calendar, configure an IBKR-shaped simulated account, and open the
 shared source-aware container canvas. Replay includes its anchor date;
 Backtest selects exchange sessions before its exclusive anchor date.
 
-Canvas layout and container presentation are configured once under
-`Configuration -> Canvas`; Live, Replay, and Backtest do not own separate
-canvas profiles. The configuration page defaults to a 09:45 New York preview
+The new shared-workspace layout and container presentation are configured once
+under `Configuration -> Canvas`; Replay and Backtest do not expose separate
+canvas designers. The configuration page defaults to a 09:45 New York preview
 and renders every container. Market data comes from QMD History, news/SEC/XBRL
 rows are point-in-time ClickHouse reads, and broker/runtime-only state is an
 explicit IBKR-shaped configuration fixture. Per-container controls and the
-single global layout are persisted in browser storage.
+single global layout are persisted in browser storage. The existing Live page
+still retains its legacy canvas state until the planned Live migration; it does
+not yet consume this global profile.
 
 The earlier prepared-data replay remains in
 `frontend/src/pages/LiveTradingPage.tsx` and `/api/live-trading/*` only as a

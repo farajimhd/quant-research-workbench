@@ -83,11 +83,13 @@ and the shared run controller as required. Until those authorities are wired,
 the page reports the exact blockers and does not open an empty canvas or invoke
 the legacy prepared-bar routes.
 
-Canvas layout and container testing are global configuration under
-`Configuration -> Canvas`. There is one persisted layout and one set of
-per-container presentation settings; Live, Replay, and Backtest do not have
-separate canvas designers or layout profiles. Run pages consume that global
-configuration and may toggle compatible features for the active run.
+Canvas layout and container testing for the new shared workspace are global
+configuration under `Configuration -> Canvas`. There is one persisted layout
+and one set of per-container presentation settings; Replay and Backtest do not
+expose mode-specific canvas designers. The current Live page still uses its
+legacy canvas persistence until the planned migration, so it does not yet
+consume the new global profile. Once migrated, run pages may toggle compatible
+features for an active run without owning another layout authority.
 
 The configuration page uses a selectable New York point-in-time preview that
 defaults to 09:45. Chart and scanner content is calculated by QMD History from
