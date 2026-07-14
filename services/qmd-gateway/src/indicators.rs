@@ -74,6 +74,12 @@ pub struct IndicatorRow {
     pub trend_score: f64,
 }
 
+/// Calculate canonical indicators for an ordered batch of bars.
+pub fn calculate_bar_indicators(bars: &[BarRow]) -> Vec<IndicatorRow> {
+    let mut state = BarIndicatorState::new();
+    bars.iter().map(|bar| state.apply_bar(bar)).collect()
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct IndicatorKey {
     sym: String,

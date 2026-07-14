@@ -32,8 +32,8 @@ def canvas_preview_payload(
     symbol = chart_symbol.strip().upper()
     if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", symbol):
         raise ValueError("chart_symbol must be a valid ticker")
-    if chart_timeframe not in {"1m", "5m"}:
-        raise ValueError("chart_timeframe must be 1m or 5m")
+    if chart_timeframe not in {"1s", "10s", "30s", "1m", "5m", "1h"}:
+        raise ValueError("chart_timeframe must be 1s, 10s, 30s, 1m, 5m, or 1h")
 
     offset_at_clock = max(0, int((as_of - as_of.replace(hour=4, minute=0)).total_seconds() // 60))
     chart_start = max(0, offset_at_clock - 30)
@@ -82,7 +82,12 @@ def canvas_preview_payload(
 
     return {
         "as_of": as_of.isoformat(),
-        "chart": {"bars": chart_bars, "symbol": symbol, "timeframe": chart_timeframe},
+        "chart": {
+            "bars": chart_bars,
+            "indicators": chart_payload.get("indicators", []) if isinstance(chart_payload, dict) else [],
+            "symbol": symbol,
+            "timeframe": chart_timeframe,
+        },
         "errors": errors,
         "fills": _fill_fixture(as_of, reference_price),
         "journal": _journal_fixture(as_of),

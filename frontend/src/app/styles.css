@@ -16355,6 +16355,72 @@ button {
   scrollbar-width: thin;
 }
 
+/* The Canvas chart is a dense trading surface; its container supplies the frame. */
+.canvas-config-page .workspace-window[data-window-kind="chart"] .chart-shell {
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.canvas-config-page .workspace-window[data-window-kind="chart"] .chart-component-toolbar {
+  gap: 2px;
+  min-height: 30px;
+  padding: 1px 3px;
+}
+
+.canvas-config-page .workspace-window[data-window-kind="chart"] .chart-ticker-input {
+  min-height: 24px;
+  padding-block: 0;
+}
+
+.canvas-config-page .workspace-window[data-window-kind="chart"] .chart-timeframe-row .timeframe-button {
+  min-height: 24px;
+  padding-inline: 4px;
+  font-size: 11px;
+}
+
+.canvas-config-page .workspace-window[data-window-kind="chart"] .chart-column-select-button {
+  gap: 4px;
+  min-height: 24px;
+  padding-inline: 5px;
+  font-size: 11px;
+}
+
+.canvas-config-page .workspace-window[data-window-kind="chart"] .toolbar-button {
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+}
+
+.canvas-config-page .workspace-window[data-window-kind="chart"] .toolbar-divider {
+  height: 16px;
+  margin-inline: 1px;
+}
+
+.canvas-config-page .workspace-window[data-window-kind="chart"] .chart-canvas-stack {
+  padding: 0;
+}
+
+.canvas-config-page .workspace-window[data-window-kind="chart"] .chart-price {
+  height: auto;
+  min-height: 160px;
+  flex: 1 1 240px;
+}
+
+.canvas-config-page .workspace-window[data-window-kind="chart"] .chart-osc {
+  height: 104px;
+  min-height: 84px;
+  flex: 0 0 104px;
+}
+
+.canvas-config-page .workspace-window[data-window-kind="chart"] .chart-pane-close {
+  top: 3px;
+  right: 3px;
+  width: 18px;
+  height: 18px;
+}
+
 .live-global-status-actions {
   align-items: center;
   display: flex;

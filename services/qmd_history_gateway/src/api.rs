@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use futures_util::SinkExt;
 use qmd_core::bars::{is_supported_timeframe, BarSnapshot, SharedBarStore};
 use qmd_core::compact_event::LiveCompactEvent;
+use qmd_core::indicators::{calculate_bar_indicators, IndicatorRow};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -56,6 +57,13 @@ struct HealthPayload {
     status: &'static str,
 }
 
+#[derive(Debug, Serialize)]
+struct HistoricalBarSnapshot {
+    #[serde(flatten)]
+    bars: BarSnapshot,
+    indicators: Vec<IndicatorRow>,
+}
+
 type ApiError = (StatusCode, Json<Value>);
 
 pub fn app(state: AppState) -> Router {
@@ -96,7 +104,12 @@ async fn coverage(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<EventCoverage>, ApiError> {
     let window = window(&query.start, &query.end, Vec::new())?;
-    state.source.coverage(&window).await.map(Json).map_err(service_error)
+    state
+        .source
+        .coverage(&window)
+        .await
+        .map(Json)
+        .map_err(service_error)
 }
 
 async fn compact_event_snapshot(
@@ -121,7 +134,7 @@ async fn bar_snapshot(
     Path(ticker): Path<String>,
     Query(query): Query<BarsQuery>,
     State(state): State<Arc<AppState>>,
-) -> Result<Json<BarSnapshot>, ApiError> {
+) -> Result<Json<HistoricalBarSnapshot>, ApiError> {
     let window = window(&query.start, &query.end, vec![ticker.clone()])?;
     let timeframe = query.timeframe.unwrap_or_else(|| "1m".to_string());
     validate_timeframe(&timeframe)?;
@@ -138,7 +151,16 @@ async fn bar_snapshot(
         shard.apply_event(&state.source.market_event(event)).await;
     }
     shard.finalize_due(window.end).await;
-    Ok(Json(bars.snapshot(&ticker, &timeframe, bar_limit).await))
+    let snapshot = bars.snapshot(&ticker, &timeframe, bar_limit).await;
+    let mut indicator_bars = snapshot.history.clone();
+    if let Some(current) = snapshot.current.clone() {
+        indicator_bars.push(current);
+    }
+    let indicators = calculate_bar_indicators(&indicator_bars);
+    Ok(Json(HistoricalBarSnapshot {
+        bars: snapshot,
+        indicators,
+    }))
 }
 
 async fn compact_event_stream(

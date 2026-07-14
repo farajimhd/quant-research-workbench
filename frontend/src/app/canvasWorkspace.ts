@@ -12,7 +12,7 @@ export type CanvasLinkGroupDefinition = {
 
 export type CanvasLinkContext = {
   symbol: string;
-  timeframe: "1m" | "5m";
+  timeframe: "1s" | "10s" | "30s" | "1m" | "5m" | "1h";
 };
 
 export type CanvasWorkspaceState = {
@@ -168,7 +168,9 @@ function normalizeLinkContext(value: CanvasLinkContext | undefined, fallback: Ca
   const symbol = value?.symbol?.trim().toUpperCase();
   return {
     symbol: symbol || fallback.symbol,
-    timeframe: value?.timeframe === "5m" ? "5m" : "1m",
+    timeframe: ["1s", "10s", "30s", "1m", "5m", "1h"].includes(String(value?.timeframe))
+      ? value!.timeframe
+      : "1m",
   };
 }
 

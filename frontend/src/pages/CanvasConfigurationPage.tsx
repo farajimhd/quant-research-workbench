@@ -23,17 +23,18 @@ import {
   type CanvasRegistry,
   type CanvasWorkspaceState,
 } from "../app/canvasWorkspace";
-import { ChartPanel, type ChartPayload } from "../app/components/ChartPanel";
+import { ChartPanel, type ChartDisplayItem, type ChartPayload } from "../app/components/ChartPanel";
 import { MarketStatusBadge, historicalMarketStatus } from "../app/components/MarketStatusBadge";
 import { TRADING_WORKSPACE_LAYOUT_VERSION, TradingWorkspace, createFocusLayouts } from "../app/components/TradingWorkspace";
 import type { WorkspaceWindowLayout, WorkspaceWindowMeta, WorkspaceWindowStatus } from "../app/components/WorkspaceCanvas";
 import { TRADING_WORKSPACE_CONTAINERS, containerSupportsSymbolLink, type WorkspaceContainerDefinition, type WorkspaceContainerId } from "../app/tradingWorkspace";
 
 type HistoricalBar = { bar_start: string; close: number; high: number; low: number; open: number; volume: number };
+type HistoricalIndicator = { bar_start: string } & Record<string, number | string>;
 type PreviewRow = Record<string, unknown>;
 type CanvasPreview = {
   as_of: string;
-  chart: { bars: HistoricalBar[]; symbol: string; timeframe: string };
+  chart: { bars: HistoricalBar[]; indicators: HistoricalIndicator[]; symbol: string; timeframe: string };
   errors: Record<string, string>;
   fills: PreviewRow[];
   journal: PreviewRow[];
@@ -47,7 +48,7 @@ type CanvasPreview = {
 };
 
 type ContainerSettings = {
-  chart: { showVolume: boolean; symbol: string; timeframe: "1m" | "5m" };
+  chart: { showVolume: boolean; symbol: string; timeframe: CanvasLinkContext["timeframe"]; visibleIndicators: string[] };
   fills: { limit: number; showCommission: boolean };
   journal: { limit: number };
   news: { limit: number; showTeaser: boolean };
@@ -64,7 +65,7 @@ type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; tit
 
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const DEFAULT_SETTINGS: ContainerSettings = {
-  chart: { showVolume: true, symbol: "AAPL", timeframe: "1m" },
+  chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap"] },
   fills: { limit: 5, showCommission: true },
   journal: { limit: 6 },
   news: { limit: 5, showTeaser: true },
@@ -75,6 +76,51 @@ const DEFAULT_SETTINGS: ContainerSettings = {
   strategy: { showSignals: true },
   xbrl: { limit: 6, showPeriod: true },
 };
+
+const HISTORICAL_TIMEFRAMES: CanvasLinkContext["timeframe"][] = ["1s", "10s", "30s", "1m", "5m", "1h"];
+const CHART_INDICATORS: ChartDisplayItem[] = [
+  displayIndicator("indicator.vwap", "VWAP", "volume_liquidity", ["vwap"]),
+  displayIndicator("indicator.ema_9", "EMA 9", "momentum", ["ema_9"]),
+  displayIndicator("indicator.ema_20", "EMA 20", "momentum", ["ema_20"]),
+  displayIndicator("indicator.ema_50", "EMA 50", "momentum", ["ema_50"]),
+  displayIndicator("indicator.sma_20", "SMA 20", "momentum", ["close_sma_20"]),
+  displayIndicator("indicator.bollinger", "Bollinger Bands (20, 2)", "volatility", ["bollinger_mid_20", "bollinger_upper_20", "bollinger_lower_20"]),
+  displayIndicator("indicator.rsi", "RSI 14", "momentum", ["rsi_14"], "rsi"),
+  displayIndicator("indicator.macd", "MACD (12, 26, 9)", "momentum", ["macd_line", "macd_signal", "macd_histogram"], "macd"),
+  displayIndicator("indicator.atr", "ATR 14", "volatility", ["atr_14"], "atr"),
+  displayIndicator("indicator.bollinger_std", "Bollinger Std Dev", "volatility", ["bollinger_std_20"], "bollinger_std"),
+  displayIndicator("indicator.volume_sma", "Volume SMA 20", "volume_liquidity", ["volume_sma_20"], "volume"),
+  displayIndicator("indicator.return", "1-bar Return", "price_action", ["return_1_bar"], "return"),
+  displayIndicator("indicator.price_ema", "Price vs EMA 20", "momentum", ["price_vs_ema20_pct"], "distance"),
+  displayIndicator("indicator.price_vwap", "Price vs VWAP", "volume_liquidity", ["price_vs_vwap_pct"], "distance"),
+  displayIndicator("indicator.trend_score", "Trend Score", "momentum", ["trend_score"], "trend"),
+];
+
+const INDICATOR_SERIES = [
+  { column: "vwap", color: "var(--warning)", displayItemId: "indicator.vwap", label: "VWAP", pane: "price" },
+  { column: "ema_9", color: "var(--info)", displayItemId: "indicator.ema_9", label: "EMA 9", pane: "price" },
+  { column: "ema_20", color: "var(--primary)", displayItemId: "indicator.ema_20", label: "EMA 20", pane: "price" },
+  { column: "ema_50", color: "var(--danger)", displayItemId: "indicator.ema_50", label: "EMA 50", pane: "price" },
+  { column: "close_sma_20", color: "var(--success)", displayItemId: "indicator.sma_20", label: "SMA 20", pane: "price" },
+  { column: "bollinger_mid_20", color: "var(--primary)", displayItemId: "indicator.bollinger", label: "Bollinger Mid", pane: "price" },
+  { column: "bollinger_upper_20", color: "var(--info)", displayItemId: "indicator.bollinger", label: "Bollinger Upper", pane: "price" },
+  { column: "bollinger_lower_20", color: "var(--info)", displayItemId: "indicator.bollinger", label: "Bollinger Lower", pane: "price" },
+  { column: "rsi_14", color: "var(--primary)", displayItemId: "indicator.rsi", label: "RSI 14", pane: "rsi" },
+  { column: "macd_line", color: "var(--info)", displayItemId: "indicator.macd", label: "MACD", pane: "macd" },
+  { column: "macd_signal", color: "var(--warning)", displayItemId: "indicator.macd", label: "Signal", pane: "macd" },
+  { column: "macd_histogram", color: "var(--success)", displayItemId: "indicator.macd", label: "Histogram", pane: "macd", style: "histogram" },
+  { column: "atr_14", color: "var(--warning)", displayItemId: "indicator.atr", label: "ATR 14", pane: "atr" },
+  { column: "bollinger_std_20", color: "var(--info)", displayItemId: "indicator.bollinger_std", label: "Bollinger Std Dev", pane: "bollinger_std" },
+  { column: "volume_sma_20", color: "var(--primary)", displayItemId: "indicator.volume_sma", label: "Volume SMA 20", pane: "volume" },
+  { column: "return_1_bar", color: "var(--success)", displayItemId: "indicator.return", label: "1-bar Return", pane: "return", style: "histogram" },
+  { column: "price_vs_ema20_pct", color: "var(--info)", displayItemId: "indicator.price_ema", label: "Price vs EMA 20", pane: "distance" },
+  { column: "price_vs_vwap_pct", color: "var(--warning)", displayItemId: "indicator.price_vwap", label: "Price vs VWAP", pane: "distance" },
+  { column: "trend_score", color: "var(--primary)", displayItemId: "indicator.trend_score", label: "Trend Score", pane: "trend" },
+] as const;
+
+function displayIndicator(id: string, title: string, group: string, sourceColumns: string[], pane = "price"): ChartDisplayItem {
+  return { category: pane === "price" ? "Price overlay" : "Oscillator pane", group, id, presentation: { chartRole: pane === "price" ? "overlay" : "oscillator", pane, selectable: true }, sourceColumns, title };
+}
 
 export function CanvasConfigurationPage() {
   return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager />;
@@ -412,17 +458,34 @@ function renderPreview(id: WorkspaceContainerId, preview: CanvasPreview | null, 
 }
 
 function ChartPreview({ linkContext, loading, onLinkContextChange, preview, settings, setSettings }: { linkContext: CanvasLinkContext; loading: boolean; onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void; preview: CanvasPreview | null; settings: ContainerSettings; setSettings: React.Dispatch<React.SetStateAction<ContainerSettings>> }) {
+  const indicators = preview?.chart.indicators ?? [];
   const payload = useMemo<ChartPayload>(() => ({
     candles: (preview?.chart.bars ?? []).map((bar) => ({ close: bar.close, high: bar.high, low: bar.low, open: bar.open, time: Date.parse(bar.bar_start) / 1000 })),
-    markers: [], oscillator_series: [], overlay_series: [], regions: [],
+    markers: [],
+    oscillator_series: historicalIndicatorSeries(indicators, "oscillator"),
+    overlay_series: historicalIndicatorSeries(indicators, "price"),
+    regions: [],
     volume: settings.chart.showVolume ? (preview?.chart.bars ?? []).map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
-  }), [preview?.chart.bars, settings.chart.showVolume]);
-  function updateChart(symbol: string, timeframe: "1m" | "5m") {
+  }), [indicators, preview?.chart.bars, settings.chart.showVolume]);
+  function updateChart(symbol: string, timeframe: CanvasLinkContext["timeframe"]) {
     setSettings((current) => ({ ...current, chart: { ...current.chart, symbol, timeframe } }));
     onLinkContextChange({ symbol, timeframe });
   }
   const previewDate = preview?.as_of.slice(0, 10);
-  return <ChartPanel emptyMessage="No bars at this clock." enableFullscreen={false} featureOptions={[]} indicatorOptions={[]} initialFitMode="recent" loading={loading} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), linkContext.timeframe)} onTimeframeChange={(timeframe) => updateChart(linkContext.symbol, timeframe as "1m" | "5m")} onVisibleColumnsChange={() => undefined} payload={payload} periodEnd={previewDate} periodStart={previewDate} showIndicatorControls={false} ticker={linkContext.symbol} timeframe={linkContext.timeframe} timeframes={["1m", "5m"]} visibleColumns={[]} />;
+  return <ChartPanel displayItemOptions={CHART_INDICATORS} emptyMessage="No bars at this clock." enableFullscreen={false} featureOptions={[]} indicatorOptions={[]} initialFitMode="recent" loading={loading} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), linkContext.timeframe)} onTimeframeChange={(timeframe) => updateChart(linkContext.symbol, timeframe as CanvasLinkContext["timeframe"])} onVisibleColumnsChange={(visibleIndicators) => setSettings((current) => ({ ...current, chart: { ...current.chart, visibleIndicators } }))} payload={payload} periodEnd={previewDate} periodStart={previewDate} ticker={linkContext.symbol} timeframe={linkContext.timeframe} timeframes={HISTORICAL_TIMEFRAMES} visibleColumns={settings.chart.visibleIndicators} />;
+}
+
+function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscillator" | "price"): ChartPayload["overlay_series"] {
+  return INDICATOR_SERIES.filter((spec) => (spec.pane === "price" ? "price" : "oscillator") === target).map((spec) => ({
+    color: spec.color,
+    column: spec.column,
+    data: rows.map((row) => ({ time: Date.parse(String(row.bar_start)) / 1000, value: Number(row[spec.column]) })).filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value)),
+    displayItemId: spec.displayItemId,
+    label: spec.label,
+    lineWidth: 1,
+    paneKey: spec.pane,
+    style: "style" in spec ? spec.style : "line",
+  }));
 }
 
 function PreviewTable({ columns, onSymbolSelect, rows }: { columns: string[]; onSymbolSelect?: (symbol: string) => void; rows: PreviewRow[] }) {
@@ -446,7 +509,7 @@ function NewsPreview({ rows, showTeaser }: { rows: PreviewRow[]; showTeaser: boo
 function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, linkContext: CanvasLinkContext, setSettings: React.Dispatch<React.SetStateAction<ContainerSettings>>, onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void) {
   const current = settings[id] as Record<string, unknown>;
   function patch(value: Record<string, unknown>) { setSettings((state) => ({ ...state, [id]: { ...state[id], ...value } })); }
-  if (id === "chart") return <><TextField label="Symbol" onChange={(value) => { patch({ symbol: value.toUpperCase() }); onLinkContextChange({ symbol: value.toUpperCase() }); }} value={linkContext.symbol} /><SelectField label="Bar interval" onChange={(value) => { patch({ timeframe: value }); onLinkContextChange({ timeframe: value as "1m" | "5m" }); }} options={["1m", "5m"]} value={linkContext.timeframe} /><CheckField checked={Boolean(current.showVolume)} label="Show volume" onChange={(value) => patch({ showVolume: value })} /></>;
+  if (id === "chart") return <><TextField label="Symbol" onChange={(value) => { patch({ symbol: value.toUpperCase() }); onLinkContextChange({ symbol: value.toUpperCase() }); }} value={linkContext.symbol} /><SelectField label="Bar interval" onChange={(value) => { patch({ timeframe: value }); onLinkContextChange({ timeframe: value as CanvasLinkContext["timeframe"] }); }} options={HISTORICAL_TIMEFRAMES} value={linkContext.timeframe} /><CheckField checked={Boolean(current.showVolume)} label="Show volume" onChange={(value) => patch({ showVolume: value })} /></>;
   if (id === "portfolio") return <><CheckField checked={Boolean(current.showPositions)} label="Show positions" onChange={(value) => patch({ showPositions: value })} /><CheckField checked={Boolean(current.showPnl)} label="Show P&L" onChange={(value) => patch({ showPnl: value })} /></>;
   if (id === "strategy") return <CheckField checked={Boolean(current.showSignals)} label="Show recent signals" onChange={(value) => patch({ showSignals: value })} />;
   if (id === "scanner") return <><NumberField label="Rows" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showActivity)} label="Show market activity" onChange={(value) => patch({ showActivity: value })} /></>;
@@ -465,7 +528,22 @@ function CheckField({ checked, label, onChange }: { checked: boolean; label: str
 function Metric({ label, value }: { label: string; value: string }) { return <div><span>{label}</span><strong>{value}</strong></div>; }
 function EmptyState({ label }: { label: string }) { return <div className="canvas-preview-empty">{label}</div>; }
 
-function readSettings(): ContainerSettings { try { const raw = window.localStorage.getItem(CANVAS_SETTINGS_STORAGE_KEY); return raw ? { ...DEFAULT_SETTINGS, ...JSON.parse(raw) } : DEFAULT_SETTINGS; } catch { return DEFAULT_SETTINGS; } }
+function readSettings(): ContainerSettings {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(CANVAS_SETTINGS_STORAGE_KEY) ?? "{}") as Partial<ContainerSettings>;
+    return {
+      ...DEFAULT_SETTINGS,
+      ...stored,
+      chart: {
+        ...DEFAULT_SETTINGS.chart,
+        ...(stored.chart ?? {}),
+        visibleIndicators: Array.isArray(stored.chart?.visibleIndicators) ? stored.chart.visibleIndicators : DEFAULT_SETTINGS.chart.visibleIndicators,
+      },
+    };
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
+}
 function readPreviewContext(): CanvasPreviewContext { try { const parsed = JSON.parse(window.localStorage.getItem(CANVAS_PREVIEW_CONTEXT_STORAGE_KEY) || "null") as CanvasPreviewContext | null; return parsed?.sessionDate && parsed?.previewTime ? parsed : { previewTime: "09:45", sessionDate: previousWeekdayIsoDate() }; } catch { return { previewTime: "09:45", sessionDate: previousWeekdayIsoDate() }; } }
 function previousWeekdayIsoDate() { const value = new Date(); value.setDate(value.getDate() - 1); while (value.getDay() === 0 || value.getDay() === 6) value.setDate(value.getDate() - 1); const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000); return local.toISOString().slice(0, 10); }
 function previewClockReadings(context: CanvasPreviewContext) {

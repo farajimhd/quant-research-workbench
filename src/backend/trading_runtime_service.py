@@ -286,6 +286,7 @@ def historical_bar_chunk(
     bars = list(snapshot.get("history") or []) if isinstance(snapshot, dict) else []
     if isinstance(snapshot, dict) and snapshot.get("current"):
         bars.append(dict(snapshot["current"]))
+    indicators = list(snapshot.get("indicators") or []) if isinstance(snapshot, dict) else []
     return {
         "ticker": resolved_ticker,
         "timeframe": resolved_timeframe,
@@ -296,6 +297,7 @@ def historical_bar_chunk(
         "start": chunk_start.isoformat(),
         "end": chunk_end.isoformat(),
         "bars": bars,
+        "indicators": indicators,
         "bar_count": len(bars),
         "source": "qmd_history_gateway",
     }

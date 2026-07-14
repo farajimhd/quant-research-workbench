@@ -1425,7 +1425,7 @@ function IndicatorFeatureSelect({
         type="button"
       >
         <ChartNoAxesCombined size={19} />
-        <span>Indicators &amp; Features</span>
+        <span>{visibleFeatures.length ? "Indicators & Features" : "Indicators"}</span>
         {selectedCount ? <b>{selectedCount}</b> : null}
         <ChevronDown size={14} />
       </button>

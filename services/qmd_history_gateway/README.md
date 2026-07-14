@@ -67,10 +67,15 @@ and `1h`.
 - `GET /config`
 - `GET /coverage?start=...&end=...`
 - `GET /snapshot/compact-events/{ticker}?start=...&end=...&limit=...`
-- `GET /snapshot/bars/{ticker}?start=...&end=...&timeframe=1m&limit=...`
+- `GET /snapshot/bars/{ticker}?start=...&end=...&timeframe=1m&limit=...` (bars plus canonical QMD bar indicators)
 - `WS /stream/compact-events?start=...&end=...&tickers=AAPL,MSFT`
 - `WS /stream/events?start=...&end=...&tickers=AAPL,MSFT`
 - `WS /stream/bars/{ticker}?start=...&end=...&timeframe=1m`
+
+The bar snapshot calculates its `indicators` array from the returned ordered
+bars through the shared live-QMD indicator state. Replay, Backtest, and Canvas
+charts therefore use the live formulas without reading or maintaining a
+separate historical indicator table.
 
 The streaming endpoints close after the requested historical window is fully
 delivered. The live QMD equivalents remain open and publish newly arriving
