@@ -1,7 +1,14 @@
 import type { WorkspaceContainerId } from "./tradingWorkspace";
 import type { WorkspaceWindowLayout } from "./components/WorkspaceCanvas";
 
-export type CanvasLinkGroupId = "none" | "A" | "B" | "C";
+export type CanvasLinkGroupId = "none" | "A" | "B" | "C" | "D" | "E" | "F" | "G";
+export type CanvasAssignedLinkGroupId = Exclude<CanvasLinkGroupId, "none">;
+
+export type CanvasLinkGroupDefinition = {
+  color: string;
+  id: CanvasAssignedLinkGroupId;
+  label: string;
+};
 
 export type CanvasLinkContext = {
   symbol: string;
@@ -23,7 +30,7 @@ export type CanvasRegistry = {
   canvases: CanvasRecord[];
   defaultState?: CanvasWorkspaceState;
   linkAssignments: Partial<Record<WorkspaceContainerId, CanvasLinkGroupId>>;
-  linkContexts: Record<Exclude<CanvasLinkGroupId, "none">, CanvasLinkContext>;
+  linkContexts: Record<CanvasAssignedLinkGroupId, CanvasLinkContext>;
   version: 1;
 };
 
@@ -33,10 +40,24 @@ export const CANVAS_PREVIEW_CONTEXT_STORAGE_KEY = "quant-research-workbench.canv
 export const CANVAS_SETTINGS_STORAGE_KEY = "quant-research-workbench.canvas.container-settings.v1";
 export const MAIN_CANVAS_STORAGE_KEY = "quant-research-workbench.trading-workspace.global.v1";
 
+export const CANVAS_LINK_GROUPS: readonly CanvasLinkGroupDefinition[] = [
+  { color: "var(--canvas-link-blue)", id: "A", label: "Blue" },
+  { color: "var(--canvas-link-green)", id: "B", label: "Green" },
+  { color: "var(--canvas-link-amber)", id: "C", label: "Amber" },
+  { color: "var(--canvas-link-violet)", id: "D", label: "Violet" },
+  { color: "var(--canvas-link-rose)", id: "E", label: "Rose" },
+  { color: "var(--canvas-link-cyan)", id: "F", label: "Cyan" },
+  { color: "var(--canvas-link-orange)", id: "G", label: "Orange" },
+];
+
 const DEFAULT_LINK_CONTEXTS: CanvasRegistry["linkContexts"] = {
   A: { symbol: "AAPL", timeframe: "1m" },
   B: { symbol: "MSFT", timeframe: "1m" },
   C: { symbol: "NVDA", timeframe: "5m" },
+  D: { symbol: "TSLA", timeframe: "1m" },
+  E: { symbol: "AMZN", timeframe: "1m" },
+  F: { symbol: "META", timeframe: "5m" },
+  G: { symbol: "AMD", timeframe: "1m" },
 };
 
 const DEFAULT_LINK_ASSIGNMENTS: CanvasRegistry["linkAssignments"] = {
@@ -73,6 +94,10 @@ export function readCanvasRegistry(): CanvasRegistry {
         A: normalizeLinkContext(parsed.linkContexts?.A, DEFAULT_LINK_CONTEXTS.A),
         B: normalizeLinkContext(parsed.linkContexts?.B, DEFAULT_LINK_CONTEXTS.B),
         C: normalizeLinkContext(parsed.linkContexts?.C, DEFAULT_LINK_CONTEXTS.C),
+        D: normalizeLinkContext(parsed.linkContexts?.D, DEFAULT_LINK_CONTEXTS.D),
+        E: normalizeLinkContext(parsed.linkContexts?.E, DEFAULT_LINK_CONTEXTS.E),
+        F: normalizeLinkContext(parsed.linkContexts?.F, DEFAULT_LINK_CONTEXTS.F),
+        G: normalizeLinkContext(parsed.linkContexts?.G, DEFAULT_LINK_CONTEXTS.G),
       },
       version: 1,
     };
@@ -132,9 +157,17 @@ function defaultCanvasRegistry(): CanvasRegistry {
       A: { ...DEFAULT_LINK_CONTEXTS.A },
       B: { ...DEFAULT_LINK_CONTEXTS.B },
       C: { ...DEFAULT_LINK_CONTEXTS.C },
+      D: { ...DEFAULT_LINK_CONTEXTS.D },
+      E: { ...DEFAULT_LINK_CONTEXTS.E },
+      F: { ...DEFAULT_LINK_CONTEXTS.F },
+      G: { ...DEFAULT_LINK_CONTEXTS.G },
     },
     version: 1,
   };
+}
+
+export function canvasLinkGroupDefinition(group: CanvasLinkGroupId): CanvasLinkGroupDefinition | undefined {
+  return group === "none" ? undefined : CANVAS_LINK_GROUPS.find((candidate) => candidate.id === group);
 }
 
 function normalizeLinkContext(value: CanvasLinkContext | undefined, fallback: CanvasLinkContext): CanvasLinkContext {

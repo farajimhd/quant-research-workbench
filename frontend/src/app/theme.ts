@@ -32,6 +32,7 @@ type AppThemeTokenMap = {
   border: string;
   card: string;
   cardMuted: string;
+  canvasLinkGroups: readonly [string, string, string, string, string, string, string];
   chromeBackground: string;
   chromeBorder: string;
   chromeMuted: string;
@@ -283,6 +284,13 @@ export function applyThemeDefinition(target: HTMLElement, themeId: AppThemeId = 
     "--card": tokens.card,
     "--card-foreground": tokens.foreground,
     "--card-muted": tokens.cardMuted,
+    "--canvas-link-blue": tokens.canvasLinkGroups[0],
+    "--canvas-link-green": tokens.canvasLinkGroups[1],
+    "--canvas-link-amber": tokens.canvasLinkGroups[2],
+    "--canvas-link-violet": tokens.canvasLinkGroups[3],
+    "--canvas-link-rose": tokens.canvasLinkGroups[4],
+    "--canvas-link-cyan": tokens.canvasLinkGroups[5],
+    "--canvas-link-orange": tokens.canvasLinkGroups[6],
     "--control-bg": tokens.controlBackground,
     "--danger": tokens.danger,
     "--destructive": tokens.danger,
@@ -392,6 +400,9 @@ function buildTheme({
       border: palette.border,
       card: palette.card,
       cardMuted: tone === "light" ? palette.secondary : palette.muted,
+      canvasLinkGroups: tone === "light"
+        ? ["#2563eb", "#059669", "#b45309", "#7c3aed", "#db2777", "#0e7490", "#ea580c"]
+        : ["#60a5fa", "#34d399", "#fbbf24", "#a78bfa", "#f472b6", "#22d3ee", "#fb923c"],
       chromeBackground: withOpacity(palette.background, tone === "light" ? "0.95" : "0.92"),
       chromeBorder: palette.border,
       chromeMuted: palette.mutedForeground,

@@ -42,6 +42,7 @@ type TradingWorkspaceProps = {
   definitionsOverride?: readonly WorkspaceContainerDefinition[];
   historicalSourceReady: boolean;
   layoutPreset?: "focus" | "global" | "mode";
+  linkColorForContainer?: (definition: WorkspaceContainerDefinition) => string | undefined;
   linkLabelForContainer?: (definition: WorkspaceContainerDefinition) => string | undefined;
   metaForContainer?: (definition: WorkspaceContainerDefinition) => WorkspaceWindowMeta;
   mode: TradingWorkspaceMode;
@@ -72,6 +73,7 @@ export function TradingWorkspace({
   definitionsOverride,
   historicalSourceReady,
   layoutPreset = "mode",
+  linkColorForContainer,
   linkLabelForContainer,
   metaForContainer,
   mode,
@@ -220,6 +222,7 @@ export function TradingWorkspace({
               key={id}
               kind={id}
               layout={layout}
+              linkColor={linkColorForContainer?.(definition)}
               titleBarActions={titleBarActionsForContainer?.(definition)}
               linkLabel={linkLabelForContainer?.(definition)}
               meta={meta}

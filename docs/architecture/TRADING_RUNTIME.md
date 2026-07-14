@@ -90,10 +90,11 @@ Replay and Backtest do not expose mode-specific canvas designers. Containers
 may move between registered canvases or open as linked copies in a new tab.
 New managed canvases inherit the saved default layout, falling back to the
 current main layout, and their names are direct open actions in the registry.
-Link groups A, B, and C persist a shared symbol and bar-interval context so
-containers assigned to the same group continue to track the same context across
-tabs. Group selection and current group membership are shown inside each
-container's configuration surface. Focus canvas routes deliberately omit the
+Seven color groups persist a shared symbol and bar-interval context so
+containers with the same color continue to track the same context across tabs.
+Each container chooses Blue, Green, Amber, Violet, Rose, Cyan, or Orange from
+its title-bar popover; its title bar receives a low-opacity group tint and the
+popover identifies its same-color peers. Focus canvas routes deliberately omit the
 application sidebar. The current Live page still uses its legacy canvas
 persistence until the planned migration, so it does not yet consume the new
 global profile. Once migrated, run pages may toggle compatible features for an

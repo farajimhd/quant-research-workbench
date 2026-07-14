@@ -212,24 +212,45 @@ def validate_canvas_interactions(
         link_button = title_bar.get_by_role("button", name="Configure and link Chart")
         if link_button.count() != 1:
             issues.append("Chart link action is not in the container title bar")
-        if "Link A" not in link_button.inner_text():
-            issues.append("Chart does not expose its current link group at the point of use")
+        if "Blue" not in link_button.inner_text():
+            issues.append("Chart does not expose its current link color at the point of use")
+        scanner = page.get_by_role("region", name="Scanner", exact=True)
+        portfolio = page.get_by_role("region", name="Portfolio", exact=True)
+        chart_tint = title_bar.evaluate("element => getComputedStyle(element).backgroundColor")
+        scanner_tint = scanner.locator(".workspace-window-header").evaluate("element => getComputedStyle(element).backgroundColor")
+        portfolio_tint = portfolio.locator(".workspace-window-header").evaluate("element => getComputedStyle(element).backgroundColor")
+        if chart.get_attribute("data-linked") != "true" or chart_tint != scanner_tint:
+            issues.append("containers with the same link color do not share the same title-bar tint")
+        if chart_tint == portfolio_tint:
+            issues.append("different link colors do not produce distinguishable title-bar tints")
         link_button.click()
         if chart.get_by_label("Chart configuration").count() != 1:
             issues.append("Chart configuration is not contained inside the Chart container")
         if page.locator(".canvas-config-drawer").count():
             issues.append("container configuration created a page-level drawer")
-        if "Choose the same group" not in chart.get_by_label("Chart configuration").inner_text():
-            issues.append("Chart configuration does not explain how containers are linked")
-        if "With Scanner" not in chart.get_by_label("Chart configuration").inner_text():
-            issues.append("Chart configuration does not identify containers in its current link group")
+        if "Same color = linked" not in chart.get_by_label("Chart configuration").inner_text():
+            issues.append("Chart configuration does not explain the color-link model")
+        color_picker = chart.get_by_label("Chart link color")
+        if color_picker.locator(".canvas-link-color-choice").count() != 7:
+            issues.append("Chart link picker does not expose exactly seven colors")
+        if "Linked with Scanner" not in chart.get_by_label("Chart configuration").inner_text():
+            issues.append("Chart configuration does not identify containers with the same color")
         if interaction_screenshot:
             page.screenshot(path=str(interaction_screenshot), full_page=True)
-        chart.get_by_label("Chart link group").select_option("C")
+        color_picker.get_by_role("button", name="Assign Chart to Violet").click()
         page.wait_for_timeout(100)
+        violet_tint = title_bar.evaluate("element => getComputedStyle(element).backgroundColor")
+        if violet_tint == scanner_tint:
+            issues.append("changing the Chart link color did not change its title-bar tint")
         link_button.click()
-        if "Link C" not in chart.get_by_role("button", name="Configure and link Chart").inner_text():
-            issues.append("changing a container link channel did not update its link state")
+        if "Violet" not in chart.get_by_role("button", name="Configure and link Chart").inner_text():
+            issues.append("changing a container link color did not update its title-bar state")
+        link_button.click()
+        chart.get_by_role("button", name="Unlink Chart").click()
+        if chart.get_attribute("data-linked") != "false":
+            issues.append("unlinking Chart did not remove its linked title-bar state")
+        chart.get_by_role("button", name="Assign Chart to Violet").click()
+        link_button.click()
 
         minimize = chart.get_by_role("button", name="Minimize Chart")
         if minimize.locator(".lucide-minus").count() != 1:

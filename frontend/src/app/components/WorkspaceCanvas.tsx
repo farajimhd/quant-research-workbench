@@ -66,6 +66,7 @@ type WorkspaceWindowProps = {
   id: WorkspaceWindowId;
   kind?: string;
   layout: WorkspaceWindowLayout;
+  linkColor?: string;
   titleBarActions?: ReactNode;
   linkLabel?: string;
   meta?: WorkspaceWindowMeta;
@@ -92,6 +93,7 @@ export function WorkspaceWindow({
   id,
   kind,
   layout,
+  linkColor,
   titleBarActions,
   linkLabel,
   meta,
@@ -105,9 +107,13 @@ export function WorkspaceWindow({
 }: WorkspaceWindowProps) {
   const edge = compact ? 0 : 12;
   const minimizedHeight = compact ? 24 : 44;
-  const style = layout.fullscreen
+  const geometry = layout.fullscreen
     ? { height: `calc(100% - ${edge * 2}px)`, left: edge, top: edge, width: `calc(100% - ${edge * 2}px)`, zIndex: 1000 + layout.z }
     : { height: layout.minimized ? minimizedHeight : layout.h, left: layout.x, top: layout.y, width: layout.w, zIndex: layout.z };
+  const style = {
+    ...geometry,
+    ...(linkColor ? { "--workspace-link-color": linkColor } : {}),
+  } as CSSProperties;
 
   function horizontalBounds(element: HTMLElement) {
     const workspace = element.closest<HTMLElement>("[data-workspace-canvas]");
@@ -196,6 +202,7 @@ export function WorkspaceWindow({
     <section
       aria-label={title}
       className={compact ? "workspace-window live-window compact-window" : "workspace-window live-window"}
+      data-linked={linkColor ? "true" : "false"}
       data-window-kind={kind ?? (id.startsWith("chart-") ? "chart" : id)}
       style={style}
       onPointerDown={() => onFocus(id)}

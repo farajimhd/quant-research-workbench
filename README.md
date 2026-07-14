@@ -56,8 +56,9 @@ registry on this page creates, opens, and removes focused child canvases.
 New managed canvases inherit the saved default layout, or the current main
 layout when no default has been saved, so they never open as empty pages.
 Containers may be moved between registered canvases or opened as linked copies.
-Each container exposes `Link A`, `Link B`, `Link C`, or `Link` internally;
-choosing the same group shares symbol and interval context across tabs. Child
+Each container chooses one of seven color groups from its title bar; containers
+with the same color share symbol and interval context across tabs and use the
+same low-opacity title-bar tint. Child
 canvases use a chromeless route, and each container owns its own settings
 overlay plus distinct minimize, restore, maximize, fullscreen-exit, reset,
 close, and linked-open controls. The existing Live page still retains its

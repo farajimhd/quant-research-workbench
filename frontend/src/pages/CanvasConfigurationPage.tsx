@@ -1,12 +1,14 @@
-import { ExternalLink, Link2, Plus, RefreshCw, Save, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Check, ExternalLink, Link2, Plus, RefreshCw, Save, Trash2, Unlink } from "lucide-react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 import { api } from "../api/client";
 import {
   CANVAS_PREVIEW_CONTEXT_STORAGE_KEY,
   CANVAS_REGISTRY_STORAGE_KEY,
   CANVAS_SETTINGS_STORAGE_KEY,
+  CANVAS_LINK_GROUPS,
   MAIN_CANVAS_ID,
+  canvasLinkGroupDefinition,
   canvasWorkspaceStorageKey,
   configurationCanvasUrl,
   createCanvasRecord,
@@ -16,6 +18,7 @@ import {
   removeCanvasRecord,
   writeCanvasRegistry,
   writeCanvasWorkspaceState,
+  type CanvasAssignedLinkGroupId,
   type CanvasLinkContext,
   type CanvasLinkGroupId,
   type CanvasRegistry,
@@ -71,13 +74,6 @@ const DEFAULT_SETTINGS: ContainerSettings = {
   strategy: { showSignals: true },
   xbrl: { limit: 6, showPeriod: true },
 };
-
-const LINK_OPTIONS: Array<{ label: string; value: CanvasLinkGroupId }> = [
-  { label: "None · independent", value: "none" },
-  { label: "Group A · Market context", value: "A" },
-  { label: "Group B · Execution context", value: "B" },
-  { label: "Group C · Custom context", value: "C" },
-];
 
 export function CanvasConfigurationPage() {
   return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager />;
@@ -170,7 +166,7 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
     setRegistry((current) => update(current));
   }
 
-  function updateLinkContext(group: Exclude<CanvasLinkGroupId, "none">, patch: Partial<CanvasLinkContext>) {
+  function updateLinkContext(group: CanvasAssignedLinkGroupId, patch: Partial<CanvasLinkContext>) {
     updateRegistry((current) => ({
       ...current,
       linkContexts: { ...current.linkContexts, [group]: { ...current.linkContexts[group], ...patch } },
@@ -287,8 +283,10 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
         runStatus={preview ? "running" : "idle"}
         showHealth={false}
         storageKeyOverride={canvasWorkspaceStorageKey(canvasId)}
+        linkColorForContainer={(definition) => canvasLinkGroupDefinition(registry.linkAssignments[definition.id] ?? "none")?.color}
         titleBarActionsForContainer={(definition) => {
           const group = registry.linkAssignments[definition.id] ?? "none";
+          const groupDefinition = canvasLinkGroupDefinition(group);
           const open = configurationContainerId === definition.id;
           return <button
             aria-expanded={open}
@@ -296,9 +294,9 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
             className="workspace-window-link-action"
             data-active={open ? "true" : "false"}
             onClick={() => setConfigurationContainerId((current) => current === definition.id ? null : definition.id)}
-            title={group === "none" ? "Choose a link group" : `Linked to Group ${group}; configure or change group`}
+            title={groupDefinition ? `${groupDefinition.label} link group; configure or change color` : "Choose a link color"}
             type="button"
-          ><Link2 size={11} /><span>{group === "none" ? "Link" : `Link ${group}`}</span></button>;
+          ><Link2 size={11} />{groupDefinition ? <i aria-hidden="true" className="canvas-link-title-swatch" /> : null}<span>{groupDefinition?.label ?? "Link"}</span></button>;
         }}
         workspaceBadge={manager ? "Main" : "Focus"}
       />
@@ -323,9 +321,26 @@ function ContainerPreview({ configOpen, definition, linkContext, linkGroup, link
   settings: ContainerSettings;
   setSettings: React.Dispatch<React.SetStateAction<ContainerSettings>>;
 }) {
+  const groupDefinition = canvasLinkGroupDefinition(linkGroup);
   return <div className="canvas-container-preview">
-    {configOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} configuration`}><div className="canvas-link-guide"><strong>Link containers</strong><p>Choose the same group in each container to share symbol and interval across canvases.</p></div><label><span>Linked group</span><select aria-label={`${definition.title} link group`} onChange={(event) => onLinkChange(event.target.value as CanvasLinkGroupId)} value={linkGroup}>{LINK_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>{linkGroup !== "none" ? <div className="canvas-link-context"><Link2 size={12} /><span>Group {linkGroup} · {linkContext.symbol} · {linkContext.timeframe}</span><small>{linkedContainers.length ? `With ${linkedContainers.join(", ")}` : "No other container uses this group yet"}</small></div> : null}{containerFields(definition.id, settings, linkContext, setSettings, onLinkContextChange)}</div> : null}
+    {configOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} configuration`}><div className="canvas-link-guide"><strong>Link color</strong><small>Same color = linked</small></div><LinkColorPicker containerTitle={definition.title} onChange={onLinkChange} value={linkGroup} />{groupDefinition ? <div className="canvas-link-context"><i aria-hidden="true" className="canvas-link-context-swatch" /><span>{groupDefinition.label} · {linkContext.symbol} · {linkContext.timeframe}</span><small>{linkedContainers.length ? `Linked with ${linkedContainers.join(", ")}` : "No other container has this color"}</small></div> : null}{containerFields(definition.id, settings, linkContext, setSettings, onLinkContextChange)}</div> : null}
     <div className={configOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{loading && !preview ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div> : renderPreview(definition.id, preview, settings, setSettings, linkGroup, onLinkContextChange, linkContext)}</div>
+  </div>;
+}
+
+function LinkColorPicker({ containerTitle, onChange, value }: { containerTitle: string; onChange: (group: CanvasLinkGroupId) => void; value: CanvasLinkGroupId }) {
+  return <div aria-label={`${containerTitle} link color`} className="canvas-link-picker" role="group">
+    {CANVAS_LINK_GROUPS.map((group) => <button
+      aria-label={`Assign ${containerTitle} to ${group.label}`}
+      aria-pressed={value === group.id}
+      className="canvas-link-color-choice"
+      key={group.id}
+      onClick={() => onChange(group.id)}
+      style={{ "--canvas-link-choice-color": group.color } as CSSProperties}
+      title={group.label}
+      type="button"
+    ><span aria-hidden="true">{value === group.id ? <Check size={12} /> : null}</span></button>)}
+    <button aria-label={`Unlink ${containerTitle}`} aria-pressed={value === "none"} className="canvas-link-unlink" onClick={() => onChange("none")} title="Unlink" type="button"><Unlink size={12} /></button>
   </div>;
 }
 
