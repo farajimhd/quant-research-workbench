@@ -332,7 +332,15 @@ function ServiceFleetCard({ now, onOpen, service }: { now: Date; onOpen: () => v
           {metrics.map((metric) => (
             <div className={`service-fleet-metric tone-${metric.tone ?? "neutral"}`} key={metric.label}>
               <span>{metric.label}</span>
-              <strong>{metric.value}</strong>
+              <strong className={metric.valueParts ? "service-fleet-metric-ratio" : undefined}>
+                {metric.valueParts ? (
+                  <>
+                    <span className="service-fleet-metric-current">{metric.valueParts.current}</span>
+                    <span className="service-fleet-metric-separator">/</span>
+                    <span className="service-fleet-metric-total">{metric.valueParts.total}</span>
+                  </>
+                ) : metric.value}
+              </strong>
               <small title={metric.detail}>{metric.detail}</small>
             </div>
           ))}
@@ -4885,6 +4893,10 @@ type ServiceFleetMetric = {
   label: string;
   tone?: "good" | "neutral" | "warn";
   value: string;
+  valueParts?: {
+    current: string;
+    total: string;
+  };
 };
 
 type ServiceFleetDatabaseSummary = {
@@ -4910,7 +4922,12 @@ function serviceFleetMetrics(service: ServiceStatusPayload): ServiceFleetMetric[
   const metrics = serviceMetricsRecord(service);
   const number = (keys: string[]) => numericMetricOptional(metrics, keys);
   const compact = (value: number | null) => value === null ? "—" : formatCompactNumber(value);
-  const ratio = (left: number | null, right: number | null) => left === null && right === null ? "—" : `${compact(left)} / ${compact(right)}`;
+  const ratio = (left: number | null, right: number | null) => {
+    if (left === null && right === null) return { value: "—" };
+    const current = compact(left);
+    const total = compact(right);
+    return { value: `${current} / ${total}`, valueParts: { current, total } };
+  };
   const detail = (text: string, fallback: string) => text.trim() || fallback;
 
   if (service.registry.id === "news") {
@@ -4924,10 +4941,10 @@ function serviceFleetMetrics(service: ServiceStatusPayload): ServiceFleetMetric[
     const coverageDone = number(["gap_fill_flushed_chunks"]);
     const coverageTotal = number(["gap_fill_total_chunks"]);
     return [
-      { label: "Unique / Polled", value: ratio(unique, polled), detail: `${compact(duplicates)} repeat rows` },
-      { label: "Enriched / Required", value: ratio(enriched, required), detail: remainingLabel(enriched, required, "URLs"), tone: hasRemaining(enriched, required) ? "warn" : "neutral" },
+      { label: "Unique / Polled", ...ratio(unique, polled), detail: `${compact(duplicates)} repeat rows` },
+      { label: "Enriched / Required", ...ratio(enriched, required), detail: remainingLabel(enriched, required, "URLs"), tone: hasRemaining(enriched, required) ? "warn" : "neutral" },
       { label: "Inserted", value: compact(written), detail: differenceLabel(written, unique, "unique not written"), tone: hasRemaining(written, unique) ? "warn" : "neutral" },
-      { label: "Coverage Filled", value: ratio(coverageDone, coverageTotal), detail: remainingLabel(coverageDone, coverageTotal, "chunks"), tone: hasRemaining(coverageDone, coverageTotal) ? "warn" : "neutral" },
+      { label: "Coverage Filled", ...ratio(coverageDone, coverageTotal), detail: remainingLabel(coverageDone, coverageTotal, "chunks"), tone: hasRemaining(coverageDone, coverageTotal) ? "warn" : "neutral" },
     ];
   }
 
@@ -4939,9 +4956,9 @@ function serviceFleetMetrics(service: ServiceStatusPayload): ServiceFleetMetric[
     const contextPending = number(["xbrl_context_pending_rows"]);
     const contextFailures = number(["xbrl_context_sync_failures"]);
     return [
-      { label: "Processed / Feed", value: ratio(processed, feed), detail: remainingLabel(processed, feed, "filings"), tone: hasRemaining(processed, feed) ? "warn" : "neutral" },
-      { label: "Written / Processed", value: ratio(written, processed), detail: differenceLabel(written, processed, "not written"), tone: hasRemaining(written, processed) ? "warn" : "neutral" },
-      { label: "Workers Active", value: ratio(number(["live_active_workers"]), number(["live_workers"])), detail: `${compact(number(["live_queue_size"]))} queued · ${compact(workerFailures)} failed`, tone: (workerFailures ?? 0) > 0 ? "warn" : "neutral" },
+      { label: "Processed / Feed", ...ratio(processed, feed), detail: remainingLabel(processed, feed, "filings"), tone: hasRemaining(processed, feed) ? "warn" : "neutral" },
+      { label: "Written / Processed", ...ratio(written, processed), detail: differenceLabel(written, processed, "not written"), tone: hasRemaining(written, processed) ? "warn" : "neutral" },
+      { label: "Workers Active", ...ratio(number(["live_active_workers"]), number(["live_workers"])), detail: `${compact(number(["live_queue_size"]))} queued · ${compact(workerFailures)} failed`, tone: (workerFailures ?? 0) > 0 ? "warn" : "neutral" },
       { label: "XBRL Facts", value: compact(number(["xbrl_company_fact_rows"])), detail: `${compact(contextPending)} pending · ${compact(contextFailures)} failed`, tone: (contextPending ?? 0) + (contextFailures ?? 0) > 0 ? "warn" : "neutral" },
     ];
   }
@@ -4949,7 +4966,7 @@ function serviceFleetMetrics(service: ServiceStatusPayload): ServiceFleetMetric[
   if (service.registry.id === "text-embed") {
     const coverage = textEmbedCoverageTotals(metrics);
     return [
-      { label: "Completed / Detected", value: ratio(coverage.completed, coverage.detected), detail: `${compact(coverage.remaining)} gaps remaining`, tone: coverage.remaining ? "warn" : "neutral" },
+      { label: "Completed / Detected", ...ratio(coverage.completed, coverage.detected), detail: `${compact(coverage.remaining)} gaps remaining`, tone: coverage.remaining ? "warn" : "neutral" },
       { label: "Embeddings Written", value: compact(number(["embedding_rows_written"])), detail: `${compact(number(["coverage_rows_written"]))} coverage rows` },
       { label: "Last Batch", value: compact(number(["last_embedding_sequences"])), detail: detail(stringMetric(metrics, ["last_embedding_stage", "last_embedding_source"]), "not reported") },
       { label: "Last Throughput", value: number(["last_embedding_sequences_per_second"]) === null ? "—" : `${number(["last_embedding_sequences_per_second"])!.toFixed(1)}/s`, detail: detail(stringMetric(metrics, ["last_embedding_source", "active_source"]), "not reported") },
@@ -4963,9 +4980,9 @@ function serviceFleetMetrics(service: ServiceStatusPayload): ServiceFleetMetric[
     const present = tables.reduce((sum, row) => sum + optionalNumber(row.tables_present), 0);
     const total = tables.reduce((sum, row) => sum + optionalNumber(row.tables_total), 0);
     return [
-      { label: "Sources Healthy", value: ratio(sources.length ? healthySources : null, sources.length || null), detail: `${Math.max(0, sources.length - healthySources)} need attention`, tone: sources.length > healthySources ? "warn" : "neutral" },
+      { label: "Sources Healthy", ...ratio(sources.length ? healthySources : null, sources.length || null), detail: `${Math.max(0, sources.length - healthySources)} need attention`, tone: sources.length > healthySources ? "warn" : "neutral" },
       { label: "Rows Fetched", value: compact(number(["source_rows_fetched"])), detail: "latest sync" },
-      { label: "Tables Present", value: ratio(tables.length ? present : null, tables.length ? total : null), detail: `${Math.max(0, total - present)} missing`, tone: total > present ? "warn" : "neutral" },
+      { label: "Tables Present", ...ratio(tables.length ? present : null, tables.length ? total : null), detail: `${Math.max(0, total - present)} missing`, tone: total > present ? "warn" : "neutral" },
       { label: "Audit Failures", value: compact(number(["audit_failures"])), detail: detail(stringMetric(metrics, ["audit_status"]), "not reported"), tone: (number(["audit_failures"]) ?? 0) > 0 ? "warn" : "neutral" },
     ];
   }
@@ -4997,7 +5014,7 @@ function serviceFleetMetrics(service: ServiceStatusPayload): ServiceFleetMetric[
     { label: "Events Ingested", value: compact(number(["ingest_events"])), detail: `${compact(number(["ingest_quotes"]))} quotes · ${compact(number(["ingest_trades"]))} trades` },
     { label: "Events Persisted", value: compact(number(["compact_events_persisted"])), detail: `${compact(number(["compact_events_reorder_pending"]))} reorder pending` },
     { label: "Bars Persisted", value: compact(number(["intraday_bar_rows_persisted"])), detail: `${compact(number(["intraday_bar_repairs_completed"]))} late repairs` },
-    { label: "Repair / Queue", value: ratio(optionalNumberOrNull(coverage.completed_jobs), optionalNumberOrNull(coverage.total_jobs)), detail: `${compact(queueDrops)} queue drops`, tone: (queueDrops ?? 0) > 0 ? "warn" : "neutral" },
+    { label: "Repair / Queue", ...ratio(optionalNumberOrNull(coverage.completed_jobs), optionalNumberOrNull(coverage.total_jobs)), detail: `${compact(queueDrops)} queue drops`, tone: (queueDrops ?? 0) > 0 ? "warn" : "neutral" },
   ];
 }
 
