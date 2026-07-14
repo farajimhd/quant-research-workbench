@@ -54,8 +54,9 @@ the clock. The same compact header labels pre-market, regular, after-hours, or
 closed state from that ET preview clock. Replay follows its historical ET cursor,
 while Live reads the QMD Service Core market-status snapshot and reports an
 explicit unavailable state instead of substituting the browser clock. Canvas registry, container library, and layout reset controls live in
-a collapsible right management sidebar. The document clips horizontal overflow
-while the canvas remains its own horizontal scroll surface. Market data comes from QMD History, news/SEC/XBRL
+a collapsible right management sidebar. The document and page shell clip
+horizontal overflow; only the canvas owns horizontal scrolling, and container
+movement or resizing may expand that canvas in both axes. Market data comes from QMD History, news/SEC/XBRL
 rows are point-in-time ClickHouse reads, and broker/runtime-only state is an
 explicit IBKR-shaped configuration fixture. Per-container controls and the
 single global default layout are persisted in browser storage. A canvas

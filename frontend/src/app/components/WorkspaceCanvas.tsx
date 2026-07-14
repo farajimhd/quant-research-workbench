@@ -114,24 +114,17 @@ export function WorkspaceWindow({
     ...(linkColor ? { "--workspace-link-color": linkColor } : {}),
   } as CSSProperties;
 
-  function horizontalBounds(element: HTMLElement) {
-    const workspace = element.closest<HTMLElement>("[data-workspace-canvas]");
-    return workspace?.clientWidth ?? Number.POSITIVE_INFINITY;
-  }
-
-  function moveWindow(x: number, y: number, element: HTMLElement) {
-    const canvasWidth = horizontalBounds(element);
+  function moveWindow(x: number, y: number) {
     onLayoutChange(id, {
-      x: Math.max(0, Math.min(x, Math.max(0, canvasWidth - layout.w))),
+      x: Math.max(0, x),
       y: Math.max(0, y),
     });
   }
 
-  function resizeWindow(w: number, h: number, element: HTMLElement) {
-    const canvasWidth = horizontalBounds(element);
+  function resizeWindow(w: number, h: number) {
     onLayoutChange(id, {
       h: Math.max(MIN_WINDOW_HEIGHT, h),
-      w: Math.max(MIN_WINDOW_WIDTH, Math.min(w, Math.max(MIN_WINDOW_WIDTH, canvasWidth - layout.x))),
+      w: Math.max(MIN_WINDOW_WIDTH, w),
     });
   }
 
@@ -144,7 +137,7 @@ export function WorkspaceWindow({
     event.currentTarget.setPointerCapture(event.pointerId);
     const target = event.currentTarget;
     const move = (moveEvent: globalThis.PointerEvent) => {
-      moveWindow(startX + moveEvent.clientX - originX, startY + moveEvent.clientY - originY, target);
+      moveWindow(startX + moveEvent.clientX - originX, startY + moveEvent.clientY - originY);
     };
     const stop = () => {
       target.removeEventListener("pointermove", move);
@@ -163,7 +156,7 @@ export function WorkspaceWindow({
     const step = event.shiftKey ? KEYBOARD_MOVE_STEP_LARGE : KEYBOARD_MOVE_STEP;
     const dx = event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0;
     const dy = event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0;
-    moveWindow(layout.x + dx, layout.y + dy, event.currentTarget);
+    moveWindow(layout.x + dx, layout.y + dy);
   }
 
   function startResize(event: PointerEvent<HTMLButtonElement>) {
@@ -176,7 +169,7 @@ export function WorkspaceWindow({
     event.currentTarget.setPointerCapture(event.pointerId);
     const target = event.currentTarget;
     const move = (moveEvent: globalThis.PointerEvent) => {
-      resizeWindow(startW + moveEvent.clientX - originX, startH + moveEvent.clientY - originY, target);
+      resizeWindow(startW + moveEvent.clientX - originX, startH + moveEvent.clientY - originY);
     };
     const stop = () => {
       target.removeEventListener("pointermove", move);
@@ -194,7 +187,7 @@ export function WorkspaceWindow({
     const step = event.shiftKey ? KEYBOARD_MOVE_STEP_LARGE : KEYBOARD_MOVE_STEP;
     const dw = event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0;
     const dh = event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0;
-    resizeWindow(layout.w + dw, layout.h + dh, event.currentTarget);
+    resizeWindow(layout.w + dw, layout.h + dh);
   }
 
   return (

@@ -87,13 +87,18 @@
   }
 }
 
+html,
+body {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
   min-width: 0;
   background: var(--page-bg);
   color: var(--foreground);
   font-size: var(--font-size-base);
-  overflow-x: auto;
 }
 
 button,
@@ -289,6 +294,8 @@ button {
   display: grid;
   grid-template-columns: 256px minmax(0, 1fr);
   min-height: calc(var(--app-zoomed-viewport-height) - 64px);
+  min-width: 0;
+  overflow-x: hidden;
 }
 
 .sidebar-collapsed .shell-body {
@@ -393,6 +400,7 @@ button {
 .main {
   min-width: 0;
   min-height: calc(var(--app-zoomed-viewport-height) - 64px);
+  overflow-x: hidden;
 }
 
 .shell-content-inner {
@@ -400,6 +408,8 @@ button {
   min-height: calc(var(--app-zoomed-viewport-height) - 64px);
   margin: 0 auto;
   padding: 24px;
+  min-width: 0;
+  overflow-x: hidden;
 }
 
 .page-cache-panel {
@@ -408,6 +418,9 @@ button {
 
 .page-cache-panel.active {
   display: block;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
 }
 
 .services-page {
@@ -20339,7 +20352,8 @@ button {
 .focus-app-main {
   height: 100%;
   min-width: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .canvas-config-page {
@@ -20473,6 +20487,9 @@ button {
 .canvas-config-page .trading-workspace-shell {
   gap: 2px;
   isolation: isolate;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
   position: relative;
 }
 
