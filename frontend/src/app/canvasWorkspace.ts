@@ -126,9 +126,11 @@ export function writeCanvasWorkspaceState(canvasId: string, state: CanvasWorkspa
   window.localStorage.setItem(canvasWorkspaceStorageKey(canvasId), JSON.stringify(state));
 }
 
-export function focusCanvasUrl(canvasId: string) {
+export function focusCanvasUrl(canvasId: string, containerId?: WorkspaceContainerId) {
   const url = new URL(window.location.href);
   url.searchParams.set("canvas", canvasId);
+  if (containerId) url.searchParams.set("container", containerId);
+  else url.searchParams.delete("container");
   url.hash = "canvas-focus";
   return url.toString();
 }
@@ -136,6 +138,7 @@ export function focusCanvasUrl(canvasId: string) {
 export function configurationCanvasUrl() {
   const url = new URL(window.location.href);
   url.searchParams.delete("canvas");
+  url.searchParams.delete("container");
   url.hash = "canvas-configuration";
   return url.toString();
 }

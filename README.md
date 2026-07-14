@@ -63,6 +63,10 @@ registry on this page creates, opens, and removes focused child canvases.
 New managed canvases inherit the saved default layout, or the current main
 layout when no default has been saved, so they never open as empty pages.
 Containers may be moved between registered canvases or opened as linked copies.
+Linked-copy URLs carry the requested container identity as well as the canvas
+identity, so a focus page can restore its container even when no prior browser
+workspace state is available. Chart controls and loading state mount immediately
+while the point-in-time preview request is still resolving.
 Only containers explicitly defined as single-symbol may join one of seven neon
 color groups; the current shared set makes Chart linkable while generic Scanner,
 News, Orders, and other multi-item containers remain independent. The neon

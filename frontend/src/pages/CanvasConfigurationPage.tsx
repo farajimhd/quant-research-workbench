@@ -81,17 +81,19 @@ export function CanvasConfigurationPage() {
 }
 
 export function CanvasFocusPage() {
-  const canvasId = new URLSearchParams(window.location.search).get("canvas") || MAIN_CANVAS_ID;
-  return <CanvasWorkspaceSurface canvasId={canvasId} manager={false} />;
+  const params = new URLSearchParams(window.location.search);
+  const canvasId = params.get("canvas") || MAIN_CANVAS_ID;
+  const requestedContainerId = validContainerId(params.get("container"));
+  return <CanvasWorkspaceSurface canvasId={canvasId} manager={false} requestedContainerId={requestedContainerId} />;
 }
 
-function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manager: boolean }) {
+function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { canvasId: string; manager: boolean; requestedContainerId?: WorkspaceContainerId }) {
+  const [initialCanvasState] = useState<CanvasWorkspaceState | null>(() => focusCanvasState(canvasId, requestedContainerId));
   const [registry, setRegistry] = useState<CanvasRegistry>(readCanvasRegistry);
   const [settings, setSettings] = useState<ContainerSettings>(readSettings);
   const [previewContext, setPreviewContext] = useState<CanvasPreviewContext>(readPreviewContext);
   const [preview, setPreview] = useState<CanvasPreview | null>(null);
-  const [workspaceState, setWorkspaceState] = useState<CanvasWorkspaceState | null>(() => readCanvasWorkspaceState(canvasId));
-  const [initialCanvasState] = useState<CanvasWorkspaceState | null>(() => readCanvasWorkspaceState(canvasId));
+  const [workspaceState, setWorkspaceState] = useState<CanvasWorkspaceState | null>(initialCanvasState);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [defaultSaved, setDefaultSaved] = useState(false);
@@ -215,7 +217,7 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
         };
     writeCanvasWorkspaceState(created.canvas.id, state);
     setRegistry(created.registry);
-    window.open(focusCanvasUrl(created.canvas.id), "_blank", "noopener,noreferrer");
+    window.open(focusCanvasUrl(created.canvas.id, containerId), "_blank", "noopener,noreferrer");
   }
 
   function moveContainer(containerId: WorkspaceContainerId, targetCanvasId: string, sourceLayout: WorkspaceWindowLayout) {
@@ -273,6 +275,7 @@ function CanvasWorkspaceSurface({ canvasId, manager }: { canvasId: string; manag
         defaultStateOverride={manager ? registry.defaultState ?? null : initialCanvasState}
         definitionsOverride={TRADING_WORKSPACE_CONTAINERS}
         historicalSourceReady={!error}
+        initialStateOverride={manager ? null : initialCanvasState}
         layoutPreset={manager ? "global" : "focus"}
         managementContent={manager ? <CanvasManager registry={registry} onCreate={() => openNewCanvas()} onOpen={(id) => window.open(focusCanvasUrl(id), "_blank", "noopener,noreferrer")} onRemove={removeCanvas} /> : null}
         managementOpen={manager && managementOpen}
@@ -365,7 +368,7 @@ function ContainerPreview({ definition, linkContext, linkGroup, linkedContainers
   return <div className="canvas-container-preview">
     {linkOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} link configuration`} data-canvas-link-popover={definition.id}><div className="canvas-link-guide"><strong>Link color</strong><small>Same color = linked</small></div><LinkColorPicker containerTitle={definition.title} onChange={onLinkChange} value={linkGroup} /><LinkedContainerList containerTitle={definition.title} containers={linkedContainers} /></div> : null}
     {settingsOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} settings`}>{containerFields(definition.id, settings, linkContext, setSettings, onLinkContextChange)}</div> : null}
-    <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{loading && !preview ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div> : renderPreview(definition.id, preview, settings, setSettings, linkGroup, onLinkContextChange, linkContext)}</div>
+    <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{loading && !preview && definition.id !== "chart" ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div> : renderPreview(definition.id, preview, settings, setSettings, linkGroup, onLinkContextChange, linkContext, loading)}</div>
   </div>;
 }
 
@@ -391,9 +394,9 @@ function LinkColorPicker({ containerTitle, onChange, value }: { containerTitle: 
   </div>;
 }
 
-function renderPreview(id: WorkspaceContainerId, preview: CanvasPreview | null, settings: ContainerSettings, setSettings: React.Dispatch<React.SetStateAction<ContainerSettings>>, linkGroup: CanvasLinkGroupId, onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void, linkContext: CanvasLinkContext) {
+function renderPreview(id: WorkspaceContainerId, preview: CanvasPreview | null, settings: ContainerSettings, setSettings: React.Dispatch<React.SetStateAction<ContainerSettings>>, linkGroup: CanvasLinkGroupId, onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void, linkContext: CanvasLinkContext, loading = false) {
+  if (id === "chart") return <ChartPreview linkContext={linkContext} loading={loading} onLinkContextChange={onLinkContextChange} preview={preview} settings={settings} setSettings={setSettings} />;
   if (!preview) return <EmptyState label="No preview data" />;
-  if (id === "chart") return <ChartPreview linkContext={linkContext} onLinkContextChange={onLinkContextChange} preview={preview} settings={settings} setSettings={setSettings} />;
   if (id === "scanner") return <PreviewTable columns={settings.scanner.showActivity ? ["symbol", "last", "change_pct", "volume", "trade_count"] : ["symbol", "last", "change_pct"]} onSymbolSelect={linkGroup === "none" ? undefined : (symbol) => onLinkContextChange({ symbol })} rows={preview.scanner.slice(0, settings.scanner.limit)} />;
   if (id === "portfolio") return <PortfolioPreview data={preview.portfolio} settings={settings.portfolio} />;
   if (id === "orders") return <PreviewTable columns={settings.orders.showOrderIds ? ["orderId", "ticker", "side", "orderType", "quantity", "status"] : ["ticker", "side", "orderType", "quantity", "status"]} rows={preview.orders.slice(0, settings.orders.limit)} />;
@@ -408,17 +411,18 @@ function renderPreview(id: WorkspaceContainerId, preview: CanvasPreview | null, 
   return <PreviewTable columns={["time", "category", "event", "detail"]} rows={preview.journal.slice(0, settings.journal.limit)} />;
 }
 
-function ChartPreview({ linkContext, onLinkContextChange, preview, settings, setSettings }: { linkContext: CanvasLinkContext; onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void; preview: CanvasPreview; settings: ContainerSettings; setSettings: React.Dispatch<React.SetStateAction<ContainerSettings>> }) {
+function ChartPreview({ linkContext, loading, onLinkContextChange, preview, settings, setSettings }: { linkContext: CanvasLinkContext; loading: boolean; onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void; preview: CanvasPreview | null; settings: ContainerSettings; setSettings: React.Dispatch<React.SetStateAction<ContainerSettings>> }) {
   const payload = useMemo<ChartPayload>(() => ({
-    candles: preview.chart.bars.map((bar) => ({ close: bar.close, high: bar.high, low: bar.low, open: bar.open, time: Date.parse(bar.bar_start) / 1000 })),
+    candles: (preview?.chart.bars ?? []).map((bar) => ({ close: bar.close, high: bar.high, low: bar.low, open: bar.open, time: Date.parse(bar.bar_start) / 1000 })),
     markers: [], oscillator_series: [], overlay_series: [], regions: [],
-    volume: settings.chart.showVolume ? preview.chart.bars.map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
-  }), [preview.chart.bars, settings.chart.showVolume]);
+    volume: settings.chart.showVolume ? (preview?.chart.bars ?? []).map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
+  }), [preview?.chart.bars, settings.chart.showVolume]);
   function updateChart(symbol: string, timeframe: "1m" | "5m") {
     setSettings((current) => ({ ...current, chart: { ...current.chart, symbol, timeframe } }));
     onLinkContextChange({ symbol, timeframe });
   }
-  return <ChartPanel emptyMessage="No bars at this clock." enableFullscreen={false} featureOptions={[]} indicatorOptions={[]} initialFitMode="recent" onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), linkContext.timeframe)} onTimeframeChange={(timeframe) => updateChart(linkContext.symbol, timeframe as "1m" | "5m")} onVisibleColumnsChange={() => undefined} payload={payload} periodEnd={preview.as_of.slice(0, 10)} periodStart={preview.as_of.slice(0, 10)} showIndicatorControls={false} ticker={linkContext.symbol} timeframe={linkContext.timeframe} timeframes={["1m", "5m"]} visibleColumns={[]} />;
+  const previewDate = preview?.as_of.slice(0, 10);
+  return <ChartPanel emptyMessage="No bars at this clock." enableFullscreen={false} featureOptions={[]} indicatorOptions={[]} initialFitMode="recent" loading={loading} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), linkContext.timeframe)} onTimeframeChange={(timeframe) => updateChart(linkContext.symbol, timeframe as "1m" | "5m")} onVisibleColumnsChange={() => undefined} payload={payload} periodEnd={previewDate} periodStart={previewDate} showIndicatorControls={false} ticker={linkContext.symbol} timeframe={linkContext.timeframe} timeframes={["1m", "5m"]} visibleColumns={[]} />;
 }
 
 function PreviewTable({ columns, onSymbolSelect, rows }: { columns: string[]; onSymbolSelect?: (symbol: string) => void; rows: PreviewRow[] }) {
@@ -496,6 +500,12 @@ function previewRowKey(row: PreviewRow, columns: string[], index: number) { retu
 function money(value: unknown) { return typeof value === "number" ? new Intl.NumberFormat("en-US", { currency: "USD", style: "currency" }).format(value) : "—"; }
 function formatCell(value: unknown, column: string) { if (value === null || value === undefined || value === "") return "—"; if (column.includes("time") || column.includes("at_utc")) { const date = new Date(String(value)); return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" }).format(date); } if (typeof value === "number") return new Intl.NumberFormat("en-US", { maximumFractionDigits: column.includes("pct") ? 2 : 4 }).format(value); if (Array.isArray(value)) return value.join(", "); return String(value); }
 function containerTitle(id: WorkspaceContainerId) { return TRADING_WORKSPACE_CONTAINERS.find((definition) => definition.id === id)?.title ?? id; }
+function validContainerId(value: string | null): WorkspaceContainerId | undefined { return TRADING_WORKSPACE_CONTAINERS.some((definition) => definition.id === value) ? value as WorkspaceContainerId : undefined; }
+function focusCanvasState(canvasId: string, requestedContainerId?: WorkspaceContainerId): CanvasWorkspaceState | null {
+  const stored = readCanvasWorkspaceState(canvasId);
+  if (!requestedContainerId || stored?.openIds.includes(requestedContainerId)) return stored;
+  return { layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: createFocusLayouts([requestedContainerId]), openIds: [requestedContainerId] };
+}
 function normalizeInheritedLayouts(layouts: Record<string, WorkspaceWindowLayout>, ids: WorkspaceContainerId[]) {
   const fallback = createFocusLayouts(ids);
   return Object.fromEntries(ids.map((id) => [id, { ...(layouts[id] ?? fallback[id]), fullscreen: false, minimized: false }]));

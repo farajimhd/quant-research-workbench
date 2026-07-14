@@ -41,6 +41,7 @@ type TradingWorkspaceProps = {
   defaultStateOverride?: CanvasWorkspaceState | null;
   definitionsOverride?: readonly WorkspaceContainerDefinition[];
   historicalSourceReady: boolean;
+  initialStateOverride?: CanvasWorkspaceState | null;
   layoutPreset?: "focus" | "global" | "mode";
   linkColorForContainer?: (definition: WorkspaceContainerDefinition) => string | undefined;
   linkLabelForContainer?: (definition: WorkspaceContainerDefinition) => string | undefined;
@@ -76,6 +77,7 @@ export function TradingWorkspace({
   defaultStateOverride,
   definitionsOverride,
   historicalSourceReady,
+  initialStateOverride,
   layoutPreset = "mode",
   linkColorForContainer,
   linkLabelForContainer,
@@ -102,8 +104,8 @@ export function TradingWorkspace({
   const definitionById = useMemo(() => new Map(definitions.map((definition) => [definition.id, definition])), [definitions]);
   const storageKey = storageKeyOverride ?? `quant-research-workbench.trading-workspace.${mode}`;
   const initial = useMemo(
-    () => readWorkspaceState(storageKey, mode, definitions, defaultOpenIds, layoutPreset),
-    [defaultOpenIds, definitions, layoutPreset, mode, storageKey],
+    () => initialStateOverride ?? readWorkspaceState(storageKey, mode, definitions, defaultOpenIds, layoutPreset),
+    [defaultOpenIds, definitions, initialStateOverride, layoutPreset, mode, storageKey],
   );
   const [openIds, setOpenIds] = useState<WorkspaceContainerId[]>(initial.openIds);
   const [layouts, setLayouts] = useState<Record<string, WorkspaceWindowLayout>>(initial.layouts);
