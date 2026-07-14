@@ -33,6 +33,7 @@ type AppThemeTokenMap = {
   card: string;
   cardMuted: string;
   canvasLinkGroups: readonly [string, string, string, string, string, string, string];
+  metricAccents: readonly [string, string, string, string];
   chromeBackground: string;
   chromeBorder: string;
   chromeMuted: string;
@@ -291,6 +292,10 @@ export function applyThemeDefinition(target: HTMLElement, themeId: AppThemeId = 
     "--canvas-link-rose": tokens.canvasLinkGroups[4],
     "--canvas-link-cyan": tokens.canvasLinkGroups[5],
     "--canvas-link-orange": tokens.canvasLinkGroups[6],
+    "--metric-accent-1": tokens.metricAccents[0],
+    "--metric-accent-2": tokens.metricAccents[1],
+    "--metric-accent-3": tokens.metricAccents[2],
+    "--metric-accent-4": tokens.metricAccents[3],
     "--control-bg": tokens.controlBackground,
     "--danger": tokens.danger,
     "--destructive": tokens.danger,
@@ -403,6 +408,9 @@ function buildTheme({
       canvasLinkGroups: tone === "light"
         ? ["#007dff", "#00c853", "#d6b000", "#8f00ff", "#ff1493", "#00a6a6", "#ff5a00"]
         : ["#00c8ff", "#39ff14", "#ffee00", "#bf5fff", "#ff3bd4", "#00ffd5", "#ff7a00"],
+      metricAccents: tone === "light"
+        ? ["#008143", "#00758a", "#6d3fd1", "#006edc"]
+        : ["#56f1bb", "#00d8ff", "#c68cff", "#65c7ff"],
       chromeBackground: withOpacity(palette.background, tone === "light" ? "0.95" : "0.92"),
       chromeBorder: palette.border,
       chromeMuted: palette.mutedForeground,

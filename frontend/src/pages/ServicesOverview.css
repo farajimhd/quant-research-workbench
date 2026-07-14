@@ -121,16 +121,16 @@
 }
 
 .service-fleet-metric {
-  --fleet-metric-accent: color-mix(in oklab, var(--canvas-link-green) 68%, var(--foreground));
+  --fleet-metric-accent: var(--metric-accent-1);
   display: grid;
   gap: 1px;
   min-height: 39px;
   min-width: 0;
   padding: 0 10px;
 }
-.service-fleet-metric:nth-child(2) { --fleet-metric-accent: color-mix(in oklab, var(--canvas-link-cyan) 68%, var(--foreground)); }
-.service-fleet-metric:nth-child(3) { --fleet-metric-accent: color-mix(in oklab, var(--canvas-link-violet) 68%, var(--foreground)); }
-.service-fleet-metric:nth-child(4) { --fleet-metric-accent: color-mix(in oklab, var(--canvas-link-orange) 68%, var(--foreground)); }
+.service-fleet-metric:nth-child(2) { --fleet-metric-accent: var(--metric-accent-2); }
+.service-fleet-metric:nth-child(3) { --fleet-metric-accent: var(--metric-accent-3); }
+.service-fleet-metric:nth-child(4) { --fleet-metric-accent: var(--metric-accent-4); }
 .service-fleet-metric:first-child { padding-left: 0; }
 .service-fleet-metric + .service-fleet-metric { border-left: 1px solid var(--surface-border); }
 .service-fleet-metric > span,
