@@ -25,6 +25,7 @@ from research.mlops.clickhouse import (  # noqa: E402
     default_clickhouse_url,
     default_clickhouse_user,
     quote_ident,
+    sql_string,
 )
 from research.mlops.env import discover_env_files, load_env_files  # noqa: E402
 
@@ -173,7 +174,7 @@ def table_exists(client: ClickHouseHttpClient, database: str, name: str) -> bool
     return bool(
         int(
             client.execute(
-                f"SELECT count() FROM system.tables WHERE database={json.dumps(database)} AND name={json.dumps(name)} FORMAT TSV"
+                f"SELECT count() FROM system.tables WHERE database={sql_string(database)} AND name={sql_string(name)} FORMAT TSV"
             ).strip()
             or "0"
         )

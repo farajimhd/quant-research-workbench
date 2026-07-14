@@ -274,6 +274,14 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
         self.assertEqual(result["matched"], 1)
         self.assertEqual(result["mismatched"], 0)
 
+    def test_archive_identity_table_probe_uses_string_literals(self) -> None:
+        statements: list[str] = []
+        client = SimpleNamespace(execute=lambda sql: statements.append(sql) or "1\n")
+
+        self.assertTrue(archive_identity.table_exists(client, "sec_core", "sec_submissions_filing_overlay_v3"))
+        self.assertIn("database='sec_core'", statements[0])
+        self.assertIn("name='sec_submissions_filing_overlay_v3'", statements[0])
+
     def test_direct_submission_overlay_preserves_relation_without_acceptance_time(self) -> None:
         statements: list[str] = []
         client = SimpleNamespace(execute=statements.append)
