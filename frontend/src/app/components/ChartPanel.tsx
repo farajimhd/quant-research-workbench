@@ -234,6 +234,8 @@ type ChartPanelProps = {
   indicatorOptions: string[];
   initialFitMode?: "default" | "last_market_day" | "live_first_10" | "recent";
   labelOptions?: ChartLabelOption[];
+  canLoadEarlier?: boolean;
+  loadingEarlier?: boolean;
   loading?: boolean;
   normalizeTicker?: boolean;
   onPeriodChange?: (start: string, end: string) => void;
@@ -242,6 +244,7 @@ type ChartPanelProps = {
   onVisibleColumnsChange: (value: string[]) => void;
   onVisibleSupervisionGroupsChange?: (value: string[]) => void;
   onLiveEntryClose?: () => void;
+  onLoadEarlier?: () => void;
   payload: ChartPayload | null;
   periodEnd?: string;
   periodMax?: string;
@@ -301,6 +304,8 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   indicatorOptions,
   initialFitMode = "default",
   labelOptions = [],
+  canLoadEarlier = false,
+  loadingEarlier = false,
   loading = false,
   normalizeTicker = true,
   onPeriodChange,
@@ -309,6 +314,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   onVisibleColumnsChange,
   onVisibleSupervisionGroupsChange,
   onLiveEntryClose,
+  onLoadEarlier,
   periodEnd,
   periodMax,
   periodMin,
@@ -355,7 +361,10 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const overlayInteractionCleanupRef = useRef<(() => void) | null>(null);
   const overlayRedrawFrameRef = useRef<number | null>(null);
   const overlayRedrawTimerRef = useRef<number | null>(null);
-  const regionDrawRef = useRef<(() => void) | null>(null);
+  const regionDrawRef = useRef<((range: LogicalRange | null) => void) | null>(null);
+  const canLoadEarlierRef = useRef(canLoadEarlier);
+  const loadingEarlierRef = useRef(loadingEarlier);
+  const onLoadEarlierRef = useRef(onLoadEarlier);
   const fittedChartKeyRef = useRef("");
   const normalizeTickerValue = (value: string) => (normalizeTicker ? value.toUpperCase() : value);
   const [draftTicker, setDraftTicker] = useState(normalizeTickerValue(ticker));
@@ -399,6 +408,9 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   liveEntryLineRef.current = liveEntryLineForDraw;
   referenceRef.current = reference ?? null;
   showReferenceLineRef.current = showReferenceLine;
+  canLoadEarlierRef.current = canLoadEarlier;
+  loadingEarlierRef.current = loadingEarlier;
+  onLoadEarlierRef.current = onLoadEarlier;
 
   const updateChartSettings = <K extends keyof ChartAppearanceSettings>(key: K, value: ChartAppearanceSettings[K]) => {
     setChartSettings((current) => {
@@ -541,7 +553,17 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const volume = priceChart.addHistogramSeries({ priceFormat: { type: "volume" }, priceScaleId: "", base: 0 });
     volume.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
     volumeRef.current = volume;
-    const draw = () => scheduleOverlayRedraw();
+    const draw = (range: LogicalRange | null) => {
+      scheduleOverlayRedraw();
+      if (
+        range
+        && range.from <= 10
+        && canLoadEarlierRef.current
+        && !loadingEarlierRef.current
+      ) {
+        onLoadEarlierRef.current?.();
+      }
+    };
     regionDrawRef.current = draw;
     priceChart.timeScale().subscribeVisibleLogicalRangeChange(draw);
     const observer = new ResizeObserver(() => {
@@ -560,6 +582,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const fitKey = buildChartFitKey(ticker, timeframe, referenceKey, payload.candles);
     const shouldAutoFit = fitKey !== fittedChartKeyRef.current;
     const currentRange = shouldAutoFit ? null : priceChartRef.current.timeScale().getVisibleLogicalRange();
+    const currentTimeRange = shouldAutoFit ? null : priceChartRef.current.timeScale().getVisibleRange();
     const timeline = chartTimelineData(payload.candles, timeframe);
     candleRef.current.setData(timeline as never);
     volumeRef.current.setData(volumeDataForSettings(payload, chartSettingsRef.current) as never);
@@ -581,7 +604,11 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         initialFitTimerRef.current = null;
       }, 20);
     } else {
-      if (currentRange) priceChartRef.current.timeScale().setVisibleLogicalRange(currentRange);
+      if (currentTimeRange) {
+        priceChartRef.current.timeScale().setVisibleRange(currentTimeRange);
+      } else if (currentRange) {
+        priceChartRef.current.timeScale().setVisibleLogicalRange(currentRange);
+      }
       drawCurrentRegions();
     }
     refreshInteractionSync();
@@ -1079,6 +1106,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       ) : (
         <div className="chart-canvas-stack">
           {loading ? <div className="chart-update-status">Updating chart...</div> : null}
+          {loadingEarlier ? <div className="chart-update-status">Loading earlier data...</div> : null}
           {errorMessage ? <div className="chart-update-status error">Chart update failed</div> : null}
           <div className="chart-reference-stack-layer" ref={referenceLayerRef} />
           <div className="chart-price">

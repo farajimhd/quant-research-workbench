@@ -32,6 +32,11 @@ struct HistoryQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct LatestCoverageQuery {
+    before: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct BarsQuery {
     end: String,
     event_limit: Option<usize>,
@@ -116,11 +121,20 @@ async fn coverage(
 }
 
 async fn latest_coverage(
+    Query(query): Query<LatestCoverageQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<LatestEventCoverage>, ApiError> {
+    let before = query
+        .before
+        .as_deref()
+        .map(|value| {
+            chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                .map_err(|_| bad_request("before must be an ISO date"))
+        })
+        .transpose()?;
     state
         .source
-        .latest_coverage()
+        .latest_coverage_before(before)
         .await
         .map(Json)
         .map_err(service_error)

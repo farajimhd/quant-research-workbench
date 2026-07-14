@@ -243,11 +243,17 @@ impl HistoricalEventSource {
         })
     }
 
-    pub async fn latest_coverage(&self) -> Result<LatestEventCoverage, String> {
+    pub async fn latest_coverage_before(
+        &self,
+        before: Option<chrono::NaiveDate>,
+    ) -> Result<LatestEventCoverage, String> {
         let coverage_table = format!(
             "{}.events_ordinal_continuity",
             self.config.clickhouse_database
         );
+        let before_filter = before
+            .map(|value| format!(" AND source_date < toDate('{value}')"))
+            .unwrap_or_default();
         let sql = format!(
             r#"SELECT
                 toString(source_date) AS session_date,
@@ -261,11 +267,12 @@ impl HistoricalEventSource {
                 FROM {coverage_table}
                 GROUP BY ticker, source_date
             )
-            WHERE canonical_event_count > 0
+            WHERE canonical_event_count > 0{before_filter}
             GROUP BY source_date
             ORDER BY source_date DESC
             LIMIT 1
             FORMAT JSONEachRow"#,
+            before_filter = before_filter,
         );
         let text = self.query(&sql).await?;
         let row = text

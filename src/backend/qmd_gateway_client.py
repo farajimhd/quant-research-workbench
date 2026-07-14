@@ -100,6 +100,30 @@ def qmd_bars(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) -> dic
     return payload if isinstance(payload, dict) else {"ticker": symbol.upper(), "timeframe": timeframe, "history": [], "current": None}
 
 
+def qmd_bar_history(
+    symbol: str,
+    *,
+    timeframe: str = "1m",
+    before: str | None = None,
+    days: int = 1,
+    row_limit: int = 20_000,
+) -> dict[str, Any]:
+    if not symbol.strip():
+        raise ValueError("symbol is required for QMD bar history.")
+    payload = qmd_get_json(
+        f"/history/bars/{urllib.parse.quote(symbol.strip().upper())}",
+        {"before": before, "days": days, "timeframe": timeframe, "limit": row_limit},
+        timeout=15,
+    )
+    return payload if isinstance(payload, dict) else {
+        "ticker": symbol.upper(),
+        "timeframe": timeframe,
+        "history": [],
+        "earliest_session_date": "",
+        "has_more": False,
+    }
+
+
 def qmd_indicators(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) -> dict[str, Any]:
     if not symbol.strip():
         raise ValueError("symbol is required for QMD indicators.")

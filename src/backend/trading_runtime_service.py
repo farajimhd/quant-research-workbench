@@ -310,6 +310,63 @@ def historical_latest_coverage() -> dict[str, Any]:
     return payload
 
 
+@lru_cache(maxsize=256)
+def historical_bar_history_before(
+    *,
+    before: date,
+    ticker: str,
+    timeframe: str,
+    row_limit: int = 20_000,
+) -> dict[str, Any]:
+    resolved_ticker = _historical_ticker(ticker)
+    resolved_timeframe = _historical_timeframe(timeframe)
+    coverage = _historical_gateway_get(
+        "/coverage/latest",
+        {"before": before.isoformat()},
+        timeout=15,
+    )
+    session_date_text = str(coverage.get("session_date") or "") if isinstance(coverage, dict) else ""
+    if not session_date_text:
+        return {
+            "ticker": resolved_ticker,
+            "timeframe": resolved_timeframe,
+            "history": [],
+            "earliest_session_date": "",
+            "has_more": False,
+            "source": "qmd_history_gateway",
+        }
+    session_date = date.fromisoformat(session_date_text)
+    window = historical_window_preview(
+        mode=RunMode.REPLAY.value,
+        anchor_date=session_date,
+        session_count=1,
+        replay_end_date=session_date,
+    )
+    snapshot = _historical_gateway_get(
+        f"/snapshot/bars/{urllib.parse.quote(resolved_ticker)}",
+        {
+            "start": window["start"],
+            "end": window["end"],
+            "timeframe": resolved_timeframe,
+            "limit": max(1, min(row_limit, 20_000)),
+            "event_limit": 2_000_000,
+        },
+        timeout=90,
+    )
+    bars = list(snapshot.get("history") or []) if isinstance(snapshot, dict) else []
+    if isinstance(snapshot, dict) and snapshot.get("current"):
+        bars.append(dict(snapshot["current"]))
+    bars.sort(key=lambda row: str(row.get("bar_start") or ""))
+    return {
+        "ticker": resolved_ticker,
+        "timeframe": resolved_timeframe,
+        "history": bars,
+        "earliest_session_date": session_date_text if bars else "",
+        "has_more": bool(bars),
+        "source": "qmd_history_gateway",
+    }
+
+
 def historical_day_coverage(anchor_date: date) -> dict[str, Any]:
     window = historical_window_preview(
         mode=RunMode.REPLAY.value,
