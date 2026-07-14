@@ -31,6 +31,7 @@ from research.mlops.clickhouse import (  # noqa: E402
 )
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
 from pipelines.sec.edgar.sec_acceptance_backfill_build import (  # noqa: E402
+    acceptance_rows_for_company,
     create_stage_table,
     insert_rows,
 )
@@ -100,8 +101,29 @@ class FragmentResult:
 
 
 @dataclass(frozen=True, slots=True)
+class DirectSubmissionJob:
+    cik: str
+    url: str
+    artifact_path: str
+    wanted_accessions: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DirectSubmissionResult:
+    job: DirectSubmissionJob
+    status: str
+    artifact_path: str
+    byte_size: int
+    sha256: str
+    matched_rows: tuple[dict[str, Any], ...]
+    error: str
+    elapsed_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
 class RunPaths:
     run_root: Path
+    direct_results_jsonl: Path
     fragment_jobs_jsonl: Path
     fragment_results_jsonl: Path
     accepted_jsonl: Path
@@ -116,6 +138,7 @@ class RunPaths:
         run_root.mkdir(parents=True, exist_ok=True)
         return cls(
             run_root=run_root,
+            direct_results_jsonl=run_root / "direct_submission_results.jsonl",
             fragment_jobs_jsonl=run_root / "fragment_jobs.jsonl",
             fragment_results_jsonl=run_root / "fragment_results.jsonl",
             accepted_jsonl=run_root / "accepted_rows.jsonl",
@@ -129,10 +152,9 @@ class RunPaths:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Second-pass SEC accepted timestamp fill. It finds q_live filings still missing after "
-            "the submissions.zip recent pass, downloads only needed older SEC submission fragment "
-            "JSON files, appends matched rows to the narrow acceptance staging table, and writes "
-            "still-not-found diagnostics."
+            "Second-pass SEC accepted timestamp fill. It refreshes the live submissions JSON for "
+            "each unresolved filing CIK, matches current filings, downloads only needed older "
+            "submission fragments referenced by that fresh payload, and writes diagnostics."
         )
     )
     parser.add_argument("--clickhouse-url", default=default_migration_clickhouse_url())
@@ -177,21 +199,26 @@ def main() -> None:
     artifact_root = Path(args.artifact_root_win)
     submissions_zip = resolve_submissions_zip(args, artifact_root)
     fragment_root = artifact_root / "bulk" / "submissions" / "fragments"
+    current_root = artifact_root / "bulk" / "submissions" / "current"
     fragment_root.mkdir(parents=True, exist_ok=True)
+    current_root.mkdir(parents=True, exist_ok=True)
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
 
     print_header(args, paths, loaded_env, submissions_zip, fragment_root, run_id)
     started = time.perf_counter()
-    missing_by_cik = load_remaining_missing(client, args)
-    jobs, planning_stats = plan_fragment_jobs(args, submissions_zip, fragment_root, missing_by_cik)
-    write_jsonl(paths.fragment_jobs_jsonl, [asdict(job) for job in jobs])
-
     if args.execute:
         create_stage_table(client, args)
 
+    missing_by_cik = load_remaining_missing(client, args)
+    initial_remaining_rows = sum(len(values) for values in missing_by_cik.values())
+
+    direct_stats, fresh_payloads = run_direct_submission_jobs(client, args, paths, current_root, missing_by_cik)
+    jobs, planning_stats = plan_fragment_jobs(args, submissions_zip, fragment_root, missing_by_cik, fresh_payloads)
+    write_jsonl(paths.fragment_jobs_jsonl, [asdict(job) for job in jobs])
     stats = run_fragment_jobs(client, args, paths, jobs, missing_by_cik)
+    stats.update(direct_stats)
     stats.update(planning_stats)
-    stats["initial_remaining_rows"] = sum(len(values) for values in missing_by_cik.values()) + stats["accepted_rows_written"]
+    stats["initial_remaining_rows"] = initial_remaining_rows
     stats["still_not_found_rows"] = sum(len(values) for values in missing_by_cik.values())
     stats["still_not_found_ciks"] = sum(1 for values in missing_by_cik.values() if values)
     stats["wall_seconds"] = round(time.perf_counter() - started, 3)
@@ -200,6 +227,11 @@ def main() -> None:
     write_summary(paths.summary_md, args, paths, run_id, submissions_zip, fragment_root, stats)
     print("summary=" + json.dumps(stats, sort_keys=True, default=str), flush=True)
     print(f"summary_md={paths.summary_md}", flush=True)
+    if stats["direct_jobs_failed"] or stats["fragment_jobs_failed"]:
+        raise SystemExit(
+            f"SEC acceptance submissions enrichment failed: direct={stats['direct_jobs_failed']} "
+            f"fragments={stats['fragment_jobs_failed']}"
+        )
 
 
 def default_migration_clickhouse_url() -> str:
@@ -229,16 +261,35 @@ def resolve_submissions_zip(args: argparse.Namespace, artifact_root: Path) -> Pa
 def load_remaining_missing(client: ClickHouseHttpClient, args: argparse.Namespace) -> dict[str, dict[str, MissingFiling]]:
     target = f"{quote_ident(args.target_database)}.{quote_ident(args.target_table)}"
     stage = f"{quote_ident(args.stage_database)}.{quote_ident(args.stage_table)}"
+    stage_exists = table_exists(client, args.stage_database, args.stage_table)
+    stage_join = f"""
+LEFT JOIN
+(
+    SELECT cik, accession_number, 1 AS matched
+    FROM {stage} FINAL
+    WHERE acceptance_datetime_raw IS NOT NULL
+      AND endsWith(acceptance_datetime_raw, 'Z')
+      AND parseDateTime64BestEffortOrNull(acceptance_datetime_raw, 9, 'UTC') IS NOT NULL
+) AS s
+    ON q.cik = s.cik AND q.accession_number = s.accession_number
+""" if stage_exists else ""
+    unmatched_predicate = "AND s.matched = 0" if stage_exists else ""
     sql = f"""
 SELECT
     q.cik,
     q.accession_number,
     ifNull(toString(q.filing_date), '') AS filing_date,
     toString(q.form_type) AS form_type
-FROM (SELECT * FROM {target} FINAL WHERE accepted_at_utc IS NULL) AS q
-LEFT JOIN (SELECT cik, accession_number, 1 AS matched FROM {stage} FINAL) AS s
-    ON q.cik = s.cik AND q.accession_number = s.accession_number
-WHERE s.matched = 0
+FROM
+(
+    SELECT *
+    FROM {target} FINAL
+    WHERE accepted_at_utc IS NULL
+       OR accepted_at_source IN ('archive_filing_date_midnight', 'archive_date_midnight', 'filing_date_midnight_fallback')
+) AS q
+{stage_join}
+WHERE 1 = 1
+{unmatched_predicate}
 ORDER BY q.cik, q.accession_number
 FORMAT TSV
 """
@@ -266,6 +317,14 @@ FORMAT TSV
     return dict(missing)
 
 
+def table_exists(client: ClickHouseHttpClient, database: str, table: str) -> bool:
+    output = client.execute(
+        "SELECT count() FROM system.tables "
+        f"WHERE database = {sql_string(database)} AND name = {sql_string(table)} FORMAT TSV"
+    )
+    return int(output.strip() or "0") == 1
+
+
 def stream_clickhouse_lines(client: ClickHouseHttpClient, sql: str) -> Any:
     req = request.Request(client.base_url + "/", data=sql.encode("utf-8"), method="POST")
     if client.user:
@@ -285,6 +344,7 @@ def plan_fragment_jobs(
     submissions_zip: Path,
     fragment_root: Path,
     missing_by_cik: dict[str, dict[str, MissingFiling]],
+    fresh_payloads: dict[str, Path],
 ) -> tuple[list[FragmentJob], dict[str, int]]:
     jobs: list[FragmentJob] = []
     stats = {
@@ -303,11 +363,15 @@ def plan_fragment_jobs(
                 names_by_cik_name[Path(name).name] = name
         for cik in sorted(missing_by_cik):
             zip_name = f"CIK{cik}.json"
-            archive_name = names_by_cik_name.get(zip_name)
-            if archive_name is None:
-                stats["ciks_without_fragment_index"] += 1
-                continue
-            data = json.loads(archive.read(archive_name).decode("utf-8", errors="replace"))
+            fresh_path = fresh_payloads.get(cik)
+            if fresh_path is not None:
+                data = json.loads(fresh_path.read_text(encoding="utf-8"))
+            else:
+                archive_name = names_by_cik_name.get(zip_name)
+                if archive_name is None:
+                    stats["ciks_without_fragment_index"] += 1
+                    continue
+                data = json.loads(archive.read(archive_name).decode("utf-8", errors="replace"))
             fragment_refs = data.get("filings", {}).get("files", []) or []
             if not fragment_refs:
                 stats["ciks_without_fragment_index"] += 1
@@ -348,6 +412,127 @@ def plan_fragment_jobs(
                     return jobs, stats
     stats["fragment_jobs_planned"] = len(jobs)
     return jobs, stats
+
+
+def run_direct_submission_jobs(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    paths: RunPaths,
+    current_root: Path,
+    missing_by_cik: dict[str, dict[str, MissingFiling]],
+) -> tuple[dict[str, int], dict[str, Path]]:
+    jobs = [
+        DirectSubmissionJob(
+            cik=cik,
+            url=f"{DATA_SEC_SUBMISSIONS_BASE_URL}/CIK{cik}.json",
+            artifact_path=str(current_root / f"CIK{cik}.json"),
+            wanted_accessions=tuple(sorted(missing)),
+        )
+        for cik, missing in sorted(missing_by_cik.items())
+        if missing
+    ]
+    stats = {
+        "direct_jobs_planned": len(jobs),
+        "direct_jobs_completed": 0,
+        "direct_jobs_failed": 0,
+        "direct_accepted_rows_written": 0,
+        "direct_accepted_rows_inserted": 0,
+        "direct_accepted_rows_missing_acceptance_datetime": 0,
+    }
+    fresh_payloads: dict[str, Path] = {}
+    rows_batch: list[dict[str, Any]] = []
+    limiter = RateLimiter(args.sec_request_min_interval_seconds)
+    started = time.perf_counter()
+    with paths.direct_results_jsonl.open("w", encoding="utf-8") as result_handle, paths.accepted_jsonl.open("w", encoding="utf-8") as accepted_handle:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.download_workers) as executor:
+            futures = {
+                executor.submit(
+                    process_direct_submission_job,
+                    job,
+                    sec_user_agent(),
+                    args.request_timeout_seconds,
+                    args.max_retries,
+                    args.retry_base_seconds,
+                    limiter,
+                ): job
+                for job in jobs
+            }
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                result_handle.write(json.dumps(direct_result_record(result), ensure_ascii=False, separators=(",", ":"), default=str) + "\n")
+                stats["direct_jobs_completed"] += 1
+                if result.status != "ok":
+                    stats["direct_jobs_failed"] += 1
+                else:
+                    fresh_payloads[result.job.cik] = Path(result.artifact_path)
+                for row in result.matched_rows:
+                    accepted_handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) + "\n")
+                    stats["direct_accepted_rows_written"] += 1
+                    missing_by_cik.get(row["cik"], {}).pop(row["accession_number"], None)
+                    if not row["accepted_at_utc"]:
+                        stats["direct_accepted_rows_missing_acceptance_datetime"] += 1
+                        continue
+                    if args.execute:
+                        rows_batch.append(row)
+                    if args.execute and len(rows_batch) >= args.batch_size:
+                        stats["direct_accepted_rows_inserted"] += insert_rows(client, args.stage_database, args.stage_table, rows_batch)
+                        rows_batch.clear()
+                completed = stats["direct_jobs_completed"]
+                if completed % 100 == 0 or completed == len(jobs):
+                    print(
+                        "direct_submissions "
+                        f"jobs={completed:,}/{len(jobs):,} "
+                        f"accepted={stats['direct_accepted_rows_written']:,} "
+                        f"remaining={sum(len(values) for values in missing_by_cik.values()):,} "
+                        f"elapsed={time.perf_counter() - started:.1f}s",
+                        flush=True,
+                    )
+    if args.execute:
+        stats["direct_accepted_rows_inserted"] += insert_rows(client, args.stage_database, args.stage_table, rows_batch)
+    return stats, fresh_payloads
+
+
+def process_direct_submission_job(
+    job: DirectSubmissionJob,
+    user_agent: str,
+    timeout_seconds: float,
+    max_retries: int,
+    retry_base_seconds: float,
+    limiter: RateLimiter,
+) -> DirectSubmissionResult:
+    started = time.perf_counter()
+    artifact = Path(job.artifact_path)
+    try:
+        body = fetch_url(job.url, user_agent, timeout_seconds, max_retries, retry_base_seconds, limiter)
+        payload = json.loads(body.decode("utf-8", errors="strict"))
+        payload_cik = cik10(payload.get("cik"))
+        if payload_cik != job.cik:
+            raise RuntimeError(f"SEC submissions CIK mismatch: expected={job.cik} actual={payload_cik}")
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        temporary = artifact.with_suffix(artifact.suffix + ".tmp")
+        temporary.write_bytes(body)
+        temporary.replace(artifact)
+        sha = hashlib.sha256(body).hexdigest()
+        source_file_id = hashlib.sha256(f"submissions_api_current|{job.url}|{sha}".encode("utf-8")).hexdigest()
+        rows = acceptance_rows_for_company(
+            payload,
+            job.cik,
+            set(job.wanted_accessions),
+            source_file_id,
+            sha,
+            clickhouse_now64(),
+            accepted_source="submissions_api_recent",
+        )
+        return DirectSubmissionResult(job, "ok", str(artifact), len(body), sha, tuple(rows), "", round(time.perf_counter() - started, 3))
+    except Exception as exc:  # noqa: BLE001
+        return DirectSubmissionResult(job, "failed", str(artifact), 0, "", (), repr(exc), round(time.perf_counter() - started, 3))
+
+
+def direct_result_record(result: DirectSubmissionResult) -> dict[str, Any]:
+    row = asdict(result)
+    row["matched_row_count"] = len(result.matched_rows)
+    row.pop("matched_rows", None)
+    return row
 
 
 def matching_accessions_for_fragment(missing: dict[str, MissingFiling], filing_from: str, filing_to: str, *, download_all: bool) -> list[str]:
@@ -395,7 +580,7 @@ def run_fragment_jobs(
     limiter = RateLimiter(args.sec_request_min_interval_seconds)
     write_lock = threading.Lock()
     started = time.perf_counter()
-    with paths.fragment_results_jsonl.open("w", encoding="utf-8") as result_handle, paths.accepted_jsonl.open("w", encoding="utf-8") as accepted_handle:
+    with paths.fragment_results_jsonl.open("w", encoding="utf-8") as result_handle, paths.accepted_jsonl.open("a", encoding="utf-8") as accepted_handle:
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.download_workers) as executor:
             future_to_job = {
                 executor.submit(

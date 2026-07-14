@@ -704,6 +704,37 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
             (stage_coverage_kind("archive-text-rebuild"),),
         ),
         StageCommand(
+            "acceptance-submissions-enrichment",
+            add_execute_flag(
+                [
+                    args.python_executable,
+                    script("pipelines/sec/edgar/sec_acceptance_fragment_fill.py"),
+                    "--target-database",
+                    args.write_database,
+                    "--target-table",
+                    "sec_filing_v3",
+                    "--stage-database",
+                    args.bulk_mirror_database,
+                    "--stage-table",
+                    "sec_bulk_mirror_filing_acceptance_v3",
+                    "--artifact-root-win",
+                    args.artifact_root_win,
+                    "--output-root-win",
+                    str(Path(args.core_output_root_win) / "sec_acceptance_fragment_fill"),
+                    "--download-workers",
+                    "8",
+                    "--sec-request-min-interval-seconds",
+                    str(max(0.0, args.sec_request_min_interval_seconds)),
+                    "--request-timeout-seconds",
+                    str(max(1.0, args.request_timeout_seconds)),
+                ],
+                args,
+            ),
+            logs_root / "acceptance-submissions-enrichment.log",
+            True,
+            (stage_coverage_kind("acceptance-submissions-enrichment"),),
+        ),
+        StageCommand(
             "acceptance-raw-metadata-repair",
             add_execute_flag(
                 [
@@ -717,6 +748,8 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                     args.bulk_mirror_database,
                     "--mirror-table",
                     "sec_bulk_mirror_filing_v3",
+                    "--enriched-table",
+                    "sec_bulk_mirror_filing_acceptance_v3",
                 ],
                 args,
             ),
@@ -895,6 +928,7 @@ def add_execute_flag(command: list[str], args: argparse.Namespace, *, dry_run_fl
             "sec_bulk_to_canonical.py" in command_text
             or "sec_xbrl_companyfacts_catchup.py" in command_text
             or "sec_xbrl_integrity_repair.py" in command_text
+            or "sec_acceptance_fragment_fill.py" in command_text
             or "sec_acceptance_raw_metadata_repair.py" in command_text
             or "step_06_build_q_live_bridge_features.py" in command_text
             or "sec_filing_archive_rebuild.py" in command_text
@@ -1004,6 +1038,7 @@ def stage_already_completed(args: argparse.Namespace, command: StageCommand) -> 
         "bulk-ingest",
         "archive-text-rebuild",
         "validate-downloaded",
+        "acceptance-submissions-enrichment",
         "acceptance-raw-metadata-repair",
         "sec-bridge-rebuild",
         "sec-context-build",

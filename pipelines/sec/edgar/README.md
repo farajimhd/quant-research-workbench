@@ -34,8 +34,11 @@ This unified gap-fill entry point refreshes SEC bulk `submissions`,
 `company_tickers_mf`, mirrors those source snapshots into `sec_core`, derives canonical
 filing parents and XBRL rows from that mirror, downloads missing daily archives,
 validates them, extracts normalized filing/document/text rows, inserts them,
-repairs date-only parent timestamps exclusively from preserved raw SEC UTC acceptance
-metadata, runs API fallback for missing recent XBRL, repairs XBRL relationships, rebuilds
+repairs date-only parent timestamps from explicit UTC acceptance metadata in the nightly
+bulk mirror, then refreshes unresolved filing CIKs from the real-time per-CIK submissions
+API and its referenced history fragments before applying the same strict UTC repair. The
+CIK comes from the parsed filing relationship and is never inferred from the accession
+prefix. The pipeline then runs API fallback for missing recent XBRL, repairs XBRL relationships, rebuilds
 `id_sec_market_bridge_v3`, builds SEC context tables in `market_sip_compact`,
 audits the result, and writes coverage rows.
 

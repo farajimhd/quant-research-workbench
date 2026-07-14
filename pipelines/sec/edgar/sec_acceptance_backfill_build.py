@@ -291,6 +291,8 @@ def acceptance_rows_for_company(
     source_file_id: str,
     source_sha256: str,
     now: str,
+    *,
+    accepted_source: str = "submissions_bulk_recent",
 ) -> list[dict[str, Any]]:
     recent = data.get("filings", {}).get("recent", {}) or {}
     if not recent:
@@ -317,7 +319,7 @@ def acceptance_rows_for_company(
             "report_date": nullable_date(recent_value(recent, "reportDate", index)),
             "accepted_at_utc": accepted_at_utc(accepted_raw),
             "acceptance_datetime_raw": accepted_raw or None,
-            "accepted_at_source": "submissions_bulk_recent" if accepted_raw else "missing_in_submissions_bulk_recent",
+            "accepted_at_source": accepted_source if accepted_raw else f"missing_in_{accepted_source}",
             "primary_document": primary_document or None,
             "primary_document_url": filing_document_url(cik, accession_compact, primary_document) if primary_document else None,
             "filing_detail_url": filing_detail_url(cik, accession_compact),

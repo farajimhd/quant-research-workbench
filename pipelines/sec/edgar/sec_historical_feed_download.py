@@ -79,7 +79,7 @@ class ExistingDirJob:
 class ParsedSubmission:
     archive_date: str
     accession_number: str
-    accession_cik: str
+    accession_prefix: str
     form_type: str
     filing_date: str
     period: str
@@ -651,7 +651,7 @@ def parse_nc_bytes(archive_date: str, path: Path, raw: bytes) -> tuple[ParsedSub
         ParsedSubmission(
             archive_date=archive_date,
             accession_number=accession,
-            accession_cik=accession[:10] if len(accession) >= 10 else "",
+            accession_prefix=accession[:10] if len(accession) >= 10 else "",
             form_type=form_type,
             filing_date=yyyymmdd_to_date(first_tag(header_text, "FILING-DATE")),
             period=yyyymmdd_to_date(first_tag(header_text, "PERIOD")),

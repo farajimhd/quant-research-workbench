@@ -46,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-table", default=os.environ.get("SEC_FILING_TABLE", "sec_filing_v3"))
     parser.add_argument("--mirror-database", default=os.environ.get("SEC_BULK_MIRROR_DATABASE", "sec_core"))
     parser.add_argument("--mirror-table", default="sec_bulk_mirror_filing_v3")
+    parser.add_argument("--enriched-table", default="sec_bulk_mirror_filing_acceptance_v3")
     parser.add_argument(
         "--max-partitions-per-insert-block",
         type=int,
@@ -65,9 +66,16 @@ def main() -> int:
     require_table(client, args.target_database, args.target_table)
 
     require_table(client, args.mirror_database, args.mirror_table)
+    enriched_exists = table_exists(client, args.mirror_database, args.enriched_table)
+    if args.execute and not enriched_exists:
+        require_table(client, args.mirror_database, args.enriched_table)
 
     run_id = f"sec_acceptance_raw_metadata_repair_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
-    resolved_cte = resolved_raw_cte_sql(args.mirror_database, args.mirror_table)
+    resolved_cte = resolved_raw_cte_sql(
+        args.mirror_database,
+        args.mirror_table,
+        args.enriched_table if enriched_exists else None,
+    )
     before = query_summary(client, args, resolved_cte)
     if int(before["target_partitions"]) > int(args.max_partitions_per_insert_block):
         raise SystemExit(
@@ -93,7 +101,8 @@ def main() -> int:
     summary = {
         "run_id": run_id,
         "execute": bool(args.execute),
-        "source_table": f"{args.mirror_database}.{args.mirror_table}",
+        "source_tables": [f"{args.mirror_database}.{args.mirror_table}"]
+        + ([f"{args.mirror_database}.{args.enriched_table}"] if enriched_exists else []),
         "fallback_rows_before": int(before["fallback_rows"]),
         "repairable_rows_before": int(before["repairable_rows"]),
         "differing_rows_before": int(before["differing_rows"]),
@@ -110,20 +119,58 @@ def main() -> int:
     return 0
 
 
-def resolved_raw_cte_sql(database: str, table: str) -> str:
+def resolved_raw_cte_sql(database: str, table: str, enriched_table: str | None = "sec_bulk_mirror_filing_acceptance_v3") -> str:
+    enriched_union = ""
+    if enriched_table:
+        enriched_union = f"""
+
+    UNION ALL
+
+    SELECT
+        e.cik,
+        e.accession_number,
+        e.acceptance_datetime_raw,
+        concat('sec_core_', e.accepted_at_source, '_raw_z_repair') AS accepted_at_source,
+        2 AS source_priority
+    FROM {quote_ident(database)}.{quote_ident(enriched_table)} AS e FINAL
+    WHERE e.acceptance_datetime_raw IS NOT NULL
+      AND endsWith(e.acceptance_datetime_raw, 'Z')
+      AND parseDateTime64BestEffortOrNull(e.acceptance_datetime_raw, 9, 'UTC') IS NOT NULL
+"""
     return f"""
+raw_candidates AS
+(
+    SELECT
+        cik,
+        accession_number,
+        acceptance_datetime_raw,
+        'sec_core_submissions_bulk_raw_z_repair' AS accepted_at_source,
+        1 AS source_priority
+    FROM {quote_ident(database)}.{quote_ident(table)} FINAL
+    WHERE acceptance_datetime_raw IS NOT NULL
+      AND endsWith(acceptance_datetime_raw, 'Z')
+      AND parseDateTime64BestEffortOrNull(acceptance_datetime_raw, 9, 'UTC') IS NOT NULL
+    {enriched_union}
+),
+resolved_raw_values AS
+(
+    SELECT
+        c.cik,
+        c.accession_number,
+        argMax(c.acceptance_datetime_raw, c.source_priority) AS acceptance_datetime_raw,
+        argMax(c.accepted_at_source, c.source_priority) AS accepted_at_source
+    FROM raw_candidates AS c
+    GROUP BY c.cik, c.accession_number
+),
 resolved_raw AS
 (
     SELECT
         cik,
         accession_number,
         acceptance_datetime_raw,
-        'sec_core_submissions_raw_z_repair' AS accepted_at_source,
+        accepted_at_source,
         parseDateTime64BestEffortOrNull(acceptance_datetime_raw, 9, 'UTC') AS accepted_at_utc
-    FROM {quote_ident(database)}.{quote_ident(table)} FINAL
-    WHERE acceptance_datetime_raw IS NOT NULL
-      AND endsWith(acceptance_datetime_raw, 'Z')
-      AND parseDateTime64BestEffortOrNull(acceptance_datetime_raw, 9, 'UTC') IS NOT NULL
+    FROM resolved_raw_values
 )
 """.strip()
 
@@ -190,6 +237,7 @@ def delete_replaced_fallbacks_sql(args: argparse.Namespace) -> str:
     sources = ", ".join(sql_string(value) for value in FALLBACK_SOURCES)
     target = f"{quote_ident(args.target_database)}.{quote_ident(args.target_table)}"
     mirror = f"{quote_ident(args.mirror_database)}.{quote_ident(args.mirror_table)}"
+    enriched = f"{quote_ident(args.mirror_database)}.{quote_ident(getattr(args, 'enriched_table', 'sec_bulk_mirror_filing_acceptance_v3'))}"
     return f"""
 ALTER TABLE {target}
 DELETE WHERE accepted_at_source IN ({sources})
@@ -197,6 +245,14 @@ DELETE WHERE accepted_at_source IN ({sources})
   (
       SELECT cik, accession_number
       FROM {mirror} FINAL
+      WHERE acceptance_datetime_raw IS NOT NULL
+        AND endsWith(acceptance_datetime_raw, 'Z')
+        AND parseDateTime64BestEffortOrNull(acceptance_datetime_raw, 9, 'UTC') IS NOT NULL
+
+      UNION ALL
+
+      SELECT cik, accession_number
+      FROM {enriched} FINAL
       WHERE acceptance_datetime_raw IS NOT NULL
         AND endsWith(acceptance_datetime_raw, 'Z')
         AND parseDateTime64BestEffortOrNull(acceptance_datetime_raw, 9, 'UTC') IS NOT NULL
@@ -218,7 +274,7 @@ def require_table(client: ClickHouseHttpClient, database: str, table: str) -> No
 
 
 def validate_identifier_args(args: argparse.Namespace) -> None:
-    for name in ("target_database", "target_table", "mirror_database", "mirror_table"):
+    for name in ("target_database", "target_table", "mirror_database", "mirror_table", "enriched_table"):
         value = str(getattr(args, name))
         if not value or not value.replace("_", "").isalnum():
             raise SystemExit(f"Invalid --{name.replace('_', '-')}: {value!r}")

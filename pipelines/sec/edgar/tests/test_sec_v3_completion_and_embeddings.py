@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
 import sys
 import zipfile
@@ -13,9 +14,11 @@ from unittest import mock
 
 from pipelines.market_sip.events import clickhouse_build_text_tokens as tokens
 from pipelines.sec.edgar import sec_acceptance_raw_metadata_repair as acceptance_repair
+from pipelines.sec.edgar import sec_acceptance_fragment_fill as acceptance_fragment
 from pipelines.sec.edgar import sec_bulk_clickhouse_ingest as bulk_ingest
 from pipelines.sec.edgar import sec_bulk_snapshot_refresh as snapshot_refresh
 from pipelines.sec.edgar import sec_historical_gap_fill as historical
+from pipelines.sec.edgar import sec_filing_text_extract_parts as filing_extract
 from pipelines.sec.edgar.sec_bulk_sources import BULK_SOURCE_NAMES, DEFAULT_BULK_SOURCES, require_complete_bulk_sources
 from pipelines.sec.edgar.sec_pipeline import submissions
 
@@ -65,6 +68,17 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
             [*command, "--execute"],
         )
 
+    def test_historical_fill_runs_direct_acceptance_enrichment(self) -> None:
+        with mock.patch.object(sys, "argv", ["sec_historical_gap_fill.py", "--execute"]):
+            args = historical.parse_args()
+        commands = {command.stage: command.command for command in historical.build_commands(args, Path("logs"))}
+
+        self.assertIn("acceptance-submissions-enrichment", commands)
+        self.assertIn("--execute", commands["acceptance-submissions-enrichment"])
+        repair = commands["acceptance-raw-metadata-repair"]
+        self.assertIn("--enriched-table", repair)
+        self.assertIn("sec_bulk_mirror_filing_acceptance_v3", repair)
+
     def test_bulk_download_is_always_reconciled(self) -> None:
         command = historical.StageCommand("bulk-download", [], Path("bulk.log"), False, ("covered",))
 
@@ -85,9 +99,11 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
 
         self.assertIn("endsWith(acceptance_datetime_raw, 'Z')", cte)
         self.assertIn("parseDateTime64BestEffortOrNull", cte)
-        self.assertIn("sec_core_submissions_raw_z_repair", cte)
+        self.assertIn("sec_core_submissions_bulk_raw_z_repair", cte)
+        self.assertIn("sec_bulk_mirror_filing_acceptance_v3", cte)
+        self.assertIn("source_priority", cte)
         self.assertNotIn("sec_filing_v2", cte)
-        self.assertNotIn("UNION ALL", cte)
+        self.assertIn("UNION ALL", cte)
         self.assertIn("r.accepted_at_utc AS accepted_at_utc", sql)
         self.assertIn("r.acceptance_datetime_raw AS acceptance_datetime_raw", sql)
         self.assertIn("f.accepted_at_source IN", sql)
@@ -96,7 +112,81 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
         self.assertIn("ALTER TABLE `q_live`.`sec_filing_v3`", delete_sql)
         self.assertIn("accepted_at_source IN", delete_sql)
         self.assertIn("FROM `sec_core`.`sec_bulk_mirror_filing_v3` FINAL", delete_sql)
+        self.assertIn("FROM `sec_core`.`sec_bulk_mirror_filing_acceptance_v3` FINAL", delete_sql)
         self.assertIn("mutations_sync = 2", delete_sql)
+
+    def test_direct_submissions_match_uses_requested_filing_cik_not_accession_prefix(self) -> None:
+        payload = {
+            "cik": "0000766421",
+            "name": "ALASKA AIR GROUP, INC.",
+            "filings": {
+                "recent": {
+                    "accessionNumber": ["0002143285-26-000002"],
+                    "acceptanceDateTime": ["2026-07-07T23:25:29.000Z"],
+                    "filingDate": ["2026-07-07"],
+                    "reportDate": [""],
+                    "form": ["3"],
+                    "primaryDocument": ["xslF345X06/wk-form3_1783466725.xml"],
+                    "size": [702453],
+                    "items": [""],
+                },
+                "files": [],
+            },
+        }
+        with tempfile.TemporaryDirectory() as temp_root:
+            job = acceptance_fragment.DirectSubmissionJob(
+                cik="0000766421",
+                url="https://data.sec.gov/submissions/CIK0000766421.json",
+                artifact_path=str(Path(temp_root) / "CIK0000766421.json"),
+                wanted_accessions=("0002143285-26-000002",),
+            )
+            with mock.patch.object(acceptance_fragment, "fetch_url", return_value=json.dumps(payload).encode("utf-8")):
+                result = acceptance_fragment.process_direct_submission_job(
+                    job,
+                    "test@example.com",
+                    30.0,
+                    0,
+                    0.0,
+                    acceptance_fragment.RateLimiter(0.0),
+                )
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(len(result.matched_rows), 1)
+        self.assertEqual(result.matched_rows[0]["cik"], "0000766421")
+        self.assertEqual(result.matched_rows[0]["accession_number"], "0002143285-26-000002")
+        self.assertEqual(result.matched_rows[0]["acceptance_datetime_raw"], "2026-07-07T23:25:29.000Z")
+        self.assertEqual(result.matched_rows[0]["accepted_at_source"], "submissions_api_recent")
+
+    def test_archive_parser_uses_embedded_issuer_cik_not_accession_prefix(self) -> None:
+        raw = b"""<SEC-DOCUMENT>0002143285-26-000002.txt
+<SEC-HEADER>
+<ACCESSION-NUMBER>0002143285-26-000002
+<FILING-DATE>20260707
+<ISSUER>
+<COMPANY-DATA>
+<CONFORMED-NAME>ALASKA AIR GROUP, INC.
+<CIK>0000766421
+</COMPANY-DATA>
+</ISSUER>
+<REPORTING-OWNER>
+<OWNER-DATA>
+<CONFORMED-NAME>REPORTING OWNER
+<CIK>0002143285
+</OWNER-DATA>
+</REPORTING-OWNER>
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>3
+<SEQUENCE>1
+<FILENAME>form3.xml
+<TEXT><ownershipDocument/></TEXT>
+</DOCUMENT>
+"""
+
+        parsed = filing_extract.parse_filing(raw, "0002143285-26-000002.nc")
+
+        self.assertEqual(parsed["accession_number"], "0002143285-26-000002")
+        self.assertEqual(parsed["cik"], "0000766421")
 
     def test_bulk_submission_fragment_uses_top_level_arrays_without_blank_company_replacement(self) -> None:
         artifact = bulk_ingest.SourceArtifact(
