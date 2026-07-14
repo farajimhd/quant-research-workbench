@@ -36,6 +36,7 @@ from src.backtest.jobs import cancel_backtest_job, get_backtest_status, list_bac
 from src.backtest.metrics import portfolio_pnl_breakdown
 from src.backtest.results import list_runs, read_run_metadata
 from src.backend.json_utils import json_safe, parse_csv_list
+from src.backend.canvas_preview_service import canvas_preview_payload
 from src.backend.market_data_service import (
     apply_chart_volume_convergence_columns,
     artifact_records,
@@ -89,7 +90,9 @@ from src.backend.real_live_market_data import (
 from src.backend.real_live_market_data.config import market_gateway_config
 from src.backend.trading_runtime_service import (
     get_strategy_definition,
+    historical_bar_chunk,
     historical_gateway_snapshot,
+    historical_preflight,
     historical_window_preview,
     list_strategy_definitions,
     save_strategy_definition,
@@ -436,6 +439,27 @@ class HistoricalWindowPreviewRequest(BaseModel):
     anchor_date: date
     session_count: int = Field(default=1, ge=1, le=260)
     replay_end_date: date | None = None
+
+
+class HistoricalPreflightRequest(BaseModel):
+    mode: str
+    anchor_date: date
+    session_count: int = Field(default=20, ge=1, le=260)
+
+
+class HistoricalBarChunkRequest(BaseModel):
+    session_date: date
+    ticker: str
+    timeframe: str = "1m"
+    offset_minutes: int = Field(default=0, ge=0, le=959)
+    window_minutes: int = Field(default=15, ge=1, le=30)
+
+
+class CanvasPreviewRequest(BaseModel):
+    session_date: date
+    preview_time: str = "09:45"
+    chart_symbol: str = "AAPL"
+    chart_timeframe: str = "1m"
 
 
 def parse_date_param(value: date | None, fallback: str) -> date:
@@ -4194,6 +4218,49 @@ def trading_historical_window(payload: HistoricalWindowPreviewRequest) -> dict[s
             anchor_date=payload.anchor_date,
             session_count=payload.session_count,
             replay_end_date=payload.replay_end_date,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/trading/historical-preflight")
+def trading_historical_preflight(payload: HistoricalPreflightRequest) -> dict[str, Any]:
+    if payload.mode not in {"replay", "backtest"}:
+        raise HTTPException(status_code=400, detail="mode must be replay or backtest")
+    try:
+        return historical_preflight(
+            mode=payload.mode,
+            anchor_date=payload.anchor_date,
+            session_count=1 if payload.mode == "replay" else payload.session_count,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/trading/historical-bars")
+def trading_historical_bars(payload: HistoricalBarChunkRequest) -> dict[str, Any]:
+    try:
+        return historical_bar_chunk(
+            anchor_date=payload.session_date,
+            ticker=payload.ticker,
+            timeframe=payload.timeframe,
+            offset_minutes=payload.offset_minutes,
+            window_minutes=payload.window_minutes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/trading/canvas-preview")
+def trading_canvas_preview(payload: CanvasPreviewRequest) -> dict[str, Any]:
+    try:
+        return canvas_preview_payload(
+            session_date=payload.session_date,
+            preview_time=payload.preview_time,
+            chart_symbol=payload.chart_symbol,
+            chart_timeframe=payload.chart_timeframe,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import os
 import json
+import re
+import urllib.error
+import urllib.parse
 import urllib.request
-from datetime import date
+from datetime import date, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -14,6 +17,8 @@ from src.trading_runtime.runtime import RunMode
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+SUPPORTED_HISTORICAL_TIMEFRAMES = {"1s", "10s", "30s", "1m", "5m", "1h"}
+HISTORICAL_CHUNK_MINUTES = 15
 
 
 @lru_cache(maxsize=1)
@@ -108,6 +113,10 @@ def historical_window_preview(
     replay_end_date: date | None,
 ) -> dict[str, Any]:
     resolved_mode = RunMode(mode)
+    # Replay is deliberately a single exchange day. Keep this invariant in the
+    # backend so an old or external client cannot silently create a multi-day run.
+    if resolved_mode == RunMode.REPLAY:
+        replay_end_date = anchor_date
     window = historical_run_window(
         resolved_mode,
         anchor_date,
@@ -125,4 +134,215 @@ def historical_window_preview(
         "source": "qmd_history_gateway",
         "source_url": historical_gateway_base_url(),
         "broker": "simulated_ibkr",
+    }
+
+
+def historical_preflight(
+    *,
+    mode: str,
+    anchor_date: date,
+    session_count: int,
+) -> dict[str, Any]:
+    window = historical_window_preview(
+        mode=mode,
+        anchor_date=anchor_date,
+        session_count=session_count,
+        replay_end_date=anchor_date if mode == RunMode.REPLAY.value else None,
+    )
+    gateway = historical_gateway_snapshot()
+    strategies = list_strategy_definitions(latest_only=True)
+    automatic_strategies = [row for row in strategies if row.get("automatic") and row.get("enabled")]
+    checks: list[dict[str, Any]] = [
+        _preflight_check(
+            "historical_source",
+            "Historical market source",
+            "ready" if gateway.get("ready") else "error",
+            "QMD History answered with its historical role and canonical event source."
+            if gateway.get("ready")
+            else "QMD History did not answer with a ready historical identity.",
+            gateway.get("health", {}).get("source") or gateway.get("error") or gateway.get("base_url", ""),
+            required=True,
+        ),
+        _preflight_check(
+            "session_window",
+            "Exchange-day window",
+            "ready",
+            "One inclusive exchange day, 04:00-20:00 New York."
+            if mode == RunMode.REPLAY.value
+            else f"{window['session_count']} sessions strictly before the anchor date.",
+            f"{window['start']} -> {window['end']}",
+            required=True,
+        ),
+    ]
+
+    coverage: dict[str, Any] = {}
+    data_error = ""
+    if gateway.get("ready"):
+        try:
+            payload = _historical_gateway_get(
+                "/coverage",
+                {"start": window["start"], "end": window["end"]},
+                timeout=30,
+            )
+            if isinstance(payload, dict):
+                coverage = payload
+            if int(coverage.get("event_count") or 0) <= 0:
+                data_error = "No canonical market events were found in the resolved session window."
+        except Exception as exc:
+            data_error = str(exc)
+    elif gateway.get("error"):
+        data_error = str(gateway["error"])
+
+    event_count = int(coverage.get("event_count") or 0)
+    ticker_count = int(coverage.get("ticker_count") or 0)
+    market_ready = bool(event_count > 0 and ticker_count > 0 and not data_error)
+    checks.append(
+        _preflight_check(
+            "market_data",
+            "Canonical event coverage",
+            "ready" if market_ready else "error",
+            (
+                f"{event_count:,} events across {ticker_count:,} symbols are recorded for the selected exchange day set."
+                if market_ready
+                else data_error or "Historical market data could not be verified."
+            ),
+            (
+                f"Coverage: {coverage.get('coverage_table')}; events: {', '.join(coverage.get('source_tables') or [])}"
+                if market_ready
+                else "No usable sample evidence."
+            ),
+            required=True,
+        )
+    )
+    checks.append(
+        _preflight_check(
+            "strategy_authority",
+            "Automatic strategy revisions",
+            "ready" if automatic_strategies else "blocked",
+            f"{len(automatic_strategies)} enabled automatic revision(s) are available."
+            if automatic_strategies
+            else "No enabled automatic strategy revision exists in the central trading authority.",
+            "Required for strategy execution and every backtest; optional for market-only replay.",
+            required=mode != RunMode.REPLAY.value,
+        )
+    )
+    checks.append(
+        _preflight_check(
+            "run_controller",
+            "Trading run controller",
+            "blocked",
+            "The shared strategy/broker run-controller API is not implemented.",
+            "Market replay can run; simulated orders, portfolio, fills, and strategy execution cannot be claimed yet.",
+            required=mode != RunMode.REPLAY.value,
+        )
+    )
+    return {
+        "mode": mode,
+        "window": window,
+        "gateway": gateway,
+        "checks": checks,
+        "market_ready": market_ready,
+        "strategy_run_ready": False,
+        "automatic_strategy_count": len(automatic_strategies),
+        "coverage": coverage,
+    }
+
+
+def historical_bar_chunk(
+    *,
+    anchor_date: date,
+    ticker: str,
+    timeframe: str,
+    offset_minutes: int,
+    window_minutes: int = HISTORICAL_CHUNK_MINUTES,
+) -> dict[str, Any]:
+    resolved_ticker = _historical_ticker(ticker)
+    resolved_timeframe = _historical_timeframe(timeframe)
+    if not 0 <= offset_minutes < 960:
+        raise ValueError("offset_minutes must be between 0 and 959")
+    if not 1 <= window_minutes <= 30:
+        raise ValueError("window_minutes must be between 1 and 30")
+    window = historical_window_preview(
+        mode=RunMode.REPLAY.value,
+        anchor_date=anchor_date,
+        session_count=1,
+        replay_end_date=anchor_date,
+    )
+    day_start = datetime.fromisoformat(window["start"])
+    day_end = datetime.fromisoformat(window["end"])
+    chunk_start = day_start + timedelta(minutes=offset_minutes)
+    chunk_end = min(chunk_start + timedelta(minutes=window_minutes), day_end)
+    snapshot = _historical_gateway_get(
+        f"/snapshot/bars/{urllib.parse.quote(resolved_ticker)}",
+        {
+            "start": chunk_start.isoformat(),
+            "end": chunk_end.isoformat(),
+            "timeframe": resolved_timeframe,
+            "limit": 5_000,
+            "event_limit": 1_000_000,
+        },
+        timeout=45,
+    )
+    bars = list(snapshot.get("history") or []) if isinstance(snapshot, dict) else []
+    if isinstance(snapshot, dict) and snapshot.get("current"):
+        bars.append(dict(snapshot["current"]))
+    return {
+        "ticker": resolved_ticker,
+        "timeframe": resolved_timeframe,
+        "session_date": anchor_date.isoformat(),
+        "offset_minutes": offset_minutes,
+        "next_offset_minutes": min(960, offset_minutes + window_minutes),
+        "complete": chunk_end >= day_end,
+        "start": chunk_start.isoformat(),
+        "end": chunk_end.isoformat(),
+        "bars": bars,
+        "bar_count": len(bars),
+        "source": "qmd_history_gateway",
+    }
+
+
+def _historical_gateway_get(path: str, params: dict[str, Any], *, timeout: float) -> Any:
+    query = urllib.parse.urlencode(params)
+    url = f"{historical_gateway_base_url()}{path}?{query}"
+    request = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"QMD History returned HTTP {exc.code}: {detail}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"QMD History request failed: {exc}") from exc
+
+
+def _historical_ticker(value: str) -> str:
+    ticker = value.strip().upper()
+    if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker):
+        raise ValueError("ticker must contain 1-15 letters, numbers, dots, or hyphens")
+    return ticker
+
+
+def _historical_timeframe(value: str) -> str:
+    timeframe = value.strip().lower()
+    if timeframe not in SUPPORTED_HISTORICAL_TIMEFRAMES:
+        raise ValueError(f"unsupported timeframe {value}")
+    return timeframe
+
+
+def _preflight_check(
+    check_id: str,
+    label: str,
+    status: str,
+    summary: str,
+    evidence: str,
+    *,
+    required: bool,
+) -> dict[str, Any]:
+    return {
+        "id": check_id,
+        "label": label,
+        "status": status,
+        "summary": summary,
+        "evidence": evidence,
+        "required": required,
     }

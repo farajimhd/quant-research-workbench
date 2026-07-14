@@ -1,5 +1,5 @@
 use crate::config::HistoricalGatewayConfig;
-use crate::source::{EventWindow, HistoricalCursor, HistoricalEventSource};
+use crate::source::{EventCoverage, EventWindow, HistoricalCursor, HistoricalEventSource};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -62,6 +62,7 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/config", get(config))
+        .route("/coverage", get(coverage))
         .route(
             "/snapshot/compact-events/{ticker}",
             get(compact_event_snapshot),
@@ -88,6 +89,14 @@ async fn health(State(state): State<Arc<AppState>>) -> Result<Json<HealthPayload
 
 async fn config(State(state): State<Arc<AppState>>) -> Json<HistoricalGatewayConfig> {
     Json(state.config.clone())
+}
+
+async fn coverage(
+    Query(query): Query<HistoryQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<EventCoverage>, ApiError> {
+    let window = window(&query.start, &query.end, Vec::new())?;
+    state.source.coverage(&window).await.map(Json).map_err(service_error)
 }
 
 async fn compact_event_snapshot(

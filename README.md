@@ -45,6 +45,14 @@ runtime calendar, configure an IBKR-shaped simulated account, and open the
 shared source-aware container canvas. Replay includes its anchor date;
 Backtest selects exchange sessions before its exclusive anchor date.
 
+Canvas layout and container presentation are configured once under
+`Configuration -> Canvas`; Live, Replay, and Backtest do not own separate
+canvas profiles. The configuration page defaults to a 09:45 New York preview
+and renders every container. Market data comes from QMD History, news/SEC/XBRL
+rows are point-in-time ClickHouse reads, and broker/runtime-only state is an
+explicit IBKR-shaped configuration fixture. Per-container controls and the
+single global layout are persisted in browser storage.
+
 The earlier prepared-data replay remains in
 `frontend/src/pages/LiveTradingPage.tsx` and `/api/live-trading/*` only as a
 legacy implementation while its scanner/strategy features are migrated. The
@@ -84,7 +92,7 @@ paper or live accounts.
 | Prepared-data provider | `src/data_provider` | Existing historical feature artifacts. New historical execution and bar calculation use canonical events; feature migration remains separate from brokerage semantics. |
 | Shared market engine | `src/market_engine` | Canonical event and event-derived bar contracts used by historical and live consumers. |
 | Live and recent market data | `services/qmd-gateway` | Rust gateway for Massive quotes/trades, compact events, always-on canonical intraday bars, indicators, scanner primitives, recent gap repair, and local streams/APIs. |
-| Historical market-data API | `services/qmd_history_gateway` | Read-only Rust compact-event, canonical-event, and event-derived bar API for Replay, Backtest, and Backtest Debug. It reads `market_sip_compact.events_YYYY` and depends on live QMD's shared `qmd_core` decoder/bar implementation; it never connects to Massive. |
+| Historical market-data API | `services/qmd_history_gateway` | Read-only Rust day-coverage, compact-event, canonical-event, and event-derived bar API for Replay, Backtest, and Backtest Debug. It verifies days from `events_ordinal_continuity`, reads `market_sip_compact.events_YYYY`, and depends on live QMD's shared `qmd_core` decoder/bar implementation; it never connects to Massive. |
 | Historical market data | `pipelines/market_sip` | Massive flat-file download, compact event ingestion, validation, repairs, and derived event/bar builders. |
 | Trading audit persistence | `services/trading_journal_gateway` | Mirrors the crash-safe local trading outbox into typed ClickHouse `q_live.tr_*` tables without making ClickHouse the order-command queue. |
 | News | `services/news_gateway`, `pipelines/news/benzinga` | Live Benzinga acquisition plus historical ingestion, normalization, persistence, coverage, and repair. |

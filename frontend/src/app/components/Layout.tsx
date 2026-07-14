@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
-import { Activity, Check, ChevronLeft, ChevronRight, FlaskConical, History, Palette, ServerCog, Wifi } from "lucide-react";
+import { Activity, Check, ChevronLeft, ChevronRight, FlaskConical, History, PanelsTopLeft, Palette, ServerCog, Wifi } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { buildMenuItemButtonClassName, buildThemeMenuItemButtonClassName } from "../selectionStyles";
 import { APP_THEMES, DEFAULT_THEME_ID, applyThemeDefinition, isAppThemeId, type AppThemeDefinition, type AppThemeId } from "../theme";
 
-export type PageKey = "real-live-trading" | "replay-trading" | "backtest-trading" | "services-dashboard" | "service-qmd" | "service-qmd-history" | "service-news" | "service-sec" | "service-text-embed" | "service-reference" | "service-ibkr";
+export type PageKey = "real-live-trading" | "replay-trading" | "backtest-trading" | "canvas-configuration" | "services-dashboard" | "service-qmd" | "service-qmd-history" | "service-news" | "service-sec" | "service-text-embed" | "service-reference" | "service-ibkr";
 export type UiScale = 0.8 | 0.9 | 1 | 1.1 | 1.25;
 
 type LayoutProps = {
@@ -22,6 +22,12 @@ const navGroups = [
       { key: "real-live-trading" as PageKey, label: "Live", icon: Wifi },
       { key: "replay-trading" as PageKey, label: "Replay", icon: History },
       { key: "backtest-trading" as PageKey, label: "Backtest", icon: FlaskConical }
+    ]
+  },
+  {
+    label: "Configuration",
+    items: [
+      { key: "canvas-configuration" as PageKey, label: "Canvas", icon: PanelsTopLeft }
     ]
   },
   {

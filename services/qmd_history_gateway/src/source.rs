@@ -15,6 +15,18 @@ pub struct EventWindow {
     pub tickers: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct EventCoverage {
+    pub coverage_table: String,
+    pub end: DateTime<Utc>,
+    pub event_count: u64,
+    pub first_sip_timestamp_us: u64,
+    pub last_sip_timestamp_us: u64,
+    pub source_tables: Vec<String>,
+    pub start: DateTime<Utc>,
+    pub ticker_count: u64,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct HistoricalCursor {
     pub ordinal: u64,
@@ -47,6 +59,14 @@ struct HistoricalRow {
     size_primary: f32,
     size_secondary: f32,
     ticker: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct EventCoverageRow {
+    event_count: u64,
+    first_sip_timestamp_us: u64,
+    last_sip_timestamp_us: u64,
+    ticker_count: u64,
 }
 
 impl HistoricalEventSource {
@@ -154,6 +174,50 @@ impl HistoricalEventSource {
             ticker: event.ticker.clone(),
         });
         Ok((events, next_cursor))
+    }
+
+    pub async fn coverage(&self, window: &EventWindow) -> Result<EventCoverage, String> {
+        validate_window(window)?;
+        let last_inclusive = window.end - chrono::Duration::microseconds(1);
+        let years = (window.start.year()..=last_inclusive.year()).collect::<Vec<_>>();
+        let coverage_table = format!("{}.events_ordinal_continuity", self.config.clickhouse_database);
+        let sql = format!(
+            r#"SELECT
+                sum(event_count) AS event_count,
+                uniqExact(ticker) AS ticker_count,
+                if(event_count = 0, 0, min(first_sip_timestamp_us)) AS first_sip_timestamp_us,
+                if(event_count = 0, 0, max(last_sip_timestamp_us)) AS last_sip_timestamp_us
+            FROM (
+                SELECT
+                    ticker,
+                    source_date,
+                    argMax(event_count, tuple(build_step, updated_at)) AS event_count,
+                    argMax(first_sip_timestamp_us, tuple(build_step, updated_at)) AS first_sip_timestamp_us,
+                    argMax(last_sip_timestamp_us, tuple(build_step, updated_at)) AS last_sip_timestamp_us
+                FROM {coverage_table}
+                WHERE source_date >= toDate('{}') AND source_date <= toDate('{}')
+                GROUP BY ticker, source_date
+            )
+            FORMAT JSONEachRow"#,
+            window.start.date_naive(),
+            last_inclusive.date_naive(),
+        );
+        let text = self.query(&sql).await?;
+        let row = serde_json::from_str::<EventCoverageRow>(text.trim())
+            .map_err(|error| format!("invalid historical coverage response: {error}"))?;
+        Ok(EventCoverage {
+            coverage_table,
+            end: window.end,
+            event_count: row.event_count,
+            first_sip_timestamp_us: row.first_sip_timestamp_us,
+            last_sip_timestamp_us: row.last_sip_timestamp_us,
+            source_tables: years
+                .iter()
+                .map(|year| format!("{}.{}{}", self.config.clickhouse_database, self.config.table_prefix, year))
+                .collect(),
+            start: window.start,
+            ticker_count: row.ticker_count,
+        })
     }
 
     async fn query(&self, sql: &str) -> Result<String, String> {

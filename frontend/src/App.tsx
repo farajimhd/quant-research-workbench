@@ -1,11 +1,12 @@
 import { useEffect, useState, type ReactNode } from "react";
 
 import { Layout, type PageKey } from "./app/components/Layout";
+import { CanvasConfigurationPage } from "./pages/CanvasConfigurationPage";
 import { HistoricalTradingPage } from "./pages/HistoricalTradingPage";
 import { RealLiveTradingPage } from "./pages/RealLiveTradingPage";
 import { ServicesPage, type ServicePageMode } from "./pages/ServicesPage";
 
-const validPages: PageKey[] = ["real-live-trading", "replay-trading", "backtest-trading", "services-dashboard", "service-qmd", "service-qmd-history", "service-news", "service-sec", "service-text-embed", "service-reference", "service-ibkr"];
+const validPages: PageKey[] = ["real-live-trading", "replay-trading", "backtest-trading", "canvas-configuration", "services-dashboard", "service-qmd", "service-qmd-history", "service-news", "service-sec", "service-text-embed", "service-reference", "service-ibkr"];
 
 export function App() {
   const [page, setPage] = useState<PageKey>(() => {
@@ -45,6 +46,9 @@ export function App() {
       </div>
       <div aria-hidden={page !== "backtest-trading"} className={page === "backtest-trading" ? "page-cache-panel active" : "page-cache-panel"}>
         {page === "backtest-trading" || visitedPages.has("backtest-trading") ? <HistoricalTradingPage mode="backtest" /> : null}
+      </div>
+      <div aria-hidden={page !== "canvas-configuration"} className={page === "canvas-configuration" ? "page-cache-panel active" : "page-cache-panel"}>
+        {page === "canvas-configuration" || visitedPages.has("canvas-configuration") ? <CanvasConfigurationPage /> : null}
       </div>
       {servicePageMode(page) ? (
         <div className="page-cache-panel active">

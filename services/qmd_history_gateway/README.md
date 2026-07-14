@@ -58,6 +58,7 @@ and `1h`.
 
 - `GET /health`
 - `GET /config`
+- `GET /coverage?start=...&end=...`
 - `GET /snapshot/compact-events/{ticker}?start=...&end=...&limit=...`
 - `GET /snapshot/bars/{ticker}?start=...&end=...&timeframe=1m&limit=...`
 - `WS /stream/compact-events?start=...&end=...&tickers=AAPL,MSFT`
@@ -67,6 +68,13 @@ and `1h`.
 The streaming endpoints close after the requested historical window is fully
 delivered. The live QMD equivalents remain open and publish newly arriving
 events; the event and bar payload schemas are shared.
+
+`/coverage` verifies selected exchange days from
+`market_sip_compact.events_ordinal_continuity`, the canonical per-symbol,
+per-source-day coverage authority written with the event tables. It reports
+event and symbol counts plus the corresponding `events_YYYY` tables without
+scanning hundreds of millions of event rows. Snapshot and stream payloads
+continue to read the event tables themselves.
 
 ## Validation
 

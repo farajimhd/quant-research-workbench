@@ -70,12 +70,30 @@ migrated from prepared provider bars to event-derived bars. Until that cutover
 is complete, those routes are legacy research paths and must not be treated as
 proof of replay/live brokerage parity.
 
-The routed Replay and Backtest setup pages resolve historical windows through
-`/api/trading/historical-window`, check the Rust gateway through
-`/api/trading/historical-gateway`, and use the shared source-aware container
-workspace. Container definitions explicitly bind market, broker, strategy,
-news, SEC, XBRL, and journal sources by mode. Live news/SEC containers use a
-gateway-plus-history policy; historical modes use persisted point-in-time data.
-The frontend keeps run start disabled until the runtime-compatible strategy
-loader and historical run-controller API exist rather than invoking the legacy
-prepared-bar routes.
+Replay setup accepts one exchange date only. Symbol and bar interval are
+container concerns inside the active replay, not run-level parameters. The
+home-page preflight calls `/api/trading/historical-preflight`, which verifies
+the Rust service identity, resolves the exchange window, and reads canonical
+day coverage through the gateway's `/coverage` resource. Replay then loads
+symbol bars in bounded chunks from `/api/trading/historical-bars`; the Rust
+gateway still calculates every bar from events.
+
+Backtest setup uses the same preflight but treats automatic strategy revisions
+and the shared run controller as required. Until those authorities are wired,
+the page reports the exact blockers and does not open an empty canvas or invoke
+the legacy prepared-bar routes.
+
+Canvas layout and container testing are global configuration under
+`Configuration -> Canvas`. There is one persisted layout and one set of
+per-container presentation settings; Live, Replay, and Backtest do not have
+separate canvas designers or layout profiles. Run pages consume that global
+configuration and may toggle compatible features for the active run.
+
+The configuration page uses a selectable New York point-in-time preview that
+defaults to 09:45. Chart and scanner content is calculated by QMD History from
+canonical events. News, SEC, and XBRL content is read from their persisted
+tables with an as-of cutoff. Portfolio, orders, executions, strategy state, and
+journal content use explicitly marked IBKR-shaped configuration fixtures,
+because global canvas configuration has no active trading run from which those
+resources could truthfully be read. Changing a container setting changes the
+rendered preview and persists independently from the global window geometry.

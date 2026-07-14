@@ -28,6 +28,7 @@ PAGES = (
     "real-live-trading",
     "replay-trading",
     "backtest-trading",
+    "canvas-configuration",
     "services-dashboard",
     "service-qmd",
     "service-qmd-history",
@@ -41,7 +42,7 @@ VIEWPORTS = {
     "normal": {"width": 1600, "height": 1000},
     "compact": {"width": 1280, "height": 720},
 }
-REPRESENTATIVE_PAGES = ("real-live-trading", "replay-trading", "backtest-trading", "services-dashboard")
+REPRESENTATIVE_PAGES = ("real-live-trading", "replay-trading", "backtest-trading", "canvas-configuration", "services-dashboard")
 REPRESENTATIVE_THEMES = ("light", "dark")
 TARGETED_SCALES = (0.8, 1.0, 1.25)
 

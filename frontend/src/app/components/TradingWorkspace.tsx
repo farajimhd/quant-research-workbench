@@ -33,11 +33,20 @@ import {
 
 type TradingWorkspaceProps = {
   clockLabel: string;
+  defaultOpenIds?: WorkspaceContainerId[];
+  definitionsOverride?: readonly WorkspaceContainerDefinition[];
   historicalSourceReady: boolean;
+  layoutPreset?: "global" | "mode";
+  metaForContainer?: (definition: WorkspaceContainerDefinition) => WorkspaceWindowMeta;
   mode: TradingWorkspaceMode;
   renderContainer?: (definition: WorkspaceContainerDefinition) => ReactNode;
   runLabel: string;
   runStatus: "completed" | "idle" | "running" | "unavailable";
+  sourceLabel?: string;
+  showHealth?: boolean;
+  statusLabel?: string;
+  storageKeyOverride?: string;
+  workspaceBadge?: string;
 };
 
 const CANVAS_TARGETS: WorkspaceCanvasTarget[] = [{ color: "var(--primary)", id: "main", isCurrent: true, label: "Main" }];
@@ -45,16 +54,28 @@ const LAYOUT_VERSION = 2;
 
 export function TradingWorkspace({
   clockLabel,
+  defaultOpenIds,
+  definitionsOverride,
   historicalSourceReady,
+  layoutPreset = "mode",
+  metaForContainer,
   mode,
   renderContainer,
   runLabel,
   runStatus,
+  sourceLabel = "QMD History",
+  showHealth = true,
+  statusLabel,
+  storageKeyOverride,
+  workspaceBadge,
 }: TradingWorkspaceProps) {
-  const definitions = useMemo(() => containersForMode(mode), [mode]);
+  const definitions = useMemo(() => [...(definitionsOverride ?? containersForMode(mode))], [definitionsOverride, mode]);
   const definitionById = useMemo(() => new Map(definitions.map((definition) => [definition.id, definition])), [definitions]);
-  const storageKey = `quant-research-workbench.trading-workspace.${mode}`;
-  const initial = useMemo(() => readWorkspaceState(storageKey, mode), [mode, storageKey]);
+  const storageKey = storageKeyOverride ?? `quant-research-workbench.trading-workspace.${mode}`;
+  const initial = useMemo(
+    () => readWorkspaceState(storageKey, mode, definitions, defaultOpenIds, layoutPreset),
+    [defaultOpenIds, definitions, layoutPreset, mode, storageKey],
+  );
   const [openIds, setOpenIds] = useState<WorkspaceContainerId[]>(initial.openIds);
   const [layouts, setLayouts] = useState<Record<string, WorkspaceWindowLayout>>(initial.layouts);
   const [libraryOpen, setLibraryOpen] = useState(false);
@@ -84,9 +105,9 @@ export function TradingWorkspace({
   }
 
   function resetLayout() {
-    const nextIds = defaultContainersForMode(mode);
+    const nextIds = defaultOpenIds ?? defaultContainersForMode(mode);
     setOpenIds(nextIds);
-    setLayouts(createHistoricalLayouts(mode, nextIds));
+    setLayouts(layoutPreset === "global" ? createGlobalLayouts(nextIds) : createHistoricalLayouts(mode, nextIds));
   }
 
   const minHeight = workspaceMinHeight(openIds, layouts, false);
@@ -95,20 +116,20 @@ export function TradingWorkspace({
     <div className="trading-workspace-shell" data-workspace-mode={mode}>
       <section className="trading-workspace-command" aria-label="Workspace context and controls">
         <div className="trading-workspace-identity">
-          <span className="trading-mode-badge" data-mode={mode}>{modeLabel(mode)}</span>
+          <span className="trading-mode-badge" data-mode={mode}>{workspaceBadge ?? modeLabel(mode)}</span>
           <div>
             <strong>{runLabel}</strong>
             <small>{clockLabel}</small>
           </div>
         </div>
-        <div className="trading-workspace-health">
+        {showHealth ? <div className="trading-workspace-health">
           <span className="workspace-health-item" data-status={historicalSourceReady ? "ready" : "error"}>
-            <i aria-hidden="true" /> QMD History {historicalSourceReady ? "ready" : "offline"}
+            <i aria-hidden="true" /> {sourceLabel} {historicalSourceReady ? "ready" : "offline"}
           </span>
           <span className="workspace-health-item" data-status={runStatus === "running" ? "ready" : "idle"}>
-            <i aria-hidden="true" /> {runStatus === "running" ? "Run active" : "No active run"}
+            <i aria-hidden="true" /> {statusLabel ?? (runStatus === "running" ? "Run active" : "No active run")}
           </span>
-        </div>
+        </div> : null}
         <div className="trading-workspace-actions">
           <button className="button secondary compact" onClick={() => setLibraryOpen((value) => !value)} type="button">
             {libraryOpen ? <X size={14} /> : <PanelTopOpen size={14} />} Containers
@@ -125,14 +146,14 @@ export function TradingWorkspace({
 
       <section className="trading-workspace-canvas live-workspace" data-workspace-canvas style={{ minHeight }}>
         <div className="trading-workspace-watermark" aria-hidden="true">
-          <span>{modeLabel(mode)}</span>
+          <span>{workspaceBadge ?? modeLabel(mode)}</span>
           <small>container workspace</small>
         </div>
         {openIds.map((id) => {
           const definition = definitionById.get(id);
           const layout = layouts[id];
           if (!definition || !layout) return null;
-          const meta = containerMeta(definition, mode, historicalSourceReady, runStatus);
+          const meta = metaForContainer?.(definition) ?? containerMeta(definition, mode, historicalSourceReady, runStatus);
           return (
             <WorkspaceWindow
               canPopOut={false}
@@ -240,18 +261,44 @@ function containerMeta(
   };
 }
 
-function readWorkspaceState(storageKey: string, mode: TradingWorkspaceMode) {
-  const defaultIds = defaultContainersForMode(mode);
+function readWorkspaceState(
+  storageKey: string,
+  mode: TradingWorkspaceMode,
+  definitions: WorkspaceContainerDefinition[],
+  defaultOpenIds: WorkspaceContainerId[] | undefined,
+  layoutPreset: "global" | "mode",
+) {
+  const defaultIds = defaultOpenIds ?? defaultContainersForMode(mode);
   try {
     const raw = window.localStorage.getItem(storageKey);
     if (!raw) throw new Error("no saved layout");
     const parsed = JSON.parse(raw) as { layoutVersion?: number; layouts?: Record<string, WorkspaceWindowLayout>; openIds?: WorkspaceContainerId[] };
     if (parsed.layoutVersion !== LAYOUT_VERSION || !parsed.layouts || !Array.isArray(parsed.openIds)) throw new Error("stale layout");
-    const validIds = parsed.openIds.filter((id) => containersForMode(mode).some((definition) => definition.id === id));
+    const validIds = parsed.openIds.filter((id) => definitions.some((definition) => definition.id === id));
     return { layouts: parsed.layouts, openIds: validIds.length ? validIds : defaultIds };
   } catch {
-    return { layouts: createHistoricalLayouts(mode, defaultIds), openIds: defaultIds };
+    return { layouts: layoutPreset === "global" ? createGlobalLayouts(defaultIds) : createHistoricalLayouts(mode, defaultIds), openIds: defaultIds };
   }
+}
+
+function createGlobalLayouts(ids: WorkspaceContainerId[]): Record<string, WorkspaceWindowLayout> {
+  const width = availableWorkspaceWidth();
+  const margin = 12;
+  const gap = 10;
+  const columnWidth = Math.floor((width - margin * 2 - gap) / 2);
+  const placements: Record<WorkspaceContainerId, Omit<WorkspaceWindowLayout, "fullscreen" | "minimized" | "z">> = {
+    scanner: { h: 310, w: columnWidth, x: margin, y: 84 },
+    chart: { h: 450, w: columnWidth, x: margin + columnWidth + gap, y: 84 },
+    portfolio: { h: 300, w: columnWidth, x: margin, y: 404 },
+    orders: { h: 300, w: columnWidth, x: margin + columnWidth + gap, y: 544 },
+    fills: { h: 270, w: columnWidth, x: margin, y: 714 },
+    strategy: { h: 270, w: columnWidth, x: margin + columnWidth + gap, y: 854 },
+    news: { h: 340, w: columnWidth, x: margin, y: 994 },
+    sec: { h: 340, w: columnWidth, x: margin + columnWidth + gap, y: 1134 },
+    xbrl: { h: 340, w: columnWidth, x: margin, y: 1344 },
+    journal: { h: 340, w: columnWidth, x: margin + columnWidth + gap, y: 1484 },
+  };
+  return Object.fromEntries(ids.map((id, index) => [id, { ...placements[id], fullscreen: false, minimized: false, z: index + 1 }]));
 }
 
 function createHistoricalLayouts(mode: TradingWorkspaceMode, ids: WorkspaceContainerId[]): Record<string, WorkspaceWindowLayout> {
