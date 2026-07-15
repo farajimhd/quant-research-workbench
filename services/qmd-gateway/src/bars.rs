@@ -156,13 +156,13 @@ pub struct BarRow {
     pub schema_version: u16,
     /// UTC calendar date from `bar_start`; used for ClickHouse partitioning.
     pub session_date: String,
-    /// Canonical bar length label, for example `1s`, `10s`, `30s`, `1m`, `5m`, or `1h`.
+    /// Canonical bar length label, for example `100ms`, `1s`, `5s`, `10s`, `30s`, `1m`, `5m`, or `1h`.
     pub timeframe: String,
     /// Uppercase Massive ticker symbol.
     pub sym: String,
     /// Bar bucket start, aligned by flooring event timestamp to the timeframe boundary.
     pub bar_start: DateTime<Utc>,
-    /// Bar bucket end, calculated as `bar_start + timeframe_seconds`.
+    /// Bar bucket end, calculated as `bar_start + timeframe duration`.
     pub bar_end: DateTime<Utc>,
     /// True once the timeframe has elapsed and the bar has been emitted for persistence.
     pub is_closed: bool,
@@ -359,7 +359,7 @@ struct BarKey {
 #[derive(Clone, Debug)]
 struct BarFrame {
     label: String,
-    seconds: i64,
+    duration_millis: i64,
 }
 
 #[derive(Clone)]
@@ -592,8 +592,8 @@ impl BarStore {
             }
         }
         for frame in self.frames.clone() {
-            let start = aligned_start(event.ts(), frame.seconds);
-            let end = start + chrono::Duration::seconds(frame.seconds);
+            let start = aligned_start(event.ts(), frame.duration_millis);
+            let end = start + chrono::Duration::milliseconds(frame.duration_millis);
             let key = BarKey {
                 sym: sym.clone(),
                 timeframe: frame.label.clone(),
@@ -637,7 +637,7 @@ impl BarStore {
                     sym.clone(),
                     start,
                     end,
-                    frame.seconds as f64,
+                    frame.duration_millis as f64 / 1_000.0,
                 )
             });
             match event {
@@ -1300,16 +1300,21 @@ async fn send_finalized_bars(
 }
 fn parse_timeframe(label: &str) -> Option<BarFrame> {
     let label = canonical_timeframe(label);
-    let seconds = match label.as_str() {
-        "1s" => 1,
-        "10s" => 10,
-        "30s" => 30,
-        "1m" => 60,
-        "5m" => 300,
-        "1h" => 3_600,
+    let duration_millis = match label.as_str() {
+        "100ms" => 100,
+        "1s" => 1_000,
+        "5s" => 5_000,
+        "10s" => 10_000,
+        "30s" => 30_000,
+        "1m" => 60_000,
+        "5m" => 300_000,
+        "1h" => 3_600_000,
         _ => return None,
     };
-    Some(BarFrame { label, seconds })
+    Some(BarFrame {
+        label,
+        duration_millis,
+    })
 }
 
 pub fn is_supported_timeframe(value: &str) -> bool {
@@ -1320,10 +1325,9 @@ fn canonical_timeframe(value: &str) -> String {
     value.trim().to_ascii_lowercase()
 }
 
-fn aligned_start(ts: DateTime<Utc>, seconds: i64) -> DateTime<Utc> {
+fn aligned_start(ts: DateTime<Utc>, duration_millis: i64) -> DateTime<Utc> {
     let millis = ts.timestamp_millis();
-    let bucket_millis = seconds * 1_000;
-    let start_millis = millis.div_euclid(bucket_millis) * bucket_millis;
+    let start_millis = millis.div_euclid(duration_millis) * duration_millis;
     Utc.timestamp_millis_opt(start_millis)
         .single()
         .unwrap_or(ts)
@@ -1446,6 +1450,22 @@ mod tests {
             trf_ts: None,
             ts,
         }
+    }
+
+    #[test]
+    fn supports_fixed_subsecond_and_five_second_boundaries() {
+        assert!(is_supported_timeframe("100ms"));
+        assert!(is_supported_timeframe("5s"));
+        let second = Utc.with_ymd_and_hms(2026, 7, 10, 13, 30, 7).unwrap();
+        let timestamp = second + chrono::Duration::milliseconds(987);
+        assert_eq!(
+            aligned_start(timestamp, 100),
+            second + chrono::Duration::milliseconds(900)
+        );
+        assert_eq!(
+            aligned_start(timestamp, 5_000),
+            Utc.with_ymd_and_hms(2026, 7, 10, 13, 30, 5).unwrap()
+        );
     }
 
     #[test]

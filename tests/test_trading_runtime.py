@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.backend.real_live_trading_service import ibkr_order_payload
-from src.backend.qmd_gateway_client import normalize_qmd_family_bar_snapshot
+from src.backend.qmd_gateway_client import ENRICHED_QMD_TIMEFRAMES, normalize_qmd_family_bar_snapshot
 from src.backend.trading_runtime_service import historical_bar_history_before
 from src.market_engine.events import QuoteEvent
 from src.market_engine.historical_source import _validate_health, event_from_qmd_payload
@@ -125,6 +125,10 @@ class JournalTests(unittest.TestCase):
 
 
 class HistoricalContractTests(unittest.TestCase):
+    def test_subsecond_and_five_second_charts_use_enriched_indicator_contract(self) -> None:
+        self.assertIn("100ms", ENRICHED_QMD_TIMEFRAMES)
+        self.assertIn("5s", ENRICHED_QMD_TIMEFRAMES)
+
     def test_python_runtime_consumes_the_rust_market_event_contract(self) -> None:
         event = event_from_qmd_payload(
             {

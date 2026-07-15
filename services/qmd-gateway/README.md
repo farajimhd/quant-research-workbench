@@ -107,7 +107,7 @@ Environment variables:
 - `QMD_PRODUCT_CACHE_MAX_ROWS`, default `2000000`
 - `QMD_PRODUCT_CACHE_MAX_PARTITIONS`, default `8192` ticker-day partitions
 - `QMD_BAR_SHARD_COUNT`, default `8`
-- `QMD_BAR_TIMEFRAMES`, default `1s,10s,30s,1m,5m,1h`
+- `QMD_BAR_TIMEFRAMES`, default `100ms,1s,5s,10s,30s,1m,5m,1h`
 - `QMD_SCANNER_BROADCAST_MS`, default `1000`
 - `QMD_TICKER_BROADCAST_MS`, default `250`
 - `QMD_GAP_FILL_ENABLED`, default `true`

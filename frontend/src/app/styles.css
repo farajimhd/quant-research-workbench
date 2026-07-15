@@ -12724,8 +12724,10 @@ button {
 .chart-legend-editor {
   display: grid;
   gap: 7px;
-  border-top: 1px solid color-mix(in oklab, var(--surface-border) 72%, transparent);
-  background: color-mix(in oklab, var(--surface-alt) 32%, transparent);
+  border: 1px solid color-mix(in oklab, var(--surface-border) 82%, transparent);
+  border-radius: 7px;
+  background: color-mix(in oklab, var(--surface) 97%, var(--surface-alt));
+  box-shadow: 0 8px 24px color-mix(in oklab, var(--foreground) 12%, transparent);
   padding: 8px;
 }
 
@@ -12802,7 +12804,7 @@ button {
   overflow: auto;
   border: 1px solid color-mix(in oklab, var(--surface-border) 72%, transparent);
   border-radius: 10px;
-  background: color-mix(in oklab, var(--surface) 94%, transparent);
+  background: color-mix(in oklab, var(--surface) 97%, var(--surface-alt));
   box-shadow: 0 18px 46px rgba(16, 24, 40, 0.16);
   padding: 12px;
 }
@@ -16569,15 +16571,34 @@ button {
 
 .live-window-resize {
   background: transparent;
-  border-bottom: 12px solid color-mix(in oklab, var(--muted-foreground) 38%, transparent);
-  border-left: 12px solid transparent;
-  bottom: 4px;
+  border: 0;
+  bottom: 0;
   cursor: nwse-resize;
-  height: 0;
+  height: 22px;
+  min-height: 22px;
+  min-width: 22px;
+  padding: 0;
+  position: absolute;
+  right: 0;
+  touch-action: none;
+  width: 22px;
+  z-index: 20;
+}
+
+.live-window-resize::after {
+  border-bottom: 2px solid color-mix(in oklab, var(--muted-foreground) 72%, transparent);
+  border-right: 2px solid color-mix(in oklab, var(--muted-foreground) 72%, transparent);
+  bottom: 4px;
+  content: "";
+  height: 8px;
   position: absolute;
   right: 4px;
-  touch-action: none;
-  width: 0;
+  width: 8px;
+}
+
+.live-window-resize:hover::after,
+.live-window-resize:focus-visible::after {
+  border-color: var(--foreground);
 }
 
 .live-container-stack {
@@ -21004,8 +21025,8 @@ button {
 }
 
 .compact-window .workspace-window-resize.live-window-resize {
-  bottom: 1px;
-  right: 1px;
+  bottom: 0;
+  right: 0;
 }
 
 .canvas-container-preview {

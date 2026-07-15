@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_QMD_BASE_URL = "http://127.0.0.1:8795"
-ENRICHED_QMD_TIMEFRAMES = frozenset({"1s", "10s", "30s", "1m", "5m", "1h"})
+ENRICHED_QMD_TIMEFRAMES = frozenset({"100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"})
 
 
 def load_qmd_env() -> None:

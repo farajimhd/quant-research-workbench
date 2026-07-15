@@ -193,7 +193,7 @@ impl GatewayConfig {
             bar_shard_count: env_usize("QMD_BAR_SHARD_COUNT", 8),
             bar_timeframes: env_list_with_default(
                 "QMD_BAR_TIMEFRAMES",
-                &["1s", "10s", "30s", "1m", "5m", "1h"],
+                &["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"],
             ),
             bind: env_string("QMD_GATEWAY_BIND", "127.0.0.1:8795"),
             clickhouse_database: env_string_any(
@@ -295,7 +295,9 @@ impl GatewayConfig {
             indicator_history_by_timeframe: env_timeframe_limit_map(
                 "QMD_INDICATOR_HISTORY_BY_TIMEFRAME",
                 &[
+                    ("100ms", 6_000),
                     ("1s", 900),
+                    ("5s", 720),
                     ("10s", 360),
                     ("30s", 480),
                     ("1m", 960),

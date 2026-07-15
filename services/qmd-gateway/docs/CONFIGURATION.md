@@ -76,7 +76,7 @@ are live-tradability blocking until their close transition is observed.
 
 | Env Var | Default | Meaning | Tuning Note |
 |---|---:|---|---|
-| `QMD_BAR_TIMEFRAMES` | `1s,10s,30s,1m,5m,1h` | Timeframes built from quotes/trades. | Timeframes are aligned to the top of their interval. |
+| `QMD_BAR_TIMEFRAMES` | `100ms,1s,5s,10s,30s,1m,5m,1h` | Enriched timeframes built from quotes/trades for indicators and downstream state. | Timeframes are aligned to the top of their interval. |
 | `QMD_BAR_HISTORY_LIMIT` | `1000` | In-memory closed bars retained per ticker/timeframe. | Deeper history should come from ClickHouse. |
 | `QMD_BAR_SHARD_COUNT` | `8` | Number of bar worker shards. | Increase if bar latency rises. |
 | `QMD_PRODUCT_CACHE_MAX_BYTES` | `536870912` | Service-wide estimated byte ceiling for canonical family and condition rows. | Limits are divided across shards. |

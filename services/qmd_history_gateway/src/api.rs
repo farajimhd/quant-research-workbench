@@ -829,6 +829,8 @@ mod tests {
 
     #[test]
     fn timeframes_are_validated_by_the_shared_qmd_bar_contract() {
+        assert!(validate_timeframe("100ms").is_ok());
+        assert!(validate_timeframe("5s").is_ok());
         assert!(validate_timeframe("1m").is_ok());
         assert!(validate_timeframe("2m").is_err());
     }

@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -352,6 +353,22 @@ def validate_canvas_interactions(
         if scanner.get_by_label("Scanner settings").count() != 1 or "Rows" not in scanner.get_by_label("Scanner settings").inner_text():
             issues.append("Scanner row configuration is not separated into its internal settings popover")
         scanner.get_by_role("button", name="Configure Scanner").click()
+
+        resize_handle = chart.get_by_role("button", name=re.compile(r"^Resize Chart\."))
+        resize_box = resize_handle.bounding_box()
+        chart_before_resize = chart.bounding_box()
+        if not resize_box or not chart_before_resize:
+            issues.append("Chart resize handle is not measurable")
+        else:
+            page.mouse.move(resize_box["x"] + resize_box["width"] / 2, resize_box["y"] + resize_box["height"] / 2)
+            page.mouse.down()
+            page.mouse.move(resize_box["x"] + resize_box["width"] / 2 + 36, resize_box["y"] + resize_box["height"] / 2 + 28, steps=4)
+            page.mouse.up()
+            page.wait_for_timeout(100)
+            chart_after_resize = chart.bounding_box()
+            if not chart_after_resize or chart_after_resize["width"] < chart_before_resize["width"] + 30 or chart_after_resize["height"] < chart_before_resize["height"] + 22:
+                issues.append("Chart resize handle does not change both width and height")
+            chart.get_by_role("button", name="Reset Chart to its default layout").click()
 
         minimize = chart.get_by_role("button", name="Minimize Chart")
         if minimize.locator(".lucide-minus").count() != 1:

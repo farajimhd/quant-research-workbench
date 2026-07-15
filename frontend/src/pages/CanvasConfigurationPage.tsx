@@ -125,7 +125,7 @@ const DEFAULT_SETTINGS: ContainerSettings = {
 };
 
 const HISTORICAL_TIMEFRAMES: CanvasLinkContext["timeframe"][] = ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"];
-const ENRICHED_QMD_TIMEFRAMES = new Set<CanvasLinkContext["timeframe"]>(["1s", "10s", "30s", "1m", "5m", "1h"]);
+const ENRICHED_QMD_TIMEFRAMES = new Set<CanvasLinkContext["timeframe"]>(["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"]);
 const CHART_INDICATORS: ChartDisplayItem[] = [
   displayIndicator("indicator.vwap", "VWAP", "volume_liquidity", ["vwap"]),
   displayIndicator("indicator.ema_9", "EMA 9", "momentum", ["ema_9"]),
@@ -826,14 +826,7 @@ function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscilla
   return INDICATOR_SERIES.filter((spec) => visible.has(spec.displayItemId) && (spec.pane === "price" ? "price" : "oscillator") === target).map((spec) => ({
     color: spec.color,
     column: spec.column,
-    data: rows.map((row) => {
-      const value = Number(row[spec.column]);
-      return {
-        ...(spec.column === "macd_histogram" ? { color: value >= 0 ? "var(--success)" : "var(--danger)" } : {}),
-        time: Date.parse(String(row.bar_start)) / 1000,
-        value,
-      };
-    }).filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value)),
+    data: rows.map((row) => ({ time: Date.parse(String(row.bar_start)) / 1000, value: Number(row[spec.column]) })).filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value)),
     displayItemId: spec.displayItemId,
     label: spec.label,
     lineWidth: 1,

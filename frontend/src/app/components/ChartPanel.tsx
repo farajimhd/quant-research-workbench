@@ -337,6 +337,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
 }, ref) => {
   const priceRef = useRef<HTMLDivElement | null>(null);
   const oscillatorPaneRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const oscillatorLayerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const shellRef = useRef<HTMLDivElement | null>(null);
   const priceLayerRef = useRef<HTMLDivElement | null>(null);
   const referenceLayerRef = useRef<HTMLDivElement | null>(null);
@@ -451,6 +452,14 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     }
   };
 
+  const setOscillatorLayerRef = (key: string, node: HTMLDivElement | null) => {
+    if (node) {
+      oscillatorLayerRefs.current.set(key, node);
+    } else {
+      oscillatorLayerRefs.current.delete(key);
+    }
+  };
+
   useImperativeHandle(ref, () => ({
     fitFirstDay() {
       fitFirstDay(priceChartRef.current, fitCandles(payload), timeframe);
@@ -526,7 +535,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       const source = indicatorSourceRef.current.get(key);
       if (!source) return;
       const settings = resolveLegendSettings(legendSettings, key, source);
-      applySeriesSettings(renderer, source, settings, key.startsWith("oscillator:"));
+      applySeriesSettings(renderer, source, settings, key.startsWith("oscillator:"), chartSettingsRef.current);
     });
   }, [legendSettings]);
 
@@ -550,7 +559,13 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       priceLineVisible: false
     });
     candleRef.current = candleSeries;
-    const volume = priceChart.addHistogramSeries({ priceFormat: { type: "volume" }, priceScaleId: "", base: 0 });
+    const volume = priceChart.addHistogramSeries({
+      base: 0,
+      lastValueVisible: false,
+      priceFormat: { type: "volume" },
+      priceLineVisible: false,
+      priceScaleId: "",
+    });
     volume.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
     volumeRef.current = volume;
     const draw = (range: LogicalRange | null) => {
@@ -648,6 +663,11 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       const paneIndex = oscillatorPaneGroups.findIndex((group) => group.key === key);
       if (pane) chart.applyOptions(chartOptions(pane.clientWidth, pane.clientHeight, false, palette, chartSettingsRef.current, timeframe, paneIndex === oscillatorPaneGroups.length - 1));
     });
+    indicatorSeriesRef.current.forEach((renderer, key) => {
+      const source = indicatorSourceRef.current.get(key);
+      if (!source) return;
+      applySeriesSettings(renderer, source, resolveLegendSettings(legendSettings, key, source), key.startsWith("oscillator:"), chartSettingsRef.current);
+    });
     drawCurrentRegions();
   }
 
@@ -677,7 +697,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       const settings = resolveLegendSettings(legendSettings, key, series);
       const existing = indicatorSeriesRef.current.get(key);
       if (existing) {
-        applySeriesSettings(existing, series, settings, false);
+        applySeriesSettings(existing, series, settings, false, chartSettingsRef.current);
       } else {
         const renderer = priceChart.addLineSeries({
           color: seriesColorWithOpacity(series, settings.color),
@@ -688,7 +708,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           title: series.label,
           visible: settings.visible
         });
-        renderer.setData(seriesDataForSettings(series, settings) as never);
+        renderer.setData(seriesDataForSettings(series, settings, chartSettingsRef.current) as never);
         indicatorSeriesRef.current.set(key, renderer);
       }
       indicatorSourceRef.current.set(key, series);
@@ -776,10 +796,10 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       const settings = resolveLegendSettings(legendSettings, key, series);
       let renderer = indicatorSeriesRef.current.get(key);
       if (renderer) {
-        applySeriesSettings(renderer, series, settings, true);
+        applySeriesSettings(renderer, series, settings, true, chartSettingsRef.current);
       } else {
         renderer = addChartSeries(runtime.chart, series, settings);
-        renderer.setData(seriesDataForSettings(series, settings) as never);
+        renderer.setData(seriesDataForSettings(series, settings, chartSettingsRef.current) as never);
         indicatorSeriesRef.current.set(key, renderer);
       }
       indicatorSourceRef.current.set(key, series);
@@ -875,6 +895,9 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     if (!chart || !currentPayload) return;
     const selectedZones = (currentPayload.price_zones ?? []).filter((zone) => !zone.displayItemId || visibleSelectionRef.current.has(zone.displayItemId.toLowerCase()));
     drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, selectedZones, currentPayload.trade_annotations ?? [], currentPayload.candles, chartSettingsRef.current, liveEntryLineRef.current);
+    oscillatorPaneRuntimesRef.current.forEach((runtime, key) => {
+      drawSessionRegions(runtime.chart, oscillatorLayerRefs.current.get(key) ?? null, currentPayload.regions, currentPayload.candles, chartSettingsRef.current, false);
+    });
     drawReferenceLine(chart, referenceLayerRef.current, currentPayload.candles, showReferenceLineRef.current ? referenceRef.current : null);
   }
 
@@ -1129,6 +1152,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
             return (
               <div className="chart-osc" key={group.key}>
                 <div className="chart-pane-canvas" ref={(node) => setOscillatorPaneRef(group.key, node)} />
+                <div className="session-layer" ref={(node) => setOscillatorLayerRef(group.key, node)} />
                 <button
                   aria-label={`Close ${formatOscillatorPaneLabel(group)} pane`}
                   className="chart-pane-close"
@@ -2308,7 +2332,7 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
   };
 }
 
-function applySeriesSettings(renderer: AnySeriesApi, source: ChartSeries, settings: Required<LegendSeriesSettings>, useAdaptivePriceFormat: boolean) {
+function applySeriesSettings(renderer: AnySeriesApi, source: ChartSeries, settings: Required<LegendSeriesSettings>, useAdaptivePriceFormat: boolean, appearance = defaultChartAppearanceSettings) {
   const priceFormatOptions = useAdaptivePriceFormat ? { priceFormat: adaptiveSeriesPriceFormat(source) } : {};
   if (source.style === "histogram") {
     renderer.applyOptions({ color: settings.color, ...priceFormatOptions, visible: settings.visible } as never);
@@ -2321,7 +2345,7 @@ function applySeriesSettings(renderer: AnySeriesApi, source: ChartSeries, settin
       visible: settings.visible
     } as never);
   }
-  renderer.setData(seriesDataForSettings(source, settings) as never);
+  renderer.setData(seriesDataForSettings(source, settings, appearance) as never);
 }
 
 function addChartSeries(chart: IChartApi, series: ChartSeries, settings: Required<LegendSeriesSettings>): AnySeriesApi {
@@ -2403,11 +2427,14 @@ function resolveChartColor(color: string) {
   return window.getComputedStyle(document.documentElement).getPropertyValue(variable[1]).trim() || "#344054";
 }
 
-function seriesDataForSettings(series: ChartSeries, settings: Required<LegendSeriesSettings>) {
+function seriesDataForSettings(series: ChartSeries, settings: Required<LegendSeriesSettings>, appearance = defaultChartAppearanceSettings) {
   if (!settings.visible) return [];
   if (series.style !== "histogram") return series.data;
   const defaultColor = defaultLegendSettings(series).color;
   if (!settings.color || settings.color === defaultColor) {
+    if (series.column === "macd_histogram") {
+      return series.data.map((point) => ({ ...point, color: point.value >= 0 ? appearance.upColor : appearance.downColor }));
+    }
     return series.data.map((point) => ({ ...point, ...(point.color ? { color: resolveChartColor(point.color) } : {}) }));
   }
   return series.data.map((point) => ({ ...point, color: settings.color }));
@@ -2447,7 +2474,7 @@ function chartOptions(
   return {
     width: Math.max(320, width),
     height: Math.max(160, height),
-    layout: { background: { color: palette.background }, textColor: palette.text },
+    layout: { attributionLogo: false, background: { color: palette.background }, textColor: palette.text },
     grid: {
       vertLines: { color: palette.grid },
       horzLines: { color: palette.grid }
@@ -2691,8 +2718,7 @@ function nearestTimelineIndex(timeline: CandleSeriesDatum[], targetTime: number)
 }
 
 function buildChartFitKey(ticker: string, timeframe: string, referenceKey: string, candles: Candle[]) {
-  const first = candles[0];
-  return `${ticker}:${timeframe}:${referenceKey || "no-reference"}:${first?.time ?? "empty"}`;
+  return `${ticker}:${timeframe}:${referenceKey || "no-reference"}:${candles.length ? "data" : "empty"}`;
 }
 
 function hasMultipleMarketDates(candles: Candle[]) {
@@ -2898,6 +2924,25 @@ function drawRegions(
 ) {
   if (!layer) return;
   layer.innerHTML = "";
+  const plotLayer = drawSessionRegions(chart, layer, regions, candles, settings, true);
+  if (!plotLayer) return;
+  const barWidth = estimateBarWidth(chart, candles);
+  const candleDuration = estimateCandleDuration(candles);
+  drawPriceZones(chart, priceSeries, layer, priceZones, candles, barWidth, candleDuration);
+  drawTradeAnnotations(chart, priceSeries, layer, tradeAnnotations, candles, barWidth);
+  drawLiveEntryLine(chart, priceSeries, layer, candles, liveEntryLine);
+}
+
+function drawSessionRegions(
+  chart: IChartApi,
+  layer: HTMLDivElement | null,
+  regions: Region[],
+  candles: Candle[],
+  settings: ChartAppearanceSettings,
+  drawSeparators: boolean
+) {
+  if (!layer) return null;
+  layer.innerHTML = "";
   const plotLayer = document.createElement("div");
   plotLayer.className = "session-plot-region";
   plotLayer.style.right = `${chart.priceScale("right").width()}px`;
@@ -2919,10 +2964,8 @@ function drawRegions(
     node.style.background = sessionRegionColor(region, settings);
     plotLayer.appendChild(node);
   });
-  drawPriceZones(chart, priceSeries, layer, priceZones, candles, barWidth, candleDuration);
-  drawDaySeparators(chart, plotLayer, candles, settings, barWidth);
-  drawTradeAnnotations(chart, priceSeries, layer, tradeAnnotations, candles, barWidth);
-  drawLiveEntryLine(chart, priceSeries, layer, candles, liveEntryLine);
+  if (drawSeparators) drawDaySeparators(chart, plotLayer, candles, settings, barWidth);
+  return plotLayer;
 }
 
 function drawLiveEntryLine(

@@ -246,8 +246,11 @@ remain available in the canonical three-family cache without becoming zero-price
 candles or displacing valid price bars. QMD History applies the identical
 projection in `/snapshot/chart-bars`.
 The response supports the full production intraday grid. The enriched
-timeframes return aligned causal indicators; `100ms` and `5s` currently return
-the canonical trade-family candle projection with `indicators_available=false`.
+timeframes return aligned causal indicators, including `100ms` and `5s`.
+The chart candle projection remains reconciled to the canonical trade-family
+bars, while indicator state is calculated from the matching enriched bars so
+production chart features use the same causal calculator at every intraday
+resolution.
 The frontend retains all explicitly requested pages and cancels obsolete
 ticker/timeframe requests instead of allowing stale responses to overwrite a
 new selection.
