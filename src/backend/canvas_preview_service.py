@@ -14,7 +14,11 @@ from research.mlops.clickhouse import (
     default_clickhouse_user,
     sql_string,
 )
-from src.backend.trading_runtime_service import historical_bar_chunk, historical_day_coverage
+from src.backend.trading_runtime_service import (
+    SUPPORTED_HISTORICAL_TIMEFRAMES,
+    historical_bar_chunk,
+    historical_day_coverage,
+)
 
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -32,23 +36,15 @@ def canvas_preview_payload(
     symbol = chart_symbol.strip().upper()
     if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", symbol):
         raise ValueError("chart_symbol must be a valid ticker")
-    if chart_timeframe not in {"1s", "10s", "30s", "1m", "5m", "1h"}:
-        raise ValueError("chart_timeframe must be 1s, 10s, 30s, 1m, 5m, or 1h")
+    if chart_timeframe not in SUPPORTED_HISTORICAL_TIMEFRAMES:
+        raise ValueError(f"chart_timeframe must be one of {', '.join(sorted(SUPPORTED_HISTORICAL_TIMEFRAMES))}")
 
     offset_at_clock = max(0, int((as_of - as_of.replace(hour=4, minute=0)).total_seconds() // 60))
-    chart_start = max(0, offset_at_clock - 30)
     scanner_start = max(0, offset_at_clock - 15)
     cutoff = as_of.astimezone(UTC)
 
     jobs: dict[str, Callable[[], Any]] = {
         "coverage": lambda: historical_day_coverage(session_date),
-        "chart": lambda: historical_bar_chunk(
-            anchor_date=session_date,
-            ticker=symbol,
-            timeframe=chart_timeframe,
-            offset_minutes=chart_start,
-            window_minutes=min(30, max(1, offset_at_clock - chart_start)),
-        ),
         "news": lambda: _query_news(cutoff),
         "sec": lambda: _query_sec(cutoff),
         "xbrl": lambda: _query_xbrl(cutoff),
@@ -72,21 +68,19 @@ def canvas_preview_payload(
             except Exception as exc:  # A failed context source must not blank unrelated containers.
                 errors[name] = str(exc)
 
-    chart_payload = results.get("chart", {})
-    chart_bars = chart_payload.get("bars", []) if isinstance(chart_payload, dict) else []
     scanner = [
         row
         for scanner_symbol in SCANNER_SYMBOLS
         if (row := _scanner_row(scanner_symbol, results.get(f"scanner:{scanner_symbol}"))) is not None
     ]
-    reference_price = float(chart_bars[-1].get("close", 100.0)) if chart_bars else 100.0
+    reference_price = float(scanner[0].get("last", 100.0)) if scanner else 100.0
 
     return {
         "as_of": as_of.isoformat(),
         "coverage": results.get("coverage", {}),
         "chart": {
-            "bars": chart_bars,
-            "indicators": chart_payload.get("indicators", []) if isinstance(chart_payload, dict) else [],
+            "bars": [],
+            "indicators": [],
             "symbol": symbol,
             "timeframe": chart_timeframe,
         },

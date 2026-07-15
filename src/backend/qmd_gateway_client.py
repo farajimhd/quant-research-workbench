@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_QMD_BASE_URL = "http://127.0.0.1:8795"
+ENRICHED_QMD_TIMEFRAMES = frozenset({"1s", "10s", "30s", "1m", "5m", "1h"})
 
 
 def load_qmd_env() -> None:
@@ -98,6 +99,55 @@ def qmd_bars(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) -> dic
         raise ValueError("symbol is required for QMD bars.")
     payload = qmd_get_json(f"/snapshot/bars/{urllib.parse.quote(symbol.strip().upper())}", {"timeframe": timeframe, "limit": row_limit}, timeout=3)
     return payload if isinstance(payload, dict) else {"ticker": symbol.upper(), "timeframe": timeframe, "history": [], "current": None}
+
+
+def qmd_chart_bars(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) -> dict[str, Any]:
+    if timeframe in ENRICHED_QMD_TIMEFRAMES:
+        return qmd_bars(symbol, timeframe=timeframe, row_limit=row_limit)
+    if not symbol.strip():
+        raise ValueError("symbol is required for QMD chart bars.")
+    payload = qmd_get_json(
+        f"/snapshot/family-bars/{urllib.parse.quote(symbol.strip().upper())}",
+        {"family": "trade", "limit": row_limit, "resolution": timeframe},
+        timeout=3,
+    )
+    return normalize_qmd_family_bar_snapshot(payload, symbol=symbol, timeframe=timeframe)
+
+
+def normalize_qmd_family_bar_snapshot(payload: Any, *, symbol: str, timeframe: str) -> dict[str, Any]:
+    rows = payload.get("rows", []) if isinstance(payload, dict) else []
+    normalized = [
+        normalize_qmd_family_bar(row, timeframe=timeframe)
+        for row in rows
+        if isinstance(row, dict)
+    ]
+    normalized.sort(key=lambda row: row["bar_start"])
+    current = normalized[-1] if normalized and not normalized[-1]["is_closed"] else None
+    history = normalized[:-1] if current is not None else normalized
+    return {
+        "ticker": symbol.strip().upper(),
+        "timeframe": timeframe,
+        "history": history,
+        "current": current,
+    }
+
+
+def normalize_qmd_family_bar(row: dict[str, Any], *, timeframe: str) -> dict[str, Any]:
+    return {
+        "schema_version": row.get("schema_version"),
+        "session_date": row.get("local_date"),
+        "timeframe": timeframe,
+        "sym": str(row.get("ticker") or "").upper(),
+        "bar_start": row.get("bar_start"),
+        "bar_end": row.get("bar_end"),
+        "is_closed": row.get("state") != "partial",
+        "open": row.get("open"),
+        "high": row.get("high"),
+        "low": row.get("low"),
+        "close": row.get("close"),
+        "volume": row.get("size_sum"),
+        "vwap": None,
+    }
 
 
 def qmd_indicators(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) -> dict[str, Any]:

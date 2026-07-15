@@ -5,8 +5,9 @@ use qmd_core::bars::{BarRow, BarSnapshot, SharedBarStore, BAR_SCHEMA_VERSION};
 use qmd_core::compact_event::LiveCompactEvent;
 use qmd_core::indicators::{BarIndicatorCalculator, IndicatorRow, INDICATOR_SCHEMA_VERSION};
 use qmd_core::market_products::{
-    parse_resolution_us, ConditionBarSnapshot, ConditionClassifier, FamilyBarSnapshot,
-    MacroBarSnapshot, MarketProductEngine, ProductCacheLimits, MARKET_PRODUCT_SCHEMA_VERSION,
+    parse_resolution_us, ConditionBarSnapshot, ConditionClassifier, FamilyBarRow,
+    FamilyBarSnapshot, MacroBarSnapshot, MarketProductEngine, ProductCacheLimits, ProductState,
+    MARKET_PRODUCT_SCHEMA_VERSION,
 };
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -53,6 +54,36 @@ pub struct CacheMetrics {
     pub hits: u64,
     pub misses: u64,
     pub max_bytes: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ChartBarRow {
+    pub schema_version: u16,
+    pub session_date: String,
+    pub timeframe: String,
+    pub sym: String,
+    pub bar_start: DateTime<Utc>,
+    pub bar_end: DateTime<Utc>,
+    pub is_closed: bool,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: f64,
+    pub vwap: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ChartSnapshot {
+    pub as_of: DateTime<Utc>,
+    pub bars: Vec<ChartBarRow>,
+    pub cache: CacheEvidence,
+    pub has_more: bool,
+    pub indicators: Vec<IndicatorRow>,
+    pub indicators_available: bool,
+    pub next_before: Option<DateTime<Utc>>,
+    pub ticker: String,
+    pub timeframe: String,
 }
 
 #[derive(Clone)]
@@ -235,6 +266,102 @@ impl HistoricalDerivedCache {
                 .iter()
                 .map(|frame| frame.indicator.clone())
                 .collect(),
+        })
+    }
+
+    pub async fn chart_snapshot(
+        &self,
+        window: EventWindow,
+        ticker: String,
+        timeframe: String,
+        limit: usize,
+        as_of: DateTime<Utc>,
+        before: Option<DateTime<Utc>>,
+    ) -> Result<ChartSnapshot, String> {
+        let resolution_us = parse_resolution_us(&timeframe)
+            .ok_or_else(|| format!("unsupported chart timeframe {timeframe}"))?;
+        let lease = self.acquire(window, ticker.clone()).await?;
+        let event_count = lease.entry.wait_ready().await?;
+        let cache = CacheEvidence {
+            engine_version: HISTORICAL_ENGINE_VERSION,
+            event_count,
+            hit: lease.hit,
+            source_revision: lease.source_revision,
+        };
+
+        if qmd_core::bars::is_supported_timeframe(&timeframe) {
+            let state = lease.entry.state.lock().await;
+            let matching = state
+                .frames
+                .iter()
+                .filter(|frame| {
+                    frame.bar.timeframe.eq_ignore_ascii_case(&timeframe)
+                        && frame.bar.bar_end <= as_of
+                        && before.is_none_or(|bound| frame.bar.bar_start < bound)
+                })
+                .collect::<Vec<_>>();
+            let has_more = matching.len() > limit;
+            let selected = &matching[matching.len().saturating_sub(limit)..];
+            let bars = selected
+                .iter()
+                .map(|frame| ChartBarRow::from_bar(&frame.bar))
+                .collect::<Vec<_>>();
+            let indicators = selected
+                .iter()
+                .map(|frame| frame.indicator.clone())
+                .collect::<Vec<_>>();
+            let next_before = has_more.then(|| bars[0].bar_start);
+            return Ok(ChartSnapshot {
+                as_of,
+                bars,
+                cache,
+                has_more,
+                indicators,
+                indicators_available: true,
+                next_before,
+                ticker,
+                timeframe,
+            });
+        }
+
+        let mut state = lease.entry.state.lock().await;
+        let products = state
+            .products
+            .as_mut()
+            .ok_or_else(|| "historical market products were not built".to_string())?;
+        let family = products.family_snapshot_for_before(
+            &ticker,
+            resolution_us,
+            Some("trade"),
+            limit.saturating_add(1),
+            as_of,
+            before,
+        );
+        let mut trade_rows = family
+            .rows
+            .into_iter()
+            .filter(|row| row.bar_end <= as_of)
+            .collect::<Vec<_>>();
+        let has_more = trade_rows.len() > limit;
+        if has_more {
+            let remove = trade_rows.len() - limit;
+            trade_rows.drain(..remove);
+        }
+        let bars = trade_rows
+            .iter()
+            .map(|row| ChartBarRow::from_family(row, &timeframe))
+            .collect::<Vec<_>>();
+        let next_before = has_more.then(|| bars[0].bar_start);
+        Ok(ChartSnapshot {
+            as_of,
+            bars,
+            cache,
+            has_more,
+            indicators: Vec::new(),
+            indicators_available: false,
+            next_before,
+            ticker,
+            timeframe,
         })
     }
 
@@ -606,6 +733,12 @@ impl CacheEntry {
     }
 
     async fn wait_complete(&self) -> Result<(Vec<DerivedUpdate>, u64), String> {
+        let events_processed = self.wait_ready().await?;
+        let state = self.state.lock().await;
+        Ok((state.frames.clone(), events_processed))
+    }
+
+    async fn wait_ready(&self) -> Result<u64, String> {
         loop {
             let notified = self.notify.notified();
             {
@@ -614,10 +747,48 @@ impl CacheEntry {
                     if let Some(error) = &state.error {
                         return Err(error.clone());
                     }
-                    return Ok((state.frames.clone(), state.events_processed));
+                    return Ok(state.events_processed);
                 }
             }
             notified.await;
+        }
+    }
+}
+
+impl ChartBarRow {
+    fn from_bar(bar: &BarRow) -> Self {
+        Self {
+            schema_version: bar.schema_version,
+            session_date: bar.session_date.clone(),
+            timeframe: bar.timeframe.clone(),
+            sym: bar.sym.clone(),
+            bar_start: bar.bar_start,
+            bar_end: bar.bar_end,
+            is_closed: bar.is_closed,
+            open: bar.open,
+            high: bar.high,
+            low: bar.low,
+            close: bar.close,
+            volume: bar.volume,
+            vwap: Some(bar.vwap),
+        }
+    }
+
+    fn from_family(bar: &FamilyBarRow, timeframe: &str) -> Self {
+        Self {
+            schema_version: bar.schema_version,
+            session_date: bar.local_date.clone(),
+            timeframe: timeframe.to_string(),
+            sym: bar.ticker.clone(),
+            bar_start: bar.bar_start,
+            bar_end: bar.bar_end,
+            is_closed: !matches!(bar.state, ProductState::Partial),
+            open: f64::from(bar.open),
+            high: f64::from(bar.high),
+            low: f64::from(bar.low),
+            close: f64::from(bar.close),
+            volume: bar.size_sum,
+            vwap: None,
         }
     }
 }

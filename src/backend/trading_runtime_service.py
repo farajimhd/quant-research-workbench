@@ -17,7 +17,16 @@ from src.trading_runtime.runtime import RunMode
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SUPPORTED_HISTORICAL_TIMEFRAMES = {"1s", "10s", "30s", "1m", "5m", "1h"}
+SUPPORTED_HISTORICAL_TIMEFRAMES = {
+    "100ms",
+    "1s",
+    "5s",
+    "10s",
+    "30s",
+    "1m",
+    "5m",
+    "1h",
+}
 HISTORICAL_CHUNK_MINUTES = 15
 
 
@@ -321,22 +330,26 @@ def historical_latest_coverage() -> dict[str, Any]:
     return payload
 
 
-@lru_cache(maxsize=256)
 def historical_bar_history_before(
     *,
     before: date,
     ticker: str,
     timeframe: str,
     row_limit: int = 20_000,
+    session_date: date | None = None,
+    as_of: str | None = None,
+    before_bar: str | None = None,
 ) -> dict[str, Any]:
     resolved_ticker = _historical_ticker(ticker)
     resolved_timeframe = _historical_timeframe(timeframe)
-    coverage = _historical_gateway_get(
-        "/coverage/latest",
-        {"before": before.isoformat()},
-        timeout=15,
-    )
-    session_date_text = str(coverage.get("session_date") or "") if isinstance(coverage, dict) else ""
+    coverage = None
+    if session_date is None:
+        coverage = _historical_gateway_get(
+            "/coverage/latest",
+            {"before": before.isoformat()},
+            timeout=15,
+        )
+    session_date_text = session_date.isoformat() if session_date else str(coverage.get("session_date") or "") if isinstance(coverage, dict) else ""
     if not session_date_text:
         return {
             "ticker": resolved_ticker,
@@ -346,34 +359,57 @@ def historical_bar_history_before(
             "has_more": False,
             "source": "qmd_history_gateway",
         }
-    session_date = date.fromisoformat(session_date_text)
+    resolved_session_date = date.fromisoformat(session_date_text)
     window = historical_window_preview(
         mode=RunMode.REPLAY.value,
-        anchor_date=session_date,
+        anchor_date=resolved_session_date,
         session_count=1,
-        replay_end_date=session_date,
+        replay_end_date=resolved_session_date,
     )
+    window_start = datetime.fromisoformat(window["start"])
+    window_end = datetime.fromisoformat(window["end"])
+    resolved_as_of = datetime.fromisoformat(as_of) if as_of else window_end
+    if resolved_as_of.tzinfo is None:
+        raise ValueError("as_of must include a timezone")
+    resolved_as_of = max(window_start, min(resolved_as_of, window_end))
     snapshot = _historical_gateway_get(
-        f"/snapshot/bars/{urllib.parse.quote(resolved_ticker)}",
+        f"/snapshot/chart-bars/{urllib.parse.quote(resolved_ticker)}",
         {
             "start": window["start"],
             "end": window["end"],
+            "as_of": resolved_as_of.isoformat(),
+            "before": before_bar,
             "timeframe": resolved_timeframe,
-            "limit": max(1, min(row_limit, 20_000)),
-            "event_limit": 2_000_000,
+            "limit": max(1, min(row_limit, 50_000)),
         },
         timeout=90,
     )
-    bars = list(snapshot.get("history") or []) if isinstance(snapshot, dict) else []
-    if isinstance(snapshot, dict) and snapshot.get("current"):
-        bars.append(dict(snapshot["current"]))
+    bars = list(snapshot.get("bars") or []) if isinstance(snapshot, dict) else []
+    indicators = list(snapshot.get("indicators") or []) if isinstance(snapshot, dict) else []
     bars.sort(key=lambda row: str(row.get("bar_start") or ""))
+    indicators.sort(key=lambda row: str(row.get("bar_start") or ""))
+    has_more_in_session = bool(snapshot.get("has_more")) if isinstance(snapshot, dict) else False
+    previous_session_before = ""
+    if not has_more_in_session:
+        previous = _historical_gateway_get(
+            "/coverage/latest",
+            {"before": resolved_session_date.isoformat()},
+            timeout=15,
+        )
+        if isinstance(previous, dict) and previous.get("session_date"):
+            previous_session_before = resolved_session_date.isoformat()
     return {
         "ticker": resolved_ticker,
         "timeframe": resolved_timeframe,
         "history": bars,
+        "indicators": indicators,
+        "indicators_available": bool(snapshot.get("indicators_available")) if isinstance(snapshot, dict) else False,
         "earliest_session_date": session_date_text if bars else "",
-        "has_more": bool(bars),
+        "has_more": has_more_in_session or bool(previous_session_before),
+        "has_more_in_session": has_more_in_session,
+        "next_before": str(snapshot.get("next_before") or "") if isinstance(snapshot, dict) else "",
+        "previous_session_before": previous_session_before,
+        "as_of": resolved_as_of.isoformat(),
         "source": "qmd_history_gateway",
     }
 
@@ -396,7 +432,7 @@ def historical_day_coverage(anchor_date: date) -> dict[str, Any]:
 
 
 def _historical_gateway_get(path: str, params: dict[str, Any], *, timeout: float) -> Any:
-    query = urllib.parse.urlencode(params)
+    query = urllib.parse.urlencode({key: value for key, value in params.items() if value is not None})
     url = f"{historical_gateway_base_url()}{path}?{query}"
     request = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
     try:

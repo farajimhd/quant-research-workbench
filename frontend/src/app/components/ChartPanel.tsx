@@ -2173,14 +2173,17 @@ function candleDataForTimeframe(candles: Candle[], timeframe: string): CandleSer
   const sortedCandles = [...candles].sort((left, right) => left.time - right.time);
   const data: CandleSeriesDatum[] = [];
   const maxFillGapSeconds = 12 * 60 * 60;
+  const maxSyntheticPoints = 20_000;
+  let syntheticPoints = 0;
   for (let index = 0; index < sortedCandles.length; index += 1) {
     const candle = sortedCandles[index];
     if (index > 0) {
       const previous = sortedCandles[index - 1];
       const gap = candle.time - previous.time;
       if (gap > stepSeconds && gap <= maxFillGapSeconds) {
-        for (let time = previous.time + stepSeconds; time < candle.time; time += stepSeconds) {
+        for (let time = previous.time + stepSeconds; time < candle.time && syntheticPoints < maxSyntheticPoints; time += stepSeconds) {
           data.push({ time });
+          syntheticPoints += 1;
         }
       }
     }
@@ -2202,10 +2205,12 @@ function buildTimelineDataSignature(timeline: CandleSeriesDatum[]) {
 
 function chartTimeframeSeconds(timeframe: string) {
   const normalized = timeframe.trim().toLowerCase();
-  const match = normalized.match(/^(\d+)(m|h|d)$/);
+  const match = normalized.match(/^(\d+)(ms|s|m|h|d)$/);
   if (!match) return null;
   const value = Number(match[1]);
   if (!Number.isFinite(value) || value <= 0) return null;
+  if (match[2] === "ms") return value / 1_000;
+  if (match[2] === "s") return value;
   if (match[2] === "m") return value * 60;
   if (match[2] === "h") return value * 60 * 60;
   return value * 24 * 60 * 60;

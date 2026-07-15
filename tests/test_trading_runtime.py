@@ -5,8 +5,11 @@ import tempfile
 import unittest
 from datetime import date, datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from src.backend.real_live_trading_service import ibkr_order_payload
+from src.backend.qmd_gateway_client import normalize_qmd_family_bar_snapshot
+from src.backend.trading_runtime_service import historical_bar_history_before
 from src.market_engine.events import QuoteEvent
 from src.market_engine.historical_source import _validate_health, event_from_qmd_payload
 from src.trading_runtime.ibkr_schema import OrderRequest, OrderStatus
@@ -157,6 +160,69 @@ class HistoricalContractTests(unittest.TestCase):
             "running": True,
         }
         self.assertIs(_validate_health(payload), payload)
+
+    @patch("src.backend.trading_runtime_service._historical_gateway_get")
+    def test_chart_history_preserves_exact_session_as_of_and_intra_session_cursor(self, gateway_get) -> None:
+        gateway_get.return_value = {
+            "as_of": "2026-07-10T13:45:00+00:00",
+            "bars": [
+                {
+                    "bar_start": "2026-07-10T13:44:00+00:00",
+                    "bar_end": "2026-07-10T13:45:00+00:00",
+                    "close": 315.0,
+                }
+            ],
+            "has_more": True,
+            "indicators": [{"bar_start": "2026-07-10T13:44:00+00:00", "ema_20": 314.8}],
+            "indicators_available": True,
+            "next_before": "2026-07-10T13:44:00+00:00",
+        }
+
+        result = historical_bar_history_before(
+            before=date(2026, 7, 11),
+            session_date=date(2026, 7, 10),
+            as_of="2026-07-10T13:45:00+00:00",
+            before_bar="2026-07-10T13:44:00+00:00",
+            ticker="AAPL",
+            timeframe="100ms",
+            row_limit=5_000,
+        )
+
+        path, params = gateway_get.call_args.args[:2]
+        self.assertEqual(path, "/snapshot/chart-bars/AAPL")
+        self.assertEqual(params["timeframe"], "100ms")
+        self.assertEqual(params["as_of"], "2026-07-10T13:45:00+00:00")
+        self.assertEqual(params["before"], "2026-07-10T13:44:00+00:00")
+        self.assertEqual(result["next_before"], "2026-07-10T13:44:00+00:00")
+        self.assertTrue(result["has_more_in_session"])
+        self.assertEqual(len(result["indicators"]), 1)
+
+    def test_live_family_bars_use_the_chart_bar_contract(self) -> None:
+        payload = normalize_qmd_family_bar_snapshot(
+            {
+                "rows": [
+                    {
+                        "bar_start": "2026-07-10T13:45:00+00:00",
+                        "bar_end": "2026-07-10T13:45:00.100000+00:00",
+                        "bar_family": "trade",
+                        "close": 315.0,
+                        "high": 315.1,
+                        "local_date": "2026-07-10",
+                        "low": 314.9,
+                        "open": 314.95,
+                        "schema_version": 1,
+                        "size_sum": 200,
+                        "state": "partial",
+                        "ticker": "AAPL",
+                    }
+                ]
+            },
+            symbol="AAPL",
+            timeframe="100ms",
+        )
+        self.assertEqual(payload["history"], [])
+        self.assertEqual(payload["current"]["timeframe"], "100ms")
+        self.assertEqual(payload["current"]["volume"], 200)
 
 
 class LiveOrderContractTests(unittest.TestCase):

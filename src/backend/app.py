@@ -67,7 +67,16 @@ from src.backend.market_data_service import (
 )
 from src.backend.news_service import ensure_benzinga_news_cache, news_at_payload
 from src.backend.progress_model import build_progress_model
-from src.backend.qmd_gateway_client import qmd_bars, qmd_catalogs, qmd_indicators, qmd_service_status, qmd_status, qmd_websocket_url
+from src.backend.qmd_gateway_client import (
+    ENRICHED_QMD_TIMEFRAMES,
+    normalize_qmd_family_bar_snapshot,
+    qmd_catalogs,
+    qmd_chart_bars,
+    qmd_indicators,
+    qmd_service_status,
+    qmd_status,
+    qmd_websocket_url,
+)
 from src.backend.real_live_trading_service import (
     apply_tradable_filter_to_scanner_payload,
     cancel_real_live_order,
@@ -90,6 +99,7 @@ from src.backend.real_live_market_data import (
 )
 from src.backend.real_live_market_data.config import market_gateway_config
 from src.backend.trading_runtime_service import (
+    SUPPORTED_HISTORICAL_TIMEFRAMES,
     get_strategy_definition,
     historical_bar_history_before,
     historical_bar_chunk,
@@ -4279,18 +4289,26 @@ def trading_canvas_live_chart(symbol: str, timeframe: str = "1m", row_limit: int
     ticker = symbol.strip().upper()
     if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
         raise HTTPException(status_code=400, detail="symbol must be a valid ticker")
-    if timeframe not in {"1s", "10s", "30s", "1m", "5m", "1h"}:
-        raise HTTPException(status_code=400, detail="timeframe must be 1s, 10s, 30s, 1m, 5m, or 1h")
+    if timeframe not in SUPPORTED_HISTORICAL_TIMEFRAMES:
+        raise HTTPException(status_code=400, detail=f"timeframe must be one of {', '.join(sorted(SUPPORTED_HISTORICAL_TIMEFRAMES))}")
     with ThreadPoolExecutor(max_workers=2) as executor:
-        bars_future = executor.submit(qmd_bars, ticker, timeframe=timeframe, row_limit=row_limit)
-        indicators_future = executor.submit(qmd_indicators, ticker, timeframe=timeframe, row_limit=row_limit)
+        bars_future = executor.submit(qmd_chart_bars, ticker, timeframe=timeframe, row_limit=row_limit)
+        indicators_future = (
+            executor.submit(qmd_indicators, ticker, timeframe=timeframe, row_limit=row_limit)
+            if timeframe in ENRICHED_QMD_TIMEFRAMES
+            else None
+        )
         try:
             bars = bars_future.result()
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         errors: dict[str, str] = {}
         try:
-            indicators = indicators_future.result()
+            indicators = (
+                indicators_future.result()
+                if indicators_future is not None
+                else {"ticker": ticker, "timeframe": timeframe, "history": [], "current": None, "tick": None}
+            )
         except Exception as exc:
             indicators = {"ticker": ticker, "timeframe": timeframe, "history": [], "current": None, "tick": None}
             errors["indicators"] = str(exc)
@@ -4308,21 +4326,32 @@ def trading_canvas_live_chart_history(
     symbol: str,
     timeframe: str = "1m",
     before: str | None = None,
+    session_date: str | None = None,
+    as_of: str | None = None,
+    before_bar: str | None = None,
     days: int = Query(default=1, ge=1, le=1),
-    row_limit: int = Query(default=20_000, ge=1, le=20_000),
+    row_limit: int = Query(default=20_000, ge=1, le=50_000),
 ) -> dict[str, Any]:
     ticker = symbol.strip().upper()
     if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
         raise HTTPException(status_code=400, detail="symbol must be a valid ticker")
-    if timeframe not in {"1s", "10s", "30s", "1m", "5m", "1h"}:
-        raise HTTPException(status_code=400, detail="timeframe must be 1s, 10s, 30s, 1m, 5m, or 1h")
+    if timeframe not in SUPPORTED_HISTORICAL_TIMEFRAMES:
+        raise HTTPException(status_code=400, detail=f"timeframe must be one of {', '.join(sorted(SUPPORTED_HISTORICAL_TIMEFRAMES))}")
     if before is not None:
         try:
             date.fromisoformat(before)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="before must be an ISO date") from exc
     try:
-        return _canvas_live_chart_history(ticker=ticker, timeframe=timeframe, before=before, row_limit=row_limit)
+        return _canvas_live_chart_history(
+            ticker=ticker,
+            timeframe=timeframe,
+            before=before,
+            session_date=session_date,
+            as_of=as_of,
+            before_bar=before_bar,
+            row_limit=row_limit,
+        )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -4332,6 +4361,9 @@ def _canvas_live_chart_history(
     ticker: str,
     timeframe: str,
     before: str | None,
+    session_date: str | None,
+    as_of: str | None,
+    before_bar: str | None,
     row_limit: int,
 ) -> dict[str, Any]:
     before_date = date.fromisoformat(before) if before else datetime.now(ZoneInfo(EXCHANGE_TIME_ZONE)).date()
@@ -4340,6 +4372,9 @@ def _canvas_live_chart_history(
         ticker=ticker,
         timeframe=timeframe,
         row_limit=row_limit,
+        session_date=date.fromisoformat(session_date) if session_date else None,
+        as_of=as_of,
+        before_bar=before_bar,
     )
 
 
@@ -4349,7 +4384,7 @@ async def trading_canvas_live_chart_stream(websocket: WebSocket, stream: str, sy
     ticker = symbol.strip().upper()
     timeframe = websocket.query_params.get("timeframe", "1m")
     row_limit_text = websocket.query_params.get("limit", "500")
-    if stream not in {"bars", "indicators"} or not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker) or timeframe not in {"1s", "10s", "30s", "1m", "5m", "1h"}:
+    if stream not in {"bars", "indicators"} or not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker) or timeframe not in SUPPORTED_HISTORICAL_TIMEFRAMES:
         await websocket.send_json({"error": "Invalid live chart stream request."})
         await websocket.close(code=1008)
         return
@@ -4360,11 +4395,26 @@ async def trading_canvas_live_chart_stream(websocket: WebSocket, stream: str, sy
         await websocket.close(code=1008)
         return
     try:
-        upstream_url = qmd_websocket_url(f"/stream/{stream}/{ticker}", {"timeframe": timeframe, "limit": row_limit})
+        family_bars = stream == "bars" and timeframe not in ENRICHED_QMD_TIMEFRAMES
+        if stream == "indicators" and timeframe not in ENRICHED_QMD_TIMEFRAMES:
+            await websocket.close(code=1000)
+            return
+        upstream_path = f"/stream/family-bars/{ticker}" if family_bars else f"/stream/{stream}/{ticker}"
+        upstream_params = (
+            {"emit": "full_then_updates", "family": "trade", "limit": row_limit, "resolution": timeframe}
+            if family_bars
+            else {"timeframe": timeframe, "limit": row_limit}
+        )
+        upstream_url = qmd_websocket_url(upstream_path, upstream_params)
         async with websockets.connect(upstream_url, ping_interval=20, ping_timeout=20, max_size=8 * 1024 * 1024) as upstream:
             async for message in upstream:
                 if isinstance(message, bytes):
                     await websocket.send_bytes(message)
+                elif family_bars:
+                    payload = json.loads(message)
+                    await websocket.send_json(
+                        normalize_qmd_family_bar_snapshot(payload, symbol=ticker, timeframe=timeframe)
+                    )
                 else:
                     await websocket.send_text(message)
     except WebSocketDisconnect:

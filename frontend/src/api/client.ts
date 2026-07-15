@@ -3,8 +3,11 @@ export type ApiRequestInit = RequestInit & { timeoutMs?: number };
 
 export async function api<T>(path: string, init?: ApiRequestInit): Promise<T> {
   const { timeoutMs, ...requestInit } = init ?? {};
-  const controller = timeoutMs ? new AbortController() : null;
-  const timeout = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : null;
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort(requestInit.signal?.reason);
+  if (requestInit.signal?.aborted) abortFromCaller();
+  else requestInit.signal?.addEventListener("abort", abortFromCaller, { once: true });
+  const timeout = timeoutMs ? window.setTimeout(() => controller.abort(), timeoutMs) : null;
   try {
     const response = await fetch(path, {
       headers: {
@@ -12,7 +15,7 @@ export async function api<T>(path: string, init?: ApiRequestInit): Promise<T> {
         ...(requestInit.headers ?? {})
       },
       ...requestInit,
-      signal: requestInit.signal ?? controller?.signal
+      signal: controller.signal
     });
     const text = await response.text();
     const payload = parseJsonPayload(text);
@@ -28,6 +31,7 @@ export async function api<T>(path: string, init?: ApiRequestInit): Promise<T> {
     return payload as T;
   } finally {
     if (timeout !== null) window.clearTimeout(timeout);
+    requestInit.signal?.removeEventListener("abort", abortFromCaller);
   }
 }
 

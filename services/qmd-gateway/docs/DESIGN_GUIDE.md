@@ -151,6 +151,11 @@ Timeframe is not part of the historical derived-cache key. A cold build reads
 events once and constructs every configured resolution, indicators, conditions,
 and macro inputs. Timeframe changes reuse the entry.
 
+Chart delivery is a bounded projection over that entry, not another cache. The
+projection returns only the candle fields required by the browser plus causal
+indicators when the enriched timeframe supports them. It never clones the
+entry's complete derived-update vector merely to serve one page.
+
 ### Live product cache
 
 The live cache is sharded by stable ticker hash. Each shard has an independent
@@ -214,11 +219,11 @@ estimated/configured bytes, hits, misses, builds, entries, and evictions.
 QMD Live:
 
 ```text
-GET /snapshot/family-bars/{ticker}?resolution=1m&limit=1500
+GET /snapshot/family-bars/{ticker}?resolution=1m&family=trade&limit=1500
 GET /snapshot/condition-bars/{ticker}?resolution=1m&limit=1500
 GET /snapshot/macro-bars/{ticker}?timeframe=1d&limit=500
 GET /snapshot/product-cache
-WS  /stream/family-bars/{ticker}?resolution=1m
+WS  /stream/family-bars/{ticker}?resolution=1m&family=trade&emit=full_then_updates
 WS  /stream/condition-bars/{ticker}?resolution=1m
 WS  /stream/macro-bars/{ticker}?timeframe=1d
 ```
@@ -226,14 +231,27 @@ WS  /stream/macro-bars/{ticker}?timeframe=1d
 QMD History adds point-in-time bounds:
 
 ```text
+GET /snapshot/chart-bars/{ticker}?start=...&end=...&as_of=...&before=...&timeframe=1m&limit=5000
 GET /snapshot/family-bars/{ticker}?start=...&end=...&as_of=...&resolution=1m
 GET /snapshot/condition-bars/{ticker}?start=...&end=...&as_of=...&resolution=1m
 GET /snapshot/macro-bars/{ticker}?start=...&end=...&as_of=...&timeframe=1d
 ```
 
-Existing `/snapshot/bars` and `/stream/bars` remain compatibility endpoints for
-charts and enriched features. Their price-bar fields reconcile to the canonical
-trade-family authority.
+`/snapshot/chart-bars` is the browser history contract. `as_of` clamps the
+source horizon before aggregation, `before` is an exclusive fixed-bar cursor,
+and `has_more` plus `next_before` drive lazy backward paging inside one session.
+The response supports the full production intraday grid. The enriched
+timeframes return aligned causal indicators; `100ms` and `5s` currently return
+the canonical trade-family candle projection with `indicators_available=false`.
+The frontend retains all explicitly requested pages and cancels obsolete
+ticker/timeframe requests instead of allowing stale responses to overwrite a
+new selection.
+
+Existing `/snapshot/bars` and `/stream/bars` remain enriched compatibility
+endpoints. Live chart requests for `100ms` and `5s` use filtered canonical
+trade-family snapshots and streams, normalized to the same lean candle wire
+shape. Other intraday chart timeframes use the enriched endpoints, whose price
+fields reconcile to the canonical trade-family authority.
 
 Historical `/stream/derived` supports `full`, `updates`, and
 `full_then_updates`, sequence resume, one-step playback, paced replay, and

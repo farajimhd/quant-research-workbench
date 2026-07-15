@@ -1,5 +1,6 @@
 use crate::cache::{
-    CacheEvidence, CacheMetrics, DerivedSnapshot, HistoricalDerivedCache, HISTORICAL_ENGINE_VERSION,
+    CacheEvidence, CacheMetrics, ChartSnapshot, DerivedSnapshot, HistoricalDerivedCache,
+    HISTORICAL_ENGINE_VERSION,
 };
 use crate::config::HistoricalGatewayConfig;
 use crate::source::{
@@ -46,6 +47,16 @@ struct LatestCoverageQuery {
 struct BarsQuery {
     end: String,
     event_limit: Option<usize>,
+    limit: Option<usize>,
+    start: String,
+    timeframe: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChartQuery {
+    as_of: Option<String>,
+    before: Option<String>,
+    end: String,
     limit: Option<usize>,
     start: String,
     timeframe: Option<String>,
@@ -107,6 +118,7 @@ pub fn app(state: AppState) -> Router {
             get(compact_event_snapshot),
         )
         .route("/snapshot/bars/{ticker}", get(bar_snapshot))
+        .route("/snapshot/chart-bars/{ticker}", get(chart_bar_snapshot))
         .route("/snapshot/family-bars/{ticker}", get(family_bar_snapshot))
         .route(
             "/snapshot/condition-bars/{ticker}",
@@ -206,6 +218,49 @@ async fn bar_snapshot(
     state
         .cache
         .snapshot(window, ticker, timeframe, bar_limit)
+        .await
+        .map(Json)
+        .map_err(service_error)
+}
+
+async fn chart_bar_snapshot(
+    State(state): State<Arc<AppState>>,
+    Path(ticker): Path<String>,
+    Query(query): Query<ChartQuery>,
+) -> Result<Json<ChartSnapshot>, ApiError> {
+    let ticker = normalize_ticker(&ticker)?;
+    let timeframe = query.timeframe.unwrap_or_else(|| "1m".to_string());
+    if !state
+        .config
+        .product_timeframes
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(&timeframe))
+    {
+        return Err(bad_request(format!(
+            "unsupported chart timeframe {timeframe}; configured values are {}",
+            state.config.product_timeframes.join(", ")
+        )));
+    }
+    let product_query = ProductQuery {
+        as_of: query.as_of,
+        end: query.end,
+        limit: query.limit,
+        resolution: Some(timeframe.clone()),
+        start: query.start,
+        timeframe: None,
+    };
+    let (window, as_of) = causal_product_window(&product_query, &ticker)?;
+    let before = query.before.as_deref().map(parse_timestamp).transpose()?;
+    state
+        .cache
+        .chart_snapshot(
+            window,
+            ticker,
+            timeframe,
+            product_query.limit.unwrap_or(5_000).clamp(1, 50_000),
+            as_of,
+            before,
+        )
         .await
         .map(Json)
         .map_err(service_error)

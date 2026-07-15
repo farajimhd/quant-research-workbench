@@ -69,6 +69,7 @@ struct BarsQuery {
 #[derive(Debug, Deserialize)]
 struct ProductQuery {
     emit: Option<String>,
+    family: Option<String>,
     limit: Option<usize>,
     resolution: Option<String>,
     timeframe: Option<String>,
@@ -719,20 +720,25 @@ async fn family_bar_snapshot(
         .as_deref()
         .and_then(parse_resolution_us)
         .unwrap_or(60_000_000);
-    Json(
-        state
-            .products
-            .family_snapshot(
-                &ticker,
-                resolution_us,
-                query
-                    .limit
-                    .unwrap_or(1_500)
-                    .min(state.config.product_cache_max_rows),
-                chrono::Utc::now(),
-            )
-            .await,
-    )
+    let limit = query
+        .limit
+        .unwrap_or(1_500)
+        .min(state.config.product_cache_max_rows);
+    let snapshot = match query.family.as_deref() {
+        Some(family) => {
+            state
+                .products
+                .family_snapshot_for(&ticker, resolution_us, family, limit, chrono::Utc::now())
+                .await
+        }
+        None => {
+            state
+                .products
+                .family_snapshot(&ticker, resolution_us, limit, chrono::Utc::now())
+                .await
+        }
+    };
+    Json(snapshot)
 }
 
 async fn condition_bar_snapshot(
@@ -980,10 +986,20 @@ async fn stream_product_snapshots(
                 serde_json::to_string(&snapshot)
             }
             _ => {
-                let mut snapshot = state
-                    .products
-                    .family_snapshot(&ticker, resolution_us, limit, now)
-                    .await;
+                let mut snapshot = match query.family.as_deref() {
+                    Some(family) => {
+                        state
+                            .products
+                            .family_snapshot_for(&ticker, resolution_us, family, limit, now)
+                            .await
+                    }
+                    None => {
+                        state
+                            .products
+                            .family_snapshot(&ticker, resolution_us, limit, now)
+                            .await
+                    }
+                };
                 if emit == "updates" || !first {
                     snapshot.rows.retain(|row| {
                         let key = format!(

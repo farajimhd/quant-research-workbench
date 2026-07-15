@@ -356,6 +356,25 @@ impl SharedMarketProductStore {
             .family_snapshot(ticker, resolution_us, limit, as_of)
     }
 
+    pub async fn family_snapshot_for(
+        &self,
+        ticker: &str,
+        resolution_us: u64,
+        bar_family: &str,
+        limit: usize,
+        as_of: DateTime<Utc>,
+    ) -> FamilyBarSnapshot {
+        let index = stable_hash(ticker) as usize % self.shards.len();
+        self.shards[index].lock().await.family_snapshot_for_before(
+            ticker,
+            resolution_us,
+            Some(bar_family),
+            limit,
+            as_of,
+            None,
+        )
+    }
+
     pub async fn condition_snapshot(
         &self,
         ticker: &str,
@@ -535,6 +554,29 @@ impl MarketProductEngine {
         limit: usize,
         as_of: DateTime<Utc>,
     ) -> FamilyBarSnapshot {
+        self.family_snapshot_before(ticker, resolution_us, limit, as_of, None)
+    }
+
+    pub fn family_snapshot_before(
+        &mut self,
+        ticker: &str,
+        resolution_us: u64,
+        limit: usize,
+        as_of: DateTime<Utc>,
+        before: Option<DateTime<Utc>>,
+    ) -> FamilyBarSnapshot {
+        self.family_snapshot_for_before(ticker, resolution_us, None, limit, as_of, before)
+    }
+
+    pub fn family_snapshot_for_before(
+        &mut self,
+        ticker: &str,
+        resolution_us: u64,
+        bar_family: Option<&str>,
+        limit: usize,
+        as_of: DateTime<Utc>,
+        before: Option<DateTime<Utc>>,
+    ) -> FamilyBarSnapshot {
         let ticker = ticker.to_ascii_uppercase();
         let mut rows = self
             .partitions
@@ -542,6 +584,8 @@ impl MarketProductEngine {
             .filter(|(key, _)| key.ticker == ticker)
             .flat_map(|(_, partition)| partition.family.values_mut())
             .filter(|entry| entry.row.label_resolution_us == resolution_us)
+            .filter(|entry| bar_family.is_none_or(|family| entry.row.bar_family == family))
+            .filter(|entry| before.is_none_or(|bound| entry.row.bar_start < bound))
             .map(|entry| {
                 refresh_family_state(&mut entry.row, as_of);
                 entry.row.clone()
@@ -1105,6 +1149,35 @@ mod tests {
         assert_eq!(snapshot.rows.len(), 1);
         assert_eq!(snapshot.rows[0].open, 100.0);
         assert_eq!(snapshot.rows[0].state, ProductState::Corrected);
+    }
+
+    #[test]
+    fn family_snapshot_before_pages_by_fixed_bar_start() {
+        let limits = ProductCacheLimits {
+            max_bytes: 16 * 1024 * 1024,
+            max_partitions: 8,
+            max_rows: 100_000,
+        };
+        let mut engine = MarketProductEngine::new(
+            vec![1_000_000],
+            limits,
+            rules(),
+            ConditionClassifier::training_aligned(),
+        );
+        let start = Utc.with_ymd_and_hms(2026, 7, 10, 13, 45, 0).unwrap();
+        for (offset, price) in [(0, 100.0), (1, 101.0), (2, 102.0), (3, 103.0)] {
+            let ts = start + Duration::seconds(offset);
+            engine.apply_event(&trade(ts, offset as u64 + 1, price, 1.0), ts);
+        }
+
+        let before = start + Duration::seconds(3);
+        let as_of = start + Duration::seconds(4);
+        let snapshot = engine.family_snapshot_before("AAPL", 1_000_000, 2, as_of, Some(before));
+
+        assert_eq!(snapshot.rows.len(), 2);
+        assert_eq!(snapshot.rows[0].bar_start, start + Duration::seconds(1));
+        assert_eq!(snapshot.rows[1].bar_start, start + Duration::seconds(2));
+        assert!(snapshot.rows.iter().all(|row| row.bar_start < before));
     }
 
     #[test]
