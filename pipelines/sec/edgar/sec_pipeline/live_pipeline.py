@@ -16,6 +16,7 @@ from pipelines.sec.edgar.sec_filing_text_extract_parts import (
 )
 from pipelines.sec.edgar.sec_pipeline.feed import SecFeedItem, accession_text_url
 from pipelines.sec.edgar.sec_pipeline.entities import build_entity_rows
+from pipelines.sec.edgar.sec_pipeline.archive_accession import build_archive_accession_row
 from pipelines.sec.edgar.sec_pipeline.http import SecHttpClient
 from pipelines.sec.edgar.sec_pipeline.revision import parse_pac_event, source_revision
 from pipelines.sec.edgar.sec_pipeline.submissions import SecSubmissionFiling, SecSubmissionsClient
@@ -26,6 +27,7 @@ from pipelines.sec.edgar.sec_pipeline.xbrl_live import LiveXbrlRows, SecLiveXbrl
 class LiveFilingRows:
     filing_row: dict[str, Any]
     entity_rows: list[dict[str, Any]]
+    archive_accession_rows: list[dict[str, Any]]
     document_rows: list[dict[str, Any]]
     text_source_rows: list[dict[str, Any]]
     text_rows: list[dict[str, Any]]
@@ -128,6 +130,24 @@ class SecLiveFilingPipeline:
             source_run_id=source_run_id,
             inserted_at=inserted_at,
         )
+        archive_accession_rows = [] if pac_event else [
+            build_archive_accession_row(
+                filing=filing,
+                entities=filing["entities"],
+                primary_cik=parent.cik,
+                source_archive_date=archive_date_text,
+                source_archive_member=raw_path.name,
+                source_archive_path=str(raw_path),
+                source_header_sha256=filing["header_sha256"],
+                source_content_sha256=source_sha,
+                document_count=len(filing.get("documents") or []),
+                header_text=filing["header_text"],
+                revision=revision,
+                source_run_id=source_run_id,
+                inserted_at=inserted_at,
+                source_kind="live_accession_text",
+            )
+        ]
         has_xbrl_payload = False
         for document in [] if pac_event else (filing.get("documents") or []):
             doc_row, text_source_row, text_row, skip_row, _sample = build_rows(
@@ -153,6 +173,7 @@ class SecLiveFilingPipeline:
         return LiveFilingRows(
             filing_row=filing_row,
             entity_rows=entity_rows,
+            archive_accession_rows=archive_accession_rows,
             document_rows=document_rows,
             text_source_rows=text_source_rows,
             text_rows=text_rows,

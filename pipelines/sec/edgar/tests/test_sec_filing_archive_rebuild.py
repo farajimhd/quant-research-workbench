@@ -34,6 +34,17 @@ class SecFilingArchiveRebuildTests(unittest.TestCase):
         self.assertIn("ReplacingMergeTree(source_revision_rank)", source_statement)
         self.assertIn("ORDER BY (cik, accession_number, document_id, content_format)", source_statement)
 
+    def test_archive_inventory_current_view_preserves_each_source_kind(self) -> None:
+        raw_sql = text_schema.DEFAULT_SCHEMA_PATH.read_text(encoding="utf-8")
+        rendered = text_schema.render_schema(raw_sql, "q_live", "live_market_ssd", False)
+        view_statement = next(
+            statement for statement in text_schema.split_sql_statements(rendered)
+            if "sec_filing_archive_accession_current_v3" in statement
+        )
+
+        self.assertIn("GROUP BY accession_number, source_kind", view_statement)
+        self.assertIn("USING (accession_number, source_kind, source_version_key)", view_statement)
+
     def test_part_checkpoints_only_apply_to_current_table_generation(self) -> None:
         class FakeClient:
             def execute(self, _sql: str) -> str:
@@ -126,6 +137,11 @@ class SecFilingArchiveRebuildTests(unittest.TestCase):
         )
 
         self.assertFalse(historical.stage_already_completed(SimpleNamespace(), command))
+
+    def test_targeted_repair_stages_never_use_coarse_coverage_for_resume(self) -> None:
+        for stage in ("filing-entity-backfill", "missing-document-repair", "acceptance-archive-repair"):
+            command = historical.StageCommand(stage, ["python", "worker.py"], Path("worker.log"), True)
+            self.assertFalse(historical.stage_already_completed(SimpleNamespace(), command), stage)
 
     def test_sec_file_ingest_uses_parallel_native_parquet_reader(self) -> None:
         settings = ingest.settings_sql(SimpleNamespace(max_threads=4, max_memory_usage="16G"))
@@ -697,14 +713,44 @@ ACCEPTANCE-DATETIME: 20260701120000
                 result = extractor.process_archive_worker(payload)
 
             source_part = next(item for item in result["part_files"] if item["dataset_name"] == "text_source")
+            inventory_part = next(item for item in result["part_files"] if item["dataset_name"] == "archive_accession")
             source_path = Path(source_part["path"])
             self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["archive_accession_rows"], 1)
+            self.assertEqual(inventory_part["rows"], 1)
             self.assertTrue(source_path.name.endswith(".parquet"))
             self.assertGreater(source_part["rows"], 0)
             row = pq.read_table(source_path, columns=["source_text"]).column("source_text")[0].as_py()
             self.assertIn("Complete submitted text.", row)
             self.assertEqual(source_part["format"], "Parquet")
             self.assertGreaterEqual(source_part["row_groups"], 1)
+
+            class NoQueryClickHouseClient:
+                def __init__(self, *_args: object, **_kwargs: object) -> None:
+                    pass
+
+                def execute(self, _sql: str) -> str:
+                    raise AssertionError("targeted extraction must use its supplied parent rows")
+
+            targeted_payload = {
+                **payload,
+                "parts_root": str(root / "targeted-parts"),
+                "target_members": ["submission.nc"],
+                "target_accessions": ["0000000001-26-000001"],
+                "parent_rows": [{
+                    "filing_id": "filing-id", "accession_number": "0000000001-26-000001",
+                    "accession_number_compact": "000000000126000001", "cik": "0000000001",
+                    "form_type": "8-K", "accepted_at_utc": "2026-07-01 16:00:00.000000000",
+                    "primary_document": "example.htm", "primary_document_url": "",
+                    "filing_detail_url": "",
+                }],
+            }
+            with mock.patch.object(extractor, "ClickHouseHttpClient", NoQueryClickHouseClient):
+                targeted = extractor.process_archive_worker(targeted_payload)
+
+            self.assertEqual(targeted["status"], "ok")
+            self.assertEqual(targeted["filing_parent_rows"], 0)
+            self.assertEqual(targeted["document_rows"], 1)
 
             class SetEvent:
                 def is_set(self) -> bool:

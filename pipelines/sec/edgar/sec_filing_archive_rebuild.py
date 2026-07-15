@@ -43,15 +43,18 @@ DEFAULT_PARTS_ROOT_CH = "/mnt/d/market-data"
 DEFAULT_DATABASE = "q_live"
 DEFAULT_ARCHIVE_MANIFEST_TABLE = "sec_filing_archive_ingest_manifest_v3"
 EVENT_PREFIX = "SEC_ARCHIVE_EVENT="
-DATASET_ORDER = ("filing", "document", "text_source", "text", "skip")
+DATASET_ORDER = ("filing", "entity", "archive_accession", "document", "text_source", "text", "skip", "pac")
 PART_DIRECTORIES = {
     "filing": "sec_filing_v3_parts",
+    "entity": "sec_filing_entity_v3_parts",
+    "archive_accession": "sec_filing_archive_accession_v3_parts",
     "document": "sec_filing_document_v3_parts",
     "text_source": "sec_filing_text_v3_parts",
     "text": "sec_filing_text_rendered_v3_parts",
     "skip": "sec_filing_document_skip_v3_parts",
+    "pac": "sec_filing_pac_event_v3_parts",
 }
-DATE_SCOPED_DATASETS = {"document", "text_source", "text", "skip"}
+DATE_SCOPED_DATASETS = {"entity", "archive_accession", "document", "text_source", "text", "skip", "pac"}
 PART_ARCHIVE_DATE_PATTERN = re.compile(r"(?:^|_)(20\d{6})(?:_|\.|$)")
 
 
@@ -852,6 +855,7 @@ def recovery_result(task: dict[str, Any], payload: dict[str, Any]) -> dict[str, 
         "checkpoint_rows": completed_rows,
         "filing_parent_rows": rows_for(part_files, "filing") + completed_rows.get("filing", 0),
         "entity_rows": rows_for(part_files, "entity") + completed_rows.get("entity", 0),
+        "archive_accession_rows": rows_for(part_files, "archive_accession") + completed_rows.get("archive_accession", 0),
         "document_rows": rows_for(part_files, "document") + completed_rows.get("document", 0),
         "text_source_rows": rows_for(part_files, "text_source") + completed_rows.get("text_source", 0),
         "text_rows": rows_for(part_files, "text") + completed_rows.get("text", 0),

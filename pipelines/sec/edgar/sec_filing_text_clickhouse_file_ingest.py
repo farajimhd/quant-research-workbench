@@ -40,6 +40,7 @@ DEFAULT_PARTS_ROOT_CH = DEFAULT_CLICKHOUSE_FILE_ROOT
 EXPECTED_TARGET_TABLES = {
     "filing": "sec_filing_v3",
     "entity": "sec_filing_entity_v3",
+    "archive_accession": "sec_filing_archive_accession_v3",
     "document": "sec_filing_document_v3",
     "text_source": "sec_filing_text_v3",
     "text": "sec_filing_text_rendered_v3",
@@ -49,14 +50,16 @@ EXPECTED_TARGET_TABLES = {
 DATASET_ORDER = {
     "filing": 0,
     "entity": 1,
-    "document": 2,
-    "text_source": 3,
-    "text": 4,
-    "skip": 5,
-    "pac": 6,
+    "archive_accession": 2,
+    "document": 3,
+    "text_source": 4,
+    "text": 5,
+    "skip": 6,
+    "pac": 7,
 }
 REVISION_KEYS = {
     "entity": ("accession_number", "source_version_key", "entity_role", "entity_cik"),
+    "archive_accession": ("accession_number", "source_version_key"),
     "document": ("cik", "accession_number", "sequence_number", "document_id"),
     "text_source": ("cik", "accession_number", "document_id", "content_format"),
     "text": ("cik", "accession_number", "document_id", "text_kind"),
@@ -127,7 +130,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-threads", type=int, default=int(os.environ.get("SEC_TEXT_FILE_INGEST_MAX_THREADS", "24")))
     parser.add_argument("--max-memory-usage", default=os.environ.get("SEC_TEXT_FILE_INGEST_MAX_MEMORY", "0"))
     parser.add_argument("--limit-parts", type=int, default=int(os.environ.get("SEC_TEXT_FILE_INGEST_LIMIT_PARTS", "0")))
-    parser.add_argument("--dataset", choices=["all", "filing", "entity", "document", "text_source", "text", "skip", "pac"], default="all")
+    parser.add_argument("--dataset", choices=["all", "filing", "entity", "archive_accession", "document", "text_source", "text", "skip", "pac"], default="all")
     parser.add_argument("--execute", action="store_true", help="Actually insert rows. Without this, only validate and print SQL.")
     parser.add_argument("--preflight-only", action="store_true", help="Validate ClickHouse file() access and exit before inserting.")
     parser.add_argument("--skip-preflight", action="store_true", help="Skip file() row-count preflight. Use only after a successful preflight-only run for the same manifest.")

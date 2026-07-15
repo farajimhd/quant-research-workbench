@@ -7,6 +7,7 @@ This package contains the SEC EDGAR historical workflow:
 - exact-file failed archive deletion;
 - acceptance timestamp repair helpers;
 - archive-derived acceptance timestamp repair for date-only parent rows;
+- accession-level archive occurrence inventory and targeted missing-document repair;
 - bulk plus rate-limited direct-submissions relationship reconciliation and exact UTC timestamp repair;
 - archive-derived filing document/text extraction and ClickHouse file ingest;
 - historical backfill orchestration over the stages that exist today;
@@ -42,6 +43,23 @@ accession. A parallel source audit verifies residual archive identities directly
 The pipeline then runs API fallback for missing recent XBRL, repairs XBRL relationships, rebuilds
 `id_sec_market_bridge_v3`, builds SEC context tables in `market_sip_compact`,
 audits the result, and writes coverage rows.
+
+Archive inventory and targeted finalization can be run without rebuilding the
+historical text corpus:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_gap_fill.py --finalize-only --execute
+```
+
+This scans SGML headers into `sec_filing_entity_v3` and
+`sec_filing_archive_accession_v3`, preserving embedded CIK relationships,
+archive occurrence, document counts, source hashes, revision rank,
+`ACCEPTANCE-DATETIME`, and `PRIVATE-TO-PUBLIC` evidence. It then extracts only
+archive-backed parents whose public documents are absent, repairs only
+date-based acceptance fallbacks that have an exact source timestamp, refreshes
+the bridge/context products, and runs the final integrity audit. Metadata-only
+filings and source records with no acceptance timestamp remain explicit
+nonfatal unresolved classifications.
 
 The acceptance repair measures the number of corrected monthly target partitions
 before writing. Its default maintenance bound is 1,000 partitions, which permits

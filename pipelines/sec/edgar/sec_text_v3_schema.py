@@ -204,9 +204,9 @@ def validate_rendered_sql(rendered_sql: str, statements: list[str], args: argpar
     create_statements = [statement for statement in statements if statement.upper().startswith("CREATE TABLE IF NOT EXISTS")]
     view_statements = [statement for statement in statements if statement.upper().startswith("CREATE VIEW IF NOT EXISTS")]
     alter_statements = [statement for statement in statements if statement.upper().startswith("ALTER TABLE")]
-    if len(create_statements) != 6 or len(view_statements) != 1 or len(alter_statements) != 22 or len(statements) != 29:
+    if len(create_statements) != 7 or len(view_statements) != 2 or len(alter_statements) != 22 or len(statements) != 31:
         raise SystemExit(
-            f"Expected 6 CREATE TABLE, 1 CREATE VIEW, and 22 ALTER TABLE statements, got "
+            f"Expected 7 CREATE TABLE, 2 CREATE VIEW, and 22 ALTER TABLE statements, got "
             f"create={len(create_statements)} view={len(view_statements)} alter={len(alter_statements)} total={len(statements)}."
         )
     for statement in statements:

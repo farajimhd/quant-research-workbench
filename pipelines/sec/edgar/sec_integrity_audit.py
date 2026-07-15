@@ -26,6 +26,7 @@ from research.mlops.clickhouse import (  # noqa: E402
     sql_string,
 )
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
+from pipelines.sec.edgar.sec_pipeline.submissions import parse_acceptance_datetime  # noqa: E402
 
 
 DEFAULT_DATABASE = "q_live"
@@ -35,6 +36,8 @@ SEC_TABLES = (
     "sec_filing_v3",
     "sec_filing_entity_v3",
     "sec_filing_entity_current_v3",
+    "sec_filing_archive_accession_v3",
+    "sec_filing_archive_accession_current_v3",
     "sec_filing_document_v3",
     "sec_filing_text_v3",
     "sec_filing_text_rendered_v3",
@@ -126,6 +129,8 @@ def main() -> None:
         )
     if {"sec_filing_v3", "sec_filing_entity_current_v3"}.issubset(table_meta):
         checks.extend(check_filing_entities(client, args.database))
+    if {"sec_filing_v3", "sec_filing_document_v3", "sec_filing_archive_accession_current_v3"}.issubset(table_meta):
+        checks.extend(check_archive_backed_repairs(client, args.database))
     if "sec_filing_document_v3" in table_meta:
         checks.extend(check_document_v2_shape(column_map))
     if "sec_filing_text_v3" in table_meta:
@@ -178,6 +183,7 @@ def check_required_tables(table_meta: dict[str, dict[str, Any]], require_v3_tabl
     if require_v3_tables:
         required |= {
             "sec_filing_entity_v3", "sec_filing_entity_current_v3", "sec_filing_document_v3",
+            "sec_filing_archive_accession_v3", "sec_filing_archive_accession_current_v3",
             "sec_filing_text_v3", "sec_filing_text_rendered_v3", "sec_filing_document_skip_v3",
         }
     for table in SEC_TABLES:
@@ -238,6 +244,60 @@ def check_filing_entities(client: ClickHouseHttpClient, db: str) -> list[dict[st
             table="sec_filing_entity_current_v3",
             details=summary,
         )
+    ]
+
+
+def check_archive_backed_repairs(client: ClickHouseHttpClient, db: str) -> list[dict[str, Any]]:
+    classification = query_one(
+        client,
+        f"""
+        WITH parents AS (
+          SELECT f.cik, f.accession_number
+          FROM {qi(db)}.sec_filing_v3 AS f FINAL
+          LEFT ANTI JOIN (SELECT DISTINCT cik, accession_number FROM {qi(db)}.sec_filing_document_v3 FINAL) AS d USING (cik, accession_number)
+        ), docs_any AS (SELECT DISTINCT accession_number FROM {qi(db)}.sec_filing_document_v3 FINAL),
+        inventory AS (SELECT * FROM {qi(db)}.sec_filing_archive_accession_current_v3 WHERE source_kind='daily_archive')
+        SELECT count() AS parents_without_exact_documents,
+               countIf(d.accession_number != '') AS documents_under_other_cik,
+               countIf(d.accession_number = '' AND i.accession_number != '' AND i.document_count > 0 AND p.cik=i.primary_cik) AS archive_backed_repairable,
+               countIf(d.accession_number = '' AND i.accession_number != '' AND i.document_count = 0) AS archive_member_without_documents,
+               countIf(d.accession_number = '' AND i.accession_number = '') AS metadata_only_not_disseminated,
+               countIf(d.accession_number = '' AND i.accession_number != '' AND i.document_count > 0 AND p.cik!=i.primary_cik) AS archive_identity_mismatch
+        FROM parents AS p LEFT JOIN docs_any AS d USING (accession_number) LEFT JOIN inventory AS i USING (accession_number)
+        FORMAT TSVWithNames
+        """,
+    )
+    fallback_rows = query_rows(
+        client,
+        f"""
+        SELECT f.cik, f.accession_number, ifNull(i.acceptance_datetime_raw, '') AS archive_acceptance_raw
+        FROM {qi(db)}.sec_filing_v3 AS f FINAL
+        LEFT JOIN {qi(db)}.sec_filing_archive_accession_current_v3 AS i USING (accession_number)
+        WHERE f.accepted_at_source IN ('archive_filing_date_midnight','archive_date_midnight','filing_date_midnight_fallback')
+        FORMAT TSVWithNames
+        """,
+    )
+    repairable_times = sum(1 for row in fallback_rows if parse_acceptance_datetime(row["archive_acceptance_raw"]))
+    unresolved_times = len(fallback_rows) - repairable_times
+    return [
+        check(
+            "sec_archive_backed_missing_documents",
+            "pass" if int(classification["archive_backed_repairable"]) == 0 else "fail",
+            "archive-backed filing parents with public documents are fully extracted",
+            table="sec_filing_document_v3",
+            details=classification,
+        ),
+        check(
+            "sec_source_repairable_acceptance_fallbacks",
+            "pass" if repairable_times == 0 else "fail",
+            "date-only acceptance fallbacks have no deterministic archive timestamp remaining",
+            table="sec_filing_v3",
+            details={
+                "fallback_rows": len(fallback_rows),
+                "source_repairable_rows": repairable_times,
+                "source_unresolved_rows": unresolved_times,
+            },
+        ),
     ]
 
 

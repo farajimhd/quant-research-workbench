@@ -39,6 +39,18 @@ DEFAULT_PARTS_ROOT_CH = "/mnt/d/market-data"
 DEFAULT_SEC_BRIDGE_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/q_live_migration/step_06_bridge_features")
 DEFAULT_SEC_CONTEXT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_context")
 DEFAULT_START_DATE = "2019-01-01"
+FINALIZE_ONLY_STAGES = {
+    "filing-entity-backfill",
+    "missing-document-repair",
+    "filing-parent-reconcile",
+    "acceptance-submissions-enrichment",
+    "acceptance-raw-metadata-repair",
+    "acceptance-archive-repair",
+    "archive-identity-audit",
+    "sec-bridge-rebuild",
+    "sec-context-build",
+    "integrity-audit",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,6 +298,11 @@ def parse_args() -> argparse.Namespace:
         help="Exclusive UTC/archive date, YYYY-MM-DD. Defaults to tomorrow UTC so today's archives are included.",
     )
     parser.add_argument("--execute", action="store_true", help="Execute writes. Without this, only dry-run stage commands execute.")
+    parser.add_argument(
+        "--finalize-only",
+        action="store_true",
+        help="Run only source inventory, targeted document/timestamp repair, derived refresh, and final audit.",
+    )
     parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument("--python-executable", default=sys.executable)
     parser.add_argument("--read-database", default=env_string("SEC_CLICKHOUSE_READ_DATABASE", "q_live"))
@@ -301,6 +318,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--xbrl-output-root-win", default=env_string("SEC_XBRL_CATCHUP_OUTPUT_ROOT_WIN", "D:/market-data/prepared/sec_xbrl_companyfacts_catchup"))
     parser.add_argument("--xbrl-repair-output-root-win", default=env_string("SEC_XBRL_REPAIR_OUTPUT_ROOT_WIN", "D:/market-data/prepared/sec_xbrl_integrity_repair"))
     parser.add_argument("--integrity-audit-output-root-win", default=env_string("SEC_INTEGRITY_AUDIT_OUTPUT_ROOT_WIN", "D:/market-data/prepared/sec_integrity_audit"))
+    parser.add_argument("--missing-document-repair-output-root-win", default=env_string("SEC_MISSING_DOCUMENT_REPAIR_OUTPUT_ROOT_WIN", "D:/market-data/prepared/sec_missing_document_repair"))
+    parser.add_argument("--acceptance-archive-repair-output-root-win", default=env_string("SEC_ACCEPTANCE_ARCHIVE_REPAIR_OUTPUT_ROOT_WIN", "D:/market-data/prepared/sec_acceptance_archive_repair"))
     parser.add_argument("--sec-bridge-output-root-win", default=env_string("SEC_BRIDGE_OUTPUT_ROOT_WIN", str(DEFAULT_SEC_BRIDGE_OUTPUT_ROOT_WIN)))
     parser.add_argument("--sec-bridge-table", default=env_string("SEC_BRIDGE_TABLE", "id_sec_market_bridge_v3"))
     parser.add_argument("--context-database", default=env_string("SEC_CONTEXT_DATABASE", "market_sip_compact"))
@@ -401,6 +420,8 @@ def main() -> None:
     logs_root.mkdir(parents=True, exist_ok=True)
 
     commands = build_commands(args, logs_root)
+    if args.finalize_only:
+        commands = [command for command in commands if command.stage in FINALIZE_ONLY_STAGES]
     manifest = {
         "run_id": run_id,
         "created_at_utc": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -753,6 +774,33 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
             (stage_coverage_kind("sec-revision-reconcile"),),
         ),
         StageCommand(
+            "missing-document-repair",
+            add_execute_flag(
+                [
+                    args.python_executable,
+                    script("pipelines/sec/edgar/sec_missing_document_repair.py"),
+                    "--database",
+                    args.write_database,
+                    "--output-root-win",
+                    args.missing_document_repair_output_root_win,
+                    "--parts-root-win",
+                    args.parts_root_win,
+                    "--parts-root-ch",
+                    args.parts_root_ch,
+                    "--workers",
+                    str(max(1, args.text_extract_workers)),
+                    "--min-text-chars",
+                    str(max(0, args.min_text_chars)),
+                    "--max-text-chars",
+                    str(max(0, args.max_text_chars)),
+                ],
+                args,
+            ),
+            logs_root / "missing-document-repair.log",
+            True,
+            (stage_coverage_kind("missing-document-repair"),),
+        ),
+        StageCommand(
             "filing-parent-reconcile",
             add_execute_flag(
                 [
@@ -820,6 +868,31 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
             logs_root / "acceptance-raw-metadata-repair.log",
             True,
             (stage_coverage_kind("acceptance-raw-metadata-repair"),),
+        ),
+        StageCommand(
+            "acceptance-archive-repair",
+            add_execute_flag(
+                [
+                    args.python_executable,
+                    script("pipelines/sec/edgar/sec_acceptance_archive_repair.py"),
+                    "--database",
+                    args.write_database,
+                    "--archive-root-win",
+                    archive_root,
+                    "--output-root-win",
+                    args.acceptance_archive_repair_output_root_win,
+                    "--start-date",
+                    DEFAULT_START_DATE,
+                    "--end-date",
+                    args.end_date,
+                    "--archive-workers",
+                    str(max(1, args.text_extract_workers)),
+                ],
+                args,
+            ),
+            logs_root / "acceptance-archive-repair.log",
+            True,
+            (stage_coverage_kind("acceptance-archive-repair"),),
         ),
         StageCommand(
             "archive-identity-audit",
@@ -1121,10 +1194,12 @@ def stage_already_completed(args: argparse.Namespace, command: StageCommand) -> 
         "bulk-ingest",
         "archive-text-rebuild",
         "filing-entity-backfill",
+        "missing-document-repair",
         "filing-parent-reconcile",
         "validate-downloaded",
         "acceptance-submissions-enrichment",
         "acceptance-raw-metadata-repair",
+        "acceptance-archive-repair",
         "archive-identity-audit",
         "sec-bridge-rebuild",
         "sec-context-build",

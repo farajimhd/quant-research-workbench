@@ -26,9 +26,12 @@ from pipelines.sec.edgar.sec_filing_text_extract_parts import (  # noqa: E402
     tag_value,
 )
 from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import (  # noqa: E402
+    create_archive_accession_current_view,
+    create_archive_accession_table_schema,
     create_entity_current_view,
     create_entity_table_schema,
 )
+from pipelines.sec.edgar.sec_pipeline.archive_accession import build_archive_accession_row  # noqa: E402
 from pipelines.sec.edgar.sec_pipeline.entities import (  # noqa: E402
     build_entity_rows,
     parse_filing_entities,
@@ -77,6 +80,8 @@ def main() -> None:
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
     create_entity_table_schema(client, target_database=args.database, reference_database=args.database)
     create_entity_current_view(client, target_database=args.database)
+    create_archive_accession_table_schema(client, target_database=args.database, reference_database=args.database)
+    create_archive_accession_current_view(client, target_database=args.database)
     create_manifest_table(client, args)
     completed = completed_archive_keys(client, args)
     pending = [path for path in archives if archive_identity(path)["archive_key"] not in completed]
@@ -87,7 +92,7 @@ def main() -> None:
     )
     run_id = "sec_entity_backfill_" + datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     payloads = [worker_payload(args, path, run_id) for path in pending]
-    done = rows = 0
+    done = rows = accession_rows = 0
     with concurrent.futures.ProcessPoolExecutor(max_workers=max(1, args.workers)) as pool:
         futures = {pool.submit(process_archive, payload): payload["archive_path"] for payload in payloads}
         try:
@@ -95,16 +100,21 @@ def main() -> None:
                 result = future.result()
                 done += 1
                 rows += int(result["entity_rows"])
+                accession_rows += int(result["archive_accession_rows"])
                 print(
                     f"entity archives={done:,}/{len(pending):,} date={result['archive_date']} "
-                    f"filings={result['filings']:,} rows={result['entity_rows']:,}",
+                    f"filings={result['filings']:,} entity_rows={result['entity_rows']:,} "
+                    f"accession_rows={result['archive_accession_rows']:,}",
                     flush=True,
                 )
         except Exception:
             for future in futures:
                 future.cancel()
             raise
-    print(f"SEC entity backfill completed archives={done:,} entity_rows={rows:,}", flush=True)
+    print(
+        f"SEC entity backfill completed archives={done:,} entity_rows={rows:,} "
+        f"archive_accession_rows={accession_rows:,}", flush=True
+    )
 
 
 def worker_payload(args: argparse.Namespace, archive: Path, run_id: str) -> dict[str, Any]:
@@ -120,6 +130,7 @@ def process_archive(payload: dict[str, Any]) -> dict[str, Any]:
     archive_date = archive_date_from_name(archive.name)
     inserted_at = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     rows: list[dict[str, Any]] = []
+    accession_rows: list[dict[str, Any]] = []
     filings = 0
     with tarfile.open(archive, "r:gz") as tar:
         for occurrence_sequence, member in enumerate(tar, start=1):
@@ -128,7 +139,7 @@ def process_archive(payload: dict[str, Any]) -> dict[str, Any]:
             handle = tar.extractfile(member)
             if handle is None:
                 continue
-            header_bytes, source_sha = read_header_and_hash(handle)
+            header_bytes, source_sha, document_count = read_header_and_hash(handle)
             header_text = decode_sec_bytes(header_bytes)
             entities = parse_filing_entities(header_text)
             primary = primary_filing_entity(entities)
@@ -163,29 +174,62 @@ def process_archive(payload: dict[str, Any]) -> dict[str, Any]:
                     inserted_at=inserted_at,
                 )
             )
+            filing = {
+                "accession_number": accession,
+                "form_type": header_value(header_text, "CONFORMED SUBMISSION TYPE") or tag_value(header_text, "TYPE"),
+                "filing_date": _sec_date(header_value(header_text, "FILED AS OF DATE") or tag_value(header_text, "FILING-DATE")),
+                "acceptance_datetime_raw": header_value(header_text, "ACCEPTANCE-DATETIME") or tag_value(header_text, "ACCEPTANCE-DATETIME"),
+            }
+            accession_rows.append(
+                build_archive_accession_row(
+                    filing=filing,
+                    entities=entities,
+                    primary_cik=primary.cik,
+                    source_archive_date=archive_date.isoformat(),
+                    source_archive_member=member.name,
+                    source_archive_path=str(archive),
+                    source_header_sha256=hashlib.sha256(header_text.encode("utf-8", errors="replace")).hexdigest(),
+                    source_content_sha256=source_sha,
+                    document_count=document_count,
+                    header_text=header_text,
+                    revision=revision,
+                    source_run_id=str(payload["run_id"]),
+                    inserted_at=inserted_at,
+                    source_kind="daily_archive",
+                )
+            )
             filings += 1
     client = ClickHouseHttpClient(payload["clickhouse_url"], payload["user"], payload["password"])
     insert_rows(client, payload["database"], "sec_filing_entity_v3", rows)
-    insert_manifest(client, payload, identity, filings, len(rows), inserted_at)
-    return {"archive_date": archive_date.isoformat(), "filings": filings, "entity_rows": len(rows)}
+    insert_rows(client, payload["database"], "sec_filing_archive_accession_v3", accession_rows)
+    insert_manifest(client, payload, identity, filings, len(rows), len(accession_rows), inserted_at)
+    return {
+        "archive_date": archive_date.isoformat(), "filings": filings,
+        "entity_rows": len(rows), "archive_accession_rows": len(accession_rows),
+    }
 
 
-def read_header_and_hash(handle: Any) -> tuple[bytes, str]:
+def read_header_and_hash(handle: Any) -> tuple[bytes, str, int]:
     digest = hashlib.sha256()
     header = bytearray()
     found_document = False
+    document_count = 0
+    tail = b""
     while True:
         chunk = handle.read(1024 * 1024)
         if not chunk:
             break
         digest.update(chunk)
+        upper = tail + chunk.upper()
+        document_count += upper.count(b"<DOCUMENT>")
+        tail = upper[-9:]
         if not found_document:
             header.extend(chunk)
             marker = bytes(header).upper().find(b"<DOCUMENT>")
             if marker >= 0:
                 del header[marker:]
                 found_document = True
-    return bytes(header), digest.hexdigest()
+    return bytes(header), digest.hexdigest(), document_count
 
 
 def insert_rows(client: ClickHouseHttpClient, database: str, table: str, rows: list[dict[str, Any]]) -> None:
@@ -200,29 +244,40 @@ def create_manifest_table(client: ClickHouseHttpClient, args: argparse.Namespace
     client.execute(
         f"""CREATE TABLE IF NOT EXISTS {quote_ident(args.database)}.{quote_ident(args.manifest_table)}
         (archive_key String, archive_date Date, archive_path String, archive_size UInt64,
-         archive_mtime_ns UInt64, filings UInt64, entity_rows UInt64, status LowCardinality(String),
+         archive_mtime_ns UInt64, filings UInt64, entity_rows UInt64, archive_accession_rows UInt64,
+         status LowCardinality(String),
          run_id String, error String, updated_at DateTime64(3, 'UTC'))
         ENGINE=ReplacingMergeTree(updated_at) PARTITION BY toYYYYMM(archive_date)
         ORDER BY archive_key"""
+    )
+    client.execute(
+        f"ALTER TABLE {quote_ident(args.database)}.{quote_ident(args.manifest_table)} "
+        "ADD COLUMN IF NOT EXISTS archive_accession_rows UInt64 DEFAULT 0 AFTER entity_rows"
     )
 
 
 def completed_archive_keys(client: ClickHouseHttpClient, args: argparse.Namespace) -> set[str]:
     out = client.execute(
         f"SELECT archive_key FROM {quote_ident(args.database)}.{quote_ident(args.manifest_table)} FINAL "
-        "WHERE status='ok' FORMAT TSV"
+        "WHERE status='ok' AND archive_accession_rows > 0 FORMAT TSV"
     )
     return {line.strip() for line in out.splitlines() if line.strip()}
 
 
 def insert_manifest(
-    client: ClickHouseHttpClient, payload: dict[str, Any], identity: dict[str, Any], filings: int, rows: int, updated_at: str
+    client: ClickHouseHttpClient, payload: dict[str, Any], identity: dict[str, Any], filings: int,
+    rows: int, accession_rows: int, updated_at: str
 ) -> None:
     row = {
-        **identity, "filings": filings, "entity_rows": rows, "status": "ok",
+        **identity, "filings": filings, "entity_rows": rows, "archive_accession_rows": accession_rows, "status": "ok",
         "run_id": payload["run_id"], "error": "", "updated_at": updated_at,
     }
     insert_rows(client, payload["database"], payload["manifest_table"], [row])
+
+
+def _sec_date(value: str) -> str | None:
+    digits = "".join(character for character in str(value or "") if character.isdigit())
+    return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}" if len(digits) >= 8 else None
 
 
 if __name__ == "__main__":

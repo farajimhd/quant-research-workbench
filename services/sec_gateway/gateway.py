@@ -866,6 +866,7 @@ class SecGateway:
         result = self._writer.write_accession(
             filing_row=rows.filing_row,
             entity_rows=getattr(rows, "entity_rows", []),
+            archive_accession_rows=getattr(rows, "archive_accession_rows", []),
             document_rows=rows.document_rows,
             text_source_rows=rows.text_source_rows,
             text_rows=rows.text_rows,

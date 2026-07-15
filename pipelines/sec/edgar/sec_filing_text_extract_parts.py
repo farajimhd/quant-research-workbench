@@ -38,6 +38,7 @@ from pipelines.sec.edgar.sec_pipeline.entities import (  # noqa: E402
     parse_filing_entities,
     primary_filing_entity,
 )
+from pipelines.sec.edgar.sec_pipeline.archive_accession import build_archive_accession_row  # noqa: E402
 from pipelines.sec.edgar.sec_parquet_parts import (  # noqa: E402
     DEFAULT_FILE_BYTES,
     DEFAULT_ROW_GROUP_BYTES,
@@ -118,6 +119,14 @@ ENTITY_COLUMNS = [
     "source_archive_date", "source_archive_member", "source_archive_path", "source_header_sha256",
     "source_version_key", "source_revision_at", "source_revision_rank", "source_revision_kind",
     "pac_event_id", "source_run_id", "inserted_at",
+]
+ARCHIVE_ACCESSION_COLUMNS = [
+    "accession_number", "accession_number_compact", "primary_cik", "entity_ciks", "form_type",
+    "filing_date", "acceptance_datetime_raw", "document_count", "public_document_count",
+    "private_to_public", "source_kind", "source_archive_date", "source_archive_member",
+    "source_archive_path", "source_header_sha256", "source_content_sha256", "source_version_key",
+    "source_revision_at", "source_revision_rank", "source_revision_kind", "pac_event_id",
+    "source_run_id", "inserted_at",
 ]
 TEXT_SOURCE_COLUMNS = [
     "document_id",
@@ -544,6 +553,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     writer_specs = {
         "filing": ("sec_filing_v3_parts", "sec_filing_v3", FILING_COLUMNS),
         "entity": ("sec_filing_entity_v3_parts", "sec_filing_entity_v3", ENTITY_COLUMNS),
+        "archive_accession": ("sec_filing_archive_accession_v3_parts", "sec_filing_archive_accession_v3", ARCHIVE_ACCESSION_COLUMNS),
         "document": ("sec_filing_document_v3_parts", "sec_filing_document_v3", DOCUMENT_COLUMNS),
         "text_source": ("sec_filing_text_v3_parts", "sec_filing_text_v3", TEXT_SOURCE_COLUMNS),
         "text": ("sec_filing_text_rendered_v3_parts", "sec_filing_text_rendered_v3", TEXT_COLUMNS),
@@ -566,13 +576,19 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
     client = ClickHouseHttpClient(str(payload["clickhouse_url"]), str(payload["user"]), str(payload["password"]))
-    parents = load_parent_map(
+    supplied_parent_rows = payload.get("parent_rows") or []
+    parents = {} if supplied_parent_rows else load_parent_map(
         client,
         str(payload["database"]),
         archive_date,
         int(payload["parent_window_days_before"]),
         int(payload["parent_window_days_after"]),
     )
+    for row in supplied_parent_rows:
+        parent = FilingParent(**row)
+        parents[(normalize_cik(parent.cik), normalize_accession(parent.accession_number))] = parent
+    target_accessions = {normalize_accession(value) for value in payload.get("target_accessions") or []}
+    target_members = {str(value) for value in payload.get("target_members") or []}
     inserted_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     stats: dict[str, Any] = {
         "archive_date": archive_date_text,
@@ -584,6 +600,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
         "filing_parent_rows": 0,
         "document_rows": 0,
         "entity_rows": 0,
+        "archive_accession_rows": 0,
         "text_source_rows": 0,
         "text_rows": 0,
         "skip_rows": 0,
@@ -603,7 +620,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
         "errors": [],
         "samples": [],
     }
-    filing_parent_count = entity_count = doc_count = text_source_count = text_count = skip_count = pac_count = 0
+    filing_parent_count = entity_count = archive_accession_count = doc_count = text_source_count = text_count = skip_count = pac_count = 0
     try:
         with tarfile.open(archive, "r:gz") as tar:
             for member_sequence, member in enumerate(tar, start=1):
@@ -612,6 +629,8 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
                     stats["status"] = "cancelled"
                     break
                 if not member.isfile() or not member.name.lower().endswith(".nc"):
+                    continue
+                if target_members and member.name not in target_members:
                     continue
                 if payload["max_filings_per_archive"] and stats["filings"] >= payload["max_filings_per_archive"]:
                     stats["truncated_by_limit"] = True
@@ -626,6 +645,8 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
                 except Exception as exc:  # noqa: BLE001
                     stats["parse_errors"] += 1
                     add_error(stats, archive_date_text, member.name, "", "", "parse_error", repr(exc))
+                    continue
+                if target_accessions and normalize_accession(filing["accession_number"]) not in target_accessions:
                     continue
                 stats["filings"] += 1
                 stats["form_types"][filing["form_type"]] += 1
@@ -674,6 +695,25 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
                 for entity_row in entity_rows:
                     writers["entity"].append(entity_row)
                 entity_count += len(entity_rows)
+                writers["archive_accession"].append(
+                    build_archive_accession_row(
+                        filing=filing,
+                        entities=filing["entities"],
+                        primary_cik=parent.cik,
+                        source_archive_date=archive_date_text,
+                        source_archive_member=member.name,
+                        source_archive_path=str(archive),
+                        source_header_sha256=filing["header_sha256"],
+                        source_content_sha256=source_sha,
+                        document_count=len(filing["documents"]),
+                        header_text=filing["header_text"],
+                        revision=revision,
+                        source_run_id=str(payload["source_run_id"]),
+                        inserted_at=inserted_at,
+                        source_kind="daily_archive",
+                    )
+                )
+                archive_accession_count += 1
                 for document in filing["documents"]:
                     stats["documents"] += 1
                     doc_row, text_source_row, text_row, skip_row, sample_row = build_rows(
@@ -715,6 +755,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     stats["filing_parent_rows"] = filing_parent_count
     stats["document_rows"] = doc_count
     stats["entity_rows"] = entity_count
+    stats["archive_accession_rows"] = archive_accession_count
     stats["text_source_rows"] = text_source_count
     stats["text_rows"] = text_count
     stats["skip_rows"] = skip_count
@@ -816,6 +857,7 @@ def parse_filing(raw: bytes, member_name: str) -> dict[str, Any]:
         "items": items,
         "entities": entities,
         "header_sha256": hashlib.sha256(header_text.encode("utf-8", errors="replace")).hexdigest(),
+        "header_text": header_text,
         "documents": documents,
     }
 
@@ -1350,7 +1392,7 @@ def aggregate_results(args: argparse.Namespace, source_run_id: str, loaded_env: 
     for result in results:
         if result.get("status") != "ok":
             summary["failed_archives"] += 1
-        for key in ("members", "filings", "documents", "document_rows", "entity_rows", "text_source_rows", "text_rows", "skip_rows", "pac_rows", "pac_filings", "error_rows", "parent_rows_loaded", "parent_missing_filings", "parse_errors"):
+        for key in ("members", "filings", "documents", "document_rows", "entity_rows", "archive_accession_rows", "text_source_rows", "text_rows", "skip_rows", "pac_rows", "pac_filings", "error_rows", "parent_rows_loaded", "parent_missing_filings", "parse_errors"):
             summary[key] += int(result.get(key) or 0)
         summary["filing_parent_rows"] += int(result.get("filing_parent_rows") or 0)
         merge_counter(summary["document_roles"], result.get("document_roles") or {})
@@ -1378,6 +1420,7 @@ def empty_summary(args: argparse.Namespace, source_run_id: str, loaded_env: list
         "filing_parent_rows": 0,
         "document_rows": 0,
         "entity_rows": 0,
+        "archive_accession_rows": 0,
         "text_source_rows": 0,
         "text_rows": 0,
         "skip_rows": 0,
@@ -1407,6 +1450,7 @@ def write_manifest(path: Path, args: argparse.Namespace, source_run_id: str, loa
         "target_tables": {
             "filing": "sec_filing_v3",
             "entity": "sec_filing_entity_v3",
+            "archive_accession": "sec_filing_archive_accession_v3",
             "document": "sec_filing_document_v3",
             "text_source": "sec_filing_text_v3",
             "text": "sec_filing_text_rendered_v3",
@@ -1435,6 +1479,7 @@ def write_summary(path: Path, args: argparse.Namespace, source_run_id: str, summ
         f"- Missing parent rows written: `{summary['filing_parent_rows']:,}`",
         f"- Document rows: `{summary['document_rows']:,}`",
         f"- Entity rows: `{summary['entity_rows']:,}`",
+        f"- Archive accession rows: `{summary['archive_accession_rows']:,}`",
         f"- Text source rows: `{summary['text_source_rows']:,}`",
         f"- Text rows: `{summary['text_rows']:,}`",
         f"- Skip rows: `{summary['skip_rows']:,}`",
@@ -1461,6 +1506,7 @@ def failed_archive_result(archive: Path, error: str) -> dict[str, Any]:
         "documents": 0,
         "document_rows": 0,
         "entity_rows": 0,
+        "archive_accession_rows": 0,
         "text_source_rows": 0,
         "text_rows": 0,
         "skip_rows": 0,

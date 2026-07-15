@@ -10,7 +10,7 @@ import tarfile
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -161,6 +161,7 @@ def main() -> None:
     part_files = sorted(paths.repair_parts_root.glob("*.jsonl"))
     if args.execute and not args.skip_insert and part_files:
         insert_parts(client, args, part_files)
+        cleanup_superseded_fallbacks(client, args, part_files, repair_sources, run_id)
     summary = summarize(args, repair_sources, archives, jobs, results, part_files, time.perf_counter() - started)
     write_manifest(paths.manifest_json, args, paths, loaded_env_files, run_id, repair_sources, part_files, summary)
     write_summary(paths.summary_md, args, paths, run_id, summary)
@@ -232,40 +233,47 @@ def select_archives(root: Path, args: argparse.Namespace) -> list[Path]:
 
 
 def build_jobs(client: ClickHouseHttpClient, args: argparse.Namespace, archives: list[Path], repair_sources: list[str]) -> list[ArchiveJob]:
-    jobs: list[ArchiveJob] = []
-    started = time.perf_counter()
-    for index, archive in enumerate(archives, start=1):
-        archive_date = archive_date_from_name(archive.name)
-        candidates = load_candidates_for_archive(client, args, archive_date, repair_sources)
-        if args.limit_candidates_per_archive:
-            candidates = candidates[: args.limit_candidates_per_archive]
-        if candidates:
-            jobs.append(ArchiveJob(str(archive), archive_date.isoformat(), candidates))
-        if index == 1 or index % 50 == 0 or index == len(archives):
-            print(
-                f"candidate_scan={index:,}/{len(archives):,} jobs={len(jobs):,} "
-                f"last_date={archive_date.isoformat()} elapsed={time.perf_counter() - started:.1f}s",
-                flush=True,
-            )
-    print(f"candidate_scan_done archives={len(archives):,} jobs_with_candidates={len(jobs):,}", flush=True)
-    return jobs
-
-
-def load_candidates_for_archive(client: ClickHouseHttpClient, args: argparse.Namespace, archive_date: date, repair_sources: list[str]) -> list[CandidateRow]:
     target = f"{quote_ident(args.database)}.{quote_ident(args.target_table)}"
     sources = ", ".join(sql_string(source) for source in repair_sources)
-    source_run_clause = f" AND source_run_id = {sql_string(args.source_run_id)}" if args.source_run_id else ""
-    archive_date_sql = sql_string(archive_date.isoformat())
-    sql = f"""
-SELECT {", ".join(FILING_COLUMNS)}
-FROM {target} FINAL
-WHERE accepted_at_source IN ({sources})
-  AND (filing_date = toDate({archive_date_sql}) OR toDate(accepted_at_utc) = toDate({archive_date_sql}))
-  {source_run_clause}
-FORMAT JSONEachRow
-"""
-    text = client.execute(sql)
-    return [CandidateRow(json.loads(line)) for line in text.splitlines() if line.strip()]
+    source_run_clause = f" AND f.source_run_id = {sql_string(args.source_run_id)}" if args.source_run_id else ""
+    start_clause = f" AND i.source_archive_date >= toDate({sql_string(args.start_date)})" if args.start_date else ""
+    end_clause = f" AND i.source_archive_date < toDate({sql_string(args.end_date)})" if args.end_date else ""
+    text = client.execute(
+        f"""
+        SELECT i.source_archive_path, i.source_archive_date,
+               {', '.join('f.' + quote_ident(column) for column in FILING_COLUMNS)}
+        FROM {target} AS f FINAL
+        INNER JOIN {quote_ident(args.database)}.sec_filing_archive_accession_current_v3 AS i USING (accession_number)
+        WHERE f.accepted_at_source IN ({sources})
+          AND i.source_kind='daily_archive'
+          AND i.acceptance_datetime_raw IS NOT NULL
+          AND i.acceptance_datetime_raw != ''
+          {source_run_clause}{start_clause}{end_clause}
+        ORDER BY i.source_archive_date, i.source_archive_path, f.accession_number
+        FORMAT JSONEachRow
+        """
+    )
+    grouped: dict[str, list[CandidateRow]] = {}
+    dates: dict[str, str] = {}
+    selected_paths = {str(path) for path in archives}
+    row_count = 0
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        path = str(row.pop("source_archive_path"))
+        if path not in selected_paths:
+            continue
+        dates[path] = str(row.pop("source_archive_date"))
+        grouped.setdefault(path, []).append(CandidateRow(row))
+        row_count += 1
+    jobs: list[ArchiveJob] = []
+    for path, candidates in grouped.items():
+        if args.limit_candidates_per_archive:
+            candidates = candidates[: args.limit_candidates_per_archive]
+        jobs.append(ArchiveJob(path, dates[path], candidates))
+    print(f"candidate_inventory_done repairable_rows={row_count:,} jobs_with_candidates={len(jobs):,}", flush=True)
+    return jobs
 
 
 def process_jobs(args: argparse.Namespace, paths: RunPaths, jobs: list[ArchiveJob], run_id: str) -> list[ArchiveRepairResult]:
@@ -451,6 +459,57 @@ def insert_parts(client: ClickHouseHttpClient, args: argparse.Namespace, part_fi
         client.execute(f"INSERT INTO {target} ({columns}) SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n{body}")
         print(f"inserted_part={index:,}/{len(part_files):,} path={path.name} elapsed={time.perf_counter() - before:.2f}s", flush=True)
     print(f"insert_done parts={len(part_files):,} elapsed={time.perf_counter() - started:.1f}s", flush=True)
+
+
+def cleanup_superseded_fallbacks(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    part_files: list[Path],
+    repair_sources: list[str],
+    run_id: str,
+) -> None:
+    stage = f"sec_acceptance_archive_repair_keys__{re.sub(r'[^A-Za-z0-9_]', '_', run_id)}"
+    target = f"{quote_ident(args.database)}.{quote_ident(args.target_table)}"
+    stage_target = f"{quote_ident(args.database)}.{quote_ident(stage)}"
+    client.execute(f"CREATE TABLE {stage_target} (cik String, accession_number String) ENGINE=MergeTree ORDER BY (cik, accession_number)")
+    try:
+        for path in part_files:
+            keys: set[tuple[str, str]] = set()
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    row = json.loads(line)
+                    keys.add((str(row["cik"]), str(row["accession_number"])))
+            if keys:
+                body = "\n".join(json.dumps({"cik": cik, "accession_number": accession}) for cik, accession in sorted(keys))
+                client.execute(f"INSERT INTO {stage_target} FORMAT JSONEachRow\n{body}")
+        expected = int(client.execute(f"SELECT uniqExact((cik, accession_number)) FROM {stage_target} FORMAT TSV").strip() or "0")
+        verified = int(
+            client.execute(
+                f"SELECT uniqExact((k.cik, k.accession_number)) FROM {stage_target} AS k "
+                f"INNER JOIN {target} AS f FINAL USING (cik, accession_number) "
+                "WHERE startsWith(f.accepted_at_source, 'archive_acceptance_datetime_') FORMAT TSV"
+            ).strip()
+            or "0"
+        )
+        if verified != expected:
+            raise RuntimeError(f"acceptance replacement verification failed: expected={expected} verified={verified}")
+        sources = ", ".join(sql_string(source) for source in repair_sources)
+        client.execute(
+            f"ALTER TABLE {target} DELETE WHERE accepted_at_source IN ({sources}) "
+            f"AND (cik, accession_number) IN (SELECT cik, accession_number FROM {stage_target}) "
+            "SETTINGS mutations_sync=2, allow_nondeterministic_mutations=1"
+        )
+        remaining = int(
+            client.execute(
+                f"SELECT count() FROM {target} FINAL WHERE accepted_at_source IN ({sources}) "
+                f"AND (cik, accession_number) IN (SELECT cik, accession_number FROM {stage_target}) FORMAT TSV"
+            ).strip()
+            or "0"
+        )
+        if remaining:
+            raise RuntimeError(f"superseded acceptance fallback cleanup left {remaining} rows")
+    finally:
+        client.execute(f"DROP TABLE IF EXISTS {stage_target} SYNC")
 
 
 def summarize(
