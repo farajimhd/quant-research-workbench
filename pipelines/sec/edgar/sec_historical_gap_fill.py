@@ -325,6 +325,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--archive-download-concurrency", type=int, default=3)
     parser.add_argument("--archive-validation-workers", type=int, default=32)
     parser.add_argument("--text-extract-workers", type=int, default=int(os.environ.get("SEC_ARCHIVE_REBUILD_WORKERS", "32")))
+    parser.add_argument("--entity-backfill-workers", type=int, default=int(os.environ.get("SEC_ENTITY_BACKFILL_WORKERS", "32")))
+    parser.add_argument("--entity-archive-manifest-table", default=env_string("SEC_ENTITY_ARCHIVE_MANIFEST_TABLE", "sec_filing_entity_archive_manifest_v3"))
     parser.add_argument("--xbrl-workers", type=int, default=8)
     parser.add_argument("--sec-request-min-interval-seconds", type=float, default=0.12)
     parser.add_argument("--request-timeout-seconds", type=float, default=30.0)
@@ -645,6 +647,31 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
             logs_root / "validate-downloaded.log",
             False,
             (stage_coverage_kind("validate-downloaded"),),
+        ),
+        StageCommand(
+            "filing-entity-backfill",
+            add_execute_flag(
+                [
+                    args.python_executable,
+                    script("pipelines/sec/edgar/sec_filing_entity_backfill.py"),
+                    "--database",
+                    args.write_database,
+                    "--archive-root-win",
+                    archive_root,
+                    "--start-date",
+                    DEFAULT_START_DATE,
+                    "--end-date",
+                    args.end_date,
+                    "--workers",
+                    str(max(1, args.entity_backfill_workers)),
+                    "--manifest-table",
+                    args.entity_archive_manifest_table,
+                ],
+                args,
+            ),
+            logs_root / "filing-entity-backfill.log",
+            True,
+            (stage_coverage_kind("filing-entity-backfill"),),
         ),
         StageCommand(
             "archive-text-rebuild",
@@ -1093,6 +1120,7 @@ def stage_already_completed(args: argparse.Namespace, command: StageCommand) -> 
         "bulk-download",
         "bulk-ingest",
         "archive-text-rebuild",
+        "filing-entity-backfill",
         "filing-parent-reconcile",
         "validate-downloaded",
         "acceptance-submissions-enrichment",

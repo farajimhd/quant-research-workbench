@@ -33,6 +33,8 @@ DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_integrity_audit")
 DEFAULT_ARCHIVE_ROOT_WIN = Path("D:/market-data/sec_core/daily_archives")
 SEC_TABLES = (
     "sec_filing_v3",
+    "sec_filing_entity_v3",
+    "sec_filing_entity_current_v3",
     "sec_filing_document_v3",
     "sec_filing_text_v3",
     "sec_filing_text_rendered_v3",
@@ -122,6 +124,8 @@ def main() -> None:
                 args.submissions_overlay_table,
             )
         )
+    if {"sec_filing_v3", "sec_filing_entity_current_v3"}.issubset(table_meta):
+        checks.extend(check_filing_entities(client, args.database))
     if "sec_filing_document_v3" in table_meta:
         checks.extend(check_document_v2_shape(column_map))
     if "sec_filing_text_v3" in table_meta:
@@ -172,7 +176,10 @@ def check_required_tables(table_meta: dict[str, dict[str, Any]], require_v3_tabl
     rows = []
     required = {"sec_filing_v3"}
     if require_v3_tables:
-        required |= {"sec_filing_document_v3", "sec_filing_text_v3", "sec_filing_text_rendered_v3", "sec_filing_document_skip_v3"}
+        required |= {
+            "sec_filing_entity_v3", "sec_filing_entity_current_v3", "sec_filing_document_v3",
+            "sec_filing_text_v3", "sec_filing_text_rendered_v3", "sec_filing_document_skip_v3",
+        }
     for table in SEC_TABLES:
         exists = table in table_meta
         status = "pass" if exists or table not in required else "fail"
@@ -188,6 +195,50 @@ def check_required_tables(table_meta: dict[str, dict[str, Any]], require_v3_tabl
             )
         )
     return rows
+
+
+def check_filing_entities(client: ClickHouseHttpClient, db: str) -> list[dict[str, Any]]:
+    summary = query_one(
+        client,
+        f"""
+        SELECT count() AS rows,
+               uniqExact(accession_number) AS accessions,
+               uniqExact(entity_cik) AS entity_ciks,
+               countIf(entity_role = '') AS missing_roles,
+               countIf(entity_cik = '') AS missing_ciks,
+               uniqExactIf(accession_number, substring(accession_number_compact, 1, 10) != primary_cik) AS accession_prefix_primary_cik_mismatches
+        FROM {qi(db)}.sec_filing_entity_current_v3
+        FORMAT TSVWithNames
+        """,
+    )
+    orphans = scalar_int(
+        client,
+        f"""
+        SELECT count()
+        FROM (SELECT DISTINCT accession_number FROM {qi(db)}.sec_filing_entity_current_v3) AS e
+        LEFT ANTI JOIN (SELECT DISTINCT accession_number FROM {qi(db)}.sec_filing_v3 FINAL) AS f USING (accession_number)
+        """,
+    )
+    missing_entities = scalar_int(
+        client,
+        f"""
+        SELECT count()
+        FROM (SELECT DISTINCT accession_number FROM {qi(db)}.sec_filing_v3 FINAL) AS f
+        LEFT ANTI JOIN (SELECT DISTINCT accession_number FROM {qi(db)}.sec_filing_entity_current_v3) AS e USING (accession_number)
+        """,
+    )
+    status = "pass" if int(summary["rows"]) > 0 and int(summary["missing_roles"]) == 0 and int(summary["missing_ciks"]) == 0 and orphans == 0 and missing_entities == 0 else "fail"
+    summary["accessions_without_filing"] = orphans
+    summary["filings_without_entities"] = missing_entities
+    return [
+        check(
+            "sec_filing_entity_relationships",
+            status,
+            "current SGML entity relationships are populated and join to filings by accession",
+            table="sec_filing_entity_current_v3",
+            details=summary,
+        )
+    ]
 
 
 def check_filing_parent(client: ClickHouseHttpClient, db: str, scope_start: date) -> list[dict[str, Any]]:

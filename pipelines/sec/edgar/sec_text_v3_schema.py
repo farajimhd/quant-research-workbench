@@ -202,15 +202,16 @@ def validate_rendered_sql(rendered_sql: str, statements: list[str], args: argpar
     if STORAGE_POLICY_PLACEHOLDER in rendered_sql:
         raise SystemExit(f"Rendered SQL still contains {STORAGE_POLICY_PLACEHOLDER}.")
     create_statements = [statement for statement in statements if statement.upper().startswith("CREATE TABLE IF NOT EXISTS")]
+    view_statements = [statement for statement in statements if statement.upper().startswith("CREATE VIEW IF NOT EXISTS")]
     alter_statements = [statement for statement in statements if statement.upper().startswith("ALTER TABLE")]
-    if len(create_statements) != 5 or len(alter_statements) != 22 or len(statements) != 27:
+    if len(create_statements) != 6 or len(view_statements) != 1 or len(alter_statements) != 22 or len(statements) != 29:
         raise SystemExit(
-            f"Expected 5 CREATE TABLE and 22 ALTER TABLE statements, got "
-            f"create={len(create_statements)} alter={len(alter_statements)} total={len(statements)}."
+            f"Expected 6 CREATE TABLE, 1 CREATE VIEW, and 22 ALTER TABLE statements, got "
+            f"create={len(create_statements)} view={len(view_statements)} alter={len(alter_statements)} total={len(statements)}."
         )
     for statement in statements:
-        if not statement.upper().startswith(("CREATE TABLE IF NOT EXISTS", "ALTER TABLE")):
-            raise SystemExit("Only CREATE TABLE IF NOT EXISTS and ALTER TABLE statements are allowed in this schema script.")
+        if not statement.upper().startswith(("CREATE TABLE IF NOT EXISTS", "CREATE VIEW IF NOT EXISTS", "ALTER TABLE")):
+            raise SystemExit("Only idempotent CREATE TABLE/VIEW and ALTER TABLE statements are allowed in this schema script.")
         if statement.upper().startswith("CREATE TABLE") and args.storage_policy.strip() and "storage_policy" not in statement:
             raise SystemExit(f"CREATE TABLE statement missing storage_policy: {first_statement_line(statement)}")
         nullable_order = nullable_columns_in_order_by(statement)

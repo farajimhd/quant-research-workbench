@@ -38,6 +38,45 @@ PARTITION BY cityHash64(cik) % 64
 ORDER BY (cik, accession_number, sequence_number, document_id)
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
 
+CREATE TABLE IF NOT EXISTS q_live.sec_filing_entity_v3
+(
+    relationship_id String,
+    filing_id Nullable(String),
+    accession_number String,
+    accession_number_compact String,
+    primary_cik String,
+    entity_cik String,
+    entity_role LowCardinality(String),
+    entity_name Nullable(String),
+    source_section_ordinal UInt16,
+    source_archive_date Date,
+    source_archive_member String,
+    source_archive_path Nullable(String),
+    source_header_sha256 String,
+    source_version_key String,
+    source_revision_at DateTime64(3, 'UTC'),
+    source_revision_rank UInt64,
+    source_revision_kind LowCardinality(String),
+    pac_event_id Nullable(String),
+    source_run_id String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(inserted_at)
+PARTITION BY cityHash64(accession_number) % 64
+ORDER BY (accession_number, source_version_key, entity_role, entity_cik)
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
+CREATE VIEW IF NOT EXISTS q_live.sec_filing_entity_current_v3 AS
+SELECT e.*
+FROM q_live.sec_filing_entity_v3 FINAL AS e
+INNER JOIN
+(
+    SELECT accession_number,
+           argMax(source_version_key, tuple(source_revision_rank, source_version_key)) AS source_version_key
+    FROM q_live.sec_filing_entity_v3 FINAL
+    GROUP BY accession_number
+) AS latest USING (accession_number, source_version_key);
+
 CREATE TABLE IF NOT EXISTS q_live.sec_filing_text_v3
 (
     document_id String,

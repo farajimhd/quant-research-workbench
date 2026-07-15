@@ -33,6 +33,11 @@ from research.mlops.clickhouse import (  # noqa: E402
 )
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
 from pipelines.sec.edgar.sec_pipeline.submissions import parse_acceptance_datetime  # noqa: E402
+from pipelines.sec.edgar.sec_pipeline.entities import (  # noqa: E402
+    build_entity_rows,
+    parse_filing_entities,
+    primary_filing_entity,
+)
 from pipelines.sec.edgar.sec_parquet_parts import (  # noqa: E402
     DEFAULT_FILE_BYTES,
     DEFAULT_ROW_GROUP_BYTES,
@@ -106,6 +111,13 @@ DOCUMENT_COLUMNS = [
     "pac_event_id",
     "source_run_id",
     "inserted_at",
+]
+ENTITY_COLUMNS = [
+    "relationship_id", "filing_id", "accession_number", "accession_number_compact",
+    "primary_cik", "entity_cik", "entity_role", "entity_name", "source_section_ordinal",
+    "source_archive_date", "source_archive_member", "source_archive_path", "source_header_sha256",
+    "source_version_key", "source_revision_at", "source_revision_rank", "source_revision_kind",
+    "pac_event_id", "source_run_id", "inserted_at",
 ]
 TEXT_SOURCE_COLUMNS = [
     "document_id",
@@ -411,7 +423,7 @@ def main() -> None:
     print(f"done summary={summary_path}", flush=True)
     print(
         f"archives={summary['archives_completed']:,}/{summary['archive_count']:,} "
-        f"documents={summary['document_rows']:,} text={summary['text_rows']:,} "
+        f"documents={summary['document_rows']:,} entities={summary['entity_rows']:,} text={summary['text_rows']:,} "
         f"skips={summary['skip_rows']:,} errors={summary['error_rows']:,}",
         flush=True,
     )
@@ -531,6 +543,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     parts_root = Path(payload["parts_root"])
     writer_specs = {
         "filing": ("sec_filing_v3_parts", "sec_filing_v3", FILING_COLUMNS),
+        "entity": ("sec_filing_entity_v3_parts", "sec_filing_entity_v3", ENTITY_COLUMNS),
         "document": ("sec_filing_document_v3_parts", "sec_filing_document_v3", DOCUMENT_COLUMNS),
         "text_source": ("sec_filing_text_v3_parts", "sec_filing_text_v3", TEXT_SOURCE_COLUMNS),
         "text": ("sec_filing_text_rendered_v3_parts", "sec_filing_text_rendered_v3", TEXT_COLUMNS),
@@ -570,6 +583,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
         "documents": 0,
         "filing_parent_rows": 0,
         "document_rows": 0,
+        "entity_rows": 0,
         "text_source_rows": 0,
         "text_rows": 0,
         "skip_rows": 0,
@@ -589,7 +603,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
         "errors": [],
         "samples": [],
     }
-    filing_parent_count = doc_count = text_source_count = text_count = skip_count = pac_count = 0
+    filing_parent_count = entity_count = doc_count = text_source_count = text_count = skip_count = pac_count = 0
     try:
         with tarfile.open(archive, "r:gz") as tar:
             for member_sequence, member in enumerate(tar, start=1):
@@ -644,6 +658,22 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
                     writers["filing"].append(parent_row)
                     filing_parent_count += 1
                     parents[(parent.cik, parent.accession_number)] = parent
+                entity_rows = build_entity_rows(
+                    entities=filing["entities"],
+                    filing_id=parent.filing_id,
+                    accession_number=parent.accession_number,
+                    primary_cik=parent.cik,
+                    source_archive_date=archive_date_text,
+                    source_archive_member=member.name,
+                    source_archive_path=str(archive),
+                    source_header_sha256=filing["header_sha256"],
+                    revision=revision,
+                    source_run_id=str(payload["source_run_id"]),
+                    inserted_at=inserted_at,
+                )
+                for entity_row in entity_rows:
+                    writers["entity"].append(entity_row)
+                entity_count += len(entity_rows)
                 for document in filing["documents"]:
                     stats["documents"] += 1
                     doc_row, text_source_row, text_row, skip_row, sample_row = build_rows(
@@ -684,6 +714,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
 
     stats["filing_parent_rows"] = filing_parent_count
     stats["document_rows"] = doc_count
+    stats["entity_rows"] = entity_count
     stats["text_source_rows"] = text_source_count
     stats["text_rows"] = text_count
     stats["skip_rows"] = skip_count
@@ -745,12 +776,14 @@ def parse_filing(raw: bytes, member_name: str) -> dict[str, Any]:
     decoded = decode_sec_bytes(raw)
     header_text = decoded.split("<DOCUMENT>", 1)[0]
     accession = normalize_accession(header_value(header_text, "ACCESSION NUMBER") or tag_value(header_text, "ACCESSION-NUMBER") or Path(member_name).stem)
-    cik = extract_submission_cik(header_text)
+    entities = parse_filing_entities(header_text)
+    primary_entity = primary_filing_entity(entities)
+    cik = primary_entity.cik if primary_entity else extract_submission_cik(header_text)
     form_type = clean_label(header_value(header_text, "CONFORMED SUBMISSION TYPE") or tag_value(header_text, "TYPE")).upper()
     filing_date = parse_sec_date_value(header_value(header_text, "FILED AS OF DATE") or tag_value(header_text, "FILING-DATE"))
     report_date = parse_sec_date_value(header_value(header_text, "CONFORMED PERIOD OF REPORT") or tag_value(header_text, "PERIOD"))
     acceptance_raw = clean_text_field(header_value(header_text, "ACCEPTANCE-DATETIME") or tag_value(header_text, "ACCEPTANCE-DATETIME"))
-    company_name = extract_submission_company_name(header_text)
+    company_name = primary_entity.name if primary_entity and primary_entity.name else extract_submission_company_name(header_text)
     items = extract_submission_items(header_text)
     documents = []
     for index, block in enumerate(re.findall(r"<DOCUMENT>\s*(.*?)\s*</DOCUMENT>", decoded, flags=re.S | re.I), start=1):
@@ -781,6 +814,8 @@ def parse_filing(raw: bytes, member_name: str) -> dict[str, Any]:
         "report_date": report_date,
         "acceptance_datetime_raw": acceptance_raw,
         "items": items,
+        "entities": entities,
+        "header_sha256": hashlib.sha256(header_text.encode("utf-8", errors="replace")).hexdigest(),
         "documents": documents,
     }
 
@@ -1315,7 +1350,7 @@ def aggregate_results(args: argparse.Namespace, source_run_id: str, loaded_env: 
     for result in results:
         if result.get("status") != "ok":
             summary["failed_archives"] += 1
-        for key in ("members", "filings", "documents", "document_rows", "text_source_rows", "text_rows", "skip_rows", "pac_rows", "pac_filings", "error_rows", "parent_rows_loaded", "parent_missing_filings", "parse_errors"):
+        for key in ("members", "filings", "documents", "document_rows", "entity_rows", "text_source_rows", "text_rows", "skip_rows", "pac_rows", "pac_filings", "error_rows", "parent_rows_loaded", "parent_missing_filings", "parse_errors"):
             summary[key] += int(result.get(key) or 0)
         summary["filing_parent_rows"] += int(result.get("filing_parent_rows") or 0)
         merge_counter(summary["document_roles"], result.get("document_roles") or {})
@@ -1342,6 +1377,7 @@ def empty_summary(args: argparse.Namespace, source_run_id: str, loaded_env: list
         "documents": 0,
         "filing_parent_rows": 0,
         "document_rows": 0,
+        "entity_rows": 0,
         "text_source_rows": 0,
         "text_rows": 0,
         "skip_rows": 0,
@@ -1370,6 +1406,7 @@ def write_manifest(path: Path, args: argparse.Namespace, source_run_id: str, loa
         "database": args.database,
         "target_tables": {
             "filing": "sec_filing_v3",
+            "entity": "sec_filing_entity_v3",
             "document": "sec_filing_document_v3",
             "text_source": "sec_filing_text_v3",
             "text": "sec_filing_text_rendered_v3",
@@ -1397,6 +1434,7 @@ def write_summary(path: Path, args: argparse.Namespace, source_run_id: str, summ
         f"- Documents parsed: `{summary['documents']:,}`",
         f"- Missing parent rows written: `{summary['filing_parent_rows']:,}`",
         f"- Document rows: `{summary['document_rows']:,}`",
+        f"- Entity rows: `{summary['entity_rows']:,}`",
         f"- Text source rows: `{summary['text_source_rows']:,}`",
         f"- Text rows: `{summary['text_rows']:,}`",
         f"- Skip rows: `{summary['skip_rows']:,}`",
@@ -1422,6 +1460,7 @@ def failed_archive_result(archive: Path, error: str) -> dict[str, Any]:
         "filings": 0,
         "documents": 0,
         "document_rows": 0,
+        "entity_rows": 0,
         "text_source_rows": 0,
         "text_rows": 0,
         "skip_rows": 0,

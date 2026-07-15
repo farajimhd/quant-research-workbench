@@ -9,6 +9,8 @@ from research.mlops.clickhouse import ClickHouseHttpClient
 
 
 FILING_TABLE = "sec_filing_v3"
+ENTITY_TABLE = "sec_filing_entity_v3"
+ENTITY_CURRENT_VIEW = "sec_filing_entity_current_v3"
 DOCUMENT_TABLE = "sec_filing_document_v3"
 TEXT_SOURCE_TABLE = "sec_filing_text_v3"
 TEXT_TABLE = "sec_filing_text_rendered_v3"
@@ -31,6 +33,7 @@ LEGACY_SCHEMA_SOURCE_TABLES = {
 }
 WRITE_TABLES = [
     FILING_TABLE,
+    ENTITY_TABLE,
     DOCUMENT_TABLE,
     TEXT_SOURCE_TABLE,
     TEXT_TABLE,
@@ -46,6 +49,7 @@ WRITE_TABLES = [
 @dataclass(frozen=True, slots=True)
 class SecWriteResult:
     filing_rows: int = 0
+    entity_rows: int = 0
     document_rows: int = 0
     text_source_rows: int = 0
     text_rows: int = 0
@@ -62,6 +66,7 @@ class SecWriteResult:
 @dataclass(frozen=True, slots=True)
 class SecWriteAudit:
     filing_rows: int
+    entity_rows: int
     document_rows: int
     text_source_rows: int
     text_rows: int
@@ -71,6 +76,7 @@ class SecWriteAudit:
     xbrl_frame_rows: int
     xbrl_frame_observation_rows: int
     duplicate_filing_keys: int
+    entities_without_filing: int
     documents_without_filing: int
     text_sources_without_document: int
     texts_without_document: int
@@ -83,6 +89,7 @@ class SecWriteAudit:
     def ok(self) -> bool:
         return (
             self.duplicate_filing_keys == 0
+            and self.entities_without_filing == 0
             and self.documents_without_filing == 0
             and self.text_sources_without_document == 0
             and self.texts_without_document == 0
@@ -117,6 +124,7 @@ class SecClickHouseWriter:
     def audit_integrity(self) -> SecWriteAudit:
         return SecWriteAudit(
             filing_rows=scalar_int(self.client, f"SELECT count() FROM {qi(self.database)}.{qi(FILING_TABLE)} FINAL"),
+            entity_rows=scalar_int(self.client, f"SELECT count() FROM {qi(self.database)}.{qi(ENTITY_TABLE)} FINAL"),
             document_rows=scalar_int(self.client, f"SELECT count() FROM {qi(self.database)}.{qi(DOCUMENT_TABLE)} FINAL"),
             text_source_rows=scalar_int(self.client, f"SELECT count() FROM {qi(self.database)}.{qi(TEXT_SOURCE_TABLE)} FINAL"),
             text_rows=scalar_int(self.client, f"SELECT count() FROM {qi(self.database)}.{qi(TEXT_TABLE)} FINAL"),
@@ -135,6 +143,15 @@ class SecClickHouseWriter:
                     GROUP BY cik, accession_number
                     HAVING c > 1
                 )
+                """,
+            ),
+            entities_without_filing=scalar_int(
+                self.client,
+                f"""
+                SELECT count()
+                FROM (SELECT DISTINCT accession_number FROM {qi(self.database)}.{qi(ENTITY_TABLE)} FINAL) AS e
+                LEFT ANTI JOIN (SELECT DISTINCT accession_number FROM {qi(self.database)}.{qi(FILING_TABLE)} FINAL) AS f
+                ON e.accession_number = f.accession_number
                 """,
             ),
             documents_without_filing=scalar_int(
@@ -243,6 +260,7 @@ class SecClickHouseWriter:
         self,
         *,
         filing_row: dict[str, Any],
+        entity_rows: list[dict[str, Any]],
         document_rows: list[dict[str, Any]],
         text_source_rows: list[dict[str, Any]],
         text_rows: list[dict[str, Any]],
@@ -264,6 +282,7 @@ class SecClickHouseWriter:
         # failed batch can leave only recoverable upstream rows, never rendered-only rows.
         self.insert_rows(TEXT_SOURCE_TABLE, text_source_rows)
         self.insert_rows(FILING_TABLE, [filing_row])
+        self.insert_rows(ENTITY_TABLE, entity_rows)
         self.insert_rows(DOCUMENT_TABLE, document_rows)
         self.insert_rows(TEXT_TABLE, text_rows)
         self.insert_rows(SKIP_TABLE, skip_rows)
@@ -274,6 +293,7 @@ class SecClickHouseWriter:
         self.insert_rows(XBRL_FRAME_OBSERVATION_TABLE, xbrl_frame_observation_rows or [])
         return SecWriteResult(
             filing_rows=1,
+            entity_rows=len(entity_rows),
             document_rows=len(document_rows),
             text_source_rows=len(text_source_rows),
             text_rows=len(text_rows),
@@ -348,10 +368,15 @@ def ensure_sec_write_database(
                     create_pac_table_schema(client, target_database=write_database, reference_database=read_database)
                     created_or_present.append(f"{write_database}.{table}")
                     continue
+                elif table == ENTITY_TABLE:
+                    create_entity_table_schema(client, target_database=write_database, reference_database=read_database)
+                    created_or_present.append(f"{write_database}.{table}")
+                    continue
                 else:
                     raise RuntimeError(f"source SEC table is missing: {read_database}.{table} or {read_database}.{legacy_source_table}")
             clone_table_schema(client, source_database=read_database, target_database=write_database, source_table=source_table, target_table=table)
         created_or_present.append(f"{write_database}.{table}")
+    create_entity_current_view(client, target_database=write_database)
     return created_or_present
 
 
@@ -441,6 +466,49 @@ def create_text_source_table_schema(client: ClickHouseHttpClient, *, target_data
         PARTITION BY cityHash64(cik) % 64
         ORDER BY (cik, accession_number, document_id, content_format)
         SETTINGS {settings}
+        """
+    )
+
+
+def create_entity_table_schema(client: ClickHouseHttpClient, *, target_database: str, reference_database: str) -> None:
+    storage_policy = infer_storage_policy(client, reference_database, [FILING_TABLE, DOCUMENT_TABLE])
+    settings = "index_granularity = 8192"
+    if storage_policy:
+        settings += f", storage_policy = {sql_string(storage_policy)}"
+    client.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {qi(target_database)}.{qi(ENTITY_TABLE)}
+        (
+            relationship_id String, filing_id Nullable(String), accession_number String,
+            accession_number_compact String, primary_cik String, entity_cik String,
+            entity_role LowCardinality(String), entity_name Nullable(String),
+            source_section_ordinal UInt16, source_archive_date Date,
+            source_archive_member String, source_archive_path Nullable(String),
+            source_header_sha256 String, source_version_key String,
+            source_revision_at DateTime64(3, 'UTC'), source_revision_rank UInt64,
+            source_revision_kind LowCardinality(String), pac_event_id Nullable(String),
+            source_run_id String, inserted_at DateTime64(3, 'UTC')
+        )
+        ENGINE = ReplacingMergeTree(inserted_at)
+        PARTITION BY cityHash64(accession_number) % 64
+        ORDER BY (accession_number, source_version_key, entity_role, entity_cik)
+        SETTINGS {settings}
+        """
+    )
+
+
+def create_entity_current_view(client: ClickHouseHttpClient, *, target_database: str) -> None:
+    client.execute(
+        f"""
+        CREATE VIEW IF NOT EXISTS {qi(target_database)}.{qi(ENTITY_CURRENT_VIEW)} AS
+        SELECT e.*
+        FROM {qi(target_database)}.{qi(ENTITY_TABLE)} FINAL AS e
+        INNER JOIN (
+            SELECT accession_number,
+                   argMax(source_version_key, tuple(source_revision_rank, source_version_key)) AS source_version_key
+            FROM {qi(target_database)}.{qi(ENTITY_TABLE)} FINAL
+            GROUP BY accession_number
+        ) AS latest USING (accession_number, source_version_key)
         """
     )
 

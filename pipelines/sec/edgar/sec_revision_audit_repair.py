@@ -498,7 +498,7 @@ def apply_stored_pac(client: ClickHouseHttpClient, args: argparse.Namespace) -> 
 def apply_pac_event(client: ClickHouseHttpClient, args: argparse.Namespace, event: PacEvent) -> None:
     accession_filter = f"accession_number={sql_string(event.accession_number)}"
     if event.filing_deleted:
-        for table in ("sec_filing_v3", *DOCUMENT_FAMILIES):
+        for table in ("sec_filing_v3", "sec_filing_entity_v3", *DOCUMENT_FAMILIES):
             delete_where(client, args.database, table, accession_filter, args.mutations_sync)
         return
     if event.filing_date or event.date_as_of_change or event.form_type:
