@@ -240,6 +240,7 @@ is larger than a row-group target. This replaced unbounded serial JSON staging.
 | Defect | Impact | Remedy |
 | --- | --- | --- |
 | Serial JSON staging failed on very large text and was slow | Archive workers failed late and the terminal could appear successful | Use parallel byte-bounded Parquet shards and ClickHouse native file reads; fail the whole run immediately |
+| Repair Parquet inferred lineage and inventory fields as strings | ClickHouse rejected a repair insert at runtime, after an earlier dataset had already committed | Define all SEC v3 numeric, temporal, array, and text types in the shared Parquet schema authority and reject name or type mismatches during local preflight before any insert |
 | Source text partitioning and ordering did not suit large revision-aware inserts | Inserts hit partition and merge pressure | Recreate v3 source text with bounded hash partitioning and revision-aware ordering |
 | A failed archive could leave partial ClickHouse rows | Reruns could skip or duplicate incomplete units | Detect failed units from manifests, delete and verify only their partial rows, then reinsert the whole unit |
 | Temporary extracted files accumulated until the entire run ended | Disk exhaustion stopped long rebuilds | Delete a worker's temporary shards only after its archive is durably inserted and checkpointed |

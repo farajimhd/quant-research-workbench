@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 
 from pipelines.sec.edgar import sec_filing_archive_rebuild as rebuild
@@ -18,7 +19,11 @@ from pipelines.sec.edgar import sec_filing_text_clickhouse_file_ingest as ingest
 from pipelines.sec.edgar import sec_filing_text_extract_parts as extractor
 from pipelines.sec.edgar import sec_historical_gap_fill as historical
 from pipelines.sec.edgar import sec_text_v3_schema as text_schema
-from pipelines.sec.edgar.sec_parquet_parts import ParquetShardWriter, validate_parquet_part
+from pipelines.sec.edgar.sec_parquet_parts import (
+    ParquetShardWriter,
+    arrow_type_for_column,
+    validate_parquet_part,
+)
 
 
 class SecFilingArchiveRebuildTests(unittest.TestCase):
@@ -248,6 +253,38 @@ class SecFilingArchiveRebuildTests(unittest.TestCase):
                 self.assertEqual(metadata["rows"], 1)
                 actual.extend(pq.read_table(part["path"], columns=["source_text"]).column("source_text").to_pylist())
             self.assertEqual(actual, expected)
+
+    def test_parquet_schema_uses_canonical_sec_lineage_and_inventory_types(self) -> None:
+        expected_types = {
+            "source_section_ordinal": pa.uint16(),
+            "document_count": pa.uint32(),
+            "public_document_count": pa.uint32(),
+            "source_revision_rank": pa.uint64(),
+            "correction_order_key": pa.uint64(),
+            "private_to_public": pa.uint8(),
+            "filing_deleted": pa.uint8(),
+            "document_deleted": pa.uint8(),
+            "date_as_of_change": pa.date32(),
+            "source_revision_at": pa.timestamp("ms", tz="UTC"),
+            "entity_ciks": pa.list_(pa.string()),
+        }
+
+        for column, expected_type in expected_types.items():
+            self.assertEqual(arrow_type_for_column(column), expected_type, column)
+
+    def test_parquet_preflight_rejects_wrong_canonical_type_before_insert(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "wrong-lineage-type.parquet"
+            table = pa.table(
+                {
+                    "accession_number": ["0001974158-24-000002"],
+                    "source_revision_rank": ["1720000000000000000"],
+                }
+            )
+            pq.write_table(table, path)
+
+            with self.assertRaisesRegex(RuntimeError, "Parquet type mismatch.*source_revision_rank"):
+                validate_parquet_part(path, 1, ["accession_number", "source_revision_rank"])
 
     def test_parquet_preflight_does_not_query_clickhouse(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

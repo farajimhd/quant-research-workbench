@@ -29,21 +29,24 @@ DICTIONARY_COLUMNS = {
     "text_kind",
     "text_status",
 }
-UINT32_COLUMNS = {"sequence_number"}
+UINT16_COLUMNS = {"source_section_ordinal"}
+UINT32_COLUMNS = {"sequence_number", "document_count", "public_document_count"}
 UINT64_COLUMNS = {
     "byte_size",
+    "correction_order_key",
     "filing_size",
     "payload_char_count",
+    "source_revision_rank",
     "source_text_byte_count",
     "source_text_char_count",
     "text_byte_count",
     "text_char_count",
 }
-UINT8_COLUMNS = {"has_normalized_text"}
-DATE_COLUMNS = {"filing_date", "report_date", "source_archive_date"}
+UINT8_COLUMNS = {"document_deleted", "filing_deleted", "has_normalized_text", "private_to_public"}
+DATE_COLUMNS = {"date_as_of_change", "filing_date", "report_date", "source_archive_date"}
 TIMESTAMP_NS_COLUMNS = {"accepted_at_utc"}
-TIMESTAMP_MS_COLUMNS = {"extracted_at_utc", "inserted_at"}
-LIST_STRING_COLUMNS = {"quality_flags"}
+TIMESTAMP_MS_COLUMNS = {"extracted_at_utc", "inserted_at", "source_revision_at"}
+LIST_STRING_COLUMNS = {"entity_ciks", "quality_flags"}
 
 
 class ParquetShardWriter:
@@ -199,6 +202,8 @@ def schema_for_columns(columns: Iterable[str]) -> pa.Schema:
 
 
 def arrow_type_for_column(column: str) -> pa.DataType:
+    if column in UINT16_COLUMNS:
+        return pa.uint16()
     if column in UINT32_COLUMNS:
         return pa.uint32()
     if column in UINT64_COLUMNS:
@@ -230,8 +235,8 @@ def coerce_row(row: dict[str, Any], columns: Iterable[str]) -> dict[str, Any]:
             output[column] = parse_utc_datetime(value)
         elif column in LIST_STRING_COLUMNS:
             output[column] = [str(item) for item in (value or [])]
-        elif column in UINT32_COLUMNS or column in UINT64_COLUMNS or column in UINT8_COLUMNS:
-            output[column] = None if value is None else int(value)
+        elif column in UINT16_COLUMNS or column in UINT32_COLUMNS or column in UINT64_COLUMNS or column in UINT8_COLUMNS:
+            output[column] = None if value in ("", None) else int(value)
         else:
             output[column] = None if value is None else str(value)
     return output
@@ -266,10 +271,19 @@ def estimate_row_bytes(row: dict[str, Any], columns: Iterable[str]) -> int:
 def validate_parquet_part(path: Path, expected_rows: int, expected_columns: Iterable[str]) -> dict[str, int]:
     parquet = pq.ParquetFile(path)
     metadata = parquet.metadata
-    actual_columns = parquet.schema_arrow.names
+    actual_schema = parquet.schema_arrow
+    actual_columns = actual_schema.names
     expected = list(expected_columns)
     if actual_columns != expected:
         raise RuntimeError(f"Parquet schema mismatch path={path} expected={expected} actual={actual_columns}")
+    expected_schema = schema_for_columns(expected)
+    type_mismatches = [
+        f"{column}: expected={expected_schema.field(column).type} actual={actual_schema.field(column).type}"
+        for column in expected
+        if actual_schema.field(column).type != expected_schema.field(column).type
+    ]
+    if type_mismatches:
+        raise RuntimeError(f"Parquet type mismatch path={path} " + "; ".join(type_mismatches))
     if expected_rows >= 0 and metadata.num_rows != expected_rows:
         raise RuntimeError(
             f"Parquet row mismatch path={path} expected={expected_rows} actual={metadata.num_rows}"
