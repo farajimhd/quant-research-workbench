@@ -190,6 +190,7 @@ def worker_payload(
         "parquet_compression_level": args.parquet_compression_level,
         "target_accessions": [row["accession_number"] for row in rows],
         "target_members": [row["source_archive_member"] for row in rows],
+        "parent_resolution_mode": "supplied_only",
         "parent_rows": parent_rows,
     }
 

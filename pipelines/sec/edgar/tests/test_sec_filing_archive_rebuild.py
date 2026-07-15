@@ -810,6 +810,24 @@ ACCEPTANCE-DATETIME: 20260701120000
             self.assertEqual(targeted["status"], "ok")
             self.assertEqual(targeted["filing_parent_rows"], 0)
             self.assertEqual(targeted["document_rows"], 1)
+            self.assertEqual(targeted["parent_resolution_mode"], "supplied_only")
+
+            archive_only_payload = {
+                **payload,
+                "parts_root": str(root / "archive-only-parts"),
+                "target_members": ["submission.nc"],
+                "target_accessions": ["0000000001-26-000001"],
+                "parent_resolution_mode": "supplied_only",
+                "parent_rows": [],
+            }
+            with mock.patch.object(extractor, "ClickHouseHttpClient", NoQueryClickHouseClient):
+                archive_only = extractor.process_archive_worker(archive_only_payload)
+
+            self.assertEqual(archive_only["status"], "ok")
+            self.assertEqual(archive_only["filing_parent_rows"], 1)
+            self.assertEqual(archive_only["document_rows"], 1)
+            self.assertEqual(archive_only["parent_rows_loaded"], 0)
+            self.assertEqual(archive_only["parent_resolution_mode"], "supplied_only")
 
             class SetEvent:
                 def is_set(self) -> bool:

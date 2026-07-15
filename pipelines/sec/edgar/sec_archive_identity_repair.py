@@ -247,6 +247,7 @@ def worker_payload(
         "parquet_compression_level": args.parquet_compression_level,
         "target_accessions": sorted({row["sgml_accession"] for row in rows}),
         "target_members": sorted({row["member"] for row in rows}),
+        "parent_resolution_mode": "supplied_only",
         "parent_rows": [],
     }
 

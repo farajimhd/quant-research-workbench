@@ -548,6 +548,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     archive = Path(payload["archive_path"])
     archive_date = archive_date_from_name(archive.name)
     archive_date_text = archive_date.isoformat()
+    parent_resolution_mode = resolve_parent_resolution_mode(payload)
     part_prefix = f"{archive_date:%Y%m%d}_{int(payload['archive_index']):06d}"
     parts_root = Path(payload["parts_root"])
     writer_specs = {
@@ -577,13 +578,15 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
 
     client = ClickHouseHttpClient(str(payload["clickhouse_url"]), str(payload["user"]), str(payload["password"]))
     supplied_parent_rows = payload.get("parent_rows") or []
-    parents = {} if supplied_parent_rows else load_parent_map(
-        client,
-        str(payload["database"]),
-        archive_date,
-        int(payload["parent_window_days_before"]),
-        int(payload["parent_window_days_after"]),
-    )
+    parents = {}
+    if parent_resolution_mode == "database_window":
+        parents = load_parent_map(
+            client,
+            str(payload["database"]),
+            archive_date,
+            int(payload["parent_window_days_before"]),
+            int(payload["parent_window_days_after"]),
+        )
     for row in supplied_parent_rows:
         parent = FilingParent(**row)
         parents[(normalize_cik(parent.cik), normalize_accession(parent.accession_number))] = parent
@@ -608,6 +611,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
         "pac_filings": 0,
         "error_rows": 0,
         "parent_rows_loaded": len(parents),
+        "parent_resolution_mode": parent_resolution_mode,
         "parent_missing_filings": 0,
         "parse_errors": 0,
         "truncated_by_limit": False,
@@ -767,6 +771,19 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     stats["content_formats"] = dict(stats["content_formats"])
     stats["form_types"] = dict(stats["form_types"])
     return stats
+
+
+def resolve_parent_resolution_mode(payload: dict[str, Any]) -> str:
+    mode = payload.get("parent_resolution_mode")
+    if mode is None:
+        mode = "supplied_only" if "parent_rows" in payload else "database_window"
+    normalized = str(mode).strip().lower()
+    if normalized not in {"database_window", "supplied_only"}:
+        raise ValueError(
+            "parent_resolution_mode must be 'database_window' or 'supplied_only', "
+            f"got {mode!r}"
+        )
+    return normalized
 
 
 def load_parent_map(client: ClickHouseHttpClient, db: str, archive_date: date, days_before: int, days_after: int) -> dict[tuple[str, str], FilingParent]:
