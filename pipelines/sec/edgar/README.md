@@ -65,6 +65,14 @@ the bridge/context products, and runs the final integrity audit. Metadata-only
 filings and source records with no acceptance timestamp remain explicit
 nonfatal unresolved classifications.
 
+Before the final archive identity audit, finalization also repairs existing
+document/text rows stored under a non-primary entity CIK. It reparses only the
+mismatched archive members, inserts and verifies the complete subject-company
+filing/document/source/rendered lineage, invalidates stale v3 model rows, and
+synchronously deletes the old document key last. This makes the repair
+restart-safe while retaining the reporting-person relationship in
+`sec_filing_entity_v3`.
+
 The acceptance repair measures the number of corrected monthly target partitions
 before writing. Its default maintenance bound is 1,000 partitions, which permits
 the current 145-partition SEC history in one server-side insert while failing

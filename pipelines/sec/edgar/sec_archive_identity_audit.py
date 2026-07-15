@@ -55,9 +55,7 @@ def main() -> int:
         raise SystemExit("--workers must be >= 1")
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
     rows = load_unconfirmed_document_identities(client, args)
-    grouped: dict[str, dict[str, dict[str, str]]] = defaultdict(dict)
-    for row in rows:
-        grouped[row["archive_path"]][row["member"].lstrip("./")] = row
+    grouped = group_unconfirmed_identities(rows)
 
     run_id = "sec_archive_identity_audit_" + datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     run_root = Path(args.output_root_win) / run_id
@@ -125,7 +123,14 @@ FORMAT JSONEachRow
     return [json.loads(line) for line in text.splitlines() if line.strip()]
 
 
-def audit_archive(archive_path: str, wanted: dict[str, dict[str, str]]) -> dict[str, Any]:
+def group_unconfirmed_identities(rows: list[dict[str, str]]) -> dict[str, dict[str, list[dict[str, str]]]]:
+    grouped: dict[str, dict[str, list[dict[str, str]]]] = defaultdict(lambda: defaultdict(list))
+    for row in rows:
+        grouped[row["archive_path"]][row["member"].lstrip("./")].append(row)
+    return {archive_path: dict(members) for archive_path, members in grouped.items()}
+
+
+def audit_archive(archive_path: str, wanted: dict[str, list[dict[str, str]] | dict[str, str]]) -> dict[str, Any]:
     result: dict[str, Any] = {
         "archive_path": archive_path,
         "wanted": len(wanted),
@@ -141,31 +146,38 @@ def audit_archive(archive_path: str, wanted: dict[str, dict[str, str]]) -> dict[
         with tarfile.open(archive_path, "r:gz") as archive:
             for member in archive:
                 key = member.name.lstrip("./")
-                expected = wanted.get(key)
-                if expected is None or not member.isfile():
+                expected_values = wanted.get(key)
+                if expected_values is None or not member.isfile():
                     continue
+                expected_rows = expected_values if isinstance(expected_values, list) else [expected_values]
                 handle = archive.extractfile(member)
                 if handle is None:
                     continue
                 parsed = parse_filing(handle.read(), member.name)
                 found.add(key)
-                if parsed["cik"] == expected["cik"] and parsed["accession_number"] == expected["accession_number"]:
-                    result["matched"] += 1
-                else:
-                    result["mismatched"] += 1
-                    result["mismatches"].append(
-                        {
-                            "member": member.name,
-                            "stored_cik": expected["cik"],
-                            "sgml_cik": parsed["cik"],
-                            "stored_accession": expected["accession_number"],
-                            "sgml_accession": parsed["accession_number"],
-                        }
-                    )
-        result["missing"] = len(set(wanted) - found)
+                for expected in expected_rows:
+                    if parsed["cik"] == expected["cik"] and parsed["accession_number"] == expected["accession_number"]:
+                        result["matched"] += 1
+                    else:
+                        result["mismatched"] += 1
+                        result["mismatches"].append(
+                            {
+                                "member": member.name,
+                                "stored_cik": expected["cik"],
+                                "sgml_cik": parsed["cik"],
+                                "stored_accession": expected["accession_number"],
+                                "sgml_accession": parsed["accession_number"],
+                                "expected_document_count": len(parsed["documents"]),
+                            }
+                        )
+        result["missing"] = sum(
+            len(values) if isinstance(values, list) else 1
+            for key, values in wanted.items()
+            if key not in found
+        )
     except Exception as exc:  # noqa: BLE001
         result["archive_errors"] = 1
-        result["missing"] = len(wanted)
+        result["missing"] = sum(len(values) if isinstance(values, list) else 1 for values in wanted.values())
         result["error"] = repr(exc)
     return result
 

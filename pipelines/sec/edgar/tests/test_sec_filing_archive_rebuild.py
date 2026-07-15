@@ -60,7 +60,7 @@ class SecFilingArchiveRebuildTests(unittest.TestCase):
         gated_stages = {
             "filing-entity-backfill", "missing-document-repair", "filing-parent-reconcile",
             "acceptance-submissions-enrichment", "acceptance-raw-metadata-repair",
-            "acceptance-archive-repair", "sec-bridge-rebuild",
+            "acceptance-archive-repair", "archive-identity-repair", "sec-bridge-rebuild",
         }
         for stage in gated_stages:
             self.assertIn("--execute", commands[stage], stage)

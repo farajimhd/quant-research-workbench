@@ -66,6 +66,7 @@ is deliberate:
 | `acceptance-submissions-enrichment` | Resolve missing accession metadata from bulk and direct submissions | Authoritative raw acceptance metadata |
 | `acceptance-raw-metadata-repair` | Replace date-only fallbacks with explicit UTC metadata | Corrected canonical event time |
 | `acceptance-archive-repair` | Use exact SGML acceptance values where submissions lack them | Corrected archive-backed event time |
+| `archive-identity-repair` | Rekey existing document/text rows stored under a non-primary entity CIK | Verified subject-company document lineage |
 | `archive-identity-audit` | Compare canonical identity with embedded archive identity | Explicit identity findings |
 | `xbrl-companyfacts-catchup` | Fill recent or missing XBRL from companyfacts | Canonical XBRL rows |
 | `xbrl-integrity-repair` | Repair XBRL keys and relationships | Consistent XBRL graph |
@@ -87,9 +88,10 @@ post-rebuild reconciliation without reprocessing the entire text corpus:
 3. Reconcile filing parents.
 4. Enrich unresolved acceptance metadata from submissions.
 5. Apply exact acceptance timestamp repairs from submissions and archives.
-6. Audit archive identity.
-7. Rebuild the SEC bridge and XBRL context.
-8. Run the fail-fast integrity audit.
+6. Repair document/text rows stored under a non-primary SGML entity CIK.
+7. Audit archive identity.
+8. Rebuild the SEC bridge and XBRL context.
+9. Run the fail-fast integrity audit.
 
 Write permission is an explicit per-stage contract. A stage that mutates data
 must receive `--execute`; filenames are not used to infer whether a stage is
@@ -206,6 +208,7 @@ is larger than a row-group target. This replaced unbounded serial JSON staging.
 | Defect | Impact | Remedy |
 | --- | --- | --- |
 | Accession prefix was treated as issuer CIK | Filings could attach to the submitter instead of the subject company | Parse SGML entity blocks and submissions membership into `sec_filing_entity_v3`; never infer issuer from accession text |
+| Existing Form 144 documents remained keyed to the reporting person after entity backfill | Source and rendered text could map to an insider instead of the subject security | Reparse only audited mismatched members, verify replacement subject-CIK lineage, invalidate stale model rows, and delete the old document key last |
 | Submissions relationships were materialized as dependency-free filing parents | Canonical filing counts and relationships drifted | Keep submissions as accession-to-CIK relationships and remove parent rows without document or source authority |
 | Filing parents existed without documents | Missing text was indistinguishable from metadata-only filings | Build archive occurrence inventory, classify the reason, and repair only occurrences that prove documents exist |
 | Duplicate archive occurrences were resolved by insert time | Worker timing selected the canonical revision | Store deterministic source lineage and use `source_revision_rank` for current-row selection |
@@ -269,9 +272,10 @@ The following items must not be mistaken for completed remediation:
 2. **Rendered text statistics:** source and rendered length distributions,
    compression ratios, content-type distributions, and largest-document audits
    are still required before choosing document concatenation or chunk policy.
-3. **Finalizer acceptance:** the currently running finalizer is not accepted
-   until its logs and database audit show zero source-repairable timestamps,
-   zero archive-backed missing documents, and no source/rendered lineage errors.
+3. **Finalizer acceptance:** the finalizer is not accepted until archive identity
+   repair and the remaining stages complete, and its database audit shows zero
+   source-repairable timestamps, zero archive-backed missing documents, and no
+   source/rendered lineage errors.
 4. **Embedding rebuild:** v3 tokens and embeddings must be regenerated only
    after the renderer and timestamp audits are accepted.
 

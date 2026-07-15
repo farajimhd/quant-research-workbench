@@ -16,6 +16,7 @@ from unittest import mock
 from pipelines.market_sip.events import clickhouse_build_text_tokens as tokens
 from pipelines.sec.edgar import sec_acceptance_raw_metadata_repair as acceptance_repair
 from pipelines.sec.edgar import sec_archive_identity_audit as archive_identity
+from pipelines.sec.edgar import sec_archive_identity_repair as identity_repair
 from pipelines.sec.edgar import sec_acceptance_fragment_fill as acceptance_fragment
 from pipelines.sec.edgar import sec_acceptance_backfill_build as acceptance_build
 from pipelines.sec.edgar import sec_bulk_clickhouse_ingest as bulk_ingest
@@ -83,6 +84,8 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
         self.assertIn("filing-parent-reconcile", commands)
         self.assertIn("--execute", commands["filing-parent-reconcile"])
         self.assertIn("archive-identity-audit", commands)
+        self.assertIn("archive-identity-repair", commands)
+        self.assertIn("--execute", commands["archive-identity-repair"])
         stage_index = commands["bulk-canonicalize"].index("--stages") + 1
         self.assertEqual(commands["bulk-canonicalize"][stage_index], "xbrl")
         repair = commands["acceptance-raw-metadata-repair"]
@@ -264,15 +267,74 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
             result = archive_identity.audit_archive(
                 str(archive_path),
                 {
-                    "0002143285-26-000002.nc": {
+                    "0002143285-26-000002.nc": [{
                         "cik": "0000766421",
                         "accession_number": "0002143285-26-000002",
-                    }
+                    }]
                 },
             )
 
         self.assertEqual(result["matched"], 1)
         self.assertEqual(result["mismatched"], 0)
+
+    def test_archive_identity_audit_keeps_all_stored_ciks_for_one_member(self) -> None:
+        raw = b"""<SEC-DOCUMENT>0002000333-23-000002.txt
+<SEC-HEADER><ACCESSION-NUMBER>0002000333-23-000002
+<ISSUER><COMPANY-DATA><CIK>0001386278
+</COMPANY-DATA></ISSUER></SEC-HEADER>
+<DOCUMENT><TYPE>144<SEQUENCE>1<FILENAME>form144.xml<TEXT>x</TEXT></DOCUMENT>
+"""
+        with tempfile.TemporaryDirectory() as temp_root:
+            archive_path = Path(temp_root) / "sample.nc.tar.gz"
+            source_path = Path(temp_root) / "sample.nc"
+            source_path.write_bytes(raw)
+            with tarfile.open(archive_path, "w:gz") as archive:
+                archive.add(source_path, arcname="./0002000333-23-000002.nc")
+            result = archive_identity.audit_archive(
+                str(archive_path),
+                {
+                    "0002000333-23-000002.nc": [
+                        {"cik": "0001386278", "accession_number": "0002000333-23-000002"},
+                        {"cik": "0002000333", "accession_number": "0002000333-23-000002"},
+                    ]
+                },
+            )
+
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(result["mismatched"], 1)
+        self.assertEqual(result["mismatches"][0]["expected_document_count"], 1)
+
+    def test_identity_repair_deletes_document_key_last(self) -> None:
+        self.assertEqual(identity_repair.DOCUMENT_TABLES_CHILD_FIRST[-1], "sec_filing_document_v3")
+        self.assertEqual(
+            identity_repair.identity_predicate("0002000333", "0002000333-23-000002"),
+            "cik='0002000333' AND accession_number='0002000333-23-000002'",
+        )
+
+    def test_identity_repair_verifies_synchronous_deletion(self) -> None:
+        statements: list[str] = []
+
+        class FakeClient:
+            deleted = False
+
+            def execute(self, sql: str) -> str:
+                statements.append(sql)
+                if sql.startswith("ALTER TABLE"):
+                    self.deleted = True
+                    return ""
+                return "0\n" if self.deleted else "2\n"
+
+        deleted = identity_repair.delete_and_verify(
+            FakeClient(),
+            "q_live",
+            "sec_filing_document_v3",
+            "cik='old' AND accession_number='accession'",
+            2,
+        )
+
+        self.assertEqual(deleted, 2)
+        self.assertIn("SETTINGS mutations_sync=2", statements[1])
+        self.assertTrue(statements[2].startswith("SELECT count()"))
 
     def test_archive_identity_table_probe_uses_string_literals(self) -> None:
         statements: list[str] = []
