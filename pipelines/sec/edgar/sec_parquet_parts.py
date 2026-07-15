@@ -142,6 +142,7 @@ class ParquetShardWriter:
         name = f"{self.filename_prefix}_{self._file_index:02d}.parquet"
         self._final_path = self.output_directory / name
         self._temporary_path = self._final_path.with_suffix(".parquet.tmp")
+        self.output_directory.mkdir(parents=True, exist_ok=True)
         self._temporary_path.unlink(missing_ok=True)
         dictionary_columns = sorted(DICTIONARY_COLUMNS.intersection(self.columns))
         statistics_columns = [column for column in self.columns if column not in WIDE_TEXT_COLUMNS]

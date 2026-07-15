@@ -21,7 +21,7 @@ from pipelines.sec.edgar import sec_archive_identity_audit as identity_audit  # 
 from pipelines.sec.edgar import sec_filing_text_clickhouse_file_ingest as file_ingest  # noqa: E402
 from pipelines.sec.edgar import sec_filing_text_extract_parts as extractor  # noqa: E402
 from pipelines.sec.edgar.sec_filing_archive_rebuild import build_and_preflight_parts  # noqa: E402
-from pipelines.sec.edgar.sec_missing_document_repair import cleanup_parts  # noqa: E402
+from pipelines.sec.edgar.sec_missing_document_repair import cleanup_parts, prune_empty_part_directories  # noqa: E402
 from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import ensure_sec_write_database  # noqa: E402
 from research.mlops.clickhouse import (  # noqa: E402
     ClickHouseHttpClient,
@@ -215,6 +215,7 @@ def extract_and_insert(
             for future in futures:
                 future.cancel()
             raise
+    prune_empty_part_directories(parts_root)
     return totals
 
 

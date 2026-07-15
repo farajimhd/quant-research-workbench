@@ -18,6 +18,7 @@ from pipelines.sec.edgar import sec_filing_archive_rebuild as rebuild
 from pipelines.sec.edgar import sec_filing_text_clickhouse_file_ingest as ingest
 from pipelines.sec.edgar import sec_filing_text_extract_parts as extractor
 from pipelines.sec.edgar import sec_historical_gap_fill as historical
+from pipelines.sec.edgar import sec_missing_document_repair as missing_document_repair
 from pipelines.sec.edgar import sec_text_v3_schema as text_schema
 from pipelines.sec.edgar.sec_parquet_parts import (
     ParquetShardWriter,
@@ -253,6 +254,44 @@ class SecFilingArchiveRebuildTests(unittest.TestCase):
                 self.assertEqual(metadata["rows"], 1)
                 actual.extend(pq.read_table(part["path"], columns=["source_text"]).column("source_text").to_pylist())
             self.assertEqual(actual, expected)
+
+    def test_parquet_writer_reasserts_output_directory_when_opening_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_directory = Path(temp_dir) / "shared-dataset"
+            writer = ParquetShardWriter(
+                dataset_name="document",
+                target_table="sec_filing_document_v3",
+                output_directory=output_directory,
+                filename_prefix="sample",
+                columns=["document_id"],
+                archive_index=1,
+                row_group_bytes=1024,
+                file_bytes=1024,
+            )
+            output_directory.rmdir()
+            writer.append({"document_id": "doc"})
+
+            parts = writer.close()
+
+            self.assertEqual(len(parts), 1)
+            self.assertTrue(Path(parts[0]["path"]).exists())
+
+    def test_worker_cleanup_keeps_shared_directory_until_pool_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            parts_root = Path(temp_dir) / "parts"
+            dataset_directory = parts_root / "sec_filing_v3_parts"
+            dataset_directory.mkdir(parents=True)
+            part_path = dataset_directory / "worker-1.parquet"
+            part_path.write_bytes(b"part")
+
+            missing_document_repair.cleanup_parts({"part_files": [{"path": str(part_path)}]})
+
+            self.assertFalse(part_path.exists())
+            self.assertTrue(dataset_directory.exists())
+
+            missing_document_repair.prune_empty_part_directories(parts_root)
+
+            self.assertFalse(dataset_directory.exists())
 
     def test_parquet_schema_uses_canonical_sec_lineage_and_inventory_types(self) -> None:
         expected_types = {

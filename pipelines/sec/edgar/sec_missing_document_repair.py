@@ -101,6 +101,7 @@ def main() -> int:
             for future in futures:
                 future.cancel()
             raise
+    prune_empty_part_directories(parts_root)
     after = classify_missing_parents(client, args.database)
     if int(after["archive_backed_repairable"]):
         raise RuntimeError(f"archive-backed document repair incomplete: {after}")
@@ -207,10 +208,14 @@ def ingest_namespace(args: argparse.Namespace) -> SimpleNamespace:
 def cleanup_parts(result: dict[str, Any]) -> None:
     for item in result.get("part_files", []):
         path = Path(item["path"])
-        if path.exists():
-            path.unlink()
-    for directory in {Path(item["path"]).parent for item in result.get("part_files", [])}:
-        if directory.exists() and not any(directory.iterdir()):
+        path.unlink(missing_ok=True)
+
+
+def prune_empty_part_directories(parts_root: Path) -> None:
+    if not parts_root.exists():
+        return
+    for directory in parts_root.iterdir():
+        if directory.is_dir() and not any(directory.iterdir()):
             directory.rmdir()
 
 
