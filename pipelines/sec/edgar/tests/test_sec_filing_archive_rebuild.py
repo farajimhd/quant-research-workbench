@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import io
 import json
+import sys
 import tempfile
 import tarfile
 import unittest
@@ -44,6 +45,27 @@ class SecFilingArchiveRebuildTests(unittest.TestCase):
 
         self.assertIn("GROUP BY accession_number, source_kind", view_statement)
         self.assertIn("USING (accession_number, source_kind, source_version_key)", view_statement)
+        self.assertIn("FROM q_live.sec_filing_archive_accession_v3 AS a FINAL", view_statement)
+        self.assertNotIn("FINAL AS", view_statement)
+
+    def test_finalize_execute_is_propagated_by_explicit_stage_contract(self) -> None:
+        with mock.patch.object(sys, "argv", ["sec_historical_gap_fill.py", "--finalize-only", "--execute"]):
+            args = historical.parse_args()
+        commands = {
+            command.stage: command.command
+            for command in historical.build_commands(args, Path("C:/tmp/sec-finalizer-tests"))
+            if command.stage in historical.FINALIZE_ONLY_STAGES
+        }
+
+        gated_stages = {
+            "filing-entity-backfill", "missing-document-repair", "filing-parent-reconcile",
+            "acceptance-submissions-enrichment", "acceptance-raw-metadata-repair",
+            "acceptance-archive-repair", "sec-bridge-rebuild",
+        }
+        for stage in gated_stages:
+            self.assertIn("--execute", commands[stage], stage)
+        for stage in {"archive-identity-audit", "sec-context-build", "integrity-audit"}:
+            self.assertNotIn("--execute", commands[stage], stage)
 
     def test_part_checkpoints_only_apply_to_current_table_generation(self) -> None:
         class FakeClient:
@@ -523,7 +545,7 @@ class SecFilingArchiveRebuildTests(unittest.TestCase):
             execute=True,
         )
 
-        command = historical.add_execute_flag(["python", "sec_filing_archive_rebuild.py"], args)
+        command = historical.add_required_execute_flag(["python", "sec_filing_archive_rebuild.py"], args)
 
         self.assertEqual(command[-1], "--execute")
 

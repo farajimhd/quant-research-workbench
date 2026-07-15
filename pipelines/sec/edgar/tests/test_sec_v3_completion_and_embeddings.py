@@ -67,9 +67,9 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
     def test_acceptance_repair_executes_only_in_execute_mode(self) -> None:
         command = ["python", "sec_acceptance_raw_metadata_repair.py"]
 
-        self.assertEqual(historical.add_execute_flag(command, SimpleNamespace(execute=False)), command)
+        self.assertEqual(historical.add_required_execute_flag(command, SimpleNamespace(execute=False)), command)
         self.assertEqual(
-            historical.add_execute_flag(command, SimpleNamespace(execute=True)),
+            historical.add_required_execute_flag(command, SimpleNamespace(execute=True)),
             [*command, "--execute"],
         )
 

@@ -514,7 +514,7 @@ def create_entity_current_view(client: ClickHouseHttpClient, *, target_database:
         f"""
         CREATE VIEW IF NOT EXISTS {qi(target_database)}.{qi(ENTITY_CURRENT_VIEW)} AS
         SELECT e.*
-        FROM {qi(target_database)}.{qi(ENTITY_TABLE)} FINAL AS e
+        FROM {qi(target_database)}.{qi(ENTITY_TABLE)} AS e FINAL
         INNER JOIN (
             SELECT accession_number,
                    argMax(source_version_key, tuple(source_revision_rank, source_version_key)) AS source_version_key
@@ -556,7 +556,7 @@ def create_archive_accession_current_view(client: ClickHouseHttpClient, *, targe
         f"""
         CREATE VIEW IF NOT EXISTS {qi(target_database)}.{qi(ARCHIVE_ACCESSION_CURRENT_VIEW)} AS
         SELECT a.*
-        FROM {qi(target_database)}.{qi(ARCHIVE_ACCESSION_TABLE)} FINAL AS a
+        FROM {qi(target_database)}.{qi(ARCHIVE_ACCESSION_TABLE)} AS a FINAL
         INNER JOIN (
             SELECT accession_number,
                    source_kind,

@@ -503,7 +503,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
     return [
         StageCommand(
             "bulk-download",
-            add_execute_flag(
+            add_runtime_flags(
                 [
                     args.python_executable,
                     script("pipelines/sec/edgar/sec_initial_fill_download.py"),
@@ -538,7 +538,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
         ),
         StageCommand(
             "bulk-ingest",
-            add_execute_flag(
+            add_runtime_flags(
                 [
                     args.python_executable,
                     script("pipelines/sec/edgar/sec_bulk_clickhouse_ingest.py"),
@@ -574,7 +574,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
         ),
         StageCommand(
             "bulk-canonicalize",
-            add_execute_flag(
+            add_required_execute_flag(
                 [
                     args.python_executable,
                     script("pipelines/sec/edgar/sec_bulk_to_canonical.py"),
@@ -599,7 +599,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
         ),
         StageCommand(
             "daily-archive-download",
-            add_execute_flag(
+            add_runtime_flags(
                 [
                     args.python_executable,
                     script("pipelines/sec/edgar/sec_daily_feed_archive_download.py"),
@@ -671,7 +671,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
         ),
         StageCommand(
             "filing-entity-backfill",
-            add_execute_flag(
+            add_required_execute_flag(
                 [
                     args.python_executable,
                     script("pipelines/sec/edgar/sec_filing_entity_backfill.py"),
@@ -696,7 +696,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
         ),
         StageCommand(
             "archive-text-rebuild",
-            add_execute_flag(
+            add_required_execute_flag(
                 [
                     args.python_executable,
                     script("pipelines/sec/edgar/sec_filing_archive_rebuild.py"),
@@ -753,7 +753,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
         ),
         StageCommand(
             "sec-revision-reconcile",
-            add_execute_flag(
+            add_required_execute_flag(
                 [
                     args.python_executable,
                     script("pipelines/sec/edgar/sec_revision_audit_repair.py"),
@@ -775,7 +775,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
         ),
         StageCommand(
             "missing-document-repair",
-            add_execute_flag(
+            add_required_execute_flag(
                 [
                     args.python_executable,
                     script("pipelines/sec/edgar/sec_missing_document_repair.py"),
@@ -802,7 +802,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
         ),
         StageCommand(
             "filing-parent-reconcile",
-            add_execute_flag(
+            add_required_execute_flag(
                 [
                     args.python_executable,
                     script("pipelines/sec/edgar/sec_filing_parent_reconcile.py"),
@@ -817,7 +817,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
         ),
         StageCommand(
             "acceptance-submissions-enrichment",
-            add_execute_flag(
+            add_required_execute_flag(
                 [
                     args.python_executable,
                     script("pipelines/sec/edgar/sec_acceptance_fragment_fill.py"),
@@ -848,7 +848,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
         ),
         StageCommand(
             "acceptance-raw-metadata-repair",
-            add_execute_flag(
+            add_required_execute_flag(
                 [
                     args.python_executable,
                     script("pipelines/sec/edgar/sec_acceptance_raw_metadata_repair.py"),
@@ -871,7 +871,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
         ),
         StageCommand(
             "acceptance-archive-repair",
-            add_execute_flag(
+            add_required_execute_flag(
                 [
                     args.python_executable,
                     script("pipelines/sec/edgar/sec_acceptance_archive_repair.py"),
@@ -914,7 +914,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
         ),
         StageCommand(
             "xbrl-companyfacts-catchup",
-            add_execute_flag(
+            add_required_execute_flag(
                 [
                     args.python_executable,
                     script("pipelines/sec/edgar/sec_xbrl_companyfacts_catchup.py"),
@@ -939,7 +939,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
         ),
         StageCommand(
             "xbrl-integrity-repair",
-            add_execute_flag(
+            add_required_execute_flag(
                 [
                     args.python_executable,
                     script("pipelines/sec/edgar/sec_xbrl_integrity_repair.py"),
@@ -960,7 +960,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
         ),
         StageCommand(
             "sec-bridge-rebuild",
-            add_execute_flag(
+            add_required_execute_flag(
                 [
                     args.python_executable,
                     script("pipelines/reference_data/migration/step_06_build_q_live_bridge_features.py"),
@@ -984,7 +984,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
         ),
         StageCommand(
             "sec-context-build",
-            add_execute_flag(
+            add_runtime_flags(
                 [
                     args.python_executable,
                     script("pipelines/market_sip/events/clickhouse_build_sec_context.py"),
@@ -1051,7 +1051,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
     ]
 
 
-def add_execute_flag(command: list[str], args: argparse.Namespace, *, dry_run_flag: str = "") -> list[str]:
+def add_runtime_flags(command: list[str], args: argparse.Namespace, *, dry_run_flag: str = "") -> list[str]:
     out = list(command)
     command_text = " ".join(out)
     if "sec_initial_fill_download.py" in command_text:
@@ -1078,20 +1078,16 @@ def add_execute_flag(command: list[str], args: argparse.Namespace, *, dry_run_fl
             out.extend(["--max-filings-per-archive", str(args.max_filings_per_archive)])
     if "sec_filing_text_clickhouse_file_ingest.py" in command_text and args.text_limit_parts:
         out.extend(["--limit-parts", str(args.text_limit_parts)])
-    if args.execute:
-        if (
-            "sec_bulk_to_canonical.py" in command_text
-            or "sec_filing_parent_reconcile.py" in command_text
-            or "sec_xbrl_companyfacts_catchup.py" in command_text
-            or "sec_xbrl_integrity_repair.py" in command_text
-            or "sec_acceptance_fragment_fill.py" in command_text
-            or "sec_acceptance_raw_metadata_repair.py" in command_text
-            or "step_06_build_q_live_bridge_features.py" in command_text
-            or "sec_filing_archive_rebuild.py" in command_text
-        ):
-            out.append("--execute")
-    elif dry_run_flag:
+    if not args.execute and dry_run_flag:
         out.append(dry_run_flag)
+    return out
+
+
+def add_required_execute_flag(command: list[str], args: argparse.Namespace) -> list[str]:
+    """Build a command whose component script explicitly gates writes behind --execute."""
+    out = add_runtime_flags(command, args)
+    if args.execute:
+        out.append("--execute")
     return out
 
 

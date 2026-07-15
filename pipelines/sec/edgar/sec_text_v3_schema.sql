@@ -68,7 +68,7 @@ SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_P
 
 CREATE VIEW IF NOT EXISTS q_live.sec_filing_entity_current_v3 AS
 SELECT e.*
-FROM q_live.sec_filing_entity_v3 FINAL AS e
+FROM q_live.sec_filing_entity_v3 AS e FINAL
 INNER JOIN
 (
     SELECT accession_number,
@@ -110,7 +110,7 @@ SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_P
 
 CREATE VIEW IF NOT EXISTS q_live.sec_filing_archive_accession_current_v3 AS
 SELECT a.*
-FROM q_live.sec_filing_archive_accession_v3 FINAL AS a
+FROM q_live.sec_filing_archive_accession_v3 AS a FINAL
 INNER JOIN
 (
     SELECT accession_number,
