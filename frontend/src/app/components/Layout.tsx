@@ -168,7 +168,7 @@ export function Layout({
             ))}
           </nav>
         </aside>
-        <main className="main">
+        <main className={compactContent ? "main compact-main" : "main"}>
           <div className={compactContent ? "shell-content-inner compact-content" : "shell-content-inner"}>{children}</div>
         </main>
       </div>

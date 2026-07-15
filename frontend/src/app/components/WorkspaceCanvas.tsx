@@ -69,6 +69,7 @@ type WorkspaceWindowProps = {
   titleBarActions?: ReactNode;
   linkLabel?: string;
   meta?: WorkspaceWindowMeta;
+  fullscreenRightInset?: number | string;
   onClose: (id: WorkspaceWindowId) => void;
   onFocus: (id: WorkspaceWindowId) => void;
   onLayoutChange: (id: WorkspaceWindowId, patch: Partial<WorkspaceWindowLayout>) => void;
@@ -96,6 +97,7 @@ export function WorkspaceWindow({
   titleBarActions,
   linkLabel,
   meta,
+  fullscreenRightInset = 0,
   onClose,
   onFocus,
   onLayoutChange,
@@ -107,7 +109,7 @@ export function WorkspaceWindow({
   const edge = compact ? 0 : 12;
   const minimizedHeight = compact ? 24 : 44;
   const geometry = layout.fullscreen
-    ? { height: `calc(100% - ${edge * 2}px)`, left: edge, top: edge, width: `calc(100% - ${edge * 2}px)`, zIndex: 1000 + layout.z }
+    ? { bottom: edge, left: edge, right: fullscreenRightInset || edge, top: edge, zIndex: 1000 + layout.z }
     : { height: layout.minimized ? minimizedHeight : layout.h, left: layout.x, top: layout.y, width: layout.w, zIndex: layout.z };
   const style = {
     ...geometry,

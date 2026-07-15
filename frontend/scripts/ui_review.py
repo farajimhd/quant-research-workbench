@@ -243,6 +243,8 @@ def validate_canvas_interactions(
             issues.append("Canvas still renders the duplicate Main workspace context row")
         if page.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth"):
             issues.append("Canvas page leaks horizontal scrolling to the document")
+        if page.evaluate("document.documentElement.scrollHeight > document.documentElement.clientHeight + 1"):
+            issues.append("Canvas page leaks vertical scrolling to the document")
         canvas = page.locator("[data-workspace-canvas]")
         if canvas.evaluate("element => getComputedStyle(element).overflowX") not in ("auto", "scroll"):
             issues.append("Canvas is not its own horizontal scrolling surface")
@@ -367,6 +369,45 @@ def validate_canvas_interactions(
             issues.append("fullscreen exit does not use the inward-arrow icon")
         if chart.get_by_role("button", name="Minimize Chart").locator(".lucide-minus").count() != 1:
             issues.append("fullscreen and title-bar minimize actions are visually ambiguous")
+        fullscreen_geometry = page.evaluate("""() => {
+            const canvas = document.querySelector('[data-workspace-canvas]');
+            const chart = document.querySelector('[data-window-kind="chart"]');
+            if (!canvas || !chart) return null;
+            const canvasRect = canvas.getBoundingClientRect();
+            const chartRect = chart.getBoundingClientRect();
+            return {
+                canvasBottom: canvasRect.bottom,
+                canvasOverflow: getComputedStyle(canvas).overflow,
+                chartBottom: chartRect.bottom,
+                documentHeight: document.documentElement.scrollHeight,
+                viewportHeight: document.documentElement.clientHeight,
+            };
+        }""")
+        if not fullscreen_geometry:
+            issues.append("fullscreen geometry is unavailable")
+        else:
+            if fullscreen_geometry["chartBottom"] > fullscreen_geometry["canvasBottom"] + 1:
+                issues.append("fullscreen Chart extends below the Canvas viewport")
+            if fullscreen_geometry["canvasOverflow"] != "hidden":
+                issues.append("fullscreen Canvas still exposes scrollbars")
+            if fullscreen_geometry["documentHeight"] > fullscreen_geometry["viewportHeight"] + 1:
+                issues.append("fullscreen Chart makes the document scroll")
+        if interaction_screenshot:
+            page.screenshot(path=str(interaction_screenshot.with_name(interaction_screenshot.stem + "__fullscreen.png")), full_page=True)
+        page.get_by_role("button", name="Canvas management", exact=True).click()
+        fullscreen_management = page.get_by_role("complementary", name="Canvas management")
+        fullscreen_management.wait_for(state="visible", timeout=5000)
+        sidebar_geometry = page.evaluate("""() => {
+            const sidebar = document.querySelector('.workspace-management-sidebar');
+            const chart = document.querySelector('[data-window-kind="chart"]');
+            if (!sidebar || !chart) return null;
+            const sidebarRect = sidebar.getBoundingClientRect();
+            const chartRect = chart.getBoundingClientRect();
+            return { chartRight: chartRect.right, sidebarLeft: sidebarRect.left };
+        }""")
+        if not sidebar_geometry or sidebar_geometry["chartRight"] > sidebar_geometry["sidebarLeft"] + 1:
+            issues.append("fullscreen Chart does not reserve the right management sidebar")
+        fullscreen_management.get_by_role("button", name="Close canvas management").click()
         chart.get_by_role("button", name="Exit fullscreen Chart").click()
         chart.get_by_role("button", name="Reset Chart to its default layout").click()
 

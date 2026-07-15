@@ -422,6 +422,12 @@ button {
   overflow-x: hidden;
 }
 
+.main.compact-main {
+  height: calc(var(--app-zoomed-viewport-height) - 64px);
+  min-height: 0;
+  overflow: hidden;
+}
+
 .shell-content-inner {
   width: 100%;
   min-height: calc(var(--app-zoomed-viewport-height) - 64px);
@@ -16374,6 +16380,14 @@ button {
   scrollbar-width: thin;
 }
 
+.session-plot-region {
+  bottom: 0;
+  left: 0;
+  overflow: hidden;
+  position: absolute;
+  top: 0;
+}
+
 /* The Canvas chart is a dense trading surface; its container supplies the frame. */
 .canvas-config-page .workspace-window[data-window-kind="chart"] .chart-shell {
   height: 100%;
@@ -18825,6 +18839,12 @@ button {
   min-height: 860px;
 }
 
+.trading-workspace-plane {
+  min-width: 100%;
+  position: relative;
+  width: 100%;
+}
+
 .trading-workspace-watermark {
   color: color-mix(in oklab, var(--muted-foreground) 28%, transparent);
   display: grid;
@@ -20548,9 +20568,18 @@ button {
 /* Compact linked canvas system */
 
 .shell-content-inner.compact-content {
+  height: 100%;
   max-width: 100%;
+  min-height: 0;
+  overflow: hidden;
   overflow-x: hidden;
   padding: 2px;
+}
+
+.shell-content-inner.compact-content > .page-cache-panel.active {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .focus-app-shell {
@@ -20568,6 +20597,8 @@ button {
 
 .canvas-config-page {
   gap: 2px;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
   max-width: 100%;
   min-width: 0;
   overflow: hidden;
@@ -20584,6 +20615,10 @@ button {
   grid-template-rows: auto minmax(0, 1fr);
   height: 100%;
   min-height: 0;
+}
+
+.canvas-config-page .trading-workspace-shell[data-command-bar-visible="false"] {
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .canvas-focus-page .trading-workspace-shell[data-library-open="true"] {
@@ -20696,8 +20731,10 @@ button {
 
 .canvas-config-page .trading-workspace-shell {
   gap: 2px;
+  height: 100%;
   isolation: isolate;
   max-width: 100%;
+  min-height: 0;
   min-width: 0;
   overflow-x: hidden;
   position: relative;
@@ -20803,10 +20840,26 @@ button {
 
 .canvas-config-page .trading-workspace-canvas {
   border-radius: 0;
-  min-height: 640px;
+  height: 100%;
+  min-height: 0;
   max-width: 100%;
   overflow: auto;
   z-index: 0;
+}
+
+.canvas-config-page .trading-workspace-canvas[data-has-fullscreen="true"] {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.canvas-config-page .trading-workspace-shell[data-management-open="true"] .workspace-management-scrim {
+  right: min(360px, 92%);
+}
+
+.canvas-config-page .trading-workspace-shell[data-management-open="true"] .workspace-management-sidebar {
+  bottom: 0;
+  max-height: none;
+  z-index: 2000;
 }
 
 .workspace-management-scrim {

@@ -13,7 +13,7 @@ import {
   ShoppingCart,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import type { CanvasWorkspaceState } from "../canvasWorkspace";
 import {
@@ -110,6 +110,7 @@ export function TradingWorkspace({
   const [openIds, setOpenIds] = useState<WorkspaceContainerId[]>(initial.openIds);
   const [layouts, setLayouts] = useState<Record<string, WorkspaceWindowLayout>>(initial.layouts);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const canvasRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     const state = { layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts, openIds };
@@ -180,10 +181,16 @@ export function TradingWorkspace({
     setOpenIds((current) => current.filter((candidate) => candidate !== id));
   }
 
+  const hasFullscreen = openIds.some((id) => Boolean(layouts[id]?.fullscreen));
   const minHeight = workspaceMinHeight(openIds, layouts, compact);
 
+  useEffect(() => {
+    if (!hasFullscreen) return;
+    canvasRef.current?.scrollTo({ left: 0, top: 0 });
+  }, [hasFullscreen]);
+
   return (
-    <div className="trading-workspace-shell" data-library-open={libraryOpen ? "true" : "false"} data-workspace-mode={mode}>
+    <div className="trading-workspace-shell" data-command-bar-visible={commandBarVisible ? "true" : "false"} data-library-open={libraryOpen ? "true" : "false"} data-management-open={managementOpen ? "true" : "false"} data-workspace-mode={mode}>
       {commandBarVisible ? <section className="trading-workspace-command" aria-label="Workspace context and controls">
         <div className="trading-workspace-identity">
           <span className="trading-mode-badge" data-mode={mode}>{workspaceBadge ?? modeLabel(mode)}</span>
@@ -225,42 +232,50 @@ export function TradingWorkspace({
         </aside>
       </> : null}
 
-      <section className="trading-workspace-canvas live-workspace" data-workspace-canvas style={{ minHeight }}>
-        <div className="trading-workspace-watermark" aria-hidden="true">
-          <span>{workspaceBadge ?? modeLabel(mode)}</span>
-          <small>container workspace</small>
+      <section
+        className="trading-workspace-canvas live-workspace"
+        data-has-fullscreen={hasFullscreen ? "true" : "false"}
+        data-workspace-canvas
+        ref={canvasRef}
+      >
+        <div className="trading-workspace-plane" style={{ minHeight: hasFullscreen ? "100%" : minHeight }}>
+          <div className="trading-workspace-watermark" aria-hidden="true">
+            <span>{workspaceBadge ?? modeLabel(mode)}</span>
+            <small>container workspace</small>
+          </div>
+          {openIds.map((id) => {
+            const definition = definitionById.get(id);
+            const layout = layouts[id];
+            if (!definition || !layout) return null;
+            const meta = metaForContainer?.(definition) ?? containerMeta(definition, mode, historicalSourceReady, runStatus);
+            return (
+              <WorkspaceWindow
+                canPopOut={canPopOut}
+                canvasTargets={canvasTargets}
+                compact={compact}
+                icon={containerIcon(id)}
+                id={id}
+                key={id}
+                kind={id}
+                layout={layout}
+                linkColor={linkColorForContainer?.(definition)}
+                titleBarActions={titleBarActionsForContainer?.(definition)}
+                linkLabel={linkLabelForContainer?.(definition)}
+                meta={meta}
+                fullscreenRightInset={managementOpen ? "min(360px, 92%)" : 0}
+                onClose={() => setOpenIds((current) => current.filter((candidate) => candidate !== id))}
+                onFocus={() => focusContainer(id)}
+                onLayoutChange={updateLayout}
+                onMoveToCanvas={(windowId, targetCanvasId) => moveContainer(windowId as WorkspaceContainerId, targetCanvasId)}
+                onPopOut={() => onPopOutContainer?.(id, layout)}
+                onReset={() => resetContainer(id)}
+                title={definition.title}
+              >
+                {renderContainer ? renderContainer(definition) : <ContainerStandby definition={definition} meta={meta} mode={mode} />}
+              </WorkspaceWindow>
+            );
+          })}
         </div>
-        {openIds.map((id) => {
-          const definition = definitionById.get(id);
-          const layout = layouts[id];
-          if (!definition || !layout) return null;
-          const meta = metaForContainer?.(definition) ?? containerMeta(definition, mode, historicalSourceReady, runStatus);
-          return (
-            <WorkspaceWindow
-              canPopOut={canPopOut}
-              canvasTargets={canvasTargets}
-              compact={compact}
-              icon={containerIcon(id)}
-              id={id}
-              key={id}
-              kind={id}
-              layout={layout}
-              linkColor={linkColorForContainer?.(definition)}
-              titleBarActions={titleBarActionsForContainer?.(definition)}
-              linkLabel={linkLabelForContainer?.(definition)}
-              meta={meta}
-              onClose={() => setOpenIds((current) => current.filter((candidate) => candidate !== id))}
-              onFocus={() => focusContainer(id)}
-              onLayoutChange={updateLayout}
-              onMoveToCanvas={(windowId, targetCanvasId) => moveContainer(windowId as WorkspaceContainerId, targetCanvasId)}
-              onPopOut={() => onPopOutContainer?.(id, layout)}
-              onReset={() => resetContainer(id)}
-              title={definition.title}
-            >
-              {renderContainer ? renderContainer(definition) : <ContainerStandby definition={definition} meta={meta} mode={mode} />}
-            </WorkspaceWindow>
-          );
-        })}
       </section>
     </div>
   );

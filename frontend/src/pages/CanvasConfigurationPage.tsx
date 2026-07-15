@@ -93,6 +93,7 @@ type CanvasLiveChartState = {
 };
 
 type ContainerSettings = {
+  version: 2;
   chart: { showVolume: boolean; symbol: string; timeframe: CanvasLinkContext["timeframe"]; visibleIndicators: string[] };
   fills: { limit: number; showCommission: boolean };
   journal: { limit: number };
@@ -110,7 +111,8 @@ type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; tit
 
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const DEFAULT_SETTINGS: ContainerSettings = {
-  chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap"] },
+  version: 2,
+  chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd"] },
   fills: { limit: 5, showCommission: true },
   journal: { limit: 6 },
   news: { limit: 5, showTeaser: true },
@@ -824,7 +826,14 @@ function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscilla
   return INDICATOR_SERIES.filter((spec) => visible.has(spec.displayItemId) && (spec.pane === "price" ? "price" : "oscillator") === target).map((spec) => ({
     color: spec.color,
     column: spec.column,
-    data: rows.map((row) => ({ time: Date.parse(String(row.bar_start)) / 1000, value: Number(row[spec.column]) })).filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value)),
+    data: rows.map((row) => {
+      const value = Number(row[spec.column]);
+      return {
+        ...(spec.column === "macd_histogram" ? { color: value >= 0 ? "var(--success)" : "var(--danger)" } : {}),
+        time: Date.parse(String(row.bar_start)) / 1000,
+        value,
+      };
+    }).filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value)),
     displayItemId: spec.displayItemId,
     label: spec.label,
     lineWidth: 1,
@@ -876,13 +885,18 @@ function EmptyState({ label }: { label: string }) { return <div className="canva
 function readSettings(): ContainerSettings {
   try {
     const stored = JSON.parse(window.localStorage.getItem(CANVAS_SETTINGS_STORAGE_KEY) ?? "{}") as Partial<ContainerSettings>;
+    const storedIndicators = Array.isArray(stored.chart?.visibleIndicators) ? stored.chart.visibleIndicators : DEFAULT_SETTINGS.chart.visibleIndicators;
+    const visibleIndicators = stored.version === DEFAULT_SETTINGS.version || storedIndicators.includes("indicator.macd")
+      ? storedIndicators
+      : [...storedIndicators, "indicator.macd"];
     return {
       ...DEFAULT_SETTINGS,
       ...stored,
+      version: DEFAULT_SETTINGS.version,
       chart: {
         ...DEFAULT_SETTINGS.chart,
         ...(stored.chart ?? {}),
-        visibleIndicators: Array.isArray(stored.chart?.visibleIndicators) ? stored.chart.visibleIndicators : DEFAULT_SETTINGS.chart.visibleIndicators,
+        visibleIndicators,
       },
     };
   } catch {

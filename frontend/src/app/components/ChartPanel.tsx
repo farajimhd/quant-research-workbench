@@ -547,7 +547,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const candleSeries = priceChart.addCandlestickSeries({
       ...candleSeriesOptions(chartSettingsRef.current),
       autoscaleInfoProvider: padCandleAutoscale,
-      priceLineVisible: true
+      priceLineVisible: false
     });
     candleRef.current = candleSeries;
     const volume = priceChart.addHistogramSeries({ priceFormat: { type: "volume" }, priceScaleId: "", base: 0 });
@@ -637,7 +637,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const palette = readChartPalette();
     const priceChart = priceChartRef.current;
     if (priceChart && priceRef.current) {
-      priceChart.applyOptions(chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettingsRef.current, timeframe));
+      priceChart.applyOptions(chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettingsRef.current, timeframe, oscillatorPaneGroups.length === 0));
       candleRef.current?.applyOptions(candleSeriesOptions(chartSettingsRef.current));
       if (payloadRef.current && volumeRef.current) {
         volumeRef.current.setData(volumeDataForSettings(payloadRef.current, chartSettingsRef.current) as never);
@@ -645,7 +645,8 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     }
     oscillatorChartRefs.current.forEach((chart, key) => {
       const pane = oscillatorPaneRefs.current.get(key);
-      if (pane) chart.applyOptions(chartOptions(pane.clientWidth, pane.clientHeight, false, palette, chartSettingsRef.current, timeframe));
+      const paneIndex = oscillatorPaneGroups.findIndex((group) => group.key === key);
+      if (pane) chart.applyOptions(chartOptions(pane.clientWidth, pane.clientHeight, false, palette, chartSettingsRef.current, timeframe, paneIndex === oscillatorPaneGroups.length - 1));
     });
     drawCurrentRegions();
   }
@@ -699,12 +700,12 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     Array.from(oscillatorPaneRuntimesRef.current.keys()).forEach((key) => {
       if (!nextPaneKeys.has(key)) removeOscillatorPaneRuntime(key);
     });
-    groups.forEach((group) => {
+    groups.forEach((group, groupIndex) => {
       const pane = oscillatorPaneRefs.current.get(group.key);
       if (!pane) return;
       let runtime = oscillatorPaneRuntimesRef.current.get(group.key);
       if (!runtime) {
-        const chart = createChart(pane, chartOptions(pane.clientWidth, pane.clientHeight, false, readChartPalette(), chartSettingsRef.current, timeframe));
+        const chart = createChart(pane, chartOptions(pane.clientWidth, pane.clientHeight, false, readChartPalette(), chartSettingsRef.current, timeframe, groupIndex === groups.length - 1));
         runtime = {
           chart,
           primaryKey: "",
@@ -722,7 +723,12 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       }
       updateOscillatorPaneTimeline(runtime, chartTimelineData(payloadRef.current?.candles ?? [], timeframe));
       updateOscillatorPaneSeries(runtime, group.series);
+      runtime.chart.applyOptions(chartOptions(pane.clientWidth, pane.clientHeight, false, readChartPalette(), chartSettingsRef.current, timeframe, groupIndex === groups.length - 1));
     });
+    const price = priceRef.current;
+    if (price && priceChartRef.current) {
+      priceChartRef.current.applyOptions(chartOptions(price.clientWidth, price.clientHeight, false, readChartPalette(), chartSettingsRef.current, timeframe, groups.length === 0));
+    }
   }
 
   function updateOscillatorPaneTimeline(runtime: OscillatorPaneRuntime, timeline: CandleSeriesDatum[]) {
@@ -2400,7 +2406,10 @@ function resolveChartColor(color: string) {
 function seriesDataForSettings(series: ChartSeries, settings: Required<LegendSeriesSettings>) {
   if (!settings.visible) return [];
   if (series.style !== "histogram") return series.data;
-  if (!settings.color || settings.color === series.color) return series.data;
+  const defaultColor = defaultLegendSettings(series).color;
+  if (!settings.color || settings.color === defaultColor) {
+    return series.data.map((point) => ({ ...point, ...(point.color ? { color: resolveChartColor(point.color) } : {}) }));
+  }
   return series.data.map((point) => ({ ...point, color: settings.color }));
 }
 
@@ -2430,7 +2439,8 @@ function chartOptions(
   compact = false,
   palette: ChartPalette = readChartPalette(),
   settings: ChartAppearanceSettings = defaultChartAppearanceSettings,
-  timeframe = "1m"
+  timeframe = "1m",
+  showTimeScale = true
 ) {
   const timeframeSeconds = chartTimeframeSeconds(timeframe);
   const showSeconds = timeframeSeconds !== null && timeframeSeconds < 60;
@@ -2452,6 +2462,7 @@ function chartOptions(
       rightOffset: compact ? 1 : 2,
       barSpacing: compact ? Math.max(12, Math.round(settings.candleSize * 0.55)) : settings.candleSize,
       minBarSpacing: 0.2,
+      visible: showTimeScale,
       timeVisible: true,
       secondsVisible: showSeconds,
       tickMarkFormatter: (timeValue: Time) => formatMarketAxisTime(timeValue, timeframe)
@@ -2508,6 +2519,17 @@ const marketDateTimeFormatter = new Intl.DateTimeFormat("en-US", {
   hour12: false,
   minute: "2-digit",
   month: "short",
+  timeZone: "America/New_York",
+  year: "numeric"
+});
+
+const marketSecondDateTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  day: "2-digit",
+  hour: "2-digit",
+  hour12: false,
+  minute: "2-digit",
+  month: "short",
+  second: "2-digit",
   timeZone: "America/New_York",
   year: "numeric"
 });
@@ -2876,6 +2898,11 @@ function drawRegions(
 ) {
   if (!layer) return;
   layer.innerHTML = "";
+  const plotLayer = document.createElement("div");
+  plotLayer.className = "session-plot-region";
+  plotLayer.style.right = `${chart.priceScale("right").width()}px`;
+  plotLayer.style.bottom = `${chart.timeScale().height()}px`;
+  layer.appendChild(plotLayer);
   const barWidth = estimateBarWidth(chart, candles);
   const candleDuration = estimateCandleDuration(candles);
   regions.forEach((region) => {
@@ -2890,10 +2917,10 @@ function drawRegions(
     node.style.left = `${left}px`;
     node.style.width = `${width}px`;
     node.style.background = sessionRegionColor(region, settings);
-    layer.appendChild(node);
+    plotLayer.appendChild(node);
   });
   drawPriceZones(chart, priceSeries, layer, priceZones, candles, barWidth, candleDuration);
-  drawDaySeparators(chart, layer, candles, settings, barWidth);
+  drawDaySeparators(chart, plotLayer, candles, settings, barWidth);
   drawTradeAnnotations(chart, priceSeries, layer, tradeAnnotations, candles, barWidth);
   drawLiveEntryLine(chart, priceSeries, layer, candles, liveEntryLine);
 }
@@ -3313,6 +3340,7 @@ function formatMarketDateTime(timeValue: Time, timeframe = "1m") {
   const timestamp = new Date(timestampFromChartTime(timeValue) * 1000);
   const seconds = chartTimeframeSeconds(timeframe);
   if (seconds !== null && seconds < 1) return marketSubsecondDateTimeFormatter.format(timestamp);
+  if (seconds !== null && seconds < 60) return marketSecondDateTimeFormatter.format(timestamp);
   return marketDateTimeFormatter.format(timestamp);
 }
 
