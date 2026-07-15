@@ -219,11 +219,11 @@ estimated/configured bytes, hits, misses, builds, entries, and evictions.
 QMD Live:
 
 ```text
-GET /snapshot/family-bars/{ticker}?resolution=1m&family=trade&limit=1500
+GET /snapshot/family-bars/{ticker}?resolution=1m&family=trade&price_only=true&limit=1500
 GET /snapshot/condition-bars/{ticker}?resolution=1m&limit=1500
 GET /snapshot/macro-bars/{ticker}?timeframe=1d&limit=500
 GET /snapshot/product-cache
-WS  /stream/family-bars/{ticker}?resolution=1m&family=trade&emit=full_then_updates
+WS  /stream/family-bars/{ticker}?resolution=1m&family=trade&price_only=true&emit=full_then_updates
 WS  /stream/condition-bars/{ticker}?resolution=1m
 WS  /stream/macro-bars/{ticker}?timeframe=1d
 ```
@@ -240,6 +240,11 @@ GET /snapshot/macro-bars/{ticker}?start=...&end=...&as_of=...&timeframe=1d
 `/snapshot/chart-bars` is the browser history contract. `as_of` clamps the
 source horizon before aggregation, `before` is an exclusive fixed-bar cursor,
 and `has_more` plus `next_before` drive lazy backward paging inside one session.
+Live family-bar chart consumers set `price_only=true`. That projection filters
+size-only trade buckets before applying `limit`, so condition-excluded prints
+remain available in the canonical three-family cache without becoming zero-price
+candles or displacing valid price bars. QMD History applies the identical
+projection in `/snapshot/chart-bars`.
 The response supports the full production intraday grid. The enriched
 timeframes return aligned causal indicators; `100ms` and `5s` currently return
 the canonical trade-family candle projection with `indicators_available=false`.

@@ -202,6 +202,20 @@ class HistoricalContractTests(unittest.TestCase):
             {
                 "rows": [
                     {
+                        "bar_start": "2026-07-10T13:44:59.900000+00:00",
+                        "bar_end": "2026-07-10T13:45:00+00:00",
+                        "bar_family": "trade",
+                        "close": 0,
+                        "high": 0,
+                        "local_date": "2026-07-10",
+                        "low": 0,
+                        "open": 0,
+                        "schema_version": 1,
+                        "size_sum": 50,
+                        "state": "closed",
+                        "ticker": "AAPL",
+                    },
+                    {
                         "bar_start": "2026-07-10T13:45:00+00:00",
                         "bar_end": "2026-07-10T13:45:00.100000+00:00",
                         "bar_family": "trade",

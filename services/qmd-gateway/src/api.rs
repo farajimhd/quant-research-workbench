@@ -71,6 +71,7 @@ struct ProductQuery {
     emit: Option<String>,
     family: Option<String>,
     limit: Option<usize>,
+    price_only: Option<bool>,
     resolution: Option<String>,
     timeframe: Option<String>,
 }
@@ -724,14 +725,20 @@ async fn family_bar_snapshot(
         .limit
         .unwrap_or(1_500)
         .min(state.config.product_cache_max_rows);
-    let snapshot = match query.family.as_deref() {
-        Some(family) => {
+    let snapshot = match (query.family.as_deref(), query.price_only.unwrap_or(false)) {
+        (Some("trade"), true) => {
+            state
+                .products
+                .trade_price_snapshot(&ticker, resolution_us, limit, chrono::Utc::now())
+                .await
+        }
+        (Some(family), _) => {
             state
                 .products
                 .family_snapshot_for(&ticker, resolution_us, family, limit, chrono::Utc::now())
                 .await
         }
-        None => {
+        (None, _) => {
             state
                 .products
                 .family_snapshot(&ticker, resolution_us, limit, chrono::Utc::now())
@@ -986,20 +993,27 @@ async fn stream_product_snapshots(
                 serde_json::to_string(&snapshot)
             }
             _ => {
-                let mut snapshot = match query.family.as_deref() {
-                    Some(family) => {
-                        state
-                            .products
-                            .family_snapshot_for(&ticker, resolution_us, family, limit, now)
-                            .await
-                    }
-                    None => {
-                        state
-                            .products
-                            .family_snapshot(&ticker, resolution_us, limit, now)
-                            .await
-                    }
-                };
+                let mut snapshot =
+                    match (query.family.as_deref(), query.price_only.unwrap_or(false)) {
+                        (Some("trade"), true) => {
+                            state
+                                .products
+                                .trade_price_snapshot(&ticker, resolution_us, limit, now)
+                                .await
+                        }
+                        (Some(family), _) => {
+                            state
+                                .products
+                                .family_snapshot_for(&ticker, resolution_us, family, limit, now)
+                                .await
+                        }
+                        (None, _) => {
+                            state
+                                .products
+                                .family_snapshot(&ticker, resolution_us, limit, now)
+                                .await
+                        }
+                    };
                 if emit == "updates" || !first {
                     snapshot.rows.retain(|row| {
                         let key = format!(

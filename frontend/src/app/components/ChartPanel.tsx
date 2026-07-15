@@ -533,7 +533,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   useEffect(() => {
     chartSettingsRef.current = effectiveChartSettings;
     applyChartAppearance();
-  }, [effectiveChartSettings, themeSignature]);
+  }, [effectiveChartSettings, themeSignature, timeframe]);
 
   useEffect(() => {
     if (!hasChartData) {
@@ -542,7 +542,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     }
     if (!priceRef.current || priceChartRef.current) return undefined;
     const palette = readChartPalette();
-    const priceChart = createChart(priceRef.current, chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettingsRef.current));
+    const priceChart = createChart(priceRef.current, chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettingsRef.current, timeframe));
     priceChartRef.current = priceChart;
     const candleSeries = priceChart.addCandlestickSeries({
       ...candleSeriesOptions(chartSettingsRef.current),
@@ -637,7 +637,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const palette = readChartPalette();
     const priceChart = priceChartRef.current;
     if (priceChart && priceRef.current) {
-      priceChart.applyOptions(chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettingsRef.current));
+      priceChart.applyOptions(chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettingsRef.current, timeframe));
       candleRef.current?.applyOptions(candleSeriesOptions(chartSettingsRef.current));
       if (payloadRef.current && volumeRef.current) {
         volumeRef.current.setData(volumeDataForSettings(payloadRef.current, chartSettingsRef.current) as never);
@@ -645,7 +645,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     }
     oscillatorChartRefs.current.forEach((chart, key) => {
       const pane = oscillatorPaneRefs.current.get(key);
-      if (pane) chart.applyOptions(chartOptions(pane.clientWidth, pane.clientHeight, false, palette, chartSettingsRef.current));
+      if (pane) chart.applyOptions(chartOptions(pane.clientWidth, pane.clientHeight, false, palette, chartSettingsRef.current, timeframe));
     });
     drawCurrentRegions();
   }
@@ -704,7 +704,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       if (!pane) return;
       let runtime = oscillatorPaneRuntimesRef.current.get(group.key);
       if (!runtime) {
-        const chart = createChart(pane, chartOptions(pane.clientWidth, pane.clientHeight, false, readChartPalette(), chartSettingsRef.current));
+        const chart = createChart(pane, chartOptions(pane.clientWidth, pane.clientHeight, false, readChartPalette(), chartSettingsRef.current, timeframe));
         runtime = {
           chart,
           primaryKey: "",
@@ -2173,6 +2173,7 @@ function candleDataForTimeframe(candles: Candle[], timeframe: string): CandleSer
   const sortedCandles = [...candles].sort((left, right) => left.time - right.time);
   const data: CandleSeriesDatum[] = [];
   const maxFillGapSeconds = 12 * 60 * 60;
+  const stepMilliseconds = Math.max(1, Math.round(stepSeconds * 1_000));
   const maxSyntheticPoints = 20_000;
   let syntheticPoints = 0;
   for (let index = 0; index < sortedCandles.length; index += 1) {
@@ -2181,8 +2182,13 @@ function candleDataForTimeframe(candles: Candle[], timeframe: string): CandleSer
       const previous = sortedCandles[index - 1];
       const gap = candle.time - previous.time;
       if (gap > stepSeconds && gap <= maxFillGapSeconds) {
-        for (let time = previous.time + stepSeconds; time < candle.time && syntheticPoints < maxSyntheticPoints; time += stepSeconds) {
-          data.push({ time });
+        const candleMilliseconds = Math.round(candle.time * 1_000);
+        for (
+          let timeMilliseconds = Math.round(previous.time * 1_000) + stepMilliseconds;
+          timeMilliseconds < candleMilliseconds && syntheticPoints < maxSyntheticPoints;
+          timeMilliseconds += stepMilliseconds
+        ) {
+          data.push({ time: timeMilliseconds / 1_000 });
           syntheticPoints += 1;
         }
       }
@@ -2423,8 +2429,11 @@ function chartOptions(
   height: number,
   compact = false,
   palette: ChartPalette = readChartPalette(),
-  settings: ChartAppearanceSettings = defaultChartAppearanceSettings
+  settings: ChartAppearanceSettings = defaultChartAppearanceSettings,
+  timeframe = "1m"
 ) {
+  const timeframeSeconds = chartTimeframeSeconds(timeframe);
+  const showSeconds = timeframeSeconds !== null && timeframeSeconds < 60;
   return {
     width: Math.max(320, width),
     height: Math.max(160, height),
@@ -2434,7 +2443,7 @@ function chartOptions(
       horzLines: { color: palette.grid }
     },
     localization: {
-      timeFormatter: (timeValue: Time) => formatMarketDateTime(timeValue)
+      timeFormatter: (timeValue: Time) => formatMarketDateTime(timeValue, timeframe)
     },
     crosshair: { mode: 0 },
     rightPriceScale: { borderColor: palette.grid, minimumWidth: CHART_PRICE_SCALE_MIN_WIDTH },
@@ -2444,8 +2453,8 @@ function chartOptions(
       barSpacing: compact ? Math.max(12, Math.round(settings.candleSize * 0.55)) : settings.candleSize,
       minBarSpacing: 0.2,
       timeVisible: true,
-      secondsVisible: false,
-      tickMarkFormatter: (timeValue: Time) => formatMarketAxisTime(timeValue)
+      secondsVisible: showSeconds,
+      tickMarkFormatter: (timeValue: Time) => formatMarketAxisTime(timeValue, timeframe)
     }
   };
 }
@@ -2476,12 +2485,41 @@ const marketAxisFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/New_York"
 });
 
+const marketSecondAxisFormatter = new Intl.DateTimeFormat("en-US", {
+  hour: "2-digit",
+  hour12: false,
+  minute: "2-digit",
+  second: "2-digit",
+  timeZone: "America/New_York"
+});
+
+const marketSubsecondAxisFormatter = new Intl.DateTimeFormat("en-US", {
+  fractionalSecondDigits: 1,
+  hour: "2-digit",
+  hour12: false,
+  minute: "2-digit",
+  second: "2-digit",
+  timeZone: "America/New_York"
+});
+
 const marketDateTimeFormatter = new Intl.DateTimeFormat("en-US", {
   day: "2-digit",
   hour: "2-digit",
   hour12: false,
   minute: "2-digit",
   month: "short",
+  timeZone: "America/New_York",
+  year: "numeric"
+});
+
+const marketSubsecondDateTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  day: "2-digit",
+  fractionalSecondDigits: 1,
+  hour: "2-digit",
+  hour12: false,
+  minute: "2-digit",
+  month: "short",
+  second: "2-digit",
   timeZone: "America/New_York",
   year: "numeric"
 });
@@ -3263,12 +3301,19 @@ function timestampFromChartTime(timeValue: Time) {
   return Date.UTC(timeValue.year, timeValue.month - 1, timeValue.day) / 1000;
 }
 
-function formatMarketAxisTime(timeValue: Time) {
-  return marketAxisFormatter.format(new Date(timestampFromChartTime(timeValue) * 1000));
+function formatMarketAxisTime(timeValue: Time, timeframe = "1m") {
+  const timestamp = new Date(timestampFromChartTime(timeValue) * 1000);
+  const seconds = chartTimeframeSeconds(timeframe);
+  if (seconds !== null && seconds < 1) return marketSubsecondAxisFormatter.format(timestamp);
+  if (seconds !== null && seconds < 60) return marketSecondAxisFormatter.format(timestamp);
+  return marketAxisFormatter.format(timestamp);
 }
 
-function formatMarketDateTime(timeValue: Time) {
-  return marketDateTimeFormatter.format(new Date(timestampFromChartTime(timeValue) * 1000));
+function formatMarketDateTime(timeValue: Time, timeframe = "1m") {
+  const timestamp = new Date(timestampFromChartTime(timeValue) * 1000);
+  const seconds = chartTimeframeSeconds(timeframe);
+  if (seconds !== null && seconds < 1) return marketSubsecondDateTimeFormatter.format(timestamp);
+  return marketDateTimeFormatter.format(timestamp);
 }
 
 function formatPrice(value: number) {

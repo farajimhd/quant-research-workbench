@@ -375,6 +375,20 @@ impl SharedMarketProductStore {
         )
     }
 
+    pub async fn trade_price_snapshot(
+        &self,
+        ticker: &str,
+        resolution_us: u64,
+        limit: usize,
+        as_of: DateTime<Utc>,
+    ) -> FamilyBarSnapshot {
+        let index = stable_hash(ticker) as usize % self.shards.len();
+        self.shards[index]
+            .lock()
+            .await
+            .trade_price_snapshot_for_before(ticker, resolution_us, limit, as_of, None)
+    }
+
     pub async fn condition_snapshot(
         &self,
         ticker: &str,
@@ -592,6 +606,38 @@ impl MarketProductEngine {
             })
             .collect::<Vec<_>>();
         rows.sort_by_key(|row| (row.bar_start, row.bar_family.clone()));
+        retain_tail(&mut rows, limit);
+        FamilyBarSnapshot {
+            as_of,
+            rows,
+            ticker,
+            resolution_us,
+        }
+    }
+
+    pub fn trade_price_snapshot_for_before(
+        &mut self,
+        ticker: &str,
+        resolution_us: u64,
+        limit: usize,
+        as_of: DateTime<Utc>,
+        before: Option<DateTime<Utc>>,
+    ) -> FamilyBarSnapshot {
+        let ticker = ticker.to_ascii_uppercase();
+        let mut rows = self
+            .partitions
+            .iter_mut()
+            .filter(|(key, _)| key.ticker == ticker)
+            .flat_map(|(_, partition)| partition.family.values_mut())
+            .filter(|entry| entry.row.label_resolution_us == resolution_us)
+            .filter(|entry| entry.row.bar_family == "trade")
+            .filter(|entry| before.is_none_or(|bound| entry.row.bar_start < bound))
+            .filter_map(|entry| {
+                refresh_family_state(&mut entry.row, as_of);
+                valid_trade_price_bar(&entry.row).then(|| entry.row.clone())
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by_key(|row| row.bar_start);
         retain_tail(&mut rows, limit);
         FamilyBarSnapshot {
             as_of,
@@ -1070,6 +1116,16 @@ fn retain_tail<T>(rows: &mut Vec<T>, limit: usize) {
     }
 }
 
+fn valid_trade_price_bar(row: &FamilyBarRow) -> bool {
+    row.bar_family == "trade"
+        && [row.open, row.high, row.low, row.close]
+            .into_iter()
+            .all(|value| value.is_finite() && value > 0.0)
+        && row.high >= row.open.max(row.close)
+        && row.low <= row.open.min(row.close)
+        && row.high >= row.low
+}
+
 fn positive_min_f32(left: f32, right: f32) -> f32 {
     if left <= 0.0 {
         right
@@ -1108,8 +1164,18 @@ mod tests {
     }
 
     fn trade(ts: DateTime<Utc>, sequence: u64, price: f64, size: f64) -> MarketEvent {
+        trade_with_conditions(ts, sequence, price, size, vec![])
+    }
+
+    fn trade_with_conditions(
+        ts: DateTime<Utc>,
+        sequence: u64,
+        price: f64,
+        size: f64,
+        conditions: Vec<u16>,
+    ) -> MarketEvent {
         MarketEvent::Trade(TradeEvent {
-            conditions: vec![],
+            conditions,
             exchange: 4,
             ingest_ts: ts,
             participant_ts: None,
@@ -1178,6 +1244,62 @@ mod tests {
         assert_eq!(snapshot.rows[0].bar_start, start + Duration::seconds(1));
         assert_eq!(snapshot.rows[1].bar_start, start + Duration::seconds(2));
         assert!(snapshot.rows.iter().all(|row| row.bar_start < before));
+    }
+
+    #[test]
+    fn trade_price_snapshot_omits_size_only_trade_buckets_before_limiting() {
+        let limits = ProductCacheLimits {
+            max_bytes: 16 * 1024 * 1024,
+            max_partitions: 8,
+            max_rows: 100_000,
+        };
+        let trade_rules = TradeAggregationRules::new([
+            (0, TradeUpdateRule::regular()),
+            (
+                7,
+                TradeUpdateRule {
+                    update_high_low: false,
+                    update_last: false,
+                    update_volume: true,
+                },
+            ),
+        ])
+        .unwrap();
+        let mut engine = MarketProductEngine::new(
+            vec![100_000],
+            limits,
+            trade_rules,
+            ConditionClassifier::training_aligned(),
+        );
+        let start = Utc.with_ymd_and_hms(2026, 7, 10, 13, 45, 0).unwrap();
+        engine.apply_event(&trade(start, 1, 315.0, 100.0), start);
+        engine.apply_event(
+            &trade_with_conditions(
+                start + Duration::milliseconds(100),
+                2,
+                231.82,
+                50.0,
+                vec![7],
+            ),
+            start + Duration::milliseconds(100),
+        );
+        engine.apply_event(
+            &trade(start + Duration::milliseconds(200), 3, 315.1, 75.0),
+            start + Duration::milliseconds(200),
+        );
+
+        let snapshot = engine.trade_price_snapshot_for_before(
+            "AAPL",
+            100_000,
+            2,
+            start + Duration::seconds(1),
+            None,
+        );
+
+        assert_eq!(snapshot.rows.len(), 2);
+        assert_eq!(snapshot.rows[0].open, 315.0);
+        assert_eq!(snapshot.rows[1].open, 315.1);
+        assert!(snapshot.rows.iter().all(valid_trade_price_bar));
     }
 
     #[test]

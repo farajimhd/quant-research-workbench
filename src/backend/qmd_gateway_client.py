@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import urllib.error
 import urllib.parse
@@ -108,7 +109,7 @@ def qmd_chart_bars(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) 
         raise ValueError("symbol is required for QMD chart bars.")
     payload = qmd_get_json(
         f"/snapshot/family-bars/{urllib.parse.quote(symbol.strip().upper())}",
-        {"family": "trade", "limit": row_limit, "resolution": timeframe},
+        {"family": "trade", "limit": row_limit, "price_only": True, "resolution": timeframe},
         timeout=3,
     )
     return normalize_qmd_family_bar_snapshot(payload, symbol=symbol, timeframe=timeframe)
@@ -119,7 +120,7 @@ def normalize_qmd_family_bar_snapshot(payload: Any, *, symbol: str, timeframe: s
     normalized = [
         normalize_qmd_family_bar(row, timeframe=timeframe)
         for row in rows
-        if isinstance(row, dict)
+        if isinstance(row, dict) and is_qmd_trade_price_bar(row)
     ]
     normalized.sort(key=lambda row: row["bar_start"])
     current = normalized[-1] if normalized and not normalized[-1]["is_closed"] else None
@@ -148,6 +149,23 @@ def normalize_qmd_family_bar(row: dict[str, Any], *, timeframe: str) -> dict[str
         "volume": row.get("size_sum"),
         "vwap": None,
     }
+
+
+def is_qmd_trade_price_bar(row: dict[str, Any]) -> bool:
+    if row.get("bar_family") != "trade":
+        return False
+    try:
+        open_price, high, low, close = (
+            float(row[field]) for field in ("open", "high", "low", "close")
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (
+        all(math.isfinite(value) and value > 0 for value in (open_price, high, low, close))
+        and high >= max(open_price, close)
+        and low <= min(open_price, close)
+        and high >= low
+    )
 
 
 def qmd_indicators(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) -> dict[str, Any]:

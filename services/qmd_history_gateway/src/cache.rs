@@ -329,10 +329,9 @@ impl HistoricalDerivedCache {
             .products
             .as_mut()
             .ok_or_else(|| "historical market products were not built".to_string())?;
-        let family = products.family_snapshot_for_before(
+        let family = products.trade_price_snapshot_for_before(
             &ticker,
             resolution_us,
-            Some("trade"),
             limit.saturating_add(1),
             as_of,
             before,
