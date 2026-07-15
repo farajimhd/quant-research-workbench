@@ -19,6 +19,9 @@ use qmd_core::live_market_state::{
 };
 use qmd_core::maintenance::SharedMaintenanceState;
 use qmd_core::market_calendar::{run_market_calendar_refresh, MarketCalendarClient};
+use qmd_core::market_products::{
+    parse_resolution_us, ConditionClassifier, ProductCacheLimits, SharedMarketProductStore,
+};
 use qmd_core::massive::{run_massive_ingest, MarketEventFanout};
 use qmd_core::metrics::SharedMetrics;
 use qmd_core::scanner::{spawn_scanner_primitive_engine, ScannerPrimitive, SharedScannerStore};
@@ -110,7 +113,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.bar_timeframes.clone(),
         config.bar_history_limit,
         config.bar_shard_count,
+        trade_aggregation_rules.clone(),
+    );
+    let product_resolutions = config
+        .intraday_bar_timeframes
+        .iter()
+        .filter_map(|value| parse_resolution_us(value))
+        .collect::<Vec<_>>();
+    let products = SharedMarketProductStore::new(
+        product_resolutions,
+        ProductCacheLimits {
+            max_bytes: config.product_cache_max_bytes,
+            max_partitions: config.product_cache_max_partitions,
+            max_rows: config.product_cache_max_rows,
+        },
+        config.intraday_bar_shard_count,
         trade_aggregation_rules,
+        ConditionClassifier::training_aligned(),
     );
     let indicators = SharedIndicatorStore::new(
         config.indicator_history_limit,
@@ -174,6 +193,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             compact_event_store.clone(),
             metrics.clone(),
             intraday_bar_service.router.clone(),
+            products.clone(),
         );
         compact_writer.initialize().await.map_err(|error| {
             startup_error(format!(
@@ -281,6 +301,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         metrics: metrics.clone(),
         maintenance: maintenance.clone(),
         market_calendar: market_calendar.clone(),
+        products,
         intraday_bars: intraday_bar_service.rows.clone(),
         scanner,
         scanner_events: scanner_sender,

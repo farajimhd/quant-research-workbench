@@ -155,7 +155,7 @@ Market-event consumers select the source by runtime mode:
   historical source/arrival sequence.
 - Historical bars are calculated from those events in the gateway/runtime. No
   historical bar table is an execution source of truth.
-- `q_live.intraday_bars_v1` is the single rolling live bar table. Sparse
+- `q_live.intraday_family_bars_v2` is the rolling live three-family bar table. Sparse
   `trade`, `quote_bid`, and `quote_ask` bars are built at `100ms`, then rolled
   up from closed base bars to `1s`, `5s`, `10s`, `30s`, `1m`, `5m`, and `1h`.
   It retains the same current-plus-three-prior-session window as live events.

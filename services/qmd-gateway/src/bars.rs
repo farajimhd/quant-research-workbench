@@ -1,5 +1,6 @@
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::live_market_state::LiveMarketStateRouter;
+use crate::market_products::FamilyBarRow;
 use crate::metrics::SharedMetrics;
 use crate::scanner::ScannerPrimitiveRouter;
 use chrono::{DateTime, TimeZone, Timelike, Utc};
@@ -58,7 +59,7 @@ impl TradeAggregationRules {
         })
     }
 
-    fn resolve(&self, conditions: &[u16], timestamp: DateTime<Utc>) -> TradeUpdateRule {
+    pub(crate) fn resolve(&self, conditions: &[u16], timestamp: DateTime<Utc>) -> TradeUpdateRule {
         if conditions.is_empty() {
             return TradeUpdateRule::regular();
         }
@@ -113,6 +114,30 @@ impl BarSnapshot {
         self.history.retain(valid_price_bar);
         self.current = self.current.filter(valid_price_bar);
         self
+    }
+
+    pub fn reconcile_family_authority(&mut self, family_rows: &[FamilyBarRow]) {
+        let trade_rows = family_rows
+            .iter()
+            .filter(|row| row.bar_family == "trade")
+            .map(|row| (row.bar_start.timestamp_micros(), row))
+            .collect::<HashMap<_, _>>();
+        for bar in self.history.iter_mut().chain(self.current.iter_mut()) {
+            let Some(row) = trade_rows.get(&bar.bar_start.timestamp_micros()) else {
+                continue;
+            };
+            bar.open = f64::from(row.open);
+            bar.high = f64::from(row.high);
+            bar.low = f64::from(row.low);
+            bar.close = f64::from(row.close);
+            bar.volume = row.size_sum;
+            bar.trade_count = row.event_count;
+            bar.avg_trade_size = if row.event_count > 0 {
+                row.size_sum / row.event_count as f64
+            } else {
+                0.0
+            };
+        }
     }
 }
 

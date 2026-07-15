@@ -2,6 +2,7 @@ use crate::bars::{TradeAggregationRules, TradeUpdateRule};
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::intraday_bars::IntradayBarRouter;
+use crate::market_products::SharedMarketProductStore;
 use crate::metrics::SharedMetrics;
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, TimeZone, Utc};
@@ -499,7 +500,9 @@ pub struct CompactEventClickHouseWriter {
     event_sender: broadcast::Sender<LiveCompactEvent>,
     live_store: SharedCompactEventStore,
     metrics: SharedMetrics,
+    products: SharedMarketProductStore,
     references: CompactEventReferences,
+    decoder: CompactEventDecoder,
     intraday_bar_router: IntradayBarRouter,
 }
 
@@ -511,14 +514,18 @@ impl CompactEventClickHouseWriter {
         live_store: SharedCompactEventStore,
         metrics: SharedMetrics,
         intraday_bar_router: IntradayBarRouter,
+        products: SharedMarketProductStore,
     ) -> Self {
+        let decoder = references.decoder();
         Self {
             client: Client::new(),
             config,
             event_sender,
             live_store,
             metrics,
+            products,
             references,
+            decoder,
             intraday_bar_router,
         }
     }
@@ -588,6 +595,10 @@ impl CompactEventClickHouseWriter {
                                     self.metrics.inc_compact_event_broadcast_dropped();
                                 }
                                 self.live_store.push(conversion.event.clone()).await;
+                                let canonical_event = self.decoder.decode(&conversion.event);
+                                self.products
+                                    .apply_event(&canonical_event, canonical_event.ts())
+                                    .await;
                                 if self.intraday_bar_router.send(conversion.event.clone()).await.is_err() {
                                     self.metrics.inc_intraday_bar_event_dropped();
                                     eprintln!("Canonical intraday bar receiver closed; could not route one compact event.");

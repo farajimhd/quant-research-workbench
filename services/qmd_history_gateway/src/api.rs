@@ -15,6 +15,9 @@ use chrono::{DateTime, Utc};
 use futures_util::SinkExt;
 use qmd_core::bars::is_supported_timeframe;
 use qmd_core::compact_event::LiveCompactEvent;
+use qmd_core::market_products::{
+    parse_resolution_us, ConditionBarSnapshot, FamilyBarSnapshot, MacroBarSnapshot,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -44,6 +47,16 @@ struct BarsQuery {
     end: String,
     event_limit: Option<usize>,
     limit: Option<usize>,
+    start: String,
+    timeframe: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProductQuery {
+    as_of: Option<String>,
+    end: String,
+    limit: Option<usize>,
+    resolution: Option<String>,
     start: String,
     timeframe: Option<String>,
 }
@@ -94,6 +107,12 @@ pub fn app(state: AppState) -> Router {
             get(compact_event_snapshot),
         )
         .route("/snapshot/bars/{ticker}", get(bar_snapshot))
+        .route("/snapshot/family-bars/{ticker}", get(family_bar_snapshot))
+        .route(
+            "/snapshot/condition-bars/{ticker}",
+            get(condition_bar_snapshot),
+        )
+        .route("/snapshot/macro-bars/{ticker}", get(macro_bar_snapshot))
         .route("/stream/compact-events", get(compact_event_stream))
         .route("/stream/events", get(event_stream))
         .route("/stream/bars/{ticker}", get(bar_stream))
@@ -190,6 +209,110 @@ async fn bar_snapshot(
         .await
         .map(Json)
         .map_err(service_error)
+}
+
+async fn family_bar_snapshot(
+    State(state): State<Arc<AppState>>,
+    Path(ticker): Path<String>,
+    Query(query): Query<ProductQuery>,
+) -> Result<Json<FamilyBarSnapshot>, ApiError> {
+    let ticker = normalize_ticker(&ticker)?;
+    let (product_window, as_of) = causal_product_window(&query, &ticker)?;
+    let resolution_us = product_resolution(&query)?;
+    state
+        .cache
+        .family_snapshot(
+            product_window,
+            ticker,
+            resolution_us,
+            query
+                .limit
+                .unwrap_or(10_000)
+                .min(state.config.product_cache_max_rows_per_entry),
+            as_of,
+        )
+        .await
+        .map(Json)
+        .map_err(service_error)
+}
+
+async fn condition_bar_snapshot(
+    State(state): State<Arc<AppState>>,
+    Path(ticker): Path<String>,
+    Query(query): Query<ProductQuery>,
+) -> Result<Json<ConditionBarSnapshot>, ApiError> {
+    let ticker = normalize_ticker(&ticker)?;
+    let (product_window, as_of) = causal_product_window(&query, &ticker)?;
+    let resolution_us = product_resolution(&query)?;
+    state
+        .cache
+        .condition_snapshot(
+            product_window,
+            ticker,
+            resolution_us,
+            query
+                .limit
+                .unwrap_or(10_000)
+                .min(state.config.product_cache_max_rows_per_entry),
+            as_of,
+        )
+        .await
+        .map(Json)
+        .map_err(service_error)
+}
+
+async fn macro_bar_snapshot(
+    State(state): State<Arc<AppState>>,
+    Path(ticker): Path<String>,
+    Query(query): Query<ProductQuery>,
+) -> Result<Json<MacroBarSnapshot>, ApiError> {
+    let ticker = normalize_ticker(&ticker)?;
+    let (product_window, as_of) = causal_product_window(&query, &ticker)?;
+    let timeframe = query.timeframe.unwrap_or_else(|| "1d".to_string());
+    if !matches!(timeframe.as_str(), "1d" | "1w" | "1y") {
+        return Err(bad_request("macro timeframe must be 1d, 1w, or 1y"));
+    }
+    state
+        .cache
+        .macro_snapshot(
+            product_window,
+            ticker,
+            timeframe,
+            query.limit.unwrap_or(1_000).min(10_000),
+            as_of,
+        )
+        .await
+        .map(Json)
+        .map_err(service_error)
+}
+
+fn causal_product_window(
+    query: &ProductQuery,
+    ticker: &str,
+) -> Result<(EventWindow, DateTime<Utc>), ApiError> {
+    let mut product_window = window(&query.start, &query.end, vec![ticker.to_string()])?;
+    let as_of = query
+        .as_of
+        .as_deref()
+        .map(parse_timestamp)
+        .transpose()?
+        .unwrap_or(product_window.end);
+    if as_of <= product_window.start {
+        return Err(bad_request("as_of must be after start"));
+    }
+    product_window.end = product_window.end.min(as_of);
+    Ok((product_window, as_of))
+}
+
+fn product_resolution(query: &ProductQuery) -> Result<u64, ApiError> {
+    match query.resolution.as_deref() {
+        Some(value) => parse_resolution_us(value)
+            .filter(|resolution| *resolution > 0)
+            .ok_or_else(|| {
+                bad_request("resolution must be a positive duration such as 100ms, 1s, or 1m")
+            }),
+        None => Ok(60_000_000),
+    }
 }
 
 async fn compact_event_stream(
@@ -357,7 +480,7 @@ async fn stream_cached_bars(
     timeframe: String,
 ) {
     let ticker = window.tickers[0].clone();
-    let lease = match cache.acquire(window, ticker, timeframe).await {
+    let lease = match cache.acquire(window, ticker).await {
         Ok(lease) => lease,
         Err(error) => {
             send_stream_error(&mut socket, error).await;
@@ -376,8 +499,10 @@ async fn stream_cached_bars(
             if frame.sequence <= last_sequence {
                 continue;
             }
-            if send_json(&mut socket, &frame.bar).await.is_err() {
-                return;
+            if frame.bar.timeframe.eq_ignore_ascii_case(&timeframe) {
+                if send_json(&mut socket, &frame.bar).await.is_err() {
+                    return;
+                }
             }
             last_sequence = frame.sequence;
         }
@@ -387,8 +512,10 @@ async fn stream_cached_bars(
         }
         match receiver.recv().await {
             Ok(frame) if frame.sequence > last_sequence => {
-                if send_json(&mut socket, &frame.bar).await.is_err() {
-                    return;
+                if frame.bar.timeframe.eq_ignore_ascii_case(&timeframe) {
+                    if send_json(&mut socket, &frame.bar).await.is_err() {
+                        return;
+                    }
                 }
                 last_sequence = frame.sequence;
             }
@@ -411,10 +538,7 @@ async fn stream_derived(
     max_updates: Option<u64>,
     updates_per_second: f64,
 ) {
-    let lease = match cache
-        .acquire(window, ticker.clone(), timeframe.clone())
-        .await
-    {
+    let lease = match cache.acquire(window, ticker.clone()).await {
         Ok(lease) => lease,
         Err(error) => {
             send_stream_error(&mut socket, error).await;
@@ -436,7 +560,9 @@ async fn stream_derived(
         }
         let visible = frames
             .iter()
-            .filter(|frame| frame.as_of <= as_of)
+            .filter(|frame| {
+                frame.as_of <= as_of && frame.bar.timeframe.eq_ignore_ascii_case(&timeframe)
+            })
             .cloned()
             .collect::<Vec<_>>();
         let full = FullDerivedEnvelope {
@@ -490,11 +616,13 @@ async fn stream_derived(
             if frame.sequence <= last_sequence {
                 continue;
             }
-            if send_json(&mut socket, frame).await.is_err() {
-                return;
+            if frame.bar.timeframe.eq_ignore_ascii_case(&timeframe) {
+                if send_json(&mut socket, frame).await.is_err() {
+                    return;
+                }
+                updates_sent += 1;
             }
             last_sequence = frame.sequence;
-            updates_sent += 1;
             if max_updates.is_some_and(|limit| updates_sent >= limit) {
                 let _ = socket.close().await;
                 return;
@@ -507,11 +635,13 @@ async fn stream_derived(
         }
         match receiver.recv().await {
             Ok(frame) if frame.sequence > last_sequence => {
-                if send_json(&mut socket, &frame).await.is_err() {
-                    return;
+                if frame.bar.timeframe.eq_ignore_ascii_case(&timeframe) {
+                    if send_json(&mut socket, &frame).await.is_err() {
+                        return;
+                    }
+                    updates_sent += 1;
                 }
                 last_sequence = frame.sequence;
-                updates_sent += 1;
                 if max_updates.is_some_and(|limit| updates_sent >= limit) {
                     let _ = socket.close().await;
                     return;
@@ -574,6 +704,19 @@ fn parse_timestamp(value: &str) -> Result<DateTime<Utc>, ApiError> {
         .map_err(|_| bad_request(format!("timestamp must be RFC3339 with timezone: {value}")))
 }
 
+fn normalize_ticker(value: &str) -> Result<String, ApiError> {
+    let ticker = value.trim().to_ascii_uppercase();
+    if ticker.is_empty()
+        || ticker.len() > 32
+        || !ticker
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '/'))
+    {
+        return Err(bad_request("ticker is invalid"));
+    }
+    Ok(ticker)
+}
+
 fn validate_timeframe(value: &str) -> Result<(), ApiError> {
     if is_supported_timeframe(value) {
         Ok(())
@@ -618,7 +761,10 @@ fn service_error(message: String) -> ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_timestamp, validate_timeframe};
+    use super::{
+        causal_product_window, parse_timestamp, product_resolution, validate_timeframe,
+        ProductQuery,
+    };
 
     #[test]
     fn timestamps_require_explicit_timezone() {
@@ -630,5 +776,33 @@ mod tests {
     fn timeframes_are_validated_by_the_shared_qmd_bar_contract() {
         assert!(validate_timeframe("1m").is_ok());
         assert!(validate_timeframe("2m").is_err());
+    }
+
+    #[test]
+    fn product_windows_never_build_past_as_of() {
+        let query = ProductQuery {
+            as_of: Some("2026-07-10T13:44:15Z".to_string()),
+            end: "2026-07-10T13:44:30Z".to_string(),
+            limit: None,
+            resolution: Some("1s".to_string()),
+            start: "2026-07-10T13:44:00Z".to_string(),
+            timeframe: None,
+        };
+        let (window, as_of) = causal_product_window(&query, "AAPL").unwrap();
+        assert_eq!(window.end, as_of);
+        assert_eq!(product_resolution(&query).unwrap(), 1_000_000);
+    }
+
+    #[test]
+    fn invalid_product_resolution_is_rejected() {
+        let query = ProductQuery {
+            as_of: None,
+            end: "2026-07-10T13:44:30Z".to_string(),
+            limit: None,
+            resolution: Some("nonsense".to_string()),
+            start: "2026-07-10T13:44:00Z".to_string(),
+            timeframe: None,
+        };
+        assert!(product_resolution(&query).is_err());
     }
 }

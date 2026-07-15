@@ -64,7 +64,7 @@ concatenate a non-overlapping boundary, and may assign a query-local ordinal.
 
 ## Canonical Intraday Bars
 
-`/stream/intraday-bars` and required table `intraday_bars_v1` expose the
+`/stream/intraday-bars` and required table `intraday_family_bars_v2` expose the
 long-form families used by `research/mlops/packed_market`: `trade`,
 `quote_bid`, and `quote_ask`. Rows use New York 04:00-20:00 local-session
 buckets and contain `schema_version`, `ticker`, `local_date`,
@@ -250,7 +250,7 @@ Table: `live_massive_quotes`
 The scanner, indicator, LULD-estimate, and `/snapshot/bars/{ticker}` path keeps
 an enriched `BarRow` in memory. It is built directly from Massive events for
 configured operational timeframes and is not persisted. The only durable bar
-contract is `intraday_bars_v1` above. The fields below document the richer
+contract is `intraday_family_bars_v2` above. The fields below document the richer
 operational row consumed inside QMD.
 
 ### Identity And Time
@@ -454,7 +454,7 @@ Table: `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`.
 
 ## Indicator Persistence Policy
 
-Tick indicators are memory-first and are not persisted continuously. Closed bar-level indicators are also memory-first by default because the current set can be recomputed from compact events and `intraday_bars_v1`. Set `QMD_PERSIST_INDICATORS=true` only when a run needs a materialized indicator table for chart-load speed or audit.
+Tick indicators are memory-first and are not persisted continuously. Closed bar-level indicators are also memory-first by default because the current set can be recomputed from compact events and `intraday_family_bars_v2`. Set `QMD_PERSIST_INDICATORS=true` only when a run needs a materialized indicator table for chart-load speed or audit.
 
 ## Indicator Catalog Summary
 

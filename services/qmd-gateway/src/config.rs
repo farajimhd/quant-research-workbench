@@ -65,6 +65,9 @@ pub struct GatewayConfig {
     pub api_key_present: bool,
     pub bar_channel_capacity: usize,
     pub bar_history_limit: usize,
+    pub product_cache_max_bytes: usize,
+    pub product_cache_max_partitions: usize,
+    pub product_cache_max_rows: usize,
     pub bar_shard_count: usize,
     pub bar_timeframes: Vec<String>,
     pub bind: String,
@@ -181,6 +184,12 @@ impl GatewayConfig {
             api_key_present: !massive_api_key.is_empty(),
             bar_channel_capacity: env_usize("QMD_BAR_CHANNEL_CAPACITY", 250_000),
             bar_history_limit: env_usize("QMD_BAR_HISTORY_LIMIT", 1_000),
+            product_cache_max_bytes: env_usize("QMD_PRODUCT_CACHE_MAX_BYTES", 512 * 1024 * 1024)
+                .clamp(16 * 1024 * 1024, 16 * 1024 * 1024 * 1024),
+            product_cache_max_partitions: env_usize("QMD_PRODUCT_CACHE_MAX_PARTITIONS", 8_192)
+                .clamp(16, 1_000_000),
+            product_cache_max_rows: env_usize("QMD_PRODUCT_CACHE_MAX_ROWS", 2_000_000)
+                .clamp(10_000, 100_000_000),
             bar_shard_count: env_usize("QMD_BAR_SHARD_COUNT", 8),
             bar_timeframes: env_list_with_default(
                 "QMD_BAR_TIMEFRAMES",
@@ -362,7 +371,7 @@ impl GatewayConfig {
             ),
             intraday_bar_channel_capacity: env_usize("QMD_INTRADAY_BAR_CHANNEL_CAPACITY", 250_000),
             intraday_bar_shard_count: env_usize("QMD_INTRADAY_BAR_SHARD_COUNT", 8),
-            intraday_bar_table: env_string("QMD_INTRADAY_BAR_TABLE", "intraday_bars_v1"),
+            intraday_bar_table: env_string("QMD_INTRADAY_BAR_TABLE", "intraday_family_bars_v2"),
             intraday_bar_timeframes: env_list_with_default(
                 "QMD_INTRADAY_BAR_TIMEFRAMES",
                 &["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"],

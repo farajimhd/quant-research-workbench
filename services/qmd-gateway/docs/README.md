@@ -6,15 +6,17 @@ Use it to comment on the market-data gateway without mixing in app-backend topic
 
 ## Review Order
 
-1. [ARCHITECTURE.md](ARCHITECTURE.md)
+1. [DESIGN_GUIDE.md](DESIGN_GUIDE.md)
+   - Product authority, shared live/history contracts, mode behavior, cache bounds, concurrency, and validation invariants.
+2. [ARCHITECTURE.md](ARCHITECTURE.md)
    - Read first. It defines the system boundary, module ownership, runtime flow, and what belongs outside the gateway.
-2. [CONFIGURATION.md](CONFIGURATION.md)
+3. [CONFIGURATION.md](CONFIGURATION.md)
    - Every environment variable, default value, effect, and tuning note.
-3. [DATA_CONTRACTS.md](DATA_CONTRACTS.md)
+4. [DATA_CONTRACTS.md](DATA_CONTRACTS.md)
    - Raw trade/quote rows, bar fields, tick indicators, bar indicators, formulas, and persistence rules.
-4. [SCANNER_AND_SIGNALS.md](SCANNER_AND_SIGNALS.md)
+5. [SCANNER_AND_SIGNALS.md](SCANNER_AND_SIGNALS.md)
    - Current Massive-only scanner primitives and the signal-method catalog contracts.
-5. [OPERATIONS.md](OPERATIONS.md)
+6. [OPERATIONS.md](OPERATIONS.md)
    - Gap fill, replay, metrics, backpressure, failure behavior, and review checklist.
 
 ## Terms Used In These Docs

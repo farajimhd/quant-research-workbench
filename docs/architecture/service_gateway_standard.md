@@ -217,7 +217,7 @@ their implementation spreads into separate conventions.
 
 | Service | Type | Primary sources | Primary sinks | Cadence | Canonical responsibility |
 | --- | --- | --- | --- | --- | --- |
-| QMD Gateway | high-rate Rust streaming gateway | Massive stock websocket `T.*`, `Q.*`; Massive REST repair; historical `market_sip_compact.events_<year>` coverage | `q_live.events`, `q_live.intraday_bars_v1`, sparse abnormal market-state rows, QMD coverage tables, local streams | continuous websocket plus startup/after-hours repair | Lossless live market-event capture, training-aligned rolling intraday bars, compact streams, and Massive-only scanner primitives. |
+| QMD Gateway | high-rate Rust streaming gateway | Massive stock websocket `T.*`, `Q.*`; Massive REST repair; historical `market_sip_compact.events_<year>` coverage | `q_live.events`, `q_live.intraday_family_bars_v2`, sparse abnormal market-state rows, QMD coverage tables, local streams | continuous websocket plus startup/after-hours repair | Lossless live market-event capture, training-aligned rolling intraday bars, compact streams, and Massive-only scanner primitives. |
 | News Gateway | Python REST/text gateway | Massive-served Benzinga REST, approved external URL/PDF artifacts | `q_live.benzinga_news_normalized_v1`, `q_live.benzinga_news_ticker_v1`, coverage manifest, raw artifacts | market-aware polling | Canonical Benzinga news rows and ticker links with async enrichment. |
 | SEC Gateway | Python SEC filing gateway | SEC current Atom feed, submissions JSON, companyfacts JSON, daily archives | `q_live.sec_filing_v2`, `sec_filing_document_v2`, `sec_filing_text_v2`, SEC XBRL tables, SEC coverage | market-aware polling plus historical gap fill | Canonical SEC filing/text/XBRL rows. |
 | Reference Gateway | Python low-frequency reference reconciler | Massive reference endpoints, q_live identity tables, IBKR Client Portal, FINRA/SEC/Massive publications | identity graph, source mappings, issues, tradable/scanner publications, market reference publications, reference alerts | daemon cycles and after-hours maintenance | Keep market reference identity, conid/routing evidence, tradability publications, and slow reference publications coherent. |
@@ -264,7 +264,7 @@ fundamentals, issuer identity, or final trading signals.
   table may need to be recreated from a clean slate. Historical data should be
   recovered from `market_sip_compact.events_<year>` plus the recent q_live
   retention window, not by keeping stale encoded q_live rows forever.
-- `q_live.intraday_bars_v1`: rolling sparse family bars from 100ms through 1h,
+- `q_live.intraday_family_bars_v2`: rolling sparse family bars from 100ms through 1h,
   derived from the same sanitized compact events as `q_live.events`. Closed
   100ms bars are the base for every higher resolution; this is the single
   durable q_live bar contract.
@@ -1597,7 +1597,7 @@ Examples:
 
 ```text
 q_live.events | write | running | 1.2M | - | 42k/s | - | latest=2026-07-06 09:34:12
-q_live.intraday_bars_v1 | write | waiting | 0 | - | - | - | next 100ms close
+q_live.intraday_family_bars_v2 | write | waiting | 0 | - | - | - | next 100ms close
 q_live.benzinga_news_normalized_v1 | publish | completed | 18 | 18 | - | - | skipped=422
 market_sip_compact.sec_filing_text_embeddings | embed | running | 4,096 | 12,800 | 310/s | 28s | gpu ok
 ```

@@ -1,15 +1,21 @@
 use crate::config::HistoricalGatewayConfig;
 use crate::source::{EventWindow, HistoricalCursor, HistoricalEventSource, SourceRevision};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use qmd_core::bars::{BarRow, BarSnapshot, SharedBarStore, BAR_SCHEMA_VERSION};
+use qmd_core::compact_event::LiveCompactEvent;
 use qmd_core::indicators::{BarIndicatorCalculator, IndicatorRow, INDICATOR_SCHEMA_VERSION};
+use qmd_core::market_products::{
+    parse_resolution_us, ConditionBarSnapshot, ConditionClassifier, FamilyBarSnapshot,
+    MacroBarSnapshot, MarketProductEngine, ProductCacheLimits, MARKET_PRODUCT_SCHEMA_VERSION,
+};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
+use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex, Notify};
+use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
 
-pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v1";
+pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v2";
 
 #[derive(Clone, Debug, Serialize)]
 pub struct DerivedUpdate {
@@ -39,19 +45,25 @@ pub struct CacheEvidence {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct CacheMetrics {
+    pub active_builds: usize,
     pub builds: u64,
+    pub estimated_bytes: u64,
     pub entries: usize,
     pub evictions: u64,
     pub hits: u64,
     pub misses: u64,
+    pub max_bytes: usize,
 }
 
 #[derive(Clone)]
 pub struct HistoricalDerivedCache {
+    allocated_bytes: Arc<AtomicU64>,
     config: HistoricalGatewayConfig,
     inner: Arc<Mutex<CacheIndex>>,
     source: HistoricalEventSource,
     stats: Arc<CacheStats>,
+    build_permits: Arc<Semaphore>,
+    fetch_permits: Arc<Semaphore>,
 }
 
 pub struct CacheLease {
@@ -61,10 +73,17 @@ pub struct CacheLease {
 }
 
 pub struct CacheEntry {
+    allocated_bytes: Arc<AtomicU64>,
     complete: AtomicBool,
+    frame_bytes: AtomicU64,
+    global_max_bytes: u64,
     notify: Notify,
     state: Mutex<EntryState>,
     updates: broadcast::Sender<DerivedUpdate>,
+    estimated_bytes: AtomicU64,
+    max_update_bytes: usize,
+    max_updates: usize,
+    product_bytes: AtomicU64,
 }
 
 struct CacheIndex {
@@ -78,6 +97,7 @@ struct EntryState {
     error: Option<String>,
     events_processed: u64,
     frames: Vec<DerivedUpdate>,
+    products: Option<MarketProductEngine>,
 }
 
 #[derive(Default)]
@@ -90,7 +110,11 @@ struct CacheStats {
 
 impl HistoricalDerivedCache {
     pub fn new(config: HistoricalGatewayConfig, source: HistoricalEventSource) -> Self {
+        let max_concurrent_builds = config.cache_max_concurrent_builds;
+        let max_concurrent_fetches = config.cache_max_concurrent_fetches;
+        let allocated_bytes = Arc::new(AtomicU64::new(0));
         Self {
+            allocated_bytes,
             config,
             inner: Arc::new(Mutex::new(CacheIndex {
                 entries: HashMap::new(),
@@ -98,17 +122,14 @@ impl HistoricalDerivedCache {
             })),
             source,
             stats: Arc::new(CacheStats::default()),
+            build_permits: Arc::new(Semaphore::new(max_concurrent_builds)),
+            fetch_permits: Arc::new(Semaphore::new(max_concurrent_fetches)),
         }
     }
 
-    pub async fn acquire(
-        &self,
-        window: EventWindow,
-        ticker: String,
-        timeframe: String,
-    ) -> Result<CacheLease, String> {
+    pub async fn acquire(&self, window: EventWindow, ticker: String) -> Result<CacheLease, String> {
         let source_revision = self.source.source_revision(&window).await?;
-        let key = cache_key(&window, &ticker, &timeframe, &source_revision);
+        let key = cache_key(&window, &ticker, &source_revision);
         let mut index = self.inner.lock().await;
         if let Some(entry) = index.entries.get(&key).cloned() {
             touch(&mut index.order, &key);
@@ -139,10 +160,17 @@ impl HistoricalDerivedCache {
         }
         let (updates, _) = broadcast::channel(self.config.cache_update_capacity.max(16));
         let entry = Arc::new(CacheEntry {
+            allocated_bytes: self.allocated_bytes.clone(),
             complete: AtomicBool::new(false),
+            frame_bytes: AtomicU64::new(0),
+            global_max_bytes: self.config.cache_max_bytes as u64,
             notify: Notify::new(),
             state: Mutex::new(EntryState::default()),
             updates,
+            estimated_bytes: AtomicU64::new(0),
+            max_update_bytes: self.config.cache_max_bytes / 2,
+            max_updates: self.config.cache_max_updates_per_entry,
+            product_bytes: AtomicU64::new(0),
         });
         index.entries.insert(key.clone(), entry.clone());
         index.order.push_back(key);
@@ -152,7 +180,7 @@ impl HistoricalDerivedCache {
         let builder = self.clone();
         let build_entry = entry.clone();
         tokio::spawn(async move {
-            builder.build(build_entry, window, ticker, timeframe).await;
+            builder.build(build_entry, window, ticker).await;
         });
         Ok(CacheLease {
             entry,
@@ -168,19 +196,35 @@ impl HistoricalDerivedCache {
         timeframe: String,
         limit: usize,
     ) -> Result<DerivedSnapshot, String> {
-        let lease = self
-            .acquire(window, ticker.clone(), timeframe.clone())
-            .await?;
+        let as_of = window.end;
+        let lease = self.acquire(window, ticker.clone()).await?;
         let (frames, event_count) = lease.entry.wait_complete().await?;
-        let take = limit.min(frames.len());
-        let selected = &frames[frames.len().saturating_sub(take)..];
+        let matching = frames
+            .iter()
+            .filter(|frame| frame.bar.timeframe.eq_ignore_ascii_case(&timeframe))
+            .collect::<Vec<_>>();
+        let take = limit.min(matching.len());
+        let selected = &matching[matching.len().saturating_sub(take)..];
+        let mut bars = BarSnapshot {
+            current: None,
+            history: selected.iter().map(|frame| frame.bar.clone()).collect(),
+            ticker: ticker.clone(),
+            timeframe: timeframe.clone(),
+        };
+        if let Some(resolution_us) = parse_resolution_us(&timeframe) {
+            let mut state = lease.entry.state.lock().await;
+            if let Some(products) = state.products.as_mut() {
+                let family = products.family_snapshot(
+                    &ticker,
+                    resolution_us,
+                    limit.saturating_mul(3),
+                    as_of,
+                );
+                bars.reconcile_family_authority(&family.rows);
+            }
+        }
         Ok(DerivedSnapshot {
-            bars: BarSnapshot {
-                current: None,
-                history: selected.iter().map(|frame| frame.bar.clone()).collect(),
-                ticker,
-                timeframe,
-            },
+            bars,
             cache: CacheEvidence {
                 engine_version: HISTORICAL_ENGINE_VERSION,
                 event_count,
@@ -194,26 +238,89 @@ impl HistoricalDerivedCache {
         })
     }
 
-    pub async fn metrics(&self) -> CacheMetrics {
-        CacheMetrics {
-            builds: self.stats.builds.load(Ordering::Relaxed),
-            entries: self.inner.lock().await.entries.len(),
-            evictions: self.stats.evictions.load(Ordering::Relaxed),
-            hits: self.stats.hits.load(Ordering::Relaxed),
-            misses: self.stats.misses.load(Ordering::Relaxed),
-        }
+    pub async fn family_snapshot(
+        &self,
+        window: EventWindow,
+        ticker: String,
+        resolution_us: u64,
+        limit: usize,
+        as_of: DateTime<Utc>,
+    ) -> Result<FamilyBarSnapshot, String> {
+        let lease = self.acquire(window, ticker.clone()).await?;
+        lease.entry.wait_complete().await?;
+        let mut state = lease.entry.state.lock().await;
+        let products = state
+            .products
+            .as_mut()
+            .ok_or_else(|| "historical market products were not built".to_string())?;
+        Ok(products.family_snapshot(&ticker, resolution_us, limit, as_of))
     }
 
-    async fn build(
+    pub async fn condition_snapshot(
         &self,
-        entry: Arc<CacheEntry>,
+        window: EventWindow,
+        ticker: String,
+        resolution_us: u64,
+        limit: usize,
+        as_of: DateTime<Utc>,
+    ) -> Result<ConditionBarSnapshot, String> {
+        let lease = self.acquire(window, ticker.clone()).await?;
+        lease.entry.wait_complete().await?;
+        let mut state = lease.entry.state.lock().await;
+        let products = state
+            .products
+            .as_mut()
+            .ok_or_else(|| "historical market products were not built".to_string())?;
+        Ok(products.condition_snapshot(&ticker, resolution_us, limit, as_of))
+    }
+
+    pub async fn macro_snapshot(
+        &self,
         window: EventWindow,
         ticker: String,
         timeframe: String,
-    ) {
-        let result = self
-            .build_inner(entry.clone(), window, ticker, timeframe)
-            .await;
+        limit: usize,
+        as_of: DateTime<Utc>,
+    ) -> Result<MacroBarSnapshot, String> {
+        let lease = self.acquire(window, ticker.clone()).await?;
+        lease.entry.wait_complete().await?;
+        let mut state = lease.entry.state.lock().await;
+        let products = state
+            .products
+            .as_mut()
+            .ok_or_else(|| "historical market products were not built".to_string())?;
+        Ok(products.macro_snapshot(&ticker, &timeframe, limit, as_of))
+    }
+
+    pub async fn metrics(&self) -> CacheMetrics {
+        let index = self.inner.lock().await;
+        CacheMetrics {
+            active_builds: self.config.cache_max_concurrent_builds
+                - self.build_permits.available_permits(),
+            builds: self.stats.builds.load(Ordering::Relaxed),
+            estimated_bytes: self.allocated_bytes.load(Ordering::Relaxed),
+            entries: index.entries.len(),
+            evictions: self.stats.evictions.load(Ordering::Relaxed),
+            hits: self.stats.hits.load(Ordering::Relaxed),
+            misses: self.stats.misses.load(Ordering::Relaxed),
+            max_bytes: self.config.cache_max_bytes,
+        }
+    }
+
+    async fn build(&self, entry: Arc<CacheEntry>, window: EventWindow, ticker: String) {
+        let permit = match self.build_permits.acquire().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                let mut state = entry.state.lock().await;
+                state.error = Some("historical build concurrency gate closed".to_string());
+                state.complete = true;
+                entry.complete.store(true, Ordering::Release);
+                entry.notify.notify_waiters();
+                return;
+            }
+        };
+        let result = self.build_inner(entry.clone(), window, ticker).await;
+        drop(permit);
         let mut state = entry.state.lock().await;
         match result {
             Ok(events_processed) => {
@@ -228,6 +335,7 @@ impl HistoricalDerivedCache {
         drop(state);
         entry.complete.store(true, Ordering::Release);
         entry.notify.notify_waiters();
+        self.enforce_byte_limit().await;
     }
 
     async fn build_inner(
@@ -235,61 +343,173 @@ impl HistoricalDerivedCache {
         entry: Arc<CacheEntry>,
         window: EventWindow,
         _ticker: String,
-        timeframe: String,
     ) -> Result<u64, String> {
+        let resolutions = self
+            .config
+            .product_timeframes
+            .iter()
+            .filter_map(|value| parse_resolution_us(value))
+            .collect::<Vec<_>>();
         let bars = SharedBarStore::new(
-            vec![timeframe],
+            self.config.product_timeframes.clone(),
             self.config.cache_max_bars_per_entry,
             1,
             self.source.trade_aggregation_rules(),
         );
         let shard = bars.shard(0);
-        let mut indicators = BarIndicatorCalculator::new();
-        let mut cursor: Option<HistoricalCursor> = None;
+        let mut indicators = HashMap::<String, BarIndicatorCalculator>::new();
+        let mut products = MarketProductEngine::new(
+            resolutions,
+            ProductCacheLimits {
+                max_bytes: self.config.cache_max_bytes / 2,
+                max_partitions: self.config.cache_max_entries.max(1),
+                max_rows: self.config.product_cache_max_rows_per_entry,
+            },
+            self.source.trade_aggregation_rules(),
+            ConditionClassifier::training_aligned(),
+        );
         let mut events_processed = 0_u64;
-        loop {
-            let remaining = self
-                .config
-                .max_events_per_request
-                .saturating_sub(events_processed as usize);
-            if remaining == 0 {
-                return Err(format!(
-                    "historical derived build exceeded event_limit={}",
-                    self.config.max_events_per_request
-                ));
-            }
-            let request_size = self.config.batch_size.min(remaining).max(1);
-            let (events, next) = self
-                .source
-                .fetch_batch(&window, cursor.as_ref(), request_size)
-                .await?;
-            let count = events.len();
-            for compact in &events {
-                let event = self.source.market_event(compact);
-                for bar in shard.apply_event(&event).await {
-                    if valid_price_bar(&bar) {
-                        let indicator = indicators.apply_bar(&bar);
-                        entry.push(bar, indicator).await;
+        let chunks = split_event_window(&window, self.config.fetch_chunk_hours);
+        let per_build_fetches = self
+            .config
+            .cache_max_concurrent_fetches
+            .div_ceil(self.config.cache_max_concurrent_builds)
+            .max(1);
+        let mut next_chunk = 0usize;
+        let mut active = VecDeque::new();
+        while next_chunk < chunks.len() && active.len() < per_build_fetches {
+            active.push_back(self.spawn_chunk_fetch(chunks[next_chunk].clone()));
+            next_chunk += 1;
+        }
+        while let Some(mut receiver) = active.pop_front() {
+            while let Some(batch) = receiver.recv().await {
+                let events = batch?;
+                let count = events.len();
+                if events_processed.saturating_add(count as u64)
+                    > self.config.max_events_per_request as u64
+                {
+                    return Err(format!(
+                        "historical derived build exceeded event_limit={}",
+                        self.config.max_events_per_request
+                    ));
+                }
+                for compact in &events {
+                    let event = self.source.market_event(compact);
+                    products.apply_event(&event, event.ts());
+                    for bar in shard.apply_event(&event).await {
+                        if valid_price_bar(&bar) {
+                            let indicator = indicators
+                                .entry(bar.timeframe.clone())
+                                .or_insert_with(BarIndicatorCalculator::new)
+                                .apply_bar(&bar);
+                            entry.push(bar, indicator).await?;
+                        }
                     }
                 }
-            }
-            events_processed += count as u64;
-            {
+                events_processed += count as u64;
+                entry.set_product_bytes(products.metrics().estimated_bytes)?;
                 let mut state = entry.state.lock().await;
                 state.events_processed = events_processed;
             }
-            if count < request_size || next.is_none() {
-                break;
+            if next_chunk < chunks.len() {
+                active.push_back(self.spawn_chunk_fetch(chunks[next_chunk].clone()));
+                next_chunk += 1;
             }
-            cursor = next;
         }
         for bar in shard.finalize_due(window.end).await {
             if valid_price_bar(&bar) {
-                let indicator = indicators.apply_bar(&bar);
-                entry.push(bar, indicator).await;
+                let indicator = indicators
+                    .entry(bar.timeframe.clone())
+                    .or_insert_with(BarIndicatorCalculator::new)
+                    .apply_bar(&bar);
+                entry.push(bar, indicator).await?;
             }
         }
+        let product_metrics = products.metrics();
+        entry.set_product_bytes(product_metrics.estimated_bytes)?;
+        if product_metrics.evictions > 0 {
+            return Err(format!(
+                "historical canonical product build exceeded its bounded cache: evictions={} rows={} estimated_bytes={}",
+                product_metrics.evictions,
+                product_metrics.family_rows + product_metrics.condition_rows,
+                product_metrics.estimated_bytes,
+            ));
+        }
+        let mut state = entry.state.lock().await;
+        state.products = Some(products);
         Ok(events_processed)
+    }
+
+    fn spawn_chunk_fetch(
+        &self,
+        window: EventWindow,
+    ) -> mpsc::Receiver<Result<Vec<LiveCompactEvent>, String>> {
+        let (sender, receiver) = mpsc::channel(2);
+        let source = self.source.clone();
+        let permits = self.fetch_permits.clone();
+        let batch_size = self.config.batch_size;
+        tokio::spawn(async move {
+            let _permit = match permits.acquire_owned().await {
+                Ok(permit) => permit,
+                Err(_) => {
+                    let _ = sender
+                        .send(Err("historical fetch concurrency gate closed".to_string()))
+                        .await;
+                    return;
+                }
+            };
+            let mut cursor: Option<HistoricalCursor> = None;
+            loop {
+                match source
+                    .fetch_batch(&window, cursor.as_ref(), batch_size)
+                    .await
+                {
+                    Ok((events, next)) => {
+                        let count = events.len();
+                        if count > 0 && sender.send(Ok(events)).await.is_err() {
+                            return;
+                        }
+                        if count < batch_size || next.is_none() {
+                            return;
+                        }
+                        cursor = next;
+                    }
+                    Err(error) => {
+                        let _ = sender.send(Err(error)).await;
+                        return;
+                    }
+                }
+            }
+        });
+        receiver
+    }
+
+    async fn enforce_byte_limit(&self) {
+        let mut index = self.inner.lock().await;
+        loop {
+            let total = index
+                .entries
+                .values()
+                .map(|entry| entry.estimated_bytes.load(Ordering::Relaxed) as usize)
+                .sum::<usize>();
+            if total <= self.config.cache_max_bytes {
+                break;
+            }
+            let Some(position) = index.order.iter().position(|candidate| {
+                index
+                    .entries
+                    .get(candidate)
+                    .is_some_and(|entry| entry.complete.load(Ordering::Acquire))
+            }) else {
+                break;
+            };
+            let Some(oldest) = index.order.remove(position) else {
+                break;
+            };
+            if index.entries.remove(&oldest).is_some() {
+                self.stats.evictions.fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
 }
 
@@ -308,8 +528,25 @@ impl CacheEntry {
         )
     }
 
-    async fn push(&self, bar: BarRow, indicator: IndicatorRow) {
+    async fn push(&self, bar: BarRow, indicator: IndicatorRow) -> Result<(), String> {
         let mut state = self.state.lock().await;
+        let frame_bytes = state
+            .frames
+            .len()
+            .saturating_add(1)
+            .saturating_mul(size_of::<DerivedUpdate>() + 512);
+        if state.frames.len() >= self.max_updates || frame_bytes > self.max_update_bytes {
+            return Err(format!(
+                "historical derived entry exceeded cache limit: updates={} max_updates={} estimated_bytes={} max_update_bytes={}",
+                state.frames.len() + 1,
+                self.max_updates,
+                frame_bytes,
+                self.max_update_bytes,
+            ));
+        }
+        self.set_estimated_bytes(frame_bytes as u64 + self.product_bytes.load(Ordering::Acquire))?;
+        self.frame_bytes
+            .store(frame_bytes as u64, Ordering::Release);
         let update = DerivedUpdate {
             as_of: bar.bar_end,
             bar,
@@ -320,6 +557,52 @@ impl CacheEntry {
         state.frames.push(update.clone());
         drop(state);
         let _ = self.updates.send(update);
+        Ok(())
+    }
+
+    fn set_product_bytes(&self, bytes: usize) -> Result<(), String> {
+        let bytes = bytes as u64;
+        self.set_estimated_bytes(self.frame_bytes.load(Ordering::Acquire) + bytes)?;
+        self.product_bytes.store(bytes, Ordering::Release);
+        Ok(())
+    }
+
+    fn set_estimated_bytes(&self, next: u64) -> Result<(), String> {
+        let previous = self.estimated_bytes.load(Ordering::Acquire);
+        if next == previous {
+            return Ok(());
+        }
+        if next < previous {
+            self.allocated_bytes
+                .fetch_sub(previous - next, Ordering::AcqRel);
+            self.estimated_bytes.store(next, Ordering::Release);
+            return Ok(());
+        }
+        let delta = next - previous;
+        let mut allocated = self.allocated_bytes.load(Ordering::Acquire);
+        loop {
+            let Some(candidate) = allocated.checked_add(delta) else {
+                return Err("historical cache byte accounting overflowed".to_string());
+            };
+            if candidate > self.global_max_bytes {
+                return Err(format!(
+                    "historical cache byte limit exceeded: requested_bytes={} allocated_bytes={} max_bytes={}",
+                    delta, allocated, self.global_max_bytes,
+                ));
+            }
+            match self.allocated_bytes.compare_exchange_weak(
+                allocated,
+                candidate,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    self.estimated_bytes.store(next, Ordering::Release);
+                    return Ok(());
+                }
+                Err(current) => allocated = current,
+            }
+        }
     }
 
     async fn wait_complete(&self) -> Result<(Vec<DerivedUpdate>, u64), String> {
@@ -339,22 +622,42 @@ impl CacheEntry {
     }
 }
 
-fn cache_key(
-    window: &EventWindow,
-    ticker: &str,
-    timeframe: &str,
-    revision: &SourceRevision,
-) -> String {
+impl Drop for CacheEntry {
+    fn drop(&mut self) {
+        let bytes = self.estimated_bytes.load(Ordering::Acquire);
+        if bytes > 0 {
+            self.allocated_bytes.fetch_sub(bytes, Ordering::AcqRel);
+        }
+    }
+}
+
+fn split_event_window(window: &EventWindow, chunk_hours: usize) -> Vec<EventWindow> {
+    let step = Duration::hours(chunk_hours.max(1) as i64);
+    let mut chunks = Vec::new();
+    let mut start = window.start;
+    while start < window.end {
+        let end = (start + step).min(window.end);
+        chunks.push(EventWindow {
+            start,
+            end,
+            tickers: window.tickers.clone(),
+        });
+        start = end;
+    }
+    chunks
+}
+
+fn cache_key(window: &EventWindow, ticker: &str, revision: &SourceRevision) -> String {
     format!(
         "{}:{}:{}:{}:{}:{}:{}:{}",
         ticker.to_ascii_uppercase(),
-        timeframe.to_ascii_lowercase(),
         window.start.timestamp_micros(),
         window.end.timestamp_micros(),
         revision.token,
         HISTORICAL_ENGINE_VERSION,
         BAR_SCHEMA_VERSION,
         INDICATOR_SCHEMA_VERSION,
+        MARKET_PRODUCT_SCHEMA_VERSION,
     )
 }
 
@@ -376,9 +679,15 @@ fn valid_price_bar(bar: &BarRow) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{cache_key, SourceRevision, HISTORICAL_ENGINE_VERSION};
+    use super::{
+        cache_key, split_event_window, CacheEntry, EntryState, SourceRevision,
+        HISTORICAL_ENGINE_VERSION,
+    };
     use crate::source::EventWindow;
     use chrono::{TimeZone, Utc};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::Arc;
+    use tokio::sync::{broadcast, Mutex, Notify};
 
     #[test]
     fn cache_key_changes_with_source_revision_and_engine_contract() {
@@ -398,9 +707,49 @@ mod tests {
             ..first.clone()
         };
         assert_ne!(
-            cache_key(&window, "AAPL", "1m", &first),
-            cache_key(&window, "AAPL", "1m", &second)
+            cache_key(&window, "AAPL", &first),
+            cache_key(&window, "AAPL", &second)
         );
-        assert!(cache_key(&window, "AAPL", "1m", &first).contains(HISTORICAL_ENGINE_VERSION));
+        assert!(cache_key(&window, "AAPL", &first).contains(HISTORICAL_ENGINE_VERSION));
+    }
+
+    #[test]
+    fn cache_entry_reservations_enforce_the_service_byte_ceiling() {
+        let allocated = Arc::new(AtomicU64::new(0));
+        let (updates, _) = broadcast::channel(16);
+        let entry = CacheEntry {
+            allocated_bytes: allocated.clone(),
+            complete: AtomicBool::new(false),
+            frame_bytes: AtomicU64::new(0),
+            global_max_bytes: 1_000,
+            notify: Notify::new(),
+            state: Mutex::new(EntryState::default()),
+            updates,
+            estimated_bytes: AtomicU64::new(0),
+            max_update_bytes: 1_000,
+            max_updates: 10,
+            product_bytes: AtomicU64::new(0),
+        };
+        assert!(entry.set_estimated_bytes(900).is_ok());
+        assert!(entry.set_estimated_bytes(1_001).is_err());
+        assert_eq!(allocated.load(Ordering::Acquire), 900);
+        drop(entry);
+        assert_eq!(allocated.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn source_windows_split_into_ordered_non_overlapping_chunks() {
+        let window = EventWindow {
+            start: Utc.with_ymd_and_hms(2026, 7, 10, 0, 0, 0).unwrap(),
+            end: Utc.with_ymd_and_hms(2026, 7, 12, 6, 0, 0).unwrap(),
+            tickers: vec!["AAPL".to_string()],
+        };
+        let chunks = split_event_window(&window, 24);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks.first().unwrap().start, window.start);
+        assert_eq!(chunks.last().unwrap().end, window.end);
+        for pair in chunks.windows(2) {
+            assert_eq!(pair[0].end, pair[1].start);
+        }
     }
 }

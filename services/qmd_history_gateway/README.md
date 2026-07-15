@@ -48,7 +48,11 @@ Configuration uses `QMD_HISTORY_CLICKHOUSE_URL`, `QMD_HISTORY_DATABASE`,
 `QMD_HISTORY_CLICKHOUSE_PASSWORD`, `QMD_HISTORY_BIND`,
 `QMD_HISTORY_BATCH_SIZE`, `QMD_HISTORY_MAX_EVENTS_PER_REQUEST`,
 `QMD_HISTORY_CACHE_MAX_ENTRIES`, `QMD_HISTORY_CACHE_MAX_BARS_PER_ENTRY`, and
-`QMD_HISTORY_CACHE_UPDATE_CAPACITY`.
+`QMD_HISTORY_CACHE_UPDATE_CAPACITY`. Memory/concurrency controls are
+`QMD_HISTORY_CACHE_MAX_BYTES`, `QMD_HISTORY_CACHE_MAX_CONCURRENT_BUILDS`,
+`QMD_HISTORY_CACHE_MAX_CONCURRENT_FETCHES`, `QMD_HISTORY_FETCH_CHUNK_HOURS`,
+`QMD_HISTORY_CACHE_MAX_UPDATES_PER_ENTRY`, and
+`QMD_HISTORY_PRODUCT_CACHE_MAX_ROWS_PER_ENTRY`.
 
 Defaults:
 
@@ -56,14 +60,22 @@ Defaults:
 - database: `market_sip_compact`
 - yearly-table prefix: `events_`
 - batch size: `25000`
-- maximum events in one bar snapshot calculation: `2000000`
+- maximum events in one derived calculation: `10000000`
 - revision-aware derived cache entries: `256`
 - maximum bars retained per derived entry: `100000`
+- total derived-cache memory budget: `1 GiB`
+- concurrent cold builds: `4`
+- service-wide concurrent ClickHouse chunk fetches: `8`
+- source fetch chunk width: `24 hours`
+- maximum derived updates per entry: `500000`
+- maximum canonical product rows per entry: `2000000`
 
 ## API
 
 All timestamps must be RFC3339 with an explicit timezone. Historical requests
 are half-open: `start <= event_time < end`.
+Product snapshots additionally clamp their build horizon to `min(end, as_of)`;
+future events never enter an as-of cache entry.
 Supported bar timeframes are the live QMD set: `1s`, `10s`, `30s`, `1m`, `5m`,
 and `1h`.
 
@@ -72,6 +84,9 @@ and `1h`.
 - `GET /coverage?start=...&end=...`
 - `GET /coverage/latest` (latest market day with canonical event coverage)
 - `GET /snapshot/cache` (cache hits, misses, builds, entries, and evictions)
+- `GET /snapshot/family-bars/{ticker}?start=...&end=...&as_of=...&resolution=1m`
+- `GET /snapshot/condition-bars/{ticker}?start=...&end=...&as_of=...&resolution=1m`
+- `GET /snapshot/macro-bars/{ticker}?start=...&end=...&as_of=...&timeframe=1d`
 - `GET /snapshot/compact-events/{ticker}?start=...&end=...&limit=...`
 - `GET /snapshot/bars/{ticker}?start=...&end=...&timeframe=1m&limit=...` (bars plus canonical QMD bar indicators)
 - `WS /stream/compact-events?start=...&end=...&tickers=AAPL,MSFT`
@@ -91,7 +106,9 @@ stateful indicator calculator. A source-revision and engine-version cache key
 prevents redundant calculation while invalidating results after canonical
 event rebuilds or QMD schema changes. Cold stream subscribers receive updates
 as ClickHouse events are read; concurrent and later consumers share the same
-single-flight build.
+single-flight build. Cold builds split long windows into fixed time chunks,
+prefetch a bounded number concurrently under a service-wide semaphore, and
+consume the chunk streams oldest-to-newest for causal indicators.
 
 The streaming endpoints close after the requested historical window is fully
 delivered. The live QMD equivalents remain open and publish newly arriving

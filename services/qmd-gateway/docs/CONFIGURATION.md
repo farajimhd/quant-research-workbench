@@ -79,11 +79,14 @@ are live-tradability blocking until their close transition is observed.
 | `QMD_BAR_TIMEFRAMES` | `1s,10s,30s,1m,5m,1h` | Timeframes built from quotes/trades. | Timeframes are aligned to the top of their interval. |
 | `QMD_BAR_HISTORY_LIMIT` | `1000` | In-memory closed bars retained per ticker/timeframe. | Deeper history should come from ClickHouse. |
 | `QMD_BAR_SHARD_COUNT` | `8` | Number of bar worker shards. | Increase if bar latency rises. |
+| `QMD_PRODUCT_CACHE_MAX_BYTES` | `536870912` | Service-wide estimated byte ceiling for canonical family and condition rows. | Limits are divided across shards. |
+| `QMD_PRODUCT_CACHE_MAX_ROWS` | `2000000` | Service-wide canonical product row ceiling. | Eviction removes complete ticker-day partitions. |
+| `QMD_PRODUCT_CACHE_MAX_PARTITIONS` | `8192` | Service-wide ticker-day partition ceiling. | Prevents unbounded symbol/day keys. |
 
 Canonical intraday bars are always enabled and require compact-event
 persistence. `QMD_INTRADAY_BAR_TIMEFRAMES` defaults to
 `100ms,1s,5s,10s,30s,1m,5m,1h`, `QMD_INTRADAY_BAR_TABLE` defaults to
-`intraday_bars_v1`, and the channel/shard controls are
+`intraday_family_bars_v2`, and the channel/shard controls are
 `QMD_INTRADAY_BAR_CHANNEL_CAPACITY` and `QMD_INTRADAY_BAR_SHARD_COUNT`.
 
 ## Indicators
@@ -94,7 +97,7 @@ persistence. `QMD_INTRADAY_BAR_TIMEFRAMES` defaults to
 | `QMD_INDICATOR_HISTORY_BY_TIMEFRAME` | `1s:900,10s:360,30s:480,1m:960,5m:192,1h:32` | Closed indicator rows retained per ticker/timeframe. | If a timeframe is missing, fallback is `QMD_INDICATOR_HISTORY_LIMIT`. |
 | `QMD_INDICATOR_HISTORY_LIMIT` | `1000` | Fallback indicator history limit. | Used only for unlisted timeframes. |
 | `QMD_INDICATOR_SHARD_COUNT` | `8` | Number of indicator worker shards. | Increase if indicator latency rises. |
-| `QMD_PERSIST_INDICATORS` | `false` | Persist closed bar-level indicator rows to ClickHouse. | Keep false by default because these indicators can be recomputed from compact events and `intraday_bars_v1`. |
+| `QMD_PERSIST_INDICATORS` | `false` | Persist closed bar-level indicator rows to ClickHouse. | Keep false by default because these indicators can be recomputed from compact events and `intraday_family_bars_v2`. |
 
 ## ClickHouse Batch Writes
 

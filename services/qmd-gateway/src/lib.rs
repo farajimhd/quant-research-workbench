@@ -21,6 +21,7 @@ pub mod intraday_bars;
 pub mod live_market_state;
 pub mod maintenance;
 pub mod market_calendar;
+pub mod market_products;
 pub mod massive;
 pub mod metrics;
 pub mod scanner;

@@ -11,6 +11,10 @@ use crate::live_market_state::{
 };
 use crate::maintenance::{MaintenanceSnapshot, SharedMaintenanceState};
 use crate::market_calendar::{MarketCalendarClient, MarketSnapshot};
+use crate::market_products::{
+    parse_resolution_us, ConditionBarSnapshot, FamilyBarSnapshot, MacroBarSnapshot,
+    ProductCacheMetrics, SharedMarketProductStore,
+};
 use crate::metrics::{MetricsSnapshot, OperationalSnapshot, SharedMetrics};
 use crate::scanner::{ScannerPrimitive, ScannerPrimitiveSnapshot, SharedScannerStore};
 use crate::session::session_phase;
@@ -43,6 +47,7 @@ pub struct AppState {
     pub market: SharedMarketState,
     pub maintenance: SharedMaintenanceState,
     pub market_calendar: MarketCalendarClient,
+    pub products: SharedMarketProductStore,
     pub metrics: SharedMetrics,
     pub intraday_bars: broadcast::Sender<IntradayBarRow>,
     pub scanner: SharedScannerStore,
@@ -58,6 +63,14 @@ struct LimitQuery {
 #[derive(Debug, Deserialize)]
 struct BarsQuery {
     limit: Option<usize>,
+    timeframe: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProductQuery {
+    emit: Option<String>,
+    limit: Option<usize>,
+    resolution: Option<String>,
     timeframe: Option<String>,
 }
 
@@ -108,6 +121,13 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/snapshot/ticker/{ticker}", get(ticker_snapshot))
         .route("/snapshot/bars/{ticker}", get(bar_snapshot))
+        .route("/snapshot/product-cache", get(product_cache_snapshot))
+        .route("/snapshot/family-bars/{ticker}", get(family_bar_snapshot))
+        .route(
+            "/snapshot/condition-bars/{ticker}",
+            get(condition_bar_snapshot),
+        )
+        .route("/snapshot/macro-bars/{ticker}", get(macro_bar_snapshot))
         .route(
             "/snapshot/compact-events/{ticker}",
             get(compact_event_snapshot),
@@ -129,6 +149,9 @@ pub fn app(state: AppState) -> Router {
         .route("/stream/scanner-primitives", get(scanner_primitive_stream))
         .route("/stream/ticker/{ticker}", get(ticker_stream))
         .route("/stream/bars/{ticker}", get(bar_stream))
+        .route("/stream/family-bars/{ticker}", get(family_bar_stream))
+        .route("/stream/condition-bars/{ticker}", get(condition_bar_stream))
+        .route("/stream/macro-bars/{ticker}", get(macro_bar_stream))
         .route("/stream/indicators/{ticker}", get(indicator_stream))
         .layer(CorsLayer::permissive())
         .with_state(Arc::new(state))
@@ -654,19 +677,105 @@ async fn bar_snapshot(
     Path(ticker): Path<String>,
     Query(query): Query<BarsQuery>,
 ) -> Json<BarSnapshot> {
+    let timeframe = query.timeframe.as_deref().unwrap_or("1m");
+    let mut snapshot = state
+        .bars
+        .snapshot(
+            &ticker,
+            timeframe,
+            query
+                .limit
+                .unwrap_or(500)
+                .min(state.config.bar_history_limit),
+        )
+        .await
+        .price_bars();
+    if let Some(resolution_us) = parse_resolution_us(timeframe) {
+        let family = state
+            .products
+            .family_snapshot(
+                &ticker,
+                resolution_us,
+                state.config.bar_history_limit.saturating_mul(3),
+                chrono::Utc::now(),
+            )
+            .await;
+        snapshot.reconcile_family_authority(&family.rows);
+    }
+    Json(snapshot)
+}
+
+async fn product_cache_snapshot(State(state): State<Arc<AppState>>) -> Json<ProductCacheMetrics> {
+    Json(state.products.metrics().await)
+}
+
+async fn family_bar_snapshot(
+    State(state): State<Arc<AppState>>,
+    Path(ticker): Path<String>,
+    Query(query): Query<ProductQuery>,
+) -> Json<FamilyBarSnapshot> {
+    let resolution_us = query
+        .resolution
+        .as_deref()
+        .and_then(parse_resolution_us)
+        .unwrap_or(60_000_000);
     Json(
         state
-            .bars
-            .snapshot(
+            .products
+            .family_snapshot(
                 &ticker,
-                query.timeframe.as_deref().unwrap_or("1m"),
+                resolution_us,
                 query
                     .limit
-                    .unwrap_or(500)
-                    .min(state.config.bar_history_limit),
+                    .unwrap_or(1_500)
+                    .min(state.config.product_cache_max_rows),
+                chrono::Utc::now(),
             )
-            .await
-            .price_bars(),
+            .await,
+    )
+}
+
+async fn condition_bar_snapshot(
+    State(state): State<Arc<AppState>>,
+    Path(ticker): Path<String>,
+    Query(query): Query<ProductQuery>,
+) -> Json<ConditionBarSnapshot> {
+    let resolution_us = query
+        .resolution
+        .as_deref()
+        .and_then(parse_resolution_us)
+        .unwrap_or(60_000_000);
+    Json(
+        state
+            .products
+            .condition_snapshot(
+                &ticker,
+                resolution_us,
+                query
+                    .limit
+                    .unwrap_or(1_500)
+                    .min(state.config.product_cache_max_rows),
+                chrono::Utc::now(),
+            )
+            .await,
+    )
+}
+
+async fn macro_bar_snapshot(
+    State(state): State<Arc<AppState>>,
+    Path(ticker): Path<String>,
+    Query(query): Query<ProductQuery>,
+) -> Json<MacroBarSnapshot> {
+    Json(
+        state
+            .products
+            .macro_snapshot(
+                &ticker,
+                query.timeframe.as_deref().unwrap_or("1d"),
+                query.limit.unwrap_or(500).min(10_000),
+                chrono::Utc::now(),
+            )
+            .await,
     )
 }
 
@@ -753,6 +862,176 @@ async fn bar_stream(
         )
         .await;
     })
+}
+
+async fn family_bar_stream(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+    Path(ticker): Path<String>,
+    Query(query): Query<ProductQuery>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| async move {
+        let resolution_us = query
+            .resolution
+            .as_deref()
+            .and_then(parse_resolution_us)
+            .unwrap_or(60_000_000);
+        stream_product_snapshots(socket, state, ticker, resolution_us, query, "family").await;
+    })
+}
+
+async fn condition_bar_stream(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+    Path(ticker): Path<String>,
+    Query(query): Query<ProductQuery>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| async move {
+        let resolution_us = query
+            .resolution
+            .as_deref()
+            .and_then(parse_resolution_us)
+            .unwrap_or(60_000_000);
+        stream_product_snapshots(socket, state, ticker, resolution_us, query, "condition").await;
+    })
+}
+
+async fn macro_bar_stream(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+    Path(ticker): Path<String>,
+    Query(query): Query<ProductQuery>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| async move {
+        stream_product_snapshots(socket, state, ticker, 0, query, "macro").await;
+    })
+}
+
+async fn stream_product_snapshots(
+    mut socket: WebSocket,
+    state: Arc<AppState>,
+    ticker: String,
+    resolution_us: u64,
+    query: ProductQuery,
+    kind: &'static str,
+) {
+    let mut timer = interval(Duration::from_millis(state.config.ticker_broadcast_ms));
+    let limit = query
+        .limit
+        .unwrap_or(1_500)
+        .min(state.config.product_cache_max_rows);
+    let emit = query.emit.as_deref().unwrap_or("full_then_updates");
+    if !matches!(emit, "full" | "updates" | "full_then_updates") {
+        let _ = socket
+            .send(Message::Text(
+                r#"{"error":"emit must be full, updates, or full_then_updates"}"#.into(),
+            ))
+            .await;
+        return;
+    }
+    let mut first = true;
+    let mut seen = std::collections::HashMap::<String, u64>::new();
+    loop {
+        timer.tick().await;
+        let now = chrono::Utc::now();
+        let payload = match kind {
+            "condition" => {
+                let mut snapshot = state
+                    .products
+                    .condition_snapshot(&ticker, resolution_us, limit, now)
+                    .await;
+                if emit == "updates" || !first {
+                    snapshot.rows.retain(|row| {
+                        let key = format!("{}:{}", row.label_resolution_us, row.bucket_index);
+                        row.revision > seen.get(&key).copied().unwrap_or(0)
+                    });
+                }
+                for row in &snapshot.rows {
+                    seen.insert(
+                        format!("{}:{}", row.label_resolution_us, row.bucket_index),
+                        row.revision,
+                    );
+                }
+                serde_json::to_string(&snapshot)
+            }
+            "macro" => {
+                let mut snapshot = state
+                    .products
+                    .macro_snapshot(
+                        &ticker,
+                        query.timeframe.as_deref().unwrap_or("1d"),
+                        limit,
+                        now,
+                    )
+                    .await;
+                if emit == "updates" || !first {
+                    snapshot.rows.retain(|row| {
+                        let key =
+                            format!("{}:{}:{}", row.timeframe, row.session_date, row.bar_family);
+                        row.revision > seen.get(&key).copied().unwrap_or(0)
+                    });
+                }
+                for row in &snapshot.rows {
+                    seen.insert(
+                        format!("{}:{}:{}", row.timeframe, row.session_date, row.bar_family),
+                        row.revision,
+                    );
+                }
+                serde_json::to_string(&snapshot)
+            }
+            _ => {
+                let mut snapshot = state
+                    .products
+                    .family_snapshot(&ticker, resolution_us, limit, now)
+                    .await;
+                if emit == "updates" || !first {
+                    snapshot.rows.retain(|row| {
+                        let key = format!(
+                            "{}:{}:{}:{}",
+                            row.local_date,
+                            row.label_resolution_us,
+                            row.bucket_index,
+                            row.bar_family
+                        );
+                        row.revision > seen.get(&key).copied().unwrap_or(0)
+                    });
+                }
+                for row in &snapshot.rows {
+                    seen.insert(
+                        format!(
+                            "{}:{}:{}:{}",
+                            row.local_date,
+                            row.label_resolution_us,
+                            row.bucket_index,
+                            row.bar_family
+                        ),
+                        row.revision,
+                    );
+                }
+                serde_json::to_string(&snapshot)
+            }
+        };
+        match payload {
+            Ok(text) => {
+                if socket.send(Message::Text(text.into())).await.is_err() {
+                    break;
+                }
+            }
+            Err(error) => {
+                if socket
+                    .send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }
+        if emit == "full" {
+            return;
+        }
+        first = false;
+    }
 }
 
 async fn indicator_stream(
@@ -1013,7 +1292,7 @@ async fn stream_bars(
     let mut timer = interval(Duration::from_millis(state.config.ticker_broadcast_ms));
     loop {
         timer.tick().await;
-        let snapshot = state
+        let mut snapshot = state
             .bars
             .snapshot(
                 &ticker,
@@ -1022,6 +1301,18 @@ async fn stream_bars(
             )
             .await
             .price_bars();
+        if let Some(resolution_us) = parse_resolution_us(&timeframe) {
+            let family = state
+                .products
+                .family_snapshot(
+                    &ticker,
+                    resolution_us,
+                    limit.min(state.config.product_cache_max_rows),
+                    chrono::Utc::now(),
+                )
+                .await;
+            snapshot.reconcile_family_authority(&family.rows);
+        }
         match serde_json::to_string(&snapshot) {
             Ok(text) => {
                 if socket.send(Message::Text(text.into())).await.is_err() {

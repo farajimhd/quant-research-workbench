@@ -12,7 +12,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, sleep, timeout, Duration, Instant};
 
-pub const INTRADAY_BAR_SCHEMA_VERSION: u16 = 1;
+pub const INTRADAY_BAR_SCHEMA_VERSION: u16 = 2;
 pub const BASE_RESOLUTION_US: i64 = 100_000;
 const SESSION_START_US: i64 = 4 * 60 * 60 * 1_000_000;
 const SESSION_END_US: i64 = 20 * 60 * 60 * 1_000_000;
@@ -72,7 +72,7 @@ struct SortKey(u64, u64, u8, u64);
 struct EventPoint {
     family: &'static str,
     price: f32,
-    size: f32,
+    size: f64,
 }
 
 #[derive(Clone, Eq, Hash, PartialEq)]
@@ -102,14 +102,14 @@ pub struct IntradayBarRow {
     close: f32,
     high: f32,
     low: f32,
-    size_sum: f32,
-    size_open: f32,
-    size_close: f32,
-    size_high: f32,
-    size_low: f32,
-    event_count: u32,
-    first_event_timestamp_us: i64,
-    last_event_timestamp_us: i64,
+    size_sum: f64,
+    size_open: f64,
+    size_close: f64,
+    size_high: f64,
+    size_low: f64,
+    event_count: u64,
+    first_event_timestamp_us: u64,
+    last_event_timestamp_us: u64,
     bar_start_session_us: i64,
     bar_end_session_us: i64,
     #[serde(skip)]
@@ -143,8 +143,8 @@ impl IntradayBarRow {
             size_high: point.size,
             size_low: point.size,
             event_count: 1,
-            first_event_timestamp_us: event.sip_timestamp_us as i64,
-            last_event_timestamp_us: event.sip_timestamp_us as i64,
+            first_event_timestamp_us: event.sip_timestamp_us,
+            last_event_timestamp_us: event.sip_timestamp_us,
             bar_start_session_us: bucket * BASE_RESOLUTION_US,
             bar_end_session_us: (bucket + 1) * BASE_RESOLUTION_US,
             first_key: key,
@@ -158,13 +158,13 @@ impl IntradayBarRow {
             self.first_key = key;
             self.open = point.price;
             self.size_open = point.size;
-            self.first_event_timestamp_us = event.sip_timestamp_us as i64;
+            self.first_event_timestamp_us = event.sip_timestamp_us;
         }
         if key >= self.last_key {
             self.last_key = key;
             self.close = point.price;
             self.size_close = point.size;
-            self.last_event_timestamp_us = event.sip_timestamp_us as i64;
+            self.last_event_timestamp_us = event.sip_timestamp_us;
         }
         self.high = self.high.max(point.price);
         self.low = self.low.min(point.price);
@@ -535,21 +535,21 @@ impl IntradayBarWriter {
                 schema_version UInt16,
                 ticker LowCardinality(String),
                 local_date Date,
-                label_resolution_us Int64,
-                bucket_index Int64,
+                label_resolution_us UInt64,
+                bucket_index UInt64,
                 bar_family LowCardinality(String),
                 open Float32,
                 close Float32,
                 high Float32,
                 low Float32,
-                size_sum Float32,
-                size_open Float32,
-                size_close Float32,
-                size_high Float32,
-                size_low Float32,
-                event_count UInt32,
-                first_event_timestamp_us Int64,
-                last_event_timestamp_us Int64,
+                size_sum Float64,
+                size_open Float64,
+                size_close Float64,
+                size_high Float64,
+                size_low Float64,
+                event_count UInt64,
+                first_event_timestamp_us UInt64,
+                last_event_timestamp_us UInt64,
                 bar_start_session_us Int64,
                 bar_end_session_us Int64,
                 updated_at_utc DateTime64(3, 'UTC') DEFAULT now64(3)
@@ -584,21 +584,21 @@ impl IntradayBarWriter {
             ("schema_version", "UInt16"),
             ("ticker", "LowCardinality(String)"),
             ("local_date", "Date"),
-            ("label_resolution_us", "Int64"),
-            ("bucket_index", "Int64"),
+            ("label_resolution_us", "UInt64"),
+            ("bucket_index", "UInt64"),
             ("bar_family", "LowCardinality(String)"),
             ("open", "Float32"),
             ("close", "Float32"),
             ("high", "Float32"),
             ("low", "Float32"),
-            ("size_sum", "Float32"),
-            ("size_open", "Float32"),
-            ("size_close", "Float32"),
-            ("size_high", "Float32"),
-            ("size_low", "Float32"),
-            ("event_count", "UInt32"),
-            ("first_event_timestamp_us", "Int64"),
-            ("last_event_timestamp_us", "Int64"),
+            ("size_sum", "Float64"),
+            ("size_open", "Float64"),
+            ("size_close", "Float64"),
+            ("size_high", "Float64"),
+            ("size_low", "Float64"),
+            ("event_count", "UInt64"),
+            ("first_event_timestamp_us", "UInt64"),
+            ("last_event_timestamp_us", "UInt64"),
             ("bar_start_session_us", "Int64"),
             ("bar_end_session_us", "Int64"),
             ("updated_at_utc", "DateTime64(3, 'UTC')"),
@@ -794,7 +794,7 @@ impl IntradayBarWriter {
               intDiv(bar_start_session_us, {resolution}) AS bucket, bar_family,
               argMin(open, bucket_index), argMax(close, bucket_index), max(high), min(low), sum(size_sum),
               argMin(size_open, bucket_index), argMax(size_close, bucket_index), max(size_high), min(size_low),
-              toUInt32(sum(event_count)), min(first_event_timestamp_us), max(last_event_timestamp_us),
+              toUInt64(sum(event_count)), min(first_event_timestamp_us), max(last_event_timestamp_us),
               bucket * {resolution}, (bucket + 1) * {resolution}
             FROM {table} FINAL
             WHERE label_resolution_us = {base}{filter}
@@ -1022,10 +1022,16 @@ impl IntradayBarWriter {
             .map(|row| row.last_event_timestamp_us)
             .max()
             .unwrap_or_default();
-        let Some(start) = chrono::DateTime::<Utc>::from_timestamp_micros(min_us) else {
+        let Ok(min_us_i64) = i64::try_from(min_us) else {
             return Err(format!("invalid intraday bar coverage start {min_us}"));
         };
-        let Some(end) = chrono::DateTime::<Utc>::from_timestamp_micros(max_us) else {
+        let Some(start) = chrono::DateTime::<Utc>::from_timestamp_micros(min_us_i64) else {
+            return Err(format!("invalid intraday bar coverage start {min_us}"));
+        };
+        let Ok(max_us_i64) = i64::try_from(max_us) else {
+            return Err(format!("invalid intraday bar coverage end {max_us}"));
+        };
+        let Some(end) = chrono::DateTime::<Utc>::from_timestamp_micros(max_us_i64) else {
             return Err(format!("invalid intraday bar coverage end {max_us}"));
         };
         if end <= start {
@@ -1104,7 +1110,7 @@ fn event_points(event: &LiveCompactEvent) -> Vec<EventPoint> {
             .then_some(EventPoint {
                 family: "trade",
                 price,
-                size: event.size_primary,
+                size: f64::from(event.size_primary),
             })
             .into_iter()
             .collect();
@@ -1116,14 +1122,14 @@ fn event_points(event: &LiveCompactEvent) -> Vec<EventPoint> {
         out.push(EventPoint {
             family: "quote_bid",
             price: bid,
-            size: event.size_secondary,
+            size: f64::from(event.size_secondary),
         });
     }
     if ask > 0.0 {
         out.push(EventPoint {
             family: "quote_ask",
             price: ask,
-            size: event.size_primary,
+            size: f64::from(event.size_primary),
         });
     }
     out
