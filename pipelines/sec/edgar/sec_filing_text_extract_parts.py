@@ -38,6 +38,11 @@ from pipelines.sec.edgar.sec_parquet_parts import (  # noqa: E402
     DEFAULT_ROW_GROUP_BYTES,
     ParquetShardWriter,
 )
+from pipelines.sec.edgar.sec_pipeline.revision import (  # noqa: E402
+    SourceRevision,
+    parse_pac_event,
+    source_revision,
+)
 
 
 DEFAULT_ARCHIVE_ROOT_WIN = Path("D:/market-data/sec_core/daily_archives")
@@ -94,6 +99,11 @@ DOCUMENT_COLUMNS = [
     "extraction_status",
     "extraction_error",
     "normalizer_version",
+    "source_version_key",
+    "source_revision_at",
+    "source_revision_rank",
+    "source_revision_kind",
+    "pac_event_id",
     "source_run_id",
     "inserted_at",
 ]
@@ -121,6 +131,11 @@ TEXT_SOURCE_COLUMNS = [
     "source_text_byte_count",
     "content_sha256",
     "normalizer_version",
+    "source_version_key",
+    "source_revision_at",
+    "source_revision_rank",
+    "source_revision_kind",
+    "pac_event_id",
     "source_run_id",
     "inserted_at",
 ]
@@ -140,6 +155,11 @@ TEXT_COLUMNS = [
     "quality_flags",
     "source_archive_date",
     "source_archive_member",
+    "source_version_key",
+    "source_revision_at",
+    "source_revision_rank",
+    "source_revision_kind",
+    "pac_event_id",
     "extracted_at_utc",
     "source_run_id",
     "inserted_at",
@@ -163,6 +183,33 @@ SKIP_COLUMNS = [
     "quality_flags",
     "extraction_error",
     "normalizer_version",
+    "source_version_key",
+    "source_revision_at",
+    "source_revision_rank",
+    "source_revision_kind",
+    "pac_event_id",
+    "source_run_id",
+    "inserted_at",
+]
+PAC_COLUMNS = [
+    "pac_event_id",
+    "accession_number",
+    "cik",
+    "correction_timestamp_raw",
+    "correction_order_key",
+    "filing_date",
+    "date_as_of_change",
+    "form_type",
+    "action",
+    "filing_deleted",
+    "sequence_number",
+    "document_name",
+    "document_type",
+    "document_deleted",
+    "source_archive_date",
+    "source_archive_member",
+    "source_archive_path",
+    "source_content_sha256",
     "source_run_id",
     "inserted_at",
 ]
@@ -488,6 +535,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
         "text_source": ("sec_filing_text_v3_parts", "sec_filing_text_v3", TEXT_SOURCE_COLUMNS),
         "text": ("sec_filing_text_rendered_v3_parts", "sec_filing_text_rendered_v3", TEXT_COLUMNS),
         "skip": ("sec_filing_document_skip_v3_parts", "sec_filing_document_skip_v3", SKIP_COLUMNS),
+        "pac": ("sec_filing_pac_event_v3_parts", "sec_filing_pac_event_v3", PAC_COLUMNS),
     }
     writers = {
         dataset: ParquetShardWriter(
@@ -525,6 +573,8 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
         "text_source_rows": 0,
         "text_rows": 0,
         "skip_rows": 0,
+        "pac_rows": 0,
+        "pac_filings": 0,
         "error_rows": 0,
         "parent_rows_loaded": len(parents),
         "parent_missing_filings": 0,
@@ -539,10 +589,10 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
         "errors": [],
         "samples": [],
     }
-    filing_parent_count = doc_count = text_source_count = text_count = skip_count = 0
+    filing_parent_count = doc_count = text_source_count = text_count = skip_count = pac_count = 0
     try:
         with tarfile.open(archive, "r:gz") as tar:
-            for member in tar:
+            for member_sequence, member in enumerate(tar, start=1):
                 stop_event = payload.get("stop_event")
                 if stop_event is not None and stop_event.is_set():
                     stats["status"] = "cancelled"
@@ -565,6 +615,28 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
                     continue
                 stats["filings"] += 1
                 stats["form_types"][filing["form_type"]] += 1
+                source_sha = sha256_bytes(raw)
+                pac_event = parse_pac_event(
+                    decode_sec_bytes(raw),
+                    archive_date=archive_date,
+                    archive_member=member.name,
+                    archive_path=archive,
+                    source_content_sha256=source_sha,
+                )
+                if pac_event is not None:
+                    pac_rows = pac_event.rows(source_run_id=str(payload["source_run_id"]), inserted_at=inserted_at)
+                    for pac_row in pac_rows:
+                        writers["pac"].append(pac_row)
+                    pac_count += len(pac_rows)
+                    stats["pac_filings"] += 1
+                    continue
+                revision = source_revision(
+                    archive_date=archive_date,
+                    archive_member=member.name,
+                    archive_path=archive,
+                    source_content_sha256=source_sha,
+                    occurrence_sequence=member_sequence,
+                )
                 parent = resolve_parent(parents, filing)
                 if parent is None:
                     stats["parent_missing_filings"] += 1
@@ -574,7 +646,9 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
                     parents[(parent.cik, parent.accession_number)] = parent
                 for document in filing["documents"]:
                     stats["documents"] += 1
-                    doc_row, text_source_row, text_row, skip_row, sample_row = build_rows(payload, archive, archive_date_text, member.name, parent, document, inserted_at)
+                    doc_row, text_source_row, text_row, skip_row, sample_row = build_rows(
+                        payload, archive, archive_date_text, member.name, parent, document, inserted_at, revision=revision
+                    )
                     writers["document"].append(doc_row)
                     doc_count += 1
                     stats["document_roles"][doc_row["document_role"]] += 1
@@ -613,6 +687,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     stats["text_source_rows"] = text_source_count
     stats["text_rows"] = text_count
     stats["skip_rows"] = skip_count
+    stats["pac_rows"] = pac_count
     stats["error_rows"] = len(stats["errors"])
     stats["document_roles"] = dict(stats["document_roles"])
     stats["text_kinds"] = dict(stats["text_kinds"])
@@ -774,6 +849,8 @@ def build_rows(
     parent: FilingParent,
     document: dict[str, Any],
     inserted_at: str,
+    *,
+    revision: SourceRevision | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
     doc_type = document["document_type"]
     doc_name = document["document_name"]
@@ -794,6 +871,12 @@ def build_rows(
     status = "text_extracted" if has_text else f"skipped_{skip_reason or 'empty'}"
     extraction_error = None
     text_kind = text_kind_for_role(document_role)
+    revision = revision or source_revision(
+        archive_date=archive_date_text,
+        archive_member=member_name,
+        archive_path=archive,
+        source_content_sha256=content_sha,
+    )
     doc_row = {
         "document_id": document_id,
         "filing_id": parent.filing_id,
@@ -820,6 +903,11 @@ def build_rows(
         "extraction_status": status,
         "extraction_error": extraction_error,
         "normalizer_version": NORMALIZER_VERSION,
+        "source_version_key": revision.source_version_key,
+        "source_revision_at": revision.source_revision_at,
+        "source_revision_rank": revision.source_revision_rank,
+        "source_revision_kind": revision.source_revision_kind,
+        "pac_event_id": revision.pac_event_id or None,
         "source_run_id": str(payload["source_run_id"]),
         "inserted_at": inserted_at,
     }
@@ -850,6 +938,11 @@ def build_rows(
             "source_text_byte_count": len(source_text.encode("utf-8", errors="replace")),
             "content_sha256": content_sha,
             "normalizer_version": NORMALIZER_VERSION,
+            "source_version_key": revision.source_version_key,
+            "source_revision_at": revision.source_revision_at,
+            "source_revision_rank": revision.source_revision_rank,
+            "source_revision_kind": revision.source_revision_kind,
+            "pac_event_id": revision.pac_event_id or None,
             "source_run_id": str(payload["source_run_id"]),
             "inserted_at": inserted_at,
         }
@@ -871,6 +964,11 @@ def build_rows(
             "quality_flags": sorted(set(quality_flags)),
             "source_archive_date": archive_date_text,
             "source_archive_member": member_name,
+            "source_version_key": revision.source_version_key,
+            "source_revision_at": revision.source_revision_at,
+            "source_revision_rank": revision.source_revision_rank,
+            "source_revision_kind": revision.source_revision_kind,
+            "pac_event_id": revision.pac_event_id or None,
             "extracted_at_utc": inserted_at,
             "source_run_id": str(payload["source_run_id"]),
             "inserted_at": inserted_at,
@@ -897,6 +995,11 @@ def build_rows(
             "quality_flags": sorted(set(quality_flags)),
             "extraction_error": extraction_error,
             "normalizer_version": NORMALIZER_VERSION,
+            "source_version_key": revision.source_version_key,
+            "source_revision_at": revision.source_revision_at,
+            "source_revision_rank": revision.source_revision_rank,
+            "source_revision_kind": revision.source_revision_kind,
+            "pac_event_id": revision.pac_event_id or None,
             "source_run_id": str(payload["source_run_id"]),
             "inserted_at": inserted_at,
         }
@@ -1151,14 +1254,20 @@ def structure_for_columns(columns: list[str]) -> str:
         "source_text_char_count": "UInt64",
         "source_text_byte_count": "UInt64",
         "has_normalized_text": "UInt8",
+        "filing_deleted": "UInt8",
+        "document_deleted": "UInt8",
         "text_char_count": "UInt64",
         "text_byte_count": "UInt64",
         "filing_size": "Nullable(UInt64)",
         "quality_flags": "Array(String)",
         "filing_date": "Nullable(Date)",
         "report_date": "Nullable(Date)",
+        "date_as_of_change": "Nullable(Date)",
         "source_archive_date": "Date",
         "accepted_at_utc": "Nullable(DateTime64(9, 'UTC'))",
+        "source_revision_at": "DateTime64(3, 'UTC')",
+        "source_revision_rank": "UInt64",
+        "correction_order_key": "UInt64",
         "inserted_at": "DateTime64(3, 'UTC')",
         "extracted_at_utc": "DateTime64(3, 'UTC')",
     }
@@ -1176,6 +1285,7 @@ def structure_for_columns(columns: list[str]) -> str:
         "primary_document_url",
         "filing_detail_url",
         "items",
+        "pac_event_id",
     }
     parts = []
     for column in columns:
@@ -1205,7 +1315,7 @@ def aggregate_results(args: argparse.Namespace, source_run_id: str, loaded_env: 
     for result in results:
         if result.get("status") != "ok":
             summary["failed_archives"] += 1
-        for key in ("members", "filings", "documents", "document_rows", "text_source_rows", "text_rows", "skip_rows", "error_rows", "parent_rows_loaded", "parent_missing_filings", "parse_errors"):
+        for key in ("members", "filings", "documents", "document_rows", "text_source_rows", "text_rows", "skip_rows", "pac_rows", "pac_filings", "error_rows", "parent_rows_loaded", "parent_missing_filings", "parse_errors"):
             summary[key] += int(result.get(key) or 0)
         summary["filing_parent_rows"] += int(result.get("filing_parent_rows") or 0)
         merge_counter(summary["document_roles"], result.get("document_roles") or {})
@@ -1235,6 +1345,8 @@ def empty_summary(args: argparse.Namespace, source_run_id: str, loaded_env: list
         "text_source_rows": 0,
         "text_rows": 0,
         "skip_rows": 0,
+        "pac_rows": 0,
+        "pac_filings": 0,
         "error_rows": 0,
         "parent_rows_loaded": 0,
         "parent_missing_filings": 0,
@@ -1262,6 +1374,7 @@ def write_manifest(path: Path, args: argparse.Namespace, source_run_id: str, loa
             "text_source": "sec_filing_text_v3",
             "text": "sec_filing_text_rendered_v3",
             "skip": "sec_filing_document_skip_v3",
+            "pac": "sec_filing_pac_event_v3",
         },
         "parts_root": str(path.parent / "parts"),
         "part_files": part_files,
@@ -1287,6 +1400,7 @@ def write_summary(path: Path, args: argparse.Namespace, source_run_id: str, summ
         f"- Text source rows: `{summary['text_source_rows']:,}`",
         f"- Text rows: `{summary['text_rows']:,}`",
         f"- Skip rows: `{summary['skip_rows']:,}`",
+        f"- PAC filings/events: `{summary['pac_filings']:,}` / `{summary['pac_rows']:,}`",
         f"- Error rows: `{summary['error_rows']:,}`",
         f"- Parent missing filings: `{summary['parent_missing_filings']:,}`",
         "",

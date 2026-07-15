@@ -25,10 +25,15 @@ CREATE TABLE IF NOT EXISTS q_live.sec_filing_document_v3
     extraction_status LowCardinality(String),
     extraction_error Nullable(String),
     normalizer_version LowCardinality(String),
+    source_version_key String,
+    source_revision_at DateTime64(3, 'UTC'),
+    source_revision_rank UInt64,
+    source_revision_kind LowCardinality(String),
+    pac_event_id Nullable(String),
     source_run_id String,
     inserted_at DateTime64(3, 'UTC')
 )
-ENGINE = ReplacingMergeTree(inserted_at)
+ENGINE = ReplacingMergeTree(source_revision_rank)
 PARTITION BY cityHash64(cik) % 64
 ORDER BY (cik, accession_number, sequence_number, document_id)
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
@@ -58,11 +63,16 @@ CREATE TABLE IF NOT EXISTS q_live.sec_filing_text_v3
     source_text_byte_count UInt64,
     content_sha256 String,
     normalizer_version LowCardinality(String),
+    source_version_key String,
+    source_revision_at DateTime64(3, 'UTC'),
+    source_revision_rank UInt64,
+    source_revision_kind LowCardinality(String),
+    pac_event_id Nullable(String),
     source_run_id String,
     inserted_at DateTime64(3, 'UTC')
 )
-ENGINE = ReplacingMergeTree(inserted_at)
-PARTITION BY toYYYYMM(source_archive_date)
+ENGINE = ReplacingMergeTree(source_revision_rank)
+PARTITION BY cityHash64(cik) % 64
 ORDER BY (cik, accession_number, document_id, content_format)
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
 
@@ -83,11 +93,16 @@ CREATE TABLE IF NOT EXISTS q_live.sec_filing_text_rendered_v3
     quality_flags Array(String),
     source_archive_date Date,
     source_archive_member String,
+    source_version_key String,
+    source_revision_at DateTime64(3, 'UTC'),
+    source_revision_rank UInt64,
+    source_revision_kind LowCardinality(String),
+    pac_event_id Nullable(String),
     extracted_at_utc DateTime64(3, 'UTC'),
     source_run_id String,
     inserted_at DateTime64(3, 'UTC')
 )
-ENGINE = ReplacingMergeTree(inserted_at)
+ENGINE = ReplacingMergeTree(source_revision_rank)
 PARTITION BY cityHash64(cik) % 64
 ORDER BY (cik, accession_number, document_id, text_kind)
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
@@ -112,10 +127,72 @@ CREATE TABLE IF NOT EXISTS q_live.sec_filing_document_skip_v3
     quality_flags Array(String),
     extraction_error Nullable(String),
     normalizer_version LowCardinality(String),
+    source_version_key String,
+    source_revision_at DateTime64(3, 'UTC'),
+    source_revision_rank UInt64,
+    source_revision_kind LowCardinality(String),
+    pac_event_id Nullable(String),
+    source_run_id String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(source_revision_rank)
+PARTITION BY cityHash64(cik) % 64
+ORDER BY (cik, accession_number, document_id, skip_reason)
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
+CREATE TABLE IF NOT EXISTS q_live.sec_filing_pac_event_v3
+(
+    pac_event_id String,
+    accession_number String,
+    cik String,
+    correction_timestamp_raw String,
+    correction_order_key UInt64,
+    filing_date Nullable(Date),
+    date_as_of_change Nullable(Date),
+    form_type LowCardinality(String),
+    action LowCardinality(String),
+    filing_deleted UInt8,
+    sequence_number UInt32,
+    document_name String,
+    document_type LowCardinality(String),
+    document_deleted UInt8,
+    source_archive_date Date,
+    source_archive_member String,
+    source_archive_path Nullable(String),
+    source_content_sha256 String,
     source_run_id String,
     inserted_at DateTime64(3, 'UTC')
 )
 ENGINE = ReplacingMergeTree(inserted_at)
-PARTITION BY cityHash64(cik) % 64
-ORDER BY (cik, accession_number, document_id, skip_reason)
+PARTITION BY toYYYYMM(source_archive_date)
+ORDER BY (accession_number, pac_event_id)
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
+-- Existing v3 installations keep their current engine until an explicit cutover,
+-- but receive the shared revision lineage needed by the resolver and repair tool.
+ALTER TABLE q_live.sec_filing_document_v3 ADD COLUMN IF NOT EXISTS source_version_key String DEFAULT '' AFTER normalizer_version;
+ALTER TABLE q_live.sec_filing_document_v3 ADD COLUMN IF NOT EXISTS source_revision_at DateTime64(3, 'UTC') DEFAULT toDateTime64(source_archive_date, 3, 'UTC') AFTER source_version_key;
+ALTER TABLE q_live.sec_filing_document_v3 ADD COLUMN IF NOT EXISTS source_revision_rank UInt64 DEFAULT toUInt64(toUnixTimestamp64Milli(source_revision_at)) * 1000000 AFTER source_revision_at;
+ALTER TABLE q_live.sec_filing_document_v3 ADD COLUMN IF NOT EXISTS source_revision_kind LowCardinality(String) DEFAULT 'legacy_archive_occurrence' AFTER source_revision_at;
+ALTER TABLE q_live.sec_filing_document_v3 ADD COLUMN IF NOT EXISTS pac_event_id Nullable(String) AFTER source_revision_kind;
+
+ALTER TABLE q_live.sec_filing_text_v3 ADD COLUMN IF NOT EXISTS source_version_key String DEFAULT '' AFTER normalizer_version;
+ALTER TABLE q_live.sec_filing_text_v3 ADD COLUMN IF NOT EXISTS source_revision_at DateTime64(3, 'UTC') DEFAULT toDateTime64(source_archive_date, 3, 'UTC') AFTER source_version_key;
+ALTER TABLE q_live.sec_filing_text_v3 ADD COLUMN IF NOT EXISTS source_revision_rank UInt64 DEFAULT toUInt64(toUnixTimestamp64Milli(source_revision_at)) * 1000000 AFTER source_revision_at;
+ALTER TABLE q_live.sec_filing_text_v3 ADD COLUMN IF NOT EXISTS source_revision_kind LowCardinality(String) DEFAULT 'legacy_archive_occurrence' AFTER source_revision_at;
+ALTER TABLE q_live.sec_filing_text_v3 ADD COLUMN IF NOT EXISTS pac_event_id Nullable(String) AFTER source_revision_kind;
+
+ALTER TABLE q_live.sec_filing_text_rendered_v3 ADD COLUMN IF NOT EXISTS source_version_key String DEFAULT '' AFTER source_archive_member;
+ALTER TABLE q_live.sec_filing_text_rendered_v3 ADD COLUMN IF NOT EXISTS source_revision_at DateTime64(3, 'UTC') DEFAULT toDateTime64(source_archive_date, 3, 'UTC') AFTER source_version_key;
+ALTER TABLE q_live.sec_filing_text_rendered_v3 ADD COLUMN IF NOT EXISTS source_revision_rank UInt64 DEFAULT toUInt64(toUnixTimestamp64Milli(source_revision_at)) * 1000000 AFTER source_revision_at;
+ALTER TABLE q_live.sec_filing_text_rendered_v3 ADD COLUMN IF NOT EXISTS source_revision_kind LowCardinality(String) DEFAULT 'legacy_archive_occurrence' AFTER source_revision_at;
+ALTER TABLE q_live.sec_filing_text_rendered_v3 ADD COLUMN IF NOT EXISTS pac_event_id Nullable(String) AFTER source_revision_kind;
+
+ALTER TABLE q_live.sec_filing_document_skip_v3 ADD COLUMN IF NOT EXISTS source_version_key String DEFAULT '' AFTER normalizer_version;
+ALTER TABLE q_live.sec_filing_document_skip_v3 ADD COLUMN IF NOT EXISTS source_revision_at DateTime64(3, 'UTC') DEFAULT toDateTime64(source_archive_date, 3, 'UTC') AFTER source_version_key;
+ALTER TABLE q_live.sec_filing_document_skip_v3 ADD COLUMN IF NOT EXISTS source_revision_rank UInt64 DEFAULT toUInt64(toUnixTimestamp64Milli(source_revision_at)) * 1000000 AFTER source_revision_at;
+ALTER TABLE q_live.sec_filing_document_skip_v3 ADD COLUMN IF NOT EXISTS source_revision_kind LowCardinality(String) DEFAULT 'legacy_archive_occurrence' AFTER source_revision_at;
+ALTER TABLE q_live.sec_filing_document_skip_v3 ADD COLUMN IF NOT EXISTS pac_event_id Nullable(String) AFTER source_revision_kind;
+
+ALTER TABLE q_live.sec_filing_pac_event_v3 ADD COLUMN IF NOT EXISTS correction_timestamp_raw String DEFAULT '' AFTER cik;
+ALTER TABLE q_live.sec_filing_pac_event_v3 ADD COLUMN IF NOT EXISTS correction_order_key UInt64 DEFAULT 0 AFTER correction_timestamp_raw;

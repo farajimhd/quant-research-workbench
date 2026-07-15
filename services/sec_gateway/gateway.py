@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import FILING_TABLE, SecClickHouseWriter, SecWriteResult, qi, sql_string
+from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import DOCUMENT_TABLE, FILING_TABLE, SecClickHouseWriter, SecWriteResult, qi, sql_string
 from pipelines.sec.edgar.sec_pipeline.coverage import (
     KIND_LIVE_FEED,
     SecCoverageConfig,
@@ -715,13 +715,25 @@ class SecGateway:
         values = ",".join(sql_string(item) for item in accessions)
         out = self._client.execute(
             f"""
-            SELECT accession_number
-            FROM {qi(self.config.pipeline.clickhouse.write_database)}.{qi(FILING_TABLE)} FINAL
+            SELECT accession_number, toString(max(source_revision_at))
+            FROM {qi(self.config.pipeline.clickhouse.write_database)}.{qi(DOCUMENT_TABLE)}
             WHERE accession_number IN ({values})
+            GROUP BY accession_number
             FORMAT TSV
             """
         )
-        existing = {line.strip() for line in out.splitlines() if line.strip()}
+        current_revision: dict[str, datetime] = {}
+        for line in out.splitlines():
+            fields = line.split("\t", 1)
+            if len(fields) != 2 or not fields[0] or not fields[1]:
+                continue
+            current_revision[fields[0]] = datetime.fromisoformat(fields[1].replace("Z", "+00:00")).replace(tzinfo=UTC)
+        existing = {
+            item.accession_number
+            for item in items
+            if item.accession_number in current_revision
+            and (item.updated_at_utc is None or current_revision[item.accession_number] >= item.updated_at_utc)
+        }
         if self.config.xbrl_context_sync_enabled and existing:
             existing -= self._xbrl_context.pending_source_accessions(sorted(existing))
         return existing
@@ -857,6 +869,7 @@ class SecGateway:
             text_source_rows=rows.text_source_rows,
             text_rows=rows.text_rows,
             skip_rows=rows.skip_rows,
+            pac_rows=getattr(rows, "pac_rows", []),
             xbrl_concept_rows=rows.xbrl_rows.concept_rows,
             xbrl_company_fact_rows=rows.xbrl_rows.company_fact_rows,
             xbrl_frame_rows=rows.xbrl_rows.frame_rows,

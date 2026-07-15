@@ -21,7 +21,7 @@ from pipelines.sec.edgar.sec_parquet_parts import ParquetShardWriter, validate_p
 
 
 class SecFilingArchiveRebuildTests(unittest.TestCase):
-    def test_source_text_schema_uses_monthly_archive_partitions(self) -> None:
+    def test_source_text_schema_keeps_all_document_revisions_in_one_partition(self) -> None:
         raw_sql = text_schema.DEFAULT_SCHEMA_PATH.read_text(encoding="utf-8")
         rendered = text_schema.render_schema(raw_sql, "q_live", "live_market_ssd", False)
         source_statement = next(
@@ -30,9 +30,9 @@ class SecFilingArchiveRebuildTests(unittest.TestCase):
             if "q_live.sec_filing_text_v3" in statement
         )
 
-        self.assertIn("PARTITION BY toYYYYMM(source_archive_date)", source_statement)
+        self.assertIn("PARTITION BY cityHash64(cik) % 64", source_statement)
+        self.assertIn("ReplacingMergeTree(source_revision_rank)", source_statement)
         self.assertIn("ORDER BY (cik, accession_number, document_id, content_format)", source_statement)
-        self.assertNotIn("PARTITION BY cityHash64(cik) % 64", source_statement)
 
     def test_part_checkpoints_only_apply_to_current_table_generation(self) -> None:
         class FakeClient:
@@ -105,7 +105,8 @@ class SecFilingArchiveRebuildTests(unittest.TestCase):
         self.assertEqual(created, {"sec_filing_text_v3"})
         self.assertEqual(table_uuids["sec_filing_text_v3"], "uuid-sec_filing_text_v3")
         source_ddl = next(sql for sql in client.statements if "CREATE TABLE IF NOT EXISTS q_live.sec_filing_text_v3" in sql)
-        self.assertIn("PARTITION BY toYYYYMM(source_archive_date)", source_ddl)
+        self.assertIn("PARTITION BY cityHash64(cik) % 64", source_ddl)
+        self.assertIn("ReplacingMergeTree(source_revision_rank)", source_ddl)
 
     def test_archive_rebuild_rejects_stale_hash_partitioned_source_table(self) -> None:
         class FakeClient:

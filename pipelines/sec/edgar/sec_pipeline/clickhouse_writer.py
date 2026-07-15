@@ -13,6 +13,7 @@ DOCUMENT_TABLE = "sec_filing_document_v3"
 TEXT_SOURCE_TABLE = "sec_filing_text_v3"
 TEXT_TABLE = "sec_filing_text_rendered_v3"
 SKIP_TABLE = "sec_filing_document_skip_v3"
+PAC_TABLE = "sec_filing_pac_event_v3"
 XBRL_CONCEPT_TABLE = "sec_xbrl_concept_v3"
 XBRL_COMPANY_FACT_TABLE = "sec_xbrl_company_fact_v3"
 XBRL_FRAME_TABLE = "sec_xbrl_frame_v3"
@@ -34,6 +35,7 @@ WRITE_TABLES = [
     TEXT_SOURCE_TABLE,
     TEXT_TABLE,
     SKIP_TABLE,
+    PAC_TABLE,
     XBRL_CONCEPT_TABLE,
     XBRL_COMPANY_FACT_TABLE,
     XBRL_FRAME_TABLE,
@@ -245,19 +247,27 @@ class SecClickHouseWriter:
         text_source_rows: list[dict[str, Any]],
         text_rows: list[dict[str, Any]],
         skip_rows: list[dict[str, Any]],
+        pac_rows: list[dict[str, Any]] | None = None,
         xbrl_concept_rows: list[dict[str, Any]] | None = None,
         xbrl_company_fact_rows: list[dict[str, Any]] | None = None,
         xbrl_frame_rows: list[dict[str, Any]] | None = None,
         xbrl_frame_observation_rows: list[dict[str, Any]] | None = None,
         skip_existing: bool = True,
     ) -> SecWriteResult:
+        validate_source_lineage(document_rows, text_source_rows, text_rows)
+        incoming_rank = max((int(row.get("source_revision_rank") or 0) for row in document_rows), default=0)
+        if incoming_rank and self.latest_document_revision_rank(str(filing_row["cik"]), str(filing_row["accession_number"])) >= incoming_rank:
+            return SecWriteResult(skipped_existing=True)
         if skip_existing and self.filing_exists(str(filing_row["cik"]), str(filing_row["accession_number"])):
             return SecWriteResult(skipped_existing=True)
+        # Raw source is the lineage authority. Publishing it first guarantees a
+        # failed batch can leave only recoverable upstream rows, never rendered-only rows.
+        self.insert_rows(TEXT_SOURCE_TABLE, text_source_rows)
         self.insert_rows(FILING_TABLE, [filing_row])
         self.insert_rows(DOCUMENT_TABLE, document_rows)
-        self.insert_rows(TEXT_SOURCE_TABLE, text_source_rows)
         self.insert_rows(TEXT_TABLE, text_rows)
         self.insert_rows(SKIP_TABLE, skip_rows)
+        self.insert_rows(PAC_TABLE, pac_rows or [])
         self.insert_rows(XBRL_CONCEPT_TABLE, xbrl_concept_rows or [])
         self.insert_rows(XBRL_COMPANY_FACT_TABLE, xbrl_company_fact_rows or [])
         self.insert_rows(XBRL_FRAME_TABLE, xbrl_frame_rows or [])
@@ -275,11 +285,35 @@ class SecClickHouseWriter:
             skipped_existing=False,
         )
 
+    def latest_document_revision_rank(self, cik: str, accession_number: str) -> int:
+        out = self.client.execute(
+            f"SELECT max(source_revision_rank) FROM {qi(self.database)}.{qi(DOCUMENT_TABLE)} "
+            f"WHERE cik={sql_string(cik)} AND accession_number={sql_string(accession_number)} FORMAT TSV"
+        )
+        return int(out.strip() or "0")
+
     def insert_rows(self, table: str, rows: list[dict[str, Any]]) -> None:
         if not rows:
             return
         body = "\n".join(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) for row in rows)
         self.client.execute(f"INSERT INTO {qi(self.database)}.{qi(table)} SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n{body}")
+
+
+def validate_source_lineage(
+    document_rows: list[dict[str, Any]],
+    text_source_rows: list[dict[str, Any]],
+    text_rows: list[dict[str, Any]],
+) -> None:
+    document_keys = {(str(row["cik"]), str(row["accession_number"]), str(row["document_id"])) for row in document_rows}
+    source_keys = {(str(row["cik"]), str(row["accession_number"]), str(row["document_id"])) for row in text_source_rows}
+    rendered_keys = {(str(row["cik"]), str(row["accession_number"]), str(row["document_id"])) for row in text_rows}
+    orphan_sources = source_keys - document_keys
+    rendered_without_source = rendered_keys - source_keys
+    if orphan_sources or rendered_without_source:
+        raise RuntimeError(
+            "SEC accession batch violates raw-source lineage: "
+            f"orphan_sources={len(orphan_sources)} rendered_without_source={len(rendered_without_source)}"
+        )
 
 
 def qi(value: str) -> str:
@@ -308,6 +342,10 @@ def ensure_sec_write_database(
                     source_table = legacy_source_table
                 elif table == TEXT_SOURCE_TABLE:
                     create_text_source_table_schema(client, target_database=write_database, reference_database=read_database)
+                    created_or_present.append(f"{write_database}.{table}")
+                    continue
+                elif table == PAC_TABLE:
+                    create_pac_table_schema(client, target_database=write_database, reference_database=read_database)
                     created_or_present.append(f"{write_database}.{table}")
                     continue
                 else:
@@ -391,12 +429,55 @@ def create_text_source_table_schema(client: ClickHouseHttpClient, *, target_data
             source_text_byte_count UInt64,
             content_sha256 String,
             normalizer_version LowCardinality(String),
+            source_version_key String,
+            source_revision_at DateTime64(3, 'UTC'),
+            source_revision_rank UInt64,
+            source_revision_kind LowCardinality(String),
+            pac_event_id Nullable(String),
+            source_run_id String,
+            inserted_at DateTime64(3, 'UTC')
+        )
+        ENGINE = ReplacingMergeTree(source_revision_rank)
+        PARTITION BY cityHash64(cik) % 64
+        ORDER BY (cik, accession_number, document_id, content_format)
+        SETTINGS {settings}
+        """
+    )
+
+
+def create_pac_table_schema(client: ClickHouseHttpClient, *, target_database: str, reference_database: str) -> None:
+    storage_policy = infer_storage_policy(client, reference_database, [DOCUMENT_TABLE, TEXT_TABLE])
+    settings = "index_granularity = 8192"
+    if storage_policy:
+        settings += f", storage_policy = {sql_string(storage_policy)}"
+    client.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {qi(target_database)}.{qi(PAC_TABLE)}
+        (
+            pac_event_id String,
+            accession_number String,
+            cik String,
+            correction_timestamp_raw String,
+            correction_order_key UInt64,
+            filing_date Nullable(Date),
+            date_as_of_change Nullable(Date),
+            form_type LowCardinality(String),
+            action LowCardinality(String),
+            filing_deleted UInt8,
+            sequence_number UInt32,
+            document_name String,
+            document_type LowCardinality(String),
+            document_deleted UInt8,
+            source_archive_date Date,
+            source_archive_member String,
+            source_archive_path Nullable(String),
+            source_content_sha256 String,
             source_run_id String,
             inserted_at DateTime64(3, 'UTC')
         )
         ENGINE = ReplacingMergeTree(inserted_at)
-        PARTITION BY cityHash64(cik) % 64
-        ORDER BY (cik, accession_number, document_id, content_format)
+        PARTITION BY toYYYYMM(source_archive_date)
+        ORDER BY (accession_number, pac_event_id)
         SETTINGS {settings}
         """
     )

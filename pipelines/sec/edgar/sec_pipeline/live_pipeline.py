@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ from pipelines.sec.edgar.sec_filing_text_extract_parts import (
 )
 from pipelines.sec.edgar.sec_pipeline.feed import SecFeedItem, accession_text_url
 from pipelines.sec.edgar.sec_pipeline.http import SecHttpClient
+from pipelines.sec.edgar.sec_pipeline.revision import parse_pac_event, source_revision
 from pipelines.sec.edgar.sec_pipeline.submissions import SecSubmissionFiling, SecSubmissionsClient
 from pipelines.sec.edgar.sec_pipeline.xbrl_live import LiveXbrlRows, SecLiveXbrlExtractor
 
@@ -26,6 +28,7 @@ class LiveFilingRows:
     text_source_rows: list[dict[str, Any]]
     text_rows: list[dict[str, Any]]
     skip_rows: list[dict[str, Any]]
+    pac_rows: list[dict[str, Any]]
     xbrl_rows: LiveXbrlRows
     raw_path: Path
 
@@ -68,6 +71,22 @@ class SecLiveFilingPipeline:
         inserted_at = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         archive_date = (item.updated_at_utc or datetime.now(UTC)).date()
         archive_date_text = archive_date.isoformat()
+        source_sha = hashlib.sha256(response.body).hexdigest()
+        pac_event = parse_pac_event(
+            response.body.decode("latin-1", errors="replace"),
+            archive_date=archive_date,
+            archive_member=raw_path.name,
+            archive_path=raw_path,
+            source_content_sha256=source_sha,
+        )
+        revision = source_revision(
+            archive_date=archive_date,
+            archive_member=raw_path.name,
+            archive_path=raw_path,
+            source_content_sha256=source_sha,
+            pac_event=pac_event,
+            occurrence_at_utc=item.updated_at_utc,
+        )
         payload: dict[str, Any] = {
             "source_run_id": source_run_id,
             "min_text_chars": self.min_text_chars,
@@ -93,9 +112,12 @@ class SecLiveFilingPipeline:
         text_source_rows: list[dict[str, Any]] = []
         text_rows: list[dict[str, Any]] = []
         skip_rows: list[dict[str, Any]] = []
+        pac_rows = pac_event.rows(source_run_id=source_run_id, inserted_at=inserted_at) if pac_event else []
         has_xbrl_payload = False
-        for document in filing.get("documents") or []:
-            doc_row, text_source_row, text_row, skip_row, _sample = build_rows(payload, raw_path, archive_date_text, raw_path.name, parent, document, inserted_at)
+        for document in [] if pac_event else (filing.get("documents") or []):
+            doc_row, text_source_row, text_row, skip_row, _sample = build_rows(
+                payload, raw_path, archive_date_text, raw_path.name, parent, document, inserted_at, revision=revision
+            )
             document_rows.append(doc_row)
             if doc_row.get("document_role") == "xbrl_sidecar" or doc_row.get("content_format") == "xbrl":
                 has_xbrl_payload = True
@@ -119,6 +141,7 @@ class SecLiveFilingPipeline:
             text_source_rows=text_source_rows,
             text_rows=text_rows,
             skip_rows=skip_rows,
+            pac_rows=pac_rows,
             xbrl_rows=xbrl_rows,
             raw_path=raw_path,
         )

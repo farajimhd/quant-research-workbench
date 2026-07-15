@@ -704,6 +704,28 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
             (stage_coverage_kind("archive-text-rebuild"),),
         ),
         StageCommand(
+            "sec-revision-reconcile",
+            add_execute_flag(
+                [
+                    args.python_executable,
+                    script("pipelines/sec/edgar/sec_revision_audit_repair.py"),
+                    "--database",
+                    args.write_database,
+                    "--archive-root-win",
+                    archive_root,
+                    "--start-date",
+                    args.start_date,
+                    "--end-date",
+                    args.end_date,
+                    "--apply-stored-pac",
+                ],
+                args,
+            ),
+            logs_root / "sec-revision-reconcile.log",
+            True,
+            (stage_coverage_kind("sec-revision-reconcile"),),
+        ),
+        StageCommand(
             "filing-parent-reconcile",
             add_execute_flag(
                 [

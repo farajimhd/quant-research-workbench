@@ -43,6 +43,7 @@ EXPECTED_TARGET_TABLES = {
     "text_source": "sec_filing_text_v3",
     "text": "sec_filing_text_rendered_v3",
     "skip": "sec_filing_document_skip_v3",
+    "pac": "sec_filing_pac_event_v3",
 }
 DATASET_ORDER = {
     "filing": 0,
@@ -50,6 +51,13 @@ DATASET_ORDER = {
     "text_source": 2,
     "text": 3,
     "skip": 4,
+    "pac": 5,
+}
+REVISION_KEYS = {
+    "document": ("cik", "accession_number", "sequence_number", "document_id"),
+    "text_source": ("cik", "accession_number", "document_id", "content_format"),
+    "text": ("cik", "accession_number", "document_id", "text_kind"),
+    "skip": ("cik", "accession_number", "document_id", "skip_reason"),
 }
 
 
@@ -116,7 +124,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-threads", type=int, default=int(os.environ.get("SEC_TEXT_FILE_INGEST_MAX_THREADS", "24")))
     parser.add_argument("--max-memory-usage", default=os.environ.get("SEC_TEXT_FILE_INGEST_MAX_MEMORY", "0"))
     parser.add_argument("--limit-parts", type=int, default=int(os.environ.get("SEC_TEXT_FILE_INGEST_LIMIT_PARTS", "0")))
-    parser.add_argument("--dataset", choices=["all", "filing", "document", "text_source", "text", "skip"], default="all")
+    parser.add_argument("--dataset", choices=["all", "filing", "document", "text_source", "text", "skip", "pac"], default="all")
     parser.add_argument("--execute", action="store_true", help="Actually insert rows. Without this, only validate and print SQL.")
     parser.add_argument("--preflight-only", action="store_true", help="Validate ClickHouse file() access and exit before inserting.")
     parser.add_argument("--skip-preflight", action="store_true", help="Skip file() row-count preflight. Use only after a successful preflight-only run for the same manifest.")
@@ -450,6 +458,8 @@ def insert_per_part(client: ClickHouseHttpClient, args: argparse.Namespace, part
     profiles: list[InsertProfile] = []
     total = len(parts)
     for index, part in enumerate(parts, start=1):
+        if part.dataset_name == "text":
+            validate_rendered_source_lineage(client, args, part)
         profile = insert_one_part(client, args, part)
         profiles.append(profile)
         insert_part_manifest(client, args, part, profile)
@@ -490,12 +500,81 @@ def insert_one_part(client: ClickHouseHttpClient, args: argparse.Namespace, part
 
 def insert_sql(args: argparse.Namespace, part: PartFile) -> str:
     columns = ", ".join(quote_ident(column) for column in part.columns)
-    select_columns = ", ".join(quote_ident(column) for column in part.columns)
+    if part.dataset_name not in REVISION_KEYS:
+        select_columns = ", ".join(quote_ident(column) for column in part.columns)
+        return (
+            f"INSERT INTO {quote_ident(args.database)}.{quote_ident(part.target_table)} ({columns})\n"
+            f"SELECT {select_columns}\n"
+            f"FROM {file_table_function(part)}"
+        )
+    keys = REVISION_KEYS[part.dataset_name]
+    keys_sql = ", ".join(quote_ident(column) for column in keys)
+    select_columns = ", ".join(
+        "now64(3) AS inserted_at" if column == "inserted_at" else f"i.{quote_ident(column)}"
+        for column in part.columns
+    )
+    source_authority_cte = ""
+    source_authority_join = ""
+    source_authority_filter = ""
+    if part.dataset_name == "text":
+        source_table = quote_ident(EXPECTED_TARGET_TABLES["text_source"])
+        source_authority_cte = (
+            ", source_authority AS (\n"
+            "    SELECT cik, accession_number, document_id,\n"
+            "           argMax(source_version_key, tuple(source_revision_rank, source_text_byte_count, source_version_key)) AS authority_version_key\n"
+            f"    FROM {quote_ident(args.database)}.{source_table}\n"
+            "    WHERE tuple(cik, accession_number, document_id) IN "
+            "(SELECT tuple(cik, accession_number, document_id) FROM incoming)\n"
+            "    GROUP BY cik, accession_number, document_id\n"
+            ")\n"
+        )
+        source_authority_join = " INNER JOIN source_authority AS a USING (cik, accession_number, document_id)"
+        source_authority_filter = " AND i.source_version_key = a.authority_version_key"
     return (
         f"INSERT INTO {quote_ident(args.database)}.{quote_ident(part.target_table)} ({columns})\n"
+        "WITH incoming AS (\n"
+        f"    SELECT *, row_number() OVER (PARTITION BY {keys_sql} ORDER BY source_revision_rank DESC, source_version_key DESC) AS authority_row\n"
+        f"    FROM {file_table_function(part)}\n"
+        "), current AS (\n"
+        f"    SELECT {keys_sql}, max(source_revision_rank) AS current_revision_rank\n"
+        f"    FROM {quote_ident(args.database)}.{quote_ident(part.target_table)}\n"
+        f"    WHERE tuple({keys_sql}) IN (SELECT tuple({keys_sql}) FROM incoming)\n"
+        f"    GROUP BY {keys_sql}\n"
+        ")\n"
+        f"{source_authority_cte}"
         f"SELECT {select_columns}\n"
-        f"FROM {file_table_function(part)}"
+        f"FROM incoming AS i LEFT JOIN current AS c USING ({keys_sql}){source_authority_join}\n"
+        f"WHERE i.authority_row = 1 AND i.source_revision_rank >= ifNull(c.current_revision_rank, 0){source_authority_filter}"
     )
+
+
+def validate_rendered_source_lineage(client: ClickHouseHttpClient, args: argparse.Namespace, part: PartFile) -> None:
+    missing = int(
+        client.execute(
+            "WITH incoming AS (\n"
+            "  SELECT *, row_number() OVER (PARTITION BY cik, accession_number, document_id, text_kind "
+            "ORDER BY source_revision_rank DESC, source_version_key DESC) AS authority_row\n"
+            f"  FROM {file_table_function(part)}\n"
+            "), source_authority AS (\n"
+            "  SELECT cik, accession_number, document_id,\n"
+            "         argMax(source_version_key, tuple(source_revision_rank, source_text_byte_count, source_version_key)) AS authority_version_key,\n"
+            "         max(source_revision_rank) AS authority_revision_rank\n"
+            f"  FROM {quote_ident(args.database)}.{quote_ident(EXPECTED_TARGET_TABLES['text_source'])}\n"
+            "  WHERE tuple(cik, accession_number, document_id) IN "
+            "(SELECT tuple(cik, accession_number, document_id) FROM incoming)\n"
+            "  GROUP BY cik, accession_number, document_id\n"
+            ")\n"
+            "SELECT count() FROM incoming AS i LEFT JOIN source_authority AS s USING (cik, accession_number, document_id)\n"
+            "WHERE i.authority_row=1 AND (s.authority_revision_rank=0 OR "
+            "(i.source_revision_rank >= s.authority_revision_rank AND i.source_version_key != s.authority_version_key)) FORMAT TSV"
+        ).strip()
+        or "0"
+    )
+    if missing:
+        raise RuntimeError(
+            "SEC rendered part has no persisted raw-source revision: "
+            f"part={part.windows_path} missing_source_rows={missing}"
+        )
 
 
 def file_table_function(part: PartFile) -> str:
