@@ -1,5 +1,9 @@
 # Python SEC Gateway
 
+For the live filing lifecycle, write ordering, HTTP and recovery policy, service
+boundaries, historical defect ledger, and operator acceptance checks, see
+[SEC Gateway Lifecycle and Operations](SEC_GATEWAY_LIFECYCLE_AND_OPERATIONS.md).
+
 The SEC gateway is the live service layer for SEC filings. It is intentionally
 Python because SEC ingestion is network, text parsing, ClickHouse, and audit
 heavy rather than low-latency tick processing.

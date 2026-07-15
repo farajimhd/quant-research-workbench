@@ -1,5 +1,9 @@
 # SEC EDGAR Pipeline
 
+For the complete v3 stage lifecycle, source-of-truth rules, table boundaries,
+historical defect ledger, remedies, and remaining renderer work, see
+[SEC Pipeline Lifecycle and Remediation Reference](SEC_PIPELINE_LIFECYCLE_AND_REMEDIATION.md).
+
 This package contains the SEC EDGAR historical workflow:
 
 - SEC bulk and daily archive download helpers;
