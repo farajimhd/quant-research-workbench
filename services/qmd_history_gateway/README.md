@@ -46,7 +46,9 @@ address-conflict message instead of attempting a duplicate bind.
 Configuration uses `QMD_HISTORY_CLICKHOUSE_URL`, `QMD_HISTORY_DATABASE`,
 `QMD_HISTORY_TABLE_PREFIX`, `QMD_HISTORY_CLICKHOUSE_USER`,
 `QMD_HISTORY_CLICKHOUSE_PASSWORD`, `QMD_HISTORY_BIND`,
-`QMD_HISTORY_BATCH_SIZE`, and `QMD_HISTORY_MAX_EVENTS_PER_REQUEST`.
+`QMD_HISTORY_BATCH_SIZE`, `QMD_HISTORY_MAX_EVENTS_PER_REQUEST`,
+`QMD_HISTORY_CACHE_MAX_ENTRIES`, `QMD_HISTORY_CACHE_MAX_BARS_PER_ENTRY`, and
+`QMD_HISTORY_CACHE_UPDATE_CAPACITY`.
 
 Defaults:
 
@@ -55,6 +57,8 @@ Defaults:
 - yearly-table prefix: `events_`
 - batch size: `25000`
 - maximum events in one bar snapshot calculation: `2000000`
+- revision-aware derived cache entries: `256`
+- maximum bars retained per derived entry: `100000`
 
 ## API
 
@@ -67,16 +71,27 @@ and `1h`.
 - `GET /config`
 - `GET /coverage?start=...&end=...`
 - `GET /coverage/latest` (latest market day with canonical event coverage)
+- `GET /snapshot/cache` (cache hits, misses, builds, entries, and evictions)
 - `GET /snapshot/compact-events/{ticker}?start=...&end=...&limit=...`
 - `GET /snapshot/bars/{ticker}?start=...&end=...&timeframe=1m&limit=...` (bars plus canonical QMD bar indicators)
 - `WS /stream/compact-events?start=...&end=...&tickers=AAPL,MSFT`
 - `WS /stream/events?start=...&end=...&tickers=AAPL,MSFT`
 - `WS /stream/bars/{ticker}?start=...&end=...&timeframe=1m`
+- `WS /stream/derived/{ticker}?start=...&end=...&timeframe=1m&emit=updates`
 
-The bar snapshot calculates its `indicators` array from the returned ordered
-bars through the shared live-QMD indicator state. Replay, Backtest, and Canvas
-charts therefore use the live formulas without reading or maintaining a
-separate historical indicator table.
+`/stream/derived` supports `emit=full`, `emit=updates`, and
+`emit=full_then_updates`. Incremental messages contain a monotonic sequence,
+the causal finalized bar, its canonical indicator row, and the bar's event-time
+`as_of`. Clients resume with `after_sequence`; `max_updates=1` implements one
+Replay step. `updates_per_second=0` is unthrottled fast-forward, while a
+positive value provides paced Replay output.
+
+The bar snapshot and derived stream use the shared live-QMD bar store and
+stateful indicator calculator. A source-revision and engine-version cache key
+prevents redundant calculation while invalidating results after canonical
+event rebuilds or QMD schema changes. Cold stream subscribers receive updates
+as ClickHouse events are read; concurrent and later consumers share the same
+single-flight build.
 
 The streaming endpoints close after the requested historical window is fully
 delivered. The live QMD equivalents remain open and publish newly arriving

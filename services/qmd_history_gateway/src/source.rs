@@ -36,6 +36,14 @@ pub struct LatestEventCoverage {
     pub ticker_count: u64,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct SourceRevision {
+    pub event_count: u64,
+    pub max_build_step: u64,
+    pub max_updated_at: String,
+    pub token: String,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct HistoricalCursor {
     pub ordinal: u64,
@@ -86,6 +94,13 @@ struct LatestEventCoverageRow {
     ticker_count: u64,
 }
 
+#[derive(Debug, Deserialize)]
+struct SourceRevisionRow {
+    event_count: u64,
+    max_build_step: u64,
+    max_updated_at: String,
+}
+
 impl HistoricalEventSource {
     pub async fn initialize(config: HistoricalGatewayConfig) -> Result<Self, String> {
         let references = CompactEventReferences::load_from_clickhouse(
@@ -115,6 +130,61 @@ impl HistoricalEventSource {
 
     pub fn trade_aggregation_rules(&self) -> TradeAggregationRules {
         self.trade_rules.clone()
+    }
+
+    pub async fn source_revision(&self, window: &EventWindow) -> Result<SourceRevision, String> {
+        validate_window(window)?;
+        if window.tickers.is_empty() {
+            return Err("source revision requires at least one ticker".to_string());
+        }
+        let tickers = window
+            .tickers
+            .iter()
+            .map(|ticker| normalize_ticker(ticker))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|ticker| sql_literal(&ticker))
+            .collect::<Vec<_>>()
+            .join(",");
+        let last_inclusive = window.end - chrono::Duration::microseconds(1);
+        let continuity_table = format!(
+            "{}.events_ordinal_continuity",
+            self.config.clickhouse_database
+        );
+        let sql = format!(
+            r#"SELECT
+                sum(event_count) AS event_count,
+                max(latest_build_step) AS max_build_step,
+                toString(max(latest_updated_at)) AS max_updated_at
+            FROM (
+                SELECT
+                    ticker,
+                    source_date,
+                    argMax(event_count, tuple(build_step, updated_at)) AS event_count,
+                    argMax(build_step, tuple(build_step, updated_at)) AS latest_build_step,
+                    max(updated_at) AS latest_updated_at
+                FROM {continuity_table}
+                WHERE source_date >= toDate('{}')
+                  AND source_date <= toDate('{}')
+                  AND ticker IN ({tickers})
+                GROUP BY ticker, source_date
+            )
+            FORMAT JSONEachRow"#,
+            window.start.date_naive(),
+            last_inclusive.date_naive(),
+        );
+        let text = self.query(&sql).await?;
+        let row = serde_json::from_str::<SourceRevisionRow>(text.trim())
+            .map_err(|error| format!("invalid historical source revision response: {error}"))?;
+        Ok(SourceRevision {
+            event_count: row.event_count,
+            max_build_step: row.max_build_step,
+            max_updated_at: row.max_updated_at.clone(),
+            token: format!(
+                "{}:{}:{}",
+                row.max_build_step, row.event_count, row.max_updated_at
+            ),
+        })
     }
 
     pub async fn fetch_batch(

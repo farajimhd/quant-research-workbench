@@ -1,3 +1,6 @@
+use crate::cache::{
+    CacheEvidence, CacheMetrics, DerivedSnapshot, HistoricalDerivedCache, HISTORICAL_ENGINE_VERSION,
+};
 use crate::config::HistoricalGatewayConfig;
 use crate::source::{
     EventCoverage, EventWindow, HistoricalCursor, HistoricalEventSource, LatestEventCoverage,
@@ -10,9 +13,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use futures_util::SinkExt;
-use qmd_core::bars::{is_supported_timeframe, BarSnapshot, SharedBarStore};
+use qmd_core::bars::is_supported_timeframe;
 use qmd_core::compact_event::LiveCompactEvent;
-use qmd_core::indicators::{calculate_bar_indicators, IndicatorRow};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -20,6 +22,7 @@ use tower_http::cors::CorsLayer;
 
 #[derive(Clone)]
 pub struct AppState {
+    pub cache: HistoricalDerivedCache,
     pub config: HistoricalGatewayConfig,
     pub source: HistoricalEventSource,
 }
@@ -54,21 +57,27 @@ struct StreamQuery {
     tickers: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct DerivedStreamQuery {
+    after_sequence: Option<u64>,
+    as_of: Option<String>,
+    end: String,
+    emit: Option<String>,
+    max_updates: Option<u64>,
+    start: String,
+    timeframe: Option<String>,
+    updates_per_second: Option<f64>,
+}
+
 #[derive(Debug, Serialize)]
 struct HealthPayload {
+    cache: CacheMetrics,
     config: HistoricalGatewayConfig,
     host_role: &'static str,
     running: bool,
     service: &'static str,
     source: &'static str,
     status: &'static str,
-}
-
-#[derive(Debug, Serialize)]
-struct HistoricalBarSnapshot {
-    #[serde(flatten)]
-    bars: BarSnapshot,
-    indicators: Vec<IndicatorRow>,
 }
 
 type ApiError = (StatusCode, Json<Value>);
@@ -79,6 +88,7 @@ pub fn app(state: AppState) -> Router {
         .route("/config", get(config))
         .route("/coverage", get(coverage))
         .route("/coverage/latest", get(latest_coverage))
+        .route("/snapshot/cache", get(cache_snapshot))
         .route(
             "/snapshot/compact-events/{ticker}",
             get(compact_event_snapshot),
@@ -87,6 +97,7 @@ pub fn app(state: AppState) -> Router {
         .route("/stream/compact-events", get(compact_event_stream))
         .route("/stream/events", get(event_stream))
         .route("/stream/bars/{ticker}", get(bar_stream))
+        .route("/stream/derived/{ticker}", get(derived_stream))
         .layer(CorsLayer::permissive())
         .with_state(Arc::new(state))
 }
@@ -94,6 +105,7 @@ pub fn app(state: AppState) -> Router {
 async fn health(State(state): State<Arc<AppState>>) -> Result<Json<HealthPayload>, ApiError> {
     state.source.health().await.map_err(service_error)?;
     Ok(Json(HealthPayload {
+        cache: state.cache.metrics().await,
         config: state.config.clone(),
         host_role: "historical",
         running: true,
@@ -101,6 +113,10 @@ async fn health(State(state): State<Arc<AppState>>) -> Result<Json<HealthPayload
         source: "market_sip_compact.events_YYYY",
         status: "ready",
     }))
+}
+
+async fn cache_snapshot(State(state): State<Arc<AppState>>) -> Json<CacheMetrics> {
+    Json(state.cache.metrics().await)
 }
 
 async fn config(State(state): State<Arc<AppState>>) -> Json<HistoricalGatewayConfig> {
@@ -162,41 +178,18 @@ async fn bar_snapshot(
     Path(ticker): Path<String>,
     Query(query): Query<BarsQuery>,
     State(state): State<Arc<AppState>>,
-) -> Result<Json<HistoricalBarSnapshot>, ApiError> {
+) -> Result<Json<DerivedSnapshot>, ApiError> {
     let window = window(&query.start, &query.end, vec![ticker.clone()])?;
     let timeframe = query.timeframe.unwrap_or_else(|| "1m".to_string());
     validate_timeframe(&timeframe)?;
     let bar_limit = query.limit.unwrap_or(1_000).clamp(1, 100_000);
-    let event_limit = query
-        .event_limit
-        .unwrap_or(state.config.max_events_per_request)
-        .clamp(1, state.config.max_events_per_request);
-    let events =
-        collect_events(&state.source, &window, state.config.batch_size, event_limit).await?;
-    let bars = SharedBarStore::new(
-        vec![timeframe.clone()],
-        bar_limit,
-        1,
-        state.source.trade_aggregation_rules(),
-    );
-    let shard = bars.shard(0);
-    for event in &events {
-        shard.apply_event(&state.source.market_event(event)).await;
-    }
-    shard.finalize_due(window.end).await;
-    let snapshot = bars
-        .snapshot(&ticker, &timeframe, bar_limit)
+    let _legacy_event_limit = query.event_limit;
+    state
+        .cache
+        .snapshot(window, ticker, timeframe, bar_limit)
         .await
-        .price_bars();
-    let mut indicator_bars = snapshot.history.clone();
-    if let Some(current) = snapshot.current.clone() {
-        indicator_bars.push(current);
-    }
-    let indicators = calculate_bar_indicators(&indicator_bars);
-    Ok(Json(HistoricalBarSnapshot {
-        bars: snapshot,
-        indicators,
-    }))
+        .map(Json)
+        .map_err(service_error)
 }
 
 async fn compact_event_stream(
@@ -236,14 +229,59 @@ async fn bar_stream(
 ) -> Result<impl IntoResponse, ApiError> {
     let mut window = stream_window(&query)?;
     window.tickers = vec![ticker];
-    let batch_size = query
-        .batch_size
-        .unwrap_or(state.config.batch_size)
-        .clamp(1, 100_000);
     let timeframe = query.timeframe.unwrap_or_else(|| "1m".to_string());
     validate_timeframe(&timeframe)?;
+    let cache = state.cache.clone();
+    Ok(websocket.on_upgrade(move |socket| stream_cached_bars(socket, cache, window, timeframe)))
+}
+
+async fn derived_stream(
+    Path(ticker): Path<String>,
+    websocket: WebSocketUpgrade,
+    Query(query): Query<DerivedStreamQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let window = window(&query.start, &query.end, vec![ticker.clone()])?;
+    let timeframe = query.timeframe.unwrap_or_else(|| "1m".to_string());
+    validate_timeframe(&timeframe)?;
+    let emit = query.emit.unwrap_or_else(|| "updates".to_string());
+    if !matches!(emit.as_str(), "full" | "updates" | "full_then_updates") {
+        return Err(bad_request(
+            "emit must be full, updates, or full_then_updates",
+        ));
+    }
+    let as_of = query
+        .as_of
+        .as_deref()
+        .map(parse_timestamp)
+        .transpose()?
+        .unwrap_or(window.start);
+    if as_of < window.start || as_of > window.end {
+        return Err(bad_request("as_of must be inside the requested window"));
+    }
+    let updates_per_second = query.updates_per_second.unwrap_or(0.0);
+    if !updates_per_second.is_finite() || !(0.0..=10_000.0).contains(&updates_per_second) {
+        return Err(bad_request(
+            "updates_per_second must be between 0 and 10000; zero means unthrottled fast-forward",
+        ));
+    }
+    if query.max_updates.is_some_and(|value| value == 0) {
+        return Err(bad_request("max_updates must be greater than zero"));
+    }
+    let cache = state.cache.clone();
     Ok(websocket.on_upgrade(move |socket| {
-        stream_bars(socket, state.source.clone(), window, timeframe, batch_size)
+        stream_derived(
+            socket,
+            cache,
+            window,
+            ticker,
+            timeframe,
+            emit,
+            as_of,
+            query.after_sequence.unwrap_or(0),
+            query.max_updates,
+            updates_per_second,
+        )
     }))
 }
 
@@ -312,75 +350,196 @@ async fn stream_market_events(
     }
 }
 
-async fn stream_bars(
+async fn stream_cached_bars(
     mut socket: WebSocket,
-    source: HistoricalEventSource,
+    cache: HistoricalDerivedCache,
     window: EventWindow,
     timeframe: String,
-    batch_size: usize,
 ) {
-    let bars = SharedBarStore::new(vec![timeframe], 1, 1, source.trade_aggregation_rules());
-    let shard = bars.shard(0);
-    let mut cursor: Option<HistoricalCursor> = None;
+    let ticker = window.tickers[0].clone();
+    let lease = match cache.acquire(window, ticker, timeframe).await {
+        Ok(lease) => lease,
+        Err(error) => {
+            send_stream_error(&mut socket, error).await;
+            return;
+        }
+    };
+    let mut receiver = lease.entry.subscribe();
+    let mut last_sequence = 0;
     loop {
-        let (events, next) = match source
-            .fetch_batch(&window, cursor.as_ref(), batch_size)
-            .await
-        {
-            Ok(result) => result,
-            Err(error) => {
-                send_stream_error(&mut socket, error).await;
+        let (frames, complete, error, _) = lease.entry.current().await;
+        if let Some(error) = error {
+            send_stream_error(&mut socket, error).await;
+            return;
+        }
+        for frame in &frames {
+            if frame.sequence <= last_sequence {
+                continue;
+            }
+            if send_json(&mut socket, &frame.bar).await.is_err() {
                 return;
             }
-        };
-        for event in &events {
-            for bar in shard.apply_event(&source.market_event(event)).await {
-                if send_json(&mut socket, &bar).await.is_err() {
-                    return;
-                }
-            }
+            last_sequence = frame.sequence;
         }
-        if events.len() < batch_size || next.is_none() {
-            for bar in shard.finalize_due(window.end).await {
-                if send_json(&mut socket, &bar).await.is_err() {
-                    return;
-                }
-            }
+        if complete {
             let _ = socket.close().await;
             return;
         }
-        cursor = next;
+        match receiver.recv().await {
+            Ok(frame) if frame.sequence > last_sequence => {
+                if send_json(&mut socket, &frame.bar).await.is_err() {
+                    return;
+                }
+                last_sequence = frame.sequence;
+            }
+            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+        }
     }
 }
 
-async fn collect_events(
-    source: &HistoricalEventSource,
-    window: &EventWindow,
-    batch_size: usize,
-    max_events: usize,
-) -> Result<Vec<LiveCompactEvent>, ApiError> {
-    let mut events = Vec::new();
-    let mut cursor: Option<HistoricalCursor> = None;
+#[allow(clippy::too_many_arguments)]
+async fn stream_derived(
+    mut socket: WebSocket,
+    cache: HistoricalDerivedCache,
+    window: EventWindow,
+    ticker: String,
+    timeframe: String,
+    emit: String,
+    as_of: DateTime<Utc>,
+    after_sequence: u64,
+    max_updates: Option<u64>,
+    updates_per_second: f64,
+) {
+    let lease = match cache
+        .acquire(window, ticker.clone(), timeframe.clone())
+        .await
+    {
+        Ok(lease) => lease,
+        Err(error) => {
+            send_stream_error(&mut socket, error).await;
+            return;
+        }
+    };
+
+    if emit == "full" || emit == "full_then_updates" {
+        let (frames, _, error, events_processed) = loop {
+            let state = lease.entry.current().await;
+            if state.1 {
+                break state;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        if let Some(error) = error {
+            send_stream_error(&mut socket, error).await;
+            return;
+        }
+        let visible = frames
+            .iter()
+            .filter(|frame| frame.as_of <= as_of)
+            .cloned()
+            .collect::<Vec<_>>();
+        let full = FullDerivedEnvelope {
+            as_of,
+            bars: visible.iter().map(|frame| frame.bar.clone()).collect(),
+            cache: CacheEvidence {
+                engine_version: HISTORICAL_ENGINE_VERSION,
+                event_count: events_processed,
+                hit: lease.hit,
+                source_revision: lease.source_revision.clone(),
+            },
+            indicators: visible
+                .iter()
+                .map(|frame| frame.indicator.clone())
+                .collect(),
+            next_sequence: visible.last().map_or(0, |frame| frame.sequence),
+            ticker: ticker.clone(),
+            timeframe: timeframe.clone(),
+            update_type: "full",
+        };
+        if send_json(&mut socket, &full).await.is_err() {
+            return;
+        }
+        if emit == "full" {
+            let _ = socket.close().await;
+            return;
+        }
+    }
+
+    let mut receiver = lease.entry.subscribe();
+    let mut last_sequence = after_sequence;
+    let mut updates_sent = 0_u64;
+    if emit == "full_then_updates" {
+        let (frames, _, _, _) = lease.entry.current().await;
+        last_sequence = last_sequence.max(
+            frames
+                .iter()
+                .filter(|frame| frame.as_of <= as_of)
+                .map(|frame| frame.sequence)
+                .max()
+                .unwrap_or(0),
+        );
+    }
     loop {
-        // Fetch one row beyond the allowed total so a window containing exactly
-        // `max_events` is accepted while an actual overflow still fails loudly.
-        let remaining_with_probe = max_events.saturating_sub(events.len()).saturating_add(1);
-        let request_size = batch_size.min(remaining_with_probe).max(1);
-        let (batch, next) = source
-            .fetch_batch(window, cursor.as_ref(), request_size)
-            .await
-            .map_err(service_error)?;
-        let count = batch.len();
-        events.extend(batch);
-        if events.len() > max_events {
-            return Err(bad_request(format!(
-                "historical bar request exceeded event_limit={max_events}; narrow the window"
-            )));
+        let (frames, complete, error, _) = lease.entry.current().await;
+        if let Some(error) = error {
+            send_stream_error(&mut socket, error).await;
+            return;
         }
-        if count < request_size || next.is_none() {
-            return Ok(events);
+        for frame in &frames {
+            if frame.sequence <= last_sequence {
+                continue;
+            }
+            if send_json(&mut socket, frame).await.is_err() {
+                return;
+            }
+            last_sequence = frame.sequence;
+            updates_sent += 1;
+            if max_updates.is_some_and(|limit| updates_sent >= limit) {
+                let _ = socket.close().await;
+                return;
+            }
+            throttle(updates_per_second).await;
         }
-        cursor = next;
+        if complete {
+            let _ = socket.close().await;
+            return;
+        }
+        match receiver.recv().await {
+            Ok(frame) if frame.sequence > last_sequence => {
+                if send_json(&mut socket, &frame).await.is_err() {
+                    return;
+                }
+                last_sequence = frame.sequence;
+                updates_sent += 1;
+                if max_updates.is_some_and(|limit| updates_sent >= limit) {
+                    let _ = socket.close().await;
+                    return;
+                }
+                throttle(updates_per_second).await;
+            }
+            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct FullDerivedEnvelope {
+    as_of: DateTime<Utc>,
+    bars: Vec<qmd_core::bars::BarRow>,
+    cache: CacheEvidence,
+    indicators: Vec<qmd_core::indicators::IndicatorRow>,
+    next_sequence: u64,
+    ticker: String,
+    timeframe: String,
+    #[serde(rename = "type")]
+    update_type: &'static str,
+}
+
+async fn throttle(updates_per_second: f64) {
+    if updates_per_second > 0.0 {
+        tokio::time::sleep(std::time::Duration::from_secs_f64(1.0 / updates_per_second)).await;
     }
 }
 

@@ -76,8 +76,33 @@ pub struct IndicatorRow {
 
 /// Calculate canonical indicators for an ordered batch of bars.
 pub fn calculate_bar_indicators(bars: &[BarRow]) -> Vec<IndicatorRow> {
-    let mut state = BarIndicatorState::new();
-    bars.iter().map(|bar| state.apply_bar(bar)).collect()
+    let mut calculator = BarIndicatorCalculator::new();
+    bars.iter().map(|bar| calculator.apply_bar(bar)).collect()
+}
+
+/// Stateful canonical bar-indicator calculator shared by live and historical
+/// runtimes. Historical replay uses this incrementally so a finalized bar is
+/// accompanied by exactly the same causal indicator update as live QMD.
+pub struct BarIndicatorCalculator {
+    state: BarIndicatorState,
+}
+
+impl BarIndicatorCalculator {
+    pub fn new() -> Self {
+        Self {
+            state: BarIndicatorState::new(),
+        }
+    }
+
+    pub fn apply_bar(&mut self, bar: &BarRow) -> IndicatorRow {
+        self.state.apply_bar(bar)
+    }
+}
+
+impl Default for BarIndicatorCalculator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

@@ -95,6 +95,7 @@ from src.backend.trading_runtime_service import (
     historical_bar_chunk,
     historical_latest_coverage,
     historical_gateway_snapshot,
+    historical_gateway_websocket_url,
     historical_preflight,
     historical_window_preview,
     list_strategy_definitions,
@@ -4371,6 +4372,81 @@ async def trading_canvas_live_chart_stream(websocket: WebSocket, stream: str, sy
     except Exception as exc:
         try:
             await websocket.send_json({"error": f"QMD live {stream} stream unavailable: {exc}"})
+            await websocket.close(code=1011)
+        except Exception:
+            return
+
+
+@app.websocket("/api/trading/historical-stream/{symbol}")
+async def trading_historical_stream(websocket: WebSocket, symbol: str) -> None:
+    await websocket.accept()
+    ticker = symbol.strip().upper()
+    timeframe = websocket.query_params.get("timeframe", "1m")
+    session_date_text = websocket.query_params.get("session_date", "")
+    after_sequence_text = websocket.query_params.get("after_sequence", "0")
+    updates_per_second_text = websocket.query_params.get("updates_per_second", "0")
+    max_updates_text = websocket.query_params.get("max_updates", "")
+    if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
+        await websocket.send_json({"error": "Invalid historical ticker."})
+        await websocket.close(code=1008)
+        return
+    if timeframe not in {"1s", "10s", "30s", "1m", "5m", "1h"}:
+        await websocket.send_json({"error": "Invalid historical timeframe."})
+        await websocket.close(code=1008)
+        return
+    try:
+        session_date = date.fromisoformat(session_date_text)
+        after_sequence = max(0, int(after_sequence_text))
+        updates_per_second = float(updates_per_second_text)
+        max_updates = int(max_updates_text) if max_updates_text else None
+    except ValueError:
+        await websocket.send_json({"error": "Invalid historical stream controls."})
+        await websocket.close(code=1008)
+        return
+    if not 0 <= updates_per_second <= 10_000:
+        await websocket.send_json({"error": "updates_per_second must be between 0 and 10000."})
+        await websocket.close(code=1008)
+        return
+    if max_updates is not None and not 1 <= max_updates <= 100_000:
+        await websocket.send_json({"error": "max_updates must be between 1 and 100000."})
+        await websocket.close(code=1008)
+        return
+    window = historical_window_preview(
+        mode="replay",
+        anchor_date=session_date,
+        session_count=1,
+        replay_end_date=session_date,
+    )
+    try:
+        upstream_url = historical_gateway_websocket_url(
+            f"/stream/derived/{ticker}",
+            {
+                "after_sequence": after_sequence,
+                "emit": "updates",
+                "end": window["end"],
+                "start": window["start"],
+                "timeframe": timeframe,
+                "max_updates": max_updates,
+                "updates_per_second": updates_per_second,
+            },
+        )
+        async with websockets.connect(
+            upstream_url,
+            ping_interval=20,
+            ping_timeout=20,
+            max_size=16 * 1024 * 1024,
+        ) as upstream:
+            async for message in upstream:
+                if isinstance(message, bytes):
+                    await websocket.send_bytes(message)
+                else:
+                    await websocket.send_text(message)
+        await websocket.close(code=1000)
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        try:
+            await websocket.send_json({"error": f"QMD History stream unavailable: {exc}"})
             await websocket.close(code=1011)
         except Exception:
             return

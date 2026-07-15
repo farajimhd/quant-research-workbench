@@ -6,6 +6,9 @@ use std::env;
 pub struct HistoricalGatewayConfig {
     pub batch_size: usize,
     pub bind: String,
+    pub cache_max_bars_per_entry: usize,
+    pub cache_max_entries: usize,
+    pub cache_update_capacity: usize,
     pub clickhouse_database: String,
     #[serde(skip_serializing)]
     pub clickhouse_password: String,
@@ -22,6 +25,11 @@ impl HistoricalGatewayConfig {
         Self {
             batch_size: env_usize("QMD_HISTORY_BATCH_SIZE", 25_000).clamp(1, 100_000),
             bind: env_string("QMD_HISTORY_BIND", "127.0.0.1:8801"),
+            cache_max_bars_per_entry: env_usize("QMD_HISTORY_CACHE_MAX_BARS_PER_ENTRY", 100_000)
+                .clamp(1_000, 1_000_000),
+            cache_max_entries: env_usize("QMD_HISTORY_CACHE_MAX_ENTRIES", 256).clamp(1, 10_000),
+            cache_update_capacity: env_usize("QMD_HISTORY_CACHE_UPDATE_CAPACITY", 4_096)
+                .clamp(16, 100_000),
             clickhouse_database: source.database,
             clickhouse_password_present: !source.password.is_empty(),
             clickhouse_password: source.password,

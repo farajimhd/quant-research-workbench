@@ -13,10 +13,10 @@ import {
   Sparkles,
   TriangleAlert,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { api } from "../api/client";
-import { ChartPanel, type ChartPayload } from "../app/components/ChartPanel";
+import { api, query } from "../api/client";
+import { ChartPanel, type ChartPanelHandle, type ChartPayload } from "../app/components/ChartPanel";
 import { MarketStatusBadge, historicalMarketStatus } from "../app/components/MarketStatusBadge";
 
 type HistoricalMode = "backtest" | "replay";
@@ -33,6 +33,7 @@ type HistoricalCheck = {
 };
 
 type HistoricalBar = {
+  bar_end?: string;
   bar_start: string;
   close: number;
   high: number;
@@ -63,16 +64,15 @@ type HistoricalPreflight = {
   window: HistoricalWindow;
 };
 
-type HistoricalBarChunk = {
-  bar_count: number;
-  bars: HistoricalBar[];
-  complete: boolean;
-  next_offset_minutes: number;
-  offset_minutes: number;
+type HistoricalDerivedUpdate = {
+  as_of: string;
+  bar: HistoricalBar;
+  sequence: number;
+  type: "update";
 };
 
 const TIMEFRAMES = ["1m", "5m"];
-const PLAYBACK_SPEEDS = [1, 5, 15];
+const PLAYBACK_SPEEDS = [1, 5, 15, 0];
 
 export function HistoricalTradingPage({ mode }: { mode: HistoricalMode }) {
   const [view, setView] = useState<HistoricalView>("home");
@@ -182,78 +182,91 @@ function ReplayPlayer({ onBack, preflight, sessionDate }: { onBack: () => void; 
   const [ticker, setTicker] = useState("AAPL");
   const [timeframe, setTimeframe] = useState("1m");
   const [bars, setBars] = useState<HistoricalBar[]>([]);
-  const [cursor, setCursor] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(5);
-  const [nextOffset, setNextOffset] = useState(0);
   const [complete, setComplete] = useState(false);
-  const [loadingChunk, setLoadingChunk] = useState(false);
+  const [connected, setConnected] = useState(false);
+  const [loadingStream, setLoadingStream] = useState(false);
   const [loadError, setLoadError] = useState("");
+  const [stepRequest, setStepRequest] = useState(0);
+  const chartRef = useRef<ChartPanelHandle | null>(null);
+  const sequenceRef = useRef(0);
 
-  const shouldPrefetch = !complete && !loadingChunk && (bars.length < 15 || cursor >= bars.length - 5);
   useEffect(() => {
-    if (!shouldPrefetch) return;
-    let cancelled = false;
-    setLoadingChunk(true);
+    const stepping = !playing && stepRequest > 0;
+    if (!playing && !stepping) return;
+    let active = true;
+    setLoadingStream(true);
     setLoadError("");
-    api<HistoricalBarChunk>("/api/trading/historical-bars", {
-      body: JSON.stringify({
-        offset_minutes: nextOffset,
-        session_date: sessionDate,
-        ticker,
-        timeframe,
-        window_minutes: 15,
-      }),
-      method: "POST",
-      timeoutMs: 60000,
-    })
-      .then((payload) => {
-        if (cancelled) return;
-        setBars((current) => {
-          const merged = mergeBars(current, payload.bars);
-          if (merged.length) setCursor((value) => value || 1);
-          return merged;
-        });
-        setNextOffset(payload.next_offset_minutes);
-        setComplete(payload.complete || payload.next_offset_minutes >= 960);
-      })
-      .catch((exc) => {
-        if (!cancelled) setLoadError(exc instanceof Error ? exc.message : String(exc));
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingChunk(false);
-      });
-    return () => { cancelled = true; };
-  }, [bars.length, complete, cursor, nextOffset, sessionDate, ticker, timeframe]);
+    const socket = new WebSocket(historicalStreamUrl({
+      afterSequence: sequenceRef.current,
+      maxUpdates: stepping ? 1 : undefined,
+      sessionDate,
+      ticker,
+      timeframe,
+      updatesPerSecond: stepping ? 0 : speed,
+    }));
+    socket.onopen = () => {
+      if (!active) return;
+      setConnected(true);
+      setLoadingStream(false);
+    };
+    socket.onmessage = (event) => {
+      if (!active) return;
+      try {
+        const payload = JSON.parse(String(event.data)) as HistoricalDerivedUpdate & { error?: string };
+        if (payload.error) throw new Error(payload.error);
+        if (payload.type !== "update" || !payload.bar || !Number.isFinite(payload.sequence)) return;
+        sequenceRef.current = Math.max(sequenceRef.current, payload.sequence);
+        setBars((current) => mergeBars(current, [payload.bar]));
+      } catch (reason) {
+        setLoadError(reason instanceof Error ? reason.message : "QMD History returned invalid replay data.");
+      }
+    };
+    socket.onerror = () => {
+      if (active) setLoadError("QMD History replay stream could not be reached.");
+    };
+    socket.onclose = (event) => {
+      if (!active) return;
+      setConnected(false);
+      setLoadingStream(false);
+      if (stepping) setStepRequest(0);
+      if (event.code === 1000 && !stepping) {
+        setComplete(true);
+        setPlaying(false);
+      } else if (event.code !== 1000) {
+        setLoadError((currentError) => currentError || `QMD History replay stream closed (${event.code}).`);
+        setPlaying(false);
+      }
+    };
+    return () => {
+      active = false;
+      socket.close();
+    };
+  }, [playing, sessionDate, speed, stepRequest, ticker, timeframe]);
+
+  const current = bars.at(-1);
+  const marketStatus = useMemo(() => historicalMarketStatus(sessionDate, current ? marketTimeText(current.bar_start) : "04:00:00"), [current, sessionDate]);
+  const chartPayload = useMemo(() => barsToChartPayload(bars), [bars]);
+  const loadedEnd = bars.at(-1)?.bar_start;
+  const progress = current ? replayDayProgress(current.bar_end ?? current.bar_start) : 0;
 
   useEffect(() => {
-    if (!playing) return;
-    const timer = window.setInterval(() => {
-      setCursor((current) => {
-        const next = Math.min(bars.length, current + speed);
-        if (next >= bars.length && complete) setPlaying(false);
-        return next;
-      });
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [bars.length, complete, playing, speed]);
-
-  const visibleBars = bars.slice(0, Math.max(1, cursor));
-  const current = visibleBars.at(-1);
-  const marketStatus = useMemo(() => historicalMarketStatus(sessionDate, current ? marketTimeText(current.bar_start) : "04:00:00"), [current, sessionDate]);
-  const chartPayload = useMemo(() => barsToChartPayload(visibleBars), [visibleBars]);
-  const loadedEnd = bars.at(-1)?.bar_start;
-  const progress = bars.length ? Math.max(1, Math.round((cursor / bars.length) * 100)) : 0;
+    if (!bars.length) return;
+    const timer = window.setTimeout(() => chartRef.current?.fitRecent(), speed === 0 ? 120 : 20);
+    return () => window.clearTimeout(timer);
+  }, [bars.length, speed]);
 
   function resetMarketSelection(nextTicker: string, nextTimeframe: string) {
     setPlaying(false);
     setTicker(nextTicker);
     setTimeframe(nextTimeframe);
     setBars([]);
-    setCursor(0);
-    setNextOffset(0);
+    sequenceRef.current = 0;
     setComplete(false);
+    setConnected(false);
     setLoadError("");
+    setStepRequest(0);
   }
 
   return (
@@ -267,10 +280,10 @@ function ReplayPlayer({ onBack, preflight, sessionDate }: { onBack: () => void; 
 
       <section className="replay-control-deck">
         <button aria-label={playing ? "Pause replay" : "Play replay"} className="replay-play-button" onClick={() => setPlaying((value) => !value)} type="button">{playing ? <Pause size={24} /> : <Play size={24} />}</button>
-        <button aria-label="Advance one bar" className="button secondary replay-step-button" disabled={cursor >= bars.length && complete} onClick={() => setCursor((value) => Math.min(bars.length, value + 1))} type="button"><SkipForward size={18} /> Step</button>
+        <button aria-label="Advance one bar" className="button secondary replay-step-button" disabled={complete || loadingStream} onClick={() => setStepRequest((value) => value + 1)} type="button"><SkipForward size={18} /> Step</button>
         <div className="replay-clock"><span>Replay clock · New York</span><strong>{current ? formatMarketTime(current.bar_start) : "Waiting for first bar"}</strong></div>
-        <div className="replay-speed" aria-label="Playback speed">{PLAYBACK_SPEEDS.map((value) => <button className={speed === value ? "active" : ""} key={value} onClick={() => setSpeed(value)} type="button">{value} bars/s</button>)}</div>
-        <div className="replay-buffer" data-loading={loadingChunk ? "true" : "false"}><Database size={17} /><div><span>{loadingChunk ? "Loading next event window" : complete ? "Full day loaded" : "Progressive day buffer"}</span><strong>{bars.length} bars · through {loadedEnd ? formatMarketTime(loadedEnd) : "—"}</strong></div></div>
+        <div className="replay-speed" aria-label="Playback speed">{PLAYBACK_SPEEDS.map((value) => <button className={speed === value ? "active" : ""} key={value} onClick={() => setSpeed(value)} type="button">{value === 0 ? "Fast" : `${value} bars/s`}</button>)}</div>
+        <div className="replay-buffer" data-loading={loadingStream ? "true" : "false"}><Database size={17} /><div><span>{loadingStream ? "QMD History reading events" : complete ? "Session replay complete" : connected ? "Event-time stream active" : "Replay paused"}</span><strong>{bars.length} bars · through {loadedEnd ? formatMarketTime(loadedEnd) : "—"}</strong></div></div>
       </section>
 
       <div className="replay-progress-track"><span style={{ width: `${progress}%` }} /></div>
@@ -284,13 +297,14 @@ function ReplayPlayer({ onBack, preflight, sessionDate }: { onBack: () => void; 
             featureOptions={[]}
             indicatorOptions={[]}
             initialFitMode="recent"
-            loading={loadingChunk && !bars.length}
+            loading={loadingStream && !bars.length}
             onTickerChange={(value) => resetMarketSelection(value.toUpperCase(), timeframe)}
             onTimeframeChange={(value) => resetMarketSelection(ticker, value)}
             onVisibleColumnsChange={() => undefined}
             payload={chartPayload}
             periodEnd={sessionDate}
             periodStart={sessionDate}
+            ref={chartRef}
             showIndicatorControls={false}
             ticker={ticker}
             timeframe={timeframe}
@@ -344,6 +358,38 @@ function barsToChartPayload(bars: HistoricalBar[]): ChartPayload {
     regions: [],
     volume: bars.map((bar) => ({ color: bar.close >= bar.open ? success : danger, time: Date.parse(bar.bar_start) / 1000, value: bar.volume })),
   };
+}
+
+function historicalStreamUrl({
+  afterSequence,
+  maxUpdates,
+  sessionDate,
+  ticker,
+  timeframe,
+  updatesPerSecond,
+}: {
+  afterSequence: number;
+  maxUpdates?: number;
+  sessionDate: string;
+  ticker: string;
+  timeframe: string;
+  updatesPerSecond: number;
+}) {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const path = `/api/trading/historical-stream/${encodeURIComponent(ticker)}${query({
+    after_sequence: afterSequence,
+    max_updates: maxUpdates,
+    session_date: sessionDate,
+    timeframe,
+    updates_per_second: updatesPerSecond,
+  })}`;
+  return `${protocol}//${window.location.host}${path}`;
+}
+
+function replayDayProgress(value: string) {
+  const parts = marketTimeText(value).split(":").map(Number);
+  const elapsedMinutes = parts[0] * 60 + parts[1] - 4 * 60;
+  return Math.max(0, Math.min(100, Math.round((elapsedMinutes / (16 * 60)) * 100)));
 }
 
 function themeToken(name: string) {

@@ -1,8 +1,10 @@
 mod api;
+mod cache;
 mod config;
 mod source;
 
 use crate::api::{app, AppState};
+use crate::cache::HistoricalDerivedCache;
 use crate::config::HistoricalGatewayConfig;
 use crate::source::HistoricalEventSource;
 use qmd_core::config::load_env_files;
@@ -30,16 +32,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .map_err(|error| {
             startup_error(format!("historical ClickHouse preflight failed: {error}"))
         })?;
+    let cache = HistoricalDerivedCache::new(config.clone(), source.clone());
     let listener = tokio::net::TcpListener::bind(bind).await?;
     eprintln!(
         "qmd-history-gateway listening on {bind}; source={}.{}YYYY",
         config.clickhouse_database, config.table_prefix
     );
-    axum::serve(listener, app(AppState { config, source }))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await?;
+    axum::serve(
+        listener,
+        app(AppState {
+            cache,
+            config,
+            source,
+        }),
+    )
+    .with_graceful_shutdown(async {
+        let _ = tokio::signal::ctrl_c().await;
+    })
+    .await?;
     Ok(())
 }
 

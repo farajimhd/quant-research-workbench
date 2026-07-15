@@ -76,6 +76,17 @@ def historical_gateway_base_url() -> str:
     return f"http://{resolved_host}:{resolved_port}"
 
 
+def historical_gateway_websocket_url(path: str, params: dict[str, Any]) -> str:
+    parsed = urllib.parse.urlsplit(historical_gateway_base_url())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("QMD History gateway URL must use http or https")
+    query = urllib.parse.urlencode({key: value for key, value in params.items() if value is not None})
+    target_path = f"{parsed.path.rstrip('/')}/{path.lstrip('/')}"
+    return urllib.parse.urlunsplit(
+        ("wss" if parsed.scheme == "https" else "ws", parsed.netloc, target_path, query, "")
+    )
+
+
 def historical_gateway_snapshot() -> dict[str, Any]:
     base_url = historical_gateway_base_url()
     try:
