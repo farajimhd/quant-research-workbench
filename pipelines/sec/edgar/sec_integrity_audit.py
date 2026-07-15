@@ -233,14 +233,37 @@ def check_filing_entities(client: ClickHouseHttpClient, db: str) -> list[dict[st
         LEFT ANTI JOIN (SELECT DISTINCT accession_number FROM {qi(db)}.sec_filing_entity_current_v3) AS e USING (accession_number)
         """,
     )
-    status = "pass" if int(summary["rows"]) > 0 and int(summary["missing_roles"]) == 0 and int(summary["missing_ciks"]) == 0 and orphans == 0 and missing_entities == 0 else "fail"
+    archive_backed_missing_entities = scalar_int(
+        client,
+        f"""
+        SELECT count()
+        FROM (
+            SELECT DISTINCT accession_number
+            FROM {qi(db)}.sec_filing_archive_accession_current_v3
+            WHERE source_kind = 'daily_archive'
+        ) AS a
+        INNER JOIN (SELECT DISTINCT accession_number FROM {qi(db)}.sec_filing_v3 FINAL) AS f USING (accession_number)
+        LEFT ANTI JOIN (SELECT DISTINCT accession_number FROM {qi(db)}.sec_filing_entity_current_v3) AS e USING (accession_number)
+        """,
+    )
+    status = (
+        "pass"
+        if int(summary["rows"]) > 0
+        and int(summary["missing_roles"]) == 0
+        and int(summary["missing_ciks"]) == 0
+        and orphans == 0
+        and archive_backed_missing_entities == 0
+        else "fail"
+    )
     summary["accessions_without_filing"] = orphans
     summary["filings_without_entities"] = missing_entities
+    summary["archive_backed_filings_without_entities"] = archive_backed_missing_entities
+    summary["metadata_only_filings_without_entities"] = max(0, missing_entities - archive_backed_missing_entities)
     return [
         check(
             "sec_filing_entity_relationships",
             status,
-            "current SGML entity relationships are populated and join to filings by accession",
+            "current SGML entity relationships cover archive-backed filings and join by accession",
             table="sec_filing_entity_current_v3",
             details=summary,
         )

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import unittest
 from datetime import UTC, datetime
+from unittest import mock
 
+from pipelines.sec.edgar import sec_integrity_audit as integrity_audit
 from pipelines.sec.edgar.sec_filing_text_extract_parts import parse_filing
 from pipelines.sec.edgar.sec_pipeline.archive_accession import build_archive_accession_row
 from pipelines.sec.edgar.sec_pipeline.entities import parse_filing_entities, primary_filing_entity
@@ -10,6 +12,45 @@ from pipelines.sec.edgar.sec_pipeline.revision import SourceRevision
 
 
 class SecFilingEntityTests(unittest.TestCase):
+    def test_integrity_allows_metadata_only_filings_without_sgml_entities(self) -> None:
+        entity_summary = {
+            "rows": "8739623",
+            "accessions": "5921797",
+            "entity_ciks": "448691",
+            "missing_roles": "0",
+            "missing_ciks": "0",
+            "accession_prefix_primary_cik_mismatches": "4649456",
+        }
+        with (
+            mock.patch.object(integrity_audit, "query_one", return_value=entity_summary),
+            mock.patch.object(integrity_audit, "scalar_int", side_effect=[0, 124537, 0]) as scalar,
+        ):
+            result = integrity_audit.check_filing_entities(object(), "q_live")[0]
+
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(result["details"]["filings_without_entities"], 124537)
+        self.assertEqual(result["details"]["archive_backed_filings_without_entities"], 0)
+        self.assertEqual(result["details"]["metadata_only_filings_without_entities"], 124537)
+        self.assertIn("sec_filing_archive_accession_current_v3", scalar.call_args_list[2].args[1])
+
+    def test_integrity_fails_when_archive_backed_filing_has_no_entities(self) -> None:
+        entity_summary = {
+            "rows": "10",
+            "accessions": "5",
+            "entity_ciks": "3",
+            "missing_roles": "0",
+            "missing_ciks": "0",
+            "accession_prefix_primary_cik_mismatches": "2",
+        }
+        with (
+            mock.patch.object(integrity_audit, "query_one", return_value=entity_summary),
+            mock.patch.object(integrity_audit, "scalar_int", side_effect=[0, 2, 1]),
+        ):
+            result = integrity_audit.check_filing_entities(object(), "q_live")[0]
+
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["details"]["archive_backed_filings_without_entities"], 1)
+
     def test_parses_all_roles_and_never_uses_accession_prefix_as_cik(self) -> None:
         raw = b"""<SEC-DOCUMENT>0002143285-26-000002.txt
 ACCESSION NUMBER: 0002143285-26-000002
