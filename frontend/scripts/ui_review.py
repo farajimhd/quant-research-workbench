@@ -313,6 +313,30 @@ def validate_canvas_interactions(
                 persisted_editor.get_by_role("button", name="Close indicator settings").click()
             else:
                 issues.append("oscillator legend does not expose indicator configuration actions")
+            resize_handle = chart.locator(".workspace-window-resize")
+            if resize_handle.count() == 1:
+                for _ in range(4):
+                    resize_handle.press("Shift+ArrowUp")
+                page.wait_for_timeout(180)
+                bottom_oscillator = chart.locator(".chart-osc").last
+                time_axis_is_contained = bottom_oscillator.evaluate(
+                    """pane => {
+                        const paneBounds = pane.getBoundingClientRect();
+                        const stackBounds = pane.closest('.chart-canvas-stack')?.getBoundingClientRect();
+                        const chartTable = pane.querySelector('table')?.getBoundingClientRect();
+                        return Boolean(
+                            stackBounds
+                            && chartTable
+                            && paneBounds.bottom <= stackBounds.bottom + 1
+                            && chartTable.bottom <= paneBounds.bottom + 1
+                        );
+                    }"""
+                )
+                if not time_axis_is_contained:
+                    issues.append("resizing a Chart container clips the bottom pane time axis")
+                for _ in range(4):
+                    resize_handle.press("Shift+ArrowDown")
+                page.wait_for_timeout(180)
         price_pane = chart.locator(".chart-price").first
         latest_fit = chart.get_by_role("button", name="Fit session", exact=True)
         price_box = None

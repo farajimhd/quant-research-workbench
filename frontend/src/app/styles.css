@@ -16502,14 +16502,14 @@ button {
 
 .canvas-config-page :is(.workspace-window, .workspace-group-member)[data-window-kind="chart"] .chart-price {
   height: auto;
-  min-height: 160px;
+  min-height: 48px;
   flex: 1 1 240px;
 }
 
 .canvas-config-page :is(.workspace-window, .workspace-group-member)[data-window-kind="chart"] .chart-osc {
   height: 104px;
-  min-height: 72px;
-  flex: 0 0 104px;
+  min-height: 40px;
+  flex: 0 1 104px;
 }
 
 .canvas-config-page :is(.workspace-window, .workspace-group-member)[data-window-kind="chart"] .chart-pane-close {

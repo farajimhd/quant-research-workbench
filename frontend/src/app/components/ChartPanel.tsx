@@ -2826,7 +2826,10 @@ function chartOptions(
   const macroTimeframe = timeframe === "1d" || timeframe === "1mo";
   return {
     width: Math.max(320, width),
-    height: Math.max(160, height),
+    // The chart must render at the height allocated by the pane stack. A larger
+    // internal minimum pushes the bottom-owned time scale below a resized pane,
+    // where the chart shell clips it until the user moves a pane separator.
+    height: Math.max(1, Math.floor(height)),
     layout: { attributionLogo: false, background: { color: palette.background }, textColor: palette.text },
     grid: {
       vertLines: { color: palette.grid },
