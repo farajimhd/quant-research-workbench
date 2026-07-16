@@ -59,6 +59,31 @@ class SecPackedTextRendererTests(unittest.TestCase):
         self.assertIn("<record> issuer=Name 0; vote/result=FOR", result.packed_text)
         self.assertNotIn("<root/record/issuer>", result.packed_text)
 
+    def test_substantive_xml_comments_are_preserved_in_document_order(self) -> None:
+        source = """<assetdata>
+        <!-- Exhibit 103 -->
+        <!-- Asset Related Document -->
+        <!-- Item 3(c)(4): Original loan term includes a partial month. -->
+        </assetdata>"""
+        result = render_sec_packed_text(source, "xml", document_type="EX-103", form_type="ABS-EE")
+
+        self.assertEqual(
+            result.packed_text,
+            "<assetdata>\nExhibit 103\nAsset Related Document\n"
+            "Item 3(c)(4): Original loan term includes a partial month.",
+        )
+        self.assertIn("xml_comments_preserved", result.quality_flags)
+        self.assertNotIn("empty_rendered_text", result.quality_flags)
+
+    def test_body_terminates_malformed_unclosed_html_head(self) -> None:
+        source = """<html><head><title></title><body>
+        <p>Exhibit 5.1</p><p>We have acted as counsel to the issuer.</p>
+        </body></head></html>"""
+        result = render_sec_packed_text(source, "html", document_type="EX-5.1", form_type="S-3")
+
+        self.assertEqual(result.packed_text, "Exhibit 5.1\nWe have acted as counsel to the issuer.")
+        self.assertNotIn("empty_rendered_text", result.quality_flags)
+
     def test_structured_fund_xml_stays_in_source_but_is_excluded_from_model_text(self) -> None:
         result = render_sec_packed_text(
             "<root><holding><name>Issuer</name></holding></root>",

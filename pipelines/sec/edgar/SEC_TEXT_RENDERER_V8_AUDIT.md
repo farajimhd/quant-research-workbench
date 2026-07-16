@@ -264,6 +264,22 @@ The renderer reached the stop condition after the fresh-sample loop:
 - remaining possible reductions require semantic deletion rather than layout
   normalization.
 
+## Full-Rebuild Edge-Case Follow-Up
+
+The later full-corpus run found two structures absent from the random audit
+sample. Six `ABS-EE` `EX-103` exhibits used an empty `<assetdata>` element and
+stored 8,559-20,714 rendered characters of explanatory narrative entirely in
+XML comments. One `S-3` legal opinion opened `<body>` before closing `<head>`,
+causing the old depth-based head skip to hide 14,275 renderable characters.
+
+The shared renderer now retains nonempty, non-separator XML comments in source
+order with `xml_comments_preserved`, and uses explicit head state that ends when
+body begins. Validation against all seven exact production documents produced
+nonempty output without OCR or source truncation. This follow-up narrows the
+stop condition: XML leaf, attribute, repeated-record, and substantive-comment
+content are preserved; malformed HTML cannot keep visible body content in head
+skip state.
+
 Before tokenization or embedding, rebuild only
 `q_live.sec_filing_text_rendered_v3` from the already complete
 `q_live.sec_filing_text_v3`. Do not rerun archive acquisition or source

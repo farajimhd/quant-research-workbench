@@ -9,8 +9,12 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pyarrow as pa
+import pyarrow.parquet as pq
+
 from pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild import (
     SourceWatermark,
+    SOURCE_COLUMNS,
     FilingWatermark,
     PartitionResult,
     build_rendered_row,
@@ -19,6 +23,7 @@ from pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild import (
     load_filing_forms,
     load_partition_authority,
     prepare_lookup_database,
+    prepare_partition_export,
     run_jobs,
     staging_table_for_run,
 )
@@ -93,6 +98,73 @@ class SecRenderedV3RebuildTest(unittest.TestCase):
             self.assertNotIn(3, prepared)
             self.assertTrue(manifest.called)
             self.assertTrue((Path(temp_dir) / "partition_results.json").exists())
+
+    def test_completed_legacy_partition_export_is_validated_adopted_and_reused(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            run_root = Path(temp_dir) / "sec_filing_text_rendered_v3_rebuild" / "run"
+            partition_root = run_root / "partitions" / "202607"
+            partition_root.mkdir(parents=True)
+            source_path = partition_root / "source_202607.parquet"
+            columns = {name: [""] for name in SOURCE_COLUMNS}
+            columns["source_revision_rank"] = [1]
+            pq.write_table(pa.table(columns), source_path)
+            job = SimpleNamespace(
+                run_id="run",
+                run_root=str(run_root),
+                database="q_live",
+                source_table="sec_filing_text_v3",
+                staging_table="stage_v3",
+                partition_id=202607,
+                expected_rows=1,
+                expected_source_chars=0,
+            )
+
+            with (
+                patch("pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild.cleanup_partition_staging"),
+                patch("pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild.export_source_partition") as export,
+            ):
+                reused = prepare_partition_export(object(), job)
+
+            self.assertTrue(reused)
+            self.assertFalse(export.called)
+            self.assertTrue((partition_root / "source_export.json").exists())
+
+    def test_mismatched_partition_export_receipt_forces_reexport(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            run_root = Path(temp_dir) / "sec_filing_text_rendered_v3_rebuild" / "run"
+            partition_root = run_root / "partitions" / "202607"
+            partition_root.mkdir(parents=True)
+            source_path = partition_root / "source_202607.parquet"
+            columns = {name: [""] for name in SOURCE_COLUMNS}
+            columns["source_revision_rank"] = [1]
+            pq.write_table(pa.table(columns), source_path)
+            (partition_root / "source_export.json").write_text('{"run_id":"wrong"}', encoding="utf-8")
+            job = SimpleNamespace(
+                run_id="run",
+                run_root=str(run_root),
+                database="q_live",
+                source_table="sec_filing_text_v3",
+                staging_table="stage_v3",
+                partition_id=202607,
+                expected_rows=1,
+                expected_source_chars=0,
+            )
+
+            def export(_client: object, _job: object, path: Path) -> None:
+                pq.write_table(pa.table(columns), path)
+
+            with (
+                patch("pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild.cleanup_partition_staging"),
+                patch(
+                    "pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild.export_source_partition",
+                    side_effect=export,
+                ) as export_mock,
+            ):
+                reused = prepare_partition_export(object(), job)
+
+            self.assertFalse(reused)
+            self.assertTrue(export_mock.called)
+            self.assertIn('"run_id": "run"', (partition_root / "source_export.json").read_text(encoding="utf-8"))
 
     def test_completed_temporary_lookup_is_promoted_on_resume(self) -> None:
         source = SourceWatermark(1, 100, 7, "2026-07-16 00:00:00.000", 123)

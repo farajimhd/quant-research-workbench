@@ -17,7 +17,7 @@ DUPLICATE_PLACEHOLDER_PREFIX_CHARS = 15
 
 _UINT32_MAX = 4_294_967_295
 _VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
-_SKIP_TAGS = {"script", "style", "noscript", "svg", "head", "ix:hidden"}
+_SKIP_TAGS = {"script", "style", "noscript", "svg", "ix:hidden"}
 _BLOCK_TAGS = {
     "address",
     "article",
@@ -166,6 +166,7 @@ class _SecHTMLPackedTextParser(HTMLParser):
         self.table: _TableState | None = None
         self.table_depth = 0
         self.table_count = 0
+        self.in_head = False
         self.in_title = False
         self.document_title_parts: list[str] = []
         self.image_references: list[_ImageReference] = []
@@ -173,8 +174,17 @@ class _SecHTMLPackedTextParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
         attr_map = {name.lower(): value or "" for name, value in attrs}
+        if tag == "head":
+            self.in_head = True
+            return
+        if tag == "body":
+            # SEC HTML is often structurally invalid and may open BODY before
+            # closing HEAD. BODY is authoritative for visible-content state.
+            self.in_head = False
         if tag == "title":
             self.in_title = True
+            return
+        if self.in_head:
             return
         if tag == "img" and not self.skip_depth and not _is_hidden_tag(tag, attr_map):
             reference = _html_image_reference(attr_map)
@@ -220,8 +230,13 @@ class _SecHTMLPackedTextParser(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
+        if tag == "head":
+            self.in_head = False
+            return
         if tag == "title":
             self.in_title = False
+            return
+        if self.in_head:
             return
         if self.skip_depth:
             self.skip_depth = max(0, self.skip_depth - 1)
@@ -242,7 +257,7 @@ class _SecHTMLPackedTextParser(HTMLParser):
         if self.in_title and data:
             self.document_title_parts.append(data)
             return
-        if self.skip_depth or not data:
+        if self.in_head or self.skip_depth or not data:
             return
         if self.table is not None:
             if self.table.current_cell_parts is not None:
@@ -410,6 +425,8 @@ def render_sec_packed_text(
         blocks = _xml_blocks(source)
         if any(block.kind == "xml_record" for block in blocks):
             flags.append("xml_repeated_records_packed")
+        if any(block.kind == "xml_comment" for block in blocks):
+            flags.append("xml_comments_preserved")
     else:
         blocks = _plain_text_blocks(source)
 
@@ -682,7 +699,8 @@ def _xml_blocks(source: str) -> list[RenderedBlock]:
     if not text:
         return []
     try:
-        root = ET.fromstring(text)
+        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
+        root = ET.fromstring(text, parser=parser)
     except ET.ParseError:
         return _xml_like_blocks_with_tags(source)
     repeated_record_blocks = _xml_repeated_record_blocks(root)
@@ -695,11 +713,12 @@ def _xml_blocks(source: str) -> list[RenderedBlock]:
 
 def _xml_repeated_record_blocks(root: ET.Element) -> list[RenderedBlock]:
     children = list(root)
-    if len(children) < 3:
+    element_children = [child for child in children if not _is_xml_comment(child)]
+    if len(element_children) < 3:
         return []
-    child_tags = [_strip_namespace(child.tag) for child in children]
+    child_tags = [_strip_namespace(child.tag) for child in element_children]
     record_tag, record_count = Counter(child_tags).most_common(1)[0]
-    if not record_tag or record_count < 3 or record_count / len(children) < 0.6:
+    if not record_tag or record_count < 3 or record_count / len(element_children) < 0.6:
         return []
 
     root_tag = _strip_namespace(root.tag)
@@ -728,6 +747,11 @@ def _xml_repeated_record_blocks(root: ET.Element) -> list[RenderedBlock]:
 
 
 def _flatten_xml_record(node: ET.Element, path: list[str], fields: list[str]) -> None:
+    if _is_xml_comment(node):
+        comment = _clean_block_text(node.text or "")
+        if comment and not _is_low_signal_text(comment):
+            fields.append(f"comment={comment}")
+        return
     tag = _strip_namespace(node.tag)
     next_path = [*path, tag] if tag else path
     field_name = "/".join(next_path[1:] if len(next_path) > 1 else next_path)
@@ -755,7 +779,11 @@ def _prepare_xml_source(source: str) -> str:
 
 
 def _xml_like_blocks_with_tags(source: str) -> list[RenderedBlock]:
-    blocks: list[RenderedBlock] = []
+    blocks = [
+        RenderedBlock("xml_comment", text)
+        for raw in re.findall(r"(?is)<!--(.*?)-->", source or "")
+        if (text := _clean_block_text(raw)) and not _is_low_signal_text(text)
+    ]
     for match in re.finditer(r"(?is)<([A-Za-z_][\w:.-]*)(?:\s[^>]*)?>\s*([^<]+?)\s*</\1>", source or ""):
         tag = _strip_namespace(match.group(1))
         text = _clean_block_text(match.group(2))
@@ -774,6 +802,11 @@ def _is_structured_fund_xml(*, form_type: str, document_type: str, document_name
 
 
 def _walk_xml(node: ET.Element, path: list[str], blocks: list[RenderedBlock]) -> None:
+    if _is_xml_comment(node):
+        text = _clean_block_text(node.text or "")
+        if text and not _is_low_signal_text(text):
+            blocks.append(RenderedBlock("xml_comment", text))
+        return
     tag = _strip_namespace(node.tag)
     next_path = [*path, tag] if tag else path
     text = _clean_block_text(node.text or "")
@@ -800,6 +833,10 @@ def _xml_attrs(node: ET.Element) -> list[str]:
         if clean_value:
             attrs.append(f"@{_strip_namespace(name)}={clean_value}")
     return attrs
+
+
+def _is_xml_comment(node: ET.Element) -> bool:
+    return node.tag is ET.Comment
 
 
 def _xml_compact_path(path: list[str]) -> str:

@@ -84,11 +84,31 @@ worker count. The first export, render, or insert failure stops new exports,
 drains only already active workers, and writes the failed stage and exception to
 the ClickHouse rebuild manifest.
 
+Each completed source export now receives an atomic `source_export.json`
+receipt bound to the immutable run, source table, partition, expected logical
+counts, Parquet filename and size, physical row count, and exact column
+contract. Resume validates that receipt and the Parquet footer before reusing
+the export. Complete exports from runs created immediately before receipts were
+introduced are adopted only after the same structural and row-count checks.
+A Parquet read failure removes that partition's export and receipt after the
+reader closes, so only the damaged partition is re-exported. Renderer/content
+failures retain the valid source export and avoid repeating hours of ClickHouse
+transport.
+
 Image-only HTML is not treated as an empty render. The canonical renderer
 preserves the HTML title plus every non-tracking image source, alt/title label,
 and declared dimension as a compact image inventory. It explicitly flags that
 the referenced image content was not OCR-extracted. Truly empty non-structured
 documents still fail the partition instead of disappearing silently.
+
+Substantive XML comments are model-visible source content. This matters for
+`ABS-EE` `EX-103` asset-related documents whose otherwise empty `<assetdata>`
+root contains the complete explanatory narrative in comments. The renderer
+preserves those comments in document order and flags
+`xml_comments_preserved`. For malformed SEC HTML, `<head>` is explicit parser
+state and the opening `<body>` ends it even when the submitter placed the
+closing `</head>` after the body. This prevents legal opinions and similar
+exhibits from being discarded as header metadata.
 
 ## Resume
 

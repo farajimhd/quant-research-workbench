@@ -701,7 +701,7 @@ def run_jobs(
                     print(f"partition={job.partition_id} stage=export status=active", flush=True)
                     export_started = time.perf_counter()
                     try:
-                        prepare_partition_export(client, job)
+                        reused_export = prepare_partition_export(client, job)
                     except Exception as exc:  # noqa: BLE001
                         result = failure_result(job, "export", exc, export_started)
                         insert_partition_manifest(client, job, result)
@@ -719,6 +719,7 @@ def run_jobs(
                         break
                     print(
                         f"partition={job.partition_id} stage=export status=completed "
+                        f"reused={str(bool(reused_export)).lower()} "
                         f"wall={time.perf_counter() - export_started:.1f}s",
                         flush=True,
                     )
@@ -838,13 +839,106 @@ def failure_result(
     )
 
 
-def prepare_partition_export(client: ClickHouseHttpClient, job: PartitionJob) -> None:
+def prepare_partition_export(client: ClickHouseHttpClient, job: PartitionJob) -> bool:
     partition_root = Path(job.run_root) / "partitions" / str(job.partition_id)
     source_path = partition_root / f"source_{job.partition_id}.parquet"
+    receipt_path = partition_root / "source_export.json"
     partition_root.mkdir(parents=True, exist_ok=True)
     cleanup_partition_staging(client, job)
-    cleanup_temp_root(partition_root, keep_source=False)
+    cleanup_temp_root(partition_root, keep_source=True)
+    if validate_source_export(job, source_path, receipt_path):
+        return True
+    source_path.unlink(missing_ok=True)
+    receipt_path.unlink(missing_ok=True)
     export_source_partition(client, job, source_path)
+    write_source_export_receipt(job, source_path, receipt_path)
+    return False
+
+
+def validate_source_export(job: PartitionJob, source_path: Path, receipt_path: Path) -> bool:
+    if not source_path.is_file() or source_path.stat().st_size <= 0:
+        return False
+    try:
+        parquet = pq.ParquetFile(source_path)
+        try:
+            physical_rows = int(parquet.metadata.num_rows)
+            schema_names = list(parquet.schema_arrow.names)
+        finally:
+            parquet.close()
+    except Exception:  # noqa: BLE001
+        return False
+    if schema_names != SOURCE_COLUMNS or physical_rows < minimum_export_rows(job):
+        return False
+
+    expected = source_export_identity(job, source_path, physical_rows)
+    if receipt_path.exists():
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        return all(receipt.get(key) == value for key, value in expected.items())
+
+    # Runs created before export receipts are safe to adopt because the run
+    # manifest locks source and filing watermarks and ClickHouse writes the
+    # Parquet path atomically enough to require a valid footer here.
+    write_source_export_receipt(job, source_path, receipt_path, physical_rows=physical_rows)
+    return True
+
+
+def write_source_export_receipt(
+    job: PartitionJob,
+    source_path: Path,
+    receipt_path: Path,
+    *,
+    physical_rows: int | None = None,
+) -> None:
+    if physical_rows is None:
+        parquet = pq.ParquetFile(source_path)
+        try:
+            physical_rows = int(parquet.metadata.num_rows)
+            if list(parquet.schema_arrow.names) != SOURCE_COLUMNS:
+                raise RuntimeError(f"source export schema mismatch: {source_path}")
+        finally:
+            parquet.close()
+    minimum_rows = minimum_export_rows(job)
+    if physical_rows < minimum_rows:
+        raise RuntimeError(
+            f"source export row count is incomplete partition={job.partition_id} "
+            f"expected_at_least={minimum_rows} actual={physical_rows}"
+        )
+    payload = {
+        **source_export_identity(job, source_path, physical_rows),
+        "schema": SOURCE_COLUMNS,
+        "completed_at_utc": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+    }
+    temporary_path = receipt_path.with_suffix(".json.tmp")
+    temporary_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    temporary_path.replace(receipt_path)
+
+
+def source_export_identity(job: PartitionJob, source_path: Path, physical_rows: int) -> dict[str, Any]:
+    return {
+        "format_version": 1,
+        "run_id": job.run_id,
+        "database": job.database,
+        "source_table": job.source_table,
+        "partition_id": job.partition_id,
+        "expected_rows": job.expected_rows,
+        "expected_source_chars": job.expected_source_chars,
+        "file_name": source_path.name,
+        "file_size": source_path.stat().st_size,
+        "physical_rows": physical_rows,
+    }
+
+
+def minimum_export_rows(job: PartitionJob) -> int:
+    row_limit = int(getattr(job, "max_rows_per_partition", 0) or 0)
+    return min(job.expected_rows, row_limit) if row_limit else job.expected_rows
+
+
+def invalidate_source_export(partition_root: Path, source_path: Path) -> None:
+    source_path.unlink(missing_ok=True)
+    (partition_root / "source_export.json").unlink(missing_ok=True)
 
 
 def process_exported_partition(job: PartitionJob) -> PartitionResult:
@@ -853,11 +947,15 @@ def process_exported_partition(job: PartitionJob) -> PartitionResult:
     partition_root = Path(job.run_root) / "partitions" / str(job.partition_id)
     source_path = partition_root / f"source_{job.partition_id}.parquet"
     output_root = partition_root / "rendered"
-    source_parquet = pq.ParquetFile(source_path)
     try:
-        physical_rows = int(source_parquet.metadata.num_rows)
-    finally:
-        source_parquet.close()
+        source_parquet = pq.ParquetFile(source_path)
+        try:
+            physical_rows = int(source_parquet.metadata.num_rows)
+        finally:
+            source_parquet.close()
+    except Exception:  # noqa: BLE001
+        invalidate_source_export(partition_root, source_path)
+        raise
     authority = load_partition_authority(Path(job.lookup_database_path), job.partition_id)
     filing_forms = load_filing_forms(
         Path(job.lookup_database_path),
@@ -881,9 +979,19 @@ def process_exported_partition(job: PartitionJob) -> PartitionResult:
     extracted_at = datetime.now(UTC)
     try:
         parquet = pq.ParquetFile(source_path)
+        source_read_error: Exception | None = None
         try:
-            for batch in parquet.iter_batches(batch_size=8):
-                for source in batch.to_pylist():
+            batches = iter(parquet.iter_batches(batch_size=8))
+            while True:
+                try:
+                    batch = next(batches)
+                    sources = batch.to_pylist()
+                except StopIteration:
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    source_read_error = exc
+                    break
+                for source in sources:
                     key = source_authority_key(source)
                     authority_row = authority.get(key)
                     if authority_row is None:
@@ -921,6 +1029,11 @@ def process_exported_partition(job: PartitionJob) -> PartitionResult:
                     writer.append(build_rendered_row(source, text, rendered.quality_flags, job.run_id, extracted_at))
         finally:
             parquet.close()
+        if source_read_error is not None:
+            invalidate_source_export(partition_root, source_path)
+            raise RuntimeError(
+                f"source Parquet read failed partition={job.partition_id}; export invalidated for retry"
+            ) from source_read_error
         parts = writer.close()
     except Exception:
         writer.abort()

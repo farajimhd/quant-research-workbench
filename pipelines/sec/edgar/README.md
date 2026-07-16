@@ -114,6 +114,10 @@ distribution, large-document iterations, table/XML corrections, and rejected
 lossy rules are documented in [SEC_TEXT_RENDERER_V8_AUDIT.md](SEC_TEXT_RENDERER_V8_AUDIT.md).
 Updating the code does not rewrite existing rendered rows; rebuild the rendered
 derivative from `sec_filing_text_v3` before SEC token or embedding generation.
+The renderer preserves substantive XML comments, including `ABS-EE` `EX-103`
+asset-related narratives, and treats `<body>` as the end of malformed HTML head
+state. Full-corpus rebuild retries validate and reuse completed monthly source
+exports instead of repeating ClickHouse transport after renderer-only failures.
 
 The SEC gateway generates the same explicit shape so the workstation script does
 not depend on ambient shell defaults. `--resume-from-coverage` is enabled by default and records
