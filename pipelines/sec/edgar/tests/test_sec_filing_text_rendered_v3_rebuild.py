@@ -1,26 +1,99 @@
 from __future__ import annotations
 
+import concurrent.futures
 import unittest
 import sqlite3
 from datetime import UTC, date, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild import (
     SourceWatermark,
     FilingWatermark,
+    PartitionResult,
     build_rendered_row,
+    export_source_partition,
     load_or_create_run_manifest,
     load_filing_forms,
     load_partition_authority,
     prepare_lookup_database,
+    run_jobs,
     staging_table_for_run,
 )
 from pipelines.sec.edgar.sec_pipeline.text_renderer import SEC_PACKED_TEXT_RENDERER_VERSION
 
 
 class SecRenderedV3RebuildTest(unittest.TestCase):
+    def test_source_export_checks_parquet_pages_after_each_large_text_row(self) -> None:
+        class RecordingClient:
+            def __init__(self) -> None:
+                self.sql = ""
+
+            def execute(self, sql: str) -> str:
+                self.sql = sql
+                return ""
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            client = RecordingClient()
+            job = SimpleNamespace(
+                file_root_win=str(root),
+                file_root_ch="/mnt/test",
+                max_rows_per_partition=0,
+                database="q_live",
+                source_table="sec_filing_text_v3",
+                partition_id=202002,
+                export_threads=2,
+                max_memory_usage=32 * 1024**3,
+            )
+            export_source_partition(client, job, root / "source.parquet")
+
+            self.assertIn("output_format_parquet_batch_size=1", client.sql)
+            self.assertIn("output_format_parquet_row_group_size_bytes=268435456", client.sql)
+            self.assertIn("output_format_parquet_parallel_encoding=0", client.sql)
+            self.assertIn("output_format_parquet_write_bloom_filter=0", client.sql)
+
+    def test_scheduler_stops_exporting_after_first_worker_failure(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            jobs = [SimpleNamespace(partition_id=value, run_root=temp_dir) for value in range(1, 6)]
+            prepared: list[int] = []
+
+            def prepare(_client: object, job: SimpleNamespace) -> None:
+                prepared.append(job.partition_id)
+
+            def process(job: SimpleNamespace) -> PartitionResult:
+                if job.partition_id == 1:
+                    raise RuntimeError("expected failure")
+                return PartitionResult(job.partition_id, 1, 1, 0, 1, 1, 1, 0.01, "ok")
+
+            with (
+                patch(
+                    "pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild.concurrent.futures.ProcessPoolExecutor",
+                    concurrent.futures.ThreadPoolExecutor,
+                ),
+                patch(
+                    "pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild.prepare_partition_export",
+                    side_effect=prepare,
+                ),
+                patch(
+                    "pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild.process_exported_partition",
+                    side_effect=process,
+                ),
+                patch(
+                    "pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild.insert_partition_manifest"
+                ) as manifest,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "partition 1 failed"):
+                    run_jobs(object(), jobs, max_workers=2, total_partitions=5, already_completed=0)
+
+            self.assertIn(1, prepared)
+            self.assertLessEqual(len(prepared), 2)
+            self.assertNotIn(3, prepared)
+            self.assertTrue(manifest.called)
+            self.assertTrue((Path(temp_dir) / "partition_results.json").exists())
+
     def test_completed_temporary_lookup_is_promoted_on_resume(self) -> None:
         source = SourceWatermark(1, 100, 7, "2026-07-16 00:00:00.000", 123)
         filing = FilingWatermark(1, 1, "2026-07-16 00:00:00.000", 456)

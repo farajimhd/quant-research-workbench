@@ -42,16 +42,21 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 
 Four workers are intentional. A monthly partition can contain more than 200
 billion source characters and an individual source row can exceed 600 million
-characters. Increase to eight only after observing stable RAM, temporary disk,
-and ClickHouse merge pressure.
+characters. ClickHouse exports exactly one monthly partition at a time while up
+to four Python workers render already exported partitions. This overlaps
+database I/O with CPU rendering without allowing large source scans to compete
+for server memory. Increase the renderer workers to eight only after observing
+stable RAM, temporary disk, and ClickHouse merge pressure.
 
-Each worker owns one monthly source partition through export, v8 rendering,
-Parquet insertion, ClickHouse checkpoint, and temporary-file cleanup. A failed
-partition leaves the staging table and durable successful checkpoints intact.
-Each run owns a separate staging table. The worker resolves each source
-`filing_id` through the run's compact form map so structured XML classification
-receives the authoritative parent form type. Only explicitly classified structured fund XML is omitted from the
-rendered text table; an empty result for any other source row fails loudly.
+The parent process owns each bounded monthly export. A renderer worker then
+owns that exported partition through v8 rendering, Parquet insertion,
+ClickHouse checkpoint, and temporary-file cleanup. A failed partition leaves
+the staging table and durable successful checkpoints intact. Each run owns a
+separate staging table. The worker resolves each source `filing_id` through the
+run's compact form map so structured XML classification receives the
+authoritative parent form type. Only explicitly classified structured fund XML
+is omitted from the rendered text table; an empty result for any other source
+row fails loudly.
 
 The first production attempt failed because every monthly worker joined the
 entire `sec_filing_v3 FINAL` relation while exporting large source text. Each
@@ -69,6 +74,15 @@ Parquet export is deleted. If interruption occurs after the complete SQLite
 lookup has been committed but before its atomic rename, resuming the same run
 validates and promotes `render_lookup.sqlite.tmp` instead of repeating the
 multi-million-row export and import.
+
+The source transport checks Parquet page size after every row, targets 256 MiB
+row groups by bytes, and disables unnecessary parallel encoding and bloom
+filters. This is required because grouping 1,024 unusually large SEC text rows
+can exceed Parquet's uncompressed page limit even though the largest individual
+source row is about 601 MB. Partition submission is bounded to the renderer
+worker count. The first export, render, or insert failure stops new exports,
+drains only already active workers, and writes the failed stage and exception to
+the ClickHouse rebuild manifest.
 
 ## Resume
 

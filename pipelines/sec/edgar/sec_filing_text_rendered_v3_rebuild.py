@@ -234,7 +234,13 @@ def main() -> int:
     print(f"resume completed={len(completed):,} pending={len(pending):,}", flush=True)
 
     jobs = [build_job(args, run_id, run_root, lookup_database_path, row) for row in pending]
-    results = run_jobs(jobs, max_workers=args.workers, total_partitions=len(partitions), already_completed=len(completed))
+    results = run_jobs(
+        client,
+        jobs,
+        max_workers=args.workers,
+        total_partitions=len(partitions),
+        already_completed=len(completed),
+    )
     failures = [result for result in results if result.status != "ok"]
     if failures:
         write_results(run_root, results)
@@ -647,54 +653,211 @@ def build_job(
     )
 
 
-def run_jobs(jobs: list[PartitionJob], *, max_workers: int, total_partitions: int, already_completed: int) -> list[PartitionResult]:
+def run_jobs(
+    client: ClickHouseHttpClient,
+    jobs: list[PartitionJob],
+    *,
+    max_workers: int,
+    total_partitions: int,
+    already_completed: int,
+) -> list[PartitionResult]:
     if not jobs:
         return []
     results: list[PartitionResult] = []
     completed = already_completed
     started = time.perf_counter()
+    next_job = iter(jobs)
+    no_more_jobs = False
+    first_failure: PartitionResult | None = None
+
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(process_partition, job): job for job in jobs}
+        futures: dict[concurrent.futures.Future[PartitionResult], PartitionJob] = {}
         try:
-            for future in concurrent.futures.as_completed(futures):
-                job = futures[future]
-                try:
-                    result = future.result()
-                except Exception as exc:  # noqa: BLE001
-                    result = PartitionResult(job.partition_id, 0, 0, 0, 0, 0, 0, 0.0, "error", repr(exc))
-                results.append(result)
-                completed += 1
-                elapsed = time.perf_counter() - started
-                rate = (completed - already_completed) / elapsed if elapsed > 0 else 0.0
-                print(
-                    f"partition={result.partition_id} status={result.status} overall={completed}/{total_partitions} "
-                    f"source={result.source_rows:,} rendered={result.rendered_rows:,} excluded={result.excluded_rows:,} "
-                    f"wall={result.wall_seconds:.1f}s rate={rate:.3f}_partitions/s",
-                    flush=True,
+            while futures or (not no_more_jobs and first_failure is None):
+                while len(futures) < max_workers and not no_more_jobs and first_failure is None:
+                    completed_futures = [future for future in futures if future.done()]
+                    if completed_futures:
+                        first_failure = collect_partition_results(
+                            client,
+                            futures,
+                            completed_futures,
+                            results,
+                            completed,
+                            already_completed,
+                            total_partitions,
+                            started,
+                        )
+                        completed += len(completed_futures)
+                        if first_failure is not None:
+                            print_run_failure(first_failure, active_renderers=len(futures))
+                            break
+
+                    try:
+                        job = next(next_job)
+                    except StopIteration:
+                        no_more_jobs = True
+                        break
+
+                    print(f"partition={job.partition_id} stage=export status=active", flush=True)
+                    export_started = time.perf_counter()
+                    try:
+                        prepare_partition_export(client, job)
+                    except Exception as exc:  # noqa: BLE001
+                        result = failure_result(job, "export", exc, export_started)
+                        insert_partition_manifest(client, job, result)
+                        results.append(result)
+                        completed += 1
+                        print_partition_result(
+                            result,
+                            completed=completed,
+                            already_completed=already_completed,
+                            total_partitions=total_partitions,
+                            started=started,
+                        )
+                        first_failure = result
+                        print_run_failure(first_failure, active_renderers=len(futures))
+                        break
+                    print(
+                        f"partition={job.partition_id} stage=export status=completed "
+                        f"wall={time.perf_counter() - export_started:.1f}s",
+                        flush=True,
+                    )
+                    futures[executor.submit(process_exported_partition, job)] = job
+
+                if not futures:
+                    break
+
+                done, _ = concurrent.futures.wait(
+                    futures,
+                    return_when=(
+                        concurrent.futures.ALL_COMPLETED
+                        if first_failure is not None
+                        else concurrent.futures.FIRST_COMPLETED
+                    ),
                 )
-                if result.status != "ok":
-                    for pending in futures:
-                        pending.cancel()
-                    raise RuntimeError(f"partition {result.partition_id} failed: {result.error}")
+                new_failure = collect_partition_results(
+                    client,
+                    futures,
+                    list(done),
+                    results,
+                    completed,
+                    already_completed,
+                    total_partitions,
+                    started,
+                )
+                completed += len(done)
+                if first_failure is None and new_failure is not None:
+                    first_failure = new_failure
+                    print_run_failure(first_failure, active_renderers=len(futures))
         except KeyboardInterrupt:
             for future in futures:
                 future.cancel()
             raise
+
+    if first_failure is not None:
+        write_results(Path(jobs[0].run_root), sorted(results, key=lambda item: item.partition_id))
+        raise RuntimeError(f"partition {first_failure.partition_id} failed: {first_failure.error}")
     return sorted(results, key=lambda item: item.partition_id)
 
 
-def process_partition(job: PartitionJob) -> PartitionResult:
+def collect_partition_results(
+    client: ClickHouseHttpClient,
+    futures: dict[concurrent.futures.Future[PartitionResult], PartitionJob],
+    done: list[concurrent.futures.Future[PartitionResult]],
+    results: list[PartitionResult],
+    completed: int,
+    already_completed: int,
+    total_partitions: int,
+    started: float,
+) -> PartitionResult | None:
+    first_failure: PartitionResult | None = None
+    for offset, future in enumerate(done, start=1):
+        job = futures.pop(future)
+        try:
+            result = future.result()
+        except Exception as exc:  # noqa: BLE001
+            result = failure_result(job, "render_or_insert", exc, started_at=None)
+            insert_partition_manifest(client, job, result)
+        results.append(result)
+        print_partition_result(
+            result,
+            completed=completed + offset,
+            already_completed=already_completed,
+            total_partitions=total_partitions,
+            started=started,
+        )
+        if result.status != "ok" and first_failure is None:
+            first_failure = result
+    return first_failure
+
+
+def print_partition_result(
+    result: PartitionResult,
+    *,
+    completed: int,
+    already_completed: int,
+    total_partitions: int,
+    started: float,
+) -> None:
+    elapsed = time.perf_counter() - started
+    rate = (completed - already_completed) / elapsed if elapsed > 0 else 0.0
+    print(
+        f"partition={result.partition_id} status={result.status} overall={completed}/{total_partitions} "
+        f"source={result.source_rows:,} rendered={result.rendered_rows:,} excluded={result.excluded_rows:,} "
+        f"wall={result.wall_seconds:.1f}s rate={rate:.3f}_partitions/s error={result.error!r}",
+        flush=True,
+    )
+
+
+def print_run_failure(result: PartitionResult, *, active_renderers: int) -> None:
+    print(
+        f"run_status=failed first_partition={result.partition_id} action=stop_new_exports "
+        f"active_renderers_to_drain={active_renderers} error={result.error!r}",
+        flush=True,
+    )
+
+
+def failure_result(
+    job: PartitionJob,
+    stage: str,
+    exc: Exception,
+    started_at: float | None,
+) -> PartitionResult:
+    wall_seconds = 0.0 if started_at is None else round(time.perf_counter() - started_at, 3)
+    return PartitionResult(
+        job.partition_id,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        wall_seconds,
+        "error",
+        f"stage={stage} {type(exc).__name__}: {exc}",
+    )
+
+
+def prepare_partition_export(client: ClickHouseHttpClient, job: PartitionJob) -> None:
+    partition_root = Path(job.run_root) / "partitions" / str(job.partition_id)
+    source_path = partition_root / f"source_{job.partition_id}.parquet"
+    partition_root.mkdir(parents=True, exist_ok=True)
+    cleanup_partition_staging(client, job)
+    cleanup_temp_root(partition_root, keep_source=False)
+    export_source_partition(client, job, source_path)
+
+
+def process_exported_partition(job: PartitionJob) -> PartitionResult:
     started = time.perf_counter()
     client = ClickHouseHttpClient(job.clickhouse_url, job.clickhouse_user, job.clickhouse_password)
     partition_root = Path(job.run_root) / "partitions" / str(job.partition_id)
     source_path = partition_root / f"source_{job.partition_id}.parquet"
     output_root = partition_root / "rendered"
-    partition_root.mkdir(parents=True, exist_ok=True)
-    cleanup_partition_staging(client, job)
-    cleanup_temp_root(partition_root, keep_source=False)
-
-    export_source_partition(client, job, source_path)
-    physical_rows = int(pq.ParquetFile(source_path).metadata.num_rows)
+    source_parquet = pq.ParquetFile(source_path)
+    try:
+        physical_rows = int(source_parquet.metadata.num_rows)
+    finally:
+        source_parquet.close()
     authority = load_partition_authority(Path(job.lookup_database_path), job.partition_id)
     filing_forms = load_filing_forms(
         Path(job.lookup_database_path),
@@ -718,43 +881,46 @@ def process_partition(job: PartitionJob) -> PartitionResult:
     extracted_at = datetime.now(UTC)
     try:
         parquet = pq.ParquetFile(source_path)
-        for batch in parquet.iter_batches(batch_size=8):
-            for source in batch.to_pylist():
-                key = source_authority_key(source)
-                authority_row = authority.get(key)
-                if authority_row is None:
-                    continue
-                source_version_key, source_revision_rank, filing_id = authority_row
-                if (
-                    str(source.get("source_version_key") or "") != source_version_key
-                    or int(source.get("source_revision_rank") or 0) != source_revision_rank
-                ):
-                    continue
-                del authority[key]
-                source_rows += 1
-                source_text = str(source.get("source_text") or "")
-                source_chars += len(source_text)
-                rendered = render_sec_packed_text(
-                    source_text,
-                    str(source.get("content_format") or ""),
-                    document_name=str(source.get("document_name") or ""),
-                    document_type=str(source.get("document_type") or ""),
-                    form_type=filing_forms[filing_id],
-                    text_kind=str(source.get("text_kind") or ""),
-                    include_intermediate=False,
-                )
-                text = rendered.packed_text
-                if STRUCTURED_XML_EXCLUDED_QUALITY_FLAG in rendered.quality_flags:
-                    excluded_rows += 1
-                    continue
-                if not text:
-                    raise RuntimeError(
-                        "renderer produced an unexpectedly empty non-structured document "
-                        f"document_id={source.get('document_id')} content_format={source.get('content_format')} "
-                        f"source_chars={len(source_text)} quality_flags={rendered.quality_flags}"
+        try:
+            for batch in parquet.iter_batches(batch_size=8):
+                for source in batch.to_pylist():
+                    key = source_authority_key(source)
+                    authority_row = authority.get(key)
+                    if authority_row is None:
+                        continue
+                    source_version_key, source_revision_rank, filing_id = authority_row
+                    if (
+                        str(source.get("source_version_key") or "") != source_version_key
+                        or int(source.get("source_revision_rank") or 0) != source_revision_rank
+                    ):
+                        continue
+                    del authority[key]
+                    source_rows += 1
+                    source_text = str(source.get("source_text") or "")
+                    source_chars += len(source_text)
+                    rendered = render_sec_packed_text(
+                        source_text,
+                        str(source.get("content_format") or ""),
+                        document_name=str(source.get("document_name") or ""),
+                        document_type=str(source.get("document_type") or ""),
+                        form_type=filing_forms[filing_id],
+                        text_kind=str(source.get("text_kind") or ""),
+                        include_intermediate=False,
                     )
-                rendered_chars += len(text)
-                writer.append(build_rendered_row(source, text, rendered.quality_flags, job.run_id, extracted_at))
+                    text = rendered.packed_text
+                    if STRUCTURED_XML_EXCLUDED_QUALITY_FLAG in rendered.quality_flags:
+                        excluded_rows += 1
+                        continue
+                    if not text:
+                        raise RuntimeError(
+                            "renderer produced an unexpectedly empty non-structured document "
+                            f"document_id={source.get('document_id')} content_format={source.get('content_format')} "
+                            f"source_chars={len(source_text)} quality_flags={rendered.quality_flags}"
+                        )
+                    rendered_chars += len(text)
+                    writer.append(build_rendered_row(source, text, rendered.quality_flags, job.run_id, extracted_at))
+        finally:
+            parquet.close()
         parts = writer.close()
     except Exception:
         writer.abort()
@@ -874,8 +1040,12 @@ FROM {table(job.database, job.source_table)} AS s
 WHERE toYYYYMM(s.source_archive_date)={job.partition_id}
 {limit_sql}
 SETTINGS max_threads={job.export_threads}, max_memory_usage={job.max_memory_usage},
-         max_block_size=128, preferred_block_size_bytes=67108864,
+         max_block_size=8, preferred_block_size_bytes=16777216,
+         output_format_parquet_batch_size=1,
          output_format_parquet_row_group_size=1024,
+         output_format_parquet_row_group_size_bytes=268435456,
+         output_format_parquet_parallel_encoding=0,
+         output_format_parquet_write_bloom_filter=0,
          output_format_parquet_compression_method='zstd', output_format_parquet_compliant_nested_types=1
 """
     )
