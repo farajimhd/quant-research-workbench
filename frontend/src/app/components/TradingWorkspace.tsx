@@ -851,9 +851,11 @@ function createGlobalLayouts(ids: string[], instances: Record<string, WorkspaceC
     fills: { h: 220, w: columnWidth, x: margin, y: 484 },
     strategy: { h: 220, w: columnWidth, x: margin + columnWidth + gap, y: 644 },
     news: { h: 290, w: columnWidth, x: margin, y: 706 },
-    sec: { h: 290, w: columnWidth, x: margin + columnWidth + gap, y: 866 },
-    xbrl: { h: 290, w: columnWidth, x: margin, y: 998 },
-    journal: { h: 290, w: columnWidth, x: margin + columnWidth + gap, y: 1158 },
+    ticker_news: { h: 360, w: columnWidth, x: margin, y: 998 },
+    news_detail: { h: 520, w: columnWidth, x: margin + columnWidth + gap, y: 866 },
+    sec: { h: 290, w: columnWidth, x: margin + columnWidth + gap, y: 1388 },
+    xbrl: { h: 290, w: columnWidth, x: margin, y: 1360 },
+    journal: { h: 290, w: columnWidth, x: margin + columnWidth + gap, y: 1680 },
   };
   return Object.fromEntries(ids.map((id, index) => {
     const kind = instanceKind(id, instances);
@@ -1006,6 +1008,8 @@ function containerIcon(id: WorkspaceContainerId) {
     fills: ListChecks,
     journal: ScrollText,
     news: Newspaper,
+    ticker_news: Newspaper,
+    news_detail: FileSearch,
     orders: ShoppingCart,
     portfolio: BriefcaseBusiness,
     scanner: ScanSearch,

@@ -8,6 +8,8 @@ export type WorkspaceContainerId =
   | "orders"
   | "fills"
   | "news"
+  | "ticker_news"
+  | "news_detail"
   | "sec"
   | "xbrl"
   | "journal";
@@ -207,8 +209,8 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   },
   {
     id: "news",
-    title: "News",
-    description: "Symbol and market news ordered against the workspace clock with a configurable recent-item limit.",
+    title: "All News",
+    description: "Searchable point-in-time news inventory with database-backed filters and article selection.",
     modes: allModes,
     defaultOpen: { live: true, paper: true, replay: true, backtest_debug: true },
     sourceByMode: {
@@ -218,6 +220,29 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
       backtest: historicalBinding("Persisted news available at each backtest event time", [newsHistory]),
       backtest_debug: historicalBinding("Persisted news available at the debug cursor", [newsHistory]),
     },
+  },
+  {
+    id: "ticker_news",
+    title: "Ticker News",
+    description: "Recent, hot, and developing news for the linked symbol at the workspace clock.",
+    linkScope: "single-symbol",
+    modes: allModes,
+    defaultOpen: {},
+    sourceByMode: {
+      live: hybridBinding("Linked-symbol news from the gateway and persisted history", [newsLive, newsHistory]),
+      paper: hybridBinding("Linked-symbol news from the gateway and persisted history", [newsLive, newsHistory]),
+      replay: historicalBinding("Linked-symbol news available at the replay clock", [newsHistory]),
+      backtest: historicalBinding("Linked-symbol news available at each backtest event time", [newsHistory]),
+      backtest_debug: historicalBinding("Linked-symbol news available at the debug cursor", [newsHistory]),
+    },
+  },
+  {
+    id: "news_detail",
+    title: "News Detail",
+    description: "Readable article text, metadata, security links, and source provenance for the selected story.",
+    modes: allModes,
+    defaultOpen: {},
+    sourceByMode: Object.fromEntries(allModes.map((mode) => [mode, historicalBinding("Canonical persisted news article", [newsHistory])])),
   },
   {
     id: "sec",

@@ -389,7 +389,7 @@ def validate_canvas_interactions(
         oscillator_count_before_group = chart.locator(".chart-osc").count()
         chart.locator(".workspace-window-header").get_by_role("button", name=re.compile(r"^Add .+ to group selection$")).click()
         grouping_tray = page.get_by_role("region", name="Container group selection")
-        page.get_by_role("button", name="Add News to group selection", exact=True).click()
+        page.get_by_role("button", name="Add All News to group selection", exact=True).click()
         grouping_tray.get_by_role("button", name="Create group (2)", exact=True).click()
         chart_group = page.locator(".workspace-group-window")
         grouped_chart = chart_group.locator('[data-window-kind="chart"]')
@@ -465,7 +465,7 @@ def validate_canvas_interactions(
             issues.append("Container library did not open")
         else:
             articles = library.locator("article")
-            if articles.count() != 10:
+            if articles.count() != 12:
                 issues.append("Container library does not show the complete compact container list")
             if articles.count() > 1:
                 first_box, second_box = articles.nth(0).bounding_box(), articles.nth(1).bounding_box()
@@ -484,7 +484,7 @@ def validate_canvas_interactions(
             issues.append("Chart does not expose its current link color at the point of use")
         scanner = page.get_by_role("region", name="Scanner", exact=True)
         portfolio = page.get_by_role("region", name="Portfolio", exact=True)
-        news = page.get_by_role("region", name="News", exact=True)
+        news = page.get_by_role("region", name="All News", exact=True)
         chart_tint = title_bar.evaluate("element => getComputedStyle(element).backgroundColor")
         scanner_tint = scanner.locator(".workspace-window-header").evaluate("element => getComputedStyle(element).backgroundColor")
         portfolio_tint = portfolio.locator(".workspace-window-header").evaluate("element => getComputedStyle(element).backgroundColor")
@@ -499,8 +499,8 @@ def validate_canvas_interactions(
             issues.append("link color leaks from the link control into the whole title bar")
         if scanner.get_attribute("data-linked") != "false" or scanner.get_by_role("button", name="Link Scanner").count():
             issues.append("multi-symbol Scanner incorrectly exposes linking")
-        if news.get_attribute("data-linked") != "false" or news.get_by_role("button", name="Link News").count():
-            issues.append("generic News incorrectly exposes linking")
+        if news.get_attribute("data-linked") != "false" or news.get_by_role("button", name="Link All News").count():
+            issues.append("All News incorrectly exposes symbol linking")
         if scanner.get_by_label("Linked container color").count() or news.get_by_label("Linked container color").count() or portfolio.get_by_label("Linked container color").count():
             issues.append("non-linkable containers expose a title color marker")
         initial_link_border = link_button.evaluate("element => getComputedStyle(element).borderColor")

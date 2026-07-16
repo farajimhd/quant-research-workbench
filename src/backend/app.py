@@ -1877,6 +1877,107 @@ def service_news_detail(canonical_news_id: str) -> dict[str, Any]:
     }
 
 
+def trading_news_rows(
+    as_of: str = "",
+    lookback_hours: int = 6,
+    limit: int = 100,
+    search: str = "",
+    ticker: str = "",
+    content: str = "all",
+    before: str = "",
+    before_id: str = "",
+) -> dict[str, Any]:
+    """Return a bounded point-in-time news page for Canvas news containers."""
+    safe_limit = max(1, min(limit, 250))
+    safe_hours = max(1, min(lookback_hours, 24 * 365 * 5))
+    try:
+        cutoff = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of.strip() else datetime.now(UTC)
+        cutoff = cutoff.replace(tzinfo=UTC) if cutoff.tzinfo is None else cutoff.astimezone(UTC)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="as_of must be an ISO-8601 timestamp") from exc
+    try:
+        cursor = datetime.fromisoformat(before.replace("Z", "+00:00")) if before.strip() else cutoff
+        cursor = cursor.replace(tzinfo=UTC) if cursor.tzinfo is None else cursor.astimezone(UTC)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="before must be an ISO-8601 timestamp") from exc
+    safe_ticker = ticker.strip().upper()
+    if safe_ticker and (len(safe_ticker) > 16 or not all(char.isalnum() or char in ".-" for char in safe_ticker)):
+        raise HTTPException(status_code=400, detail="ticker is invalid")
+    safe_content = content.strip().lower()
+    if safe_content not in {"all", "full", "title"}:
+        raise HTTPException(status_code=400, detail="content must be all, full, or title")
+
+    database = "q_live"
+    normalized_table = "benzinga_news_normalized_v1"
+    ticker_table = "benzinga_news_ticker_v1"
+    window_start = cutoff - timedelta(hours=safe_hours)
+    start_sql = f"toDateTime64({sql_string(window_start.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
+    end_sql = f"toDateTime64({sql_string(cutoff.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
+    cursor_sql = f"toDateTime64({sql_string(min(cursor, cutoff).strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
+    cursor_id = before_id.strip()
+    cursor_filter = "n.published_at_utc < page_before"
+    if before.strip() and cursor_id:
+        cursor_filter = f"(n.published_at_utc < page_before OR (n.published_at_utc = page_before AND n.canonical_news_id < {sql_string(cursor_id)}))"
+    filters = ["n.published_at_utc >= window_start", "n.published_at_utc <= window_end", cursor_filter]
+    if safe_ticker:
+        filters.append(f"has(t.ticker_link_sample, {sql_string(safe_ticker)})")
+    search_term = search.strip()
+    if search_term:
+        escaped = sql_string(search_term)
+        filters.append(
+            "positionCaseInsensitiveUTF8(concat("
+            "ifNull(n.title, ''), ' ', ifNull(n.normalized_full_text, ''), ' ', "
+            f"ifNull(n.author, ''), ' ', ifNull(n.url_domain, '')), {escaped}) > 0"
+        )
+    if safe_content == "full":
+        filters.append("NOT n.is_title_only")
+    elif safe_content == "title":
+        filters.append("n.is_title_only")
+    where_sql = " AND ".join(filters)
+    query = f"""
+        WITH
+            {start_sql} AS window_start,
+            {end_sql} AS window_end,
+            {cursor_sql} AS page_before,
+            ticker_counts AS
+            (
+                SELECT canonical_news_id,
+                       arraySort(groupUniqArray(nullIf(ticker, ''))) AS ticker_link_sample
+                FROM {quote_ident(database)}.{quote_ident(ticker_table)} FINAL
+                WHERE published_at_utc >= window_start AND published_at_utc <= window_end
+                GROUP BY canonical_news_id
+            )
+        SELECT
+            n.canonical_news_id,
+            formatDateTime(n.published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
+            n.title, n.article_url, n.url_domain, n.author, n.channels, n.provider_tags,
+            ifNull(t.ticker_link_sample, []) AS ticker_link_sample,
+            n.has_external_text, n.has_pdf, n.is_title_only,
+            lengthUTF8(n.normalized_full_text) AS full_text_chars,
+            substring(n.normalized_full_text, 1, 320) AS text_preview
+        FROM {quote_ident(database)}.{quote_ident(normalized_table)} AS n FINAL
+        LEFT JOIN ticker_counts AS t ON t.canonical_news_id = n.canonical_news_id
+        WHERE {where_sql}
+        ORDER BY n.published_at_utc DESC, n.canonical_news_id DESC
+        LIMIT {safe_limit + 1}
+        FORMAT JSONEachRow
+    """
+    rows = clickhouse_json_each_row(query)
+    has_more = len(rows) > safe_limit
+    rows = rows[:safe_limit]
+    return {
+        "as_of": cutoff.isoformat().replace("+00:00", "Z"),
+        "has_more": has_more,
+        "limit": safe_limit,
+        "lookback_hours": safe_hours,
+        "next_before": str(rows[-1].get("published_at_utc") or "") if has_more and rows else "",
+        "next_before_id": str(rows[-1].get("canonical_news_id") or "") if has_more and rows else "",
+        "rows": rows,
+        "source": f"{database}.{normalized_table}",
+        "window_start": window_start.isoformat().replace("+00:00", "Z"),
+    }
+
+
 def clickhouse_json_each_row(query: str) -> list[dict[str, Any]]:
     return [json.loads(line) for line in clickhouse_status_query(query).splitlines() if line.strip()]
 
@@ -3100,6 +3201,25 @@ def news_service_today(limit: int = 250, sort: str = "desc") -> dict[str, Any]:
 
 @app.get("/api/services/news/detail/{canonical_news_id}")
 def news_service_detail(canonical_news_id: str) -> dict[str, Any]:
+    return service_news_detail(canonical_news_id)
+
+
+@app.get("/api/trading/news")
+def trading_news(
+    as_of: str = "",
+    lookback_hours: int = 6,
+    limit: int = 100,
+    search: str = "",
+    ticker: str = "",
+    content: str = "all",
+    before: str = "",
+    before_id: str = "",
+) -> dict[str, Any]:
+    return trading_news_rows(as_of, lookback_hours, limit, search, ticker, content, before, before_id)
+
+
+@app.get("/api/trading/news/detail/{canonical_news_id}")
+def trading_news_detail(canonical_news_id: str) -> dict[str, Any]:
     return service_news_detail(canonical_news_id)
 
 

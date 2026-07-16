@@ -25,6 +25,7 @@ import {
   type CanvasWorkspaceState,
 } from "../app/canvasWorkspace";
 import { ChartPanel, type ChartDisplayItem, type ChartPayload } from "../app/components/ChartPanel";
+import { AllNewsContainer, NewsDetailContainer, TickerNewsContainer } from "../app/components/NewsContainers";
 import { MarketStatusBadge, historicalMarketStatus } from "../app/components/MarketStatusBadge";
 import { TRADING_WORKSPACE_LAYOUT_VERSION, TradingWorkspace, createFocusLayouts } from "../app/components/TradingWorkspace";
 import type { WorkspaceWindowLayout, WorkspaceWindowMeta, WorkspaceWindowStatus } from "../app/components/WorkspaceCanvas";
@@ -98,7 +99,9 @@ type ContainerSettings = {
   chart: { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
   fills: { limit: number; showCommission: boolean };
   journal: { limit: number };
-  news: { limit: number; showTeaser: boolean };
+  news: { content: string; lookbackHours: number; ticker: string };
+  ticker_news: { lookbackHours: number; showTeaser: boolean };
+  news_detail: Record<string, never>;
   orders: { limit: number; showOrderIds: boolean };
   portfolio: { showPositions: boolean; showPnl: boolean };
   scanner: { limit: number; showActivity: boolean };
@@ -116,7 +119,9 @@ const DEFAULT_SETTINGS: ContainerSettings = {
   chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd"] },
   fills: { limit: 5, showCommission: true },
   journal: { limit: 6 },
-  news: { limit: 5, showTeaser: true },
+  news: { content: "all", lookbackHours: 6, ticker: "" },
+  ticker_news: { lookbackHours: 72, showTeaser: true },
+  news_detail: {},
   orders: { limit: 6, showOrderIds: true },
   portfolio: { showPositions: true, showPnl: true },
   scanner: { limit: 6, showActivity: true },
@@ -430,10 +435,11 @@ export function CanvasFocusPage() {
   const params = new URLSearchParams(window.location.search);
   const canvasId = params.get("canvas") || MAIN_CANVAS_ID;
   const requestedInstanceId = params.get("container") || undefined;
-  return <CanvasWorkspaceSurface canvasId={canvasId} manager={false} requestedInstanceId={requestedInstanceId} />;
+  const requestedNewsId = params.get("news") || undefined;
+  return <CanvasWorkspaceSurface canvasId={canvasId} manager={false} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} />;
 }
 
-function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId }: { canvasId: string; manager: boolean; requestedInstanceId?: string }) {
+function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, requestedNewsId }: { canvasId: string; manager: boolean; requestedInstanceId?: string; requestedNewsId?: string }) {
   const [initialCanvasState] = useState<CanvasWorkspaceState | null>(() => focusCanvasState(canvasId, requestedInstanceId));
   const [registry, setRegistry] = useState<CanvasRegistry>(readCanvasRegistry);
   const [previewContext, setPreviewContext] = useState<CanvasPreviewContext>(readPreviewContext);
@@ -451,7 +457,8 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId }: { ca
   const currentCanvas = registry.canvases.find((canvas) => canvas.id === canvasId) ?? { id: canvasId, label: canvasId === MAIN_CANVAS_ID ? "Main" : "Focus canvas" };
   const primaryChartId = (workspaceState?.openIds ?? []).find((id) => workspaceContainerKind(id, workspaceState) === "chart") ?? "chart";
   const primarySettings = instanceSettings(registry, primaryChartId);
-  const previewContainerKey = (workspaceState?.openIds ?? []).filter((id) => workspaceContainerKind(id, workspaceState) !== "chart").sort().join(",");
+  const dedicatedContainers = new Set<WorkspaceContainerId>(["chart", "news", "ticker_news", "news_detail"]);
+  const previewContainerKey = (workspaceState?.openIds ?? []).filter((id) => !dedicatedContainers.has(workspaceContainerKind(id, workspaceState))).sort().join(",");
   const activeLinkGroup = registry.linkAssignments[primaryChartId] ?? "none";
   const activeSymbol = activeLinkGroup === "none" ? primarySettings.chart.symbol : registry.linkContexts[activeLinkGroup].symbol;
   const chartCutoffMs = useMemo(() => dateInTimeZone(previewContext.sessionDate, previewContext.previewTime, "America/New_York").getTime(), [previewContext]);
@@ -544,12 +551,13 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId }: { ca
         status: contextError ? "error" : "ready",
       };
     }
-    const sourceError = preview?.errors[definition.id] ?? preview?.errors[definition.id === "news" ? "news" : definition.id === "sec" ? "sec" : definition.id === "xbrl" ? "xbrl" : ""];
+    const sourceError = preview?.errors[definition.id] ?? preview?.errors[definition.id === "sec" ? "sec" : definition.id === "xbrl" ? "xbrl" : ""];
+    const newsContainer = ["news", "ticker_news", "news_detail"].includes(definition.id);
     return {
       detail: `${definition.title} rendered at the shared configuration clock.`,
       freshness: previewContext.previewTime,
-      sourceLabel: sourceError ? "Unavailable" : definition.id === "scanner" ? "QMD History" : ["news", "sec", "xbrl"].includes(definition.id) ? "Point-in-time DB" : "IBKR preview",
-      status: sourceError ? "error" : preview ? "ready" : "idle",
+      sourceLabel: sourceError ? "Unavailable" : definition.id === "scanner" ? "QMD History" : newsContainer || ["sec", "xbrl"].includes(definition.id) ? "Point-in-time DB" : "IBKR preview",
+      status: sourceError ? "error" : newsContainer || preview ? "ready" : "idle",
     };
   }, [contextError, preview, previewContext.previewTime]);
 
@@ -738,6 +746,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId }: { ca
               return { status: metaForContainer(candidate).status, symbol: registry.linkContexts[group].symbol, title: containerInstanceTitle(candidateKind, candidateId, workspaceState, registry) };
             });
           return <ContainerPreview
+            canvasId={canvasId}
             chartCutoffMs={chartCutoffMs}
             definition={definition}
             instanceId={instanceId}
@@ -750,6 +759,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId }: { ca
             onLinkContextChange={(patch) => { if (group !== "none") updateLinkContext(group, patch); }}
             preview={preview}
             previewContext={previewContext}
+            requestedNewsId={requestedNewsId}
             settings={settings}
             settingsOpen={settingsContainerId === instanceId}
             updateSettings={(update) => updateInstanceSettings(instanceId, update)}
@@ -801,7 +811,8 @@ function CanvasManager({ onCreate, onOpen, onRemove, registry }: { onCreate: () 
 
 type SettingsUpdater = (update: ContainerSettings | ((current: ContainerSettings) => ContainerSettings)) => void;
 
-function ContainerPreview({ chartCutoffMs, definition, instanceId, linkContext, linkGroup, linkedContainers, linkOpen, loading, onLinkChange, onLinkContextChange, preview, previewContext, settings, settingsOpen, updateSettings }: {
+function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, linkContext, linkGroup, linkedContainers, linkOpen, loading, onLinkChange, onLinkContextChange, preview, previewContext, requestedNewsId, settings, settingsOpen, updateSettings }: {
+  canvasId: string;
   chartCutoffMs: number;
   definition: WorkspaceContainerDefinition;
   instanceId: string;
@@ -814,6 +825,7 @@ function ContainerPreview({ chartCutoffMs, definition, instanceId, linkContext, 
   onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void;
   preview: CanvasPreview | null;
   previewContext: CanvasPreviewContext;
+  requestedNewsId?: string;
   settings: ContainerSettings;
   settingsOpen: boolean;
   updateSettings: SettingsUpdater;
@@ -824,6 +836,12 @@ function ContainerPreview({ chartCutoffMs, definition, instanceId, linkContext, 
     {settingsOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} settings`}>{containerFields(definition.id, settings, linkContext, updateSettings, onLinkContextChange)}</div> : null}
     <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{definition.id === "chart"
       ? <ChartContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} linkGroup={linkGroup} onLinkContextChange={onLinkContextChange} previewContext={previewContext} settings={settings} updateSettings={updateSettings} />
+      : definition.id === "news"
+        ? <AllNewsContainer asOf={new Date(chartCutoffMs).toISOString()} canvasId={canvasId} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, news: { ...state.news, ...patch } }))} settings={settings.news} />
+      : definition.id === "ticker_news"
+        ? <TickerNewsContainer asOf={new Date(chartCutoffMs).toISOString()} canvasId={canvasId} settings={settings.ticker_news} symbol={linkContext.symbol} />
+      : definition.id === "news_detail"
+        ? <NewsDetailContainer canvasId={canvasId} requestedNewsId={requestedNewsId} />
       : loading && !preview
         ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div>
         : renderPreview(definition.id, preview, settings, linkGroup, onLinkContextChange)}</div>
@@ -859,7 +877,6 @@ function renderPreview(id: WorkspaceContainerId, preview: CanvasPreview | null, 
   if (id === "orders") return <PreviewTable columns={settings.orders.showOrderIds ? ["orderId", "ticker", "side", "orderType", "quantity", "status"] : ["ticker", "side", "orderType", "quantity", "status"]} rows={preview.orders.slice(0, settings.orders.limit)} />;
   if (id === "fills") return <PreviewTable columns={settings.fills.showCommission ? ["time", "ticker", "side", "shares", "price", "commission"] : ["time", "ticker", "side", "shares", "price"]} rows={preview.fills.slice(0, settings.fills.limit)} />;
   if (id === "strategy") return <StrategyPreview data={preview.strategy} showSignals={settings.strategy.showSignals} />;
-  if (id === "news") return <NewsPreview rows={preview.news.slice(0, settings.news.limit)} showTeaser={settings.news.showTeaser} />;
   if (id === "sec") {
     const rows = settings.sec.form === "All" ? preview.sec : preview.sec.filter((row) => row.form_type === settings.sec.form);
     return <PreviewTable columns={["accepted_at_utc", "form_type", "company_name", "accession_number"]} rows={rows.slice(0, settings.sec.limit)} />;
@@ -954,11 +971,6 @@ function StrategyPreview({ data, showSignals }: { data: CanvasPreview["strategy"
   return <div className="canvas-strategy-preview"><div><span>Strategy</span><strong>{data.strategy_id}</strong></div><div><span>Revision</span><strong>v{data.revision}</strong></div><div><span>State</span><strong>{data.state}</strong></div>{showSignals ? <PreviewTable columns={["time", "symbol", "signal", "value"]} rows={data.signals} /> : null}</div>;
 }
 
-function NewsPreview({ rows, showTeaser }: { rows: PreviewRow[]; showTeaser: boolean }) {
-  if (!rows.length) return <EmptyState label="No news before this clock" />;
-  return <div className="canvas-news-preview">{rows.map((row, index) => <article key={String(row.canonical_news_id ?? index)}><time>{formatCell(row.published_at_utc, "published_at_utc")}</time><strong>{String(row.title ?? "Untitled")}</strong>{showTeaser && row.teaser ? <p>{String(row.teaser)}</p> : null}</article>)}</div>;
-}
-
 function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, linkContext: CanvasLinkContext, updateSettings: SettingsUpdater, onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void) {
   const current = settings[id] as Record<string, unknown>;
   function patch(value: Record<string, unknown>) { updateSettings((state) => ({ ...state, [id]: { ...state[id], ...value } })); }
@@ -968,7 +980,9 @@ function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, 
   if (id === "scanner") return <><NumberField label="Rows" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showActivity)} label="Show market activity" onChange={(value) => patch({ showActivity: value })} /></>;
   if (id === "orders") return <><NumberField label="Rows" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showOrderIds)} label="Show order IDs" onChange={(value) => patch({ showOrderIds: value })} /></>;
   if (id === "fills") return <><NumberField label="Rows" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showCommission)} label="Show commission" onChange={(value) => patch({ showCommission: value })} /></>;
-  if (id === "news") return <><NumberField label="Last N articles" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showTeaser)} label="Show teaser" onChange={(value) => patch({ showTeaser: value })} /></>;
+  if (id === "news") return <><SelectField label="Lookback hours" onChange={(value) => patch({ lookbackHours: Number(value) })} options={["1", "6", "24", "168", "720"]} value={String(current.lookbackHours)} /><SelectField label="Text coverage" onChange={(value) => patch({ content: value })} options={["all", "full", "title"]} value={String(current.content)} /></>;
+  if (id === "ticker_news") return <><SelectField label="Lookback hours" onChange={(value) => patch({ lookbackHours: Number(value) })} options={["24", "72", "168", "720"]} value={String(current.lookbackHours)} /><CheckField checked={Boolean(current.showTeaser)} label="Show teaser" onChange={(value) => patch({ showTeaser: value })} /><div className="canvas-settings-note">Ticker comes from the selected link color. Hot and recent states use the shared clock.</div></>;
+  if (id === "news_detail") return <div className="canvas-settings-note">This reader follows the most recently selected news article in this canvas.</div>;
   if (id === "sec") return <><NumberField label="Last N filings" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><SelectField label="Form" onChange={(value) => patch({ form: value })} options={["All", "10-K", "10-Q", "8-K"]} value={String(current.form)} /></>;
   if (id === "xbrl") return <><NumberField label="Last N facts" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showPeriod)} label="Show fiscal period" onChange={(value) => patch({ showPeriod: value })} /></>;
   return <NumberField label="Last N events" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} />;
@@ -1000,6 +1014,8 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
     fills: { ...DEFAULT_SETTINGS.fills, ...(stored.fills ?? {}) },
     journal: { ...DEFAULT_SETTINGS.journal, ...(stored.journal ?? {}) },
     news: { ...DEFAULT_SETTINGS.news, ...(stored.news ?? {}) },
+    ticker_news: { ...DEFAULT_SETTINGS.ticker_news, ...(stored.ticker_news ?? {}) },
+    news_detail: {},
     orders: { ...DEFAULT_SETTINGS.orders, ...(stored.orders ?? {}) },
     portfolio: { ...DEFAULT_SETTINGS.portfolio, ...(stored.portfolio ?? {}) },
     scanner: { ...DEFAULT_SETTINGS.scanner, ...(stored.scanner ?? {}) },
@@ -1080,7 +1096,7 @@ function containerInstanceTitle(kind: WorkspaceContainerId, instanceId: string, 
 }
 function focusCanvasState(canvasId: string, requestedInstanceId?: string): CanvasWorkspaceState | null {
   const stored = readCanvasWorkspaceState(canvasId);
-  if (!requestedInstanceId || stored?.openIds.includes(requestedInstanceId)) return stored;
+  if (!requestedInstanceId) return stored;
   const kind = workspaceContainerKind(requestedInstanceId, stored);
   return { groups: {}, instances: { [requestedInstanceId]: kind }, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: createFocusLayouts([requestedInstanceId]), openIds: [requestedInstanceId] };
 }
