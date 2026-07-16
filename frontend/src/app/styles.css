@@ -12762,9 +12762,9 @@ button {
   overflow-y: auto;
   border: 1px solid color-mix(in oklab, var(--surface-border) 82%, transparent);
   border-radius: 7px;
-  background: color-mix(in oklab, var(--surface) 96%, transparent);
+  background: color-mix(in oklab, var(--surface) 90%, transparent);
   box-shadow: 0 8px 24px color-mix(in oklab, var(--foreground) 12%, transparent);
-  backdrop-filter: blur(8px);
+  backdrop-filter: blur(10px) saturate(1.05);
   padding: 8px;
 }
 

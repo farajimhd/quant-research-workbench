@@ -264,19 +264,34 @@ def validate_canvas_interactions(
                     issues.append("indicator settings portal is fully transparent")
                 if editor_style["backdrop"] == "none":
                     issues.append("indicator settings portal lacks the intended light transparency treatment")
+                alpha_match = re.search(r"/\s*([0-9.]+)\s*\)$|rgba?\([^)]*,\s*([0-9.]+)\s*\)$", editor_style["background"])
+                if alpha_match:
+                    alpha = float(next(value for value in alpha_match.groups() if value is not None))
+                    if alpha >= 0.97:
+                        issues.append("indicator settings portal is effectively opaque")
+                    elif alpha < 0.82:
+                        issues.append("indicator settings portal is too transparent for chart-legible controls")
                 if interaction_screenshot:
                     page.screenshot(path=str(interaction_screenshot.with_name(interaction_screenshot.stem + "__indicator-config.png")), full_page=True)
                 editor.get_by_role("button", name="Close indicator settings").click()
             else:
                 issues.append("oscillator legend does not expose indicator configuration actions")
         price_pane = chart.locator(".chart-price").first
-        latest_fit = chart.get_by_role("button", name="Fit latest trading session once", exact=True)
+        latest_fit = chart.get_by_role("button", name="Fit session", exact=True)
+        price_box = None
         if price_pane.count() and latest_fit.count():
             latest_fit.click()
             price_box = price_pane.bounding_box()
             if price_box:
                 start_x = price_box["x"] + price_box["width"] * 0.55
                 start_y = price_box["y"] + price_box["height"] * 0.55
+                page.mouse.click(start_x, start_y)
+                page.mouse.move(8, 8)
+                page.wait_for_timeout(180)
+                click_baseline = price_pane.screenshot()
+                page.wait_for_timeout(350)
+                if click_baseline != price_pane.screenshot():
+                    issues.append("chart reverses a fit command after the first chart click")
                 page.mouse.move(start_x, start_y)
                 page.mouse.down()
                 page.mouse.move(start_x + 90, start_y, steps=6)
@@ -287,8 +302,25 @@ def validate_canvas_interactions(
                 page.wait_for_timeout(750)
                 if manually_panned != price_pane.screenshot():
                     issues.append("chart reapplies an automatic fit after manual pan")
-        if chart.get_by_role("button", name="Fit all loaded bars once", exact=True).count() != 1:
-            issues.append("chart does not expose the explicit all-loaded-bars reset action")
+        center_latest = chart.get_by_role("button", name="Center latest", exact=True)
+        reset_view = chart.get_by_role("button", name="Reset view", exact=True)
+        if center_latest.count() != 1:
+            issues.append("chart does not expose the concise center-latest action")
+        if reset_view.count() != 1:
+            issues.append("chart does not expose the concise reset-view action")
+        elif price_pane.count() and price_box:
+            for action, label in ((center_latest, "Center latest"), (reset_view, "Reset view")):
+                if action.count() != 1:
+                    continue
+                action.click()
+                page.wait_for_timeout(120)
+                page.mouse.click(start_x, start_y)
+                page.mouse.move(8, 8)
+                page.wait_for_timeout(180)
+                interaction_baseline = price_pane.screenshot()
+                page.wait_for_timeout(350)
+                if interaction_baseline != price_pane.screenshot():
+                    issues.append(f"{label} reverses after the first chart click")
         canvas = page.locator("[data-workspace-canvas]")
         if canvas.evaluate("element => getComputedStyle(element).overflowX") not in ("auto", "scroll"):
             issues.append("Canvas is not its own horizontal scrolling surface")
@@ -399,13 +431,13 @@ def validate_canvas_interactions(
 
         if chart.get_by_role("button", name="1D", exact=True).count():
             chart.get_by_role("button", name="1D", exact=True).click()
-            if chart.get_by_role("button", name="Fit loaded 180-day range once", exact=True).count() != 1:
-                issues.append("daily chart does not expose a timeframe-aware 180-day fit action")
-            if chart.get_by_role("button", name="Fit all loaded bars once", exact=True).count() != 1:
-                issues.append("daily chart does not expose the explicit all-bars reset action")
+            if chart.get_by_role("button", name="Fit range", exact=True).count() != 1:
+                issues.append("daily chart does not expose the concise fit-range action")
+            if chart.get_by_role("button", name="Reset view", exact=True).count() != 1:
+                issues.append("daily chart does not expose Reset view")
             chart.get_by_role("button", name="1M", exact=True).click()
-            if chart.get_by_role("button", name="Fit loaded 24-month range once", exact=True).count() != 1:
-                issues.append("monthly chart does not expose a timeframe-aware 24-month fit action")
+            if chart.get_by_role("button", name="Fit range", exact=True).count() != 1:
+                issues.append("monthly chart does not expose the concise fit-range action")
             chart.get_by_role("button", name="1m", exact=True).click()
 
         resize_handle = chart.get_by_role("button", name=re.compile(r"^Resize .+\."))

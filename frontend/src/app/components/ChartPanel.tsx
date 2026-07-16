@@ -363,6 +363,9 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const initialFitTimerRef = useRef<number | null>(null);
   const rangeCleanupRef = useRef<(() => void) | null>(null);
+  const rangeSyncControllerRef = useRef<ChartRangeSyncController | null>(null);
+  const rangeInteractionOwnerRef = useRef<IChartApi | null>(null);
+  const rangeInteractionReleaseTimerRef = useRef<number | null>(null);
   const crosshairCleanupRef = useRef<(() => void) | null>(null);
   const zoomCrosshairCleanupRef = useRef<(() => void) | null>(null);
   const overlayInteractionCleanupRef = useRef<(() => void) | null>(null);
@@ -490,6 +493,16 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     return () => window.clearTimeout(timer);
   }, [oscillatorPaneHeights]);
 
+  useEffect(() => {
+    const release = () => releaseViewportForUser();
+    window.addEventListener("pointerup", release);
+    window.addEventListener("pointercancel", release);
+    return () => {
+      window.removeEventListener("pointerup", release);
+      window.removeEventListener("pointercancel", release);
+    };
+  }, []);
+
   function suppressEarlierLoad() {
     // Programmatic fits and pane synchronization also emit visible-range events.
     // Only genuine user navigation to the left edge may request older history.
@@ -503,14 +516,38 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     }
   }
 
-  function claimViewportForUser() {
+  function chartForInteractionTarget(target: EventTarget | null) {
+    if (!(target instanceof Node)) return null;
+    if (priceRef.current?.contains(target)) return priceChartRef.current;
+    for (const [key, element] of oscillatorPaneRefs.current.entries()) {
+      if (element.contains(target)) return oscillatorChartRefs.current.get(key) ?? null;
+    }
+    return null;
+  }
+
+  function claimViewportForUser(target: EventTarget | null) {
     cancelPendingInitialFit();
+    rangeInteractionOwnerRef.current = chartForInteractionTarget(target);
+  }
+
+  function releaseViewportForUser(delay = 0) {
+    if (rangeInteractionReleaseTimerRef.current !== null) {
+      window.clearTimeout(rangeInteractionReleaseTimerRef.current);
+    }
+    rangeInteractionReleaseTimerRef.current = window.setTimeout(() => {
+      rangeInteractionOwnerRef.current = null;
+      rangeInteractionReleaseTimerRef.current = null;
+    }, delay);
   }
 
   function executeViewportCommand(command: () => void) {
     cancelPendingInitialFit();
     suppressEarlierLoad();
+    rangeInteractionOwnerRef.current = null;
     command();
+    if (priceChartRef.current) {
+      rangeSyncControllerRef.current?.synchronizeFrom(priceChartRef.current);
+    }
   }
 
   function updateOscillatorPaneHeight(key: string, height: number) {
@@ -987,7 +1024,16 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       runtime,
     }));
     const panes = paneEntries.map((entry) => entry.runtime);
-    rangeCleanupRef.current = syncChartRanges([priceChart, ...panes.map((pane) => pane.chart)]);
+    const rangeController = syncChartRanges(
+      [priceChart, ...panes.map((pane) => pane.chart)],
+      priceChart,
+      () => rangeInteractionOwnerRef.current,
+    );
+    rangeSyncControllerRef.current = rangeController;
+    rangeCleanupRef.current = () => {
+      rangeController.cleanup();
+      if (rangeSyncControllerRef.current === rangeController) rangeSyncControllerRef.current = null;
+    };
     const closeByTime = new Map(currentPayload.candles.map((candle) => [candle.time, candle.close]));
     crosshairCleanupRef.current = syncCrosshairs(priceChart, panes, candleSeries, closeByTime);
     zoomCrosshairCleanupRef.current = syncZoomCorrectedCrosshairs(priceElement, priceChart, candleSeries, paneEntries, closeByTime);
@@ -1040,6 +1086,11 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       window.clearTimeout(overlayRedrawTimerRef.current);
       overlayRedrawTimerRef.current = null;
     }
+    if (rangeInteractionReleaseTimerRef.current !== null) {
+      window.clearTimeout(rangeInteractionReleaseTimerRef.current);
+      rangeInteractionReleaseTimerRef.current = null;
+    }
+    rangeInteractionOwnerRef.current = null;
     overlayInteractionCleanupRef.current?.();
     overlayInteractionCleanupRef.current = null;
     resizeObserverRef.current?.disconnect();
@@ -1105,10 +1156,15 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     <div
       className={fullscreen ? "chart-shell fullscreen" : "chart-shell"}
       onPointerDownCapture={(event) => {
-        if ((event.target as HTMLElement).closest(".chart-pane-canvas")) claimViewportForUser();
+        if ((event.target as HTMLElement).closest(".chart-pane-canvas")) claimViewportForUser(event.target);
       }}
+      onPointerCancelCapture={() => releaseViewportForUser()}
+      onPointerUpCapture={() => releaseViewportForUser()}
       onWheelCapture={(event) => {
-        if ((event.target as HTMLElement).closest(".chart-pane-canvas")) claimViewportForUser();
+        if ((event.target as HTMLElement).closest(".chart-pane-canvas")) {
+          claimViewportForUser(event.target);
+          releaseViewportForUser(180);
+        }
       }}
       ref={shellRef}
     >
@@ -1210,9 +1266,9 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           <Settings size={15} />
         </button>
         <span className="toolbar-divider" />
-        <button aria-label={latestRangeActionLabel(timeframe)} className="toolbar-button" type="button" title={`${latestRangeActionLabel(timeframe)}; pan and zoom remain manual afterward`} onClick={() => executeViewportCommand(() => fitLatestSession(priceChartRef.current, fitCandles(payload), timeframe))}><CalendarDays size={15} /></button>
-        <button aria-label={reference ? "Center selected trade once" : "Center newest bars once"} className="toolbar-button" type="button" title={reference ? "Center the selected trade once; pan and zoom remain manual afterward" : "Center the newest bars once with room on the right; pan and zoom remain manual afterward"} onClick={() => executeViewportCommand(() => centerReferenceOrLatest(priceChartRef.current, fitCandles(payload), reference, timeframe))}><AlignCenterHorizontal size={15} /></button>
-        <button aria-label="Fit all loaded bars once" className="toolbar-button" type="button" title="Fit all loaded bars once; pan and zoom remain manual afterward" onClick={() => executeViewportCommand(() => fitAllLoadedBars(priceChartRef.current, fitCandles(payload), timeframe))}><RefreshCcw size={15} /></button>
+        <button aria-label={latestRangeActionLabel(timeframe)} className="toolbar-button" type="button" title={latestRangeActionLabel(timeframe)} onClick={() => executeViewportCommand(() => fitLatestSession(priceChartRef.current, fitCandles(payload), timeframe))}><CalendarDays size={15} /></button>
+        <button aria-label={reference ? "Center trade" : "Center latest"} className="toolbar-button" type="button" title={reference ? "Center trade" : "Center latest"} onClick={() => executeViewportCommand(() => centerReferenceOrLatest(priceChartRef.current, fitCandles(payload), reference, timeframe))}><AlignCenterHorizontal size={15} /></button>
+        <button aria-label="Reset view" className="toolbar-button" type="button" title="Reset view" onClick={() => executeViewportCommand(() => resetChartViewport(priceChartRef.current, fitCandles(payload), timeframe, priceRef.current?.clientWidth ?? 0, chartSettingsRef.current.candleSize))}><RefreshCcw size={15} /></button>
         {enableFullscreen ? (
           <>
             <span className="toolbar-divider" />
@@ -2819,10 +2875,22 @@ function fitLatestSession(target: ChartRangeTarget, candles: Candle[], timeframe
   setChartLogicalRange(charts, { from: Math.max(-1, firstIndex - 1), to: Math.max(firstIndex + 1, lastIndex + 1) });
 }
 
-function fitAllLoadedBars(target: ChartRangeTarget, candles: Candle[], timeframe = "") {
-  const charts = chartRangeTargets(target);
-  if (!charts.length || !candles.length) return;
-  setChartLogicalRange(charts, loadedRange(candleDataForTimeframe(candles, timeframe).length, 0.04));
+function resetChartViewport(chart: IChartApi | null, candles: Candle[], timeframe: string, chartWidth: number, candleSize: number) {
+  if (!chart) return;
+  const timeScale = chart.timeScale();
+  const normalizedCandleSize = clampNumber(candleSize, 8, 80, defaultChartAppearanceSettings.candleSize);
+  timeScale.applyOptions({
+    barSpacing: normalizedCandleSize,
+    rightOffset: 2
+  });
+  const timelineLength = candleDataForTimeframe(candles, timeframe).length;
+  if (!timelineLength || chartWidth <= 0) {
+    timeScale.scrollToPosition(2, false);
+    return;
+  }
+  const rightEdge = timelineLength + 1;
+  const visibleBars = Math.max(5, chartWidth / normalizedCandleSize);
+  timeScale.setVisibleLogicalRange({ from: rightEdge - visibleBars, to: rightEdge });
 }
 
 function loadedRange(length: number, paddingRatio: number) {
@@ -2832,9 +2900,8 @@ function loadedRange(length: number, paddingRatio: number) {
 }
 
 function latestRangeActionLabel(timeframe: string) {
-  if (timeframe === "1d") return "Fit loaded 180-day range once";
-  if (timeframe === "1mo") return "Fit loaded 24-month range once";
-  return "Fit latest trading session once";
+  if (isMacroTimeframe(timeframe)) return "Fit range";
+  return "Fit session";
 }
 
 function isMacroTimeframe(timeframe: string) {
@@ -2995,9 +3062,15 @@ function hasMultipleMarketDates(candles: Candle[]) {
   return candles.some((candle) => marketDate(candle.time) !== first);
 }
 
-function syncChartRanges(charts: IChartApi[]) {
-  if (charts.length < 2) return () => undefined;
+type ChartRangeSyncController = {
+  cleanup: () => void;
+  synchronizeFrom: (source: IChartApi) => void;
+};
+
+function syncChartRanges(charts: IChartApi[], primary: IChartApi, interactionOwner: () => IChartApi | null): ChartRangeSyncController {
+  if (charts.length < 2) return { cleanup: () => undefined, synchronizeFrom: () => undefined };
   let syncing = false;
+  let authoritativeRange = primary.timeScale().getVisibleLogicalRange();
   const expectedRanges = new Map<IChartApi, LogicalRange[]>();
   const expectRange = (chart: IChartApi, range: LogicalRange) => {
     const queue = expectedRanges.get(chart) ?? [];
@@ -3009,42 +3082,51 @@ function syncChartRanges(charts: IChartApi[]) {
     const queue = expectedRanges.get(chart);
     if (!queue?.length) return false;
     const index = queue.findIndex((expected) => logicalRangesEqual(range, expected));
-    if (index < 0) {
-      expectedRanges.delete(chart);
-      return false;
-    }
+    if (index < 0) return false;
     queue.splice(0, index + 1);
     if (!queue.length) expectedRanges.delete(chart);
     return true;
+  };
+  const writeAuthoritativeRange = (range: LogicalRange, source?: IChartApi) => {
+    authoritativeRange = range;
+    syncing = true;
+    charts.forEach((target) => {
+      if (target === source) return;
+      const current = target.timeScale().getVisibleLogicalRange();
+      if (current && logicalRangesEqual(current, range)) return;
+      expectRange(target, range);
+      target.timeScale().setVisibleLogicalRange(range);
+    });
+    syncing = false;
   };
   const handlers = charts.map((source) => {
     const handler = (range: LogicalRange | null) => {
       if (!range) return;
       if (consumesExpectedRange(source, range)) return;
       if (syncing) return;
-      syncing = true;
-      charts.forEach((target) => {
-        if (target !== source) {
-          expectRange(target, range);
-          target.timeScale().setVisibleLogicalRange(range);
+      if (source !== primary && interactionOwner() !== source) {
+        if (authoritativeRange && !logicalRangesEqual(range, authoritativeRange)) {
+          expectRange(source, authoritativeRange);
+          source.timeScale().setVisibleLogicalRange(authoritativeRange);
         }
-      });
-      syncing = false;
+        return;
+      }
+      writeAuthoritativeRange(range, source);
     };
     source.timeScale().subscribeVisibleLogicalRangeChange(handler);
     return { handler, source };
   });
-  const initialRange = charts[0].timeScale().getVisibleLogicalRange();
-  if (initialRange) {
-    charts.slice(1).forEach((target) => {
-      expectRange(target, initialRange);
-      target.timeScale().setVisibleLogicalRange(initialRange);
-    });
-  }
-  return () => {
-    handlers.forEach(({ handler, source }) => {
-      source.timeScale().unsubscribeVisibleLogicalRangeChange(handler);
-    });
+  if (authoritativeRange) writeAuthoritativeRange(authoritativeRange, primary);
+  return {
+    cleanup: () => {
+      handlers.forEach(({ handler, source }) => {
+        source.timeScale().unsubscribeVisibleLogicalRangeChange(handler);
+      });
+    },
+    synchronizeFrom: (source) => {
+      const range = source.timeScale().getVisibleLogicalRange();
+      if (range) writeAuthoritativeRange(range, source);
+    },
   };
 }
 
