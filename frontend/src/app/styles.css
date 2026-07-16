@@ -12832,6 +12832,24 @@ button {
   text-align: center;
 }
 
+.legend-range-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-range-control input[type="range"] {
+  min-width: 0;
+  width: 100%;
+}
+
+.legend-range-control output {
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
 .chart-settings-slot {
   position: absolute;
   top: 50px;
@@ -21098,10 +21116,73 @@ button {
 
 .workspace-group-body {
   background: var(--surface);
-  inset: 0;
+  bottom: 0;
+  left: 0;
   overflow: hidden;
   position: absolute;
+  right: 0;
+  top: var(--workspace-group-header-height, 44px);
   z-index: 1;
+}
+
+.workspace-content-slot,
+.workspace-persistent-content-host {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+}
+
+.workspace-group-splitter {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  position: absolute;
+  z-index: 35;
+}
+
+.workspace-group-splitter::after {
+  background: color-mix(in oklab, var(--foreground) 38%, var(--surface-border));
+  border-radius: 999px;
+  content: "";
+  opacity: 0;
+  position: absolute;
+  transition: opacity 120ms ease, background-color 120ms ease;
+}
+
+.workspace-group-splitter:hover::after,
+.workspace-group-splitter:focus-visible::after,
+.workspace-group-splitter:active::after {
+  opacity: 1;
+}
+
+.workspace-group-splitter.vertical {
+  cursor: col-resize;
+  transform: translateX(-5px);
+  width: 10px;
+}
+
+.workspace-group-splitter.vertical::after {
+  bottom: 8px;
+  left: 4px;
+  top: 8px;
+  width: 2px;
+}
+
+.workspace-group-splitter.horizontal {
+  cursor: row-resize;
+  height: 10px;
+  transform: translateY(-5px);
+}
+
+.workspace-group-splitter.horizontal::after {
+  height: 2px;
+  left: 8px;
+  right: 8px;
+  top: 4px;
 }
 
 .workspace-group-member {

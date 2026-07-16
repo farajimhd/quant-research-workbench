@@ -179,6 +179,7 @@ type LegendSeriesSettings = {
   color?: string;
   lineStyle?: LegendLineStyle;
   lineWidth?: number;
+  opacity?: number;
   showValue?: boolean;
   visible?: boolean;
 };
@@ -547,6 +548,12 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     command();
     if (priceChartRef.current) {
       rangeSyncControllerRef.current?.synchronizeFrom(priceChartRef.current);
+      window.requestAnimationFrame(() => {
+        const priceChart = priceChartRef.current;
+        if (!priceChart) return;
+        rangeSyncControllerRef.current?.synchronizeFrom(priceChart);
+        scheduleOverlayRedrawBurst();
+      });
     }
   }
 
@@ -824,7 +831,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         applySeriesSettings(existing, series, settings, false, chartSettingsRef.current);
       } else {
         const renderer = priceChart.addLineSeries({
-          color: seriesColorWithOpacity(series, settings.color),
+          color: colorWithOpacity(settings.color, effectiveSeriesOpacity(series, settings)),
           lineStyle: toChartLineStyle(settings.lineStyle),
           lineWidth: toLineWidth(settings.lineWidth),
           autoscaleInfoProvider: () => null,
@@ -1028,6 +1035,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       [priceChart, ...panes.map((pane) => pane.chart)],
       priceChart,
       () => rangeInteractionOwnerRef.current,
+      scheduleOverlayRedrawBurst,
     );
     rangeSyncControllerRef.current = rangeController;
     rangeCleanupRef.current = () => {
@@ -1129,6 +1137,8 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       const pane = oscillatorPaneRefs.current.get(key);
       if (pane) chart.applyOptions({ width: pane.clientWidth, height: pane.clientHeight });
     });
+    if (priceChartRef.current) rangeSyncControllerRef.current?.synchronizeFrom(priceChartRef.current);
+    scheduleOverlayRedrawBurst();
   }
 
   const closeOscillatorPane = (group: OscillatorPaneGroup) => {
@@ -1465,6 +1475,7 @@ type LegendItem = {
   label: string;
   lineStyle: LegendLineStyle;
   lineWidth: number;
+  opacity: number;
   seriesStyle: "candlestick" | "histogram" | "line";
   showValue: boolean;
   value: string;
@@ -1510,11 +1521,11 @@ function ChartLegend({
           <div className="chart-legend-rows">
             {items.map((item) => (
               <div className={item.visible ? "chart-legend-row" : "chart-legend-row muted"} key={item.key}>
-                <span className={item.seriesStyle === "histogram" ? "legend-swatch histogram" : `legend-swatch ${item.lineStyle}`} style={{ color: item.color }}>
+                <span className={item.seriesStyle === "histogram" ? "legend-swatch histogram" : `legend-swatch ${item.lineStyle}`} style={{ color: item.color, opacity: item.opacity }}>
                   <i style={{ background: item.color }} />
                 </span>
                 <span className="legend-label">{item.label}</span>
-                {item.showValue && item.visible ? <span className="legend-value" style={{ color: item.color }}>{item.value}</span> : null}
+                {item.showValue && item.visible ? <span className="legend-value" style={{ color: item.color, opacity: item.opacity }}>{item.value}</span> : null}
                 {item.configurable ? (
                   <span className="legend-row-actions">
                     <button
@@ -1644,6 +1655,21 @@ function LegendEditor({
           </label>
         </>
       ) : null}
+      <label>
+        Opacity
+        <span className="legend-range-control">
+          <input
+            aria-label={`${item.label} opacity`}
+            min={0}
+            max={100}
+            step={1}
+            type="range"
+            value={Math.round(item.opacity * 100)}
+            onChange={(event) => onUpdate({ opacity: Number(event.target.value) / 100 })}
+          />
+          <output>{Math.round(item.opacity * 100)}%</output>
+        </span>
+      </label>
       <label className="legend-checkbox">
         <input checked={item.showValue} type="checkbox" onChange={(event) => onUpdate({ showValue: event.target.checked })} />
         Value in legend
@@ -2367,6 +2393,7 @@ function buildSeriesLegendItems(series: ChartSeries[], pane: LegendPane, setting
       label: item.label,
       lineStyle: settings.lineStyle,
       lineWidth: settings.lineWidth,
+      opacity: settings.opacity,
       seriesStyle: item.style,
       showValue: settings.showValue,
       value: latest === null ? "-" : formatPrice(latest),
@@ -2631,6 +2658,7 @@ function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettin
     color: resolveChartColor(series.color),
     lineStyle: series.lineStyle ?? "solid",
     lineWidth: Math.max(1, Math.min(4, Math.round(series.lineWidth || 1))),
+    opacity: 1,
     showValue: true,
     visible: true
   };
@@ -2643,6 +2671,7 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
     color: resolveChartColor(stored.color || defaults.color),
     lineStyle: stored.lineStyle || defaults.lineStyle,
     lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? defaults.lineWidth))),
+    opacity: clampNumber(stored.opacity ?? defaults.opacity, 0, 1, 1),
     showValue: stored.showValue ?? defaults.showValue,
     visible: stored.visible ?? defaults.visible
   };
@@ -2651,10 +2680,10 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
 function applySeriesSettings(renderer: AnySeriesApi, source: ChartSeries, settings: Required<LegendSeriesSettings>, useAdaptivePriceFormat: boolean, appearance = defaultChartAppearanceSettings) {
   const priceFormatOptions = useAdaptivePriceFormat ? { priceFormat: adaptiveSeriesPriceFormat(source) } : {};
   if (source.style === "histogram") {
-    renderer.applyOptions({ color: settings.color, ...priceFormatOptions, visible: settings.visible } as never);
+    renderer.applyOptions({ color: colorWithOpacity(settings.color, effectiveSeriesOpacity(source, settings)), ...priceFormatOptions, visible: settings.visible } as never);
   } else {
     renderer.applyOptions({
-      color: seriesColorWithOpacity(source, settings.color),
+      color: colorWithOpacity(settings.color, effectiveSeriesOpacity(source, settings)),
       lineStyle: toChartLineStyle(settings.lineStyle),
       lineWidth: toLineWidth(settings.lineWidth),
       ...priceFormatOptions,
@@ -2668,7 +2697,7 @@ function addChartSeries(chart: IChartApi, series: ChartSeries, settings: Require
   if (series.style === "histogram") {
     return chart.addHistogramSeries({
       autoscaleInfoProvider: includeZeroInAutoscale,
-      color: settings.color,
+      color: colorWithOpacity(settings.color, effectiveSeriesOpacity(series, settings)),
       priceFormat: adaptiveSeriesPriceFormat(series),
       priceLineVisible: false,
       title: series.label,
@@ -2677,7 +2706,7 @@ function addChartSeries(chart: IChartApi, series: ChartSeries, settings: Require
   }
   return chart.addLineSeries({
     autoscaleInfoProvider: includeZeroInAutoscale,
-    color: seriesColorWithOpacity(series, settings.color),
+    color: colorWithOpacity(settings.color, effectiveSeriesOpacity(series, settings)),
     lineStyle: toChartLineStyle(settings.lineStyle),
     lineWidth: toLineWidth(settings.lineWidth),
     priceFormat: adaptiveSeriesPriceFormat(series),
@@ -2731,9 +2760,14 @@ function padCandleAutoscale(baseImplementation: () => AutoscaleInfo | null): Aut
   };
 }
 
-function seriesColorWithOpacity(series: ChartSeries, color: string) {
-  if (series.style === "histogram" || series.opacity === undefined || series.opacity >= 0.99 || !validHexColor(color, "")) return color;
-  return rgbaFromHex(color, series.opacity);
+function effectiveSeriesOpacity(series: ChartSeries, settings: Required<LegendSeriesSettings>) {
+  return clampNumber((series.opacity ?? 1) * settings.opacity, 0, 1, 1);
+}
+
+function colorWithOpacity(color: string, opacity: number) {
+  const resolved = resolveChartColor(color);
+  if (opacity >= 0.999 || !validHexColor(resolved, "")) return resolved;
+  return rgbaFromHex(resolved, opacity);
 }
 
 function resolveChartColor(color: string) {
@@ -2747,13 +2781,15 @@ function seriesDataForSettings(series: ChartSeries, settings: Required<LegendSer
   if (!settings.visible) return [];
   if (series.style !== "histogram") return series.data;
   const defaultColor = defaultLegendSettings(series).color;
+  const opacity = effectiveSeriesOpacity(series, settings);
+  const applyOpacity = (color: string) => colorWithOpacity(color, opacity);
   if (!settings.color || settings.color === defaultColor) {
     if (series.column === "macd_histogram") {
-      return series.data.map((point) => ({ ...point, color: point.value >= 0 ? appearance.upColor : appearance.downColor }));
+      return series.data.map((point) => ({ ...point, color: applyOpacity(point.value >= 0 ? appearance.upColor : appearance.downColor) }));
     }
-    return series.data.map((point) => ({ ...point, ...(point.color ? { color: resolveChartColor(point.color) } : {}) }));
+    return series.data.map((point) => ({ ...point, ...(point.color ? { color: applyOpacity(point.color) } : {}) }));
   }
-  return series.data.map((point) => ({ ...point, color: settings.color }));
+  return series.data.map((point) => ({ ...point, color: applyOpacity(settings.color) }));
 }
 
 function toChartLineStyle(style: LegendLineStyle) {
@@ -3126,48 +3162,43 @@ type ChartRangeSyncController = {
   synchronizeFrom: (source: IChartApi) => void;
 };
 
-function syncChartRanges(charts: IChartApi[], primary: IChartApi, interactionOwner: () => IChartApi | null): ChartRangeSyncController {
-  if (charts.length < 2) return { cleanup: () => undefined, synchronizeFrom: () => undefined };
-  let syncing = false;
+function syncChartRanges(
+  charts: IChartApi[],
+  primary: IChartApi,
+  interactionOwner: () => IChartApi | null,
+  onSynchronized: () => void,
+): ChartRangeSyncController {
+  if (charts.length < 2) return { cleanup: () => undefined, synchronizeFrom: () => onSynchronized() };
   let authoritativeRange = primary.timeScale().getVisibleLogicalRange();
-  const expectedRanges = new Map<IChartApi, LogicalRange[]>();
-  const expectRange = (chart: IChartApi, range: LogicalRange) => {
-    const queue = expectedRanges.get(chart) ?? [];
-    queue.push(range);
-    if (queue.length > 64) queue.splice(0, queue.length - 64);
-    expectedRanges.set(chart, queue);
-  };
-  const consumesExpectedRange = (chart: IChartApi, range: LogicalRange) => {
-    const queue = expectedRanges.get(chart);
-    if (!queue?.length) return false;
-    const index = queue.findIndex((expected) => logicalRangesEqual(range, expected));
-    if (index < 0) return false;
-    queue.splice(0, index + 1);
-    if (!queue.length) expectedRanges.delete(chart);
-    return true;
-  };
+  const pendingProgrammaticRanges = new Map<IChartApi, LogicalRange>();
   const writeAuthoritativeRange = (range: LogicalRange, source?: IChartApi) => {
     authoritativeRange = range;
-    syncing = true;
     charts.forEach((target) => {
       if (target === source) return;
       const current = target.timeScale().getVisibleLogicalRange();
       if (current && logicalRangesEqual(current, range)) return;
-      expectRange(target, range);
+      pendingProgrammaticRanges.set(target, range);
       target.timeScale().setVisibleLogicalRange(range);
     });
-    syncing = false;
+    onSynchronized();
   };
   const handlers = charts.map((source) => {
     const handler = (range: LogicalRange | null) => {
       if (!range) return;
-      if (consumesExpectedRange(source, range)) return;
-      if (syncing) return;
-      if (source !== primary && interactionOwner() !== source) {
+      const pendingRange = pendingProgrammaticRanges.get(source);
+      if (pendingRange && logicalRangesEqual(range, pendingRange)) {
+        pendingProgrammaticRanges.delete(source);
+        onSynchronized();
+        return;
+      }
+      pendingProgrammaticRanges.delete(source);
+      const owner = interactionOwner();
+      if (source !== primary && owner !== source) {
         if (authoritativeRange && !logicalRangesEqual(range, authoritativeRange)) {
-          expectRange(source, authoritativeRange);
+          pendingProgrammaticRanges.set(source, authoritativeRange);
           source.timeScale().setVisibleLogicalRange(authoritativeRange);
         }
+        onSynchronized();
         return;
       }
       writeAuthoritativeRange(range, source);

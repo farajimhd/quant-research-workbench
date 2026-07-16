@@ -295,9 +295,22 @@ def validate_canvas_interactions(
                         issues.append("indicator settings portal is effectively opaque")
                     elif alpha < 0.82:
                         issues.append("indicator settings portal is too transparent for chart-legible controls")
+                opacity_input = editor.get_by_role("slider", name=re.compile(r" opacity$"))
+                if opacity_input.count() != 1:
+                    issues.append("indicator settings does not expose a per-series opacity input")
+                else:
+                    opacity_input.fill("47")
+                    if opacity_input.input_value() != "47":
+                        issues.append("indicator opacity input does not update its persisted series setting")
                 if interaction_screenshot:
                     page.screenshot(path=str(interaction_screenshot.with_name(interaction_screenshot.stem + "__indicator-config.png")), full_page=True)
                 editor.get_by_role("button", name="Close indicator settings").click()
+                configure_indicator.click()
+                persisted_editor = page.get_by_role("dialog", name=re.compile(r"indicator settings$"))
+                persisted_opacity = persisted_editor.get_by_role("slider", name=re.compile(r" opacity$"))
+                if persisted_opacity.count() != 1 or persisted_opacity.input_value() != "47":
+                    issues.append("indicator opacity does not persist after closing its settings")
+                persisted_editor.get_by_role("button", name="Close indicator settings").click()
             else:
                 issues.append("oscillator legend does not expose indicator configuration actions")
         price_pane = chart.locator(".chart-price").first
@@ -345,6 +358,67 @@ def validate_canvas_interactions(
                 page.wait_for_timeout(350)
                 if interaction_baseline != price_pane.screenshot():
                     issues.append(f"{label} reverses after the first chart click")
+
+        # Verify grouping while the deterministic AAPL payload is still loaded.
+        # Later link-management checks intentionally change shared ticker state.
+        chart_shell_before_group = chart.locator(".chart-shell").bounding_box()
+        oscillator_count_before_group = chart.locator(".chart-osc").count()
+        chart.locator(".workspace-window-header").get_by_role("button", name=re.compile(r"^Add .+ to group selection$")).click()
+        grouping_tray = page.get_by_role("region", name="Container group selection")
+        page.get_by_role("button", name="Add News to group selection", exact=True).click()
+        grouping_tray.get_by_role("button", name="Create group (2)", exact=True).click()
+        chart_group = page.locator(".workspace-group-window")
+        grouped_chart = chart_group.locator('[data-window-kind="chart"]')
+        grouped_chart_shell = grouped_chart.locator(".chart-shell")
+        for _ in range(20):
+            if grouped_chart.locator(".chart-price").count() and grouped_chart.locator(".chart-osc").count() >= oscillator_count_before_group:
+                break
+            page.wait_for_timeout(250)
+        chart_shell_after_group = grouped_chart_shell.bounding_box()
+        if chart_shell_before_group and chart_shell_after_group:
+            if chart_shell_after_group["width"] + 1 < chart_shell_before_group["width"] or chart_shell_after_group["height"] + 1 < chart_shell_before_group["height"]:
+                issues.append("grouping clips the Chart member's existing content dimensions")
+        else:
+            issues.append("grouped Chart content is not measurable")
+        grouped_price = grouped_chart.locator(".chart-price").first
+        grouped_oscillator = grouped_chart.locator(".chart-osc").first
+        if grouped_price.count() != 1 or grouped_chart.locator(".chart-osc").count() < oscillator_count_before_group:
+            issues.append("grouping removes a Chart pane or its independent time-axis surface")
+        elif oscillator_count_before_group:
+            price_regions = grouped_price.locator(".session-region")
+            oscillator_regions = grouped_oscillator.locator(".session-region")
+            if price_regions.count() != oscillator_regions.count() or price_regions.count() == 0:
+                issues.append("grouped Chart does not retain matching extended-hours regions across panes")
+            else:
+                for region_index in range(price_regions.count()):
+                    price_region_box = price_regions.nth(region_index).bounding_box()
+                    oscillator_region_box = oscillator_regions.nth(region_index).bounding_box()
+                    if price_region_box and oscillator_region_box and (
+                        abs(price_region_box["x"] - oscillator_region_box["x"]) > 1
+                        or abs(price_region_box["width"] - oscillator_region_box["width"]) > 1
+                    ):
+                        issues.append("grouped Chart session shading is not horizontally aligned across price and oscillator panes")
+                        break
+            grouped_fit = grouped_chart.get_by_role("button", name="Fit session", exact=True)
+            grouped_fit.click()
+            page.wait_for_timeout(180)
+            grouped_price_box = grouped_price.bounding_box()
+            if grouped_price_box:
+                page.mouse.click(grouped_price_box["x"] + grouped_price_box["width"] * 0.55, grouped_price_box["y"] + grouped_price_box["height"] * 0.55)
+                page.mouse.move(8, 8)
+                page.wait_for_timeout(180)
+                grouped_click_baseline = grouped_price.screenshot()
+                page.wait_for_timeout(350)
+                if grouped_click_baseline != grouped_price.screenshot():
+                    issues.append("grouped Chart reverses a fit command after the first chart click")
+        if interaction_screenshot:
+            page.screenshot(path=str(interaction_screenshot.with_name(interaction_screenshot.stem + "__chart-grouped.png")), full_page=True)
+        chart_group.get_by_role("button", name=re.compile(r"^Ungroup .+$")).click()
+        page.wait_for_timeout(100)
+        clear_group_selection = page.get_by_role("button", name="Clear group selection", exact=True)
+        if clear_group_selection.count():
+            clear_group_selection.click()
+
         canvas = page.locator("[data-workspace-canvas]")
         if canvas.evaluate("element => getComputedStyle(element).overflowX") not in ("auto", "scroll"):
             issues.append("Canvas is not its own horizontal scrolling surface")
@@ -590,7 +664,7 @@ def validate_canvas_interactions(
         page.get_by_role("button", name="Clear group selection", exact=True).click()
 
         for title in ("Orders", "Strategy"):
-            page.get_by_role("button", name=f"Add {title} to group selection", exact=True).click()
+            page.get_by_role("button", name=f"Add {title} to group selection", exact=True).click(force=True)
         page.get_by_role("button", name="Create group (2)", exact=True).click()
         page.get_by_role("button", name="Clear group selection", exact=True).click()
         group_selectors = page.locator(".workspace-group-window > .workspace-group-header .workspace-group-select")
@@ -616,15 +690,52 @@ def validate_canvas_interactions(
             page.get_by_role("button", name="Add 1 to group", exact=True).click()
             if root_group.locator(".workspace-group-member").count() != 5:
                 issues.append("adding a container to an existing group did not extend the compound surface")
+            splitters = root_group.locator(".workspace-group-splitter")
+            if splitters.count() == 0:
+                issues.append("grouped layout does not expose sliders on shared member boundaries")
+            else:
+                splitter = splitters.first
+                splitter_box = splitter.bounding_box()
+                group_box_before_split = root_group.bounding_box()
+                member_boxes_before_split = [root_group.locator(".workspace-group-member").nth(index).bounding_box() for index in range(root_group.locator(".workspace-group-member").count())]
+                if splitter_box and group_box_before_split:
+                    splitter_center = (
+                        splitter_box["x"] + splitter_box["width"] / 2,
+                        splitter_box["y"] + splitter_box["height"] / 2,
+                    )
+                    vertical_split = "vertical" in (splitter.get_attribute("class") or "")
+
+                    def drag_splitter(delta: int) -> list[dict | None]:
+                        page.mouse.move(*splitter_center)
+                        page.mouse.down()
+                        page.mouse.move(
+                            splitter_center[0] + (delta if vertical_split else 0),
+                            splitter_center[1] + (0 if vertical_split else delta),
+                            steps=4,
+                        )
+                        page.mouse.up()
+                        page.wait_for_timeout(120)
+                        return [root_group.locator(".workspace-group-member").nth(index).bounding_box() for index in range(root_group.locator(".workspace-group-member").count())]
+
+                    member_boxes_after_split = drag_splitter(24)
+                    changed_members = sum(1 for before, after in zip(member_boxes_before_split, member_boxes_after_split) if before and after and (abs(before["width"] - after["width"]) > 2 or abs(before["height"] - after["height"]) > 2))
+                    if changed_members < 2:
+                        member_boxes_after_split = drag_splitter(-24)
+                        changed_members = sum(1 for before, after in zip(member_boxes_before_split, member_boxes_after_split) if before and after and (abs(before["width"] - after["width"]) > 2 or abs(before["height"] - after["height"]) > 2))
+                    group_box_after_split = root_group.bounding_box()
+                    if changed_members < 2:
+                        issues.append("group boundary slider does not resize both adjacent member sets")
+                    if group_box_after_split and (abs(group_box_before_split["width"] - group_box_after_split["width"]) > 1 or abs(group_box_before_split["height"] - group_box_after_split["height"]) > 1):
+                        issues.append("group boundary slider changes the outer group size instead of its internal split")
             minimize_group = root_group.get_by_role("button", name=re.compile(r"^Minimize .+$"))
             minimize_group.click()
             if root_group.locator(".workspace-group-body").count():
                 issues.append("minimizing a group did not hide the complete compound body")
             root_group.get_by_role("button", name=re.compile(r"^Restore .+$")).click()
-            root_group.get_by_role("button", name=re.compile(r"^Fullscreen .+$")).click()
+            root_group.get_by_role("button", name=re.compile(r"^Fullscreen .+$")).click(force=True)
             if root_group.get_by_role("button", name=re.compile(r"^Exit fullscreen .+$")).count() != 1:
                 issues.append("fullscreen did not apply to the complete container group")
-            root_group.get_by_role("button", name=re.compile(r"^Exit fullscreen .+$")).click()
+            root_group.get_by_role("button", name=re.compile(r"^Exit fullscreen .+$")).click(force=True)
 
         if interaction_screenshot:
             page.screenshot(path=str(interaction_screenshot.with_name(interaction_screenshot.stem + "__grouped.png")), full_page=True)

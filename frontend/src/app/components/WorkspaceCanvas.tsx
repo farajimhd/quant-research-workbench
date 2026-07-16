@@ -42,6 +42,16 @@ export type WorkspaceWindowSummary = {
   z: number;
 };
 
+export type WorkspaceGroupSplitter = {
+  axis: "x" | "y";
+  end: number;
+  id: string;
+  negativeIds: string[];
+  position: number;
+  positiveIds: string[];
+  start: number;
+};
+
 export type WorkspaceCanvasTarget = {
   color: string;
   id: string;
@@ -295,6 +305,8 @@ type WorkspaceGroupWindowProps = {
   onUngroup: (id: WorkspaceWindowId) => void;
   onUngroupMember: (id: WorkspaceWindowId) => void;
   selected?: boolean;
+  splitters?: WorkspaceGroupSplitter[];
+  onSplitterResize?: (splitter: WorkspaceGroupSplitter, deltaRatio: number) => void;
   title: string;
 };
 
@@ -317,16 +329,27 @@ export function WorkspaceGroupWindow({
   onMoveToCanvas,
   onPopOut,
   onSelectionToggle,
+  onSplitterResize,
   onUngroup,
   onUngroupMember,
   selected = false,
+  splitters = [],
   title,
 }: WorkspaceGroupWindowProps) {
   const edge = compact ? 0 : 12;
-  const minimizedHeight = compact ? 24 : 44;
+  const headerHeight = compact ? 24 : 44;
+  const groupTop = Math.max(0, layout.y - headerHeight);
+  const headerOffset = layout.y - groupTop;
   const geometry = layout.fullscreen
-    ? { bottom: edge, left: edge, right: fullscreenRightInset || edge, top: edge, zIndex: 1000 + layout.z }
-    : { height: layout.minimized ? minimizedHeight : layout.h, left: layout.x, top: layout.y, width: layout.w, zIndex: layout.z };
+    ? { "--workspace-group-header-height": `${headerHeight}px`, bottom: edge, left: edge, right: fullscreenRightInset || edge, top: edge, zIndex: 1000 + layout.z }
+    : {
+      "--workspace-group-header-height": `${headerHeight}px`,
+      height: layout.minimized ? headerHeight : layout.h + headerOffset,
+      left: layout.x,
+      top: groupTop,
+      width: layout.w,
+      zIndex: layout.z,
+    };
 
   function moveGroup(x: number, y: number) {
     onLayoutChange(id, { x: Math.max(0, x), y: Math.max(0, y) });
@@ -390,6 +413,44 @@ export function WorkspaceGroupWindow({
     resizeGroup(layout.w + (event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0), layout.h + (event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0));
   }
 
+  function resizeSplitter(splitter: WorkspaceGroupSplitter, deltaPixels: number, body: HTMLElement) {
+    const dimension = splitter.axis === "x" ? body.clientWidth : body.clientHeight;
+    if (dimension > 0) onSplitterResize?.(splitter, deltaPixels / dimension);
+  }
+
+  function startSplitterResize(splitter: WorkspaceGroupSplitter, event: PointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    const body = event.currentTarget.closest(".workspace-group-body") as HTMLElement | null;
+    if (!body) return;
+    const origin = splitter.axis === "x" ? event.clientX : event.clientY;
+    let previous = origin;
+    const move = (moveEvent: globalThis.PointerEvent) => {
+      const current = splitter.axis === "x" ? moveEvent.clientX : moveEvent.clientY;
+      resizeSplitter(splitter, current - previous, body);
+      previous = current;
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+  }
+
+  function resizeSplitterWithKeyboard(splitter: WorkspaceGroupSplitter, event: KeyboardEvent<HTMLButtonElement>) {
+    const validKeys = splitter.axis === "x" ? ["ArrowLeft", "ArrowRight"] : ["ArrowUp", "ArrowDown"];
+    if (!validKeys.includes(event.key)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const body = event.currentTarget.closest(".workspace-group-body") as HTMLElement | null;
+    if (!body) return;
+    const direction = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1;
+    resizeSplitter(splitter, direction * (event.shiftKey ? 24 : 8), body);
+  }
+
   return <section aria-label={title} className={compact ? "workspace-window workspace-group-window live-window compact-window" : "workspace-window workspace-group-window live-window"} data-selected={selected ? "true" : "false"} data-workspace-group={id} onPointerDown={() => onFocus(id)} style={geometry as CSSProperties}>
     <div aria-label={`Move ${title}. Use arrow keys to reposition; hold Shift for larger steps.`} className="workspace-window-header workspace-group-header live-window-header" onKeyDown={moveWithKeyboard} onPointerDown={startDrag} role="toolbar" tabIndex={0}>
       <div className="workspace-window-title live-window-title">
@@ -415,7 +476,18 @@ export function WorkspaceGroupWindow({
         <button aria-label={layout.fullscreen ? `Exit fullscreen ${title}` : `Fullscreen ${title}`} className="toolbar-button compact" onClick={() => onLayoutChange(id, { fullscreen: !layout.fullscreen, minimized: false })} title={layout.fullscreen ? "Exit group fullscreen" : "Fullscreen group"} type="button">{layout.fullscreen ? <Minimize2 size={12} /> : <Maximize2 size={12} />}</button>
       </div>
     </div>
-    {!layout.minimized ? <div className="workspace-group-body">{children}</div> : null}
+    {!layout.minimized ? <div className="workspace-group-body">{children}{splitters.map((splitter) => <button
+      aria-label={`Resize grouped containers ${splitter.axis === "x" ? "horizontally" : "vertically"}`}
+      className={`workspace-group-splitter ${splitter.axis === "x" ? "vertical" : "horizontal"}`}
+      key={splitter.id}
+      onKeyDown={(event) => resizeSplitterWithKeyboard(splitter, event)}
+      onPointerDown={(event) => startSplitterResize(splitter, event)}
+      style={splitter.axis === "x"
+        ? { height: `${splitter.end - splitter.start}%`, left: `${splitter.position}%`, top: `${splitter.start}%` }
+        : { left: `${splitter.start}%`, top: `${splitter.position}%`, width: `${splitter.end - splitter.start}%` }}
+      title={splitter.axis === "x" ? "Resize columns" : "Resize rows"}
+      type="button"
+    />)}</div> : null}
     {!layout.minimized ? <button aria-label={`Resize ${title}. Use arrow keys to resize; hold Shift for larger steps.`} className="workspace-window-resize live-window-resize" onKeyDown={resizeWithKeyboard} onPointerDown={startResize} type="button" /> : null}
   </section>;
 }
@@ -424,7 +496,6 @@ export function WorkspaceGroupedMember({
   bounds,
   children,
   groupBounds,
-  headerHeight,
   id,
   kind,
   onFocus,
@@ -433,7 +504,6 @@ export function WorkspaceGroupedMember({
   bounds: Pick<WorkspaceWindowLayout, "h" | "w" | "x" | "y">;
   children: ReactNode;
   groupBounds: Pick<WorkspaceWindowLayout, "h" | "w" | "x" | "y">;
-  headerHeight: number;
   id: string;
   kind: string;
   onFocus: () => void;
@@ -443,11 +513,10 @@ export function WorkspaceGroupedMember({
   const top = (bounds.y - groupBounds.y) / groupBounds.h * 100;
   const width = bounds.w / groupBounds.w * 100;
   const height = bounds.h / groupBounds.h * 100;
-  const occupiesGroupTop = Math.abs(bounds.y - groupBounds.y) < 1;
   const style = {
-    height: occupiesGroupTop ? `calc(${height}% - ${headerHeight}px)` : `${height}%`,
+    height: `${height}%`,
     left: `${left}%`,
-    top: occupiesGroupTop ? `${headerHeight}px` : `${top}%`,
+    top: `${top}%`,
     width: `${width}%`,
   } as CSSProperties;
   return <section aria-label={title} className="workspace-group-member" data-window-id={id} data-window-kind={kind} onPointerDown={(event) => { event.stopPropagation(); onFocus(); }} style={style}><div className="workspace-window-body live-window-body">{children}</div></section>;
