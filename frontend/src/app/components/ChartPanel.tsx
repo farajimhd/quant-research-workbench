@@ -35,6 +35,7 @@ import { createPortal } from "react-dom";
 
 import { displayName } from "../format";
 import { buildSegmentButtonClassName } from "../selectionStyles";
+import { TickerLogo } from "./TickerIdentity";
 
 type Candle = { time: number; open: number; high: number; low: number; close: number };
 type ChartSeries = {
@@ -264,6 +265,7 @@ type ChartPanelProps = {
   showSupervisionControls?: boolean;
   settingsStorageKey?: string;
   ticker: string;
+  tickerLogoUrl?: string;
   tickerInputWidth?: number | string;
   tickerMaxLength?: number;
   timeframe: string;
@@ -335,6 +337,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   showSupervisionControls = false,
   settingsStorageKey,
   ticker,
+  tickerLogoUrl,
   tickerInputWidth,
   tickerMaxLength = 10,
   timeframe,
@@ -1180,6 +1183,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     >
       <div className="chart-component-toolbar">
         <form className="chart-ticker-form" onSubmit={commitTicker}>
+          <TickerLogo logoUrl={tickerLogoUrl} ticker={ticker} />
           <input
             aria-label="Ticker"
             className="chart-ticker-input"

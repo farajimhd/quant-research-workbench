@@ -113,6 +113,7 @@ from src.backend.trading_runtime_service import (
     list_strategy_definitions,
     save_strategy_definition,
 )
+from src.backend.ticker_presentation_service import ticker_presentation_payload
 from src.data_provider.calendar import market_sessions, scan_market_source
 from src.data_provider.catalog import provider_catalog, save_presentation_override
 from src.data_provider.config import (
@@ -3224,6 +3225,11 @@ def trading_news(
     before_id: str = "",
 ) -> dict[str, Any]:
     return trading_news_rows(as_of, lookback_hours, limit, search, ticker, content, before, before_id)
+
+
+@app.get("/api/trading/ticker-presentations")
+def trading_ticker_presentations(tickers: str = "") -> dict[str, Any]:
+    return ticker_presentation_payload(parse_csv_list(tickers))
 
 
 @app.get("/api/trading/news/detail/{canonical_news_id}")

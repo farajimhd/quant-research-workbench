@@ -25,6 +25,7 @@ import { createPortal } from "react-dom";
 
 import { displayName, formatCell } from "../format";
 import { Modal } from "./Modal";
+import { TickerIdentity } from "./TickerIdentity";
 
 type DataRow = Record<string, unknown>;
 export type SortDirection = "asc" | "desc";
@@ -2792,9 +2793,11 @@ function renderCell(row: DataRow, column: string) {
   if (isBadgeCategoryColumn(column.toLowerCase())) return renderCategoricalCell(row[column], column);
   if (!isTickerColumn(column)) return formatCell(column, row[column]);
   const value = formatCell(column, row[column]);
-  if (column.toLowerCase() !== "ticker") return value;
+  const ticker = value === "-" ? "" : value;
+  const identity = <TickerIdentity logoUrl={stringValue(row.logo_url)} ticker={ticker} />;
+  if (column.toLowerCase() !== "ticker") return identity;
   const newsCount = coerceNumber(row.live_news_count);
-  if (!Number.isFinite(newsCount) || newsCount <= 0) return value;
+  if (!Number.isFinite(newsCount) || newsCount <= 0) return identity;
   const recency = normalizedNewsRecency(row.live_news_recency);
   const latestTitle = stringValue(row.live_news_latest_title);
   const latestTime = stringValue(row.live_news_latest_time);
@@ -2804,7 +2807,7 @@ function renderCell(row: DataRow, column: string) {
   return (
     <span className="data-table-ticker-with-news" title={title}>
       <NewsIcon className={`data-table-news-icon ${indicator.className}`} size={14} aria-label={`${recency} news`} />
-      <span>{value}</span>
+      {identity}
     </span>
   );
 }
@@ -2859,12 +2862,11 @@ function isTickerColumn(column: string) {
 
 function renderLogoCell(row: DataRow, column: string) {
   const logoUrl = stringValue(row.logo_url);
+  if (!logoUrl) return null;
   const title = stringValue(row.candidate_massive_ticker) || stringValue(row.ticker) || formatCell(column, row[column]);
-  const fallback = (title || "?").slice(0, 1).toUpperCase();
   return (
-    <span className="data-table-logo-cell" title={title || "No logo"}>
-      <span className="data-table-logo-fallback">{fallback}</span>
-      {logoUrl ? <img alt="" loading="lazy" src={logoUrl} /> : null}
+    <span className="data-table-logo-cell" title={title}>
+      <img alt="" loading="lazy" onError={(event) => { event.currentTarget.hidden = true; }} src={logoUrl} />
     </span>
   );
 }

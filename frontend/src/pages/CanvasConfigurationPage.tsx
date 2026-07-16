@@ -1,4 +1,4 @@
-import { Check, Clock3, ExternalLink, Globe2, Link2, MapPin, PanelRightOpen, Plus, Save, Settings2, Trash2, Unlink } from "lucide-react";
+import { Check, Clock3, ExternalLink, Link2, MapPin, PanelRightOpen, Plus, Save, Settings2, Trash2, Unlink } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
 
 import { api, query } from "../api/client";
@@ -29,7 +29,9 @@ import {
 } from "../app/canvasWorkspace";
 import { ChartPanel, type ChartDisplayItem, type ChartPayload } from "../app/components/ChartPanel";
 import { AllNewsContainer, NewsDetailContainer, TickerNewsContainer } from "../app/components/NewsContainers";
+import { MarketTime } from "../app/components/MarketTime";
 import { MarketStatusBadge, historicalMarketStatus } from "../app/components/MarketStatusBadge";
+import { TickerIdentity, useTickerPresentations } from "../app/components/TickerIdentity";
 import { TRADING_WORKSPACE_LAYOUT_VERSION, TradingWorkspace, createFocusLayouts } from "../app/components/TradingWorkspace";
 import type { WorkspaceWindowLayout, WorkspaceWindowMeta, WorkspaceWindowStatus } from "../app/components/WorkspaceCanvas";
 import { TRADING_WORKSPACE_CONTAINERS, containerSupportsSymbolLink, type WorkspaceContainerDefinition, type WorkspaceContainerId } from "../app/tradingWorkspace";
@@ -466,7 +468,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
   const activeSymbol = activeLinkGroup === "none" ? primarySettings.chart.symbol : registry.linkContexts[activeLinkGroup].symbol;
   const chartCutoffMs = useMemo(() => dateInTimeZone(previewContext.sessionDate, previewContext.previewTime, "America/New_York").getTime(), [previewContext]);
   const previewClocks = useMemo(() => previewClockReadings(previewContext), [previewContext]);
-  const clockIcons = [Clock3, MapPin, Globe2];
+  const clockIcons = [Clock3, MapPin];
   const marketStatus = useMemo(() => historicalMarketStatus(previewContext.sessionDate, previewContext.previewTime), [previewContext]);
 
   useEffect(() => {
@@ -709,7 +711,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
           <div className="canvas-clock-zones" aria-label="Preview time zones">
             {previewClocks.map((clock, index) => {
               const Icon = clockIcons[index];
-              return <span key={clock.label}><Icon aria-hidden="true" size={15} /><span><small>{clock.label}</small><strong>{clock.value}</strong><em>{clock.detail}</em></span></span>;
+              return <span key={clock.label}><Icon aria-hidden="true" size={15} /><span><small>{clock.label}</small><strong>{clock.value}</strong>{clock.detail ? <em>{clock.detail}</em> : null}</span></span>;
             })}
           </div>
         </div>
@@ -863,8 +865,9 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
 }
 
 function LinkedContainerList({ containerTitle, containers }: { containerTitle: string; containers: LinkedContainerState[] }) {
+  const presentations = useTickerPresentations(containers.map((container) => container.symbol));
   return <div aria-label={`${containerTitle} linked containers`} className="canvas-linked-container-list">
-    {containers.length ? containers.map((container) => <div className="canvas-linked-container-row" key={container.title}><span>{container.title}</span><strong>{container.symbol}</strong><em data-status={container.status}><i aria-hidden="true" />{statusLabel(container.status)}</em></div>) : <small>No containers use this color</small>}
+    {containers.length ? containers.map((container) => <div className="canvas-linked-container-row" key={container.title}><span>{container.title}</span><strong><TickerIdentity logoUrl={presentations[container.symbol]?.logo_url} ticker={container.symbol} /></strong><em data-status={container.status}><i aria-hidden="true" />{statusLabel(container.status)}</em></div>) : <small>No containers use this color</small>}
   </div>;
 }
 
@@ -912,7 +915,8 @@ type ChartContainerPreviewProps = {
 
 const ChartContainerPreview = memo(function ChartContainerPreview({ cutoffMs, instanceId, linkContext, onLinkContextChange, previewContext, settings, updateSettings }: ChartContainerPreviewProps) {
   const liveChart = useCanvasLiveChart(linkContext.symbol, settings.chart.timeframe, cutoffMs, previewContext.sessionDate);
-  return <ChartPreview instanceId={instanceId} linkContext={linkContext} liveChart={liveChart} onLinkContextChange={onLinkContextChange} settings={settings} updateSettings={updateSettings} />;
+  const presentations = useTickerPresentations([linkContext.symbol]);
+  return <ChartPreview instanceId={instanceId} linkContext={linkContext} liveChart={liveChart} logoUrl={presentations[linkContext.symbol]?.logo_url} onLinkContextChange={onLinkContextChange} settings={settings} updateSettings={updateSettings} />;
 }, chartContainerPreviewPropsEqual);
 
 function chartContainerPreviewPropsEqual(previous: ChartContainerPreviewProps, next: ChartContainerPreviewProps) {
@@ -934,7 +938,7 @@ function stringArraysEqual(previous: readonly string[], next: readonly string[])
   return previous.length === next.length && previous.every((value, index) => value === next[index]);
 }
 
-function ChartPreview({ instanceId, linkContext, liveChart, onLinkContextChange, settings, updateSettings }: { instanceId: string; linkContext: CanvasLinkContext; liveChart: CanvasLiveChartState; onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void; settings: ContainerSettings; updateSettings: SettingsUpdater }) {
+function ChartPreview({ instanceId, linkContext, liveChart, logoUrl, onLinkContextChange, settings, updateSettings }: { instanceId: string; linkContext: CanvasLinkContext; liveChart: CanvasLiveChartState; logoUrl?: string; onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void; settings: ContainerSettings; updateSettings: SettingsUpdater }) {
   const indicators = liveChart.indicators;
   const visibleIndicators = liveChart.indicatorsAvailable ? settings.chart.visibleIndicators : [];
   const timeframe = settings.chart.timeframe;
@@ -955,7 +959,7 @@ function ChartPreview({ instanceId, linkContext, liveChart, onLinkContextChange,
   const emptyMessage = liveChart.connected
     ? `Waiting for the first live ${linkContext.symbol} ${timeframe} bar.`
     : "Start QMD Gateway to stream canonical live bars.";
-  return <ChartPanel canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={liveChart.indicatorsAvailable ? CHART_INDICATORS : []} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} indicatorOptions={[]} initialFitMode="recent" loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => updateSettings((current) => ({ ...current, chart: { ...current.chart, visibleIndicators: nextVisibleIndicators } }))} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} timeframe={timeframe} timeframes={HISTORICAL_TIMEFRAMES} visibleColumns={visibleIndicators} />;
+  return <ChartPanel canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={liveChart.indicatorsAvailable ? CHART_INDICATORS : []} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} indicatorOptions={[]} initialFitMode="recent" loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => updateSettings((current) => ({ ...current, chart: { ...current.chart, visibleIndicators: nextVisibleIndicators } }))} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={HISTORICAL_TIMEFRAMES} visibleColumns={visibleIndicators} />;
 }
 
 function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscillator" | "price", visibleIndicators: string[]): ChartPayload["overlay_series"] {
@@ -973,9 +977,24 @@ function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscilla
 }
 
 function PreviewTable({ columns, onSymbolSelect, rows }: { columns: string[]; onSymbolSelect?: (symbol: string) => void; rows: PreviewRow[] }) {
+  const tickerColumns = columns.filter(isPreviewTickerColumn);
+  const presentations = useTickerPresentations(rows.flatMap((row) => tickerColumns.map((column) => String(row[column] || ""))));
   if (!rows.length) return <EmptyState label="No point-in-time rows" />;
-  return <div className="canvas-preview-table-wrap"><table className="canvas-preview-table"><thead><tr>{columns.map((column) => <th key={column}>{labelFor(column)}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={previewRowKey(row, columns, index)}>{columns.map((column) => <td key={column}>{column === "symbol" && onSymbolSelect ? <button className="canvas-symbol-link" onClick={() => onSymbolSelect(String(row[column]))} type="button">{formatCell(row[column], column)}</button> : formatCell(row[column], column)}</td>)}</tr>)}</tbody></table></div>;
+  return <div className="canvas-preview-table-wrap"><table className="canvas-preview-table"><thead><tr>{columns.map((column) => <th key={column}>{labelFor(column)}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={previewRowKey(row, columns, index)}>{columns.map((column) => <td key={column}><PreviewCell column={column} onSymbolSelect={onSymbolSelect} presentations={presentations} row={row} /></td>)}</tr>)}</tbody></table></div>;
 }
+
+function PreviewCell({ column, onSymbolSelect, presentations, row }: { column: string; onSymbolSelect?: (symbol: string) => void; presentations: ReturnType<typeof useTickerPresentations>; row: PreviewRow }) {
+  if (isPreviewTickerColumn(column)) {
+    const ticker = String(row[column] || "").trim().toUpperCase();
+    const identity = <TickerIdentity logoUrl={presentations[ticker]?.logo_url} ticker={ticker} />;
+    return column === "symbol" && onSymbolSelect ? <button className="canvas-symbol-link" onClick={() => onSymbolSelect(ticker)} type="button">{identity}</button> : identity;
+  }
+  if (isPreviewTimeColumn(column)) return <MarketTime value={String(row[column] || "")} />;
+  return formatCell(row[column], column);
+}
+
+function isPreviewTickerColumn(column: string) { return ["symbol", "ticker", "candidate_massive_ticker"].includes(column.toLowerCase()); }
+function isPreviewTimeColumn(column: string) { const normalized = column.toLowerCase(); return normalized === "time" || normalized.endsWith("_time") || normalized.endsWith("_at") || normalized.endsWith("_at_utc"); }
 
 function PortfolioPreview({ data, settings }: { data: CanvasPreview["portfolio"]; settings: ContainerSettings["portfolio"] }) {
   return <div className="canvas-portfolio-preview"><div className="canvas-metric-row"><Metric label="Net liquidation" value={money(data.summary.netLiquidation)} /><Metric label="Available" value={money(data.summary.availableFunds)} />{settings.showPnl ? <Metric label="Unrealized P&L" value={money(data.summary.unrealizedPnl)} /> : null}</div>{settings.showPositions ? <PreviewTable columns={["ticker", "position", "mktPrice", "avgCost", "unrealizedPnl"]} rows={data.positions} /> : null}</div>;
@@ -1048,16 +1067,14 @@ function readPreviewContext(): CanvasPreviewContext { try { const parsed = JSON.
 function previousWeekdayIsoDate() { const value = new Date(); value.setDate(value.getDate() - 1); while (value.getDay() === 0 || value.getDay() === 6) value.setDate(value.getDate() - 1); const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000); return local.toISOString().slice(0, 10); }
 function previewClockReadings(context: CanvasPreviewContext) {
   const instant = dateInTimeZone(context.sessionDate, context.previewTime, "America/New_York");
-  const format = (timeZone?: string) => {
-    const zone = timeZone ? { timeZone } : {};
-    const date = new Intl.DateTimeFormat("en-US", { day: "2-digit", month: "short", year: "numeric", ...zone }).format(instant);
-    const time = new Intl.DateTimeFormat("en-US", { hour: "2-digit", hour12: false, minute: "2-digit", second: "2-digit", ...zone }).format(instant);
-    return { detail: date, value: time };
+  const format = (timeZone: string, includeDate: boolean) => {
+    const detail = includeDate ? new Intl.DateTimeFormat("en-US", { day: "2-digit", month: "short", timeZone, year: "numeric" }).format(instant) : "";
+    const value = new Intl.DateTimeFormat("en-US", { hour: "2-digit", hour12: false, minute: "2-digit", second: "2-digit", timeZone }).format(instant);
+    return { detail, value };
   };
   return [
-    { label: "ET", ...format("America/New_York") },
-    { label: "Local", ...format() },
-    { label: "UTC", ...format("UTC") },
+    { label: "ET", ...format("America/New_York", true) },
+    { label: "VAN", ...format("America/Vancouver", false) },
   ];
 }
 function dateInTimeZone(date: string, time: string, timeZone: string) {
