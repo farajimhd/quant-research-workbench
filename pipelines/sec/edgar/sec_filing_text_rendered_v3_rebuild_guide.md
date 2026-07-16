@@ -12,6 +12,12 @@ renderer or extractor-local v1 normalizer path. The older
 selected source rows from archives; it is not a full-corpus rendered-table
 builder.
 
+The renderer authority lives in
+`pipelines/sec/edgar/sec_pipeline/text_renderer.py`, which is inside the tree
+that `sec_gateway` synchronizes to the workstation. Historical, live,
+market-SIP, embedding, repair, and audit consumers import that one module.
+There is no minimum rendered length and no rendered-text cap argument.
+
 Keep `sec_gateway` and `text_embed_gateway` stopped for the complete run. The
 script captures the source watermark and refuses validation or cutover if the
 source changes. The watermark includes a full logical-row metadata hash, not
@@ -42,10 +48,21 @@ and ClickHouse merge pressure.
 Each worker owns one monthly source partition through export, v8 rendering,
 Parquet insertion, ClickHouse checkpoint, and temporary-file cleanup. A failed
 partition leaves the staging table and durable successful checkpoints intact.
-Each run owns a separate staging table. The export joins `sec_filing_v3` by
-`filing_id` so structured XML classification receives the authoritative parent
-form type. Only explicitly classified structured fund XML is omitted from the
+Each run owns a separate staging table. The worker resolves each source
+`filing_id` through the run's compact form map so structured XML classification
+receives the authoritative parent form type. Only explicitly classified structured fund XML is omitted from the
 rendered text table; an empty result for any other source row fails loudly.
+
+The first production attempt failed because every monthly worker joined the
+entire `sec_filing_v3 FINAL` relation while exporting large source text. Each
+query read roughly 8.2 million rows and 26-30 GiB before reaching the 32 GiB
+query limit. Removing that join exposed a second issue: selecting source text
+with `FINAL` performs cross-partition revision reconciliation and again exceeds
+32 GiB. The corrected path exports compact filing and source-authority metadata
+once into an indexed local SQLite map. Workers then stream physical rows from
+only one monthly partition without `FINAL`, retain exactly the authoritative
+cross-partition source version locally, and perform no large-text sort or join.
+Do not resume a run created by the pre-fix implementation; start a new run.
 
 ## Resume
 

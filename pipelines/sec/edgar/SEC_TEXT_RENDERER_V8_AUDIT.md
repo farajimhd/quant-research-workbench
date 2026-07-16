@@ -278,3 +278,13 @@ hash, isolates staging per run, verifies the Python/ClickHouse file mount before
 creating tables, joins the parent filing form by `filing_id`, and permits only
 the renderer's explicit structured-fund-XML exclusion. Any other empty render
 is a hard failure with document-level diagnostics.
+
+After the first full rebuild exposed a 32 GiB query failure, parent form lookup
+was moved out of each monthly large-text export. A follow-up live query proved
+that large-text `FINAL` itself also performs an unbounded cross-partition
+revision merge. One compact, watermarked SQLite authority now records both
+filing forms and the exact current source version for each logical text key.
+Monthly workers stream one physical partition without `FINAL`, select the
+cross-partition authority locally, and perform no global join or text sort. The
+production ingestion contract also removed both the minimum-length skip and
+every rendered-text cap argument.

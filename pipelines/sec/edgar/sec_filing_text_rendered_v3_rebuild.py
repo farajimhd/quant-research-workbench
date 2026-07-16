@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -20,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pipelines.market_sip.events.sec_packed_text_renderer import (  # noqa: E402
+from pipelines.sec.edgar.sec_pipeline.text_renderer import (  # noqa: E402
     SEC_PACKED_TEXT_RENDERER_VERSION,
     STRUCTURED_XML_EXCLUDED_QUALITY_FLAG,
     render_sec_packed_text,
@@ -67,7 +68,6 @@ SOURCE_COLUMNS = [
     "source_revision_rank",
     "source_revision_kind",
     "pac_event_id",
-    "form_type",
 ]
 
 TARGET_COLUMNS = [
@@ -107,6 +107,14 @@ class SourceWatermark:
 
 
 @dataclass(frozen=True, slots=True)
+class FilingWatermark:
+    rows: int
+    unique_filing_ids: int
+    max_inserted_at: str
+    metadata_hash: int
+
+
+@dataclass(frozen=True, slots=True)
 class PartitionJob:
     partition_id: int
     expected_rows: int
@@ -122,7 +130,7 @@ class PartitionJob:
     clickhouse_password: str
     file_root_win: str
     file_root_ch: str
-    min_text_chars: int
+    lookup_database_path: str
     export_threads: int
     insert_threads: int
     max_memory_usage: int
@@ -173,7 +181,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--export-threads", type=int, default=2)
     parser.add_argument("--insert-threads", type=int, default=2)
     parser.add_argument("--max-memory-usage", default=os.environ.get("SEC_RENDER_REBUILD_MAX_MEMORY", "32G"))
-    parser.add_argument("--min-text-chars", type=int, default=1)
     parser.add_argument("--parquet-row-group-mib", type=int, default=128)
     parser.add_argument("--parquet-file-mib", type=int, default=1024)
     parser.add_argument("--limit-partitions", type=int, default=0, help="Testing only; cutover is forbidden when set.")
@@ -201,6 +208,7 @@ def main() -> int:
 
     require_tables(client, args)
     current_watermark = load_source_watermark(client, args)
+    current_filing_watermark = load_filing_watermark(client, args)
     partitions = load_partitions(client, args)
     if args.limit_partitions:
         partitions = partitions[: args.limit_partitions]
@@ -213,29 +221,34 @@ def main() -> int:
 
     run_root.mkdir(parents=True, exist_ok=True)
     source_watermark = load_or_create_run_manifest(
-        run_root, args, run_id, loaded_env, current_watermark, partitions
+        run_root, args, run_id, loaded_env, current_watermark, current_filing_watermark, partitions
     )
     verify_clickhouse_file_root(client, args, run_root)
+    lookup_database_path = prepare_lookup_database(
+        client, args, run_root, current_watermark, current_filing_watermark
+    )
     ensure_manifest_table(client, args)
     ensure_staging_table(client, args)
     completed = load_completed_partitions(client, args, run_id)
     pending = [row for row in partitions if row["partition_id"] not in completed]
     print(f"resume completed={len(completed):,} pending={len(pending):,}", flush=True)
 
-    jobs = [build_job(args, run_id, run_root, row) for row in pending]
+    jobs = [build_job(args, run_id, run_root, lookup_database_path, row) for row in pending]
     results = run_jobs(jobs, max_workers=args.workers, total_partitions=len(partitions), already_completed=len(completed))
     failures = [result for result in results if result.status != "ok"]
     if failures:
         write_results(run_root, results)
         raise RuntimeError(f"render rebuild failed partitions={[result.partition_id for result in failures]}")
 
-    validation = validate_staging(client, args, run_id, partitions, source_watermark)
+    validation = validate_staging(
+        client, args, run_id, partitions, source_watermark, current_filing_watermark
+    )
     (run_root / "validation.json").write_text(json.dumps(validation, indent=2, sort_keys=True), encoding="utf-8")
     write_results(run_root, results)
     print_validation(validation)
 
     if args.cutover:
-        backup_table = cutover(client, args, run_id, source_watermark)
+        backup_table = cutover(client, args, run_id, source_watermark, current_filing_watermark)
         print(f"cutover=complete target={args.database}.{args.target_table} backup={args.database}.{backup_table}", flush=True)
     else:
         print(f"cutover=pending staging={args.database}.{args.staging_table}", flush=True)
@@ -250,8 +263,6 @@ def validate_args(args: argparse.Namespace) -> None:
             raise SystemExit(f"--{label.replace('_', '-')} must be a simple ClickHouse identifier: {value!r}")
     if args.workers < 1 or args.export_threads < 1 or args.insert_threads < 1:
         raise SystemExit("worker and thread counts must be positive")
-    if args.min_text_chars < 1:
-        raise SystemExit("--min-text-chars must be positive")
     if args.parquet_row_group_mib < 1 or args.parquet_file_mib < args.parquet_row_group_mib:
         raise SystemExit("Parquet file size must be at least the row-group size")
     if args.cutover and not args.execute:
@@ -305,6 +316,30 @@ FROM {table(args.database, args.source_table)} FINAL
     )
 
 
+def load_filing_watermark(client: ClickHouseHttpClient, args: argparse.Namespace) -> FilingWatermark:
+    row = query_one(
+        client,
+        f"""
+SELECT count() AS rows, uniqExact(filing_id) AS unique_filing_ids,
+       toString(max(inserted_at)) AS max_inserted_at,
+       groupBitXor(cityHash64(filing_id, form_type)) AS metadata_hash
+FROM {table(args.database, 'sec_filing_v3')} FINAL
+""",
+    )
+    watermark = FilingWatermark(
+        rows=int(row["rows"]),
+        unique_filing_ids=int(row["unique_filing_ids"]),
+        max_inserted_at=str(row["max_inserted_at"]),
+        metadata_hash=int(row["metadata_hash"]),
+    )
+    if watermark.rows != watermark.unique_filing_ids:
+        raise RuntimeError(
+            "sec_filing_v3 filing_id is not unique; cannot build deterministic form lookup "
+            f"rows={watermark.rows} unique={watermark.unique_filing_ids}"
+        )
+    return watermark
+
+
 def load_partitions(client: ClickHouseHttpClient, args: argparse.Namespace) -> list[dict[str, int]]:
     return [
         {key: int(value) for key, value in row.items()}
@@ -319,6 +354,180 @@ ORDER BY partition_id
 """,
         )
     ]
+
+
+def prepare_lookup_database(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    run_root: Path,
+    source_watermark: SourceWatermark,
+    filing_watermark: FilingWatermark,
+) -> Path:
+    database_path = run_root / "render_lookup.sqlite"
+    if database_path.exists():
+        validate_lookup_database(database_path, source_watermark, filing_watermark)
+        return database_path
+
+    form_parquet_path = run_root / "filing_form_map.parquet"
+    authority_parquet_path = run_root / "source_authority.parquet"
+    sqlite_temporary_path = database_path.with_suffix(".sqlite.tmp")
+    form_parquet_path.unlink(missing_ok=True)
+    authority_parquet_path.unlink(missing_ok=True)
+    sqlite_temporary_path.unlink(missing_ok=True)
+    clickhouse_path = windows_path_to_clickhouse_path(form_parquet_path, Path(args.file_root_win), args.file_root_ch)
+    print("render_lookup stage=export_filing_forms status=active", flush=True)
+    client.execute(
+        f"""
+INSERT INTO TABLE FUNCTION file({sql_string(clickhouse_path)}, 'Parquet')
+SELECT filing_id, form_type
+FROM {table(args.database, 'sec_filing_v3')} FINAL
+SETTINGS max_threads=2, max_memory_usage={parse_size_bytes(args.max_memory_usage)},
+         max_block_size=65536, output_format_parquet_compression_method='zstd'
+"""
+    )
+    print("render_lookup stage=export_filing_forms status=completed", flush=True)
+
+    connection = sqlite3.connect(sqlite_temporary_path)
+    try:
+        connection.execute("PRAGMA journal_mode=OFF")
+        connection.execute("PRAGMA synchronous=OFF")
+        connection.execute("PRAGMA temp_store=FILE")
+        connection.execute("PRAGMA cache_size=-262144")
+        connection.execute("PRAGMA page_size=32768")
+        connection.execute("CREATE TABLE filing_forms (filing_id TEXT NOT NULL, form_type TEXT NOT NULL)")
+        parquet = pq.ParquetFile(form_parquet_path)
+        inserted = 0
+        for batch in parquet.iter_batches(batch_size=100_000, columns=["filing_id", "form_type"]):
+            rows = [
+                (str(row.get("filing_id") or ""), str(row.get("form_type") or ""))
+                for row in batch.to_pylist()
+            ]
+            connection.executemany("INSERT INTO filing_forms VALUES (?, ?)", rows)
+            inserted += len(rows)
+            if inserted % 1_000_000 < len(rows):
+                print(f"render_lookup stage=load_filing_forms rows={inserted:,}", flush=True)
+        if inserted != filing_watermark.unique_filing_ids:
+            raise RuntimeError(
+                f"filing form-map export mismatch expected={filing_watermark.unique_filing_ids} actual={inserted}"
+            )
+        print("render_lookup stage=index_filing_forms status=active", flush=True)
+        connection.execute("CREATE UNIQUE INDEX filing_forms_id ON filing_forms(filing_id)")
+        print("render_lookup stage=index_filing_forms status=completed", flush=True)
+
+        authority_clickhouse_path = windows_path_to_clickhouse_path(
+            authority_parquet_path, Path(args.file_root_win), args.file_root_ch
+        )
+        print("render_lookup stage=export_source_authority status=active", flush=True)
+        client.execute(
+            f"""
+INSERT INTO TABLE FUNCTION file({sql_string(authority_clickhouse_path)}, 'Parquet')
+SELECT cik, accession_number, document_id, content_format, source_version_key,
+       source_revision_rank, toYYYYMM(source_archive_date) AS partition_id, filing_id
+FROM {table(args.database, args.source_table)} FINAL
+SETTINGS max_threads=2, max_memory_usage={parse_size_bytes(args.max_memory_usage)},
+         max_block_size=65536, output_format_parquet_compression_method='zstd'
+"""
+        )
+        print("render_lookup stage=export_source_authority status=completed", flush=True)
+        connection.execute(
+            "CREATE TABLE source_authority ("
+            "cik TEXT NOT NULL, accession_number TEXT NOT NULL, document_id TEXT NOT NULL, "
+            "content_format TEXT NOT NULL, source_version_key TEXT NOT NULL, source_revision_rank INTEGER NOT NULL, "
+            "partition_id INTEGER NOT NULL, filing_id TEXT NOT NULL)"
+        )
+        authority_parquet = pq.ParquetFile(authority_parquet_path)
+        authority_inserted = 0
+        for batch in authority_parquet.iter_batches(batch_size=100_000):
+            rows = [
+                (
+                    str(row.get("cik") or ""),
+                    str(row.get("accession_number") or ""),
+                    str(row.get("document_id") or ""),
+                    str(row.get("content_format") or ""),
+                    str(row.get("source_version_key") or ""),
+                    int(row.get("source_revision_rank") or 0),
+                    int(row.get("partition_id") or 0),
+                    str(row.get("filing_id") or ""),
+                )
+                for row in batch.to_pylist()
+            ]
+            connection.executemany("INSERT INTO source_authority VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+            authority_inserted += len(rows)
+            if authority_inserted % 1_000_000 < len(rows):
+                print(f"render_lookup stage=load_source_authority rows={authority_inserted:,}", flush=True)
+        if authority_inserted != source_watermark.rows:
+            raise RuntimeError(
+                f"source authority export mismatch expected={source_watermark.rows} actual={authority_inserted}"
+            )
+        print("render_lookup stage=index_source_authority status=active", flush=True)
+        connection.execute(
+            "CREATE UNIQUE INDEX source_authority_key ON "
+            "source_authority(cik, accession_number, document_id, content_format)"
+        )
+        connection.execute("CREATE INDEX source_authority_partition ON source_authority(partition_id)")
+        print("render_lookup stage=index_source_authority status=completed", flush=True)
+        connection.execute("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        connection.executemany(
+            "INSERT INTO metadata VALUES (?, ?)",
+            [
+                ("source_rows", str(source_watermark.rows)),
+                ("source_bytes", str(source_watermark.source_bytes)),
+                ("source_max_revision_rank", str(source_watermark.max_revision_rank)),
+                ("source_max_inserted_at", source_watermark.max_inserted_at),
+                ("source_metadata_hash", str(source_watermark.source_metadata_hash)),
+                ("filing_rows", str(filing_watermark.rows)),
+                ("unique_filing_ids", str(filing_watermark.unique_filing_ids)),
+                ("filing_max_inserted_at", filing_watermark.max_inserted_at),
+                ("filing_metadata_hash", str(filing_watermark.metadata_hash)),
+            ],
+        )
+        connection.commit()
+    finally:
+        connection.close()
+        form_parquet_path.unlink(missing_ok=True)
+        authority_parquet_path.unlink(missing_ok=True)
+    sqlite_temporary_path.replace(database_path)
+    validate_lookup_database(database_path, source_watermark, filing_watermark)
+    print(
+        f"render_lookup=ready authority_rows={source_watermark.rows:,} "
+        f"filing_rows={filing_watermark.unique_filing_ids:,} path={database_path}",
+        flush=True,
+    )
+    return database_path
+
+
+def validate_lookup_database(
+    path: Path,
+    source_watermark: SourceWatermark,
+    filing_watermark: FilingWatermark,
+) -> None:
+    connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro&immutable=1", uri=True)
+    try:
+        metadata = dict(connection.execute("SELECT key, value FROM metadata"))
+        actual_filing_rows = int(connection.execute("SELECT count() FROM filing_forms").fetchone()[0])
+        actual_source_rows = int(connection.execute("SELECT count() FROM source_authority").fetchone()[0])
+    finally:
+        connection.close()
+    expected = {
+        "source_rows": str(source_watermark.rows),
+        "source_bytes": str(source_watermark.source_bytes),
+        "source_max_revision_rank": str(source_watermark.max_revision_rank),
+        "source_max_inserted_at": source_watermark.max_inserted_at,
+        "source_metadata_hash": str(source_watermark.source_metadata_hash),
+        "filing_rows": str(filing_watermark.rows),
+        "unique_filing_ids": str(filing_watermark.unique_filing_ids),
+        "filing_max_inserted_at": filing_watermark.max_inserted_at,
+        "filing_metadata_hash": str(filing_watermark.metadata_hash),
+    }
+    if (
+        metadata != expected
+        or actual_filing_rows != filing_watermark.unique_filing_ids
+        or actual_source_rows != source_watermark.rows
+    ):
+        raise RuntimeError(
+            f"render lookup watermark mismatch path={path} expected={expected} actual={metadata} "
+            f"source_rows={actual_source_rows} filing_rows={actual_filing_rows}"
+        )
 
 
 def ensure_manifest_table(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
@@ -386,7 +595,13 @@ def load_completed_partitions(client: ClickHouseHttpClient, args: argparse.Names
     return {int(line) for line in text.splitlines() if line.strip()}
 
 
-def build_job(args: argparse.Namespace, run_id: str, run_root: Path, row: dict[str, int]) -> PartitionJob:
+def build_job(
+    args: argparse.Namespace,
+    run_id: str,
+    run_root: Path,
+    lookup_database_path: Path,
+    row: dict[str, int],
+) -> PartitionJob:
     return PartitionJob(
         partition_id=int(row["partition_id"]),
         expected_rows=int(row["source_rows"]),
@@ -402,7 +617,7 @@ def build_job(args: argparse.Namespace, run_id: str, run_root: Path, row: dict[s
         clickhouse_password=args.password,
         file_root_win=args.file_root_win,
         file_root_ch=args.file_root_ch,
-        min_text_chars=args.min_text_chars,
+        lookup_database_path=str(lookup_database_path),
         export_threads=args.export_threads,
         insert_threads=args.insert_threads,
         max_memory_usage=parse_size_bytes(args.max_memory_usage),
@@ -460,10 +675,12 @@ def process_partition(job: PartitionJob) -> PartitionResult:
     cleanup_temp_root(partition_root, keep_source=False)
 
     export_source_partition(client, job, source_path)
-    source_rows = int(pq.ParquetFile(source_path).metadata.num_rows)
-    if not job.max_rows_per_partition and source_rows != job.expected_rows:
-        raise RuntimeError(f"source export row mismatch expected={job.expected_rows} actual={source_rows}")
-
+    physical_rows = int(pq.ParquetFile(source_path).metadata.num_rows)
+    authority = load_partition_authority(Path(job.lookup_database_path), job.partition_id)
+    filing_forms = load_filing_forms(
+        Path(job.lookup_database_path),
+        {row[2] for row in authority.values()},
+    )
     writer = ParquetShardWriter(
         dataset_name="rendered_text_v3",
         target_table=job.staging_table,
@@ -476,6 +693,7 @@ def process_partition(job: PartitionJob) -> PartitionResult:
         compression_level=1,
     )
     excluded_rows = 0
+    source_rows = 0
     source_chars = 0
     rendered_chars = 0
     extracted_at = datetime.now(UTC)
@@ -483,6 +701,18 @@ def process_partition(job: PartitionJob) -> PartitionResult:
         parquet = pq.ParquetFile(source_path)
         for batch in parquet.iter_batches(batch_size=8):
             for source in batch.to_pylist():
+                key = source_authority_key(source)
+                authority_row = authority.get(key)
+                if authority_row is None:
+                    continue
+                source_version_key, source_revision_rank, filing_id = authority_row
+                if (
+                    str(source.get("source_version_key") or "") != source_version_key
+                    or int(source.get("source_revision_rank") or 0) != source_revision_rank
+                ):
+                    continue
+                del authority[key]
+                source_rows += 1
                 source_text = str(source.get("source_text") or "")
                 source_chars += len(source_text)
                 rendered = render_sec_packed_text(
@@ -490,7 +720,7 @@ def process_partition(job: PartitionJob) -> PartitionResult:
                     str(source.get("content_format") or ""),
                     document_name=str(source.get("document_name") or ""),
                     document_type=str(source.get("document_type") or ""),
-                    form_type=str(source.get("form_type") or ""),
+                    form_type=filing_forms[filing_id],
                     text_kind=str(source.get("text_kind") or ""),
                     include_intermediate=False,
                 )
@@ -498,7 +728,7 @@ def process_partition(job: PartitionJob) -> PartitionResult:
                 if STRUCTURED_XML_EXCLUDED_QUALITY_FLAG in rendered.quality_flags:
                     excluded_rows += 1
                     continue
-                if len(text) < job.min_text_chars:
+                if not text:
                     raise RuntimeError(
                         "renderer produced an unexpectedly empty non-structured document "
                         f"document_id={source.get('document_id')} content_format={source.get('content_format')} "
@@ -511,6 +741,16 @@ def process_partition(job: PartitionJob) -> PartitionResult:
         writer.abort()
         raise
 
+    if authority and not job.max_rows_per_partition:
+        raise RuntimeError(
+            f"physical partition is missing {len(authority):,} authoritative source rows; "
+            f"sample={list(authority)[:5]}"
+        )
+    if not job.max_rows_per_partition and source_rows != job.expected_rows:
+        raise RuntimeError(
+            f"authoritative source row mismatch expected={job.expected_rows} actual={source_rows} "
+            f"physical={physical_rows}"
+        )
     rendered_rows = sum(int(part["rows"]) for part in parts)
     if rendered_rows + excluded_rows != source_rows:
         raise RuntimeError(
@@ -536,6 +776,64 @@ def process_partition(job: PartitionJob) -> PartitionResult:
     return result
 
 
+def load_filing_forms(lookup_database_path: Path, filing_ids: set[str]) -> dict[str, str]:
+    forms: dict[str, str] = {}
+    connection = sqlite3.connect(f"{lookup_database_path.resolve().as_uri()}?mode=ro&immutable=1", uri=True)
+    try:
+        ordered = sorted(filing_ids)
+        chunk_size = 500
+        for start in range(0, len(ordered), chunk_size):
+            chunk = ordered[start : start + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            forms.update(
+                (str(filing_id), str(form_type or ""))
+                for filing_id, form_type in connection.execute(
+                    f"SELECT filing_id, form_type FROM filing_forms WHERE filing_id IN ({placeholders})",
+                    chunk,
+                )
+            )
+    finally:
+        connection.close()
+    missing = filing_ids.difference(forms)
+    if missing:
+        raise RuntimeError(
+            f"source partition has {len(missing):,} filing_id values absent from sec_filing_v3; "
+            f"sample={sorted(missing)[:10]}"
+        )
+    return forms
+
+
+def load_partition_authority(
+    lookup_database_path: Path,
+    partition_id: int,
+) -> dict[tuple[str, str, str, str], tuple[str, int, str]]:
+    connection = sqlite3.connect(f"{lookup_database_path.resolve().as_uri()}?mode=ro&immutable=1", uri=True)
+    try:
+        rows = connection.execute(
+            "SELECT cik, accession_number, document_id, content_format, source_version_key, "
+            "source_revision_rank, filing_id FROM source_authority WHERE partition_id=?",
+            (partition_id,),
+        )
+        authority = {
+            (str(cik), str(accession), str(document_id), str(content_format)): (
+                str(source_version_key), int(source_revision_rank), str(filing_id)
+            )
+            for cik, accession, document_id, content_format, source_version_key, source_revision_rank, filing_id in rows
+        }
+    finally:
+        connection.close()
+    return authority
+
+
+def source_authority_key(source: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(source.get("cik") or ""),
+        str(source.get("accession_number") or ""),
+        str(source.get("document_id") or ""),
+        str(source.get("content_format") or ""),
+    )
+
+
 def cleanup_partition_staging(client: ClickHouseHttpClient, job: PartitionJob) -> None:
     client.execute(
         f"ALTER TABLE {table(job.database, job.staging_table)} DELETE WHERE "
@@ -547,18 +845,18 @@ def export_source_partition(client: ClickHouseHttpClient, job: PartitionJob, sou
     source_path.parent.mkdir(parents=True, exist_ok=True)
     source_path.unlink(missing_ok=True)
     clickhouse_path = windows_path_to_clickhouse_path(source_path, Path(job.file_root_win), job.file_root_ch)
-    source_columns = ", ".join(f"s.{quote_ident(column)}" for column in SOURCE_COLUMNS if column != "form_type")
+    source_columns = ", ".join(f"s.{quote_ident(column)}" for column in SOURCE_COLUMNS)
     limit_sql = f" LIMIT {job.max_rows_per_partition}" if job.max_rows_per_partition else ""
     client.execute(
         f"""
 INSERT INTO TABLE FUNCTION file({sql_string(clickhouse_path)}, 'Parquet')
-SELECT {source_columns}, ifNull(f.form_type, '') AS form_type
-FROM {table(job.database, job.source_table)} AS s FINAL
-LEFT ANY JOIN {table(job.database, 'sec_filing_v3')} AS f FINAL ON f.filing_id=s.filing_id
+SELECT {source_columns}
+FROM {table(job.database, job.source_table)} AS s
 WHERE toYYYYMM(s.source_archive_date)={job.partition_id}
-ORDER BY s.cik, s.accession_number, s.document_id, s.content_format
 {limit_sql}
-SETTINGS max_threads={job.export_threads}, max_memory_usage={job.max_memory_usage}, join_algorithm='grace_hash',
+SETTINGS max_threads={job.export_threads}, max_memory_usage={job.max_memory_usage},
+         max_block_size=128, preferred_block_size_bytes=67108864,
+         output_format_parquet_row_group_size=1024,
          output_format_parquet_compression_method='zstd', output_format_parquet_compliant_nested_types=1
 """
     )
@@ -634,8 +932,10 @@ def validate_staging(
     run_id: str,
     partitions: list[dict[str, int]],
     initial_watermark: SourceWatermark,
+    initial_filing_watermark: FilingWatermark,
 ) -> dict[str, Any]:
     current_watermark = load_source_watermark(client, args)
+    current_filing_watermark = load_filing_watermark(client, args)
     manifest = query_one(
         client,
         f"""
@@ -663,6 +963,11 @@ FROM {table(args.database, args.staging_table)} FINAL
     errors: list[str] = []
     if current_watermark != initial_watermark:
         errors.append(f"source watermark changed initial={asdict(initial_watermark)} current={asdict(current_watermark)}")
+    if current_filing_watermark != initial_filing_watermark:
+        errors.append(
+            "filing watermark changed "
+            f"initial={asdict(initial_filing_watermark)} current={asdict(current_filing_watermark)}"
+        )
     if int(manifest["partitions"]) != len(partitions):
         errors.append(f"manifest partitions expected={len(partitions)} actual={manifest['partitions']}")
     if int(manifest["source_rows"]) != expected_source_rows:
@@ -684,6 +989,8 @@ FROM {table(args.database, args.staging_table)} FINAL
         "renderer_version": SEC_PACKED_TEXT_RENDERER_VERSION,
         "initial_source_watermark": asdict(initial_watermark),
         "current_source_watermark": asdict(current_watermark),
+        "initial_filing_watermark": asdict(initial_filing_watermark),
+        "current_filing_watermark": asdict(current_filing_watermark),
         "manifest": manifest,
         "staging": staging,
         "errors": errors,
@@ -693,9 +1000,17 @@ FROM {table(args.database, args.staging_table)} FINAL
     return validation
 
 
-def cutover(client: ClickHouseHttpClient, args: argparse.Namespace, run_id: str, watermark: SourceWatermark) -> str:
+def cutover(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    run_id: str,
+    watermark: SourceWatermark,
+    filing_watermark: FilingWatermark,
+) -> str:
     if load_source_watermark(client, args) != watermark:
         raise RuntimeError("source watermark changed after validation; refusing cutover")
+    if load_filing_watermark(client, args) != filing_watermark:
+        raise RuntimeError("filing metadata watermark changed after validation; refusing cutover")
     suffix = re.sub(r"[^0-9]", "", run_id)[-14:] or datetime.now(UTC).strftime("%Y%m%d%H%M%S")
     backup_table = f"sec_filing_text_rendered_pre_v8_{suffix}_v3"
     if scalar_int(
@@ -732,6 +1047,7 @@ def load_or_create_run_manifest(
     run_id: str,
     loaded_env: list[Path],
     watermark: SourceWatermark,
+    filing_watermark: FilingWatermark,
     partitions: list[dict[str, int]],
 ) -> SourceWatermark:
     manifest_path = run_root / "run_manifest.json"
@@ -750,10 +1066,20 @@ def load_or_create_run_manifest(
             raise RuntimeError(
                 f"resume configuration differs from run manifest expected={expected_identity} actual={actual_identity}"
             )
+        if "filing_watermark" not in payload:
+            raise RuntimeError(
+                "this run predates the bounded filing-form lookup; start a new run without --run-id"
+            )
         original = SourceWatermark(**payload["source_watermark"])
         if watermark != original:
             raise RuntimeError(
                 f"source changed since run started; refusing resume original={asdict(original)} current={asdict(watermark)}"
+            )
+        original_filing = FilingWatermark(**payload["filing_watermark"])
+        if filing_watermark != original_filing:
+            raise RuntimeError(
+                "filing metadata changed since run started; refusing resume "
+                f"original={asdict(original_filing)} current={asdict(filing_watermark)}"
             )
         original_partitions = payload.get("partitions", [])
         if original_partitions != partitions:
@@ -770,6 +1096,7 @@ def load_or_create_run_manifest(
         "manifest_table": args.manifest_table,
         "workers": args.workers,
         "source_watermark": asdict(watermark),
+        "filing_watermark": asdict(filing_watermark),
         "partitions": partitions,
         "loaded_env_files": [str(path) for path in loaded_env],
         "secret_status": secret_status(["CLICKHOUSE_PASSWORD", "SEC_CLICKHOUSE_PASSWORD", "QMD_CLICKHOUSE_PASSWORD"]),

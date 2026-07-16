@@ -28,7 +28,7 @@ from pipelines.market_sip.events.clickhouse_build_text_tokens import (
     sec_rendered_source_ctes_sql,
     tokenize_and_insert_source_batch,
 )
-from pipelines.market_sip.events.sec_packed_text_renderer import (
+from pipelines.sec.edgar.sec_pipeline.text_renderer import (
     STRUCTURED_XML_EXCLUDED_QUALITY_FLAG,
 )
 from research.mlops.clickhouse import ClickHouseHttpClient, parse_size_bytes, quote_ident, sql_string

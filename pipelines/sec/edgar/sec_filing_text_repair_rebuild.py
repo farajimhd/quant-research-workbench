@@ -75,8 +75,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pending-multiplier", type=int, default=int(os.environ.get("SEC_TEXT_REPAIR_PENDING_MULTIPLIER", "2")))
     parser.add_argument("--sample-limit", type=int, default=1000)
     parser.add_argument("--sample-text-chars", type=int, default=2000)
-    parser.add_argument("--min-text-chars", type=int, default=40)
-    parser.add_argument("--max-text-chars", type=int, default=0, help="Optional normalized text storage cap. 0 means unlimited.")
     parser.add_argument("--limit-archives", type=int, default=0)
     parser.add_argument("--max-filings-per-archive", type=int, default=0)
     parser.add_argument("--limit-parts", type=int, default=0)
@@ -192,8 +190,6 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--archive-workers must be positive")
     if args.pending_multiplier <= 0:
         raise SystemExit("--pending-multiplier must be positive")
-    if args.max_text_chars < 0:
-        raise SystemExit("--max-text-chars must be >= 0")
 
 
 def validate_identifier(value: str, label: str) -> None:
@@ -223,10 +219,6 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[RepairComm
         str(max(0, args.sample_limit)),
         "--sample-text-chars",
         str(max(0, args.sample_text_chars)),
-        "--min-text-chars",
-        str(max(0, args.min_text_chars)),
-        "--max-text-chars",
-        str(max(0, args.max_text_chars)),
         "--progress-every",
         "1",
     ]

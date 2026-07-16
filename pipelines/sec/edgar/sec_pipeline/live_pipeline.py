@@ -43,8 +43,6 @@ class SecLiveFilingPipeline:
         *,
         http: SecHttpClient,
         raw_root_win: Path,
-        min_text_chars: int = 40,
-        max_text_chars: int = 0,
         submissions_cache_entries: int = 512,
         submissions_cache_max_age_seconds: float = 3600.0,
         xbrl_payload_cache_entries: int = 32,
@@ -53,8 +51,6 @@ class SecLiveFilingPipeline:
     ) -> None:
         self.http = http
         self.raw_root_win = raw_root_win
-        self.min_text_chars = min_text_chars
-        self.max_text_chars = max_text_chars
         self.submissions = SecSubmissionsClient(
             http=http,
             max_cache_entries=submissions_cache_entries,
@@ -93,8 +89,6 @@ class SecLiveFilingPipeline:
         )
         payload: dict[str, Any] = {
             "source_run_id": source_run_id,
-            "min_text_chars": self.min_text_chars,
-            "max_text_chars": self.max_text_chars,
             "sample_text_chars": 0,
         }
         filing_row, parent = build_missing_parent_row(

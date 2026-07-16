@@ -59,8 +59,9 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 - `--archive-workers`: number of archives processed concurrently. Use `2` conservatively and `4` when memory/IO look stable.
 - `--max-filings-per-archive`: smoke/testing cap only. Do not use for final extraction.
 - `--sample-limit`: number of text samples retained in the run output for manual review.
-- `--min-text-chars`: text shorter than this is skipped as low signal.
-- `--max-text-chars`: optional storage cap for emergency/debug runs. The default `0` means unlimited; do not cap final extraction.
+- Every nonempty supported render is persisted. There is no minimum-length
+  filter and no rendered-text cap. Only explicit non-text formats and the
+  structured-fund-XML policy produce skip rows.
 - `--parent-window-days-before`, `--parent-window-days-after`: accepted timestamp lookup window around each archive date.
 - `--parquet-row-group-mb`: logical byte target for each row group; default `256`.
 - `--parquet-file-mb`: logical byte target for each file; default `1024`.

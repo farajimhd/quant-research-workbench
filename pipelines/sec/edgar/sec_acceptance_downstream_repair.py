@@ -20,7 +20,7 @@ from pipelines.market_sip.events.clickhouse_build_sec_context import (  # noqa: 
     text_context_columns_sql,
     text_context_schema_migration_sqls,
 )
-from pipelines.market_sip.events.sec_packed_text_renderer import (  # noqa: E402
+from pipelines.sec.edgar.sec_pipeline.text_renderer import (  # noqa: E402
     SEC_PACKED_TEXT_RENDERER_VERSION,
     build_sec_text_context_row,
 )

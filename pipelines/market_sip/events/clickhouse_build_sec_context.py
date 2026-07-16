@@ -26,7 +26,7 @@ from research.mlops.clickhouse import (  # noqa: E402
 )
 from research.mlops.env import load_env_files, secret_status  # noqa: E402
 from pipelines.market_sip.validation.clickhouse_delete_compact_audit_rows import default_clickhouse_url_with_network_fallback  # noqa: E402
-from pipelines.market_sip.events.sec_packed_text_renderer import (  # noqa: E402
+from pipelines.sec.edgar.sec_pipeline.text_renderer import (  # noqa: E402
     SEC_PACKED_TEXT_RENDERER_VERSION,
     build_sec_text_context_row,
 )

@@ -4,11 +4,47 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pipelines.market_sip.events.sec_packed_text_renderer import SEC_PACKED_TEXT_RENDERER_VERSION
+from pipelines.sec.edgar.sec_pipeline.text_renderer import SEC_PACKED_TEXT_RENDERER_VERSION
 from pipelines.sec.edgar.sec_filing_text_extract_parts import FilingParent, build_rows
 
 
 class SecTextRendererIntegrationTests(unittest.TestCase):
+    def test_single_character_supported_text_is_persisted_without_a_cap(self) -> None:
+        parent = FilingParent(
+            filing_id="filing-id",
+            accession_number="0000000001-26-000002",
+            accession_number_compact="000000000126000002",
+            cik="0000000001",
+            form_type="8-K",
+            accepted_at_utc="2026-07-15 12:00:00.000",
+            primary_document="filing.txt",
+            primary_document_url="",
+            filing_detail_url="",
+        )
+        document = {
+            "document_type": "8-K",
+            "document_name": "filing.txt",
+            "payload": "X",
+            "payload_bytes": 1,
+            "payload_char_count": 1,
+            "sequence_number": 1,
+            "description": "",
+        }
+        payload = {"source_run_id": "test-run", "sample_text_chars": 500}
+        with tempfile.TemporaryDirectory() as tmp:
+            _doc, source_row, rendered_row, skip_row, _sample = build_rows(
+                payload,
+                Path(tmp) / "20260715.nc.tar.gz",
+                "2026-07-15",
+                "filing.nc",
+                parent,
+                document,
+                "2026-07-15 12:01:00.000",
+            )
+        self.assertEqual(source_row["source_text"], "X")
+        self.assertEqual(rendered_row["text"], "X")
+        self.assertIsNone(skip_row)
+
     def test_live_and_historical_shared_row_builder_renders_non_xbrl_xml(self) -> None:
         xml = "<proxyVoteTable>" + "".join(
             f"<proxyTable><issuerName>Issuer {index}</issuerName><sharesVoted>{index + 1}</sharesVoted></proxyTable>"
@@ -36,8 +72,6 @@ class SecTextRendererIntegrationTests(unittest.TestCase):
         }
         payload = {
             "source_run_id": "test-run",
-            "min_text_chars": 1,
-            "max_text_chars": 0,
             "sample_text_chars": 500,
         }
         with tempfile.TemporaryDirectory() as tmp:

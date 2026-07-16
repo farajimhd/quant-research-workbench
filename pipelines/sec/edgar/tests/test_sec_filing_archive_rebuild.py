@@ -822,8 +822,6 @@ ACCEPTANCE-DATETIME: 20260701120000
                 "sample_text_chars": 100,
                 "parent_window_days_before": 1,
                 "parent_window_days_after": 2,
-                "min_text_chars": 1,
-                "max_text_chars": 0,
                 "parquet_row_group_bytes": 256,
                 "parquet_file_bytes": 512,
                 "parquet_compression_level": 1,

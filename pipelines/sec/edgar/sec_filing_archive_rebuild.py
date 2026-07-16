@@ -117,8 +117,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-text-chars", type=int, default=2000)
     parser.add_argument("--parent-window-days-before", type=int, default=1)
     parser.add_argument("--parent-window-days-after", type=int, default=2)
-    parser.add_argument("--min-text-chars", type=int, default=40)
-    parser.add_argument("--max-text-chars", type=int, default=0)
     parser.add_argument("--cleanup-parts", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--recover-incomplete-runs", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
@@ -356,8 +354,6 @@ def lane_payload(
         "sample_text_chars": max(0, int(args.sample_text_chars)),
         "parent_window_days_before": max(0, int(args.parent_window_days_before)),
         "parent_window_days_after": max(1, int(args.parent_window_days_after)),
-        "min_text_chars": max(0, int(args.min_text_chars)),
-        "max_text_chars": max(0, int(args.max_text_chars)),
         "cleanup_parts": bool(args.cleanup_parts),
         "retry_dataset_keys": sorted(retry_dataset_keys),
     }
@@ -549,8 +545,6 @@ def extractor_payload(payload: dict[str, Any], task: dict[str, Any]) -> dict[str
         "sample_text_chars": payload["sample_text_chars"],
         "parent_window_days_before": payload["parent_window_days_before"],
         "parent_window_days_after": payload["parent_window_days_after"],
-        "min_text_chars": payload["min_text_chars"],
-        "max_text_chars": payload["max_text_chars"],
         "parquet_row_group_bytes": payload["parquet_row_group_bytes"],
         "parquet_file_bytes": payload["parquet_file_bytes"],
         "parquet_compression_level": payload["parquet_compression_level"],

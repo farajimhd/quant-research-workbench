@@ -97,7 +97,7 @@ same archive remain checkpoints and are not rewritten.
 Focused text repair after parser/storage bugs:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_filing_text_repair_rebuild.py --start-date 2026-07-01 --end-date 2026-07-11 --archive-root-win D:/market-data/sec_core/daily_archives --database q_live --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --max-text-chars 0 --cleanup-stale-skips --execute
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_filing_text_repair_rebuild.py --start-date 2026-07-01 --end-date 2026-07-11 --archive-root-win D:/market-data/sec_core/daily_archives --database q_live --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --cleanup-stale-skips --execute
 ```
 
 Use this focused repair when raw daily archives are already present and the goal

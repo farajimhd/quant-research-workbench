@@ -47,7 +47,7 @@ from pipelines.sec.edgar.sec_pipeline.revision import (  # noqa: E402
     parse_pac_event,
     source_revision,
 )
-from pipelines.market_sip.events.sec_packed_text_renderer import (  # noqa: E402
+from pipelines.sec.edgar.sec_pipeline.text_renderer import (  # noqa: E402
     SEC_PACKED_TEXT_RENDERER_VERSION,
     STRUCTURED_XML_EXCLUDED_QUALITY_FLAG,
     render_sec_packed_text,
@@ -288,13 +288,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-text-chars", type=int, default=1200)
     parser.add_argument("--parent-window-days-before", type=int, default=1)
     parser.add_argument("--parent-window-days-after", type=int, default=2)
-    parser.add_argument("--min-text-chars", type=int, default=40)
-    parser.add_argument(
-        "--max-text-chars",
-        type=int,
-        default=int(os.environ.get("SEC_TEXT_EXTRACT_MAX_TEXT_CHARS", "0")),
-        help="Optional normalized text storage cap. 0 means unlimited and is the default.",
-    )
     parser.add_argument("--progress-every", type=int, default=10)
     parser.add_argument(
         "--parquet-row-group-mb",
@@ -465,8 +458,6 @@ def worker_payload(args: argparse.Namespace, archive: Path, parts_root: Path, so
         "sample_text_chars": max(0, int(args.sample_text_chars)),
         "parent_window_days_before": max(0, int(args.parent_window_days_before)),
         "parent_window_days_after": max(1, int(args.parent_window_days_after)),
-        "min_text_chars": max(0, int(args.min_text_chars)),
-        "max_text_chars": max(0, int(args.max_text_chars)),
         "parquet_row_group_bytes": max(1, int(args.parquet_row_group_mb)) * 1024**2,
         "parquet_file_bytes": max(1, int(args.parquet_file_mb)) * 1024**2,
         "parquet_compression_level": int(args.parquet_compression_level),
@@ -898,11 +889,7 @@ def build_rows(
         normalized_text = ""
         extraction_method = f"unsupported_{content_format}_v1"
         quality_flags = [f"format_{content_format}"]
-    skip_reason = skip_reason_for_document(document_role, content_format, normalized_text, quality_flags, int(payload["min_text_chars"]))
-    max_text_chars = int(payload.get("max_text_chars") or 0)
-    if max_text_chars > 0 and normalized_text and len(normalized_text) > max_text_chars:
-        normalized_text = normalized_text[:max_text_chars].rstrip()
-        quality_flags.append("truncated_max_text_chars")
+    skip_reason = skip_reason_for_document(document_role, content_format, normalized_text, quality_flags)
     has_text = bool(normalized_text and not skip_reason)
     text_sha = sha256_text(normalized_text) if normalized_text else ""
     document_id = deterministic_id("sec-document-v2", parent.cik, parent.accession_number, str(document["sequence_number"]), doc_name, doc_type)
@@ -1068,7 +1055,7 @@ def should_persist_text_source(document_role: str, content_format: str) -> bool:
     return content_format in {"html", "plain_text", "xml"}
 
 
-def skip_reason_for_document(document_role: str, content_format: str, text: str, quality_flags: list[str], min_text_chars: int) -> str:
+def skip_reason_for_document(document_role: str, content_format: str, text: str, quality_flags: list[str]) -> str:
     if document_role == "xbrl_sidecar":
         return "xbrl_sidecar"
     if document_role == "image":
@@ -1089,8 +1076,6 @@ def skip_reason_for_document(document_role: str, content_format: str, text: str,
         return f"unsupported_{content_format}"
     if not text:
         return "empty_text"
-    if len(text) < min_text_chars:
-        return "too_short"
     return ""
 
 

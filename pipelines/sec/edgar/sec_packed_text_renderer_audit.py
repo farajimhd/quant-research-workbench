@@ -14,7 +14,7 @@ REPO_ROOT = next(parent for parent in Path(__file__).resolve().parents if (paren
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pipelines.market_sip.events.sec_packed_text_renderer import (  # noqa: E402
+from pipelines.sec.edgar.sec_pipeline.text_renderer import (  # noqa: E402
     DUPLICATE_BLOCK_MIN_CHARS,
     SEC_PACKED_TEXT_RENDERER_VERSION,
     render_sec_packed_text,
@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-archives", type=int, default=0, help="Optional cap after date filtering and shuffling.")
     parser.add_argument("--max-filings-scanned", type=int, default=5000, help="Stop after this many archive filings. Use 0 for no cap.")
     parser.add_argument("--progress-every", type=int, default=500, help="Print archive scan progress every N filings. Use 0 to disable.")
-    parser.add_argument("--min-text-chars", type=int, default=100)
+    parser.add_argument("--min-source-chars", type=int, default=100)
     parser.add_argument("--excerpt-chars", type=int, default=4000)
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     return parser.parse_args()
@@ -90,8 +90,7 @@ def collect_samples(args: argparse.Namespace) -> list[dict[str, Any]]:
     seen_documents: set[tuple[str, str]] = set()
     payload_config = {
         "source_run_id": f"audit_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}",
-        "min_text_chars": int(args.min_text_chars),
-        "max_text_chars": 0,
+        "min_source_chars": int(args.min_source_chars),
         "sample_text_chars": int(args.excerpt_chars),
     }
     inserted_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
@@ -168,7 +167,7 @@ def samples_from_member(
         if not should_persist_text_source(document_role, content_format):
             continue
         source_text = str(document.get("payload") or "")
-        if len(source_text) < int(payload_config["min_text_chars"]):
+        if len(source_text) < int(payload_config["min_source_chars"]):
             continue
         doc_row = build_audit_doc_row(parent, document, content_format, document_role)
         text_source_row = build_audit_text_source_row(parent, document, doc_row, source_text)

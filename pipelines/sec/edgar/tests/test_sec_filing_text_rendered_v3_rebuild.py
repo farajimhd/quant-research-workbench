@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import sqlite3
 from datetime import UTC, date, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -8,14 +9,40 @@ from types import SimpleNamespace
 
 from pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild import (
     SourceWatermark,
+    FilingWatermark,
     build_rendered_row,
     load_or_create_run_manifest,
+    load_filing_forms,
+    load_partition_authority,
     staging_table_for_run,
 )
-from pipelines.market_sip.events.sec_packed_text_renderer import SEC_PACKED_TEXT_RENDERER_VERSION
+from pipelines.sec.edgar.sec_pipeline.text_renderer import SEC_PACKED_TEXT_RENDERER_VERSION
 
 
 class SecRenderedV3RebuildTest(unittest.TestCase):
+    def test_partition_form_lookup_uses_compact_local_authority(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            map_path = root / "forms.sqlite"
+            connection = sqlite3.connect(map_path)
+            connection.execute("CREATE TABLE filing_forms (filing_id TEXT PRIMARY KEY, form_type TEXT NOT NULL)")
+            connection.executemany("INSERT INTO filing_forms VALUES (?, ?)", [("a", "8-K"), ("b", "10-Q")])
+            connection.execute(
+                "CREATE TABLE source_authority (cik TEXT, accession_number TEXT, document_id TEXT, "
+                "content_format TEXT, source_version_key TEXT, source_revision_rank INTEGER, "
+                "partition_id INTEGER, filing_id TEXT)"
+            )
+            connection.execute(
+                "INSERT INTO source_authority VALUES ('1', 'acc', 'doc', 'html', 'version', 7, 202607, 'a')"
+            )
+            connection.commit()
+            connection.close()
+            self.assertEqual(load_filing_forms(map_path, {"a", "b"}), {"a": "8-K", "b": "10-Q"})
+            self.assertEqual(
+                load_partition_authority(map_path, 202607),
+                {("1", "acc", "doc", "html"): ("version", 7, "a")},
+            )
+
     def test_staging_table_is_isolated_by_run(self) -> None:
         self.assertEqual(
             staging_table_for_run("sec-render/v8 20260716"),
@@ -58,12 +85,13 @@ class SecRenderedV3RebuildTest(unittest.TestCase):
         )
         original = SourceWatermark(10, 100, 7, "2026-07-16 00:00:00.000", 123)
         changed = SourceWatermark(11, 101, 8, "2026-07-16 00:01:00.000", 456)
+        filing = FilingWatermark(5, 5, "2026-07-16 00:00:00.000", 789)
         partitions = [{"partition_id": 202607, "source_rows": 10, "source_chars": 90}]
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            load_or_create_run_manifest(root, args, "test", [], original, partitions)
+            load_or_create_run_manifest(root, args, "test", [], original, filing, partitions)
             with self.assertRaisesRegex(RuntimeError, "source changed since run started"):
-                load_or_create_run_manifest(root, args, "test", [], changed, partitions)
+                load_or_create_run_manifest(root, args, "test", [], changed, filing, partitions)
 
 
 if __name__ == "__main__":

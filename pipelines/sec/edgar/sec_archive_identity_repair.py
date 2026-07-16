@@ -62,8 +62,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--insert-max-threads", type=int, default=8)
     parser.add_argument("--insert-max-memory-usage", default="16G")
     parser.add_argument("--part-manifest-table", default="sec_filing_text_file_ingest_manifest_v3")
-    parser.add_argument("--min-text-chars", type=int, default=40)
-    parser.add_argument("--max-text-chars", type=int, default=0)
     parser.add_argument("--parquet-row-group-mb", type=int, default=256)
     parser.add_argument("--parquet-file-mb", type=int, default=1024)
     parser.add_argument("--parquet-compression-level", type=int, default=1)
@@ -144,8 +142,6 @@ def validate_args(args: argparse.Namespace) -> None:
             raise SystemExit(f"--{name.replace('_', '-')} must be a simple ClickHouse identifier: {value!r}")
     if args.workers < 1:
         raise SystemExit("--workers must be >= 1")
-    if args.max_text_chars < 0:
-        raise SystemExit("--max-text-chars must be >= 0")
 
 
 def discover_mismatches(client: ClickHouseHttpClient, args: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[str, int]]:
@@ -241,8 +237,6 @@ def worker_payload(
         "sample_text_chars": 0,
         "parent_window_days_before": 3,
         "parent_window_days_after": 3,
-        "min_text_chars": args.min_text_chars,
-        "max_text_chars": args.max_text_chars,
         "parquet_row_group_bytes": args.parquet_row_group_mb * 1024**2,
         "parquet_file_bytes": args.parquet_file_mb * 1024**2,
         "parquet_compression_level": args.parquet_compression_level,

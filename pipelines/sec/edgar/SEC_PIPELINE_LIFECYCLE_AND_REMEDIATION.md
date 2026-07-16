@@ -303,4 +303,4 @@ source exists; a repairable unresolved row is a failure.
 - [SEC Gateway README](../../../services/sec_gateway/README.md)
 - [SEC text parser and source extractor](sec_filing_text_extract_parts.py)
 - [Historical orchestration](sec_historical_gap_fill.py)
-- [Advanced packed renderer](../../market_sip/events/sec_packed_text_renderer.py)
+- [Advanced packed renderer](sec_pipeline/text_renderer.py)

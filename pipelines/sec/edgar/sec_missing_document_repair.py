@@ -37,8 +37,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--insert-max-threads", type=int, default=8)
     parser.add_argument("--insert-max-memory-usage", default="16G")
     parser.add_argument("--part-manifest-table", default="sec_filing_text_file_ingest_manifest_v3")
-    parser.add_argument("--min-text-chars", type=int, default=40)
-    parser.add_argument("--max-text-chars", type=int, default=0)
     parser.add_argument("--parquet-row-group-mb", type=int, default=256)
     parser.add_argument("--parquet-file-mb", type=int, default=1024)
     parser.add_argument("--parquet-compression-level", type=int, default=1)
@@ -184,8 +182,7 @@ def worker_payload(
         "source_run_id": run_id, "database": args.database, "clickhouse_url": args.clickhouse_url,
         "user": args.user, "password": args.password, "max_filings_per_archive": 0,
         "sample_limit": 0, "sample_text_chars": 0, "parent_window_days_before": 0,
-        "parent_window_days_after": 1, "min_text_chars": args.min_text_chars,
-        "max_text_chars": args.max_text_chars,
+        "parent_window_days_after": 1,
         "parquet_row_group_bytes": args.parquet_row_group_mb * 1024**2,
         "parquet_file_bytes": args.parquet_file_mb * 1024**2,
         "parquet_compression_level": args.parquet_compression_level,

@@ -355,8 +355,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pending-multiplier", type=int, default=2)
     parser.add_argument("--sample-limit", type=int, default=1000)
     parser.add_argument("--sample-text-chars", type=int, default=2000)
-    parser.add_argument("--min-text-chars", type=int, default=40)
-    parser.add_argument("--max-text-chars", type=int, default=0, help="Optional normalized text storage cap. 0 means unlimited.")
     parser.add_argument("--text-limit-parts", type=int, default=0)
     parser.add_argument("--text-ingest-max-threads", type=int, default=int(os.environ.get("SEC_TEXT_FILE_INGEST_MAX_THREADS", "96")))
     parser.add_argument("--text-ingest-max-memory-usage", default=os.environ.get("SEC_TEXT_FILE_INGEST_MAX_MEMORY", "64G"))
@@ -717,10 +715,6 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                     "1" if args.sample_limit else "0",
                     "--sample-text-chars",
                     str(max(0, args.sample_text_chars)),
-                    "--min-text-chars",
-                    str(max(0, args.min_text_chars)),
-                    "--max-text-chars",
-                    str(max(0, args.max_text_chars)),
                     "--parts-root-win",
                     args.parts_root_win,
                     "--parts-root-ch",
@@ -790,10 +784,6 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                     args.parts_root_ch,
                     "--workers",
                     str(max(1, args.text_extract_workers)),
-                    "--min-text-chars",
-                    str(max(0, args.min_text_chars)),
-                    "--max-text-chars",
-                    str(max(0, args.max_text_chars)),
                 ],
                 args,
             ),
@@ -913,10 +903,6 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                     args.parts_root_ch,
                     "--workers",
                     str(max(1, args.text_extract_workers)),
-                    "--min-text-chars",
-                    str(max(0, args.min_text_chars)),
-                    "--max-text-chars",
-                    str(max(0, args.max_text_chars)),
                 ],
                 args,
             ),

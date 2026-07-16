@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from pipelines.market_sip.events.sec_packed_text_renderer import (
+from pipelines.sec.edgar.sec_pipeline.text_renderer import (
     DUPLICATE_BLOCK_MIN_CHARS,
     SEC_PACKED_TEXT_RENDERER_VERSION,
     STRUCTURED_XML_EXCLUDED_QUALITY_FLAG,
