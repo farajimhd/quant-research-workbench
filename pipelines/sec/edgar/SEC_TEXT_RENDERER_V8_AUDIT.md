@@ -267,5 +267,14 @@ The renderer reached the stop condition after the fresh-sample loop:
 Before tokenization or embedding, rebuild only
 `q_live.sec_filing_text_rendered_v3` from the already complete
 `q_live.sec_filing_text_v3`. Do not rerun archive acquisition or source
-extraction. The rebuild must use staging plus audited cutover because the current
-rendered table contains stale v1 rows.
+extraction. Use `sec_filing_text_rendered_v3_rebuild.py`; it processes monthly
+source partitions through server-side Parquet exchange, applies v8 in bounded
+parallel workers, inserts into a resumable staging table, validates complete
+source accounting plus renderer/hash/length/key invariants, and performs an
+explicit atomic cutover while retaining the stale table as a backup.
+
+The production rebuild additionally binds resume to a logical-row metadata
+hash, isolates staging per run, verifies the Python/ClickHouse file mount before
+creating tables, joins the parent filing form by `filing_id`, and permits only
+the renderer's explicit structured-fund-XML exclusion. Any other empty render
+is a hard failure with document-level diagnostics.
