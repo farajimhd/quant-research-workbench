@@ -84,6 +84,52 @@ class SecPackedTextRendererTests(unittest.TestCase):
         self.assertEqual(result.packed_text, "Exhibit 5.1\nWe have acted as counsel to the issuer.")
         self.assertNotIn("empty_rendered_text", result.quality_flags)
 
+    def test_structurally_empty_html_emits_document_presence_without_fabricated_content(self) -> None:
+        result = render_sec_packed_text(
+            "<html><body></body></html>",
+            "html",
+            document_name="documents_list.htm",
+            document_type="EX-99",
+            form_type="C",
+            text_kind="press_release_exhibit",
+        )
+
+        self.assertIn("Submitted document presence record", result.packed_text)
+        self.assertIn("contains no renderable content", result.packed_text)
+        self.assertIn("document_name=documents_list.htm", result.packed_text)
+        self.assertIn("source_characters=26", result.packed_text)
+        self.assertIn("document_presence_only", result.quality_flags)
+        self.assertIn("html_structurally_empty_document", result.quality_flags)
+        self.assertIn("no_renderable_content", result.quality_flags)
+        self.assertNotIn("empty_rendered_text", result.quality_flags)
+
+    def test_empty_xml_root_and_empty_source_emit_typed_presence_records(self) -> None:
+        xml = render_sec_packed_text("<XBRL>\n</XBRL>", "xml", document_type="8-K")
+        empty = render_sec_packed_text("", "plain_text", document_type="EX-99")
+
+        self.assertIn("xml_structurally_empty_document", xml.quality_flags)
+        self.assertIn("content_format=xml", xml.packed_text)
+        self.assertIn("source_payload_empty", empty.quality_flags)
+        self.assertIn("source_characters=0", empty.packed_text)
+
+    def test_hidden_only_html_is_presence_only_but_visible_parser_loss_is_not_masked(self) -> None:
+        hidden = render_sec_packed_text(
+            "<html><body><div style='display:none'>Hidden metadata</div></body></html>",
+            "html",
+        )
+        visible_parser_loss = render_sec_packed_text("<html><body><table>Important text</table></body></html>", "html")
+
+        self.assertIn("html_nonvisible_only_document", hidden.quality_flags)
+        self.assertIn("document_presence_only", hidden.quality_flags)
+        self.assertEqual(visible_parser_loss.packed_text, "")
+        self.assertIn("empty_rendered_text", visible_parser_loss.quality_flags)
+
+    def test_unclosed_html_table_is_finalized_before_empty_classification(self) -> None:
+        result = render_sec_packed_text("<html><body><table><tr><td>Revenue<td>100", "html")
+
+        self.assertIn("Revenue: 100", result.packed_text)
+        self.assertNotIn("document_presence_only", result.quality_flags)
+
     def test_structured_fund_xml_stays_in_source_but_is_excluded_from_model_text(self) -> None:
         result = render_sec_packed_text(
             "<root><holding><name>Issuer</name></holding></root>",

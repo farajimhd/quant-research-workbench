@@ -98,8 +98,17 @@ transport.
 Image-only HTML is not treated as an empty render. The canonical renderer
 preserves the HTML title plus every non-tracking image source, alt/title label,
 and declared dimension as a compact image inventory. It explicitly flags that
-the referenced image content was not OCR-extracted. Truly empty non-structured
-documents still fail the partition instead of disappearing silently.
+the referenced image content was not OCR-extracted.
+
+Structurally empty submitted documents are distinct from renderer loss. Empty
+HTML wrappers such as `<html><body></body></html>`, empty XML roots, and
+zero-byte source payloads produce a deterministic presence-only record with
+document metadata, source character count, `document_presence_only`, and
+`no_renderable_content`. No source text or image content is fabricated. If the
+HTML parser observes visible substantive characters but produces no blocks,
+the result remains empty and the rebuild still fails the partition. This keeps
+parser loss fatal while allowing genuine SEC-submitted placeholders to remain
+visible to downstream filing models.
 
 Substantive XML comments are model-visible source content. This matters for
 `ABS-EE` `EX-103` asset-related documents whose otherwise empty `<assetdata>`

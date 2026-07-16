@@ -163,6 +163,8 @@ class _SecHTMLPackedTextParser(HTMLParser):
         self.skip_depth = 0
         self.hidden_node_count = 0
         self.page_artifact_count = 0
+        self.visible_data_char_count = 0
+        self.nonvisible_data_char_count = 0
         self.table: _TableState | None = None
         self.table_depth = 0
         self.table_count = 0
@@ -258,7 +260,9 @@ class _SecHTMLPackedTextParser(HTMLParser):
             self.document_title_parts.append(data)
             return
         if self.in_head or self.skip_depth or not data:
+            self.nonvisible_data_char_count += len(_clean_inline(data))
             return
+        self.visible_data_char_count += len(_clean_inline(data))
         if self.table is not None:
             if self.table.current_cell_parts is not None:
                 self.table.current_cell_parts.append(data)
@@ -266,6 +270,15 @@ class _SecHTMLPackedTextParser(HTMLParser):
                 self.table.caption_parts.append(data)
             return
         self.buffer.append(data)
+
+    def finish(self) -> None:
+        if self.table is not None:
+            self._finish_cell()
+            self._finish_row()
+            self._emit_table_blocks(self.table)
+            self.table = None
+            self.table_depth = 0
+        self._flush_buffer()
 
     def _handle_table_start(self, tag: str, attrs: dict[str, str]) -> None:
         assert self.table is not None
@@ -378,6 +391,8 @@ def render_sec_packed_text(
     parser_hidden_nodes = 0
     parser_table_count = 0
     parser_page_artifacts = 0
+    parser_visible_chars = 0
+    parser_nonvisible_chars = 0
 
     if fmt == "xml" and _is_structured_fund_xml(form_type=form_type, document_type=document_type, document_name=document_name):
         flags.extend(
@@ -392,11 +407,13 @@ def render_sec_packed_text(
         try:
             parser.feed(source)
             parser.close()
-            parser._flush_buffer()
+            parser.finish()
             blocks = parser.blocks
             parser_hidden_nodes = parser.hidden_node_count
             parser_table_count = parser.table_count
             parser_page_artifacts = parser.page_artifact_count
+            parser_visible_chars = parser.visible_data_char_count
+            parser_nonvisible_chars = parser.nonvisible_data_char_count
             if not blocks and parser.image_references:
                 blocks = _image_only_html_blocks(
                     _clean_inline(" ".join(parser.document_title_parts)),
@@ -429,6 +446,29 @@ def render_sec_packed_text(
             flags.append("xml_comments_preserved")
     else:
         blocks = _plain_text_blocks(source)
+
+    if not blocks and STRUCTURED_XML_EXCLUDED_QUALITY_FLAG not in flags:
+        can_emit_presence = fmt != "html" or parser_visible_chars == 0
+        if can_emit_presence:
+            if fmt == "html" and parser_nonvisible_chars:
+                status = "Submitted HTML contains no visible text or media references; only non-visible content was present."
+                flags.append("html_nonvisible_only_document")
+            elif source.strip():
+                status = f"Submitted {fmt} source is structurally empty and contains no renderable content."
+                flags.append(f"{_flag_token(fmt)}_structurally_empty_document")
+            else:
+                status = "Submitted source payload is empty."
+                flags.append("source_payload_empty")
+            blocks = _document_presence_blocks(
+                status=status,
+                content_format=fmt,
+                source_chars=len(source),
+                document_name=document_name,
+                document_type=document_type,
+                form_type=form_type,
+                text_kind=text_kind,
+            )
+            flags.extend(["document_presence_only", "no_renderable_content"])
 
     blocks = _dedupe_empty_and_separator_blocks(blocks)
     blocks, duplicate_block_count, duplicate_block_samples = _replace_duplicate_blocks(blocks)
@@ -962,6 +1002,36 @@ def _image_only_html_blocks(title: str, references: list[_ImageReference]) -> li
             fields.append(f"height={reference.height}")
         blocks.append(RenderedBlock("image_reference", f"Image {index}: {'; '.join(fields)}"))
     return blocks
+
+
+def _document_presence_blocks(
+    *,
+    status: str,
+    content_format: str,
+    source_chars: int,
+    document_name: str,
+    document_type: str,
+    form_type: str,
+    text_kind: str,
+) -> list[RenderedBlock]:
+    fields = [
+        f"content_format={content_format}",
+        f"source_characters={source_chars}",
+    ]
+    for label, value in (
+        ("document_name", document_name),
+        ("document_type", document_type),
+        ("form_type", form_type),
+        ("text_kind", text_kind),
+    ):
+        clean_value = _clean_inline(value)
+        if clean_value:
+            fields.append(f"{label}={clean_value}")
+    return [
+        RenderedBlock("heading", "Submitted document presence record"),
+        RenderedBlock("content_status", f"Content status: {status}"),
+        RenderedBlock("document_metadata", "Document metadata: " + "; ".join(fields)),
+    ]
 
 
 def _repair_text(value: str) -> str:

@@ -118,6 +118,9 @@ The renderer preserves substantive XML comments, including `ABS-EE` `EX-103`
 asset-related narratives, and treats `<body>` as the end of malformed HTML head
 state. Full-corpus rebuild retries validate and reuse completed monthly source
 exports instead of repeating ClickHouse transport after renderer-only failures.
+Genuinely empty submitted wrappers produce metadata-bearing presence records;
+observed visible content that disappears during rendering remains a fatal
+integrity error.
 
 The SEC gateway generates the same explicit shape so the workstation script does
 not depend on ambient shell defaults. `--resume-from-coverage` is enabled by default and records

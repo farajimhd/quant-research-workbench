@@ -280,6 +280,21 @@ stop condition: XML leaf, attribute, repeated-record, and substantive-comment
 content are preserved; malformed HTML cannot keep visible body content in head
 skip state.
 
+The subsequent corpus resume found a different semantic class: accession
+`0001670254-19-000538` contains a valid 9,581-character primary XML document
+and an `EX-99` `documents_list.htm` whose complete submitted source is exactly
+`<html><body></body></html>`. This is not truncation. The old rebuild invariant
+incorrectly treated every empty render as parser loss.
+
+The renderer now separates structural emptiness from loss. It emits a
+deterministic presence-only record for empty HTML/XML/plain-text payloads and
+records document identity, format, and source character count without
+fabricating content. HTML for which the parser observed visible characters but
+produced no blocks remains empty and therefore fatal to the rebuild. An audit
+of the 200 most frequent HTML patterns at 512 source characters or fewer
+covered 9,380 physical rows: 4,621 were correctly classified as presence-only,
+4,759 rendered normally, and none remained unexpectedly empty.
+
 Before tokenization or embedding, rebuild only
 `q_live.sec_filing_text_rendered_v3` from the already complete
 `q_live.sec_filing_text_v3`. Do not rerun archive acquisition or source
