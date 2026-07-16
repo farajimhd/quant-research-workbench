@@ -247,6 +247,30 @@ def validate_canvas_interactions(
             issues.append("Canvas page leaks horizontal scrolling to the document")
         if page.evaluate("document.documentElement.scrollHeight > document.documentElement.clientHeight + 1"):
             issues.append("Canvas page leaks vertical scrolling to the document")
+        indicator_menu_trigger = chart.locator(".chart-column-select-button").filter(has_text=re.compile(r"^Indicators"))
+        if indicator_menu_trigger.count():
+            indicator_menu_trigger.first.click()
+            indicator_menu = page.locator("body > .chart-column-menu-portal").first
+            indicator_menu_box = indicator_menu.bounding_box()
+            if not indicator_menu_box:
+                issues.append("indicators popover is not rendered through the viewport portal")
+            else:
+                if (
+                    indicator_menu_box["x"] < -1
+                    or indicator_menu_box["y"] < -1
+                    or indicator_menu_box["x"] + indicator_menu_box["width"] > scenario["viewport"]["width"] + 1
+                    or indicator_menu_box["y"] + indicator_menu_box["height"] > scenario["viewport"]["height"] + 1
+                ):
+                    issues.append("indicators popover is clipped by a viewport edge")
+                portal_is_top_layer = page.evaluate(
+                    "([x, y]) => Boolean(document.elementFromPoint(x, y)?.closest('.chart-column-menu-portal'))",
+                    [indicator_menu_box["x"] + indicator_menu_box["width"] / 2, indicator_menu_box["y"] + min(20, indicator_menu_box["height"] / 2)],
+                )
+                if not portal_is_top_layer:
+                    issues.append("indicators popover renders behind a Canvas container")
+                if interaction_screenshot:
+                    page.screenshot(path=str(interaction_screenshot.with_name(interaction_screenshot.stem + "__indicators-popover.png")), full_page=True)
+            indicator_menu_trigger.first.click()
         oscillator = chart.locator(".chart-osc").first
         if oscillator.count():
             oscillator.locator(".chart-legend-header").click()

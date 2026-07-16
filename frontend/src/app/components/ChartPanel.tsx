@@ -623,7 +623,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     if (!columnMenuOpen && !supervisionMenuOpen && !periodMenuOpen) return;
     const closeOnOutsidePointer = (event: PointerEvent) => {
       const target = event.target as HTMLElement | null;
-      if (target?.closest(".chart-column-select") || target?.closest(".chart-period-select")) return;
+      if (target?.closest(".chart-column-select") || target?.closest(".chart-column-menu-portal") || target?.closest(".chart-period-select")) return;
       setColumnMenuOpen(false);
       setSupervisionMenuOpen(false);
       setPeriodMenuOpen(false);
@@ -1654,6 +1654,61 @@ function LegendEditor({
   );
 }
 
+function ChartColumnMenuPortal({
+  anchor,
+  children,
+  className = ""
+}: {
+  anchor: HTMLElement | null;
+  children: ReactNode;
+  className?: string;
+}) {
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [position, setPosition] = useState({ left: 8, top: 8, visibility: "hidden" as "hidden" | "visible" });
+
+  useLayoutEffect(() => {
+    const placeMenu = () => {
+      const menu = menuRef.current;
+      if (!anchor || !menu || !anchor.isConnected) return;
+      const zoom = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--app-zoom")) || 1;
+      const anchorRect = anchor.getBoundingClientRect();
+      const menuRect = menu.getBoundingClientRect();
+      const viewportWidth = window.innerWidth / zoom;
+      const viewportHeight = window.innerHeight / zoom;
+      const menuWidth = menuRect.width / zoom;
+      const menuHeight = menuRect.height / zoom;
+      const anchorLeft = anchorRect.left / zoom;
+      const anchorBottom = anchorRect.bottom / zoom;
+      const anchorTop = anchorRect.top / zoom;
+      const margin = 8;
+      const gap = 6;
+      const below = anchorBottom + gap;
+      const above = anchorTop - menuHeight - gap;
+      const top = below + menuHeight <= viewportHeight - margin ? below : Math.max(margin, above);
+      const left = Math.max(margin, Math.min(anchorLeft, viewportWidth - menuWidth - margin));
+      setPosition({ left, top, visibility: "visible" });
+    };
+    placeMenu();
+    const observer = new ResizeObserver(placeMenu);
+    if (menuRef.current) observer.observe(menuRef.current);
+    window.addEventListener("resize", placeMenu);
+    window.addEventListener("scroll", placeMenu, true);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", placeMenu);
+      window.removeEventListener("scroll", placeMenu, true);
+    };
+  }, [anchor]);
+
+  if (!anchor) return null;
+  return createPortal(
+    <div className={`chart-column-menu chart-column-menu-portal${className ? ` ${className}` : ""}`} ref={menuRef} style={position}>
+      {children}
+    </div>,
+    document.body
+  );
+}
+
 function IndicatorFeatureSelect({
   catalogColumns,
   displayItemOptions,
@@ -1687,6 +1742,7 @@ function IndicatorFeatureSelect({
   const selectedCount = usesDisplayItems ? standardDisplayItems.filter((option) => selected.has(option.id)).length : visibleOptions.filter((option) => selected.has(option)).length;
   const labelForOption = (option: string) => catalogByColumn.get(option)?.title ?? displayName(option);
   const [helpKey, setHelpKey] = useState<string | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (!open) setHelpKey(null);
@@ -1720,6 +1776,7 @@ function IndicatorFeatureSelect({
         aria-expanded={open}
         className="chart-column-select-button"
         onClick={() => onOpenChange(!open)}
+        ref={triggerRef}
         title="Indicators & Features"
         type="button"
       >
@@ -1729,7 +1786,7 @@ function IndicatorFeatureSelect({
         <ChevronDown size={14} />
       </button>
       {open ? (
-        <div className="chart-column-menu">
+        <ChartColumnMenuPortal anchor={triggerRef.current}>
           {usesDisplayItems ? (
             <div className="chart-column-menu-grid">
               {groupedDisplayItems.map((section) => (
@@ -1775,7 +1832,7 @@ function IndicatorFeatureSelect({
               {visibleFeatures.length ? null : <div className="chart-column-menu-empty">No feature columns for this session.</div>}
             </div>
           )}
-        </div>
+        </ChartColumnMenuPortal>
       ) : null}
     </div>
   );
@@ -1810,6 +1867,7 @@ function SupervisionSelect({
   const selectedLabels = new Set(visibleLabels);
   const selectedCount = lookaheadDisplayItems.filter((option) => selected.has(option.id)).length + labelOptions.filter((option) => selectedLabels.has(option.group)).length;
   const [helpKey, setHelpKey] = useState<string | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (!open) setHelpKey(null);
@@ -1853,6 +1911,7 @@ function SupervisionSelect({
         aria-expanded={open}
         className="chart-column-select-button"
         onClick={() => onOpenChange(!open)}
+        ref={triggerRef}
         title="Lookahead & Supervision"
         type="button"
       >
@@ -1862,7 +1921,7 @@ function SupervisionSelect({
         <ChevronDown size={14} />
       </button>
       {open ? (
-        <div className="chart-column-menu chart-supervision-menu">
+        <ChartColumnMenuPortal anchor={triggerRef.current} className="chart-supervision-menu">
           <div className="chart-column-menu-grid">
             <div className="chart-column-menu-column lookahead" key="lookahead">
               <div className="chart-column-menu-title">Lookahead / Supervision</div>
@@ -1911,7 +1970,7 @@ function SupervisionSelect({
               ) : null}
             </div>
           </div>
-        </div>
+        </ChartColumnMenuPortal>
       ) : null}
     </div>
   );

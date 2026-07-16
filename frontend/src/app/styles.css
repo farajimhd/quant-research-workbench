@@ -11906,12 +11906,11 @@ button {
 }
 
 .chart-column-menu {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  z-index: 24;
-  width: min(1240px, calc(100vw - 36px));
-  max-height: min(560px, calc(100vh - 150px));
+  position: fixed;
+  z-index: 10050;
+  zoom: var(--app-zoom);
+  width: min(1240px, calc(var(--app-zoomed-viewport-width) - 16px));
+  max-height: min(560px, calc(var(--app-zoomed-viewport-height) - 16px));
   overflow: hidden;
   border: 1px solid color-mix(in oklab, var(--surface-border) 72%, transparent);
   border-radius: 9px;
@@ -11947,7 +11946,7 @@ button {
   grid-auto-columns: minmax(248px, 312px);
   grid-auto-flow: column;
   gap: 0;
-  max-height: min(536px, calc(100vh - 174px));
+  max-height: min(536px, calc(var(--app-zoomed-viewport-height) - 40px));
   overflow: auto;
 }
 
