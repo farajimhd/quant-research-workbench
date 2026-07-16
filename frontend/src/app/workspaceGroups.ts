@@ -4,6 +4,7 @@ export const WORKSPACE_GROUP_PREFIX = "workspace-group-";
 
 export type WorkspaceGroup = {
   childIds: string[];
+  closed: boolean;
   fullscreen: boolean;
   id: string;
   minimized: boolean;
@@ -77,6 +78,7 @@ export function normalizeWorkspaceGroups(
     if (!isWorkspaceGroupId(id) || !candidate || !Array.isArray(candidate.childIds)) continue;
     groups[id] = {
       childIds: [...new Set(candidate.childIds.filter((childId): childId is string => typeof childId === "string" && childId !== id))],
+      closed: Boolean(candidate.closed),
       fullscreen: Boolean(candidate.fullscreen),
       id,
       minimized: Boolean(candidate.minimized),
@@ -150,7 +152,7 @@ export function createWorkspaceGroup(
   z: number,
 ) {
   const id = createWorkspaceGroupId(groups);
-  return { ...groups, [id]: { childIds: [...new Set(childIds)], fullscreen: false, id, minimized: false, z } };
+  return { ...groups, [id]: { childIds: [...new Set(childIds)], closed: false, fullscreen: false, id, minimized: false, z } };
 }
 
 export function addWorkspaceNodesToGroup(

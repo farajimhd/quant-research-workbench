@@ -285,6 +285,7 @@ type WorkspaceGroupWindowProps = {
   menuItems: WorkspaceGroupMenuItem[];
   minHeight?: number;
   minWidth?: number;
+  onClose: (id: WorkspaceWindowId) => void;
   onCloseMember: (id: WorkspaceWindowId) => void;
   onDetachMember: (id: WorkspaceWindowId) => void;
   onFocus: (id: WorkspaceWindowId) => void;
@@ -310,6 +311,7 @@ export function WorkspaceGroupWindow({
   menuItems,
   minHeight = MIN_WINDOW_HEIGHT,
   minWidth = MIN_WINDOW_WIDTH,
+  onClose,
   onCloseMember,
   onDetachMember,
   onFocus,
@@ -422,6 +424,7 @@ export function WorkspaceGroupWindow({
         <button aria-label={`Ungroup ${title}`} className="toolbar-button compact" onClick={() => onUngroup(id)} title="Ungroup one level" type="button"><Unlink size={12} /></button>
         <button aria-label={layout.minimized ? `Restore ${title}` : `Minimize ${title}`} className="toolbar-button compact" onClick={() => onLayoutChange(id, { minimized: !layout.minimized })} title={layout.minimized ? "Restore group" : "Minimize group"} type="button">{layout.minimized ? <PanelTopOpen size={12} /> : <Minus size={12} />}</button>
         <button aria-label={layout.fullscreen ? `Exit fullscreen ${title}` : `Fullscreen ${title}`} className="toolbar-button compact" onClick={() => onLayoutChange(id, { fullscreen: !layout.fullscreen, minimized: false })} title={layout.fullscreen ? "Exit group fullscreen" : "Fullscreen group"} type="button">{layout.fullscreen ? <Minimize2 size={12} /> : <Maximize2 size={12} />}</button>
+        <button aria-label={`Close ${title}`} className="toolbar-button compact" onClick={() => onClose(id)} title="Close group; restore it from Manage" type="button"><X size={12} /></button>
       </div>
     </div>
     {!layout.minimized ? <div className="workspace-group-body">{children}</div> : null}

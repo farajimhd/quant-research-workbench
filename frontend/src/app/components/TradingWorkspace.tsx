@@ -201,7 +201,9 @@ export function TradingWorkspace({
     return () => window.removeEventListener("storage", syncStoredState);
   }, [definitions, storageKey]);
 
-  const rootNodeIds = useMemo(() => workspaceRootNodeIds(openIds, groups), [groups, openIds]);
+  const allRootNodeIds = useMemo(() => workspaceRootNodeIds(openIds, groups), [groups, openIds]);
+  const rootNodeIds = useMemo(() => allRootNodeIds.filter((id) => !groups[id]?.closed), [allRootNodeIds, groups]);
+  const visibleContainerIds = useMemo(() => new Set(rootNodeIds.flatMap((id) => workspaceDescendantContainerIds(id, groups))), [groups, rootNodeIds]);
 
   function highestLayer() {
     return Math.max(0, ...Object.values(layouts).map((layout) => layout.z), ...Object.values(groups).map((group) => group.z));
@@ -222,7 +224,7 @@ export function TradingWorkspace({
     const rootId = rootForNode(id);
     const z = highestLayer() + 1;
     if (isWorkspaceGroupId(rootId) && groups[rootId]) {
-      setGroups((current) => ({ ...current, [rootId]: { ...current[rootId], minimized: false, z } }));
+      setGroups((current) => ({ ...current, [rootId]: { ...current[rootId], closed: false, minimized: false, z } }));
       return;
     }
     setLayouts((current) => current[rootId] ? ({ ...current, [rootId]: { ...current[rootId], minimized: false, z } }) : current);
@@ -245,7 +247,7 @@ export function TradingWorkspace({
       const additions = selected.filter((id) => id !== groupId);
       setGroups((current) => ({
         ...addWorkspaceNodesToGroup(groupId, additions, current),
-        [groupId]: { ...current[groupId], childIds: [...new Set([...current[groupId].childIds, ...additions])], fullscreen: false, minimized: false, z: nextZ },
+        [groupId]: { ...current[groupId], childIds: [...new Set([...current[groupId].childIds, ...additions])], closed: false, fullscreen: false, minimized: false, z: nextZ },
       }));
       setSelectedNodeIds([groupId]);
       return;
@@ -283,6 +285,32 @@ export function TradingWorkspace({
   function detachNode(groupId: string, childId: string) {
     setGroups((current) => removeWorkspaceNodeFromGroup(groupId, childId, current, openIds));
     setSelectedNodeIds([]);
+  }
+
+  function closeGroup(groupId: string) {
+    const rootId = rootForNode(groupId);
+    if (!groups[rootId]) return;
+    setGroups((current) => ({
+      ...current,
+      [rootId]: { ...current[rootId], closed: true, fullscreen: false, minimized: false },
+    }));
+    setSelectedNodeIds((current) => current.filter((id) => id !== rootId));
+  }
+
+  function showGroup(groupId: string) {
+    const rootId = rootForNode(groupId);
+    if (!groups[rootId]) return;
+    const z = highestLayer() + 1;
+    setGroups((current) => ({
+      ...current,
+      [rootId]: { ...current[rootId], closed: false, minimized: false, z },
+    }));
+  }
+
+  function renameGroup(groupId: string, title: string) {
+    const nextTitle = title.trim();
+    if (!groups[groupId] || !nextTitle) return;
+    setGroups((current) => ({ ...current, [groupId]: { ...current[groupId], title: nextTitle } }));
   }
 
   function closeContainer(id: string) {
@@ -446,6 +474,19 @@ export function TradingWorkspace({
     return `${leaderTitle ?? "Container group"}${descendants.length > 1 ? ` + ${descendants.length - 1}` : ""}`;
   }
 
+  const managedGroups = Object.values(groups).map((group) => {
+    const rootId = rootForNode(group.id);
+    const parentId = workspaceParentMap(groups)[group.id];
+    return {
+      closed: Boolean(groups[rootId]?.closed),
+      id: group.id,
+      isRoot: rootId === group.id,
+      memberCount: workspaceDescendantContainerIds(group.id, groups).length,
+      parentTitle: parentId ? groupTitle(parentId) : undefined,
+      title: groupTitle(group.id),
+    };
+  });
+
   function renderRootNode(id: string) {
     if (groups[id]) {
       const group = groups[id];
@@ -477,6 +518,7 @@ export function TradingWorkspace({
         menuItems={menuItems}
         minHeight={minHeight}
         minWidth={minWidth}
+        onClose={closeGroup}
         onCloseMember={closeContainer}
         onDetachMember={(childId) => detachNode(id, childId)}
         onFocus={focusContainer}
@@ -529,7 +571,7 @@ export function TradingWorkspace({
 
   return (
     <div className="trading-workspace-shell" data-command-bar-visible={commandBarVisible ? "true" : "false"} data-library-open={libraryOpen ? "true" : "false"} data-management-open={managementOpen ? "true" : "false"} data-workspace-mode={mode}>
-      {openIds.map((id) => {
+      {openIds.filter((id) => visibleContainerIds.has(id)).map((id) => {
         const view = containerView(id);
         return view ? createPortal(view.content, contentHost(id), id) : null;
       })}
@@ -569,6 +611,7 @@ export function TradingWorkspace({
         <aside aria-label="Canvas management" className="workspace-management-sidebar">
           <header><strong>Canvas management</strong><button aria-label="Close canvas management" className="toolbar-button compact" onClick={onManagementClose} type="button"><X size={13} /></button></header>
           {managementContent}
+          <WorkspaceGroupManager groups={managedGroups} onClose={closeGroup} onRename={renameGroup} onShow={showGroup} />
           <WorkspaceContainerLibrary allowMultipleInstances={allowMultipleInstances} definitions={definitions} instances={instances} mode={mode} openIds={openIds} onAdd={addContainer} />
           <button className="button secondary compact workspace-management-reset" onClick={resetLayout} type="button"><RefreshCcw size={13} /> Reset layout</button>
         </aside>
@@ -614,6 +657,63 @@ function WorkspaceContentSlot({ host }: { host: HTMLDivElement }) {
   }, [host]);
 
   return <div className="workspace-content-slot" ref={slotRef} />;
+}
+
+type ManagedWorkspaceGroup = {
+  closed: boolean;
+  id: string;
+  isRoot: boolean;
+  memberCount: number;
+  parentTitle?: string;
+  title: string;
+};
+
+function WorkspaceGroupManager({
+  groups,
+  onClose,
+  onRename,
+  onShow,
+}: {
+  groups: ManagedWorkspaceGroup[];
+  onClose: (id: string) => void;
+  onRename: (id: string, title: string) => void;
+  onShow: (id: string) => void;
+}) {
+  return <section aria-label="Workspace groups" className="workspace-group-manager">
+    <header><strong>Groups</strong><small>{groups.length} saved</small></header>
+    {groups.length ? <div className="workspace-group-manager-list">{groups.map((group) => (
+      <WorkspaceGroupManagerRow group={group} key={group.id} onClose={onClose} onRename={onRename} onShow={onShow} />
+    ))}</div> : <p>No saved groups. Select containers on the Canvas to create one.</p>}
+  </section>;
+}
+
+function WorkspaceGroupManagerRow({
+  group,
+  onClose,
+  onRename,
+  onShow,
+}: {
+  group: ManagedWorkspaceGroup;
+  onClose: (id: string) => void;
+  onRename: (id: string, title: string) => void;
+  onShow: (id: string) => void;
+}) {
+  const [draft, setDraft] = useState(group.title);
+  useEffect(() => setDraft(group.title), [group.title]);
+  const canSave = Boolean(draft.trim()) && draft.trim() !== group.title;
+  return <article className="workspace-group-manager-row" data-closed={group.closed ? "true" : "false"} data-root={group.isRoot ? "true" : "false"}>
+    <form onSubmit={(event) => { event.preventDefault(); if (canSave) onRename(group.id, draft); }}>
+      <label><span>Group name</span><input aria-label={`Rename ${group.title}`} maxLength={64} onChange={(event) => setDraft(event.target.value)} value={draft} /></label>
+      <button className="button secondary compact" disabled={!canSave} type="submit">Save</button>
+    </form>
+    <div className="workspace-group-manager-meta">
+      <span>{group.memberCount} container{group.memberCount === 1 ? "" : "s"}</span>
+      <small>{group.isRoot ? (group.closed ? "Closed" : "Open on Canvas") : `Nested in ${group.parentTitle ?? "group"}`}</small>
+      {group.isRoot && !group.closed
+        ? <button aria-label={`Close ${group.title} from Manage`} className="toolbar-button compact" onClick={() => onClose(group.id)} title="Close group" type="button"><X size={12} /></button>
+        : <button aria-label={`Show ${group.title} on Canvas`} className="button secondary compact" onClick={() => onShow(group.id)} type="button">Show</button>}
+    </div>
+  </article>;
 }
 
 function WorkspaceContainerLibrary({

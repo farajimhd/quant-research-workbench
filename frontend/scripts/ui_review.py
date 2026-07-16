@@ -611,8 +611,8 @@ def validate_canvas_interactions(
         if not sidebar_geometry or sidebar_geometry["chartRight"] > sidebar_geometry["sidebarLeft"] + 1:
             issues.append("fullscreen Chart does not reserve the right management sidebar")
         fullscreen_management.get_by_role("button", name="Close canvas management").click()
-        exit_fullscreen.click()
-        chart.get_by_role("button", name=re.compile(r"^Reset .+ to its default layout$")).click()
+        exit_fullscreen.click(force=True)
+        chart.get_by_role("button", name=re.compile(r"^Reset .+ to its default layout$")).click(force=True)
 
         page.get_by_role("button", name="Canvas management", exact=True).click()
         with page.expect_popup(timeout=5000) as blank_canvas_popup_info:
@@ -706,6 +706,48 @@ def validate_canvas_interactions(
             page.get_by_role("button", name="Add 1 to group", exact=True).click()
             if root_group.locator(".workspace-group-member").count() != 5:
                 issues.append("adding a container to an existing group did not extend the compound surface")
+            root_header = root_group.locator(":scope > .workspace-group-header")
+            root_title = root_header.locator(".workspace-window-heading strong").inner_text()
+            if root_header.get_by_role("button", name=f"Close {root_title}", exact=True).count() != 1:
+                issues.append("group title bar does not expose a close action")
+
+            page.get_by_role("button", name="Canvas management", exact=True).click()
+            group_manager = page.get_by_role("region", name="Workspace groups", exact=True)
+            if group_manager.locator(".workspace-group-manager-row").count() != 3:
+                issues.append("Manage does not list every persisted nested and root group")
+            root_manager_row = group_manager.locator('.workspace-group-manager-row[data-root="true"]')
+            rename_input = root_manager_row.get_by_role("textbox", name=f"Rename {root_title}", exact=True)
+            rename_input.fill("Research Workflow")
+            root_manager_row.get_by_role("button", name="Save", exact=True).click()
+            if root_header.locator(".workspace-window-heading strong").inner_text() != "Research Workflow":
+                issues.append("renaming a group in Manage does not update its shared title bar")
+            page.locator(".workspace-management-sidebar > header").get_by_role("button", name="Close canvas management", exact=True).click()
+
+            root_header.get_by_role("button", name="Close Research Workflow", exact=True).click()
+            if page.locator(".workspace-group-window").count():
+                issues.append("closing a group does not remove its compound surface from the Canvas")
+            page.get_by_role("button", name="Canvas management", exact=True).click()
+            group_manager = page.get_by_role("region", name="Workspace groups", exact=True)
+            root_manager_row = group_manager.locator('.workspace-group-manager-row[data-root="true"]')
+            if root_manager_row.get_by_role("textbox", name="Rename Research Workflow", exact=True).input_value() != "Research Workflow":
+                issues.append("closed group name is not retained in Manage")
+            if "Closed" not in root_manager_row.inner_text():
+                issues.append("Manage does not identify a closed group")
+            persisted_closed_group = page.evaluate("""() => {
+                const raw = localStorage.getItem('quant-research-workbench.trading-workspace.global.v1');
+                if (!raw) return null;
+                const groups = Object.values(JSON.parse(raw).groups || {});
+                return groups.find((group) => group.title === 'Research Workflow') || null;
+            }""")
+            if not persisted_closed_group or not persisted_closed_group.get("closed"):
+                issues.append("closed and renamed group lifecycle is not persisted")
+            if interaction_screenshot:
+                page.screenshot(path=str(interaction_screenshot.with_name(interaction_screenshot.stem + "__groups-management.png")), full_page=True)
+            root_manager_row.get_by_role("button", name="Show Research Workflow on Canvas", exact=True).click()
+            page.locator(".workspace-management-sidebar > header").get_by_role("button", name="Close canvas management", exact=True).click()
+            root_group = page.locator(".workspace-group-window")
+            if root_group.count() != 1 or root_group.locator(":scope > .workspace-group-header .workspace-window-heading strong").inner_text() != "Research Workflow":
+                issues.append("Manage cannot restore a closed named group")
             minimize_group = root_group.get_by_role("button", name=re.compile(r"^Minimize .+$"))
             minimize_group.click()
             if root_group.locator(".workspace-group-body").count():
@@ -723,6 +765,8 @@ def validate_canvas_interactions(
         page.locator(".workspace-group-window").wait_for(state="visible", timeout=5000)
         if page.locator(".workspace-group-window .workspace-group-member").count() != 5:
             issues.append("compound group hierarchy did not survive a page reload")
+        if page.locator(".workspace-group-window > .workspace-group-header .workspace-window-heading strong").inner_text() != "Research Workflow":
+            issues.append("renamed group title did not survive a page reload")
     except Exception as exc:
         issues.append(f"Canvas interaction check failed: {exc}")
     return issues

@@ -21006,6 +21006,105 @@ button {
   width: auto;
 }
 
+.workspace-group-manager {
+  border: 1px solid var(--border);
+  display: grid;
+  min-width: 0;
+}
+
+.workspace-group-manager > header {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  min-height: 26px;
+  padding: 2px 5px;
+}
+
+.workspace-group-manager > header strong {
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.workspace-group-manager > header small,
+.workspace-group-manager > p {
+  color: var(--muted-foreground);
+  font-size: 8px;
+}
+
+.workspace-group-manager > p {
+  margin: 0;
+  padding: 7px 5px;
+}
+
+.workspace-group-manager-list {
+  display: grid;
+  min-width: 0;
+}
+
+.workspace-group-manager-row {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 4px;
+}
+
+.workspace-group-manager-row:first-child {
+  border-top: 0;
+}
+
+.workspace-group-manager-row form,
+.workspace-group-manager-meta {
+  align-items: end;
+  display: flex;
+  gap: 3px;
+  min-width: 0;
+}
+
+.workspace-group-manager-row form label {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 2px;
+  min-width: 0;
+}
+
+.workspace-group-manager-row form label span {
+  color: var(--muted-foreground);
+  font-size: 7px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.workspace-group-manager-row input {
+  background: var(--control-bg);
+  border: 1px solid var(--border);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 9px;
+  min-height: 22px;
+  min-width: 0;
+  padding: 1px 4px;
+  width: 100%;
+}
+
+.workspace-group-manager-meta {
+  align-items: center;
+}
+
+.workspace-group-manager-meta span,
+.workspace-group-manager-meta small {
+  font-size: 8px;
+}
+
+.workspace-group-manager-meta small {
+  color: var(--muted-foreground);
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .workspace-management-reset { justify-content: center; width: 100%; }
 
 .canvas-config-page .trading-workspace-watermark {
