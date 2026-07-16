@@ -371,9 +371,22 @@ def prepare_lookup_database(
     form_parquet_path = run_root / "filing_form_map.parquet"
     authority_parquet_path = run_root / "source_authority.parquet"
     sqlite_temporary_path = database_path.with_suffix(".sqlite.tmp")
+
+    if sqlite_temporary_path.exists():
+        try:
+            validate_lookup_database(sqlite_temporary_path, source_watermark, filing_watermark)
+        except (RuntimeError, sqlite3.DatabaseError) as exc:
+            print(f"render_lookup temporary_database=invalid action=rebuild error={exc!r}", flush=True)
+            sqlite_temporary_path.unlink()
+        else:
+            form_parquet_path.unlink(missing_ok=True)
+            authority_parquet_path.unlink(missing_ok=True)
+            sqlite_temporary_path.replace(database_path)
+            print(f"render_lookup temporary_database=valid action=resume path={database_path}", flush=True)
+            return database_path
+
     form_parquet_path.unlink(missing_ok=True)
     authority_parquet_path.unlink(missing_ok=True)
-    sqlite_temporary_path.unlink(missing_ok=True)
     clickhouse_path = windows_path_to_clickhouse_path(form_parquet_path, Path(args.file_root_win), args.file_root_ch)
     print("render_lookup stage=export_filing_forms status=active", flush=True)
     client.execute(
@@ -396,16 +409,19 @@ SETTINGS max_threads=2, max_memory_usage={parse_size_bytes(args.max_memory_usage
         connection.execute("PRAGMA page_size=32768")
         connection.execute("CREATE TABLE filing_forms (filing_id TEXT NOT NULL, form_type TEXT NOT NULL)")
         parquet = pq.ParquetFile(form_parquet_path)
-        inserted = 0
-        for batch in parquet.iter_batches(batch_size=100_000, columns=["filing_id", "form_type"]):
-            rows = [
-                (str(row.get("filing_id") or ""), str(row.get("form_type") or ""))
-                for row in batch.to_pylist()
-            ]
-            connection.executemany("INSERT INTO filing_forms VALUES (?, ?)", rows)
-            inserted += len(rows)
-            if inserted % 1_000_000 < len(rows):
-                print(f"render_lookup stage=load_filing_forms rows={inserted:,}", flush=True)
+        try:
+            inserted = 0
+            for batch in parquet.iter_batches(batch_size=100_000, columns=["filing_id", "form_type"]):
+                rows = [
+                    (str(row.get("filing_id") or ""), str(row.get("form_type") or ""))
+                    for row in batch.to_pylist()
+                ]
+                connection.executemany("INSERT INTO filing_forms VALUES (?, ?)", rows)
+                inserted += len(rows)
+                if inserted % 1_000_000 < len(rows):
+                    print(f"render_lookup stage=load_filing_forms rows={inserted:,}", flush=True)
+        finally:
+            parquet.close()
         if inserted != filing_watermark.unique_filing_ids:
             raise RuntimeError(
                 f"filing form-map export mismatch expected={filing_watermark.unique_filing_ids} actual={inserted}"
@@ -436,25 +452,28 @@ SETTINGS max_threads=2, max_memory_usage={parse_size_bytes(args.max_memory_usage
             "partition_id INTEGER NOT NULL, filing_id TEXT NOT NULL)"
         )
         authority_parquet = pq.ParquetFile(authority_parquet_path)
-        authority_inserted = 0
-        for batch in authority_parquet.iter_batches(batch_size=100_000):
-            rows = [
-                (
-                    str(row.get("cik") or ""),
-                    str(row.get("accession_number") or ""),
-                    str(row.get("document_id") or ""),
-                    str(row.get("content_format") or ""),
-                    str(row.get("source_version_key") or ""),
-                    int(row.get("source_revision_rank") or 0),
-                    int(row.get("partition_id") or 0),
-                    str(row.get("filing_id") or ""),
-                )
-                for row in batch.to_pylist()
-            ]
-            connection.executemany("INSERT INTO source_authority VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
-            authority_inserted += len(rows)
-            if authority_inserted % 1_000_000 < len(rows):
-                print(f"render_lookup stage=load_source_authority rows={authority_inserted:,}", flush=True)
+        try:
+            authority_inserted = 0
+            for batch in authority_parquet.iter_batches(batch_size=100_000):
+                rows = [
+                    (
+                        str(row.get("cik") or ""),
+                        str(row.get("accession_number") or ""),
+                        str(row.get("document_id") or ""),
+                        str(row.get("content_format") or ""),
+                        str(row.get("source_version_key") or ""),
+                        int(row.get("source_revision_rank") or 0),
+                        int(row.get("partition_id") or 0),
+                        str(row.get("filing_id") or ""),
+                    )
+                    for row in batch.to_pylist()
+                ]
+                connection.executemany("INSERT INTO source_authority VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+                authority_inserted += len(rows)
+                if authority_inserted % 1_000_000 < len(rows):
+                    print(f"render_lookup stage=load_source_authority rows={authority_inserted:,}", flush=True)
+        finally:
+            authority_parquet.close()
         if authority_inserted != source_watermark.rows:
             raise RuntimeError(
                 f"source authority export mismatch expected={source_watermark.rows} actual={authority_inserted}"

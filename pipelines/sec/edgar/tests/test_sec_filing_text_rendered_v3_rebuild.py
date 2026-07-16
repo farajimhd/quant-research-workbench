@@ -14,12 +14,59 @@ from pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild import (
     load_or_create_run_manifest,
     load_filing_forms,
     load_partition_authority,
+    prepare_lookup_database,
     staging_table_for_run,
 )
 from pipelines.sec.edgar.sec_pipeline.text_renderer import SEC_PACKED_TEXT_RENDERER_VERSION
 
 
 class SecRenderedV3RebuildTest(unittest.TestCase):
+    def test_completed_temporary_lookup_is_promoted_on_resume(self) -> None:
+        source = SourceWatermark(1, 100, 7, "2026-07-16 00:00:00.000", 123)
+        filing = FilingWatermark(1, 1, "2026-07-16 00:00:00.000", 456)
+        args = SimpleNamespace(file_root_win="D:/market-data", file_root_ch="/mnt/d/market-data")
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            temporary_path = root / "render_lookup.sqlite.tmp"
+            connection = sqlite3.connect(temporary_path)
+            connection.execute("CREATE TABLE filing_forms (filing_id TEXT, form_type TEXT)")
+            connection.execute("INSERT INTO filing_forms VALUES ('filing', '8-K')")
+            connection.execute(
+                "CREATE TABLE source_authority (cik TEXT, accession_number TEXT, document_id TEXT, "
+                "content_format TEXT, source_version_key TEXT, source_revision_rank INTEGER, "
+                "partition_id INTEGER, filing_id TEXT)"
+            )
+            connection.execute(
+                "INSERT INTO source_authority VALUES ('1', 'acc', 'doc', 'html', 'version', 7, 202607, 'filing')"
+            )
+            connection.execute("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            connection.executemany(
+                "INSERT INTO metadata VALUES (?, ?)",
+                [
+                    ("source_rows", "1"),
+                    ("source_bytes", "100"),
+                    ("source_max_revision_rank", "7"),
+                    ("source_max_inserted_at", "2026-07-16 00:00:00.000"),
+                    ("source_metadata_hash", "123"),
+                    ("filing_rows", "1"),
+                    ("unique_filing_ids", "1"),
+                    ("filing_max_inserted_at", "2026-07-16 00:00:00.000"),
+                    ("filing_metadata_hash", "456"),
+                ],
+            )
+            connection.commit()
+            connection.close()
+            (root / "filing_form_map.parquet").touch()
+            (root / "source_authority.parquet").touch()
+
+            database_path = prepare_lookup_database(None, args, root, source, filing)
+
+            self.assertEqual(database_path, root / "render_lookup.sqlite")
+            self.assertTrue(database_path.exists())
+            self.assertFalse(temporary_path.exists())
+            self.assertFalse((root / "filing_form_map.parquet").exists())
+            self.assertFalse((root / "source_authority.parquet").exists())
+
     def test_partition_form_lookup_uses_compact_local_authority(self) -> None:
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

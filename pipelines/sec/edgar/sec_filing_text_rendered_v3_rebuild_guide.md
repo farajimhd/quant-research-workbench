@@ -64,6 +64,12 @@ only one monthly partition without `FINAL`, retain exactly the authoritative
 cross-partition source version locally, and perform no large-text sort or join.
 Do not resume a run created by the pre-fix implementation; start a new run.
 
+On Windows, each PyArrow reader is explicitly closed before its temporary
+Parquet export is deleted. If interruption occurs after the complete SQLite
+lookup has been committed but before its atomic rename, resuming the same run
+validates and promotes `render_lookup.sqlite.tmp` instead of repeating the
+multi-million-row export and import.
+
 ## Resume
 
 Use the `run_id` printed by the interrupted run:
