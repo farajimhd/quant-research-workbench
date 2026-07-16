@@ -46,7 +46,6 @@ import {
   WorkspaceGroupedMember,
   WorkspaceGroupWindow,
   type WorkspaceCanvasTarget,
-  type WorkspaceGroupSplitter,
   type WorkspaceWindowLayout,
   type WorkspaceWindowMeta,
 } from "./WorkspaceCanvas";
@@ -311,33 +310,6 @@ export function TradingWorkspace({
     if (Object.keys(statePatch).length) setGroups((current) => ({ ...current, [id]: { ...current[id], ...statePatch } }));
   }
 
-  function resizeGroupSplitter(groupId: string, splitter: WorkspaceGroupSplitter, deltaRatio: number) {
-    const bounds = workspaceNodeBounds(groupId, layouts, groups);
-    if (!bounds || !Number.isFinite(deltaRatio) || deltaRatio === 0) return;
-    setLayouts((current) => {
-      const dimension = splitter.axis === "x" ? bounds.w : bounds.h;
-      const minimum = splitter.axis === "x" ? 160 : 120;
-      const requestedDelta = deltaRatio * dimension;
-      const negativeLimit = Math.max(...splitter.negativeIds.map((id) => minimum - (splitter.axis === "x" ? current[id]?.w ?? minimum : current[id]?.h ?? minimum)));
-      const positiveLimit = Math.min(...splitter.positiveIds.map((id) => (splitter.axis === "x" ? current[id]?.w ?? minimum : current[id]?.h ?? minimum) - minimum));
-      const delta = Math.max(negativeLimit, Math.min(positiveLimit, requestedDelta));
-      if (Math.abs(delta) < 0.01) return current;
-      const negativeIds = new Set(splitter.negativeIds);
-      const positiveIds = new Set(splitter.positiveIds);
-      return Object.fromEntries(Object.entries(current).map(([id, layout]) => {
-        if (negativeIds.has(id)) {
-          return [id, splitter.axis === "x" ? { ...layout, w: layout.w + delta } : { ...layout, h: layout.h + delta }];
-        }
-        if (positiveIds.has(id)) {
-          return [id, splitter.axis === "x"
-            ? { ...layout, w: layout.w - delta, x: layout.x + delta }
-            : { ...layout, h: layout.h - delta, y: layout.y + delta }];
-        }
-        return [id, layout];
-      }));
-    });
-  }
-
   function addContainer(id: WorkspaceContainerId) {
     if (!allowMultipleInstances && openIds.includes(id)) {
       focusContainer(id);
@@ -483,7 +455,6 @@ export function TradingWorkspace({
       const layout: WorkspaceWindowLayout = { ...bounds, fullscreen: group.fullscreen, minimized: group.minimized, z: group.z };
       const minWidth = minimumGroupDimension(descendants, layouts, bounds, "w");
       const minHeight = minimumGroupDimension(descendants, layouts, bounds, "h");
-      const splitters = workspaceGroupSplitters(descendants, layouts, bounds);
       const menuItems = group.childIds.map((childId) => {
         const view = groups[childId] ? null : containerView(childId);
         return {
@@ -513,11 +484,9 @@ export function TradingWorkspace({
         onMoveToCanvas={moveGroup}
         onPopOut={popOutGroup}
         onSelectionToggle={toggleNodeSelection}
-        onSplitterResize={(splitter, deltaRatio) => resizeGroupSplitter(id, splitter, deltaRatio)}
         onUngroup={ungroupNode}
         onUngroupMember={ungroupNode}
         selected={selectedNodeIds.includes(id)}
-        splitters={splitters}
         title={groupTitle(id)}
       >
         {descendants.map((memberId) => {
@@ -645,90 +614,6 @@ function WorkspaceContentSlot({ host }: { host: HTMLDivElement }) {
   }, [host]);
 
   return <div className="workspace-content-slot" ref={slotRef} />;
-}
-
-function workspaceGroupSplitters(
-  memberIds: string[],
-  layouts: Record<string, WorkspaceWindowLayout>,
-  bounds: Pick<WorkspaceWindowLayout, "h" | "w" | "x" | "y">,
-): WorkspaceGroupSplitter[] {
-  const epsilon = 1.5;
-  const joinTolerance = 24;
-  const members = memberIds.map((id) => ({ id, layout: layouts[id] })).filter((item): item is { id: string; layout: WorkspaceWindowLayout } => Boolean(item.layout));
-  const candidates: Array<WorkspaceGroupSplitter & { absolutePosition: number; absoluteStart: number; absoluteEnd: number }> = [];
-  members.forEach((left, leftIndex) => {
-    members.slice(leftIndex + 1).forEach((right) => {
-      const leftRight = left.layout.x + left.layout.w;
-      const rightRight = right.layout.x + right.layout.w;
-      const topBottom = left.layout.y + left.layout.h;
-      const bottomBottom = right.layout.y + right.layout.h;
-      const verticalStart = Math.max(left.layout.y, right.layout.y);
-      const verticalEnd = Math.min(topBottom, bottomBottom);
-      if (verticalEnd - verticalStart > epsilon) {
-        if (Math.abs(leftRight - right.layout.x) <= joinTolerance) {
-          candidates.push(splitterCandidate("x", (leftRight + right.layout.x) / 2, verticalStart, verticalEnd, left.id, right.id));
-        } else if (Math.abs(rightRight - left.layout.x) <= joinTolerance) {
-          candidates.push(splitterCandidate("x", (rightRight + left.layout.x) / 2, verticalStart, verticalEnd, right.id, left.id));
-        }
-      }
-      const horizontalStart = Math.max(left.layout.x, right.layout.x);
-      const horizontalEnd = Math.min(leftRight, rightRight);
-      if (horizontalEnd - horizontalStart > epsilon) {
-        if (Math.abs(topBottom - right.layout.y) <= joinTolerance) {
-          candidates.push(splitterCandidate("y", (topBottom + right.layout.y) / 2, horizontalStart, horizontalEnd, left.id, right.id));
-        } else if (Math.abs(bottomBottom - left.layout.y) <= joinTolerance) {
-          candidates.push(splitterCandidate("y", (bottomBottom + left.layout.y) / 2, horizontalStart, horizontalEnd, right.id, left.id));
-        }
-      }
-    });
-  });
-
-  const merged: typeof candidates = [];
-  candidates.sort((left, right) => left.axis.localeCompare(right.axis) || left.absolutePosition - right.absolutePosition || left.absoluteStart - right.absoluteStart).forEach((candidate) => {
-    const existing = merged.find((item) => item.axis === candidate.axis
-      && Math.abs(item.absolutePosition - candidate.absolutePosition) <= joinTolerance
-      && candidate.absoluteStart <= item.absoluteEnd + epsilon
-      && candidate.absoluteEnd >= item.absoluteStart - epsilon);
-    if (!existing) {
-      merged.push({ ...candidate, negativeIds: [...candidate.negativeIds], positiveIds: [...candidate.positiveIds] });
-      return;
-    }
-    existing.absoluteStart = Math.min(existing.absoluteStart, candidate.absoluteStart);
-    existing.absoluteEnd = Math.max(existing.absoluteEnd, candidate.absoluteEnd);
-    existing.negativeIds = [...new Set([...existing.negativeIds, ...candidate.negativeIds])];
-    existing.positiveIds = [...new Set([...existing.positiveIds, ...candidate.positiveIds])];
-  });
-
-  return merged.map((splitter) => {
-    const origin = splitter.axis === "x" ? bounds.x : bounds.y;
-    const spanOrigin = splitter.axis === "x" ? bounds.y : bounds.x;
-    const dimension = splitter.axis === "x" ? bounds.w : bounds.h;
-    const spanDimension = splitter.axis === "x" ? bounds.h : bounds.w;
-    return {
-      axis: splitter.axis,
-      end: (splitter.absoluteEnd - spanOrigin) / spanDimension * 100,
-      id: `${splitter.axis}-${[...splitter.negativeIds].sort().join("+")}--${[...splitter.positiveIds].sort().join("+")}`,
-      negativeIds: splitter.negativeIds,
-      position: (splitter.absolutePosition - origin) / dimension * 100,
-      positiveIds: splitter.positiveIds,
-      start: (splitter.absoluteStart - spanOrigin) / spanDimension * 100,
-    };
-  });
-}
-
-function splitterCandidate(axis: "x" | "y", position: number, start: number, end: number, negativeId: string, positiveId: string) {
-  return {
-    absoluteEnd: end,
-    absolutePosition: position,
-    absoluteStart: start,
-    axis,
-    end: 0,
-    id: "",
-    negativeIds: [negativeId],
-    position: 0,
-    positiveIds: [positiveId],
-    start: 0,
-  };
 }
 
 function WorkspaceContainerLibrary({

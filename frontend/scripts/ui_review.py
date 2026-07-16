@@ -661,6 +661,22 @@ def validate_canvas_interactions(
             issues.append("grouping two containers did not create one two-member compound surface")
         if first_group.locator(".workspace-group-member .workspace-window-header").count():
             issues.append("grouped member title bars still consume layout space")
+        grouped_fill_errors = first_group.locator(".workspace-group-member").evaluate_all("""(members) => members.flatMap((member) => {
+            const body = member.querySelector(':scope > .workspace-window-body');
+            const slot = body?.querySelector(':scope > .workspace-content-slot');
+            const host = slot?.querySelector(':scope > .workspace-persistent-content-host');
+            const content = host?.firstElementChild;
+            if (!body || !slot || !host || !content) return ['missing persistent content sizing chain'];
+            const bodyRect = body.getBoundingClientRect();
+            return [slot, host, content].flatMap((element, index) => {
+                const rect = element.getBoundingClientRect();
+                return Math.abs(rect.width - bodyRect.width) > 2 || Math.abs(rect.height - bodyRect.height) > 2
+                    ? [`content sizing layer ${index + 1} is ${Math.round(rect.width)}x${Math.round(rect.height)} inside ${Math.round(bodyRect.width)}x${Math.round(bodyRect.height)}`]
+                    : [];
+            });
+        })""")
+        if grouped_fill_errors:
+            issues.append(f"grouped container content does not fill its member: {grouped_fill_errors[0]}")
         page.get_by_role("button", name="Clear group selection", exact=True).click()
 
         for title in ("Orders", "Strategy"):
@@ -690,43 +706,6 @@ def validate_canvas_interactions(
             page.get_by_role("button", name="Add 1 to group", exact=True).click()
             if root_group.locator(".workspace-group-member").count() != 5:
                 issues.append("adding a container to an existing group did not extend the compound surface")
-            splitters = root_group.locator(".workspace-group-splitter")
-            if splitters.count() == 0:
-                issues.append("grouped layout does not expose sliders on shared member boundaries")
-            else:
-                splitter = splitters.first
-                splitter_box = splitter.bounding_box()
-                group_box_before_split = root_group.bounding_box()
-                member_boxes_before_split = [root_group.locator(".workspace-group-member").nth(index).bounding_box() for index in range(root_group.locator(".workspace-group-member").count())]
-                if splitter_box and group_box_before_split:
-                    splitter_center = (
-                        splitter_box["x"] + splitter_box["width"] / 2,
-                        splitter_box["y"] + splitter_box["height"] / 2,
-                    )
-                    vertical_split = "vertical" in (splitter.get_attribute("class") or "")
-
-                    def drag_splitter(delta: int) -> list[dict | None]:
-                        page.mouse.move(*splitter_center)
-                        page.mouse.down()
-                        page.mouse.move(
-                            splitter_center[0] + (delta if vertical_split else 0),
-                            splitter_center[1] + (0 if vertical_split else delta),
-                            steps=4,
-                        )
-                        page.mouse.up()
-                        page.wait_for_timeout(120)
-                        return [root_group.locator(".workspace-group-member").nth(index).bounding_box() for index in range(root_group.locator(".workspace-group-member").count())]
-
-                    member_boxes_after_split = drag_splitter(24)
-                    changed_members = sum(1 for before, after in zip(member_boxes_before_split, member_boxes_after_split) if before and after and (abs(before["width"] - after["width"]) > 2 or abs(before["height"] - after["height"]) > 2))
-                    if changed_members < 2:
-                        member_boxes_after_split = drag_splitter(-24)
-                        changed_members = sum(1 for before, after in zip(member_boxes_before_split, member_boxes_after_split) if before and after and (abs(before["width"] - after["width"]) > 2 or abs(before["height"] - after["height"]) > 2))
-                    group_box_after_split = root_group.bounding_box()
-                    if changed_members < 2:
-                        issues.append("group boundary slider does not resize both adjacent member sets")
-                    if group_box_after_split and (abs(group_box_before_split["width"] - group_box_after_split["width"]) > 1 or abs(group_box_before_split["height"] - group_box_after_split["height"]) > 1):
-                        issues.append("group boundary slider changes the outer group size instead of its internal split")
             minimize_group = root_group.get_by_role("button", name=re.compile(r"^Minimize .+$"))
             minimize_group.click()
             if root_group.locator(".workspace-group-body").count():
