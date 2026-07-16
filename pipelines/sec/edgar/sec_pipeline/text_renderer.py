@@ -118,6 +118,15 @@ class _TableCell:
 
 
 @dataclass(frozen=True, slots=True)
+class _ImageReference:
+    src: str
+    alt: str
+    title: str
+    width: str
+    height: str
+
+
+@dataclass(frozen=True, slots=True)
 class PackedTextResult:
     packed_text: str
     intermediate_text: str
@@ -157,10 +166,20 @@ class _SecHTMLPackedTextParser(HTMLParser):
         self.table: _TableState | None = None
         self.table_depth = 0
         self.table_count = 0
+        self.in_title = False
+        self.document_title_parts: list[str] = []
+        self.image_references: list[_ImageReference] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
         attr_map = {name.lower(): value or "" for name, value in attrs}
+        if tag == "title":
+            self.in_title = True
+            return
+        if tag == "img" and not self.skip_depth and not _is_hidden_tag(tag, attr_map):
+            reference = _html_image_reference(attr_map)
+            if reference is not None:
+                self.image_references.append(reference)
         if self.skip_depth:
             if tag not in _VOID_TAGS:
                 self.skip_depth += 1
@@ -201,6 +220,9 @@ class _SecHTMLPackedTextParser(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
+        if tag == "title":
+            self.in_title = False
+            return
         if self.skip_depth:
             self.skip_depth = max(0, self.skip_depth - 1)
             return
@@ -217,6 +239,9 @@ class _SecHTMLPackedTextParser(HTMLParser):
             self._flush_buffer()
 
     def handle_data(self, data: str) -> None:
+        if self.in_title and data:
+            self.document_title_parts.append(data)
+            return
         if self.skip_depth or not data:
             return
         if self.table is not None:
@@ -357,6 +382,27 @@ def render_sec_packed_text(
             parser_hidden_nodes = parser.hidden_node_count
             parser_table_count = parser.table_count
             parser_page_artifacts = parser.page_artifact_count
+            if not blocks and parser.image_references:
+                blocks = _image_only_html_blocks(
+                    _clean_inline(" ".join(parser.document_title_parts)),
+                    parser.image_references,
+                )
+                flags.extend(
+                    [
+                        "html_image_only_document",
+                        "html_image_references_preserved",
+                        "image_content_not_ocr_extracted",
+                    ]
+                )
+            elif not blocks and parser.document_title_parts:
+                blocks = [
+                    RenderedBlock("heading", "HTML document with title only"),
+                    RenderedBlock(
+                        "document_title",
+                        f"Document title: {_clean_inline(' '.join(parser.document_title_parts))}",
+                    ),
+                ]
+                flags.append("html_title_only_document")
         except Exception:  # noqa: BLE001
             flags.append("html_parser_fallback")
             blocks = _plain_text_blocks(_strip_markup(source))
@@ -843,6 +889,42 @@ def _clean_block_text(value: str) -> str:
 
 def _clean_inline(value: str) -> str:
     return re.sub(r"\s+", " ", _clean_block_text(value)).strip()
+
+
+def _html_image_reference(attrs: dict[str, str]) -> _ImageReference | None:
+    src = _clean_inline(attrs.get("src", ""))
+    if not src or src.lower().startswith("data:"):
+        return None
+    width = _clean_inline(attrs.get("width", ""))
+    height = _clean_inline(attrs.get("height", ""))
+    if width in {"0", "1", "2"} and height in {"0", "1", "2"}:
+        return None
+    return _ImageReference(
+        src=src,
+        alt=_clean_inline(attrs.get("alt", "")),
+        title=_clean_inline(attrs.get("title", "")),
+        width=width,
+        height=height,
+    )
+
+
+def _image_only_html_blocks(title: str, references: list[_ImageReference]) -> list[RenderedBlock]:
+    blocks = [RenderedBlock("heading", "Image-only HTML document")]
+    if title:
+        blocks.append(RenderedBlock("document_title", f"Document title: {title}"))
+    blocks.append(RenderedBlock("image_inventory", f"Image references: {len(references)}"))
+    for index, reference in enumerate(references, start=1):
+        fields = [f"src={reference.src}"]
+        if reference.alt:
+            fields.append(f"alt={reference.alt}")
+        if reference.title:
+            fields.append(f"title={reference.title}")
+        if reference.width:
+            fields.append(f"width={reference.width}")
+        if reference.height:
+            fields.append(f"height={reference.height}")
+        blocks.append(RenderedBlock("image_reference", f"Image {index}: {'; '.join(fields)}"))
+    return blocks
 
 
 def _repair_text(value: str) -> str:

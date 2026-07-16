@@ -95,6 +95,49 @@ class SecTextRendererIntegrationTests(unittest.TestCase):
         self.assertEqual(rendered_row["extraction_method"], SEC_PACKED_TEXT_RENDERER_VERSION)
         self.assertIn("<proxyTable> issuerName=Issuer 0; sharesVoted=1", rendered_row["text"])
 
+    def test_live_and_historical_shared_row_builder_keeps_image_only_html_visible(self) -> None:
+        source = """<html><head><title>Legal opinion</title></head><body>
+        <img src="opinion-1.jpg" title="page1" width="791" height="1024">
+        <img src="opinion-2.jpg" title="page2" width="791" height="1024">
+        </body></html>"""
+        parent = FilingParent(
+            filing_id="filing-id",
+            accession_number="0000000001-26-000003",
+            accession_number_compact="000000000126000003",
+            cik="0000000001",
+            form_type="S-8",
+            accepted_at_utc="2026-07-15 12:00:00.000",
+            primary_document="filing.htm",
+            primary_document_url="",
+            filing_detail_url="",
+        )
+        document = {
+            "document_type": "EX-5",
+            "document_name": "opinion.htm",
+            "payload": source,
+            "payload_bytes": len(source.encode("utf-8")),
+            "payload_char_count": len(source),
+            "sequence_number": 2,
+            "description": "Legal opinion",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            _doc, source_row, rendered_row, skip_row, _sample = build_rows(
+                {"source_run_id": "test-run", "sample_text_chars": 500},
+                Path(tmp) / "20260715.nc.tar.gz",
+                "2026-07-15",
+                "filing.nc",
+                parent,
+                document,
+                "2026-07-15 12:01:00.000",
+            )
+
+        self.assertIsNotNone(source_row)
+        self.assertIsNotNone(rendered_row)
+        self.assertIsNone(skip_row)
+        assert rendered_row is not None
+        self.assertIn("Image references: 2", rendered_row["text"])
+        self.assertIn("image_content_not_ocr_extracted", rendered_row["quality_flags"])
+
 
 if __name__ == "__main__":
     unittest.main()

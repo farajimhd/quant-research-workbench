@@ -84,6 +84,12 @@ worker count. The first export, render, or insert failure stops new exports,
 drains only already active workers, and writes the failed stage and exception to
 the ClickHouse rebuild manifest.
 
+Image-only HTML is not treated as an empty render. The canonical renderer
+preserves the HTML title plus every non-tracking image source, alt/title label,
+and declared dimension as a compact image inventory. It explicitly flags that
+the referenced image content was not OCR-extracted. Truly empty non-structured
+documents still fail the partition instead of disappearing silently.
+
 ## Resume
 
 Use the `run_id` printed by the interrupted run:

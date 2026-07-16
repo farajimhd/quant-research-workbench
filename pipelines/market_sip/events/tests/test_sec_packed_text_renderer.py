@@ -95,6 +95,34 @@ class SecPackedTextRendererTests(unittest.TestCase):
         self.assertEqual(result.renderer_version, SEC_PACKED_TEXT_RENDERER_VERSION)
         self.assertEqual(result.intermediate_text, "")
 
+    def test_image_only_html_preserves_complete_image_inventory_without_claiming_ocr(self) -> None:
+        source = "<html><head><title>Scanned agreement</title></head><body>" + "".join(
+            f'<p><img src="agreement_{index:03d}.jpg" width="670" height="870"></p>'
+            for index in range(1, 20)
+        ) + "</body></html>"
+        result = render_sec_packed_text(source, "html", document_type="EX-10.3", form_type="10-K")
+
+        self.assertIn("Image-only HTML document", result.packed_text)
+        self.assertIn("Document title: Scanned agreement", result.packed_text)
+        self.assertIn("Image references: 19", result.packed_text)
+        self.assertIn("Image 19: src=agreement_019.jpg; width=670; height=870", result.packed_text)
+        self.assertIn("html_image_only_document", result.quality_flags)
+        self.assertIn("image_content_not_ocr_extracted", result.quality_flags)
+        self.assertNotIn("empty_rendered_text", result.quality_flags)
+
+    def test_workiva_image_only_opinion_preserves_title_and_slide_names(self) -> None:
+        source = """<HTML><HEAD><TITLE>determinationltr08252018</TITLE></HEAD><BODY>
+        <IMG src="determinationltr08252018001.jpg" title="slide1" width="791" height="1024">
+        <FONT size="1" style="font-size:1pt;color:white"> </FONT>
+        <IMG src="determinationltr08252018002.jpg" title="slide2" width="791" height="1024">
+        </BODY></HTML>"""
+        result = render_sec_packed_text(source, "html", document_type="EX-5", form_type="S-8")
+
+        self.assertIn("Document title: determinationltr08252018", result.packed_text)
+        self.assertIn("Image references: 2", result.packed_text)
+        self.assertIn("src=determinationltr08252018001.jpg; title=slide1", result.packed_text)
+        self.assertIn("src=determinationltr08252018002.jpg; title=slide2", result.packed_text)
+
 
 if __name__ == "__main__":
     unittest.main()
