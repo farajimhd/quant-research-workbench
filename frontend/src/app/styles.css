@@ -12755,10 +12755,16 @@ button {
 .chart-legend-editor {
   display: grid;
   gap: 7px;
+  position: fixed;
+  z-index: 2600;
+  width: min(220px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   border: 1px solid color-mix(in oklab, var(--surface-border) 82%, transparent);
   border-radius: 7px;
-  background: color-mix(in oklab, var(--surface) 97%, var(--surface-alt));
+  background: color-mix(in oklab, var(--surface) 96%, transparent);
   box-shadow: 0 8px 24px color-mix(in oklab, var(--foreground) 12%, transparent);
+  backdrop-filter: blur(8px);
   padding: 8px;
 }
 
@@ -21199,26 +21205,57 @@ button {
   border: 1px solid var(--border-strong);
   box-shadow: var(--shadow-md);
   display: flex;
-  gap: 5px;
-  padding: 3px;
-  bottom: 8px;
+  gap: 8px;
+  padding: 6px 7px 6px 9px;
+  bottom: 10px;
   left: 50%;
+  max-width: min(620px, calc(100vw - 24px));
   position: fixed;
   transform: translateX(-50%);
   z-index: 2200;
 }
 
-.workspace-group-selection-bar > span {
-  align-items: center;
-  color: var(--muted-foreground);
-  display: inline-flex;
-  font-size: 9px;
-  gap: 4px;
-  padding: 0 4px;
+.workspace-group-selection-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 210px;
 }
 
-.workspace-group-selection-bar > span strong {
+.workspace-group-selection-copy > span {
+  align-items: center;
   color: var(--foreground);
+  display: inline-flex;
+  font-size: 10px;
+  gap: 5px;
+}
+
+.workspace-group-selection-copy em {
+  color: var(--muted-foreground);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.workspace-group-selection-copy small {
+  color: var(--muted-foreground);
+  font-size: 9px;
+  line-height: 1.2;
+}
+
+.workspace-group-confirm {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.workspace-group-selection-keys {
+  color: var(--muted-foreground);
+  font-size: 8px;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .workspace-group-selection-copy { min-width: 150px; }
+  .workspace-group-selection-keys { display: none; }
 }
 
 .canvas-container-preview {

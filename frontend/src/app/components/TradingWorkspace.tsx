@@ -90,6 +90,22 @@ type TradingWorkspaceProps = {
 const DEFAULT_CANVAS_TARGETS: WorkspaceCanvasTarget[] = [{ color: "var(--primary)", id: "main", isCurrent: true, label: "Main" }];
 export const TRADING_WORKSPACE_LAYOUT_VERSION = 5;
 
+function groupSelectionAction(selectedNodeIds: string[], groups: Record<string, WorkspaceGroup>) {
+  if (selectedNodeIds.length < 2) return "Select one more";
+  const selectedGroups = selectedNodeIds.filter((id) => Boolean(groups[id]));
+  if (selectedGroups.length === 1) return `Add ${selectedNodeIds.length - 1} to group`;
+  if (selectedGroups.length > 1) return `Create parent group (${selectedNodeIds.length})`;
+  return `Create group (${selectedNodeIds.length})`;
+}
+
+function groupSelectionInstruction(selectedNodeIds: string[], groups: Record<string, WorkspaceGroup>) {
+  if (selectedNodeIds.length < 2) return "Select another container or group, then confirm.";
+  const selectedGroups = selectedNodeIds.filter((id) => Boolean(groups[id]));
+  if (selectedGroups.length === 1) return "The other selections will join the selected group.";
+  if (selectedGroups.length > 1) return "The selected groups will become one parent group.";
+  return "Ready to merge under one title bar.";
+}
+
 export function TradingWorkspace({
   allowMultipleInstances = false,
   clockLabel,
@@ -217,6 +233,25 @@ export function TradingWorkspace({
     setGroups(nextGroups);
     setSelectedNodeIds([groupId]);
   }
+
+  useEffect(() => {
+    if (!selectedNodeIds.length) return undefined;
+    const handleGroupingKeys = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setSelectedNodeIds([]);
+        return;
+      }
+      if (event.key === "Enter" && selectedNodeIds.filter((id) => rootNodeIds.includes(id)).length >= 2) {
+        event.preventDefault();
+        groupSelectedNodes();
+      }
+    };
+    document.addEventListener("keydown", handleGroupingKeys);
+    return () => document.removeEventListener("keydown", handleGroupingKeys);
+  }, [groups, layouts, openIds, rootNodeIds, selectedNodeIds]);
 
   function ungroupNode(groupId: string) {
     setGroups((current) => ungroupWorkspaceGroup(groupId, current, openIds));
@@ -520,10 +555,14 @@ export function TradingWorkspace({
         ref={canvasRef}
       >
         <div className="trading-workspace-plane" style={{ minHeight: hasFullscreen ? "100%" : minHeight }}>
-          {selectedNodeIds.length ? <div aria-label="Container group selection" className="workspace-group-selection-bar" role="toolbar">
-            <span><LayoutGrid size={13} /><strong>{selectedNodeIds.length}</strong> selected</span>
-            <button className="button secondary compact" disabled={selectedNodeIds.length < 2} onClick={groupSelectedNodes} type="button">{selectedNodeIds.filter((id) => Boolean(groups[id])).length === 1 ? "Add to group" : "Group selected"}</button>
-            <button aria-label="Clear group selection" className="toolbar-button compact" onClick={() => setSelectedNodeIds([])} title="Clear group selection" type="button"><X size={12} /></button>
+          {selectedNodeIds.length ? <div aria-label="Container group selection" aria-live="polite" className="workspace-group-selection-bar" role="region">
+            <div className="workspace-group-selection-copy">
+              <span><LayoutGrid size={14} /><strong>Grouping</strong><em>{selectedNodeIds.length} selected</em></span>
+              <small>{groupSelectionInstruction(selectedNodeIds, groups)}</small>
+            </div>
+            <button className="button primary compact workspace-group-confirm" disabled={selectedNodeIds.length < 2} onClick={groupSelectedNodes} type="button">{groupSelectionAction(selectedNodeIds, groups)}</button>
+            <span className="workspace-group-selection-keys" aria-hidden="true">Enter to group · Esc to cancel</span>
+            <button aria-label="Clear group selection" className="toolbar-button compact" onClick={() => setSelectedNodeIds([])} title="Cancel grouping" type="button"><X size={12} /></button>
           </div> : null}
           <div className="trading-workspace-watermark" aria-hidden="true">
             <span>{workspaceBadge ?? modeLabel(mode)}</span>

@@ -436,7 +436,7 @@ def historical_macro_bar_history(
     if resolved_as_of.tzinfo is None:
         raise ValueError("as_of must include a timezone")
     if timeframe == "1mo":
-        month_index = resolved_as_of.year * 12 + resolved_as_of.month - 1 - 35
+        month_index = resolved_as_of.year * 12 + resolved_as_of.month - 1 - 23
         start = resolved_as_of.replace(
             year=month_index // 12,
             month=month_index % 12 + 1,
@@ -447,7 +447,7 @@ def historical_macro_bar_history(
             microsecond=0,
         )
     else:
-        start = (resolved_as_of - timedelta(days=89)).replace(hour=0, minute=0, second=0, microsecond=0)
+        start = (resolved_as_of - timedelta(days=179)).replace(hour=0, minute=0, second=0, microsecond=0)
     payload = _historical_gateway_get(
         f"/snapshot/chart-macro-bars/{urllib.parse.quote(ticker)}",
         {

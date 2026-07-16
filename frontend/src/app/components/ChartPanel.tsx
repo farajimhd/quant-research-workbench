@@ -25,11 +25,13 @@ import {
   EyeOff,
   Maximize2,
   Minimize2,
+  RefreshCcw,
   Settings,
   SlidersHorizontal,
   X
 } from "lucide-react";
-import { forwardRef, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { displayName } from "../format";
 import { buildSegmentButtonClassName } from "../selectionStyles";
@@ -157,6 +159,7 @@ type ChartMarker = SeriesMarker<Time> & { displayItemId?: string };
 type LegendPane = "price" | "oscillator";
 type OscillatorPaneRuntime = {
   chart: IChartApi;
+  layerSignature: string;
   primaryKey: string;
   renderer: AnySeriesApi | null;
   seriesKeys: Set<string>;
@@ -471,10 +474,10 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
 
   useImperativeHandle(ref, () => ({
     fitFirstDay() {
-      executeViewportCommand(() => fitLatestSession(chartGroup(), fitCandles(payload), timeframe));
+      executeViewportCommand(() => fitLatestSession(priceChartRef.current, fitCandles(payload), timeframe));
     },
     fitRecent() {
-      executeViewportCommand(() => centerReferenceOrLatest(chartGroup(), fitCandles(payload), reference, timeframe, initialFitMode));
+      executeViewportCommand(() => centerReferenceOrLatest(priceChartRef.current, fitCandles(payload), reference, timeframe, initialFitMode));
     },
     toggleFullscreen() {
       setFullscreen((value) => !value);
@@ -486,10 +489,6 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const timer = window.setTimeout(() => resizeCharts(), 0);
     return () => window.clearTimeout(timer);
   }, [oscillatorPaneHeights]);
-
-  function chartGroup() {
-    return [priceChartRef.current, ...oscillatorChartRefs.current.values()].filter((chart): chart is IChartApi => Boolean(chart));
-  }
 
   function suppressEarlierLoad() {
     // Programmatic fits and pane synchronization also emit visible-range events.
@@ -816,6 +815,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         const chart = createChart(pane, chartOptions(pane.clientWidth, pane.clientHeight, false, readChartPalette(), chartSettingsRef.current, timeframe, groupIndex === groups.length - 1));
         runtime = {
           chart,
+          layerSignature: "",
           primaryKey: "",
           renderer: null,
           seriesKeys: new Set<string>(),
@@ -859,7 +859,23 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }
 
   function updateOscillatorPaneSeries(runtime: OscillatorPaneRuntime, seriesList: ChartSeries[]) {
-    const nextKeys = new Set(seriesList.map((series) => legendSeriesKey("oscillator", series)));
+    const layeredSeries = [...seriesList].sort((left, right) => Number(left.style === "line") - Number(right.style === "line"));
+    const layerSignature = layeredSeries.map((series) => `${legendSeriesKey("oscillator", series)}:${series.style}`).join("|");
+    if (runtime.layerSignature && runtime.layerSignature !== layerSignature) {
+      if (runtime.zeroLine && runtime.zeroLineRenderer) runtime.zeroLineRenderer.removePriceLine(runtime.zeroLine);
+      runtime.zeroLine = null;
+      runtime.zeroLineRenderer = null;
+      runtime.zeroLineSeriesKey = "";
+      runtime.seriesKeys.forEach((key) => {
+        const renderer = indicatorSeriesRef.current.get(key);
+        if (renderer) runtime.chart.removeSeries(renderer);
+        indicatorSeriesRef.current.delete(key);
+        indicatorSourceRef.current.delete(key);
+      });
+      runtime.seriesKeys.clear();
+    }
+    runtime.layerSignature = layerSignature;
+    const nextKeys = new Set(layeredSeries.map((series) => legendSeriesKey("oscillator", series)));
     Array.from(runtime.seriesKeys).forEach((key) => {
       if (nextKeys.has(key)) return;
       const renderer = indicatorSeriesRef.current.get(key);
@@ -879,7 +895,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     let primaryRenderer: AnySeriesApi | null = null;
     let primaryKey = "";
     let primaryValuesByTime = new Map<number, number>();
-    seriesList.forEach((series) => {
+    layeredSeries.forEach((series) => {
       const key = legendSeriesKey("oscillator", series);
       const settings = resolveLegendSettings(legendSettings, key, series);
       let renderer = indicatorSeriesRef.current.get(key);
@@ -1194,8 +1210,9 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           <Settings size={15} />
         </button>
         <span className="toolbar-divider" />
-        <button aria-label="Fit latest trading day once" className="toolbar-button" type="button" title="Fit the latest trading day once; pan and zoom remain manual afterward" onClick={() => executeViewportCommand(() => fitLatestSession(chartGroup(), fitCandles(payload), timeframe))}><CalendarDays size={15} /></button>
-        <button aria-label={reference ? "Center selected trade once" : "Center newest bars once"} className="toolbar-button" type="button" title={reference ? "Center the selected trade once; pan and zoom remain manual afterward" : "Center the newest bars once with room on the right; pan and zoom remain manual afterward"} onClick={() => executeViewportCommand(() => centerReferenceOrLatest(chartGroup(), fitCandles(payload), reference, timeframe))}><AlignCenterHorizontal size={15} /></button>
+        <button aria-label={latestRangeActionLabel(timeframe)} className="toolbar-button" type="button" title={`${latestRangeActionLabel(timeframe)}; pan and zoom remain manual afterward`} onClick={() => executeViewportCommand(() => fitLatestSession(priceChartRef.current, fitCandles(payload), timeframe))}><CalendarDays size={15} /></button>
+        <button aria-label={reference ? "Center selected trade once" : "Center newest bars once"} className="toolbar-button" type="button" title={reference ? "Center the selected trade once; pan and zoom remain manual afterward" : "Center the newest bars once with room on the right; pan and zoom remain manual afterward"} onClick={() => executeViewportCommand(() => centerReferenceOrLatest(priceChartRef.current, fitCandles(payload), reference, timeframe))}><AlignCenterHorizontal size={15} /></button>
+        <button aria-label="Fit all loaded bars once" className="toolbar-button" type="button" title="Fit all loaded bars once; pan and zoom remain manual afterward" onClick={() => executeViewportCommand(() => fitAllLoadedBars(priceChartRef.current, fitCandles(payload), timeframe))}><RefreshCcw size={15} /></button>
         {enableFullscreen ? (
           <>
             <span className="toolbar-divider" />
@@ -1411,6 +1428,7 @@ function ChartLegend({
 }) {
   const [collapsed, setCollapsed] = useState(true);
   const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [editorAnchor, setEditorAnchor] = useState<HTMLElement | null>(null);
   if (!items.length) return null;
   const editingItem = items.find((item) => item.key === editingKey && item.configurable);
   return (
@@ -1418,7 +1436,14 @@ function ChartLegend({
       <button
         aria-label={collapsed ? "Expand legend" : "Collapse legend"}
         className="chart-legend-header"
-        onClick={() => setCollapsed((value) => !value)}
+        onClick={() => {
+          const nextCollapsed = !collapsed;
+          setCollapsed(nextCollapsed);
+          if (nextCollapsed) {
+            setEditingKey(null);
+            setEditorAnchor(null);
+          }
+        }}
         type="button"
       >
         {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
@@ -1446,7 +1471,11 @@ function ChartLegend({
                     </button>
                     <button
                       aria-label={`Configure ${item.label}`}
-                      onClick={() => setEditingKey((value) => (value === item.key ? null : item.key))}
+                      onClick={(event) => {
+                        const closing = editingKey === item.key;
+                        setEditingKey(closing ? null : item.key);
+                        setEditorAnchor(closing ? null : event.currentTarget);
+                      }}
                       title="Configure"
                       type="button"
                     >
@@ -1459,8 +1488,12 @@ function ChartLegend({
           </div>
           {editingItem ? (
             <LegendEditor
+              anchor={editorAnchor}
               item={editingItem}
-              onClose={() => setEditingKey(null)}
+              onClose={() => {
+                setEditingKey(null);
+                setEditorAnchor(null);
+              }}
               onReset={() => onReset(editingItem.key)}
               onUpdate={(patch) => onUpdate(editingItem.key, patch)}
             />
@@ -1472,18 +1505,63 @@ function ChartLegend({
 }
 
 function LegendEditor({
+  anchor,
   item,
   onClose,
   onReset,
   onUpdate
 }: {
+  anchor: HTMLElement | null;
   item: LegendItem;
   onClose: () => void;
   onReset: () => void;
   onUpdate: (patch: LegendSeriesSettings) => void;
 }) {
-  return (
-    <div className="chart-legend-editor">
+  const editorRef = useRef<HTMLDivElement | null>(null);
+  const [position, setPosition] = useState({ left: 8, top: 8, visibility: "hidden" as "hidden" | "visible" });
+
+  useLayoutEffect(() => {
+    const placeEditor = () => {
+      const editor = editorRef.current;
+      if (!anchor || !editor || !anchor.isConnected) return;
+      const anchorRect = anchor.getBoundingClientRect();
+      const editorRect = editor.getBoundingClientRect();
+      const margin = 8;
+      const below = anchorRect.bottom + 5;
+      const above = anchorRect.top - editorRect.height - 5;
+      const top = below + editorRect.height <= window.innerHeight - margin ? below : Math.max(margin, above);
+      const left = Math.max(margin, Math.min(anchorRect.right - editorRect.width, window.innerWidth - editorRect.width - margin));
+      setPosition({ left, top, visibility: "visible" });
+    };
+    placeEditor();
+    window.addEventListener("resize", placeEditor);
+    window.addEventListener("scroll", placeEditor, true);
+    return () => {
+      window.removeEventListener("resize", placeEditor);
+      window.removeEventListener("scroll", placeEditor, true);
+    };
+  }, [anchor, item.key]);
+
+  useEffect(() => {
+    const closeOnPointer = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && (editorRef.current?.contains(target) || anchor?.contains(target))) return;
+      onClose();
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("pointerdown", closeOnPointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnPointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [anchor, onClose]);
+
+  if (!anchor) return null;
+  return createPortal(
+    <div className="chart-legend-editor" ref={editorRef} role="dialog" aria-label={`${item.label} indicator settings`} style={position}>
       <div className="chart-legend-editor-header">
         <span>{item.label}</span>
         <button aria-label="Close indicator settings" onClick={onClose} title="Close" type="button">
@@ -1515,7 +1593,8 @@ function LegendEditor({
         Value in legend
       </label>
       <button className="legend-reset-button" onClick={onReset} type="button">Reset</button>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -2716,11 +2795,17 @@ const marketSubsecondDateTimeFormatter = new Intl.DateTimeFormat("en-US", {
 });
 
 type ChartRangeTarget = IChartApi | null | IChartApi[];
+const DAILY_MACRO_WINDOW_BARS = 180;
+const MONTHLY_MACRO_WINDOW_BARS = 24;
 
 function fitLatestSession(target: ChartRangeTarget, candles: Candle[], timeframe = "") {
   const charts = chartRangeTargets(target);
   if (!charts.length || !candles.length) return;
   const timeline = candleDataForTimeframe(candles, timeframe);
+  if (isMacroTimeframe(timeframe)) {
+    setChartLogicalRange(charts, loadedRange(timeline.length, 0.025));
+    return;
+  }
   const latestDay = marketDate(candles[candles.length - 1].time);
   let firstIndex = -1;
   let lastIndex = -1;
@@ -2732,6 +2817,28 @@ function fitLatestSession(target: ChartRangeTarget, candles: Candle[], timeframe
   });
   if (firstIndex < 0 || lastIndex < 0) return;
   setChartLogicalRange(charts, { from: Math.max(-1, firstIndex - 1), to: Math.max(firstIndex + 1, lastIndex + 1) });
+}
+
+function fitAllLoadedBars(target: ChartRangeTarget, candles: Candle[], timeframe = "") {
+  const charts = chartRangeTargets(target);
+  if (!charts.length || !candles.length) return;
+  setChartLogicalRange(charts, loadedRange(candleDataForTimeframe(candles, timeframe).length, 0.04));
+}
+
+function loadedRange(length: number, paddingRatio: number) {
+  const last = Math.max(0, length - 1);
+  const padding = Math.max(0.5, Math.min(4, length * paddingRatio));
+  return { from: -padding, to: last + padding };
+}
+
+function latestRangeActionLabel(timeframe: string) {
+  if (timeframe === "1d") return "Fit loaded 180-day range once";
+  if (timeframe === "1mo") return "Fit loaded 24-month range once";
+  return "Fit latest trading session once";
+}
+
+function isMacroTimeframe(timeframe: string) {
+  return timeframe === "1d" || timeframe === "1mo";
 }
 
 function fitCandles(payload: ChartPayload | null | undefined) {
@@ -2797,8 +2904,16 @@ function centerLatest(target: ChartRangeTarget, candles: Candle[], timeframe = "
   const timeline = candleDataForTimeframe(candles, timeframe);
   const lastCandle = candles[candles.length - 1];
   const last = nearestTimelineIndex(timeline, lastCandle.time);
-  const preferredSpan = timeframe === "1mo" ? 36 : timeframe === "1d" ? 90 : Math.ceil(timeline.length * 0.18);
-  const span = Math.min(timeframe === "1mo" ? 36 : timeframe === "1d" ? 90 : 180, Math.max(timeframe === "1mo" ? 18 : timeframe === "1d" ? 45 : 60, preferredSpan));
+  if (isMacroTimeframe(timeframe)) {
+    const requestedBars = timeframe === "1mo" ? MONTHLY_MACRO_WINDOW_BARS : DAILY_MACRO_WINDOW_BARS;
+    const span = Math.max(1, Math.min(requestedBars, timeline.length));
+    const leftPadding = Math.max(0.5, Math.min(2, span * 0.025));
+    const growthSpace = Math.max(0.75, Math.min(3, span * 0.06));
+    setChartLogicalRange(charts, { from: Math.max(-leftPadding, last - span + 1 - leftPadding), to: last + growthSpace });
+    return;
+  }
+  const preferredSpan = Math.ceil(timeline.length * 0.18);
+  const span = Math.min(180, Math.max(60, preferredSpan));
   const futureSpace = Math.max(3, Math.ceil(span * 0.22));
   setChartLogicalRange(charts, { from: last - (span - futureSpace), to: last + futureSpace });
 }

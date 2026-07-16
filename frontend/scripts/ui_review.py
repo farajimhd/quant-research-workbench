@@ -247,6 +247,48 @@ def validate_canvas_interactions(
             issues.append("Canvas page leaks horizontal scrolling to the document")
         if page.evaluate("document.documentElement.scrollHeight > document.documentElement.clientHeight + 1"):
             issues.append("Canvas page leaks vertical scrolling to the document")
+        oscillator = chart.locator(".chart-osc").first
+        if oscillator.count():
+            oscillator.locator(".chart-legend-header").click()
+            configure_indicator = oscillator.locator("button[aria-label^='Configure ']").first
+            if configure_indicator.count():
+                configure_indicator.click()
+                editor = page.get_by_role("dialog", name=re.compile(r"indicator settings$"))
+                editor_box = editor.bounding_box()
+                if not editor_box:
+                    issues.append("indicator settings portal is not measurable")
+                elif editor_box["y"] < 0 or editor_box["y"] + editor_box["height"] > scenario["viewport"]["height"] + 1:
+                    issues.append("indicator settings portal is clipped by the viewport edge")
+                editor_style = editor.evaluate("element => ({ background: getComputedStyle(element).backgroundColor, backdrop: getComputedStyle(element).backdropFilter })")
+                if editor_style["background"] in ("rgba(0, 0, 0, 0)", "transparent"):
+                    issues.append("indicator settings portal is fully transparent")
+                if editor_style["backdrop"] == "none":
+                    issues.append("indicator settings portal lacks the intended light transparency treatment")
+                if interaction_screenshot:
+                    page.screenshot(path=str(interaction_screenshot.with_name(interaction_screenshot.stem + "__indicator-config.png")), full_page=True)
+                editor.get_by_role("button", name="Close indicator settings").click()
+            else:
+                issues.append("oscillator legend does not expose indicator configuration actions")
+        price_pane = chart.locator(".chart-price").first
+        latest_fit = chart.get_by_role("button", name="Fit latest trading session once", exact=True)
+        if price_pane.count() and latest_fit.count():
+            latest_fit.click()
+            price_box = price_pane.bounding_box()
+            if price_box:
+                start_x = price_box["x"] + price_box["width"] * 0.55
+                start_y = price_box["y"] + price_box["height"] * 0.55
+                page.mouse.move(start_x, start_y)
+                page.mouse.down()
+                page.mouse.move(start_x + 90, start_y, steps=6)
+                page.mouse.up()
+                page.mouse.move(8, 8)
+                page.wait_for_timeout(250)
+                manually_panned = price_pane.screenshot()
+                page.wait_for_timeout(750)
+                if manually_panned != price_pane.screenshot():
+                    issues.append("chart reapplies an automatic fit after manual pan")
+        if chart.get_by_role("button", name="Fit all loaded bars once", exact=True).count() != 1:
+            issues.append("chart does not expose the explicit all-loaded-bars reset action")
         canvas = page.locator("[data-workspace-canvas]")
         if canvas.evaluate("element => getComputedStyle(element).overflowX") not in ("auto", "scroll"):
             issues.append("Canvas is not its own horizontal scrolling surface")
@@ -354,6 +396,17 @@ def validate_canvas_interactions(
         if scanner.get_by_label("Scanner settings").count() != 1 or "Rows" not in scanner.get_by_label("Scanner settings").inner_text():
             issues.append("Scanner row configuration is not separated into its internal settings popover")
         scanner.get_by_role("button", name="Configure Scanner").click()
+
+        if chart.get_by_role("button", name="1D", exact=True).count():
+            chart.get_by_role("button", name="1D", exact=True).click()
+            if chart.get_by_role("button", name="Fit loaded 180-day range once", exact=True).count() != 1:
+                issues.append("daily chart does not expose a timeframe-aware 180-day fit action")
+            if chart.get_by_role("button", name="Fit all loaded bars once", exact=True).count() != 1:
+                issues.append("daily chart does not expose the explicit all-bars reset action")
+            chart.get_by_role("button", name="1M", exact=True).click()
+            if chart.get_by_role("button", name="Fit loaded 24-month range once", exact=True).count() != 1:
+                issues.append("monthly chart does not expose a timeframe-aware 24-month fit action")
+            chart.get_by_role("button", name="1m", exact=True).click()
 
         resize_handle = chart.get_by_role("button", name=re.compile(r"^Resize .+\."))
         resize_box = resize_handle.bounding_box()
@@ -463,9 +516,16 @@ def validate_canvas_interactions(
         # Compound-container behavior: two groups can be grouped again, and an
         # ungrouped container can then join that hierarchy. The group owns the
         # only title bar; member chrome must consume zero layout height.
-        for title in ("Scanner", "Portfolio"):
-            page.get_by_role("button", name=f"Add {title} to group selection", exact=True).click()
-        page.locator(".workspace-group-selection-bar > button.button").click()
+        page.get_by_role("button", name="Add Scanner to group selection", exact=True).click()
+        grouping_tray = page.get_by_role("region", name="Container group selection")
+        if "Select another container or group, then confirm." not in grouping_tray.inner_text():
+            issues.append("grouping selection does not explain the next step after the first container")
+        if not grouping_tray.get_by_role("button", name="Select one more", exact=True).is_disabled():
+            issues.append("grouping confirmation is active before a second selection exists")
+        page.get_by_role("button", name="Add Portfolio to group selection", exact=True).click()
+        if "Ready to merge under one title bar." not in grouping_tray.inner_text():
+            issues.append("grouping selection does not explain the ready-to-merge result")
+        grouping_tray.get_by_role("button", name="Create group (2)", exact=True).click()
         first_group = page.locator(".workspace-group-window")
         if first_group.count() != 1 or first_group.locator(".workspace-group-member").count() != 2:
             issues.append("grouping two containers did not create one two-member compound surface")
@@ -475,7 +535,7 @@ def validate_canvas_interactions(
 
         for title in ("Orders", "Strategy"):
             page.get_by_role("button", name=f"Add {title} to group selection", exact=True).click()
-        page.locator(".workspace-group-selection-bar > button.button").click()
+        page.get_by_role("button", name="Create group (2)", exact=True).click()
         page.get_by_role("button", name="Clear group selection", exact=True).click()
         group_selectors = page.locator(".workspace-group-window > .workspace-group-header .workspace-group-select")
         if group_selectors.count() != 2:
@@ -483,7 +543,7 @@ def validate_canvas_interactions(
         else:
             group_selectors.nth(0).click()
             group_selectors.nth(1).click()
-            page.locator(".workspace-group-selection-bar > button.button").click()
+            page.get_by_role("button", name="Create parent group (2)", exact=True).click()
             page.wait_for_timeout(100)
             persisted = page.evaluate("""() => {
                 const raw = localStorage.getItem('quant-research-workbench.trading-workspace.global.v1');
@@ -497,7 +557,7 @@ def validate_canvas_interactions(
             issues.append("nested group does not render all descendant containers under one title bar")
         else:
             page.get_by_role("button", name="Add XBRL Facts to group selection", exact=True).click()
-            page.locator(".workspace-group-selection-bar > button.button").click()
+            page.get_by_role("button", name="Add 1 to group", exact=True).click()
             if root_group.locator(".workspace-group-member").count() != 5:
                 issues.append("adding a container to an existing group did not extend the compound surface")
             minimize_group = root_group.get_by_role("button", name=re.compile(r"^Minimize .+$"))
@@ -549,6 +609,16 @@ def capture(args: argparse.Namespace) -> int:
                     + json.dumps(scale_value)
                     + ");"
                 )
+                if args.canvas_session_date:
+                    preview_context = {
+                        "previewTime": args.canvas_preview_time,
+                        "sessionDate": args.canvas_session_date,
+                    }
+                    context.add_init_script(
+                        "localStorage.setItem('quant-research-workbench.canvas.preview-context.v1', "
+                        + json.dumps(json.dumps(preview_context))
+                        + ");"
+                    )
                 if scenario["page"] == "canvas-focus":
                     focus_id = args.canvas_id or "review-focus"
                     focus_layout = {
@@ -600,6 +670,18 @@ def capture(args: argparse.Namespace) -> int:
                         "localStorage.setItem(" + json.dumps(f"{storage_prefix}.{args.canvas_id}") + ", " + json.dumps(json.dumps(storage_payload)) + ");"
                     )
                 page = context.new_page()
+                if args.canvas_session_date:
+                    page.route(
+                        "**/api/trading/canvas-context",
+                        lambda route: route.fulfill(
+                            content_type="application/json",
+                            body=json.dumps({
+                                "preview_time": args.canvas_preview_time,
+                                "session_date": args.canvas_session_date,
+                                "coverage": {"source": "ui-review-seed"},
+                            }),
+                        ),
+                    )
                 console_errors: list[str] = []
                 page_errors: list[str] = []
                 failed_requests: list[str] = []
@@ -774,6 +856,8 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("--url", default="http://127.0.0.1:5173")
     result.add_argument("--canvas-id", help="open trading routes directly in the named child canvas")
+    result.add_argument("--canvas-session-date", help="seed a deterministic Canvas preview session date (YYYY-MM-DD)")
+    result.add_argument("--canvas-preview-time", default="09:45", help="preview time paired with --canvas-session-date (HH:MM)")
     result.add_argument("--seed-core-containers", action="store_true", help="seed portfolio and scanner containers for child-canvas review")
     result.add_argument("--mode", choices=("targeted", "full"), default="targeted")
     result.add_argument("--matrix", choices=("bounded", "exhaustive"), default="bounded")
