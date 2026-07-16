@@ -78,21 +78,36 @@ export function TickerNewsContainer({ asOf, settings, symbol }: { asOf: string; 
   const state = useNewsQuery({ asOf, content: "all", hours: settings.lookbackHours, refreshKey: 0, search: "", ticker: symbol });
   const presentations = useTickerPresentations([symbol]);
   const asOfMs = Date.parse(asOf);
+  const orderedRows = [...state.rows].sort(compareNewsRecency);
+  const companyRows = orderedRows.filter((row) => row.news_kind === "company");
+  const otherRows = orderedRows.filter((row) => row.news_kind !== "company");
   return <section className="ticker-news" aria-label={`${symbol} news`}>
     <header><div><TickerIdentity className="ticker-news-symbol" logoUrl={presentations[symbol]?.logo_url} ticker={symbol} /><span>Recent coverage</span></div><small>{state.rows.length} stories · through <MarketTime value={asOf} /></small></header>
     <NewsStatus state={state} compact />
     <div className="ticker-news-feed">
-      {state.rows.map((row) => {
-        const ageMinutes = Math.max(0, (asOfMs - Date.parse(row.published_at_utc)) / 60000);
-        const tone = ageMinutes <= 15 ? "hot" : ageMinutes <= 120 ? "recent" : "cold";
-        return <article data-tone={tone} key={row.canonical_news_id}>
-          <div aria-label={`${tone} news`} className="ticker-news-marker" title={`${tone} news`}>{tone === "hot" ? <Flame size={14} /> : tone === "recent" ? <Sparkles size={14} /> : <Snowflake size={14} />}</div>
-          <div><div className="ticker-news-meta"><MarketTime dateStyle="short" includeDate={!sameExchangeDate(row.published_at_utc, asOf)} value={row.published_at_utc} /><em data-tone={tone}>{tone}</em><NewsKind kind={row.news_kind} /><span>{row.url_domain}</span></div><button className="ticker-news-open" onClick={() => openNewsPage(row.canonical_news_id)} type="button"><strong>{row.title}</strong>{settings.showTeaser && row.text_preview ? <p>{row.text_preview}</p> : null}</button></div>
-        </article>;
-      })}
+      <TickerNewsSection asOf={asOf} asOfMs={asOfMs} emptyLabel="No company-specific news in this window." label="Company news" rows={companyRows} showTeaser={settings.showTeaser} />
+      <TickerNewsSection asOf={asOf} asOfMs={asOfMs} emptyLabel="No broader coverage in this window." label="Other coverage" rows={otherRows} showTeaser={settings.showTeaser} />
       {!state.loading && !state.rows.length ? <NewsEmpty label={`No ${symbol} news in the last ${settings.lookbackHours} hours.`} /> : null}
     </div>
   </section>;
+}
+
+function TickerNewsSection({ asOf, asOfMs, emptyLabel, label, rows, showTeaser }: { asOf: string; asOfMs: number; emptyLabel: string; label: string; rows: NewsRow[]; showTeaser: boolean }) {
+  return <section className="ticker-news-section" aria-label={label}>
+    <header><strong>{label}</strong><span>{rows.length}</span></header>
+    {rows.map((row) => <TickerNewsStory asOf={asOf} asOfMs={asOfMs} key={row.canonical_news_id} row={row} showTeaser={showTeaser} />)}
+    {!rows.length ? <small className="ticker-news-section-empty">{emptyLabel}</small> : null}
+  </section>;
+}
+
+function TickerNewsStory({ asOf, asOfMs, row, showTeaser }: { asOf: string; asOfMs: number; row: NewsRow; showTeaser: boolean }) {
+  const publishedMs = Date.parse(row.published_at_utc);
+  const ageMinutes = Number.isFinite(publishedMs) && Number.isFinite(asOfMs) ? Math.max(0, (asOfMs - publishedMs) / 60_000) : Number.POSITIVE_INFINITY;
+  const tone = ageMinutes <= 15 ? "hot" : ageMinutes <= 120 ? "recent" : "cold";
+  return <article data-tone={tone}>
+    <div aria-label={`${tone} news`} className="ticker-news-marker" title={`${tone} news`}>{tone === "hot" ? <Flame size={14} /> : tone === "recent" ? <Sparkles size={14} /> : <Snowflake size={14} />}</div>
+    <div><div className="ticker-news-meta"><MarketTime dateStyle="short" includeDate={!sameExchangeDate(row.published_at_utc, asOf)} value={row.published_at_utc} /><em data-tone={tone}>{tone}</em><NewsKind kind={row.news_kind} /><span>{row.url_domain}</span></div><button className="ticker-news-open" onClick={() => openNewsPage(row.canonical_news_id)} type="button"><strong>{row.title}</strong>{showTeaser && row.text_preview ? <p>{row.text_preview}</p> : null}</button></div>
+  </article>;
 }
 
 export function NewsDetailContainer({ canvasId, requestedNewsId }: { canvasId: string; requestedNewsId?: string }) {
@@ -162,6 +177,7 @@ function articleParagraphs(value: string) { const explicit = value.split(/\n{2,}
 function stringList(value: unknown): string[] { return Array.isArray(value) ? value.map(String).filter(Boolean) : []; }
 function sameExchangeDate(left: string, right: string) { return exchangeDateKey(left) === exchangeDateKey(right); }
 function exchangeDateKey(value: string) { const date = new Date(value); return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat("en-CA", { day: "2-digit", month: "2-digit", timeZone: "America/New_York", year: "numeric" }).format(date); }
+function compareNewsRecency(left: NewsRow, right: NewsRow) { return Date.parse(right.published_at_utc) - Date.parse(left.published_at_utc); }
 function selectionKey(canvasId: string) { return `quant-research-workbench.canvas.news-selection.${canvasId}`; }
 function readSelectedNews(canvasId: string) { return window.localStorage.getItem(selectionKey(canvasId)) || ""; }
 function selectNews(canvasId: string, newsId: string) { window.localStorage.setItem(selectionKey(canvasId), newsId); window.dispatchEvent(new CustomEvent(NEWS_SELECTION_EVENT, { detail: { canvasId, newsId } })); }

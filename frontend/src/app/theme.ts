@@ -50,6 +50,7 @@ type AppThemeTokenMap = {
   menuShadow: string;
   muted: string;
   mutedForeground: string;
+  newsHot: string;
   popover: string;
   primary: string;
   primaryForeground: string;
@@ -313,6 +314,7 @@ export function applyThemeDefinition(target: HTMLElement, themeId: AppThemeId = 
     "--menu-shadow": tokens.menuShadow,
     "--muted": tokens.muted,
     "--muted-foreground": tokens.mutedForeground,
+    "--news-hot": tokens.newsHot,
     "--page-bg": tokens.background,
     "--popover": tokens.popover,
     "--popover-foreground": tokens.foreground,
@@ -431,6 +433,7 @@ function buildTheme({
       menuShadow: tone === "light" ? "0 18px 42px rgba(15, 23, 42, 0.12)" : "0 18px 42px rgba(2, 6, 23, 0.34)",
       muted: palette.muted,
       mutedForeground: palette.mutedForeground,
+      newsHot: tone === "light" ? "#ff1744" : "#ff3b5c",
       popover: palette.card,
       primary: palette.primary,
       primaryForeground: "#ffffff",

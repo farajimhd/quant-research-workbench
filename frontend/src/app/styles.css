@@ -21711,14 +21711,18 @@ button {
 .ticker-news > header div { display: flex; align-items: center; gap: 7px; }.ticker-news > header strong { font-size: 15px; }.ticker-news > header span, .ticker-news > header small { color: var(--muted-foreground); font-size: 10px; }.ticker-news > header > small { align-items: center; display: flex; gap: 4px; }
 .ticker-news-symbol > span { color: var(--foreground); font-size: 15px; font-weight: 700; }.ticker-news-symbol img { height: 24px; width: 24px; }
 .ticker-news-feed { min-height: 0; overflow: auto; }
-.ticker-news-feed article { display: grid; grid-template-columns: 26px minmax(0, 1fr); border-bottom: 1px solid var(--border); }
+.ticker-news-section + .ticker-news-section { border-top: 1px solid var(--border); }
+.ticker-news-section > header { align-items: center; background: var(--surface-alt); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; padding: 5px 9px; position: sticky; top: 0; z-index: 1; }
+.ticker-news-section > header strong { font-size: 10px; font-weight: 720; letter-spacing: .045em; text-transform: uppercase; }.ticker-news-section > header span { color: var(--muted-foreground); font-size: 9px; }
+.ticker-news-section article { display: grid; grid-template-columns: 26px minmax(0, 1fr); border-bottom: 1px solid var(--border); }
+.ticker-news-section-empty { color: var(--muted-foreground); display: block; font-size: 10px; padding: 9px; }
 .ticker-news-marker { display: grid; place-items: start center; padding-top: 10px; color: var(--muted-foreground); }
-.ticker-news-feed article[data-tone="hot"] .ticker-news-marker { color: var(--danger); }.ticker-news-feed article[data-tone="recent"] .ticker-news-marker { color: var(--success); }.ticker-news-feed article[data-tone="cold"] .ticker-news-marker { color: var(--canvas-link-blue); }
-.ticker-news-feed article > div:last-child { min-width: 0; padding: 8px 9px 8px 0; }
-.ticker-news-meta { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; color: var(--muted-foreground); font-size: 9px; }.ticker-news-meta em { font-style: normal; font-weight: 750; text-transform: uppercase; }.ticker-news-meta em[data-tone="hot"] { color: var(--danger); }.ticker-news-meta em[data-tone="recent"] { color: var(--success); }.ticker-news-meta em[data-tone="cold"] { color: var(--canvas-link-blue); }
+.ticker-news-section article[data-tone="hot"] .ticker-news-marker { color: var(--news-hot); }.ticker-news-section article[data-tone="recent"] .ticker-news-marker { color: var(--success); }.ticker-news-section article[data-tone="cold"] .ticker-news-marker { color: var(--canvas-link-blue); }
+.ticker-news-section article > div:last-child { min-width: 0; padding: 8px 9px 8px 0; }
+.ticker-news-meta { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; color: var(--muted-foreground); font-size: 9px; }.ticker-news-meta em { font-style: normal; font-weight: 750; text-transform: uppercase; }.ticker-news-meta em[data-tone="hot"] { color: var(--news-hot); }.ticker-news-meta em[data-tone="recent"] { color: var(--success); }.ticker-news-meta em[data-tone="cold"] { color: var(--canvas-link-blue); }
 .news-kind { display: inline-flex; gap: 3px; align-items: center; font-weight: 650; }.news-kind[data-kind="company"] { color: var(--success); }.news-kind[data-kind="multi"] { color: var(--canvas-link-cyan); }.news-kind[data-kind="analyst"] { color: var(--canvas-link-blue); }.news-kind[data-kind="ai"] { color: var(--canvas-link-violet); }.news-kind[data-kind="market"] { color: var(--muted-foreground); }
 .ticker-news-open { background: transparent; border: 0; color: inherit; cursor: pointer; display: block; padding: 0; text-align: left; width: 100%; }.ticker-news-open:hover strong { color: var(--info); }.ticker-news-open:focus-visible { outline: 1px solid var(--focus); outline-offset: 2px; }
-.ticker-news-feed article strong { display: block; font-size: 13.5px; font-weight: 520; line-height: 1.3; }.ticker-news-feed article p { overflow: hidden; margin: 4px 0 0; color: var(--muted-foreground); font-size: 10.5px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.ticker-news-section article strong { display: block; font-size: 13.5px; font-weight: 520; line-height: 1.3; }.ticker-news-section article p { overflow: hidden; margin: 4px 0 0; color: var(--muted-foreground); font-size: 10.5px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .news-window-start { align-items: center; display: inline-flex; gap: 3px; }
 
 .news-reader { overflow: auto; padding: clamp(14px, 3cqw, 30px) clamp(18px, 6cqw, 72px) 36px; }
