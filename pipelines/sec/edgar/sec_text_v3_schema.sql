@@ -154,8 +154,8 @@ CREATE TABLE IF NOT EXISTS q_live.sec_filing_text_v3
     inserted_at DateTime64(3, 'UTC')
 )
 ENGINE = ReplacingMergeTree(source_revision_rank)
-PARTITION BY cityHash64(cik) % 64
-ORDER BY (cik, accession_number, document_id, content_format)
+PARTITION BY {{SEC_TEXT_SOURCE_PARTITION_KEY}}
+ORDER BY ({{SEC_TEXT_SOURCE_SORTING_KEY}})
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
 
 CREATE TABLE IF NOT EXISTS q_live.sec_filing_text_rendered_v3

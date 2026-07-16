@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from research.mlops.clickhouse import ClickHouseHttpClient
+from pipelines.sec.edgar.sec_text_layout import TEXT_SOURCE_PARTITION_KEY, TEXT_SOURCE_SORTING_KEY
 
 
 FILING_TABLE = "sec_filing_v3"
@@ -475,8 +476,8 @@ def create_text_source_table_schema(client: ClickHouseHttpClient, *, target_data
             inserted_at DateTime64(3, 'UTC')
         )
         ENGINE = ReplacingMergeTree(source_revision_rank)
-        PARTITION BY cityHash64(cik) % 64
-        ORDER BY (cik, accession_number, document_id, content_format)
+        PARTITION BY {TEXT_SOURCE_PARTITION_KEY}
+        ORDER BY ({TEXT_SOURCE_SORTING_KEY})
         SETTINGS {settings}
         """
     )

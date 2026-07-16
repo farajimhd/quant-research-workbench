@@ -23,6 +23,12 @@ from research.mlops.clickhouse import (  # noqa: E402
     default_clickhouse_user,
 )
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
+from pipelines.sec.edgar.sec_text_layout import (  # noqa: E402
+    TEXT_SOURCE_PARTITION_KEY,
+    TEXT_SOURCE_PARTITION_PLACEHOLDER,
+    TEXT_SOURCE_SORTING_KEY,
+    TEXT_SOURCE_SORTING_PLACEHOLDER,
+)
 
 
 DEFAULT_SCHEMA_PATH = Path(__file__).with_name("sec_text_v3_schema.sql")
@@ -154,7 +160,8 @@ def validate_identifier(value: str, label: str) -> None:
 
 
 def render_schema(raw_sql: str, target_database: str, storage_policy: str, allow_empty_storage_policy: bool) -> str:
-    rendered = raw_sql
+    rendered = raw_sql.replace(TEXT_SOURCE_PARTITION_PLACEHOLDER, TEXT_SOURCE_PARTITION_KEY)
+    rendered = rendered.replace(TEXT_SOURCE_SORTING_PLACEHOLDER, TEXT_SOURCE_SORTING_KEY)
     if target_database != DEFAULT_TARGET_DATABASE:
         rendered = re.sub(r"\bq_live\.", f"{target_database}.", rendered)
     storage_policy = storage_policy.strip()
@@ -199,8 +206,17 @@ def strip_sql_comments(sql: str) -> str:
 
 
 def validate_rendered_sql(rendered_sql: str, statements: list[str], args: argparse.Namespace) -> None:
-    if STORAGE_POLICY_PLACEHOLDER in rendered_sql:
-        raise SystemExit(f"Rendered SQL still contains {STORAGE_POLICY_PLACEHOLDER}.")
+    unresolved_placeholders = [
+        placeholder
+        for placeholder in (
+            STORAGE_POLICY_PLACEHOLDER,
+            TEXT_SOURCE_PARTITION_PLACEHOLDER,
+            TEXT_SOURCE_SORTING_PLACEHOLDER,
+        )
+        if placeholder in rendered_sql
+    ]
+    if unresolved_placeholders:
+        raise SystemExit(f"Rendered SQL still contains placeholders: {unresolved_placeholders}.")
     create_statements = [statement for statement in statements if statement.upper().startswith("CREATE TABLE IF NOT EXISTS")]
     view_statements = [statement for statement in statements if statement.upper().startswith("CREATE VIEW IF NOT EXISTS")]
     alter_statements = [statement for statement in statements if statement.upper().startswith("ALTER TABLE")]

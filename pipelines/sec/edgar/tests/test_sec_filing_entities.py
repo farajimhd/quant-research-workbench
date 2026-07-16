@@ -51,6 +51,23 @@ class SecFilingEntityTests(unittest.TestCase):
         self.assertEqual(result["status"], "fail")
         self.assertEqual(result["details"]["archive_backed_filings_without_entities"], 1)
 
+    def test_integrity_enforces_canonical_source_text_layout(self) -> None:
+        monthly = integrity_audit.check_text_source_layout(
+            {
+                "partition_key": "toYYYYMM(source_archive_date)",
+                "sorting_key": "cik, accession_number, document_id, content_format",
+            }
+        )[0]
+        hash_partitioned = integrity_audit.check_text_source_layout(
+            {
+                "partition_key": "cityHash64(cik) % 64",
+                "sorting_key": "cik, accession_number, document_id, content_format",
+            }
+        )[0]
+
+        self.assertEqual(monthly["status"], "pass")
+        self.assertEqual(hash_partitioned["status"], "fail")
+
     def test_parses_all_roles_and_never_uses_accession_prefix_as_cik(self) -> None:
         raw = b"""<SEC-DOCUMENT>0002143285-26-000002.txt
 ACCESSION NUMBER: 0002143285-26-000002

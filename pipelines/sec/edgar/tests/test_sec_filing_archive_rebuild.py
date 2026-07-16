@@ -20,6 +20,7 @@ from pipelines.sec.edgar import sec_filing_text_extract_parts as extractor
 from pipelines.sec.edgar import sec_historical_gap_fill as historical
 from pipelines.sec.edgar import sec_missing_document_repair as missing_document_repair
 from pipelines.sec.edgar import sec_text_v3_schema as text_schema
+from pipelines.sec.edgar.sec_pipeline import clickhouse_writer
 from pipelines.sec.edgar.sec_parquet_parts import (
     ParquetShardWriter,
     arrow_type_for_column,
@@ -28,7 +29,7 @@ from pipelines.sec.edgar.sec_parquet_parts import (
 
 
 class SecFilingArchiveRebuildTests(unittest.TestCase):
-    def test_source_text_schema_keeps_all_document_revisions_in_one_partition(self) -> None:
+    def test_source_text_schema_uses_canonical_monthly_archive_partition(self) -> None:
         raw_sql = text_schema.DEFAULT_SCHEMA_PATH.read_text(encoding="utf-8")
         rendered = text_schema.render_schema(raw_sql, "q_live", "live_market_ssd", False)
         source_statement = next(
@@ -37,7 +38,7 @@ class SecFilingArchiveRebuildTests(unittest.TestCase):
             if "q_live.sec_filing_text_v3" in statement
         )
 
-        self.assertIn("PARTITION BY cityHash64(cik) % 64", source_statement)
+        self.assertIn("PARTITION BY toYYYYMM(source_archive_date)", source_statement)
         self.assertIn("ReplacingMergeTree(source_revision_rank)", source_statement)
         self.assertIn("ORDER BY (cik, accession_number, document_id, content_format)", source_statement)
 
@@ -144,8 +145,28 @@ class SecFilingArchiveRebuildTests(unittest.TestCase):
         self.assertEqual(created, {"sec_filing_text_v3"})
         self.assertEqual(table_uuids["sec_filing_text_v3"], "uuid-sec_filing_text_v3")
         source_ddl = next(sql for sql in client.statements if "CREATE TABLE IF NOT EXISTS q_live.sec_filing_text_v3" in sql)
-        self.assertIn("PARTITION BY cityHash64(cik) % 64", source_ddl)
+        self.assertIn("PARTITION BY toYYYYMM(source_archive_date)", source_ddl)
         self.assertIn("ReplacingMergeTree(source_revision_rank)", source_ddl)
+
+    def test_live_writer_uses_same_source_text_layout_as_historical_schema(self) -> None:
+        class FakeClient:
+            def __init__(self) -> None:
+                self.sql = ""
+
+            def execute(self, sql: str) -> str:
+                self.sql = sql
+                return ""
+
+        client = FakeClient()
+        with mock.patch.object(clickhouse_writer, "infer_storage_policy", return_value="live_market_ssd"):
+            clickhouse_writer.create_text_source_table_schema(
+                client,
+                target_database="q_live",
+                reference_database="q_live",
+            )
+
+        self.assertIn("PARTITION BY toYYYYMM(source_archive_date)", client.sql)
+        self.assertIn("ORDER BY (cik, accession_number, document_id, content_format)", client.sql)
 
     def test_archive_rebuild_rejects_stale_hash_partitioned_source_table(self) -> None:
         class FakeClient:

@@ -27,6 +27,11 @@ from research.mlops.clickhouse import (  # noqa: E402
 )
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
 from pipelines.sec.edgar.sec_pipeline.submissions import parse_acceptance_datetime  # noqa: E402
+from pipelines.sec.edgar.sec_text_layout import (  # noqa: E402
+    TEXT_SOURCE_PARTITION_KEY,
+    TEXT_SOURCE_SORTING_KEY,
+    text_source_layout_matches,
+)
 
 
 DEFAULT_DATABASE = "q_live"
@@ -134,6 +139,7 @@ def main() -> None:
     if "sec_filing_document_v3" in table_meta:
         checks.extend(check_document_v2_shape(column_map))
     if "sec_filing_text_v3" in table_meta:
+        checks.extend(check_text_source_layout(table_meta["sec_filing_text_v3"]))
         checks.extend(check_text_source_shape(column_map))
         if "sec_filing_document_v3" in table_meta:
             checks.extend(check_text_source_table(client, args.database, text_source_table="sec_filing_text_v3", document_table="sec_filing_document_v3"))
@@ -550,6 +556,26 @@ def check_text_source_shape(column_map: dict[str, set[str]]) -> list[dict[str, A
             "source text required schema columns",
             table="sec_filing_text_v3",
             details={"missing_columns": missing},
+        )
+    ]
+
+
+def check_text_source_layout(table_metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    partition_key = str(table_metadata.get("partition_key") or "")
+    sorting_key = str(table_metadata.get("sorting_key") or "")
+    matches = text_source_layout_matches(partition_key, sorting_key)
+    return [
+        check(
+            "sec_filing_text_v3_physical_layout",
+            "pass" if matches else "fail",
+            "source text table uses the canonical historical-write partition and identity sort keys",
+            table="sec_filing_text_v3",
+            details={
+                "partition_key": partition_key,
+                "sorting_key": sorting_key,
+                "expected_partition_key": TEXT_SOURCE_PARTITION_KEY,
+                "expected_sorting_key": TEXT_SOURCE_SORTING_KEY,
+            },
         )
     ]
 

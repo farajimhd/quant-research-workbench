@@ -31,6 +31,11 @@ from pipelines.sec.edgar.sec_parquet_parts import (  # noqa: E402
     convert_json_part,
     validate_parquet_part,
 )
+from pipelines.sec.edgar.sec_text_layout import (  # noqa: E402
+    TEXT_SOURCE_PARTITION_KEY,
+    TEXT_SOURCE_SORTING_KEY,
+    text_source_layout_matches,
+)
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_string  # noqa: E402
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
 
@@ -1147,20 +1152,12 @@ def validate_source_text_layout(client: ClickHouseHttpClient, database: str) -> 
     fields = (text.strip().splitlines() or [""])[0].split("\t")
     partition_key = fields[0] if fields else ""
     sorting_key = fields[1] if len(fields) > 1 else ""
-    expected_partition = "toYYYYMM(source_archive_date)"
-    expected_sorting = "cik,accession_number,document_id,content_format"
-    if normalized_clickhouse_key(partition_key) != normalized_clickhouse_key(expected_partition) or normalized_clickhouse_key(
-        sorting_key
-    ) != normalized_clickhouse_key(expected_sorting):
+    if not text_source_layout_matches(partition_key, sorting_key):
         raise RuntimeError(
             f"{database}.{table} has incompatible layout partition_key={partition_key!r} sorting_key={sorting_key!r}; "
-            f"expected partition_key={expected_partition!r} sorting_key={expected_sorting!r}. "
+            f"expected partition_key={TEXT_SOURCE_PARTITION_KEY!r} sorting_key={TEXT_SOURCE_SORTING_KEY!r}. "
             "Drop the stale source-text table before running the historical rebuild."
         )
-
-
-def normalized_clickhouse_key(value: str) -> str:
-    return re.sub(r"[\s`()]+", "", value).lower()
 
 
 def emit_lane(
