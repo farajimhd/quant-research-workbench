@@ -1,8 +1,8 @@
-import { ExternalLink, Flame, Newspaper, RefreshCw, Search, Sparkles } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Bot, Building2, ExternalLink, Flame, Globe2, Layers3, Newspaper, RefreshCw, Search, Snowflake, Sparkles, TrendingUp } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 
 import { api, query } from "../../api/client";
-import { focusCanvasUrl } from "../canvasWorkspace";
+import { NEWS_READER_CANVAS_ID, ensureNewsReaderCanvas, focusCanvasUrl } from "../canvasWorkspace";
 
 type NewsRow = {
   article_url?: string;
@@ -13,6 +13,7 @@ type NewsRow = {
   has_external_text?: boolean;
   has_pdf?: boolean;
   is_title_only?: boolean;
+  news_kind?: "ai" | "analyst" | "company" | "market" | "multi";
   provider_tags?: string[];
   published_at_utc: string;
   text_preview?: string;
@@ -39,7 +40,7 @@ type NewsDetailPayload = {
 
 const NEWS_SELECTION_EVENT = "quant-news-selection";
 
-export function AllNewsContainer({ asOf, canvasId, onSettingsChange, settings }: { asOf: string; canvasId: string; onSettingsChange: (patch: Partial<{ content: string; lookbackHours: number; ticker: string }>) => void; settings: { content: string; lookbackHours: number; ticker: string } }) {
+export function AllNewsContainer({ asOf, onSettingsChange, settings }: { asOf: string; onSettingsChange: (patch: Partial<{ content: string; lookbackHours: number; ticker: string }>) => void; settings: { content: string; lookbackHours: number; ticker: string } }) {
   const [search, setSearch] = useState("");
   const [committedSearch, setCommittedSearch] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
@@ -57,10 +58,10 @@ export function AllNewsContainer({ asOf, canvasId, onSettingsChange, settings }:
     <NewsStatus state={state} />
     <div className="news-table-wrap">
       <table className="news-table"><thead><tr><th>Time</th><th>Ticker</th><th>Headline</th><th>Source</th><th>Text</th></tr></thead><tbody>
-        {state.rows.map((row) => <tr key={row.canonical_news_id} onDoubleClick={() => openNewsPage(canvasId, row.canonical_news_id)} onClick={() => selectNews(canvasId, row.canonical_news_id)} tabIndex={0}>
+        {state.rows.map((row) => <tr key={row.canonical_news_id} tabIndex={0}>
           <td><time dateTime={row.published_at_utc}>{formatNewsTime(row.published_at_utc)}</time></td>
           <td><TickerList tickers={row.ticker_link_sample} /></td>
-          <td><button className="news-headline-button" onClick={() => selectNews(canvasId, row.canonical_news_id)} type="button"><strong>{row.title || "Untitled story"}</strong>{row.text_preview ? <small>{row.text_preview}</small> : null}</button></td>
+          <td><button className="news-headline-button" onClick={() => openNewsPage(row.canonical_news_id)} type="button"><strong>{row.title || "Untitled story"}</strong>{row.text_preview ? <small>{row.text_preview}</small> : null}</button></td>
           <td>{row.url_domain || "—"}</td><td><NewsTextState row={row} /></td>
         </tr>)}
       </tbody></table>
@@ -70,7 +71,7 @@ export function AllNewsContainer({ asOf, canvasId, onSettingsChange, settings }:
   </section>;
 }
 
-export function TickerNewsContainer({ asOf, canvasId, settings, symbol }: { asOf: string; canvasId: string; settings: { lookbackHours: number; showTeaser: boolean }; symbol: string }) {
+export function TickerNewsContainer({ asOf, settings, symbol }: { asOf: string; settings: { lookbackHours: number; showTeaser: boolean }; symbol: string }) {
   const state = useNewsQuery({ asOf, content: "all", hours: settings.lookbackHours, refreshKey: 0, search: "", ticker: symbol });
   const asOfMs = Date.parse(asOf);
   return <section className="ticker-news" aria-label={`${symbol} news`}>
@@ -79,10 +80,10 @@ export function TickerNewsContainer({ asOf, canvasId, settings, symbol }: { asOf
     <div className="ticker-news-feed">
       {state.rows.map((row) => {
         const ageMinutes = Math.max(0, (asOfMs - Date.parse(row.published_at_utc)) / 60000);
-        const tone = ageMinutes <= 15 ? "hot" : ageMinutes <= 120 ? "recent" : "normal";
+        const tone = ageMinutes <= 15 ? "hot" : ageMinutes <= 120 ? "recent" : "cold";
         return <article data-tone={tone} key={row.canonical_news_id}>
-          <div className="ticker-news-marker">{tone === "hot" ? <Flame size={13} /> : tone === "recent" ? <Sparkles size={13} /> : <Newspaper size={13} />}</div>
-          <div><div className="ticker-news-meta"><time>{formatNewsTime(row.published_at_utc)}</time>{tone !== "normal" ? <em>{tone}</em> : null}<span>{row.url_domain}</span></div><strong>{row.title}</strong>{settings.showTeaser && row.text_preview ? <p>{row.text_preview}</p> : null}<a href={newsPageUrl(canvasId, row.canonical_news_id)} onClick={() => selectNews(canvasId, row.canonical_news_id)} rel="noreferrer" target="_blank">Details <ExternalLink size={11} /></a></div>
+          <div aria-label={`${tone} news`} className="ticker-news-marker" title={`${tone} news`}>{tone === "hot" ? <Flame size={14} /> : tone === "recent" ? <Sparkles size={14} /> : <Snowflake size={14} />}</div>
+          <div><div className="ticker-news-meta"><time>{formatNewsTime(row.published_at_utc)}</time><em data-tone={tone}>{tone}</em><NewsKind kind={row.news_kind} /><span>{row.url_domain}</span></div><strong>{row.title}</strong>{settings.showTeaser && row.text_preview ? <p>{row.text_preview}</p> : null}<a href={newsPageUrl(row.canonical_news_id)} onClick={() => prepareNewsReader(row.canonical_news_id)} target="quant-news-reader">Details <ExternalLink size={11} /></a></div>
         </article>;
       })}
       {!state.loading && !state.rows.length ? <NewsEmpty label={`No ${symbol} news in the last ${settings.lookbackHours} hours.`} /> : null}
@@ -101,7 +102,14 @@ export function NewsDetailContainer({ canvasId, requestedNewsId }: { canvasId: s
       if (selected.canvasId === canvasId) setNewsId(selected.newsId);
     };
     window.addEventListener(NEWS_SELECTION_EVENT, onSelection);
-    return () => window.removeEventListener(NEWS_SELECTION_EVENT, onSelection);
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === selectionKey(canvasId) && event.newValue) setNewsId(event.newValue);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener(NEWS_SELECTION_EVENT, onSelection);
+      window.removeEventListener("storage", onStorage);
+    };
   }, [canvasId]);
   useEffect(() => {
     if (!newsId) { setDetail(null); return; }
@@ -143,6 +151,7 @@ function NewsStatus({ compact, state }: { compact?: boolean; state: ReturnType<t
 function NewsEmpty({ label }: { label: string }) { return <div className="news-empty"><Newspaper size={18} /><span>{label}</span></div>; }
 function TickerList({ tickers = [] }: { tickers?: string[] }) { return <span className="news-tickers">{tickers.slice(0, 3).map((ticker) => <b key={ticker}>{ticker}</b>)}{tickers.length > 3 ? <b>+{tickers.length - 3}</b> : !tickers.length ? "—" : null}</span>; }
 function NewsTextState({ row }: { row: NewsRow }) { return <span className="news-text-state" data-state={row.is_title_only ? "title" : "full"}>{row.is_title_only ? "Title" : row.has_pdf ? "PDF" : row.has_external_text ? "Full" : "Body"}</span>; }
+function NewsKind({ kind = "market" }: { kind?: NewsRow["news_kind"] }) { const values = { ai: { Icon: Bot, label: "AI" }, analyst: { Icon: TrendingUp, label: "Analyst" }, company: { Icon: Building2, label: "Company" }, market: { Icon: Globe2, label: "Market" }, multi: { Icon: Layers3, label: "Multi" } }; const value = values[kind]; return <span className="news-kind" data-kind={kind}><value.Icon size={11} />{value.label}</span>; }
 function formatNewsTime(value: string) { const date = new Date(value); return Number.isNaN(date.getTime()) ? "—" : new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(date); }
 function formatNewsDate(value: string) { const date = new Date(value); return Number.isNaN(date.getTime()) ? "—" : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date); }
 function firstText(...values: unknown[]) { for (const value of values) if (typeof value === "string" && value.trim()) return value.trim(); return ""; }
@@ -151,5 +160,6 @@ function stringList(value: unknown): string[] { return Array.isArray(value) ? va
 function selectionKey(canvasId: string) { return `quant-research-workbench.canvas.news-selection.${canvasId}`; }
 function readSelectedNews(canvasId: string) { return window.localStorage.getItem(selectionKey(canvasId)) || ""; }
 function selectNews(canvasId: string, newsId: string) { window.localStorage.setItem(selectionKey(canvasId), newsId); window.dispatchEvent(new CustomEvent(NEWS_SELECTION_EVENT, { detail: { canvasId, newsId } })); }
-function newsPageUrl(canvasId: string, newsId: string) { const url = new URL(focusCanvasUrl(canvasId, "news_detail")); url.searchParams.set("news", newsId); return url.toString(); }
-function openNewsPage(canvasId: string, newsId: string) { selectNews(canvasId, newsId); window.open(newsPageUrl(canvasId, newsId), "_blank", "noopener,noreferrer"); }
+function prepareNewsReader(newsId: string) { ensureNewsReaderCanvas(); selectNews(NEWS_READER_CANVAS_ID, newsId); }
+function newsPageUrl(newsId: string) { const url = new URL(focusCanvasUrl(NEWS_READER_CANVAS_ID, "news_detail")); url.searchParams.set("news", newsId); return url.toString(); }
+function openNewsPage(newsId: string) { prepareNewsReader(newsId); window.open(newsPageUrl(newsId), "quant-news-reader"); }

@@ -5,13 +5,16 @@ import { api, query } from "../api/client";
 import {
   CANVAS_PREVIEW_CONTEXT_STORAGE_KEY,
   CANVAS_REGISTRY_STORAGE_KEY,
+  CANVAS_REGISTRY_UPDATED_EVENT,
   CANVAS_SETTINGS_STORAGE_KEY,
   CANVAS_LINK_GROUPS,
   MAIN_CANVAS_ID,
+  NEWS_READER_CANVAS_ID,
   canvasLinkGroupDefinition,
   canvasWorkspaceStorageKey,
   createCanvasRecord,
   focusCanvasUrl,
+  ensureNewsReaderCanvas,
   readCanvasRegistry,
   readCanvasWorkspaceState,
   removeCanvasRecord,
@@ -467,6 +470,12 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
   const marketStatus = useMemo(() => historicalMarketStatus(previewContext.sessionDate, previewContext.previewTime), [previewContext]);
 
   useEffect(() => {
+    if (canvasId !== NEWS_READER_CANVAS_ID) return;
+    ensureNewsReaderCanvas();
+    setRegistry(readCanvasRegistry());
+  }, [canvasId]);
+
+  useEffect(() => {
     writeCanvasRegistry(registry);
   }, [registry]);
 
@@ -494,7 +503,12 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
       if (event.key === CANVAS_PREVIEW_CONTEXT_STORAGE_KEY) setPreviewContext(readPreviewContext());
     };
     window.addEventListener("storage", syncSharedCanvasState);
-    return () => window.removeEventListener("storage", syncSharedCanvasState);
+    const syncLocalCanvasRegistry = () => setRegistry(readCanvasRegistry());
+    window.addEventListener(CANVAS_REGISTRY_UPDATED_EVENT, syncLocalCanvasRegistry);
+    return () => {
+      window.removeEventListener("storage", syncSharedCanvasState);
+      window.removeEventListener(CANVAS_REGISTRY_UPDATED_EVENT, syncLocalCanvasRegistry);
+    };
   }, []);
 
   useEffect(() => {
@@ -837,9 +851,9 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
     <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{definition.id === "chart"
       ? <ChartContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} linkGroup={linkGroup} onLinkContextChange={onLinkContextChange} previewContext={previewContext} settings={settings} updateSettings={updateSettings} />
       : definition.id === "news"
-        ? <AllNewsContainer asOf={new Date(chartCutoffMs).toISOString()} canvasId={canvasId} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, news: { ...state.news, ...patch } }))} settings={settings.news} />
+        ? <AllNewsContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, news: { ...state.news, ...patch } }))} settings={settings.news} />
       : definition.id === "ticker_news"
-        ? <TickerNewsContainer asOf={new Date(chartCutoffMs).toISOString()} canvasId={canvasId} settings={settings.ticker_news} symbol={linkContext.symbol} />
+        ? <TickerNewsContainer asOf={new Date(chartCutoffMs).toISOString()} settings={settings.ticker_news} symbol={linkContext.symbol} />
       : definition.id === "news_detail"
         ? <NewsDetailContainer canvasId={canvasId} requestedNewsId={requestedNewsId} />
       : loading && !preview

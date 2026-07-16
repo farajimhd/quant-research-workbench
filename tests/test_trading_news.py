@@ -36,6 +36,10 @@ class TradingNewsTests(unittest.TestCase):
         self.assertIn("positionCaseInsensitiveUTF8", sql)
         self.assertIn("NOT n.is_title_only", sql)
         self.assertIn("n.published_at_utc <= window_end", sql)
+        self.assertIn("AS news_kind", sql)
+        self.assertIn("'analyst'", sql)
+        self.assertIn("'multi'", sql)
+        self.assertIn("'company'", sql)
         self.assertIn("LIMIT 2", sql)
 
     @patch("src.backend.app.clickhouse_status_query", return_value="")

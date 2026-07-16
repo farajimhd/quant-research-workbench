@@ -1952,6 +1952,14 @@ def trading_news_rows(
             formatDateTime(n.published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
             n.title, n.article_url, n.url_domain, n.author, n.channels, n.provider_tags,
             ifNull(t.ticker_link_sample, []) AS ticker_link_sample,
+            length(ifNull(t.ticker_link_sample, [])) AS ticker_link_count,
+            multiIf(
+                arrayExists(value -> lowerUTF8(value) IN ('benzai', 'ai generated', 'ai-generated'), n.provider_tags), 'ai',
+                arrayExists(value -> lowerUTF8(value) IN ('analyst ratings', 'price target', 'analyst color', 'initiation', 'reiteration', 'upgrades', 'downgrades'), n.channels), 'analyst',
+                length(ifNull(t.ticker_link_sample, [])) > 1, 'multi',
+                length(ifNull(t.ticker_link_sample, [])) = 1, 'company',
+                'market'
+            ) AS news_kind,
             n.has_external_text, n.has_pdf, n.is_title_only,
             lengthUTF8(n.normalized_full_text) AS full_text_chars,
             substring(n.normalized_full_text, 1, 320) AS text_preview
