@@ -6,10 +6,11 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.orchestrator import historical_run_window
@@ -26,7 +27,10 @@ SUPPORTED_HISTORICAL_TIMEFRAMES = {
     "1m",
     "5m",
     "1h",
+    "1d",
+    "1mo",
 }
+MACRO_CHART_TIMEFRAMES = {"1d", "1mo"}
 HISTORICAL_CHUNK_MINUTES = 15
 
 
@@ -342,6 +346,13 @@ def historical_bar_history_before(
 ) -> dict[str, Any]:
     resolved_ticker = _historical_ticker(ticker)
     resolved_timeframe = _historical_timeframe(timeframe)
+    if resolved_timeframe in MACRO_CHART_TIMEFRAMES:
+        return historical_macro_bar_history(
+            ticker=resolved_ticker,
+            timeframe=resolved_timeframe,
+            session_date=session_date or before,
+            as_of=as_of,
+        )
     coverage = None
     if session_date is None:
         coverage = _historical_gateway_get(
@@ -411,6 +422,75 @@ def historical_bar_history_before(
         "previous_session_before": previous_session_before,
         "as_of": resolved_as_of.isoformat(),
         "source": "qmd_history_gateway",
+    }
+
+
+def historical_macro_bar_history(
+    *,
+    ticker: str,
+    timeframe: str,
+    session_date: date,
+    as_of: str | None,
+) -> dict[str, Any]:
+    resolved_as_of = datetime.fromisoformat(as_of) if as_of else datetime.combine(session_date, time(20, 0), tzinfo=ZoneInfo("America/New_York"))
+    if resolved_as_of.tzinfo is None:
+        raise ValueError("as_of must include a timezone")
+    if timeframe == "1mo":
+        month_index = resolved_as_of.year * 12 + resolved_as_of.month - 1 - 35
+        start = resolved_as_of.replace(
+            year=month_index // 12,
+            month=month_index % 12 + 1,
+            day=1,
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+    else:
+        start = (resolved_as_of - timedelta(days=89)).replace(hour=0, minute=0, second=0, microsecond=0)
+    payload = _historical_gateway_get(
+        f"/snapshot/chart-macro-bars/{urllib.parse.quote(ticker)}",
+        {
+            "start": start.isoformat(),
+            "end": (resolved_as_of + timedelta(days=1)).isoformat(),
+            "as_of": resolved_as_of.isoformat(),
+            "timeframe": timeframe,
+        },
+        timeout=30,
+    )
+    rows = [
+        {
+            "schema_version": 1,
+            "session_date": row.get("session_date"),
+            "timeframe": timeframe,
+            "sym": ticker,
+            "bar_start": row.get("bar_start"),
+            "bar_end": row.get("bar_end"),
+            "is_closed": bool(row.get("is_closed", True)),
+            "open": row.get("open"),
+            "high": row.get("high"),
+            "low": row.get("low"),
+            "close": row.get("close"),
+            "volume": row.get("size_sum"),
+            "vwap": None,
+        }
+        for row in (payload.get("bars") or [])
+        if isinstance(row, dict) and row.get("bar_family") == "trade"
+    ] if isinstance(payload, dict) else []
+    rows.sort(key=lambda row: str(row.get("bar_start") or ""))
+    return {
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "history": rows,
+        "indicators": [],
+        "indicators_available": False,
+        "earliest_session_date": str(rows[0].get("session_date") or "") if rows else "",
+        "has_more": False,
+        "has_more_in_session": False,
+        "next_before": "",
+        "previous_session_before": "",
+        "as_of": resolved_as_of.isoformat(),
+        "source": payload.get("source", "qmd_history_gateway") if isinstance(payload, dict) else "qmd_history_gateway",
     }
 
 

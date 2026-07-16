@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_QMD_BASE_URL = "http://127.0.0.1:8795"
 ENRICHED_QMD_TIMEFRAMES = frozenset({"100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"})
+MACRO_QMD_TIMEFRAMES = frozenset({"1d", "1mo"})
 
 
 def load_qmd_env() -> None:
@@ -103,6 +104,8 @@ def qmd_bars(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) -> dic
 
 
 def qmd_chart_bars(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) -> dict[str, Any]:
+    if timeframe in MACRO_QMD_TIMEFRAMES:
+        return qmd_macro_bars(symbol, timeframe=timeframe, row_limit=row_limit)
     if timeframe in ENRICHED_QMD_TIMEFRAMES:
         return qmd_bars(symbol, timeframe=timeframe, row_limit=row_limit)
     if not symbol.strip():
@@ -113,6 +116,52 @@ def qmd_chart_bars(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) 
         timeout=3,
     )
     return normalize_qmd_family_bar_snapshot(payload, symbol=symbol, timeframe=timeframe)
+
+
+def qmd_macro_bars(symbol: str, *, timeframe: str, row_limit: int = 500) -> dict[str, Any]:
+    if not symbol.strip():
+        raise ValueError("symbol is required for QMD macro bars.")
+    payload = qmd_get_json(
+        f"/snapshot/macro-bars/{urllib.parse.quote(symbol.strip().upper())}",
+        {"limit": row_limit, "timeframe": timeframe},
+        timeout=3,
+    )
+    return normalize_qmd_macro_bar_snapshot(payload, symbol=symbol, timeframe=timeframe)
+
+
+def normalize_qmd_macro_bar_snapshot(payload: Any, *, symbol: str, timeframe: str) -> dict[str, Any]:
+    rows = payload.get("rows", []) if isinstance(payload, dict) else []
+    normalized = [
+        normalize_qmd_macro_bar(row, timeframe=timeframe)
+        for row in rows
+        if isinstance(row, dict) and is_qmd_trade_price_bar(row)
+    ]
+    normalized.sort(key=lambda row: str(row.get("bar_start") or ""))
+    current = normalized[-1] if normalized and not normalized[-1]["is_closed"] else None
+    return {
+        "ticker": symbol.strip().upper(),
+        "timeframe": timeframe,
+        "history": normalized[:-1] if current is not None else normalized,
+        "current": current,
+    }
+
+
+def normalize_qmd_macro_bar(row: dict[str, Any], *, timeframe: str) -> dict[str, Any]:
+    return {
+        "schema_version": row.get("schema_version"),
+        "session_date": row.get("session_date"),
+        "timeframe": timeframe,
+        "sym": str(row.get("ticker") or "").upper(),
+        "bar_start": row.get("bar_start"),
+        "bar_end": row.get("bar_end"),
+        "is_closed": row.get("state") != "partial",
+        "open": row.get("open"),
+        "high": row.get("high"),
+        "low": row.get("low"),
+        "close": row.get("close"),
+        "volume": row.get("size_sum"),
+        "vwap": None,
+    }
 
 
 def normalize_qmd_family_bar_snapshot(payload: Any, *, symbol: str, timeframe: str) -> dict[str, Any]:

@@ -3,10 +3,51 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from src.backend.qmd_gateway_client import qmd_websocket_url
+from src.backend.qmd_gateway_client import normalize_qmd_macro_bar_snapshot, qmd_websocket_url
 
 
 class QmdGatewayClientTests(unittest.TestCase):
+    def test_macro_snapshot_projects_trade_family_and_current_bar(self) -> None:
+        result = normalize_qmd_macro_bar_snapshot(
+            {
+                "rows": [
+                    {"bar_family": "quote", "bar_start": "2026-07-01T00:00:00Z"},
+                    {
+                        "bar_family": "trade",
+                        "bar_start": "2026-07-01T00:00:00Z",
+                        "bar_end": "2026-08-01T00:00:00Z",
+                        "close": 315.0,
+                        "high": 320.0,
+                        "local_date": "2026-07-01",
+                        "low": 300.0,
+                        "open": 305.0,
+                        "size_sum": 10_000.0,
+                        "state": "closed",
+                    },
+                    {
+                        "bar_family": "trade",
+                        "bar_start": "2026-08-01T00:00:00Z",
+                        "bar_end": "2026-09-01T00:00:00Z",
+                        "close": 321.0,
+                        "high": 322.0,
+                        "local_date": "2026-08-01",
+                        "low": 314.0,
+                        "open": 315.0,
+                        "size_sum": 2_500.0,
+                        "state": "partial",
+                    },
+                ],
+            },
+            symbol="AAPL",
+            timeframe="1mo",
+        )
+
+        self.assertEqual(len(result["history"]), 1)
+        self.assertEqual(result["history"][0]["timeframe"], "1mo")
+        self.assertTrue(result["history"][0]["is_closed"])
+        self.assertEqual(result["current"]["close"], 321.0)
+        self.assertFalse(result["current"]["is_closed"])
+
     @patch("src.backend.qmd_gateway_client.qmd_enabled", return_value=True)
     @patch("src.backend.qmd_gateway_client.qmd_base_url", return_value="http://127.0.0.1:8795")
     def test_websocket_url_uses_qmd_authority_and_query(self, _base_url, _enabled) -> None:

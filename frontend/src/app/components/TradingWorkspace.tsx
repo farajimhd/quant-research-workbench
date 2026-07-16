@@ -33,31 +33,34 @@ import {
 } from "./WorkspaceCanvas";
 
 type TradingWorkspaceProps = {
+  allowMultipleInstances?: boolean;
   clockLabel: string;
   canPopOut?: boolean;
   canvasTargets?: WorkspaceCanvasTarget[];
   compact?: boolean;
-  defaultOpenIds?: WorkspaceContainerId[];
+  defaultOpenIds?: string[];
   defaultStateOverride?: CanvasWorkspaceState | null;
   definitionsOverride?: readonly WorkspaceContainerDefinition[];
   historicalSourceReady: boolean;
   initialStateOverride?: CanvasWorkspaceState | null;
   layoutPreset?: "focus" | "global" | "mode";
-  linkColorForContainer?: (definition: WorkspaceContainerDefinition) => string | undefined;
-  linkLabelForContainer?: (definition: WorkspaceContainerDefinition) => string | undefined;
-  metaForContainer?: (definition: WorkspaceContainerDefinition) => WorkspaceWindowMeta;
+  linkColorForContainer?: (definition: WorkspaceContainerDefinition, instanceId: string) => string | undefined;
+  linkLabelForContainer?: (definition: WorkspaceContainerDefinition, instanceId: string) => string | undefined;
+  metaForContainer?: (definition: WorkspaceContainerDefinition, instanceId: string) => WorkspaceWindowMeta;
   mode: TradingWorkspaceMode;
-  onMoveContainerToCanvas?: (id: WorkspaceContainerId, canvasId: string, layout: WorkspaceWindowLayout) => void;
-  onPopOutContainer?: (id: WorkspaceContainerId, layout: WorkspaceWindowLayout) => void;
+  onContainerAdded?: (instanceId: string, definition: WorkspaceContainerDefinition) => void;
+  onMoveContainerToCanvas?: (id: string, canvasId: string, layout: WorkspaceWindowLayout) => void;
+  onPopOutContainer?: (id: string, layout: WorkspaceWindowLayout) => void;
   onStateChange?: (state: CanvasWorkspaceState) => void;
-  renderContainer?: (definition: WorkspaceContainerDefinition) => ReactNode;
+  renderContainer?: (definition: WorkspaceContainerDefinition, instanceId: string) => ReactNode;
   runLabel: string;
   runStatus: "completed" | "idle" | "running" | "unavailable";
   sourceLabel?: string;
   showHealth?: boolean;
   statusLabel?: string;
   storageKeyOverride?: string;
-  titleBarActionsForContainer?: (definition: WorkspaceContainerDefinition) => ReactNode;
+  titleBarActionsForContainer?: (definition: WorkspaceContainerDefinition, instanceId: string) => ReactNode;
+  titleForContainer?: (definition: WorkspaceContainerDefinition, instanceId: string) => string;
   workspaceBadge?: string;
   commandBarVisible?: boolean;
   managementContent?: ReactNode;
@@ -66,9 +69,10 @@ type TradingWorkspaceProps = {
 };
 
 const DEFAULT_CANVAS_TARGETS: WorkspaceCanvasTarget[] = [{ color: "var(--primary)", id: "main", isCurrent: true, label: "Main" }];
-export const TRADING_WORKSPACE_LAYOUT_VERSION = 3;
+export const TRADING_WORKSPACE_LAYOUT_VERSION = 4;
 
 export function TradingWorkspace({
+  allowMultipleInstances = false,
   clockLabel,
   canPopOut = false,
   canvasTargets = DEFAULT_CANVAS_TARGETS,
@@ -84,6 +88,7 @@ export function TradingWorkspace({
   metaForContainer,
   mode,
   onMoveContainerToCanvas,
+  onContainerAdded,
   onPopOutContainer,
   onStateChange,
   renderContainer,
@@ -94,6 +99,7 @@ export function TradingWorkspace({
   statusLabel,
   storageKeyOverride,
   titleBarActionsForContainer,
+  titleForContainer,
   workspaceBadge,
   commandBarVisible = true,
   managementContent,
@@ -107,16 +113,17 @@ export function TradingWorkspace({
     () => initialStateOverride ?? readWorkspaceState(storageKey, mode, definitions, defaultOpenIds, layoutPreset),
     [defaultOpenIds, definitions, initialStateOverride, layoutPreset, mode, storageKey],
   );
-  const [openIds, setOpenIds] = useState<WorkspaceContainerId[]>(initial.openIds);
+  const [openIds, setOpenIds] = useState<string[]>(initial.openIds);
+  const [instances, setInstances] = useState<Record<string, WorkspaceContainerId>>(initial.instances);
   const [layouts, setLayouts] = useState<Record<string, WorkspaceWindowLayout>>(initial.layouts);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const canvasRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
-    const state = { layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts, openIds };
+    const state = { instances, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts, openIds };
     window.localStorage.setItem(storageKey, JSON.stringify(state));
     onStateChange?.(state);
-  }, [layouts, onStateChange, openIds, storageKey]);
+  }, [instances, layouts, onStateChange, openIds, storageKey]);
 
   useEffect(() => {
     const syncStoredState = (event: StorageEvent) => {
@@ -125,28 +132,32 @@ export function TradingWorkspace({
       if (!next) return;
       setOpenIds(next.openIds);
       setLayouts(next.layouts);
+      setInstances(next.instances);
     };
     window.addEventListener("storage", syncStoredState);
     return () => window.removeEventListener("storage", syncStoredState);
   }, [definitions, storageKey]);
 
-  function focusContainer(id: WorkspaceContainerId) {
+  function focusContainer(id: string) {
     const highest = Math.max(0, ...Object.values(layouts).map((layout) => layout.z));
     setLayouts((current) => ({ ...current, [id]: { ...current[id], minimized: false, z: highest + 1 } }));
   }
 
   function addContainer(id: WorkspaceContainerId) {
-    if (openIds.includes(id)) {
+    if (!allowMultipleInstances && openIds.includes(id)) {
       focusContainer(id);
       setLibraryOpen(false);
       onManagementClose?.();
       return;
     }
-    const nextIds = [...openIds, id];
+    const instanceId = allowMultipleInstances ? nextContainerInstanceId(id, Object.keys(instances)) : id;
+    const nextIds = [...openIds, instanceId];
     setOpenIds(nextIds);
+    setInstances((current) => ({ ...current, [instanceId]: id }));
     setLayouts((current) => layoutPreset === "focus"
       ? createFocusLayouts(nextIds)
-      : { ...current, [id]: createAddedLayout(current, openIds.length) });
+      : { ...current, [instanceId]: createAddedLayout(current, openIds.length) });
+    onContainerAdded?.(instanceId, definitionById.get(id)!);
     setLibraryOpen(false);
     onManagementClose?.();
   }
@@ -159,22 +170,26 @@ export function TradingWorkspace({
     if (defaultStateOverride) {
       setOpenIds([...defaultStateOverride.openIds]);
       setLayouts(cloneLayouts(defaultStateOverride.layouts));
+      setInstances({ ...defaultStateOverride.instances });
       return;
     }
     const nextIds = defaultOpenIds ?? defaultContainersForMode(mode);
     setOpenIds(nextIds);
-    setLayouts(createLayoutsForPreset(layoutPreset, mode, nextIds));
+    const nextInstances = Object.fromEntries(nextIds.map((id) => [id, instanceKind(id, {}, definitionById)])) as Record<string, WorkspaceContainerId>;
+    setInstances(nextInstances);
+    setLayouts(createLayoutsForPreset(layoutPreset, mode, nextIds, nextInstances));
   }
 
-  function resetContainer(id: WorkspaceContainerId) {
+  function resetContainer(id: string) {
+    const kind = instanceKind(id, instances, definitionById);
     const defaultLayout = defaultStateOverride?.layouts[id]
-      ?? createLayoutsForPreset(layoutPreset, mode, [id])[id]
+      ?? createLayoutsForPreset(layoutPreset, mode, [id], { [id]: kind })[id]
       ?? createAddedLayout({}, 0, layoutPreset === "focus");
     setOpenIds((current) => current.includes(id) ? current : [...current, id]);
     setLayouts((current) => ({ ...current, [id]: { ...defaultLayout, z: Math.max(1, defaultLayout.z) } }));
   }
 
-  function moveContainer(id: WorkspaceContainerId, canvasId: string) {
+  function moveContainer(id: string, canvasId: string) {
     const layout = layouts[id];
     if (!layout || !onMoveContainerToCanvas) return;
     onMoveContainerToCanvas(id, canvasId, layout);
@@ -219,7 +234,7 @@ export function TradingWorkspace({
 
       {libraryOpen ? <>
         <button aria-label="Close container library" className="workspace-container-library-scrim" onClick={() => setLibraryOpen(false)} type="button" />
-        <WorkspaceContainerLibrary definitions={definitions} mode={mode} openIds={openIds} onAdd={addContainer} />
+        <WorkspaceContainerLibrary allowMultipleInstances={allowMultipleInstances} definitions={definitions} instances={instances} mode={mode} openIds={openIds} onAdd={addContainer} />
       </> : null}
 
       {managementOpen ? <>
@@ -227,7 +242,7 @@ export function TradingWorkspace({
         <aside aria-label="Canvas management" className="workspace-management-sidebar">
           <header><strong>Canvas management</strong><button aria-label="Close canvas management" className="toolbar-button compact" onClick={onManagementClose} type="button"><X size={13} /></button></header>
           {managementContent}
-          <WorkspaceContainerLibrary definitions={definitions} mode={mode} openIds={openIds} onAdd={addContainer} />
+          <WorkspaceContainerLibrary allowMultipleInstances={allowMultipleInstances} definitions={definitions} instances={instances} mode={mode} openIds={openIds} onAdd={addContainer} />
           <button className="button secondary compact workspace-management-reset" onClick={resetLayout} type="button"><RefreshCcw size={13} /> Reset layout</button>
         </aside>
       </> : null}
@@ -244,34 +259,36 @@ export function TradingWorkspace({
             <small>container workspace</small>
           </div>
           {openIds.map((id) => {
-            const definition = definitionById.get(id);
+            const kind = instanceKind(id, instances, definitionById);
+            const definition = definitionById.get(kind);
             const layout = layouts[id];
             if (!definition || !layout) return null;
-            const meta = metaForContainer?.(definition) ?? containerMeta(definition, mode, historicalSourceReady, runStatus);
+            const meta = metaForContainer?.(definition, id) ?? containerMeta(definition, mode, historicalSourceReady, runStatus);
+            const title = titleForContainer?.(definition, id) ?? definition.title;
             return (
               <WorkspaceWindow
                 canPopOut={canPopOut}
                 canvasTargets={canvasTargets}
                 compact={compact}
-                icon={containerIcon(id)}
+                icon={containerIcon(kind)}
                 id={id}
                 key={id}
-                kind={id}
+                kind={kind}
                 layout={layout}
-                linkColor={linkColorForContainer?.(definition)}
-                titleBarActions={titleBarActionsForContainer?.(definition)}
-                linkLabel={linkLabelForContainer?.(definition)}
+                linkColor={linkColorForContainer?.(definition, id)}
+                titleBarActions={titleBarActionsForContainer?.(definition, id)}
+                linkLabel={linkLabelForContainer?.(definition, id)}
                 meta={meta}
                 fullscreenRightInset={managementOpen ? "min(360px, 92%)" : 0}
                 onClose={() => setOpenIds((current) => current.filter((candidate) => candidate !== id))}
                 onFocus={() => focusContainer(id)}
                 onLayoutChange={updateLayout}
-                onMoveToCanvas={(windowId, targetCanvasId) => moveContainer(windowId as WorkspaceContainerId, targetCanvasId)}
+                onMoveToCanvas={(windowId, targetCanvasId) => moveContainer(windowId, targetCanvasId)}
                 onPopOut={() => onPopOutContainer?.(id, layout)}
                 onReset={() => resetContainer(id)}
-                title={definition.title}
+                title={title}
               >
-                {renderContainer ? renderContainer(definition) : <ContainerStandby definition={definition} meta={meta} mode={mode} />}
+                {renderContainer ? renderContainer(definition, id) : <ContainerStandby definition={definition} meta={meta} mode={mode} />}
               </WorkspaceWindow>
             );
           })}
@@ -282,15 +299,19 @@ export function TradingWorkspace({
 }
 
 function WorkspaceContainerLibrary({
+  allowMultipleInstances,
   definitions,
+  instances,
   mode,
   onAdd,
   openIds,
 }: {
+  allowMultipleInstances: boolean;
   definitions: WorkspaceContainerDefinition[];
+  instances: Record<string, WorkspaceContainerId>;
   mode: TradingWorkspaceMode;
   onAdd: (id: WorkspaceContainerId) => void;
-  openIds: WorkspaceContainerId[];
+  openIds: string[];
 }) {
   return (
     <section className="workspace-container-library" aria-label="Container library">
@@ -301,16 +322,16 @@ function WorkspaceContainerLibrary({
       <div className="workspace-container-library-grid">
         {definitions.map((definition) => {
           const binding = sourceBindingForContainer(definition, mode);
-          const isOpen = openIds.includes(definition.id);
+          const openCount = openIds.filter((id) => instanceKind(id, instances) === definition.id).length;
           return (
             <article key={definition.id}>
               <div className="workspace-library-icon">{containerIcon(definition.id)}</div>
               <div className="workspace-library-copy">
                 <strong>{definition.title}</strong>
-                <small>{binding.summary}</small>
+                <small>{binding.summary}{openCount ? ` · ${openCount} open` : ""}</small>
               </div>
               <button className="button secondary compact" onClick={() => onAdd(definition.id)} type="button">
-                {isOpen ? "Focus" : "Add"}
+                {!allowMultipleInstances && openCount ? "Focus" : "Add"}
               </button>
             </article>
           );
@@ -362,7 +383,7 @@ function readWorkspaceState(
   storageKey: string,
   mode: TradingWorkspaceMode,
   definitions: WorkspaceContainerDefinition[],
-  defaultOpenIds: WorkspaceContainerId[] | undefined,
+  defaultOpenIds: string[] | undefined,
   layoutPreset: "focus" | "global" | "mode",
 ): CanvasWorkspaceState {
   const defaultIds = defaultOpenIds ?? defaultContainersForMode(mode);
@@ -373,28 +394,32 @@ function readWorkspaceState(
     if (!parsed) throw new Error("stale layout");
     return parsed;
   } catch {
-    return { layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: createLayoutsForPreset(layoutPreset, mode, defaultIds), openIds: defaultIds };
+    const instances = Object.fromEntries(defaultIds.map((id) => [id, instanceKind(id, {}, new Map(definitions.map((definition) => [definition.id, definition])))])) as Record<string, WorkspaceContainerId>;
+    return { instances, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: createLayoutsForPreset(layoutPreset, mode, defaultIds, instances), openIds: defaultIds };
   }
 }
 
 function parseWorkspaceState(raw: string, definitions: WorkspaceContainerDefinition[]): CanvasWorkspaceState | null {
   try {
     const parsed = JSON.parse(raw) as Partial<CanvasWorkspaceState>;
-    if (parsed.layoutVersion !== TRADING_WORKSPACE_LAYOUT_VERSION || !parsed.layouts || !Array.isArray(parsed.openIds)) return null;
-    const openIds = parsed.openIds.filter((id) => definitions.some((definition) => definition.id === id));
+    if (![3, TRADING_WORKSPACE_LAYOUT_VERSION].includes(Number(parsed.layoutVersion)) || !parsed.layouts || !Array.isArray(parsed.openIds)) return null;
+    const definitionById = new Map(definitions.map((definition) => [definition.id, definition]));
+    const parsedInstances = parsed.instances && typeof parsed.instances === "object" ? parsed.instances : {};
+    const openIds = parsed.openIds.filter((id) => definitionById.has(instanceKind(id, parsedInstances, definitionById)));
+    const instances = Object.fromEntries(openIds.map((id) => [id, instanceKind(id, parsedInstances, definitionById)])) as Record<string, WorkspaceContainerId>;
     const layouts = Object.fromEntries(openIds.flatMap((id) => parsed.layouts?.[id] ? [[id, parsed.layouts[id]]] : []));
-    return { layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts, openIds };
+    return { instances, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts, openIds };
   } catch {
     return null;
   }
 }
 
-function createLayoutsForPreset(preset: "focus" | "global" | "mode", mode: TradingWorkspaceMode, ids: WorkspaceContainerId[]) {
+function createLayoutsForPreset(preset: "focus" | "global" | "mode", mode: TradingWorkspaceMode, ids: string[], instances: Record<string, WorkspaceContainerId> = {}) {
   if (preset === "focus") return createFocusLayouts(ids);
-  return preset === "global" ? createGlobalLayouts(ids) : createHistoricalLayouts(mode, ids);
+  return preset === "global" ? createGlobalLayouts(ids, instances) : createHistoricalLayouts(mode, ids, instances);
 }
 
-function createGlobalLayouts(ids: WorkspaceContainerId[]): Record<string, WorkspaceWindowLayout> {
+function createGlobalLayouts(ids: string[], instances: Record<string, WorkspaceContainerId> = {}): Record<string, WorkspaceWindowLayout> {
   const width = availableWorkspaceWidth();
   const margin = 0;
   const gap = 2;
@@ -411,10 +436,14 @@ function createGlobalLayouts(ids: WorkspaceContainerId[]): Record<string, Worksp
     xbrl: { h: 290, w: columnWidth, x: margin, y: 998 },
     journal: { h: 290, w: columnWidth, x: margin + columnWidth + gap, y: 1158 },
   };
-  return Object.fromEntries(ids.map((id, index) => [id, { ...placements[id], fullscreen: false, minimized: false, z: index + 1 }]));
+  return Object.fromEntries(ids.map((id, index) => {
+    const kind = instanceKind(id, instances);
+    const placement = placements[kind] ?? createAddedLayout({}, index);
+    return [id, { ...placement, fullscreen: false, minimized: false, z: index + 1 }];
+  }));
 }
 
-export function createFocusLayouts(ids: WorkspaceContainerId[]): Record<string, WorkspaceWindowLayout> {
+export function createFocusLayouts(ids: string[]): Record<string, WorkspaceWindowLayout> {
   const width = availableWorkspaceWidth(true);
   const height = Math.max(320, availableWorkspaceHeight() - 62);
   if (ids.length === 1) return { [ids[0]]: { fullscreen: true, h: height, minimized: false, w: width, x: 0, y: 0, z: 1 } };
@@ -431,7 +460,7 @@ export function createFocusLayouts(ids: WorkspaceContainerId[]): Record<string, 
   }]));
 }
 
-function createHistoricalLayouts(mode: TradingWorkspaceMode, ids: WorkspaceContainerId[]): Record<string, WorkspaceWindowLayout> {
+function createHistoricalLayouts(mode: TradingWorkspaceMode, ids: string[], instances: Record<string, WorkspaceContainerId> = {}): Record<string, WorkspaceWindowLayout> {
   const width = availableWorkspaceWidth();
   const margin = 12;
   const gap = 10;
@@ -454,9 +483,27 @@ function createHistoricalLayouts(mode: TradingWorkspaceMode, ids: WorkspaceConta
         orders: { h: 280, w: rightWidth, x: rightX, y: 664 },
       };
   return Object.fromEntries(ids.map((id, index) => {
-    const placement = placements[id] ?? createAddedLayout({}, index);
+    const placement = placements[instanceKind(id, instances)] ?? createAddedLayout({}, index);
     return [id, { ...placement, fullscreen: false, minimized: false, z: index + 1 }];
   }));
+}
+
+function nextContainerInstanceId(kind: WorkspaceContainerId, openIds: string[]) {
+  if (!openIds.includes(kind)) return kind;
+  let counter = 2;
+  while (openIds.includes(`${kind}-${counter}`)) counter += 1;
+  return `${kind}-${counter}`;
+}
+
+function instanceKind(
+  instanceId: string,
+  instances: Record<string, WorkspaceContainerId>,
+  definitions?: Map<WorkspaceContainerId, WorkspaceContainerDefinition>,
+): WorkspaceContainerId {
+  const explicit = instances[instanceId];
+  if (explicit) return explicit;
+  if (definitions?.has(instanceId as WorkspaceContainerId)) return instanceId as WorkspaceContainerId;
+  return instanceId.replace(/-\d+$/, "") as WorkspaceContainerId;
 }
 
 function createAddedLayout(layouts: Record<string, WorkspaceWindowLayout>, index: number, focus = false): WorkspaceWindowLayout {

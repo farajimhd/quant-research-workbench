@@ -28,7 +28,7 @@ import {
   SlidersHorizontal,
   X
 } from "lucide-react";
-import { forwardRef, type FormEvent, type ReactNode, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 
 import { displayName } from "../format";
 import { buildSegmentButtonClassName } from "../selectionStyles";
@@ -257,6 +257,7 @@ type ChartPanelProps = {
   showReferenceLine?: boolean;
   showIndicatorControls?: boolean;
   showSupervisionControls?: boolean;
+  settingsStorageKey?: string;
   ticker: string;
   tickerInputWidth?: number | string;
   tickerMaxLength?: number;
@@ -327,6 +328,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   showReferenceLine = true,
   showIndicatorControls = true,
   showSupervisionControls = false,
+  settingsStorageKey,
   ticker,
   tickerInputWidth,
   tickerMaxLength = 10,
@@ -366,6 +368,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const canLoadEarlierRef = useRef(canLoadEarlier);
   const loadingEarlierRef = useRef(loadingEarlier);
   const onLoadEarlierRef = useRef(onLoadEarlier);
+  const suppressEarlierLoadUntilRef = useRef(0);
   const fittedChartKeyRef = useRef("");
   const normalizeTickerValue = (value: string) => (normalizeTicker ? value.toUpperCase() : value);
   const [draftTicker, setDraftTicker] = useState(normalizeTickerValue(ticker));
@@ -373,8 +376,12 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const [supervisionMenuOpen, setSupervisionMenuOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
-  const [chartSettings, setChartSettings] = useState<ChartAppearanceSettings>(() => loadChartAppearanceSettings());
-  const [legendSettings, setLegendSettings] = useState<LegendSettingsMap>(() => loadLegendSettings());
+  const legendStorageKey = settingsStorageKey ? `${settingsStorageKey}.legend` : LEGEND_SETTINGS_STORAGE_KEY;
+  const appearanceStorageKey = settingsStorageKey ? `${settingsStorageKey}.appearance` : CHART_APPEARANCE_STORAGE_KEY;
+  const paneHeightStorageKey = settingsStorageKey ? `${settingsStorageKey}.pane-heights` : `${LEGEND_SETTINGS_STORAGE_KEY}.pane-heights`;
+  const [chartSettings, setChartSettings] = useState<ChartAppearanceSettings>(() => loadChartAppearanceSettings(appearanceStorageKey));
+  const [legendSettings, setLegendSettings] = useState<LegendSettingsMap>(() => loadLegendSettings(legendStorageKey));
+  const [oscillatorPaneHeights, setOscillatorPaneHeights] = useState<Record<string, number>>(() => loadOscillatorPaneHeights(paneHeightStorageKey));
   const [periodMenuOpen, setPeriodMenuOpen] = useState(false);
   const [themeSignature, setThemeSignature] = useState(() => document.documentElement.dataset.shellTheme ?? "");
   const effectiveChartSettings = useMemo(
@@ -416,21 +423,21 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const updateChartSettings = <K extends keyof ChartAppearanceSettings>(key: K, value: ChartAppearanceSettings[K]) => {
     setChartSettings((current) => {
       const next = normalizeChartAppearanceSettings({ ...current, [key]: value });
-      saveChartAppearanceSettings(next);
+      saveChartAppearanceSettings(next, appearanceStorageKey);
       return next;
     });
   };
 
   const resetChartSettings = () => {
     const next = { ...defaultChartAppearanceSettings };
-    saveChartAppearanceSettings(next);
+    saveChartAppearanceSettings(next, appearanceStorageKey);
     setChartSettings(next);
   };
 
   const updateLegendSettings = (key: string, patch: LegendSeriesSettings) => {
     setLegendSettings((current) => {
       const next = { ...current, [key]: { ...(current[key] ?? {}), ...patch } };
-      saveLegendSettings(next);
+      saveLegendSettings(next, legendStorageKey);
       return next;
     });
   };
@@ -439,7 +446,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     setLegendSettings((current) => {
       const next = { ...current };
       delete next[key];
-      saveLegendSettings(next);
+      saveLegendSettings(next, legendStorageKey);
       return next;
     });
   };
@@ -462,16 +469,69 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
 
   useImperativeHandle(ref, () => ({
     fitFirstDay() {
-      fitFirstDay(priceChartRef.current, fitCandles(payload), timeframe);
+      suppressEarlierLoad();
+      fitLatestSession(chartGroup(), fitCandles(payload), timeframe);
     },
     fitRecent() {
-      fitReferenceOrRecent(priceChartRef.current, fitCandles(payload), reference, timeframe, initialFitMode);
+      suppressEarlierLoad();
+      centerReferenceOrLatest(chartGroup(), fitCandles(payload), reference, timeframe, initialFitMode);
     },
     toggleFullscreen() {
       setFullscreen((value) => !value);
       window.setTimeout(() => resizeCharts(), 30);
     }
   }));
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => resizeCharts(), 0);
+    return () => window.clearTimeout(timer);
+  }, [oscillatorPaneHeights]);
+
+  function chartGroup() {
+    return [priceChartRef.current, ...oscillatorChartRefs.current.values()].filter((chart): chart is IChartApi => Boolean(chart));
+  }
+
+  function suppressEarlierLoad() {
+    // Programmatic fits and pane synchronization also emit visible-range events.
+    // Only genuine user navigation to the left edge may request older history.
+    suppressEarlierLoadUntilRef.current = Date.now() + 750;
+  }
+
+  function updateOscillatorPaneHeight(key: string, height: number) {
+    const maxHeight = Math.max(96, Math.floor((shellRef.current?.clientHeight ?? 640) * 0.65));
+    setOscillatorPaneHeights((current) => {
+      const next = { ...current, [key]: Math.max(72, Math.min(maxHeight, Math.round(height))) };
+      saveOscillatorPaneHeights(next, paneHeightStorageKey);
+      return next;
+    });
+  }
+
+  function startOscillatorPaneResize(key: string, event: ReactPointerEvent<HTMLButtonElement>) {
+    const pane = oscillatorPaneRefs.current.get(key);
+    if (!pane) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const startY = event.clientY;
+    const startHeight = pane.clientHeight;
+    const target = event.currentTarget;
+    target.setPointerCapture(event.pointerId);
+    const move = (moveEvent: globalThis.PointerEvent) => updateOscillatorPaneHeight(key, startHeight - (moveEvent.clientY - startY));
+    const stop = () => {
+      target.removeEventListener("pointermove", move);
+      target.removeEventListener("pointerup", stop);
+      target.removeEventListener("pointercancel", stop);
+    };
+    target.addEventListener("pointermove", move);
+    target.addEventListener("pointerup", stop);
+    target.addEventListener("pointercancel", stop);
+  }
+
+  function resizeOscillatorPaneWithKeyboard(key: string, event: ReactKeyboardEvent<HTMLButtonElement>) {
+    if (!["ArrowUp", "ArrowDown"].includes(event.key)) return;
+    event.preventDefault();
+    const current = oscillatorPaneRefs.current.get(key)?.clientHeight ?? oscillatorPaneHeights[key] ?? 104;
+    updateOscillatorPaneHeight(key, current + (event.key === "ArrowUp" ? 12 : -12));
+  }
 
   useEffect(() => {
     const target = document.documentElement;
@@ -575,6 +635,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         && range.from <= 10
         && canLoadEarlierRef.current
         && !loadingEarlierRef.current
+        && Date.now() >= suppressEarlierLoadUntilRef.current
       ) {
         onLoadEarlierRef.current?.();
       }
@@ -610,6 +671,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       initialFitTimerRef.current = window.setTimeout(() => {
         const currentPayload = payloadRef.current;
         if (!currentPayload || !priceChartRef.current) return;
+        suppressEarlierLoad();
         if (reference) {
           fitAroundReference(priceChartRef.current, currentPayload.candles, reference, timeframe);
         } else {
@@ -619,6 +681,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         initialFitTimerRef.current = null;
       }, 20);
     } else {
+      suppressEarlierLoad();
       if (currentTimeRange) {
         priceChartRef.current.timeScale().setVisibleRange(currentTimeRange);
       } else if (currentRange) {
@@ -631,6 +694,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
 
   useEffect(() => {
     if (!priceChartRef.current || !payload?.candles.length || !reference) return;
+    suppressEarlierLoad();
     fitAroundReference(priceChartRef.current, payload.candles, reference, timeframe);
     drawCurrentRegions();
   }, [referenceKey, timeframe]);
@@ -1032,7 +1096,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         <div className="chart-timeframe-row">
           {timeframes.map((item) => (
             <button className={buildSegmentButtonClassName(item === timeframe)} key={item} onClick={() => onTimeframeChange(item)} type="button">
-              {item}
+              {formatTimeframeLabel(item)}
             </button>
           ))}
         </div>
@@ -1096,8 +1160,8 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           <Settings size={15} />
         </button>
         <span className="toolbar-divider" />
-        <button className="toolbar-button" type="button" title="Fit first day" onClick={() => fitFirstDay(priceChartRef.current, fitCandles(payload), timeframe)}><CalendarRange size={15} /></button>
-        <button className="toolbar-button" type="button" title={reference ? "Fit selected trade" : "Fit recent"} onClick={() => fitReferenceOrRecent(priceChartRef.current, fitCandles(payload), reference, timeframe)}><LocateFixed size={15} /></button>
+        <button aria-label="Show latest session" className="toolbar-button" type="button" title="Show latest session" onClick={() => { suppressEarlierLoad(); fitLatestSession(chartGroup(), fitCandles(payload), timeframe); }}><CalendarRange size={15} /></button>
+        <button aria-label={reference ? "Center selected trade" : "Center latest bars"} className="toolbar-button" type="button" title={reference ? "Center selected trade" : "Center latest bars with room for new data"} onClick={() => { suppressEarlierLoad(); centerReferenceOrLatest(chartGroup(), fitCandles(payload), reference, timeframe); }}><LocateFixed size={15} /></button>
         {enableFullscreen ? (
           <>
             <span className="toolbar-divider" />
@@ -1150,9 +1214,17 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           </div>
           {oscillatorPaneGroups.map((group) => {
             return (
-              <div className="chart-osc" key={group.key}>
+              <div className="chart-osc" key={group.key} style={{ flexBasis: oscillatorPaneHeights[group.key] ?? undefined }}>
                 <div className="chart-pane-canvas" ref={(node) => setOscillatorPaneRef(group.key, node)} />
                 <div className="session-layer" ref={(node) => setOscillatorLayerRef(group.key, node)} />
+                <button
+                  aria-label={`Resize ${formatOscillatorPaneLabel(group)} pane. Use up and down arrow keys to resize.`}
+                  className="chart-pane-resize"
+                  onKeyDown={(event) => resizeOscillatorPaneWithKeyboard(group.key, event)}
+                  onPointerDown={(event) => startOscillatorPaneResize(group.key, event)}
+                  title="Drag to resize oscillator pane"
+                  type="button"
+                />
                 <button
                   aria-label={`Close ${formatOscillatorPaneLabel(group)} pane`}
                   className="chart-pane-close"
@@ -2127,10 +2199,10 @@ function seriesSelectionKey(series: ChartSeries) {
   return String(series.displayItemId || series.column || series.label).toLowerCase();
 }
 
-function loadLegendSettings(): LegendSettingsMap {
+function loadLegendSettings(storageKey = LEGEND_SETTINGS_STORAGE_KEY): LegendSettingsMap {
   if (typeof window === "undefined") return {};
   try {
-    const raw = window.localStorage.getItem(LEGEND_SETTINGS_STORAGE_KEY);
+    const raw = window.localStorage.getItem(storageKey);
     if (!raw) return {};
     const parsed = JSON.parse(raw) as LegendSettingsMap;
     return parsed && typeof parsed === "object" ? parsed : {};
@@ -2139,15 +2211,15 @@ function loadLegendSettings(): LegendSettingsMap {
   }
 }
 
-function saveLegendSettings(settings: LegendSettingsMap) {
+function saveLegendSettings(settings: LegendSettingsMap, storageKey = LEGEND_SETTINGS_STORAGE_KEY) {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(LEGEND_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  window.localStorage.setItem(storageKey, JSON.stringify(settings));
 }
 
-function loadChartAppearanceSettings(): ChartAppearanceSettings {
+function loadChartAppearanceSettings(storageKey = CHART_APPEARANCE_STORAGE_KEY): ChartAppearanceSettings {
   if (typeof window === "undefined") return { ...defaultChartAppearanceSettings };
   try {
-    const raw = window.localStorage.getItem(CHART_APPEARANCE_STORAGE_KEY);
+    const raw = window.localStorage.getItem(storageKey);
     if (!raw) return { ...defaultChartAppearanceSettings };
     return normalizeChartAppearanceSettings(JSON.parse(raw) as Partial<ChartAppearanceSettings>);
   } catch {
@@ -2155,9 +2227,24 @@ function loadChartAppearanceSettings(): ChartAppearanceSettings {
   }
 }
 
-function saveChartAppearanceSettings(settings: ChartAppearanceSettings) {
+function saveChartAppearanceSettings(settings: ChartAppearanceSettings, storageKey = CHART_APPEARANCE_STORAGE_KEY) {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(CHART_APPEARANCE_STORAGE_KEY, JSON.stringify(settings));
+  window.localStorage.setItem(storageKey, JSON.stringify(settings));
+}
+
+function loadOscillatorPaneHeights(storageKey: string): Record<string, number> {
+  if (typeof window === "undefined") return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(storageKey) ?? "{}") as Record<string, number>;
+    return Object.fromEntries(Object.entries(parsed).filter(([, value]) => Number.isFinite(value) && value >= 72));
+  } catch {
+    return {};
+  }
+}
+
+function saveOscillatorPaneHeights(heights: Record<string, number>, storageKey: string) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(storageKey, JSON.stringify(heights));
 }
 
 function normalizeChartAppearanceSettings(settings: Partial<ChartAppearanceSettings>): ChartAppearanceSettings {
@@ -2241,6 +2328,7 @@ function buildTimelineDataSignature(timeline: CandleSeriesDatum[]) {
 
 function chartTimeframeSeconds(timeframe: string) {
   const normalized = timeframe.trim().toLowerCase();
+  if (normalized === "1mo") return 30 * 24 * 60 * 60;
   const match = normalized.match(/^(\d+)(ms|s|m|h|d)$/);
   if (!match) return null;
   const value = Number(match[1]);
@@ -2471,6 +2559,7 @@ function chartOptions(
 ) {
   const timeframeSeconds = chartTimeframeSeconds(timeframe);
   const showSeconds = timeframeSeconds !== null && timeframeSeconds < 60;
+  const macroTimeframe = timeframe === "1d" || timeframe === "1mo";
   return {
     width: Math.max(320, width),
     height: Math.max(160, height),
@@ -2490,7 +2579,7 @@ function chartOptions(
       barSpacing: compact ? Math.max(12, Math.round(settings.candleSize * 0.55)) : settings.candleSize,
       minBarSpacing: 0.2,
       visible: showTimeScale,
-      timeVisible: true,
+      timeVisible: !macroTimeframe,
       secondsVisible: showSeconds,
       tickMarkFormatter: (timeValue: Time) => formatMarketAxisTime(timeValue, timeframe)
     }
@@ -2521,6 +2610,25 @@ const marketAxisFormatter = new Intl.DateTimeFormat("en-US", {
   hour12: false,
   minute: "2-digit",
   timeZone: "America/New_York"
+});
+
+const marketDailyAxisFormatter = new Intl.DateTimeFormat("en-US", {
+  day: "2-digit",
+  month: "short",
+  timeZone: "America/New_York"
+});
+
+const marketMonthlyAxisFormatter = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  timeZone: "America/New_York",
+  year: "2-digit"
+});
+
+const marketMacroDateTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  day: "2-digit",
+  month: "short",
+  timeZone: "America/New_York",
+  year: "numeric"
 });
 
 const marketSecondAxisFormatter = new Intl.DateTimeFormat("en-US", {
@@ -2573,17 +2681,23 @@ const marketSubsecondDateTimeFormatter = new Intl.DateTimeFormat("en-US", {
   year: "numeric"
 });
 
-function fitFirstDay(chart: IChartApi | null, candles: Candle[], timeframe = "") {
-  if (!chart || !candles.length) return;
+type ChartRangeTarget = IChartApi | null | IChartApi[];
+
+function fitLatestSession(target: ChartRangeTarget, candles: Candle[], timeframe = "") {
+  const charts = chartRangeTargets(target);
+  if (!charts.length || !candles.length) return;
   const timeline = candleDataForTimeframe(candles, timeframe);
-  const firstDay = marketDate(candles[0].time);
-  let lastIndex = 0;
+  const latestDay = marketDate(candles[candles.length - 1].time);
+  let firstIndex = -1;
+  let lastIndex = -1;
   timeline.forEach((item, index) => {
-    if (marketDate(item.time) === firstDay) {
+    if (marketDate(item.time) === latestDay) {
+      if (firstIndex < 0) firstIndex = index;
       lastIndex = index;
     }
   });
-  chart.timeScale().setVisibleLogicalRange({ from: -1, to: Math.max(8, lastIndex + 1) });
+  if (firstIndex < 0 || lastIndex < 0) return;
+  setChartLogicalRange(charts, { from: Math.max(-1, firstIndex - 1), to: Math.max(firstIndex + 1, lastIndex + 1) });
 }
 
 function fitCandles(payload: ChartPayload | null | undefined) {
@@ -2604,7 +2718,7 @@ function fitInitialRange(chart: IChartApi | null, candles: Candle[], timeframe =
     return;
   }
   if (mode === "recent") {
-    fitRecent(chart, candles, timeframe);
+    centerLatest(chart, candles, timeframe);
     return;
   }
   if (mode === "last_market_day") {
@@ -2616,67 +2730,59 @@ function fitInitialRange(chart: IChartApi | null, candles: Candle[], timeframe =
     chart.timeScale().setVisibleLogicalRange({ from: -1, to: Math.max(8, timeline.length) });
     return;
   }
-  fitFirstDay(chart, candles, timeframe);
+  fitLatestSession(chart, candles, timeframe);
 }
 
-function fitLiveFirstTenMinutes(chart: IChartApi | null, candles: Candle[], timeframe: string) {
-  if (!chart || !candles.length) return;
+function fitLiveFirstTenMinutes(target: ChartRangeTarget, candles: Candle[], timeframe: string) {
+  const charts = chartRangeTargets(target);
+  if (!charts.length || !candles.length) return;
   const timeline = candleDataForTimeframe(candles, timeframe);
   const lastCandle = candles[candles.length - 1];
   const lastIndex = nearestTimelineIndex(timeline, lastCandle.time);
   const stepSeconds = chartTimeframeSeconds(timeframe) ?? 60;
   const targetBars = Math.max(4, Math.ceil((10 * 60) / stepSeconds));
   const halfSpan = Math.max(2, Math.ceil(targetBars / 2));
-  chart.timeScale().setVisibleLogicalRange({
+  setChartLogicalRange(charts, {
     from: Math.max(-1, lastIndex - halfSpan),
     to: Math.min(timeline.length + halfSpan, lastIndex + halfSpan),
   });
 }
 
 function fitLastMarketDay(chart: IChartApi | null, candles: Candle[], timeframe: string) {
-  if (!chart || !candles.length) return;
-  const timeline = candleDataForTimeframe(candles, timeframe);
-  const lastCandle = candles[candles.length - 1];
-  const lastDay = marketDate(lastCandle.time);
-  const firstIndex = timeline.findIndex((item) => marketDate(item.time) === lastDay);
-  const lastIndex = nearestTimelineIndex(timeline, lastCandle.time);
-  if (firstIndex < 0) {
-    fitRecent(chart, candles, timeframe);
-    return;
-  }
-  chart.timeScale().setVisibleLogicalRange({
-    from: Math.max(-1, firstIndex - 1),
-    to: Math.max(firstIndex + 8, lastIndex + 1),
-  });
+  fitLatestSession(chart, candles, timeframe);
 }
 
-function fitRecent(chart: IChartApi | null, candles: Candle[], timeframe = "") {
-  if (!chart || !candles.length) return;
+function centerLatest(target: ChartRangeTarget, candles: Candle[], timeframe = "") {
+  const charts = chartRangeTargets(target);
+  if (!charts.length || !candles.length) return;
   const timeline = candleDataForTimeframe(candles, timeframe);
   const lastCandle = candles[candles.length - 1];
   const last = nearestTimelineIndex(timeline, lastCandle.time);
-  const span = Math.min(180, Math.max(60, Math.ceil(timeline.length * 0.18)));
-  const halfSpan = Math.ceil(span / 2);
-  chart.timeScale().setVisibleLogicalRange({ from: last - halfSpan, to: last + halfSpan });
+  const preferredSpan = timeframe === "1mo" ? 36 : timeframe === "1d" ? 90 : Math.ceil(timeline.length * 0.18);
+  const span = Math.min(timeframe === "1mo" ? 36 : timeframe === "1d" ? 90 : 180, Math.max(timeframe === "1mo" ? 18 : timeframe === "1d" ? 45 : 60, preferredSpan));
+  const futureSpace = Math.max(3, Math.ceil(span * 0.22));
+  setChartLogicalRange(charts, { from: last - (span - futureSpace), to: last + futureSpace });
 }
 
-function fitReferenceOrRecent(chart: IChartApi | null, candles: Candle[], reference: ChartReference | null | undefined, timeframe: string, mode: ChartPanelProps["initialFitMode"] = "default") {
+function centerReferenceOrLatest(target: ChartRangeTarget, candles: Candle[], reference: ChartReference | null | undefined, timeframe: string, mode: ChartPanelProps["initialFitMode"] = "default") {
   if (reference) {
-    fitAroundReference(chart, candles, reference, timeframe);
+    fitAroundReference(target, candles, reference, timeframe);
     return;
   }
   if (mode === "live_first_10") {
-    fitLiveFirstTenMinutes(chart, candles, timeframe);
+    fitLiveFirstTenMinutes(target, candles, timeframe);
     return;
   }
   if (mode === "last_market_day") {
-    fitLastMarketDay(chart, candles, timeframe);
+    fitLatestSession(target, candles, timeframe);
     return;
   }
-  fitRecent(chart, candles, timeframe);
+  centerLatest(target, candles, timeframe);
 }
 
-function fitAroundReference(chart: IChartApi | null, candles: Candle[], reference: ChartReference, timeframe: string) {
+function fitAroundReference(target: ChartRangeTarget, candles: Candle[], reference: ChartReference, timeframe: string) {
+  const charts = chartRangeTargets(target);
+  const chart = charts[0];
   if (!chart || !candles.length) return;
   const referenceTime = resolveFitReferenceTime(reference, candles);
   if (referenceTime === null) {
@@ -2690,10 +2796,18 @@ function fitAroundReference(chart: IChartApi | null, candles: Candle[], referenc
   const tradeSpan = Math.max(1, Math.abs(endIndex - startIndex));
   const span = Math.min(timeline.length, Math.max(60, Math.min(240, tradeSpan * 5)));
   const halfSpan = Math.ceil(span / 2);
-  chart.timeScale().setVisibleLogicalRange({
+  setChartLogicalRange(charts, {
     from: Math.max(-1, referenceIndex - halfSpan),
     to: Math.min(timeline.length + halfSpan, referenceIndex + halfSpan),
   });
+}
+
+function chartRangeTargets(target: ChartRangeTarget) {
+  return (Array.isArray(target) ? target : [target]).filter((chart): chart is IChartApi => Boolean(chart));
+}
+
+function setChartLogicalRange(charts: IChartApi[], range: { from: number; to: number }) {
+  charts.forEach((chart) => chart.timeScale().setVisibleLogicalRange(range as LogicalRange));
 }
 
 function resolveFitReferenceTime(reference: ChartReference, candles: Candle[]) {
@@ -3373,6 +3487,8 @@ function timestampFromChartTime(timeValue: Time) {
 
 function formatMarketAxisTime(timeValue: Time, timeframe = "1m") {
   const timestamp = new Date(timestampFromChartTime(timeValue) * 1000);
+  if (timeframe === "1mo") return marketMonthlyAxisFormatter.format(timestamp);
+  if (timeframe === "1d") return marketDailyAxisFormatter.format(timestamp);
   const seconds = chartTimeframeSeconds(timeframe);
   if (seconds !== null && seconds < 1) return marketSubsecondAxisFormatter.format(timestamp);
   if (seconds !== null && seconds < 60) return marketSecondAxisFormatter.format(timestamp);
@@ -3381,10 +3497,17 @@ function formatMarketAxisTime(timeValue: Time, timeframe = "1m") {
 
 function formatMarketDateTime(timeValue: Time, timeframe = "1m") {
   const timestamp = new Date(timestampFromChartTime(timeValue) * 1000);
+  if (timeframe === "1mo" || timeframe === "1d") return marketMacroDateTimeFormatter.format(timestamp);
   const seconds = chartTimeframeSeconds(timeframe);
   if (seconds !== null && seconds < 1) return marketSubsecondDateTimeFormatter.format(timestamp);
   if (seconds !== null && seconds < 60) return marketSecondDateTimeFormatter.format(timestamp);
   return marketDateTimeFormatter.format(timestamp);
+}
+
+function formatTimeframeLabel(timeframe: string) {
+  if (timeframe === "1d") return "1D";
+  if (timeframe === "1mo") return "1M";
+  return timeframe;
 }
 
 function formatPrice(value: number) {

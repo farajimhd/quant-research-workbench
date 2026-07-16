@@ -12188,8 +12188,39 @@ button {
 .chart-osc {
   position: relative;
   height: 190px;
+  min-height: 72px;
   border-top: 1px solid var(--border);
   overflow: hidden;
+}
+
+.chart-pane-resize {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  z-index: 7;
+  width: 72px;
+  height: 9px;
+  border: 0;
+  background: transparent;
+  cursor: ns-resize;
+  padding: 0;
+  transform: translate(-50%, -50%);
+}
+
+.chart-pane-resize::after {
+  position: absolute;
+  top: 4px;
+  left: 20px;
+  width: 32px;
+  height: 2px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--muted-foreground) 46%, transparent);
+  content: "";
+}
+
+.chart-pane-resize:hover::after,
+.chart-pane-resize:focus-visible::after {
+  background: var(--foreground);
 }
 
 .chart-pane-close {
@@ -12788,8 +12819,12 @@ button {
 }
 
 .chart-empty-state {
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 360px;
+  justify-content: center;
   padding: 28px;
+  text-align: center;
 }
 
 .chart-settings-slot {
@@ -16398,6 +16433,11 @@ button {
   box-shadow: none;
 }
 
+.canvas-config-page .workspace-window[data-window-kind="chart"] .chart-empty-state {
+  min-height: 0;
+  align-items: center;
+}
+
 .canvas-config-page .workspace-window[data-window-kind="chart"] .chart-component-toolbar {
   gap: 2px;
   min-height: 30px;
@@ -16445,7 +16485,7 @@ button {
 
 .canvas-config-page .workspace-window[data-window-kind="chart"] .chart-osc {
   height: 104px;
-  min-height: 84px;
+  min-height: 72px;
   flex: 0 0 104px;
 }
 

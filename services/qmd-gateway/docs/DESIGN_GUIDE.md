@@ -133,11 +133,20 @@ Closed historical `1d`, `1w`, and `1y` rows may hydrate from
 The shared core also rolls current macro rows from cached intraday rows:
 
 - current day: closed intraday rows plus the current partial row
-- current week/year: closed daily context plus the current partial day
+- current week/month/year: closed daily context plus the current partial day
 
 All macro responses are evaluated as-of the active clock. Replay cannot expose
-the final macro close before the cursor reaches it. `1mo` is not in the durable
-contract and requires an explicit schema migration.
+the final macro close before the cursor reaches it. The durable source does not
+duplicate monthly rows: QMD History forms `1mo` from the authoritative `1d`
+trade/quote families with calendar-month boundaries, while QMD Live rolls the
+open month through the same shared macro algebra. The chart therefore receives
+one `1mo` contract without another raw-event scan or a second candle builder.
+
+Canvas uses bounded macro defaults rather than intraday lazy paging: `1d`
+requests the latest 90 calendar days and `1mo` requests the latest 36 calendar
+months. Closed history comes from the durable macro table; the live service may
+append the current partial period. Internal API naming is `1mo` so `1m` remains
+unambiguously one minute; the browser presents `1mo` as `1M`/Monthly.
 
 ## Cache identity and memory bounds
 
@@ -235,6 +244,7 @@ GET /snapshot/chart-bars/{ticker}?start=...&end=...&as_of=...&before=...&timefra
 GET /snapshot/family-bars/{ticker}?start=...&end=...&as_of=...&resolution=1m
 GET /snapshot/condition-bars/{ticker}?start=...&end=...&as_of=...&resolution=1m
 GET /snapshot/macro-bars/{ticker}?start=...&end=...&as_of=...&timeframe=1d
+GET /snapshot/chart-macro-bars/{ticker}?start=...&end=...&as_of=...&timeframe=1d|1mo
 ```
 
 `/snapshot/chart-bars` is the browser history contract. `as_of` clamps the
@@ -251,6 +261,10 @@ The chart candle projection remains reconciled to the canonical trade-family
 bars, while indicator state is calculated from the matching enriched bars so
 production chart features use the same causal calculator at every intraday
 resolution.
+`/snapshot/chart-macro-bars` is the bounded browser macro-history contract. It
+reads the durable three-family macro authority directly for `1d` and groups its
+daily rows for `1mo`; it never builds macro candles independently in Python or
+the frontend. Macro chart rows intentionally omit intraday causal indicators.
 The frontend retains all explicitly requested pages and cancels obsolete
 ticker/timeframe requests instead of allowing stale responses to overwrite a
 new selection.

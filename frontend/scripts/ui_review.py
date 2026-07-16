@@ -184,7 +184,7 @@ def validate_canvas_interactions(
     if scenario["page"] == "canvas-focus":
         if page.locator(".sidebar").count():
             issues.append("focus canvas renders the application sidebar")
-        chart = page.get_by_role("region", name="Chart", exact=True)
+        chart = page.locator('.workspace-window[data-window-kind="chart"]')
         if chart.count() != 1:
             issues.append("focus canvas does not render exactly one Chart container")
         else:
@@ -205,9 +205,10 @@ def validate_canvas_interactions(
     ):
         return issues
 
-    chart = page.get_by_role("region", name="Chart", exact=True)
-    if chart.count() != 1:
-        return ["main canvas does not render exactly one Chart container"]
+    charts = page.locator('.workspace-window[data-window-kind="chart"]')
+    if charts.count() < 1:
+        return ["main canvas does not render a Chart container"]
+    chart = charts.first
     try:
         sidebar_toggle = page.get_by_role("button", name="Toggle sidebar")
         toggle_box = sidebar_toggle.bounding_box()
@@ -354,7 +355,7 @@ def validate_canvas_interactions(
             issues.append("Scanner row configuration is not separated into its internal settings popover")
         scanner.get_by_role("button", name="Configure Scanner").click()
 
-        resize_handle = chart.get_by_role("button", name=re.compile(r"^Resize Chart\."))
+        resize_handle = chart.get_by_role("button", name=re.compile(r"^Resize .+\."))
         resize_box = resize_handle.bounding_box()
         chart_before_resize = chart.bounding_box()
         if not resize_box or not chart_before_resize:
@@ -368,23 +369,25 @@ def validate_canvas_interactions(
             chart_after_resize = chart.bounding_box()
             if not chart_after_resize or chart_after_resize["width"] < chart_before_resize["width"] + 30 or chart_after_resize["height"] < chart_before_resize["height"] + 22:
                 issues.append("Chart resize handle does not change both width and height")
-            chart.get_by_role("button", name="Reset Chart to its default layout").click()
+            chart.get_by_role("button", name=re.compile(r"^Reset .+ to its default layout$")).click()
 
-        minimize = chart.get_by_role("button", name="Minimize Chart")
+        minimize = chart.get_by_role("button", name=re.compile(r"^Minimize .+$"))
         if minimize.locator(".lucide-minus").count() != 1:
             issues.append("minimize action does not use the dedicated minus icon")
         minimize.click()
-        if chart.get_by_role("button", name="Restore Chart").count() != 1:
+        restore = chart.get_by_role("button", name=re.compile(r"^Restore .+$"))
+        if restore.count() != 1:
             issues.append("Chart did not enter the minimized state")
-        elif chart.get_by_role("button", name="Restore Chart").locator(".lucide-panel-top-open").count() != 1:
+        elif restore.locator(".lucide-panel-top-open").count() != 1:
             issues.append("restore action does not use a distinct restore icon")
-        chart.get_by_role("button", name="Restore Chart").click()
-        chart.get_by_role("button", name="Fullscreen Chart").click()
-        if chart.get_by_role("button", name="Exit fullscreen Chart").count() != 1:
+        restore.click()
+        chart.get_by_role("button", name=re.compile(r"^Fullscreen .+$")).click()
+        exit_fullscreen = chart.get_by_role("button", name=re.compile(r"^Exit fullscreen .+$"))
+        if exit_fullscreen.count() != 1:
             issues.append("Chart did not enter the maximized state")
-        elif chart.get_by_role("button", name="Exit fullscreen Chart").locator(".lucide-minimize-2").count() != 1:
+        elif exit_fullscreen.locator(".lucide-minimize-2").count() != 1:
             issues.append("fullscreen exit does not use the inward-arrow icon")
-        if chart.get_by_role("button", name="Minimize Chart").locator(".lucide-minus").count() != 1:
+        if chart.get_by_role("button", name=re.compile(r"^Minimize .+$")).locator(".lucide-minus").count() != 1:
             issues.append("fullscreen and title-bar minimize actions are visually ambiguous")
         fullscreen_geometry = page.evaluate("""() => {
             const canvas = document.querySelector('[data-workspace-canvas]');
@@ -425,8 +428,8 @@ def validate_canvas_interactions(
         if not sidebar_geometry or sidebar_geometry["chartRight"] > sidebar_geometry["sidebarLeft"] + 1:
             issues.append("fullscreen Chart does not reserve the right management sidebar")
         fullscreen_management.get_by_role("button", name="Close canvas management").click()
-        chart.get_by_role("button", name="Exit fullscreen Chart").click()
-        chart.get_by_role("button", name="Reset Chart to its default layout").click()
+        exit_fullscreen.click()
+        chart.get_by_role("button", name=re.compile(r"^Reset .+ to its default layout$")).click()
 
         page.get_by_role("button", name="Canvas management", exact=True).click()
         with page.expect_popup(timeout=5000) as blank_canvas_popup_info:
@@ -442,12 +445,12 @@ def validate_canvas_interactions(
         page.get_by_role("complementary", name="Canvas management").get_by_role("button", name="Close canvas management").click()
 
         with page.expect_popup(timeout=5000) as popup_info:
-            chart.get_by_role("button", name="Open linked Chart in a new canvas").click()
+            chart.get_by_role("button", name=re.compile(r"^Open linked .+ in a new canvas$")).click()
         popup = popup_info.value
         popup.locator(".app-shell").wait_for(state="visible", timeout=5000)
         if "#canvas-focus" not in popup.url or popup.locator(".sidebar").count():
             issues.append("linked container did not open in a chromeless focus canvas")
-        if popup.get_by_role("region", name="Chart", exact=True).count() != 1:
+        if popup.locator('.workspace-window[data-window-kind="chart"]').count() != 1:
             issues.append("linked focus canvas does not contain the source Chart")
         popup.close()
         page.get_by_role("button", name="Canvas management", exact=True).click()

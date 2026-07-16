@@ -12,13 +12,15 @@ export type CanvasLinkGroupDefinition = {
 
 export type CanvasLinkContext = {
   symbol: string;
-  timeframe: "100ms" | "1s" | "5s" | "10s" | "30s" | "1m" | "5m" | "1h";
 };
 
+export type CanvasChartTimeframe = "100ms" | "1s" | "5s" | "10s" | "30s" | "1m" | "5m" | "1h" | "1d" | "1mo";
+
 export type CanvasWorkspaceState = {
+  instances: Record<string, WorkspaceContainerId>;
   layoutVersion: number;
   layouts: Record<string, WorkspaceWindowLayout>;
-  openIds: WorkspaceContainerId[];
+  openIds: string[];
 };
 
 export type CanvasRecord = {
@@ -29,9 +31,10 @@ export type CanvasRecord = {
 export type CanvasRegistry = {
   canvases: CanvasRecord[];
   defaultState?: CanvasWorkspaceState;
-  linkAssignments: Partial<Record<WorkspaceContainerId, CanvasLinkGroupId>>;
+  instanceSettings: Record<string, unknown>;
+  linkAssignments: Partial<Record<string, CanvasLinkGroupId>>;
   linkContexts: Record<CanvasAssignedLinkGroupId, CanvasLinkContext>;
-  version: 1;
+  version: 2;
 };
 
 export const MAIN_CANVAS_ID = "main";
@@ -51,13 +54,13 @@ export const CANVAS_LINK_GROUPS: readonly CanvasLinkGroupDefinition[] = [
 ];
 
 const DEFAULT_LINK_CONTEXTS: CanvasRegistry["linkContexts"] = {
-  A: { symbol: "AAPL", timeframe: "1m" },
-  B: { symbol: "MSFT", timeframe: "1m" },
-  C: { symbol: "NVDA", timeframe: "5m" },
-  D: { symbol: "TSLA", timeframe: "1m" },
-  E: { symbol: "AMZN", timeframe: "1m" },
-  F: { symbol: "META", timeframe: "5m" },
-  G: { symbol: "AMD", timeframe: "1m" },
+  A: { symbol: "AAPL" },
+  B: { symbol: "MSFT" },
+  C: { symbol: "NVDA" },
+  D: { symbol: "TSLA" },
+  E: { symbol: "AMZN" },
+  F: { symbol: "META" },
+  G: { symbol: "AMD" },
 };
 
 const DEFAULT_LINK_ASSIGNMENTS: CanvasRegistry["linkAssignments"] = {
@@ -73,13 +76,14 @@ export function canvasWorkspaceStorageKey(canvasId: string) {
 export function readCanvasRegistry(): CanvasRegistry {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(CANVAS_REGISTRY_STORAGE_KEY) || "null") as Partial<CanvasRegistry> | null;
-    if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.canvases)) return defaultCanvasRegistry();
+    if (!parsed || ![1, 2].includes(Number(parsed.version)) || !Array.isArray(parsed.canvases)) return defaultCanvasRegistry();
     const canvases = parsed.canvases.some((canvas) => canvas.id === MAIN_CANVAS_ID)
       ? parsed.canvases
       : [{ id: MAIN_CANVAS_ID, label: "Main" }, ...parsed.canvases];
     return {
       canvases,
-      defaultState: parsed.defaultState,
+      defaultState: normalizeWorkspaceState(parsed.defaultState) ?? undefined,
+      instanceSettings: parsed.instanceSettings && typeof parsed.instanceSettings === "object" ? parsed.instanceSettings : {},
       linkAssignments: normalizeLinkAssignments(parsed.linkAssignments),
       linkContexts: {
         A: normalizeLinkContext(parsed.linkContexts?.A, DEFAULT_LINK_CONTEXTS.A),
@@ -90,7 +94,7 @@ export function readCanvasRegistry(): CanvasRegistry {
         F: normalizeLinkContext(parsed.linkContexts?.F, DEFAULT_LINK_CONTEXTS.F),
         G: normalizeLinkContext(parsed.linkContexts?.G, DEFAULT_LINK_CONTEXTS.G),
       },
-      version: 1,
+      version: 2,
     };
   } catch {
     return defaultCanvasRegistry();
@@ -116,7 +120,7 @@ export function removeCanvasRecord(registry: CanvasRegistry, canvasId: string): 
 export function readCanvasWorkspaceState(canvasId: string): CanvasWorkspaceState | null {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(canvasWorkspaceStorageKey(canvasId)) || "null") as CanvasWorkspaceState | null;
-    return parsed && Array.isArray(parsed.openIds) && parsed.layouts ? parsed : null;
+    return normalizeWorkspaceState(parsed);
   } catch {
     return null;
   }
@@ -126,7 +130,7 @@ export function writeCanvasWorkspaceState(canvasId: string, state: CanvasWorkspa
   window.localStorage.setItem(canvasWorkspaceStorageKey(canvasId), JSON.stringify(state));
 }
 
-export function focusCanvasUrl(canvasId: string, containerId?: WorkspaceContainerId) {
+export function focusCanvasUrl(canvasId: string, containerId?: string) {
   const url = new URL(window.location.href);
   url.searchParams.set("canvas", canvasId);
   if (containerId) url.searchParams.set("container", containerId);
@@ -146,6 +150,7 @@ export function configurationCanvasUrl() {
 function defaultCanvasRegistry(): CanvasRegistry {
   return {
     canvases: [{ id: MAIN_CANVAS_ID, label: "Main" }],
+    instanceSettings: {},
     linkAssignments: { ...DEFAULT_LINK_ASSIGNMENTS },
     linkContexts: {
       A: { ...DEFAULT_LINK_CONTEXTS.A },
@@ -156,7 +161,7 @@ function defaultCanvasRegistry(): CanvasRegistry {
       F: { ...DEFAULT_LINK_CONTEXTS.F },
       G: { ...DEFAULT_LINK_CONTEXTS.G },
     },
-    version: 1,
+    version: 2,
   };
 }
 
@@ -166,22 +171,25 @@ export function canvasLinkGroupDefinition(group: CanvasLinkGroupId): CanvasLinkG
 
 function normalizeLinkContext(value: CanvasLinkContext | undefined, fallback: CanvasLinkContext): CanvasLinkContext {
   const symbol = value?.symbol?.trim().toUpperCase();
-  return {
-    symbol: symbol || fallback.symbol,
-    timeframe: ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"].includes(String(value?.timeframe))
-      ? value!.timeframe
-      : "1m",
-  };
+  return { symbol: symbol || fallback.symbol };
 }
 
 function normalizeLinkAssignments(value: CanvasRegistry["linkAssignments"] | undefined): CanvasRegistry["linkAssignments"] {
   const candidates = { ...DEFAULT_LINK_ASSIGNMENTS, ...(value ?? {}) };
   const assignments: CanvasRegistry["linkAssignments"] = {};
   for (const [rawContainerId, rawGroup] of Object.entries(candidates)) {
-    const containerId = rawContainerId as WorkspaceContainerId;
-    if (containerSupportsSymbolLink(containerId) && isCanvasLinkGroupId(rawGroup)) assignments[containerId] = rawGroup;
+    const containerKind = rawContainerId.split("-")[0] as WorkspaceContainerId;
+    if (containerSupportsSymbolLink(containerKind) && isCanvasLinkGroupId(rawGroup)) assignments[rawContainerId] = rawGroup;
   }
   return assignments;
+}
+
+function normalizeWorkspaceState(value: CanvasWorkspaceState | undefined | null): CanvasWorkspaceState | null {
+  if (!value || !Array.isArray(value.openIds) || !value.layouts) return null;
+  const instances = value.instances && typeof value.instances === "object"
+    ? value.instances
+    : Object.fromEntries(value.openIds.map((id) => [id, id.split("-")[0] as WorkspaceContainerId]));
+  return { ...value, instances };
 }
 
 function isCanvasLinkGroupId(value: unknown): value is CanvasLinkGroupId {

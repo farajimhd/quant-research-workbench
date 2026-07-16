@@ -1005,6 +1005,7 @@ fn state_for(bar_end: DateTime<Utc>, as_of: DateTime<Utc>, was_closed: bool) -> 
 fn canonical_macro_timeframe(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
         "1w" | "week" | "weekly" => "1w".to_string(),
+        "1mo" | "month" | "monthly" => "1mo".to_string(),
         "1y" | "year" | "yearly" => "1y".to_string(),
         _ => "1d".to_string(),
     }
@@ -1026,6 +1027,7 @@ fn macro_period_label(date: NaiveDate, timeframe: &str) -> String {
                 .format("%Y-%m-%d")
                 .to_string()
         }
+        "1mo" => format!("{:04}-{:02}-01", date.year(), date.month()),
         "1y" => format!("{:04}-01-01", date.year()),
         _ => date.format("%Y-%m-%d").to_string(),
     }
@@ -1043,6 +1045,7 @@ fn macro_from_family_rows(
     let last = rows.iter().rev().find(|row| row.close > 0.0)?;
     let bar_start = rows.iter().map(|row| row.bar_start).min()?;
     let bar_end = rows.iter().map(|row| row.bar_end).max()?;
+    let current_period = macro_period_label(as_of.with_timezone(&New_York).date_naive(), timeframe);
     Some(MacroFamilyBarRow {
         schema_version: MARKET_PRODUCT_SCHEMA_VERSION,
         session_date: period.to_string(),
@@ -1075,6 +1078,8 @@ fn macro_from_family_rows(
         revision: rows.iter().map(|row| row.revision).sum(),
         state: if rows.iter().any(|row| row.state == ProductState::Corrected) {
             ProductState::Corrected
+        } else if timeframe != "1d" && period == current_period {
+            ProductState::Partial
         } else if bar_end <= as_of && rows.iter().all(|row| row.state == ProductState::Closed) {
             ProductState::Closed
         } else {
@@ -1384,5 +1389,36 @@ mod tests {
         assert!(metrics.family_rows + metrics.condition_rows <= metrics.max_rows);
         assert!(metrics.estimated_bytes <= metrics.max_bytes);
         assert!(metrics.evictions >= 1);
+    }
+
+    #[test]
+    fn monthly_macro_timeframe_uses_calendar_month_boundaries() {
+        let first = NaiveDate::from_ymd_opt(2026, 7, 3).unwrap();
+        let last = NaiveDate::from_ymd_opt(2026, 7, 31).unwrap();
+        assert_eq!(canonical_macro_timeframe("monthly"), "1mo");
+        assert_eq!(macro_period_label(first, "1mo"), "2026-07-01");
+        assert_eq!(macro_period_label(last, "1mo"), "2026-07-01");
+    }
+
+    #[test]
+    fn current_month_macro_row_remains_partial() {
+        let limits = ProductCacheLimits {
+            max_bytes: 16 * 1024 * 1024,
+            max_partitions: 8,
+            max_rows: 100_000,
+        };
+        let mut engine = MarketProductEngine::new(
+            vec![60_000_000],
+            limits,
+            rules(),
+            ConditionClassifier::training_aligned(),
+        );
+        let event_time = Utc.with_ymd_and_hms(2026, 7, 10, 14, 0, 0).unwrap();
+        let as_of = event_time + Duration::minutes(2);
+        engine.apply_event(&trade(event_time, 1, 315.0, 100.0), event_time);
+
+        let snapshot = engine.macro_snapshot("AAPL", "1mo", 10, as_of);
+        assert_eq!(snapshot.rows.len(), 1);
+        assert_eq!(snapshot.rows[0].state, ProductState::Partial);
     }
 }

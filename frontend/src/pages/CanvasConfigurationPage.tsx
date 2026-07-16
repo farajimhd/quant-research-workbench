@@ -18,6 +18,7 @@ import {
   writeCanvasRegistry,
   writeCanvasWorkspaceState,
   type CanvasAssignedLinkGroupId,
+  type CanvasChartTimeframe,
   type CanvasLinkContext,
   type CanvasLinkGroupId,
   type CanvasRegistry,
@@ -93,8 +94,8 @@ type CanvasLiveChartState = {
 };
 
 type ContainerSettings = {
-  version: 2;
-  chart: { showVolume: boolean; symbol: string; timeframe: CanvasLinkContext["timeframe"]; visibleIndicators: string[] };
+  version: 3;
+  chart: { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
   fills: { limit: number; showCommission: boolean };
   journal: { limit: number };
   news: { limit: number; showTeaser: boolean };
@@ -111,7 +112,7 @@ type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; tit
 
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 2,
+  version: 3,
   chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd"] },
   fills: { limit: 5, showCommission: true },
   journal: { limit: 6 },
@@ -124,8 +125,9 @@ const DEFAULT_SETTINGS: ContainerSettings = {
   xbrl: { limit: 6, showPeriod: true },
 };
 
-const HISTORICAL_TIMEFRAMES: CanvasLinkContext["timeframe"][] = ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"];
-const ENRICHED_QMD_TIMEFRAMES = new Set<CanvasLinkContext["timeframe"]>(["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"]);
+const HISTORICAL_TIMEFRAMES: CanvasChartTimeframe[] = ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h", "1d", "1mo"];
+const ENRICHED_QMD_TIMEFRAMES = new Set<CanvasChartTimeframe>(["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"]);
+const MACRO_TIMEFRAMES = new Set<CanvasChartTimeframe>(["1d", "1mo"]);
 const CHART_INDICATORS: ChartDisplayItem[] = [
   displayIndicator("indicator.vwap", "VWAP", "volume_liquidity", ["vwap"]),
   displayIndicator("indicator.ema_9", "EMA 9", "momentum", ["ema_9"]),
@@ -170,8 +172,8 @@ function displayIndicator(id: string, title: string, group: string, sourceColumn
   return { category: pane === "price" ? "Price overlay" : "Oscillator pane", group, id, presentation: { chartRole: pane === "price" ? "overlay" : "oscillator", pane, selectable: true }, sourceColumns, title };
 }
 
-function useCanvasLiveChart(symbol: string, timeframe: CanvasLinkContext["timeframe"], cutoffMs: number, sessionDate: string): CanvasLiveChartState {
-  const pointInTime = cutoffMs < Date.now() - timeframeDurationMs(timeframe);
+function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cutoffMs: number, sessionDate: string): CanvasLiveChartState {
+  const pointInTime = cutoffMs < Date.now() - 5_000;
   const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier">>({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime });
   const historyCursorRef = useRef<ChartHistoryCursor | null>(null);
   const historyRequestRef = useRef(false);
@@ -354,7 +356,11 @@ function updateHistoryCursor(ref: MutableRefObject<ChartHistoryCursor | null>, p
 }
 
 function closedQmdSnapshotRows<T extends { bar_start: string }>(payload: QmdSnapshot<T>, timeframe: string, cutoffMs = Date.now()): T[] {
-  return closedRowsAtCutoff(payload.history ?? [], timeframe, cutoffMs);
+  const closed = closedRowsAtCutoff(payload.history ?? [], timeframe, cutoffMs);
+  const current = payload.current;
+  if (!current) return closed;
+  const currentStart = Date.parse(current.bar_start);
+  return Number.isFinite(currentStart) && currentStart <= cutoffMs ? mergeRowsByTime(closed, [current]) : closed;
 }
 
 function closedRowsAtCutoff<T extends { bar_start: string }>(rows: T[], timeframe: string, cutoffMs = Date.now()): T[] {
@@ -369,6 +375,8 @@ function closedRowsAtCutoff<T extends { bar_start: string }>(rows: T[], timefram
 }
 
 function timeframeDurationMs(timeframe: string): number {
+  if (timeframe === "1d") return 24 * 60 * 60 * 1_000;
+  if (timeframe === "1mo") return 30 * 24 * 60 * 60 * 1_000;
   const match = /^(\d+)(ms|s|m|h)$/.exec(timeframe.trim().toLowerCase());
   if (!match) return 60_000;
   const value = Number(match[1]);
@@ -421,14 +429,13 @@ export function CanvasConfigurationPage() {
 export function CanvasFocusPage() {
   const params = new URLSearchParams(window.location.search);
   const canvasId = params.get("canvas") || MAIN_CANVAS_ID;
-  const requestedContainerId = validContainerId(params.get("container"));
-  return <CanvasWorkspaceSurface canvasId={canvasId} manager={false} requestedContainerId={requestedContainerId} />;
+  const requestedInstanceId = params.get("container") || undefined;
+  return <CanvasWorkspaceSurface canvasId={canvasId} manager={false} requestedInstanceId={requestedInstanceId} />;
 }
 
-function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { canvasId: string; manager: boolean; requestedContainerId?: WorkspaceContainerId }) {
-  const [initialCanvasState] = useState<CanvasWorkspaceState | null>(() => focusCanvasState(canvasId, requestedContainerId));
+function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId }: { canvasId: string; manager: boolean; requestedInstanceId?: string }) {
+  const [initialCanvasState] = useState<CanvasWorkspaceState | null>(() => focusCanvasState(canvasId, requestedInstanceId));
   const [registry, setRegistry] = useState<CanvasRegistry>(readCanvasRegistry);
-  const [settings, setSettings] = useState<ContainerSettings>(readSettings);
   const [previewContext, setPreviewContext] = useState<CanvasPreviewContext>(readPreviewContext);
   const [preview, setPreview] = useState<CanvasPreview | null>(null);
   const [contextReady, setContextReady] = useState(false);
@@ -438,18 +445,16 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
   const [error, setError] = useState("");
   const [defaultSaved, setDefaultSaved] = useState(false);
   const [managementOpen, setManagementOpen] = useState(false);
-  const [linkPopoverContainerId, setLinkPopoverContainerId] = useState<WorkspaceContainerId | null>(null);
-  const [settingsContainerId, setSettingsContainerId] = useState<WorkspaceContainerId | null>(null);
+  const [linkPopoverContainerId, setLinkPopoverContainerId] = useState<string | null>(null);
+  const [settingsContainerId, setSettingsContainerId] = useState<string | null>(null);
 
   const currentCanvas = registry.canvases.find((canvas) => canvas.id === canvasId) ?? { id: canvasId, label: canvasId === MAIN_CANVAS_ID ? "Main" : "Focus canvas" };
-  const activeContainerId = workspaceState?.openIds.includes("chart") ? "chart" : workspaceState?.openIds[0] ?? "chart";
-  const previewContainerKey = (workspaceState?.openIds ?? []).filter((id) => id !== "chart").sort().join(",");
-  const activeLinkGroup = registry.linkAssignments[activeContainerId] ?? "none";
-  const activeLinkContext = activeLinkGroup === "none"
-    ? settings.chart
-    : registry.linkContexts[activeLinkGroup];
+  const primaryChartId = (workspaceState?.openIds ?? []).find((id) => workspaceContainerKind(id, workspaceState) === "chart") ?? "chart";
+  const primarySettings = instanceSettings(registry, primaryChartId);
+  const previewContainerKey = (workspaceState?.openIds ?? []).filter((id) => workspaceContainerKind(id, workspaceState) !== "chart").sort().join(",");
+  const activeLinkGroup = registry.linkAssignments[primaryChartId] ?? "none";
+  const activeSymbol = activeLinkGroup === "none" ? primarySettings.chart.symbol : registry.linkContexts[activeLinkGroup].symbol;
   const chartCutoffMs = useMemo(() => dateInTimeZone(previewContext.sessionDate, previewContext.previewTime, "America/New_York").getTime(), [previewContext]);
-  const liveChart = useCanvasLiveChart(activeLinkContext.symbol, activeLinkContext.timeframe, chartCutoffMs, previewContext.sessionDate);
   const previewClocks = useMemo(() => previewClockReadings(previewContext), [previewContext]);
   const clockIcons = [Clock3, MapPin, Globe2];
   const marketStatus = useMemo(() => historicalMarketStatus(previewContext.sessionDate, previewContext.previewTime), [previewContext]);
@@ -457,10 +462,6 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
   useEffect(() => {
     writeCanvasRegistry(registry);
   }, [registry]);
-
-  useEffect(() => {
-    window.localStorage.setItem(CANVAS_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
-  }, [settings]);
 
   useEffect(() => {
     window.localStorage.setItem(CANVAS_PREVIEW_CONTEXT_STORAGE_KEY, JSON.stringify(previewContext));
@@ -483,7 +484,6 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
   useEffect(() => {
     const syncSharedCanvasState = (event: StorageEvent) => {
       if (event.key === CANVAS_REGISTRY_STORAGE_KEY) setRegistry(readCanvasRegistry());
-      if (event.key === CANVAS_SETTINGS_STORAGE_KEY) setSettings(readSettings());
       if (event.key === CANVAS_PREVIEW_CONTEXT_STORAGE_KEY) setPreviewContext(readPreviewContext());
     };
     window.addEventListener("storage", syncSharedCanvasState);
@@ -521,7 +521,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
     setError("");
     api<CanvasPreview>("/api/trading/canvas-preview", {
       body: JSON.stringify({
-        chart_symbol: activeLinkContext.symbol,
+        chart_symbol: activeSymbol,
         chart_timeframe: "1m",
         preview_time: previewContext.previewTime,
         session_date: previewContext.sessionDate,
@@ -533,19 +533,15 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
       .catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [activeLinkContext.symbol, contextError, contextReady, previewContainerKey, previewContext.previewTime, previewContext.sessionDate]);
+  }, [activeSymbol, contextError, contextReady, previewContainerKey, previewContext.previewTime, previewContext.sessionDate]);
 
   const metaForContainer = useMemo(() => (definition: WorkspaceContainerDefinition): WorkspaceWindowMeta => {
     if (definition.id === "chart") {
       return {
-        detail: liveChart.pointInTime
-          ? `Point-in-time canonical QMD data · ${new Intl.NumberFormat("en-US").format(liveChart.bars.length)} closed bars through ${previewContext.previewTime}.`
-          : liveChart.connected
-            ? `Streaming canonical QMD data · ${new Intl.NumberFormat("en-US").format(liveChart.bars.length)} closed bars loaded${liveChart.loadingEarlier ? " · loading earlier" : ""}.`
-            : liveChart.error || "Connecting to canonical QMD bars.",
-        freshness: liveChart.pointInTime ? previewContext.previewTime : liveChart.lastUpdateAt ? formatCell(liveChart.lastUpdateAt, "time") : liveChart.connected ? "Live" : "Connecting",
-        sourceLabel: liveChart.pointInTime ? "QMD History" : liveChart.connected ? "QMD Live" : liveChart.bars.length ? "QMD Live disconnected" : liveChart.error ? "QMD Live unavailable" : "QMD Live",
-        status: liveChart.bars.length ? "ready" : liveChart.error ? "error" : "idle",
+        detail: "Canonical QMD bars using the container's own timeframe and indicator configuration.",
+        freshness: previewContext.previewTime,
+        sourceLabel: "QMD History + Live",
+        status: contextError ? "error" : "ready",
       };
     }
     const sourceError = preview?.errors[definition.id] ?? preview?.errors[definition.id === "news" ? "news" : definition.id === "sec" ? "sec" : definition.id === "xbrl" ? "xbrl" : ""];
@@ -555,7 +551,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
       sourceLabel: sourceError ? "Unavailable" : definition.id === "scanner" ? "QMD History" : ["news", "sec", "xbrl"].includes(definition.id) ? "Point-in-time DB" : "IBKR preview",
       status: sourceError ? "error" : preview ? "ready" : "idle",
     };
-  }, [liveChart, preview, previewContext.previewTime]);
+  }, [contextError, preview, previewContext.previewTime]);
 
   const canvasTargets = registry.canvases.map((canvas, index) => ({
     color: ["var(--primary)", "var(--info)", "var(--success)", "var(--warning)"][index % 4],
@@ -575,22 +571,39 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
     }));
   }
 
-  function setContainerLink(containerId: WorkspaceContainerId, group: CanvasLinkGroupId) {
-    if (!containerSupportsSymbolLink(containerId)) return;
-    updateRegistry((current) => ({ ...current, linkAssignments: { ...current.linkAssignments, [containerId]: group } }));
+  function updateInstanceSettings(instanceId: string, update: ContainerSettings | ((current: ContainerSettings) => ContainerSettings)) {
+    updateRegistry((current) => {
+      const existing = instanceSettings(current, instanceId);
+      const next = typeof update === "function" ? update(existing) : update;
+      return { ...current, instanceSettings: { ...current.instanceSettings, [instanceId]: normalizeSettings(next) } };
+    });
   }
 
-  function openNewCanvas(containerId?: WorkspaceContainerId, sourceLayout?: WorkspaceWindowLayout) {
-    const created = createCanvasRecord(registry, containerId ? `${containerTitle(containerId)} focus` : undefined);
+  function setContainerLink(instanceId: string, containerId: WorkspaceContainerId, group: CanvasLinkGroupId) {
+    if (!containerSupportsSymbolLink(containerId)) return;
+    updateRegistry((current) => ({ ...current, linkAssignments: { ...current.linkAssignments, [instanceId]: group } }));
+  }
+
+  function registerContainerInstance(instanceId: string) {
+    updateRegistry((current) => current.instanceSettings[instanceId]
+      ? current
+      : { ...current, instanceSettings: { ...current.instanceSettings, [instanceId]: cloneDefaultSettings() } });
+  }
+
+  function openNewCanvas(instanceId?: string, sourceLayout?: WorkspaceWindowLayout) {
+    const containerId = instanceId ? workspaceContainerKind(instanceId, workspaceState) : undefined;
+    const created = createCanvasRecord(registry, containerId ? `${containerInstanceTitle(containerId, instanceId!, workspaceState, registry)} focus` : undefined);
     const sourceState = registry.defaultState ?? workspaceState;
     const inheritedIds = sourceState?.openIds.length ? sourceState.openIds : ALL_CONTAINER_IDS;
-    const state: CanvasWorkspaceState = containerId
+    const state: CanvasWorkspaceState = instanceId && containerId
       ? {
+          instances: { [instanceId]: containerId },
           layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
-          layouts: { [containerId]: focusLayout(sourceLayout) },
-          openIds: [containerId],
+          layouts: { [instanceId]: focusLayout(sourceLayout) },
+          openIds: [instanceId],
         }
       : {
+          instances: sourceState?.instances ?? Object.fromEntries(inheritedIds.map((id) => [id, workspaceContainerKind(id, sourceState)])),
           layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
           layouts: sourceState
             ? normalizeInheritedLayouts(sourceState.layouts, inheritedIds)
@@ -599,19 +612,21 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
         };
     writeCanvasWorkspaceState(created.canvas.id, state);
     setRegistry(created.registry);
-    window.open(focusCanvasUrl(created.canvas.id, containerId), "_blank", "noopener,noreferrer");
+    window.open(focusCanvasUrl(created.canvas.id, instanceId), "_blank", "noopener,noreferrer");
   }
 
-  function moveContainer(containerId: WorkspaceContainerId, targetCanvasId: string, sourceLayout: WorkspaceWindowLayout) {
-    const target = readCanvasWorkspaceState(targetCanvasId) ?? { layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: {}, openIds: [] };
-    const openIds = target.openIds.includes(containerId) ? target.openIds : [...target.openIds, containerId];
+  function moveContainer(instanceId: string, targetCanvasId: string, sourceLayout: WorkspaceWindowLayout) {
+    const containerId = workspaceContainerKind(instanceId, workspaceState);
+    const target = readCanvasWorkspaceState(targetCanvasId) ?? { instances: {}, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: {}, openIds: [] };
+    const openIds = target.openIds.includes(instanceId) ? target.openIds : [...target.openIds, instanceId];
     const targetContainsFullscreenWindow = target.openIds.some((id) => target.layouts[id]?.fullscreen);
     const layouts = target.openIds.length === 0
-      ? { ...target.layouts, [containerId]: focusLayout(sourceLayout) }
+      ? { ...target.layouts, [instanceId]: focusLayout(sourceLayout) }
       : targetContainsFullscreenWindow
         ? createFocusLayouts(openIds)
-        : { ...target.layouts, [containerId]: offsetLayout(sourceLayout, target.openIds.length) };
+        : { ...target.layouts, [instanceId]: offsetLayout(sourceLayout, target.openIds.length) };
     writeCanvasWorkspaceState(targetCanvasId, {
+      instances: { ...target.instances, [instanceId]: containerId },
       layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
       layouts,
       openIds,
@@ -651,6 +666,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
       {contextError || error ? <div className="canvas-inline-error">{contextError || error}</div> : null}
 
       <TradingWorkspace
+        allowMultipleInstances
         canPopOut
         canvasTargets={canvasTargets}
         clockLabel=""
@@ -666,52 +682,63 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
         managementOpen={manager && managementOpen}
         metaForContainer={metaForContainer}
         mode="replay"
+        onContainerAdded={registerContainerInstance}
         onMoveContainerToCanvas={moveContainer}
         onManagementClose={() => setManagementOpen(false)}
         onPopOutContainer={openNewCanvas}
         onStateChange={setWorkspaceState}
-        renderContainer={(definition) => {
+        renderContainer={(definition, instanceId) => {
+          const settings = instanceSettings(registry, instanceId);
           const linkable = definition.linkScope === "single-symbol";
-          const group = linkable ? registry.linkAssignments[definition.id] ?? "none" : "none";
-          const linkContext = group === "none" ? settings.chart : registry.linkContexts[group];
-          const linkedContainers: LinkedContainerState[] = group === "none" ? [] : TRADING_WORKSPACE_CONTAINERS
-            .filter((candidate) => candidate.linkScope === "single-symbol" && registry.linkAssignments[candidate.id] === group)
-            .map((candidate) => ({ status: metaForContainer(candidate).status, symbol: registry.linkContexts[group].symbol, title: candidate.title }));
+          const group = linkable ? registry.linkAssignments[instanceId] ?? "none" : "none";
+          const linkContext = group === "none" ? { symbol: settings.chart.symbol } : registry.linkContexts[group];
+          const linkedContainers: LinkedContainerState[] = group === "none" ? [] : (workspaceState?.openIds ?? [])
+            .filter((candidateId) => {
+              const candidateKind = workspaceContainerKind(candidateId, workspaceState);
+              return containerSupportsSymbolLink(candidateKind) && registry.linkAssignments[candidateId] === group;
+            })
+            .map((candidateId) => {
+              const candidateKind = workspaceContainerKind(candidateId, workspaceState);
+              const candidate = TRADING_WORKSPACE_CONTAINERS.find((item) => item.id === candidateKind)!;
+              return { status: metaForContainer(candidate).status, symbol: registry.linkContexts[group].symbol, title: containerInstanceTitle(candidateKind, candidateId, workspaceState, registry) };
+            });
           return <ContainerPreview
+            chartCutoffMs={chartCutoffMs}
             definition={definition}
-            linkOpen={linkPopoverContainerId === definition.id}
+            instanceId={instanceId}
+            linkOpen={linkPopoverContainerId === instanceId}
             linkContext={linkContext}
             linkGroup={group}
             linkedContainers={linkedContainers}
-            liveChart={liveChart}
             loading={loading}
-            onLinkChange={(nextGroup) => setContainerLink(definition.id, nextGroup)}
+            onLinkChange={(nextGroup) => setContainerLink(instanceId, definition.id, nextGroup)}
             onLinkContextChange={(patch) => { if (group !== "none") updateLinkContext(group, patch); }}
             preview={preview}
+            previewContext={previewContext}
             settings={settings}
-            settingsOpen={settingsContainerId === definition.id}
-            setSettings={setSettings}
+            settingsOpen={settingsContainerId === instanceId}
+            updateSettings={(update) => updateInstanceSettings(instanceId, update)}
           />;
         }}
         runLabel={currentCanvas.label}
         runStatus={preview ? "running" : "idle"}
         showHealth={false}
         storageKeyOverride={canvasWorkspaceStorageKey(canvasId)}
-        linkColorForContainer={(definition) => definition.linkScope === "single-symbol" ? canvasLinkGroupDefinition(registry.linkAssignments[definition.id] ?? "none")?.color : undefined}
-        titleBarActionsForContainer={(definition) => {
+        linkColorForContainer={(definition, instanceId) => definition.linkScope === "single-symbol" ? canvasLinkGroupDefinition(registry.linkAssignments[instanceId] ?? "none")?.color : undefined}
+        titleBarActionsForContainer={(definition, instanceId) => {
           const linkable = definition.linkScope === "single-symbol";
-          const group = linkable ? registry.linkAssignments[definition.id] ?? "none" : "none";
+          const group = linkable ? registry.linkAssignments[instanceId] ?? "none" : "none";
           const groupDefinition = canvasLinkGroupDefinition(group);
-          const linkOpen = linkPopoverContainerId === definition.id;
-          const settingsOpen = settingsContainerId === definition.id;
+          const linkOpen = linkPopoverContainerId === instanceId;
+          const settingsOpen = settingsContainerId === instanceId;
           return <>
             {linkable ? <button
               aria-expanded={linkOpen}
               aria-label={`Link ${definition.title}`}
               className="workspace-window-link-action"
-              data-canvas-link-trigger={definition.id}
+              data-canvas-link-trigger={instanceId}
               data-active={linkOpen ? "true" : "false"}
-              onClick={() => { setSettingsContainerId(null); setLinkPopoverContainerId((current) => current === definition.id ? null : definition.id); }}
+              onClick={() => { setSettingsContainerId(null); setLinkPopoverContainerId((current) => current === instanceId ? null : instanceId); }}
               title={groupDefinition ? `${groupDefinition.label} link group; change color or unlink` : "Choose a link color"}
               type="button"
             ><Link2 size={11} />{groupDefinition ? <i aria-hidden="true" className="canvas-link-title-swatch" /> : null}<span>{groupDefinition?.label ?? "Link"}</span></button> : null}
@@ -720,12 +747,13 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedContainerId }: { c
               aria-label={`Configure ${definition.title}`}
               className="toolbar-button compact workspace-window-settings-action"
               data-active={settingsOpen ? "true" : "false"}
-              onClick={() => { setLinkPopoverContainerId(null); setSettingsContainerId((current) => current === definition.id ? null : definition.id); }}
+              onClick={() => { setLinkPopoverContainerId(null); setSettingsContainerId((current) => current === instanceId ? null : instanceId); }}
               title={`Configure ${definition.title}`}
               type="button"
             ><Settings2 size={11} /></button>
           </>;
         }}
+        titleForContainer={(definition, instanceId) => containerInstanceTitle(definition.id, instanceId, workspaceState, registry)}
         workspaceBadge={manager ? "Main" : "Focus"}
       />
     </div>
@@ -736,26 +764,34 @@ function CanvasManager({ onCreate, onOpen, onRemove, registry }: { onCreate: () 
   return <section aria-label="Canvas manager" className="canvas-manager-strip"><strong>Canvases</strong><div className="canvas-manager-items">{registry.canvases.map((canvas) => <article key={canvas.id} data-main={canvas.id === MAIN_CANVAS_ID ? "true" : "false"}>{canvas.id === MAIN_CANVAS_ID ? <><span>{canvas.label}</span><small>default authority</small></> : <><button aria-label={`Open ${canvas.label}`} className="canvas-manager-open" onClick={() => onOpen(canvas.id)} title="Open canvas in a new page" type="button"><span>{canvas.label}</span><ExternalLink size={11} /></button><button aria-label={`Remove ${canvas.label}`} className="toolbar-button compact" onClick={() => onRemove(canvas.id)} title="Remove canvas" type="button"><Trash2 size={12} /></button></>}</article>)}</div><button className="button secondary compact" onClick={onCreate} type="button"><Plus size={13} /> New canvas</button></section>;
 }
 
-function ContainerPreview({ definition, linkContext, linkGroup, linkedContainers, linkOpen, liveChart, loading, onLinkChange, onLinkContextChange, preview, settings, settingsOpen, setSettings }: {
+type SettingsUpdater = (update: ContainerSettings | ((current: ContainerSettings) => ContainerSettings)) => void;
+
+function ContainerPreview({ chartCutoffMs, definition, instanceId, linkContext, linkGroup, linkedContainers, linkOpen, loading, onLinkChange, onLinkContextChange, preview, previewContext, settings, settingsOpen, updateSettings }: {
+  chartCutoffMs: number;
   definition: WorkspaceContainerDefinition;
+  instanceId: string;
   linkContext: CanvasLinkContext;
   linkGroup: CanvasLinkGroupId;
   linkedContainers: LinkedContainerState[];
   linkOpen: boolean;
-  liveChart: CanvasLiveChartState;
   loading: boolean;
   onLinkChange: (group: CanvasLinkGroupId) => void;
   onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void;
   preview: CanvasPreview | null;
+  previewContext: CanvasPreviewContext;
   settings: ContainerSettings;
   settingsOpen: boolean;
-  setSettings: React.Dispatch<React.SetStateAction<ContainerSettings>>;
+  updateSettings: SettingsUpdater;
 }) {
   const overlayOpen = linkOpen || settingsOpen;
   return <div className="canvas-container-preview">
-    {linkOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} link configuration`} data-canvas-link-popover={definition.id}><div className="canvas-link-guide"><strong>Link color</strong><small>Same color = linked</small></div><LinkColorPicker containerTitle={definition.title} onChange={onLinkChange} value={linkGroup} /><LinkedContainerList containerTitle={definition.title} containers={linkedContainers} /></div> : null}
-    {settingsOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} settings`}>{containerFields(definition.id, settings, linkContext, setSettings, onLinkContextChange)}</div> : null}
-    <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{loading && !preview && definition.id !== "chart" ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div> : renderPreview(definition.id, preview, settings, setSettings, linkGroup, onLinkContextChange, linkContext, liveChart, loading)}</div>
+    {linkOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} link configuration`} data-canvas-link-popover={instanceId}><div className="canvas-link-guide"><strong>Link color</strong><small>Same color = linked</small></div><LinkColorPicker containerTitle={definition.title} onChange={onLinkChange} value={linkGroup} /><LinkedContainerList containerTitle={definition.title} containers={linkedContainers} /></div> : null}
+    {settingsOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} settings`}>{containerFields(definition.id, settings, linkContext, updateSettings, onLinkContextChange)}</div> : null}
+    <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{definition.id === "chart"
+      ? <ChartContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} onLinkContextChange={onLinkContextChange} previewContext={previewContext} settings={settings} updateSettings={updateSettings} />
+      : loading && !preview
+        ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div>
+        : renderPreview(definition.id, preview, settings, linkGroup, onLinkContextChange)}</div>
   </div>;
 }
 
@@ -781,8 +817,7 @@ function LinkColorPicker({ containerTitle, onChange, value }: { containerTitle: 
   </div>;
 }
 
-function renderPreview(id: WorkspaceContainerId, preview: CanvasPreview | null, settings: ContainerSettings, setSettings: React.Dispatch<React.SetStateAction<ContainerSettings>>, linkGroup: CanvasLinkGroupId, onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void, linkContext: CanvasLinkContext, liveChart: CanvasLiveChartState, loading = false) {
-  if (id === "chart") return <ChartPreview linkContext={linkContext} liveChart={liveChart} onLinkContextChange={onLinkContextChange} settings={settings} setSettings={setSettings} />;
+function renderPreview(id: WorkspaceContainerId, preview: CanvasPreview | null, settings: ContainerSettings, linkGroup: CanvasLinkGroupId, onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void) {
   if (!preview) return <EmptyState label="No preview data" />;
   if (id === "scanner") return <PreviewTable columns={settings.scanner.showActivity ? ["symbol", "last", "change_pct", "volume", "trade_count"] : ["symbol", "last", "change_pct"]} onSymbolSelect={linkGroup === "none" ? undefined : (symbol) => onLinkContextChange({ symbol })} rows={preview.scanner.slice(0, settings.scanner.limit)} />;
   if (id === "portfolio") return <PortfolioPreview data={preview.portfolio} settings={settings.portfolio} />;
@@ -798,27 +833,33 @@ function renderPreview(id: WorkspaceContainerId, preview: CanvasPreview | null, 
   return <PreviewTable columns={["time", "category", "event", "detail"]} rows={preview.journal.slice(0, settings.journal.limit)} />;
 }
 
-function ChartPreview({ linkContext, liveChart, onLinkContextChange, settings, setSettings }: { linkContext: CanvasLinkContext; liveChart: CanvasLiveChartState; onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void; settings: ContainerSettings; setSettings: React.Dispatch<React.SetStateAction<ContainerSettings>> }) {
+function ChartContainerPreview({ cutoffMs, instanceId, linkContext, onLinkContextChange, previewContext, settings, updateSettings }: { cutoffMs: number; instanceId: string; linkContext: CanvasLinkContext; onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void; previewContext: CanvasPreviewContext; settings: ContainerSettings; updateSettings: SettingsUpdater }) {
+  const liveChart = useCanvasLiveChart(linkContext.symbol, settings.chart.timeframe, cutoffMs, previewContext.sessionDate);
+  return <ChartPreview instanceId={instanceId} linkContext={linkContext} liveChart={liveChart} onLinkContextChange={onLinkContextChange} settings={settings} updateSettings={updateSettings} />;
+}
+
+function ChartPreview({ instanceId, linkContext, liveChart, onLinkContextChange, settings, updateSettings }: { instanceId: string; linkContext: CanvasLinkContext; liveChart: CanvasLiveChartState; onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void; settings: ContainerSettings; updateSettings: SettingsUpdater }) {
   const indicators = liveChart.indicators;
   const visibleIndicators = liveChart.indicatorsAvailable ? settings.chart.visibleIndicators : [];
+  const timeframe = settings.chart.timeframe;
   const payload = useMemo<ChartPayload>(() => ({
     candles: liveChart.bars.map((bar) => ({ close: bar.close, high: bar.high, low: bar.low, open: bar.open, time: Date.parse(bar.bar_start) / 1000 })),
     markers: [],
     oscillator_series: historicalIndicatorSeries(indicators, "oscillator", visibleIndicators),
     overlay_series: historicalIndicatorSeries(indicators, "price", visibleIndicators),
-    regions: extendedSessionRegions(liveChart.bars),
+    regions: MACRO_TIMEFRAMES.has(timeframe) ? [] : extendedSessionRegions(liveChart.bars),
     volume: settings.chart.showVolume ? liveChart.bars.map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
-  }), [indicators, liveChart.bars, settings.chart.showVolume, visibleIndicators]);
-  function updateChart(symbol: string, timeframe: CanvasLinkContext["timeframe"]) {
-    setSettings((current) => ({ ...current, chart: { ...current.chart, symbol, timeframe } }));
-    onLinkContextChange({ symbol, timeframe });
+  }), [indicators, liveChart.bars, settings.chart.showVolume, timeframe, visibleIndicators]);
+  function updateChart(symbol: string, nextTimeframe: CanvasChartTimeframe) {
+    updateSettings((current) => ({ ...current, chart: { ...current.chart, symbol, timeframe: nextTimeframe } }));
+    onLinkContextChange({ symbol });
   }
   const latestBar = liveChart.bars[liveChart.bars.length - 1];
   const sessionDate = latestBar?.session_date || latestBar?.bar_start.slice(0, 10);
   const emptyMessage = liveChart.connected
-    ? `Waiting for the first live ${linkContext.symbol} ${linkContext.timeframe} bar.`
+    ? `Waiting for the first live ${linkContext.symbol} ${timeframe} bar.`
     : "Start QMD Gateway to stream canonical live bars.";
-  return <ChartPanel canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={liveChart.indicatorsAvailable ? CHART_INDICATORS : []} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} indicatorOptions={[]} initialFitMode="recent" loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), linkContext.timeframe)} onTimeframeChange={(timeframe) => updateChart(linkContext.symbol, timeframe as CanvasLinkContext["timeframe"])} onVisibleColumnsChange={(visibleIndicators) => setSettings((current) => ({ ...current, chart: { ...current.chart, visibleIndicators } }))} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} ticker={linkContext.symbol} timeframe={linkContext.timeframe} timeframes={HISTORICAL_TIMEFRAMES} visibleColumns={visibleIndicators} />;
+  return <ChartPanel canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={liveChart.indicatorsAvailable ? CHART_INDICATORS : []} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} indicatorOptions={[]} initialFitMode="recent" loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => updateSettings((current) => ({ ...current, chart: { ...current.chart, visibleIndicators: nextVisibleIndicators } }))} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} timeframe={timeframe} timeframes={HISTORICAL_TIMEFRAMES} visibleColumns={visibleIndicators} />;
 }
 
 function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscillator" | "price", visibleIndicators: string[]): ChartPayload["overlay_series"] {
@@ -853,10 +894,10 @@ function NewsPreview({ rows, showTeaser }: { rows: PreviewRow[]; showTeaser: boo
   return <div className="canvas-news-preview">{rows.map((row, index) => <article key={String(row.canonical_news_id ?? index)}><time>{formatCell(row.published_at_utc, "published_at_utc")}</time><strong>{String(row.title ?? "Untitled")}</strong>{showTeaser && row.teaser ? <p>{String(row.teaser)}</p> : null}</article>)}</div>;
 }
 
-function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, linkContext: CanvasLinkContext, setSettings: React.Dispatch<React.SetStateAction<ContainerSettings>>, onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void) {
+function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, linkContext: CanvasLinkContext, updateSettings: SettingsUpdater, onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void) {
   const current = settings[id] as Record<string, unknown>;
-  function patch(value: Record<string, unknown>) { setSettings((state) => ({ ...state, [id]: { ...state[id], ...value } })); }
-  if (id === "chart") return <><TextField label="Symbol" onChange={(value) => { patch({ symbol: value.toUpperCase() }); onLinkContextChange({ symbol: value.toUpperCase() }); }} value={linkContext.symbol} /><SelectField label="Bar interval" onChange={(value) => { patch({ timeframe: value }); onLinkContextChange({ timeframe: value as CanvasLinkContext["timeframe"] }); }} options={HISTORICAL_TIMEFRAMES} value={linkContext.timeframe} /><CheckField checked={Boolean(current.showVolume)} label="Show volume" onChange={(value) => patch({ showVolume: value })} /></>;
+  function patch(value: Record<string, unknown>) { updateSettings((state) => ({ ...state, [id]: { ...state[id], ...value } })); }
+  if (id === "chart") return <><TextField label="Symbol" onChange={(value) => { patch({ symbol: value.toUpperCase() }); onLinkContextChange({ symbol: value.toUpperCase() }); }} value={linkContext.symbol} /><SelectField label="Bar interval" onChange={(value) => patch({ timeframe: value as CanvasChartTimeframe })} optionLabel={formatChartTimeframe} options={HISTORICAL_TIMEFRAMES} value={settings.chart.timeframe} /><CheckField checked={Boolean(current.showVolume)} label="Show volume" onChange={(value) => patch({ showVolume: value })} /></>;
   if (id === "portfolio") return <><CheckField checked={Boolean(current.showPositions)} label="Show positions" onChange={(value) => patch({ showPositions: value })} /><CheckField checked={Boolean(current.showPnl)} label="Show P&L" onChange={(value) => patch({ showPnl: value })} /></>;
   if (id === "strategy") return <CheckField checked={Boolean(current.showSignals)} label="Show recent signals" onChange={(value) => patch({ showSignals: value })} />;
   if (id === "scanner") return <><NumberField label="Rows" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showActivity)} label="Show market activity" onChange={(value) => patch({ showActivity: value })} /></>;
@@ -870,7 +911,7 @@ function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, 
 
 function TextField({ label, onChange, value }: { label: string; onChange: (value: string) => void; value: string }) { return <label><span>{label}</span><input onChange={(event) => onChange(event.target.value)} value={value} /></label>; }
 function NumberField({ label, onChange, value }: { label: string; onChange: (value: number) => void; value: number }) { return <label><span>{label}</span><input max={20} min={1} onChange={(event) => onChange(Number(event.target.value))} type="number" value={value} /></label>; }
-function SelectField({ label, onChange, options, value }: { label: string; onChange: (value: string) => void; options: string[]; value: string }) { return <label><span>{label}</span><select onChange={(event) => onChange(event.target.value)} value={value}>{options.map((option) => <option key={option}>{option}</option>)}</select></label>; }
+function SelectField({ label, onChange, optionLabel = (option) => option, options, value }: { label: string; onChange: (value: string) => void; optionLabel?: (value: string) => string; options: readonly string[]; value: string }) { return <label><span>{label}</span><select onChange={(event) => onChange(event.target.value)} value={value}>{options.map((option) => <option key={option} value={option}>{optionLabel(option)}</option>)}</select></label>; }
 function CheckField({ checked, label, onChange }: { checked: boolean; label: string; onChange: (value: boolean) => void }) { return <label className="canvas-check-field"><input checked={checked} onChange={(event) => onChange(event.target.checked)} type="checkbox" /><span>{label}</span></label>; }
 function Metric({ label, value }: { label: string; value: string }) { return <div><span>{label}</span><strong>{value}</strong></div>; }
 function EmptyState({ label }: { label: string }) { return <div className="canvas-preview-empty">{label}</div>; }
@@ -878,23 +919,35 @@ function EmptyState({ label }: { label: string }) { return <div className="canva
 function readSettings(): ContainerSettings {
   try {
     const stored = JSON.parse(window.localStorage.getItem(CANVAS_SETTINGS_STORAGE_KEY) ?? "{}") as Partial<ContainerSettings>;
-    const storedIndicators = Array.isArray(stored.chart?.visibleIndicators) ? stored.chart.visibleIndicators : DEFAULT_SETTINGS.chart.visibleIndicators;
-    const visibleIndicators = stored.version === DEFAULT_SETTINGS.version || storedIndicators.includes("indicator.macd")
-      ? storedIndicators
-      : [...storedIndicators, "indicator.macd"];
-    return {
-      ...DEFAULT_SETTINGS,
-      ...stored,
-      version: DEFAULT_SETTINGS.version,
-      chart: {
-        ...DEFAULT_SETTINGS.chart,
-        ...(stored.chart ?? {}),
-        visibleIndicators,
-      },
-    };
+    return normalizeSettings(stored);
   } catch {
-    return DEFAULT_SETTINGS;
+    return cloneDefaultSettings();
   }
+}
+
+function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSettings {
+  const storedIndicators = Array.isArray(stored.chart?.visibleIndicators) ? stored.chart.visibleIndicators : DEFAULT_SETTINGS.chart.visibleIndicators;
+  const visibleIndicators = stored.version === DEFAULT_SETTINGS.version || storedIndicators.includes("indicator.macd") ? storedIndicators : [...storedIndicators, "indicator.macd"];
+  const timeframe = HISTORICAL_TIMEFRAMES.includes(stored.chart?.timeframe as CanvasChartTimeframe) ? stored.chart!.timeframe! : DEFAULT_SETTINGS.chart.timeframe;
+  return {
+    version: DEFAULT_SETTINGS.version,
+    chart: { ...DEFAULT_SETTINGS.chart, ...(stored.chart ?? {}), timeframe, visibleIndicators: [...visibleIndicators] },
+    fills: { ...DEFAULT_SETTINGS.fills, ...(stored.fills ?? {}) },
+    journal: { ...DEFAULT_SETTINGS.journal, ...(stored.journal ?? {}) },
+    news: { ...DEFAULT_SETTINGS.news, ...(stored.news ?? {}) },
+    orders: { ...DEFAULT_SETTINGS.orders, ...(stored.orders ?? {}) },
+    portfolio: { ...DEFAULT_SETTINGS.portfolio, ...(stored.portfolio ?? {}) },
+    scanner: { ...DEFAULT_SETTINGS.scanner, ...(stored.scanner ?? {}) },
+    sec: { ...DEFAULT_SETTINGS.sec, ...(stored.sec ?? {}) },
+    strategy: { ...DEFAULT_SETTINGS.strategy, ...(stored.strategy ?? {}) },
+    xbrl: { ...DEFAULT_SETTINGS.xbrl, ...(stored.xbrl ?? {}) },
+  };
+}
+
+function cloneDefaultSettings() { return normalizeSettings(DEFAULT_SETTINGS); }
+function instanceSettings(registry: CanvasRegistry, instanceId: string) {
+  const stored = registry.instanceSettings[instanceId] as Partial<ContainerSettings> | undefined;
+  return stored ? normalizeSettings(stored) : instanceId === "chart" ? readSettings() : cloneDefaultSettings();
 }
 function readPreviewContext(): CanvasPreviewContext { try { const parsed = JSON.parse(window.localStorage.getItem(CANVAS_PREVIEW_CONTEXT_STORAGE_KEY) || "null") as CanvasPreviewContext | null; return parsed?.sessionDate && parsed?.previewTime ? parsed : { previewTime: "09:45", sessionDate: previousWeekdayIsoDate() }; } catch { return { previewTime: "09:45", sessionDate: previousWeekdayIsoDate() }; } }
 function previousWeekdayIsoDate() { const value = new Date(); value.setDate(value.getDate() - 1); while (value.getDay() === 0 || value.getDay() === 6) value.setDate(value.getDate() - 1); const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000); return local.toISOString().slice(0, 10); }
@@ -925,19 +978,48 @@ function dateInTimeZone(date: string, time: string, timeZone: string) {
   return instant;
 }
 function labelFor(value: string) { return value.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2"); }
+function formatChartTimeframe(value: string) {
+  if (value === "100ms") return "100 milliseconds";
+  if (value === "1d") return "Daily";
+  if (value === "1mo") return "Monthly";
+  const match = value.match(/^(\d+)([smh])$/);
+  if (!match) return value;
+  const count = Number(match[1]);
+  const unit = match[2] === "s" ? "second" : match[2] === "m" ? "minute" : "hour";
+  return `${count} ${unit}${count === 1 ? "" : "s"}`;
+}
 function statusLabel(value: WorkspaceWindowStatus) { return value.charAt(0).toUpperCase() + value.slice(1); }
 function previewRowKey(row: PreviewRow, columns: string[], index: number) { return `${columns.map((column) => String(row[column] ?? "")).join("|")}|${index}`; }
 function money(value: unknown) { return typeof value === "number" ? new Intl.NumberFormat("en-US", { currency: "USD", style: "currency" }).format(value) : "—"; }
 function formatPreviewDate(value?: string) { if (!value) return "this date"; return new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(new Date(`${value}T12:00:00Z`)); }
 function formatCell(value: unknown, column: string) { if (value === null || value === undefined || value === "") return "—"; if (column.includes("time") || column.includes("at_utc")) { const date = new Date(String(value)); return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" }).format(date); } if (typeof value === "number") return new Intl.NumberFormat("en-US", { maximumFractionDigits: column.includes("pct") ? 2 : 4 }).format(value); if (Array.isArray(value)) return value.join(", "); return String(value); }
 function containerTitle(id: WorkspaceContainerId) { return TRADING_WORKSPACE_CONTAINERS.find((definition) => definition.id === id)?.title ?? id; }
-function validContainerId(value: string | null): WorkspaceContainerId | undefined { return TRADING_WORKSPACE_CONTAINERS.some((definition) => definition.id === value) ? value as WorkspaceContainerId : undefined; }
-function focusCanvasState(canvasId: string, requestedContainerId?: WorkspaceContainerId): CanvasWorkspaceState | null {
-  const stored = readCanvasWorkspaceState(canvasId);
-  if (!requestedContainerId || stored?.openIds.includes(requestedContainerId)) return stored;
-  return { layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: createFocusLayouts([requestedContainerId]), openIds: [requestedContainerId] };
+function workspaceContainerKind(instanceId: string, state?: CanvasWorkspaceState | null): WorkspaceContainerId {
+  const stored = state?.instances[instanceId];
+  if (stored) return stored;
+  return TRADING_WORKSPACE_CONTAINERS.find((definition) => instanceId === definition.id || instanceId.startsWith(`${definition.id}-`))?.id ?? "chart";
 }
-function normalizeInheritedLayouts(layouts: Record<string, WorkspaceWindowLayout>, ids: WorkspaceContainerId[]) {
+function containerInstanceTitle(kind: WorkspaceContainerId, instanceId: string, state: CanvasWorkspaceState | null, registry: CanvasRegistry) {
+  const matchingIds = (state?.openIds ?? [instanceId]).filter((candidateId) => workspaceContainerKind(candidateId, state) === kind);
+  if (kind === "chart") {
+    const timeframe = instanceSettings(registry, instanceId).chart.timeframe;
+    const matchingTimeframeIds = matchingIds.filter((candidateId) => instanceSettings(registry, candidateId).chart.timeframe === timeframe);
+    const duplicateIndex = matchingTimeframeIds.indexOf(instanceId);
+    const readableTimeframe = formatChartTimeframe(timeframe).replace(/\b\w/g, (letter) => letter.toUpperCase());
+    const base = timeframe === "1d" ? "Daily Chart" : timeframe === "1mo" ? "Monthly Chart" : `${readableTimeframe} Chart`;
+    return matchingTimeframeIds.length > 1 && duplicateIndex >= 0 ? `${base} ${duplicateIndex + 1}` : base;
+  }
+  const index = matchingIds.indexOf(instanceId);
+  const base = containerTitle(kind);
+  return matchingIds.length > 1 && index >= 0 ? `${base} ${index + 1}` : base;
+}
+function focusCanvasState(canvasId: string, requestedInstanceId?: string): CanvasWorkspaceState | null {
+  const stored = readCanvasWorkspaceState(canvasId);
+  if (!requestedInstanceId || stored?.openIds.includes(requestedInstanceId)) return stored;
+  const kind = workspaceContainerKind(requestedInstanceId, stored);
+  return { instances: { [requestedInstanceId]: kind }, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: createFocusLayouts([requestedInstanceId]), openIds: [requestedInstanceId] };
+}
+function normalizeInheritedLayouts(layouts: Record<string, WorkspaceWindowLayout>, ids: string[]) {
   const fallback = createFocusLayouts(ids);
   return Object.fromEntries(ids.map((id) => [id, { ...(layouts[id] ?? fallback[id]), fullscreen: false, minimized: false }]));
 }

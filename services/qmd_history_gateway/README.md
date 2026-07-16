@@ -44,7 +44,7 @@ without a ready historical `/health` response, it stops with an actionable
 address-conflict message instead of attempting a duplicate bind.
 
 Configuration uses `QMD_HISTORY_CLICKHOUSE_URL`, `QMD_HISTORY_DATABASE`,
-`QMD_HISTORY_TABLE_PREFIX`, `QMD_HISTORY_CLICKHOUSE_USER`,
+`QMD_HISTORY_TABLE_PREFIX`, `QMD_HISTORY_MACRO_BARS_TABLE`, `QMD_HISTORY_CLICKHOUSE_USER`,
 `QMD_HISTORY_CLICKHOUSE_PASSWORD`, `QMD_HISTORY_BIND`,
 `QMD_HISTORY_BATCH_SIZE`, `QMD_HISTORY_MAX_EVENTS_PER_REQUEST`,
 `QMD_HISTORY_CACHE_MAX_ENTRIES`, `QMD_HISTORY_CACHE_MAX_BARS_PER_ENTRY`, and
@@ -59,6 +59,7 @@ Defaults:
 - bind: `127.0.0.1:8801`
 - database: `market_sip_compact`
 - yearly-table prefix: `events_`
+- durable macro table: `macro_bars_by_time_symbol`
 - batch size: `25000`
 - maximum events in one derived calculation: `10000000`
 - revision-aware derived cache entries: `256`
@@ -87,6 +88,7 @@ and `1h`.
 - `GET /snapshot/family-bars/{ticker}?start=...&end=...&as_of=...&resolution=1m`
 - `GET /snapshot/condition-bars/{ticker}?start=...&end=...&as_of=...&resolution=1m`
 - `GET /snapshot/macro-bars/{ticker}?start=...&end=...&as_of=...&timeframe=1d`
+- `GET /snapshot/chart-macro-bars/{ticker}?start=...&end=...&as_of=...&timeframe=1d|1mo` (bounded chart history; monthly rows aggregate durable daily macro families)
 - `GET /snapshot/compact-events/{ticker}?start=...&end=...&limit=...`
 - `GET /snapshot/bars/{ticker}?start=...&end=...&timeframe=1m&limit=...` (bars plus canonical QMD bar indicators)
 - `WS /stream/compact-events?start=...&end=...&tickers=AAPL,MSFT`

@@ -119,6 +119,10 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/snapshot/bars/{ticker}", get(bar_snapshot))
         .route("/snapshot/chart-bars/{ticker}", get(chart_bar_snapshot))
+        .route(
+            "/snapshot/chart-macro-bars/{ticker}",
+            get(chart_macro_bar_snapshot),
+        )
         .route("/snapshot/family-bars/{ticker}", get(family_bar_snapshot))
         .route(
             "/snapshot/condition-bars/{ticker}",
@@ -324,8 +328,8 @@ async fn macro_bar_snapshot(
     let ticker = normalize_ticker(&ticker)?;
     let (product_window, as_of) = causal_product_window(&query, &ticker)?;
     let timeframe = query.timeframe.unwrap_or_else(|| "1d".to_string());
-    if !matches!(timeframe.as_str(), "1d" | "1w" | "1y") {
-        return Err(bad_request("macro timeframe must be 1d, 1w, or 1y"));
+    if !matches!(timeframe.as_str(), "1d" | "1w" | "1mo" | "1y") {
+        return Err(bad_request("macro timeframe must be 1d, 1w, 1mo, or 1y"));
     }
     state
         .cache
@@ -336,6 +340,25 @@ async fn macro_bar_snapshot(
             query.limit.unwrap_or(1_000).min(10_000),
             as_of,
         )
+        .await
+        .map(Json)
+        .map_err(service_error)
+}
+
+async fn chart_macro_bar_snapshot(
+    State(state): State<Arc<AppState>>,
+    Path(ticker): Path<String>,
+    Query(query): Query<ProductQuery>,
+) -> Result<Json<crate::source::HistoricalMacroChartSnapshot>, ApiError> {
+    let ticker = normalize_ticker(&ticker)?;
+    let (window, as_of) = causal_product_window(&query, &ticker)?;
+    let timeframe = query.timeframe.unwrap_or_else(|| "1d".to_string());
+    if !matches!(timeframe.as_str(), "1d" | "1mo") {
+        return Err(bad_request("chart macro timeframe must be 1d or 1mo"));
+    }
+    state
+        .source
+        .chart_macro_bars(&window, &ticker, &timeframe, as_of)
         .await
         .map(Json)
         .map_err(service_error)

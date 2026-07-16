@@ -1,5 +1,6 @@
 use crate::config::HistoricalGatewayConfig;
-use chrono::{DateTime, Datelike, TimeZone, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono_tz::America::New_York;
 use qmd_core::bars::TradeAggregationRules;
 use qmd_core::compact_event::{
     CompactEventDecoder, CompactEventReferences, LiveCompactEvent,
@@ -42,6 +43,32 @@ pub struct SourceRevision {
     pub max_build_step: u64,
     pub max_updated_at: String,
     pub token: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct HistoricalMacroChartRow {
+    pub bar_end: DateTime<Utc>,
+    pub bar_family: String,
+    pub bar_start: DateTime<Utc>,
+    pub close: f64,
+    pub event_count: u64,
+    pub high: f64,
+    pub is_closed: bool,
+    pub low: f64,
+    pub open: f64,
+    pub session_date: String,
+    pub size_sum: f64,
+    pub ticker: String,
+    pub timeframe: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct HistoricalMacroChartSnapshot {
+    pub as_of: DateTime<Utc>,
+    pub bars: Vec<HistoricalMacroChartRow>,
+    pub source: String,
+    pub ticker: String,
+    pub timeframe: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -99,6 +126,22 @@ struct SourceRevisionRow {
     event_count: u64,
     max_build_step: u64,
     max_updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MacroQueryRow {
+    bar_end: String,
+    bar_family: String,
+    bar_start: String,
+    close: f64,
+    event_count: u64,
+    high: f64,
+    low: f64,
+    open: f64,
+    session_date: String,
+    size_sum: f64,
+    ticker: String,
+    timeframe: String,
 }
 
 impl HistoricalEventSource {
@@ -319,6 +362,114 @@ impl HistoricalEventSource {
         })
     }
 
+    pub async fn chart_macro_bars(
+        &self,
+        window: &EventWindow,
+        ticker: &str,
+        timeframe: &str,
+        as_of: DateTime<Utc>,
+    ) -> Result<HistoricalMacroChartSnapshot, String> {
+        validate_window(window)?;
+        let ticker = normalize_ticker(ticker)?;
+        if !matches!(timeframe, "1d" | "1mo") {
+            return Err("chart macro timeframe must be 1d or 1mo".to_string());
+        }
+        let table = format!(
+            "{}.{}",
+            self.config.clickhouse_database, self.config.macro_bars_table
+        );
+        let projection = if timeframe == "1mo" {
+            r#"SELECT
+                toString(month_start) AS session_date,
+                '1mo' AS timeframe,
+                sym AS ticker,
+                bar_family,
+                toString(min(source_bar_start)) AS bar_start,
+                toString(max(source_bar_end)) AS bar_end,
+                argMin(open, source_bar_start) AS open,
+                argMax(close, source_bar_end) AS close,
+                max(high) AS high,
+                min(low) AS low,
+                sum(size_sum) AS size_sum,
+                sum(event_count) AS event_count
+            FROM (
+                SELECT toStartOfMonth(toDate(session_date)) AS month_start, sym, bar_family, bar_start AS source_bar_start, bar_end AS source_bar_end, open, close, high, low, size_sum, event_count
+                FROM {table} FINAL
+                WHERE timeframe = '1d'
+                  AND sym = {ticker}
+                  AND toDate(session_date) >= toDate('{start}')
+                  AND toDate(session_date) < toDate('{end}')
+                  AND bar_end <= parseDateTime64BestEffort('{as_of}')
+            )
+            GROUP BY month_start, sym, bar_family
+            ORDER BY bar_start, bar_family
+            FORMAT JSONEachRow"#
+        } else {
+            r#"SELECT
+                toString(session_date) AS session_date,
+                '1d' AS timeframe,
+                sym AS ticker,
+                bar_family,
+                toString(source_bar_start) AS bar_start,
+                toString(source_bar_end) AS bar_end,
+                open,
+                close,
+                high,
+                low,
+                size_sum,
+                event_count
+            FROM (
+                SELECT session_date, sym, bar_family, bar_start AS source_bar_start, bar_end AS source_bar_end, open, close, high, low, size_sum, event_count
+                FROM {table} FINAL
+                WHERE timeframe = '1d'
+                  AND sym = {ticker}
+                  AND toDate(session_date) >= toDate('{start}')
+                  AND toDate(session_date) < toDate('{end}')
+                  AND bar_end <= parseDateTime64BestEffort('{as_of}')
+            )
+            ORDER BY bar_start, bar_family
+            FORMAT JSONEachRow"#
+        };
+        let sql = projection
+            .replace("{table}", &table)
+            .replace("{ticker}", &sql_literal(&ticker))
+            .replace("{start}", &window.start.date_naive().to_string())
+            .replace("{end}", &window.end.date_naive().to_string())
+            .replace("{as_of}", &as_of.to_rfc3339());
+        let text = self.query(&sql).await?;
+        let bars = text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let row = serde_json::from_str::<MacroQueryRow>(line)
+                    .map_err(|error| format!("invalid macro bar row: {error}"))?;
+                let is_closed = macro_bar_is_closed(&row.session_date, timeframe, as_of)?;
+                Ok(HistoricalMacroChartRow {
+                    bar_end: parse_clickhouse_datetime(&row.bar_end)?,
+                    bar_family: row.bar_family,
+                    bar_start: parse_clickhouse_datetime(&row.bar_start)?,
+                    close: row.close,
+                    event_count: row.event_count,
+                    high: row.high,
+                    is_closed,
+                    low: row.low,
+                    open: row.open,
+                    session_date: row.session_date,
+                    size_sum: row.size_sum,
+                    ticker: row.ticker,
+                    timeframe: row.timeframe,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(HistoricalMacroChartSnapshot {
+            as_of,
+            bars,
+            source: table,
+            ticker,
+            timeframe: timeframe.to_string(),
+        })
+    }
+
     pub async fn latest_coverage_before(
         &self,
         before: Option<chrono::NaiveDate>,
@@ -393,6 +544,30 @@ impl HistoricalEventSource {
     }
 }
 
+fn parse_clickhouse_datetime(value: &str) -> Result<DateTime<Utc>, String> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|value| value.with_timezone(&Utc))
+        .or_else(|_| {
+            NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
+                .map(|value| value.and_utc())
+        })
+        .map_err(|error| format!("invalid ClickHouse timestamp {value:?}: {error}"))
+}
+
+fn macro_bar_is_closed(
+    session_date: &str,
+    timeframe: &str,
+    as_of: DateTime<Utc>,
+) -> Result<bool, String> {
+    if timeframe != "1mo" {
+        return Ok(true);
+    }
+    let period = NaiveDate::parse_from_str(session_date, "%Y-%m-%d")
+        .map_err(|error| format!("invalid macro session date {session_date:?}: {error}"))?;
+    let current = as_of.with_timezone(&New_York).date_naive();
+    Ok((period.year(), period.month()) < (current.year(), current.month()))
+}
+
 fn row_to_event(row: HistoricalRow) -> LiveCompactEvent {
     let ingest_ts = Utc
         .timestamp_micros(row.sip_timestamp_us as i64)
@@ -447,7 +622,8 @@ fn sql_literal(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_ticker, row_to_event, HistoricalRow};
+    use super::{macro_bar_is_closed, normalize_ticker, row_to_event, HistoricalRow};
+    use chrono::{TimeZone, Utc};
     use qmd_core::compact_event::{CompactEventDecoder, LIVE_COMPACT_EVENT_SCHEMA_VERSION};
     use qmd_core::event::MarketEvent;
 
@@ -491,5 +667,28 @@ mod tests {
     fn ticker_validation_rejects_sql_content() {
         assert_eq!(normalize_ticker("aapl").unwrap(), "AAPL");
         assert!(normalize_ticker("AAPL') OR 1=1").is_err());
+    }
+
+    #[test]
+    fn current_new_york_month_remains_partial() {
+        let july_session = "2026-07-01";
+        assert!(!macro_bar_is_closed(
+            july_session,
+            "1mo",
+            Utc.with_ymd_and_hms(2026, 7, 10, 14, 0, 0).unwrap(),
+        )
+        .unwrap());
+        assert!(!macro_bar_is_closed(
+            july_session,
+            "1mo",
+            Utc.with_ymd_and_hms(2026, 8, 1, 0, 30, 0).unwrap(),
+        )
+        .unwrap());
+        assert!(macro_bar_is_closed(
+            july_session,
+            "1mo",
+            Utc.with_ymd_and_hms(2026, 8, 1, 14, 0, 0).unwrap(),
+        )
+        .unwrap());
     }
 }

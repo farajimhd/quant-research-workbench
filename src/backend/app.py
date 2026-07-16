@@ -69,7 +69,9 @@ from src.backend.news_service import ensure_benzinga_news_cache, news_at_payload
 from src.backend.progress_model import build_progress_model
 from src.backend.qmd_gateway_client import (
     ENRICHED_QMD_TIMEFRAMES,
+    MACRO_QMD_TIMEFRAMES,
     normalize_qmd_family_bar_snapshot,
+    normalize_qmd_macro_bar_snapshot,
     qmd_catalogs,
     qmd_chart_bars,
     qmd_indicators,
@@ -4395,12 +4397,16 @@ async def trading_canvas_live_chart_stream(websocket: WebSocket, stream: str, sy
         await websocket.close(code=1008)
         return
     try:
-        family_bars = stream == "bars" and timeframe not in ENRICHED_QMD_TIMEFRAMES
+        macro_bars = stream == "bars" and timeframe in MACRO_QMD_TIMEFRAMES
+        family_bars = stream == "bars" and timeframe not in ENRICHED_QMD_TIMEFRAMES and not macro_bars
         if stream == "indicators" and timeframe not in ENRICHED_QMD_TIMEFRAMES:
             await websocket.close(code=1000)
             return
-        upstream_path = f"/stream/family-bars/{ticker}" if family_bars else f"/stream/{stream}/{ticker}"
+        upstream_path = f"/stream/macro-bars/{ticker}" if macro_bars else f"/stream/family-bars/{ticker}" if family_bars else f"/stream/{stream}/{ticker}"
         upstream_params = (
+            {"emit": "full_then_updates", "limit": row_limit, "timeframe": timeframe}
+            if macro_bars
+            else
             {"emit": "full_then_updates", "family": "trade", "limit": row_limit, "resolution": timeframe}
             if family_bars
             else {"timeframe": timeframe, "limit": row_limit}
@@ -4410,6 +4416,11 @@ async def trading_canvas_live_chart_stream(websocket: WebSocket, stream: str, sy
             async for message in upstream:
                 if isinstance(message, bytes):
                     await websocket.send_bytes(message)
+                elif macro_bars:
+                    payload = json.loads(message)
+                    await websocket.send_json(
+                        normalize_qmd_macro_bar_snapshot(payload, symbol=ticker, timeframe=timeframe)
+                    )
                 elif family_bars:
                     payload = json.loads(message)
                     await websocket.send_json(

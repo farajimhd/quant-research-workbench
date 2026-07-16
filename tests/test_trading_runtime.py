@@ -201,6 +201,43 @@ class HistoricalContractTests(unittest.TestCase):
         self.assertTrue(result["has_more_in_session"])
         self.assertEqual(len(result["indicators"]), 1)
 
+    @patch("src.backend.trading_runtime_service._historical_gateway_get")
+    def test_monthly_chart_history_requests_exact_36_month_macro_window(self, gateway_get) -> None:
+        gateway_get.return_value = {
+            "bars": [
+                {
+                    "bar_family": "trade",
+                    "bar_start": "2023-08-01T04:00:00+00:00",
+                    "bar_end": "2023-09-01T04:00:00+00:00",
+                    "close": 190.0,
+                    "high": 198.0,
+                    "is_closed": True,
+                    "low": 175.0,
+                    "open": 178.0,
+                    "session_date": "2023-08-01",
+                    "size_sum": 10_000.0,
+                }
+            ],
+            "source": "market_sip_compact.macro_bars_by_time_symbol",
+        }
+
+        result = historical_bar_history_before(
+            before=date(2026, 7, 11),
+            session_date=date(2026, 7, 10),
+            as_of="2026-07-10T13:45:00+00:00",
+            before_bar=None,
+            ticker="AAPL",
+            timeframe="1mo",
+            row_limit=5_000,
+        )
+
+        path, params = gateway_get.call_args.args[:2]
+        self.assertEqual(path, "/snapshot/chart-macro-bars/AAPL")
+        self.assertEqual(params["timeframe"], "1mo")
+        self.assertEqual(params["start"], "2023-08-01T00:00:00+00:00")
+        self.assertEqual(result["history"][0]["volume"], 10_000.0)
+        self.assertFalse(result["indicators_available"])
+
     def test_live_family_bars_use_the_chart_bar_contract(self) -> None:
         payload = normalize_qmd_family_bar_snapshot(
             {
