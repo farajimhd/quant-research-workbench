@@ -328,10 +328,29 @@ INNER JOIN {mdb}.sec_embedding_policy_v3 AS p ON c.resolved_taxonomy_key=p.taxon
 WHERE c.resolution_status='approved'
 SETTINGS max_threads=32,max_memory_usage='96G',join_algorithm='grace_hash'
 """)[0]
+    source_by_taxonomy = query_json(client, f"""
+SELECT p.taxonomy_key, count() AS source_rows, uniqExact(s.accession_number) AS source_filings,
+       sum(s.source_text_char_count) AS source_characters,
+       quantilesExact(0.5,0.9,0.99,0.999)(s.source_text_char_count) AS source_quantiles,
+       max(s.source_text_char_count) AS source_max_characters
+FROM (
+    SELECT accession_number,upperUTF8(trimBoth(document_type)) AS document_type,document_role,source_text_char_count
+    FROM {db}.sec_filing_text_v3 FINAL
+) AS s
+INNER JOIN {db}.sec_disclosure_taxonomy_candidate_v3 AS c
+    ON s.document_type=c.document_type AND s.document_role=c.document_role
+INNER JOIN {mdb}.sec_embedding_policy_v3 AS p ON c.resolved_taxonomy_key=p.taxonomy_key
+WHERE c.resolution_status='approved'
+GROUP BY p.taxonomy_key
+SETTINGS max_threads=32,max_memory_usage='96G',join_algorithm='grace_hash'
+""")
     rendered_by_taxonomy = query_json(client, f"""
-SELECT p.taxonomy_key, count() AS rendered_rows, sum(r.text_char_count) AS rendered_characters
+SELECT p.taxonomy_key, count() AS rendered_rows, uniqExact(s.accession_number) AS rendered_filings,
+       sum(r.text_char_count) AS rendered_characters,
+       quantilesExact(0.5,0.9,0.99,0.999)(r.text_char_count) AS rendered_quantiles,
+       max(r.text_char_count) AS rendered_max_characters
 FROM (SELECT document_id,text_char_count FROM {db}.sec_filing_text_rendered_v3 FINAL) AS r
-INNER JOIN (SELECT document_id,upperUTF8(trimBoth(document_type)) AS document_type,document_role FROM {db}.sec_filing_text_v3 FINAL) AS s
+INNER JOIN (SELECT document_id,accession_number,upperUTF8(trimBoth(document_type)) AS document_type,document_role FROM {db}.sec_filing_text_v3 FINAL) AS s
     ON r.document_id=s.document_id
 INNER JOIN {db}.sec_disclosure_taxonomy_candidate_v3 AS c
     ON s.document_type=c.document_type AND s.document_role=c.document_role
@@ -347,7 +366,13 @@ WHERE database={sql_string(model_database)}
   AND name IN ('sec_filing_text_tokens_v3','sec_filing_text_embeddings_v3')
 """)
     products = {row["name"]: int(row["total_rows"] or 0) for row in table_rows}
-    return {"source": source, "rendered": rendered, "rendered_by_taxonomy": rendered_by_taxonomy, "model_products": products}
+    return {
+        "source": source,
+        "rendered": rendered,
+        "source_by_taxonomy": source_by_taxonomy,
+        "rendered_by_taxonomy": rendered_by_taxonomy,
+        "model_products": products,
+    }
 
 
 def write_report(approved: list[dict[str, Any]], candidates: list[dict[str, Any]], policies: list[dict[str, Any]], statistics: dict[str, Any]) -> None:
@@ -363,11 +388,7 @@ def write_report(approved: list[dict[str, Any]], candidates: list[dict[str, Any]
     source = statistics["source"]
     rendered = statistics["rendered"]
     product_rows = statistics["model_products"]
-    source_by_taxonomy: dict[str, dict[str, int]] = {}
-    for candidate in approved_candidates:
-        values = source_by_taxonomy.setdefault(candidate["resolved_taxonomy_key"], {"rows": 0, "characters": 0})
-        values["rows"] += int(candidate["source_rows"])
-        values["characters"] += int(candidate["source_characters"])
+    source_by_taxonomy = {row["taxonomy_key"]: row for row in statistics["source_by_taxonomy"]}
     rendered_by_taxonomy = {row["taxonomy_key"]: row for row in statistics["rendered_by_taxonomy"]}
     token_rows = product_rows.get("sec_filing_text_tokens_v3")
     embedding_rows = product_rows.get("sec_filing_text_embeddings_v3")
@@ -399,19 +420,30 @@ def write_report(approved: list[dict[str, Any]], candidates: list[dict[str, Any]
         "",
         "Counts use logical current rows from `FINAL`. Eligible rendered rows are joined by `document_id` to full source metadata, resolved through the approved taxonomy, and filtered by the model policy. They are the actual documents the v3 embedding extractor should process.", "",
         "## Approved Taxonomy", "",
-        "| Scope | Match | Type | Official or canonical title | Category | Impact | Score | Source rows | Source chars | Rendered rows | Rendered chars | Embed | Strategy |",
-        "| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+        "| Scope | Match | Type | Official or canonical title | Category | Impact | Score | Source rows | Source filings | Source chars | Source P50/P90/P99/P99.9 | Source max | Rendered rows | Rendered filings | Rendered chars | Rendered P50/P90/P99/P99.9 | Rendered max | Embed | Strategy |",
+        "| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- | ---: | --- | --- |",
     ]
     for row in sorted(approved, key=lambda r: (r["taxonomy_scope"], r["submitted_type"])):
         p = policy[row["taxonomy_key"]]
-        source_values = source_by_taxonomy.get(row["taxonomy_key"], {"rows": 0, "characters": 0})
-        rendered_values = rendered_by_taxonomy.get(row["taxonomy_key"], {"rendered_rows": 0, "rendered_characters": 0})
+        source_values = source_by_taxonomy.get(
+            row["taxonomy_key"],
+            {"source_rows": 0, "source_filings": 0, "source_characters": 0, "source_quantiles": [], "source_max_characters": 0},
+        )
+        rendered_values = rendered_by_taxonomy.get(
+            row["taxonomy_key"],
+            {"rendered_rows": 0, "rendered_filings": 0, "rendered_characters": 0, "rendered_quantiles": [], "rendered_max_characters": 0},
+        )
+        source_quantiles = " / ".join(fmt_chars(int(value)) for value in source_values["source_quantiles"]) or "n/a"
+        rendered_quantiles = " / ".join(fmt_chars(int(value)) for value in rendered_values["rendered_quantiles"]) or "n/a"
         cells = [
             row["taxonomy_scope"], row["match_kind"], row["submitted_type"], row["canonical_title"],
-            row["category"], row["impact_label"], row["impact_score"], f"{source_values['rows']:,}",
-            fmt_chars(source_values["characters"]), f"{int(rendered_values['rendered_rows']):,}",
-            fmt_chars(int(rendered_values["rendered_characters"])), "yes" if p["embedding_enabled"] else "no",
-            p["input_strategy"],
+            row["category"], row["impact_label"], row["impact_score"], f"{int(source_values['source_rows']):,}",
+            f"{int(source_values['source_filings']):,}", fmt_chars(int(source_values["source_characters"])),
+            source_quantiles, fmt_chars(int(source_values["source_max_characters"])),
+            f"{int(rendered_values['rendered_rows']):,}", f"{int(rendered_values['rendered_filings']):,}",
+            fmt_chars(int(rendered_values["rendered_characters"])), rendered_quantiles,
+            fmt_chars(int(rendered_values["rendered_max_characters"])),
+            "yes" if p["embedding_enabled"] else "no", p["input_strategy"],
         ]
         lines.append("| " + " | ".join(str(value).replace("|", "\\|").replace("\n", " ") for value in cells) + " |")
     lines += ["", "## Largest Observed Groups", "", "| Type | Role | Rows | Filings | Characters | P50 / P90 / P99 | Maximum | Resolution | Embed |", "| --- | --- | ---: | ---: | ---: | --- | ---: | --- | --- |"]
