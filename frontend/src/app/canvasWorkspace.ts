@@ -1,5 +1,6 @@
 import { containerSupportsSymbolLink, type WorkspaceContainerId } from "./tradingWorkspace";
 import type { WorkspaceWindowLayout } from "./components/WorkspaceCanvas";
+import { normalizeWorkspaceGroups, type WorkspaceGroup } from "./workspaceGroups";
 
 export type CanvasLinkGroupId = "none" | "A" | "B" | "C" | "D" | "E" | "F" | "G";
 export type CanvasAssignedLinkGroupId = Exclude<CanvasLinkGroupId, "none">;
@@ -17,6 +18,7 @@ export type CanvasLinkContext = {
 export type CanvasChartTimeframe = "100ms" | "1s" | "5s" | "10s" | "30s" | "1m" | "5m" | "1h" | "1d" | "1mo";
 
 export type CanvasWorkspaceState = {
+  groups: Record<string, WorkspaceGroup>;
   instances: Record<string, WorkspaceContainerId>;
   layoutVersion: number;
   layouts: Record<string, WorkspaceWindowLayout>;
@@ -189,7 +191,7 @@ function normalizeWorkspaceState(value: CanvasWorkspaceState | undefined | null)
   const instances = value.instances && typeof value.instances === "object"
     ? value.instances
     : Object.fromEntries(value.openIds.map((id) => [id, id.split("-")[0] as WorkspaceContainerId]));
-  return { ...value, instances };
+  return { ...value, groups: normalizeWorkspaceGroups(value.groups, value.openIds), instances };
 }
 
 function isCanvasLinkGroupId(value: unknown): value is CanvasLinkGroupId {

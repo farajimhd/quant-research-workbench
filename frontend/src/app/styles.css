@@ -16426,70 +16426,70 @@ button {
 }
 
 /* The Canvas chart is a dense trading surface; its container supplies the frame. */
-.canvas-config-page .workspace-window[data-window-kind="chart"] .chart-shell {
+.canvas-config-page :is(.workspace-window, .workspace-group-member)[data-window-kind="chart"] .chart-shell {
   height: 100%;
   border: 0;
   border-radius: 0;
   box-shadow: none;
 }
 
-.canvas-config-page .workspace-window[data-window-kind="chart"] .chart-empty-state {
+.canvas-config-page :is(.workspace-window, .workspace-group-member)[data-window-kind="chart"] .chart-empty-state {
   min-height: 0;
   align-items: center;
 }
 
-.canvas-config-page .workspace-window[data-window-kind="chart"] .chart-component-toolbar {
+.canvas-config-page :is(.workspace-window, .workspace-group-member)[data-window-kind="chart"] .chart-component-toolbar {
   gap: 2px;
   min-height: 30px;
   padding: 1px 3px;
 }
 
-.canvas-config-page .workspace-window[data-window-kind="chart"] .chart-ticker-input {
+.canvas-config-page :is(.workspace-window, .workspace-group-member)[data-window-kind="chart"] .chart-ticker-input {
   min-height: 24px;
   padding-block: 0;
 }
 
-.canvas-config-page .workspace-window[data-window-kind="chart"] .chart-timeframe-row .timeframe-button {
+.canvas-config-page :is(.workspace-window, .workspace-group-member)[data-window-kind="chart"] .chart-timeframe-row .timeframe-button {
   min-height: 24px;
   padding-inline: 4px;
   font-size: 11px;
 }
 
-.canvas-config-page .workspace-window[data-window-kind="chart"] .chart-column-select-button {
+.canvas-config-page :is(.workspace-window, .workspace-group-member)[data-window-kind="chart"] .chart-column-select-button {
   gap: 4px;
   min-height: 24px;
   padding-inline: 5px;
   font-size: 11px;
 }
 
-.canvas-config-page .workspace-window[data-window-kind="chart"] .toolbar-button {
+.canvas-config-page :is(.workspace-window, .workspace-group-member)[data-window-kind="chart"] .toolbar-button {
   width: 24px;
   height: 24px;
   min-height: 24px;
 }
 
-.canvas-config-page .workspace-window[data-window-kind="chart"] .toolbar-divider {
+.canvas-config-page :is(.workspace-window, .workspace-group-member)[data-window-kind="chart"] .toolbar-divider {
   height: 16px;
   margin-inline: 1px;
 }
 
-.canvas-config-page .workspace-window[data-window-kind="chart"] .chart-canvas-stack {
+.canvas-config-page :is(.workspace-window, .workspace-group-member)[data-window-kind="chart"] .chart-canvas-stack {
   padding: 0;
 }
 
-.canvas-config-page .workspace-window[data-window-kind="chart"] .chart-price {
+.canvas-config-page :is(.workspace-window, .workspace-group-member)[data-window-kind="chart"] .chart-price {
   height: auto;
   min-height: 160px;
   flex: 1 1 240px;
 }
 
-.canvas-config-page .workspace-window[data-window-kind="chart"] .chart-osc {
+.canvas-config-page :is(.workspace-window, .workspace-group-member)[data-window-kind="chart"] .chart-osc {
   height: 104px;
   min-height: 72px;
   flex: 0 0 104px;
 }
 
-.canvas-config-page .workspace-window[data-window-kind="chart"] .chart-pane-close {
+.canvas-config-page :is(.workspace-window, .workspace-group-member)[data-window-kind="chart"] .chart-pane-close {
   top: 3px;
   right: 3px;
   width: 18px;
@@ -21067,6 +21067,158 @@ button {
 .compact-window .workspace-window-resize.live-window-resize {
   bottom: 0;
   right: 0;
+}
+
+.workspace-window[data-selected="true"],
+.workspace-window:has(.workspace-group-select[data-active="true"]) {
+  outline: 2px solid color-mix(in oklab, var(--primary) 74%, transparent);
+  outline-offset: -2px;
+}
+
+.workspace-group-select[data-active="true"] {
+  background: color-mix(in oklab, var(--primary) 12%, var(--control-bg));
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.workspace-group-window.live-window {
+  background: var(--surface);
+  isolation: isolate;
+}
+
+.workspace-group-header {
+  position: relative;
+  z-index: 40;
+}
+
+.workspace-group-body {
+  background: var(--surface);
+  inset: 0;
+  overflow: hidden;
+  position: absolute;
+  z-index: 1;
+}
+
+.workspace-group-member {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  position: absolute;
+}
+
+.workspace-group-member > .workspace-window-body.live-window-body {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+.workspace-group-members {
+  position: relative;
+}
+
+.workspace-group-members > summary {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  list-style: none;
+}
+
+.workspace-group-members > summary::-webkit-details-marker {
+  display: none;
+}
+
+.workspace-group-member-menu {
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-lg);
+  color: var(--foreground);
+  display: grid;
+  min-width: 290px;
+  position: absolute;
+  right: 0;
+  top: 24px;
+  z-index: 80;
+}
+
+.workspace-group-member-menu > header {
+  align-items: baseline;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  padding: 7px 8px;
+}
+
+.workspace-group-member-menu > header strong {
+  font-size: 10px;
+}
+
+.workspace-group-member-menu > header small,
+.workspace-group-member-row small {
+  color: var(--muted-foreground);
+  font-size: 8px;
+}
+
+.workspace-group-member-row {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 5px 6px 5px 8px;
+}
+
+.workspace-group-member-row:last-child {
+  border-bottom: 0;
+}
+
+.workspace-group-member-row > span {
+  display: grid;
+  min-width: 0;
+}
+
+.workspace-group-member-row > span strong {
+  font-size: 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-group-member-row > div {
+  align-items: center;
+  display: flex;
+  gap: 2px;
+}
+
+.workspace-group-selection-bar {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-md);
+  display: flex;
+  gap: 5px;
+  padding: 3px;
+  bottom: 8px;
+  left: 50%;
+  position: fixed;
+  transform: translateX(-50%);
+  z-index: 2200;
+}
+
+.workspace-group-selection-bar > span {
+  align-items: center;
+  color: var(--muted-foreground);
+  display: inline-flex;
+  font-size: 9px;
+  gap: 4px;
+  padding: 0 4px;
+}
+
+.workspace-group-selection-bar > span strong {
+  color: var(--foreground);
 }
 
 .canvas-container-preview {

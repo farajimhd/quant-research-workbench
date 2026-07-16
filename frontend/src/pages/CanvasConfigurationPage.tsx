@@ -597,12 +597,14 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId }: { ca
     const inheritedIds = sourceState?.openIds.length ? sourceState.openIds : ALL_CONTAINER_IDS;
     const state: CanvasWorkspaceState = instanceId && containerId
       ? {
+          groups: {},
           instances: { [instanceId]: containerId },
           layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
           layouts: { [instanceId]: focusLayout(sourceLayout) },
           openIds: [instanceId],
         }
       : {
+          groups: sourceState?.groups ?? {},
           instances: sourceState?.instances ?? Object.fromEntries(inheritedIds.map((id) => [id, workspaceContainerKind(id, sourceState)])),
           layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
           layouts: sourceState
@@ -617,7 +619,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId }: { ca
 
   function moveContainer(instanceId: string, targetCanvasId: string, sourceLayout: WorkspaceWindowLayout) {
     const containerId = workspaceContainerKind(instanceId, workspaceState);
-    const target = readCanvasWorkspaceState(targetCanvasId) ?? { instances: {}, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: {}, openIds: [] };
+    const target = readCanvasWorkspaceState(targetCanvasId) ?? { groups: {}, instances: {}, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: {}, openIds: [] };
     const openIds = target.openIds.includes(instanceId) ? target.openIds : [...target.openIds, instanceId];
     const targetContainsFullscreenWindow = target.openIds.some((id) => target.layouts[id]?.fullscreen);
     const layouts = target.openIds.length === 0
@@ -626,6 +628,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId }: { ca
         ? createFocusLayouts(openIds)
         : { ...target.layouts, [instanceId]: offsetLayout(sourceLayout, target.openIds.length) };
     writeCanvasWorkspaceState(targetCanvasId, {
+      groups: target.groups,
       instances: { ...target.instances, [instanceId]: containerId },
       layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
       layouts,
@@ -633,10 +636,40 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId }: { ca
     });
   }
 
+  function moveGroup(groupId: string, targetCanvasId: string, sourceState: CanvasWorkspaceState) {
+    const target = readCanvasWorkspaceState(targetCanvasId) ?? { groups: {}, instances: {}, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: {}, openIds: [] };
+    const offset = target.openIds.length ? 18 * ((target.openIds.length % 5) + 1) : 0;
+    const movedLayouts = Object.fromEntries(Object.entries(sourceState.layouts).map(([id, layout]) => [id, { ...layout, x: layout.x + offset, y: layout.y + offset }]));
+    const highest = Math.max(0, ...Object.values(target.layouts).map((layout) => layout.z), ...Object.values(target.groups).map((group) => group.z));
+    const movedGroups = Object.fromEntries(Object.entries(sourceState.groups).map(([id, group]) => [id, {
+      ...group,
+      fullscreen: target.openIds.length === 0 && id === groupId,
+      minimized: false,
+      z: id === groupId ? highest + 1 : group.z,
+    }]));
+    writeCanvasWorkspaceState(targetCanvasId, {
+      groups: { ...target.groups, ...movedGroups },
+      instances: { ...target.instances, ...sourceState.instances },
+      layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
+      layouts: { ...target.layouts, ...movedLayouts },
+      openIds: [...new Set([...target.openIds, ...sourceState.openIds])],
+    });
+  }
+
+  function openGroupCanvas(groupId: string, sourceState: CanvasWorkspaceState) {
+    const created = createCanvasRecord(registry, "Grouped focus");
+    const groups = Object.fromEntries(Object.entries(sourceState.groups).map(([id, group]) => [id, { ...group, fullscreen: id === groupId, minimized: false }]));
+    const state = { ...sourceState, groups, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION };
+    writeCanvasWorkspaceState(created.canvas.id, state);
+    setRegistry(created.registry);
+    window.open(focusCanvasUrl(created.canvas.id), "_blank", "noopener,noreferrer");
+  }
+
   function saveDefaultLayout() {
     if (!workspaceState) return;
     const defaultState = {
       ...workspaceState,
+      groups: Object.fromEntries(Object.entries(workspaceState.groups).map(([id, group]) => [id, { ...group, fullscreen: false, minimized: false }])),
       layouts: Object.fromEntries(Object.entries(workspaceState.layouts).map(([id, layout]) => [id, { ...layout, fullscreen: false, minimized: false }])),
     };
     updateRegistry((current) => ({ ...current, defaultState }));
@@ -684,8 +717,10 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId }: { ca
         mode="replay"
         onContainerAdded={registerContainerInstance}
         onMoveContainerToCanvas={moveContainer}
+        onMoveGroupToCanvas={moveGroup}
         onManagementClose={() => setManagementOpen(false)}
         onPopOutContainer={openNewCanvas}
+        onPopOutGroup={openGroupCanvas}
         onStateChange={setWorkspaceState}
         renderContainer={(definition, instanceId) => {
           const settings = instanceSettings(registry, instanceId);
@@ -1017,7 +1052,7 @@ function focusCanvasState(canvasId: string, requestedInstanceId?: string): Canva
   const stored = readCanvasWorkspaceState(canvasId);
   if (!requestedInstanceId || stored?.openIds.includes(requestedInstanceId)) return stored;
   const kind = workspaceContainerKind(requestedInstanceId, stored);
-  return { instances: { [requestedInstanceId]: kind }, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: createFocusLayouts([requestedInstanceId]), openIds: [requestedInstanceId] };
+  return { groups: {}, instances: { [requestedInstanceId]: kind }, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: createFocusLayouts([requestedInstanceId]), openIds: [requestedInstanceId] };
 }
 function normalizeInheritedLayouts(layouts: Record<string, WorkspaceWindowLayout>, ids: string[]) {
   const fallback = createFocusLayouts(ids);

@@ -1,5 +1,6 @@
 import {
   BarChart3,
+  Check,
   ExternalLink,
   Eye,
   FolderOpen,
@@ -10,6 +11,7 @@ import {
   Minimize2,
   PanelTopOpen,
   RotateCcw,
+  Unlink,
   X,
 } from "lucide-react";
 import type {
@@ -76,6 +78,8 @@ type WorkspaceWindowProps = {
   onMoveToCanvas: (id: WorkspaceWindowId, canvasId: string) => void;
   onPopOut: (id: WorkspaceWindowId) => void;
   onReset?: (id: WorkspaceWindowId) => void;
+  onSelectionToggle?: (id: WorkspaceWindowId) => void;
+  selected?: boolean;
   title: string;
 };
 
@@ -104,6 +108,8 @@ export function WorkspaceWindow({
   onMoveToCanvas,
   onPopOut,
   onReset,
+  onSelectionToggle,
+  selected = false,
   title,
 }: WorkspaceWindowProps) {
   const edge = compact ? 0 : 12;
@@ -132,6 +138,7 @@ export function WorkspaceWindow({
 
   function startDrag(event: PointerEvent<HTMLDivElement>) {
     if (layout.fullscreen) return;
+    if ((event.target as HTMLElement).closest("button, summary, input, select, textarea, a, [role='menu']")) return;
     const originX = event.clientX;
     const originY = event.clientY;
     const startX = layout.x;
@@ -197,6 +204,7 @@ export function WorkspaceWindow({
       aria-label={title}
       className={compact ? "workspace-window live-window compact-window" : "workspace-window live-window"}
       data-linked={linkColor ? "true" : "false"}
+      data-selected={selected ? "true" : "false"}
       data-window-kind={kind ?? (id.startsWith("chart-") ? "chart" : id)}
       style={style}
       onPointerDown={() => onFocus(id)}
@@ -219,6 +227,9 @@ export function WorkspaceWindow({
           {linkColor ? <span aria-label="Linked container color" className="workspace-window-link-marker" title="This container participates in the matching link color" /> : null}
         </div>
         <div className="workspace-window-actions live-window-actions" onPointerDown={(event) => event.stopPropagation()}>
+          {onSelectionToggle ? <button aria-label={`${selected ? "Remove" : "Add"} ${title} ${selected ? "from" : "to"} group selection`} aria-pressed={selected} className="toolbar-button compact workspace-group-select" data-active={selected ? "true" : "false"} onClick={() => onSelectionToggle(id)} onPointerDown={(event) => event.stopPropagation()} title={selected ? "Remove from group selection" : "Select for grouping"} type="button">
+            {selected ? <Check size={12} /> : <LayoutGrid size={12} />}
+          </button> : null}
           {titleBarActions}
           {canvasTargets.length > 1 ? <CanvasTargetSelect canvasTargets={canvasTargets} onMove={(canvasId) => onMoveToCanvas(id, canvasId)} title={title} /> : null}
           {canPopOut ? (
@@ -252,6 +263,194 @@ export function WorkspaceWindow({
       ) : null}
     </section>
   );
+}
+
+export type WorkspaceGroupMenuItem = {
+  actions?: ReactNode;
+  id: string;
+  isGroup: boolean;
+  kind?: string;
+  title: string;
+};
+
+type WorkspaceGroupWindowProps = {
+  canPopOut?: boolean;
+  canvasTargets: WorkspaceCanvasTarget[];
+  children: ReactNode;
+  compact?: boolean;
+  fullscreenRightInset?: number | string;
+  id: WorkspaceWindowId;
+  layout: WorkspaceWindowLayout;
+  memberCount: number;
+  menuItems: WorkspaceGroupMenuItem[];
+  minHeight?: number;
+  minWidth?: number;
+  onCloseMember: (id: WorkspaceWindowId) => void;
+  onDetachMember: (id: WorkspaceWindowId) => void;
+  onFocus: (id: WorkspaceWindowId) => void;
+  onLayoutChange: (id: WorkspaceWindowId, patch: Partial<WorkspaceWindowLayout>) => void;
+  onMoveToCanvas: (id: WorkspaceWindowId, canvasId: string) => void;
+  onPopOut: (id: WorkspaceWindowId) => void;
+  onSelectionToggle: (id: WorkspaceWindowId) => void;
+  onUngroup: (id: WorkspaceWindowId) => void;
+  onUngroupMember: (id: WorkspaceWindowId) => void;
+  selected?: boolean;
+  title: string;
+};
+
+export function WorkspaceGroupWindow({
+  canPopOut = true,
+  canvasTargets,
+  children,
+  compact = false,
+  fullscreenRightInset = 0,
+  id,
+  layout,
+  memberCount,
+  menuItems,
+  minHeight = MIN_WINDOW_HEIGHT,
+  minWidth = MIN_WINDOW_WIDTH,
+  onCloseMember,
+  onDetachMember,
+  onFocus,
+  onLayoutChange,
+  onMoveToCanvas,
+  onPopOut,
+  onSelectionToggle,
+  onUngroup,
+  onUngroupMember,
+  selected = false,
+  title,
+}: WorkspaceGroupWindowProps) {
+  const edge = compact ? 0 : 12;
+  const minimizedHeight = compact ? 24 : 44;
+  const geometry = layout.fullscreen
+    ? { bottom: edge, left: edge, right: fullscreenRightInset || edge, top: edge, zIndex: 1000 + layout.z }
+    : { height: layout.minimized ? minimizedHeight : layout.h, left: layout.x, top: layout.y, width: layout.w, zIndex: layout.z };
+
+  function moveGroup(x: number, y: number) {
+    onLayoutChange(id, { x: Math.max(0, x), y: Math.max(0, y) });
+  }
+
+  function resizeGroup(w: number, h: number) {
+    onLayoutChange(id, { h: Math.max(minHeight, h), w: Math.max(minWidth, w) });
+  }
+
+  function startDrag(event: PointerEvent<HTMLDivElement>) {
+    if (layout.fullscreen) return;
+    if ((event.target as HTMLElement).closest("button, summary, input, select, textarea, a, [role='menu']")) return;
+    const originX = event.clientX;
+    const originY = event.clientY;
+    const startX = layout.x;
+    const startY = layout.y;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const target = event.currentTarget;
+    const move = (moveEvent: globalThis.PointerEvent) => moveGroup(startX + moveEvent.clientX - originX, startY + moveEvent.clientY - originY);
+    const stop = () => {
+      target.removeEventListener("pointermove", move);
+      target.removeEventListener("pointerup", stop);
+      target.removeEventListener("pointercancel", stop);
+    };
+    target.addEventListener("pointermove", move);
+    target.addEventListener("pointerup", stop);
+    target.addEventListener("pointercancel", stop);
+  }
+
+  function moveWithKeyboard(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.target !== event.currentTarget || layout.fullscreen || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+    event.preventDefault();
+    const step = event.shiftKey ? KEYBOARD_MOVE_STEP_LARGE : KEYBOARD_MOVE_STEP;
+    moveGroup(layout.x + (event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0), layout.y + (event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0));
+  }
+
+  function startResize(event: PointerEvent<HTMLButtonElement>) {
+    if (layout.fullscreen || layout.minimized) return;
+    event.stopPropagation();
+    const originX = event.clientX;
+    const originY = event.clientY;
+    const startW = layout.w;
+    const startH = layout.h;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const target = event.currentTarget;
+    const move = (moveEvent: globalThis.PointerEvent) => resizeGroup(startW + moveEvent.clientX - originX, startH + moveEvent.clientY - originY);
+    const stop = () => {
+      target.removeEventListener("pointermove", move);
+      target.removeEventListener("pointerup", stop);
+      target.removeEventListener("pointercancel", stop);
+    };
+    target.addEventListener("pointermove", move);
+    target.addEventListener("pointerup", stop);
+    target.addEventListener("pointercancel", stop);
+  }
+
+  function resizeWithKeyboard(event: KeyboardEvent<HTMLButtonElement>) {
+    if (layout.fullscreen || layout.minimized || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+    event.preventDefault();
+    const step = event.shiftKey ? KEYBOARD_MOVE_STEP_LARGE : KEYBOARD_MOVE_STEP;
+    resizeGroup(layout.w + (event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0), layout.h + (event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0));
+  }
+
+  return <section aria-label={title} className={compact ? "workspace-window workspace-group-window live-window compact-window" : "workspace-window workspace-group-window live-window"} data-selected={selected ? "true" : "false"} data-workspace-group={id} onPointerDown={() => onFocus(id)} style={geometry as CSSProperties}>
+    <div aria-label={`Move ${title}. Use arrow keys to reposition; hold Shift for larger steps.`} className="workspace-window-header workspace-group-header live-window-header" onKeyDown={moveWithKeyboard} onPointerDown={startDrag} role="toolbar" tabIndex={0}>
+      <div className="workspace-window-title live-window-title">
+        <LayoutGrid aria-hidden="true" size={14} />
+        <div className="workspace-window-heading"><strong>{title}</strong><small>{memberCount} containers · grouped layout</small></div>
+      </div>
+      <div className="workspace-window-actions live-window-actions" onPointerDown={(event) => event.stopPropagation()}>
+        <button aria-label={`${selected ? "Remove" : "Add"} ${title} ${selected ? "from" : "to"} group selection`} aria-pressed={selected} className="toolbar-button compact workspace-group-select" data-active={selected ? "true" : "false"} onClick={() => onSelectionToggle(id)} onPointerDown={(event) => event.stopPropagation()} title={selected ? "Remove from group selection" : "Select group for grouping"} type="button">{selected ? <Check size={12} /> : <LayoutGrid size={12} />}</button>
+        <details className="workspace-group-members">
+          <summary aria-label={`Manage members of ${title}`} className="toolbar-button compact" title="Group members"><PanelTopOpen size={12} /></summary>
+          <div className="workspace-group-member-menu">
+            <header><strong>Group members</strong><small>Detach preserves position</small></header>
+            {menuItems.map((item) => <div className="workspace-group-member-row" data-member-kind={item.kind ?? "group"} key={item.id}>
+              <span><strong>{item.title}</strong><small>{item.isGroup ? "Nested group" : item.kind}</small></span>
+              <div>{item.actions}<button aria-label={`Detach ${item.title} from ${title}`} className="toolbar-button compact" onClick={() => onDetachMember(item.id)} title="Detach from group" type="button"><ExternalLink size={11} /></button>{item.isGroup ? <button aria-label={`Ungroup nested ${item.title}`} className="toolbar-button compact" onClick={() => onUngroupMember(item.id)} title="Ungroup nested group one level" type="button"><Unlink size={11} /></button> : <button aria-label={`Close ${item.title}`} className="toolbar-button compact" onClick={() => onCloseMember(item.id)} title="Close container" type="button"><X size={11} /></button>}</div>
+            </div>)}
+          </div>
+        </details>
+        {canvasTargets.length > 1 ? <CanvasTargetSelect canvasTargets={canvasTargets} onMove={(canvasId) => onMoveToCanvas(id, canvasId)} title={title} /> : null}
+        {canPopOut ? <button aria-label={`Open ${title} in a new canvas`} className="toolbar-button compact" onClick={() => onPopOut(id)} title="Move group to a new focus canvas" type="button"><ExternalLink size={12} /></button> : null}
+        <button aria-label={`Ungroup ${title}`} className="toolbar-button compact" onClick={() => onUngroup(id)} title="Ungroup one level" type="button"><Unlink size={12} /></button>
+        <button aria-label={layout.minimized ? `Restore ${title}` : `Minimize ${title}`} className="toolbar-button compact" onClick={() => onLayoutChange(id, { minimized: !layout.minimized })} title={layout.minimized ? "Restore group" : "Minimize group"} type="button">{layout.minimized ? <PanelTopOpen size={12} /> : <Minus size={12} />}</button>
+        <button aria-label={layout.fullscreen ? `Exit fullscreen ${title}` : `Fullscreen ${title}`} className="toolbar-button compact" onClick={() => onLayoutChange(id, { fullscreen: !layout.fullscreen, minimized: false })} title={layout.fullscreen ? "Exit group fullscreen" : "Fullscreen group"} type="button">{layout.fullscreen ? <Minimize2 size={12} /> : <Maximize2 size={12} />}</button>
+      </div>
+    </div>
+    {!layout.minimized ? <div className="workspace-group-body">{children}</div> : null}
+    {!layout.minimized ? <button aria-label={`Resize ${title}. Use arrow keys to resize; hold Shift for larger steps.`} className="workspace-window-resize live-window-resize" onKeyDown={resizeWithKeyboard} onPointerDown={startResize} type="button" /> : null}
+  </section>;
+}
+
+export function WorkspaceGroupedMember({
+  bounds,
+  children,
+  groupBounds,
+  headerHeight,
+  id,
+  kind,
+  onFocus,
+  title,
+}: {
+  bounds: Pick<WorkspaceWindowLayout, "h" | "w" | "x" | "y">;
+  children: ReactNode;
+  groupBounds: Pick<WorkspaceWindowLayout, "h" | "w" | "x" | "y">;
+  headerHeight: number;
+  id: string;
+  kind: string;
+  onFocus: () => void;
+  title: string;
+}) {
+  const left = (bounds.x - groupBounds.x) / groupBounds.w * 100;
+  const top = (bounds.y - groupBounds.y) / groupBounds.h * 100;
+  const width = bounds.w / groupBounds.w * 100;
+  const height = bounds.h / groupBounds.h * 100;
+  const occupiesGroupTop = Math.abs(bounds.y - groupBounds.y) < 1;
+  const style = {
+    height: occupiesGroupTop ? `calc(${height}% - ${headerHeight}px)` : `${height}%`,
+    left: `${left}%`,
+    top: occupiesGroupTop ? `${headerHeight}px` : `${top}%`,
+    width: `${width}%`,
+  } as CSSProperties;
+  return <section aria-label={title} className="workspace-group-member" data-window-id={id} data-window-kind={kind} onPointerDown={(event) => { event.stopPropagation(); onFocus(); }} style={style}><div className="workspace-window-body live-window-body">{children}</div></section>;
 }
 
 export function WorkspaceWindowManager({

@@ -4,6 +4,7 @@ import {
   Building2,
   FileSearch,
   ListChecks,
+  LayoutGrid,
   Newspaper,
   PanelTopOpen,
   RefreshCcw,
@@ -17,6 +18,21 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import type { CanvasWorkspaceState } from "../canvasWorkspace";
 import {
+  addWorkspaceNodesToGroup,
+  createWorkspaceGroup,
+  isWorkspaceGroupId,
+  normalizeWorkspaceGroups,
+  pruneWorkspaceGroups,
+  removeWorkspaceNodeFromGroup,
+  transformWorkspaceNodeLayouts,
+  ungroupWorkspaceGroup,
+  workspaceDescendantContainerIds,
+  workspaceNodeBounds,
+  workspaceParentMap,
+  workspaceRootNodeIds,
+  type WorkspaceGroup,
+} from "../workspaceGroups";
+import {
   containersForMode,
   defaultContainersForMode,
   sourceBindingForContainer,
@@ -26,7 +42,8 @@ import {
 } from "../tradingWorkspace";
 import {
   WorkspaceWindow,
-  workspaceMinHeight,
+  WorkspaceGroupedMember,
+  WorkspaceGroupWindow,
   type WorkspaceCanvasTarget,
   type WorkspaceWindowLayout,
   type WorkspaceWindowMeta,
@@ -50,7 +67,9 @@ type TradingWorkspaceProps = {
   mode: TradingWorkspaceMode;
   onContainerAdded?: (instanceId: string, definition: WorkspaceContainerDefinition) => void;
   onMoveContainerToCanvas?: (id: string, canvasId: string, layout: WorkspaceWindowLayout) => void;
+  onMoveGroupToCanvas?: (id: string, canvasId: string, state: CanvasWorkspaceState) => void;
   onPopOutContainer?: (id: string, layout: WorkspaceWindowLayout) => void;
+  onPopOutGroup?: (id: string, state: CanvasWorkspaceState) => void;
   onStateChange?: (state: CanvasWorkspaceState) => void;
   renderContainer?: (definition: WorkspaceContainerDefinition, instanceId: string) => ReactNode;
   runLabel: string;
@@ -69,7 +88,7 @@ type TradingWorkspaceProps = {
 };
 
 const DEFAULT_CANVAS_TARGETS: WorkspaceCanvasTarget[] = [{ color: "var(--primary)", id: "main", isCurrent: true, label: "Main" }];
-export const TRADING_WORKSPACE_LAYOUT_VERSION = 4;
+export const TRADING_WORKSPACE_LAYOUT_VERSION = 5;
 
 export function TradingWorkspace({
   allowMultipleInstances = false,
@@ -88,8 +107,10 @@ export function TradingWorkspace({
   metaForContainer,
   mode,
   onMoveContainerToCanvas,
+  onMoveGroupToCanvas,
   onContainerAdded,
   onPopOutContainer,
+  onPopOutGroup,
   onStateChange,
   renderContainer,
   runLabel,
@@ -116,14 +137,16 @@ export function TradingWorkspace({
   const [openIds, setOpenIds] = useState<string[]>(initial.openIds);
   const [instances, setInstances] = useState<Record<string, WorkspaceContainerId>>(initial.instances);
   const [layouts, setLayouts] = useState<Record<string, WorkspaceWindowLayout>>(initial.layouts);
+  const [groups, setGroups] = useState<Record<string, WorkspaceGroup>>(initial.groups ?? {});
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const canvasRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
-    const state = { instances, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts, openIds };
+    const state = { groups, instances, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts, openIds };
     window.localStorage.setItem(storageKey, JSON.stringify(state));
     onStateChange?.(state);
-  }, [instances, layouts, onStateChange, openIds, storageKey]);
+  }, [groups, instances, layouts, onStateChange, openIds, storageKey]);
 
   useEffect(() => {
     const syncStoredState = (event: StorageEvent) => {
@@ -133,14 +156,101 @@ export function TradingWorkspace({
       setOpenIds(next.openIds);
       setLayouts(next.layouts);
       setInstances(next.instances);
+      setGroups(next.groups);
+      setSelectedNodeIds([]);
     };
     window.addEventListener("storage", syncStoredState);
     return () => window.removeEventListener("storage", syncStoredState);
   }, [definitions, storageKey]);
 
+  const rootNodeIds = useMemo(() => workspaceRootNodeIds(openIds, groups), [groups, openIds]);
+
+  function highestLayer() {
+    return Math.max(0, ...Object.values(layouts).map((layout) => layout.z), ...Object.values(groups).map((group) => group.z));
+  }
+
+  function rootForNode(id: string) {
+    const parents = workspaceParentMap(groups);
+    let root = id;
+    const visited = new Set<string>();
+    while (parents[root] && !visited.has(root)) {
+      visited.add(root);
+      root = parents[root];
+    }
+    return root;
+  }
+
   function focusContainer(id: string) {
-    const highest = Math.max(0, ...Object.values(layouts).map((layout) => layout.z));
-    setLayouts((current) => ({ ...current, [id]: { ...current[id], minimized: false, z: highest + 1 } }));
+    const rootId = rootForNode(id);
+    const z = highestLayer() + 1;
+    if (isWorkspaceGroupId(rootId) && groups[rootId]) {
+      setGroups((current) => ({ ...current, [rootId]: { ...current[rootId], minimized: false, z } }));
+      return;
+    }
+    setLayouts((current) => current[rootId] ? ({ ...current, [rootId]: { ...current[rootId], minimized: false, z } }) : current);
+  }
+
+  function toggleNodeSelection(id: string) {
+    const rootId = rootForNode(id);
+    setSelectedNodeIds((current) => current.includes(rootId) ? current.filter((candidate) => candidate !== rootId) : [...current, rootId]);
+  }
+
+  function groupSelectedNodes() {
+    const selected = selectedNodeIds.filter((id) => rootNodeIds.includes(id));
+    if (selected.length < 2) return;
+    const selectedGroups = selected.filter((id) => Boolean(groups[id]));
+    const nextZ = highestLayer() + 1;
+    const descendants = new Set(selected.flatMap((id) => workspaceDescendantContainerIds(id, groups)));
+    setLayouts((current) => Object.fromEntries(Object.entries(current).map(([id, layout]) => [id, descendants.has(id) ? { ...layout, fullscreen: false, minimized: false } : layout])));
+    if (selectedGroups.length === 1) {
+      const groupId = selectedGroups[0];
+      const additions = selected.filter((id) => id !== groupId);
+      setGroups((current) => ({
+        ...addWorkspaceNodesToGroup(groupId, additions, current),
+        [groupId]: { ...current[groupId], childIds: [...new Set([...current[groupId].childIds, ...additions])], fullscreen: false, minimized: false, z: nextZ },
+      }));
+      setSelectedNodeIds([groupId]);
+      return;
+    }
+    const nextGroups = createWorkspaceGroup(selected, groups, nextZ);
+    const groupId = Object.keys(nextGroups).find((id) => !groups[id])!;
+    setGroups(nextGroups);
+    setSelectedNodeIds([groupId]);
+  }
+
+  function ungroupNode(groupId: string) {
+    setGroups((current) => ungroupWorkspaceGroup(groupId, current, openIds));
+    setSelectedNodeIds([]);
+  }
+
+  function detachNode(groupId: string, childId: string) {
+    setGroups((current) => removeWorkspaceNodeFromGroup(groupId, childId, current, openIds));
+    setSelectedNodeIds([]);
+  }
+
+  function closeContainer(id: string) {
+    const nextOpenIds = openIds.filter((candidate) => candidate !== id);
+    setOpenIds(nextOpenIds);
+    setInstances((current) => Object.fromEntries(Object.entries(current).filter(([candidate]) => candidate !== id)) as Record<string, WorkspaceContainerId>);
+    setLayouts((current) => Object.fromEntries(Object.entries(current).filter(([candidate]) => candidate !== id)));
+    setGroups((current) => pruneWorkspaceGroups(current, nextOpenIds));
+    setSelectedNodeIds((current) => current.filter((candidate) => candidate !== id));
+  }
+
+  function updateGroupLayout(id: string, patch: Partial<WorkspaceWindowLayout>) {
+    const bounds = workspaceNodeBounds(id, layouts, groups);
+    const group = groups[id];
+    if (!bounds || !group) return;
+    if (patch.x !== undefined || patch.y !== undefined || patch.w !== undefined || patch.h !== undefined) {
+      setLayouts((current) => transformWorkspaceNodeLayouts(id, current, groups, {
+        h: patch.h ?? bounds.h,
+        w: patch.w ?? bounds.w,
+        x: patch.x ?? bounds.x,
+        y: patch.y ?? bounds.y,
+      }));
+    }
+    const statePatch = Object.fromEntries(Object.entries(patch).filter(([key]) => ["fullscreen", "minimized", "z"].includes(key))) as Partial<WorkspaceGroup>;
+    if (Object.keys(statePatch).length) setGroups((current) => ({ ...current, [id]: { ...current[id], ...statePatch } }));
   }
 
   function addContainer(id: WorkspaceContainerId) {
@@ -171,6 +281,8 @@ export function TradingWorkspace({
       setOpenIds([...defaultStateOverride.openIds]);
       setLayouts(cloneLayouts(defaultStateOverride.layouts));
       setInstances({ ...defaultStateOverride.instances });
+      setGroups(cloneGroups(defaultStateOverride.groups ?? {}));
+      setSelectedNodeIds([]);
       return;
     }
     const nextIds = defaultOpenIds ?? defaultContainersForMode(mode);
@@ -178,6 +290,8 @@ export function TradingWorkspace({
     const nextInstances = Object.fromEntries(nextIds.map((id) => [id, instanceKind(id, {}, definitionById)])) as Record<string, WorkspaceContainerId>;
     setInstances(nextInstances);
     setLayouts(createLayoutsForPreset(layoutPreset, mode, nextIds, nextInstances));
+    setGroups({});
+    setSelectedNodeIds([]);
   }
 
   function resetContainer(id: string) {
@@ -193,16 +307,168 @@ export function TradingWorkspace({
     const layout = layouts[id];
     if (!layout || !onMoveContainerToCanvas) return;
     onMoveContainerToCanvas(id, canvasId, layout);
-    setOpenIds((current) => current.filter((candidate) => candidate !== id));
+    closeContainer(id);
   }
 
-  const hasFullscreen = openIds.some((id) => Boolean(layouts[id]?.fullscreen));
-  const minHeight = workspaceMinHeight(openIds, layouts, compact);
+  function workspaceNodeState(nodeId: string): CanvasWorkspaceState {
+    const memberIds = workspaceDescendantContainerIds(nodeId, groups);
+    const memberSet = new Set(memberIds);
+    const groupIds = descendantGroupIds(nodeId, groups);
+    const groupSet = new Set(groupIds);
+    return {
+      groups: Object.fromEntries(Object.entries(groups).filter(([id]) => groupSet.has(id)).map(([id, group]) => [id, { ...group, childIds: [...group.childIds] }])),
+      instances: Object.fromEntries(Object.entries(instances).filter(([id]) => memberSet.has(id))) as Record<string, WorkspaceContainerId>,
+      layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
+      layouts: Object.fromEntries(Object.entries(layouts).filter(([id]) => memberSet.has(id)).map(([id, layout]) => [id, { ...layout, fullscreen: false, minimized: false }])),
+      openIds: memberIds,
+    };
+  }
+
+  function removeWorkspaceNode(nodeId: string) {
+    const memberIds = new Set(workspaceDescendantContainerIds(nodeId, groups));
+    const groupIds = new Set(descendantGroupIds(nodeId, groups));
+    const nextOpenIds = openIds.filter((id) => !memberIds.has(id));
+    setOpenIds(nextOpenIds);
+    setInstances((current) => Object.fromEntries(Object.entries(current).filter(([id]) => !memberIds.has(id))) as Record<string, WorkspaceContainerId>);
+    setLayouts((current) => Object.fromEntries(Object.entries(current).filter(([id]) => !memberIds.has(id))));
+    setGroups((current) => pruneWorkspaceGroups(Object.fromEntries(Object.entries(current).filter(([id]) => !groupIds.has(id))), nextOpenIds));
+    setSelectedNodeIds([]);
+  }
+
+  function moveGroup(groupId: string, canvasId: string) {
+    if (!onMoveGroupToCanvas) return;
+    onMoveGroupToCanvas(groupId, canvasId, workspaceNodeState(groupId));
+    removeWorkspaceNode(groupId);
+  }
+
+  function popOutGroup(groupId: string) {
+    if (!onPopOutGroup) return;
+    onPopOutGroup(groupId, workspaceNodeState(groupId));
+    removeWorkspaceNode(groupId);
+  }
+
+  const hasFullscreen = rootNodeIds.some((id) => groups[id]?.fullscreen || layouts[id]?.fullscreen);
+  const minHeight = workspaceRootMinHeight(rootNodeIds, layouts, groups, compact);
 
   useEffect(() => {
     if (!hasFullscreen) return;
     canvasRef.current?.scrollTo({ left: 0, top: 0 });
   }, [hasFullscreen]);
+
+  function containerView(id: string) {
+    const kind = instanceKind(id, instances, definitionById);
+    const definition = definitionById.get(kind);
+    if (!definition) return null;
+    const meta = metaForContainer?.(definition, id) ?? containerMeta(definition, mode, historicalSourceReady, runStatus);
+    const title = titleForContainer?.(definition, id) ?? definition.title;
+    return {
+      content: renderContainer ? renderContainer(definition, id) : <ContainerStandby definition={definition} meta={meta} mode={mode} />,
+      definition,
+      icon: containerIcon(kind),
+      kind,
+      linkColor: linkColorForContainer?.(definition, id),
+      linkLabel: linkLabelForContainer?.(definition, id),
+      meta,
+      title,
+      titleBarActions: titleBarActionsForContainer?.(definition, id),
+    };
+  }
+
+  function groupTitle(groupId: string) {
+    const group = groups[groupId];
+    if (group?.title) return group.title;
+    const descendants = workspaceDescendantContainerIds(groupId, groups);
+    const leaderId = [...descendants].sort((a, b) => {
+      const left = layouts[a];
+      const right = layouts[b];
+      if (!left || !right) return 0;
+      if (Math.abs(left.y - right.y) >= 1) return left.y - right.y;
+      return right.w * right.h - left.w * left.h;
+    })[0];
+    const leaderTitle = leaderId ? containerView(leaderId)?.title : undefined;
+    return `${leaderTitle ?? "Container group"}${descendants.length > 1 ? ` + ${descendants.length - 1}` : ""}`;
+  }
+
+  function renderRootNode(id: string) {
+    if (groups[id]) {
+      const group = groups[id];
+      const bounds = workspaceNodeBounds(id, layouts, groups);
+      if (!bounds) return null;
+      const descendants = workspaceDescendantContainerIds(id, groups);
+      const layout: WorkspaceWindowLayout = { ...bounds, fullscreen: group.fullscreen, minimized: group.minimized, z: group.z };
+      const minWidth = minimumGroupDimension(descendants, layouts, bounds, "w");
+      const minHeight = minimumGroupDimension(descendants, layouts, bounds, "h");
+      const menuItems = group.childIds.map((childId) => {
+        const view = groups[childId] ? null : containerView(childId);
+        return {
+          actions: view?.titleBarActions,
+          id: childId,
+          isGroup: Boolean(groups[childId]),
+          kind: view?.kind,
+          title: groups[childId] ? groupTitle(childId) : view?.title ?? childId,
+        };
+      });
+      return <WorkspaceGroupWindow
+        canPopOut={canPopOut && Boolean(onPopOutGroup)}
+        canvasTargets={canvasTargets}
+        compact={compact}
+        fullscreenRightInset={managementOpen ? "min(360px, 92%)" : 0}
+        id={id}
+        key={id}
+        layout={layout}
+        memberCount={descendants.length}
+        menuItems={menuItems}
+        minHeight={minHeight}
+        minWidth={minWidth}
+        onCloseMember={closeContainer}
+        onDetachMember={(childId) => detachNode(id, childId)}
+        onFocus={focusContainer}
+        onLayoutChange={updateGroupLayout}
+        onMoveToCanvas={moveGroup}
+        onPopOut={popOutGroup}
+        onSelectionToggle={toggleNodeSelection}
+        onUngroup={ungroupNode}
+        onUngroupMember={ungroupNode}
+        selected={selectedNodeIds.includes(id)}
+        title={groupTitle(id)}
+      >
+        {descendants.map((memberId) => {
+          const view = containerView(memberId);
+          const memberBounds = layouts[memberId];
+          if (!view || !memberBounds) return null;
+          return <WorkspaceGroupedMember bounds={memberBounds} groupBounds={bounds} headerHeight={compact ? 24 : 44} id={memberId} key={memberId} kind={view.kind} onFocus={() => focusContainer(id)} title={view.title}>{view.content}</WorkspaceGroupedMember>;
+        })}
+      </WorkspaceGroupWindow>;
+    }
+
+    const view = containerView(id);
+    const layout = layouts[id];
+    if (!view || !layout) return null;
+    return <WorkspaceWindow
+      canPopOut={canPopOut}
+      canvasTargets={canvasTargets}
+      compact={compact}
+      icon={view.icon}
+      id={id}
+      key={id}
+      kind={view.kind}
+      layout={layout}
+      linkColor={view.linkColor}
+      titleBarActions={view.titleBarActions}
+      linkLabel={view.linkLabel}
+      meta={view.meta}
+      fullscreenRightInset={managementOpen ? "min(360px, 92%)" : 0}
+      onClose={closeContainer}
+      onFocus={focusContainer}
+      onLayoutChange={updateLayout}
+      onMoveToCanvas={(windowId, targetCanvasId) => moveContainer(windowId, targetCanvasId)}
+      onPopOut={() => onPopOutContainer?.(id, layout)}
+      onReset={() => resetContainer(id)}
+      onSelectionToggle={toggleNodeSelection}
+      selected={selectedNodeIds.includes(id)}
+      title={view.title}
+    >{view.content}</WorkspaceWindow>;
+  }
 
   return (
     <div className="trading-workspace-shell" data-command-bar-visible={commandBarVisible ? "true" : "false"} data-library-open={libraryOpen ? "true" : "false"} data-management-open={managementOpen ? "true" : "false"} data-workspace-mode={mode}>
@@ -254,44 +520,16 @@ export function TradingWorkspace({
         ref={canvasRef}
       >
         <div className="trading-workspace-plane" style={{ minHeight: hasFullscreen ? "100%" : minHeight }}>
+          {selectedNodeIds.length ? <div aria-label="Container group selection" className="workspace-group-selection-bar" role="toolbar">
+            <span><LayoutGrid size={13} /><strong>{selectedNodeIds.length}</strong> selected</span>
+            <button className="button secondary compact" disabled={selectedNodeIds.length < 2} onClick={groupSelectedNodes} type="button">{selectedNodeIds.filter((id) => Boolean(groups[id])).length === 1 ? "Add to group" : "Group selected"}</button>
+            <button aria-label="Clear group selection" className="toolbar-button compact" onClick={() => setSelectedNodeIds([])} title="Clear group selection" type="button"><X size={12} /></button>
+          </div> : null}
           <div className="trading-workspace-watermark" aria-hidden="true">
             <span>{workspaceBadge ?? modeLabel(mode)}</span>
             <small>container workspace</small>
           </div>
-          {openIds.map((id) => {
-            const kind = instanceKind(id, instances, definitionById);
-            const definition = definitionById.get(kind);
-            const layout = layouts[id];
-            if (!definition || !layout) return null;
-            const meta = metaForContainer?.(definition, id) ?? containerMeta(definition, mode, historicalSourceReady, runStatus);
-            const title = titleForContainer?.(definition, id) ?? definition.title;
-            return (
-              <WorkspaceWindow
-                canPopOut={canPopOut}
-                canvasTargets={canvasTargets}
-                compact={compact}
-                icon={containerIcon(kind)}
-                id={id}
-                key={id}
-                kind={kind}
-                layout={layout}
-                linkColor={linkColorForContainer?.(definition, id)}
-                titleBarActions={titleBarActionsForContainer?.(definition, id)}
-                linkLabel={linkLabelForContainer?.(definition, id)}
-                meta={meta}
-                fullscreenRightInset={managementOpen ? "min(360px, 92%)" : 0}
-                onClose={() => setOpenIds((current) => current.filter((candidate) => candidate !== id))}
-                onFocus={() => focusContainer(id)}
-                onLayoutChange={updateLayout}
-                onMoveToCanvas={(windowId, targetCanvasId) => moveContainer(windowId, targetCanvasId)}
-                onPopOut={() => onPopOutContainer?.(id, layout)}
-                onReset={() => resetContainer(id)}
-                title={title}
-              >
-                {renderContainer ? renderContainer(definition, id) : <ContainerStandby definition={definition} meta={meta} mode={mode} />}
-              </WorkspaceWindow>
-            );
-          })}
+          {rootNodeIds.map(renderRootNode)}
         </div>
       </section>
     </div>
@@ -395,20 +633,21 @@ function readWorkspaceState(
     return parsed;
   } catch {
     const instances = Object.fromEntries(defaultIds.map((id) => [id, instanceKind(id, {}, new Map(definitions.map((definition) => [definition.id, definition])))])) as Record<string, WorkspaceContainerId>;
-    return { instances, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: createLayoutsForPreset(layoutPreset, mode, defaultIds, instances), openIds: defaultIds };
+    return { groups: {}, instances, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: createLayoutsForPreset(layoutPreset, mode, defaultIds, instances), openIds: defaultIds };
   }
 }
 
 function parseWorkspaceState(raw: string, definitions: WorkspaceContainerDefinition[]): CanvasWorkspaceState | null {
   try {
     const parsed = JSON.parse(raw) as Partial<CanvasWorkspaceState>;
-    if (![3, TRADING_WORKSPACE_LAYOUT_VERSION].includes(Number(parsed.layoutVersion)) || !parsed.layouts || !Array.isArray(parsed.openIds)) return null;
+    if (![3, 4, TRADING_WORKSPACE_LAYOUT_VERSION].includes(Number(parsed.layoutVersion)) || !parsed.layouts || !Array.isArray(parsed.openIds)) return null;
     const definitionById = new Map(definitions.map((definition) => [definition.id, definition]));
     const parsedInstances = parsed.instances && typeof parsed.instances === "object" ? parsed.instances : {};
     const openIds = parsed.openIds.filter((id) => definitionById.has(instanceKind(id, parsedInstances, definitionById)));
     const instances = Object.fromEntries(openIds.map((id) => [id, instanceKind(id, parsedInstances, definitionById)])) as Record<string, WorkspaceContainerId>;
     const layouts = Object.fromEntries(openIds.flatMap((id) => parsed.layouts?.[id] ? [[id, parsed.layouts[id]]] : []));
-    return { instances, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts, openIds };
+    const groups = normalizeWorkspaceGroups(parsed.groups, openIds);
+    return { groups, instances, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts, openIds };
   } catch {
     return null;
   }
@@ -534,6 +773,51 @@ function availableWorkspaceHeight() {
 
 function cloneLayouts(layouts: Record<string, WorkspaceWindowLayout>) {
   return Object.fromEntries(Object.entries(layouts).map(([id, layout]) => [id, { ...layout }]));
+}
+
+function cloneGroups(groups: Record<string, WorkspaceGroup>) {
+  return Object.fromEntries(Object.entries(groups).map(([id, group]) => [id, { ...group, childIds: [...group.childIds] }]));
+}
+
+function descendantGroupIds(nodeId: string, groups: Record<string, WorkspaceGroup>, visited = new Set<string>()): string[] {
+  if (!groups[nodeId] || visited.has(nodeId)) return [];
+  const nextVisited = new Set(visited).add(nodeId);
+  return [nodeId, ...groups[nodeId].childIds.flatMap((childId) => descendantGroupIds(childId, groups, nextVisited))];
+}
+
+function minimumGroupDimension(
+  descendantIds: string[],
+  layouts: Record<string, WorkspaceWindowLayout>,
+  bounds: { h: number; w: number },
+  axis: "h" | "w",
+) {
+  const minimumMemberSize = axis === "w" ? 220 : 140;
+  const total = bounds[axis];
+  return Math.max(axis === "w" ? 320 : 240, ...descendantIds.map((id) => {
+    const size = layouts[id]?.[axis] ?? total;
+    const ratio = total > 0 ? size / total : 1;
+    return ratio > 0 ? minimumMemberSize / ratio : minimumMemberSize;
+  }));
+}
+
+function workspaceRootMinHeight(
+  rootNodeIds: string[],
+  layouts: Record<string, WorkspaceWindowLayout>,
+  groups: Record<string, WorkspaceGroup>,
+  compact: boolean,
+) {
+  const viewportHeight = typeof window === "undefined" ? 1024 : window.innerHeight;
+  const baseHeight = Math.max(viewportHeight, compact ? 960 : 900);
+  return rootNodeIds.reduce((height, id) => {
+    const bounds = workspaceNodeBounds(id, layouts, groups);
+    if (!bounds) return height;
+    const group = groups[id];
+    const fullscreen = group?.fullscreen ?? layouts[id]?.fullscreen;
+    if (fullscreen) return height;
+    const minimized = group?.minimized ?? layouts[id]?.minimized;
+    const nodeHeight = minimized ? (compact ? 24 : 44) : bounds.h;
+    return Math.max(height, bounds.y + nodeHeight + (compact ? 2 : 24));
+  }, baseHeight);
 }
 
 function containerIcon(id: WorkspaceContainerId) {

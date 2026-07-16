@@ -459,6 +459,64 @@ def validate_canvas_interactions(
         if page.locator(".canvas-manager-open").count() < 2:
             issues.append("registered canvases do not expose their names as open actions")
         page.get_by_role("complementary", name="Canvas management").get_by_role("button", name="Close canvas management").click()
+
+        # Compound-container behavior: two groups can be grouped again, and an
+        # ungrouped container can then join that hierarchy. The group owns the
+        # only title bar; member chrome must consume zero layout height.
+        for title in ("Scanner", "Portfolio"):
+            page.get_by_role("button", name=f"Add {title} to group selection", exact=True).click()
+        page.locator(".workspace-group-selection-bar > button.button").click()
+        first_group = page.locator(".workspace-group-window")
+        if first_group.count() != 1 or first_group.locator(".workspace-group-member").count() != 2:
+            issues.append("grouping two containers did not create one two-member compound surface")
+        if first_group.locator(".workspace-group-member .workspace-window-header").count():
+            issues.append("grouped member title bars still consume layout space")
+        page.get_by_role("button", name="Clear group selection", exact=True).click()
+
+        for title in ("Orders", "Strategy"):
+            page.get_by_role("button", name=f"Add {title} to group selection", exact=True).click()
+        page.locator(".workspace-group-selection-bar > button.button").click()
+        page.get_by_role("button", name="Clear group selection", exact=True).click()
+        group_selectors = page.locator(".workspace-group-window > .workspace-group-header .workspace-group-select")
+        if group_selectors.count() != 2:
+            issues.append("two independent container groups are not exposed as selectable roots")
+        else:
+            group_selectors.nth(0).click()
+            group_selectors.nth(1).click()
+            page.locator(".workspace-group-selection-bar > button.button").click()
+            page.wait_for_timeout(100)
+            persisted = page.evaluate("""() => {
+                const raw = localStorage.getItem('quant-research-workbench.trading-workspace.global.v1');
+                return raw ? JSON.parse(raw) : null;
+            }""")
+            if not persisted or len(persisted.get("groups", {})) != 3:
+                issues.append("grouping two groups did not persist the nested hierarchy")
+
+        root_group = page.locator(".workspace-group-window")
+        if root_group.count() != 1 or root_group.locator(".workspace-group-member").count() != 4:
+            issues.append("nested group does not render all descendant containers under one title bar")
+        else:
+            page.get_by_role("button", name="Add XBRL Facts to group selection", exact=True).click()
+            page.locator(".workspace-group-selection-bar > button.button").click()
+            if root_group.locator(".workspace-group-member").count() != 5:
+                issues.append("adding a container to an existing group did not extend the compound surface")
+            minimize_group = root_group.get_by_role("button", name=re.compile(r"^Minimize .+$"))
+            minimize_group.click()
+            if root_group.locator(".workspace-group-body").count():
+                issues.append("minimizing a group did not hide the complete compound body")
+            root_group.get_by_role("button", name=re.compile(r"^Restore .+$")).click()
+            root_group.get_by_role("button", name=re.compile(r"^Fullscreen .+$")).click()
+            if root_group.get_by_role("button", name=re.compile(r"^Exit fullscreen .+$")).count() != 1:
+                issues.append("fullscreen did not apply to the complete container group")
+            root_group.get_by_role("button", name=re.compile(r"^Exit fullscreen .+$")).click()
+
+        if interaction_screenshot:
+            page.screenshot(path=str(interaction_screenshot.with_name(interaction_screenshot.stem + "__grouped.png")), full_page=True)
+
+        page.reload(wait_until="domcontentloaded")
+        page.locator(".workspace-group-window").wait_for(state="visible", timeout=5000)
+        if page.locator(".workspace-group-window .workspace-group-member").count() != 5:
+            issues.append("compound group hierarchy did not survive a page reload")
     except Exception as exc:
         issues.append(f"Canvas interaction check failed: {exc}")
     return issues
