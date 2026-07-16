@@ -108,6 +108,13 @@ for documents that now have extracted text. It does not repair filing-parent
 timestamps; run the acceptance timestamp repair scripts separately for
 `sec_filing_v3.accepted_at_utc`.
 
+The canonical source-to-model renderer is `sec_packed_text_renderer_v8`, shared
+by historical extraction and SEC gateway live ingestion. Its database
+distribution, large-document iterations, table/XML corrections, and rejected
+lossy rules are documented in [SEC_TEXT_RENDERER_V8_AUDIT.md](SEC_TEXT_RENDERER_V8_AUDIT.md).
+Updating the code does not rewrite existing rendered rows; rebuild the rendered
+derivative from `sec_filing_text_v3` before SEC token or embedding generation.
+
 The SEC gateway generates the same explicit shape so the workstation script does
 not depend on ambient shell defaults. `--resume-from-coverage` is enabled by default and records
 `sec_stage_<stage_name>` rows after each successful stage. If a run fails, rerun

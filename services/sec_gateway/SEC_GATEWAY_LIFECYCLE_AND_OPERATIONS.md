@@ -212,13 +212,18 @@ Before accepting the live service after a rebuild, verify:
    creates a visible pending manifest row.
 5. Coverage timestamps reflect durable writes, not only successful feed polls.
 
-## Current Open Dependency
+## Renderer Authority
 
-The live gateway currently writes `sec_filing_text_rendered_v3` through the
-shared archive/live extraction path. The separate advanced packed renderer must
-be reconciled with that active producer before the v3 embedding build is treated
-as final. This is an upstream rendering integration audit, not a reason to alter
-or truncate preserved `sec_filing_text_v3` source rows.
+The live gateway and historical archive path both call the shared
+`sec_filing_text_extract_parts.build_rows` producer. That producer uses
+`sec_packed_text_renderer_v8` for HTML, plain text, and eligible XML; there is no
+separate live normalizer. Complete submitted source remains unchanged in
+`sec_filing_text_v3`.
+
+The pre-v8 historical rows already present in `sec_filing_text_rendered_v3` do
+not change when the gateway code is updated. Rebuild that derivative from the
+v3 source table and audit it before generating SEC tokens or embeddings. See
+`SEC_TEXT_RENDERER_V8_AUDIT.md` in the historical pipeline directory.
 
 ## Related References
 

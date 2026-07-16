@@ -216,13 +216,15 @@ directly. Its default no longer references the stale unversioned
 `q_live.sec_filing_text_v3` stores submitted text-source documents such as HTML,
 plain text, and non-XBRL XML. The compact `sec_filing_text_context_v3.text` field
 is deterministic packed model input rendered from those submitted sources by
-`sec_packed_text_renderer_v6`. HTML and inline-XBRL HTML are parsed by visible
-tags, real HTML tables are packed into column/value lines, hidden/script/style
-content is skipped, and plain text is rendered conservatively. XML is parsed
-with tag/path context so schema tags that carry heading meaning are preserved.
+`sec_packed_text_renderer_v8`. HTML and inline-XBRL HTML are parsed by visible
+tags, real HTML tables resolve `colspan`/`rowspan` into a positional grid before
+they are packed into column/value lines, hidden/script/style content is skipped,
+and plain text is rendered conservatively. Repeated XML records are packed into
+tag-derived fields; other XML uses compact tag/path context so schema tags that
+carry heading meaning are preserved.
 Repeated blocks are compacted only when their normalized length is at least 200
 characters; duplicate occurrences are replaced with `DUPLICATE of [first 15
-chars]`. Structured fund-report XML such as NPORT/N-CEN is preserved in the
+chars]`. Structured fund-report XML such as NPORT/N-CEN/N-MFP is preserved in the
 upstream source table but marked `structured_xml_excluded` in context so it is
 not tokenized as readable filing text. The renderer
 does not summarize, remove SEC/legal boilerplate, remove risk factors, remove
@@ -231,6 +233,8 @@ stores the renderer/normalizer output for audit. The context table records
 `source_text_char_count`, `source_text_hash`, `model_text_hash`,
 `model_normalizer_version`, `removed_layout_line_count`, renderer block counts,
 table block counts, long-block duplicate counts, and per-block hashes for auditability.
+The database-scale audit and difficult-document comparisons are recorded in
+`pipelines/sec/edgar/SEC_TEXT_RENDERER_V8_AUDIT.md`.
 
 The script uses `CLICKHOUSE_HISTORICAL_STORAGE_POLICY` by default through the
 shared `default_storage_policy()` helper. Override it with `--storage-policy`

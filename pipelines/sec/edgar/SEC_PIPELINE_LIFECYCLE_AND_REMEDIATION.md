@@ -264,25 +264,18 @@ is larger than a row-group target. This replaced unbounded serial JSON staging.
 
 ## Current Open Work
 
-The following items must not be mistaken for completed remediation:
+The finalizer and renderer audit are complete. The renderer audit is recorded in
+`SEC_TEXT_RENDERER_V8_AUDIT.md`; both live and historical producers now use the
+same v8 implementation.
 
-1. **Packed renderer integration:** `sec_packed_text_renderer.py` contains the
-   advanced v6 structural renderer, table labeling, XML path preservation,
-   duplicate hashes, and quality flags. The active historical context stage uses
-   `--skip-text`, while the embedding gateway consumes
-   `sec_filing_text_rendered_v3` directly. The archive extractor currently writes
-   that table through its own simpler normalizer. Before building embeddings, the
-   active producer must be audited and unified with the intended packed renderer
-   or the advanced renderer must be declared obsolete.
-2. **Rendered text statistics:** source and rendered length distributions,
-   compression ratios, content-type distributions, and largest-document audits
-   are still required before choosing document concatenation or chunk policy.
-3. **Finalizer acceptance:** the finalizer is not accepted until archive identity
-   repair and the remaining stages complete, and its database audit shows zero
-   source-repairable timestamps, zero archive-backed missing documents, and no
-   source/rendered lineage errors.
-4. **Embedding rebuild:** v3 tokens and embeddings must be regenerated only
-   after the renderer and timestamp audits are accepted.
+The remaining work is deliberately derivative-only:
+
+1. Rebuild `sec_filing_text_rendered_v3` from the complete
+   `sec_filing_text_v3` source table through a staging/audit/cutover workflow.
+   Existing v1 rows are not accepted model input.
+2. Measure the rebuilt v8 derivative and choose SEC embedding chunk policy from
+   that distribution.
+3. Generate v3 tokens and embeddings only after the v8 cutover audit passes.
 
 ## Run and Acceptance Commands
 

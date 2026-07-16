@@ -4,12 +4,13 @@ import hashlib
 import html
 import re
 import xml.etree.ElementTree as ET
+from collections import Counter
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any
 
 
-SEC_PACKED_TEXT_RENDERER_VERSION = "sec_packed_text_renderer_v6"
+SEC_PACKED_TEXT_RENDERER_VERSION = "sec_packed_text_renderer_v8"
 STRUCTURED_XML_EXCLUDED_QUALITY_FLAG = "structured_xml_excluded"
 DUPLICATE_BLOCK_MIN_CHARS = 200
 DUPLICATE_PLACEHOLDER_PREFIX_CHARS = 15
@@ -44,8 +45,9 @@ _BLOCK_TAGS = {
 }
 _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
 _TABLE_TAGS = {"table", "thead", "tbody", "tfoot", "tr", "td", "th", "caption", "colgroup", "col"}
-_STRUCTURED_FUND_XML_FORM_PREFIXES = ("NPORT", "N-PORT", "N-CEN")
+_STRUCTURED_FUND_XML_FORM_PREFIXES = ("NPORT", "N-PORT", "N-CEN", "N-MFP")
 _SEPARATOR_ONLY_RE = re.compile(r"^[\s|+\-_=*~`.]{3,}$")
+_PAGE_MARKER_RE = re.compile(r"^<\s*page(?:\s+\d+)?\s*>$", re.I)
 _NUMERICISH_RE = re.compile(r"^\s*(?:\$|usd)?\s*\(?-?[0-9][0-9,]*(?:\.[0-9]+)?%?\)?\s*$", re.I)
 _DATEISH_RE = re.compile(
     r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2},\s+\d{4}\b|"
@@ -81,6 +83,24 @@ _MOJIBAKE_REPLACEMENTS = (
     ("\u00e2\u02dc\u0090", "\u2610"),
     ("\u00e2\u02dc\u2018", "\u2611"),
     ("\u00e2\u02dc\u2019", "\u2612"),
+    ("\u00e2\u20ac\u00a6", "..."),
+    ("\u00e2\u201e\u00a2", "TM"),
+    ("\u00e2\u20ac\u2030", " "),
+    ("\u00ef\u00ac\u0081", "fi"),
+    ("\u00ef\u00ac\u0082", "fl"),
+    ("\ufb01", "fi"),
+    ("\ufb02", "fl"),
+    ("\u00c2\u00ae", "\u00ae"),
+    ("\u00c2\u00a9", "\u00a9"),
+    ("\u00c3\u00a1", "\u00e1"),
+    ("\u00c3\u00a9", "\u00e9"),
+    ("\u00c3\u00ad", "\u00ed"),
+    ("\u00c3\u00b3", "\u00f3"),
+    ("\u00c3\u00ba", "\u00fa"),
+    ("\u00c3\u00b1", "\u00f1"),
+    ("\u00c3\u00bc", "\u00fc"),
+    ("\u00c3\u00b6", "\u00f6"),
+    ("\u00c3\u00a4", "\u00e4"),
 )
 
 
@@ -88,6 +108,13 @@ _MOJIBAKE_REPLACEMENTS = (
 class RenderedBlock:
     kind: str
     text: str
+
+
+@dataclass(frozen=True, slots=True)
+class _TableCell:
+    text: str
+    colspan: int = 1
+    rowspan: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,9 +137,11 @@ class PackedTextResult:
 class _TableState:
     def __init__(self) -> None:
         self.caption_parts: list[str] = []
-        self.rows: list[list[str]] = []
-        self.current_row: list[str] | None = None
+        self.rows: list[list[_TableCell]] = []
+        self.current_row: list[_TableCell] | None = None
         self.current_cell_parts: list[str] | None = None
+        self.current_cell_colspan = 1
+        self.current_cell_rowspan = 1
         self.in_caption = False
 
 
@@ -124,6 +153,7 @@ class _SecHTMLPackedTextParser(HTMLParser):
         self.buffer_kind = "text"
         self.skip_depth = 0
         self.hidden_node_count = 0
+        self.page_artifact_count = 0
         self.table: _TableState | None = None
         self.table_depth = 0
         self.table_count = 0
@@ -141,12 +171,18 @@ class _SecHTMLPackedTextParser(HTMLParser):
                 self.skip_depth = 1
             return
         if self.table is not None:
-            self._handle_table_start(tag)
+            self._handle_table_start(tag, attr_map)
             return
         if tag == "table":
             self._flush_buffer()
             self.table = _TableState()
             self.table_depth = 1
+            return
+        if tag == "hr" and "page-break" in attr_map.get("style", "").lower():
+            self._flush_buffer()
+            if self.blocks and re.fullmatch(r"\d{1,4}", self.blocks[-1].text.strip()):
+                self.blocks.pop()
+                self.page_artifact_count += 1
             return
         if tag in _HEADING_TAGS:
             self._flush_buffer()
@@ -191,7 +227,7 @@ class _SecHTMLPackedTextParser(HTMLParser):
             return
         self.buffer.append(data)
 
-    def _handle_table_start(self, tag: str) -> None:
+    def _handle_table_start(self, tag: str, attrs: dict[str, str]) -> None:
         assert self.table is not None
         if tag == "table":
             self.table_depth += 1
@@ -208,6 +244,8 @@ class _SecHTMLPackedTextParser(HTMLParser):
         if tag in {"td", "th"}:
             self._finish_cell()
             self.table.current_cell_parts = []
+            self.table.current_cell_colspan = _positive_span(attrs.get("colspan"))
+            self.table.current_cell_rowspan = _positive_span(attrs.get("rowspan"))
             return
         if tag == "br":
             if self.table.current_cell_parts is not None:
@@ -243,15 +281,22 @@ class _SecHTMLPackedTextParser(HTMLParser):
         cell = _clean_inline(" ".join(self.table.current_cell_parts))
         if self.table.current_row is None:
             self.table.current_row = []
-        self.table.current_row.append(cell)
+        self.table.current_row.append(
+            _TableCell(cell, self.table.current_cell_colspan, self.table.current_cell_rowspan)
+        )
         self.table.current_cell_parts = None
+        self.table.current_cell_colspan = 1
+        self.table.current_cell_rowspan = 1
 
     def _finish_row(self) -> None:
         if self.table is None or self.table.current_row is None:
             return
         self._finish_cell()
-        row = [_clean_inline(cell) for cell in self.table.current_row]
-        if any(row):
+        row = [
+            _TableCell(_clean_inline(cell.text), cell.colspan, cell.rowspan)
+            for cell in self.table.current_row
+        ]
+        if any(cell.text for cell in row):
             self.table.rows.append(row)
         self.table.current_row = None
 
@@ -278,13 +323,21 @@ def render_sec_packed_text(
     document_type: str = "",
     form_type: str = "",
     text_kind: str = "",
+    include_intermediate: bool = True,
 ) -> PackedTextResult:
     source = "" if source_text is None else str(source_text)
     fmt = str(content_format or "").strip().lower() or "plain_text"
     flags = [f"format_{fmt}"]
+    if "\ufffd" in source:
+        flags.append("replacement_char")
+    if _has_mojibake(source):
+        flags.append("mojibake_suspect")
+    if any(ord(ch) > 127 for ch in source[:5000]):
+        flags.append("non_ascii")
     blocks: list[RenderedBlock]
     parser_hidden_nodes = 0
     parser_table_count = 0
+    parser_page_artifacts = 0
 
     if fmt == "xml" and _is_structured_fund_xml(form_type=form_type, document_type=document_type, document_name=document_name):
         flags.extend(
@@ -303,11 +356,14 @@ def render_sec_packed_text(
             blocks = parser.blocks
             parser_hidden_nodes = parser.hidden_node_count
             parser_table_count = parser.table_count
+            parser_page_artifacts = parser.page_artifact_count
         except Exception:  # noqa: BLE001
             flags.append("html_parser_fallback")
             blocks = _plain_text_blocks(_strip_markup(source))
     elif fmt == "xml":
         blocks = _xml_blocks(source)
+        if any(block.kind == "xml_record" for block in blocks):
+            flags.append("xml_repeated_records_packed")
     else:
         blocks = _plain_text_blocks(source)
 
@@ -325,11 +381,17 @@ def render_sec_packed_text(
         flags.append("hidden_markup_removed")
     if parser_table_count:
         flags.append("html_tables_rendered")
+    if parser_page_artifacts:
+        flags.append("html_page_numbers_removed")
     if not blocks and source.strip():
         flags.append("empty_rendered_text")
 
     packed_text = "\n".join(block.text for block in blocks).strip()
-    intermediate_text = "\n".join(f"[{block.kind}] {block.text}" for block in blocks).strip()
+    intermediate_text = (
+        "\n".join(f"[{block.kind}] {block.text}" for block in blocks).strip()
+        if include_intermediate
+        else ""
+    )
     block_keys = [_block_hash_key(block.text) for block in blocks if block.text.strip()]
     block_hashes = [stable_uint64(key) for key in block_keys]
     table_block_count = sum(1 for block in blocks if block.kind.startswith("table"))
@@ -359,6 +421,7 @@ def build_sec_text_context_row(row: dict[str, Any], *, updated_at: str | None = 
         document_type=str(row.get("document_type", "") or ""),
         form_type=str(row.get("form_type", "") or ""),
         text_kind=str(row.get("text_kind", "") or ""),
+        include_intermediate=False,
     )
     flags = _merge_quality_flags(row.get("quality_flags"), result.quality_flags)
     sequence = int(row.get("sequence_number", 0) or 0)
@@ -401,8 +464,9 @@ def stable_uint64(value: Any) -> int:
     return int.from_bytes(digest, "little", signed=False)
 
 
-def _render_table_blocks(rows: list[list[str]], caption: str) -> list[RenderedBlock]:
-    cleaned_rows = [_trim_empty_edge_cells([_clean_inline(cell) for cell in row]) for row in rows]
+def _render_table_blocks(rows: list[list[_TableCell]], caption: str) -> list[RenderedBlock]:
+    expanded_rows = _expand_table_grid(rows)
+    cleaned_rows = [[_clean_inline(cell) for cell in row] for row in expanded_rows]
     cleaned_rows = [row for row in cleaned_rows if any(row)]
     if not cleaned_rows:
         return []
@@ -416,9 +480,13 @@ def _render_table_blocks(rows: list[list[str]], caption: str) -> list[RenderedBl
     if header_index >= 0:
         header = cleaned_rows[header_index]
         columns = _header_columns(header)
+        for row in cleaned_rows[:header_index]:
+            text = " | ".join(cell for cell in row if cell)
+            if text and not _is_low_signal_text(text):
+                blocks.append(RenderedBlock("table_preamble", text))
         data_rows = cleaned_rows[header_index + 1 :]
         if columns:
-            blocks.append(RenderedBlock("table_columns", "Columns: " + "; ".join(columns)))
+            blocks.append(RenderedBlock("table_columns", "Columns: " + "; ".join(_unique_in_order(columns))))
 
     for row in data_rows:
         text = _render_table_row(row, columns)
@@ -432,22 +500,66 @@ def _render_table_blocks(rows: list[list[str]], caption: str) -> list[RenderedBl
     return blocks
 
 
+def _expand_table_grid(rows: list[list[_TableCell]]) -> list[list[str]]:
+    expanded: list[list[str]] = []
+    pending: dict[int, tuple[int, str]] = {}
+    for source_row in rows:
+        active = pending
+        pending = {}
+        row: list[str] = []
+        column = 0
+
+        def fill_active() -> None:
+            nonlocal column
+            while column in active:
+                remaining, value = active.pop(column)
+                row.append(value)
+                if remaining > 1:
+                    pending[column] = (remaining - 1, value)
+                column += 1
+
+        for cell in source_row:
+            fill_active()
+            colspan = max(1, cell.colspan)
+            rowspan = max(1, cell.rowspan)
+            for offset in range(colspan):
+                fill_active()
+                value = cell.text if offset == 0 else ""
+                row.append(value)
+                if rowspan > 1:
+                    pending[column] = (rowspan - 1, value)
+                column += 1
+        while active:
+            if column in active:
+                fill_active()
+            else:
+                row.append("")
+                column += 1
+        expanded.append(row)
+    width = max((len(row) for row in expanded), default=0)
+    return [row + [""] * (width - len(row)) for row in expanded]
+
+
 def _find_header_row(rows: list[list[str]]) -> int:
     for index, row in enumerate(rows[:12]):
+        if any(sum(1 for cell in prior if cell) >= 2 for prior in rows[:index]):
+            continue
         if _looks_like_header_row(row) and _following_rows_match_header(rows, index):
             return index
     return -1
 
 
 def _header_columns(row: list[str]) -> list[str]:
-    cells = [cell for cell in row if cell]
-    if len(cells) <= 1:
+    cells = list(row)
+    if sum(1 for cell in cells if cell) <= 1:
         return []
-    if not _is_dateish(cells[0]) and not _is_numericish(cells[0]) and any(_is_dateish(cell) for cell in cells[1:]):
-        return cells[1:]
-    if not _is_dateish(cells[0]) and not _is_numericish(cells[0]) and len(cells) > 2:
-        return cells[1:]
-    return cells
+    columns: list[str] = []
+    current = ""
+    for cell in cells:
+        if cell:
+            current = cell
+        columns.append(current)
+    return columns
 
 
 def _looks_like_header_row(row: list[str]) -> bool:
@@ -475,43 +587,48 @@ def _following_rows_match_header(rows: list[list[str]], header_index: int) -> bo
     column_count = len(columns)
     matched = 0
     for row in rows[header_index + 1 : header_index + 16]:
-        cells = [cell for cell in row if cell]
-        if not cells:
+        non_empty = [cell for cell in row if cell]
+        if not non_empty:
             continue
-        if len(cells) == 1:
+        if len(non_empty) == 1:
             continue
-        if len(cells) in {column_count, column_count + 1}:
+        if len(row) == column_count:
             matched += 1
-        elif len(cells) > column_count + 1 and column_count >= 2:
+        elif abs(len(row) - column_count) <= 1 and column_count >= 2:
             matched += 1
     return matched > 0
 
 
 def _render_table_row(row: list[str], columns: list[str]) -> str:
-    cells = [cell for cell in row if cell]
-    if not cells:
+    if not any(row):
         return ""
-    if columns and len(cells) == len(columns) + 1:
-        pairs = [f"Row={cells[0]}"]
-        pairs.extend(f"{column}={value}" for column, value in zip(columns, cells[1:]) if value)
-        return "; ".join(pairs)
-    if columns and len(cells) == len(columns):
-        pairs = [f"{column}={value}" for column, value in zip(columns, cells) if value]
-        return "; ".join(pairs)
-    if columns and len(cells) > len(columns) + 1:
-        pairs = [f"Row={cells[0]}"]
-        pairs.extend(f"{column}={value}" for column, value in zip(columns, cells[1:]) if value)
-        extra = cells[len(columns) + 1 :]
-        pairs.extend(f"Extra {index}={value}" for index, value in enumerate(extra, 1) if value)
-        return "; ".join(pairs)
-    if columns and len(cells) == 1 and (_is_numericish(cells[0]) or _is_dateish(cells[0]) or len(columns) == 1):
-        return f"{columns[-1]}={cells[0]}"
+    cells = [cell for cell in row if cell]
+    if columns and len(row) == len(columns):
+        grouped: list[tuple[str, list[str]]] = []
+        for index, (column, value) in enumerate(zip(columns, row), 1):
+            if not value:
+                continue
+            label = column or f"Column {index}"
+            if grouped and grouped[-1][0] == label:
+                grouped[-1][1].append(value)
+            else:
+                grouped.append((label, [value]))
+        if grouped:
+            return "; ".join(f"{label}={' '.join(values)}" for label, values in grouped)
     if len(cells) == 2 and _looks_like_label_cell(cells[0]):
         label = cells[0].rstrip(":")
         return f"{label}: {cells[1]}"
     if len(cells) == 2 and cells[0] in {"\u2610", "\u2611", "\u2612", "o", "x"}:
         return f"{cells[0]} {cells[1]}"
     return " | ".join(cells)
+
+
+def _unique_in_order(values: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value and (not result or result[-1] != value):
+            result.append(value)
+    return result
 
 
 def _xml_blocks(source: str) -> list[RenderedBlock]:
@@ -522,9 +639,64 @@ def _xml_blocks(source: str) -> list[RenderedBlock]:
         root = ET.fromstring(text)
     except ET.ParseError:
         return _xml_like_blocks_with_tags(source)
+    repeated_record_blocks = _xml_repeated_record_blocks(root)
+    if repeated_record_blocks:
+        return repeated_record_blocks
     blocks: list[RenderedBlock] = []
     _walk_xml(root, [], blocks)
     return blocks or _xml_like_blocks_with_tags(source)
+
+
+def _xml_repeated_record_blocks(root: ET.Element) -> list[RenderedBlock]:
+    children = list(root)
+    if len(children) < 3:
+        return []
+    child_tags = [_strip_namespace(child.tag) for child in children]
+    record_tag, record_count = Counter(child_tags).most_common(1)[0]
+    if not record_tag or record_count < 3 or record_count / len(children) < 0.6:
+        return []
+
+    root_tag = _strip_namespace(root.tag)
+    blocks: list[RenderedBlock] = []
+    if root_tag:
+        blocks.append(RenderedBlock("xml_section", f"<{root_tag}>"))
+    root_attrs = _xml_attrs(root)
+    if root_attrs and root_tag:
+        blocks.append(RenderedBlock("xml_attrs", f"<{root_tag}> " + "; ".join(root_attrs)))
+    root_text = _clean_block_text(root.text or "")
+    if root_text:
+        blocks.append(RenderedBlock("xml_text", root_text))
+
+    for child in children:
+        tag = _strip_namespace(child.tag)
+        if tag != record_tag:
+            _walk_xml(child, [root_tag] if root_tag else [], blocks)
+            continue
+        fields: list[str] = []
+        _flatten_xml_record(child, [], fields)
+        record_text = f"<{record_tag}>"
+        if fields:
+            record_text += " " + "; ".join(fields)
+        blocks.append(RenderedBlock("xml_record", record_text))
+    return blocks
+
+
+def _flatten_xml_record(node: ET.Element, path: list[str], fields: list[str]) -> None:
+    tag = _strip_namespace(node.tag)
+    next_path = [*path, tag] if tag else path
+    field_name = "/".join(next_path[1:] if len(next_path) > 1 else next_path)
+    for name, value in sorted(node.attrib.items()):
+        clean_value = _clean_inline(value)
+        if clean_value:
+            fields.append(f"{field_name}/@{_strip_namespace(name)}={clean_value}")
+    text = _clean_block_text(node.text or "")
+    if text and field_name:
+        fields.append(f"{field_name}={text}")
+    for child in list(node):
+        _flatten_xml_record(child, next_path, fields)
+    tail = _clean_block_text(node.tail or "")
+    if tail:
+        fields.append(f"text={tail}")
 
 
 def _prepare_xml_source(source: str) -> str:
@@ -560,13 +732,14 @@ def _walk_xml(node: ET.Element, path: list[str], blocks: list[RenderedBlock]) ->
     next_path = [*path, tag] if tag else path
     text = _clean_block_text(node.text or "")
     children = list(node)
+    compact_path = _xml_compact_path(next_path)
     if tag and children:
-        blocks.append(RenderedBlock("xml_section", f"<{_xml_path(next_path)}>"))
+        blocks.append(RenderedBlock("xml_section", f"<{compact_path}>"))
     attrs = _xml_attrs(node)
     if attrs and tag:
-        blocks.append(RenderedBlock("xml_attrs", f"<{_xml_path(next_path)}> " + "; ".join(attrs)))
+        blocks.append(RenderedBlock("xml_attrs", f"<{compact_path}> " + "; ".join(attrs)))
     if text and not children:
-        blocks.append(RenderedBlock("xml_leaf", f"<{_xml_path(next_path)}>: {text}"))
+        blocks.append(RenderedBlock("xml_leaf", f"<{compact_path}>: {text}"))
     for child in children:
         _walk_xml(child, next_path, blocks)
     tail = _clean_block_text(node.tail or "")
@@ -583,8 +756,9 @@ def _xml_attrs(node: ET.Element) -> list[str]:
     return attrs
 
 
-def _xml_path(path: list[str]) -> str:
-    return "/".join(part for part in path if part)
+def _xml_compact_path(path: list[str]) -> str:
+    clean_path = [part for part in path if part]
+    return "/".join(clean_path[-2:])
 
 
 def _plain_text_blocks(source: str) -> list[RenderedBlock]:
@@ -656,6 +830,13 @@ def _clean_block_text(value: str) -> str:
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", text)
     text = re.sub(r"[ \t\f\v]*\n[ \t\f\v]*", "\n", text)
     text = re.sub(r"[ \t\f\v]{2,}", " ", text)
+    lines = []
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if _is_layout_only_line(stripped):
+            continue
+        lines.append(line)
+    text = "\n".join(lines)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
@@ -669,6 +850,11 @@ def _repair_text(value: str) -> str:
     for source, replacement in _MOJIBAKE_REPLACEMENTS:
         text = text.replace(source, replacement)
     return text
+
+
+def _has_mojibake(value: str) -> bool:
+    sample = (value or "")[:10000]
+    return any(token in sample for token in ("\u00c3", "\u00c2", "\u00e2\u20ac", "\u00ef\u00ac"))
 
 
 def _is_hidden_tag(tag: str, attrs: dict[str, str]) -> bool:
@@ -685,6 +871,10 @@ def _is_hidden_tag(tag: str, attrs: dict[str, str]) -> bool:
 def _is_low_signal_text(text: str) -> bool:
     stripped = text.strip()
     return not stripped or bool(_SEPARATOR_ONLY_RE.fullmatch(stripped))
+
+
+def _is_layout_only_line(text: str) -> bool:
+    return bool(text and (_SEPARATOR_ONLY_RE.fullmatch(text) or _PAGE_MARKER_RE.fullmatch(text)))
 
 
 def _is_numericish(text: str) -> bool:
@@ -712,6 +902,13 @@ def _trim_empty_edge_cells(row: list[str]) -> list[str]:
     while end > start and not row[end - 1]:
         end -= 1
     return row[start:end]
+
+
+def _positive_span(value: str | None) -> int:
+    try:
+        return max(1, min(int(str(value or "1")), 1000))
+    except ValueError:
+        return 1
 
 
 def _strip_namespace(tag: str) -> str:

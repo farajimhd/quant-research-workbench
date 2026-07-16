@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import hashlib
-import html
 import json
 import os
 import re
@@ -14,7 +13,6 @@ import time
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -49,12 +47,17 @@ from pipelines.sec.edgar.sec_pipeline.revision import (  # noqa: E402
     parse_pac_event,
     source_revision,
 )
+from pipelines.market_sip.events.sec_packed_text_renderer import (  # noqa: E402
+    SEC_PACKED_TEXT_RENDERER_VERSION,
+    STRUCTURED_XML_EXCLUDED_QUALITY_FLAG,
+    render_sec_packed_text,
+)
 
 
 DEFAULT_ARCHIVE_ROOT_WIN = Path("D:/market-data/sec_core/daily_archives")
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_filing_text_parts")
 DEFAULT_DATABASE = "q_live"
-NORMALIZER_VERSION = "sec_text_normalizer_v1"
+NORMALIZER_VERSION = SEC_PACKED_TEXT_RENDERER_VERSION
 FILING_COLUMNS = [
     "filing_id",
     "accession_number",
@@ -258,80 +261,6 @@ class PartFile:
     bytes: int
     columns: list[str]
     structure: str
-
-
-class StructuredHTMLTextExtractor(HTMLParser):
-    block_tags = {
-        "address",
-        "article",
-        "aside",
-        "blockquote",
-        "br",
-        "caption",
-        "div",
-        "dl",
-        "dt",
-        "dd",
-        "figcaption",
-        "footer",
-        "h1",
-        "h2",
-        "h3",
-        "h4",
-        "h5",
-        "h6",
-        "header",
-        "hr",
-        "li",
-        "main",
-        "ol",
-        "p",
-        "pre",
-        "section",
-        "table",
-        "tbody",
-        "tfoot",
-        "thead",
-        "tr",
-        "ul",
-    }
-    skip_tags = {"script", "style", "noscript", "svg", "head"}
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.parts: list[str] = []
-        self.skip_depth = 0
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        tag = tag.lower()
-        if tag in self.skip_tags:
-            self.skip_depth += 1
-            return
-        if self.skip_depth:
-            return
-        if tag in {"td", "th"}:
-            self.parts.append(" | ")
-        elif tag in self.block_tags:
-            self.parts.append("\n")
-
-    def handle_endtag(self, tag: str) -> None:
-        tag = tag.lower()
-        if tag in self.skip_tags and self.skip_depth:
-            self.skip_depth -= 1
-            return
-        if self.skip_depth:
-            return
-        if tag in {"td", "th"}:
-            self.parts.append(" | ")
-        elif tag in self.block_tags:
-            self.parts.append("\n")
-
-    def handle_data(self, data: str) -> None:
-        if not self.skip_depth and data:
-            self.parts.append(data)
-
-    def text(self) -> str:
-        return "".join(self.parts)
 
 
 def parse_args() -> argparse.Namespace:
@@ -952,7 +881,23 @@ def build_rows(
     content_format = detect_content_format(doc_name, document["payload"])
     document_role = classify_document_role(parent, document, content_format)
     content_sha = sha256_text(document["payload"])
-    normalized_text, extraction_method, quality_flags = normalize_document_text(document["payload"], content_format)
+    if content_format in {"html", "plain_text", "xml"}:
+        rendered = render_sec_packed_text(
+            document["payload"],
+            content_format,
+            document_name=doc_name,
+            document_type=doc_type,
+            form_type=parent.form_type,
+            text_kind=text_kind_for_role(document_role),
+            include_intermediate=False,
+        )
+        normalized_text = rendered.packed_text
+        extraction_method = rendered.renderer_version
+        quality_flags = list(rendered.quality_flags)
+    else:
+        normalized_text = ""
+        extraction_method = f"unsupported_{content_format}_v1"
+        quality_flags = [f"format_{content_format}"]
     skip_reason = skip_reason_for_document(document_role, content_format, normalized_text, quality_flags, int(payload["min_text_chars"]))
     max_text_chars = int(payload.get("max_text_chars") or 0)
     if max_text_chars > 0 and normalized_text and len(normalized_text) > max_text_chars:
@@ -1115,136 +1060,12 @@ def build_rows(
     return doc_row, text_source_row, text_row, skip_row, sample_row
 
 
-def normalize_document_text(payload: str, content_format: str) -> tuple[str, str, list[str]]:
-    flags: list[str] = []
-    if not payload:
-        return "", "empty_text_v1", ["empty_payload"]
-    if "\ufffd" in payload:
-        flags.append("replacement_char")
-    if has_mojibake(payload):
-        flags.append("mojibake_suspect")
-    if any(ord(ch) > 127 for ch in payload[:5000]):
-        flags.append("non_ascii")
-    if content_format == "html":
-        text = html_to_text(payload)
-        method = "html_text_v1"
-    elif content_format == "plain_text":
-        text = plain_text_to_text(payload)
-        method = "plain_text_v1"
-    elif content_format == "pdf":
-        return "", "pdf_text_pending_v1", flags + ["pdf_text_pending"]
-    else:
-        return "", f"skipped_{content_format}_v1", flags
-    text = canonicalize_text(text)
-    if len(text) < 100:
-        flags.append("short_text")
-    return text, method, flags
-
-
-def html_to_text(payload: str) -> str:
-    text = re.sub(r"(?is)<!--.*?-->", " ", payload)
-    text = re.sub(r"(?is)<ix:hidden\b.*?</ix:hidden>", " ", text)
-    parser = StructuredHTMLTextExtractor()
-    try:
-        parser.feed(text)
-        parser.close()
-        return parser.text()
-    except Exception:  # noqa: BLE001
-        text = re.sub(r"(?is)<script\b.*?</script>", " ", text)
-        text = re.sub(r"(?is)<style\b.*?</style>", " ", text)
-        text = re.sub(r"(?is)<[^>]+>", " ", text)
-        return text
-
-
-def plain_text_to_text(payload: str) -> str:
-    text = payload
-    if "<" in text and ">" in text:
-        text = re.sub(r"(?is)<script\b.*?</script>", " ", text)
-        text = re.sub(r"(?is)<style\b.*?</style>", " ", text)
-        text = re.sub(r"(?is)<[^>]+>", " ", text)
-    return text
-
-
 def should_persist_text_source(document_role: str, content_format: str) -> bool:
     if document_role == "xbrl_sidecar" or content_format == "xbrl":
         return False
     if document_role in {"image", "stylesheet_or_script", "spreadsheet", "archive_or_json", "pdf"}:
         return False
     return content_format in {"html", "plain_text", "xml"}
-
-
-def canonicalize_text(text: str) -> str:
-    text = html.unescape(text)
-    text = repair_common_mojibake(text)
-    text = text.replace("\xa0", " ")
-    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", text)
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = re.sub(r"[ \t\f\v]+", " ", text)
-    text = re.sub(r" *\n *", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    lines = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if is_low_signal_line(stripped):
-            continue
-        lines.append(stripped)
-    text = "\n".join(lines)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
-
-
-def repair_common_mojibake(text: str) -> str:
-    replacements = {
-        "\u00e2\u20ac\u201c": "\u2013",
-        "\u00e2\u20ac\u201d": "\u2014",
-        "\u00e2\u20ac\u2122": "\u2019",
-        "\u00e2\u20ac\u02dc": "\u2018",
-        "\u00e2\u20ac\u0153": "\u201c",
-        "\u00e2\u20ac\u009d": "\u201d",
-        "\u00e2\u20ac\u00a6": "\u2026",
-        "\u00e2\u201e\u00a2": "\u2122",
-        "\u00e2\u20ac\u2030": " ",
-        "\u00ef\u00ac\u0081": "fi",
-        "\u00ef\u00ac\u0082": "fl",
-        "\u00c2\u00a0": " ",
-        "\u00c2\u00ae": "\u00ae",
-        "\u00c2\u00a9": "\u00a9",
-        "\u00c3\u00a1": "\u00e1",
-        "\u00c3\u00a9": "\u00e9",
-        "\u00c3\u00ad": "\u00ed",
-        "\u00c3\u00b3": "\u00f3",
-        "\u00c3\u00ba": "\u00fa",
-        "\u00c3\u00b1": "\u00f1",
-        "\u00c3\u00bc": "\u00fc",
-        "\u00c3\u00b6": "\u00f6",
-        "\u00c3\u00a4": "\u00e4",
-        "\u00c3\u2026": "\u00c5",
-        "\u00c3\u00a5": "\u00e5",
-        "\u00c3\u02dc": "\u00d8",
-        "\u00c3\u00b8": "\u00f8",
-        "\u00c3\u2021": "\u00c7",
-        "\u00c3\u00a7": "\u00e7",
-        "\u00c3\u2018": "\u00d1",
-        "\u00c3\u0089": "\u00c9",
-        "\u00c3\u201c": "\u00d3",
-        "\u00c3\u0161": "\u00da",
-        "\u00c2": "",
-    }
-    repaired = text
-    for bad, good in replacements.items():
-        repaired = repaired.replace(bad, good)
-    return repaired
-
-
-def is_low_signal_line(line: str) -> bool:
-    if not line:
-        return False
-    lowered = line.lower()
-    if lowered.startswith("javascript:"):
-        return True
-    if len(line) > 2000 and len(set(line)) < 20:
-        return True
-    return False
 
 
 def skip_reason_for_document(document_role: str, content_format: str, text: str, quality_flags: list[str], min_text_chars: int) -> str:
@@ -1260,7 +1081,9 @@ def skip_reason_for_document(document_role: str, content_format: str, text: str,
         return "archive_or_json"
     if content_format == "pdf":
         return "pdf_text_pending"
-    if content_format in {"xml", "xbrl"}:
+    if STRUCTURED_XML_EXCLUDED_QUALITY_FLAG in quality_flags:
+        return "structured_xml_model_excluded"
+    if content_format == "xbrl":
         return "structured_xml_or_xbrl"
     if content_format in {"image", "binary_like", "unknown"}:
         return f"unsupported_{content_format}"
@@ -1733,11 +1556,6 @@ def is_binary_like(text: str) -> bool:
         return False
     controls = sum(1 for char in sample if ord(char) < 32 and char not in "\n\r\t")
     return controls / max(1, len(sample)) > 0.05
-
-
-def has_mojibake(text: str) -> bool:
-    sample = text[:10000]
-    return any(token in sample for token in ("Ã", "Â", "â€™", "â€œ", "â€�", "â€“", "â€”"))
 
 
 def sha256_text(value: str) -> str:
