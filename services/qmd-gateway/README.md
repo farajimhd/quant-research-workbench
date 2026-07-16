@@ -256,6 +256,7 @@ Tick-level indicators expose:
 
 Bar-level indicators are updated when each timeframe bar closes and include:
 
+- session-anchored cumulative VWAP using the standard `hlc3 * volume` basis, with the regular benchmark resetting at the 09:30 New York open
 - `ema_9`, `ema_20`, `ema_50`
 - `rsi_14`
 - `atr_14`

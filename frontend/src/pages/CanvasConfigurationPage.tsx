@@ -1,5 +1,5 @@
 import { Check, Clock3, ExternalLink, Globe2, Link2, MapPin, PanelRightOpen, Plus, Save, Settings2, Trash2, Unlink } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
 
 import { api, query } from "../api/client";
 import {
@@ -823,7 +823,7 @@ function ContainerPreview({ chartCutoffMs, definition, instanceId, linkContext, 
     {linkOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} link configuration`} data-canvas-link-popover={instanceId}><div className="canvas-link-guide"><strong>Link color</strong><small>Same color = linked</small></div><LinkColorPicker containerTitle={definition.title} onChange={onLinkChange} value={linkGroup} /><LinkedContainerList containerTitle={definition.title} containers={linkedContainers} /></div> : null}
     {settingsOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} settings`}>{containerFields(definition.id, settings, linkContext, updateSettings, onLinkContextChange)}</div> : null}
     <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{definition.id === "chart"
-      ? <ChartContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} onLinkContextChange={onLinkContextChange} previewContext={previewContext} settings={settings} updateSettings={updateSettings} />
+      ? <ChartContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} linkGroup={linkGroup} onLinkContextChange={onLinkContextChange} previewContext={previewContext} settings={settings} updateSettings={updateSettings} />
       : loading && !preview
         ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div>
         : renderPreview(definition.id, preview, settings, linkGroup, onLinkContextChange)}</div>
@@ -868,9 +868,39 @@ function renderPreview(id: WorkspaceContainerId, preview: CanvasPreview | null, 
   return <PreviewTable columns={["time", "category", "event", "detail"]} rows={preview.journal.slice(0, settings.journal.limit)} />;
 }
 
-function ChartContainerPreview({ cutoffMs, instanceId, linkContext, onLinkContextChange, previewContext, settings, updateSettings }: { cutoffMs: number; instanceId: string; linkContext: CanvasLinkContext; onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void; previewContext: CanvasPreviewContext; settings: ContainerSettings; updateSettings: SettingsUpdater }) {
+type ChartContainerPreviewProps = {
+  cutoffMs: number;
+  instanceId: string;
+  linkContext: CanvasLinkContext;
+  linkGroup: CanvasLinkGroupId;
+  onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void;
+  previewContext: CanvasPreviewContext;
+  settings: ContainerSettings;
+  updateSettings: SettingsUpdater;
+};
+
+const ChartContainerPreview = memo(function ChartContainerPreview({ cutoffMs, instanceId, linkContext, onLinkContextChange, previewContext, settings, updateSettings }: ChartContainerPreviewProps) {
   const liveChart = useCanvasLiveChart(linkContext.symbol, settings.chart.timeframe, cutoffMs, previewContext.sessionDate);
   return <ChartPreview instanceId={instanceId} linkContext={linkContext} liveChart={liveChart} onLinkContextChange={onLinkContextChange} settings={settings} updateSettings={updateSettings} />;
+}, chartContainerPreviewPropsEqual);
+
+function chartContainerPreviewPropsEqual(previous: ChartContainerPreviewProps, next: ChartContainerPreviewProps) {
+  const previousChart = previous.settings.chart;
+  const nextChart = next.settings.chart;
+  return previous.instanceId === next.instanceId
+    && previous.cutoffMs === next.cutoffMs
+    && previous.linkGroup === next.linkGroup
+    && previous.linkContext.symbol === next.linkContext.symbol
+    && previous.previewContext.sessionDate === next.previewContext.sessionDate
+    && previous.previewContext.previewTime === next.previewContext.previewTime
+    && previousChart.symbol === nextChart.symbol
+    && previousChart.timeframe === nextChart.timeframe
+    && previousChart.showVolume === nextChart.showVolume
+    && stringArraysEqual(previousChart.visibleIndicators, nextChart.visibleIndicators);
+}
+
+function stringArraysEqual(previous: readonly string[], next: readonly string[]) {
+  return previous.length === next.length && previous.every((value, index) => value === next[index]);
 }
 
 function ChartPreview({ instanceId, linkContext, liveChart, onLinkContextChange, settings, updateSettings }: { instanceId: string; linkContext: CanvasLinkContext; liveChart: CanvasLiveChartState; onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void; settings: ContainerSettings; updateSettings: SettingsUpdater }) {

@@ -432,9 +432,10 @@ Table: `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`.
 
 | Field | Formula | Streaming Method |
 |---|---|---|
-| `schema_version` | Current value is `1`. | Constant per row. |
+| `schema_version` | Current value is `2`. | Constant per row. |
 | `session_date`, `timeframe`, `sym`, `bar_start`, `bar_end` | Copied from closed bar. | One row per closed bar. |
-| `close`, `volume`, `vwap` | Copied from closed bar. | Inputs for chart and indicator display. |
+| `close`, `volume` | Copied from closed bar. | Inputs for chart and indicator display. |
+| `vwap` | Session-anchored cumulative `sum(hlc3 * volume) / sum(volume)`. Premarket has its own accumulation and the regular-session benchmark resets at the exchange's 09:30 New York open; after-hours continues the regular-session anchor. The canonical bar's own `vwap` remains its event-level `dollar_volume / volume`. | Keep cumulative typical-price notional and volume per ticker/timeframe/market-session anchor. |
 | `ema_9`, `ema_20`, `ema_50` | `EMA_t = alpha * close_t + (1 - alpha) * EMA_{t-1}`, `alpha = 2 / (period + 1)`. | Keep last EMA value per ticker/timeframe. |
 | `rsi_14` | Wilder RSI: `100 - 100 / (1 + avg_gain / avg_loss)`. | Seed first 14 changes, then update Wilder averages. |
 | `atr_14` | Wilder average of true range. True range is `max(high-low, abs(high-prev_close), abs(low-prev_close))`. | Seed first 14 true ranges, then update Wilder average. |
@@ -449,7 +450,7 @@ Table: `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`.
 | `volume_sma_20` | Average of last 20 volumes. | Rolling sum. |
 | `return_1_bar` | `(close - previous_close) / previous_close * 100`. | Uses previous close per ticker/timeframe. |
 | `price_vs_ema20_pct` | `(close - ema_20) / ema_20 * 100`. | Derived after EMA update. |
-| `price_vs_vwap_pct` | `(close - vwap) / vwap * 100`. | Derived from closed bar. |
+| `price_vs_vwap_pct` | `(close - session_vwap) / session_vwap * 100`. | Derived from the cumulative session VWAP. |
 | `trend_score` | Fraction of 5 checks that pass: `close > ema_20`, `ema_9 > ema_20`, `ema_20 > ema_50`, `rsi_14 >= 50`, `macd_histogram > 0`. | Updated per closed bar. Range is 0 to 1. |
 
 ## Indicator Persistence Policy

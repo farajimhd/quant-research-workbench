@@ -3,7 +3,8 @@ use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::metrics::SharedMetrics;
 use crate::timefmt::clickhouse_datetime64;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Timelike, Utc};
+use chrono_tz::America::New_York;
 use reqwest::Client;
 use serde::Serialize;
 use serde_json::json;
@@ -12,7 +13,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, sleep, Duration};
 
-pub const INDICATOR_SCHEMA_VERSION: u16 = 1;
+pub const INDICATOR_SCHEMA_VERSION: u16 = 2;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct IndicatorSnapshot {
@@ -175,7 +176,26 @@ struct BarIndicatorState {
     last_close: f64,
     macd_signal_9: EmaState,
     rsi_14: RsiState,
+    session_vwap: SessionVwapState,
     volume_sma_20: RollingStats,
+}
+
+struct SessionVwapState {
+    cumulative_typical_notional: f64,
+    cumulative_volume: f64,
+    anchor: Option<SessionVwapAnchor>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SessionVwapAnchor {
+    market_date: NaiveDate,
+    phase: SessionVwapPhase,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SessionVwapPhase {
+    Premarket,
+    Regular,
 }
 
 struct EmaState {
@@ -559,6 +579,7 @@ impl BarIndicatorState {
             last_close: 0.0,
             macd_signal_9: EmaState::new(9),
             rsi_14: RsiState::new(14),
+            session_vwap: SessionVwapState::new(),
             volume_sma_20: RollingStats::new(20),
         }
     }
@@ -590,6 +611,14 @@ impl BarIndicatorState {
         self.volume_sma_20.push(bar.volume);
         self.bollinger_20.push(bar.close);
         self.last_close = bar.close;
+        let session_vwap = self.session_vwap.update(
+            bar.bar_start,
+            bar.high,
+            bar.low,
+            bar.close,
+            bar.volume,
+            bar.vwap,
+        );
 
         IndicatorRow {
             schema_version: INDICATOR_SCHEMA_VERSION,
@@ -600,7 +629,7 @@ impl BarIndicatorState {
             bar_end: bar.bar_end.clone(),
             close: bar.close,
             volume: bar.volume,
-            vwap: bar.vwap,
+            vwap: session_vwap,
             ema_9,
             ema_20,
             ema_50,
@@ -621,9 +650,59 @@ impl BarIndicatorState {
                 0.0
             },
             price_vs_ema20_pct: pct_change(bar.close, ema_20),
-            price_vs_vwap_pct: pct_change(bar.close, bar.vwap),
+            price_vs_vwap_pct: pct_change(bar.close, session_vwap),
             trend_score: trend_score(bar.close, ema_9, ema_20, ema_50, rsi_14, macd_histogram),
         }
+    }
+}
+
+impl SessionVwapState {
+    fn new() -> Self {
+        Self {
+            cumulative_typical_notional: 0.0,
+            cumulative_volume: 0.0,
+            anchor: None,
+        }
+    }
+
+    fn update(
+        &mut self,
+        bar_start: DateTime<Utc>,
+        high: f64,
+        low: f64,
+        close: f64,
+        volume: f64,
+        fallback: f64,
+    ) -> f64 {
+        let anchor = session_vwap_anchor(bar_start);
+        if self.anchor != Some(anchor) {
+            self.anchor = Some(anchor);
+            self.cumulative_typical_notional = 0.0;
+            self.cumulative_volume = 0.0;
+        }
+        let typical_price = (high + low + close) / 3.0;
+        if typical_price.is_finite() && volume.is_finite() && volume > 0.0 {
+            self.cumulative_typical_notional += typical_price * volume;
+            self.cumulative_volume += volume;
+        }
+        if self.cumulative_volume > 0.0 {
+            self.cumulative_typical_notional / self.cumulative_volume
+        } else {
+            fallback
+        }
+    }
+}
+
+fn session_vwap_anchor(bar_start: DateTime<Utc>) -> SessionVwapAnchor {
+    let local = bar_start.with_timezone(&New_York);
+    let phase = if (local.hour(), local.minute()) < (9, 30) {
+        SessionVwapPhase::Premarket
+    } else {
+        SessionVwapPhase::Regular
+    };
+    SessionVwapAnchor {
+        market_date: local.date_naive(),
+        phase,
     }
 }
 
@@ -1094,5 +1173,81 @@ fn safe_div(numerator: f64, denominator: f64) -> f64 {
         0.0
     } else {
         numerator / denominator
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SessionVwapState;
+    use chrono::{TimeZone, Utc};
+
+    #[test]
+    fn session_vwap_accumulates_hlc3_weighted_by_volume() {
+        let mut state = SessionVwapState::new();
+        let first = state.update(
+            Utc.with_ymd_and_hms(2026, 7, 14, 14, 0, 0).unwrap(),
+            11.0,
+            9.0,
+            10.0,
+            100.0,
+            0.0,
+        );
+        let second = state.update(
+            Utc.with_ymd_and_hms(2026, 7, 14, 14, 1, 0).unwrap(),
+            22.0,
+            18.0,
+            20.0,
+            300.0,
+            0.0,
+        );
+
+        assert!((first - 10.0).abs() < 1e-9);
+        assert!((second - 17.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn session_vwap_resets_at_the_regular_session_open() {
+        let mut state = SessionVwapState::new();
+        state.update(
+            Utc.with_ymd_and_hms(2026, 7, 14, 13, 29, 0).unwrap(),
+            11.0,
+            9.0,
+            10.0,
+            100.0,
+            0.0,
+        );
+        let regular_session = state.update(
+            Utc.with_ymd_and_hms(2026, 7, 14, 13, 30, 0).unwrap(),
+            31.0,
+            29.0,
+            30.0,
+            50.0,
+            0.0,
+        );
+
+        assert!((regular_session - 30.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn session_vwap_uses_new_york_time_across_daylight_saving() {
+        let mut state = SessionVwapState::new();
+        state.update(
+            Utc.with_ymd_and_hms(2026, 1, 14, 14, 29, 0).unwrap(),
+            11.0,
+            9.0,
+            10.0,
+            100.0,
+            0.0,
+        );
+        let winter_regular_session = state.update(
+            Utc.with_ymd_and_hms(2026, 1, 14, 14, 30, 0).unwrap(),
+            31.0,
+            29.0,
+            30.0,
+            50.0,
+            0.0,
+        );
+
+        assert!((winter_regular_session - 30.0).abs() < 1e-9);
     }
 }
