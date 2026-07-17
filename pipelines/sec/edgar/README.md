@@ -130,6 +130,11 @@ CPU renderer workers and ClickHouse insert lanes are controlled independently;
 the default global insert gate permits two concurrent Parquet inserts even when
 many renderer workers are active, preventing server-wide memory overcommit
 without serializing text rendering.
+The rebuild writes bundles into a monthly work table to avoid scattering every
+insert across 64 hash partitions. Validated cutover then repartitions one CIK
+hash partition at a time into the canonical final layout. Existing stale hash
+staging is migrated server-side on resume, preserving all successful bundle
+checkpoints and rendered rows.
 
 The SEC gateway generates the same explicit shape so the workstation script does
 not depend on ambient shell defaults. `--resume-from-coverage` is enabled by default and records

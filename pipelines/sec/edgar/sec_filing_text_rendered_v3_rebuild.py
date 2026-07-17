@@ -52,6 +52,9 @@ DEFAULT_BUNDLE_MANIFEST_TABLE = "sec_filing_text_rendered_rebuild_bundle_manifes
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_filing_text_rendered_v3_rebuild")
 DEFAULT_FILE_ROOT_WIN = Path("D:/market-data")
 DEFAULT_FILE_ROOT_CH = "/mnt/d/market-data"
+BUILD_PARTITION_KEY = "toYYYYMM(source_archive_date)"
+FINAL_PARTITION_KEY = "cityHash64(cik) % 64"
+RENDERED_SORTING_KEY = "cik, accession_number, document_id, text_kind"
 
 _INSERT_SEMAPHORE: Any | None = None
 
@@ -692,15 +695,146 @@ def ensure_staging_table(client: ClickHouseHttpClient, args: argparse.Namespace)
         f"SELECT count() FROM system.tables WHERE database={sql_string(args.database)} AND name={sql_string(args.staging_table)}",
     )
     if not exists:
-        client.execute(
-            f"CREATE TABLE {table(args.database, args.staging_table)} AS {table(args.database, args.target_table)}"
+        create_rendered_table(
+            client,
+            database=args.database,
+            table_name=args.staging_table,
+            schema_table=args.target_table,
+            partition_key=BUILD_PARTITION_KEY,
+            deduplication_window=100000,
         )
+    layout = load_table_layout(client, args.database, args.staging_table)
+    if normalized_layout_key(layout["partition_key"]) == normalized_layout_key(FINAL_PARTITION_KEY):
+        migrate_hash_staging_to_monthly(client, args)
+        layout = load_table_layout(client, args.database, args.staging_table)
+    if normalized_layout_key(layout["partition_key"]) != normalized_layout_key(BUILD_PARTITION_KEY):
+        raise RuntimeError(
+            f"rebuild staging table has unsupported partition key {layout['partition_key']!r}; "
+            f"expected {BUILD_PARTITION_KEY!r}"
+        )
+    legacy_table = f"{args.staging_table}_hash_legacy"
+    if table_exists(client, args.database, legacy_table):
+        client.execute(f"SYSTEM STOP MERGES {table(args.database, legacy_table)}")
     # Bundle retries use deterministic insert tokens. Persist enough recent
     # block ids for the complete rebuild so a crash between insert and
     # checkpoint cannot create physical duplicate parts.
     client.execute(
         f"ALTER TABLE {table(args.database, args.staging_table)} MODIFY SETTING "
         "non_replicated_deduplication_window=100000"
+    )
+
+
+def create_rendered_table(
+    client: ClickHouseHttpClient,
+    *,
+    database: str,
+    table_name: str,
+    schema_table: str,
+    partition_key: str,
+    deduplication_window: int = 0,
+) -> None:
+    storage_policy = load_table_layout(client, database, schema_table)["storage_policy"]
+    settings = "index_granularity=8192"
+    if storage_policy:
+        settings += f", storage_policy={sql_string(storage_policy)}"
+    if deduplication_window:
+        settings += f", non_replicated_deduplication_window={deduplication_window}"
+    client.execute(
+        f"""
+CREATE TABLE {table(database, table_name)} AS {table(database, schema_table)}
+ENGINE = ReplacingMergeTree(source_revision_rank)
+PARTITION BY {partition_key}
+ORDER BY ({RENDERED_SORTING_KEY})
+SETTINGS {settings}
+"""
+    )
+
+
+def load_table_layout(client: ClickHouseHttpClient, database: str, table_name: str) -> dict[str, str]:
+    return query_one(
+        client,
+        f"""
+SELECT partition_key, sorting_key, storage_policy
+FROM system.tables
+WHERE database={sql_string(database)} AND name={sql_string(table_name)}
+""",
+    )
+
+
+def normalized_layout_key(value: str) -> str:
+    return re.sub(r"[\s`()]+", "", str(value or "")).lower()
+
+
+def table_exists(client: ClickHouseHttpClient, database: str, table_name: str) -> bool:
+    return bool(
+        scalar_int(
+            client,
+            f"SELECT count() FROM system.tables WHERE database={sql_string(database)} "
+            f"AND name={sql_string(table_name)}",
+        )
+    )
+
+
+def rendered_table_stats(client: ClickHouseHttpClient, database: str, table_name: str, where: str = "") -> tuple[int, int]:
+    row = query_one(
+        client,
+        f"""
+SELECT count() AS rows,
+       sum(cityHash64(cik, accession_number, document_id, text_kind, source_version_key, text_sha256)) AS checksum
+FROM {table(database, table_name)} FINAL
+{where}
+""",
+    )
+    return int(row["rows"]), int(row["checksum"] or 0)
+
+
+def migrate_hash_staging_to_monthly(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
+    migration_table = f"{args.staging_table}_monthly_migration"
+    legacy_table = f"{args.staging_table}_hash_legacy"
+    if table_exists(client, args.database, legacy_table):
+        raise RuntimeError(
+            f"legacy staging table already exists while active staging is still hash partitioned: {legacy_table}"
+        )
+    if not table_exists(client, args.database, migration_table):
+        create_rendered_table(
+            client,
+            database=args.database,
+            table_name=migration_table,
+            schema_table=args.staging_table,
+            partition_key=BUILD_PARTITION_KEY,
+            deduplication_window=100000,
+        )
+    source_stats = rendered_table_stats(client, args.database, args.staging_table)
+    migration_stats = rendered_table_stats(client, args.database, migration_table)
+    if migration_stats != source_stats:
+        if migration_stats[0]:
+            client.execute(f"TRUNCATE TABLE {table(args.database, migration_table)}")
+        columns = ", ".join(quote_ident(column) for column in TARGET_COLUMNS)
+        print(
+            f"staging_layout=migrate_hash_to_monthly status=active rows={source_stats[0]:,}",
+            flush=True,
+        )
+        client.execute(
+            f"""
+INSERT INTO {table(args.database, migration_table)} ({columns})
+SELECT {columns} FROM {table(args.database, args.staging_table)}
+SETTINGS max_threads=2, max_insert_threads=1, max_memory_usage={parse_size_bytes(args.max_memory_usage)}
+"""
+        )
+        migration_stats = rendered_table_stats(client, args.database, migration_table)
+    if migration_stats != source_stats:
+        raise RuntimeError(
+            f"staging layout migration validation failed source={source_stats} migration={migration_stats}"
+        )
+    client.execute(
+        f"RENAME TABLE {table(args.database, args.staging_table)} TO {table(args.database, legacy_table)}, "
+        f"{table(args.database, migration_table)} TO {table(args.database, args.staging_table)}"
+    )
+    client.execute(f"SYSTEM STOP MERGES {table(args.database, legacy_table)}")
+    print(
+        f"staging_layout=migrate_hash_to_monthly status=completed rows={source_stats[0]:,} "
+        f"legacy={args.database}.{legacy_table}",
+        flush=True,
     )
 
 
@@ -1703,6 +1837,7 @@ def cutover(
         raise RuntimeError("source watermark changed after validation; refusing cutover")
     if load_filing_watermark(client, args) != filing_watermark:
         raise RuntimeError("filing metadata watermark changed after validation; refusing cutover")
+    cutover_table = prepare_hash_cutover_table(client, args)
     suffix = re.sub(r"[^0-9]", "", run_id)[-14:] or datetime.now(UTC).strftime("%Y%m%d%H%M%S")
     backup_table = f"sec_filing_text_rendered_pre_v8_{suffix}_v3"
     if scalar_int(
@@ -1711,12 +1846,95 @@ def cutover(
     ):
         raise RuntimeError(f"backup table already exists: {args.database}.{backup_table}")
     client.execute(
-        f"EXCHANGE TABLES {table(args.database, args.target_table)} AND {table(args.database, args.staging_table)}"
+        f"EXCHANGE TABLES {table(args.database, args.target_table)} AND {table(args.database, cutover_table)}"
     )
     client.execute(
-        f"RENAME TABLE {table(args.database, args.staging_table)} TO {table(args.database, backup_table)}"
+        f"RENAME TABLE {table(args.database, cutover_table)} TO {table(args.database, backup_table)}"
     )
+    target_stats = rendered_table_stats(client, args.database, args.target_table)
+    staging_stats = rendered_table_stats(client, args.database, args.staging_table)
+    if target_stats != staging_stats:
+        raise RuntimeError(f"post-cutover row validation failed target={target_stats} staging={staging_stats}")
+    client.execute(f"DROP TABLE {table(args.database, args.staging_table)}")
+    legacy_table = f"{args.staging_table}_hash_legacy"
+    if table_exists(client, args.database, legacy_table):
+        client.execute(f"DROP TABLE {table(args.database, legacy_table)}")
     return backup_table
+
+
+def prepare_hash_cutover_table(client: ClickHouseHttpClient, args: argparse.Namespace) -> str:
+    cutover_table = f"{args.staging_table}_final_hash"
+    if not table_exists(client, args.database, cutover_table):
+        create_rendered_table(
+            client,
+            database=args.database,
+            table_name=cutover_table,
+            schema_table=args.staging_table,
+            partition_key=FINAL_PARTITION_KEY,
+            deduplication_window=100000,
+        )
+    layout = load_table_layout(client, args.database, cutover_table)
+    if normalized_layout_key(layout["partition_key"]) != normalized_layout_key(FINAL_PARTITION_KEY):
+        raise RuntimeError(f"cutover table has wrong partition key: {layout['partition_key']}")
+    columns = ", ".join(quote_ident(column) for column in TARGET_COLUMNS)
+    for partition_id in range(64):
+        predicate = f"cityHash64(cik) % 64={partition_id}"
+        source_stats = rendered_table_stats(
+            client,
+            args.database,
+            args.staging_table,
+            f"PREWHERE {predicate}",
+        )
+        target_stats = rendered_table_stats(
+            client,
+            args.database,
+            cutover_table,
+            f"PREWHERE {predicate}",
+        )
+        if target_stats == source_stats:
+            print(
+                f"cutover_repartition={partition_id + 1}/64 status=completed reused=true rows={source_stats[0]:,}",
+                flush=True,
+            )
+            continue
+        if target_stats[0]:
+            client.execute(
+                f"ALTER TABLE {table(args.database, cutover_table)} DROP PARTITION {partition_id}"
+            )
+        print(
+            f"cutover_repartition={partition_id + 1}/64 status=active rows={source_stats[0]:,}",
+            flush=True,
+        )
+        client.execute(
+            f"""
+INSERT INTO {table(args.database, cutover_table)} ({columns})
+SELECT {columns}
+FROM {table(args.database, args.staging_table)} FINAL
+PREWHERE {predicate}
+ORDER BY {RENDERED_SORTING_KEY}
+SETTINGS max_threads=2, max_insert_threads=1, max_memory_usage={parse_size_bytes(args.max_memory_usage)}
+"""
+        )
+        target_stats = rendered_table_stats(
+            client,
+            args.database,
+            cutover_table,
+            f"PREWHERE {predicate}",
+        )
+        if target_stats != source_stats:
+            raise RuntimeError(
+                f"cutover partition validation failed partition={partition_id} "
+                f"source={source_stats} target={target_stats}"
+            )
+        print(
+            f"cutover_repartition={partition_id + 1}/64 status=completed reused=false rows={source_stats[0]:,}",
+            flush=True,
+        )
+    source_stats = rendered_table_stats(client, args.database, args.staging_table)
+    target_stats = rendered_table_stats(client, args.database, cutover_table)
+    if target_stats != source_stats:
+        raise RuntimeError(f"cutover table validation failed source={source_stats} target={target_stats}")
+    return cutover_table
 
 
 def cleanup_temp_root(partition_root: Path, *, keep_source: bool) -> None:

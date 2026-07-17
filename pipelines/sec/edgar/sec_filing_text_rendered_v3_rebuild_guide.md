@@ -58,6 +58,25 @@ committed. The shared cross-process insert gate keeps all renderer workers busy
 while allowing only two inserts to decode and merge at once. Waiting, active,
 and completed insert states are printed per partition, bundle, and part.
 
+The rebuild work table is monthly partitioned even though the final rendered
+table is CIK-hash partitioned. Writing every small bundle directly into the 64
+CIK partitions created 64 part families per insert and eventually drove dozens
+of concurrent background merges to the ClickHouse memory ceiling. On resume,
+the script detects the old hash-partitioned staging table, copies its validated
+logical rows server-side into a monthly work table, atomically swaps the work
+table into the existing staging name, and stops merges on the retained legacy
+copy. Existing renderer and bundle checkpoints remain valid; no source text is
+rerendered during this migration.
+
+After all bundle and corpus validations pass, cutover creates a fresh canonical
+CIK-hash table and copies one hash partition at a time from the monthly work
+table. Every partition is independently count/checksum validated and is
+restartable. Only after all 64 partitions match does the script exchange the
+new table with `sec_filing_text_rendered_v3`, retain the previous target backup,
+and remove the temporary work and legacy staging tables. This gives live reads
+the required same-CIK revision locality without creating a merge storm during
+the historical build.
+
 The parent process owns each bounded monthly export. A renderer worker processes
 that export as deterministic bundles of eight Parquet row groups. Every bundle
 is rendered, inserted, checkpointed in

@@ -23,6 +23,7 @@ from pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild import (
     build_rendered_row,
     collect_partition_results,
     clickhouse_insert_slot,
+    create_rendered_table,
     export_source_partition,
     load_or_create_run_manifest,
     load_filing_forms,
@@ -42,6 +43,36 @@ from pipelines.sec.edgar.sec_pipeline.text_renderer import SEC_PACKED_TEXT_RENDE
 
 
 class SecRenderedV3RebuildTest(unittest.TestCase):
+    def test_build_table_uses_monthly_layout_and_revision_version(self) -> None:
+        class RecordingClient:
+            def __init__(self) -> None:
+                self.sql: list[str] = []
+
+            def execute(self, sql: str) -> str:
+                self.sql.append(sql)
+                if "FROM system.tables" in sql:
+                    return (
+                        '{"partition_key":"cityHash64(cik) % 64",'
+                        '"sorting_key":"cik, accession_number, document_id, text_kind",'
+                        '"storage_policy":"live_market_ssd"}\n'
+                    )
+                return ""
+
+        client = RecordingClient()
+        create_rendered_table(
+            client,
+            database="q_live",
+            table_name="render_build_v3",
+            schema_table="sec_filing_text_rendered_v3",
+            partition_key="toYYYYMM(source_archive_date)",
+            deduplication_window=100000,
+        )
+
+        ddl = client.sql[-1]
+        self.assertIn("ReplacingMergeTree(source_revision_rank)", ddl)
+        self.assertIn("PARTITION BY toYYYYMM(source_archive_date)", ddl)
+        self.assertIn("storage_policy='live_market_ssd'", ddl)
+
     def test_row_group_bundles_are_bounded_and_cover_every_group_once(self) -> None:
         bundles = build_row_group_bundles(19, 8)
 
