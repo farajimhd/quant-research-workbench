@@ -22,8 +22,13 @@ TICKER_PATTERN = re.compile(r"^[A-Z][A-Z0-9.\-]{0,15}$")
 def ticker_presentation_payload(tickers: Iterable[str], *, database: str = "q_live") -> dict[str, Any]:
     normalized = normalize_tickers(tickers)
     if not normalized:
-        return {"presentations": {}, "source": f"{database}.market_presentation_asset_v1"}
-    rows = _clickhouse_rows(ticker_presentation_sql(normalized, database=database))
+        return {"presentations": {}, "source": f"{database}.market_presentation_asset_v1", "status": "ready"}
+    try:
+        rows = _clickhouse_rows(ticker_presentation_sql(normalized, database=database))
+    except RuntimeError:
+        # Branding is optional presentation data. Database pressure must not make
+        # the ticker identity or its containing Canvas surface unavailable.
+        return {"presentations": {}, "source": f"{database}.market_presentation_asset_v1", "status": "unavailable"}
     presentations: dict[str, dict[str, str]] = {}
     for row in rows:
         ticker = str(row.get("ticker") or "").strip().upper()
@@ -35,7 +40,7 @@ def ticker_presentation_payload(tickers: Iterable[str], *, database: str = "q_li
             "logo_url": logo_asset_url(relative_path),
             "ticker": ticker,
         }
-    return {"presentations": presentations, "source": f"{database}.market_presentation_asset_v1"}
+    return {"presentations": presentations, "source": f"{database}.market_presentation_asset_v1", "status": "ready"}
 
 
 def normalize_tickers(tickers: Iterable[str]) -> list[str]:
@@ -67,8 +72,8 @@ def ticker_presentation_sql(tickers: list[str], *, database: str = "q_live") -> 
     asset_filter = " OR ".join(f"({condition})" for condition in asset_match_by_ticker.values())
     return f"""
         WITH
-            (SELECT max(universe_date) FROM {database_name}.feature_tradable_universe_v1 FINAL) AS latest_universe_date,
-            (SELECT max(feature_date) FROM {database_name}.feature_scanner_static_v1 FINAL) AS latest_scanner_date,
+            (SELECT max(universe_date) FROM {database_name}.feature_tradable_universe_v1) AS latest_universe_date,
+            (SELECT max(feature_date) FROM {database_name}.feature_scanner_static_v1) AS latest_scanner_date,
             fallback_assets AS
             (
                 SELECT
@@ -106,7 +111,7 @@ def ticker_presentation_sql(tickers: list[str], *, database: str = "q_live") -> 
             ) AS asset
                 ON asset.asset_id = coalesce(scanner.logo_asset_id, issuer.logo_asset_id)
             WHERE u.universe_date = latest_universe_date
-              AND upper(u.ticker) IN ({ticker_clause})
+              AND u.ticker IN ({ticker_clause})
             ORDER BY ticker ASC, notEmpty(linked_logo_relative_path) DESC, u.is_tradable DESC
             LIMIT 1 BY ticker
         ) AS base
