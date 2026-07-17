@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import datetime as dt
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -37,8 +39,8 @@ from research.mlops.env import discover_env_files, load_env_files, secret_status
 EASTERN = ZoneInfo("America/New_York")
 UTC = dt.timezone.utc
 CALENDAR_VERSION = "xnys_pandas_market_calendars_v1"
-LABEL_VERSION = "news_reaction_trade_labels_v2"
-STATS_VERSION = "news_phrase_trade_reaction_stats_v2"
+LABEL_VERSION = "news_reaction_event_labels_v3"
+STATS_VERSION = "news_phrase_event_reaction_stats_v3"
 MULTISEARCH_NEEDLE_LIMIT = 255
 HORIZONS: tuple[tuple[str, str, int], ...] = (
     ("1m", "fixed", 60),
@@ -74,12 +76,11 @@ class CalendarRow:
 
 @dataclass(frozen=True, slots=True)
 class CoverageAudit:
-    news_ticker_months: int
-    covered_ticker_months: int
-    missing_ticker_months: int
-    missing_sample: tuple[str, ...]
-    bar_min_date: str
-    bar_max_date: str
+    source_tables: tuple[str, ...]
+    missing_source_tables: tuple[str, ...]
+    event_min_date: str
+    event_max_date: str
+    event_rows: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,17 +105,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--stats-end-date", default="2026-01-01", help="Exclusive training bound; 2026 labels remain held out by default.")
     parser.add_argument("--stages", default="calendar,dictionary,features,reactions,stats")
     parser.add_argument("--execute", action="store_true", help="Create and populate tables. Without this, print and validate the plan.")
-    parser.add_argument("--allow-partial-bar-coverage", action="store_true", help="Permit validation runs against incomplete bars; missing labels remain explicit and are excluded from statistics.")
+    parser.add_argument("--allow-partial-event-coverage", action="store_true", help="Permit an explicitly partial development build when canonical yearly event tables are missing.")
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--replace-existing", action="store_true", help="Delete the selected version/date slice before rebuilding it.")
     parser.add_argument("--feature-chunk-months", type=int, default=1)
     parser.add_argument("--reaction-chunk-days", type=int, default=1)
-    parser.add_argument("--resolution-us", type=int, default=1_000_000)
+    parser.add_argument("--reaction-workers", type=int, default=4, help="Bounded number of independent ClickHouse day-chunk queries.")
     parser.add_argument("--benchmark-ticker", default="SPY")
     parser.add_argument("--active-anchor-max-age-seconds", type=int, default=60)
     parser.add_argument("--target-max-age-seconds", type=int, default=60)
     parser.add_argument("--max-threads", type=int, default=24)
-    parser.add_argument("--max-memory-usage", default="0")
+    parser.add_argument("--max-memory-usage", default="24G", help="Total reaction-query memory budget; divided across concurrent workers.")
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default="auto")
     parser.add_argument("--progress-refresh-per-second", type=float, default=2.0)
     parser.add_argument("--progress-log-lines", type=int, default=8)
@@ -125,12 +126,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--market-database", default="market_sip_compact")
     parser.add_argument("--normalized-table", default="benzinga_news_normalized_v1")
     parser.add_argument("--ticker-table", default="benzinga_news_ticker_v1")
-    parser.add_argument("--bars-table", default="intraday_base_bars_by_time_ticker")
+    parser.add_argument("--events-table", default="events", help="Canonical compact event table base; yearly tables use the events_YYYY convention.")
+    parser.add_argument("--condition-reference-table", default="event_condition_token_reference")
     parser.add_argument("--calendar-table", default="news_reaction_calendar_v1")
     parser.add_argument("--dictionary-table", default="news_phrase_dictionary_v1")
     parser.add_argument("--features-table", default="news_language_features_v1")
-    parser.add_argument("--reactions-table", default="news_reaction_labels_v1")
-    parser.add_argument("--stats-table", default="news_phrase_reaction_stats_v1")
+    parser.add_argument("--reactions-table", default="news_reaction_labels_v2")
+    parser.add_argument("--stats-table", default="news_phrase_reaction_stats_v2")
     parser.add_argument("--status-table", default="news_reaction_build_status_v1")
     parser.add_argument("--storage-policy", default=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or os.environ.get("CLICKHOUSE_STORAGE_POLICY") or "")
     parser.add_argument("--output-root", default="D:/market-data/prepared/news_reaction_labels")
@@ -177,19 +179,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         reporter.stage_start("preflight")
         ensure_sources(client, args)
         reporter.unit_done("preflight", "source schemas", status="complete")
-        coverage = audit_bar_coverage(client, args, reporter)
+        coverage = audit_event_coverage(client, args, reporter)
+        args.available_event_tables = coverage.source_tables
         reporter.message(
-            "trade-bar coverage "
-            f"covered={coverage.covered_ticker_months:,}/{coverage.news_ticker_months:,} "
-            f"missing={coverage.missing_ticker_months:,} range={coverage.bar_min_date}:{coverage.bar_max_date} "
-            f"sample={','.join(coverage.missing_sample[:5]) or '-'}"
+            "compact-event coverage "
+            f"tables={len(coverage.source_tables):,} missing={len(coverage.missing_source_tables):,} "
+            f"range={coverage.event_min_date}:{coverage.event_max_date} rows={coverage.event_rows:,}"
         )
-        reporter.unit_done("preflight", "trade-bar coverage", status="complete")
-        if coverage.missing_ticker_months and "reactions" in stages and not args.allow_partial_bar_coverage:
+        reporter.unit_done("preflight", "compact-event coverage", status="complete")
+        if coverage.missing_source_tables and "reactions" in stages and not args.allow_partial_event_coverage:
             raise SystemExit(
-                "Reaction extraction stopped: canonical 1-second trade-bar coverage is incomplete for "
-                f"{coverage.missing_ticker_months:,} news ticker-months. Build missing bars first or use "
-                "--allow-partial-bar-coverage only for an explicitly partial validation run."
+                "Reaction extraction stopped: canonical compact event tables are missing: "
+                + ", ".join(coverage.missing_source_tables)
+                + ". Repair event coverage or use --allow-partial-event-coverage only for an explicit development run."
             )
 
         if not args.execute:
@@ -235,8 +237,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("statistics training bounds must be contained inside the extracted publication range")
     if args.feature_chunk_months <= 0 or args.reaction_chunk_days <= 0:
         raise SystemExit("chunk sizes must be positive")
-    if args.resolution_us <= 0:
-        raise SystemExit("--resolution-us must be positive")
+    if args.reaction_workers <= 0:
+        raise SystemExit("--reaction-workers must be positive")
+    if str(args.max_memory_usage) not in {"", "0"}:
+        memory_bytes(str(args.max_memory_usage))
     if args.progress_refresh_per_second <= 0 or args.progress_log_lines <= 0:
         raise SystemExit("progress refresh rate and log-line count must be positive")
 
@@ -257,13 +261,63 @@ def date_arg(value: str) -> dt.date:
         raise SystemExit(f"invalid ISO date {value!r}") from exc
 
 
+def events_table_uses_year_suffix(table_name: str) -> bool:
+    return not re.search(r"_\d{4}$", str(table_name))
+
+
+def event_table_for_year(base_table: str, year: int) -> str:
+    return f"{base_table}_{year}" if events_table_uses_year_suffix(base_table) else base_table
+
+
+def expected_event_tables(args: argparse.Namespace) -> tuple[str, ...]:
+    start = date_arg(args.start_date) - dt.timedelta(days=7)
+    end = date_arg(args.end_date) + dt.timedelta(days=8)
+    if not events_table_uses_year_suffix(args.events_table):
+        return (str(args.events_table),)
+    return tuple(event_table_for_year(args.events_table, year) for year in range(start.year, end.year + 1))
+
+
+def existing_event_tables(client: ClickHouseHttpClient, args: argparse.Namespace) -> tuple[str, ...]:
+    return tuple(name for name in expected_event_tables(args) if table_exists(client, args.market_database, name))
+
+
+def event_source_table(
+    args: argparse.Namespace,
+    first_date: dt.date,
+    last_exclusive: dt.date,
+    *,
+    tables: Sequence[str] | None = None,
+) -> str:
+    available = tuple(tables or getattr(args, "available_event_tables", ()) or ())
+    if available and events_table_uses_year_suffix(args.events_table):
+        first_year = first_date.year
+        last_year = (last_exclusive - dt.timedelta(days=1)).year
+        available = tuple(
+            name for name in available
+            if (match := re.search(r"_(\d{4})$", name)) and first_year <= int(match.group(1)) <= last_year
+        )
+    if not available:
+        if not events_table_uses_year_suffix(args.events_table):
+            available = (str(args.events_table),)
+        else:
+            available = tuple(
+                event_table_for_year(args.events_table, year)
+                for year in range(first_date.year, (last_exclusive - dt.timedelta(days=1)).year + 1)
+            )
+    if len(available) == 1:
+        return table(args.market_database, available[0])
+    pattern = "^(" + "|".join(re.escape(name) for name in available) + ")$"
+    return f"merge({sql_string(args.market_database)}, {sql_string(pattern)})"
+
+
 def print_header(args: argparse.Namespace, run_id: str, run_root: Path, stages: Sequence[str]) -> None:
     print("=" * 100, flush=True)
     print("Benzinga news reaction reference build", flush=True)
     print(f"run_id={run_id} execute={args.execute} stages={','.join(stages)}", flush=True)
-    print(f"publication_range=[{args.start_date},{args.end_date}) resolution_us={args.resolution_us}", flush=True)
+    print(f"publication_range=[{args.start_date},{args.end_date}) reaction_workers={args.reaction_workers}", flush=True)
     print(f"news_source={args.news_database}.{args.normalized_table} ticker_source={args.news_database}.{args.ticker_table}", flush=True)
-    print(f"market_source={args.market_database}.{args.bars_table}", flush=True)
+    event_source_name = f"{args.events_table}_YYYY" if events_table_uses_year_suffix(args.events_table) else str(args.events_table)
+    print(f"market_source={args.market_database}.{event_source_name} exact compact events", flush=True)
     print(f"run_root={run_root}", flush=True)
     print("secret_status=" + json.dumps(secret_status(["CLICKHOUSE_PASSWORD", "TD__DATABASE__CLICKHOUSE__PASSWORD", "CLICKHOUSE_WORKSTATION_PASSWORD"]), sort_keys=True), flush=True)
     print("=" * 100, flush=True)
@@ -273,72 +327,51 @@ def ensure_sources(client: ClickHouseHttpClient, args: argparse.Namespace) -> No
     required = (
         (args.news_database, args.normalized_table),
         (args.news_database, args.ticker_table),
-        (args.market_database, args.bars_table),
+        (args.market_database, args.condition_reference_table),
     )
     missing = [f"{db}.{table}" for db, table in required if not table_exists(client, db, table)]
     if missing:
         raise SystemExit("required source tables are missing: " + ", ".join(missing))
-    columns = table_columns(client, args.market_database, args.bars_table)
-    expected = {
-        "local_date", "ticker", "label_resolution_us", "bucket_index", "bar_family",
-        "close", "high", "low", "first_event_timestamp_us", "last_event_timestamp_us",
-    }
-    if missing_columns := sorted(expected - columns):
-        raise SystemExit(f"bar table is missing required columns: {missing_columns}")
+    for source_table in existing_event_tables(client, args):
+        columns = table_columns(client, args.market_database, source_table)
+        expected = {
+            "ticker", "ordinal", "event_meta", "sip_timestamp_us", "price_primary_int",
+            "size_primary", "condition_token_1", "condition_token_2", "condition_token_3",
+            "condition_token_4", "condition_token_5", "event_date",
+        }
+        if missing_columns := sorted(expected - columns):
+            raise SystemExit(f"event table {args.market_database}.{source_table} is missing required columns: {missing_columns}")
 
 
-def audit_bar_coverage(
+def audit_event_coverage(
     client: ClickHouseHttpClient,
     args: argparse.Namespace,
     reporter: NewsReactionProgress | None = None,
 ) -> CoverageAudit:
-    news = table(args.news_database, args.ticker_table)
-    bars = table(args.market_database, args.bars_table)
-    start = dt_sql(args.start_date)
-    end = dt_sql(args.end_date)
+    expected = expected_event_tables(args)
+    existing = tuple(name for name in expected if table_exists(client, args.market_database, name))
+    missing = tuple(name for name in expected if name not in existing)
+    if not existing:
+        return CoverageAudit(expected, missing, "", "", 0)
+    source = event_source_table(args, date_arg(args.start_date) - dt.timedelta(days=7), date_arg(args.end_date) + dt.timedelta(days=8), tables=existing)
     sql = f"""
-WITH
-news_months AS
-(
-    SELECT DISTINCT upperUTF8(ticker) AS ticker, toYYYYMM(toTimeZone(published_at_utc, 'America/New_York')) AS month_id
-    FROM {news}
-    WHERE published_at_utc >= {start} AND published_at_utc < {end}
-),
-bar_months AS
-(
-    SELECT DISTINCT upperUTF8(ticker) AS ticker, toYYYYMM(local_date) AS month_id
-    FROM {bars}
-    WHERE label_resolution_us = {int(args.resolution_us)}
-      AND bar_family = 'trade'
-      AND local_date >= addDays(toDate({sql_string(args.start_date)}), -7)
-      AND local_date < addDays(toDate({sql_string(args.end_date)}), 8)
-),
-missing AS
-(
-    SELECT n.ticker, n.month_id
-    FROM news_months AS n
-    LEFT JOIN bar_months AS b USING (ticker, month_id)
-    WHERE b.ticker = ''
-)
 SELECT
-    (SELECT count() FROM news_months) AS news_ticker_months,
-    news_ticker_months - count() AS covered_ticker_months,
-    count() AS missing_ticker_months,
-    arraySlice(groupArray(concat(ticker, ':', toString(month_id))), 1, 25) AS missing_sample,
-    toString((SELECT min(local_date) FROM {bars} WHERE label_resolution_us = {int(args.resolution_us)} AND bar_family = 'trade')) AS bar_min_date,
-    toString((SELECT max(local_date) FROM {bars} WHERE label_resolution_us = {int(args.resolution_us)} AND bar_family = 'trade')) AS bar_max_date
-FROM missing
+    toString(min(event_date)) AS event_min_date,
+    toString(max(event_date)) AS event_max_date,
+    count() AS event_rows
+FROM {source}
+PREWHERE event_date >= addDays(toDate({sql_string(args.start_date)}), -7)
+  AND event_date < addDays(toDate({sql_string(args.end_date)}), 8)
 FORMAT JSONEachRow
 """
-    text = monitored_execute(client, sql, reporter, "preflight trade-bar coverage")
+    text = monitored_execute(client, sql, reporter, "preflight compact-event coverage")
     row = parse_one_json(text)
     return CoverageAudit(
-        news_ticker_months=int(row.get("news_ticker_months") or 0),
-        covered_ticker_months=int(row.get("covered_ticker_months") or 0),
-        missing_ticker_months=int(row.get("missing_ticker_months") or 0),
-        missing_sample=tuple(str(value) for value in row.get("missing_sample") or []),
-        bar_min_date=str(row.get("bar_min_date") or ""),
-        bar_max_date=str(row.get("bar_max_date") or ""),
+        source_tables=existing,
+        missing_source_tables=missing,
+        event_min_date=str(row.get("event_min_date") or ""),
+        event_max_date=str(row.get("event_max_date") or ""),
+        event_rows=int(row.get("event_rows") or 0),
     )
 
 
@@ -354,7 +387,7 @@ def ensure_target_tables(client: ClickHouseHttpClient, args: argparse.Namespace)
             "label_version", "canonical_news_id", "ticker", "published_at_utc", "horizon_code",
             "anchor_price", "target_price", "window_high_price", "window_low_price",
             "abnormal_target_return", "abnormal_high_return", "abnormal_low_return",
-            "quality_status", "quality_flags", "source_revision",
+            "quality_status", "quality_flags", "source_revision", "observation_count",
         },
         args.stats_table: {
             "stats_version", "phrase_id", "horizon_code", "clean_sample_count",
@@ -468,7 +501,6 @@ CREATE TABLE IF NOT EXISTS {table(args.news_database, args.reactions_table)}
     overlapping_news_count UInt32,
     quality_status LowCardinality(String),
     quality_flags Array(String),
-    price_resolution_us UInt64,
     calendar_version LowCardinality(String),
     source_revision String,
     finalized_at DateTime64(6, 'UTC')
@@ -732,45 +764,108 @@ def run_reaction_chunks(
     results: list[ChunkResult] = []
     reporter.stage_start("reactions")
     completed = completed_chunk_keys(client, args, "reactions", LABEL_VERSION, reporter) if args.resume and not args.replace_existing else set()
+    pending: list[tuple[dt.date, dt.date]] = []
     for start, end in chunks:
         unit = f"{start}:{end}"
         if (start, end) in completed:
             reporter.unit_done("reactions", unit, status="skipped")
             continue
-        reporter.chunk_start("reactions", unit)
-        started = time.perf_counter()
+        if args.replace_existing:
+            delete_version_range(client, args, args.reactions_table, "label_version", LABEL_VERSION, start, end, reporter)
+        pending.append((start, end))
+
+    if not pending:
+        return results
+    workers = min(int(args.reaction_workers), len(pending))
+    query_threads = max(1, int(args.max_threads) // workers)
+    total_memory = memory_bytes(str(args.max_memory_usage)) if str(args.max_memory_usage) not in {"", "0"} else 0
+    query_memory = max(256 * 1024**2, total_memory // workers) if total_memory else 0
+    reporter.message(
+        f"reaction execution workers={workers} clickhouse_threads_per_worker={query_threads} "
+        f"memory_per_worker={query_memory if query_memory else 'server_default'}"
+    )
+    futures: dict[concurrent.futures.Future[ChunkResult], tuple[dt.date, dt.date, str]] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="news-reaction") as pool:
+        for start, end in pending:
+            unit = f"{start}:{end}"
+            reporter.chunk_start("reactions", unit)
+            query_id = "news-reaction-" + uuid.uuid4().hex
+            future = pool.submit(execute_reaction_chunk, args, start, end, query_threads, query_memory, query_id)
+            futures[future] = (start, end, query_id)
         try:
-            if args.replace_existing:
-                delete_version_range(client, args, args.reactions_table, "label_version", LABEL_VERSION, start, end, reporter)
-            before = count_version_range(client, args, args.reactions_table, "label_version", LABEL_VERSION, start, end, reporter)
-            monitored_execute(
-                client,
-                reaction_insert_sql(args, start, end) + settings_sql(args, experimental_join=True),
-                reporter,
-                f"reaction insert {unit}",
-            )
-            after = count_version_range(client, args, args.reactions_table, "label_version", LABEL_VERSION, start, end, reporter)
-            result = ChunkResult("reactions", start.isoformat(), end.isoformat(), max(0, after - before), time.perf_counter() - started)
-            record_chunk(client, args, result, LABEL_VERSION)
+            for future in concurrent.futures.as_completed(futures):
+                start, end, _query_id = futures[future]
+                unit = f"{start}:{end}"
+                try:
+                    result = future.result()
+                except BaseException as exc:
+                    reporter.unit_failed("reactions", unit, exc)
+                    for outstanding in futures:
+                        outstanding.cancel()
+                    cancel_reaction_queries(client, [query_id for _, _, query_id in futures.values()], reporter)
+                    raise
+                results.append(result)
+                reporter.unit_done("reactions", unit, status="complete", rows=result.inserted_rows, elapsed_seconds=result.elapsed_seconds)
         except KeyboardInterrupt:
-            reporter.unit_interrupted("reactions", unit)
+            for future, (start, end, _query_id) in futures.items():
+                if not future.done():
+                    future.cancel()
+                    reporter.unit_interrupted("reactions", f"{start}:{end}")
+            cancel_reaction_queries(client, [query_id for _, _, query_id in futures.values()], reporter)
             raise
-        except BaseException as exc:
-            reporter.unit_failed("reactions", unit, exc)
-            raise
-        results.append(result)
-        reporter.unit_done("reactions", unit, status="complete", rows=result.inserted_rows, elapsed_seconds=result.elapsed_seconds)
-    return results
+    return sorted(results, key=lambda item: item.start_date)
+
+
+def execute_reaction_chunk(
+    args: argparse.Namespace,
+    start: dt.date,
+    end: dt.date,
+    query_threads: int,
+    query_memory: int,
+    query_id: str,
+) -> ChunkResult:
+    client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
+    started = time.perf_counter()
+    before = count_version_range(client, args, args.reactions_table, "label_version", LABEL_VERSION, start, end)
+    client.execute(
+        reaction_insert_sql(args, start, end)
+        + settings_sql(
+            args,
+            experimental_join=True,
+            max_threads=query_threads,
+            max_memory_usage=query_memory,
+        ),
+        query_id=query_id,
+    )
+    after = count_version_range(client, args, args.reactions_table, "label_version", LABEL_VERSION, start, end)
+    result = ChunkResult("reactions", start.isoformat(), end.isoformat(), max(0, after - before), time.perf_counter() - started)
+    record_chunk(client, args, result, LABEL_VERSION)
+    return result
+
+
+def cancel_reaction_queries(
+    client: ClickHouseHttpClient,
+    query_ids: Sequence[str],
+    reporter: NewsReactionProgress | None = None,
+) -> None:
+    if not query_ids:
+        return
+    values = ", ".join(sql_string(query_id) for query_id in query_ids)
+    try:
+        client.execute(f"KILL QUERY WHERE query_id IN ({values}) ASYNC")
+    except Exception as exc:  # noqa: BLE001
+        if reporter is not None:
+            reporter.message(f"WARN concurrent query cancellation failed: {exc}")
 
 
 def reaction_insert_sql(args: argparse.Namespace, start: dt.date, end: dt.date) -> str:
     ticker_source = table(args.news_database, args.ticker_table)
     normalized = table(args.news_database, args.normalized_table)
-    bars = table(args.market_database, args.bars_table)
     calendar_table = table(args.news_database, args.calendar_table)
     target = table(args.news_database, args.reactions_table)
     lookback = start - dt.timedelta(days=8)
     lookahead = end + dt.timedelta(days=8)
+    events = event_source_table(args, lookback, lookahead)
     fixed_tuples = [
         f"tuple({sql_string(code)}, {sql_string(kind)}, toUInt64(pub_us + {seconds * 1_000_000}), toUInt8(publication_session != 'closed' AND pub_us + {seconds * 1_000_000} <= extended_close_us))"
         for code, kind, seconds in HORIZONS if kind == "fixed"
@@ -781,35 +876,47 @@ def reaction_insert_sql(args: argparse.Namespace, start: dt.date, end: dt.date) 
         "tuple('extended_close', 'session_boundary', extended_close_us, toUInt8(pub_us < extended_close_us))",
     ]
     horizon_array = "[" + ",\n            ".join(fixed_tuples + boundary_tuples) + "]"
-    source_revision = f"concat('bars:', toString({int(args.resolution_us)}), ':', toString(max_bar_built_at))"
+    source_name = f"{args.events_table}_YYYY" if events_table_uses_year_suffix(args.events_table) else str(args.events_table)
+    source_revision = sql_string(f"compact_events_exact_v1:{args.market_database}.{source_name}")
+    condition_reference = table(args.market_database, args.condition_reference_table)
     return f"""
 INSERT INTO {target}
 WITH
+    (SELECT groupArray(toUInt8(token_id)) FROM {condition_reference} WHERE source_family = 'trade_conditions' AND is_join_canonical = 1 AND update_last = 1) AS update_last_tokens,
+    (SELECT groupArray(toUInt8(token_id)) FROM {condition_reference} WHERE source_family = 'trade_conditions' AND is_join_canonical = 1 AND update_high_low = 1) AS update_high_low_tokens,
+    (SELECT groupArray(toUInt8(token_id)) FROM {condition_reference} WHERE source_family = 'trade_conditions' AND is_join_canonical = 1 AND update_last = 1 AND update_high_low = 1) AS fully_price_eligible_tokens,
+    (SELECT any(toUInt8(token_id)) FROM {condition_reference} WHERE source_family = 'trade_conditions' AND is_join_canonical = 1 AND modifier_int = 12) AS form_t_token,
 updates AS
 (
     SELECT
         upperUTF8(ticker) AS ticker,
-        local_date,
-        bucket_index,
-        max(toNullable(close)) AS trade_close,
-        max(toNullable(high)) AS trade_high,
-        min(toNullable(low)) AS trade_low,
-        min(first_event_timestamp_us) AS first_trade_timestamp_us,
-        max(last_event_timestamp_us) AS last_trade_timestamp_us,
-        max(built_at) AS max_bar_built_at
-    FROM {bars}
-    WHERE label_resolution_us = {int(args.resolution_us)}
-      AND bar_family = 'trade'
-      AND local_date >= toDate({sql_string(lookback.isoformat())})
-      AND local_date < toDate({sql_string(lookahead.isoformat())})
-      AND (ticker = {sql_string(args.benchmark_ticker.upper())} OR upperUTF8(ticker) IN
+        toNullable(toFloat64(price_primary_int) / if(bitAnd(event_meta, 2) = 2, 10000.0, 100.0)) AS trade_close,
+        trade_close AS trade_high,
+        trade_close AS trade_low,
+        toUInt64(sip_timestamp_us) AS first_trade_timestamp_us,
+        toUInt64(sip_timestamp_us) AS last_trade_timestamp_us,
+        condition_token_1,
+        condition_token_2,
+        condition_token_3,
+        condition_token_4,
+        condition_token_5,
+        toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us), 'UTC'), 'America/New_York') AS local_timestamp,
+        toUInt8(toHour(local_timestamp) < 9 OR (toHour(local_timestamp) = 9 AND toMinute(local_timestamp) < 30) OR toHour(local_timestamp) >= 16) AS is_extended_hours
+    FROM {events}
+    PREWHERE event_date >= toDate({sql_string(lookback.isoformat())})
+      AND event_date < toDate({sql_string(lookahead.isoformat())})
+    WHERE bitAnd(event_meta, 1) = 1
+      AND sip_timestamp_us > 0
+      AND ordinal > 0
+      AND price_primary_int > 0
+      AND size_primary > 0
+      AND (upperUTF8(ticker) = {sql_string(args.benchmark_ticker.upper())} OR upperUTF8(ticker) IN
       (
           SELECT DISTINCT upperUTF8(ticker)
           FROM {ticker_source}
           WHERE published_at_utc >= {dt_sql(start.isoformat())}
             AND published_at_utc < {dt_sql(end.isoformat())}
       ))
-    GROUP BY ticker, local_date, bucket_index
 ),
 points AS
 (
@@ -820,15 +927,44 @@ points AS
         trade_close AS price,
         trade_high,
         trade_low,
-        'trade_close' AS price_basis,
-        max_bar_built_at
-    FROM updates
+        'eligible_trade_event' AS price_basis,
+        update_last,
+        update_high_low
+    FROM
+    (
+        SELECT
+            *,
+            arrayFilter(token -> token != 0, [condition_token_1, condition_token_2, condition_token_3, condition_token_4, condition_token_5]) AS condition_tokens,
+            toUInt8(
+                empty(condition_tokens)
+                OR if(
+                    is_extended_hours AND has(condition_tokens, form_t_token)
+                        AND arrayAll(token -> token = form_t_token OR has(fully_price_eligible_tokens, token), condition_tokens),
+                    1,
+                    arrayAll(token -> has(update_last_tokens, token), condition_tokens)
+                )
+            ) AS update_last,
+            toUInt8(
+                empty(condition_tokens)
+                OR if(
+                    is_extended_hours AND has(condition_tokens, form_t_token)
+                        AND arrayAll(token -> token = form_t_token OR has(fully_price_eligible_tokens, token), condition_tokens),
+                    1,
+                    arrayAll(token -> has(update_high_low_tokens, token), condition_tokens)
+                )
+            ) AS update_high_low
+        FROM updates
+    )
     WHERE isNotNull(trade_close)
       AND isNotNull(trade_high)
       AND isNotNull(trade_low)
       AND first_trade_timestamp_us > 0
       AND last_trade_timestamp_us >= first_trade_timestamp_us
     ORDER BY ticker, last_trade_timestamp_us
+),
+last_points AS
+(
+    SELECT * FROM points WHERE update_last = 1
 ),
 news_base AS
 (
@@ -909,10 +1045,9 @@ anchored AS
         w.*,
         p.last_trade_timestamp_us AS anchor_ts_us,
         p.price AS anchor_price,
-        p.price_basis AS anchor_basis,
-        p.max_bar_built_at AS anchor_bar_built_at
+        p.price_basis AS anchor_basis
     FROM instrument_windows AS w
-    ASOF LEFT JOIN points AS p
+    ASOF LEFT JOIN last_points AS p
       ON w.instrument_ticker = p.ticker
      AND w.pub_us >= p.last_trade_timestamp_us + toUInt64(1)
 ),
@@ -933,15 +1068,14 @@ instrument_metrics AS
         a.anchor_ts_us,
         a.anchor_price,
         a.anchor_basis,
-        argMaxIf(toNullable(p.price), p.last_trade_timestamp_us, a.applicable = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS target_price,
-        argMaxIf(toNullable(p.last_trade_timestamp_us), p.last_trade_timestamp_us, a.applicable = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS target_ts_us,
-        argMaxIf(toNullable(p.price_basis), p.last_trade_timestamp_us, a.applicable = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS target_basis,
-        maxIf(toNullable(p.trade_high), a.applicable = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS high_price,
-        argMaxIf(toNullable(p.last_trade_timestamp_us), p.trade_high, a.applicable = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS high_ts_us,
-        minIf(toNullable(p.trade_low), a.applicable = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS low_price,
-        argMinIf(toNullable(p.last_trade_timestamp_us), p.trade_low, a.applicable = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS low_ts_us,
-        countIf(a.applicable = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS observation_count,
-        max(greatest(a.anchor_bar_built_at, p.max_bar_built_at)) AS max_bar_built_at
+        argMaxIf(toNullable(p.price), p.last_trade_timestamp_us, a.applicable = 1 AND p.update_last = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS target_price,
+        argMaxIf(toNullable(p.last_trade_timestamp_us), p.last_trade_timestamp_us, a.applicable = 1 AND p.update_last = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS target_ts_us,
+        argMaxIf(toNullable(p.price_basis), p.last_trade_timestamp_us, a.applicable = 1 AND p.update_last = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS target_basis,
+        maxIf(toNullable(p.trade_high), a.applicable = 1 AND p.update_high_low = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS high_price,
+        argMaxIf(toNullable(p.last_trade_timestamp_us), p.trade_high, a.applicable = 1 AND p.update_high_low = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS high_ts_us,
+        minIf(toNullable(p.trade_low), a.applicable = 1 AND p.update_high_low = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS low_price,
+        argMinIf(toNullable(p.last_trade_timestamp_us), p.trade_low, a.applicable = 1 AND p.update_high_low = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS low_ts_us,
+        countIf(a.applicable = 1 AND (p.update_last = 1 OR p.update_high_low = 1) AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS observation_count
     FROM anchored AS a
     LEFT JOIN points AS p
       ON p.ticker = a.instrument_ticker
@@ -960,6 +1094,30 @@ asset_metrics AS
 market_metrics AS
 (
     SELECT * FROM instrument_metrics WHERE instrument_role = 'market'
+),
+market_at_asset_high AS
+(
+    SELECT
+        a.canonical_news_id,
+        a.ticker,
+        a.horizon_code,
+        p.price AS aligned_market_high_price
+    FROM asset_metrics AS a
+    ASOF LEFT JOIN last_points AS p
+      ON {sql_string(args.benchmark_ticker.upper())} = p.ticker
+     AND a.high_ts_us >= p.last_trade_timestamp_us
+),
+market_at_asset_low AS
+(
+    SELECT
+        a.canonical_news_id,
+        a.ticker,
+        a.horizon_code,
+        p.price AS aligned_market_low_price
+    FROM asset_metrics AS a
+    ASOF LEFT JOIN last_points AS p
+      ON {sql_string(args.benchmark_ticker.upper())} = p.ticker
+     AND a.low_ts_us >= p.last_trade_timestamp_us
 ),
 overlaps AS
 (
@@ -999,7 +1157,6 @@ final_rows AS
         a.low_price AS low_price,
         a.low_ts_us AS low_ts_us,
         a.observation_count AS observation_count,
-        a.max_bar_built_at AS max_bar_built_at,
         m.anchor_price AS market_anchor_price,
         m.target_price AS market_target_price,
         m.high_price AS market_high_price,
@@ -1010,13 +1167,21 @@ final_rows AS
         if(isNotNull(a.anchor_price) AND a.anchor_price > 0 AND isNotNull(a.low_price), a.low_price / a.anchor_price - 1.0, toNullable(NULL)) AS low_return,
         if(isNotNull(m.anchor_price) AND m.anchor_price > 0 AND isNotNull(m.target_price), m.target_price / m.anchor_price - 1.0, toNullable(NULL)) AS market_target_return,
         target_return - market_target_return AS abnormal_target_return,
-        high_return - if(isNotNull(m.anchor_price) AND m.anchor_price > 0 AND isNotNull(m.high_price), m.high_price / m.anchor_price - 1.0, toNullable(NULL)) AS abnormal_high_return,
-        low_return - if(isNotNull(m.anchor_price) AND m.anchor_price > 0 AND isNotNull(m.low_price), m.low_price / m.anchor_price - 1.0, toNullable(NULL)) AS abnormal_low_return
+        high_return - if(isNotNull(m.anchor_price) AND m.anchor_price > 0 AND isNotNull(mh.aligned_market_high_price), mh.aligned_market_high_price / m.anchor_price - 1.0, toNullable(NULL)) AS abnormal_high_return,
+        low_return - if(isNotNull(m.anchor_price) AND m.anchor_price > 0 AND isNotNull(ml.aligned_market_low_price), ml.aligned_market_low_price / m.anchor_price - 1.0, toNullable(NULL)) AS abnormal_low_return
     FROM asset_metrics AS a
     LEFT JOIN market_metrics AS m
       ON m.canonical_news_id = a.canonical_news_id
      AND m.ticker = a.ticker
      AND m.horizon_code = a.horizon_code
+    LEFT JOIN market_at_asset_high AS mh
+      ON mh.canonical_news_id = a.canonical_news_id
+     AND mh.ticker = a.ticker
+     AND mh.horizon_code = a.horizon_code
+    LEFT JOIN market_at_asset_low AS ml
+      ON ml.canonical_news_id = a.canonical_news_id
+     AND ml.ticker = a.ticker
+     AND ml.horizon_code = a.horizon_code
     LEFT JOIN overlaps AS o
       ON o.canonical_news_id = a.canonical_news_id
      AND o.ticker = a.ticker
@@ -1073,6 +1238,7 @@ SELECT
         observation_count = 0 OR isNull(target_price), 'missing_target',
         publication_session != 'closed' AND (toUnixTimestamp64Micro(published_at_utc) - toInt64(anchor_ts_us)) > {int(args.active_anchor_max_age_seconds) * 1_000_000}, 'stale_anchor',
         (toInt64(target_us) - toInt64(target_ts_us)) > {int(args.target_max_age_seconds) * 1_000_000}, 'stale_target',
+        isNull(market_anchor_price) OR isNull(market_target_price), 'missing_market_reference',
         overlapping_news_count > 0, 'overlapping_news',
         'clean'
     ) AS quality_status,
@@ -1082,9 +1248,9 @@ SELECT
         if(observation_count = 0 OR isNull(target_price), 'missing_target', ''),
         if(publication_session != 'closed' AND isNotNull(anchor_ts_us) AND (toUnixTimestamp64Micro(published_at_utc) - toInt64(anchor_ts_us)) > {int(args.active_anchor_max_age_seconds) * 1_000_000}, 'stale_active_anchor', ''),
         if(isNotNull(target_ts_us) AND (toInt64(target_us) - toInt64(target_ts_us)) > {int(args.target_max_age_seconds) * 1_000_000}, 'stale_target', ''),
+        if(isNull(market_anchor_price) OR isNull(market_target_price), 'missing_market_reference', ''),
         if(overlapping_news_count > 0, 'overlapping_ticker_news', '')
     ]) AS quality_flags,
-    toUInt64({int(args.resolution_us)}) AS price_resolution_us,
     {sql_string(CALENDAR_VERSION)} AS calendar_version,
     {source_revision} AS source_revision,
     now64(6) AS finalized_at
@@ -1369,10 +1535,19 @@ def monitored_execute(
     return result
 
 
-def settings_sql(args: argparse.Namespace, *, experimental_join: bool = False) -> str:
-    settings = [f"max_threads = {int(args.max_threads)}"]
-    if str(args.max_memory_usage) not in {"", "0"}:
-        settings.append(f"max_memory_usage = {memory_bytes(args.max_memory_usage)}")
+def settings_sql(
+    args: argparse.Namespace,
+    *,
+    experimental_join: bool = False,
+    max_threads: int | None = None,
+    max_memory_usage: int | None = None,
+) -> str:
+    settings = [f"max_threads = {int(max_threads if max_threads is not None else args.max_threads)}"]
+    memory_limit = max_memory_usage if max_memory_usage is not None else (
+        memory_bytes(str(args.max_memory_usage)) if str(args.max_memory_usage) not in {"", "0"} else 0
+    )
+    if memory_limit:
+        settings.append(f"max_memory_usage = {int(memory_limit)}")
     if experimental_join:
         settings.append("allow_experimental_join_condition = 1")
         settings.append("join_algorithm = 'hash'")
@@ -1429,7 +1604,7 @@ def write_manifest(
         "sources": {
             "news": f"{args.news_database}.{args.normalized_table}",
             "ticker": f"{args.news_database}.{args.ticker_table}",
-            "bars": f"{args.market_database}.{args.bars_table}",
+            "events": f"{args.market_database}." + (f"{args.events_table}_YYYY" if events_table_uses_year_suffix(args.events_table) else str(args.events_table)),
         },
         "targets": {
             "calendar": f"{args.news_database}.{args.calendar_table}",

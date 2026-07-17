@@ -10,6 +10,7 @@ from pipelines.news.benzinga.news_reaction_extract import (
     STATS_VERSION,
     build_calendar_rows,
     feature_insert_sql,
+    event_source_table,
     monitored_execute,
     parse_args,
     reaction_insert_sql,
@@ -40,7 +41,20 @@ class NewsReactionExtractTests(unittest.TestCase):
 
     def test_reaction_sql_is_strictly_causal_and_retains_window_extrema(self) -> None:
         sql = reaction_insert_sql(self.args, dt.date(2019, 1, 2), dt.date(2019, 1, 3))
-        self.assertIn("bar_family = 'trade'", sql)
+        self.assertIn("market_sip_compact", sql)
+        self.assertIn("events_2018", sql)
+        self.assertIn("events_2019", sql)
+        self.assertIn("bitAnd(event_meta, 1) = 1", sql)
+        self.assertIn("sip_timestamp_us > 0", sql)
+        self.assertIn("size_primary > 0", sql)
+        self.assertIn("update_last_tokens", sql)
+        self.assertIn("update_high_low_tokens", sql)
+        self.assertIn("fully_price_eligible_tokens", sql)
+        self.assertIn("modifier_int = 12", sql)
+        self.assertIn("ASOF LEFT JOIN last_points", sql)
+        self.assertNotIn("intraday_base_bars", sql)
+        self.assertNotIn("label_resolution_us", sql)
+        self.assertNotIn("bucket_index", sql.split("news_base AS", 1)[0])
         self.assertNotIn("quote_bid", sql)
         self.assertNotIn("quote_ask", sql)
         self.assertNotIn("nbbo_mid", sql)
@@ -49,16 +63,29 @@ class NewsReactionExtractTests(unittest.TestCase):
         self.assertIn("p.last_trade_timestamp_us <= a.target_us", sql)
         self.assertIn("maxIf(toNullable(p.trade_high)", sql)
         self.assertIn("minIf(toNullable(p.trade_low)", sql)
-        self.assertIn("'trade_close' AS price_basis", sql)
+        self.assertIn("'eligible_trade_event' AS price_basis", sql)
         self.assertIn("c.is_session AS is_session", sql)
         self.assertNotIn("trade_fallback", sql)
         self.assertIn("publication_session != 'closed'", sql)
         self.assertIn("<= extended_close_us", sql)
         self.assertIn("overlapping_news", sql)
+        reaction_schema = target_table_sql(self.args)[3]
+        self.assertNotIn("price_resolution_us", reaction_schema)
 
-    def test_trade_label_semantics_are_versioned(self) -> None:
-        self.assertEqual(LABEL_VERSION, "news_reaction_trade_labels_v2")
-        self.assertEqual(STATS_VERSION, "news_phrase_trade_reaction_stats_v2")
+    def test_event_label_semantics_are_versioned(self) -> None:
+        self.assertEqual(LABEL_VERSION, "news_reaction_event_labels_v3")
+        self.assertEqual(STATS_VERSION, "news_phrase_event_reaction_stats_v3")
+        self.assertEqual(self.args.reactions_table, "news_reaction_labels_v2")
+
+    def test_event_source_routes_only_required_years(self) -> None:
+        source = event_source_table(self.args, dt.date(2025, 12, 31), dt.date(2026, 1, 2))
+        self.assertIn("events_2025", source)
+        self.assertIn("events_2026", source)
+        self.assertNotIn("events_2024", source)
+        self.assertEqual(self.args.reaction_workers, 4)
+        self.assertEqual(self.args.reaction_chunk_days, 1)
+        self.assertEqual(self.args.max_threads // self.args.reaction_workers, 6)
+        self.assertEqual(self.args.max_memory_usage, "24G")
 
     def test_monitored_query_interrupt_requests_clickhouse_cancellation(self) -> None:
         class InterruptingClient:

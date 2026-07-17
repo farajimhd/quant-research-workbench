@@ -16,7 +16,9 @@ DEFAULTS = {
     "stats_end_date": "2026-01-01",
     "stages": "calendar,dictionary,features,reactions,stats",
     "max_threads": 24,
-    "max_memory_usage": "0",
+    "reaction_workers": 4,
+    "reaction_chunk_days": 1,
+    "max_memory_usage": "24G",
     "progress_layout": "auto",
     "progress_refresh_per_second": 2.0,
     "progress_log_lines": 8,
@@ -34,6 +36,8 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
     parser.add_argument("--stats-end-date", default=DEFAULTS["stats_end_date"], help="Exclusive; keeps 2026 out of phrase probabilities.")
     parser.add_argument("--stages", default=DEFAULTS["stages"])
     parser.add_argument("--max-threads", type=int, default=DEFAULTS["max_threads"])
+    parser.add_argument("--reaction-workers", type=int, default=DEFAULTS["reaction_workers"])
+    parser.add_argument("--reaction-chunk-days", type=int, default=DEFAULTS["reaction_chunk_days"])
     parser.add_argument("--max-memory-usage", default=DEFAULTS["max_memory_usage"])
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default=DEFAULTS["progress_layout"])
     parser.add_argument("--progress-refresh-per-second", type=float, default=DEFAULTS["progress_refresh_per_second"])
@@ -41,7 +45,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
     parser.add_argument("--output-root", default=DEFAULTS["output_root"])
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--replace-existing", action="store_true")
-    parser.add_argument("--allow-partial-bar-coverage", action="store_true")
+    parser.add_argument("--allow-partial-event-coverage", action="store_true")
     parser.add_argument("--print-only", action="store_true")
     return parser.parse_known_args(argv)
 
@@ -57,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
         "--stats-end-date", args.stats_end_date,
         "--stages", args.stages,
         "--max-threads", str(args.max_threads),
+        "--reaction-workers", str(args.reaction_workers),
+        "--reaction-chunk-days", str(args.reaction_chunk_days),
         "--max-memory-usage", str(args.max_memory_usage),
         "--progress-layout", args.progress_layout,
         "--progress-refresh-per-second", str(args.progress_refresh_per_second),
@@ -67,8 +73,8 @@ def main(argv: list[str] | None = None) -> int:
         command.append("--execute")
     if args.replace_existing:
         command.append("--replace-existing")
-    if args.allow_partial_bar_coverage:
-        command.append("--allow-partial-bar-coverage")
+    if args.allow_partial_event_coverage:
+        command.append("--allow-partial-event-coverage")
     command.extend(passthrough)
     print("COMMAND", subprocess.list2cmdline(command), flush=True)
     if args.print_only:
