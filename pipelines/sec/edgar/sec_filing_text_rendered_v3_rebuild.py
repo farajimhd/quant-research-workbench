@@ -854,6 +854,9 @@ def collect_partition_results(
         except Exception as exc:  # noqa: BLE001
             result = failure_result(job, "render_or_insert", exc, started_at=None)
             insert_partition_manifest(client, job, result)
+        else:
+            if result.status != "ok":
+                insert_partition_manifest(client, job, result)
         results.append(result)
         print_partition_result(
             result,
@@ -935,7 +938,6 @@ def validate_source_export(job: PartitionJob, source_path: Path, receipt_path: P
         return False
     try:
         parquet = pq.ParquetFile(source_path)
-        source_read_error: Exception | None = None
         try:
             physical_rows = int(parquet.metadata.num_rows)
             schema_names = list(parquet.schema_arrow.names)
@@ -1228,6 +1230,7 @@ def process_row_group_bundle(
     extracted_at = datetime.now(UTC)
     try:
         parquet = pq.ParquetFile(source_path)
+        source_read_error: Exception | None = None
         try:
             row_groups = list(range(row_group_start, row_group_end))
             batches = iter(parquet.iter_batches(batch_size=8, row_groups=row_groups))

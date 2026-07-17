@@ -7,7 +7,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -19,12 +19,14 @@ from pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild import (
     PartitionResult,
     build_row_group_bundles,
     build_rendered_row,
+    collect_partition_results,
     export_source_partition,
     load_or_create_run_manifest,
     load_filing_forms,
     load_partition_authority,
     prepare_lookup_database,
     prepare_partition_export,
+    process_row_group_bundle,
     rebuild_stop_path,
     request_rebuild_stop,
     reset_invalidated_partition,
@@ -86,6 +88,32 @@ class SecRenderedV3RebuildTest(unittest.TestCase):
             self.assertIn("ALTER TABLE `q_live`.`bundle_manifest_v3` DELETE", client.sql[0])
             self.assertFalse(marker.exists())
 
+    def test_successful_bundle_read_initializes_corruption_state(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "sec_filing_text_rendered_v3_rebuild" / "run" / "partitions" / "202001"
+            root.mkdir(parents=True)
+            source_path = root / "source_202001.parquet"
+            pq.write_table(pa.table({column: pa.array([], type=pa.string()) for column in SOURCE_COLUMNS}), source_path)
+            job = SimpleNamespace(
+                staging_table="stage_v3",
+                parquet_row_group_bytes=1024,
+                parquet_file_bytes=2048,
+                run_id="run",
+                partition_id=202001,
+                file_root_win=str(Path(temp_dir)),
+                file_root_ch="/mnt/test",
+                insert_threads=1,
+                max_memory_usage=1024,
+                keep_temp_files=True,
+            )
+
+            result = process_row_group_bundle(
+                object(), job, source_path, {}, {}, set(), 1, 0, 0
+            )
+
+            self.assertEqual(result.status, "ok")
+            self.assertEqual(result.source_rows, 0)
+
     def test_source_export_checks_parquet_pages_after_each_large_text_row(self) -> None:
         class RecordingClient:
             def __init__(self) -> None:
@@ -114,6 +142,24 @@ class SecRenderedV3RebuildTest(unittest.TestCase):
             self.assertIn("output_format_parquet_row_group_size_bytes=268435456", client.sql)
             self.assertIn("output_format_parquet_parallel_encoding=0", client.sql)
             self.assertIn("output_format_parquet_write_bloom_filter=0", client.sql)
+
+    def test_worker_returned_error_updates_partition_manifest(self) -> None:
+        future: concurrent.futures.Future[PartitionResult] = concurrent.futures.Future()
+        failure = PartitionResult(202001, 0, 0, 0, 0, 0, 0, 1.0, "error", "bundle failed")
+        future.set_result(failure)
+        job = SimpleNamespace(partition_id=202001)
+        futures = {future: job}
+        results: list[PartitionResult] = []
+
+        with patch(
+            "pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild.insert_partition_manifest"
+        ) as insert_manifest:
+            first_failure = collect_partition_results(
+                object(), futures, [future], results, 0, 0, 1, 0.0
+            )
+
+        self.assertEqual(first_failure, failure)
+        insert_manifest.assert_called_once_with(ANY, job, failure)
 
     def test_scheduler_stops_exporting_after_first_worker_failure(self) -> None:
         with TemporaryDirectory() as temp_dir:
