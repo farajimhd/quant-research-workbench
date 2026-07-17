@@ -166,7 +166,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   {
     id: "tape",
     title: "Tape",
-    description: "Time-and-sales prints with size, venue, tape, quality flags, and trade direction inferred from the preceding NBBO.",
+    description: "Time-and-sales prints with resolved exchange and condition labels, plus direction, pace, largest print, and signed flow inferred from the preceding NBBO.",
     linkScope: "single-symbol",
     modes: allModes,
     defaultOpen: {},
@@ -175,7 +175,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   {
     id: "quotes",
     title: "Quotes",
-    description: "Consolidated NBBO updates with best bid and ask prices, sizes, venues, spread, and update time; this is not venue-level depth.",
+    description: "Consolidated NBBO liquidity monitor with best bid and ask, resolved venues, size imbalance, microprice lean, spread state, quote rate, and interpreted liquidity changes; this is not venue-level depth.",
     linkScope: "single-symbol",
     modes: allModes,
     defaultOpen: {},

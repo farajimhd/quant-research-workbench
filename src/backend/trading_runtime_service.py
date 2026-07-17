@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from pipelines.reference_data.clickhouse_load_market_references import build_condition_token_rows
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.orchestrator import historical_run_window
 from src.trading_runtime.runtime import RunMode
@@ -32,6 +33,7 @@ SUPPORTED_HISTORICAL_TIMEFRAMES = {
 }
 MACRO_CHART_TIMEFRAMES = {"1d", "1mo"}
 HISTORICAL_CHUNK_MINUTES = 15
+MARKET_REFERENCE_DIR = REPO_ROOT / "research" / "market_references" / "massive"
 
 
 @lru_cache(maxsize=1)
@@ -527,6 +529,45 @@ def historical_compact_events(
     if not isinstance(payload, list):
         raise RuntimeError("QMD History compact-event response must be an array")
     return [row for row in payload if isinstance(row, dict)]
+
+
+@lru_cache(maxsize=1)
+def market_event_references() -> dict[str, dict[str, dict[str, Any]]]:
+    exchanges = _reference_rows(MARKET_REFERENCE_DIR / "stock_exchanges.json")
+    conditions = build_condition_token_rows(MARKET_REFERENCE_DIR)
+    return {
+        "exchanges": {
+            str(row["dense_id"]): {
+                "acronym": str(row.get("acronym") or ""),
+                "mic": str(row.get("mic") or ""),
+                "name": str(row.get("name") or "Unknown venue"),
+                "participant_id": str(row.get("participant_id") or ""),
+                "type": str(row.get("type") or ""),
+            }
+            for row in exchanges
+            if isinstance(row.get("dense_id"), int) and row["dense_id"] > 0
+        },
+        "conditions": {
+            str(row["token_id"]): {
+                "name": str(row.get("condition") or "Unknown condition"),
+                "sip_mapping": str(row.get("sip_mapping") or ""),
+                "type": str(row.get("source_family") or ""),
+                "update_high_low": bool(row.get("update_high_low")),
+                "update_last": bool(row.get("update_last")),
+                "update_volume": bool(row.get("update_volume")),
+            }
+            for row in conditions
+            if isinstance(row.get("token_id"), int) and row["token_id"] > 0
+        },
+    }
+
+
+def _reference_rows(path: Path) -> list[dict[str, Any]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    rows = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        raise RuntimeError(f"Market reference file must contain a results array: {path}")
+    return [row for row in rows if isinstance(row, dict)]
 
 
 def _historical_gateway_get(path: str, params: dict[str, Any], *, timeout: float) -> Any:

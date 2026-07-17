@@ -10,10 +10,21 @@ from src.backend.trading_runtime_service import (
     historical_latest_coverage,
     historical_preflight,
     historical_window_preview,
+    market_event_references,
 )
 
 
 class HistoricalTradingServiceTests(unittest.TestCase):
+    def test_market_event_references_expose_displayable_venues_and_conditions(self) -> None:
+        market_event_references.cache_clear()
+        payload = market_event_references()
+
+        self.assertEqual(payload["exchanges"]["11"]["name"], "NYSE Arca, Inc.")
+        self.assertEqual(payload["exchanges"]["11"]["mic"], "ARCX")
+        self.assertEqual(payload["conditions"]["60"]["name"], "Regular Sale")
+        self.assertEqual(payload["conditions"]["60"]["sip_mapping"], "@")
+        self.assertEqual(payload["conditions"]["96"]["name"], "Odd Lot Trade")
+
     @patch("src.backend.trading_runtime_service._historical_gateway_get")
     def test_compact_events_request_latest_rows_before_canvas_clock(self, gateway_get) -> None:
         gateway_get.return_value = [{"ticker": "AAPL", "arrival_sequence": 9}, "invalid"]

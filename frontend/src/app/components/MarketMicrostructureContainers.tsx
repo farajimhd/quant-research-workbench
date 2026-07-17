@@ -8,6 +8,11 @@ export type MarketEventSettings = { limit: number };
 
 type CompactEvent = {
   arrival_sequence: number;
+  condition_token_1: number;
+  condition_token_2: number;
+  condition_token_3: number;
+  condition_token_4: number;
+  condition_token_5: number;
   event_meta: number;
   exchange_primary: number;
   exchange_secondary: number;
@@ -22,61 +27,116 @@ type CompactEvent = {
   ticker: string;
 };
 
-type MarketEventsPayload = { events: CompactEvent[]; source: string; symbol: string };
+type ExchangeReference = { acronym: string; mic: string; name: string; participant_id: string; type: string };
+type ConditionReference = { name: string; sip_mapping: string; type: string; update_high_low: boolean; update_last: boolean; update_volume: boolean };
+type MarketReferences = { conditions: Record<string, ConditionReference>; exchanges: Record<string, ExchangeReference> };
+type MarketEventsPayload = { events: CompactEvent[]; references: MarketReferences; source: string; symbol: string };
 type ConnectionState = "connecting" | "live" | "point-in-time" | "reconnecting";
-const MARKET_EVENTS_UNAVAILABLE = "Live market events are unavailable. Start or reconnect QMD Gateway.";
-const HISTORICAL_EVENTS_UNAVAILABLE = "Historical market events are unavailable. Start or reconnect QMD History.";
+type Direction = "buy" | "mid" | "sell";
 type QuoteUpdate = { ask: number; askExchange: number; askSize: number; bid: number; bidExchange: number; bidSize: number; id: number; issues: number; timestampUs: number };
-type TapePrint = { direction: "buy" | "mid" | "sell"; exchange: number; id: number; issues: number; price: number; size: number; tape: number; timestampUs: number };
+type TapePrint = { conditionTokens: number[]; direction: Direction; exchange: number; id: number; issues: number; price: number; size: number; tape: number; timestampUs: number };
+type QuoteSignal = { detail: string; quote: QuoteUpdate; tone: Direction };
 
 type MarketContainerProps = { end?: string; settings: MarketEventSettings; start?: string; symbol: string };
+const EMPTY_REFERENCES: MarketReferences = { conditions: {}, exchanges: {} };
+const MARKET_EVENTS_UNAVAILABLE = "Live market events are unavailable. Start or reconnect QMD Gateway.";
+const HISTORICAL_EVENTS_UNAVAILABLE = "Historical market events are unavailable. Start or reconnect QMD History.";
 
 export function TapeContainer({ end, settings, start, symbol }: MarketContainerProps) {
-  const { connected, error, events } = useMarketEvents(symbol, start, end);
+  const { connected, error, events, references } = useMarketEvents(symbol, start, end);
   const decoded = useMemo(() => decodeMarketEvents(events), [events]);
-  const prints = decoded.trades.slice(-settings.limit).reverse();
-  const buyVolume = prints.reduce((sum, item) => sum + (item.direction === "buy" ? item.size : 0), 0);
-  const sellVolume = prints.reduce((sum, item) => sum + (item.direction === "sell" ? item.size : 0), 0);
+  const chronological = decoded.trades.slice(-settings.limit);
+  const prints = [...chronological].reverse();
+  const last = prints[0];
+  const buyVolume = chronological.reduce((sum, item) => sum + (item.direction === "buy" ? item.size : 0), 0);
+  const sellVolume = chronological.reduce((sum, item) => sum + (item.direction === "sell" ? item.size : 0), 0);
+  const directionalVolume = buyVolume + sellVolume;
+  const buyShare = directionalVolume ? buyVolume / directionalVolume : 0.5;
+  const largestPrint = chronological.reduce((largest, item) => Math.max(largest, item.size), 0);
+  const pace = eventRate(chronological.map((item) => item.timestampUs));
   const presentations = useTickerPresentations([symbol]);
 
-  return <section aria-label={`${symbol} time and sales`} className="market-microstructure" data-market-state={connected}>
-    <MicrostructureHeader connected={connected} detail={`${prints.length} recent prints`} logoUrl={presentations[symbol]?.logo_url} symbol={symbol} />
-    <div className="tape-summary" aria-label="Visible tape summary">
-      <Metric label="Buy vol" tone="buy" value={compactNumber(buyVolume)} />
-      <Metric label="Sell vol" tone="sell" value={compactNumber(sellVolume)} />
-      <Metric label="Delta" tone={buyVolume >= sellVolume ? "buy" : "sell"} value={signedCompact(buyVolume - sellVolume)} />
+  return <section aria-label={`${symbol} time and sales`} className="market-microstructure tape-surface" data-market-state={connected}>
+    <MicrostructureHeader connected={connected} detail={`Time & sales · ${prints.length} prints`} logoUrl={presentations[symbol]?.logo_url} symbol={symbol} />
+    <div className="tape-overview" aria-label="Tape summary">
+      <div className="last-print" data-direction={last?.direction ?? "mid"}>
+        <small>Last print</small>
+        <strong>{last ? formatPrice(last.price) : "—"}</strong>
+        <span>{last ? `${directionLabel(last.direction)} · ${formatTradeSize(last.size)} sh` : "Waiting for a trade"}</span>
+      </div>
+      <div className="tape-flow">
+        <SignalMetric label="Buy share" tone={buyShare >= 0.5 ? "buy" : "sell"} value={`${Math.round(buyShare * 100)}%`} />
+        <SignalMetric label="Net flow" tone={buyVolume >= sellVolume ? "buy" : "sell"} value={signedCompact(buyVolume - sellVolume)} />
+        <SignalMetric label="Pace" value={`${pace.toFixed(pace >= 10 ? 0 : 1)}/s`} />
+        <SignalMetric label="Largest" value={compactNumber(largestPrint)} />
+      </div>
     </div>
     {error && !prints.length ? <MicrostructureEmpty message={error} /> : prints.length ? <div className="microstructure-scroll">
       <table className="tape-table">
-        <thead><tr><th>Time ET</th><th>Price</th><th>Size</th><th>Venue</th><th>Tape</th></tr></thead>
-        <tbody>{prints.map((print) => <tr data-direction={print.direction} key={print.id} title={print.issues ? `QMD issue flags: ${print.issues}` : undefined}>
-          <td><time>{formatEventTime(print.timestampUs)}</time></td><td className="numeric price"><span aria-hidden="true" />{formatPrice(print.price)}</td><td className="numeric">{formatSize(print.size)}</td><td>{venue(print.exchange)}</td><td>{print.tape}</td>
-        </tr>)}</tbody>
+        <thead><tr><th>Time ET</th><th>Price</th><th>Size</th><th>Exchange</th><th>Condition</th></tr></thead>
+        <tbody>{prints.map((print) => {
+          const exchange = venueReference(print.exchange, references);
+          const condition = tradeCondition(print, references);
+          return <tr data-condition={condition.special ? "special" : "regular"} data-direction={print.direction} key={print.id} title={print.issues ? `QMD issue flags: ${print.issues}` : undefined}>
+            <td><time>{formatEventTime(print.timestampUs)}</time></td>
+            <td className="numeric price">{formatPrice(print.price)}</td>
+            <td className="numeric size">{formatTradeSize(print.size)}</td>
+            <td><span className="venue-code" title={exchange.name}>{exchange.code}</span></td>
+            <td><span className="condition-code" data-special={condition.special} title={condition.label}>{condition.code}</span></td>
+          </tr>;
+        })}</tbody>
       </table>
     </div> : <MicrostructureEmpty message={connected === "point-in-time" ? "No trade prints were found before the Canvas clock." : connected === "live" ? "Waiting for the next eligible trade print." : "Connecting to the live tape…"} />}
   </section>;
 }
 
 export function QuotesContainer({ end, settings, start, symbol }: MarketContainerProps) {
-  const { connected, error, events } = useMarketEvents(symbol, start, end);
-  const quotes = useMemo(() => decodeMarketEvents(events).quotes.slice(-settings.limit).reverse(), [events, settings.limit]);
-  const current = quotes[0];
+  const { connected, error, events, references } = useMarketEvents(symbol, start, end);
+  const chronological = useMemo(() => decodeMarketEvents(events).quotes.slice(-settings.limit), [events, settings.limit]);
+  const current = chronological.at(-1);
+  const signals = useMemo(() => quoteSignals(chronological).reverse(), [chronological]);
   const presentations = useTickerPresentations([symbol]);
   const spread = current ? Math.max(0, current.ask - current.bid) : 0;
+  const midpoint = current ? (current.ask + current.bid) / 2 : 0;
+  const totalSize = current ? current.bidSize + current.askSize : 0;
+  const imbalance = current && totalSize ? (current.bidSize - current.askSize) / totalSize : 0;
+  const microprice = current && totalSize ? (current.ask * current.bidSize + current.bid * current.askSize) / totalSize : midpoint;
+  const spreadState = classifySpread(spread, chronological);
+  const bidVenue = venueReference(current?.bidExchange ?? 0, references);
+  const askVenue = venueReference(current?.askExchange ?? 0, references);
 
-  return <section aria-label={`${symbol} NBBO quote ladder`} className="market-microstructure quote-ladder" data-market-state={connected}>
-    <MicrostructureHeader connected={connected} detail="Consolidated NBBO · not venue depth" logoUrl={presentations[symbol]?.logo_url} symbol={symbol} />
-    <div className="quote-topline" aria-label="Current NBBO">
-      <Metric label="Bid" tone="buy" value={current ? `${formatPrice(current.bid)} × ${formatSize(current.bidSize)}` : "—"} />
-      <Metric label="Spread" value={current ? formatPrice(spread) : "—"} />
-      <Metric label="Ask" tone="sell" value={current ? `${formatPrice(current.ask)} × ${formatSize(current.askSize)}` : "—"} />
+  return <section aria-label={`${symbol} NBBO liquidity monitor`} className="market-microstructure quote-surface" data-market-state={connected}>
+    <MicrostructureHeader connected={connected} detail="NBBO liquidity · consolidated top of book" logoUrl={presentations[symbol]?.logo_url} symbol={symbol} />
+    <div className="nbbo-overview" aria-label="Current NBBO and liquidity signals">
+      <div className="nbbo-prices">
+        <QuoteSide exchange={bidVenue} label="Bid" price={current?.bid} size={current?.bidSize} tone="buy" />
+        <div className="spread-focus"><small>Spread</small><strong>{current ? formatPrice(spread) : "—"}</strong><span>{spreadState}</span></div>
+        <QuoteSide exchange={askVenue} label="Ask" price={current?.ask} size={current?.askSize} tone="sell" />
+      </div>
+      <div className="liquidity-signals">
+        <div className="imbalance-signal" data-tone={imbalance >= 0 ? "buy" : "sell"}>
+          <span><small>Size imbalance</small><strong>{signedPercent(imbalance)}</strong></span>
+          <i aria-hidden="true"><b style={{ width: `${Math.round((imbalance + 1) * 50)}%` }} /></i>
+          <em>{imbalanceLabel(imbalance)}</em>
+        </div>
+        <SignalMetric label="Microprice" tone={microprice >= midpoint ? "buy" : "sell"} value={current ? formatPrice(microprice) : "—"} />
+        <SignalMetric label="Lean" tone={microprice >= midpoint ? "buy" : "sell"} value={current ? signedCents(microprice - midpoint) : "—"} />
+        <SignalMetric label="Quote rate" value={`${eventRate(chronological.map((quote) => quote.timestampUs)).toFixed(1)}/s`} />
+      </div>
     </div>
-    {error && !quotes.length ? <MicrostructureEmpty message={error} /> : quotes.length ? <div className="microstructure-scroll">
-      <table className="quote-ladder-table">
-        <thead><tr><th>Time ET</th><th>Bid venue</th><th>Bid size</th><th>Bid</th><th>Ask</th><th>Ask size</th><th>Ask venue</th></tr></thead>
-        <tbody>{quotes.map((quote, index) => <tr data-current={index === 0 ? "true" : "false"} key={quote.id} title={quote.issues ? `QMD issue flags: ${quote.issues}` : undefined}>
-          <td><time>{formatEventTime(quote.timestampUs)}</time></td><td>{venue(quote.bidExchange)}</td><td className="numeric bid-size"><i style={{ width: sizeBarWidth(quote.bidSize, quotes.flatMap((row) => [row.bidSize, row.askSize])) }} />{formatSize(quote.bidSize)}</td><td className="numeric bid-price">{formatPrice(quote.bid)}</td><td className="numeric ask-price">{formatPrice(quote.ask)}</td><td className="numeric ask-size">{formatSize(quote.askSize)}<i style={{ width: sizeBarWidth(quote.askSize, quotes.flatMap((row) => [row.bidSize, row.askSize])) }} /></td><td>{venue(quote.askExchange)}</td>
-        </tr>)}</tbody>
+    {error && !signals.length ? <MicrostructureEmpty message={error} /> : signals.length ? <div className="microstructure-scroll">
+      <table className="quote-signal-table">
+        <thead><tr><th>Time ET</th><th>Liquidity event</th><th>Bid</th><th>Ask</th></tr></thead>
+        <tbody>{signals.map(({ detail, quote, tone }, index) => {
+          const rowBidVenue = venueReference(quote.bidExchange, references);
+          const rowAskVenue = venueReference(quote.askExchange, references);
+          return <tr data-current={index === 0 ? "true" : "false"} data-tone={tone} key={quote.id} title={quote.issues ? `QMD issue flags: ${quote.issues}` : undefined}>
+            <td><time>{formatEventTime(quote.timestampUs)}</time></td>
+            <td className="liquidity-event"><span>{detail}</span><small>{imbalanceLabel((quote.bidSize - quote.askSize) / Math.max(1, quote.bidSize + quote.askSize))}</small></td>
+            <td className="quote-cell bid"><strong>{formatPrice(quote.bid)}</strong><span>{formatSize(quote.bidSize)} · <abbr title={rowBidVenue.name}>{rowBidVenue.code}</abbr></span></td>
+            <td className="quote-cell ask"><strong>{formatPrice(quote.ask)}</strong><span>{formatSize(quote.askSize)} · <abbr title={rowAskVenue.name}>{rowAskVenue.code}</abbr></span></td>
+          </tr>;
+        })}</tbody>
       </table>
     </div> : <MicrostructureEmpty message={connected === "point-in-time" ? "No NBBO updates were found before the Canvas clock." : connected === "live" ? "Waiting for the next NBBO update." : "Connecting to live NBBO…"} />}
   </section>;
@@ -84,6 +144,7 @@ export function QuotesContainer({ end, settings, start, symbol }: MarketContaine
 
 function useMarketEvents(symbol: string, start?: string, end?: string) {
   const [events, setEvents] = useState<CompactEvent[]>([]);
+  const [references, setReferences] = useState<MarketReferences>(EMPTY_REFERENCES);
   const [connected, setConnected] = useState<ConnectionState>("connecting");
   const [error, setError] = useState("");
 
@@ -105,7 +166,7 @@ function useMarketEvents(symbol: string, start?: string, end?: string) {
 
     const historical = Boolean(start && end);
     api<MarketEventsPayload>(`/api/trading/canvas-market-events/${encodeURIComponent(ticker)}${query({ end, row_limit: 500, start })}`, { timeoutMs: historical ? 20000 : 10000 })
-      .then((payload) => { if (active) { merge(payload.events); if (historical) setConnected("point-in-time"); } })
+      .then((payload) => { if (active) { merge(payload.events); setReferences(payload.references ?? EMPTY_REFERENCES); if (historical) setConnected("point-in-time"); } })
       .catch(() => { if (active) setError(historical ? HISTORICAL_EVENTS_UNAVAILABLE : MARKET_EVENTS_UNAVAILABLE); });
 
     if (historical) return () => { active = false; };
@@ -136,7 +197,7 @@ function useMarketEvents(symbol: string, start?: string, end?: string) {
     return () => { active = false; if (retryTimer) window.clearTimeout(retryTimer); socket?.close(); };
   }, [end, start, symbol]);
 
-  return { connected, error, events };
+  return { connected, error, events, references };
 }
 
 function decodeMarketEvents(events: CompactEvent[]) {
@@ -160,22 +221,61 @@ function decodeMarketEvents(events: CompactEvent[]) {
       const price = event.price_primary_int / primaryScale;
       if (price <= 0 || event.size_primary <= 0) return;
       const direction = nbbo && nbbo.ask > 0 && price >= nbbo.ask ? "buy" : nbbo && nbbo.bid > 0 && price <= nbbo.bid ? "sell" : "mid";
-      trades.push({ direction, exchange: event.exchange_primary, id: event.arrival_sequence, issues: event.issue_flags, price, size: event.size_primary, tape: ((event.event_meta >> 3) & 0x07) + 1, timestampUs: event.sip_timestamp_us });
+      trades.push({
+        conditionTokens: [event.condition_token_1, event.condition_token_2, event.condition_token_3, event.condition_token_4, event.condition_token_5].filter(Boolean),
+        direction, exchange: event.exchange_primary, id: event.arrival_sequence, issues: event.issue_flags, price, size: event.size_primary,
+        tape: ((event.event_meta >> 3) & 0x07) + 1, timestampUs: event.sip_timestamp_us,
+      });
     }
   });
   return { quotes, trades };
 }
 
+function quoteSignals(quotes: QuoteUpdate[]): QuoteSignal[] {
+  return quotes.map((quote, index) => {
+    const previous = quotes[index - 1];
+    if (!previous) return { detail: "Opening snapshot", quote, tone: "mid" };
+    if (quote.bid > previous.bid) return { detail: `Bid improved ${signedCents(quote.bid - previous.bid)}`, quote, tone: "buy" };
+    if (quote.ask < previous.ask) return { detail: `Ask moved down ${signedCents(quote.ask - previous.ask)}`, quote, tone: "sell" };
+    if (quote.bid < previous.bid) return { detail: `Bid faded ${signedCents(quote.bid - previous.bid)}`, quote, tone: "sell" };
+    if (quote.ask > previous.ask) return { detail: `Ask moved up ${signedCents(quote.ask - previous.ask)}`, quote, tone: "buy" };
+    const bidDelta = quote.bidSize - previous.bidSize;
+    const askDelta = quote.askSize - previous.askSize;
+    if (Math.abs(bidDelta) >= Math.abs(askDelta) && bidDelta !== 0) return { detail: `Bid ${bidDelta > 0 ? "added" : "pulled"} ${signedShares(bidDelta)}`, quote, tone: bidDelta > 0 ? "buy" : "sell" };
+    if (askDelta !== 0) return { detail: `Ask ${askDelta > 0 ? "added" : "pulled"} ${signedShares(askDelta)}`, quote, tone: askDelta > 0 ? "sell" : "buy" };
+    return { detail: "Venue changed", quote, tone: "mid" };
+  });
+}
+
 function MicrostructureHeader({ connected, detail, logoUrl, symbol }: { connected: ConnectionState; detail: string; logoUrl?: string; symbol: string }) {
   return <header className="microstructure-header"><div><TickerIdentity logoUrl={logoUrl} ticker={symbol} /><small>{detail}</small></div><span data-state={connected}>{connected === "live" ? <Radio size={11} /> : connected === "point-in-time" ? <Clock3 size={11} /> : connected === "connecting" ? <Activity size={11} /> : <WifiOff size={11} />}{connected}</span></header>;
 }
-function Metric({ label, tone, value }: { label: string; tone?: "buy" | "sell"; value: string }) { return <div data-tone={tone}><small>{label}</small><strong>{value}</strong></div>; }
+function SignalMetric({ label, tone, value }: { label: string; tone?: "buy" | "sell"; value: string }) { return <div className="signal-metric" data-tone={tone}><small>{label}</small><strong>{value}</strong></div>; }
+function QuoteSide({ exchange, label, price, size, tone }: { exchange: { code: string; name: string }; label: string; price?: number; size?: number; tone: "buy" | "sell" }) { return <div className="quote-side" data-tone={tone}><span><small>{label}</small><abbr title={exchange.name}>{exchange.code}</abbr></span><strong>{price ? formatPrice(price) : "—"}</strong><em>{size != null ? `${formatSize(size)} shares` : "No quote"}</em></div>; }
 function MicrostructureEmpty({ message }: { message: string }) { return <div className="microstructure-empty"><Activity size={18} /><span>{message}</span></div>; }
 function compareEvents(left: CompactEvent, right: CompactEvent) { return left.sip_timestamp_us - right.sip_timestamp_us || left.source_sequence - right.source_sequence || left.arrival_sequence - right.arrival_sequence; }
 function formatPrice(value: number) { return value >= 100 ? value.toFixed(2) : value.toFixed(4).replace(/0+$/, "").replace(/\.$/, ""); }
 function formatSize(value: number) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value); }
+function formatTradeSize(value: number) { return value > 0 && value < 1 ? value.toFixed(4).replace(/0+$/, "").replace(/\.$/, "") : formatSize(value); }
 function compactNumber(value: number) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 1, notation: "compact" }).format(value); }
 function signedCompact(value: number) { return `${value > 0 ? "+" : ""}${compactNumber(value)}`; }
-function venue(value: number) { return value > 0 ? `X${value}` : "—"; }
+function signedPercent(value: number) { return `${value > 0 ? "+" : ""}${Math.round(value * 100)}%`; }
+function signedCents(value: number) { const cents = value * 100; return `${cents > 0 ? "+" : ""}${cents.toFixed(Math.abs(cents) < 0.1 ? 2 : 1)}¢`; }
+function signedShares(value: number) { return `${value > 0 ? "+" : ""}${formatSize(value)}`; }
+function directionLabel(direction: Direction) { return direction === "buy" ? "At ask" : direction === "sell" ? "At bid" : "Between market"; }
+function imbalanceLabel(value: number) { return value >= 0.25 ? "Bid-heavy" : value <= -0.25 ? "Ask-heavy" : "Balanced"; }
+function eventRate(timestamps: number[]) { if (timestamps.length < 2) return 0; const seconds = Math.max(0.001, (timestamps.at(-1)! - timestamps[0]) / 1_000_000); return (timestamps.length - 1) / seconds; }
 function formatEventTime(timestampUs: number) { return new Intl.DateTimeFormat("en-US", { fractionalSecondDigits: 3, hour: "2-digit", hour12: false, minute: "2-digit", second: "2-digit", timeZone: "America/New_York" }).format(new Date(timestampUs / 1000)); }
-function sizeBarWidth(value: number, sizes: number[]) { const maximum = Math.max(1, ...sizes); return `${Math.max(4, Math.round(value / maximum * 100))}%`; }
+function classifySpread(current: number, quotes: QuoteUpdate[]) { const spreads = quotes.map((quote) => Math.max(0, quote.ask - quote.bid)).sort((a, b) => a - b); const median = spreads[Math.floor(spreads.length / 2)] ?? current; return current < median - 0.00001 ? "Tighter" : current > median + 0.00001 ? "Wider" : "Typical"; }
+function venueReference(value: number, references: MarketReferences) { const reference = references.exchanges[String(value)]; return { code: reference?.acronym || reference?.mic || reference?.participant_id || (value ? `ID ${value}` : "—"), name: reference?.name || (value ? `Unresolved exchange ID ${value}` : "Unknown venue") }; }
+function tradeCondition(print: TapePrint, references: MarketReferences) {
+  const rows = print.conditionTokens.map((token) => references.conditions[String(token)]).filter((row): row is ConditionReference => Boolean(row));
+  if (!rows.length) return { code: "REG", label: "Regular sale", special: false };
+  const specialRows = rows.filter((row) => row.name.toLowerCase() !== "regular sale");
+  if (!specialRows.length) return { code: "REG", label: rows.map((row) => row.name).join(" · "), special: false };
+  return { code: specialRows.slice(0, 2).map((row) => shortConditionName(row)).join(" · "), label: rows.map((row) => row.name).join(" · "), special: true };
+}
+function shortConditionName(row: ConditionReference) {
+  const known: Record<string, string> = { "Derivatively Priced": "Derivative", "Intermarket Sweep": "ISO", "Odd Lot Trade": "Odd lot", "Sold (Out Of Sequence)": "Out of seq", "Trade Thru Exempt": "Exempt" };
+  return known[row.name] || row.sip_mapping || row.name;
+}

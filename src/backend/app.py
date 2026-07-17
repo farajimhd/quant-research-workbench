@@ -113,6 +113,7 @@ from src.backend.trading_runtime_service import (
     historical_gateway_websocket_url,
     historical_preflight,
     historical_window_preview,
+    market_event_references,
     list_strategy_definitions,
     save_strategy_definition,
 )
@@ -4600,11 +4601,13 @@ def trading_canvas_market_events(
         if start and end:
             return {
                 "events": historical_compact_events(ticker, start=start, end=end, row_limit=row_limit),
+                "references": market_event_references(),
                 "source": "qmd-history-gateway",
                 "symbol": ticker,
             }
         return {
             "events": qmd_compact_events(ticker, row_limit=row_limit),
+            "references": market_event_references(),
             "source": "qmd-gateway",
             "symbol": ticker,
         }
