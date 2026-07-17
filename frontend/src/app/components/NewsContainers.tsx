@@ -1,4 +1,4 @@
-import { Bot, Building2, Clock3, ExternalLink, Flame, Globe2, Layers3, Lightbulb, Newspaper, RefreshCw, Search, Snowflake, TrendingUp } from "lucide-react";
+import { Bot, Building2, Clock3, ExternalLink, FileCheck2, Flame, Globe2, Layers3, Lightbulb, Megaphone, Newspaper, RefreshCw, Search, Snowflake, TrendingUp } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, query } from "../../api/client";
@@ -15,7 +15,15 @@ type NewsRow = {
   has_external_text?: boolean;
   has_pdf?: boolean;
   is_title_only?: boolean;
-  news_kind?: "ai" | "analyst" | "company" | "insights" | "market" | "multi";
+  classification?: NewsClassification;
+  classification_confidence?: number;
+  classification_evidence?: string[];
+  is_company_news?: boolean;
+  news_format?: NewsFormat;
+  news_kind?: NewsKindValue;
+  news_origin?: NewsOrigin;
+  news_scope?: NewsScope;
+  news_topics?: string[];
   provider_tags?: string[];
   published_at_utc: string;
   text_preview?: string;
@@ -38,6 +46,7 @@ type NewsDetailPayload = {
     article_url: string;
     author: string;
     channels: string[];
+    classification: NewsClassification;
     news_kind: NewsKindValue;
     provider_tags: string[];
     published_at_utc: string;
@@ -49,7 +58,11 @@ type NewsDetailPayload = {
 };
 
 const NEWS_SELECTION_EVENT = "quant-news-selection";
-type NewsKindValue = NonNullable<NewsRow["news_kind"]>;
+type NewsKindValue = "ai" | "analyst" | "company" | "editorial" | "insights" | "market" | "multi" | "regulatory" | "why_moving";
+type NewsOrigin = "analyst" | "automated" | "editorial" | "issuer" | "regulatory" | "third_party" | "unknown";
+type NewsScope = "market_wide" | "multi_ticker" | "single_ticker";
+type NewsFormat = "ai_generated" | "analyst_action" | "company_announcement" | "earnings_flash" | "editorial_coverage" | "general" | "insights" | "macro_release" | "multi_company_coverage" | "regulatory_filing" | "trading_halt" | "why_moving";
+type NewsClassification = { confidence: number; evidence: string[]; format: NewsFormat; is_company_news: boolean; kind: NewsKindValue; origin: NewsOrigin; scope: NewsScope; topics: string[]; version: string };
 type NewsTemperature = "cold" | "hot" | "old";
 type AllNewsSettings = { content: string; kind: string; lookbackHours: number; ticker: string };
 
@@ -71,7 +84,7 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
       <button className="button secondary compact news-search-submit" type="submit">Search</button>
       <label><span>Window</span><select aria-label="News time window" onChange={(event) => onSettingsChange({ lookbackHours: Number(event.target.value) })} value={settings.lookbackHours}><option value={1}>1 hour</option><option value={6}>6 hours</option><option value={24}>24 hours</option><option value={168}>7 days</option><option value={720}>30 days</option></select></label>
       <label><span>Ticker</span><input aria-label="Filter by ticker" maxLength={16} onChange={(event) => onSettingsChange({ ticker: event.target.value.toUpperCase() })} placeholder="Any" value={settings.ticker} /></label>
-      <label><span>Type</span><select aria-label="News type" onChange={(event) => onSettingsChange({ kind: event.target.value })} value={settings.kind}><option value="all">All types</option><option value="company">Company</option><option value="insights">Insights</option><option value="analyst">Analyst</option><option value="multi">Multi</option><option value="ai">AI</option><option value="market">Market</option></select></label>
+      <label><span>Type</span><select aria-label="News type" onChange={(event) => onSettingsChange({ kind: event.target.value })} value={settings.kind}><option value="all">All types</option><option value="company">Company</option><option value="regulatory">Regulatory</option><option value="why_moving">Why moving</option><option value="analyst">Analyst</option><option value="editorial">Editorial</option><option value="insights">Insights</option><option value="multi">Multi-company</option><option value="ai">AI</option><option value="market">Market</option></select></label>
       <label><span>Text</span><select aria-label="News text coverage" onChange={(event) => onSettingsChange({ content: event.target.value })} value={settings.content}><option value="all">All</option><option value="full">Full text</option><option value="title">Title only</option></select></label>
       <button aria-label="Refresh news" className="toolbar-button compact" onClick={() => setRefreshKey((value) => value + 1)} title="Refresh" type="button"><RefreshCw size={13} /></button>
     </form>
@@ -81,7 +94,7 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
         {state.rows.map((row) => <tr key={row.canonical_news_id} tabIndex={0}>
           <td><MarketTime className="news-row-time" dateStyle="short" includeDate value={row.published_at_utc} /></td>
           <td><TickerList presentations={presentations} tickers={row.ticker_link_sample} /></td>
-          <td><NewsKind kind={row.news_kind} /></td>
+          <td><NewsKind classification={classificationFromRow(row)} /><NewsTopics kind={classificationFromRow(row).kind} topics={row.news_topics ?? row.classification?.topics} /></td>
           <td><button className="news-headline-button" onClick={() => openNewsPage(row.canonical_news_id)} type="button"><strong>{row.title || "Untitled story"}</strong>{row.text_preview ? <small>{row.text_preview}</small> : null}</button></td>
           <td>{row.url_domain || "—"}</td><td><NewsTextState row={row} /></td>
         </tr>)}
@@ -98,8 +111,8 @@ export function TickerNewsContainer({ asOf, live = false, settings, symbol }: { 
   const effectiveAsOf = state.asOf || asOf;
   const asOfMs = Date.parse(effectiveAsOf);
   const orderedRows = [...state.rows].sort(compareNewsRecency);
-  const companyRows = orderedRows.filter((row) => row.news_kind === "company");
-  const otherRows = orderedRows.filter((row) => row.news_kind !== "company");
+  const companyRows = orderedRows.filter(isCompanyNews);
+  const otherRows = orderedRows.filter((row) => !isCompanyNews(row));
   return <section className="ticker-news" aria-label={`${symbol} news`}>
     <header><div><TickerIdentity className="ticker-news-symbol" logoUrl={presentations[symbol]?.logo_url} ticker={symbol} /><span>Recent coverage</span></div><small>{state.rows.length} stories · through <MarketTime value={effectiveAsOf} /></small></header>
     <NewsStatus state={state} compact />
@@ -124,7 +137,7 @@ function TickerNewsStory({ asOf, asOfMs, row, showTeaser }: { asOf: string; asOf
   const TemperatureIcon = newsTemperaturePresentation(tone).Icon;
   return <article data-tone={tone}>
     <div aria-label={`${tone} news`} className="ticker-news-marker" title={`${tone} news`}><TemperatureIcon size={14} /></div>
-    <div><div className="ticker-news-meta"><MarketTime dateStyle="short" includeDate={!sameExchangeDate(row.published_at_utc, asOf)} value={row.published_at_utc} /><em data-tone={tone}>{tone}</em><NewsKind kind={row.news_kind} /><span>{row.url_domain}</span></div><button className="ticker-news-open" onClick={() => openNewsPage(row.canonical_news_id)} type="button"><strong>{row.title}</strong>{showTeaser && row.text_preview ? <p>{row.text_preview}</p> : null}</button></div>
+    <div><div className="ticker-news-meta"><MarketTime dateStyle="short" includeDate={!sameExchangeDate(row.published_at_utc, asOf)} value={row.published_at_utc} /><em data-tone={tone}>{tone}</em><NewsKind classification={classificationFromRow(row)} /><NewsTopics kind={classificationFromRow(row).kind} topics={row.news_topics ?? row.classification?.topics} compact /><span>{row.url_domain}</span></div><button className="ticker-news-open" onClick={() => openNewsPage(row.canonical_news_id)} type="button"><strong>{row.title}</strong>{showTeaser && row.text_preview ? <p>{row.text_preview}</p> : null}</button></div>
   </article>;
 }
 
@@ -165,11 +178,12 @@ export function NewsDetailContainer({ asOf, canvasId, requestedNewsId }: { asOf:
   const row = detail.article;
   const title = row.title || "Untitled story";
   const body = row.text;
-  const tags = row.channels.concat(row.provider_tags).slice(0, 12);
+  const classification = row.classification;
+  const tags = Array.from(new Set(classification.topics.concat(row.channels, row.provider_tags))).slice(0, 16);
   const tone = newsTemperature(row.published_at_utc, Date.parse(asOf));
-  const kind = isNewsKind(row.news_kind) ? row.news_kind : "market";
+  const kind = isNewsKind(row.news_kind) ? row.news_kind : classification.kind;
   return <article className="news-reader">
-    <header><div className="news-reader-kicker"><NewsTemperatureTag tone={tone} /><MarketTime includeDate value={row.published_at_utc} /><NewsKind kind={kind} /><span>{row.url_domain || "News"}</span></div><h1>{title}</h1><div className="news-reader-byline"><span>{row.author || "Unknown author"}</span><TickerList presentations={presentations} tickers={detailTickers} /></div>{tags.length ? <div className="news-reader-tags">{tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}</header>
+    <header><div className="news-reader-kicker"><NewsTemperatureTag tone={tone} /><MarketTime includeDate value={row.published_at_utc} /><NewsKind classification={{ ...classification, kind }} /><span>{row.url_domain || "News"}</span></div><h1>{title}</h1><div className="news-reader-byline"><span>{row.author || "Unknown author"}</span><TickerList presentations={presentations} tickers={detailTickers} /></div>{tags.length ? <div className="news-reader-tags">{tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}<ClassificationEvidence classification={classification} /></header>
     {body ? <div className="news-reader-body">{articleParagraphs(body).map((paragraph, index) => <p key={`${index}-${paragraph.slice(0, 20)}`}>{paragraph}</p>)}</div> : <NewsEmpty label="This record contains title metadata but no readable article text." />}
     <footer>{row.article_url ? <a href={row.article_url} rel="noreferrer" target="_blank">Open original source <ExternalLink size={12} /></a> : null}</footer>
   </article>;
@@ -184,6 +198,7 @@ function useNewsQuery({ asOf, content, hours, kind, live, refreshKey, search, ti
     const queryAsOf = pageAsOf || (live ? new Date().toISOString() : asOf);
     const next = await api<NewsPayload>(`/api/trading/news${query({ as_of: queryAsOf, before: before || undefined, before_id: beforeId || undefined, content, kind: kind === "all" ? undefined : kind, limit: 100, lookback_hours: hours, search: search || undefined, ticker: ticker || undefined })}`, { signal, timeoutMs: 30000 });
     if (signal?.aborted) return;
+    setError("");
     setPayload(next); setRows((current) => before ? [...current, ...next.rows.filter((row) => !current.some((item) => item.canonical_news_id === row.canonical_news_id))] : next.rows);
   }, [asOf, content, hours, kind, live, search, ticker]);
   useEffect(() => { const controller = new AbortController(); setLoading(true); setError(""); load("", "", controller.signal).catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); }); return () => controller.abort(); }, [load, refreshKey]);
@@ -234,11 +249,16 @@ function NewsStatus({ compact, state }: { compact?: boolean; state: ReturnType<t
 function NewsEmpty({ label }: { label: string }) { return <div className="news-empty"><Newspaper size={18} /><span>{label}</span></div>; }
 function TickerList({ presentations, tickers = [] }: { presentations: Record<string, TickerPresentation>; tickers?: string[] }) { return <span className="news-tickers">{tickers.slice(0, 3).map((ticker) => <b key={ticker}><TickerIdentity logoUrl={presentations[ticker]?.logo_url} ticker={ticker} /></b>)}{tickers.length > 3 ? <b>+{tickers.length - 3}</b> : !tickers.length ? "—" : null}</span>; }
 function NewsTextState({ row }: { row: NewsRow }) { return <span className="news-text-state" data-state={row.is_title_only ? "title" : "full"}>{row.is_title_only ? "Title" : row.has_pdf ? "PDF" : row.has_external_text ? "Full" : "Body"}</span>; }
-function NewsKind({ kind = "market" }: { kind?: NewsRow["news_kind"] }) { const values = { ai: { Icon: Bot, label: "AI" }, analyst: { Icon: TrendingUp, label: "Analyst" }, company: { Icon: Building2, label: "Company" }, insights: { Icon: Lightbulb, label: "Insights" }, market: { Icon: Globe2, label: "Market" }, multi: { Icon: Layers3, label: "Multi" } }; const value = values[kind]; return <span className="news-kind" data-kind={kind}><value.Icon size={11} />{value.label}</span>; }
+function NewsKind({ classification }: { classification: NewsClassification }) { const values = { ai: { Icon: Bot, label: "AI" }, analyst: { Icon: TrendingUp, label: "Analyst" }, company: { Icon: Building2, label: classification.format === "earnings_flash" ? "Company earnings" : "Company" }, editorial: { Icon: Newspaper, label: "Editorial" }, insights: { Icon: Lightbulb, label: "Insights" }, market: { Icon: Globe2, label: classification.format === "trading_halt" ? "Trading halt" : "Market" }, multi: { Icon: Layers3, label: "Multi-company" }, regulatory: { Icon: FileCheck2, label: "Regulatory" }, why_moving: { Icon: Megaphone, label: "Why moving" } }; const value = values[classification.kind]; return <span className="news-kind" data-kind={classification.kind} title={`${Math.round(classification.confidence * 100)}% classification confidence`}><value.Icon size={11} />{value.label}</span>; }
+function NewsTopics({ compact = false, kind, topics = [] }: { compact?: boolean; kind?: NewsKindValue; topics?: string[] }) { const redundant = kind === "analyst" ? "analyst" : kind === "why_moving" ? "why moving" : kind === "ai" ? "AI generated" : ""; const relevant = topics.filter((topic) => topic !== redundant); const visible = relevant.slice(0, compact ? 1 : 2); if (!visible.length) return null; return <span className="news-topic-list">{visible.map((topic) => <span key={topic}>{topic}</span>)}{relevant.length > visible.length ? <span>+{relevant.length - visible.length}</span> : null}</span>; }
+function ClassificationEvidence({ classification }: { classification: NewsClassification }) { return <details className="news-classification-evidence"><summary>Why this label</summary><dl><dt>Origin</dt><dd>{readableLabel(classification.origin)}</dd><dt>Format</dt><dd>{readableLabel(classification.format)}</dd><dt>Scope</dt><dd>{readableLabel(classification.scope)}</dd><dt>Confidence</dt><dd>{Math.round(classification.confidence * 100)}%</dd>{classification.evidence.length ? <><dt>Evidence</dt><dd>{classification.evidence.join(" · ")}</dd></> : null}</dl></details>; }
 function NewsTemperatureTag({ tone }: { tone: NewsTemperature }) { const value = newsTemperaturePresentation(tone); return <span className="news-temperature" data-tone={tone}><value.Icon size={12} /><em>{value.label}</em></span>; }
 function newsTemperature(publishedAt: string, asOfMs: number): NewsTemperature { const publishedMs = Date.parse(publishedAt); const ageMinutes = Number.isFinite(publishedMs) && Number.isFinite(asOfMs) ? Math.max(0, (asOfMs - publishedMs) / 60_000) : Number.POSITIVE_INFINITY; return ageMinutes <= NEWS_HOT_MINUTES ? "hot" : ageMinutes <= NEWS_COLD_MINUTES ? "cold" : "old"; }
 function newsTemperaturePresentation(tone: NewsTemperature) { return tone === "hot" ? { Icon: Flame, label: "Hot" } : tone === "cold" ? { Icon: Snowflake, label: "Cold" } : { Icon: Clock3, label: "Old" }; }
-function isNewsKind(value: unknown): value is NewsKindValue { return ["ai", "analyst", "company", "insights", "market", "multi"].includes(String(value)); }
+function isNewsKind(value: unknown): value is NewsKindValue { return ["ai", "analyst", "company", "editorial", "insights", "market", "multi", "regulatory", "why_moving"].includes(String(value)); }
+function classificationFromRow(row: NewsRow): NewsClassification { if (row.classification) return row.classification; const kind = isNewsKind(row.news_kind) ? row.news_kind : "market"; return { confidence: row.classification_confidence ?? 0.65, evidence: row.classification_evidence ?? [], format: row.news_format ?? "general", is_company_news: row.is_company_news ?? (kind === "company" || kind === "regulatory"), kind, origin: row.news_origin ?? "unknown", scope: row.news_scope ?? ((row.ticker_link_sample?.length ?? 0) === 1 ? "single_ticker" : (row.ticker_link_sample?.length ?? 0) > 1 ? "multi_ticker" : "market_wide"), topics: row.news_topics ?? [], version: "news_rules_v1" }; }
+function isCompanyNews(row: NewsRow) { return classificationFromRow(row).is_company_news; }
+function readableLabel(value: string) { return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
 function articleParagraphs(value: string) { const explicit = value.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean); if (explicit.length > 1) return explicit; const sentences = value.match(/[^.!?]+(?:[.!?]+[\]"')]*|$)/g)?.map((item) => item.trim()).filter(Boolean) ?? [value]; const paragraphs: string[] = []; for (let index = 0; index < sentences.length; index += 4) paragraphs.push(sentences.slice(index, index + 4).join(" ")); return paragraphs; }
 function stringList(value: unknown): string[] { return Array.isArray(value) ? value.map(String).filter(Boolean) : []; }
 function sameExchangeDate(left: string, right: string) { return exchangeDateKey(left) === exchangeDateKey(right); }

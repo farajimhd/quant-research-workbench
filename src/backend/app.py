@@ -66,6 +66,7 @@ from src.backend.market_data_service import (
     source_scan,
 )
 from src.backend.news_service import ensure_benzinga_news_cache, news_at_payload
+from src.backend.news_classification import classify_news, classify_news_kind, news_classification_sql
 from src.backend.progress_model import build_progress_model
 from src.backend.qmd_gateway_client import (
     ENRICHED_QMD_TIMEFRAMES,
@@ -1901,6 +1902,7 @@ def trading_news_detail(canonical_news_id: str) -> dict[str, Any]:
             author,
             channels,
             provider_tags,
+            links,
             formatDateTime(published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
             multiIf(
                 notEmpty(normalized_full_text), normalized_full_text,
@@ -1925,6 +1927,7 @@ def trading_news_detail(canonical_news_id: str) -> dict[str, Any]:
     """
     ticker_rows = [json.loads(line) for line in clickhouse_status_query(ticker_query, timeout_seconds=NEWS_QUERY_TIMEOUT_SECONDS).splitlines() if line.strip()]
     source_row = rows[0]
+    classification = classify_news(source_row, len(ticker_rows))
     # Product APIs expose only decision-relevant presentation fields. Database,
     # table, storage-path, ingestion-diagnostic, and agent/chat implementation
     # details must never cross into a user-facing response contract.
@@ -1933,7 +1936,8 @@ def trading_news_detail(canonical_news_id: str) -> dict[str, Any]:
             "article_url": source_row.get("article_url") or "",
             "author": source_row.get("author") or "",
             "channels": source_row.get("channels") or [],
-            "news_kind": classify_news_kind(source_row, len(ticker_rows)),
+            "classification": classification.as_dict(),
+            "news_kind": classification.kind,
             "provider_tags": source_row.get("provider_tags") or [],
             "published_at_utc": source_row.get("published_at_utc") or "",
             "text": source_row.get("text") or "",
@@ -1975,8 +1979,8 @@ def trading_news_rows(
     if safe_content not in {"all", "full", "title"}:
         raise HTTPException(status_code=400, detail="content must be all, full, or title")
     safe_kind = kind.strip().lower()
-    if safe_kind not in {"all", "ai", "analyst", "company", "insights", "market", "multi"}:
-        raise HTTPException(status_code=400, detail="kind must be all, ai, analyst, company, insights, market, or multi")
+    if safe_kind not in {"all", "ai", "analyst", "company", "editorial", "insights", "market", "multi", "regulatory", "why_moving"}:
+        raise HTTPException(status_code=400, detail="kind is invalid")
 
     database = "q_live"
     normalized_table = "benzinga_news_normalized_v1"
@@ -2021,7 +2025,8 @@ def trading_news_rows(
         "arraySort(arrayDistinct(arrayFilter(value -> notEmpty(value), "
         "arrayMap(value -> upperUTF8(trimBoth(value)), n.tickers))))"
     )
-    news_kind_sql = news_kind_sql_expression(ticker_links_sql)
+    classification_sql = news_classification_sql(ticker_links_sql)
+    news_kind_sql = classification_sql["kind"]
     if safe_kind != "all":
         filters.append(f"({news_kind_sql}) = {sql_string(safe_kind)}")
         where_sql = " AND ".join(filters)
@@ -2037,6 +2042,13 @@ def trading_news_rows(
             {ticker_links_sql} AS ticker_link_sample,
             length(ticker_link_sample) AS ticker_link_count,
             {news_kind_sql} AS news_kind,
+            {classification_sql["scope"]} AS news_scope,
+            {classification_sql["origin"]} AS news_origin,
+            {classification_sql["format"]} AS news_format,
+            {classification_sql["topics"]} AS news_topics,
+            {classification_sql["company"]} AS is_company_news,
+            {classification_sql["confidence"]} AS classification_confidence,
+            {classification_sql["evidence"]} AS classification_evidence,
             n.has_external_text, n.has_pdf, n.is_title_only,
             lengthUTF8(n.normalized_full_text) AS full_text_chars,
             substring(n.normalized_full_text, 1, 320) AS text_preview
@@ -2066,33 +2078,6 @@ def trading_news_rows(
         "rows": rows,
         "window_start": window_start.isoformat().replace("+00:00", "Z"),
     }
-
-
-def news_kind_sql_expression(ticker_links_sql: str) -> str:
-    return f"""multiIf(
-        arrayExists(value -> lowerUTF8(value) IN ('benzai', 'ai generated', 'ai-generated'), n.provider_tags), 'ai',
-        arrayExists(value -> lowerUTF8(value) IN ('analyst ratings', 'price target', 'analyst color', 'initiation', 'reiteration', 'upgrades', 'downgrades'), n.channels), 'analyst',
-        arrayExists(value -> startsWith(lowerUTF8(trimBoth(value)), 'bzi-'), n.provider_tags), 'insights',
-        length({ticker_links_sql}) > 1, 'multi',
-        length({ticker_links_sql}) = 1, 'company',
-        'market'
-    )"""
-
-
-def classify_news_kind(row: dict[str, Any], ticker_count: int) -> str:
-    provider_tags = {str(value).strip().lower() for value in row.get("provider_tags") or []}
-    channels = {str(value).strip().lower() for value in row.get("channels") or []}
-    if provider_tags.intersection({"benzai", "ai generated", "ai-generated"}):
-        return "ai"
-    if channels.intersection({"analyst ratings", "price target", "analyst color", "initiation", "reiteration", "upgrades", "downgrades"}):
-        return "analyst"
-    if any(value.startswith("bzi-") for value in provider_tags):
-        return "insights"
-    if ticker_count > 1:
-        return "multi"
-    if ticker_count == 1:
-        return "company"
-    return "market"
 
 
 def clickhouse_json_each_row(query: str) -> list[dict[str, Any]]:

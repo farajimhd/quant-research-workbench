@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from src.backend.app import SERVICE_REGISTRY, classify_news_kind, service_websocket_url, trading_news_detail, trading_news_rows
+from src.backend.app import SERVICE_REGISTRY, service_websocket_url, trading_news_detail, trading_news_rows
+from src.backend.news_classification import classify_news, classify_news_kind
 
 
 class TradingNewsTests(unittest.TestCase):
@@ -43,6 +44,11 @@ class TradingNewsTests(unittest.TestCase):
         self.assertIn("NOT n.is_title_only", sql)
         self.assertIn("n.published_at_utc <= window_end", sql)
         self.assertIn("AS news_kind", sql)
+        self.assertIn("AS news_scope", sql)
+        self.assertIn("AS news_origin", sql)
+        self.assertIn("AS news_format", sql)
+        self.assertIn("AS news_topics", sql)
+        self.assertIn("AS is_company_news", sql)
         self.assertIn("'analyst'", sql)
         self.assertIn("'insights'", sql)
         self.assertIn("startsWith(lowerUTF8(trimBoth(value)), 'bzi-')", sql)
@@ -79,8 +85,41 @@ class TradingNewsTests(unittest.TestCase):
         self.assertEqual(classify_news_kind({"author": "Benzinga Insights", "provider_tags": ["bzi-ia"]}, 1), "insights")
         self.assertEqual(classify_news_kind({"channels": ["Analyst Ratings"], "provider_tags": ["bzi-ratings"]}, 1), "analyst")
         self.assertEqual(classify_news_kind({}, 2), "multi")
-        self.assertEqual(classify_news_kind({}, 1), "company")
+        self.assertEqual(classify_news_kind({}, 1), "market")
         self.assertEqual(classify_news_kind({}, 0), "market")
+
+    def test_single_ticker_editorial_story_is_not_company_news(self) -> None:
+        classification = classify_news(
+            {
+                "author": "Vandana Singh",
+                "channels": ["trading ideas", "movers", "news", "earnings", "guidance", "general", "top stories", "health care", "large cap"],
+                "provider_tags": ["why it's moving"],
+                "title": "HCA Healthcare Trims 2026 Profit Outlook, Stock Falls",
+            },
+            1,
+        )
+
+        self.assertEqual(classification.kind, "why_moving")
+        self.assertEqual(classification.origin, "editorial")
+        self.assertEqual(classification.format, "why_moving")
+        self.assertFalse(classification.is_company_news)
+        self.assertIn("earnings", classification.topics)
+        self.assertIn("guidance", classification.topics)
+
+    def test_direct_issuer_release_is_company_news(self) -> None:
+        classification = classify_news(
+            {
+                "channels": ["contracts"],
+                "links": ["https://www.businesswire.com/news/home/example"],
+                "text": "The company announced today that it was awarded a new contract.",
+                "title": "Acme wins new contract",
+            },
+            1,
+        )
+
+        self.assertEqual(classification.kind, "company")
+        self.assertEqual(classification.origin, "issuer")
+        self.assertTrue(classification.is_company_news)
 
     @patch("src.backend.app.clickhouse_status_query")
     def test_trading_detail_contract_excludes_internal_implementation_fields(self, query_mock) -> None:
@@ -93,6 +132,7 @@ class TradingNewsTests(unittest.TestCase):
                 "url_domain": "example.test",
                 "author": "Benzinga Insights",
                 "channels": ["news", "markets"],
+                "links": [],
                 "provider_tags": ["bzi-ia"],
                 "published_at_utc": "2026-07-14T09:44:00.000000Z",
                 "downloaded_at_utc": "2026-07-14T09:58:50.653569Z",
@@ -104,6 +144,7 @@ class TradingNewsTests(unittest.TestCase):
         payload = trading_news_detail("b2185e66008f39d6875a8f4449f82b7f")
 
         self.assertEqual(payload["article"]["news_kind"], "insights")
+        self.assertEqual(payload["article"]["classification"]["origin"], "automated")
         self.assertEqual(payload["article"]["text"], "Readable article body.")
         self.assertEqual(payload["tickers"], ["AAPL"])
         serialized = json.dumps(payload)
