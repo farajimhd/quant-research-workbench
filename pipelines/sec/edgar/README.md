@@ -121,6 +121,11 @@ exports instead of repeating ClickHouse transport after renderer-only failures.
 Genuinely empty submitted wrappers produce metadata-bearing presence records;
 observed visible content that disappears during rendering remains a fatal
 integrity error.
+The full rebuild checkpoints deterministic eight-row-group bundles, uses stable
+ClickHouse insert-deduplication tokens, and cooperatively stops active workers
+at bundle boundaries after the first failure. Legacy SEC `<S>/<C>` fixed-width
+tables, including unclosed captions, are rendered into labelled rows rather
+than being dropped as non-`TR` table text.
 
 The SEC gateway generates the same explicit shape so the workstation script does
 not depend on ambient shell defaults. `--resume-from-coverage` is enabled by default and records

@@ -46,6 +46,7 @@ DEFAULT_DATABASE = "q_live"
 DEFAULT_SOURCE_TABLE = "sec_filing_text_v3"
 DEFAULT_TARGET_TABLE = "sec_filing_text_rendered_v3"
 DEFAULT_MANIFEST_TABLE = "sec_filing_text_rendered_rebuild_manifest_v3"
+DEFAULT_BUNDLE_MANIFEST_TABLE = "sec_filing_text_rendered_rebuild_bundle_manifest_v3"
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_filing_text_rendered_v3_rebuild")
 DEFAULT_FILE_ROOT_WIN = Path("D:/market-data")
 DEFAULT_FILE_ROOT_CH = "/mnt/d/market-data"
@@ -125,6 +126,7 @@ class PartitionJob:
     source_table: str
     staging_table: str
     manifest_table: str
+    bundle_manifest_table: str
     clickhouse_url: str
     clickhouse_user: str
     clickhouse_password: str
@@ -136,6 +138,7 @@ class PartitionJob:
     max_memory_usage: int
     parquet_row_group_bytes: int
     parquet_file_bytes: int
+    row_groups_per_bundle: int
     max_rows_per_partition: int
     keep_temp_files: bool
 
@@ -143,6 +146,24 @@ class PartitionJob:
 @dataclass(frozen=True, slots=True)
 class PartitionResult:
     partition_id: int
+    source_rows: int
+    rendered_rows: int
+    excluded_rows: int
+    source_chars: int
+    rendered_chars: int
+    output_parts: int
+    wall_seconds: float
+    status: str
+    error: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class BundleResult:
+    partition_id: int
+    bundle_id: int
+    row_group_start: int
+    row_group_end: int
+    physical_rows: int
     source_rows: int
     rendered_rows: int
     excluded_rows: int
@@ -173,6 +194,7 @@ def parse_args() -> argparse.Namespace:
         help="Optional explicit staging table. By default each run gets an isolated run-specific table.",
     )
     parser.add_argument("--manifest-table", default=DEFAULT_MANIFEST_TABLE)
+    parser.add_argument("--bundle-manifest-table", default=DEFAULT_BUNDLE_MANIFEST_TABLE)
     parser.add_argument("--run-id", default="")
     parser.add_argument("--output-root-win", default=str(DEFAULT_OUTPUT_ROOT_WIN))
     parser.add_argument("--file-root-win", default=str(DEFAULT_FILE_ROOT_WIN))
@@ -183,6 +205,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-memory-usage", default=os.environ.get("SEC_RENDER_REBUILD_MAX_MEMORY", "32G"))
     parser.add_argument("--parquet-row-group-mib", type=int, default=128)
     parser.add_argument("--parquet-file-mib", type=int, default=1024)
+    parser.add_argument(
+        "--row-groups-per-bundle",
+        type=int,
+        default=int(os.environ.get("SEC_RENDER_ROW_GROUPS_PER_BUNDLE", "8")),
+        help="Durable render/insert checkpoint size; workers stop only between these bounded bundles.",
+    )
     parser.add_argument("--limit-partitions", type=int, default=0, help="Testing only; cutover is forbidden when set.")
     parser.add_argument("--max-rows-per-partition", type=int, default=0, help="Testing only; cutover is forbidden when set.")
     parser.add_argument("--keep-temp-files", action="store_true")
@@ -229,6 +257,7 @@ def main() -> int:
     )
     ensure_manifest_table(client, args)
     ensure_staging_table(client, args)
+    ensure_bundle_manifest_table(client, args)
     completed = load_completed_partitions(client, args, run_id)
     pending = [row for row in partitions if row["partition_id"] not in completed]
     print(f"resume completed={len(completed):,} pending={len(pending):,}", flush=True)
@@ -263,11 +292,18 @@ def main() -> int:
 
 
 def validate_args(args: argparse.Namespace) -> None:
-    for label in ("database", "source_table", "target_table", "staging_table", "manifest_table"):
+    for label in (
+        "database",
+        "source_table",
+        "target_table",
+        "staging_table",
+        "manifest_table",
+        "bundle_manifest_table",
+    ):
         value = str(getattr(args, label))
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
             raise SystemExit(f"--{label.replace('_', '-')} must be a simple ClickHouse identifier: {value!r}")
-    if args.workers < 1 or args.export_threads < 1 or args.insert_threads < 1:
+    if args.workers < 1 or args.export_threads < 1 or args.insert_threads < 1 or args.row_groups_per_bundle < 1:
         raise SystemExit("worker and thread counts must be positive")
     if args.parquet_row_group_mib < 1 or args.parquet_file_mib < args.parquet_row_group_mib:
         raise SystemExit("Parquet file size must be at least the row-group size")
@@ -580,6 +616,35 @@ ORDER BY (run_id, partition_id)
     )
 
 
+def ensure_bundle_manifest_table(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
+    client.execute(
+        f"""
+CREATE TABLE IF NOT EXISTS {table(args.database, args.bundle_manifest_table)}
+(
+    run_id String,
+    partition_id UInt32,
+    bundle_id UInt32,
+    row_group_start UInt32,
+    row_group_end UInt32,
+    renderer_version LowCardinality(String),
+    physical_rows UInt64,
+    source_rows UInt64,
+    rendered_rows UInt64,
+    excluded_rows UInt64,
+    source_chars UInt64,
+    rendered_chars UInt64,
+    output_parts UInt32,
+    status LowCardinality(String),
+    error String,
+    wall_seconds Float64,
+    updated_at_utc DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(updated_at_utc)
+ORDER BY (run_id, partition_id, bundle_id)
+"""
+    )
+
+
 def verify_clickhouse_file_root(client: ClickHouseHttpClient, args: argparse.Namespace, run_root: Path) -> None:
     probe_path = run_root / f"clickhouse_file_probe_{os.getpid()}.csv"
     probe_path.write_text("1\n", encoding="ascii")
@@ -605,10 +670,16 @@ def ensure_staging_table(client: ClickHouseHttpClient, args: argparse.Namespace)
         client,
         f"SELECT count() FROM system.tables WHERE database={sql_string(args.database)} AND name={sql_string(args.staging_table)}",
     )
-    if exists:
-        return
+    if not exists:
+        client.execute(
+            f"CREATE TABLE {table(args.database, args.staging_table)} AS {table(args.database, args.target_table)}"
+        )
+    # Bundle retries use deterministic insert tokens. Persist enough recent
+    # block ids for the complete rebuild so a crash between insert and
+    # checkpoint cannot create physical duplicate parts.
     client.execute(
-        f"CREATE TABLE {table(args.database, args.staging_table)} AS {table(args.database, args.target_table)}"
+        f"ALTER TABLE {table(args.database, args.staging_table)} MODIFY SETTING "
+        "non_replicated_deduplication_window=100000"
     )
 
 
@@ -637,6 +708,7 @@ def build_job(
         source_table=args.source_table,
         staging_table=args.staging_table,
         manifest_table=args.manifest_table,
+        bundle_manifest_table=args.bundle_manifest_table,
         clickhouse_url=args.clickhouse_url,
         clickhouse_user=args.user,
         clickhouse_password=args.password,
@@ -648,6 +720,7 @@ def build_job(
         max_memory_usage=parse_size_bytes(args.max_memory_usage),
         parquet_row_group_bytes=args.parquet_row_group_mib * 1024**2,
         parquet_file_bytes=args.parquet_file_mib * 1024**2,
+        row_groups_per_bundle=args.row_groups_per_bundle,
         max_rows_per_partition=args.max_rows_per_partition,
         keep_temp_files=bool(args.keep_temp_files),
     )
@@ -663,6 +736,8 @@ def run_jobs(
 ) -> list[PartitionResult]:
     if not jobs:
         return []
+    stop_path = rebuild_stop_path(Path(jobs[0].run_root))
+    stop_path.unlink(missing_ok=True)
     results: list[PartitionResult] = []
     completed = already_completed
     started = time.perf_counter()
@@ -787,7 +862,7 @@ def collect_partition_results(
             total_partitions=total_partitions,
             started=started,
         )
-        if result.status != "ok" and first_failure is None:
+        if result.status == "error" and first_failure is None:
             first_failure = result
     return first_failure
 
@@ -812,8 +887,8 @@ def print_partition_result(
 
 def print_run_failure(result: PartitionResult, *, active_renderers: int) -> None:
     print(
-        f"run_status=failed first_partition={result.partition_id} action=stop_new_exports "
-        f"active_renderers_to_drain={active_renderers} error={result.error!r}",
+        f"run_status=failed first_partition={result.partition_id} action=cooperative_stop_at_bundle_boundary "
+        f"active_renderers={active_renderers} error={result.error!r}",
         flush=True,
     )
 
@@ -844,7 +919,7 @@ def prepare_partition_export(client: ClickHouseHttpClient, job: PartitionJob) ->
     source_path = partition_root / f"source_{job.partition_id}.parquet"
     receipt_path = partition_root / "source_export.json"
     partition_root.mkdir(parents=True, exist_ok=True)
-    cleanup_partition_staging(client, job)
+    reset_invalidated_partition(client, job, partition_root)
     cleanup_temp_root(partition_root, keep_source=True)
     if validate_source_export(job, source_path, receipt_path):
         return True
@@ -860,6 +935,7 @@ def validate_source_export(job: PartitionJob, source_path: Path, receipt_path: P
         return False
     try:
         parquet = pq.ParquetFile(source_path)
+        source_read_error: Exception | None = None
         try:
             physical_rows = int(parquet.metadata.num_rows)
             schema_names = list(parquet.schema_arrow.names)
@@ -939,18 +1015,43 @@ def minimum_export_rows(job: PartitionJob) -> int:
 def invalidate_source_export(partition_root: Path, source_path: Path) -> None:
     source_path.unlink(missing_ok=True)
     (partition_root / "source_export.json").unlink(missing_ok=True)
+    (partition_root / "source_export_requires_bundle_reset").write_text(
+        "Source transport was invalidated; staged rows and bundle checkpoints must be reset before re-export.\n",
+        encoding="utf-8",
+    )
+
+
+def reset_invalidated_partition(client: ClickHouseHttpClient, job: PartitionJob, partition_root: Path) -> None:
+    marker = partition_root / "source_export_requires_bundle_reset"
+    if not marker.exists():
+        return
+    cleanup_partition_staging(client, job)
+    client.execute(
+        f"ALTER TABLE {table(job.database, job.bundle_manifest_table)} DELETE WHERE "
+        f"run_id={sql_string(job.run_id)} AND partition_id={job.partition_id} SETTINGS mutations_sync=2"
+    )
+    marker.unlink()
 
 
 def process_exported_partition(job: PartitionJob) -> PartitionResult:
     started = time.perf_counter()
+    try:
+        return _process_exported_partition(job)
+    except Exception as exc:  # noqa: BLE001
+        request_rebuild_stop(Path(job.run_root), job.partition_id, exc)
+        return failure_result(job, "render_or_insert", exc, started)
+
+
+def _process_exported_partition(job: PartitionJob) -> PartitionResult:
+    started = time.perf_counter()
     client = ClickHouseHttpClient(job.clickhouse_url, job.clickhouse_user, job.clickhouse_password)
     partition_root = Path(job.run_root) / "partitions" / str(job.partition_id)
     source_path = partition_root / f"source_{job.partition_id}.parquet"
-    output_root = partition_root / "rendered"
     try:
         source_parquet = pq.ParquetFile(source_path)
         try:
             physical_rows = int(source_parquet.metadata.num_rows)
+            row_group_count = int(source_parquet.metadata.num_row_groups)
         finally:
             source_parquet.close()
     except Exception:  # noqa: BLE001
@@ -961,38 +1062,189 @@ def process_exported_partition(job: PartitionJob) -> PartitionResult:
         Path(job.lookup_database_path),
         {row[2] for row in authority.values()},
     )
+    bundles = build_row_group_bundles(row_group_count, job.row_groups_per_bundle)
+    completed_bundles = load_completed_bundles(client, job)
+    validate_completed_bundle_prefix(completed_bundles, total_bundles=len(bundles))
+    seen_authority_keys = load_completed_bundle_authority_keys(
+        source_path,
+        bundles,
+        completed_bundles,
+        authority,
+    )
+    for bundle_id, row_group_start, row_group_end in bundles:
+        if bundle_id in completed_bundles:
+            continue
+        if rebuild_stop_path(Path(job.run_root)).exists():
+            return PartitionResult(
+                job.partition_id, 0, 0, 0, 0, 0, 0,
+                round(time.perf_counter() - started, 3), "stopped", "another worker requested stop",
+            )
+        try:
+            bundle = process_row_group_bundle(
+                client,
+                job,
+                source_path,
+                authority,
+                filing_forms,
+                seen_authority_keys,
+                bundle_id,
+                row_group_start,
+                row_group_end,
+            )
+            insert_bundle_manifest(client, job, bundle)
+        except Exception as exc:  # noqa: BLE001
+            request_rebuild_stop(Path(job.run_root), job.partition_id, exc)
+            failure = BundleResult(
+                job.partition_id, bundle_id, row_group_start, row_group_end,
+                0, 0, 0, 0, 0, 0, 0, 0.0, "error", f"{type(exc).__name__}: {exc}",
+            )
+            insert_bundle_manifest(client, job, failure)
+            return failure_result(job, f"bundle_{bundle_id}", exc, started)
+
+    try:
+        aggregate = load_bundle_aggregate(client, job, expected_bundles=len(bundles))
+        if not job.max_rows_per_partition and aggregate.source_rows != job.expected_rows:
+            raise RuntimeError(
+                f"authoritative source row mismatch expected={job.expected_rows} actual={aggregate.source_rows} "
+                f"physical={physical_rows}"
+            )
+        if aggregate.rendered_rows + aggregate.excluded_rows != aggregate.source_rows:
+            raise RuntimeError(
+                "partition accounting mismatch "
+                f"source={aggregate.source_rows} rendered={aggregate.rendered_rows} excluded={aggregate.excluded_rows}"
+            )
+    except Exception as exc:  # noqa: BLE001
+        request_rebuild_stop(Path(job.run_root), job.partition_id, exc)
+        return failure_result(job, "partition_accounting", exc, started)
+    result = PartitionResult(
+        partition_id=job.partition_id,
+        source_rows=aggregate.source_rows,
+        rendered_rows=aggregate.rendered_rows,
+        excluded_rows=aggregate.excluded_rows,
+        source_chars=aggregate.source_chars,
+        rendered_chars=aggregate.rendered_chars,
+        output_parts=aggregate.output_parts,
+        wall_seconds=round(time.perf_counter() - started, 3),
+        status="ok",
+    )
+    insert_partition_manifest(client, job, result)
+    if not job.keep_temp_files:
+        cleanup_temp_root(partition_root, keep_source=False)
+    return result
+
+
+def build_row_group_bundles(row_group_count: int, row_groups_per_bundle: int) -> list[tuple[int, int, int]]:
+    return [
+        (bundle_id, start, min(start + row_groups_per_bundle, row_group_count))
+        for bundle_id, start in enumerate(range(0, row_group_count, row_groups_per_bundle), start=1)
+    ]
+
+
+def validate_completed_bundle_prefix(completed_bundles: set[int], *, total_bundles: int) -> None:
+    if not completed_bundles:
+        return
+    if min(completed_bundles) < 1 or max(completed_bundles) > total_bundles:
+        raise RuntimeError(
+            f"completed bundle checkpoints are outside current inventory total={total_bundles} "
+            f"completed={sorted(completed_bundles)}"
+        )
+    expected = set(range(1, max(completed_bundles) + 1))
+    if completed_bundles != expected:
+        raise RuntimeError(
+            "completed bundle checkpoints are not a contiguous prefix; "
+            f"completed={sorted(completed_bundles)}"
+        )
+
+
+def load_completed_bundle_authority_keys(
+    source_path: Path,
+    bundles: list[tuple[int, int, int]],
+    completed_bundles: set[int],
+    authority: dict[tuple[str, str, str, str], tuple[str, int, str]],
+) -> set[tuple[str, str, str, str]]:
+    if not completed_bundles:
+        return set()
+    completed_row_groups = [
+        row_group
+        for bundle_id, start, end in bundles
+        if bundle_id in completed_bundles
+        for row_group in range(start, end)
+    ]
+    seen: set[tuple[str, str, str, str]] = set()
+    parquet = pq.ParquetFile(source_path)
+    try:
+        columns = [
+            "cik",
+            "accession_number",
+            "document_id",
+            "content_format",
+            "source_version_key",
+            "source_revision_rank",
+        ]
+        for batch in parquet.iter_batches(batch_size=8192, row_groups=completed_row_groups, columns=columns):
+            for source in batch.to_pylist():
+                key = source_authority_key(source)
+                authority_row = authority.get(key)
+                if authority_row is None:
+                    continue
+                source_version_key, source_revision_rank, _ = authority_row
+                if (
+                    str(source.get("source_version_key") or "") == source_version_key
+                    and int(source.get("source_revision_rank") or 0) == source_revision_rank
+                ):
+                    seen.add(key)
+    finally:
+        parquet.close()
+    return seen
+
+
+def process_row_group_bundle(
+    client: ClickHouseHttpClient,
+    job: PartitionJob,
+    source_path: Path,
+    authority: dict[tuple[str, str, str, str], tuple[str, int, str]],
+    filing_forms: dict[str, str],
+    seen_authority_keys: set[tuple[str, str, str, str]],
+    bundle_id: int,
+    row_group_start: int,
+    row_group_end: int,
+) -> BundleResult:
+    started = time.perf_counter()
+    bundle_root = source_path.parent / "rendered" / f"bundle_{bundle_id:05d}"
+    if bundle_root.exists():
+        cleanup_temp_root(bundle_root, keep_source=False)
     writer = ParquetShardWriter(
         dataset_name="rendered_text_v3",
         target_table=job.staging_table,
-        output_directory=output_root,
-        filename_prefix=f"rendered_{job.partition_id}",
+        output_directory=bundle_root,
+        filename_prefix=f"rendered_{job.partition_id}_{bundle_id:05d}",
         columns=TARGET_COLUMNS,
-        archive_index=job.partition_id,
+        archive_index=bundle_id,
         row_group_bytes=job.parquet_row_group_bytes,
         file_bytes=job.parquet_file_bytes,
         compression_level=1,
     )
-    excluded_rows = 0
-    source_rows = 0
-    source_chars = 0
-    rendered_chars = 0
+    physical_rows = source_rows = excluded_rows = source_chars = rendered_chars = 0
     extracted_at = datetime.now(UTC)
     try:
         parquet = pq.ParquetFile(source_path)
-        source_read_error: Exception | None = None
         try:
-            batches = iter(parquet.iter_batches(batch_size=8))
+            row_groups = list(range(row_group_start, row_group_end))
+            batches = iter(parquet.iter_batches(batch_size=8, row_groups=row_groups))
             while True:
                 try:
                     batch = next(batches)
-                    sources = batch.to_pylist()
                 except StopIteration:
                     break
                 except Exception as exc:  # noqa: BLE001
                     source_read_error = exc
                     break
+                sources = batch.to_pylist()
+                physical_rows += len(sources)
                 for source in sources:
                     key = source_authority_key(source)
+                    if key in seen_authority_keys:
+                        continue
                     authority_row = authority.get(key)
                     if authority_row is None:
                         continue
@@ -1002,7 +1254,7 @@ def process_exported_partition(job: PartitionJob) -> PartitionResult:
                         or int(source.get("source_revision_rank") or 0) != source_revision_rank
                     ):
                         continue
-                    del authority[key]
+                    seen_authority_keys.add(key)
                     source_rows += 1
                     source_text = str(source.get("source_text") or "")
                     source_chars += len(source_text)
@@ -1022,55 +1274,45 @@ def process_exported_partition(job: PartitionJob) -> PartitionResult:
                     if not text:
                         raise RuntimeError(
                             "renderer produced an unexpectedly empty non-structured document "
-                            f"document_id={source.get('document_id')} content_format={source.get('content_format')} "
-                            f"source_chars={len(source_text)} quality_flags={rendered.quality_flags}"
+                            f"document_id={source.get('document_id')} accession={source.get('accession_number')} "
+                            f"content_format={source.get('content_format')} source_chars={len(source_text)} "
+                            f"quality_flags={rendered.quality_flags}"
                         )
                     rendered_chars += len(text)
                     writer.append(build_rendered_row(source, text, rendered.quality_flags, job.run_id, extracted_at))
         finally:
             parquet.close()
         if source_read_error is not None:
-            invalidate_source_export(partition_root, source_path)
+            invalidate_source_export(source_path.parent, source_path)
             raise RuntimeError(
-                f"source Parquet read failed partition={job.partition_id}; export invalidated for retry"
+                f"source Parquet read failed partition={job.partition_id} bundle={bundle_id}; "
+                "export invalidated for retry"
             ) from source_read_error
         parts = writer.close()
     except Exception:
         writer.abort()
         raise
-
-    if authority and not job.max_rows_per_partition:
-        raise RuntimeError(
-            f"physical partition is missing {len(authority):,} authoritative source rows; "
-            f"sample={list(authority)[:5]}"
-        )
-    if not job.max_rows_per_partition and source_rows != job.expected_rows:
-        raise RuntimeError(
-            f"authoritative source row mismatch expected={job.expected_rows} actual={source_rows} "
-            f"physical={physical_rows}"
-        )
     rendered_rows = sum(int(part["rows"]) for part in parts)
     if rendered_rows + excluded_rows != source_rows:
         raise RuntimeError(
-            f"partition accounting mismatch source={source_rows} rendered={rendered_rows} excluded={excluded_rows}"
+            f"bundle accounting mismatch source={source_rows} rendered={rendered_rows} excluded={excluded_rows}"
         )
-    for part in parts:
-        insert_rendered_part(client, job, Path(part["path"]))
-
-    result = PartitionResult(
-        partition_id=job.partition_id,
-        source_rows=source_rows,
-        rendered_rows=rendered_rows,
-        excluded_rows=excluded_rows,
-        source_chars=source_chars,
-        rendered_chars=rendered_chars,
-        output_parts=len(parts),
-        wall_seconds=round(time.perf_counter() - started, 3),
-        status="ok",
+    for part_index, part in enumerate(parts, start=1):
+        insert_rendered_part(client, job, Path(part["path"]), bundle_id=bundle_id, part_index=part_index)
+    wall_seconds = round(time.perf_counter() - started, 3)
+    result = BundleResult(
+        job.partition_id, bundle_id, row_group_start, row_group_end, physical_rows,
+        source_rows, rendered_rows, excluded_rows, source_chars, rendered_chars,
+        len(parts), wall_seconds, "ok",
     )
-    insert_partition_manifest(client, job, result)
+    print(
+        f"partition={job.partition_id} bundle={bundle_id} "
+        f"row_groups={row_group_start}:{row_group_end} source={source_rows:,} rendered={rendered_rows:,} "
+        f"chars_per_second={source_chars / wall_seconds if wall_seconds else 0:.0f} wall={wall_seconds:.1f}s",
+        flush=True,
+    )
     if not job.keep_temp_files:
-        cleanup_temp_root(partition_root, keep_source=False)
+        cleanup_temp_root(bundle_root, keep_source=False)
     return result
 
 
@@ -1192,7 +1434,14 @@ def build_rendered_row(source: dict[str, Any], text: str, quality_flags: list[st
     }
 
 
-def insert_rendered_part(client: ClickHouseHttpClient, job: PartitionJob, path: Path) -> None:
+def insert_rendered_part(
+    client: ClickHouseHttpClient,
+    job: PartitionJob,
+    path: Path,
+    *,
+    bundle_id: int,
+    part_index: int,
+) -> None:
     clickhouse_path = windows_path_to_clickhouse_path(path, Path(job.file_root_win), job.file_root_ch)
     columns = ", ".join(quote_ident(column) for column in TARGET_COLUMNS)
     client.execute(
@@ -1201,9 +1450,87 @@ INSERT INTO {table(job.database, job.staging_table)} ({columns})
 SELECT {columns}
 FROM file({sql_string(clickhouse_path)}, 'Parquet')
 SETTINGS max_threads={job.insert_threads}, max_memory_usage={job.max_memory_usage},
-         input_format_parquet_use_native_reader_v3=1, input_format_parquet_verify_checksums=1
+         input_format_parquet_use_native_reader_v3=1, input_format_parquet_verify_checksums=1,
+         insert_deduplication_token={sql_string(f'{job.run_id}:{job.partition_id}:{bundle_id}:{part_index}')}
 """
     )
+
+
+def load_completed_bundles(client: ClickHouseHttpClient, job: PartitionJob) -> set[int]:
+    text = client.execute(
+        f"SELECT bundle_id FROM {table(job.database, job.bundle_manifest_table)} FINAL "
+        f"WHERE run_id={sql_string(job.run_id)} AND partition_id={job.partition_id} "
+        f"AND renderer_version={sql_string(SEC_PACKED_TEXT_RENDERER_VERSION)} AND status='ok' FORMAT TSV"
+    )
+    return {int(line) for line in text.splitlines() if line.strip()}
+
+
+def insert_bundle_manifest(client: ClickHouseHttpClient, job: PartitionJob, result: BundleResult) -> None:
+    row = {
+        **asdict(result),
+        "run_id": job.run_id,
+        "renderer_version": SEC_PACKED_TEXT_RENDERER_VERSION,
+        "updated_at_utc": datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+    }
+    client.execute(
+        f"INSERT INTO {table(job.database, job.bundle_manifest_table)} "
+        "SETTINGS date_time_input_format='best_effort' FORMAT JSONEachRow\n"
+        f"{json.dumps(row, separators=(',', ':'))}"
+    )
+
+
+def load_bundle_aggregate(
+    client: ClickHouseHttpClient,
+    job: PartitionJob,
+    *,
+    expected_bundles: int,
+) -> PartitionResult:
+    row = query_one(
+        client,
+        f"""
+SELECT count() AS bundles, sum(source_rows) AS source_rows, sum(rendered_rows) AS rendered_rows,
+       sum(excluded_rows) AS excluded_rows, sum(source_chars) AS source_chars,
+       sum(rendered_chars) AS rendered_chars, sum(output_parts) AS output_parts,
+       sum(wall_seconds) AS wall_seconds
+FROM {table(job.database, job.bundle_manifest_table)} FINAL
+WHERE run_id={sql_string(job.run_id)} AND partition_id={job.partition_id}
+  AND renderer_version={sql_string(SEC_PACKED_TEXT_RENDERER_VERSION)} AND status='ok'
+""",
+    )
+    if int(row["bundles"]) != expected_bundles:
+        raise RuntimeError(
+            f"bundle checkpoint mismatch expected={expected_bundles} actual={row['bundles']}"
+        )
+    return PartitionResult(
+        job.partition_id,
+        int(row["source_rows"]),
+        int(row["rendered_rows"]),
+        int(row["excluded_rows"]),
+        int(row["source_chars"]),
+        int(row["rendered_chars"]),
+        int(row["output_parts"]),
+        float(row["wall_seconds"]),
+        "ok",
+    )
+
+
+def rebuild_stop_path(run_root: Path) -> Path:
+    return run_root / "STOP_REQUESTED.json"
+
+
+def request_rebuild_stop(run_root: Path, partition_id: int, exc: Exception) -> None:
+    path = rebuild_stop_path(run_root)
+    temporary = path.with_suffix(f".{os.getpid()}.tmp")
+    payload = {
+        "partition_id": partition_id,
+        "error": f"{type(exc).__name__}: {exc}",
+        "requested_at_utc": datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+    }
+    temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    try:
+        temporary.replace(path)
+    except OSError:
+        temporary.unlink(missing_ok=True)
 
 
 def insert_partition_manifest(client: ClickHouseHttpClient, job: PartitionJob, result: PartitionResult) -> None:
@@ -1368,6 +1695,15 @@ def load_or_create_run_manifest(
             raise RuntimeError(
                 f"resume configuration differs from run manifest expected={expected_identity} actual={actual_identity}"
             )
+        recorded_bundle_size = payload.get("row_groups_per_bundle")
+        if recorded_bundle_size is None:
+            payload["row_groups_per_bundle"] = args.row_groups_per_bundle
+            manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        elif int(recorded_bundle_size) != args.row_groups_per_bundle:
+            raise RuntimeError(
+                "resume bundle size differs from run manifest "
+                f"expected={recorded_bundle_size} actual={args.row_groups_per_bundle}"
+            )
         if "filing_watermark" not in payload:
             raise RuntimeError(
                 "this run predates the bounded filing-form lookup; start a new run without --run-id"
@@ -1397,6 +1733,7 @@ def load_or_create_run_manifest(
         "staging_table": args.staging_table,
         "manifest_table": args.manifest_table,
         "workers": args.workers,
+        "row_groups_per_bundle": args.row_groups_per_bundle,
         "source_watermark": asdict(watermark),
         "filing_watermark": asdict(filing_watermark),
         "partitions": partitions,

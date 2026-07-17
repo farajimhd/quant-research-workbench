@@ -17,6 +17,7 @@ from pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild import (
     SOURCE_COLUMNS,
     FilingWatermark,
     PartitionResult,
+    build_row_group_bundles,
     build_rendered_row,
     export_source_partition,
     load_or_create_run_manifest,
@@ -24,13 +25,67 @@ from pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild import (
     load_partition_authority,
     prepare_lookup_database,
     prepare_partition_export,
+    rebuild_stop_path,
+    request_rebuild_stop,
+    reset_invalidated_partition,
     run_jobs,
     staging_table_for_run,
+    validate_completed_bundle_prefix,
 )
 from pipelines.sec.edgar.sec_pipeline.text_renderer import SEC_PACKED_TEXT_RENDERER_VERSION
 
 
 class SecRenderedV3RebuildTest(unittest.TestCase):
+    def test_row_group_bundles_are_bounded_and_cover_every_group_once(self) -> None:
+        bundles = build_row_group_bundles(19, 8)
+
+        self.assertEqual(bundles, [(1, 0, 8), (2, 8, 16), (3, 16, 19)])
+        covered = [group for _, start, end in bundles for group in range(start, end)]
+        self.assertEqual(covered, list(range(19)))
+
+    def test_completed_bundle_checkpoints_must_be_a_contiguous_prefix(self) -> None:
+        validate_completed_bundle_prefix({1, 2, 3}, total_bundles=3)
+        with self.assertRaisesRegex(RuntimeError, "not a contiguous prefix"):
+            validate_completed_bundle_prefix({1, 3}, total_bundles=3)
+
+    def test_stop_request_is_atomic_and_contains_failure_identity(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            request_rebuild_stop(root, 202001, RuntimeError("bad table"))
+
+            payload = rebuild_stop_path(root).read_text(encoding="utf-8")
+            self.assertIn('"partition_id": 202001', payload)
+            self.assertIn("RuntimeError: bad table", payload)
+            self.assertEqual(list(root.glob("*.tmp")), [])
+
+    def test_invalidated_export_resets_staging_and_bundle_checkpoints_once(self) -> None:
+        class RecordingClient:
+            def __init__(self) -> None:
+                self.sql: list[str] = []
+
+            def execute(self, sql: str) -> str:
+                self.sql.append(sql)
+                return ""
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            marker = root / "source_export_requires_bundle_reset"
+            marker.write_text("reset", encoding="utf-8")
+            client = RecordingClient()
+            job = SimpleNamespace(
+                database="q_live",
+                staging_table="stage_v3",
+                bundle_manifest_table="bundle_manifest_v3",
+                run_id="run",
+                partition_id=202001,
+            )
+            with patch("pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild.cleanup_partition_staging") as cleanup:
+                reset_invalidated_partition(client, job, root)
+
+            cleanup.assert_called_once_with(client, job)
+            self.assertIn("ALTER TABLE `q_live`.`bundle_manifest_v3` DELETE", client.sql[0])
+            self.assertFalse(marker.exists())
+
     def test_source_export_checks_parquet_pages_after_each_large_text_row(self) -> None:
         class RecordingClient:
             def __init__(self) -> None:
@@ -274,6 +329,7 @@ class SecRenderedV3RebuildTest(unittest.TestCase):
             staging_table="sec_filing_text_rendered_stage_test_v3",
             manifest_table="sec_filing_text_rendered_rebuild_manifest_v3",
             workers=1,
+            row_groups_per_bundle=8,
         )
         original = SourceWatermark(10, 100, 7, "2026-07-16 00:00:00.000", 123)
         changed = SourceWatermark(11, 101, 8, "2026-07-16 00:01:00.000", 456)

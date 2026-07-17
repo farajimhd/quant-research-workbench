@@ -48,10 +48,16 @@ database I/O with CPU rendering without allowing large source scans to compete
 for server memory. Increase the renderer workers to eight only after observing
 stable RAM, temporary disk, and ClickHouse merge pressure.
 
-The parent process owns each bounded monthly export. A renderer worker then
-owns that exported partition through v8 rendering, Parquet insertion,
-ClickHouse checkpoint, and temporary-file cleanup. A failed partition leaves
-the staging table and durable successful checkpoints intact. Each run owns a
+The parent process owns each bounded monthly export. A renderer worker processes
+that export as deterministic bundles of eight Parquet row groups. Every bundle
+is rendered, inserted, checkpointed in
+`sec_filing_text_rendered_rebuild_bundle_manifest_v3`, and cleaned before the
+next bundle starts. Completed bundles are skipped on same-run resume. Stable
+ClickHouse insert-deduplication tokens and a 100,000-block non-replicated
+deduplication window make a retry idempotent even if the process stopped after
+the insert committed but before its checkpoint was written. A failed bundle
+atomically writes `STOP_REQUESTED.json`; other workers stop at their next bundle
+boundary instead of draining an entire multi-hour month. Each run owns a
 separate staging table. The worker resolves each source `filing_id` through the
 run's compact form map so structured XML classification receives the
 authoritative parent form type. Only explicitly classified structured fund XML
@@ -81,8 +87,11 @@ filters. This is required because grouping 1,024 unusually large SEC text rows
 can exceed Parquet's uncompressed page limit even though the largest individual
 source row is about 601 MB. Partition submission is bounded to the renderer
 worker count. The first export, render, or insert failure stops new exports,
-drains only already active workers, and writes the failed stage and exception to
-the ClickHouse rebuild manifest.
+requests cooperative cancellation of active workers, and writes the exact
+partition, bundle, stage, and exception to the ClickHouse manifests. Bundle
+progress reports row-group bounds, source/rendered rows, source-character
+throughput, and wall time so CPU rendering speed is visible separately from
+ClickHouse export and insert time.
 
 Each completed source export now receives an atomic `source_export.json`
 receipt bound to the immutable run, source table, partition, expected logical
@@ -91,9 +100,11 @@ contract. Resume validates that receipt and the Parquet footer before reusing
 the export. Complete exports from runs created immediately before receipts were
 introduced are adopted only after the same structural and row-count checks.
 A Parquet read failure removes that partition's export and receipt after the
-reader closes, so only the damaged partition is re-exported. Renderer/content
-failures retain the valid source export and avoid repeating hours of ClickHouse
-transport.
+reader closes. Before re-export, the next resume resets only that month's staged
+rows and bundle checkpoints because a replacement Parquet file is not assumed
+to preserve physical row-group boundaries. Renderer/content failures retain
+the valid source export and every completed bundle, avoiding both ClickHouse
+transport and repeated rendering.
 
 Image-only HTML is not treated as an empty render. The canonical renderer
 preserves the HTML title plus every non-tracking image source, alt/title label,
@@ -119,13 +130,21 @@ state and the opening `<body>` ends it even when the submitter placed the
 closing `</head>` after the body. This prevents legal opinions and similar
 exhibits from being discarded as header metadata.
 
+Legacy SEC fixed-width HTML tables are also model-visible. Historical filings
+may use `<S>` and `<C>` column markers without `<TR>/<TD>` and may omit the
+closing `</CAPTION>`. The renderer uses those explicit SEC markers to separate
+caption/header lines from the body, removes only separator rules, and emits
+header-labelled rows. Accession `0001445546-20-000575`, document
+`exhibit_e2.txt`, now renders all `SERIES` and `EFFECTIVE DATE` pairs instead of
+producing an empty fatal result.
+
 ## Resume
 
 Use the `run_id` printed by the interrupted run:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_filing_text_rendered_v3_rebuild.py `
-  --run-id sec_render_v8_YYYYMMDD_HHMMSS `
+  --run-id sec_render_v8_20260716_151718 `
   --workers 4 `
   --execute `
   --cutover `

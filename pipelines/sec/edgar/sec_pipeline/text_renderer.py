@@ -146,6 +146,7 @@ class PackedTextResult:
 class _TableState:
     def __init__(self) -> None:
         self.caption_parts: list[str] = []
+        self.legacy_parts: list[str] = []
         self.rows: list[list[_TableCell]] = []
         self.current_row: list[_TableCell] | None = None
         self.current_cell_parts: list[str] | None = None
@@ -268,6 +269,11 @@ class _SecHTMLPackedTextParser(HTMLParser):
                 self.table.current_cell_parts.append(data)
             elif self.table.in_caption:
                 self.table.caption_parts.append(data)
+            else:
+                # Older SEC filings use fixed-width <S>/<C> table markup
+                # without TR/TD cells. Keep that submitted text so it can be
+                # reconstructed when no ordinary HTML rows are present.
+                self.table.legacy_parts.append(data)
             return
         self.buffer.append(data)
 
@@ -289,6 +295,11 @@ class _SecHTMLPackedTextParser(HTMLParser):
             return
         if tag == "caption":
             self.table.in_caption = True
+            return
+        if tag in {"s", "c"} and self.table.in_caption:
+            # SEC's historical fixed-width dialect commonly omits
+            # </CAPTION>; the column markers start the tabular body.
+            self.table.in_caption = False
             return
         if tag == "tr":
             self._finish_row()
@@ -354,7 +365,14 @@ class _SecHTMLPackedTextParser(HTMLParser):
         self.table.current_row = None
 
     def _emit_table_blocks(self, table: _TableState) -> None:
-        blocks = _render_table_blocks(table.rows, _clean_inline(" ".join(table.caption_parts)))
+        raw_caption = "".join(table.caption_parts)
+        caption = _clean_inline(raw_caption)
+        if table.rows:
+            blocks = _render_table_blocks(table.rows, caption)
+        elif table.legacy_parts:
+            blocks = _render_legacy_sec_fixed_width_table("".join(table.legacy_parts), raw_caption)
+        else:
+            blocks = _render_table_blocks([], caption)
         if blocks:
             self.table_count += 1
             self.blocks.extend(blocks)
@@ -572,6 +590,8 @@ def _render_table_blocks(rows: list[list[_TableCell]], caption: str) -> list[Ren
     cleaned_rows = [[_clean_inline(cell) for cell in row] for row in expanded_rows]
     cleaned_rows = [row for row in cleaned_rows if any(row)]
     if not cleaned_rows:
+        if caption and not _is_low_signal_text(caption):
+            return [RenderedBlock("table_caption", f"Table: {caption}")]
         return []
     blocks: list[RenderedBlock] = []
     if caption and not _is_low_signal_text(caption):
@@ -601,6 +621,45 @@ def _render_table_blocks(rows: list[list[_TableCell]], caption: str) -> list[Ren
             if text:
                 blocks.append(RenderedBlock("table_row", text))
     return blocks
+
+
+def _render_legacy_sec_fixed_width_table(source: str, raw_caption: str) -> list[RenderedBlock]:
+    """Render SEC's legacy <S>/<C> fixed-width tables without inventing cells."""
+    caption_rows = _fixed_width_rows(raw_caption)
+    body_rows = _fixed_width_rows(source)
+    header_index = max(
+        (
+            index
+            for index, row in enumerate(caption_rows)
+            if _looks_like_header_row([cell.text for cell in row])
+            and _following_rows_match_header(
+                [[cell.text for cell in row], *[[cell.text for cell in body_row] for body_row in body_rows]],
+                0,
+            )
+        ),
+        default=-1,
+    )
+    if header_index >= 0:
+        title = " ".join(cell.text for row in caption_rows[:header_index] for cell in row)
+        rows = [caption_rows[header_index], *body_rows]
+    else:
+        title = " ".join(cell.text for row in caption_rows for cell in row)
+        rows = body_rows
+    return _render_table_blocks(rows, _clean_inline(title))
+
+
+def _fixed_width_rows(source: str) -> list[list[_TableCell]]:
+    value = html.unescape(source or "").replace("\r\n", "\n").replace("\r", "\n")
+    rows: list[list[_TableCell]] = []
+    for raw_line in value.splitlines():
+        line = _repair_text(raw_line).strip()
+        if not line or _SEPARATOR_ONLY_RE.fullmatch(line):
+            continue
+        cells = [_clean_inline(cell) for cell in re.split(r"[ \t]{2,}", line)]
+        cells = [cell for cell in cells if cell]
+        if cells:
+            rows.append([_TableCell(cell) for cell in cells])
+    return rows
 
 
 def _expand_table_grid(rows: list[list[_TableCell]]) -> list[list[str]]:

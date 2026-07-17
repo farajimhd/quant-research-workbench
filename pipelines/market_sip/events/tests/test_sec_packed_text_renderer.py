@@ -112,17 +112,33 @@ class SecPackedTextRendererTests(unittest.TestCase):
         self.assertIn("source_payload_empty", empty.quality_flags)
         self.assertIn("source_characters=0", empty.packed_text)
 
-    def test_hidden_only_html_is_presence_only_but_visible_parser_loss_is_not_masked(self) -> None:
+    def test_hidden_only_html_is_presence_only_and_legacy_table_text_is_preserved(self) -> None:
         hidden = render_sec_packed_text(
             "<html><body><div style='display:none'>Hidden metadata</div></body></html>",
             "html",
         )
-        visible_parser_loss = render_sec_packed_text("<html><body><table>Important text</table></body></html>", "html")
+        legacy_table = render_sec_packed_text("<html><body><table>Important text</table></body></html>", "html")
 
         self.assertIn("html_nonvisible_only_document", hidden.quality_flags)
         self.assertIn("document_presence_only", hidden.quality_flags)
-        self.assertEqual(visible_parser_loss.packed_text, "")
-        self.assertIn("empty_rendered_text", visible_parser_loss.quality_flags)
+        self.assertEqual(legacy_table.packed_text, "Important text")
+        self.assertNotIn("empty_rendered_text", legacy_table.quality_flags)
+
+    def test_legacy_sec_fixed_width_table_preserves_caption_headers_and_rows(self) -> None:
+        source = """<TABLE><CAPTION>EXHIBIT A</CAPTION>
+<S>                                      <C>
+Fund                                     Effective Date
+--------------------------------------   ----------------
+First Trust Alpha Fund                   February 1, 2013
+First Trust Beta Fund                    March 4, 2014
+</TABLE>"""
+        result = render_sec_packed_text(source, "html", document_type="EX-99.E UNDR CONTR", form_type="485BPOS")
+
+        self.assertIn("Table: EXHIBIT A", result.packed_text)
+        self.assertIn("Columns: Fund; Effective Date", result.packed_text)
+        self.assertIn("Fund=First Trust Alpha Fund; Effective Date=February 1, 2013", result.packed_text)
+        self.assertIn("Fund=First Trust Beta Fund; Effective Date=March 4, 2014", result.packed_text)
+        self.assertIn("html_tables_rendered", result.quality_flags)
 
     def test_unclosed_html_table_is_finalized_before_empty_classification(self) -> None:
         result = render_sec_packed_text("<html><body><table><tr><td>Revenue<td>100", "html")
