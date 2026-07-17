@@ -2,6 +2,7 @@ import { Activity, BookOpen, ChevronRight, CircleHelp, Clock3, Radio, ShieldAler
 import { useEffect, useMemo, useState } from "react";
 
 import { api, query } from "../../api/client";
+import { QuoteChartGallery, TapeChartGallery } from "./MarketMicrostructureChartGallery";
 import { Modal } from "./Modal";
 import { TickerIdentityWithChange, useTickerPresentations } from "./TickerIdentity";
 
@@ -39,8 +40,6 @@ type QuoteUpdate = { ask: number; askExchange: number; askSize: number; bid: num
 type TapePrint = { conditionTokens: number[]; direction: Direction; exchange: number; id: number; issues: number; price: number; size: number; tape: number; timestampUs: number };
 type QuoteSignal = { detail: string; quote: QuoteUpdate; tone: Direction };
 type QuoteSignalGroup = { id: number; quote: QuoteUpdate; signals: QuoteSignal[]; tone: Direction };
-type QuoteStrengthPoint = { price: number; size: number; strength: number };
-type TapeVolumeLevel = { buy: number; mid: number; price: number; sell: number; total: number };
 
 type MarketContainerProps = { end?: string; settings: MarketEventSettings; start?: string; symbol: string };
 const EMPTY_REFERENCES: MarketReferences = { conditions: {}, exchanges: {} };
@@ -92,7 +91,6 @@ export function TapeContainer({ end, start, symbol }: MarketContainerProps) {
   const streak = aggressorStreak(chronological);
   const sizeTrend = halfWindowRatio(chronological.map((item) => item.size));
   const absorption = directionalVolume > 0 && Math.abs(buyShare - 0.5) >= 0.18 && Math.abs(priceDriftBps) < 1.5;
-  const volumeProfile = useMemo(() => tapeVolumeProfile(chronological), [chronological]);
   const presentations = useTickerPresentations([symbol]);
 
   return <section aria-label={`${symbol} time and sales`} className="market-microstructure tape-surface" data-market-state={connected}>
@@ -117,7 +115,7 @@ export function TapeContainer({ end, start, symbol }: MarketContainerProps) {
         <SignalMetric help="Possible absorption appears when aggressive flow is one-sided but price barely moves. It is a diagnostic, not proof of hidden liquidity." label="Absorption" tone="mid" value={absorption ? "Possible" : "Not detected"} />
       </div>
     </div>
-    <TapeVolumeProfile levels={volumeProfile} />
+    <TapeChartGallery trades={chronological} />
     {error && !prints.length ? <MicrostructureEmpty message={error} /> : prints.length ? <div className="microstructure-scroll">
       <table className="tape-table">
         <thead><tr><th>Time ET</th><th>Price</th><th>Size</th><th>Exchange</th><th>Condition</th></tr></thead>
@@ -146,7 +144,6 @@ export function QuotesContainer({ end, start, symbol }: MarketContainerProps) {
   const groups = useMemo(() => groupQuoteSignals(signals), [signals]);
   const [expandedGroups, setExpandedGroups] = useState<Set<number>>(() => new Set());
   const pressure = useMemo(() => quotePressureDimensions(chronological), [chronological]);
-  const strength = useMemo(() => quoteStrengthSeries(chronological), [chronological]);
   const presentations = useTickerPresentations([symbol]);
   const spread = current ? Math.max(0, current.ask - current.bid) : 0;
   const midpoint = current ? (current.ask + current.bid) / 2 : 0;
@@ -177,7 +174,7 @@ export function QuotesContainer({ end, start, symbol }: MarketContainerProps) {
       </div>
       <QuotePressurePanel dimensions={pressure} />
     </div>
-    <QuoteStrengthChart points={strength} />
+    <QuoteChartGallery quotes={chronological} />
     {error && !groups.length ? <MicrostructureEmpty message={error} /> : groups.length ? <div className="microstructure-scroll">
       <table className="quote-signal-table">
         <thead><tr><th>Time ET</th><th>Quote burst / liquidity event</th><th>Bid</th><th>Ask</th></tr></thead>
@@ -346,49 +343,6 @@ function QuotePressurePanel({ dimensions }: { dimensions: PressureDimension[] })
   return <div className="quote-pressure-panel" aria-label="Quote pressure dimensions"><header><MetricLabel help="Four normalized quote-only signals from −100% ask/down pressure to +100% bid/up pressure. The center marker is neutral; these are diagnostics, not a forecast." label="Liquidity pressure" /><strong data-tone={composite > 0.08 ? "buy" : composite < -0.08 ? "sell" : "mid"}>{pressureLabel(composite)}</strong></header><div>{dimensions.map((item) => <div className="pressure-dimension" key={item.label}><MetricLabel help={item.help} label={item.label} /><i aria-hidden="true"><b data-tone={item.value > 0.08 ? "buy" : item.value < -0.08 ? "sell" : "mid"} style={{ left: `${(clamp(item.value, -1, 1) + 1) * 50}%` }} /></i><strong data-tone={item.value > 0.08 ? "buy" : item.value < -0.08 ? "sell" : "mid"}>{item.value > 0 ? "+" : ""}{Math.round(item.value * 100)}%</strong></div>)}</div></div>;
 }
 
-function QuoteStrengthChart({ points }: { points: QuoteStrengthPoint[] }) {
-  const visible = points.slice(-64);
-  const current = visible.at(-1)?.strength ?? 0;
-  const width = 320;
-  const height = 58;
-  const center = height / 2;
-  const step = width / Math.max(1, visible.length);
-  const line = visible.map((point, index) => `${index * step + step / 2},${center - point.strength * (center - 4)}`).join(" ");
-  const tone: Direction = current > 0.08 ? "buy" : current < -0.08 ? "sell" : "mid";
-  return <details className="microstructure-visual quote-strength-visual" open>
-    <summary><span><strong>Quote pressure path</strong><small>Midpoint repricing + displayed-size change · latest 64 updates</small></span><b data-tone={tone}>{current > 0 ? "+" : ""}{Math.round(current * 100)}%</b></summary>
-    {visible.length ? <div className="quote-strength-chart" role="img" aria-label={`Recent quote pressure is ${Math.round(current * 100)} percent`}>
-      <svg preserveAspectRatio="none" viewBox={`0 0 ${width} ${height}`}>
-        <line className="strength-zero" x1="0" x2={width} y1={center} y2={center} />
-        {visible.map((point, index) => {
-          const magnitude = Math.abs(point.strength) * (center - 4);
-          return <rect className={point.strength >= 0 ? "strength-buy" : "strength-sell"} height={Math.max(1, magnitude)} key={index} width={Math.max(1, step - 1)} x={index * step} y={point.strength >= 0 ? center - magnitude : center} />;
-        })}
-        <polyline className="strength-line" fill="none" points={line} />
-      </svg>
-      <span className="strength-axis ask">Ask pressure</span><span className="strength-axis neutral">Neutral</span><span className="strength-axis bid">Bid pressure</span>
-    </div> : <span className="visual-empty">Two quote updates are required to calculate pressure strength.</span>}
-  </details>;
-}
-
-function TapeVolumeProfile({ levels }: { levels: TapeVolumeLevel[] }) {
-  const maxDirectional = Math.max(1, ...levels.flatMap((level) => [level.buy, level.sell]));
-  const delta = levels.reduce((sum, level) => sum + level.buy - level.sell, 0);
-  const tone: Direction = delta > 0 ? "buy" : delta < 0 ? "sell" : "mid";
-  return <details className="microstructure-visual tape-profile-visual" open>
-    <summary><span><strong>Executed volume by price</strong><small>At-bid volume left · at-ask volume right · nearest active levels</small></span><b data-tone={tone}>Δ {signedCompact(delta)}</b></summary>
-    {levels.length ? <div className="tape-volume-profile" role="img" aria-label={`Executed volume profile with net directional volume ${signedCompact(delta)} shares`}>
-      {levels.map((level) => <div className="volume-level" key={level.price}>
-        <span>{formatPrice(level.price)}</span>
-        <i className="volume-side sell"><b style={{ width: `${level.sell / maxDirectional * 100}%` }} /></i>
-        <i className="volume-side buy"><b style={{ width: `${level.buy / maxDirectional * 100}%` }} /></i>
-        <strong>{compactNumber(level.total)}</strong>
-        {level.mid > 0 ? <em title={`${formatTradeSize(level.mid)} between-market shares`}>+{compactNumber(level.mid)} mid</em> : null}
-      </div>)}
-    </div> : <span className="visual-empty">Trade prints are required to build the volume profile.</span>}
-  </details>;
-}
-
 function quotePressureDimensions(quotes: QuoteUpdate[]): PressureDimension[] {
   const signals = quoteSignals(quotes);
   const directional = signals.filter((signal) => signal.tone !== "mid");
@@ -524,41 +478,6 @@ function marketStatusPresentation(state: MarketState | null) {
     luldTone: luldState.includes("above") || luldState.includes("below") ? "halted" : luldState.includes("near") ? "warning" : "normal",
     tone: halted || blocked ? "halted" : resumed ? "resumed" : state ? "normal" : "unknown",
   };
-}
-
-function quoteStrengthSeries(quotes: QuoteUpdate[]): QuoteStrengthPoint[] {
-  let strength = 0;
-  return quotes.slice(-65).map((quote, index, rows) => {
-    const previous = rows[index - 1];
-    if (!previous) return null;
-    const midpoint = (quote.bid + quote.ask) / 2;
-    const previousMidpoint = (previous.bid + previous.ask) / 2;
-    const referenceSpread = Math.max(0.0001, quote.ask - quote.bid, previous.ask - previous.bid);
-    const price = clamp((midpoint - previousMidpoint) / (referenceSpread / 2), -1, 1);
-    const imbalance = (row: QuoteUpdate) => (row.bidSize - row.askSize) / Math.max(1, row.bidSize + row.askSize);
-    const size = clamp(imbalance(quote) - imbalance(previous), -1, 1);
-    const impulse = 0.7 * price + 0.3 * size;
-    strength = clamp(0.72 * strength + 0.55 * impulse, -1, 1);
-    return { price, size, strength };
-  }).filter((point): point is QuoteStrengthPoint => Boolean(point));
-}
-
-function tapeVolumeProfile(trades: TapePrint[]): TapeVolumeLevel[] {
-  const latestPrice = trades.at(-1)?.price;
-  if (!latestPrice) return [];
-  const tick = latestPrice >= 1 ? 0.01 : 0.0001;
-  const levels = new Map<number, TapeVolumeLevel>();
-  trades.forEach((trade) => {
-    const price = Math.round(trade.price / tick) * tick;
-    const level = levels.get(price) ?? { buy: 0, mid: 0, price, sell: 0, total: 0 };
-    level[trade.direction] += trade.size;
-    level.total += trade.size;
-    levels.set(price, level);
-  });
-  return [...levels.values()]
-    .sort((left, right) => Math.abs(left.price - latestPrice) - Math.abs(right.price - latestPrice) || right.total - left.total)
-    .slice(0, 7)
-    .sort((left, right) => right.price - left.price);
 }
 
 function percentile(values: number[], quantile: number) { if (!values.length) return 0; const sorted = [...values].sort((a, b) => a - b); return sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * quantile))]; }
