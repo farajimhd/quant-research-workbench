@@ -12,6 +12,7 @@ This package contains the historical Benzinga news workflow:
 - compact URL policy seeding and per-item pipeline smoke tests.
 - one-item canonical ClickHouse upsert into normalized news and ticker-link tables.
 - reusable item-level package used by live ingestion and concurrent gap fills.
+- deterministic phrase-presence and causal post-news reaction reference tables.
 
 Preferred module path:
 
@@ -66,5 +67,17 @@ Live package ingest:
 ```powershell
 python -m pipelines.news.benzinga.news_benzinga_live_ingest --once --limit-items 0
 ```
+
+News phrase/reaction reference build:
+
+```powershell
+python pipelines\news\benzinga\run_news_reaction_extract.py
+python pipelines\news\benzinga\run_news_reaction_extract.py --execute
+```
+
+The first command is a read-only coverage preflight. See the
+[v1 data contract](../../../docs/data_contracts/news_reaction_reference_v1.md)
+for canonical-bar prerequisites, causal horizons, table grains, quality rules,
+and the 2019-2025 training / 2026 holdout split.
 
 Old `research/mlops/news_benzinga_*.py` wrappers are archived under `pipelines/archive/legacy_wrappers/research_mlops/`. Do not use them for new runs.

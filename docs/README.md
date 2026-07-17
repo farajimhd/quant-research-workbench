@@ -26,4 +26,5 @@ Start here before changing historical ingestion, live services, or trading UI co
 - [Benzinga Legacy Normalized Table](data_contracts/benzinga_news_normalized_v1.md): current 42-column loaded-news contract.
 - [Benzinga News Ticker Join Table](data_contracts/benzinga_news_ticker_v1.md): derived ticker/time index for loaded Benzinga news.
 - [News URL Policy Table](data_contracts/news_url_policy_v1.md): compact domain/action policy used by item-level news processing.
+- [News Phrase and Reaction Reference v1](data_contracts/news_reaction_reference_v1.md): deterministic phrase-presence facts, causal intraday reaction labels, and the 2019-2025 training / 2026 holdout contract.
 - [SEC Filing Text Pipeline](data_contracts/sec_filing_text_pipeline.md): target SEC document and text contracts.
