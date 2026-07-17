@@ -103,6 +103,19 @@ def qmd_bars(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) -> dic
     return payload if isinstance(payload, dict) else {"ticker": symbol.upper(), "timeframe": timeframe, "history": [], "current": None}
 
 
+def qmd_compact_events(symbol: str, *, row_limit: int = 250) -> list[dict[str, Any]]:
+    """Return the live canonical compact-event buffer without changing its wire semantics."""
+    ticker = symbol.strip().upper()
+    if not ticker:
+        raise ValueError("symbol is required for QMD compact events.")
+    payload = qmd_get_json(
+        f"/snapshot/compact-events/{urllib.parse.quote(ticker)}",
+        {"limit": row_limit},
+        timeout=3,
+    )
+    return [row for row in payload if isinstance(row, dict)] if isinstance(payload, list) else []
+
+
 def qmd_chart_bars(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) -> dict[str, Any]:
     if timeframe in MACRO_QMD_TIMEFRAMES:
         return qmd_macro_bars(symbol, timeframe=timeframe, row_limit=row_limit)

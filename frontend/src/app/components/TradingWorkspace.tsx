@@ -6,9 +6,11 @@ import {
   ListChecks,
   LayoutGrid,
   Newspaper,
+  ListFilter,
   PanelTopOpen,
   RefreshCcw,
   ScanSearch,
+  Rows3,
   ScrollText,
   Settings2,
   ShoppingCart,
@@ -846,6 +848,8 @@ function createGlobalLayouts(ids: string[], instances: Record<string, WorkspaceC
   const placements: Record<WorkspaceContainerId, Omit<WorkspaceWindowLayout, "fullscreen" | "minimized" | "z">> = {
     scanner: { h: 250, w: columnWidth, x: margin, y: 0 },
     chart: { h: 410, w: columnWidth, x: margin + columnWidth + gap, y: 0 },
+    tape: { h: 360, w: columnWidth, x: margin, y: 1972 },
+    quotes: { h: 360, w: columnWidth, x: margin + columnWidth + gap, y: 1972 },
     portfolio: { h: 230, w: columnWidth, x: margin, y: 252 },
     orders: { h: 230, w: columnWidth, x: margin + columnWidth + gap, y: 412 },
     fills: { h: 220, w: columnWidth, x: margin, y: 484 },
@@ -1005,6 +1009,8 @@ function workspaceRootMinHeight(
 function containerIcon(id: WorkspaceContainerId) {
   const icons = {
     chart: BarChart3,
+    tape: ListFilter,
+    quotes: Rows3,
     fills: ListChecks,
     journal: ScrollText,
     news: Newspaper,

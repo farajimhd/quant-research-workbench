@@ -75,6 +75,7 @@ from src.backend.qmd_gateway_client import (
     normalize_qmd_macro_bar_snapshot,
     qmd_catalogs,
     qmd_chart_bars,
+    qmd_compact_events,
     qmd_indicators,
     qmd_service_status,
     qmd_status,
@@ -4582,6 +4583,24 @@ def trading_canvas_live_chart(symbol: str, timeframe: str = "1m", row_limit: int
     }
 
 
+@app.get("/api/trading/canvas-market-events/{symbol}")
+def trading_canvas_market_events(
+    symbol: str,
+    row_limit: int = Query(default=250, ge=1, le=1000),
+) -> dict[str, Any]:
+    ticker = symbol.strip().upper()
+    if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
+        raise HTTPException(status_code=400, detail="symbol must be a valid ticker")
+    try:
+        return {
+            "events": qmd_compact_events(ticker, row_limit=row_limit),
+            "source": "qmd-gateway",
+            "symbol": ticker,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.get("/api/trading/canvas-live-chart/history")
 def trading_canvas_live_chart_history(
     symbol: str,
@@ -4692,6 +4711,32 @@ async def trading_canvas_live_chart_stream(websocket: WebSocket, stream: str, sy
     except Exception as exc:
         try:
             await websocket.send_json({"error": f"QMD live {stream} stream unavailable: {exc}"})
+            await websocket.close(code=1011)
+        except Exception:
+            return
+
+
+@app.websocket("/api/trading/canvas-market-events/stream/{symbol}")
+async def trading_canvas_market_events_stream(websocket: WebSocket, symbol: str) -> None:
+    await websocket.accept()
+    ticker = symbol.strip().upper()
+    if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
+        await websocket.send_json({"error": "Invalid market-event stream request."})
+        await websocket.close(code=1008)
+        return
+    try:
+        upstream_url = qmd_websocket_url("/stream/compact-events")
+        async with websockets.connect(upstream_url, ping_interval=20, ping_timeout=20, max_size=2 * 1024 * 1024) as upstream:
+            await websocket.send_json({"status": "connected", "ticker": ticker})
+            async for message in upstream:
+                payload = json.loads(message.decode("utf-8") if isinstance(message, bytes) else message)
+                if not isinstance(payload, dict) or payload.get("ticker") == ticker or "warning" in payload or "error" in payload:
+                    await websocket.send_json(payload)
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        try:
+            await websocket.send_json({"error": f"QMD compact-event stream unavailable: {exc}"})
             await websocket.close(code=1011)
         except Exception:
             return

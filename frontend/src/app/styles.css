@@ -21755,3 +21755,43 @@ button {
   .news-table th:nth-child(5), .news-table td:nth-child(5), .news-table th:nth-child(6), .news-table td:nth-child(6) { display: none; }
   .ticker-news-feed article p { display: none; }
 }
+
+/* Canvas market microstructure containers */
+.market-microstructure { background: var(--surface); color: var(--foreground); display: grid; font-variant-numeric: tabular-nums; grid-template-rows: auto auto minmax(0, 1fr); height: 100%; min-height: 0; overflow: hidden; }
+.microstructure-header { align-items: center; border-bottom: 1px solid var(--border); display: flex; gap: 10px; justify-content: space-between; min-width: 0; padding: 7px 9px; }
+.microstructure-header > div { display: grid; gap: 2px; min-width: 0; }
+.microstructure-header small { color: var(--muted-foreground); font-size: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.microstructure-header > span { align-items: center; color: var(--muted-foreground); display: inline-flex; flex: 0 0 auto; font-size: 8px; gap: 4px; letter-spacing: .06em; text-transform: uppercase; }
+.microstructure-header > span[data-state="live"] { color: var(--success); }
+.microstructure-header > span[data-state="reconnecting"] { color: var(--warning); }
+.tape-summary, .quote-topline { background: var(--surface-alt); border-bottom: 1px solid var(--border); display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.tape-summary > div, .quote-topline > div { display: grid; gap: 2px; min-width: 0; padding: 6px 9px; }
+.tape-summary > div:not(:last-child), .quote-topline > div:not(:last-child) { border-right: 1px solid var(--border); }
+.tape-summary small, .quote-topline small { color: var(--muted-foreground); font-size: 7px; letter-spacing: .06em; text-transform: uppercase; }
+.tape-summary strong, .quote-topline strong { font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-tone="buy"] strong { color: var(--success); }
+[data-tone="sell"] strong { color: var(--danger); }
+.microstructure-scroll { min-height: 0; overflow: auto; scrollbar-gutter: stable; }
+.tape-table, .quote-ladder-table { border-collapse: collapse; min-width: 100%; table-layout: fixed; width: 100%; }
+.tape-table th, .quote-ladder-table th { background: var(--surface); border-bottom: 1px solid var(--border); color: var(--muted-foreground); font-size: 7px; font-weight: 600; letter-spacing: .04em; padding: 5px 7px; position: sticky; text-align: right; text-transform: uppercase; top: 0; z-index: 1; }
+.tape-table th:first-child, .quote-ladder-table th:first-child { text-align: left; }
+.tape-table td, .quote-ladder-table td { border-bottom: 1px solid color-mix(in oklab, var(--border) 55%, transparent); font-size: 9px; height: 22px; overflow: hidden; padding: 3px 7px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.tape-table td:first-child, .quote-ladder-table td:first-child { color: var(--muted-foreground); text-align: left; }
+.tape-table tbody tr:hover, .quote-ladder-table tbody tr:hover { background: var(--surface-alt); }
+.tape-table .numeric, .quote-ladder-table .numeric { font-weight: 600; }
+.tape-table .price span { border-radius: 50%; display: inline-block; height: 5px; margin-right: 5px; width: 5px; }
+.tape-table tr[data-direction="buy"] .price { color: var(--success); }
+.tape-table tr[data-direction="buy"] .price span { background: var(--success); }
+.tape-table tr[data-direction="sell"] .price { color: var(--danger); }
+.tape-table tr[data-direction="sell"] .price span { background: var(--danger); }
+.tape-table tr[data-direction="mid"] .price span { background: var(--muted-foreground); }
+.quote-ladder-table { min-width: 620px; }
+.quote-ladder-table th:nth-child(2), .quote-ladder-table th:nth-child(7), .quote-ladder-table td:nth-child(2), .quote-ladder-table td:nth-child(7) { color: var(--muted-foreground); width: 54px; }
+.quote-ladder-table .bid-price { color: var(--success); }
+.quote-ladder-table .ask-price { color: var(--danger); }
+.quote-ladder-table tr[data-current="true"] { background: color-mix(in oklab, var(--primary) 8%, var(--surface)); }
+.quote-ladder-table .bid-size, .quote-ladder-table .ask-size { isolation: isolate; position: relative; }
+.quote-ladder-table .bid-size i, .quote-ladder-table .ask-size i { bottom: 3px; opacity: .2; position: absolute; top: 3px; z-index: -1; }
+.quote-ladder-table .bid-size i { background: var(--success); right: 0; }
+.quote-ladder-table .ask-size i { background: var(--danger); left: 0; }
+.microstructure-empty { align-items: center; color: var(--muted-foreground); display: flex; flex-direction: column; font-size: 9px; gap: 7px; justify-content: center; min-height: 120px; padding: 16px; text-align: center; }

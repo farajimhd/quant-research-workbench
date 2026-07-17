@@ -2,6 +2,8 @@ export type TradingWorkspaceMode = "live" | "paper" | "replay" | "backtest" | "b
 
 export type WorkspaceContainerId =
   | "chart"
+  | "tape"
+  | "quotes"
   | "scanner"
   | "strategy"
   | "portfolio"
@@ -160,6 +162,24 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
     modes: allModes,
     defaultOpen: { live: true, paper: true, replay: true, backtest_debug: true },
     sourceByMode: marketSourceByMode,
+  },
+  {
+    id: "tape",
+    title: "Tape",
+    description: "Live time-and-sales prints with size, venue, tape, quality flags, and trade direction inferred from the preceding NBBO.",
+    linkScope: "single-symbol",
+    modes: allModes,
+    defaultOpen: {},
+    sourceByMode: Object.fromEntries(allModes.map((mode) => [mode, liveBinding("Current canonical trade events from QMD Live", [qmdLive])])),
+  },
+  {
+    id: "quotes",
+    title: "Quotes",
+    description: "Live consolidated NBBO updates with best bid and ask prices, sizes, venues, spread, and update time; this is not venue-level depth.",
+    linkScope: "single-symbol",
+    modes: allModes,
+    defaultOpen: {},
+    sourceByMode: Object.fromEntries(allModes.map((mode) => [mode, liveBinding("Current consolidated NBBO events from QMD Live", [qmdLive])])),
   },
   {
     id: "scanner",
