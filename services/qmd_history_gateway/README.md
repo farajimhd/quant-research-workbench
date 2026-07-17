@@ -90,6 +90,7 @@ and `1h`.
 - `GET /snapshot/macro-bars/{ticker}?start=...&end=...&as_of=...&timeframe=1d`
 - `GET /snapshot/chart-macro-bars/{ticker}?start=...&end=...&as_of=...&timeframe=1d|1mo` (bounded chart history; monthly rows aggregate durable daily macro families)
 - `GET /snapshot/compact-events/{ticker}?start=...&end=...&limit=...`
+- `GET /snapshot/microstructure-forecast/{ticker}?start=...&end=...&limit=1024` (the shared deterministic 25-, 100-, and 500-event next-midpoint forecast contract used by live QMD, strategies, and Canvas)
 - `GET /snapshot/bars/{ticker}?start=...&end=...&timeframe=1m&limit=...` (bars plus canonical QMD bar indicators)
 - `WS /stream/compact-events?start=...&end=...&tickers=AAPL,MSFT`
 - `WS /stream/events?start=...&end=...&tickers=AAPL,MSFT`

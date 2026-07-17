@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from src.backend.qmd_gateway_client import normalize_qmd_macro_bar_snapshot, qmd_compact_events, qmd_live_market_state, qmd_websocket_url
+from src.backend.qmd_gateway_client import normalize_qmd_macro_bar_snapshot, qmd_compact_events, qmd_live_market_state, qmd_microstructure_forecast, qmd_websocket_url
 
 
 class QmdGatewayClientTests(unittest.TestCase):
@@ -20,6 +20,20 @@ class QmdGatewayClientTests(unittest.TestCase):
 
         self.assertEqual(qmd_compact_events("aapl", row_limit=50), [{"ticker": "AAPL", "arrival_sequence": 7}])
         get_json.assert_called_once_with("/snapshot/compact-events/AAPL", {"limit": 50}, timeout=3)
+
+    @patch("src.backend.qmd_gateway_client.qmd_get_json")
+    def test_microstructure_forecast_uses_canonical_qmd_route(self, get_json) -> None:
+        get_json.return_value = {"method": "deterministic_microstructure_v1", "horizons": []}
+
+        self.assertEqual(
+            qmd_microstructure_forecast("aapl"),
+            {"method": "deterministic_microstructure_v1", "horizons": []},
+        )
+        get_json.assert_called_once_with(
+            "/snapshot/microstructure-forecast/AAPL",
+            {"limit": 1_024},
+            timeout=3,
+        )
 
     def test_macro_snapshot_projects_trade_family_and_current_bar(self) -> None:
         result = normalize_qmd_macro_bar_snapshot(

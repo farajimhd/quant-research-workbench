@@ -108,6 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let trade_aggregation_rules = compact_references
         .trade_aggregation_rules()
         .map_err(startup_error)?;
+    let compact_event_decoder = compact_references.decoder();
     let market = SharedMarketState::new();
     let bars = SharedBarStore::new(
         config.bar_timeframes.clone(),
@@ -128,7 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             max_rows: config.product_cache_max_rows,
         },
         config.intraday_bar_shard_count,
-        trade_aggregation_rules,
+        trade_aggregation_rules.clone(),
         ConditionClassifier::training_aligned(),
     );
     let indicators = SharedIndicatorStore::new(
@@ -290,6 +291,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (shutdown_sender, mut shutdown_receiver) = watch::channel(false);
     let app = app(AppState {
         bars,
+        compact_event_decoder,
         compact_event_store: compact_event_store.clone(),
         compact_events: compact_event_sender,
         config: config.clone(),
@@ -306,6 +308,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         scanner,
         scanner_events: scanner_sender,
         shutdown: shutdown_sender,
+        trade_aggregation_rules,
     });
 
     let listener = tokio::net::TcpListener::bind(bind).await?;

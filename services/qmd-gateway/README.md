@@ -169,6 +169,18 @@ quote/trade persistence is intentionally optional and is not part of the default
 coverage repair contract. The compact event row is the durable live equivalent
 of the historical `market_sip_compact.events_YYYY` training tables.
 
+Strategies that need an explainable short-horizon directional feature can call
+`GET /snapshot/microstructure-forecast/{ticker}?limit=1024`. QMD returns the
+same deterministic `deterministic_microstructure_v1` contract used by QMD
+History and Canvas for 25-, 100-, and 500-event horizons. Each horizon includes
+the signed score, direction class, strength, confidence, regime, absorption
+flag, observation duration, and five normalized inputs: quote-flow imbalance,
+microprice lean, eligible trade-flow imbalance, persistence, and realized
+midpoint response. The fixed score weights are 35%, 20%, 20%, 15%, and 10%,
+respectively. This is a next-midpoint-direction feature, not an order
+instruction, return forecast, or price target; strategies must still apply
+market-state, LULD, spread, risk, and execution gates.
+
 ## After-Hours Maintenance
 
 The QMD maintenance source of truth for historical event availability is
@@ -591,6 +603,7 @@ GET http://127.0.0.1:8795/snapshot/scanner-primitives?limit=250
 GET http://127.0.0.1:8795/snapshot/ticker/AAPL
 GET http://127.0.0.1:8795/snapshot/bars/AAPL?timeframe=1m&limit=500
 GET http://127.0.0.1:8795/snapshot/indicators/AAPL?timeframe=1m&limit=500
+GET http://127.0.0.1:8795/snapshot/microstructure-forecast/AAPL?limit=1024
 GET http://127.0.0.1:8795/indicator-catalog
 GET http://127.0.0.1:8795/signal-catalog
 ```

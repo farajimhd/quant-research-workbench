@@ -9,6 +9,7 @@ from src.backend.trading_runtime_service import (
     historical_compact_events,
     historical_latest_coverage,
     historical_market_state,
+    historical_microstructure_forecast,
     historical_ticker_change,
     historical_preflight,
     historical_window_preview,
@@ -94,6 +95,33 @@ class HistoricalTradingServiceTests(unittest.TestCase):
                 "start": "2026-07-14T04:00:00-04:00",
                 "end": "2026-07-14T09:45:00-04:00",
                 "limit": 500,
+                "tail": "true",
+            },
+            timeout=15,
+        )
+
+    @patch("src.backend.trading_runtime_service._historical_gateway_get")
+    def test_microstructure_forecast_uses_shared_history_gateway_contract(self, gateway_get) -> None:
+        gateway_get.return_value = {
+            "schema_version": 1,
+            "method": "deterministic_microstructure_v1",
+            "ticker": "AAPL",
+            "horizons": [{"horizon_events": 25, "direction": "up"}],
+        }
+
+        payload = historical_microstructure_forecast(
+            "aapl",
+            start="2026-07-14T04:00:00-04:00",
+            end="2026-07-14T09:45:00-04:00",
+        )
+
+        self.assertEqual(payload["method"], "deterministic_microstructure_v1")
+        gateway_get.assert_called_once_with(
+            "/snapshot/microstructure-forecast/AAPL",
+            {
+                "start": "2026-07-14T04:00:00-04:00",
+                "end": "2026-07-14T09:45:00-04:00",
+                "limit": 1_024,
                 "tail": "true",
             },
             timeout=15,

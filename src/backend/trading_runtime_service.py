@@ -531,6 +531,25 @@ def historical_compact_events(
     return [row for row in payload if isinstance(row, dict)]
 
 
+def historical_microstructure_forecast(
+    ticker: str,
+    *,
+    start: str,
+    end: str,
+    row_limit: int = 1_024,
+) -> dict[str, Any]:
+    """Return the shared QMD deterministic forecast at a historical cutoff."""
+    resolved_ticker = _historical_ticker(ticker)
+    payload = _historical_gateway_get(
+        f"/snapshot/microstructure-forecast/{urllib.parse.quote(resolved_ticker)}",
+        {"start": start, "end": end, "limit": row_limit, "tail": "true"},
+        timeout=15,
+    )
+    if not isinstance(payload, dict):
+        raise RuntimeError("QMD History microstructure forecast response must be an object")
+    return payload
+
+
 def historical_market_state(ticker: str, *, start: str, end: str) -> dict[str, Any]:
     """Return QMD-derived halt/resume and estimated LULD state at a historical cutoff."""
     resolved_ticker = _historical_ticker(ticker)

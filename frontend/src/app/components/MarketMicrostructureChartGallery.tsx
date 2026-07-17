@@ -1,4 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
+import { CircleHelp } from "lucide-react";
+
+import { Modal } from "./Modal";
 
 type Direction = "buy" | "mid" | "sell";
 export type MicroQuote = { ask: number; askSize: number; bid: number; bidSize: number; timestampUs: number };
@@ -33,16 +36,15 @@ export function TapeChartGallery({ trades }: { trades: MicroTrade[] }) {
 
 function ChartGallery({ charts, defaultId, empty, kind }: { charts: ChartChoice[]; defaultId: string; empty: string; kind: string }) {
   const [selectedId, setSelectedId] = useState(defaultId);
+  const [guideOpen, setGuideOpen] = useState(false);
   const selected = charts.find((chart) => chart.id === selectedId) ?? charts[0];
   return <details className="microstructure-visual micro-chart-gallery" open>
     <summary><span><strong>{kind} chart comparison</strong><small>Select a view and read its guide; collapse this panel whenever you need more table rows.</small></span><b>{charts.length} views</b></summary>
     {selected ? <div className="micro-chart-lab">
       <div aria-label={`${kind} chart choices`} className="micro-chart-tabs" role="tablist">{charts.map((chart) => <button aria-selected={chart.id === selected.id} key={chart.id} onClick={() => setSelectedId(chart.id)} role="tab" type="button">{chart.label}</button>)}</div>
-      <section className="micro-chart-guide" aria-label={`How to read ${selected.label}`}>
-        <header><span><strong>{selected.label}</strong><small>{selected.question}</small></span>{selected.value ? <b>{selected.value}</b> : null}</header>
-        <div><GuidePoint label="Read" text={selected.read} tone="mid" /><GuidePoint label="Bullish evidence" text={selected.bullish} tone="buy" /><GuidePoint label="Bearish evidence" text={selected.bearish} tone="sell" /><GuidePoint label="Do not overread" text={selected.caution} tone="warning" /></div>
-      </section>
+      <header className="micro-chart-heading"><span><strong>{selected.label}</strong><small>{selected.question}</small></span><div>{selected.value ? <b>{selected.value}</b> : null}<button aria-label={`How to read ${selected.label}`} onClick={() => setGuideOpen(true)} type="button"><CircleHelp size={12} /> Guide</button></div></header>
       <div className="micro-chart-stage">{selected.chart}</div>
+      {guideOpen ? <Modal className="micro-chart-guide-modal" onClose={() => setGuideOpen(false)} title={`How to read: ${selected.label}`}><div className="micro-chart-guide"><GuidePoint label="Read" text={selected.read} tone="mid" /><GuidePoint label="Bullish evidence" text={selected.bullish} tone="buy" /><GuidePoint label="Bearish evidence" text={selected.bearish} tone="sell" /><GuidePoint label="Do not overread" text={selected.caution} tone="warning" /></div></Modal> : null}
     </div> : <span className="visual-empty">{empty}</span>}
   </details>;
 }

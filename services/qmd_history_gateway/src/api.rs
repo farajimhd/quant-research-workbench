@@ -19,6 +19,7 @@ use qmd_core::compact_event::LiveCompactEvent;
 use qmd_core::market_products::{
     parse_resolution_us, ConditionBarSnapshot, FamilyBarSnapshot, MacroBarSnapshot,
 };
+use qmd_core::microstructure_forecast::{forecast_compact_events, MicrostructureForecastSnapshot};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -118,6 +119,10 @@ pub fn app(state: AppState) -> Router {
             "/snapshot/compact-events/{ticker}",
             get(compact_event_snapshot),
         )
+        .route(
+            "/snapshot/microstructure-forecast/{ticker}",
+            get(microstructure_forecast_snapshot),
+        )
         .route("/snapshot/bars/{ticker}", get(bar_snapshot))
         .route("/snapshot/chart-bars/{ticker}", get(chart_bar_snapshot))
         .route(
@@ -213,6 +218,26 @@ async fn compact_event_snapshot(
     }
     .map_err(service_error)?;
     Ok(Json(events))
+}
+
+async fn microstructure_forecast_snapshot(
+    Path(ticker): Path<String>,
+    Query(query): Query<HistoryQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<MicrostructureForecastSnapshot>, ApiError> {
+    let ticker = normalize_ticker(&ticker)?;
+    let window = window(&query.start, &query.end, vec![ticker])?;
+    let events = state
+        .source
+        .fetch_latest(&window, query.limit.unwrap_or(5_000).clamp(500, 100_000))
+        .await
+        .map_err(service_error)?;
+    Ok(Json(forecast_compact_events(
+        &events,
+        &state.source.decoder(),
+        &state.source.trade_aggregation_rules(),
+        "qmd-history-gateway",
+    )))
 }
 
 async fn bar_snapshot(
