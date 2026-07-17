@@ -95,12 +95,23 @@ chunks execute through separate ClickHouse HTTP clients with
 divides it across active workers instead of assigning the full thread count to
 every query. Each query uses event-date and ticker predicate pushdown, decodes
 only the required trade fields, and calculates all horizons in one insert.
+Canonical SIP tickers are already uppercase, so the raw event predicate remains
+on the stored `ticker` ordering key; applying a case-conversion function there
+would prevent primary-key pruning. Each day worker splits requested news/ticker
+links into 32 deterministic shards. Link-based partitioning also distributes
+days where one heavily covered ticker has many articles. It materializes a short-lived MergeTree cache for
+one shard at a time, containing compact, sorted event tuples by ticker and event
+date. Every news-relative anchor, terminal, high, low, and aligned SPY
+observation is selected from those arrays before the cache is dropped. This
+avoids both fixed bars and the many-to-many news-horizon/event join expansion
+while bounding decoded-event memory.
 
-Defaults are four workers, 24 total ClickHouse threads, and a 24 GiB total
+Defaults are four workers, eight total ClickHouse threads, and a 24 GiB total
 reaction-query memory budget. The launcher divides both CPU threads and memory
-across active workers. Reduce workers when the ClickHouse host is shared or
-storage is saturated; increase the day chunk size only after measuring
-representative query memory.
+across active workers. Join blocks are capped at 1,024 rows so array-valued
+cache records cannot trigger multi-GiB allocation spikes. Reduce workers when
+the ClickHouse host is shared or storage is saturated; increase the day chunk
+size only after measuring representative query memory.
 
 ## Run
 

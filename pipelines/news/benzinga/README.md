@@ -79,8 +79,17 @@ The reaction build reads canonical compact events directly. The anchor is the
 last eligible trade strictly before publication; terminal/high/low values use
 all exact events in each news-relative interval, including partial seconds at
 both boundaries. Price eligibility reuses QMD's condition-token last/extrema
-rules, including extended-hours Form T. Four bounded day-chunk workers share the configured total
-ClickHouse CPU and memory budgets. The execution command shows Rich progress on
+rules, including extended-hours Form T. Each day worker divides requested
+news/ticker links into deterministic shards and materializes one short-lived, compact
+event cache for the active shard. The cache contains one sorted timestamp array
+per stored uppercase ticker and event date; every horizon is resolved causally
+from those arrays before the cache is dropped. The raw ticker predicate stays
+on the ClickHouse ordering key, avoiding both whole-market scans and a
+many-to-many event join. Four bounded day-chunk workers share the configured total
+ClickHouse CPU and memory budgets. Defaults are 32 news-link shards, eight total
+ClickHouse threads, and 24 GiB shared across workers. Reaction joins use bounded
+1,024-row blocks so array-valued cache records cannot trigger multi-GiB
+allocation spikes. The execution command shows Rich progress on
 an interactive terminal and automatically falls back to timestamped text output
 when redirected. Use `--progress-layout text` to force the text form.
 

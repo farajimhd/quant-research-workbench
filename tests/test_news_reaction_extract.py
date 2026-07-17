@@ -11,12 +11,15 @@ from pipelines.news.benzinga.news_reaction_extract import (
     expected_event_tables,
     feature_insert_sql,
     event_source_table,
+    event_cache_create_sql,
     event_coverage_sql,
     monitored_execute,
     parse_args,
     reaction_insert_sql,
     stats_insert_sql,
+    settings_sql,
     target_table_sql,
+    validate_args,
 )
 from pipelines.news.benzinga.news_reaction_phrase_dictionary import PHRASE_RULES, validate_phrase_rules
 
@@ -53,22 +56,32 @@ class NewsReactionExtractTests(unittest.TestCase):
         self.assertIn("bitAnd(event_meta, 1) = 1", sql)
         self.assertIn("sip_timestamp_us > 0", sql)
         self.assertIn("size_primary > 0", sql)
+        self.assertIn("AND (ticker = 'SPY' OR ticker IN", sql)
+        self.assertNotIn("upperUTF8(ticker) = 'SPY'", sql)
         self.assertIn("update_last_tokens", sql)
         self.assertIn("update_high_low_tokens", sql)
         self.assertIn("fully_price_eligible_tokens", sql)
         self.assertIn("modifier_int = 12", sql)
-        self.assertIn("ASOF LEFT JOIN last_points", sql)
+        self.assertIn("point_arrays AS", sql)
+        self.assertIn("arraySort(event -> tupleElement(event, 1), groupArrayIf", sql)
+        self.assertNotIn("ASOF", sql)
         self.assertNotIn("intraday_base_bars", sql)
         self.assertNotIn("label_resolution_us", sql)
         self.assertNotIn("bucket_index", sql.split("news_base AS", 1)[0])
         self.assertNotIn("quote_bid", sql)
         self.assertNotIn("quote_ask", sql)
         self.assertNotIn("nbbo_mid", sql)
-        self.assertIn("w.pub_us >= p.last_trade_timestamp_us + toUInt64(1)", sql)
-        self.assertIn("p.first_trade_timestamp_us > a.pub_us", sql)
-        self.assertIn("p.last_trade_timestamp_us <= a.target_us", sql)
-        self.assertIn("maxIf(toNullable(p.trade_high)", sql)
-        self.assertIn("minIf(toNullable(p.trade_low)", sql)
+        self.assertIn("tupleElement(event, 1) < pub_us", sql)
+        self.assertIn("tupleElement(event, 1) > pub_us", sql)
+        self.assertIn("tupleElement(event, 1) <= target_us, market_events.all_market_events", sql)
+        self.assertIn("arrayFilter(event -> tupleElement(event, 1) <= day_window.target_us", sql)
+        self.assertIn("ON day_window.ticker = p.ticker", sql)
+        self.assertIn("ifNull(o.overlapping_news_count, toUInt32(0)) AS overlap_count", sql)
+        self.assertIn("overlap_count AS overlapping_news_count", sql)
+        self.assertNotIn("ifNull(overlapping_news_count, 0) AS overlapping_news_count", sql)
+        self.assertIn("arrayMax(event -> if(", sql)
+        self.assertIn("arrayMin(event -> if(", sql)
+        self.assertIn("arrayCount(event ->", sql)
         self.assertIn("'eligible_trade_event' AS price_basis", sql)
         self.assertIn("c.is_session AS is_session", sql)
         self.assertNotIn("trade_fallback", sql)
@@ -89,9 +102,63 @@ class NewsReactionExtractTests(unittest.TestCase):
         self.assertIn("events_2026", source)
         self.assertNotIn("events_2024", source)
         self.assertEqual(self.args.reaction_workers, 4)
+        self.assertEqual(self.args.reaction_ticker_shards, 32)
         self.assertEqual(self.args.reaction_chunk_days, 1)
-        self.assertEqual(self.args.max_threads // self.args.reaction_workers, 6)
+        self.assertEqual(self.args.max_threads // self.args.reaction_workers, 2)
         self.assertEqual(self.args.max_memory_usage, "24G")
+        bounded_settings = settings_sql(self.args, experimental_join=True)
+        self.assertIn("max_block_size = 1024", bounded_settings)
+        self.assertIn("max_joined_block_size_rows = 1024", bounded_settings)
+
+    def test_event_cache_is_sharded_and_reused_by_reaction_query(self) -> None:
+        cache_name = "_news_reaction_event_cache_test"
+        cache_sql = event_cache_create_sql(
+            self.args,
+            dt.date(2019, 1, 2),
+            dt.date(2019, 1, 3),
+            cache_name,
+            ticker_shard_index=3,
+            ticker_shard_count=8,
+        )
+        self.assertIn(f"CREATE TABLE `q_live`.`{cache_name}`", cache_sql)
+        self.assertIn("ENGINE = MergeTree", cache_sql)
+        self.assertIn("cityHash64(canonical_news_id, upperUTF8(ticker)) % toUInt64(8) = toUInt64(3)", cache_sql)
+        self.assertNotIn("window_event_dates", cache_sql)
+        cached_reaction_sql = reaction_insert_sql(
+            self.args,
+            dt.date(2019, 1, 2),
+            dt.date(2019, 1, 3),
+            ticker_shard_index=3,
+            ticker_shard_count=8,
+            event_cache_table_name=cache_name,
+        )
+        self.assertIn(f"FROM `q_live`.`{cache_name}`", cached_reaction_sql)
+        self.assertIn("cityHash64(t.canonical_news_id, upperUTF8(t.ticker)) % toUInt64(8) = toUInt64(3)", cached_reaction_sql)
+
+    def test_reaction_ticker_shards_must_be_complete(self) -> None:
+        with self.assertRaises(ValueError):
+            reaction_insert_sql(
+                self.args,
+                dt.date(2019, 1, 2),
+                dt.date(2019, 1, 3),
+                ticker_shard_index=0,
+            )
+        with self.assertRaises(ValueError):
+            reaction_insert_sql(
+                self.args,
+                dt.date(2019, 1, 2),
+                dt.date(2019, 1, 3),
+                ticker_shard_index=8,
+                ticker_shard_count=8,
+            )
+
+    def test_reaction_only_range_does_not_require_stats_range(self) -> None:
+        args = parse_args([
+            "--stages", "reactions",
+            "--start-date", "2019-01-02",
+            "--end-date", "2019-01-03",
+        ])
+        validate_args(args, ("reactions",))
 
     def test_event_authority_is_clamped_to_publication_years(self) -> None:
         expected = expected_event_tables(self.args)
