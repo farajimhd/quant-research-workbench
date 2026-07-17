@@ -20,6 +20,7 @@ import type {
   PointerEvent,
   ReactNode,
 } from "react";
+import { useEffect, useRef } from "react";
 
 export type WorkspaceWindowId = string;
 
@@ -88,6 +89,18 @@ const MIN_WINDOW_HEIGHT = 240;
 const KEYBOARD_MOVE_STEP = 10;
 const KEYBOARD_MOVE_STEP_LARGE = 40;
 
+function useWorkspaceWindowFocus(id: WorkspaceWindowId, onFocus: (id: WorkspaceWindowId) => void) {
+  const windowRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const windowElement = windowRef.current;
+    if (!windowElement) return;
+    const focusAfterClick = () => queueMicrotask(() => onFocus(id));
+    windowElement.addEventListener("click", focusAfterClick);
+    return () => windowElement.removeEventListener("click", focusAfterClick);
+  }, [id, onFocus]);
+  return windowRef;
+}
+
 export function WorkspaceWindow({
   canPopOut = true,
   canvasTargets,
@@ -112,6 +125,7 @@ export function WorkspaceWindow({
   selected = false,
   title,
 }: WorkspaceWindowProps) {
+  const windowRef = useWorkspaceWindowFocus(id, onFocus);
   const edge = compact ? 0 : 12;
   const minimizedHeight = compact ? 24 : 44;
   const geometry = layout.fullscreen
@@ -139,6 +153,7 @@ export function WorkspaceWindow({
   function startDrag(event: PointerEvent<HTMLDivElement>) {
     if (layout.fullscreen) return;
     if ((event.target as HTMLElement).closest("button, summary, input, select, textarea, a, [role='menu']")) return;
+    onFocus(id);
     const originX = event.clientX;
     const originY = event.clientY;
     const startX = layout.x;
@@ -206,8 +221,8 @@ export function WorkspaceWindow({
       data-linked={linkColor ? "true" : "false"}
       data-selected={selected ? "true" : "false"}
       data-window-kind={kind ?? (id.startsWith("chart-") ? "chart" : id)}
+      ref={windowRef}
       style={style}
-      onPointerDown={() => onFocus(id)}
     >
       <div
         aria-label={`Move ${title}. Use arrow keys to reposition; hold Shift for larger steps.`}
@@ -324,6 +339,7 @@ export function WorkspaceGroupWindow({
   selected = false,
   title,
 }: WorkspaceGroupWindowProps) {
+  const windowRef = useWorkspaceWindowFocus(id, onFocus);
   const edge = compact ? 0 : 12;
   const headerHeight = compact ? 24 : 44;
   const groupTop = Math.max(0, layout.y - headerHeight);
@@ -350,6 +366,7 @@ export function WorkspaceGroupWindow({
   function startDrag(event: PointerEvent<HTMLDivElement>) {
     if (layout.fullscreen) return;
     if ((event.target as HTMLElement).closest("button, summary, input, select, textarea, a, [role='menu']")) return;
+    onFocus(id);
     const originX = event.clientX;
     const originY = event.clientY;
     const startX = layout.x;
@@ -401,7 +418,7 @@ export function WorkspaceGroupWindow({
     resizeGroup(layout.w + (event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0), layout.h + (event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0));
   }
 
-  return <section aria-label={title} className={compact ? "workspace-window workspace-group-window live-window compact-window" : "workspace-window workspace-group-window live-window"} data-selected={selected ? "true" : "false"} data-workspace-group={id} onPointerDown={() => onFocus(id)} style={geometry as CSSProperties}>
+  return <section aria-label={title} className={compact ? "workspace-window workspace-group-window live-window compact-window" : "workspace-window workspace-group-window live-window"} data-selected={selected ? "true" : "false"} data-workspace-group={id} ref={windowRef} style={geometry as CSSProperties}>
     <div aria-label={`Move ${title}. Use arrow keys to reposition; hold Shift for larger steps.`} className="workspace-window-header workspace-group-header live-window-header" onKeyDown={moveWithKeyboard} onPointerDown={startDrag} role="toolbar" tabIndex={0}>
       <div className="workspace-window-title live-window-title">
         <LayoutGrid aria-hidden="true" size={14} />

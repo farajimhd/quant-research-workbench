@@ -10951,7 +10951,7 @@ button {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 80;
+  z-index: 10080;
   display: grid;
   place-items: center;
   background: rgba(16, 24, 40, 0.18);
@@ -21317,7 +21317,7 @@ button {
   position: absolute;
   right: 0;
   top: 24px;
-  z-index: 80;
+  z-index: 10080;
 }
 
 .workspace-group-member-menu > header {
@@ -21786,9 +21786,10 @@ button {
 .quote-side strong { font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: clamp(18px, 5cqw, 26px); font-weight: 780; letter-spacing: -.05em; line-height: 1.05; }
 .quote-side[data-tone="buy"] strong { color: var(--success); }.quote-side[data-tone="sell"] strong { color: var(--danger); }
 .quote-side em { color: var(--muted-foreground); font-size: 8px; font-style: normal; font-weight: 600; margin-top: 2px; }
-.spread-focus { align-content: center; border-left: 1px solid var(--border); border-right: 1px solid var(--border); display: grid; justify-items: center; padding: 7px 4px; }
-.spread-focus strong { font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: 13px; line-height: 1.05; }
-.spread-focus span { color: var(--muted-foreground); font-size: 7px; font-weight: 650; margin-top: 2px; }
+.spread-focus { align-content: start; border-left: 1px solid var(--border); border-right: 1px solid var(--border); display: grid; justify-items: start; padding: 9px 10px 8px; }
+.spread-focus strong { color: var(--foreground); font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: clamp(18px, 4cqw, 22px); font-weight: 700; line-height: 1.05; }
+.spread-focus[data-tone="buy"] strong { color: var(--success); }.spread-focus[data-tone="sell"] strong { color: var(--danger); }
+.spread-focus span { color: var(--muted-foreground); font-size: 9px; font-weight: 500; margin-top: 2px; }
 .liquidity-signals { border-top: 1px solid var(--border); display: grid; grid-template-columns: minmax(140px, 1.4fr) repeat(3, minmax(74px, 1fr)); }
 .imbalance-signal { border-right: 1px solid var(--border); display: grid; gap: 3px; padding: 6px 10px; }
 .imbalance-signal > span { align-items: baseline; display: flex; gap: 7px; justify-content: space-between; }
@@ -21833,11 +21834,11 @@ button {
 }
 
 /* Market microstructure legibility, responsive table sizing, and help/status layer. */
-.microstructure-header { padding: 9px 11px; }
-.microstructure-identity { align-items: center; display: flex; gap: 9px; min-width: 0; }
+.microstructure-header { align-content: flex-start; flex-wrap: wrap; padding: 9px 11px; }
+.microstructure-identity { align-items: center; display: flex; flex: 1 1 190px; gap: 9px; min-width: 0; }
 .microstructure-header .ticker-identity { flex: 0 0 auto; font-size: 17px; }
 .microstructure-identity > small { color: var(--muted-foreground); font-size: 10px; font-weight: 450; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.microstructure-header-actions { align-items: center; display: flex; flex: 0 0 auto; gap: 6px; }
+.microstructure-header-actions { align-items: center; display: flex; flex: 0 1 auto; flex-wrap: wrap; gap: 6px; justify-content: flex-end; margin-left: auto; max-width: 100%; }
 .market-status-badge, .luld-status-badge, .market-context-badge, .microstructure-guide > summary { align-items: center; border: 1px solid var(--border); border-radius: 5px; display: inline-flex; font-size: 9.5px; font-weight: 620; gap: 4px; min-height: 25px; padding: 3px 7px; white-space: nowrap; }
 .market-status-badge[data-status="normal"], .market-status-badge[data-status="resumed"] { background: color-mix(in oklab, var(--tape-ask) 9%, var(--surface)); border-color: color-mix(in oklab, var(--tape-ask) 34%, var(--border)); color: var(--tape-ask); }
 .market-status-badge[data-status="halted"], .luld-status-badge[data-status="halted"] { background: color-mix(in oklab, var(--tape-bid) 10%, var(--surface)); border-color: color-mix(in oklab, var(--tape-bid) 35%, var(--border)); color: var(--tape-bid); }
@@ -21849,6 +21850,7 @@ button {
 .micro-help-tip { align-items: center; color: currentColor; display: inline-flex; margin-left: 3px; opacity: .68; vertical-align: -2px; }.micro-help-tip:focus, .micro-help-tip:hover { opacity: 1; outline: none; }
 .last-print small, .signal-metric small, .quote-side small, .spread-focus small, .imbalance-signal small { font-size: 9px; font-weight: 520; letter-spacing: .035em; }
 .signal-metric strong { font-size: 14px; font-weight: 620; letter-spacing: -.015em; }
+.signal-metric[data-tone="mid"] strong, [data-tone="mid"] > strong { color: var(--foreground); }
 .microstructure-scroll { overflow: auto; scrollbar-gutter: stable both-edges; }
 .tape-table, .quote-signal-table { min-width: 0; table-layout: auto; width: max-content; }
 .tape-table th, .quote-signal-table th { font-size: 9px; font-weight: 560; padding: 7px 9px; white-space: nowrap; width: auto !important; }
@@ -21868,7 +21870,7 @@ button {
 
 /* Shared single-ticker change: prior QMD 20:00 ET session close to point-in-time price. */
 .ticker-identity-with-change { align-items: center; display: inline-flex; gap: 7px; min-width: 0; }
-.ticker-change-badge { align-items: center; border: 1px solid currentColor; border-radius: 5px; display: inline-flex; font-variant-numeric: tabular-nums lining-nums; gap: 3px; min-height: 23px; padding: 2px 6px; white-space: nowrap; }
+.ticker-change-badge { align-items: center; border: 1px solid currentColor; border-radius: 5px; display: inline-flex; font-variant-numeric: tabular-nums lining-nums; gap: 4px; justify-content: center; min-height: 25px; min-width: 118px; padding: 2px 7px; white-space: nowrap; }
 .ticker-change-badge strong { font-size: 11px; font-weight: 680; }.ticker-change-badge small { font-size: 9px; font-weight: 480; opacity: .82; }
 .ticker-change-badge[data-tone="up"] { background: color-mix(in oklab, var(--tape-ask) 9%, var(--surface)); color: var(--tape-ask); }.ticker-change-badge[data-tone="down"] { background: color-mix(in oklab, var(--tape-bid) 9%, var(--surface)); color: var(--tape-bid); }.ticker-change-badge[data-tone="flat"] { color: var(--muted-foreground); }.ticker-change-badge[data-tone="unavailable"] { border-color: var(--border); color: var(--muted-foreground); }
 
@@ -21885,16 +21887,17 @@ button {
 /* Tape signal hierarchy and readable multi-condition column. */
 .tape-overview { grid-template-rows: auto auto; }.tape-diagnostics { border-top: 1px solid var(--border); display: grid; grid-column: 1 / -1; grid-template-columns: repeat(5, minmax(0, 1fr)); }.tape-diagnostics .signal-metric { padding-block: 6px; }
 .trade-condition-list { align-items: center; display: inline-flex; gap: 4px; }.trade-condition-list .condition-code { align-items: center; border: 1px solid color-mix(in oklab, currentColor 32%, var(--border)); display: inline-flex; gap: 3px; padding: 2px 4px; }.trade-condition-list .condition-code small { font-size: 7px; font-weight: 500; opacity: .62; }.trade-condition-list .condition-code[data-condition-tone="iso"] { color: var(--tape-iso); }.trade-condition-list .condition-code[data-condition-tone="odd"], .trade-condition-list .condition-code[data-condition-tone="special"] { color: var(--tape-odd); }.trade-condition-list .condition-code[data-condition-tone="warning"] { color: var(--tape-warning); }
+.condition-empty { color: var(--muted-foreground); }
 .tape-table td:first-child, .quote-signal-table td:first-child { font-size: 9px; font-weight: 420; }.tape-table .size { font-size: 12px; font-weight: 620; }.quote-cell strong { font-size: 13px; }.quote-cell span { font-size: 10px; }
 
 /* Grouped quote bursts and signed pressure visualization. */
-.quote-pressure-panel { border-top: 1px solid var(--border); display: grid; gap: 5px; padding: 7px 10px 8px; }.quote-pressure-panel > header { align-items: center; display: flex; justify-content: space-between; }.quote-pressure-panel > header span { color: var(--muted-foreground); font-size: 9px; font-weight: 560; letter-spacing: .04em; text-transform: uppercase; }.quote-pressure-panel > header strong { font-size: 11px; }.quote-pressure-panel > header strong[data-tone="buy"] { color: var(--tape-ask); }.quote-pressure-panel > header strong[data-tone="sell"] { color: var(--tape-bid); }
-.quote-pressure-panel > div { display: grid; gap: 9px; grid-template-columns: repeat(4, minmax(105px, 1fr)); }.pressure-dimension { align-items: center; display: grid; gap: 5px; grid-template-columns: auto minmax(48px, 1fr) 28px; }.pressure-dimension > span { color: var(--muted-foreground); font-size: 9px; }.pressure-dimension > i { background: color-mix(in oklab, var(--muted-foreground) 12%, transparent); display: block; height: 5px; position: relative; }.pressure-dimension > i::after { background: var(--border-strong); content: ""; inset-block: -2px; left: 50%; position: absolute; width: 1px; }.pressure-dimension > i b { height: 100%; position: absolute; }.pressure-dimension > i b[data-tone="buy"] { background: var(--tape-ask); }.pressure-dimension > i b[data-tone="sell"] { background: var(--tape-bid); }.pressure-dimension > strong { font-size: 9px; font-weight: 570; text-align: right; }
-.quote-group-toggle { align-items: center; background: transparent; border: 0; color: inherit; cursor: pointer; display: flex; font: inherit; gap: 3px; padding: 0; }.quote-signal-table tr[data-child="true"] { background: color-mix(in oklab, var(--surface-alt) 72%, var(--surface)); }.quote-signal-table tr[data-child="true"] .liquidity-event { padding-left: 18px; }.quote-signal-table tr[data-child="true"] .liquidity-event > span { align-items: center; display: flex; gap: 5px; }.quote-signal-table tr[data-child="true"] .liquidity-event i { border-left: 1px solid var(--border-strong); height: 13px; }
-.quote-burst-details > summary { align-items: center; cursor: pointer; display: flex; gap: 3px; list-style: none; white-space: nowrap; }.quote-burst-details > summary::-webkit-details-marker { display: none; }.quote-burst-details[open] > summary svg { transform: rotate(90deg); }.quote-burst-details > summary svg { flex: 0 0 auto; transition: transform 120ms ease; }.quote-burst-events { border-left: 1px solid var(--border-strong); display: grid; gap: 5px; margin: 7px 0 2px 5px; min-width: 520px; padding-left: 9px; }.quote-burst-events > div { align-items: baseline; display: grid; font-size: 11px; gap: 10px; grid-template-columns: 76px minmax(135px, 1fr) max-content max-content; white-space: nowrap; }.quote-burst-events time { color: var(--text-muted); font-size: 10px; font-variant-numeric: tabular-nums; }.quote-burst-events strong { color: var(--text); font-weight: 500; }.quote-burst-events > div[data-tone="buy"] strong { color: var(--tape-at-ask-text); }.quote-burst-events > div[data-tone="sell"] strong { color: var(--tape-at-bid-text); }
+.quote-pressure-panel { border-top: 1px solid var(--border); display: grid; gap: 7px; padding: 7px 10px 9px; }.quote-pressure-panel > header { align-items: center; display: flex; justify-content: space-between; }.quote-pressure-panel > header .metric-label { color: var(--muted-foreground); font-size: 9px; font-weight: 560; letter-spacing: .04em; text-transform: uppercase; }.quote-pressure-panel > header strong { font-size: 11px; }.quote-pressure-panel > header strong[data-tone="buy"] { color: var(--tape-ask); }.quote-pressure-panel > header strong[data-tone="sell"] { color: var(--tape-bid); }
+.quote-pressure-panel > div { display: grid; gap: 12px; grid-template-columns: repeat(4, minmax(118px, 1fr)); }.pressure-dimension { align-items: center; display: grid; gap: 6px; grid-template-columns: auto minmax(58px, 1fr) 34px; }.pressure-dimension > .metric-label { color: var(--muted-foreground); font-size: 9px; font-weight: 480; }.pressure-dimension > i, .imbalance-signal > i { background: linear-gradient(90deg, color-mix(in oklab, var(--tape-bid) 32%, var(--surface)) 0 47%, color-mix(in oklab, var(--muted-foreground) 14%, var(--surface)) 47% 53%, color-mix(in oklab, var(--tape-ask) 32%, var(--surface)) 53% 100%); border: 1px solid color-mix(in oklab, var(--border) 72%, transparent); display: block; height: 7px; overflow: visible; position: relative; }.pressure-dimension > i::after, .imbalance-signal > i::after { background: var(--border-strong); content: ""; inset-block: -2px; left: 50%; position: absolute; width: 1px; }.pressure-dimension > i b, .imbalance-signal > i b { background: var(--foreground); border: 1px solid var(--surface); border-radius: 50%; height: 11px; position: absolute; top: 50%; transform: translate(-50%, -50%); width: 4px; z-index: 1; }.pressure-dimension > i b[data-tone="buy"] { background: var(--tape-ask); }.pressure-dimension > i b[data-tone="sell"] { background: var(--tape-bid); }.pressure-dimension > strong { color: var(--foreground); font-size: 9px; font-weight: 570; text-align: right; }.pressure-dimension > strong[data-tone="buy"] { color: var(--tape-ask); }.pressure-dimension > strong[data-tone="sell"] { color: var(--tape-bid); }
+.quote-group-toggle { align-items: center; background: transparent; border: 0; color: inherit; cursor: pointer; display: flex; font: inherit; gap: 4px; padding: 0; white-space: nowrap; }.quote-group-toggle svg { flex: 0 0 auto; transition: transform 120ms ease; }.quote-group-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }.quote-group-toggle span { font-size: 11px; font-weight: 560; }.quote-signal-table tr[data-tone="buy"] .quote-group-toggle, .quote-signal-table tr[data-tone="buy"] .liquidity-event > span { color: var(--success); }.quote-signal-table tr[data-tone="sell"] .quote-group-toggle, .quote-signal-table tr[data-tone="sell"] .liquidity-event > span { color: var(--danger); }.quote-signal-table tr[data-child="true"] { background: color-mix(in oklab, var(--surface-alt) 72%, var(--surface)); }.quote-signal-table tr[data-child="true"] .liquidity-event { padding-left: 24px; }.quote-signal-table tr[data-child="true"] .liquidity-event::before { border-left: 1px solid var(--border-strong); content: ""; height: 14px; margin-left: -9px; position: absolute; }.quote-signal-table tr[data-child="true"] td:first-child { color: transparent; }
+.liquidity-event { position: relative; }.imbalance-signal[data-tone="buy"] > i b { background: var(--tape-ask); }.imbalance-signal[data-tone="sell"] > i b { background: var(--tape-bid); }
 
 @container (max-width: 650px) {
-  .ticker-change-badge small { display: none; }.tape-diagnostics { grid-template-columns: repeat(5, minmax(78px, 1fr)); min-width: 470px; }.quote-pressure-panel { overflow-x: auto; }.quote-pressure-panel > div { min-width: 480px; }
+  .tape-diagnostics { grid-template-columns: repeat(5, minmax(78px, 1fr)); min-width: 470px; }.quote-pressure-panel { overflow-x: auto; }.quote-pressure-panel > div { min-width: 520px; }
   .microstructure-guide-button { padding-inline: 5px; }.microstructure-guide-button { font-size: 0; }.microstructure-guide-button svg { width: 13px; }
 }
 

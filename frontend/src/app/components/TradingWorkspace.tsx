@@ -224,7 +224,10 @@ export function TradingWorkspace({
 
   function focusContainer(id: string) {
     const rootId = rootForNode(id);
-    const z = highestLayer() + 1;
+    const highest = highestLayer();
+    const currentZ = isWorkspaceGroupId(rootId) ? groups[rootId]?.z : layouts[rootId]?.z;
+    if (currentZ != null && currentZ >= highest) return;
+    const z = highest + 1;
     if (isWorkspaceGroupId(rootId) && groups[rootId]) {
       setGroups((current) => ({ ...current, [rootId]: { ...current[rootId], closed: false, minimized: false, z } }));
       return;

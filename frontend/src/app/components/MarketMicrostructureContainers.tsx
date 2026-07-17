@@ -42,13 +42,15 @@ type QuoteSignalGroup = { id: number; quote: QuoteUpdate; signals: QuoteSignal[]
 
 type MarketContainerProps = { end?: string; settings: MarketEventSettings; start?: string; symbol: string };
 const EMPTY_REFERENCES: MarketReferences = { conditions: {}, exchanges: {} };
+const MARKET_EVENT_HISTORY_LIMIT = 1024;
+const MARKET_EVENT_SOURCE_LIMIT = 5000;
 const MARKET_EVENTS_UNAVAILABLE = "Live market events are unavailable. Start or reconnect QMD Gateway.";
 const HISTORICAL_EVENTS_UNAVAILABLE = "Historical market events are unavailable. Start or reconnect QMD History.";
 
-export function TapeContainer({ end, settings, start, symbol }: MarketContainerProps) {
+export function TapeContainer({ end, start, symbol }: MarketContainerProps) {
   const { connected, error, events, marketState, references } = useMarketEvents(symbol, start, end);
   const decoded = useMemo(() => decodeMarketEvents(events), [events]);
-  const chronological = decoded.trades.slice(-Math.max(settings.limit, 100));
+  const chronological = decoded.trades.slice(-MARKET_EVENT_HISTORY_LIMIT);
   const prints = [...chronological].reverse();
   const last = prints[0];
   const buyVolume = chronological.reduce((sum, item) => sum + (item.direction === "buy" ? item.size : 0), 0);
@@ -67,7 +69,7 @@ export function TapeContainer({ end, settings, start, symbol }: MarketContainerP
   const presentations = useTickerPresentations([symbol]);
 
   return <section aria-label={`${symbol} time and sales`} className="market-microstructure tape-surface" data-market-state={connected}>
-    <MicrostructureHeader connected={connected} detail={`Time & sales · ${prints.length} prints`} end={end} kind="tape" logoUrl={presentations[symbol]?.logo_url} marketState={marketState} references={references} symbol={symbol} />
+    <MicrostructureHeader connected={connected} end={end} kind="tape" logoUrl={presentations[symbol]?.logo_url} marketState={marketState} references={references} symbol={symbol} />
     <div className="tape-overview" aria-label="Tape summary">
       <div className="last-print" data-direction={last?.direction ?? "mid"}>
         <MetricLabel help="The most recent eligible trade print at or before the displayed time." label="Last print" />
@@ -77,15 +79,15 @@ export function TapeContainer({ end, settings, start, symbol }: MarketContainerP
       <div className="tape-flow">
         <SignalMetric help="At-ask volume divided by all directionally classified volume in the visible window." label="Buy share" tone={buyShare >= 0.5 ? "buy" : "sell"} value={`${Math.round(buyShare * 100)}%`} />
         <SignalMetric help="At-ask share volume minus at-bid share volume in the visible window." label="Net flow" tone={buyVolume >= sellVolume ? "buy" : "sell"} value={signedCompact(buyVolume - sellVolume)} />
-        <SignalMetric help="Average prints per second across the visible tape window." label="Pace" value={`${pace.toFixed(pace >= 10 ? 0 : 1)}/s`} />
-        <SignalMetric help="Largest single print size in the visible tape window." label="Largest" value={compactNumber(largestPrint)} />
+        <SignalMetric help="Average prints per second across the visible tape window." label="Pace" tone="mid" value={`${pace.toFixed(pace >= 10 ? 0 : 1)}/s`} />
+        <SignalMetric help="Largest single print size in the visible tape window." label="Largest" tone="mid" value={compactNumber(largestPrint)} />
       </div>
       <div className="tape-diagnostics" aria-label="Tape diagnostic signals">
         <SignalMetric help="Consecutive most-recent prints classified on the same aggressor side. Longer streaks indicate short-lived order-flow persistence." label="Aggressor streak" tone={streak.direction === "buy" ? "buy" : streak.direction === "sell" ? "sell" : undefined} value={streak.count ? `${streak.count} ${directionLabel(streak.direction)}` : "Mixed"} />
         <SignalMetric help="Last print minus first print across the visible tape window, measured in basis points." label="Price drift" tone={priceDriftBps > 0 ? "buy" : priceDriftBps < 0 ? "sell" : undefined} value={`${priceDriftBps > 0 ? "+" : ""}${priceDriftBps.toFixed(1)} bp`} />
-        <SignalMetric help="Share of visible volume executed in prints at or above the window's 90th-percentile size." label="Large-print share" value={`${Math.round(largeShare * 100)}%`} />
-        <SignalMetric help="Recent-half average trade size divided by the earlier-half average. Above 1× means prints are getting larger." label="Size acceleration" value={`${sizeTrend.toFixed(2)}×`} />
-        <SignalMetric help="Possible absorption appears when aggressive flow is one-sided but price barely moves. It is a diagnostic, not proof of hidden liquidity." label="Absorption" value={absorption ? "Possible" : "Not detected"} />
+        <SignalMetric help="Share of visible volume executed in prints at or above the window's 90th-percentile size." label="Large-print share" tone="mid" value={`${Math.round(largeShare * 100)}%`} />
+        <SignalMetric help="Recent-half average trade size divided by the earlier-half average. Above 1× means prints are getting larger." label="Size acceleration" tone="mid" value={`${sizeTrend.toFixed(2)}×`} />
+        <SignalMetric help="Possible absorption appears when aggressive flow is one-sided but price barely moves. It is a diagnostic, not proof of hidden liquidity." label="Absorption" tone="mid" value={absorption ? "Possible" : "Not detected"} />
       </div>
     </div>
     {error && !prints.length ? <MicrostructureEmpty message={error} /> : prints.length ? <div className="microstructure-scroll">
@@ -100,7 +102,7 @@ export function TapeContainer({ end, settings, start, symbol }: MarketContainerP
             <td className="numeric price">{formatPrice(print.price)}</td>
             <td className="numeric size">{formatTradeSize(print.size)}</td>
             <td><span className="venue-code" title={exchange.name}>{exchange.code}</span></td>
-            <td><span className="trade-condition-list">{conditions.map((item, index) => <span className="condition-code" data-condition-tone={conditionTone(item.name)} data-special={item.special} key={`${item.token}-${index}`}><small>C{index + 1}</small>{item.label}</span>)}</span></td>
+            <td><span className="trade-condition-list">{conditions.length ? conditions.map((item) => <span className="condition-code" data-condition-tone={conditionTone(item.name)} data-special={item.special} key={`${item.token}-${item.slot}`}><small>C{item.slot}</small>{item.label}</span>) : <span className="condition-empty">—</span>}</span></td>
           </tr>;
         })}</tbody>
       </table>
@@ -108,12 +110,13 @@ export function TapeContainer({ end, settings, start, symbol }: MarketContainerP
   </section>;
 }
 
-export function QuotesContainer({ end, settings, start, symbol }: MarketContainerProps) {
+export function QuotesContainer({ end, start, symbol }: MarketContainerProps) {
   const { connected, error, events, marketState, references } = useMarketEvents(symbol, start, end);
-  const chronological = useMemo(() => decodeMarketEvents(events).quotes.slice(-Math.max(settings.limit * 5, settings.limit)), [events, settings.limit]);
+  const chronological = useMemo(() => decodeMarketEvents(events).quotes.slice(-MARKET_EVENT_HISTORY_LIMIT), [events]);
   const current = chronological.at(-1);
   const signals = useMemo(() => quoteSignals(chronological).reverse(), [chronological]);
-  const groups = useMemo(() => groupQuoteSignals(signals).slice(0, settings.limit), [settings.limit, signals]);
+  const groups = useMemo(() => groupQuoteSignals(signals), [signals]);
+  const [expandedGroups, setExpandedGroups] = useState<Set<number>>(() => new Set());
   const pressure = useMemo(() => quotePressureDimensions(chronological), [chronological]);
   const presentations = useTickerPresentations([symbol]);
   const spread = current ? Math.max(0, current.ask - current.bid) : 0;
@@ -126,22 +129,22 @@ export function QuotesContainer({ end, settings, start, symbol }: MarketContaine
   const askVenue = venueReference(current?.askExchange ?? 0, references);
 
   return <section aria-label={`${symbol} NBBO liquidity monitor`} className="market-microstructure quote-surface" data-market-state={connected}>
-    <MicrostructureHeader connected={connected} detail="NBBO liquidity · consolidated top of book" end={end} kind="quotes" logoUrl={presentations[symbol]?.logo_url} marketState={marketState} references={references} symbol={symbol} />
+    <MicrostructureHeader connected={connected} end={end} kind="quotes" logoUrl={presentations[symbol]?.logo_url} marketState={marketState} references={references} symbol={symbol} />
     <div className="nbbo-overview" aria-label="Current NBBO and liquidity signals">
       <div className="nbbo-prices">
         <QuoteSide exchange={bidVenue} label="Bid" price={current?.bid} size={current?.bidSize} tone="buy" />
-        <div className="spread-focus"><MetricLabel help="Current best ask minus current best bid." label="Spread" /><strong>{current ? formatPrice(spread) : "—"}</strong><span>{spreadState}</span></div>
+        <div className="spread-focus" data-tone={spreadState === "Tighter" ? "buy" : spreadState === "Wider" ? "sell" : "mid"}><MetricLabel help="Current best ask minus current best bid. Tight relative to this window is favorable for execution; wide is costly." label="Spread" /><strong>{current ? formatPrice(spread) : "—"}</strong><span>{spreadState}</span></div>
         <QuoteSide exchange={askVenue} label="Ask" price={current?.ask} size={current?.askSize} tone="sell" />
       </div>
       <div className="liquidity-signals">
         <div className="imbalance-signal" data-tone={imbalance >= 0 ? "buy" : "sell"}>
           <span><MetricLabel help="(Bid size − ask size) ÷ total displayed NBBO size. Positive values are bid-heavy." label="Size imbalance" /><strong>{signedPercent(imbalance)}</strong></span>
-          <i aria-hidden="true"><b style={{ width: `${Math.round((imbalance + 1) * 50)}%` }} /></i>
+          <i aria-hidden="true"><b style={{ left: `${Math.round((imbalance + 1) * 50)}%` }} /></i>
           <em>{imbalanceLabel(imbalance)}</em>
         </div>
         <SignalMetric help="Size-weighted NBBO price. It leans toward the side with less displayed liquidity." label="Microprice" tone={microprice >= midpoint ? "buy" : "sell"} value={current ? formatPrice(microprice) : "—"} />
         <SignalMetric help="Microprice minus the simple midpoint, shown in cents." label="Lean" tone={microprice >= midpoint ? "buy" : "sell"} value={current ? signedCents(microprice - midpoint) : "—"} />
-        <SignalMetric help="Average NBBO updates per second across the visible quote window." label="Quote rate" value={`${eventRate(chronological.map((quote) => quote.timestampUs)).toFixed(1)}/s`} />
+        <SignalMetric help="Average NBBO updates per second across the visible quote window." label="Quote rate" tone="mid" value={`${eventRate(chronological.map((quote) => quote.timestampUs)).toFixed(1)}/s`} />
       </div>
       <QuotePressurePanel dimensions={pressure} />
     </div>
@@ -150,7 +153,15 @@ export function QuotesContainer({ end, settings, start, symbol }: MarketContaine
         <thead><tr><th>Time ET</th><th>Quote burst / liquidity event</th><th>Bid</th><th>Ask</th></tr></thead>
         <tbody>{groups.flatMap((group, index) => {
           const summary = group.signals[0];
-          return <QuoteSignalRow current={index === 0} detail={group.signals.length > 1 ? `${group.signals.length} updates · ${summarizeQuoteGroup(group)}` : summary.detail} groupSignals={group.signals.length > 1 ? group.signals : undefined} key={`group-${group.id}`} quote={group.quote} references={references} tone={group.tone} />;
+          const grouped = group.signals.length > 1;
+          const expanded = expandedGroups.has(group.id);
+          const rows = [<QuoteSignalRow current={index === 0} detail={grouped ? `${group.signals.length} updates · ${summarizeQuoteGroup(group)}` : summary.detail} expanded={expanded} grouped={grouped} key={`group-${group.id}`} onToggle={() => setExpandedGroups((currentGroups) => {
+            const next = new Set(currentGroups);
+            if (next.has(group.id)) next.delete(group.id); else next.add(group.id);
+            return next;
+          })} quote={group.quote} references={references} tone={group.tone} />];
+          if (grouped && expanded) rows.push(...group.signals.map((signal) => <QuoteSignalRow child detail={signal.detail} key={`signal-${signal.quote.id}`} quote={signal.quote} references={references} tone={signal.tone} />));
+          return rows;
         })}</tbody>
       </table>
     </div> : <MicrostructureEmpty message={connected === "point-in-time" ? "No NBBO updates were found before the Canvas clock." : connected === "live" ? "Waiting for the next NBBO update." : "Connecting to live NBBO…"} />}
@@ -178,7 +189,7 @@ function useMarketEvents(symbol: string, start?: string, end?: string) {
     const merge = (incoming: CompactEvent[]) => setEvents((current) => {
       const rows = new Map(current.map((event) => [event.arrival_sequence, event]));
       incoming.forEach((event) => { if (event.ticker === ticker) rows.set(event.arrival_sequence, event); });
-      return [...rows.values()].sort(compareEvents).slice(-1000);
+      return [...rows.values()].sort(compareEvents).slice(-MARKET_EVENT_SOURCE_LIMIT);
     });
 
     const historical = Boolean(start && end);
@@ -186,7 +197,7 @@ function useMarketEvents(symbol: string, start?: string, end?: string) {
       .then((payload) => { if (active) setMarketState(payload); })
       .catch(() => { if (active) setMarketState(null); });
     void loadMarketState();
-    api<MarketEventsPayload>(`/api/trading/canvas-market-events/${encodeURIComponent(ticker)}${query({ end, row_limit: 1000, start })}`, { timeoutMs: historical ? 20000 : 10000 })
+    api<MarketEventsPayload>(`/api/trading/canvas-market-events/${encodeURIComponent(ticker)}${query({ end, row_limit: MARKET_EVENT_SOURCE_LIMIT, start })}`, { timeoutMs: historical ? 20000 : 10000 })
       .then((payload) => { if (active) { merge(payload.events); setReferences(payload.references ?? EMPTY_REFERENCES); if (historical) setConnected("point-in-time"); } })
       .catch(() => { if (active) setError(historical ? HISTORICAL_EVENTS_UNAVAILABLE : MARKET_EVENTS_UNAVAILABLE); });
 
@@ -288,16 +299,12 @@ function summarizeQuoteGroup(group: QuoteSignalGroup) {
   return unique.slice(0, 2).join(" + ");
 }
 
-function QuoteSignalRow({ current = false, detail, groupSignals, quote, references, tone }: { current?: boolean; detail: string; groupSignals?: QuoteSignal[]; quote: QuoteUpdate; references: MarketReferences; tone: Direction }) {
+function QuoteSignalRow({ child = false, current = false, detail, expanded = false, grouped = false, onToggle, quote, references, tone }: { child?: boolean; current?: boolean; detail: string; expanded?: boolean; grouped?: boolean; onToggle?: () => void; quote: QuoteUpdate; references: MarketReferences; tone: Direction }) {
   const bidVenue = venueReference(quote.bidExchange, references);
   const askVenue = venueReference(quote.askExchange, references);
-  return <tr data-current={current ? "true" : "false"} data-tone={tone} title={quote.issues ? `QMD issue flags: ${quote.issues}` : undefined}>
-    <td><time>{formatEventTime(quote.timestampUs)}</time></td>
-    <td className="liquidity-event">{groupSignals ? <details className="quote-burst-details"><summary onClick={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}><ChevronRight size={12} /><span>{detail}</span></summary><small>Open to inspect every NBBO update in this millisecond burst</small><div className="quote-burst-events">{groupSignals.map((signal) => {
-      const childBidVenue = venueReference(signal.quote.bidExchange, references);
-      const childAskVenue = venueReference(signal.quote.askExchange, references);
-      return <div data-tone={signal.tone} key={signal.quote.id}><time>{formatEventTime(signal.quote.timestampUs)}</time><strong>{signal.detail}</strong><span>{formatPrice(signal.quote.bid)} × {formatSize(signal.quote.bidSize)} · {childBidVenue.code}</span><span>{formatPrice(signal.quote.ask)} × {formatSize(signal.quote.askSize)} · {childAskVenue.code}</span></div>;
-    })}</div></details> : <><span>{detail}</span><small>{imbalanceLabel((quote.bidSize - quote.askSize) / Math.max(1, quote.bidSize + quote.askSize))}</small></>}</td>
+  return <tr data-child={child ? "true" : "false"} data-current={current ? "true" : "false"} data-tone={tone} title={quote.issues ? `QMD issue flags: ${quote.issues}` : undefined}>
+    <td>{child ? null : <time>{formatEventTime(quote.timestampUs)}</time>}</td>
+    <td className="liquidity-event">{grouped ? <><button aria-expanded={expanded} className="quote-group-toggle" onClick={onToggle} type="button"><ChevronRight size={12} /><span>{detail}</span></button><small>{expanded ? "Collapse updates" : "Show every update in this timestamp"}</small></> : <><span>{detail}</span><small>{imbalanceLabel((quote.bidSize - quote.askSize) / Math.max(1, quote.bidSize + quote.askSize))}</small></>}</td>
     <td className="quote-cell bid"><strong>{formatPrice(quote.bid)}</strong><span>{formatSize(quote.bidSize)} · <abbr title={bidVenue.name}>{bidVenue.code}</abbr></span></td>
     <td className="quote-cell ask"><strong>{formatPrice(quote.ask)}</strong><span>{formatSize(quote.askSize)} · <abbr title={askVenue.name}>{askVenue.code}</abbr></span></td>
   </tr>;
@@ -306,7 +313,7 @@ function QuoteSignalRow({ current = false, detail, groupSignals, quote, referenc
 type PressureDimension = { help: string; label: string; value: number };
 function QuotePressurePanel({ dimensions }: { dimensions: PressureDimension[] }) {
   const composite = dimensions.reduce((sum, item) => sum + item.value, 0) / Math.max(1, dimensions.length);
-  return <div className="quote-pressure-panel" aria-label="Quote pressure dimensions"><header><span>Liquidity pressure map</span><strong data-tone={composite > 0.08 ? "buy" : composite < -0.08 ? "sell" : "mid"}>{pressureLabel(composite)}</strong></header><div>{dimensions.map((item) => <div className="pressure-dimension" key={item.label} title={item.help}><span>{item.label}</span><i aria-hidden="true"><b data-tone={item.value >= 0 ? "buy" : "sell"} style={{ left: item.value >= 0 ? "50%" : `${50 + item.value * 50}%`, width: `${Math.abs(item.value) * 50}%` }} /></i><strong>{item.value > 0 ? "+" : ""}{Math.round(item.value * 100)}%</strong></div>)}</div></div>;
+  return <div className="quote-pressure-panel" aria-label="Quote pressure dimensions"><header><MetricLabel help="Four normalized quote-only signals from −100% ask/down pressure to +100% bid/up pressure. The center marker is neutral; these are diagnostics, not a forecast." label="Liquidity pressure" /><strong data-tone={composite > 0.08 ? "buy" : composite < -0.08 ? "sell" : "mid"}>{pressureLabel(composite)}</strong></header><div>{dimensions.map((item) => <div className="pressure-dimension" key={item.label}><MetricLabel help={item.help} label={item.label} /><i aria-hidden="true"><b data-tone={item.value > 0.08 ? "buy" : item.value < -0.08 ? "sell" : "mid"} style={{ left: `${(clamp(item.value, -1, 1) + 1) * 50}%` }} /></i><strong data-tone={item.value > 0.08 ? "buy" : item.value < -0.08 ? "sell" : "mid"}>{item.value > 0 ? "+" : ""}{Math.round(item.value * 100)}%</strong></div>)}</div></div>;
 }
 
 function quotePressureDimensions(quotes: QuoteUpdate[]): PressureDimension[] {
@@ -328,13 +335,13 @@ function quotePressureDimensions(quotes: QuoteUpdate[]): PressureDimension[] {
   ];
 }
 
-function MicrostructureHeader({ connected, detail, end, kind, logoUrl, marketState, references, symbol }: { connected: ConnectionState; detail: string; end?: string; kind: "quotes" | "tape"; logoUrl?: string; marketState: MarketState | null; references: MarketReferences; symbol: string }) {
+function MicrostructureHeader({ connected, end, kind, logoUrl, marketState, references, symbol }: { connected: ConnectionState; end?: string; kind: "quotes" | "tape"; logoUrl?: string; marketState: MarketState | null; references: MarketReferences; symbol: string }) {
   const [liveAsOf] = useState(() => new Date().toISOString());
   const changeAsOf = end || liveAsOf;
   const status = marketStatusPresentation(marketState);
   const context = connected === "live" ? "Live" : connected === "point-in-time" ? `Historical · ${formatContextTime(end)}` : connected;
   return <header className="microstructure-header">
-    <div className="microstructure-identity"><TickerIdentityWithChange asOf={changeAsOf} logoUrl={logoUrl} ticker={symbol} /><small>{detail}</small></div>
+    <div className="microstructure-identity"><TickerIdentityWithChange asOf={changeAsOf} logoUrl={logoUrl} ticker={symbol} /></div>
     <div className="microstructure-header-actions">
       <span className="market-status-badge" data-status={status.tone} title={status.help}>{status.tone === "halted" ? <ShieldAlert size={13} /> : <Radio size={12} />}{status.label}</span>
       <span className="luld-status-badge" data-status={status.luldTone} title={status.luldHelp}>LULD {status.luldLabel}<HelpTip label={status.luldHelp} /></span>
@@ -343,7 +350,7 @@ function MicrostructureHeader({ connected, detail, end, kind, logoUrl, marketSta
     </div>
   </header>;
 }
-function SignalMetric({ help, label, tone, value }: { help: string; label: string; tone?: "buy" | "sell"; value: string }) { return <div className="signal-metric" data-tone={tone}><MetricLabel help={help} label={label} /><strong>{value}</strong></div>; }
+function SignalMetric({ help, label, tone = "mid", value }: { help: string; label: string; tone?: Direction; value: string }) { return <div className="signal-metric" data-tone={tone}><MetricLabel help={help} label={label} /><strong>{value}</strong></div>; }
 function MetricLabel({ help, label }: { help: string; label: string }) { return <small className="metric-label">{label}<HelpTip label={help} /></small>; }
 function HelpTip({ label }: { label: string }) { return <span aria-label={label} className="micro-help-tip" role="img" tabIndex={0} title={label}><CircleHelp size={11} /></span>; }
 function MicrostructureGuide({ kind, references }: { kind: "quotes" | "tape"; references: MarketReferences }) {
@@ -387,12 +394,11 @@ function tradeCondition(print: TapePrint, references: MarketReferences) {
   return { code: specialRows.slice(0, 2).map((row) => shortConditionName(row)).join(" · "), label, special: true, tone };
 }
 function tradeConditionItems(print: TapePrint, references: MarketReferences) {
-  if (!print.conditionTokens.length) return [{ label: "Regular sale", name: "Regular Sale", special: false, token: 0 }];
-  return print.conditionTokens.map((token) => {
+  return print.conditionTokens.map((token, index) => {
     const row = references.conditions[String(token)];
     const name = row?.name || `Unknown condition ${token}`;
-    return { label: row ? shortConditionName(row) : `Token ${token}`, name, special: name.toLowerCase() !== "regular sale", token };
-  });
+    return { label: row ? shortConditionName(row) : `Token ${token}`, name, slot: index + 1, special: name.toLowerCase() !== "regular sale", token };
+  }).filter((item) => item.name.toLowerCase() !== "regular sale");
 }
 function shortConditionName(row: ConditionReference) {
   const known: Record<string, string> = { "Derivatively Priced": "Derivative", "Intermarket Sweep": "ISO", "Odd Lot Trade": "Odd lot", "Sold (Out Of Sequence)": "Out of seq", "Trade Thru Exempt": "Exempt" };

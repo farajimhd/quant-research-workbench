@@ -101,7 +101,7 @@ type CanvasLiveChartState = {
 };
 
 type ContainerSettings = {
-  version: 4;
+  version: 5;
   chart: { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
   tape: { limit: number };
   quotes: { limit: number };
@@ -123,10 +123,10 @@ type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; tit
 
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 4,
+  version: 5,
   chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd"] },
-  tape: { limit: 100 },
-  quotes: { limit: 40 },
+  tape: { limit: 1024 },
+  quotes: { limit: 1024 },
   fills: { limit: 5, showCommission: true },
   journal: { limit: 6 },
   news: { content: "all", kind: "all", lookbackHours: 6, ticker: "" },
@@ -1025,7 +1025,7 @@ function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, 
   const current = settings[id] as Record<string, unknown>;
   function patch(value: Record<string, unknown>) { updateSettings((state) => ({ ...state, [id]: { ...state[id], ...value } })); }
   if (id === "chart") return <><TextField label="Symbol" onChange={(value) => { patch({ symbol: value.toUpperCase() }); onLinkContextChange({ symbol: value.toUpperCase() }); }} value={linkContext.symbol} /><SelectField label="Bar interval" onChange={(value) => patch({ timeframe: value as CanvasChartTimeframe })} optionLabel={formatChartTimeframe} options={HISTORICAL_TIMEFRAMES} value={settings.chart.timeframe} /><CheckField checked={Boolean(current.showVolume)} label="Show volume" onChange={(value) => patch({ showVolume: value })} /></>;
-  if (id === "tape" || id === "quotes") return <><TextField label="Symbol" onChange={(value) => { const symbol = value.toUpperCase(); updateSettings((state) => ({ ...state, chart: { ...state.chart, symbol } })); onLinkContextChange({ symbol }); }} value={linkContext.symbol} /><NumberField label="Visible rows" max={id === "tape" ? 250 : 100} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><div className="canvas-settings-note">The symbol follows the selected link color. Canvas preview data is bounded by the shared historical clock.</div></>;
+  if (id === "tape" || id === "quotes") return <><TextField label="Symbol" onChange={(value) => { const symbol = value.toUpperCase(); updateSettings((state) => ({ ...state, chart: { ...state.chart, symbol } })); onLinkContextChange({ symbol }); }} value={linkContext.symbol} /><div className="canvas-settings-note">The symbol follows the selected link color. Each table retains its latest 1,024 decoded rows and remains bounded by the shared historical clock.</div></>;
   if (id === "portfolio") return <><CheckField checked={Boolean(current.showPositions)} label="Show positions" onChange={(value) => patch({ showPositions: value })} /><CheckField checked={Boolean(current.showPnl)} label="Show P&L" onChange={(value) => patch({ showPnl: value })} /></>;
   if (id === "strategy") return <CheckField checked={Boolean(current.showSignals)} label="Show recent signals" onChange={(value) => patch({ showSignals: value })} />;
   if (id === "scanner") return <><NumberField label="Rows" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showActivity)} label="Show market activity" onChange={(value) => patch({ showActivity: value })} /></>;
@@ -1062,8 +1062,8 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
   return {
     version: DEFAULT_SETTINGS.version,
     chart: { ...DEFAULT_SETTINGS.chart, ...(stored.chart ?? {}), timeframe, visibleIndicators: [...visibleIndicators] },
-    tape: { ...DEFAULT_SETTINGS.tape, ...(stored.tape ?? {}) },
-    quotes: { ...DEFAULT_SETTINGS.quotes, ...(stored.quotes ?? {}) },
+    tape: { limit: 1024 },
+    quotes: { limit: 1024 },
     fills: { ...DEFAULT_SETTINGS.fills, ...(stored.fills ?? {}) },
     journal: { ...DEFAULT_SETTINGS.journal, ...(stored.journal ?? {}) },
     news: { ...DEFAULT_SETTINGS.news, ...(stored.news ?? {}) },

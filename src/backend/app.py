@@ -4593,7 +4593,7 @@ def trading_canvas_market_events(
     symbol: str,
     start: str | None = None,
     end: str | None = None,
-    row_limit: int = Query(default=250, ge=1, le=1000),
+    row_limit: int = Query(default=250, ge=1, le=5000),
 ) -> dict[str, Any]:
     ticker = symbol.strip().upper()
     if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):

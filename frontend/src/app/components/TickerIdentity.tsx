@@ -68,7 +68,7 @@ export function TickerChangeBadge({ asOf, ticker }: { asOf: string; ticker: stri
   const tone = change.percent_change > 0.0001 ? "up" : change.percent_change < -0.0001 ? "down" : "flat";
   const Icon = tone === "up" ? ArrowUpRight : tone === "down" ? ArrowDownRight : ArrowRight;
   const sign = change.percent_change > 0 ? "+" : "";
-  return <span className="ticker-change-badge" data-tone={tone} title={`Versus ${change.previous_session_date} 20:00 ET close ${formatTickerPrice(change.previous_close)}; current ${formatTickerPrice(change.current_price ?? 0)}.`}><Icon size={13} /><strong>{sign}{change.percent_change.toFixed(2)}%</strong><small>{change.absolute_change > 0 ? "+" : ""}{formatTickerPrice(change.absolute_change)}</small></span>;
+  return <span className="ticker-change-badge" data-tone={tone} title={`Versus ${change.previous_session_date} 20:00 ET close ${formatTickerPrice(change.previous_close)}; current ${formatTickerPrice(change.current_price ?? 0)}.`}><Icon size={13} /><strong>{sign}{change.percent_change.toFixed(2)}%</strong><small>{formatTickerChange(change.absolute_change)}</small></span>;
 }
 
 export function TickerLogo({ logoUrl, ticker }: { logoUrl?: string; ticker: string }) {
@@ -103,4 +103,11 @@ function useTickerChange(ticker: string, asOf: string) {
 function formatTickerPrice(value: number) {
   const absolute = Math.abs(value);
   return absolute >= 100 ? value.toFixed(2) : value.toFixed(absolute < 1 ? 4 : 2);
+}
+
+function formatTickerChange(value: number) {
+  const sign = value > 0 ? "+" : value < 0 ? "−" : "";
+  const absolute = Math.abs(value);
+  if (absolute > 0 && absolute < 1) return `${sign}${(absolute * 100).toFixed(absolute < 0.01 ? 2 : 1)}¢`;
+  return `${sign}$${absolute.toFixed(2)}`;
 }
