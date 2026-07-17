@@ -126,6 +126,10 @@ ClickHouse insert-deduplication tokens, and cooperatively stops active workers
 at bundle boundaries after the first failure. Legacy SEC `<S>/<C>` fixed-width
 tables, including unclosed captions, are rendered into labelled rows rather
 than being dropped as non-`TR` table text.
+CPU renderer workers and ClickHouse insert lanes are controlled independently;
+the default global insert gate permits two concurrent Parquet inserts even when
+many renderer workers are active, preventing server-wide memory overcommit
+without serializing text rendering.
 
 The SEC gateway generates the same explicit shape so the workstation script does
 not depend on ambient shell defaults. `--resume-from-coverage` is enabled by default and records

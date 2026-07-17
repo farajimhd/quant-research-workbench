@@ -3,6 +3,8 @@ from __future__ import annotations
 import concurrent.futures
 import unittest
 import sqlite3
+import threading
+import time
 from datetime import UTC, date, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -20,6 +22,7 @@ from pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild import (
     build_row_group_bundles,
     build_rendered_row,
     collect_partition_results,
+    clickhouse_insert_slot,
     export_source_partition,
     load_or_create_run_manifest,
     load_filing_forms,
@@ -27,6 +30,7 @@ from pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild import (
     prepare_lookup_database,
     prepare_partition_export,
     process_row_group_bundle,
+    initialize_rebuild_worker,
     rebuild_stop_path,
     request_rebuild_stop,
     reset_invalidated_partition,
@@ -160,6 +164,25 @@ class SecRenderedV3RebuildTest(unittest.TestCase):
 
         self.assertEqual(first_failure, failure)
         insert_manifest.assert_called_once_with(ANY, job, failure)
+
+    def test_insert_gate_limits_database_concurrency_without_limiting_workers(self) -> None:
+        initialize_rebuild_worker(threading.BoundedSemaphore(2))
+        state = {"active": 0, "maximum": 0}
+        lock = threading.Lock()
+
+        def insert_task() -> None:
+            with clickhouse_insert_slot():
+                with lock:
+                    state["active"] += 1
+                    state["maximum"] = max(state["maximum"], state["active"])
+                time.sleep(0.02)
+                with lock:
+                    state["active"] -= 1
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            list(executor.map(lambda _: insert_task(), range(8)))
+
+        self.assertEqual(state["maximum"], 2)
 
     def test_scheduler_stops_exporting_after_first_worker_failure(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -376,6 +399,7 @@ class SecRenderedV3RebuildTest(unittest.TestCase):
             manifest_table="sec_filing_text_rendered_rebuild_manifest_v3",
             workers=1,
             row_groups_per_bundle=8,
+            max_concurrent_inserts=1,
         )
         original = SourceWatermark(10, 100, 7, "2026-07-16 00:00:00.000", 123)
         changed = SourceWatermark(11, 101, 8, "2026-07-16 00:01:00.000", 456)

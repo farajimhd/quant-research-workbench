@@ -35,6 +35,7 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_filing_text_rendered_v3_rebuild.py `
   --workers 4 `
+  --max-concurrent-inserts 2 `
   --execute `
   --cutover `
   --confirm-sec-gateway-stopped
@@ -47,6 +48,15 @@ to four Python workers render already exported partitions. This overlaps
 database I/O with CPU rendering without allowing large source scans to compete
 for server memory. Increase the renderer workers to eight only after observing
 stable RAM, temporary disk, and ClickHouse merge pressure.
+
+Render concurrency and ClickHouse insert concurrency are independent. Keep
+`--max-concurrent-inserts 2` even when increasing `--workers`: Parquet decoding
+and insertion are the memory-heavy database stage. A production run with 16
+unbounded insert lanes reached 212 GiB resident memory on a 226 GiB ClickHouse
+server and triggered the global overcommit tracker after 96 bundles had already
+committed. The shared cross-process insert gate keeps all renderer workers busy
+while allowing only two inserts to decode and merge at once. Waiting, active,
+and completed insert states are printed per partition, bundle, and part.
 
 The parent process owns each bounded monthly export. A renderer worker processes
 that export as deterministic bundles of eight Parquet row groups. Every bundle
@@ -146,6 +156,7 @@ Use the `run_id` printed by the interrupted run:
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_filing_text_rendered_v3_rebuild.py `
   --run-id sec_render_v8_20260716_151718 `
   --workers 4 `
+  --max-concurrent-inserts 2 `
   --execute `
   --cutover `
   --confirm-sec-gateway-stopped

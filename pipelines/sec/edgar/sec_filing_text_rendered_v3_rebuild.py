@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import contextlib
 import hashlib
 import json
+import multiprocessing
 import os
 import re
 import sqlite3
@@ -50,6 +52,8 @@ DEFAULT_BUNDLE_MANIFEST_TABLE = "sec_filing_text_rendered_rebuild_bundle_manifes
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_filing_text_rendered_v3_rebuild")
 DEFAULT_FILE_ROOT_WIN = Path("D:/market-data")
 DEFAULT_FILE_ROOT_CH = "/mnt/d/market-data"
+
+_INSERT_SEMAPHORE: Any | None = None
 
 SOURCE_COLUMNS = [
     "document_id",
@@ -202,6 +206,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=int(os.environ.get("SEC_RENDER_REBUILD_WORKERS", "4")))
     parser.add_argument("--export-threads", type=int, default=2)
     parser.add_argument("--insert-threads", type=int, default=2)
+    parser.add_argument(
+        "--max-concurrent-inserts",
+        type=int,
+        default=int(os.environ.get("SEC_RENDER_MAX_CONCURRENT_INSERTS", "2")),
+        help="Global ClickHouse insert limit across renderer workers; rendering remains fully parallel.",
+    )
     parser.add_argument("--max-memory-usage", default=os.environ.get("SEC_RENDER_REBUILD_MAX_MEMORY", "32G"))
     parser.add_argument("--parquet-row-group-mib", type=int, default=128)
     parser.add_argument("--parquet-file-mib", type=int, default=1024)
@@ -267,6 +277,7 @@ def main() -> int:
         client,
         jobs,
         max_workers=args.workers,
+        max_concurrent_inserts=args.max_concurrent_inserts,
         total_partitions=len(partitions),
         already_completed=len(completed),
     )
@@ -303,8 +314,18 @@ def validate_args(args: argparse.Namespace) -> None:
         value = str(getattr(args, label))
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
             raise SystemExit(f"--{label.replace('_', '-')} must be a simple ClickHouse identifier: {value!r}")
-    if args.workers < 1 or args.export_threads < 1 or args.insert_threads < 1 or args.row_groups_per_bundle < 1:
-        raise SystemExit("worker and thread counts must be positive")
+    if (
+        args.workers < 1
+        or args.export_threads < 1
+        or args.insert_threads < 1
+        or args.row_groups_per_bundle < 1
+        or args.max_concurrent_inserts < 1
+        or args.max_concurrent_inserts > args.workers
+    ):
+        raise SystemExit(
+            "worker, thread, bundle, and concurrent-insert counts must be positive; "
+            "--max-concurrent-inserts cannot exceed --workers"
+        )
     if args.parquet_row_group_mib < 1 or args.parquet_file_mib < args.parquet_row_group_mib:
         raise SystemExit("Parquet file size must be at least the row-group size")
     if args.cutover and not args.execute:
@@ -726,11 +747,30 @@ def build_job(
     )
 
 
+def initialize_rebuild_worker(insert_semaphore: Any) -> None:
+    global _INSERT_SEMAPHORE
+    _INSERT_SEMAPHORE = insert_semaphore
+
+
+@contextlib.contextmanager
+def clickhouse_insert_slot() -> Any:
+    semaphore = _INSERT_SEMAPHORE
+    if semaphore is None:
+        yield
+        return
+    semaphore.acquire()
+    try:
+        yield
+    finally:
+        semaphore.release()
+
+
 def run_jobs(
     client: ClickHouseHttpClient,
     jobs: list[PartitionJob],
     *,
     max_workers: int,
+    max_concurrent_inserts: int = 2,
     total_partitions: int,
     already_completed: int,
 ) -> list[PartitionResult]:
@@ -745,7 +785,12 @@ def run_jobs(
     no_more_jobs = False
     first_failure: PartitionResult | None = None
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+    insert_semaphore = multiprocessing.get_context().BoundedSemaphore(max_concurrent_inserts)
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=max_workers,
+        initializer=initialize_rebuild_worker,
+        initargs=(insert_semaphore,),
+    ) as executor:
         futures: dict[concurrent.futures.Future[PartitionResult], PartitionJob] = {}
         try:
             while futures or (not no_more_jobs and first_failure is None):
@@ -1447,8 +1492,18 @@ def insert_rendered_part(
 ) -> None:
     clickhouse_path = windows_path_to_clickhouse_path(path, Path(job.file_root_win), job.file_root_ch)
     columns = ", ".join(quote_ident(column) for column in TARGET_COLUMNS)
-    client.execute(
-        f"""
+    print(
+        f"partition={job.partition_id} bundle={bundle_id} part={part_index} stage=insert status=waiting",
+        flush=True,
+    )
+    started = time.perf_counter()
+    with clickhouse_insert_slot():
+        print(
+            f"partition={job.partition_id} bundle={bundle_id} part={part_index} stage=insert status=active",
+            flush=True,
+        )
+        client.execute(
+            f"""
 INSERT INTO {table(job.database, job.staging_table)} ({columns})
 SELECT {columns}
 FROM file({sql_string(clickhouse_path)}, 'Parquet')
@@ -1456,6 +1511,11 @@ SETTINGS max_threads={job.insert_threads}, max_memory_usage={job.max_memory_usag
          input_format_parquet_use_native_reader_v3=1, input_format_parquet_verify_checksums=1,
          insert_deduplication_token={sql_string(f'{job.run_id}:{job.partition_id}:{bundle_id}:{part_index}')}
 """
+        )
+    print(
+        f"partition={job.partition_id} bundle={bundle_id} part={part_index} stage=insert status=completed "
+        f"wall={time.perf_counter() - started:.1f}s",
+        flush=True,
     )
 
 
@@ -1707,6 +1767,9 @@ def load_or_create_run_manifest(
                 "resume bundle size differs from run manifest "
                 f"expected={recorded_bundle_size} actual={args.row_groups_per_bundle}"
             )
+        if payload.get("max_concurrent_inserts") != args.max_concurrent_inserts:
+            payload["max_concurrent_inserts"] = args.max_concurrent_inserts
+            manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         if "filing_watermark" not in payload:
             raise RuntimeError(
                 "this run predates the bounded filing-form lookup; start a new run without --run-id"
@@ -1737,6 +1800,7 @@ def load_or_create_run_manifest(
         "manifest_table": args.manifest_table,
         "workers": args.workers,
         "row_groups_per_bundle": args.row_groups_per_bundle,
+        "max_concurrent_inserts": args.max_concurrent_inserts,
         "source_watermark": asdict(watermark),
         "filing_watermark": asdict(filing_watermark),
         "partitions": partitions,
@@ -1765,7 +1829,11 @@ def print_header(
     print("SEC rendered text v3 rebuild", flush=True)
     print(f"run_id={run_id} renderer={SEC_PACKED_TEXT_RENDERER_VERSION}", flush=True)
     print(f"source={args.database}.{args.source_table} target={args.database}.{args.target_table}", flush=True)
-    print(f"staging={args.database}.{args.staging_table} workers={args.workers} partitions={len(partitions)}", flush=True)
+    print(
+        f"staging={args.database}.{args.staging_table} workers={args.workers} "
+        f"max_concurrent_inserts={args.max_concurrent_inserts} partitions={len(partitions)}",
+        flush=True,
+    )
     print(f"source_rows={watermark.rows:,} source_bytes={watermark.source_bytes:,}", flush=True)
     print(f"run_root={run_root}", flush=True)
     print("=" * 96, flush=True)
