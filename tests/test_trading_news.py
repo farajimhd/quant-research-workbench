@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from src.backend.app import SERVICE_REGISTRY, service_websocket_url, trading_news_rows
+from src.backend.app import SERVICE_REGISTRY, classify_news_kind, service_websocket_url, trading_news_rows
 
 
 class TradingNewsTests(unittest.TestCase):
@@ -25,6 +25,7 @@ class TradingNewsTests(unittest.TestCase):
             search="Apple",
             ticker="aapl",
             content="full",
+            kind="analyst",
         )
 
         self.assertEqual(payload["rows"][0]["canonical_news_id"], "n1")
@@ -42,6 +43,7 @@ class TradingNewsTests(unittest.TestCase):
         self.assertIn("n.published_at_utc <= window_end", sql)
         self.assertIn("AS news_kind", sql)
         self.assertIn("'analyst'", sql)
+        self.assertIn(") = 'analyst'", sql)
         self.assertIn("'multi'", sql)
         self.assertIn("'company'", sql)
         self.assertIn("LIMIT 2", sql)
@@ -65,6 +67,15 @@ class TradingNewsTests(unittest.TestCase):
             trading_news_rows(ticker="AAPL; DROP")
         with self.assertRaises(HTTPException):
             trading_news_rows(content="summary")
+        with self.assertRaises(HTTPException):
+            trading_news_rows(kind="urgent")
+
+    def test_news_kind_classification_is_shared_with_detail_rows(self) -> None:
+        self.assertEqual(classify_news_kind({"provider_tags": ["BenzAI"]}, 1), "ai")
+        self.assertEqual(classify_news_kind({"channels": ["Price Target"]}, 1), "analyst")
+        self.assertEqual(classify_news_kind({}, 2), "multi")
+        self.assertEqual(classify_news_kind({}, 1), "company")
+        self.assertEqual(classify_news_kind({}, 0), "market")
 
     @patch.dict("os.environ", {"NEWS_GATEWAY_BIND": "0.0.0.0:8796"})
     def test_news_gateway_websocket_uses_loopback_for_wildcard_bind(self) -> None:

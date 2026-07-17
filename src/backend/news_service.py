@@ -143,7 +143,7 @@ def news_at_payload(processed_root: Path, session_date: date, bar_time: str, tic
             bucket["live_news_latest_title"] = article["title"]
             bucket["live_news_latest_time"] = article["published_et"]
             bucket["live_news_recency"] = article["recency"]
-            bucket["live_news_recent"] = article["recency"] in {"hot", "warm", "recent"}
+            bucket["live_news_recent"] = article["recency"] in {"hot", "cold"}
     return {"articles": articles[:250], "by_ticker": by_ticker, "session_date": session_date.isoformat(), "bar_time": bar_time}
 
 
@@ -341,11 +341,12 @@ def parse_news_timestamp(value: Any) -> datetime | None:
 
 
 def news_heat_expr(column: str) -> pl.Expr:
+    # Product-wide news-temperature contract: hot is neon red (<= 4h), cold is
+    # neon blue (> 4h and <= 24h), and old is neutral gray (> 24h).
     return (
         pl.when(pl.col(column) <= 240).then(pl.lit("hot"))
-        .when(pl.col(column) <= 720).then(pl.lit("warm"))
-        .when(pl.col(column) <= 1440).then(pl.lit("recent"))
-        .otherwise(pl.lit("cold"))
+        .when(pl.col(column) <= 1440).then(pl.lit("cold"))
+        .otherwise(pl.lit("old"))
     )
 
 
@@ -357,7 +358,7 @@ def news_article_payload(row: dict[str, Any]) -> dict[str, Any]:
         "channels": row.get("channels") or [],
         "pdf_text": row.get("pdf_text") or "",
         "published_et": row.get("published_et") or "",
-        "recency": row.get("news_recency") or "cold",
+        "recency": row.get("news_recency") or "old",
         "tags": row.get("tags") or [],
         "teaser": row.get("teaser") or "",
         "ticker": row.get("ticker") or "",

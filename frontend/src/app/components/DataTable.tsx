@@ -2891,7 +2891,9 @@ function articleTickerCount(item: DataRow) {
 
 function normalizedNewsRecency(value: unknown) {
   const recency = stringValue(value).toLowerCase();
-  return ["hot", "warm", "recent", "cold"].includes(recency) ? recency : "none";
+  // Warm/recent are legacy payloads; normalize them into the canonical cold-blue state.
+  if (recency === "warm" || recency === "recent") return "cold";
+  return ["hot", "cold", "old"].includes(recency) ? recency : "none";
 }
 
 function cellClassName(value: unknown, column: string) {
@@ -2899,8 +2901,7 @@ function cellClassName(value: unknown, column: string) {
   if (normalized === "logo") return "data-table-cell data-table-logo-column";
   if (isTickerColumn(column)) return "data-table-cell ticker";
   if (normalized === "live_news_recency") {
-    const recency = String(value ?? "none").toLowerCase();
-    return `data-table-cell live-news-recency ${["hot", "warm", "recent", "cold"].includes(recency) ? recency : "none"}`;
+    return `data-table-cell live-news-recency ${normalizedNewsRecency(value)}`;
   }
   if (isPriceColumn(normalized)) return "data-table-cell numeric price";
   if (isBadgeCategoryColumn(normalized)) return "data-table-cell categorical";

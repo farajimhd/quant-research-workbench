@@ -1873,6 +1873,7 @@ def service_news_detail(canonical_news_id: str) -> dict[str, Any]:
         FORMAT JSONEachRow
     """
     ticker_rows = [json.loads(line) for line in clickhouse_status_query(ticker_query).splitlines() if line.strip()]
+    rows[0]["news_kind"] = classify_news_kind(rows[0], len(ticker_rows))
     return {
         "canonical_news_id": news_id,
         "database": database,
@@ -1890,6 +1891,7 @@ def trading_news_rows(
     search: str = "",
     ticker: str = "",
     content: str = "all",
+    kind: str = "all",
     before: str = "",
     before_id: str = "",
 ) -> dict[str, Any]:
@@ -1912,6 +1914,9 @@ def trading_news_rows(
     safe_content = content.strip().lower()
     if safe_content not in {"all", "full", "title"}:
         raise HTTPException(status_code=400, detail="content must be all, full, or title")
+    safe_kind = kind.strip().lower()
+    if safe_kind not in {"all", "ai", "analyst", "company", "market", "multi"}:
+        raise HTTPException(status_code=400, detail="kind must be all, ai, analyst, company, market, or multi")
 
     database = "q_live"
     normalized_table = "benzinga_news_normalized_v1"
@@ -1956,6 +1961,10 @@ def trading_news_rows(
         "arraySort(arrayDistinct(arrayFilter(value -> notEmpty(value), "
         "arrayMap(value -> upperUTF8(trimBoth(value)), n.tickers))))"
     )
+    news_kind_sql = news_kind_sql_expression(ticker_links_sql)
+    if safe_kind != "all":
+        filters.append(f"({news_kind_sql}) = {sql_string(safe_kind)}")
+        where_sql = " AND ".join(filters)
     query = f"""
         WITH
             {start_sql} AS window_start,
@@ -1967,13 +1976,7 @@ def trading_news_rows(
             n.title, n.article_url, n.url_domain, n.author, n.channels, n.provider_tags,
             {ticker_links_sql} AS ticker_link_sample,
             length(ticker_link_sample) AS ticker_link_count,
-            multiIf(
-                arrayExists(value -> lowerUTF8(value) IN ('benzai', 'ai generated', 'ai-generated'), n.provider_tags), 'ai',
-                arrayExists(value -> lowerUTF8(value) IN ('analyst ratings', 'price target', 'analyst color', 'initiation', 'reiteration', 'upgrades', 'downgrades'), n.channels), 'analyst',
-                length(ticker_link_sample) > 1, 'multi',
-                length(ticker_link_sample) = 1, 'company',
-                'market'
-            ) AS news_kind,
+            {news_kind_sql} AS news_kind,
             n.has_external_text, n.has_pdf, n.is_title_only,
             lengthUTF8(n.normalized_full_text) AS full_text_chars,
             substring(n.normalized_full_text, 1, 320) AS text_preview
@@ -2002,6 +2005,30 @@ def trading_news_rows(
         "source": f"{database}.{normalized_table}",
         "window_start": window_start.isoformat().replace("+00:00", "Z"),
     }
+
+
+def news_kind_sql_expression(ticker_links_sql: str) -> str:
+    return f"""multiIf(
+        arrayExists(value -> lowerUTF8(value) IN ('benzai', 'ai generated', 'ai-generated'), n.provider_tags), 'ai',
+        arrayExists(value -> lowerUTF8(value) IN ('analyst ratings', 'price target', 'analyst color', 'initiation', 'reiteration', 'upgrades', 'downgrades'), n.channels), 'analyst',
+        length({ticker_links_sql}) > 1, 'multi',
+        length({ticker_links_sql}) = 1, 'company',
+        'market'
+    )"""
+
+
+def classify_news_kind(row: dict[str, Any], ticker_count: int) -> str:
+    provider_tags = {str(value).strip().lower() for value in row.get("provider_tags") or []}
+    channels = {str(value).strip().lower() for value in row.get("channels") or []}
+    if provider_tags.intersection({"benzai", "ai generated", "ai-generated"}):
+        return "ai"
+    if channels.intersection({"analyst ratings", "price target", "analyst color", "initiation", "reiteration", "upgrades", "downgrades"}):
+        return "analyst"
+    if ticker_count > 1:
+        return "multi"
+    if ticker_count == 1:
+        return "company"
+    return "market"
 
 
 def clickhouse_json_each_row(query: str) -> list[dict[str, Any]]:
@@ -3242,10 +3269,11 @@ def trading_news(
     search: str = "",
     ticker: str = "",
     content: str = "all",
+    kind: str = "all",
     before: str = "",
     before_id: str = "",
 ) -> dict[str, Any]:
-    return trading_news_rows(as_of, lookback_hours, limit, search, ticker, content, before, before_id)
+    return trading_news_rows(as_of, lookback_hours, limit, search, ticker, content, kind, before, before_id)
 
 
 @app.websocket("/api/trading/news/stream")

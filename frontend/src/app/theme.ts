@@ -50,7 +50,9 @@ type AppThemeTokenMap = {
   menuShadow: string;
   muted: string;
   mutedForeground: string;
+  newsCold: string;
   newsHot: string;
+  newsOld: string;
   popover: string;
   primary: string;
   primaryForeground: string;
@@ -314,7 +316,11 @@ export function applyThemeDefinition(target: HTMLElement, themeId: AppThemeId = 
     "--menu-shadow": tokens.menuShadow,
     "--muted": tokens.muted,
     "--muted-foreground": tokens.mutedForeground,
+    // Product-wide news-temperature contract: hot is neon red, cold is neon blue,
+    // and old is neutral. News UI must use these tokens, never success/danger/info.
+    "--news-cold": tokens.newsCold,
     "--news-hot": tokens.newsHot,
+    "--news-old": tokens.newsOld,
     "--page-bg": tokens.background,
     "--popover": tokens.popover,
     "--popover-foreground": tokens.foreground,
@@ -433,7 +439,9 @@ function buildTheme({
       menuShadow: tone === "light" ? "0 18px 42px rgba(15, 23, 42, 0.12)" : "0 18px 42px rgba(2, 6, 23, 0.34)",
       muted: palette.muted,
       mutedForeground: palette.mutedForeground,
+      newsCold: tone === "light" ? "#007dff" : "#00c8ff",
       newsHot: tone === "light" ? "#ff1744" : "#ff3b5c",
+      newsOld: palette.mutedForeground,
       popover: palette.card,
       primary: palette.primary,
       primaryForeground: "#ffffff",
