@@ -48,6 +48,8 @@ type AppThemeTokenMap = {
   foreground: string;
   menuBackground: string;
   menuShadow: string;
+  marketPrice: string;
+  marketRate: string;
   muted: string;
   mutedForeground: string;
   newsCold: string;
@@ -314,6 +316,8 @@ export function applyThemeDefinition(target: HTMLElement, themeId: AppThemeId = 
     "--input-background": tokens.controlBackground,
     "--menu-bg": tokens.menuBackground,
     "--menu-shadow": tokens.menuShadow,
+    "--market-price": tokens.marketPrice,
+    "--market-rate": tokens.marketRate,
     "--muted": tokens.muted,
     "--muted-foreground": tokens.mutedForeground,
     // Product-wide news-temperature contract: hot is neon red, cold is neon blue,
@@ -437,6 +441,10 @@ function buildTheme({
       foreground: palette.foreground,
       menuBackground: palette.card,
       menuShadow: tone === "light" ? "0 18px 42px rgba(15, 23, 42, 0.12)" : "0 18px 42px rgba(2, 6, 23, 0.34)",
+      // Financial text uses type color, never directional red/green: blue marks
+      // money and price values; violet marks percentages, rates, and basis points.
+      marketPrice: tone === "light" ? "#006edc" : "#65c7ff",
+      marketRate: tone === "light" ? "#6d3fd1" : "#c68cff",
       muted: palette.muted,
       mutedForeground: palette.mutedForeground,
       newsCold: tone === "light" ? "#007dff" : "#00c8ff",
