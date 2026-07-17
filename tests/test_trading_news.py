@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from src.backend.app import trading_news_rows
+from src.backend.app import SERVICE_REGISTRY, service_websocket_url, trading_news_rows
 
 
 class TradingNewsTests(unittest.TestCase):
@@ -65,6 +65,10 @@ class TradingNewsTests(unittest.TestCase):
             trading_news_rows(ticker="AAPL; DROP")
         with self.assertRaises(HTTPException):
             trading_news_rows(content="summary")
+
+    @patch.dict("os.environ", {"NEWS_GATEWAY_BIND": "0.0.0.0:8796"})
+    def test_news_gateway_websocket_uses_loopback_for_wildcard_bind(self) -> None:
+        self.assertEqual(service_websocket_url(SERVICE_REGISTRY["news"], "/stream/news"), "ws://127.0.0.1:8796/stream/news")
 
     @patch("src.backend.app.clickhouse_status_query", side_effect=TimeoutError("timed out"))
     def test_clickhouse_timeout_is_reported_as_gateway_timeout(self, _query_mock) -> None:

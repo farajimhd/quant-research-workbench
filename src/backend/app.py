@@ -1120,6 +1120,10 @@ def service_base_url(service: dict[str, str]) -> str:
     return f"http://{host}:{port}"
 
 
+def service_websocket_url(service: dict[str, str], path: str) -> str:
+    return f"{service_base_url(service).replace('http://', 'ws://', 1)}{path}"
+
+
 def parse_service_bind(bind: str) -> tuple[str, int]:
     text = bind.strip()
     if text.startswith("[") and "]:" in text:
@@ -3242,6 +3246,33 @@ def trading_news(
     before_id: str = "",
 ) -> dict[str, Any]:
     return trading_news_rows(as_of, lookback_hours, limit, search, ticker, content, before, before_id)
+
+
+@app.websocket("/api/trading/news/stream")
+async def trading_news_stream(websocket: WebSocket) -> None:
+    await websocket.accept()
+    ticker = websocket.query_params.get("ticker", "").strip().upper()
+    if ticker and not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,15}", ticker):
+        await websocket.send_json({"error": "Invalid news ticker stream request."})
+        await websocket.close(code=1008)
+        return
+    upstream_path = f"/stream/news/ticker/{ticker}" if ticker else "/stream/news"
+    upstream_url = service_websocket_url(SERVICE_REGISTRY["news"], upstream_path)
+    try:
+        async with websockets.connect(upstream_url, ping_interval=20, ping_timeout=20, max_size=8 * 1024 * 1024) as upstream:
+            async for message in upstream:
+                if isinstance(message, bytes):
+                    await websocket.send_bytes(message)
+                else:
+                    await websocket.send_text(message)
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        try:
+            await websocket.send_json({"error": f"News Gateway stream unavailable: {exc}"})
+            await websocket.close(code=1011)
+        except Exception:
+            return
 
 
 @app.get("/api/trading/ticker-presentations")

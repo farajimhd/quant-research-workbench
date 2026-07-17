@@ -38,12 +38,14 @@ class NewsMemoryState:
         self._recent: deque[NewsSummary] = deque(maxlen=self._history_limit)
         self._by_ticker: dict[str, deque[NewsSummary]] = defaultdict(lambda: deque(maxlen=self._history_limit))
         self._seen: dict[str, datetime] = {}
+        self._revision = 0
 
     async def add_rows(self, rows: list[dict[str, Any]]) -> int:
         return await self.upsert_rows(rows)
 
     async def upsert_rows(self, rows: list[dict[str, Any]]) -> int:
         added = 0
+        updated = False
         async with self._lock:
             self._prune_locked(datetime.now(UTC))
             for row in rows:
@@ -51,6 +53,7 @@ class NewsMemoryState:
                 if not key:
                     continue
                 summary = row_to_summary(row)
+                updated = True
                 summary_time = parse_dt(summary.published_at_utc) or datetime.now(UTC)
                 is_new = key not in self._seen
                 self._seen[key] = summary_time
@@ -59,6 +62,8 @@ class NewsMemoryState:
                     self._by_ticker[ticker.upper()].appendleft(summary)
                 if is_new:
                     added += 1
+            if updated:
+                self._revision += 1
         return added
 
     async def recent_snapshot(self, limit: int = 250) -> dict[str, Any]:
@@ -67,6 +72,7 @@ class NewsMemoryState:
             rows = latest_unique(list(self._recent), max(1, min(limit, self._history_limit)))
             return {
                 "as_of": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "revision": self._revision,
                 "row_count": len(rows),
                 "total_articles": len(self._seen),
                 "rows": [asdict(row) for row in rows],
@@ -78,9 +84,11 @@ class NewsMemoryState:
         async with self._lock:
             self._prune_locked(now)
             rows = latest_unique(list(self._by_ticker.get(key, [])), max(1, min(limit, self._history_limit)))
+            revision = self._revision
         parsed_times = [parse_dt(row.published_at_utc) for row in rows]
         return {
             "as_of": now.isoformat().replace("+00:00", "Z"),
+            "revision": revision,
             "ticker": key,
             "news_count_5m": sum(1 for value in parsed_times if value and value >= now - timedelta(minutes=5)),
             "news_count_30m": sum(1 for value in parsed_times if value and value >= now - timedelta(minutes=30)),

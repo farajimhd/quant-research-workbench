@@ -1,16 +1,16 @@
 const EXCHANGE_TIME_ZONE = "America/New_York";
 const VANCOUVER_TIME_ZONE = "America/Vancouver";
 
-export function MarketTime({ className = "", dateStyle = "full", includeDate = false, value }: { className?: string; dateStyle?: "full" | "short"; includeDate?: boolean; value: string | number | Date }) {
+export function MarketTime({ className = "", dateStyle = "full", includeDate = false, layout = "stacked", value }: { className?: string; dateStyle?: "full" | "short"; includeDate?: boolean; layout?: "inline" | "stacked"; value: string | number | Date }) {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return <span className={`market-time${className ? ` ${className}` : ""}`}>—</span>;
   const exchangeTime = formatTime(date, EXCHANGE_TIME_ZONE);
   const vancouverTime = formatTime(date, VANCOUVER_TIME_ZONE);
   const exchangeDate = includeDate ? formatDate(date, EXCHANGE_TIME_ZONE, dateStyle) : "";
   const label = `${exchangeDate ? `${exchangeDate}, ` : ""}${exchangeTime} ET; ${vancouverTime} Vancouver`;
-  return <time aria-label={label} className={`market-time${className ? ` ${className}` : ""}`} dateTime={date.toISOString()}>
-    <span>{exchangeDate ? <b>{exchangeDate}</b> : null}<strong>{exchangeTime} ET</strong></span>
-    <small>VAN {vancouverTime}</small>
+  return <time aria-label={label} className={`market-time market-time-${layout}${className ? ` ${className}` : ""}`} dateTime={date.toISOString()}>
+    <span className="market-time-primary">{exchangeDate ? <b className="market-time-date">{exchangeDate}</b> : null}<strong>{exchangeTime} ET</strong></span>
+    <small className="market-time-secondary">VAN {vancouverTime}</small>
   </time>;
 }
 

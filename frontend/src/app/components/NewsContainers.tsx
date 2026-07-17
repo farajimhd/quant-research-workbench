@@ -1,5 +1,5 @@
 import { Bot, Building2, ExternalLink, Flame, Globe2, Layers3, Newspaper, RefreshCw, Search, Snowflake, Sparkles, TrendingUp } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, query } from "../../api/client";
 import { NEWS_READER_CANVAS_ID, ensureNewsReaderCanvas, focusCanvasUrl } from "../canvasWorkspace";
@@ -42,11 +42,11 @@ type NewsDetailPayload = {
 
 const NEWS_SELECTION_EVENT = "quant-news-selection";
 
-export function AllNewsContainer({ asOf, onSettingsChange, settings }: { asOf: string; onSettingsChange: (patch: Partial<{ content: string; lookbackHours: number; ticker: string }>) => void; settings: { content: string; lookbackHours: number; ticker: string } }) {
+export function AllNewsContainer({ asOf, live = false, onSettingsChange, settings }: { asOf: string; live?: boolean; onSettingsChange: (patch: Partial<{ content: string; lookbackHours: number; ticker: string }>) => void; settings: { content: string; lookbackHours: number; ticker: string } }) {
   const [search, setSearch] = useState("");
   const [committedSearch, setCommittedSearch] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
-  const state = useNewsQuery({ asOf, content: settings.content, hours: settings.lookbackHours, refreshKey, search: committedSearch, ticker: settings.ticker });
+  const state = useNewsQuery({ asOf, content: settings.content, hours: settings.lookbackHours, live, refreshKey, search: committedSearch, ticker: settings.ticker });
   const presentations = useTickerPresentations(state.rows.flatMap((row) => row.ticker_link_sample ?? []));
 
   return <section className="news-all" aria-label="All news">
@@ -62,7 +62,7 @@ export function AllNewsContainer({ asOf, onSettingsChange, settings }: { asOf: s
     <div className="news-table-wrap">
       <table className="news-table"><thead><tr><th>Time</th><th>Ticker</th><th>Headline</th><th>Source</th><th>Text</th></tr></thead><tbody>
         {state.rows.map((row) => <tr key={row.canonical_news_id} tabIndex={0}>
-          <td><MarketTime dateStyle="short" includeDate value={row.published_at_utc} /></td>
+          <td><MarketTime className="news-row-time" dateStyle="short" includeDate value={row.published_at_utc} /></td>
           <td><TickerList presentations={presentations} tickers={row.ticker_link_sample} /></td>
           <td><button className="news-headline-button" onClick={() => openNewsPage(row.canonical_news_id)} type="button"><strong>{row.title || "Untitled story"}</strong>{row.text_preview ? <small>{row.text_preview}</small> : null}</button></td>
           <td>{row.url_domain || "—"}</td><td><NewsTextState row={row} /></td>
@@ -74,19 +74,20 @@ export function AllNewsContainer({ asOf, onSettingsChange, settings }: { asOf: s
   </section>;
 }
 
-export function TickerNewsContainer({ asOf, settings, symbol }: { asOf: string; settings: { lookbackHours: number; showTeaser: boolean }; symbol: string }) {
-  const state = useNewsQuery({ asOf, content: "all", hours: settings.lookbackHours, refreshKey: 0, search: "", ticker: symbol });
+export function TickerNewsContainer({ asOf, live = false, settings, symbol }: { asOf: string; live?: boolean; settings: { lookbackHours: number; showTeaser: boolean }; symbol: string }) {
+  const state = useNewsQuery({ asOf, content: "all", hours: settings.lookbackHours, live, refreshKey: 0, search: "", ticker: symbol });
   const presentations = useTickerPresentations([symbol]);
-  const asOfMs = Date.parse(asOf);
+  const effectiveAsOf = state.asOf || asOf;
+  const asOfMs = Date.parse(effectiveAsOf);
   const orderedRows = [...state.rows].sort(compareNewsRecency);
   const companyRows = orderedRows.filter((row) => row.news_kind === "company");
   const otherRows = orderedRows.filter((row) => row.news_kind !== "company");
   return <section className="ticker-news" aria-label={`${symbol} news`}>
-    <header><div><TickerIdentity className="ticker-news-symbol" logoUrl={presentations[symbol]?.logo_url} ticker={symbol} /><span>Recent coverage</span></div><small>{state.rows.length} stories · through <MarketTime value={asOf} /></small></header>
+    <header><div><TickerIdentity className="ticker-news-symbol" logoUrl={presentations[symbol]?.logo_url} ticker={symbol} /><span>Recent coverage</span></div><small>{state.rows.length} stories · through <MarketTime value={effectiveAsOf} /></small></header>
     <NewsStatus state={state} compact />
     <div className="ticker-news-feed">
-      <TickerNewsSection asOf={asOf} asOfMs={asOfMs} emptyLabel="No company-specific news in this window." label="Company news" rows={companyRows} showTeaser={settings.showTeaser} />
-      <TickerNewsSection asOf={asOf} asOfMs={asOfMs} emptyLabel="No broader coverage in this window." label="Other coverage" rows={otherRows} showTeaser={settings.showTeaser} />
+      <TickerNewsSection asOf={effectiveAsOf} asOfMs={asOfMs} emptyLabel="No company-specific news in this window." label="Company news" rows={companyRows} showTeaser={settings.showTeaser} />
+      <TickerNewsSection asOf={effectiveAsOf} asOfMs={asOfMs} emptyLabel="No broader coverage in this window." label="Other coverage" rows={otherRows} showTeaser={settings.showTeaser} />
       {!state.loading && !state.rows.length ? <NewsEmpty label={`No ${symbol} news in the last ${settings.lookbackHours} hours.`} /> : null}
     </div>
   </section>;
@@ -155,19 +156,60 @@ export function NewsDetailContainer({ canvasId, requestedNewsId }: { canvasId: s
   </article>;
 }
 
-function useNewsQuery({ asOf, content, hours, refreshKey, search, ticker }: { asOf: string; content: string; hours: number; refreshKey: number; search: string; ticker: string }) {
+function useNewsQuery({ asOf, content, hours, live, refreshKey, search, ticker }: { asOf: string; content: string; hours: number; live: boolean; refreshKey: number; search: string; ticker: string }) {
   const [rows, setRows] = useState<NewsRow[]>([]); const [payload, setPayload] = useState<NewsPayload | null>(null); const [error, setError] = useState(""); const [loading, setLoading] = useState(true); const [loadingMore, setLoadingMore] = useState(false);
-  const load = useCallback(async (before = "", beforeId = "", signal?: AbortSignal) => {
-    const next = await api<NewsPayload>(`/api/trading/news${query({ as_of: asOf, before: before || undefined, before_id: beforeId || undefined, content, limit: 100, lookback_hours: hours, search: search || undefined, ticker: ticker || undefined })}`, { signal, timeoutMs: 30000 });
+  const [liveConnected, setLiveConnected] = useState(false);
+  const [liveError, setLiveError] = useState("");
+  const latestRevision = useRef<number | null>(null);
+  const load = useCallback(async (before = "", beforeId = "", signal?: AbortSignal, pageAsOf = "") => {
+    const queryAsOf = pageAsOf || (live ? new Date().toISOString() : asOf);
+    const next = await api<NewsPayload>(`/api/trading/news${query({ as_of: queryAsOf, before: before || undefined, before_id: beforeId || undefined, content, limit: 100, lookback_hours: hours, search: search || undefined, ticker: ticker || undefined })}`, { signal, timeoutMs: 30000 });
     if (signal?.aborted) return;
     setPayload(next); setRows((current) => before ? [...current, ...next.rows.filter((row) => !current.some((item) => item.canonical_news_id === row.canonical_news_id))] : next.rows);
-  }, [asOf, content, hours, search, ticker]);
+  }, [asOf, content, hours, live, search, ticker]);
   useEffect(() => { const controller = new AbortController(); setLoading(true); setError(""); load("", "", controller.signal).catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); }); return () => controller.abort(); }, [load, refreshKey]);
-  const loadMore = useCallback(() => { if (!payload?.next_before) return; setLoadingMore(true); load(payload.next_before, payload.next_before_id).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason))).finally(() => setLoadingMore(false)); }, [load, payload]);
-  return { error, hasMore: Boolean(payload?.has_more), loadMore, loading, loadingMore, rows, source: payload?.source, windowStart: payload?.window_start };
+  useEffect(() => {
+    if (!live) { setLiveConnected(false); latestRevision.current = null; return; }
+    let closed = false;
+    let retryTimer = 0;
+    let socket: WebSocket | null = null;
+    let refreshController: AbortController | null = null;
+    const connect = () => {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      socket = new WebSocket(`${protocol}//${window.location.host}/api/trading/news/stream${query({ ticker: ticker || undefined })}`);
+      socket.onopen = () => { if (!closed) { setLiveConnected(true); setLiveError(""); } };
+      socket.onmessage = (event) => {
+        if (closed) return;
+        try {
+          const message = JSON.parse(String(event.data)) as { error?: string; revision?: number };
+          if (message.error) { setLiveError(message.error); socket?.close(); return; }
+          const revision = Number(message.revision);
+          if (!Number.isFinite(revision) || latestRevision.current === revision) return;
+          const firstSnapshot = latestRevision.current === null;
+          latestRevision.current = revision;
+          if (firstSnapshot) return;
+          refreshController?.abort();
+          refreshController = new AbortController();
+          load("", "", refreshController.signal).catch((reason) => { if (!refreshController?.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); });
+        } catch (reason) {
+          setLiveError(reason instanceof Error ? reason.message : String(reason));
+        }
+      };
+      socket.onclose = () => {
+        if (closed) return;
+        setLiveConnected(false);
+        retryTimer = window.setTimeout(connect, 2000);
+      };
+      socket.onerror = () => socket?.close();
+    };
+    connect();
+    return () => { closed = true; window.clearTimeout(retryTimer); refreshController?.abort(); socket?.close(); };
+  }, [live, load, ticker]);
+  const loadMore = useCallback(() => { if (!payload?.next_before) return; setLoadingMore(true); load(payload.next_before, payload.next_before_id, undefined, payload.as_of).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason))).finally(() => setLoadingMore(false)); }, [load, payload]);
+  return { asOf: payload?.as_of, error, hasMore: Boolean(payload?.has_more), live, liveConnected, liveError, loadMore, loading, loadingMore, rows, source: payload?.source, windowStart: payload?.window_start };
 }
 
-function NewsStatus({ compact, state }: { compact?: boolean; state: ReturnType<typeof useNewsQuery> }) { return <div className="news-status" data-compact={compact ? "true" : "false"}>{state.loading ? <span>Querying news…</span> : state.error ? <strong>{state.error}</strong> : <><span>{state.rows.length} returned</span>{!compact && state.windowStart ? <span className="news-window-start">Since <MarketTime includeDate value={state.windowStart} /></span> : null}<span>{state.source || "Point-in-time DB"}</span></>}</div>; }
+function NewsStatus({ compact, state }: { compact?: boolean; state: ReturnType<typeof useNewsQuery> }) { return <div className="news-status" data-compact={compact ? "true" : "false"}>{state.loading ? <span>Querying news…</span> : state.error ? <strong>{state.error}</strong> : <><span>{state.rows.length} returned</span>{!compact && state.windowStart ? <span className="news-window-start"><span>Since</span><MarketTime dateStyle="short" includeDate layout="inline" value={state.windowStart} /></span> : null}<span className="news-source-label" title={state.liveError || undefined}>{state.live ? state.liveConnected ? "News Gateway · DB" : "DB · gateway reconnecting" : state.source || "Point-in-time DB"}</span></>}</div>; }
 function NewsEmpty({ label }: { label: string }) { return <div className="news-empty"><Newspaper size={18} /><span>{label}</span></div>; }
 function TickerList({ presentations, tickers = [] }: { presentations: Record<string, TickerPresentation>; tickers?: string[] }) { return <span className="news-tickers">{tickers.slice(0, 3).map((ticker) => <b key={ticker}><TickerIdentity logoUrl={presentations[ticker]?.logo_url} ticker={ticker} /></b>)}{tickers.length > 3 ? <b>+{tickers.length - 3}</b> : !tickers.length ? "—" : null}</span>; }
 function NewsTextState({ row }: { row: NewsRow }) { return <span className="news-text-state" data-state={row.is_title_only ? "title" : "full"}>{row.is_title_only ? "Title" : row.has_pdf ? "PDF" : row.has_external_text ? "Full" : "Body"}</span>; }

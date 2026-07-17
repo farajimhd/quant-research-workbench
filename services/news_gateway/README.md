@@ -57,6 +57,21 @@ the initial provider item in memory immediately, then a bounded background worke
 performs enrichment and publishes the final canonical row. ClickHouse only gets
 final canonical rows; partial in-memory pending rows are not inserted.
 
+## App Read Contract
+
+The Canvas news containers keep one canonical query path for point-in-time and
+live use. Search, ticker filters, pagination, and article text read the persisted
+`q_live.benzinga_news_normalized_v1` and `q_live.benzinga_news_ticker_v1` tables.
+Live canvases additionally subscribe through the backend
+`/api/trading/news/stream` proxy. Gateway snapshots include a monotonic
+`revision`; a changed revision invalidates the current page and makes the client
+re-query ClickHouse at the current time. This avoids merging the gateway's
+pending in-memory row with its later enriched database row in the browser.
+
+Point-in-time Replay, Backtest, and Canvas configuration previews do not open
+the live stream. Their fixed `as_of` remains stable until the user changes the
+shared historical clock or explicitly refreshes the query.
+
 ## Dependency Preflight
 
 The gateway is fail-fast. It does not start the live polling loop, startup gap

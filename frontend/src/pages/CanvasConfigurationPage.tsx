@@ -1074,7 +1074,7 @@ function previewClockReadings(context: CanvasPreviewContext) {
   };
   return [
     { label: "ET", ...format("America/New_York", true) },
-    { label: "VAN", ...format("America/Vancouver", false) },
+    { label: "VAN", ...format("America/Vancouver", true) },
   ];
 }
 function dateInTimeZone(date: string, time: string, timeZone: string) {
