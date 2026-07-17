@@ -32,7 +32,11 @@ class TradingNewsTests(unittest.TestCase):
         self.assertEqual(payload["next_before"], "2026-07-10T13:44:00.000000Z")
         self.assertEqual(payload["next_before_id"], "n1")
         sql = query_mock.call_args.args[0]
-        self.assertIn("has(t.ticker_link_sample, 'AAPL')", sql)
+        self.assertIn("ticker = 'AAPL'", sql)
+        self.assertIn("n.canonical_news_id IN", sql)
+        self.assertIn("n.published_date >= toDate(window_start)", sql)
+        self.assertIn("arrayMap(value -> upperUTF8(trimBoth(value)), n.tickers)", sql)
+        self.assertNotIn("ticker_counts AS", sql)
         self.assertIn("positionCaseInsensitiveUTF8", sql)
         self.assertIn("NOT n.is_title_only", sql)
         self.assertIn("n.published_at_utc <= window_end", sql)
@@ -41,6 +45,7 @@ class TradingNewsTests(unittest.TestCase):
         self.assertIn("'multi'", sql)
         self.assertIn("'company'", sql)
         self.assertIn("LIMIT 2", sql)
+        self.assertEqual(query_mock.call_args.kwargs["timeout_seconds"], 12.0)
 
     @patch("src.backend.app.clickhouse_status_query", return_value="")
     def test_cursor_keeps_same_timestamp_rows_ordered(self, query_mock) -> None:
@@ -60,6 +65,12 @@ class TradingNewsTests(unittest.TestCase):
             trading_news_rows(ticker="AAPL; DROP")
         with self.assertRaises(HTTPException):
             trading_news_rows(content="summary")
+
+    @patch("src.backend.app.clickhouse_status_query", side_effect=TimeoutError("timed out"))
+    def test_clickhouse_timeout_is_reported_as_gateway_timeout(self, _query_mock) -> None:
+        with self.assertRaises(HTTPException) as raised:
+            trading_news_rows(as_of="2026-07-10T13:45:00Z")
+        self.assertEqual(raised.exception.status_code, 504)
 
 
 if __name__ == "__main__":

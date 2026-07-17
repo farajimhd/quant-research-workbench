@@ -151,6 +151,7 @@ EXCHANGE_TIME_ZONE = "America/New_York"
 PORTFOLIO_CHART_TIMEFRAMES = ["30m", "1h", "2h", "4h", "1d"]
 DEBUG_SESSIONS: dict[str, StepBacktestDebugger] = {}
 SERVICE_STATUS_TIMEOUT_SECONDS = 1.8
+NEWS_QUERY_TIMEOUT_SECONDS = 12.0
 SERVICE_LOG_TAIL_LIMIT = 160
 SERVICE_DASHBOARD_LOG_LIMIT = 360
 
@@ -1919,9 +1920,21 @@ def trading_news_rows(
     cursor_filter = "n.published_at_utc < page_before"
     if before.strip() and cursor_id:
         cursor_filter = f"(n.published_at_utc < page_before OR (n.published_at_utc = page_before AND n.canonical_news_id < {sql_string(cursor_id)}))"
-    filters = ["n.published_at_utc >= window_start", "n.published_at_utc <= window_end", cursor_filter]
+    filters = [
+        "n.published_date >= toDate(window_start)",
+        "n.published_date <= toDate(window_end)",
+        "n.published_at_utc >= window_start",
+        "n.published_at_utc <= window_end",
+        cursor_filter,
+    ]
     if safe_ticker:
-        filters.append(f"has(t.ticker_link_sample, {sql_string(safe_ticker)})")
+        filters.append(
+            "n.canonical_news_id IN ("
+            f"SELECT canonical_news_id FROM {quote_ident(database)}.{quote_ident(ticker_table)} FINAL "
+            f"WHERE ticker = {sql_string(safe_ticker)} "
+            "AND published_at_utc >= window_start AND published_at_utc <= window_end"
+            ")"
+        )
     search_term = search.strip()
     if search_term:
         escaped = sql_string(search_term)
@@ -1935,43 +1948,43 @@ def trading_news_rows(
     elif safe_content == "title":
         filters.append("n.is_title_only")
     where_sql = " AND ".join(filters)
+    ticker_links_sql = (
+        "arraySort(arrayDistinct(arrayFilter(value -> notEmpty(value), "
+        "arrayMap(value -> upperUTF8(trimBoth(value)), n.tickers))))"
+    )
     query = f"""
         WITH
             {start_sql} AS window_start,
             {end_sql} AS window_end,
-            {cursor_sql} AS page_before,
-            ticker_counts AS
-            (
-                SELECT canonical_news_id,
-                       arraySort(groupUniqArray(nullIf(ticker, ''))) AS ticker_link_sample
-                FROM {quote_ident(database)}.{quote_ident(ticker_table)} FINAL
-                WHERE published_at_utc >= window_start AND published_at_utc <= window_end
-                GROUP BY canonical_news_id
-            )
+            {cursor_sql} AS page_before
         SELECT
             n.canonical_news_id,
             formatDateTime(n.published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
             n.title, n.article_url, n.url_domain, n.author, n.channels, n.provider_tags,
-            ifNull(t.ticker_link_sample, []) AS ticker_link_sample,
-            length(ifNull(t.ticker_link_sample, [])) AS ticker_link_count,
+            {ticker_links_sql} AS ticker_link_sample,
+            length(ticker_link_sample) AS ticker_link_count,
             multiIf(
                 arrayExists(value -> lowerUTF8(value) IN ('benzai', 'ai generated', 'ai-generated'), n.provider_tags), 'ai',
                 arrayExists(value -> lowerUTF8(value) IN ('analyst ratings', 'price target', 'analyst color', 'initiation', 'reiteration', 'upgrades', 'downgrades'), n.channels), 'analyst',
-                length(ifNull(t.ticker_link_sample, [])) > 1, 'multi',
-                length(ifNull(t.ticker_link_sample, [])) = 1, 'company',
+                length(ticker_link_sample) > 1, 'multi',
+                length(ticker_link_sample) = 1, 'company',
                 'market'
             ) AS news_kind,
             n.has_external_text, n.has_pdf, n.is_title_only,
             lengthUTF8(n.normalized_full_text) AS full_text_chars,
             substring(n.normalized_full_text, 1, 320) AS text_preview
         FROM {quote_ident(database)}.{quote_ident(normalized_table)} AS n FINAL
-        LEFT JOIN ticker_counts AS t ON t.canonical_news_id = n.canonical_news_id
         WHERE {where_sql}
         ORDER BY n.published_at_utc DESC, n.canonical_news_id DESC
         LIMIT {safe_limit + 1}
         FORMAT JSONEachRow
     """
-    rows = clickhouse_json_each_row(query)
+    try:
+        rows = clickhouse_json_each_row(query)
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="News query timed out while reading ClickHouse") from exc
+    except urllib.error.URLError as exc:
+        raise HTTPException(status_code=503, detail=f"News database unavailable: {exc.reason}") from exc
     has_more = len(rows) > safe_limit
     rows = rows[:safe_limit]
     return {
@@ -1988,7 +2001,11 @@ def trading_news_rows(
 
 
 def clickhouse_json_each_row(query: str) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in clickhouse_status_query(query).splitlines() if line.strip()]
+    return [
+        json.loads(line)
+        for line in clickhouse_status_query(query, timeout_seconds=NEWS_QUERY_TIMEOUT_SECONDS).splitlines()
+        if line.strip()
+    ]
 
 
 def service_market_day_window() -> tuple[datetime, datetime, datetime, datetime]:
@@ -3001,7 +3018,7 @@ def service_table_state_years() -> list[int]:
     return list(range(date.today().year, SERVICE_TABLE_STATE_START_YEAR - 1, -1))
 
 
-def clickhouse_status_query(sql: str) -> str:
+def clickhouse_status_query(sql: str, *, timeout_seconds: float = SERVICE_STATUS_TIMEOUT_SECONDS) -> str:
     req = urllib.request.Request(default_clickhouse_url().rstrip("/") + "/", data=sql.encode("utf-8"), method="POST")
     user = default_clickhouse_user()
     password = default_clickhouse_password()
@@ -3010,7 +3027,7 @@ def clickhouse_status_query(sql: str) -> str:
     if password:
         req.add_header("X-ClickHouse-Key", password)
     try:
-        with urllib.request.urlopen(req, timeout=SERVICE_STATUS_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(req, timeout=timeout_seconds) as response:
             return response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
