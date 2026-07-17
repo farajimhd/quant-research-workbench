@@ -71,6 +71,13 @@ pub struct ChartBarRow {
     pub close: f64,
     pub volume: f64,
     pub vwap: Option<f64>,
+    pub estimated_luld_active: bool,
+    pub estimated_luld_reference_price: f64,
+    pub estimated_luld_lower_price: f64,
+    pub estimated_luld_upper_price: f64,
+    pub estimated_luld_distance_to_upper_pct: f64,
+    pub estimated_luld_distance_to_lower_pct: f64,
+    pub estimated_luld_state: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -770,6 +777,13 @@ impl ChartBarRow {
             close: bar.close,
             volume: bar.volume,
             vwap: Some(bar.vwap),
+            estimated_luld_active: bar.estimated_luld_active,
+            estimated_luld_reference_price: bar.estimated_luld_reference_price,
+            estimated_luld_lower_price: bar.estimated_luld_lower_price,
+            estimated_luld_upper_price: bar.estimated_luld_upper_price,
+            estimated_luld_distance_to_upper_pct: bar.estimated_luld_distance_to_upper_pct,
+            estimated_luld_distance_to_lower_pct: bar.estimated_luld_distance_to_lower_pct,
+            estimated_luld_state: bar.estimated_luld_state.clone(),
         }
     }
 
@@ -788,6 +802,13 @@ impl ChartBarRow {
             close: f64::from(bar.close),
             volume: bar.size_sum,
             vwap: None,
+            estimated_luld_active: false,
+            estimated_luld_reference_price: 0.0,
+            estimated_luld_lower_price: 0.0,
+            estimated_luld_upper_price: 0.0,
+            estimated_luld_distance_to_upper_pct: 0.0,
+            estimated_luld_distance_to_lower_pct: 0.0,
+            estimated_luld_state: "unavailable".to_string(),
         }
     }
 }

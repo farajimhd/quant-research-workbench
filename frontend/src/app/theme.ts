@@ -64,6 +64,11 @@ type AppThemeTokenMap = {
   sidebarForeground: string;
   sidebarPrimary: string;
   success: string;
+  tapeAsk: string;
+  tapeBid: string;
+  tapeIso: string;
+  tapeOdd: string;
+  tapeWarning: string;
   warning: string;
 };
 
@@ -350,6 +355,11 @@ export function applyThemeDefinition(target: HTMLElement, themeId: AppThemeId = 
     "--sidebar-primary-foreground": tokens.primaryForeground,
     "--sidebar-section-text": tokens.mutedForeground,
     "--success": tokens.success,
+    "--tape-ask": tokens.tapeAsk,
+    "--tape-bid": tokens.tapeBid,
+    "--tape-iso": tokens.tapeIso,
+    "--tape-odd": tokens.tapeOdd,
+    "--tape-warning": tokens.tapeWarning,
     "--surface": tokens.card,
     "--surface-alt": tokens.cardMuted,
     "--surface-border": tokens.border,
@@ -459,6 +469,11 @@ function buildTheme({
       sidebarForeground: palette.sidebarForeground,
       sidebarPrimary: palette.primary,
       success,
+      tapeAsk: tone === "light" ? "#00a83b" : "#39ff14",
+      tapeBid: tone === "light" ? "#ed174c" : "#ff315f",
+      tapeIso: tone === "light" ? "#007f96" : "#00f0ff",
+      tapeOdd: tone === "light" ? "#8a22c7" : "#d45cff",
+      tapeWarning: tone === "light" ? "#b26a00" : "#ffd400",
       warning
     }
   };

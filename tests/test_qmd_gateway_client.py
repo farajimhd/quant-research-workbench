@@ -3,10 +3,17 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from src.backend.qmd_gateway_client import normalize_qmd_macro_bar_snapshot, qmd_compact_events, qmd_websocket_url
+from src.backend.qmd_gateway_client import normalize_qmd_macro_bar_snapshot, qmd_compact_events, qmd_live_market_state, qmd_websocket_url
 
 
 class QmdGatewayClientTests(unittest.TestCase):
+    @patch("src.backend.qmd_gateway_client.qmd_get_json")
+    def test_live_market_state_uses_symbol_snapshot(self, get_json) -> None:
+        get_json.return_value = {"ticker": "AAPL", "is_live_tradable": True}
+
+        self.assertEqual(qmd_live_market_state("aapl"), get_json.return_value)
+        get_json.assert_called_once_with("/snapshot/live-market-state/AAPL", timeout=3)
+
     @patch("src.backend.qmd_gateway_client.qmd_get_json")
     def test_compact_events_preserve_only_object_rows(self, get_json) -> None:
         get_json.return_value = [{"ticker": "AAPL", "arrival_sequence": 7}, "invalid", None]

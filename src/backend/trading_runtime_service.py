@@ -531,6 +531,46 @@ def historical_compact_events(
     return [row for row in payload if isinstance(row, dict)]
 
 
+def historical_market_state(ticker: str, *, start: str, end: str) -> dict[str, Any]:
+    """Return QMD-derived halt/resume and estimated LULD state at a historical cutoff."""
+    resolved_ticker = _historical_ticker(ticker)
+    common = {"start": start, "end": end, "as_of": end, "limit": 50_000}
+    conditions = _historical_gateway_get(
+        f"/snapshot/condition-bars/{urllib.parse.quote(resolved_ticker)}",
+        {**common, "resolution": "1s"},
+        timeout=90,
+    )
+    chart = _historical_gateway_get(
+        f"/snapshot/chart-bars/{urllib.parse.quote(resolved_ticker)}",
+        {**common, "timeframe": "1s", "limit": 1},
+        timeout=90,
+    )
+    rows = list(conditions.get("rows") or []) if isinstance(conditions, dict) else []
+    trading_status = "trading"
+    status_as_of = end
+    for row in sorted(rows, key=lambda item: int(item.get("last_event_timestamp_us") or 0)):
+        if row.get("condition_halt_pause_flag"):
+            trading_status = "halted"
+            status_as_of = str(row.get("bar_end") or status_as_of)
+        if row.get("condition_resume_flag"):
+            trading_status = "resumed"
+            status_as_of = str(row.get("bar_end") or status_as_of)
+    bars = list(chart.get("bars") or []) if isinstance(chart, dict) else []
+    bar = bars[-1] if bars else {}
+    return {
+        "as_of": status_as_of,
+        "trading_status": trading_status,
+        "is_tradable": trading_status != "halted",
+        "luld_active": bool(bar.get("estimated_luld_active")),
+        "luld_state": str(bar.get("estimated_luld_state") or "unknown"),
+        "luld_lower_price": float(bar.get("estimated_luld_lower_price") or 0),
+        "luld_upper_price": float(bar.get("estimated_luld_upper_price") or 0),
+        "luld_distance_to_lower_pct": float(bar.get("estimated_luld_distance_to_lower_pct") or 0),
+        "luld_distance_to_upper_pct": float(bar.get("estimated_luld_distance_to_upper_pct") or 0),
+        "source": "qmd-history-gateway",
+    }
+
+
 @lru_cache(maxsize=1)
 def market_event_references() -> dict[str, dict[str, dict[str, Any]]]:
     exchanges = _reference_rows(MARKET_REFERENCE_DIR / "stock_exchanges.json")

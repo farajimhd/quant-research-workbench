@@ -21831,3 +21831,37 @@ button {
   .liquidity-signals { grid-template-columns: minmax(125px, 1.25fr) repeat(3, minmax(68px, 1fr)); }
   .microstructure-header small { display: none; }
 }
+
+/* Market microstructure legibility, responsive table sizing, and help/status layer. */
+.microstructure-header { padding: 9px 11px; }
+.microstructure-identity { align-items: center; display: flex; gap: 9px; min-width: 0; }
+.microstructure-header .ticker-identity { flex: 0 0 auto; font-size: 17px; }
+.microstructure-identity > small { color: var(--muted-foreground); font-size: 10px; font-weight: 450; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.microstructure-header-actions { align-items: center; display: flex; flex: 0 0 auto; gap: 6px; }
+.market-status-badge, .luld-status-badge, .market-context-badge, .microstructure-guide > summary { align-items: center; border: 1px solid var(--border); border-radius: 5px; display: inline-flex; font-size: 9.5px; font-weight: 620; gap: 4px; min-height: 25px; padding: 3px 7px; white-space: nowrap; }
+.market-status-badge[data-status="normal"], .market-status-badge[data-status="resumed"] { background: color-mix(in oklab, var(--tape-ask) 9%, var(--surface)); border-color: color-mix(in oklab, var(--tape-ask) 34%, var(--border)); color: var(--tape-ask); }
+.market-status-badge[data-status="halted"], .luld-status-badge[data-status="halted"] { background: color-mix(in oklab, var(--tape-bid) 10%, var(--surface)); border-color: color-mix(in oklab, var(--tape-bid) 35%, var(--border)); color: var(--tape-bid); }
+.luld-status-badge[data-status="warning"] { color: var(--tape-warning); }.luld-status-badge[data-status="normal"] { color: var(--muted-foreground); }
+.market-context-badge { color: var(--muted-foreground); font-weight: 540; }.market-context-badge[data-state="live"] { color: var(--tape-ask); }.market-context-badge[data-state="reconnecting"] { color: var(--warning); }
+.microstructure-guide { position: relative; }.microstructure-guide > summary { color: var(--foreground); cursor: pointer; list-style: none; }.microstructure-guide > summary::-webkit-details-marker { display: none; }
+.microstructure-guide-popover { background: var(--popover); border: 1px solid var(--border); box-shadow: var(--menu-shadow); color: var(--foreground); font-size: 11px; font-weight: 450; line-height: 1.45; padding: 11px 12px; position: absolute; right: 0; top: calc(100% + 6px); width: min(310px, 80cqw); z-index: 20; }
+.microstructure-guide-popover strong { font-size: 12px; }.microstructure-guide-popover p { margin: 6px 0 0; }.key-ask { color: var(--tape-ask); }.key-bid { color: var(--tape-bid); }
+.micro-help-tip { align-items: center; color: currentColor; display: inline-flex; margin-left: 3px; opacity: .68; vertical-align: -2px; }.micro-help-tip:focus, .micro-help-tip:hover { opacity: 1; outline: none; }
+.last-print small, .signal-metric small, .quote-side small, .spread-focus small, .imbalance-signal small { font-size: 9px; font-weight: 520; letter-spacing: .035em; }
+.signal-metric strong { font-size: 14px; font-weight: 620; letter-spacing: -.015em; }
+.microstructure-scroll { overflow: auto; scrollbar-gutter: stable both-edges; }
+.tape-table, .quote-signal-table { min-width: 0; table-layout: auto; width: max-content; }
+.tape-table th, .quote-signal-table th { font-size: 9px; font-weight: 560; padding: 7px 9px; white-space: nowrap; width: auto !important; }
+.tape-table td, .quote-signal-table td { font-size: 11px; font-weight: 450; height: 31px; overflow: visible; padding: 5px 9px; text-overflow: clip; }
+.tape-table .numeric { font-weight: 540; letter-spacing: -.01em; }.tape-table .price { font-size: 12.5px; font-weight: 640; }
+.tape-table tr[data-direction="buy"] { background: color-mix(in oklab, var(--tape-ask) 6%, var(--surface)); border-left-color: var(--tape-ask); color: var(--tape-ask); }.tape-table tr[data-direction="buy"] .price { color: var(--tape-ask); }
+.tape-table tr[data-direction="sell"] { background: color-mix(in oklab, var(--tape-bid) 6%, var(--surface)); border-left-color: var(--tape-bid); color: var(--tape-bid); }.tape-table tr[data-direction="sell"] .price { color: var(--tape-bid); }
+.tape-table tr[data-direction="mid"][data-condition-tone="iso"] { color: var(--tape-iso); }.tape-table tr[data-direction="mid"][data-condition-tone="odd"], .tape-table tr[data-direction="mid"][data-condition-tone="special"] { color: var(--tape-odd); }.tape-table tr[data-direction="mid"][data-condition-tone="warning"] { color: var(--tape-warning); }
+.venue-code, .condition-code { font-size: 10px; font-weight: 520; letter-spacing: .015em; }.tape-table tr[data-direction] .venue-code, .tape-table tr[data-direction] .condition-code { color: currentColor; }
+.liquidity-event > span { font-size: 11px; font-weight: 520; }.liquidity-event > small { font-size: 9px; font-weight: 420; }
+.quote-cell strong { font-size: 12px; font-weight: 620; letter-spacing: -.01em; }.quote-cell span { font-size: 9.5px; font-weight: 430; }
+
+@container (max-width: 600px) {
+  .microstructure-identity > small, .market-context-badge { display: none; }
+  .microstructure-header-actions { gap: 3px; }.market-status-badge, .luld-status-badge, .microstructure-guide > summary { padding-inline: 5px; }
+}

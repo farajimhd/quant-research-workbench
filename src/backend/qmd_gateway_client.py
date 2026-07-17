@@ -83,6 +83,16 @@ def qmd_service_status() -> dict[str, Any]:
     return payload
 
 
+def qmd_live_market_state(ticker: str) -> dict[str, Any]:
+    payload = qmd_get_json(
+        f"/snapshot/live-market-state/{urllib.parse.quote(ticker.strip().upper())}",
+        timeout=3,
+    )
+    if not isinstance(payload, dict):
+        raise RuntimeError("QMD live market-state response was not an object.")
+    return payload
+
+
 def qmd_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
     primitive_payload = qmd_get_json("/snapshot/scanner-primitives", {"limit": row_limit}, timeout=3)
     primitive_rows = primitive_payload.get("rows", []) if isinstance(primitive_payload, dict) else []

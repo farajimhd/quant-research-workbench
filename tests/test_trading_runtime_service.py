@@ -8,6 +8,7 @@ from src.backend.trading_runtime_service import (
     historical_bar_chunk,
     historical_compact_events,
     historical_latest_coverage,
+    historical_market_state,
     historical_preflight,
     historical_window_preview,
     market_event_references,
@@ -15,6 +16,34 @@ from src.backend.trading_runtime_service import (
 
 
 class HistoricalTradingServiceTests(unittest.TestCase):
+    @patch("src.backend.trading_runtime_service._historical_gateway_get")
+    def test_historical_market_state_uses_condition_transitions_and_qmd_luld_bar(self, gateway_get) -> None:
+        gateway_get.side_effect = [
+            {"rows": [
+                {"last_event_timestamp_us": 10, "condition_halt_pause_flag": 1, "bar_end": "2026-07-14T13:40:00Z"},
+                {"last_event_timestamp_us": 20, "condition_resume_flag": 1, "bar_end": "2026-07-14T13:41:00Z"},
+            ]},
+            {"bars": [{
+                "estimated_luld_active": True,
+                "estimated_luld_state": "near_upper",
+                "estimated_luld_lower_price": 280.0,
+                "estimated_luld_upper_price": 320.0,
+                "estimated_luld_distance_to_lower_pct": 9.0,
+                "estimated_luld_distance_to_upper_pct": 0.8,
+            }]},
+        ]
+
+        payload = historical_market_state(
+            "aapl",
+            start="2026-07-14T04:00:00-04:00",
+            end="2026-07-14T09:45:00-04:00",
+        )
+
+        self.assertEqual(payload["trading_status"], "resumed")
+        self.assertTrue(payload["is_tradable"])
+        self.assertEqual(payload["luld_state"], "near_upper")
+        self.assertEqual(payload["luld_upper_price"], 320.0)
+
     def test_market_event_references_expose_displayable_venues_and_conditions(self) -> None:
         market_event_references.cache_clear()
         payload = market_event_references()
