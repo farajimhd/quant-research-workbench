@@ -269,12 +269,22 @@ def event_table_for_year(base_table: str, year: int) -> str:
     return f"{base_table}_{year}" if events_table_uses_year_suffix(base_table) else base_table
 
 
+def event_authority_bounds(args: argparse.Namespace) -> tuple[dt.date, dt.date]:
+    """Return the event authority implied by the configured publication range.
+
+    Chunk lookback/lookahead windows may cross a year boundary, but must not
+    expand the required market dataset beyond this build's explicit authority.
+    Missing observations at the true edges remain visible as missing labels.
+    """
+    return date_arg(args.start_date), date_arg(args.end_date)
+
+
 def expected_event_tables(args: argparse.Namespace) -> tuple[str, ...]:
-    start = date_arg(args.start_date) - dt.timedelta(days=7)
-    end = date_arg(args.end_date) + dt.timedelta(days=8)
+    start, end = event_authority_bounds(args)
     if not events_table_uses_year_suffix(args.events_table):
         return (str(args.events_table),)
-    return tuple(event_table_for_year(args.events_table, year) for year in range(start.year, end.year + 1))
+    last_year = (end - dt.timedelta(days=1)).year
+    return tuple(event_table_for_year(args.events_table, year) for year in range(start.year, last_year + 1))
 
 
 def existing_event_tables(client: ClickHouseHttpClient, args: argparse.Namespace) -> tuple[str, ...]:
@@ -288,6 +298,14 @@ def event_source_table(
     *,
     tables: Sequence[str] | None = None,
 ) -> str:
+    authority_start, authority_end = event_authority_bounds(args)
+    first_date = max(first_date, authority_start)
+    last_exclusive = min(last_exclusive, authority_end)
+    if last_exclusive <= first_date:
+        raise ValueError(
+            f"event request [{first_date},{last_exclusive}) is outside configured authority "
+            f"[{authority_start},{authority_end})"
+        )
     available = tuple(tables or getattr(args, "available_event_tables", ()) or ())
     if available and events_table_uses_year_suffix(args.events_table):
         first_year = first_date.year
@@ -350,29 +368,36 @@ def audit_event_coverage(
 ) -> CoverageAudit:
     expected = expected_event_tables(args)
     existing = tuple(name for name in expected if table_exists(client, args.market_database, name))
-    missing = tuple(name for name in expected if name not in existing)
     if not existing:
-        return CoverageAudit(expected, missing, "", "", 0)
-    source = event_source_table(args, date_arg(args.start_date) - dt.timedelta(days=7), date_arg(args.end_date) + dt.timedelta(days=8), tables=existing)
-    sql = f"""
+        return CoverageAudit((), expected, "", "", 0)
+    text = monitored_execute(client, event_coverage_sql(args, existing), reporter, "preflight compact-event coverage")
+    row = parse_one_json(text)
+    populated = tuple(sorted(str(name) for name in row.get("populated_tables") or ()))
+    missing = tuple(name for name in expected if name not in populated)
+    event_rows = int(row.get("event_rows") or 0)
+    return CoverageAudit(
+        source_tables=populated,
+        missing_source_tables=missing,
+        event_min_date=str(row.get("event_min_date") or "") if event_rows else "",
+        event_max_date=str(row.get("event_max_date") or "") if event_rows else "",
+        event_rows=event_rows,
+    )
+
+
+def event_coverage_sql(args: argparse.Namespace, existing: Sequence[str]) -> str:
+    names = ", ".join(sql_string(name) for name in existing)
+    return f"""
 SELECT
-    toString(min(event_date)) AS event_min_date,
-    toString(max(event_date)) AS event_max_date,
-    count() AS event_rows
-FROM {source}
-PREWHERE event_date >= addDays(toDate({sql_string(args.start_date)}), -7)
-  AND event_date < addDays(toDate({sql_string(args.end_date)}), 8)
+    toString(min(min_date)) AS event_min_date,
+    toString(max(max_date)) AS event_max_date,
+    sum(rows) AS event_rows,
+    arraySort(groupUniqArray(table)) AS populated_tables
+FROM system.parts
+WHERE active
+  AND database = {sql_string(args.market_database)}
+  AND table IN ({names})
 FORMAT JSONEachRow
 """
-    text = monitored_execute(client, sql, reporter, "preflight compact-event coverage")
-    row = parse_one_json(text)
-    return CoverageAudit(
-        source_tables=existing,
-        missing_source_tables=missing,
-        event_min_date=str(row.get("event_min_date") or ""),
-        event_max_date=str(row.get("event_max_date") or ""),
-        event_rows=int(row.get("event_rows") or 0),
-    )
 
 
 def ensure_target_tables(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:

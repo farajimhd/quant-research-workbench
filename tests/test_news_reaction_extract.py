@@ -9,8 +9,10 @@ from pipelines.news.benzinga.news_reaction_extract import (
     MULTISEARCH_NEEDLE_LIMIT,
     STATS_VERSION,
     build_calendar_rows,
+    expected_event_tables,
     feature_insert_sql,
     event_source_table,
+    event_coverage_sql,
     monitored_execute,
     parse_args,
     reaction_insert_sql,
@@ -42,8 +44,8 @@ class NewsReactionExtractTests(unittest.TestCase):
     def test_reaction_sql_is_strictly_causal_and_retains_window_extrema(self) -> None:
         sql = reaction_insert_sql(self.args, dt.date(2019, 1, 2), dt.date(2019, 1, 3))
         self.assertIn("market_sip_compact", sql)
-        self.assertIn("events_2018", sql)
         self.assertIn("events_2019", sql)
+        self.assertNotIn("events_2018", sql)
         self.assertIn("bitAnd(event_meta, 1) = 1", sql)
         self.assertIn("sip_timestamp_us > 0", sql)
         self.assertIn("size_primary > 0", sql)
@@ -86,6 +88,29 @@ class NewsReactionExtractTests(unittest.TestCase):
         self.assertEqual(self.args.reaction_chunk_days, 1)
         self.assertEqual(self.args.max_threads // self.args.reaction_workers, 6)
         self.assertEqual(self.args.max_memory_usage, "24G")
+
+    def test_event_authority_is_clamped_to_publication_years(self) -> None:
+        expected = expected_event_tables(self.args)
+        self.assertEqual(expected[0], "events_2019")
+        self.assertEqual(expected[-1], "events_2026")
+        self.assertEqual(len(expected), 8)
+        first_source = event_source_table(self.args, dt.date(2018, 12, 24), dt.date(2019, 1, 10))
+        last_source = event_source_table(self.args, dt.date(2026, 12, 24), dt.date(2027, 1, 9))
+        self.assertIn("events_2019", first_source)
+        self.assertNotIn("events_2018", first_source)
+        self.assertIn("events_2026", last_source)
+        self.assertNotIn("events_2027", last_source)
+
+    def test_event_coverage_uses_active_part_metadata(self) -> None:
+        sql = event_coverage_sql(self.args, expected_event_tables(self.args))
+        self.assertIn("FROM system.parts", sql)
+        self.assertIn("sum(rows) AS event_rows", sql)
+        self.assertIn("arraySort(groupUniqArray(table)) AS populated_tables", sql)
+        self.assertIn("events_2019", sql)
+        self.assertIn("events_2026", sql)
+        self.assertNotIn("events_2018", sql)
+        self.assertNotIn("events_2027", sql)
+        self.assertNotIn("market_sip_compact.events", sql)
 
     def test_monitored_query_interrupt_requests_clickhouse_cancellation(self) -> None:
         class InterruptingClient:

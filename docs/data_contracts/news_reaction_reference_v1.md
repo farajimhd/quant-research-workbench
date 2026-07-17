@@ -24,6 +24,17 @@ condition intersection and extended-hours Form-T exception as QMD. It preserves
 exact SIP timestamps and ordinal ordering and does not read or build fixed-clock
 intraday bars.
 
+Event-table authority is restricted to the years intersecting the configured
+publication range. With the default `[2019-01-01, 2027-01-01)` build, preflight
+and reaction queries use only `events_2019` through `events_2026`; chunk
+lookback/lookahead windows do not introduce `events_2018` or `events_2027` as
+prerequisites. Missing observations at the true dataset edges remain explicit
+quality states rather than expanding the source contract.
+
+Preflight coverage is evaluated from active ClickHouse part metadata. It checks
+that every required yearly table has active data and reports its stored row
+count and date range without scanning the event payload.
+
 ## Output tables
 
 | Table | Grain | Purpose |

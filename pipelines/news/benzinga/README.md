@@ -84,6 +84,14 @@ ClickHouse CPU and memory budgets. The execution command shows Rich progress on
 an interactive terminal and automatically falls back to timestamped text output
 when redirected. Use `--progress-layout text` to force the text form.
 
+For the default 2019-2026 news build, event authority is exactly
+`market_sip_compact.events_2019` through `events_2026`. Preflight and chunk
+lookback/lookahead routing are clamped to that range, so adjacent 2018 or 2027
+event tables are not required.
+
+The coverage preflight reads active-part metadata from `system.parts`; it does
+not scan the event payload tables merely to count coverage.
+
 The first command is a read-only coverage preflight. See the
 [v1 data contract](../../../docs/data_contracts/news_reaction_reference_v1.md)
 for canonical-event prerequisites, causal horizons, table grains, quality rules,
