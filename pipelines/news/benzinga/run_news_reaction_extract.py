@@ -17,6 +17,9 @@ DEFAULTS = {
     "stages": "calendar,dictionary,features,reactions,stats",
     "max_threads": 24,
     "max_memory_usage": "0",
+    "progress_layout": "auto",
+    "progress_refresh_per_second": 2.0,
+    "progress_log_lines": 8,
     "output_root": r"D:\market-data\prepared\news_reaction_labels",
 }
 
@@ -32,6 +35,9 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
     parser.add_argument("--stages", default=DEFAULTS["stages"])
     parser.add_argument("--max-threads", type=int, default=DEFAULTS["max_threads"])
     parser.add_argument("--max-memory-usage", default=DEFAULTS["max_memory_usage"])
+    parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default=DEFAULTS["progress_layout"])
+    parser.add_argument("--progress-refresh-per-second", type=float, default=DEFAULTS["progress_refresh_per_second"])
+    parser.add_argument("--progress-log-lines", type=int, default=DEFAULTS["progress_log_lines"])
     parser.add_argument("--output-root", default=DEFAULTS["output_root"])
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--replace-existing", action="store_true")
@@ -52,6 +58,9 @@ def main(argv: list[str] | None = None) -> int:
         "--stages", args.stages,
         "--max-threads", str(args.max_threads),
         "--max-memory-usage", str(args.max_memory_usage),
+        "--progress-layout", args.progress_layout,
+        "--progress-refresh-per-second", str(args.progress_refresh_per_second),
+        "--progress-log-lines", str(args.progress_log_lines),
         "--output-root", args.output_root,
     ]
     if args.execute:

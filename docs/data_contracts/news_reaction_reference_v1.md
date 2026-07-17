@@ -1,4 +1,4 @@
-# News Phrase and Reaction Reference v1
+# News Phrase and Reaction Reference (table contract v1, trade labels v2)
 
 This pipeline builds deterministic article-language facts and causal post-news
 price-reaction labels. It is a reference-data build, not the frontend news
@@ -8,8 +8,8 @@ classifier and not an LLM training job.
 
 - News text and identities: `q_live.benzinga_news_normalized_v1`.
 - Point-in-time ticker links: `q_live.benzinga_news_ticker_v1`.
-- Price observations: canonical 1-second quote-bid, quote-ask, and eligible-trade
-  families in `market_sip_compact.intraday_base_bars_by_time_ticker`.
+- Price observations: canonical 1-second `trade` bars in
+  `market_sip_compact.intraday_base_bars_by_time_ticker`.
 - Exchange schedule: XNYS calendar generated with `pandas_market_calendars`,
   including holidays and early closes.
 - Training period: 2019-01-01 through 2025-12-31.
@@ -33,10 +33,16 @@ tests; missing prices stay visible and do not enter statistics.
 
 ## Causal labeling
 
-For each news/ticker pair, `p0` is the last clean observation strictly before
-`published_at_utc`. A synchronized valid bid/ask midpoint is preferred; an
-eligible trade is the fallback. Each applicable horizon records the last price,
-high, and low observed after publication through the horizon boundary.
+For each news/ticker pair, `p0` is the close of the last complete 1-second trade
+bar whose last trade is strictly before `published_at_utc`. Each applicable
+horizon records the close of the last complete post-publication trade bar plus
+the maximum trade-bar high and minimum trade-bar low through the horizon
+boundary. A one-second bar that straddles publication or the target boundary is
+excluded so pre-news or post-horizon trades cannot leak into the label.
+
+The active semantic versions are `news_reaction_trade_labels_v2` and
+`news_phrase_trade_reaction_stats_v2`. They intentionally do not resume the
+older midpoint/fallback label checkpoints.
 
 The horizons are 1m, 5m, 10m, 30m, 1h, 2h, 3h, end of premarket, end of the
 regular session, and end of extended hours. Fixed-duration horizons never carry
@@ -76,6 +82,11 @@ python pipelines\news\benzinga\run_news_reaction_extract.py --execute
 
 The build is date-chunked and resumes completed chunks by default. Use
 `--replace-existing` only when deliberately rebuilding the selected versions.
+Interactive terminals receive a stable Rich progress view with the current
+stage, durable chunk progress, active ClickHouse query and elapsed time, recent
+results, skipped/failed totals, and retained errors. Redirected output and
+`--progress-layout text` use timestamped lifecycle lines plus a 15-second active
+query heartbeat. Ctrl+C sends an explicit cancellation for the active query ID.
 Run manifests are written under
 `D:\market-data\prepared\news_reaction_labels`; they contain configuration,
 coverage, counts, timing, and secret-presence status but no secret values.

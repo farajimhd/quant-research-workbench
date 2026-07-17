@@ -5,9 +5,12 @@ import unittest
 
 from pipelines.news.benzinga.news_reaction_extract import (
     HORIZONS,
+    LABEL_VERSION,
     MULTISEARCH_NEEDLE_LIMIT,
+    STATS_VERSION,
     build_calendar_rows,
     feature_insert_sql,
+    monitored_execute,
     parse_args,
     reaction_insert_sql,
     stats_insert_sql,
@@ -37,13 +40,58 @@ class NewsReactionExtractTests(unittest.TestCase):
 
     def test_reaction_sql_is_strictly_causal_and_retains_window_extrema(self) -> None:
         sql = reaction_insert_sql(self.args, dt.date(2019, 1, 2), dt.date(2019, 1, 3))
-        self.assertIn("w.pub_us >= p.ts_us + toUInt64(1)", sql)
-        self.assertIn("p.ts_us > a.pub_us", sql)
-        self.assertIn("high_price", sql)
-        self.assertIn("low_price", sql)
+        self.assertIn("bar_family = 'trade'", sql)
+        self.assertNotIn("quote_bid", sql)
+        self.assertNotIn("quote_ask", sql)
+        self.assertNotIn("nbbo_mid", sql)
+        self.assertIn("w.pub_us >= p.last_trade_timestamp_us + toUInt64(1)", sql)
+        self.assertIn("p.first_trade_timestamp_us > a.pub_us", sql)
+        self.assertIn("p.last_trade_timestamp_us <= a.target_us", sql)
+        self.assertIn("maxIf(toNullable(p.trade_high)", sql)
+        self.assertIn("minIf(toNullable(p.trade_low)", sql)
+        self.assertIn("'trade_close' AS price_basis", sql)
+        self.assertIn("c.is_session AS is_session", sql)
+        self.assertNotIn("trade_fallback", sql)
         self.assertIn("publication_session != 'closed'", sql)
         self.assertIn("<= extended_close_us", sql)
         self.assertIn("overlapping_news", sql)
+
+    def test_trade_label_semantics_are_versioned(self) -> None:
+        self.assertEqual(LABEL_VERSION, "news_reaction_trade_labels_v2")
+        self.assertEqual(STATS_VERSION, "news_phrase_trade_reaction_stats_v2")
+
+    def test_monitored_query_interrupt_requests_clickhouse_cancellation(self) -> None:
+        class InterruptingClient:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, str | None]] = []
+
+            def execute(self, sql: str, *, query_id: str | None = None) -> str:
+                self.calls.append((sql, query_id))
+                if len(self.calls) == 1:
+                    raise KeyboardInterrupt
+                return ""
+
+        class Reporter:
+            def __init__(self) -> None:
+                self.query_id = ""
+                self.was_interrupted = False
+
+            def query_start(self, label: str, query_id: str) -> None:
+                self.query_id = query_id
+
+            def interrupted(self) -> None:
+                self.was_interrupted = True
+
+            def message(self, text: str) -> None:
+                pass
+
+        client = InterruptingClient()
+        reporter = Reporter()
+        with self.assertRaises(KeyboardInterrupt):
+            monitored_execute(client, "SELECT sleep(10)", reporter, "interrupt test")  # type: ignore[arg-type]
+        self.assertTrue(reporter.was_interrupted)
+        self.assertTrue(reporter.query_id.startswith("news-reaction-"))
+        self.assertIn("KILL QUERY WHERE query_id", client.calls[1][0])
 
     def test_horizon_contract_and_held_out_year_are_explicit(self) -> None:
         self.assertEqual(

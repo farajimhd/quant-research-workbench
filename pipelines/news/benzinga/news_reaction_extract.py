@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import time
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -21,6 +22,7 @@ from pipelines.news.benzinga.news_reaction_phrase_dictionary import (  # noqa: E
     PHRASE_RULES,
     PhraseRule,
 )
+from pipelines.news.benzinga.news_reaction_progress import NewsReactionProgress  # noqa: E402
 from research.mlops.clickhouse import (  # noqa: E402
     ClickHouseHttpClient,
     default_clickhouse_password,
@@ -35,8 +37,8 @@ from research.mlops.env import discover_env_files, load_env_files, secret_status
 EASTERN = ZoneInfo("America/New_York")
 UTC = dt.timezone.utc
 CALENDAR_VERSION = "xnys_pandas_market_calendars_v1"
-LABEL_VERSION = "news_reaction_labels_v1"
-STATS_VERSION = "news_phrase_reaction_stats_v1"
+LABEL_VERSION = "news_reaction_trade_labels_v2"
+STATS_VERSION = "news_phrase_trade_reaction_stats_v2"
 MULTISEARCH_NEEDLE_LIMIT = 255
 HORIZONS: tuple[tuple[str, str, int], ...] = (
     ("1m", "fixed", 60),
@@ -109,11 +111,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--reaction-chunk-days", type=int, default=1)
     parser.add_argument("--resolution-us", type=int, default=1_000_000)
     parser.add_argument("--benchmark-ticker", default="SPY")
-    parser.add_argument("--max-spread-bps", type=float, default=500.0)
     parser.add_argument("--active-anchor-max-age-seconds", type=int, default=60)
     parser.add_argument("--target-max-age-seconds", type=int, default=60)
     parser.add_argument("--max-threads", type=int, default=24)
     parser.add_argument("--max-memory-usage", default="0")
+    parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default="auto")
+    parser.add_argument("--progress-refresh-per-second", type=float, default=2.0)
+    parser.add_argument("--progress-log-lines", type=int, default=8)
     parser.add_argument("--clickhouse-url", default="")
     parser.add_argument("--user", default="")
     parser.add_argument("--password", default="")
@@ -150,38 +154,71 @@ def main(argv: Sequence[str] | None = None) -> int:
     run_root.mkdir(parents=True, exist_ok=True)
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
     print_header(args, run_id, run_root, stages)
-    ensure_sources(client, args)
-    coverage = audit_bar_coverage(client, args)
-    print("bar_coverage=" + json.dumps(asdict(coverage), sort_keys=True), flush=True)
-    if coverage.missing_ticker_months and "reactions" in stages and not args.allow_partial_bar_coverage:
-        raise SystemExit(
-            "Reaction extraction stopped: canonical 1-second bar coverage is incomplete for "
-            f"{coverage.missing_ticker_months:,} news ticker-months. Build missing bars first or use "
-            "--allow-partial-bar-coverage only for an explicitly partial validation run."
-        )
-
-    if not args.execute:
-        print("plan=validated; pass --execute to create/populate tables", flush=True)
-        print("feature_chunks=" + str(len(list(month_chunks(date_arg(args.start_date), date_arg(args.end_date), args.feature_chunk_months)))), flush=True)
-        print("reaction_chunks=" + str(len(list(day_chunks(date_arg(args.start_date), date_arg(args.end_date), args.reaction_chunk_days)))), flush=True)
-        write_manifest(run_root, args, run_id, stages, coverage, [])
-        return 0
-
-    ensure_target_tables(client, args)
+    feature_chunks = list(month_chunks(date_arg(args.start_date), date_arg(args.end_date), args.feature_chunk_months))
+    reaction_chunks = list(day_chunks(date_arg(args.start_date), date_arg(args.end_date), args.reaction_chunk_days))
+    stage_totals = [("preflight", 3 if args.execute else 2)]
+    stage_totals.extend(
+        (stage, len(feature_chunks) if stage == "features" else len(reaction_chunks) if stage == "reactions" else 1)
+        for stage in stages
+    )
+    if args.execute:
+        stage_totals.append(("audit", 1))
+    reporter = NewsReactionProgress(
+        stage_totals=stage_totals,
+        run_id=run_id,
+        run_root=str(run_root),
+        layout=args.progress_layout,
+        refresh_per_second=args.progress_refresh_per_second,
+        log_lines=args.progress_log_lines,
+    )
     results: list[ChunkResult] = []
-    if "calendar" in stages:
-        replace_calendar(client, args)
-    if "dictionary" in stages:
-        replace_dictionary(client, args)
-    if "features" in stages:
-        results.extend(run_feature_chunks(client, args))
-    if "reactions" in stages:
-        results.extend(run_reaction_chunks(client, args))
-    if "stats" in stages:
-        results.append(rebuild_stats(client, args))
-    audit_outputs(client, args, stages)
-    write_manifest(run_root, args, run_id, stages, coverage, results)
-    print(f"manifest={run_root / 'news_reaction_manifest.json'}", flush=True)
+    coverage: CoverageAudit | None = None
+    with reporter:
+        reporter.stage_start("preflight")
+        ensure_sources(client, args)
+        reporter.unit_done("preflight", "source schemas", status="complete")
+        coverage = audit_bar_coverage(client, args, reporter)
+        reporter.message(
+            "trade-bar coverage "
+            f"covered={coverage.covered_ticker_months:,}/{coverage.news_ticker_months:,} "
+            f"missing={coverage.missing_ticker_months:,} range={coverage.bar_min_date}:{coverage.bar_max_date} "
+            f"sample={','.join(coverage.missing_sample[:5]) or '-'}"
+        )
+        reporter.unit_done("preflight", "trade-bar coverage", status="complete")
+        if coverage.missing_ticker_months and "reactions" in stages and not args.allow_partial_bar_coverage:
+            raise SystemExit(
+                "Reaction extraction stopped: canonical 1-second trade-bar coverage is incomplete for "
+                f"{coverage.missing_ticker_months:,} news ticker-months. Build missing bars first or use "
+                "--allow-partial-bar-coverage only for an explicitly partial validation run."
+            )
+
+        if not args.execute:
+            reporter.message(
+                f"plan validated feature_chunks={len(feature_chunks):,} reaction_chunks={len(reaction_chunks):,}; "
+                "pass --execute to populate tables"
+            )
+            write_manifest(run_root, args, run_id, stages, coverage, [])
+            reporter.finish("plan_validated")
+            return 0
+
+        ensure_target_tables(client, args)
+        reporter.unit_done("preflight", "target schemas", status="complete")
+        if "calendar" in stages:
+            replace_calendar(client, args, reporter)
+        if "dictionary" in stages:
+            replace_dictionary(client, args, reporter)
+        if "features" in stages:
+            results.extend(run_feature_chunks(client, args, reporter, feature_chunks))
+        if "reactions" in stages:
+            results.extend(run_reaction_chunks(client, args, reporter, reaction_chunks))
+        if "stats" in stages:
+            results.append(rebuild_stats(client, args, reporter))
+        reporter.stage_start("audit")
+        audit_outputs(client, args, stages, reporter)
+        reporter.unit_done("audit", "output integrity", status="complete")
+        write_manifest(run_root, args, run_id, stages, coverage, results)
+        reporter.message(f"manifest={run_root / 'news_reaction_manifest.json'}")
+        reporter.finish()
     return 0
 
 
@@ -200,8 +237,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("chunk sizes must be positive")
     if args.resolution_us <= 0:
         raise SystemExit("--resolution-us must be positive")
-    if args.max_spread_bps <= 0:
-        raise SystemExit("--max-spread-bps must be positive")
+    if args.progress_refresh_per_second <= 0 or args.progress_log_lines <= 0:
+        raise SystemExit("progress refresh rate and log-line count must be positive")
 
 
 def parse_stages(value: str) -> tuple[str, ...]:
@@ -250,7 +287,11 @@ def ensure_sources(client: ClickHouseHttpClient, args: argparse.Namespace) -> No
         raise SystemExit(f"bar table is missing required columns: {missing_columns}")
 
 
-def audit_bar_coverage(client: ClickHouseHttpClient, args: argparse.Namespace) -> CoverageAudit:
+def audit_bar_coverage(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    reporter: NewsReactionProgress | None = None,
+) -> CoverageAudit:
     news = table(args.news_database, args.ticker_table)
     bars = table(args.market_database, args.bars_table)
     start = dt_sql(args.start_date)
@@ -268,6 +309,7 @@ bar_months AS
     SELECT DISTINCT upperUTF8(ticker) AS ticker, toYYYYMM(local_date) AS month_id
     FROM {bars}
     WHERE label_resolution_us = {int(args.resolution_us)}
+      AND bar_family = 'trade'
       AND local_date >= addDays(toDate({sql_string(args.start_date)}), -7)
       AND local_date < addDays(toDate({sql_string(args.end_date)}), 8)
 ),
@@ -283,12 +325,13 @@ SELECT
     news_ticker_months - count() AS covered_ticker_months,
     count() AS missing_ticker_months,
     arraySlice(groupArray(concat(ticker, ':', toString(month_id))), 1, 25) AS missing_sample,
-    toString((SELECT min(local_date) FROM {bars} WHERE label_resolution_us = {int(args.resolution_us)})) AS bar_min_date,
-    toString((SELECT max(local_date) FROM {bars} WHERE label_resolution_us = {int(args.resolution_us)})) AS bar_max_date
+    toString((SELECT min(local_date) FROM {bars} WHERE label_resolution_us = {int(args.resolution_us)} AND bar_family = 'trade')) AS bar_min_date,
+    toString((SELECT max(local_date) FROM {bars} WHERE label_resolution_us = {int(args.resolution_us)} AND bar_family = 'trade')) AS bar_max_date
 FROM missing
 FORMAT JSONEachRow
 """
-    row = query_one_json(client, sql)
+    text = monitored_execute(client, sql, reporter, "preflight trade-bar coverage")
+    row = parse_one_json(text)
     return CoverageAudit(
         news_ticker_months=int(row.get("news_ticker_months") or 0),
         covered_ticker_months=int(row.get("covered_ticker_months") or 0),
@@ -485,12 +528,20 @@ ORDER BY (stage, version, chunk_start, chunk_end_exclusive)
     )
 
 
-def replace_calendar(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
+def replace_calendar(client: ClickHouseHttpClient, args: argparse.Namespace, reporter: NewsReactionProgress) -> None:
+    reporter.stage_start("calendar")
+    reporter.chunk_start("calendar", CALENDAR_VERSION)
+    started = time.perf_counter()
     rows = build_calendar_rows(date_arg(args.start_date) - dt.timedelta(days=10), date_arg(args.end_date) + dt.timedelta(days=15))
     target = table(args.news_database, args.calendar_table)
-    client.execute(f"ALTER TABLE {target} DELETE WHERE calendar_version = {sql_string(CALENDAR_VERSION)} SETTINGS mutations_sync = 2")
+    monitored_execute(
+        client,
+        f"ALTER TABLE {target} DELETE WHERE calendar_version = {sql_string(CALENDAR_VERSION)} SETTINGS mutations_sync = 2",
+        reporter,
+        "replace calendar",
+    )
     insert_json_rows(client, target, rows)
-    print(f"calendar=done rows={len(rows):,} version={CALENDAR_VERSION}", flush=True)
+    reporter.unit_done("calendar", CALENDAR_VERSION, status="complete", rows=len(rows), elapsed_seconds=time.perf_counter() - started)
 
 
 def build_calendar_rows(start: dt.date, end_exclusive: dt.date) -> list[dict[str, Any]]:
@@ -545,9 +596,17 @@ def build_calendar_rows(start: dt.date, end_exclusive: dt.date) -> list[dict[str
     return rows
 
 
-def replace_dictionary(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
+def replace_dictionary(client: ClickHouseHttpClient, args: argparse.Namespace, reporter: NewsReactionProgress) -> None:
+    reporter.stage_start("dictionary")
+    reporter.chunk_start("dictionary", PHRASE_DICTIONARY_VERSION)
+    started = time.perf_counter()
     target = table(args.news_database, args.dictionary_table)
-    client.execute(f"ALTER TABLE {target} DELETE WHERE dictionary_version = {sql_string(PHRASE_DICTIONARY_VERSION)} SETTINGS mutations_sync = 2")
+    monitored_execute(
+        client,
+        f"ALTER TABLE {target} DELETE WHERE dictionary_version = {sql_string(PHRASE_DICTIONARY_VERSION)} SETTINGS mutations_sync = 2",
+        reporter,
+        "replace dictionary",
+    )
     updated_at = clickhouse_timestamp(dt.datetime.now(UTC))
     rows = [
         {
@@ -564,25 +623,42 @@ def replace_dictionary(client: ClickHouseHttpClient, args: argparse.Namespace) -
         for rule in PHRASE_RULES
     ]
     insert_json_rows(client, target, rows)
-    print(f"dictionary=done rows={len(rows):,} needles={sum(len(rule.needles) for rule in PHRASE_RULES):,}", flush=True)
+    reporter.message(f"dictionary needles={sum(len(rule.needles) for rule in PHRASE_RULES):,}")
+    reporter.unit_done("dictionary", PHRASE_DICTIONARY_VERSION, status="complete", rows=len(rows), elapsed_seconds=time.perf_counter() - started)
 
 
-def run_feature_chunks(client: ClickHouseHttpClient, args: argparse.Namespace) -> list[ChunkResult]:
+def run_feature_chunks(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    reporter: NewsReactionProgress,
+    chunks: Sequence[tuple[dt.date, dt.date]],
+) -> list[ChunkResult]:
     results: list[ChunkResult] = []
-    for start, end in month_chunks(date_arg(args.start_date), date_arg(args.end_date), args.feature_chunk_months):
-        if args.resume and not args.replace_existing and chunk_completed(client, args, "features", PHRASE_DICTIONARY_VERSION, start, end):
-            print(f"features chunk=[{start},{end}) status=skipped_complete", flush=True)
+    reporter.stage_start("features")
+    completed = completed_chunk_keys(client, args, "features", PHRASE_DICTIONARY_VERSION, reporter) if args.resume and not args.replace_existing else set()
+    for start, end in chunks:
+        unit = f"{start}:{end}"
+        if (start, end) in completed:
+            reporter.unit_done("features", unit, status="skipped")
             continue
+        reporter.chunk_start("features", unit)
         started = time.perf_counter()
-        if args.replace_existing:
-            delete_version_range(client, args, args.features_table, "extraction_version", PHRASE_DICTIONARY_VERSION, start, end)
-        before = count_version_range(client, args, args.features_table, "extraction_version", PHRASE_DICTIONARY_VERSION, start, end)
-        client.execute(feature_insert_sql(args, start, end) + settings_sql(args))
-        after = count_version_range(client, args, args.features_table, "extraction_version", PHRASE_DICTIONARY_VERSION, start, end)
-        result = ChunkResult("features", start.isoformat(), end.isoformat(), max(0, after - before), time.perf_counter() - started)
-        record_chunk(client, args, result, PHRASE_DICTIONARY_VERSION)
+        try:
+            if args.replace_existing:
+                delete_version_range(client, args, args.features_table, "extraction_version", PHRASE_DICTIONARY_VERSION, start, end, reporter)
+            before = count_version_range(client, args, args.features_table, "extraction_version", PHRASE_DICTIONARY_VERSION, start, end, reporter)
+            monitored_execute(client, feature_insert_sql(args, start, end) + settings_sql(args), reporter, f"feature insert {unit}")
+            after = count_version_range(client, args, args.features_table, "extraction_version", PHRASE_DICTIONARY_VERSION, start, end, reporter)
+            result = ChunkResult("features", start.isoformat(), end.isoformat(), max(0, after - before), time.perf_counter() - started)
+            record_chunk(client, args, result, PHRASE_DICTIONARY_VERSION)
+        except KeyboardInterrupt:
+            reporter.unit_interrupted("features", unit)
+            raise
+        except BaseException as exc:
+            reporter.unit_failed("features", unit, exc)
+            raise
         results.append(result)
-        print("feature_chunk=" + json.dumps(asdict(result), sort_keys=True), flush=True)
+        reporter.unit_done("features", unit, status="complete", rows=result.inserted_rows, elapsed_seconds=result.elapsed_seconds)
     return results
 
 
@@ -647,22 +723,43 @@ ARRAY JOIN matched_phrase_ids AS phrase_id
 """
 
 
-def run_reaction_chunks(client: ClickHouseHttpClient, args: argparse.Namespace) -> list[ChunkResult]:
+def run_reaction_chunks(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    reporter: NewsReactionProgress,
+    chunks: Sequence[tuple[dt.date, dt.date]],
+) -> list[ChunkResult]:
     results: list[ChunkResult] = []
-    for start, end in day_chunks(date_arg(args.start_date), date_arg(args.end_date), args.reaction_chunk_days):
-        if args.resume and not args.replace_existing and chunk_completed(client, args, "reactions", LABEL_VERSION, start, end):
-            print(f"reactions chunk=[{start},{end}) status=skipped_complete", flush=True)
+    reporter.stage_start("reactions")
+    completed = completed_chunk_keys(client, args, "reactions", LABEL_VERSION, reporter) if args.resume and not args.replace_existing else set()
+    for start, end in chunks:
+        unit = f"{start}:{end}"
+        if (start, end) in completed:
+            reporter.unit_done("reactions", unit, status="skipped")
             continue
+        reporter.chunk_start("reactions", unit)
         started = time.perf_counter()
-        if args.replace_existing:
-            delete_version_range(client, args, args.reactions_table, "label_version", LABEL_VERSION, start, end)
-        before = count_version_range(client, args, args.reactions_table, "label_version", LABEL_VERSION, start, end)
-        client.execute(reaction_insert_sql(args, start, end) + settings_sql(args, experimental_join=True))
-        after = count_version_range(client, args, args.reactions_table, "label_version", LABEL_VERSION, start, end)
-        result = ChunkResult("reactions", start.isoformat(), end.isoformat(), max(0, after - before), time.perf_counter() - started)
-        record_chunk(client, args, result, LABEL_VERSION)
+        try:
+            if args.replace_existing:
+                delete_version_range(client, args, args.reactions_table, "label_version", LABEL_VERSION, start, end, reporter)
+            before = count_version_range(client, args, args.reactions_table, "label_version", LABEL_VERSION, start, end, reporter)
+            monitored_execute(
+                client,
+                reaction_insert_sql(args, start, end) + settings_sql(args, experimental_join=True),
+                reporter,
+                f"reaction insert {unit}",
+            )
+            after = count_version_range(client, args, args.reactions_table, "label_version", LABEL_VERSION, start, end, reporter)
+            result = ChunkResult("reactions", start.isoformat(), end.isoformat(), max(0, after - before), time.perf_counter() - started)
+            record_chunk(client, args, result, LABEL_VERSION)
+        except KeyboardInterrupt:
+            reporter.unit_interrupted("reactions", unit)
+            raise
+        except BaseException as exc:
+            reporter.unit_failed("reactions", unit, exc)
+            raise
         results.append(result)
-        print("reaction_chunk=" + json.dumps(asdict(result), sort_keys=True), flush=True)
+        reporter.unit_done("reactions", unit, status="complete", rows=result.inserted_rows, elapsed_seconds=result.elapsed_seconds)
     return results
 
 
@@ -694,12 +791,15 @@ updates AS
         upperUTF8(ticker) AS ticker,
         local_date,
         bucket_index,
-        maxIf(toNullable(close), bar_family = 'quote_bid') AS bid_update,
-        maxIf(toNullable(close), bar_family = 'quote_ask') AS ask_update,
-        maxIf(toNullable(close), bar_family = 'trade') AS trade_close,
+        max(toNullable(close)) AS trade_close,
+        max(toNullable(high)) AS trade_high,
+        min(toNullable(low)) AS trade_low,
+        min(first_event_timestamp_us) AS first_trade_timestamp_us,
+        max(last_event_timestamp_us) AS last_trade_timestamp_us,
         max(built_at) AS max_bar_built_at
     FROM {bars}
     WHERE label_resolution_us = {int(args.resolution_us)}
+      AND bar_family = 'trade'
       AND local_date >= toDate({sql_string(lookback.isoformat())})
       AND local_date < toDate({sql_string(lookahead.isoformat())})
       AND (ticker = {sql_string(args.benchmark_ticker.upper())} OR upperUTF8(ticker) IN
@@ -711,43 +811,24 @@ updates AS
       ))
     GROUP BY ticker, local_date, bucket_index
 ),
-filled_points AS
-(
-    SELECT
-        ticker,
-        local_date,
-        bucket_index,
-        toUInt64(toUnixTimestamp64Micro(toDateTime64(concat(toString(local_date), ' 00:00:00'), 6, 'America/New_York'))) + bucket_index * {int(args.resolution_us)} AS ts_us,
-        argMaxIf(bid_update, tuple(local_date, bucket_index), isNotNull(bid_update)) OVER
-            (PARTITION BY ticker ORDER BY local_date, bucket_index ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS bid,
-        argMaxIf(ask_update, tuple(local_date, bucket_index), isNotNull(ask_update)) OVER
-            (PARTITION BY ticker ORDER BY local_date, bucket_index ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS ask,
-        trade_close,
-        max_bar_built_at
-    FROM updates
-),
 points AS
 (
     SELECT
         ticker,
-        ts_us,
-        if(
-            isNotNull(bid) AND isNotNull(ask) AND bid > 0 AND ask >= bid
-                AND ((ask - bid) / ((ask + bid) / 2.0) * 10000.0) <= {float(args.max_spread_bps)},
-            toNullable((ask + bid) / 2.0),
-            trade_close
-        ) AS price,
-        if(
-            isNotNull(bid) AND isNotNull(ask) AND bid > 0 AND ask >= bid
-                AND ((ask - bid) / ((ask + bid) / 2.0) * 10000.0) <= {float(args.max_spread_bps)},
-            'nbbo_mid',
-            if(isNotNull(trade_close), 'eligible_trade', 'missing')
-        ) AS price_basis,
-        if(isNotNull(bid) AND isNotNull(ask) AND bid > 0 AND ask >= bid, (ask - bid) / ((ask + bid) / 2.0) * 10000.0, toNullable(NULL)) AS spread_bps,
+        first_trade_timestamp_us,
+        last_trade_timestamp_us,
+        trade_close AS price,
+        trade_high,
+        trade_low,
+        'trade_close' AS price_basis,
         max_bar_built_at
-    FROM filled_points
-    WHERE isNotNull(price)
-    ORDER BY ticker, ts_us
+    FROM updates
+    WHERE isNotNull(trade_close)
+      AND isNotNull(trade_high)
+      AND isNotNull(trade_low)
+      AND first_trade_timestamp_us > 0
+      AND last_trade_timestamp_us >= first_trade_timestamp_us
+    ORDER BY ticker, last_trade_timestamp_us
 ),
 news_base AS
 (
@@ -758,7 +839,7 @@ news_base AS
         n.downloaded_at_utc AS available_at_utc,
         toUInt64(toUnixTimestamp64Micro(t.published_at_utc)) AS pub_us,
         toDate(toTimeZone(t.published_at_utc, 'America/New_York')) AS local_publication_date,
-        c.is_session,
+        c.is_session AS is_session,
         if(c.is_session = 1 AND t.published_at_utc < c.current_extended_close_utc, assumeNotNull(c.current_session_date), c.next_session_date) AS reaction_session_date,
         if(c.is_session = 1 AND t.published_at_utc < c.current_extended_close_utc, assumeNotNull(c.current_premarket_start_utc), c.next_premarket_start_utc) AS premarket_start_utc,
         if(c.is_session = 1 AND t.published_at_utc < c.current_extended_close_utc, assumeNotNull(c.current_regular_open_utc), c.next_regular_open_utc) AS regular_open_utc,
@@ -826,15 +907,14 @@ anchored AS
 (
     SELECT
         w.*,
-        p.ts_us AS anchor_ts_us,
+        p.last_trade_timestamp_us AS anchor_ts_us,
         p.price AS anchor_price,
         p.price_basis AS anchor_basis,
-        p.spread_bps AS anchor_spread_bps,
         p.max_bar_built_at AS anchor_bar_built_at
     FROM instrument_windows AS w
     ASOF LEFT JOIN points AS p
       ON w.instrument_ticker = p.ticker
-     AND w.pub_us >= p.ts_us + toUInt64(1)
+     AND w.pub_us >= p.last_trade_timestamp_us + toUInt64(1)
 ),
 instrument_metrics AS
 (
@@ -853,26 +933,25 @@ instrument_metrics AS
         a.anchor_ts_us,
         a.anchor_price,
         a.anchor_basis,
-        a.anchor_spread_bps,
-        argMaxIf(toNullable(p.price), p.ts_us, a.applicable = 1 AND p.ts_us > a.pub_us AND p.ts_us <= a.target_us) AS target_price,
-        argMaxIf(toNullable(p.ts_us), p.ts_us, a.applicable = 1 AND p.ts_us > a.pub_us AND p.ts_us <= a.target_us) AS target_ts_us,
-        argMaxIf(toNullable(p.price_basis), p.ts_us, a.applicable = 1 AND p.ts_us > a.pub_us AND p.ts_us <= a.target_us) AS target_basis,
-        maxIf(toNullable(p.price), a.applicable = 1 AND p.ts_us > a.pub_us AND p.ts_us <= a.target_us) AS high_price,
-        argMaxIf(toNullable(p.ts_us), p.price, a.applicable = 1 AND p.ts_us > a.pub_us AND p.ts_us <= a.target_us) AS high_ts_us,
-        minIf(toNullable(p.price), a.applicable = 1 AND p.ts_us > a.pub_us AND p.ts_us <= a.target_us) AS low_price,
-        argMinIf(toNullable(p.ts_us), p.price, a.applicable = 1 AND p.ts_us > a.pub_us AND p.ts_us <= a.target_us) AS low_ts_us,
-        countIf(a.applicable = 1 AND p.ts_us > a.pub_us AND p.ts_us <= a.target_us AND isNotNull(p.price)) AS observation_count,
+        argMaxIf(toNullable(p.price), p.last_trade_timestamp_us, a.applicable = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS target_price,
+        argMaxIf(toNullable(p.last_trade_timestamp_us), p.last_trade_timestamp_us, a.applicable = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS target_ts_us,
+        argMaxIf(toNullable(p.price_basis), p.last_trade_timestamp_us, a.applicable = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS target_basis,
+        maxIf(toNullable(p.trade_high), a.applicable = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS high_price,
+        argMaxIf(toNullable(p.last_trade_timestamp_us), p.trade_high, a.applicable = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS high_ts_us,
+        minIf(toNullable(p.trade_low), a.applicable = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS low_price,
+        argMinIf(toNullable(p.last_trade_timestamp_us), p.trade_low, a.applicable = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS low_ts_us,
+        countIf(a.applicable = 1 AND p.first_trade_timestamp_us > a.pub_us AND p.last_trade_timestamp_us <= a.target_us) AS observation_count,
         max(greatest(a.anchor_bar_built_at, p.max_bar_built_at)) AS max_bar_built_at
     FROM anchored AS a
     LEFT JOIN points AS p
       ON p.ticker = a.instrument_ticker
-     AND p.ts_us > a.pub_us
-     AND p.ts_us <= a.target_us
+     AND p.first_trade_timestamp_us > a.pub_us
+     AND p.last_trade_timestamp_us <= a.target_us
     GROUP BY
         a.canonical_news_id, a.ticker, a.published_at_utc, a.available_at_utc,
         a.reaction_session_date, a.publication_session, a.horizon_code, a.horizon_type,
         a.applicable, a.target_us, a.pub_us, a.instrument_role, a.anchor_ts_us,
-        a.anchor_price, a.anchor_basis, a.anchor_spread_bps
+        a.anchor_price, a.anchor_basis
 ),
 asset_metrics AS
 (
@@ -912,7 +991,6 @@ final_rows AS
         a.anchor_ts_us AS anchor_ts_us,
         a.anchor_price AS anchor_price,
         a.anchor_basis AS anchor_basis,
-        a.anchor_spread_bps AS anchor_spread_bps,
         a.target_price AS target_price,
         a.target_ts_us AS target_ts_us,
         a.target_basis AS target_basis,
@@ -1004,8 +1082,6 @@ SELECT
         if(observation_count = 0 OR isNull(target_price), 'missing_target', ''),
         if(publication_session != 'closed' AND isNotNull(anchor_ts_us) AND (toUnixTimestamp64Micro(published_at_utc) - toInt64(anchor_ts_us)) > {int(args.active_anchor_max_age_seconds) * 1_000_000}, 'stale_active_anchor', ''),
         if(isNotNull(target_ts_us) AND (toInt64(target_us) - toInt64(target_ts_us)) > {int(args.target_max_age_seconds) * 1_000_000}, 'stale_target', ''),
-        if(anchor_basis = 'eligible_trade', 'anchor_trade_fallback', ''),
-        if(target_basis = 'eligible_trade', 'target_trade_fallback', ''),
         if(overlapping_news_count > 0, 'overlapping_ticker_news', '')
     ]) AS quality_flags,
     toUInt64({int(args.resolution_us)}) AS price_resolution_us,
@@ -1016,14 +1092,33 @@ FROM final_rows
 """
 
 
-def rebuild_stats(client: ClickHouseHttpClient, args: argparse.Namespace) -> ChunkResult:
+def rebuild_stats(client: ClickHouseHttpClient, args: argparse.Namespace, reporter: NewsReactionProgress) -> ChunkResult:
+    reporter.stage_start("stats")
+    reporter.chunk_start("stats", STATS_VERSION)
     target = table(args.news_database, args.stats_table)
-    client.execute(f"ALTER TABLE {target} DELETE WHERE stats_version = {sql_string(STATS_VERSION)} SETTINGS mutations_sync = 2")
     started = time.perf_counter()
-    client.execute(stats_insert_sql(args) + settings_sql(args))
-    rows = int(client.execute(f"SELECT count() FROM {target} FINAL WHERE stats_version = {sql_string(STATS_VERSION)}").strip() or 0)
-    result = ChunkResult("stats", args.start_date, args.end_date, rows, time.perf_counter() - started)
-    print("stats=" + json.dumps(asdict(result), sort_keys=True), flush=True)
+    try:
+        monitored_execute(
+            client,
+            f"ALTER TABLE {target} DELETE WHERE stats_version = {sql_string(STATS_VERSION)} SETTINGS mutations_sync = 2",
+            reporter,
+            "replace phrase statistics",
+        )
+        monitored_execute(client, stats_insert_sql(args) + settings_sql(args), reporter, "build phrase statistics")
+        rows = int(monitored_execute(
+            client,
+            f"SELECT count() FROM {target} FINAL WHERE stats_version = {sql_string(STATS_VERSION)}",
+            reporter,
+            "count phrase statistics",
+        ).strip() or 0)
+        result = ChunkResult("stats", args.start_date, args.end_date, rows, time.perf_counter() - started)
+    except KeyboardInterrupt:
+        reporter.unit_interrupted("stats", STATS_VERSION)
+        raise
+    except BaseException as exc:
+        reporter.unit_failed("stats", STATS_VERSION, exc)
+        raise
+    reporter.unit_done("stats", STATS_VERSION, status="complete", rows=rows, elapsed_seconds=result.elapsed_seconds)
     return result
 
 
@@ -1074,17 +1169,31 @@ HAVING countIf(r.quality_status = 'clean') > 0
 """
 
 
-def audit_outputs(client: ClickHouseHttpClient, args: argparse.Namespace, stages: Sequence[str]) -> None:
+def audit_outputs(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    stages: Sequence[str],
+    reporter: NewsReactionProgress | None = None,
+) -> None:
     checks: dict[str, str] = {}
     if "features" in stages:
-        checks["features"] = client.execute(
-            f"SELECT concat(toString(count()), '\\t', toString(uniqExact(tuple(canonical_news_id, phrase_id))), '\\t', toString(count() - uniqExact(tuple(canonical_news_id, phrase_id)))) FROM {table(args.news_database, args.features_table)} FINAL WHERE extraction_version = {sql_string(PHRASE_DICTIONARY_VERSION)} AND published_at_utc >= {dt_sql(args.start_date)} AND published_at_utc < {dt_sql(args.end_date)}"
+        checks["features"] = monitored_execute(
+            client,
+            f"SELECT concat(toString(count()), '\\t', toString(uniqExact(tuple(canonical_news_id, phrase_id))), '\\t', toString(count() - uniqExact(tuple(canonical_news_id, phrase_id)))) FROM {table(args.news_database, args.features_table)} FINAL WHERE extraction_version = {sql_string(PHRASE_DICTIONARY_VERSION)} AND published_at_utc >= {dt_sql(args.start_date)} AND published_at_utc < {dt_sql(args.end_date)}",
+            reporter,
+            "audit language features",
         ).strip()
     if "reactions" in stages:
-        checks["reactions"] = client.execute(
-            f"SELECT concat(toString(count()), '\\t', toString(uniqExact(tuple(canonical_news_id, ticker, horizon_code))), '\\t', toString(countIf(quality_status = 'clean')), '\\t', toString(countIf(quality_status = 'missing_anchor')), '\\t', toString(countIf(quality_status = 'missing_target'))) FROM {table(args.news_database, args.reactions_table)} FINAL WHERE label_version = {sql_string(LABEL_VERSION)} AND published_at_utc >= {dt_sql(args.start_date)} AND published_at_utc < {dt_sql(args.end_date)}"
+        checks["reactions"] = monitored_execute(
+            client,
+            f"SELECT concat(toString(count()), '\\t', toString(uniqExact(tuple(canonical_news_id, ticker, horizon_code))), '\\t', toString(countIf(quality_status = 'clean')), '\\t', toString(countIf(quality_status = 'missing_anchor')), '\\t', toString(countIf(quality_status = 'missing_target'))) FROM {table(args.news_database, args.reactions_table)} FINAL WHERE label_version = {sql_string(LABEL_VERSION)} AND published_at_utc >= {dt_sql(args.start_date)} AND published_at_utc < {dt_sql(args.end_date)}",
+            reporter,
+            "audit reaction labels",
         ).strip()
-    print("output_audit=" + json.dumps(checks, sort_keys=True), flush=True)
+    if reporter is not None:
+        reporter.message("output audit " + json.dumps(checks, sort_keys=True))
+    else:
+        print("output_audit=" + json.dumps(checks, sort_keys=True), flush=True)
     if "features" in checks and int(checks["features"].split("\\t")[-1]) != 0:
         raise RuntimeError("feature table contains duplicate article/phrase presence rows")
     if "reactions" in checks:
@@ -1108,6 +1217,32 @@ WHERE stage = {sql_string(stage)}
     return int(client.execute(sql).strip() or 0) > 0
 
 
+def completed_chunk_keys(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    stage: str,
+    version: str,
+    reporter: NewsReactionProgress | None = None,
+) -> set[tuple[dt.date, dt.date]]:
+    if not table_exists(client, args.news_database, args.status_table):
+        return set()
+    sql = f"""
+SELECT chunk_start, chunk_end_exclusive
+FROM {table(args.news_database, args.status_table)} FINAL
+WHERE stage = {sql_string(stage)}
+  AND version = {sql_string(version)}
+  AND status = 'completed'
+FORMAT TSV
+"""
+    text = monitored_execute(client, sql, reporter, f"load {stage} checkpoints")
+    completed: set[tuple[dt.date, dt.date]] = set()
+    for line in text.splitlines():
+        fields = line.split("\t")
+        if len(fields) == 2:
+            completed.add((date_arg(fields[0]), date_arg(fields[1])))
+    return completed
+
+
 def record_chunk(client: ClickHouseHttpClient, args: argparse.Namespace, result: ChunkResult, version: str) -> None:
     row = {
         "stage": result.stage,
@@ -1122,19 +1257,40 @@ def record_chunk(client: ClickHouseHttpClient, args: argparse.Namespace, result:
     insert_json_rows(client, table(args.news_database, args.status_table), [row])
 
 
-def delete_version_range(client: ClickHouseHttpClient, args: argparse.Namespace, target_table: str, version_column: str, version: str, start: dt.date, end: dt.date) -> None:
-    client.execute(
+def delete_version_range(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    target_table: str,
+    version_column: str,
+    version: str,
+    start: dt.date,
+    end: dt.date,
+    reporter: NewsReactionProgress | None = None,
+) -> None:
+    monitored_execute(
+        client,
         f"ALTER TABLE {table(args.news_database, target_table)} DELETE WHERE {quote_ident(version_column)} = {sql_string(version)} "
-        f"AND published_at_utc >= {dt_sql(start.isoformat())} AND published_at_utc < {dt_sql(end.isoformat())} SETTINGS mutations_sync = 2"
+        f"AND published_at_utc >= {dt_sql(start.isoformat())} AND published_at_utc < {dt_sql(end.isoformat())} SETTINGS mutations_sync = 2",
+        reporter,
+        f"delete {target_table} {start}:{end}",
     )
 
 
-def count_version_range(client: ClickHouseHttpClient, args: argparse.Namespace, target_table: str, version_column: str, version: str, start: dt.date, end: dt.date) -> int:
+def count_version_range(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    target_table: str,
+    version_column: str,
+    version: str,
+    start: dt.date,
+    end: dt.date,
+    reporter: NewsReactionProgress | None = None,
+) -> int:
     sql = (
         f"SELECT count() FROM {table(args.news_database, target_table)} FINAL WHERE {quote_ident(version_column)} = {sql_string(version)} "
         f"AND published_at_utc >= {dt_sql(start.isoformat())} AND published_at_utc < {dt_sql(end.isoformat())}"
     )
-    return int(client.execute(sql).strip() or 0)
+    return int(monitored_execute(client, sql, reporter, f"count {target_table} {start}:{end}").strip() or 0)
 
 
 def month_chunks(start: dt.date, end: dt.date, months: int) -> Iterable[tuple[dt.date, dt.date]]:
@@ -1177,10 +1333,40 @@ def table_columns(client: ClickHouseHttpClient, database: str, table_name: str) 
 
 
 def query_one_json(client: ClickHouseHttpClient, sql: str) -> dict[str, Any]:
-    for line in client.execute(sql).splitlines():
+    return parse_one_json(client.execute(sql))
+
+
+def parse_one_json(text: str) -> dict[str, Any]:
+    for line in text.splitlines():
         if line.strip():
             return json.loads(line)
     raise RuntimeError("query returned no rows")
+
+
+def monitored_execute(
+    client: ClickHouseHttpClient,
+    sql: str,
+    reporter: NewsReactionProgress | None,
+    label: str,
+) -> str:
+    if reporter is None:
+        return client.execute(sql)
+    query_id = "news-reaction-" + uuid.uuid4().hex
+    reporter.query_start(label, query_id)
+    try:
+        result = client.execute(sql, query_id=query_id)
+    except KeyboardInterrupt:
+        reporter.interrupted()
+        try:
+            client.execute(f"KILL QUERY WHERE query_id = {sql_string(query_id)} ASYNC")
+        except Exception as kill_exc:  # noqa: BLE001
+            reporter.message(f"WARN query cancellation failed query_id={query_id}: {kill_exc}")
+        raise
+    except BaseException as exc:
+        reporter.query_failed(label, exc)
+        raise
+    reporter.query_done(label)
+    return result
 
 
 def settings_sql(args: argparse.Namespace, *, experimental_join: bool = False) -> str:

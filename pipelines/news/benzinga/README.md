@@ -75,6 +75,12 @@ python pipelines\news\benzinga\run_news_reaction_extract.py
 python pipelines\news\benzinga\run_news_reaction_extract.py --execute
 ```
 
+The reaction build uses complete one-second trade bars only: trade close for
+the pre-news anchor and horizon terminal value, and trade-bar high/low for the
+post-news window extrema. The execution command shows Rich progress on an
+interactive terminal and automatically falls back to timestamped text output
+when redirected. Use `--progress-layout text` to force the text form.
+
 The first command is a read-only coverage preflight. See the
 [v1 data contract](../../../docs/data_contracts/news_reaction_reference_v1.md)
 for canonical-bar prerequisites, causal horizons, table grains, quality rules,
