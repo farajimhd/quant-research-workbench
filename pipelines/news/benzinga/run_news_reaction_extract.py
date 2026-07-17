@@ -18,6 +18,8 @@ DEFAULTS = {
     "max_threads": 8,
     "reaction_workers": 4,
     "reaction_ticker_shards": 32,
+    "reaction_links_per_shard": 100,
+    "reaction_max_news_shards": 64,
     "reaction_chunk_days": 1,
     "max_memory_usage": "24G",
     "progress_layout": "auto",
@@ -39,6 +41,8 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
     parser.add_argument("--max-threads", type=int, default=DEFAULTS["max_threads"])
     parser.add_argument("--reaction-workers", type=int, default=DEFAULTS["reaction_workers"])
     parser.add_argument("--reaction-ticker-shards", type=int, default=DEFAULTS["reaction_ticker_shards"])
+    parser.add_argument("--reaction-links-per-shard", type=int, default=DEFAULTS["reaction_links_per_shard"])
+    parser.add_argument("--reaction-max-news-shards", type=int, default=DEFAULTS["reaction_max_news_shards"])
     parser.add_argument("--reaction-chunk-days", type=int, default=DEFAULTS["reaction_chunk_days"])
     parser.add_argument("--max-memory-usage", default=DEFAULTS["max_memory_usage"])
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default=DEFAULTS["progress_layout"])
@@ -65,6 +69,8 @@ def main(argv: list[str] | None = None) -> int:
         "--max-threads", str(args.max_threads),
         "--reaction-workers", str(args.reaction_workers),
         "--reaction-ticker-shards", str(args.reaction_ticker_shards),
+        "--reaction-links-per-shard", str(args.reaction_links_per_shard),
+        "--reaction-max-news-shards", str(args.reaction_max_news_shards),
         "--reaction-chunk-days", str(args.reaction_chunk_days),
         "--max-memory-usage", str(args.max_memory_usage),
         "--progress-layout", args.progress_layout,

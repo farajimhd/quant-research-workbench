@@ -79,15 +79,17 @@ The reaction build reads canonical compact events directly. The anchor is the
 last eligible trade strictly before publication; terminal/high/low values use
 all exact events in each news-relative interval, including partial seconds at
 both boundaries. Price eligibility reuses QMD's condition-token last/extrema
-rules, including extended-hours Form T. Each day worker divides requested
-news/ticker links into deterministic shards and materializes one short-lived, compact
-event cache for the active shard. The cache contains one sorted timestamp array
-per stored uppercase ticker and event date; every horizon is resolved causally
-from those arrays before the cache is dropped. The raw ticker predicate stays
-on the ClickHouse ordering key, avoiding both whole-market scans and a
-many-to-many event join. Four bounded day-chunk workers share the configured total
-ClickHouse CPU and memory budgets. Defaults are 32 news-link shards, eight total
-ClickHouse threads, and 24 GiB shared across workers. Reaction joins use bounded
+rules, including extended-hours Form T. Months are processed sequentially. Each
+distinct requested ticker is assigned to one of 32 deterministic event-cache
+shards, so its required days are read once into a shared monthly cache; SPY is
+loaded once. Four bounded day-chunk workers reuse that cache and dynamically
+divide each day's links at a default target of 100 links per query, capped at 64
+queries. Sparse and empty days therefore avoid the previous fixed 32-query
+overhead. The raw ticker predicate stays on the ClickHouse ordering key,
+avoiding whole-market scans, repeated ticker/day reads, and a many-to-many event
+join. Workers share the configured total ClickHouse CPU and memory budgets.
+Defaults are eight total ClickHouse threads and 24 GiB shared across workers.
+Reaction joins use bounded
 1,024-row blocks so array-valued cache records cannot trigger multi-GiB
 allocation spikes. The execution command shows Rich progress on
 an interactive terminal and automatically falls back to timestamped text output

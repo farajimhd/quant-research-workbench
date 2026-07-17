@@ -8,6 +8,7 @@ from pipelines.news.benzinga.news_reaction_extract import (
     LABEL_VERSION,
     STATS_VERSION,
     build_calendar_rows,
+    calendar_month_chunks,
     expected_event_tables,
     feature_insert_sql,
     event_source_table,
@@ -16,6 +17,7 @@ from pipelines.news.benzinga.news_reaction_extract import (
     monitored_execute,
     parse_args,
     reaction_insert_sql,
+    reaction_news_shard_count,
     stats_insert_sql,
     settings_sql,
     target_table_sql,
@@ -103,6 +105,8 @@ class NewsReactionExtractTests(unittest.TestCase):
         self.assertNotIn("events_2024", source)
         self.assertEqual(self.args.reaction_workers, 4)
         self.assertEqual(self.args.reaction_ticker_shards, 32)
+        self.assertEqual(self.args.reaction_links_per_shard, 100)
+        self.assertEqual(self.args.reaction_max_news_shards, 64)
         self.assertEqual(self.args.reaction_chunk_days, 1)
         self.assertEqual(self.args.max_threads // self.args.reaction_workers, 2)
         self.assertEqual(self.args.max_memory_usage, "24G")
@@ -122,7 +126,8 @@ class NewsReactionExtractTests(unittest.TestCase):
         )
         self.assertIn(f"CREATE TABLE `q_live`.`{cache_name}`", cache_sql)
         self.assertIn("ENGINE = MergeTree", cache_sql)
-        self.assertIn("cityHash64(canonical_news_id, upperUTF8(ticker)) % toUInt64(8) = toUInt64(3)", cache_sql)
+        self.assertIn("cityHash64(upperUTF8(ticker)) % toUInt64(8) = toUInt64(3)", cache_sql)
+        self.assertNotIn("cityHash64(canonical_news_id, upperUTF8(ticker))", cache_sql)
         self.assertNotIn("window_event_dates", cache_sql)
         cached_reaction_sql = reaction_insert_sql(
             self.args,
@@ -134,6 +139,39 @@ class NewsReactionExtractTests(unittest.TestCase):
         )
         self.assertIn(f"FROM `q_live`.`{cache_name}`", cached_reaction_sql)
         self.assertIn("cityHash64(t.canonical_news_id, upperUTF8(t.ticker)) % toUInt64(8) = toUInt64(3)", cached_reaction_sql)
+        self.assertIn("WHERE event_date >= toDate('2019-01-02')", cached_reaction_sql)
+        self.assertIn("WHERE event_date < toDate('2019-01-02')", cached_reaction_sql)
+
+        append_sql = event_cache_create_sql(
+            self.args,
+            dt.date(2019, 1, 1),
+            dt.date(2019, 2, 1),
+            cache_name,
+            ticker_shard_index=1,
+            ticker_shard_count=8,
+            create_table=False,
+            include_benchmark=False,
+        )
+        self.assertIn(f"INSERT INTO `q_live`.`{cache_name}`", append_sql)
+        self.assertNotIn("CREATE TABLE", append_sql)
+        self.assertNotIn("ticker = 'SPY' OR ticker IN", append_sql)
+
+    def test_sparse_news_days_use_dynamic_bounded_shards(self) -> None:
+        self.assertEqual(reaction_news_shard_count(self.args, 1), 1)
+        self.assertEqual(reaction_news_shard_count(self.args, 100), 1)
+        self.assertEqual(reaction_news_shard_count(self.args, 101), 2)
+        self.assertEqual(reaction_news_shard_count(self.args, 100_000), 64)
+
+    def test_reaction_months_use_calendar_boundaries_when_resuming_mid_month(self) -> None:
+        chunks = list(calendar_month_chunks(dt.date(2019, 3, 28), dt.date(2019, 5, 2)))
+        self.assertEqual(
+            chunks,
+            [
+                (dt.date(2019, 3, 1), dt.date(2019, 4, 1)),
+                (dt.date(2019, 4, 1), dt.date(2019, 5, 1)),
+                (dt.date(2019, 5, 1), dt.date(2019, 6, 1)),
+            ],
+        )
 
     def test_reaction_ticker_shards_must_be_complete(self) -> None:
         with self.assertRaises(ValueError):

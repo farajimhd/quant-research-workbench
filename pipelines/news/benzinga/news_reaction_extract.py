@@ -110,7 +110,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--feature-chunk-months", type=int, default=1)
     parser.add_argument("--reaction-chunk-days", type=int, default=1)
     parser.add_argument("--reaction-workers", type=int, default=4, help="Bounded number of independent ClickHouse day-chunk queries.")
-    parser.add_argument("--reaction-ticker-shards", type=int, default=32, help="Deterministic news-link shards executed sequentially inside each day chunk to bound event-cache and join memory.")
+    parser.add_argument("--reaction-ticker-shards", type=int, default=32, help="Deterministic ticker shards used to build one shared exact-event cache per publication month.")
+    parser.add_argument("--reaction-links-per-shard", type=int, default=100, help="Target news-ticker links per reaction insert shard; sparse days use fewer queries.")
+    parser.add_argument("--reaction-max-news-shards", type=int, default=64, help="Hard bound on reaction insert shards for a single publication day.")
     parser.add_argument("--benchmark-ticker", default="SPY")
     parser.add_argument("--active-anchor-max-age-seconds", type=int, default=60)
     parser.add_argument("--target-max-age-seconds", type=int, default=60)
@@ -239,8 +241,13 @@ def validate_args(args: argparse.Namespace, stages: Sequence[str] | None = None)
             raise SystemExit("statistics training bounds must be contained inside the extracted publication range")
     if args.feature_chunk_months <= 0 or args.reaction_chunk_days <= 0:
         raise SystemExit("chunk sizes must be positive")
-    if args.reaction_workers <= 0 or args.reaction_ticker_shards <= 0:
-        raise SystemExit("--reaction-workers and --reaction-ticker-shards must be positive")
+    if (
+        args.reaction_workers <= 0
+        or args.reaction_ticker_shards <= 0
+        or args.reaction_links_per_shard <= 0
+        or args.reaction_max_news_shards <= 0
+    ):
+        raise SystemExit("reaction workers, ticker shards, links per shard, and maximum news shards must be positive")
     if str(args.max_memory_usage) not in {"", "0"}:
         memory_bytes(str(args.max_memory_usage))
     if args.progress_refresh_per_second <= 0 or args.progress_log_lines <= 0:
@@ -784,44 +791,195 @@ def run_reaction_chunks(
 
     if not pending:
         return results
-    workers = min(int(args.reaction_workers), len(pending))
-    query_threads = max(1, int(args.max_threads) // workers)
     total_memory = memory_bytes(str(args.max_memory_usage)) if str(args.max_memory_usage) not in {"", "0"} else 0
-    query_memory = max(256 * 1024**2, total_memory // workers) if total_memory else 0
-    reporter.message(
-        f"reaction execution workers={workers} clickhouse_threads_per_worker={query_threads} "
-        f"memory_per_worker={query_memory if query_memory else 'server_default'}"
-    )
-    futures: dict[concurrent.futures.Future[ChunkResult], tuple[dt.date, dt.date, str]] = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="news-reaction") as pool:
-        for start, end in pending:
+    for month_start, month_end in calendar_month_chunks(pending[0][0], pending[-1][1]):
+        month_pending = [(start, end) for start, end in pending if month_start <= start < month_end]
+        if not month_pending:
+            continue
+        cache_start = min(start for start, _end in month_pending)
+        cache_end = max(end for _start, end in month_pending)
+        link_counts = reaction_link_counts(client, args, cache_start, cache_end)
+        active: list[tuple[dt.date, dt.date, int]] = []
+        for start, end in month_pending:
+            link_count = sum(
+                count for publication_date, count in link_counts.items()
+                if start <= publication_date < end
+            )
             unit = f"{start}:{end}"
-            reporter.chunk_start("reactions", unit)
-            query_id = "news-reaction-" + uuid.uuid4().hex
-            future = pool.submit(execute_reaction_chunk, args, start, end, query_threads, query_memory, query_id)
-            futures[future] = (start, end, query_id)
+            if link_count == 0:
+                reporter.chunk_start("reactions", unit)
+                result = complete_empty_reaction_chunk(client, args, start, end)
+                results.append(result)
+                reporter.unit_done("reactions", unit, status="complete", rows=0, elapsed_seconds=result.elapsed_seconds)
+            else:
+                active.append((start, end, link_count))
+        if not active:
+            continue
+
+        cache_table_name = "_news_reaction_event_cache_month_" + uuid.uuid4().hex[-24:]
+        cache_target = table(args.news_database, cache_table_name)
+        cache_query_prefix = "news-reaction-cache-" + uuid.uuid4().hex
+        reporter.message(
+            f"building monthly exact-event cache month={month_start:%Y-%m} "
+            f"ticker_shards={args.reaction_ticker_shards} active_chunks={len(active)}"
+        )
+        primary_error: BaseException | None = None
         try:
-            for future in concurrent.futures.as_completed(futures):
-                start, end, _query_id = futures[future]
-                unit = f"{start}:{end}"
+            build_month_event_cache(
+                client,
+                args,
+                cache_start,
+                cache_end,
+                cache_table_name,
+                query_id_prefix=cache_query_prefix,
+                query_threads=int(args.max_threads),
+                query_memory=total_memory,
+            )
+            workers = min(int(args.reaction_workers), len(active))
+            query_threads = max(1, int(args.max_threads) // workers)
+            query_memory = max(256 * 1024**2, total_memory // workers) if total_memory else 0
+            reporter.message(
+                f"reaction month={month_start:%Y-%m} workers={workers} "
+                f"clickhouse_threads_per_worker={query_threads} "
+                f"memory_per_worker={query_memory if query_memory else 'server_default'}"
+            )
+            futures: dict[concurrent.futures.Future[ChunkResult], tuple[dt.date, dt.date, str]] = {}
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="news-reaction") as pool:
+                for start, end, link_count in active:
+                    unit = f"{start}:{end}"
+                    reporter.chunk_start("reactions", unit)
+                    query_id = "news-reaction-" + uuid.uuid4().hex
+                    future = pool.submit(
+                        execute_reaction_chunk,
+                        args,
+                        start,
+                        end,
+                        query_threads,
+                        query_memory,
+                        query_id,
+                        cache_table_name,
+                        reaction_news_shard_count(args, link_count),
+                    )
+                    futures[future] = (start, end, query_id)
                 try:
-                    result = future.result()
-                except BaseException as exc:
-                    reporter.unit_failed("reactions", unit, exc)
-                    for outstanding in futures:
-                        outstanding.cancel()
+                    for future in concurrent.futures.as_completed(futures):
+                        start, end, _query_id = futures[future]
+                        unit = f"{start}:{end}"
+                        try:
+                            result = future.result()
+                        except BaseException as exc:
+                            reporter.unit_failed("reactions", unit, exc)
+                            for outstanding in futures:
+                                outstanding.cancel()
+                            cancel_reaction_queries(client, [query_id for _, _, query_id in futures.values()], reporter)
+                            raise
+                        results.append(result)
+                        reporter.unit_done("reactions", unit, status="complete", rows=result.inserted_rows, elapsed_seconds=result.elapsed_seconds)
+                except KeyboardInterrupt:
+                    for future, (start, end, _query_id) in futures.items():
+                        if not future.done():
+                            future.cancel()
+                            reporter.unit_interrupted("reactions", f"{start}:{end}")
                     cancel_reaction_queries(client, [query_id for _, _, query_id in futures.values()], reporter)
                     raise
-                results.append(result)
-                reporter.unit_done("reactions", unit, status="complete", rows=result.inserted_rows, elapsed_seconds=result.elapsed_seconds)
-        except KeyboardInterrupt:
-            for future, (start, end, _query_id) in futures.items():
-                if not future.done():
-                    future.cancel()
-                    reporter.unit_interrupted("reactions", f"{start}:{end}")
-            cancel_reaction_queries(client, [query_id for _, _, query_id in futures.values()], reporter)
+        except BaseException as exc:
+            primary_error = exc
             raise
+        finally:
+            cancel_reaction_queries(client, [cache_query_prefix], reporter)
+            try:
+                client.execute(f"DROP TABLE IF EXISTS {cache_target} SYNC", query_id=f"{cache_query_prefix}_drop")
+            except Exception as cleanup_exc:  # noqa: BLE001
+                if primary_error is None:
+                    raise
+                primary_error.add_note(f"monthly event-cache cleanup also failed: {cleanup_exc}")
     return sorted(results, key=lambda item: item.start_date)
+
+
+def reaction_link_counts(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    start: dt.date,
+    end: dt.date,
+) -> dict[dt.date, int]:
+    source = table(args.news_database, args.ticker_table)
+    rows = client.execute(f"""
+SELECT toDate(published_at_utc) AS publication_date, count()
+FROM {source}
+WHERE published_at_utc >= {dt_sql(start.isoformat())}
+  AND published_at_utc < {dt_sql(end.isoformat())}
+  AND ticker != ''
+GROUP BY publication_date
+ORDER BY publication_date
+FORMAT TabSeparated
+""")
+    result: dict[dt.date, int] = {}
+    for line in rows.splitlines():
+        if not line.strip():
+            continue
+        publication_date, count = line.split("\t", 1)
+        result[dt.date.fromisoformat(publication_date)] = int(count)
+    return result
+
+
+def reaction_news_shard_count(args: argparse.Namespace, link_count: int) -> int:
+    return min(
+        int(args.reaction_max_news_shards),
+        max(1, (int(link_count) + int(args.reaction_links_per_shard) - 1) // int(args.reaction_links_per_shard)),
+    )
+
+
+def complete_empty_reaction_chunk(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    start: dt.date,
+    end: dt.date,
+) -> ChunkResult:
+    started = time.perf_counter()
+    target = table(args.news_database, args.reactions_table)
+    client.execute(
+        f"ALTER TABLE {target} DELETE WHERE label_version = {sql_string(LABEL_VERSION)} "
+        f"AND published_at_utc >= {dt_sql(start.isoformat())} "
+        f"AND published_at_utc < {dt_sql(end.isoformat())} SETTINGS mutations_sync = 2"
+    )
+    result = ChunkResult("reactions", start.isoformat(), end.isoformat(), 0, time.perf_counter() - started)
+    record_chunk(client, args, result, LABEL_VERSION)
+    return result
+
+
+def build_month_event_cache(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    start: dt.date,
+    end: dt.date,
+    cache_table_name: str,
+    *,
+    query_id_prefix: str,
+    query_threads: int,
+    query_memory: int,
+) -> None:
+    cache_target = table(args.news_database, cache_table_name)
+    client.execute(f"DROP TABLE IF EXISTS {cache_target} SYNC", query_id=f"{query_id_prefix}_reset")
+    for shard_index in range(int(args.reaction_ticker_shards)):
+        client.execute(
+            event_cache_create_sql(
+                args,
+                start,
+                end,
+                cache_table_name,
+                ticker_shard_index=shard_index,
+                ticker_shard_count=int(args.reaction_ticker_shards),
+                create_table=shard_index == 0,
+                include_benchmark=shard_index == 0,
+            )
+            + settings_sql(
+                args,
+                max_threads=query_threads,
+                max_memory_usage=query_memory,
+                external_group_by=True,
+            ),
+            query_id=f"{query_id_prefix}_{shard_index:03d}",
+        )
 
 
 def execute_reaction_chunk(
@@ -831,62 +989,36 @@ def execute_reaction_chunk(
     query_threads: int,
     query_memory: int,
     query_id: str,
+    cache_table_name: str,
+    news_shard_count: int,
 ) -> ChunkResult:
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
     started = time.perf_counter()
     target = table(args.news_database, args.reactions_table)
-    cache_table_name = "_news_reaction_event_cache_" + re.sub(r"[^a-zA-Z0-9_]", "_", query_id)[-40:]
-    cache_target = table(args.news_database, cache_table_name)
     client.execute(
         f"ALTER TABLE {target} DELETE WHERE label_version = {sql_string(LABEL_VERSION)} "
         f"AND published_at_utc >= {dt_sql(start.isoformat())} "
         f"AND published_at_utc < {dt_sql(end.isoformat())} SETTINGS mutations_sync = 2",
         query_id=f"{query_id}_reset",
     )
-    primary_error: BaseException | None = None
-    try:
-        for shard_index in range(int(args.reaction_ticker_shards)):
-            client.execute(f"DROP TABLE IF EXISTS {cache_target} SYNC", query_id=f"{query_id}_cache_reset_{shard_index:03d}")
-            client.execute(
-                event_cache_create_sql(
-                    args,
-                    start,
-                    end,
-                    cache_table_name,
-                    ticker_shard_index=shard_index,
-                    ticker_shard_count=int(args.reaction_ticker_shards),
-                )
-                + settings_sql(args, max_threads=query_threads, max_memory_usage=query_memory),
-                query_id=f"{query_id}_cache_build_{shard_index:03d}",
+    for shard_index in range(news_shard_count):
+        client.execute(
+            reaction_insert_sql(
+                args,
+                start,
+                end,
+                ticker_shard_index=shard_index,
+                ticker_shard_count=news_shard_count,
+                event_cache_table_name=cache_table_name,
             )
-            client.execute(
-                reaction_insert_sql(
-                    args,
-                    start,
-                    end,
-                    ticker_shard_index=shard_index,
-                    ticker_shard_count=int(args.reaction_ticker_shards),
-                    event_cache_table_name=cache_table_name,
-                )
-                + settings_sql(
-                    args,
-                    experimental_join=True,
-                    max_threads=query_threads,
-                    max_memory_usage=query_memory,
-                ),
-                query_id=f"{query_id}_shard_{shard_index:03d}",
-            )
-            client.execute(f"DROP TABLE IF EXISTS {cache_target} SYNC", query_id=f"{query_id}_cache_drop_{shard_index:03d}")
-    except BaseException as exc:
-        primary_error = exc
-        raise
-    finally:
-        try:
-            client.execute(f"DROP TABLE IF EXISTS {cache_target} SYNC", query_id=f"{query_id}_cache_drop")
-        except Exception as cleanup_exc:  # noqa: BLE001
-            if primary_error is None:
-                raise
-            primary_error.add_note(f"event-cache cleanup also failed: {cleanup_exc}")
+            + settings_sql(
+                args,
+                experimental_join=True,
+                max_threads=query_threads,
+                max_memory_usage=query_memory,
+            ),
+            query_id=f"{query_id}_shard_{shard_index:03d}",
+        )
     after = count_version_range(client, args, args.reactions_table, "label_version", LABEL_VERSION, start, end)
     result = ChunkResult("reactions", start.isoformat(), end.isoformat(), after, time.perf_counter() - started)
     record_chunk(client, args, result, LABEL_VERSION)
@@ -915,12 +1047,21 @@ def reaction_insert_sql(
     *,
     ticker_shard_index: int | None = None,
     ticker_shard_count: int | None = None,
+    event_ticker_shard_index: int | None = None,
+    event_ticker_shard_count: int | None = None,
+    include_benchmark: bool = True,
     event_cache_table_name: str | None = None,
 ) -> str:
     if (ticker_shard_index is None) != (ticker_shard_count is None):
         raise ValueError("ticker shard index and count must be provided together")
     if ticker_shard_count is not None and not (0 <= int(ticker_shard_index) < int(ticker_shard_count)):
         raise ValueError("ticker shard index must be inside the configured shard count")
+    if (event_ticker_shard_index is None) != (event_ticker_shard_count is None):
+        raise ValueError("event ticker shard index and count must be provided together")
+    if event_ticker_shard_count is not None and not (
+        0 <= int(event_ticker_shard_index) < int(event_ticker_shard_count)
+    ):
+        raise ValueError("event ticker shard index must be inside the configured shard count")
     ticker_shard_sql = ""
     ticker_shard_t_sql = ""
     if ticker_shard_count is not None:
@@ -931,6 +1072,12 @@ def reaction_insert_sql(
         ticker_shard_t_sql = (
             f" AND cityHash64(t.canonical_news_id, upperUTF8(t.ticker)) % toUInt64({int(ticker_shard_count)}) "
             f"= toUInt64({int(ticker_shard_index)})"
+        )
+    event_ticker_shard_sql = ""
+    if event_ticker_shard_count is not None:
+        event_ticker_shard_sql = (
+            f" AND cityHash64(upperUTF8(ticker)) % toUInt64({int(event_ticker_shard_count)}) "
+            f"= toUInt64({int(event_ticker_shard_index)})"
         )
     ticker_source = table(args.news_database, args.ticker_table)
     normalized = table(args.news_database, args.normalized_table)
@@ -955,6 +1102,7 @@ def reaction_insert_sql(
     source_name = f"{args.events_table}_YYYY" if events_table_uses_year_suffix(args.events_table) else str(args.events_table)
     source_revision = sql_string(f"compact_events_exact_v1:{args.market_database}.{source_name}")
     condition_reference = table(args.market_database, args.condition_reference_table)
+    benchmark_event_prefix = f"ticker = {sql_string(args.benchmark_ticker.upper())} OR " if include_benchmark else ""
     sql = f"""
 INSERT INTO {target}
 WITH
@@ -989,13 +1137,15 @@ updates AS
       AND size_primary > 0
       -- Canonical SIP tickers are already uppercase. Keep this predicate on the
       -- raw ORDER BY key so ClickHouse can prune symbols before decoding events.
-      AND (ticker = {sql_string(args.benchmark_ticker.upper())} OR ticker IN
+      AND ({benchmark_event_prefix}ticker IN
       (
           SELECT DISTINCT upperUTF8(ticker)
           FROM {ticker_source}
           WHERE published_at_utc >= {dt_sql(start.isoformat())}
             AND published_at_utc < {dt_sql(end.isoformat())}
+            AND upperUTF8(ticker) != {sql_string(args.benchmark_ticker.upper())}
             {ticker_shard_sql}
+            {event_ticker_shard_sql}
       ))
 ),
 points AS
@@ -1041,7 +1191,6 @@ points AS
       AND isNotNull(trade_low)
       AND first_trade_timestamp_us > 0
       AND last_trade_timestamp_us >= first_trade_timestamp_us
-    ORDER BY ticker, last_trade_timestamp_us
 ),
 point_arrays AS
 (
@@ -1402,6 +1551,8 @@ FROM final_rows
 (
     SELECT ticker, event_date, eligible_events
     FROM {table(args.news_database, event_cache_table_name)}
+    WHERE event_date >= toDate({sql_string(start.isoformat())})
+      AND event_date < toDate({sql_string(lookahead.isoformat())})
 ),
 market_all_events AS
 (
@@ -1417,7 +1568,7 @@ prior_anchor_points AS
             event -> tupleElement(event, 1),
             groupArrayArray(eligible_events)
         )) AS prior_anchor_event
-    FROM point_arrays
+    FROM {table(args.news_database, event_cache_table_name)}
     WHERE event_date < toDate({sql_string(start.isoformat())})
     GROUP BY ticker
 ),
@@ -1442,14 +1593,17 @@ def event_cache_create_sql(
     *,
     ticker_shard_index: int,
     ticker_shard_count: int,
+    create_table: bool = True,
+    include_benchmark: bool = True,
 ) -> str:
-    """Materialize compact eligible events once for all ticker shards in a day chunk."""
+    """Materialize one ticker shard in a shared monthly compact-event cache."""
     raw_sql = reaction_insert_sql(
         args,
         start,
         end,
-        ticker_shard_index=ticker_shard_index,
-        ticker_shard_count=ticker_shard_count,
+        event_ticker_shard_index=ticker_shard_index,
+        event_ticker_shard_count=ticker_shard_count,
+        include_benchmark=include_benchmark,
     )
     with_body = raw_sql.split("\nWITH\n", 1)[1]
     event_ctes = with_body.split("news_base AS\n(", 1)[0]
@@ -1458,11 +1612,13 @@ def event_cache_create_sql(
         f"    WHERE event_date >= toDate({sql_string(start.isoformat())})\n",
     )
     cache_target = table(args.news_database, cache_table_name)
+    destination = (
+        f"CREATE TABLE {cache_target}\nENGINE = MergeTree\nORDER BY (ticker, event_date)\nAS"
+        if create_table
+        else f"INSERT INTO {cache_target}"
+    )
     return f"""
-CREATE TABLE {cache_target}
-ENGINE = MergeTree
-ORDER BY (ticker, event_date)
-AS
+{destination}
 WITH
 {event_ctes}cache_rows AS
 (
@@ -1701,6 +1857,17 @@ def day_chunks(start: dt.date, end: dt.date, days: int) -> Iterable[tuple[dt.dat
         cursor = chunk_end
 
 
+def calendar_month_chunks(start: dt.date, end: dt.date) -> Iterable[tuple[dt.date, dt.date]]:
+    cursor = start.replace(day=1)
+    while cursor < end:
+        if cursor.month == 12:
+            chunk_end = dt.date(cursor.year + 1, 1, 1)
+        else:
+            chunk_end = dt.date(cursor.year, cursor.month + 1, 1)
+        yield cursor, chunk_end
+        cursor = chunk_end
+
+
 def insert_json_rows(client: ClickHouseHttpClient, target: str, rows: Sequence[dict[str, Any]], batch_size: int = 5_000) -> None:
     for offset in range(0, len(rows), batch_size):
         batch = rows[offset : offset + batch_size]
@@ -1764,6 +1931,7 @@ def settings_sql(
     experimental_join: bool = False,
     max_threads: int | None = None,
     max_memory_usage: int | None = None,
+    external_group_by: bool = False,
 ) -> str:
     settings = [f"max_threads = {int(max_threads if max_threads is not None else args.max_threads)}"]
     memory_limit = max_memory_usage if max_memory_usage is not None else (
@@ -1771,6 +1939,8 @@ def settings_sql(
     )
     if memory_limit:
         settings.append(f"max_memory_usage = {int(memory_limit)}")
+        if external_group_by:
+            settings.append(f"max_bytes_before_external_group_by = {max(256 * 1024**2, int(memory_limit) // 2)}")
     if experimental_join:
         settings.append("allow_experimental_join_condition = 1")
         settings.append("join_algorithm = 'hash'")

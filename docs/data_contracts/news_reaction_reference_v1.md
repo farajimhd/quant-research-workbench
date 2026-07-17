@@ -97,14 +97,24 @@ every query. Each query uses event-date and ticker predicate pushdown, decodes
 only the required trade fields, and calculates all horizons in one insert.
 Canonical SIP tickers are already uppercase, so the raw event predicate remains
 on the stored `ticker` ordering key; applying a case-conversion function there
-would prevent primary-key pruning. Each day worker splits requested news/ticker
-links into 32 deterministic shards. Link-based partitioning also distributes
-days where one heavily covered ticker has many articles. It materializes a short-lived MergeTree cache for
-one shard at a time, containing compact, sorted event tuples by ticker and event
-date. Every news-relative anchor, terminal, high, low, and aligned SPY
-observation is selected from those arrays before the cache is dropped. This
-avoids both fixed bars and the many-to-many news-horizon/event join expansion
-while bounding decoded-event memory.
+would prevent primary-key pruning. Publication months are processed
+sequentially. For each month, the extractor partitions the distinct requested
+tickers into 32 deterministic shards and reads every ticker's required event
+days once into one shared, short-lived MergeTree cache. SPY is loaded once per
+month. Cache rows contain compact, sorted event tuples by ticker and event date,
+including the prior eligible anchor needed at the month boundary.
+
+Bounded day workers then calculate all news-relative anchors, terminal values,
+highs, lows, and aligned SPY observations from that read-only monthly cache.
+News-link inserts are sharded independently and dynamically: the default target
+is 100 links per query with a hard maximum of 64 shards, so sparse days no
+longer execute 32 mostly empty queries while heavily covered tickers still have
+their articles distributed. Days with no ticker-linked news are checkpointed
+without reading events. This avoids fixed bars, repeated ticker/day event reads,
+and the many-to-many news-horizon/event join expansion while keeping memory and
+query concurrency bounded. Completed publication-day checkpoints remain
+untouched on resume; only an incomplete day is deleted and rebuilt. The shared
+monthly cache is transient and is dropped after completion or cancellation.
 
 Defaults are four workers, eight total ClickHouse threads, and a 24 GiB total
 reaction-query memory budget. The launcher divides both CPU threads and memory
@@ -133,7 +143,9 @@ Example bounded tuning:
 python pipelines\news\benzinga\run_news_reaction_extract.py --execute `
   --reaction-workers 4 `
   --max-threads 24 `
-  --reaction-chunk-days 1
+  --reaction-chunk-days 1 `
+  --reaction-ticker-shards 32 `
+  --reaction-links-per-shard 100
 ```
 
 The build resumes completed semantic-version chunks by default. Use
