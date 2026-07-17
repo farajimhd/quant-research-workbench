@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from src.backend.trading_runtime_service import (
     historical_bar_chunk,
+    historical_compact_events,
     historical_latest_coverage,
     historical_preflight,
     historical_window_preview,
@@ -13,6 +14,29 @@ from src.backend.trading_runtime_service import (
 
 
 class HistoricalTradingServiceTests(unittest.TestCase):
+    @patch("src.backend.trading_runtime_service._historical_gateway_get")
+    def test_compact_events_request_latest_rows_before_canvas_clock(self, gateway_get) -> None:
+        gateway_get.return_value = [{"ticker": "AAPL", "arrival_sequence": 9}, "invalid"]
+
+        payload = historical_compact_events(
+            "aapl",
+            start="2026-07-14T04:00:00-04:00",
+            end="2026-07-14T09:45:00-04:00",
+            row_limit=500,
+        )
+
+        self.assertEqual(payload, [{"ticker": "AAPL", "arrival_sequence": 9}])
+        gateway_get.assert_called_once_with(
+            "/snapshot/compact-events/AAPL",
+            {
+                "start": "2026-07-14T04:00:00-04:00",
+                "end": "2026-07-14T09:45:00-04:00",
+                "limit": 500,
+                "tail": "true",
+            },
+            timeout=15,
+        )
+
     @patch("src.backend.trading_runtime_service._historical_gateway_get", return_value={"session_date": "2026-07-10", "event_count": 10})
     def test_latest_coverage_comes_from_history_gateway(self, gateway_get) -> None:
         payload = historical_latest_coverage()

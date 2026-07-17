@@ -36,6 +36,7 @@ struct HistoryQuery {
     end: String,
     limit: Option<usize>,
     start: String,
+    tail: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -201,11 +202,16 @@ async fn compact_event_snapshot(
         .limit
         .unwrap_or(state.config.batch_size)
         .clamp(1, 100_000);
-    let (events, _) = state
-        .source
-        .fetch_batch(&window, None, limit)
-        .await
-        .map_err(service_error)?;
+    let events = if query.tail.unwrap_or(false) {
+        state.source.fetch_latest(&window, limit).await
+    } else {
+        state
+            .source
+            .fetch_batch(&window, None, limit)
+            .await
+            .map(|(events, _)| events)
+    }
+    .map_err(service_error)?;
     Ok(Json(events))
 }
 

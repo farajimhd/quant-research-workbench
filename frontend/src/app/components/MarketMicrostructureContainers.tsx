@@ -1,4 +1,4 @@
-import { Activity, Radio, WifiOff } from "lucide-react";
+import { Activity, Clock3, Radio, WifiOff } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { api, query } from "../../api/client";
@@ -23,13 +23,16 @@ type CompactEvent = {
 };
 
 type MarketEventsPayload = { events: CompactEvent[]; source: string; symbol: string };
-type ConnectionState = "connecting" | "live" | "reconnecting";
+type ConnectionState = "connecting" | "live" | "point-in-time" | "reconnecting";
 const MARKET_EVENTS_UNAVAILABLE = "Live market events are unavailable. Start or reconnect QMD Gateway.";
+const HISTORICAL_EVENTS_UNAVAILABLE = "Historical market events are unavailable. Start or reconnect QMD History.";
 type QuoteUpdate = { ask: number; askExchange: number; askSize: number; bid: number; bidExchange: number; bidSize: number; id: number; issues: number; timestampUs: number };
 type TapePrint = { direction: "buy" | "mid" | "sell"; exchange: number; id: number; issues: number; price: number; size: number; tape: number; timestampUs: number };
 
-export function TapeContainer({ settings, symbol }: { settings: MarketEventSettings; symbol: string }) {
-  const { connected, error, events } = useMarketEvents(symbol);
+type MarketContainerProps = { end?: string; settings: MarketEventSettings; start?: string; symbol: string };
+
+export function TapeContainer({ end, settings, start, symbol }: MarketContainerProps) {
+  const { connected, error, events } = useMarketEvents(symbol, start, end);
   const decoded = useMemo(() => decodeMarketEvents(events), [events]);
   const prints = decoded.trades.slice(-settings.limit).reverse();
   const buyVolume = prints.reduce((sum, item) => sum + (item.direction === "buy" ? item.size : 0), 0);
@@ -50,12 +53,12 @@ export function TapeContainer({ settings, symbol }: { settings: MarketEventSetti
           <td><time>{formatEventTime(print.timestampUs)}</time></td><td className="numeric price"><span aria-hidden="true" />{formatPrice(print.price)}</td><td className="numeric">{formatSize(print.size)}</td><td>{venue(print.exchange)}</td><td>{print.tape}</td>
         </tr>)}</tbody>
       </table>
-    </div> : <MicrostructureEmpty message={connected === "live" ? "Waiting for the next eligible trade print." : "Connecting to the live tape…"} />}
+    </div> : <MicrostructureEmpty message={connected === "point-in-time" ? "No trade prints were found before the Canvas clock." : connected === "live" ? "Waiting for the next eligible trade print." : "Connecting to the live tape…"} />}
   </section>;
 }
 
-export function QuotesContainer({ settings, symbol }: { settings: MarketEventSettings; symbol: string }) {
-  const { connected, error, events } = useMarketEvents(symbol);
+export function QuotesContainer({ end, settings, start, symbol }: MarketContainerProps) {
+  const { connected, error, events } = useMarketEvents(symbol, start, end);
   const quotes = useMemo(() => decodeMarketEvents(events).quotes.slice(-settings.limit).reverse(), [events, settings.limit]);
   const current = quotes[0];
   const presentations = useTickerPresentations([symbol]);
@@ -75,11 +78,11 @@ export function QuotesContainer({ settings, symbol }: { settings: MarketEventSet
           <td><time>{formatEventTime(quote.timestampUs)}</time></td><td>{venue(quote.bidExchange)}</td><td className="numeric bid-size"><i style={{ width: sizeBarWidth(quote.bidSize, quotes.flatMap((row) => [row.bidSize, row.askSize])) }} />{formatSize(quote.bidSize)}</td><td className="numeric bid-price">{formatPrice(quote.bid)}</td><td className="numeric ask-price">{formatPrice(quote.ask)}</td><td className="numeric ask-size">{formatSize(quote.askSize)}<i style={{ width: sizeBarWidth(quote.askSize, quotes.flatMap((row) => [row.bidSize, row.askSize])) }} /></td><td>{venue(quote.askExchange)}</td>
         </tr>)}</tbody>
       </table>
-    </div> : <MicrostructureEmpty message={connected === "live" ? "Waiting for the next NBBO update." : "Connecting to live NBBO…"} />}
+    </div> : <MicrostructureEmpty message={connected === "point-in-time" ? "No NBBO updates were found before the Canvas clock." : connected === "live" ? "Waiting for the next NBBO update." : "Connecting to live NBBO…"} />}
   </section>;
 }
 
-function useMarketEvents(symbol: string) {
+function useMarketEvents(symbol: string, start?: string, end?: string) {
   const [events, setEvents] = useState<CompactEvent[]>([]);
   const [connected, setConnected] = useState<ConnectionState>("connecting");
   const [error, setError] = useState("");
@@ -100,9 +103,12 @@ function useMarketEvents(symbol: string) {
       return [...rows.values()].sort(compareEvents).slice(-1000);
     });
 
-    api<MarketEventsPayload>(`/api/trading/canvas-market-events/${encodeURIComponent(ticker)}${query({ row_limit: 500 })}`, { timeoutMs: 10000 })
-      .then((payload) => { if (active) merge(payload.events); })
-      .catch(() => { if (active) setError(MARKET_EVENTS_UNAVAILABLE); });
+    const historical = Boolean(start && end);
+    api<MarketEventsPayload>(`/api/trading/canvas-market-events/${encodeURIComponent(ticker)}${query({ end, row_limit: 500, start })}`, { timeoutMs: historical ? 20000 : 10000 })
+      .then((payload) => { if (active) { merge(payload.events); if (historical) setConnected("point-in-time"); } })
+      .catch(() => { if (active) setError(historical ? HISTORICAL_EVENTS_UNAVAILABLE : MARKET_EVENTS_UNAVAILABLE); });
+
+    if (historical) return () => { active = false; };
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const connect = () => {
@@ -128,7 +134,7 @@ function useMarketEvents(symbol: string) {
     };
     connect();
     return () => { active = false; if (retryTimer) window.clearTimeout(retryTimer); socket?.close(); };
-  }, [symbol]);
+  }, [end, start, symbol]);
 
   return { connected, error, events };
 }
@@ -141,14 +147,18 @@ function decodeMarketEvents(events: CompactEvent[]) {
     const primaryScale = event.event_meta & 0x02 ? 10_000 : 100;
     const secondaryScale = event.event_meta & 0x04 ? 10_000 : 100;
     if ((event.event_meta & 0x01) === 0) {
+      const ask = event.price_primary_int / primaryScale;
+      const bid = event.price_secondary_int / secondaryScale;
+      if (bid <= 0 || ask <= 0 || ask < bid) return;
       nbbo = {
-        ask: event.price_primary_int / primaryScale, askExchange: event.exchange_primary, askSize: event.size_primary,
-        bid: event.price_secondary_int / secondaryScale, bidExchange: event.exchange_secondary, bidSize: event.size_secondary,
+        ask, askExchange: event.exchange_primary, askSize: event.size_primary,
+        bid, bidExchange: event.exchange_secondary, bidSize: event.size_secondary,
         id: event.arrival_sequence, issues: event.issue_flags, timestampUs: event.sip_timestamp_us,
       };
       quotes.push(nbbo);
     } else {
       const price = event.price_primary_int / primaryScale;
+      if (price <= 0 || event.size_primary <= 0) return;
       const direction = nbbo && nbbo.ask > 0 && price >= nbbo.ask ? "buy" : nbbo && nbbo.bid > 0 && price <= nbbo.bid ? "sell" : "mid";
       trades.push({ direction, exchange: event.exchange_primary, id: event.arrival_sequence, issues: event.issue_flags, price, size: event.size_primary, tape: ((event.event_meta >> 3) & 0x07) + 1, timestampUs: event.sip_timestamp_us });
     }
@@ -157,7 +167,7 @@ function decodeMarketEvents(events: CompactEvent[]) {
 }
 
 function MicrostructureHeader({ connected, detail, logoUrl, symbol }: { connected: ConnectionState; detail: string; logoUrl?: string; symbol: string }) {
-  return <header className="microstructure-header"><div><TickerIdentity logoUrl={logoUrl} ticker={symbol} /><small>{detail}</small></div><span data-state={connected}>{connected === "live" ? <Radio size={11} /> : connected === "connecting" ? <Activity size={11} /> : <WifiOff size={11} />}{connected}</span></header>;
+  return <header className="microstructure-header"><div><TickerIdentity logoUrl={logoUrl} ticker={symbol} /><small>{detail}</small></div><span data-state={connected}>{connected === "live" ? <Radio size={11} /> : connected === "point-in-time" ? <Clock3 size={11} /> : connected === "connecting" ? <Activity size={11} /> : <WifiOff size={11} />}{connected}</span></header>;
 }
 function Metric({ label, tone, value }: { label: string; tone?: "buy" | "sell"; value: string }) { return <div data-tone={tone}><small>{label}</small><strong>{value}</strong></div>; }
 function MicrostructureEmpty({ message }: { message: string }) { return <div className="microstructure-empty"><Activity size={18} /><span>{message}</span></div>; }

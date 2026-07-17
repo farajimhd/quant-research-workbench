@@ -21763,6 +21763,7 @@ button {
 .microstructure-header small { color: var(--muted-foreground); font-size: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .microstructure-header > span { align-items: center; color: var(--muted-foreground); display: inline-flex; flex: 0 0 auto; font-size: 8px; gap: 4px; letter-spacing: .06em; text-transform: uppercase; }
 .microstructure-header > span[data-state="live"] { color: var(--success); }
+.microstructure-header > span[data-state="point-in-time"] { color: var(--info); }
 .microstructure-header > span[data-state="reconnecting"] { color: var(--warning); }
 .tape-summary, .quote-topline { background: var(--surface-alt); border-bottom: 1px solid var(--border); display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .tape-summary > div, .quote-topline > div { display: grid; gap: 2px; min-width: 0; padding: 6px 9px; }

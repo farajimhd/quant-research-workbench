@@ -574,10 +574,10 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
     }
     if (definition.id === "tape" || definition.id === "quotes") {
       return {
-        detail: definition.id === "tape" ? "Live canonical trade prints classified against the preceding NBBO." : "Live consolidated best-bid and best-ask updates; not venue-level depth.",
-        freshness: "streaming now",
-        sourceLabel: "QMD Live",
-        status: "ready",
+        detail: definition.id === "tape" ? "Canonical historical trade prints classified against the preceding NBBO." : "Historical consolidated best-bid and best-ask updates; not venue-level depth.",
+        freshness: previewContext.previewTime,
+        sourceLabel: "QMD History",
+        status: contextError ? "error" : "ready",
       };
     }
     const sourceError = preview?.errors[definition.id] ?? preview?.errors[definition.id === "sec" ? "sec" : definition.id === "xbrl" ? "xbrl" : ""];
@@ -866,9 +866,9 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
     <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{definition.id === "chart"
       ? <ChartContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} linkGroup={linkGroup} onLinkContextChange={onLinkContextChange} previewContext={previewContext} settings={settings} updateSettings={updateSettings} />
       : definition.id === "tape"
-        ? <TapeContainer settings={settings.tape} symbol={linkContext.symbol} />
+        ? <TapeContainer end={new Date(chartCutoffMs).toISOString()} settings={settings.tape} start={dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()} symbol={linkContext.symbol} />
       : definition.id === "quotes"
-        ? <QuotesContainer settings={settings.quotes} symbol={linkContext.symbol} />
+        ? <QuotesContainer end={new Date(chartCutoffMs).toISOString()} settings={settings.quotes} start={dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()} symbol={linkContext.symbol} />
       : definition.id === "news"
         ? <AllNewsContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, news: { ...state.news, ...patch } }))} settings={settings.news} />
       : definition.id === "ticker_news"
@@ -1025,7 +1025,7 @@ function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, 
   const current = settings[id] as Record<string, unknown>;
   function patch(value: Record<string, unknown>) { updateSettings((state) => ({ ...state, [id]: { ...state[id], ...value } })); }
   if (id === "chart") return <><TextField label="Symbol" onChange={(value) => { patch({ symbol: value.toUpperCase() }); onLinkContextChange({ symbol: value.toUpperCase() }); }} value={linkContext.symbol} /><SelectField label="Bar interval" onChange={(value) => patch({ timeframe: value as CanvasChartTimeframe })} optionLabel={formatChartTimeframe} options={HISTORICAL_TIMEFRAMES} value={settings.chart.timeframe} /><CheckField checked={Boolean(current.showVolume)} label="Show volume" onChange={(value) => patch({ showVolume: value })} /></>;
-  if (id === "tape" || id === "quotes") return <><TextField label="Symbol" onChange={(value) => { const symbol = value.toUpperCase(); updateSettings((state) => ({ ...state, chart: { ...state.chart, symbol } })); onLinkContextChange({ symbol }); }} value={linkContext.symbol} /><NumberField label="Visible rows" max={100} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><div className="canvas-settings-note">The symbol follows the selected link color. This container always shows the current QMD Live event stream.</div></>;
+  if (id === "tape" || id === "quotes") return <><TextField label="Symbol" onChange={(value) => { const symbol = value.toUpperCase(); updateSettings((state) => ({ ...state, chart: { ...state.chart, symbol } })); onLinkContextChange({ symbol }); }} value={linkContext.symbol} /><NumberField label="Visible rows" max={100} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><div className="canvas-settings-note">The symbol follows the selected link color. Canvas preview data is bounded by the shared historical clock.</div></>;
   if (id === "portfolio") return <><CheckField checked={Boolean(current.showPositions)} label="Show positions" onChange={(value) => patch({ showPositions: value })} /><CheckField checked={Boolean(current.showPnl)} label="Show P&L" onChange={(value) => patch({ showPnl: value })} /></>;
   if (id === "strategy") return <CheckField checked={Boolean(current.showSignals)} label="Show recent signals" onChange={(value) => patch({ showSignals: value })} />;
   if (id === "scanner") return <><NumberField label="Rows" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showActivity)} label="Show market activity" onChange={(value) => patch({ showActivity: value })} /></>;

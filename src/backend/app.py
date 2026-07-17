@@ -105,6 +105,7 @@ from src.backend.real_live_market_data.config import market_gateway_config
 from src.backend.trading_runtime_service import (
     SUPPORTED_HISTORICAL_TIMEFRAMES,
     get_strategy_definition,
+    historical_compact_events,
     historical_bar_history_before,
     historical_bar_chunk,
     historical_latest_coverage,
@@ -4586,12 +4587,22 @@ def trading_canvas_live_chart(symbol: str, timeframe: str = "1m", row_limit: int
 @app.get("/api/trading/canvas-market-events/{symbol}")
 def trading_canvas_market_events(
     symbol: str,
+    start: str | None = None,
+    end: str | None = None,
     row_limit: int = Query(default=250, ge=1, le=1000),
 ) -> dict[str, Any]:
     ticker = symbol.strip().upper()
     if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
         raise HTTPException(status_code=400, detail="symbol must be a valid ticker")
+    if bool(start) != bool(end):
+        raise HTTPException(status_code=400, detail="start and end must be provided together")
     try:
+        if start and end:
+            return {
+                "events": historical_compact_events(ticker, start=start, end=end, row_limit=row_limit),
+                "source": "qmd-history-gateway",
+                "symbol": ticker,
+            }
         return {
             "events": qmd_compact_events(ticker, row_limit=row_limit),
             "source": "qmd-gateway",

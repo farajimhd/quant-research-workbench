@@ -236,6 +236,26 @@ impl HistoricalEventSource {
         cursor: Option<&HistoricalCursor>,
         limit: usize,
     ) -> Result<(Vec<LiveCompactEvent>, Option<HistoricalCursor>), String> {
+        self.fetch_ordered(window, cursor, limit, false).await
+    }
+
+    pub async fn fetch_latest(
+        &self,
+        window: &EventWindow,
+        limit: usize,
+    ) -> Result<Vec<LiveCompactEvent>, String> {
+        let (mut events, _) = self.fetch_ordered(window, None, limit, true).await?;
+        events.reverse();
+        Ok(events)
+    }
+
+    async fn fetch_ordered(
+        &self,
+        window: &EventWindow,
+        cursor: Option<&HistoricalCursor>,
+        limit: usize,
+        descending: bool,
+    ) -> Result<(Vec<LiveCompactEvent>, Option<HistoricalCursor>), String> {
         validate_window(window)?;
         let limit = limit.clamp(1, 100_000);
         let ticker_filter = if window.tickers.is_empty() {
@@ -288,8 +308,9 @@ impl HistoricalEventSource {
                 )
             })
             .collect::<Vec<_>>();
+        let direction = if descending { "DESC" } else { "ASC" };
         let sql = format!(
-            "SELECT * FROM ({}) ORDER BY sip_timestamp_us, ticker, ordinal LIMIT {} FORMAT JSONEachRow",
+            "SELECT * FROM ({}) ORDER BY sip_timestamp_us {direction}, ticker {direction}, ordinal {direction} LIMIT {} FORMAT JSONEachRow",
             selects.join(" UNION ALL "),
             limit
         );

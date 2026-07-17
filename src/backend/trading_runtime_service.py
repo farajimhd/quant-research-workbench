@@ -511,6 +511,24 @@ def historical_day_coverage(anchor_date: date) -> dict[str, Any]:
     return payload
 
 
+def historical_compact_events(
+    ticker: str,
+    *,
+    start: str,
+    end: str,
+    row_limit: int = 500,
+) -> list[dict[str, Any]]:
+    resolved_ticker = _historical_ticker(ticker)
+    payload = _historical_gateway_get(
+        f"/snapshot/compact-events/{urllib.parse.quote(resolved_ticker)}",
+        {"start": start, "end": end, "limit": row_limit, "tail": "true"},
+        timeout=15,
+    )
+    if not isinstance(payload, list):
+        raise RuntimeError("QMD History compact-event response must be an array")
+    return [row for row in payload if isinstance(row, dict)]
+
+
 def _historical_gateway_get(path: str, params: dict[str, Any], *, timeout: float) -> Any:
     query = urllib.parse.urlencode({key: value for key, value in params.items() if value is not None})
     url = f"{historical_gateway_base_url()}{path}?{query}"
