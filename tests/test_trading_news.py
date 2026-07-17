@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from src.backend.app import SERVICE_REGISTRY, classify_news_kind, service_websocket_url, trading_news_rows
+from src.backend.app import SERVICE_REGISTRY, classify_news_kind, service_websocket_url, trading_news_detail, trading_news_rows
 
 
 class TradingNewsTests(unittest.TestCase):
@@ -32,6 +32,7 @@ class TradingNewsTests(unittest.TestCase):
         self.assertTrue(payload["has_more"])
         self.assertEqual(payload["next_before"], "2026-07-10T13:44:00.000000Z")
         self.assertEqual(payload["next_before_id"], "n1")
+        self.assertNotIn("source", payload)
         sql = query_mock.call_args.args[0]
         self.assertIn("ticker = 'AAPL'", sql)
         self.assertIn("n.canonical_news_id IN", sql)
@@ -43,6 +44,8 @@ class TradingNewsTests(unittest.TestCase):
         self.assertIn("n.published_at_utc <= window_end", sql)
         self.assertIn("AS news_kind", sql)
         self.assertIn("'analyst'", sql)
+        self.assertIn("'insights'", sql)
+        self.assertIn("startsWith(lowerUTF8(trimBoth(value)), 'bzi-')", sql)
         self.assertIn(") = 'analyst'", sql)
         self.assertIn("'multi'", sql)
         self.assertIn("'company'", sql)
@@ -73,9 +76,39 @@ class TradingNewsTests(unittest.TestCase):
     def test_news_kind_classification_is_shared_with_detail_rows(self) -> None:
         self.assertEqual(classify_news_kind({"provider_tags": ["BenzAI"]}, 1), "ai")
         self.assertEqual(classify_news_kind({"channels": ["Price Target"]}, 1), "analyst")
+        self.assertEqual(classify_news_kind({"author": "Benzinga Insights", "provider_tags": ["bzi-ia"]}, 1), "insights")
+        self.assertEqual(classify_news_kind({"channels": ["Analyst Ratings"], "provider_tags": ["bzi-ratings"]}, 1), "analyst")
         self.assertEqual(classify_news_kind({}, 2), "multi")
         self.assertEqual(classify_news_kind({}, 1), "company")
         self.assertEqual(classify_news_kind({}, 0), "market")
+
+    @patch("src.backend.app.clickhouse_status_query")
+    def test_trading_detail_contract_excludes_internal_implementation_fields(self, query_mock) -> None:
+        query_mock.side_effect = [
+            json.dumps({
+                "canonical_news_id": "b2185e66008f39d6875a8f4449f82b7f",
+                "title": "Insights Into Apple's Performance",
+                "text": "Readable article body.",
+                "article_url": "https://example.test/article",
+                "url_domain": "example.test",
+                "author": "Benzinga Insights",
+                "channels": ["news", "markets"],
+                "provider_tags": ["bzi-ia"],
+                "published_at_utc": "2026-07-14T09:44:00.000000Z",
+                "downloaded_at_utc": "2026-07-14T09:58:50.653569Z",
+                "raw_artifact_path": "C:/private/raw.json",
+            }),
+            json.dumps({"ticker": "AAPL", "canonical_news_id": "b2185e66008f39d6875a8f4449f82b7f"}),
+        ]
+
+        payload = trading_news_detail("b2185e66008f39d6875a8f4449f82b7f")
+
+        self.assertEqual(payload["article"]["news_kind"], "insights")
+        self.assertEqual(payload["article"]["text"], "Readable article body.")
+        self.assertEqual(payload["tickers"], ["AAPL"])
+        serialized = json.dumps(payload)
+        for forbidden in ("database", "normalized_table", "ticker_table", "raw_artifact_path", "downloaded_at_utc", "C:/private"):
+            self.assertNotIn(forbidden, serialized)
 
     @patch.dict("os.environ", {"NEWS_GATEWAY_BIND": "0.0.0.0:8796"})
     def test_news_gateway_websocket_uses_loopback_for_wildcard_bind(self) -> None:

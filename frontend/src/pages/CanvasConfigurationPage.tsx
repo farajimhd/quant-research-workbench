@@ -526,7 +526,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
         setPreviewContext({ previewTime: payload.preview_time || "09:45", sessionDate: payload.session_date });
         setContextError("");
       })
-      .catch((reason) => { if (!cancelled) { setContextError(`Historical coverage unavailable: ${reason instanceof Error ? reason.message : String(reason)}`); setLoading(false); } })
+      .catch(() => { if (!cancelled) { setContextError("Historical coverage is temporarily unavailable."); setLoading(false); } })
       .finally(() => { if (!cancelled) setContextReady(true); });
     return () => { cancelled = true; };
   }, []);
@@ -572,7 +572,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
     return {
       detail: `${definition.title} rendered at the shared configuration clock.`,
       freshness: previewContext.previewTime,
-      sourceLabel: sourceError ? "Unavailable" : definition.id === "scanner" ? "QMD History" : newsContainer || ["sec", "xbrl"].includes(definition.id) ? "Point-in-time DB" : "IBKR preview",
+      sourceLabel: sourceError ? "Unavailable" : definition.id === "scanner" ? "QMD History" : newsContainer || ["sec", "xbrl"].includes(definition.id) ? "Point-in-time" : "IBKR preview",
       status: sourceError ? "error" : newsContainer || preview ? "ready" : "idle",
     };
   }, [contextError, preview, previewContext.previewTime]);
@@ -1013,7 +1013,7 @@ function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, 
   if (id === "scanner") return <><NumberField label="Rows" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showActivity)} label="Show market activity" onChange={(value) => patch({ showActivity: value })} /></>;
   if (id === "orders") return <><NumberField label="Rows" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showOrderIds)} label="Show order IDs" onChange={(value) => patch({ showOrderIds: value })} /></>;
   if (id === "fills") return <><NumberField label="Rows" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showCommission)} label="Show commission" onChange={(value) => patch({ showCommission: value })} /></>;
-  if (id === "news") return <><SelectField label="Lookback hours" onChange={(value) => patch({ lookbackHours: Number(value) })} options={["1", "6", "24", "168", "720"]} value={String(current.lookbackHours)} /><SelectField label="News type" onChange={(value) => patch({ kind: value })} options={["all", "company", "analyst", "multi", "ai", "market"]} value={String(current.kind)} /><SelectField label="Text coverage" onChange={(value) => patch({ content: value })} options={["all", "full", "title"]} value={String(current.content)} /></>;
+  if (id === "news") return <><SelectField label="Lookback hours" onChange={(value) => patch({ lookbackHours: Number(value) })} options={["1", "6", "24", "168", "720"]} value={String(current.lookbackHours)} /><SelectField label="News type" onChange={(value) => patch({ kind: value })} options={["all", "company", "insights", "analyst", "multi", "ai", "market"]} value={String(current.kind)} /><SelectField label="Text coverage" onChange={(value) => patch({ content: value })} options={["all", "full", "title"]} value={String(current.content)} /></>;
   if (id === "ticker_news") return <><SelectField label="Lookback hours" onChange={(value) => patch({ lookbackHours: Number(value) })} options={["24", "72", "168", "720"]} value={String(current.lookbackHours)} /><CheckField checked={Boolean(current.showTeaser)} label="Show teaser" onChange={(value) => patch({ showTeaser: value })} /><div className="canvas-settings-note">Ticker comes from the selected link color. Hot, cold, and old states use the shared clock.</div></>;
   if (id === "news_detail") return <div className="canvas-settings-note">This reader follows the most recently selected news article in this canvas.</div>;
   if (id === "sec") return <><NumberField label="Last N filings" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><SelectField label="Form" onChange={(value) => patch({ form: value })} options={["All", "10-K", "10-Q", "8-K"]} value={String(current.form)} /></>;

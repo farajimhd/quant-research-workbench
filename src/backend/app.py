@@ -1834,7 +1834,7 @@ def service_news_today_rows(limit: int = 250, sort: str = "desc") -> dict[str, A
     }
 
 
-def service_news_detail(canonical_news_id: str) -> dict[str, Any]:
+def news_detail_source(canonical_news_id: str) -> tuple[str, str, str, str, dict[str, Any], list[dict[str, Any]]]:
     news_id = canonical_news_id.strip()
     if not news_id:
         raise HTTPException(status_code=400, detail="canonical_news_id is required")
@@ -1873,14 +1873,74 @@ def service_news_detail(canonical_news_id: str) -> dict[str, Any]:
         FORMAT JSONEachRow
     """
     ticker_rows = [json.loads(line) for line in clickhouse_status_query(ticker_query).splitlines() if line.strip()]
-    rows[0]["news_kind"] = classify_news_kind(rows[0], len(ticker_rows))
+    return news_id, database, normalized_table, ticker_table, rows[0], ticker_rows
+
+
+def service_news_detail(canonical_news_id: str) -> dict[str, Any]:
+    news_id, database, normalized_table, ticker_table, source_row, ticker_rows = news_detail_source(canonical_news_id)
     return {
         "canonical_news_id": news_id,
         "database": database,
         "normalized_table": normalized_table,
-        "row": rows[0],
+        "row": source_row,
         "ticker_rows": ticker_rows,
         "ticker_table": ticker_table,
+    }
+
+
+def trading_news_detail(canonical_news_id: str) -> dict[str, Any]:
+    news_id = canonical_news_id.strip()
+    if not news_id:
+        raise HTTPException(status_code=400, detail="canonical_news_id is required")
+    news_id_sql = sql_string(news_id)
+    row_query = f"""
+        SELECT
+            title,
+            article_url,
+            url_domain,
+            author,
+            channels,
+            provider_tags,
+            formatDateTime(published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
+            multiIf(
+                notEmpty(normalized_full_text), normalized_full_text,
+                notEmpty(external_text), external_text,
+                notEmpty(body_text), body_text,
+                pdf_text
+            ) AS text
+        FROM q_live.benzinga_news_normalized_v1 FINAL
+        WHERE canonical_news_id = {news_id_sql}
+        LIMIT 1
+        FORMAT JSONEachRow
+    """
+    rows = [json.loads(line) for line in clickhouse_status_query(row_query, timeout_seconds=NEWS_QUERY_TIMEOUT_SECONDS).splitlines() if line.strip()]
+    if not rows:
+        raise HTTPException(status_code=404, detail="News row not found")
+    ticker_query = f"""
+        SELECT ticker
+        FROM q_live.benzinga_news_ticker_v1 FINAL
+        WHERE canonical_news_id = {news_id_sql}
+        ORDER BY ticker ASC
+        FORMAT JSONEachRow
+    """
+    ticker_rows = [json.loads(line) for line in clickhouse_status_query(ticker_query, timeout_seconds=NEWS_QUERY_TIMEOUT_SECONDS).splitlines() if line.strip()]
+    source_row = rows[0]
+    # Product APIs expose only decision-relevant presentation fields. Database,
+    # table, storage-path, ingestion-diagnostic, and agent/chat implementation
+    # details must never cross into a user-facing response contract.
+    return {
+        "article": {
+            "article_url": source_row.get("article_url") or "",
+            "author": source_row.get("author") or "",
+            "channels": source_row.get("channels") or [],
+            "news_kind": classify_news_kind(source_row, len(ticker_rows)),
+            "provider_tags": source_row.get("provider_tags") or [],
+            "published_at_utc": source_row.get("published_at_utc") or "",
+            "text": source_row.get("text") or "",
+            "title": source_row.get("title") or "",
+            "url_domain": source_row.get("url_domain") or "",
+        },
+        "tickers": sorted({str(row.get("ticker") or "").strip().upper() for row in ticker_rows if str(row.get("ticker") or "").strip()}),
     }
 
 
@@ -1915,8 +1975,8 @@ def trading_news_rows(
     if safe_content not in {"all", "full", "title"}:
         raise HTTPException(status_code=400, detail="content must be all, full, or title")
     safe_kind = kind.strip().lower()
-    if safe_kind not in {"all", "ai", "analyst", "company", "market", "multi"}:
-        raise HTTPException(status_code=400, detail="kind must be all, ai, analyst, company, market, or multi")
+    if safe_kind not in {"all", "ai", "analyst", "company", "insights", "market", "multi"}:
+        raise HTTPException(status_code=400, detail="kind must be all, ai, analyst, company, insights, market, or multi")
 
     database = "q_live"
     normalized_table = "benzinga_news_normalized_v1"
@@ -1989,9 +2049,11 @@ def trading_news_rows(
     try:
         rows = clickhouse_json_each_row(query)
     except TimeoutError as exc:
-        raise HTTPException(status_code=504, detail="News query timed out while reading ClickHouse") from exc
+        raise HTTPException(status_code=504, detail="News query timed out") from exc
     except urllib.error.URLError as exc:
-        raise HTTPException(status_code=503, detail=f"News database unavailable: {exc.reason}") from exc
+        # Keep infrastructure diagnostics in server logs; product responses must
+        # not disclose database engines, hosts, schemas, paths, or raw errors.
+        raise HTTPException(status_code=503, detail="News is temporarily unavailable") from exc
     has_more = len(rows) > safe_limit
     rows = rows[:safe_limit]
     return {
@@ -2002,7 +2064,6 @@ def trading_news_rows(
         "next_before": str(rows[-1].get("published_at_utc") or "") if has_more and rows else "",
         "next_before_id": str(rows[-1].get("canonical_news_id") or "") if has_more and rows else "",
         "rows": rows,
-        "source": f"{database}.{normalized_table}",
         "window_start": window_start.isoformat().replace("+00:00", "Z"),
     }
 
@@ -2011,6 +2072,7 @@ def news_kind_sql_expression(ticker_links_sql: str) -> str:
     return f"""multiIf(
         arrayExists(value -> lowerUTF8(value) IN ('benzai', 'ai generated', 'ai-generated'), n.provider_tags), 'ai',
         arrayExists(value -> lowerUTF8(value) IN ('analyst ratings', 'price target', 'analyst color', 'initiation', 'reiteration', 'upgrades', 'downgrades'), n.channels), 'analyst',
+        arrayExists(value -> startsWith(lowerUTF8(trimBoth(value)), 'bzi-'), n.provider_tags), 'insights',
         length({ticker_links_sql}) > 1, 'multi',
         length({ticker_links_sql}) = 1, 'company',
         'market'
@@ -2024,6 +2086,8 @@ def classify_news_kind(row: dict[str, Any], ticker_count: int) -> str:
         return "ai"
     if channels.intersection({"analyst ratings", "price target", "analyst color", "initiation", "reiteration", "upgrades", "downgrades"}):
         return "analyst"
+    if any(value.startswith("bzi-") for value in provider_tags):
+        return "insights"
     if ticker_count > 1:
         return "multi"
     if ticker_count == 1:
@@ -3295,9 +3359,9 @@ async def trading_news_stream(websocket: WebSocket) -> None:
                     await websocket.send_text(message)
     except WebSocketDisconnect:
         return
-    except Exception as exc:
+    except Exception:
         try:
-            await websocket.send_json({"error": f"News Gateway stream unavailable: {exc}"})
+            await websocket.send_json({"error": "News live updates are temporarily unavailable."})
             await websocket.close(code=1011)
         except Exception:
             return
@@ -3309,8 +3373,8 @@ def trading_ticker_presentations(tickers: str = "") -> dict[str, Any]:
 
 
 @app.get("/api/trading/news/detail/{canonical_news_id}")
-def trading_news_detail(canonical_news_id: str) -> dict[str, Any]:
-    return service_news_detail(canonical_news_id)
+def trading_news_detail_route(canonical_news_id: str) -> dict[str, Any]:
+    return trading_news_detail(canonical_news_id)
 
 
 @app.get("/api/services/sec/today")

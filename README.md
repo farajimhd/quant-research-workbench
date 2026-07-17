@@ -133,6 +133,16 @@ paper or live accounts.
 `services/gateway_core` is shared infrastructure used by multiple gateways and
 is active even though it is not a standalone product service.
 
+## Product Presentation Boundary
+
+User-facing product workflows show decision-relevant content, provenance,
+freshness, and actionable failures. They must not expose database or table
+names, storage paths, raw infrastructure errors, internal implementation notes,
+or content copied from developer/agent chats. Public API response models enforce
+this boundary rather than relying on frontend hiding. Dedicated operator
+diagnostics must still translate implementation evidence into the minimum safe
+information needed to operate the system.
+
 ## Market Event Data Contract
 
 Market-event consumers select the source by runtime mode:

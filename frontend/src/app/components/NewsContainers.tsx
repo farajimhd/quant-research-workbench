@@ -1,4 +1,4 @@
-import { Bot, Building2, Clock3, ExternalLink, Flame, Globe2, Layers3, Newspaper, RefreshCw, Search, Snowflake, TrendingUp } from "lucide-react";
+import { Bot, Building2, Clock3, ExternalLink, Flame, Globe2, Layers3, Lightbulb, Newspaper, RefreshCw, Search, Snowflake, TrendingUp } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, query } from "../../api/client";
@@ -15,7 +15,7 @@ type NewsRow = {
   has_external_text?: boolean;
   has_pdf?: boolean;
   is_title_only?: boolean;
-  news_kind?: "ai" | "analyst" | "company" | "market" | "multi";
+  news_kind?: "ai" | "analyst" | "company" | "insights" | "market" | "multi";
   provider_tags?: string[];
   published_at_utc: string;
   text_preview?: string;
@@ -30,14 +30,22 @@ type NewsPayload = {
   next_before: string;
   next_before_id: string;
   rows: NewsRow[];
-  source: string;
   window_start: string;
 };
 
 type NewsDetailPayload = {
-  canonical_news_id: string;
-  row: Record<string, unknown>;
-  ticker_rows: Record<string, unknown>[];
+  article: {
+    article_url: string;
+    author: string;
+    channels: string[];
+    news_kind: NewsKindValue;
+    provider_tags: string[];
+    published_at_utc: string;
+    text: string;
+    title: string;
+    url_domain: string;
+  };
+  tickers: string[];
 };
 
 const NEWS_SELECTION_EVENT = "quant-news-selection";
@@ -63,7 +71,7 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
       <button className="button secondary compact news-search-submit" type="submit">Search</button>
       <label><span>Window</span><select aria-label="News time window" onChange={(event) => onSettingsChange({ lookbackHours: Number(event.target.value) })} value={settings.lookbackHours}><option value={1}>1 hour</option><option value={6}>6 hours</option><option value={24}>24 hours</option><option value={168}>7 days</option><option value={720}>30 days</option></select></label>
       <label><span>Ticker</span><input aria-label="Filter by ticker" maxLength={16} onChange={(event) => onSettingsChange({ ticker: event.target.value.toUpperCase() })} placeholder="Any" value={settings.ticker} /></label>
-      <label><span>Type</span><select aria-label="News type" onChange={(event) => onSettingsChange({ kind: event.target.value })} value={settings.kind}><option value="all">All types</option><option value="company">Company</option><option value="analyst">Analyst</option><option value="multi">Multi</option><option value="ai">AI</option><option value="market">Market</option></select></label>
+      <label><span>Type</span><select aria-label="News type" onChange={(event) => onSettingsChange({ kind: event.target.value })} value={settings.kind}><option value="all">All types</option><option value="company">Company</option><option value="insights">Insights</option><option value="analyst">Analyst</option><option value="multi">Multi</option><option value="ai">AI</option><option value="market">Market</option></select></label>
       <label><span>Text</span><select aria-label="News text coverage" onChange={(event) => onSettingsChange({ content: event.target.value })} value={settings.content}><option value="all">All</option><option value="full">Full text</option><option value="title">Title only</option></select></label>
       <button aria-label="Refresh news" className="toolbar-button compact" onClick={() => setRefreshKey((value) => value + 1)} title="Refresh" type="button"><RefreshCw size={13} /></button>
     </form>
@@ -148,22 +156,22 @@ export function NewsDetailContainer({ asOf, canvasId, requestedNewsId }: { asOf:
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [newsId]);
-  const detailTickers = detail?.ticker_rows.map((item) => String(item.ticker || "")).filter(Boolean) ?? [];
+  const detailTickers = detail?.tickers ?? [];
   const presentations = useTickerPresentations(detailTickers);
   if (!newsId) return <NewsEmpty label="Choose a headline in All News or Ticker News to read it here." />;
   if (loading && !detail) return <div className="canvas-preview-loading">Loading article…</div>;
   if (error) return <NewsEmpty label={error} />;
   if (!detail) return null;
-  const row = detail.row;
-  const title = String(row.title || row.normalized_title || "Untitled story");
-  const body = firstText(row.normalized_full_text, row.external_text, row.body_text, row.pdf_text);
-  const tags = stringList(row.channels).concat(stringList(row.provider_tags)).slice(0, 12);
-  const tone = newsTemperature(String(row.published_at_utc || ""), Date.parse(asOf));
+  const row = detail.article;
+  const title = row.title || "Untitled story";
+  const body = row.text;
+  const tags = row.channels.concat(row.provider_tags).slice(0, 12);
+  const tone = newsTemperature(row.published_at_utc, Date.parse(asOf));
   const kind = isNewsKind(row.news_kind) ? row.news_kind : "market";
   return <article className="news-reader">
-    <header><div className="news-reader-kicker"><NewsTemperatureTag tone={tone} /><MarketTime includeDate value={String(row.published_at_utc || "")} /><NewsKind kind={kind} /><span>{String(row.url_domain || "News")}</span></div><h1>{title}</h1><div className="news-reader-byline"><span>{String(row.author || "Unknown author")}</span><TickerList presentations={presentations} tickers={detailTickers} /></div>{tags.length ? <div className="news-reader-tags">{tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}</header>
+    <header><div className="news-reader-kicker"><NewsTemperatureTag tone={tone} /><MarketTime includeDate value={row.published_at_utc} /><NewsKind kind={kind} /><span>{row.url_domain || "News"}</span></div><h1>{title}</h1><div className="news-reader-byline"><span>{row.author || "Unknown author"}</span><TickerList presentations={presentations} tickers={detailTickers} /></div>{tags.length ? <div className="news-reader-tags">{tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}</header>
     {body ? <div className="news-reader-body">{articleParagraphs(body).map((paragraph, index) => <p key={`${index}-${paragraph.slice(0, 20)}`}>{paragraph}</p>)}</div> : <NewsEmpty label="This record contains title metadata but no readable article text." />}
-    <footer>{row.article_url ? <a href={String(row.article_url)} rel="noreferrer" target="_blank">Open original source <ExternalLink size={12} /></a> : null}<details><summary>Record provenance</summary><dl><dt>Canonical ID</dt><dd>{detail.canonical_news_id}</dd><dt>Downloaded</dt><dd>{String(row.downloaded_at_utc || "—")}</dd><dt>Text quality</dt><dd>{stringList(row.content_quality_flags).join(", ") || "No flags"}</dd></dl></details></footer>
+    <footer>{row.article_url ? <a href={row.article_url} rel="noreferrer" target="_blank">Open original source <ExternalLink size={12} /></a> : null}</footer>
   </article>;
 }
 
@@ -217,19 +225,20 @@ function useNewsQuery({ asOf, content, hours, kind, live, refreshKey, search, ti
     return () => { closed = true; window.clearTimeout(retryTimer); refreshController?.abort(); socket?.close(); };
   }, [live, load, ticker]);
   const loadMore = useCallback(() => { if (!payload?.next_before) return; setLoadingMore(true); load(payload.next_before, payload.next_before_id, undefined, payload.as_of).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason))).finally(() => setLoadingMore(false)); }, [load, payload]);
-  return { asOf: payload?.as_of, error, hasMore: Boolean(payload?.has_more), live, liveConnected, liveError, loadMore, loading, loadingMore, rows, source: payload?.source, windowStart: payload?.window_start };
+  return { asOf: payload?.as_of, error, hasMore: Boolean(payload?.has_more), live, liveConnected, liveError, loadMore, loading, loadingMore, rows, windowStart: payload?.window_start };
 }
 
-function NewsStatus({ compact, state }: { compact?: boolean; state: ReturnType<typeof useNewsQuery> }) { return <div className="news-status" data-compact={compact ? "true" : "false"}>{state.loading ? <span>Querying news…</span> : state.error ? <strong>{state.error}</strong> : <><span>{state.rows.length} returned</span>{!compact && state.windowStart ? <span className="news-window-start"><span>Since</span><MarketTime dateStyle="short" includeDate layout="inline" value={state.windowStart} /></span> : null}<span className="news-source-label" title={state.liveError || undefined}>{state.live ? state.liveConnected ? "News Gateway · DB" : "DB · gateway reconnecting" : state.source || "Point-in-time DB"}</span></>}</div>; }
+// Product UI reports user-relevant freshness only. Never render database/table
+// names, storage paths, raw service errors, implementation notes, or agent/chat text.
+function NewsStatus({ compact, state }: { compact?: boolean; state: ReturnType<typeof useNewsQuery> }) { return <div className="news-status" data-compact={compact ? "true" : "false"}>{state.loading ? <span>Querying news…</span> : state.error ? <strong>{state.error}</strong> : <><span>{state.rows.length} returned</span>{!compact && state.windowStart ? <span className="news-window-start"><span>Since</span><MarketTime dateStyle="short" includeDate layout="inline" value={state.windowStart} /></span> : null}<span className="news-source-label">{state.live ? state.liveConnected ? "Live updates" : "Reconnecting…" : "Point-in-time"}</span></>}</div>; }
 function NewsEmpty({ label }: { label: string }) { return <div className="news-empty"><Newspaper size={18} /><span>{label}</span></div>; }
 function TickerList({ presentations, tickers = [] }: { presentations: Record<string, TickerPresentation>; tickers?: string[] }) { return <span className="news-tickers">{tickers.slice(0, 3).map((ticker) => <b key={ticker}><TickerIdentity logoUrl={presentations[ticker]?.logo_url} ticker={ticker} /></b>)}{tickers.length > 3 ? <b>+{tickers.length - 3}</b> : !tickers.length ? "—" : null}</span>; }
 function NewsTextState({ row }: { row: NewsRow }) { return <span className="news-text-state" data-state={row.is_title_only ? "title" : "full"}>{row.is_title_only ? "Title" : row.has_pdf ? "PDF" : row.has_external_text ? "Full" : "Body"}</span>; }
-function NewsKind({ kind = "market" }: { kind?: NewsRow["news_kind"] }) { const values = { ai: { Icon: Bot, label: "AI" }, analyst: { Icon: TrendingUp, label: "Analyst" }, company: { Icon: Building2, label: "Company" }, market: { Icon: Globe2, label: "Market" }, multi: { Icon: Layers3, label: "Multi" } }; const value = values[kind]; return <span className="news-kind" data-kind={kind}><value.Icon size={11} />{value.label}</span>; }
+function NewsKind({ kind = "market" }: { kind?: NewsRow["news_kind"] }) { const values = { ai: { Icon: Bot, label: "AI" }, analyst: { Icon: TrendingUp, label: "Analyst" }, company: { Icon: Building2, label: "Company" }, insights: { Icon: Lightbulb, label: "Insights" }, market: { Icon: Globe2, label: "Market" }, multi: { Icon: Layers3, label: "Multi" } }; const value = values[kind]; return <span className="news-kind" data-kind={kind}><value.Icon size={11} />{value.label}</span>; }
 function NewsTemperatureTag({ tone }: { tone: NewsTemperature }) { const value = newsTemperaturePresentation(tone); return <span className="news-temperature" data-tone={tone}><value.Icon size={12} /><em>{value.label}</em></span>; }
 function newsTemperature(publishedAt: string, asOfMs: number): NewsTemperature { const publishedMs = Date.parse(publishedAt); const ageMinutes = Number.isFinite(publishedMs) && Number.isFinite(asOfMs) ? Math.max(0, (asOfMs - publishedMs) / 60_000) : Number.POSITIVE_INFINITY; return ageMinutes <= NEWS_HOT_MINUTES ? "hot" : ageMinutes <= NEWS_COLD_MINUTES ? "cold" : "old"; }
 function newsTemperaturePresentation(tone: NewsTemperature) { return tone === "hot" ? { Icon: Flame, label: "Hot" } : tone === "cold" ? { Icon: Snowflake, label: "Cold" } : { Icon: Clock3, label: "Old" }; }
-function isNewsKind(value: unknown): value is NewsKindValue { return ["ai", "analyst", "company", "market", "multi"].includes(String(value)); }
-function firstText(...values: unknown[]) { for (const value of values) if (typeof value === "string" && value.trim()) return value.trim(); return ""; }
+function isNewsKind(value: unknown): value is NewsKindValue { return ["ai", "analyst", "company", "insights", "market", "multi"].includes(String(value)); }
 function articleParagraphs(value: string) { const explicit = value.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean); if (explicit.length > 1) return explicit; const sentences = value.match(/[^.!?]+(?:[.!?]+[\]"')]*|$)/g)?.map((item) => item.trim()).filter(Boolean) ?? [value]; const paragraphs: string[] = []; for (let index = 0; index < sentences.length; index += 4) paragraphs.push(sentences.slice(index, index + 4).join(" ")); return paragraphs; }
 function stringList(value: unknown): string[] { return Array.isArray(value) ? value.map(String).filter(Boolean) : []; }
 function sameExchangeDate(left: string, right: string) { return exchangeDateKey(left) === exchangeDateKey(right); }
