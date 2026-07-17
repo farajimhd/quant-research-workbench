@@ -41,7 +41,6 @@ UTC = dt.timezone.utc
 CALENDAR_VERSION = "xnys_pandas_market_calendars_v1"
 LABEL_VERSION = "news_reaction_event_labels_v3"
 STATS_VERSION = "news_phrase_event_reaction_stats_v3"
-MULTISEARCH_NEEDLE_LIMIT = 255
 HORIZONS: tuple[tuple[str, str, int], ...] = (
     ("1m", "fixed", 60),
     ("5m", "fixed", 5 * 60),
@@ -720,63 +719,44 @@ def run_feature_chunks(
 
 
 def feature_insert_sql(args: argparse.Namespace, start: dt.date, end: dt.date, rules: Sequence[PhraseRule] = PHRASE_RULES) -> str:
-    flattened = [(needle, rule.phrase_id) for rule in rules for needle in rule.needles]
-    needles = "[" + ", ".join(sql_string(needle) for needle, _ in flattened) + "]"
-    phrase_ids = "[" + ", ".join(sql_string(phrase_id) for _, phrase_id in flattened) + "]"
-    needle_batches = [
-        flattened[offset:offset + MULTISEARCH_NEEDLE_LIMIT]
-        for offset in range(0, len(flattened), MULTISEARCH_NEEDLE_LIMIT)
-    ]
+    text_sources = (
+        ("ifNull(title, '')", 1),
+        ("concat(ifNull(teaser, ''), ' ', ifNull(body_text, ''), ' ', ifNull(external_text, ''), ' ', ifNull(pdf_text, ''))", 2),
+        ("arrayStringConcat(provider_tags, ' ')", 4),
+        ("arrayStringConcat(channels, ' ')", 8),
+    )
 
-    def positions(text_expression: str) -> str:
-        searches = [
-            "multiSearchAllPositionsCaseInsensitiveUTF8("
-            f"{text_expression}, [{', '.join(sql_string(needle) for needle, _ in batch)}])"
-            for batch in needle_batches
-        ]
-        return searches[0] if len(searches) == 1 else f"arrayConcat({', '.join(searches)})"
+    def has_any(text_expression: str, rule: PhraseRule) -> str:
+        needles = ", ".join(sql_string(needle) for needle in rule.needles)
+        if len(rule.needles) == 1:
+            return f"positionCaseInsensitiveUTF8({text_expression}, {needles}) > 0"
+        return f"multiSearchAnyCaseInsensitiveUTF8({text_expression}, [{needles}])"
+
+    phrase_matches = []
+    for rule in rules:
+        mask = " + ".join(
+            f"if({has_any(text_expression, rule)}, {bit}, 0)"
+            for text_expression, bit in text_sources
+        )
+        phrase_matches.append(f"tuple({sql_string(rule.phrase_id)}, toUInt8({mask}))")
+    phrase_match_array = "[\n            " + ",\n            ".join(phrase_matches) + "\n        ]"
 
     source = table(args.news_database, args.normalized_table)
     target = table(args.news_database, args.features_table)
     return f"""
 INSERT INTO {target}
-WITH
-    {needles} AS needles,
-    {phrase_ids} AS phrase_ids
 SELECT
     {sql_string(PHRASE_DICTIONARY_VERSION)} AS extraction_version,
     canonical_news_id,
     published_at_utc,
-    phrase_id,
-    toUInt8(
-        if(arrayExists(i -> phrase_ids[i] = phrase_id AND title_positions[i] > 0, indexes), 1, 0)
-        + if(arrayExists(i -> phrase_ids[i] = phrase_id AND body_positions[i] > 0, indexes), 2, 0)
-        + if(arrayExists(i -> phrase_ids[i] = phrase_id AND tag_positions[i] > 0, indexes), 4, 0)
-        + if(arrayExists(i -> phrase_ids[i] = phrase_id AND channel_positions[i] > 0, indexes), 8, 0)
-    ) AS source_mask,
+    phrase_match.1 AS phrase_id,
+    phrase_match.2 AS source_mask,
     text_hash,
     now64(6) AS extracted_at
-FROM
-(
-    SELECT
-        canonical_news_id,
-        published_at_utc,
-        text_hash,
-        phrase_ids,
-        arrayEnumerate(needles) AS indexes,
-        {positions("ifNull(title, '')")} AS title_positions,
-        {positions("concat(ifNull(teaser, ''), ' ', ifNull(body_text, ''), ' ', ifNull(external_text, ''), ' ', ifNull(pdf_text, ''))")} AS body_positions,
-        {positions("arrayStringConcat(provider_tags, ' ')")} AS tag_positions,
-        {positions("arrayStringConcat(channels, ' ')")} AS channel_positions,
-        arrayDistinct(arrayMap(i -> phrase_ids[i], arrayFilter(i ->
-            title_positions[i] > 0 OR body_positions[i] > 0 OR tag_positions[i] > 0 OR channel_positions[i] > 0,
-            indexes
-        ))) AS matched_phrase_ids
-    FROM {source} FINAL
-    WHERE published_at_utc >= {dt_sql(start.isoformat())}
-      AND published_at_utc < {dt_sql(end.isoformat())}
-)
-ARRAY JOIN matched_phrase_ids AS phrase_id
+FROM {source} FINAL
+ARRAY JOIN arrayFilter(match -> match.2 > 0, {phrase_match_array}) AS phrase_match
+WHERE published_at_utc >= {dt_sql(start.isoformat())}
+  AND published_at_utc < {dt_sql(end.isoformat())}
 """
 
 

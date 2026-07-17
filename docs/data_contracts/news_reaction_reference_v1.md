@@ -35,6 +35,12 @@ Preflight coverage is evaluated from active ClickHouse part metadata. It checks
 that every required yearly table has active data and reports its stored row
 count and date range without scanning the event payload.
 
+Language features use one bounded presence predicate per canonical phrase and
+source field. The query emits the combined title/body/tag/channel source mask
+directly and never retains occurrence counts or global per-needle position
+arrays. This keeps memory proportional to the source block rather than to every
+position-array alias expansion.
+
 ## Output tables
 
 | Table | Grain | Purpose |

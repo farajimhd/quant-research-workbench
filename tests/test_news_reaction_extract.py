@@ -6,7 +6,6 @@ import unittest
 from pipelines.news.benzinga.news_reaction_extract import (
     HORIZONS,
     LABEL_VERSION,
-    MULTISEARCH_NEEDLE_LIMIT,
     STATS_VERSION,
     build_calendar_rows,
     expected_event_tables,
@@ -30,13 +29,18 @@ class NewsReactionExtractTests(unittest.TestCase):
         validate_phrase_rules()
         self.assertEqual(len(PHRASE_RULES), len({rule.phrase_id for rule in PHRASE_RULES}))
         self.assertGreater(len(PHRASE_RULES), 75)
-        self.assertGreater(sum(len(rule.needles) for rule in PHRASE_RULES), MULTISEARCH_NEEDLE_LIMIT)
+        self.assertGreater(sum(len(rule.needles) for rule in PHRASE_RULES), 255)
 
     def test_feature_sql_batches_search_without_occurrence_storage(self) -> None:
         sql = feature_insert_sql(self.args, dt.date(2019, 1, 1), dt.date(2019, 2, 1))
-        batch_count = (sum(len(rule.needles) for rule in PHRASE_RULES) + MULTISEARCH_NEEDLE_LIMIT - 1) // MULTISEARCH_NEEDLE_LIMIT
-        self.assertEqual(sql.count("multiSearchAllPositionsCaseInsensitiveUTF8"), batch_count * 4)
-        self.assertIn("arrayDistinct", sql)
+        multi_rules = sum(1 for rule in PHRASE_RULES if len(rule.needles) > 1)
+        single_rules = len(PHRASE_RULES) - multi_rules
+        self.assertEqual(sql.count("multiSearchAnyCaseInsensitiveUTF8"), multi_rules * 4)
+        self.assertEqual(sql.count("positionCaseInsensitiveUTF8"), single_rules * 4)
+        self.assertEqual(sql.count("tuple('"), len(PHRASE_RULES))
+        self.assertIn("ARRAY JOIN arrayFilter", sql)
+        self.assertNotIn("multiSearchAllPositionsCaseInsensitiveUTF8", sql)
+        self.assertNotIn("GROUP BY canonical_news_id", sql)
         self.assertNotIn("occurrence", sql.lower())
         feature_schema = target_table_sql(self.args)[2].lower()
         self.assertNotIn("occurrence", feature_schema)

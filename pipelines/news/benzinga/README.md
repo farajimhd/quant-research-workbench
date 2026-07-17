@@ -92,6 +92,11 @@ event tables are not required.
 The coverage preflight reads active-part metadata from `system.parts`; it does
 not scan the event payload tables merely to count coverage.
 
+Phrase extraction evaluates each canonical phrase rule once per source field
+with a bounded presence predicate and directly emits its title/body/tag/channel
+bit mask. It does not materialize global per-needle position arrays, and phrase
+repetition still cannot create more than one article/phrase fact.
+
 The first command is a read-only coverage preflight. See the
 [v1 data contract](../../../docs/data_contracts/news_reaction_reference_v1.md)
 for canonical-event prerequisites, causal horizons, table grains, quality rules,
