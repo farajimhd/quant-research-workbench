@@ -39,6 +39,8 @@ type QuoteUpdate = { ask: number; askExchange: number; askSize: number; bid: num
 type TapePrint = { conditionTokens: number[]; direction: Direction; exchange: number; id: number; issues: number; price: number; size: number; tape: number; timestampUs: number };
 type QuoteSignal = { detail: string; quote: QuoteUpdate; tone: Direction };
 type QuoteSignalGroup = { id: number; quote: QuoteUpdate; signals: QuoteSignal[]; tone: Direction };
+type QuoteStrengthPoint = { price: number; size: number; strength: number };
+type TapeVolumeLevel = { buy: number; mid: number; price: number; sell: number; total: number };
 
 type MarketContainerProps = { end?: string; settings: MarketEventSettings; start?: string; symbol: string };
 const EMPTY_REFERENCES: MarketReferences = { conditions: {}, exchanges: {} };
@@ -46,6 +48,30 @@ const MARKET_EVENT_HISTORY_LIMIT = 1024;
 const MARKET_EVENT_SOURCE_LIMIT = 5000;
 const MARKET_EVENTS_UNAVAILABLE = "Live market events are unavailable. Start or reconnect QMD Gateway.";
 const HISTORICAL_EVENTS_UNAVAILABLE = "Historical market events are unavailable. Start or reconnect QMD History.";
+const QUOTE_EVENT_GUIDE = [
+  ["Opening snapshot", "Neutral", "First quote in the window; no preceding quote is available."],
+  ["Bid improved", "Bullish", "Best bid moved higher. Buyers are willing to pay more."],
+  ["Ask moved down", "Bearish", "Best ask moved lower. Sellers accepted a lower price, although the spread may tighten."],
+  ["Bid faded", "Bearish", "Best bid moved lower and displayed buying support retreated."],
+  ["Ask moved up", "Bullish", "Best ask moved higher as the cheaper offer retreated; the spread may also widen."],
+  ["Bid added", "Bullish", "Displayed bid size increased without a price change. Support may be fleeting."],
+  ["Bid pulled", "Bearish", "Displayed bid size decreased and visible support was withdrawn."],
+  ["Ask added", "Bearish", "Displayed ask size increased, adding visible supply."],
+  ["Ask pulled", "Bullish", "Displayed ask size decreased, leaving less visible supply above the market."],
+  ["Venue changed", "Neutral", "No price or size transition was detected; the posting venue may have changed."],
+];
+const TAPE_METRIC_GUIDE = [
+  ["Last print", "Latest eligible trade, size, and inferred side.", "Immediate execution state; one print has little forecasting value."],
+  ["Buy share", "At-ask volume divided by at-ask plus at-bid volume.", "Sustained values above 50% indicate buyer aggression; mid-market trades are excluded."],
+  ["Net flow", "At-ask share volume minus at-bid share volume.", "Positive is aggressive buying; negative is aggressive selling."],
+  ["Pace", "Average prints per second.", "Measures urgency and information arrival, not direction."],
+  ["Largest print", "Largest single trade in the visible window.", "Shows unusually large participation; direction and conditions determine meaning."],
+  ["Aggressor streak", "Consecutive latest prints on one aggressor side.", "A long streak suggests short-lived flow persistence."],
+  ["Price drift", "First-to-last trade return in basis points.", "Shows whether aggression produced price movement; it is realized response, not a forecast."],
+  ["Large-print share", "Volume in prints at or above the window's 90th-percentile size.", "High values indicate concentrated large-trade participation."],
+  ["Size acceleration", "Recent-half average size divided by earlier-half average size.", "Above 1× means prints are getting larger and urgency may be increasing."],
+  ["Absorption", "One-sided aggressive flow with less than 1.5 bp price drift.", "Suggests passive or hidden liquidity may be absorbing the flow."],
+];
 
 export function TapeContainer({ end, start, symbol }: MarketContainerProps) {
   const { connected, error, events, marketState, references } = useMarketEvents(symbol, start, end);
@@ -66,6 +92,7 @@ export function TapeContainer({ end, start, symbol }: MarketContainerProps) {
   const streak = aggressorStreak(chronological);
   const sizeTrend = halfWindowRatio(chronological.map((item) => item.size));
   const absorption = directionalVolume > 0 && Math.abs(buyShare - 0.5) >= 0.18 && Math.abs(priceDriftBps) < 1.5;
+  const volumeProfile = useMemo(() => tapeVolumeProfile(chronological), [chronological]);
   const presentations = useTickerPresentations([symbol]);
 
   return <section aria-label={`${symbol} time and sales`} className="market-microstructure tape-surface" data-market-state={connected}>
@@ -90,6 +117,7 @@ export function TapeContainer({ end, start, symbol }: MarketContainerProps) {
         <SignalMetric help="Possible absorption appears when aggressive flow is one-sided but price barely moves. It is a diagnostic, not proof of hidden liquidity." label="Absorption" tone="mid" value={absorption ? "Possible" : "Not detected"} />
       </div>
     </div>
+    <TapeVolumeProfile levels={volumeProfile} />
     {error && !prints.length ? <MicrostructureEmpty message={error} /> : prints.length ? <div className="microstructure-scroll">
       <table className="tape-table">
         <thead><tr><th>Time ET</th><th>Price</th><th>Size</th><th>Exchange</th><th>Condition</th></tr></thead>
@@ -118,6 +146,7 @@ export function QuotesContainer({ end, start, symbol }: MarketContainerProps) {
   const groups = useMemo(() => groupQuoteSignals(signals), [signals]);
   const [expandedGroups, setExpandedGroups] = useState<Set<number>>(() => new Set());
   const pressure = useMemo(() => quotePressureDimensions(chronological), [chronological]);
+  const strength = useMemo(() => quoteStrengthSeries(chronological), [chronological]);
   const presentations = useTickerPresentations([symbol]);
   const spread = current ? Math.max(0, current.ask - current.bid) : 0;
   const midpoint = current ? (current.ask + current.bid) / 2 : 0;
@@ -148,6 +177,7 @@ export function QuotesContainer({ end, start, symbol }: MarketContainerProps) {
       </div>
       <QuotePressurePanel dimensions={pressure} />
     </div>
+    <QuoteStrengthChart points={strength} />
     {error && !groups.length ? <MicrostructureEmpty message={error} /> : groups.length ? <div className="microstructure-scroll">
       <table className="quote-signal-table">
         <thead><tr><th>Time ET</th><th>Quote burst / liquidity event</th><th>Bid</th><th>Ask</th></tr></thead>
@@ -316,6 +346,49 @@ function QuotePressurePanel({ dimensions }: { dimensions: PressureDimension[] })
   return <div className="quote-pressure-panel" aria-label="Quote pressure dimensions"><header><MetricLabel help="Four normalized quote-only signals from −100% ask/down pressure to +100% bid/up pressure. The center marker is neutral; these are diagnostics, not a forecast." label="Liquidity pressure" /><strong data-tone={composite > 0.08 ? "buy" : composite < -0.08 ? "sell" : "mid"}>{pressureLabel(composite)}</strong></header><div>{dimensions.map((item) => <div className="pressure-dimension" key={item.label}><MetricLabel help={item.help} label={item.label} /><i aria-hidden="true"><b data-tone={item.value > 0.08 ? "buy" : item.value < -0.08 ? "sell" : "mid"} style={{ left: `${(clamp(item.value, -1, 1) + 1) * 50}%` }} /></i><strong data-tone={item.value > 0.08 ? "buy" : item.value < -0.08 ? "sell" : "mid"}>{item.value > 0 ? "+" : ""}{Math.round(item.value * 100)}%</strong></div>)}</div></div>;
 }
 
+function QuoteStrengthChart({ points }: { points: QuoteStrengthPoint[] }) {
+  const visible = points.slice(-64);
+  const current = visible.at(-1)?.strength ?? 0;
+  const width = 320;
+  const height = 58;
+  const center = height / 2;
+  const step = width / Math.max(1, visible.length);
+  const line = visible.map((point, index) => `${index * step + step / 2},${center - point.strength * (center - 4)}`).join(" ");
+  const tone: Direction = current > 0.08 ? "buy" : current < -0.08 ? "sell" : "mid";
+  return <details className="microstructure-visual quote-strength-visual" open>
+    <summary><span><strong>Quote pressure path</strong><small>Midpoint repricing + displayed-size change · latest 64 updates</small></span><b data-tone={tone}>{current > 0 ? "+" : ""}{Math.round(current * 100)}%</b></summary>
+    {visible.length ? <div className="quote-strength-chart" role="img" aria-label={`Recent quote pressure is ${Math.round(current * 100)} percent`}>
+      <svg preserveAspectRatio="none" viewBox={`0 0 ${width} ${height}`}>
+        <line className="strength-zero" x1="0" x2={width} y1={center} y2={center} />
+        {visible.map((point, index) => {
+          const magnitude = Math.abs(point.strength) * (center - 4);
+          return <rect className={point.strength >= 0 ? "strength-buy" : "strength-sell"} height={Math.max(1, magnitude)} key={index} width={Math.max(1, step - 1)} x={index * step} y={point.strength >= 0 ? center - magnitude : center} />;
+        })}
+        <polyline className="strength-line" fill="none" points={line} />
+      </svg>
+      <span className="strength-axis ask">Ask pressure</span><span className="strength-axis neutral">Neutral</span><span className="strength-axis bid">Bid pressure</span>
+    </div> : <span className="visual-empty">Two quote updates are required to calculate pressure strength.</span>}
+  </details>;
+}
+
+function TapeVolumeProfile({ levels }: { levels: TapeVolumeLevel[] }) {
+  const maxDirectional = Math.max(1, ...levels.flatMap((level) => [level.buy, level.sell]));
+  const delta = levels.reduce((sum, level) => sum + level.buy - level.sell, 0);
+  const tone: Direction = delta > 0 ? "buy" : delta < 0 ? "sell" : "mid";
+  return <details className="microstructure-visual tape-profile-visual" open>
+    <summary><span><strong>Executed volume by price</strong><small>At-bid volume left · at-ask volume right · nearest active levels</small></span><b data-tone={tone}>Δ {signedCompact(delta)}</b></summary>
+    {levels.length ? <div className="tape-volume-profile" role="img" aria-label={`Executed volume profile with net directional volume ${signedCompact(delta)} shares`}>
+      {levels.map((level) => <div className="volume-level" key={level.price}>
+        <span>{formatPrice(level.price)}</span>
+        <i className="volume-side sell"><b style={{ width: `${level.sell / maxDirectional * 100}%` }} /></i>
+        <i className="volume-side buy"><b style={{ width: `${level.buy / maxDirectional * 100}%` }} /></i>
+        <strong>{compactNumber(level.total)}</strong>
+        {level.mid > 0 ? <em title={`${formatTradeSize(level.mid)} between-market shares`}>+{compactNumber(level.mid)} mid</em> : null}
+      </div>)}
+    </div> : <span className="visual-empty">Trade prints are required to build the volume profile.</span>}
+  </details>;
+}
+
 function quotePressureDimensions(quotes: QuoteUpdate[]): PressureDimension[] {
   const signals = quoteSignals(quotes);
   const directional = signals.filter((signal) => signal.tone !== "mid");
@@ -361,11 +434,12 @@ function MicrostructureGuide({ kind, references }: { kind: "quotes" | "tape"; re
 function TapeGuide({ references }: { references: MarketReferences }) {
   const [search, setSearch] = useState("");
   const rows = Object.entries(references.conditions).filter(([, row]) => /trade_conditions|trade_corrections|held_trade/.test(row.type)).map(([token, row]) => ({ row, token })).filter(({ row }) => !search || `${row.name} ${row.sip_mapping} ${row.type}`.toLowerCase().includes(search.toLowerCase()));
-  return <div className="microstructure-guide-content"><section className="guide-intro"><h3>How to read the tape</h3><p><b className="key-ask">Green rows</b> executed at the ask, <b className="key-bid">red rows</b> at the bid, and colored between-market rows use the condition family below. Direction is inferred against the preceding NBBO.</p><div className="guide-signal-grid"><GuideSignal label="Flow" text="Buy share, net flow and aggressor streak measure who is crossing the spread." /><GuideSignal label="Response" text="Price drift shows whether that aggression is actually moving price." /><GuideSignal label="Participation" text="Pace, large-print share and size acceleration describe urgency and trade-size regime." /><GuideSignal label="Absorption" text="One-sided aggression with little price response can suggest passive liquidity absorbing flow." /></div></section><section><div className="guide-search"><h3>Trade condition dictionary</h3><label><span>Find condition</span><input onChange={(event) => setSearch(event.target.value)} placeholder="Odd lot, ISO, out of sequence…" value={search} /></label></div><div className="condition-dictionary">{rows.map(({ row, token }) => <article data-condition-tone={conditionTone(row.name)} key={token}><header><strong>{shortConditionName(row)}</strong><span>{row.sip_mapping || `Token ${token}`}</span></header><p>{conditionDescription(row)}</p><footer><span>{row.update_last ? "Updates last" : "Does not update last"}</span><span>{row.update_volume ? "Counts volume" : "Excluded from volume"}</span><span>{row.update_high_low ? "Updates high/low" : "No high/low update"}</span></footer></article>)}</div></section></div>;
+  return <div className="microstructure-guide-content"><section className="guide-intro"><h3>How to read the tape</h3><p><b className="key-ask">Green rows</b> executed at the ask, <b className="key-bid">red rows</b> at the bid, and colored between-market rows use the condition family below. Direction is inferred against the preceding NBBO.</p><div className="guide-signal-grid"><GuideSignal label="Flow" text="Buy share, net flow and aggressor streak measure who is crossing the spread." /><GuideSignal label="Response" text="Price drift shows whether that aggression is actually moving price." /><GuideSignal label="Participation" text="Pace, large-print share and size acceleration describe urgency and trade-size regime." /><GuideSignal label="Absorption" text="One-sided aggression with little price response can suggest passive liquidity absorbing flow." /></div></section><section><h3>Tape metrics</h3><GuideTable headings={["Metric", "What it measures", "Typical implication"]} rows={TAPE_METRIC_GUIDE} /></section><section><h3>Executed-volume profile</h3><p>The profile aggregates the visible 1,024 prints at tradable price increments. At-bid volume extends left and at-ask volume extends right. Repeated volume at a price shows auction acceptance or a battleground—not automatic support or resistance. Compare its directional delta with price drift and absorption.</p></section><section><div className="guide-search"><h3>Trade condition dictionary</h3><label><span>Find condition</span><input onChange={(event) => setSearch(event.target.value)} placeholder="Odd lot, ISO, out of sequence…" value={search} /></label></div><div className="condition-dictionary">{rows.map(({ row, token }) => <article data-condition-tone={conditionTone(row.name)} key={token}><header><strong>{shortConditionName(row)}</strong><span>{row.sip_mapping || `Token ${token}`}</span></header><p>{conditionDescription(row)}</p><footer><span>{row.update_last ? "Updates last" : "Does not update last"}</span><span>{row.update_volume ? "Counts volume" : "Excluded from volume"}</span><span>{row.update_high_low ? "Updates high/low" : "No high/low update"}</span></footer></article>)}</div></section></div>;
 }
 
-function QuoteGuide() { return <div className="microstructure-guide-content"><section className="guide-intro"><h3>From updates to an organized signal</h3><p>Quote bursts group all NBBO changes with the same SIP timestamp. The collapsed row preserves screen space; opening it reveals each price, size, or venue transition.</p><div className="guide-signal-grid"><GuideSignal label="Price pressure" text="Direction of bid and ask repricing. This is usually the strongest quote-only short-horizon feature." /><GuideSignal label="Displayed size" text="Best-level size imbalance. Useful, but vulnerable to cancellations and hidden liquidity." /><GuideSignal label="Microprice" text="Size-weighted location inside the spread. It measures which side is thinner and easier to consume." /><GuideSignal label="Persistence" text="Agreement across recent events. Repeated pressure is usually more useful than one isolated update." /></div></section><section><h3>Forecasting interpretation</h3><p>The pressure map is a feature summary, not a forecast. For short-horizon models, use signed values, their changes, persistence, spread regime, update rate, venue churn and interaction with tape aggression. Validate separately by symbol, session phase and forecast horizon because impact decays quickly and reverses around news, halts and liquidity shocks.</p></section></div>; }
+function QuoteGuide() { return <div className="microstructure-guide-content"><section className="guide-intro"><h3>From updates to an organized signal</h3><p>Quote bursts group all NBBO changes with the same SIP timestamp. The collapsed row preserves screen space; opening it reveals each price, size, or venue transition.</p><div className="guide-signal-grid"><GuideSignal label="Price pressure" text="Direction of bid and ask repricing. This is usually the strongest quote-only short-horizon feature." /><GuideSignal label="Displayed size" text="Best-level size imbalance. Useful, but vulnerable to cancellations and hidden liquidity." /><GuideSignal label="Microprice" text="Size-weighted location inside the spread. It measures which side is thinner and easier to consume." /><GuideSignal label="Persistence" text="Agreement across recent events. Repeated pressure is usually more useful than one isolated update." /></div></section><section><h3>Incremental quote-event classes</h3><GuideTable headings={["Class", "Tone", "Meaning and likely implication"]} rows={QUOTE_EVENT_GUIDE} /></section><section><h3>How quote strength accumulates</h3><p>The pressure path analyzes every raw transition rather than relying on the single display label. Each update combines 70% normalized midpoint movement with 30% change in displayed-size imbalance. The prior score retains 72% of its value and the new impulse contributes 55%, clamped to ±100%. Subsequent updates in the same direction therefore reinforce one another; opposite updates cancel the sequence. Price remains dominant because displayed size can disappear without trading.</p></section><section><h3>Forecasting interpretation</h3><p>The pressure map and path are feature summaries, not forecasts. For short-horizon models, use signed values, their changes, persistence, spread regime, update rate, venue churn and interaction with tape aggression. Validate separately by symbol, session phase and forecast horizon because impact decays quickly and reverses around news, halts and liquidity shocks.</p></section></div>; }
 function GuideSignal({ label, text }: { label: string; text: string }) { return <article><strong>{label}</strong><p>{text}</p></article>; }
+function GuideTable({ headings, rows }: { headings: string[]; rows: string[][] }) { return <div className="guide-table-scroll"><table className="guide-table"><thead><tr>{headings.map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{rows.map((row) => <tr key={row[0]}>{row.map((cell, index) => <td data-tone={index === 1 && (cell === "Bullish" || cell === "Bearish") ? (cell === "Bullish" ? "buy" : "sell") : undefined} key={`${row[0]}-${index}`}>{cell}</td>)}</tr>)}</tbody></table></div>; }
 function QuoteSide({ exchange, label, price, size, tone }: { exchange: { code: string; name: string }; label: string; price?: number; size?: number; tone: "buy" | "sell" }) { return <div className="quote-side" data-tone={tone}><span><MetricLabel help={`${label} is the current consolidated national best ${label.toLowerCase()}; ${exchange.name} is posting it.`} label={label} /><abbr title={exchange.name}>{exchange.code}</abbr></span><strong>{price ? formatPrice(price) : "—"}</strong><em>{size != null ? `${formatSize(size)} shares` : "No quote"}</em></div>; }
 function MicrostructureEmpty({ message }: { message: string }) { return <div className="microstructure-empty"><Activity size={18} /><span>{message}</span></div>; }
 function compareEvents(left: CompactEvent, right: CompactEvent) { return left.sip_timestamp_us - right.sip_timestamp_us || left.source_sequence - right.source_sequence || left.arrival_sequence - right.arrival_sequence; }
@@ -450,6 +524,41 @@ function marketStatusPresentation(state: MarketState | null) {
     luldTone: luldState.includes("above") || luldState.includes("below") ? "halted" : luldState.includes("near") ? "warning" : "normal",
     tone: halted || blocked ? "halted" : resumed ? "resumed" : state ? "normal" : "unknown",
   };
+}
+
+function quoteStrengthSeries(quotes: QuoteUpdate[]): QuoteStrengthPoint[] {
+  let strength = 0;
+  return quotes.slice(-65).map((quote, index, rows) => {
+    const previous = rows[index - 1];
+    if (!previous) return null;
+    const midpoint = (quote.bid + quote.ask) / 2;
+    const previousMidpoint = (previous.bid + previous.ask) / 2;
+    const referenceSpread = Math.max(0.0001, quote.ask - quote.bid, previous.ask - previous.bid);
+    const price = clamp((midpoint - previousMidpoint) / (referenceSpread / 2), -1, 1);
+    const imbalance = (row: QuoteUpdate) => (row.bidSize - row.askSize) / Math.max(1, row.bidSize + row.askSize);
+    const size = clamp(imbalance(quote) - imbalance(previous), -1, 1);
+    const impulse = 0.7 * price + 0.3 * size;
+    strength = clamp(0.72 * strength + 0.55 * impulse, -1, 1);
+    return { price, size, strength };
+  }).filter((point): point is QuoteStrengthPoint => Boolean(point));
+}
+
+function tapeVolumeProfile(trades: TapePrint[]): TapeVolumeLevel[] {
+  const latestPrice = trades.at(-1)?.price;
+  if (!latestPrice) return [];
+  const tick = latestPrice >= 1 ? 0.01 : 0.0001;
+  const levels = new Map<number, TapeVolumeLevel>();
+  trades.forEach((trade) => {
+    const price = Math.round(trade.price / tick) * tick;
+    const level = levels.get(price) ?? { buy: 0, mid: 0, price, sell: 0, total: 0 };
+    level[trade.direction] += trade.size;
+    level.total += trade.size;
+    levels.set(price, level);
+  });
+  return [...levels.values()]
+    .sort((left, right) => Math.abs(left.price - latestPrice) - Math.abs(right.price - latestPrice) || right.total - left.total)
+    .slice(0, 7)
+    .sort((left, right) => right.price - left.price);
 }
 
 function percentile(values: number[], quantile: number) { if (!values.length) return 0; const sorted = [...values].sort((a, b) => a - b); return sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * quantile))]; }
