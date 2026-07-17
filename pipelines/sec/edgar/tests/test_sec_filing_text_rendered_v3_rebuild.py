@@ -28,6 +28,7 @@ from pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild import (
     load_or_create_run_manifest,
     load_filing_forms,
     load_partition_authority,
+    migrate_hash_staging_to_monthly,
     prepare_lookup_database,
     prepare_partition_export,
     process_row_group_bundle,
@@ -43,6 +44,26 @@ from pipelines.sec.edgar.sec_pipeline.text_renderer import SEC_PACKED_TEXT_RENDE
 
 
 class SecRenderedV3RebuildTest(unittest.TestCase):
+    def test_hash_staging_merges_stop_before_migration_preflight(self) -> None:
+        class RecordingClient:
+            def __init__(self) -> None:
+                self.sql: list[str] = []
+
+            def execute(self, sql: str) -> str:
+                self.sql.append(sql)
+                return ""
+
+        client = RecordingClient()
+        args = SimpleNamespace(database="q_live", staging_table="render_build_v3")
+        with patch(
+            "pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild.table_exists",
+            return_value=True,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "legacy staging table already exists"):
+                migrate_hash_staging_to_monthly(client, args)
+
+        self.assertEqual(client.sql, ["SYSTEM STOP MERGES `q_live`.`render_build_v3`"])
+
     def test_build_table_uses_monthly_layout_and_revision_version(self) -> None:
         class RecordingClient:
             def __init__(self) -> None:

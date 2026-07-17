@@ -791,6 +791,9 @@ FROM {table(database, table_name)} FINAL
 def migrate_hash_staging_to_monthly(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
     migration_table = f"{args.staging_table}_monthly_migration"
     legacy_table = f"{args.staging_table}_hash_legacy"
+    # Freeze the merge storm before reading the legacy table. The table remains
+    # queryable and insert-free while its validated logical rows are migrated.
+    client.execute(f"SYSTEM STOP MERGES {table(args.database, args.staging_table)}")
     if table_exists(client, args.database, legacy_table):
         raise RuntimeError(
             f"legacy staging table already exists while active staging is still hash partitioned: {legacy_table}"
