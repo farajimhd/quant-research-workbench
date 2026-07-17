@@ -1,8 +1,9 @@
-import { Activity, CircleHelp, Clock3, Radio, ShieldAlert, WifiOff } from "lucide-react";
+import { Activity, BookOpen, ChevronRight, CircleHelp, Clock3, Radio, ShieldAlert, WifiOff } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { api, query } from "../../api/client";
-import { TickerIdentity, useTickerPresentations } from "./TickerIdentity";
+import { Modal } from "./Modal";
+import { TickerIdentityWithChange, useTickerPresentations } from "./TickerIdentity";
 
 export type MarketEventSettings = { limit: number };
 
@@ -37,6 +38,7 @@ type Direction = "buy" | "mid" | "sell";
 type QuoteUpdate = { ask: number; askExchange: number; askSize: number; bid: number; bidExchange: number; bidSize: number; id: number; issues: number; timestampUs: number };
 type TapePrint = { conditionTokens: number[]; direction: Direction; exchange: number; id: number; issues: number; price: number; size: number; tape: number; timestampUs: number };
 type QuoteSignal = { detail: string; quote: QuoteUpdate; tone: Direction };
+type QuoteSignalGroup = { id: number; quote: QuoteUpdate; signals: QuoteSignal[]; tone: Direction };
 
 type MarketContainerProps = { end?: string; settings: MarketEventSettings; start?: string; symbol: string };
 const EMPTY_REFERENCES: MarketReferences = { conditions: {}, exchanges: {} };
@@ -46,7 +48,7 @@ const HISTORICAL_EVENTS_UNAVAILABLE = "Historical market events are unavailable.
 export function TapeContainer({ end, settings, start, symbol }: MarketContainerProps) {
   const { connected, error, events, marketState, references } = useMarketEvents(symbol, start, end);
   const decoded = useMemo(() => decodeMarketEvents(events), [events]);
-  const chronological = decoded.trades.slice(-settings.limit);
+  const chronological = decoded.trades.slice(-Math.max(settings.limit, 100));
   const prints = [...chronological].reverse();
   const last = prints[0];
   const buyVolume = chronological.reduce((sum, item) => sum + (item.direction === "buy" ? item.size : 0), 0);
@@ -55,10 +57,17 @@ export function TapeContainer({ end, settings, start, symbol }: MarketContainerP
   const buyShare = directionalVolume ? buyVolume / directionalVolume : 0.5;
   const largestPrint = chronological.reduce((largest, item) => Math.max(largest, item.size), 0);
   const pace = eventRate(chronological.map((item) => item.timestampUs));
+  const priceDriftBps = chronological.length > 1 && chronological[0].price > 0 ? (chronological.at(-1)!.price / chronological[0].price - 1) * 10_000 : 0;
+  const largeThreshold = percentile(chronological.map((item) => item.size), 0.9);
+  const totalVolume = chronological.reduce((sum, item) => sum + item.size, 0);
+  const largeShare = totalVolume ? chronological.reduce((sum, item) => sum + (item.size >= largeThreshold ? item.size : 0), 0) / totalVolume : 0;
+  const streak = aggressorStreak(chronological);
+  const sizeTrend = halfWindowRatio(chronological.map((item) => item.size));
+  const absorption = directionalVolume > 0 && Math.abs(buyShare - 0.5) >= 0.18 && Math.abs(priceDriftBps) < 1.5;
   const presentations = useTickerPresentations([symbol]);
 
   return <section aria-label={`${symbol} time and sales`} className="market-microstructure tape-surface" data-market-state={connected}>
-    <MicrostructureHeader connected={connected} detail={`Time & sales · ${prints.length} prints`} end={end} kind="tape" logoUrl={presentations[symbol]?.logo_url} marketState={marketState} symbol={symbol} />
+    <MicrostructureHeader connected={connected} detail={`Time & sales · ${prints.length} prints`} end={end} kind="tape" logoUrl={presentations[symbol]?.logo_url} marketState={marketState} references={references} symbol={symbol} />
     <div className="tape-overview" aria-label="Tape summary">
       <div className="last-print" data-direction={last?.direction ?? "mid"}>
         <MetricLabel help="The most recent eligible trade print at or before the displayed time." label="Last print" />
@@ -71,6 +80,13 @@ export function TapeContainer({ end, settings, start, symbol }: MarketContainerP
         <SignalMetric help="Average prints per second across the visible tape window." label="Pace" value={`${pace.toFixed(pace >= 10 ? 0 : 1)}/s`} />
         <SignalMetric help="Largest single print size in the visible tape window." label="Largest" value={compactNumber(largestPrint)} />
       </div>
+      <div className="tape-diagnostics" aria-label="Tape diagnostic signals">
+        <SignalMetric help="Consecutive most-recent prints classified on the same aggressor side. Longer streaks indicate short-lived order-flow persistence." label="Aggressor streak" tone={streak.direction === "buy" ? "buy" : streak.direction === "sell" ? "sell" : undefined} value={streak.count ? `${streak.count} ${directionLabel(streak.direction)}` : "Mixed"} />
+        <SignalMetric help="Last print minus first print across the visible tape window, measured in basis points." label="Price drift" tone={priceDriftBps > 0 ? "buy" : priceDriftBps < 0 ? "sell" : undefined} value={`${priceDriftBps > 0 ? "+" : ""}${priceDriftBps.toFixed(1)} bp`} />
+        <SignalMetric help="Share of visible volume executed in prints at or above the window's 90th-percentile size." label="Large-print share" value={`${Math.round(largeShare * 100)}%`} />
+        <SignalMetric help="Recent-half average trade size divided by the earlier-half average. Above 1× means prints are getting larger." label="Size acceleration" value={`${sizeTrend.toFixed(2)}×`} />
+        <SignalMetric help="Possible absorption appears when aggressive flow is one-sided but price barely moves. It is a diagnostic, not proof of hidden liquidity." label="Absorption" value={absorption ? "Possible" : "Not detected"} />
+      </div>
     </div>
     {error && !prints.length ? <MicrostructureEmpty message={error} /> : prints.length ? <div className="microstructure-scroll">
       <table className="tape-table">
@@ -78,12 +94,13 @@ export function TapeContainer({ end, settings, start, symbol }: MarketContainerP
         <tbody>{prints.map((print) => {
           const exchange = venueReference(print.exchange, references);
           const condition = tradeCondition(print, references);
+          const conditions = tradeConditionItems(print, references);
           return <tr data-condition-tone={condition.tone} data-direction={print.direction} key={print.id} title={print.issues ? `QMD issue flags: ${print.issues}` : directionLabel(print.direction)}>
             <td><time>{formatEventTime(print.timestampUs)}</time></td>
             <td className="numeric price">{formatPrice(print.price)}</td>
             <td className="numeric size">{formatTradeSize(print.size)}</td>
             <td><span className="venue-code" title={exchange.name}>{exchange.code}</span></td>
-            <td><span className="condition-code" data-special={condition.special} title={condition.label}>{condition.code}</span><HelpTip label={`${condition.code}: ${condition.label}`} /></td>
+            <td><span className="trade-condition-list">{conditions.map((item, index) => <span className="condition-code" data-condition-tone={conditionTone(item.name)} data-special={item.special} key={`${item.token}-${index}`}><small>C{index + 1}</small>{item.label}</span>)}</span></td>
           </tr>;
         })}</tbody>
       </table>
@@ -93,9 +110,11 @@ export function TapeContainer({ end, settings, start, symbol }: MarketContainerP
 
 export function QuotesContainer({ end, settings, start, symbol }: MarketContainerProps) {
   const { connected, error, events, marketState, references } = useMarketEvents(symbol, start, end);
-  const chronological = useMemo(() => decodeMarketEvents(events).quotes.slice(-settings.limit), [events, settings.limit]);
+  const chronological = useMemo(() => decodeMarketEvents(events).quotes.slice(-Math.max(settings.limit * 5, settings.limit)), [events, settings.limit]);
   const current = chronological.at(-1);
   const signals = useMemo(() => quoteSignals(chronological).reverse(), [chronological]);
+  const groups = useMemo(() => groupQuoteSignals(signals).slice(0, settings.limit), [settings.limit, signals]);
+  const pressure = useMemo(() => quotePressureDimensions(chronological), [chronological]);
   const presentations = useTickerPresentations([symbol]);
   const spread = current ? Math.max(0, current.ask - current.bid) : 0;
   const midpoint = current ? (current.ask + current.bid) / 2 : 0;
@@ -107,7 +126,7 @@ export function QuotesContainer({ end, settings, start, symbol }: MarketContaine
   const askVenue = venueReference(current?.askExchange ?? 0, references);
 
   return <section aria-label={`${symbol} NBBO liquidity monitor`} className="market-microstructure quote-surface" data-market-state={connected}>
-    <MicrostructureHeader connected={connected} detail="NBBO liquidity · consolidated top of book" end={end} kind="quotes" logoUrl={presentations[symbol]?.logo_url} marketState={marketState} symbol={symbol} />
+    <MicrostructureHeader connected={connected} detail="NBBO liquidity · consolidated top of book" end={end} kind="quotes" logoUrl={presentations[symbol]?.logo_url} marketState={marketState} references={references} symbol={symbol} />
     <div className="nbbo-overview" aria-label="Current NBBO and liquidity signals">
       <div className="nbbo-prices">
         <QuoteSide exchange={bidVenue} label="Bid" price={current?.bid} size={current?.bidSize} tone="buy" />
@@ -124,19 +143,14 @@ export function QuotesContainer({ end, settings, start, symbol }: MarketContaine
         <SignalMetric help="Microprice minus the simple midpoint, shown in cents." label="Lean" tone={microprice >= midpoint ? "buy" : "sell"} value={current ? signedCents(microprice - midpoint) : "—"} />
         <SignalMetric help="Average NBBO updates per second across the visible quote window." label="Quote rate" value={`${eventRate(chronological.map((quote) => quote.timestampUs)).toFixed(1)}/s`} />
       </div>
+      <QuotePressurePanel dimensions={pressure} />
     </div>
-    {error && !signals.length ? <MicrostructureEmpty message={error} /> : signals.length ? <div className="microstructure-scroll">
+    {error && !groups.length ? <MicrostructureEmpty message={error} /> : groups.length ? <div className="microstructure-scroll">
       <table className="quote-signal-table">
-        <thead><tr><th>Time ET</th><th>Liquidity event</th><th>Bid</th><th>Ask</th></tr></thead>
-        <tbody>{signals.map(({ detail, quote, tone }, index) => {
-          const rowBidVenue = venueReference(quote.bidExchange, references);
-          const rowAskVenue = venueReference(quote.askExchange, references);
-          return <tr data-current={index === 0 ? "true" : "false"} data-tone={tone} key={quote.id} title={quote.issues ? `QMD issue flags: ${quote.issues}` : undefined}>
-            <td><time>{formatEventTime(quote.timestampUs)}</time></td>
-            <td className="liquidity-event"><span>{detail}<HelpTip label={liquidityEventHelp(detail)} /></span><small>{imbalanceLabel((quote.bidSize - quote.askSize) / Math.max(1, quote.bidSize + quote.askSize))}</small></td>
-            <td className="quote-cell bid"><strong>{formatPrice(quote.bid)}</strong><span>{formatSize(quote.bidSize)} · <abbr title={rowBidVenue.name}>{rowBidVenue.code}</abbr></span></td>
-            <td className="quote-cell ask"><strong>{formatPrice(quote.ask)}</strong><span>{formatSize(quote.askSize)} · <abbr title={rowAskVenue.name}>{rowAskVenue.code}</abbr></span></td>
-          </tr>;
+        <thead><tr><th>Time ET</th><th>Quote burst / liquidity event</th><th>Bid</th><th>Ask</th></tr></thead>
+        <tbody>{groups.flatMap((group, index) => {
+          const summary = group.signals[0];
+          return <QuoteSignalRow current={index === 0} detail={group.signals.length > 1 ? `${group.signals.length} updates · ${summarizeQuoteGroup(group)}` : summary.detail} groupSignals={group.signals.length > 1 ? group.signals : undefined} key={`group-${group.id}`} quote={group.quote} references={references} tone={group.tone} />;
         })}</tbody>
       </table>
     </div> : <MicrostructureEmpty message={connected === "point-in-time" ? "No NBBO updates were found before the Canvas clock." : connected === "live" ? "Waiting for the next NBBO update." : "Connecting to live NBBO…"} />}
@@ -172,7 +186,7 @@ function useMarketEvents(symbol: string, start?: string, end?: string) {
       .then((payload) => { if (active) setMarketState(payload); })
       .catch(() => { if (active) setMarketState(null); });
     void loadMarketState();
-    api<MarketEventsPayload>(`/api/trading/canvas-market-events/${encodeURIComponent(ticker)}${query({ end, row_limit: 500, start })}`, { timeoutMs: historical ? 20000 : 10000 })
+    api<MarketEventsPayload>(`/api/trading/canvas-market-events/${encodeURIComponent(ticker)}${query({ end, row_limit: 1000, start })}`, { timeoutMs: historical ? 20000 : 10000 })
       .then((payload) => { if (active) { merge(payload.events); setReferences(payload.references ?? EMPTY_REFERENCES); if (historical) setConnected("point-in-time"); } })
       .catch(() => { if (active) setError(historical ? HISTORICAL_EVENTS_UNAVAILABLE : MARKET_EVENTS_UNAVAILABLE); });
 
@@ -255,15 +269,76 @@ function quoteSignals(quotes: QuoteUpdate[]): QuoteSignal[] {
   });
 }
 
-function MicrostructureHeader({ connected, detail, end, kind, logoUrl, marketState, symbol }: { connected: ConnectionState; detail: string; end?: string; kind: "quotes" | "tape"; logoUrl?: string; marketState: MarketState | null; symbol: string }) {
+function groupQuoteSignals(signals: QuoteSignal[]): QuoteSignalGroup[] {
+  const groups: QuoteSignalGroup[] = [];
+  signals.forEach((signal) => {
+    const timestampMillisecond = Math.floor(signal.quote.timestampUs / 1_000);
+    const current = groups.at(-1);
+    if (current?.id === timestampMillisecond) {
+      current.signals.push(signal);
+      const score = current.signals.reduce((sum, item) => sum + (item.tone === "buy" ? 1 : item.tone === "sell" ? -1 : 0), 0);
+      current.tone = score > 0 ? "buy" : score < 0 ? "sell" : "mid";
+    } else groups.push({ id: timestampMillisecond, quote: signal.quote, signals: [signal], tone: signal.tone });
+  });
+  return groups;
+}
+
+function summarizeQuoteGroup(group: QuoteSignalGroup) {
+  const unique = [...new Set(group.signals.map((signal) => signal.detail.replace(/ [+-][\d,.]+(?:Â¢)?$/, "")))];
+  return unique.slice(0, 2).join(" + ");
+}
+
+function QuoteSignalRow({ current = false, detail, groupSignals, quote, references, tone }: { current?: boolean; detail: string; groupSignals?: QuoteSignal[]; quote: QuoteUpdate; references: MarketReferences; tone: Direction }) {
+  const bidVenue = venueReference(quote.bidExchange, references);
+  const askVenue = venueReference(quote.askExchange, references);
+  return <tr data-current={current ? "true" : "false"} data-tone={tone} title={quote.issues ? `QMD issue flags: ${quote.issues}` : undefined}>
+    <td><time>{formatEventTime(quote.timestampUs)}</time></td>
+    <td className="liquidity-event">{groupSignals ? <details className="quote-burst-details"><summary onClick={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}><ChevronRight size={12} /><span>{detail}</span></summary><small>Open to inspect every NBBO update in this millisecond burst</small><div className="quote-burst-events">{groupSignals.map((signal) => {
+      const childBidVenue = venueReference(signal.quote.bidExchange, references);
+      const childAskVenue = venueReference(signal.quote.askExchange, references);
+      return <div data-tone={signal.tone} key={signal.quote.id}><time>{formatEventTime(signal.quote.timestampUs)}</time><strong>{signal.detail}</strong><span>{formatPrice(signal.quote.bid)} × {formatSize(signal.quote.bidSize)} · {childBidVenue.code}</span><span>{formatPrice(signal.quote.ask)} × {formatSize(signal.quote.askSize)} · {childAskVenue.code}</span></div>;
+    })}</div></details> : <><span>{detail}</span><small>{imbalanceLabel((quote.bidSize - quote.askSize) / Math.max(1, quote.bidSize + quote.askSize))}</small></>}</td>
+    <td className="quote-cell bid"><strong>{formatPrice(quote.bid)}</strong><span>{formatSize(quote.bidSize)} · <abbr title={bidVenue.name}>{bidVenue.code}</abbr></span></td>
+    <td className="quote-cell ask"><strong>{formatPrice(quote.ask)}</strong><span>{formatSize(quote.askSize)} · <abbr title={askVenue.name}>{askVenue.code}</abbr></span></td>
+  </tr>;
+}
+
+type PressureDimension = { help: string; label: string; value: number };
+function QuotePressurePanel({ dimensions }: { dimensions: PressureDimension[] }) {
+  const composite = dimensions.reduce((sum, item) => sum + item.value, 0) / Math.max(1, dimensions.length);
+  return <div className="quote-pressure-panel" aria-label="Quote pressure dimensions"><header><span>Liquidity pressure map</span><strong data-tone={composite > 0.08 ? "buy" : composite < -0.08 ? "sell" : "mid"}>{pressureLabel(composite)}</strong></header><div>{dimensions.map((item) => <div className="pressure-dimension" key={item.label} title={item.help}><span>{item.label}</span><i aria-hidden="true"><b data-tone={item.value >= 0 ? "buy" : "sell"} style={{ left: item.value >= 0 ? "50%" : `${50 + item.value * 50}%`, width: `${Math.abs(item.value) * 50}%` }} /></i><strong>{item.value > 0 ? "+" : ""}{Math.round(item.value * 100)}%</strong></div>)}</div></div>;
+}
+
+function quotePressureDimensions(quotes: QuoteUpdate[]): PressureDimension[] {
+  const signals = quoteSignals(quotes);
+  const directional = signals.filter((signal) => signal.tone !== "mid");
+  const priceSignals = directional.filter((signal) => /Bid improved|Ask moved down|Bid faded|Ask moved up/.test(signal.detail));
+  const score = (rows: QuoteSignal[]) => rows.length ? clamp(rows.reduce((sum, item) => sum + (item.tone === "buy" ? 1 : -1), 0) / rows.length, -1, 1) : 0;
+  const current = quotes.at(-1);
+  const sizeImbalance = current ? (current.bidSize - current.askSize) / Math.max(1, current.bidSize + current.askSize) : 0;
+  const spread = current ? Math.max(0, current.ask - current.bid) : 0;
+  const midpoint = current ? (current.ask + current.bid) / 2 : 0;
+  const microprice = current ? (current.ask * current.bidSize + current.bid * current.askSize) / Math.max(1, current.bidSize + current.askSize) : midpoint;
+  const micropriceLean = spread > 0 ? clamp((microprice - midpoint) / (spread / 2), -1, 1) : 0;
+  return [
+    { help: "Directional score of bid/ask price improvements and fades. Persistent positive values indicate upward NBBO repricing; negative values indicate downward repricing.", label: "Price", value: score(priceSignals) },
+    { help: "Current displayed NBBO size imbalance. Positive means more size at the bid; negative means more at the ask.", label: "Displayed size", value: clamp(sizeImbalance, -1, 1) },
+    { help: "Microprice displacement inside the spread. It estimates which side is thinner and therefore easier to move through.", label: "Microprice", value: micropriceLean },
+    { help: "Directional agreement across the 12 most recent quote events. Persistence is more informative than a single update but can still reverse quickly.", label: "Persistence", value: score(directional.slice(-12)) },
+  ];
+}
+
+function MicrostructureHeader({ connected, detail, end, kind, logoUrl, marketState, references, symbol }: { connected: ConnectionState; detail: string; end?: string; kind: "quotes" | "tape"; logoUrl?: string; marketState: MarketState | null; references: MarketReferences; symbol: string }) {
+  const [liveAsOf] = useState(() => new Date().toISOString());
+  const changeAsOf = end || liveAsOf;
   const status = marketStatusPresentation(marketState);
   const context = connected === "live" ? "Live" : connected === "point-in-time" ? `Historical · ${formatContextTime(end)}` : connected;
   return <header className="microstructure-header">
-    <div className="microstructure-identity"><TickerIdentity logoUrl={logoUrl} ticker={symbol} /><small>{detail}</small></div>
+    <div className="microstructure-identity"><TickerIdentityWithChange asOf={changeAsOf} logoUrl={logoUrl} ticker={symbol} /><small>{detail}</small></div>
     <div className="microstructure-header-actions">
       <span className="market-status-badge" data-status={status.tone} title={status.help}>{status.tone === "halted" ? <ShieldAlert size={13} /> : <Radio size={12} />}{status.label}</span>
       <span className="luld-status-badge" data-status={status.luldTone} title={status.luldHelp}>LULD {status.luldLabel}<HelpTip label={status.luldHelp} /></span>
-      <MicrostructureGuide kind={kind} />
+      <MicrostructureGuide kind={kind} references={references} />
       <span className="market-context-badge" data-state={connected} title={connected === "point-in-time" ? "A historical QMD snapshot ending at this Canvas time; it is not a live feed." : "Current QMD connection state."}>{connected === "live" ? <Radio size={11} /> : connected === "point-in-time" ? <Clock3 size={11} /> : connected === "connecting" ? <Activity size={11} /> : <WifiOff size={11} />}{context}</span>
     </div>
   </header>;
@@ -271,7 +346,19 @@ function MicrostructureHeader({ connected, detail, end, kind, logoUrl, marketSta
 function SignalMetric({ help, label, tone, value }: { help: string; label: string; tone?: "buy" | "sell"; value: string }) { return <div className="signal-metric" data-tone={tone}><MetricLabel help={help} label={label} /><strong>{value}</strong></div>; }
 function MetricLabel({ help, label }: { help: string; label: string }) { return <small className="metric-label">{label}<HelpTip label={help} /></small>; }
 function HelpTip({ label }: { label: string }) { return <span aria-label={label} className="micro-help-tip" role="img" tabIndex={0} title={label}><CircleHelp size={11} /></span>; }
-function MicrostructureGuide({ kind }: { kind: "quotes" | "tape" }) { return <details className="microstructure-guide"><summary><CircleHelp size={13} /> Help</summary><div className="microstructure-guide-popover">{kind === "tape" ? <><strong>Tape color key</strong><p><b className="key-ask">At ask</b> means the print executed at or above the current ask. <b className="key-bid">At bid</b> means at or below the bid. Cyan, violet, or amber identify between-market or special-condition prints.</p><p>Condition labels come from the SIP/QMD reference contract. Hover or focus a row's help icon for its full description.</p></> : <><strong>Liquidity event guide</strong><p>Bid improvement and ask pulls are buyer-supportive; bid fades and ask additions are seller-supportive. These are NBBO changes, not venue-depth orders.</p><p>Microprice and imbalance use displayed best-bid/best-ask size only. Hover or focus any metric help icon for its formula.</p></>}</div></details>; }
+function MicrostructureGuide({ kind, references }: { kind: "quotes" | "tape"; references: MarketReferences }) {
+  const [open, setOpen] = useState(false);
+  return <><button className="microstructure-guide-button" onClick={() => setOpen(true)} type="button"><BookOpen size={13} /> Guide</button>{open ? <Modal className="microstructure-guide-modal" onClose={() => setOpen(false)} title={kind === "tape" ? "Tape conditions and signal guide" : "NBBO liquidity analysis guide"}>{kind === "tape" ? <TapeGuide references={references} /> : <QuoteGuide />}</Modal> : null}</>;
+}
+
+function TapeGuide({ references }: { references: MarketReferences }) {
+  const [search, setSearch] = useState("");
+  const rows = Object.entries(references.conditions).filter(([, row]) => /trade_conditions|trade_corrections|held_trade/.test(row.type)).map(([token, row]) => ({ row, token })).filter(({ row }) => !search || `${row.name} ${row.sip_mapping} ${row.type}`.toLowerCase().includes(search.toLowerCase()));
+  return <div className="microstructure-guide-content"><section className="guide-intro"><h3>How to read the tape</h3><p><b className="key-ask">Green rows</b> executed at the ask, <b className="key-bid">red rows</b> at the bid, and colored between-market rows use the condition family below. Direction is inferred against the preceding NBBO.</p><div className="guide-signal-grid"><GuideSignal label="Flow" text="Buy share, net flow and aggressor streak measure who is crossing the spread." /><GuideSignal label="Response" text="Price drift shows whether that aggression is actually moving price." /><GuideSignal label="Participation" text="Pace, large-print share and size acceleration describe urgency and trade-size regime." /><GuideSignal label="Absorption" text="One-sided aggression with little price response can suggest passive liquidity absorbing flow." /></div></section><section><div className="guide-search"><h3>Trade condition dictionary</h3><label><span>Find condition</span><input onChange={(event) => setSearch(event.target.value)} placeholder="Odd lot, ISO, out of sequence…" value={search} /></label></div><div className="condition-dictionary">{rows.map(({ row, token }) => <article data-condition-tone={conditionTone(row.name)} key={token}><header><strong>{shortConditionName(row)}</strong><span>{row.sip_mapping || `Token ${token}`}</span></header><p>{conditionDescription(row)}</p><footer><span>{row.update_last ? "Updates last" : "Does not update last"}</span><span>{row.update_volume ? "Counts volume" : "Excluded from volume"}</span><span>{row.update_high_low ? "Updates high/low" : "No high/low update"}</span></footer></article>)}</div></section></div>;
+}
+
+function QuoteGuide() { return <div className="microstructure-guide-content"><section className="guide-intro"><h3>From updates to an organized signal</h3><p>Quote bursts group all NBBO changes with the same SIP timestamp. The collapsed row preserves screen space; opening it reveals each price, size, or venue transition.</p><div className="guide-signal-grid"><GuideSignal label="Price pressure" text="Direction of bid and ask repricing. This is usually the strongest quote-only short-horizon feature." /><GuideSignal label="Displayed size" text="Best-level size imbalance. Useful, but vulnerable to cancellations and hidden liquidity." /><GuideSignal label="Microprice" text="Size-weighted location inside the spread. It measures which side is thinner and easier to consume." /><GuideSignal label="Persistence" text="Agreement across recent events. Repeated pressure is usually more useful than one isolated update." /></div></section><section><h3>Forecasting interpretation</h3><p>The pressure map is a feature summary, not a forecast. For short-horizon models, use signed values, their changes, persistence, spread regime, update rate, venue churn and interaction with tape aggression. Validate separately by symbol, session phase and forecast horizon because impact decays quickly and reverses around news, halts and liquidity shocks.</p></section></div>; }
+function GuideSignal({ label, text }: { label: string; text: string }) { return <article><strong>{label}</strong><p>{text}</p></article>; }
 function QuoteSide({ exchange, label, price, size, tone }: { exchange: { code: string; name: string }; label: string; price?: number; size?: number; tone: "buy" | "sell" }) { return <div className="quote-side" data-tone={tone}><span><MetricLabel help={`${label} is the current consolidated national best ${label.toLowerCase()}; ${exchange.name} is posting it.`} label={label} /><abbr title={exchange.name}>{exchange.code}</abbr></span><strong>{price ? formatPrice(price) : "—"}</strong><em>{size != null ? `${formatSize(size)} shares` : "No quote"}</em></div>; }
 function MicrostructureEmpty({ message }: { message: string }) { return <div className="microstructure-empty"><Activity size={18} /><span>{message}</span></div>; }
 function compareEvents(left: CompactEvent, right: CompactEvent) { return left.sip_timestamp_us - right.sip_timestamp_us || left.source_sequence - right.source_sequence || left.arrival_sequence - right.arrival_sequence; }
@@ -299,22 +386,38 @@ function tradeCondition(print: TapePrint, references: MarketReferences) {
   const tone = normalized.includes("out of sequence") || normalized.includes("late") ? "warning" : normalized.includes("odd lot") ? "odd" : normalized.includes("intermarket") || normalized.includes("exempt") ? "iso" : "special";
   return { code: specialRows.slice(0, 2).map((row) => shortConditionName(row)).join(" · "), label, special: true, tone };
 }
+function tradeConditionItems(print: TapePrint, references: MarketReferences) {
+  if (!print.conditionTokens.length) return [{ label: "Regular sale", name: "Regular Sale", special: false, token: 0 }];
+  return print.conditionTokens.map((token) => {
+    const row = references.conditions[String(token)];
+    const name = row?.name || `Unknown condition ${token}`;
+    return { label: row ? shortConditionName(row) : `Token ${token}`, name, special: name.toLowerCase() !== "regular sale", token };
+  });
+}
 function shortConditionName(row: ConditionReference) {
   const known: Record<string, string> = { "Derivatively Priced": "Derivative", "Intermarket Sweep": "ISO", "Odd Lot Trade": "Odd lot", "Sold (Out Of Sequence)": "Out of seq", "Trade Thru Exempt": "Exempt" };
-  return known[row.name] || row.sip_mapping || row.name;
+  return known[row.name] || row.name;
 }
 
-function liquidityEventHelp(detail: string) {
-  if (detail.startsWith("Bid improved")) return "The national best bid moved higher, a buyer-supportive price change.";
-  if (detail.startsWith("Ask moved down")) return "The national best ask moved lower, a seller-aggressive price change.";
-  if (detail.startsWith("Bid faded")) return "The national best bid moved lower, indicating weaker displayed support.";
-  if (detail.startsWith("Ask moved up")) return "The national best ask moved higher, reducing immediate sell-side pressure.";
-  if (detail.startsWith("Bid added")) return "Displayed size increased at the best bid.";
-  if (detail.startsWith("Bid pulled")) return "Displayed size decreased at the best bid.";
-  if (detail.startsWith("Ask added")) return "Displayed size increased at the best ask.";
-  if (detail.startsWith("Ask pulled")) return "Displayed size decreased at the best ask.";
-  if (detail === "Venue changed") return "The venue posting the NBBO changed without a price or size change.";
-  return "The first quote establishes the comparison baseline for later liquidity events.";
+function conditionTone(name: string) {
+  const normalized = name.toLowerCase();
+  if (normalized.includes("out of sequence") || normalized.includes("late") || normalized.includes("sold")) return "warning";
+  if (normalized.includes("odd lot")) return "odd";
+  if (normalized.includes("intermarket") || normalized.includes("exempt") || normalized.includes("sweep")) return "iso";
+  if (normalized.includes("regular")) return "regular";
+  return "special";
+}
+
+function conditionDescription(row: ConditionReference) {
+  const known: Record<string, string> = {
+    "Derivatively Priced": "Price is derived from another instrument or pricing relationship, so it should not be read as ordinary price discovery.",
+    "Intermarket Sweep": "An ISO indicates the sender is simultaneously routing to protected quotations elsewhere; it is commonly associated with urgent liquidity taking.",
+    "Odd Lot Trade": "The trade size is below the standard round lot. It is real volume, but may not carry the same quoting or price-discovery significance as round lots.",
+    "Regular Sale": "A standard eligible sale with no exceptional sequencing or pricing condition.",
+    "Sold (Out Of Sequence)": "The print arrived or was reported out of normal sequence and should not be interpreted as the newest market price.",
+    "Trade Thru Exempt": "The execution is exempt from the usual protected-quotation trade-through restriction.",
+  };
+  return known[row.name] || `${row.name} is a SIP trade qualifier. Its market-statistic behavior is shown below; interpret it together with execution side, size and sequence.`;
 }
 
 function formatContextTime(value?: string) {
@@ -342,3 +445,9 @@ function marketStatusPresentation(state: MarketState | null) {
     tone: halted || blocked ? "halted" : resumed ? "resumed" : state ? "normal" : "unknown",
   };
 }
+
+function percentile(values: number[], quantile: number) { if (!values.length) return 0; const sorted = [...values].sort((a, b) => a - b); return sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * quantile))]; }
+function halfWindowRatio(values: number[]) { if (values.length < 2) return 1; const split = Math.floor(values.length / 2); const average = (rows: number[]) => rows.reduce((sum, value) => sum + value, 0) / Math.max(1, rows.length); const earlier = average(values.slice(0, split)); return earlier > 0 ? average(values.slice(split)) / earlier : 1; }
+function aggressorStreak(trades: TapePrint[]) { const latest = trades.at(-1); if (!latest || latest.direction === "mid") return { count: 0, direction: "mid" as Direction }; let count = 0; for (let index = trades.length - 1; index >= 0 && trades[index].direction === latest.direction; index -= 1) count += 1; return { count, direction: latest.direction }; }
+function pressureLabel(value: number) { return value >= 0.35 ? "Strong bid pressure" : value >= 0.1 ? "Bid pressure" : value <= -0.35 ? "Strong ask pressure" : value <= -0.1 ? "Ask pressure" : "Mixed"; }
+function clamp(value: number, minimum: number, maximum: number) { return Math.max(minimum, Math.min(maximum, value)); }

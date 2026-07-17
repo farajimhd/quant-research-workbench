@@ -112,6 +112,7 @@ from src.backend.trading_runtime_service import (
     historical_latest_coverage,
     historical_gateway_snapshot,
     historical_market_state,
+    historical_ticker_change,
     historical_gateway_websocket_url,
     historical_preflight,
     historical_window_preview,
@@ -4626,6 +4627,19 @@ def trading_canvas_market_state(symbol: str, start: str | None = None, end: str 
         raise HTTPException(status_code=400, detail="start and end must be provided together")
     try:
         return historical_market_state(ticker, start=start, end=end) if start and end else qmd_live_market_state(ticker)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/trading/ticker-change/{symbol}")
+def trading_ticker_change(symbol: str, as_of: str) -> dict[str, Any]:
+    ticker = symbol.strip().upper()
+    if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
+        raise HTTPException(status_code=400, detail="symbol must be a valid ticker")
+    try:
+        return historical_ticker_change(ticker, as_of=as_of)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

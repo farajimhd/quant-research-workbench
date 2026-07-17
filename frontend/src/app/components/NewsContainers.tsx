@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from "rea
 import { api, query } from "../../api/client";
 import { NEWS_READER_CANVAS_ID, ensureNewsReaderCanvas, focusCanvasUrl } from "../canvasWorkspace";
 import { MarketTime } from "./MarketTime";
-import { TickerIdentity, useTickerPresentations, type TickerPresentation } from "./TickerIdentity";
+import { TickerIdentity, TickerIdentityWithChange, useTickerPresentations, type TickerPresentation } from "./TickerIdentity";
 
 type NewsRow = {
   article_url?: string;
@@ -114,7 +114,7 @@ export function TickerNewsContainer({ asOf, live = false, settings, symbol }: { 
   const companyRows = orderedRows.filter(isCompanyNews);
   const otherRows = orderedRows.filter((row) => !isCompanyNews(row));
   return <section className="ticker-news" aria-label={`${symbol} news`}>
-    <header><div><TickerIdentity className="ticker-news-symbol" logoUrl={presentations[symbol]?.logo_url} ticker={symbol} /><span>Recent coverage</span></div><small>{state.rows.length} stories · through <MarketTime value={effectiveAsOf} /></small></header>
+    <header><div><TickerIdentityWithChange asOf={effectiveAsOf} className="ticker-news-symbol" logoUrl={presentations[symbol]?.logo_url} ticker={symbol} /><span>Recent coverage</span></div><small>{state.rows.length} stories · through <MarketTime value={effectiveAsOf} /></small></header>
     <NewsStatus state={state} compact />
     <div className="ticker-news-feed">
       <TickerNewsSection asOf={effectiveAsOf} asOfMs={asOfMs} emptyLabel="No company-specific news in this window." label="Company news" rows={companyRows} showTeaser={settings.showTeaser} />
@@ -183,7 +183,7 @@ export function NewsDetailContainer({ asOf, canvasId, requestedNewsId }: { asOf:
   const tone = newsTemperature(row.published_at_utc, Date.parse(asOf));
   const kind = isNewsKind(row.news_kind) ? row.news_kind : classification.kind;
   return <article className="news-reader">
-    <header><div className="news-reader-kicker"><NewsTemperatureTag tone={tone} /><MarketTime includeDate value={row.published_at_utc} /><NewsKind classification={{ ...classification, kind }} /><span>{row.url_domain || "News"}</span></div><h1><MarketNumberText text={title} /></h1><div className="news-reader-byline"><span>{row.author || "Unknown author"}</span><TickerList presentations={presentations} tickers={detailTickers} /></div>{tags.length ? <div className="news-reader-tags">{tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}<ClassificationEvidence classification={classification} /></header>
+    <header><div className="news-reader-kicker"><NewsTemperatureTag tone={tone} /><MarketTime includeDate value={row.published_at_utc} /><NewsKind classification={{ ...classification, kind }} /><span>{row.url_domain || "News"}</span></div><h1><MarketNumberText text={title} /></h1><div className="news-reader-byline"><span>{row.author || "Unknown author"}</span>{detailTickers.length === 1 ? <TickerIdentityWithChange asOf={asOf} logoUrl={presentations[detailTickers[0]]?.logo_url} ticker={detailTickers[0]} /> : <TickerList presentations={presentations} tickers={detailTickers} />}</div>{tags.length ? <div className="news-reader-tags">{tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}<ClassificationEvidence classification={classification} /></header>
     {body ? <div className="news-reader-body">{articleParagraphs(body).map((paragraph, index) => <p key={`${index}-${paragraph.slice(0, 20)}`}><MarketNumberText text={paragraph} /></p>)}</div> : <NewsEmpty label="This record contains title metadata but no readable article text." />}
     <footer>{row.article_url ? <a href={row.article_url} rel="noreferrer" target="_blank">Open original source <ExternalLink size={12} /></a> : null}</footer>
   </article>;

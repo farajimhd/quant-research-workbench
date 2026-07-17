@@ -35,7 +35,7 @@ import { createPortal } from "react-dom";
 
 import { displayName } from "../format";
 import { buildSegmentButtonClassName } from "../selectionStyles";
-import { TickerLogo } from "./TickerIdentity";
+import { TickerChangeBadge, TickerLogo } from "./TickerIdentity";
 
 type Candle = { time: number; open: number; high: number; low: number; close: number };
 type ChartSeries = {
@@ -265,6 +265,7 @@ type ChartPanelProps = {
   showSupervisionControls?: boolean;
   settingsStorageKey?: string;
   ticker: string;
+  tickerChangeAsOf?: string;
   tickerLogoUrl?: string;
   tickerInputWidth?: number | string;
   tickerMaxLength?: number;
@@ -337,6 +338,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   showSupervisionControls = false,
   settingsStorageKey,
   ticker,
+  tickerChangeAsOf,
   tickerLogoUrl,
   tickerInputWidth,
   tickerMaxLength = 10,
@@ -1194,6 +1196,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
             value={draftTicker}
           />
         </form>
+        {tickerChangeAsOf ? <TickerChangeBadge asOf={tickerChangeAsOf} ticker={ticker} /> : null}
         {periodStart && periodEnd && onPeriodChange ? (
           <ChartPeriodSelect
             end={periodEnd}

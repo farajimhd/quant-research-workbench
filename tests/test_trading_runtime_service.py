@@ -9,6 +9,7 @@ from src.backend.trading_runtime_service import (
     historical_compact_events,
     historical_latest_coverage,
     historical_market_state,
+    historical_ticker_change,
     historical_preflight,
     historical_window_preview,
     market_event_references,
@@ -16,6 +17,27 @@ from src.backend.trading_runtime_service import (
 
 
 class HistoricalTradingServiceTests(unittest.TestCase):
+    @patch("src.backend.trading_runtime_service.historical_compact_events")
+    @patch("src.backend.trading_runtime_service.historical_macro_bar_history")
+    def test_ticker_change_compares_current_trade_with_prior_20_et_close(self, macro_history, compact_events) -> None:
+        macro_history.return_value = {"history": [
+            {"session_date": "2026-07-13", "close": 317.88},
+            {"session_date": "2026-07-14", "close": 320.00},
+        ]}
+        compact_events.return_value = [{"event_meta": 1, "price_primary_int": 31481}]
+
+        payload = historical_ticker_change("aapl", as_of="2026-07-14T09:45:00-04:00")
+
+        self.assertEqual(payload["previous_session_date"], "2026-07-13")
+        self.assertEqual(payload["current_price"], 314.81)
+        self.assertAlmostEqual(payload["percent_change"], -0.9657732478)
+        compact_events.assert_called_once_with(
+            "AAPL",
+            start="2026-07-14T04:00:00-04:00",
+            end="2026-07-14T09:45:00-04:00",
+            row_limit=5_000,
+        )
+
     @patch("src.backend.trading_runtime_service._historical_gateway_get")
     def test_historical_market_state_uses_condition_transitions_and_qmd_luld_bar(self, gateway_get) -> None:
         gateway_get.side_effect = [

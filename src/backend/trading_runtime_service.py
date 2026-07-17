@@ -571,6 +571,68 @@ def historical_market_state(ticker: str, *, start: str, end: str) -> dict[str, A
     }
 
 
+def historical_ticker_change(ticker: str, *, as_of: str) -> dict[str, Any]:
+    """Compare the point-in-time trade price with the prior 04:00-20:00 ET session close."""
+    resolved_ticker = _historical_ticker(ticker)
+    resolved_as_of = datetime.fromisoformat(as_of)
+    if resolved_as_of.tzinfo is None:
+        raise ValueError("as_of must include a timezone")
+    exchange_as_of = resolved_as_of.astimezone(ZoneInfo("America/New_York"))
+    session_date = exchange_as_of.date()
+    macro = historical_macro_bar_history(
+        ticker=resolved_ticker,
+        timeframe="1d",
+        session_date=session_date,
+        as_of=resolved_as_of.isoformat(),
+    )
+    prior_rows = [
+        row for row in macro.get("history", [])
+        if str(row.get("session_date") or "") < session_date.isoformat() and float(row.get("close") or 0) > 0
+    ]
+    previous = prior_rows[-1] if prior_rows else {}
+    previous_close = float(previous.get("close") or 0)
+    session_start = datetime.combine(session_date, time(4, 0), tzinfo=ZoneInfo("America/New_York"))
+    session_end = datetime.combine(session_date, time(20, 0), tzinfo=ZoneInfo("America/New_York"))
+    current_end = min(exchange_as_of, session_end)
+    events = historical_compact_events(
+        resolved_ticker,
+        start=session_start.isoformat(),
+        end=current_end.isoformat(),
+        row_limit=5_000,
+    ) if current_end > session_start else []
+    current_price = _latest_compact_price(events)
+    absolute_change = current_price - previous_close if current_price > 0 and previous_close > 0 else 0.0
+    percent_change = absolute_change / previous_close * 100 if previous_close > 0 and current_price > 0 else 0.0
+    return {
+        "as_of": resolved_as_of.isoformat(),
+        "current_price": current_price or None,
+        "previous_close": previous_close or None,
+        "previous_session_date": str(previous.get("session_date") or ""),
+        "absolute_change": absolute_change if current_price > 0 and previous_close > 0 else None,
+        "percent_change": percent_change if current_price > 0 and previous_close > 0 else None,
+        "source": "qmd-history-gateway",
+        "ticker": resolved_ticker,
+    }
+
+
+def _latest_compact_price(events: list[dict[str, Any]]) -> float:
+    latest_quote_midpoint = 0.0
+    for event in reversed(events):
+        event_meta = int(event.get("event_meta") or 0)
+        primary_scale = 10_000 if event_meta & 0x02 else 100
+        if event_meta & 0x01:
+            price = float(event.get("price_primary_int") or 0) / primary_scale
+            if price > 0:
+                return price
+        if latest_quote_midpoint <= 0:
+            secondary_scale = 10_000 if event_meta & 0x04 else 100
+            ask = float(event.get("price_primary_int") or 0) / primary_scale
+            bid = float(event.get("price_secondary_int") or 0) / secondary_scale
+            if ask > 0 and bid > 0 and ask >= bid:
+                latest_quote_midpoint = (ask + bid) / 2
+    return latest_quote_midpoint
+
+
 @lru_cache(maxsize=1)
 def market_event_references() -> dict[str, dict[str, dict[str, Any]]]:
     exchanges = _reference_rows(MARKET_REFERENCE_DIR / "stock_exchanges.json")
