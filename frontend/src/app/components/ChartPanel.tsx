@@ -57,7 +57,7 @@ type ChartSeries = {
   lineWidth: number;
   opacity?: number;
   priceScaleId?: "left" | "right";
-  data: Array<{ color?: string; time: number; value: number }>;
+  data: Array<{ color?: string; time: number; tone?: "buy" | "neutral" | "sell"; value: number }>;
 };
 type Region = { start: number; end: number; color: string; label: string };
 type TradeLabelPart = { text: string; tone?: "label" | "price" | "pnlLoss" | "pnlWin" | "reason" | "separator" | "size" };
@@ -2819,10 +2819,24 @@ function resolveChartColor(color: string) {
 
 function seriesDataForSettings(series: ChartSeries, settings: Required<LegendSeriesSettings>, appearance = defaultChartAppearanceSettings) {
   if (!settings.visible) return [];
-  if (series.style !== "histogram") return series.data;
   const defaultColor = defaultLegendSettings(series).color;
   const opacity = effectiveSeriesOpacity(series, settings);
   const applyOpacity = (color: string) => colorWithOpacity(color, opacity);
+  if (series.style !== "histogram") {
+    if (settings.color && settings.color !== defaultColor) {
+      return series.data.map(({ tone: _tone, ...point }) => ({ ...point, color: applyOpacity(settings.color) }));
+    }
+    return series.data.map(({ tone, ...point }) => ({
+      ...point,
+      ...(tone === "buy"
+        ? { color: applyOpacity(appearance.upColor) }
+        : tone === "sell"
+          ? { color: applyOpacity(appearance.downColor) }
+          : point.color
+            ? { color: applyOpacity(point.color) }
+            : {}),
+    }));
+  }
   if (!settings.color || settings.color === defaultColor) {
     if (series.column === "macd_histogram") {
       return series.data.map((point) => ({ ...point, color: applyOpacity(point.value >= 0 ? appearance.upColor : appearance.downColor) }));

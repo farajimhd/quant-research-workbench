@@ -164,21 +164,15 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     "QMD Microstructure Outlook",
     "microstructure",
     [
-      "microstructure_fast_signal",
-      "microstructure_fast_confidence",
-      "microstructure_confirm_signal",
-      "microstructure_confirm_confidence",
-      "microstructure_context_signal",
-      "microstructure_context_confidence",
       "microstructure_unified_signal",
       "microstructure_unified_confidence",
       "microstructure_unified_action",
     ],
     "microstructure",
     {
-      shortDescription: "Timeframe-consistent QMD quote-and-trade pressure sampled at 100 ms across 25, 100, and 500 market-event horizons.",
-      detailedDescription: "QMD samples the causal rolling forecast once at each closed 100 ms boundary. A higher-timeframe chart bar combines only the 100 ms samples inside that bar: signals use confidence weighting and confidence is reduced when those samples disagree. Each score runs from -1 (sell pressure) to +1 (buy pressure), while confidence runs from 0% to 100% on the left scale.",
-      interpretation: "Read the zero line first: bars above zero favor buying and bars below zero favor selling. Then check confidence on the left axis. The unified label reports BUY, SELL, or WAIT; WAIT means the score is weak, confidence is below 35%, or the horizons conflict. A fast move confirmed by the 100- and 500-event lines is stronger than a fast-only spike.",
+      shortDescription: "One timeframe-consistent direction signal and its confidence, derived from QMD quotes and trades.",
+      detailedDescription: "QMD evaluates its 25-, 100-, and 500-event horizons internally at each closed 100 ms boundary, then combines them into one causal signal. A higher-timeframe chart bar combines only the 100 ms samples inside that bar: signals use confidence weighting and confidence is reduced when those samples disagree. Signal runs from -1 (sell pressure) to +1 (buy pressure); confidence runs from 0% to 100% on the left scale.",
+      interpretation: "Read the signal line against zero: neon green favors buying, neon red favors selling, and neutral gray means WAIT. Then check the confidence line on the left axis. WAIT means the score is weak, confidence is below 35%, or the internal horizons conflict. The individual horizon diagnostics remain available to strategies and the API, but are intentionally omitted from this decision pane.",
       caveats: [
         "This is a deterministic microstructure estimate, not a guaranteed price forecast.",
         "Event horizons are activity-based rather than fixed clock durations, so they cover less time in a fast market.",
@@ -209,14 +203,8 @@ const INDICATOR_SERIES = [
   { column: "price_vs_ema20_pct", color: "var(--info)", displayItemId: "indicator.price_ema", label: "Price vs EMA 20", pane: "distance" },
   { column: "price_vs_vwap_pct", color: "var(--warning)", displayItemId: "indicator.price_vwap", label: "Price vs VWAP", pane: "distance" },
   { column: "trend_score", color: "var(--primary)", displayItemId: "indicator.trend_score", label: "Trend Score", pane: "trend" },
-  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "25S", column: "microstructure_fast_signal", color: "var(--info)", displayItemId: "indicator.microstructure_outlook", label: "25 score", lastValueVisible: false, lineWidth: 1, pane: "microstructure", priceScaleId: "right" },
-  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "100S", column: "microstructure_confirm_signal", color: "var(--warning)", displayItemId: "indicator.microstructure_outlook", label: "100 score", lastValueVisible: false, lineWidth: 2, pane: "microstructure", priceScaleId: "right" },
-  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "500S", column: "microstructure_context_signal", color: "var(--primary)", displayItemId: "indicator.microstructure_outlook", label: "500 score", lastValueVisible: false, lineWidth: 2, pane: "microstructure", priceScaleId: "right" },
-  { autoscaleMax: 1, autoscaleMin: -1, column: "microstructure_unified_signal", color: "var(--foreground)", displayItemId: "indicator.microstructure_outlook", label: "Unified WAIT", lineWidth: 2, pane: "microstructure", priceScaleId: "right", style: "histogram" },
-  { autoscaleMax: 100, autoscaleMin: 0, axisTitle: "25C", column: "microstructure_fast_confidence", color: "var(--info)", displayItemId: "indicator.microstructure_outlook", label: "25 conf", lastValueVisible: false, lineStyle: "dotted", opacity: 0.5, pane: "microstructure", priceScaleId: "left" },
-  { autoscaleMax: 100, autoscaleMin: 0, axisTitle: "100C", column: "microstructure_confirm_confidence", color: "var(--warning)", displayItemId: "indicator.microstructure_outlook", label: "100 conf", lastValueVisible: false, lineStyle: "dotted", opacity: 0.5, pane: "microstructure", priceScaleId: "left" },
-  { autoscaleMax: 100, autoscaleMin: 0, axisTitle: "500C", column: "microstructure_context_confidence", color: "var(--primary)", displayItemId: "indicator.microstructure_outlook", label: "500 conf", lastValueVisible: false, lineStyle: "dotted", opacity: 0.5, pane: "microstructure", priceScaleId: "left" },
-  { autoscaleMax: 100, autoscaleMin: 0, axisTitle: "UC", column: "microstructure_unified_confidence", color: "var(--foreground)", displayItemId: "indicator.microstructure_outlook", label: "Unified conf", lineStyle: "dashed", lineWidth: 2, opacity: 0.75, pane: "microstructure", priceScaleId: "left" },
+  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Signal", column: "microstructure_unified_signal", color: "var(--foreground)", displayItemId: "indicator.microstructure_outlook", label: "Signal WAIT", lineWidth: 3, pane: "microstructure", priceScaleId: "right" },
+  { autoscaleMax: 100, autoscaleMin: 0, axisTitle: "Confidence", column: "microstructure_unified_confidence", color: "var(--primary)", displayItemId: "indicator.microstructure_outlook", label: "Confidence", lineStyle: "dashed", lineWidth: 2, opacity: 0.78, pane: "microstructure", priceScaleId: "left" },
 ] as const;
 
 function displayIndicator(id: string, title: string, group: string, sourceColumns: string[], pane = "price", knowledge?: ChartDisplayItem["knowledge"]): ChartDisplayItem {
@@ -274,6 +262,8 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
     const sockets: Partial<Record<"bars" | "indicators", WebSocket>> = {};
     const reconnectTimers: number[] = [];
     const attempts = { bars: 0, indicators: 0 };
+    const historicalBuffers: { bars: QmdLiveBar[]; indicators: HistoricalIndicator[] } = { bars: [], indicators: [] };
+    const historicalDone = { bars: false, indicators: !ENRICHED_QMD_TIMEFRAMES.has(timeframe) };
     const requestController = new AbortController();
     const historyController = new AbortController();
     const ticker = symbol.trim().toUpperCase();
@@ -380,6 +370,17 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
       if (!active) return;
       const socket = new WebSocket(canvasHistoricalStreamUrl(kind, ticker, timeframe, sessionDate, cutoffMs));
       sockets[kind] = socket;
+      const finishHistoricalStream = () => {
+        if (historicalDone[kind]) return;
+        historicalDone[kind] = true;
+        if (!active || !historicalDone.bars || !historicalDone.indicators) return;
+        setState((current) => ({
+          ...current,
+          bars: mergeRowsByTime(current.bars, historicalBuffers.bars),
+          indicators: mergeRowsByTime(current.indicators, historicalBuffers.indicators),
+          loading: false,
+        }));
+      };
       socket.onmessage = (event) => {
         try {
           const payload = JSON.parse(String(event.data)) as (QmdLiveBar | HistoricalIndicator) & { error?: string };
@@ -388,16 +389,14 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
             return;
           }
           if (!payload.bar_start) return;
-          setState((current) => ({
-            ...current,
-            bars: kind === "bars" ? mergeRowsByTime(current.bars, [payload as QmdLiveBar]) : current.bars,
-            indicators: kind === "indicators" ? mergeRowsByTime(current.indicators, [payload as HistoricalIndicator]) : current.indicators,
-            loading: kind === "bars" ? false : current.loading,
-          }));
+          if (kind === "bars") historicalBuffers.bars.push(payload as QmdLiveBar);
+          else historicalBuffers.indicators.push(payload as HistoricalIndicator);
         } catch {
           if (kind === "bars") setState((current) => ({ ...current, historyError: "QMD historical bar stream returned invalid data." }));
         }
       };
+      socket.onclose = finishHistoricalStream;
+      socket.onerror = finishHistoricalStream;
     };
 
     if (!pointInTime) {
@@ -1056,13 +1055,13 @@ function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscilla
     color: spec.color,
     column: spec.column,
     data: rows.map((row) => ({
-      ...(spec.column === "microstructure_unified_signal" ? { color: microstructureActionColor(String(row.microstructure_unified_action || "WAIT")) } : {}),
+      ...(spec.column === "microstructure_unified_signal" ? { tone: microstructureActionTone(String(row.microstructure_unified_action || "WAIT")) } : {}),
       time: Date.parse(String(row.bar_start)) / 1000,
       value: Number(row[spec.column]),
     })).filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value)),
     displayItemId: spec.displayItemId,
     label: spec.column === "microstructure_unified_signal" ? microstructureUnifiedLabel(latestMicrostructure) : spec.label,
-    ...( "lastValueVisible" in spec ? { lastValueVisible: spec.lastValueVisible } : {}),
+    ...( "lastValueVisible" in spec ? { lastValueVisible: Boolean(spec.lastValueVisible) } : {}),
     ...( "lineStyle" in spec ? { lineStyle: spec.lineStyle } : {}),
     lineWidth: "lineWidth" in spec ? spec.lineWidth : 1,
     ...( "opacity" in spec ? { opacity: spec.opacity } : {}),
@@ -1072,16 +1071,16 @@ function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscilla
   }));
 }
 
-function microstructureActionColor(action: string) {
-  if (action.toUpperCase() === "BUY") return "var(--success)";
-  if (action.toUpperCase() === "SELL") return "var(--danger)";
-  return "var(--muted-foreground)";
+function microstructureActionTone(action: string): "buy" | "neutral" | "sell" {
+  if (action.toUpperCase() === "BUY") return "buy";
+  if (action.toUpperCase() === "SELL") return "sell";
+  return "neutral";
 }
 
 function microstructureUnifiedLabel(row?: HistoricalIndicator) {
   const action = String(row?.microstructure_unified_action || "WAIT").toUpperCase();
   const confidence = Number(row?.microstructure_unified_confidence);
-  return `Unified ${action}${Number.isFinite(confidence) ? ` · ${Math.round(confidence)}%` : ""}`;
+  return `Signal ${action}${Number.isFinite(confidence) ? ` · ${Math.round(confidence)}%` : ""}`;
 }
 
 function PreviewTable({ columns, onSymbolSelect, rows }: { columns: string[]; onSymbolSelect?: (symbol: string) => void; rows: PreviewRow[] }) {
