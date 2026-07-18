@@ -563,7 +563,9 @@ def check_text_source_shape(column_map: dict[str, set[str]]) -> list[dict[str, A
 def check_text_source_layout(table_metadata: dict[str, Any]) -> list[dict[str, Any]]:
     partition_key = str(table_metadata.get("partition_key") or "")
     sorting_key = str(table_metadata.get("sorting_key") or "")
-    matches = text_source_layout_matches(partition_key, sorting_key)
+    engine_full = "".join(str(table_metadata.get("engine_full") or "").split()).lower()
+    expected_engine = "replacingmergetree(source_revision_rank)"
+    matches = text_source_layout_matches(partition_key, sorting_key) and engine_full == expected_engine
     return [
         check(
             "sec_filing_text_v3_physical_layout",
@@ -573,8 +575,10 @@ def check_text_source_layout(table_metadata: dict[str, Any]) -> list[dict[str, A
             details={
                 "partition_key": partition_key,
                 "sorting_key": sorting_key,
+                "engine_full": table_metadata.get("engine_full"),
                 "expected_partition_key": TEXT_SOURCE_PARTITION_KEY,
                 "expected_sorting_key": TEXT_SOURCE_SORTING_KEY,
+                "expected_engine": "ReplacingMergeTree(source_revision_rank)",
             },
         )
     ]
@@ -895,7 +899,7 @@ def query_table_metadata(client: ClickHouseHttpClient, db: str) -> dict[str, dic
     rows = query_rows(
         client,
         f"""
-        SELECT name, engine, total_rows, partition_key, sorting_key
+        SELECT name, engine, engine_full, total_rows, partition_key, sorting_key
         FROM system.tables
         WHERE database = {sql_string(db)} AND name LIKE 'sec_%'
         ORDER BY name

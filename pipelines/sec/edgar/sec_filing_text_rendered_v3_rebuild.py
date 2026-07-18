@@ -28,6 +28,13 @@ from pipelines.sec.edgar.sec_pipeline.text_renderer import (  # noqa: E402
     STRUCTURED_XML_EXCLUDED_QUALITY_FLAG,
     render_sec_packed_text,
 )
+from pipelines.sec.edgar.sec_source_text_revision_engine import (  # noqa: E402
+    SOURCE_AUTHORITY_VERSION,
+    ensure_source_revision_engine,
+    load_source_layout,
+    mark_renderer_reset_completed,
+    revision_engine_matches,
+)
 from pipelines.sec.edgar.sec_parquet_parts import ParquetShardWriter  # noqa: E402
 from pipelines.sec.edgar.sec_filing_text_clickhouse_file_ingest import (  # noqa: E402
     windows_path_to_clickhouse_path,
@@ -248,6 +255,23 @@ def main() -> int:
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
 
     require_tables(client, args)
+    source_engine_report = run_root / "source_engine_migration.json"
+    authority_reset_partitions: set[int] = set()
+    if args.execute:
+        run_root.mkdir(parents=True, exist_ok=True)
+        authority_reset_partitions = ensure_source_revision_engine(
+            client,
+            database=args.database,
+            table_name=args.source_table,
+            report_path=source_engine_report,
+            run_id=run_id,
+        )
+    elif not revision_engine_matches(load_source_layout(client, args.database, args.source_table)):
+        print(
+            "source_engine_migration=required stale_engine=ReplacingMergeTree(inserted_at) "
+            "target_engine=ReplacingMergeTree(source_revision_rank)",
+            flush=True,
+        )
     current_watermark = load_source_watermark(client, args)
     current_filing_watermark = load_filing_watermark(client, args)
     partitions = load_partitions(client, args)
@@ -260,17 +284,28 @@ def main() -> int:
         print(f"run with --execute --confirm-sec-gateway-stopped; add --cutover for validated atomic replacement", flush=True)
         return 0
 
-    run_root.mkdir(parents=True, exist_ok=True)
-    source_watermark = load_or_create_run_manifest(
-        run_root, args, run_id, loaded_env, current_watermark, current_filing_watermark, partitions
-    )
     verify_clickhouse_file_root(client, args, run_root)
-    lookup_database_path = prepare_lookup_database(
-        client, args, run_root, current_watermark, current_filing_watermark
-    )
     ensure_manifest_table(client, args)
     ensure_staging_table(client, args)
     ensure_bundle_manifest_table(client, args)
+    if authority_reset_partitions:
+        reset_authority_drift_partitions(
+            client,
+            args,
+            run_id,
+            run_root,
+            authority_reset_partitions,
+            current_watermark,
+            current_filing_watermark,
+            partitions,
+        )
+        mark_renderer_reset_completed(source_engine_report)
+    source_watermark = load_or_create_run_manifest(
+        run_root, args, run_id, loaded_env, current_watermark, current_filing_watermark, partitions
+    )
+    lookup_database_path = prepare_lookup_database(
+        client, args, run_root, current_watermark, current_filing_watermark
+    )
     completed = load_completed_partitions(client, args, run_id)
     pending = [row for row in partitions if row["partition_id"] not in completed]
     print(f"resume completed={len(completed):,} pending={len(pending):,}", flush=True)
@@ -371,6 +406,7 @@ SELECT count() AS rows, sum(source_text_byte_count) AS source_bytes,
        groupBitXor(cityHash64(document_id, source_version_key, source_revision_rank,
                               source_text_byte_count, content_sha256)) AS source_metadata_hash
 FROM {table(args.database, args.source_table)} FINAL
+SETTINGS do_not_merge_across_partitions_select_final=0
 """,
     )
     return SourceWatermark(
@@ -417,6 +453,7 @@ SELECT toYYYYMM(source_archive_date) AS partition_id, count() AS source_rows,
 FROM {table(args.database, args.source_table)} FINAL
 GROUP BY partition_id
 ORDER BY partition_id
+SETTINGS do_not_merge_across_partitions_select_final=0
 """,
         )
     ]
@@ -461,7 +498,8 @@ INSERT INTO TABLE FUNCTION file({sql_string(clickhouse_path)}, 'Parquet')
 SELECT filing_id, form_type
 FROM {table(args.database, 'sec_filing_v3')} FINAL
 SETTINGS max_threads=2, max_memory_usage={parse_size_bytes(args.max_memory_usage)},
-         max_block_size=65536, output_format_parquet_compression_method='zstd'
+         max_block_size=65536, output_format_parquet_compression_method='zstd',
+         do_not_merge_across_partitions_select_final=0
 """
     )
     print("render_lookup stage=export_filing_forms status=completed", flush=True)
@@ -507,7 +545,8 @@ SELECT cik, accession_number, document_id, content_format, source_version_key,
        source_revision_rank, toYYYYMM(source_archive_date) AS partition_id, filing_id
 FROM {table(args.database, args.source_table)} FINAL
 SETTINGS max_threads=2, max_memory_usage={parse_size_bytes(args.max_memory_usage)},
-         max_block_size=65536, output_format_parquet_compression_method='zstd'
+         max_block_size=65536, output_format_parquet_compression_method='zstd',
+         do_not_merge_across_partitions_select_final=0
 """
         )
         print("render_lookup stage=export_source_authority status=completed", flush=True)
@@ -564,6 +603,7 @@ SETTINGS max_threads=2, max_memory_usage={parse_size_bytes(args.max_memory_usage
                 ("unique_filing_ids", str(filing_watermark.unique_filing_ids)),
                 ("filing_max_inserted_at", filing_watermark.max_inserted_at),
                 ("filing_metadata_hash", str(filing_watermark.metadata_hash)),
+                ("source_authority_version", str(SOURCE_AUTHORITY_VERSION)),
             ],
         )
         connection.commit()
@@ -603,6 +643,7 @@ def validate_lookup_database(
         "unique_filing_ids": str(filing_watermark.unique_filing_ids),
         "filing_max_inserted_at": filing_watermark.max_inserted_at,
         "filing_metadata_hash": str(filing_watermark.metadata_hash),
+        "source_authority_version": str(SOURCE_AUTHORITY_VERSION),
     }
     if (
         metadata != expected
@@ -839,6 +880,105 @@ SETTINGS max_threads=2, max_insert_threads=1, max_memory_usage={parse_size_bytes
         f"legacy={args.database}.{legacy_table}",
         flush=True,
     )
+
+
+def reset_authority_drift_partitions(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    run_id: str,
+    run_root: Path,
+    affected_partitions: set[int],
+    source_watermark: SourceWatermark,
+    filing_watermark: FilingWatermark,
+    partitions: list[dict[str, int]],
+) -> None:
+    ordered = sorted(affected_partitions)
+    if not ordered:
+        return
+    print(
+        f"source_authority_reset status=active partitions={len(ordered)} "
+        f"first={ordered[0]} last={ordered[-1]}",
+        flush=True,
+    )
+    active_staging_partitions = {
+        int(line)
+        for line in client.execute(
+            f"SELECT DISTINCT partition_id FROM system.parts WHERE database={sql_string(args.database)} "
+            f"AND table={sql_string(args.staging_table)} AND active FORMAT TSV"
+        ).splitlines()
+        if line.strip()
+    }
+    for partition_id in ordered:
+        if partition_id in active_staging_partitions:
+            client.execute(f"ALTER TABLE {table(args.database, args.staging_table)} DROP PARTITION {partition_id}")
+    partition_sql = ",".join(str(value) for value in ordered)
+    for manifest_table in (args.manifest_table, args.bundle_manifest_table):
+        client.execute(
+            f"ALTER TABLE {table(args.database, manifest_table)} DELETE WHERE "
+            f"run_id={sql_string(run_id)} AND partition_id IN ({partition_sql}) SETTINGS mutations_sync=2"
+        )
+    for partition_id in ordered:
+        partition_root = run_root / "partitions" / str(partition_id)
+        if partition_root.exists():
+            cleanup_temp_root(partition_root, keep_source=False)
+            try:
+                partition_root.rmdir()
+            except OSError:
+                pass
+    for name in (
+        "render_lookup.sqlite",
+        "render_lookup.sqlite.tmp",
+        "filing_form_map.parquet",
+        "source_authority.parquet",
+        "STOP_REQUESTED.json",
+        "partition_results.json",
+        "validation.json",
+    ):
+        (run_root / name).unlink(missing_ok=True)
+    rebase_run_manifest_after_source_migration(
+        run_root,
+        args,
+        run_id,
+        source_watermark,
+        filing_watermark,
+        partitions,
+        ordered,
+    )
+    print(f"source_authority_reset status=completed partitions={len(ordered)}", flush=True)
+
+
+def rebase_run_manifest_after_source_migration(
+    run_root: Path,
+    args: argparse.Namespace,
+    run_id: str,
+    source_watermark: SourceWatermark,
+    filing_watermark: FilingWatermark,
+    partitions: list[dict[str, int]],
+    affected_partitions: list[int],
+) -> None:
+    manifest_path = run_root / "run_manifest.json"
+    if not manifest_path.exists():
+        return
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    expected = {
+        "run_id": run_id,
+        "database": args.database,
+        "source_table": args.source_table,
+        "target_table": args.target_table,
+        "staging_table": args.staging_table,
+    }
+    actual = {key: payload.get(key) for key in expected}
+    if actual != expected:
+        raise RuntimeError(f"cannot rebase mismatched run manifest expected={expected} actual={actual}")
+    payload["source_watermark"] = asdict(source_watermark)
+    payload["filing_watermark"] = asdict(filing_watermark)
+    payload["partitions"] = partitions
+    payload["source_authority_version"] = SOURCE_AUTHORITY_VERSION
+    payload["source_engine_repair_partitions"] = affected_partitions
+    payload["source_engine_repaired_at_utc"] = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    temporary = manifest_path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    temporary.replace(manifest_path)
 
 
 def load_completed_partitions(client: ClickHouseHttpClient, args: argparse.Namespace, run_id: str) -> set[int]:
@@ -1969,6 +2109,7 @@ def load_or_create_run_manifest(
         expected_identity = {
             "run_id": run_id,
             "renderer_version": SEC_PACKED_TEXT_RENDERER_VERSION,
+            "source_authority_version": SOURCE_AUTHORITY_VERSION,
             "database": args.database,
             "source_table": args.source_table,
             "target_table": args.target_table,
@@ -2014,6 +2155,7 @@ def load_or_create_run_manifest(
     payload = {
         "run_id": run_id,
         "renderer_version": SEC_PACKED_TEXT_RENDERER_VERSION,
+        "source_authority_version": SOURCE_AUTHORITY_VERSION,
         "database": args.database,
         "source_table": args.source_table,
         "target_table": args.target_table,

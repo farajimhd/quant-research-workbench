@@ -135,6 +135,10 @@ insert across 64 hash partitions. Validated cutover then repartitions one CIK
 hash partition at a time into the canonical final layout. Existing stale hash
 staging is migrated server-side on resume, preserving all successful bundle
 checkpoints and rendered rows.
+The same preflight repairs a deployed `sec_filing_text_v3` table whose
+replacement version is still `inserted_at`. Monthly partitions are attached
+into the canonical revision-ranked engine, source-parent IDs are reconciled by
+CIK and accession, and only renderer months with changed authority are reset.
 
 The SEC gateway generates the same explicit shape so the workstation script does
 not depend on ambient shell defaults. `--resume-from-coverage` is enabled by default and records

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import unittest
 import sqlite3
 import threading
 import time
 from datetime import UTC, date, datetime
+from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -17,6 +19,7 @@ import pyarrow.parquet as pq
 from pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild import (
     SourceWatermark,
     SOURCE_COLUMNS,
+    SOURCE_AUTHORITY_VERSION,
     FilingWatermark,
     PartitionResult,
     build_row_group_bundles,
@@ -32,6 +35,7 @@ from pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild import (
     prepare_lookup_database,
     prepare_partition_export,
     process_row_group_bundle,
+    rebase_run_manifest_after_source_migration,
     initialize_rebuild_worker,
     rebuild_stop_path,
     request_rebuild_stop,
@@ -373,6 +377,7 @@ class SecRenderedV3RebuildTest(unittest.TestCase):
                     ("unique_filing_ids", "1"),
                     ("filing_max_inserted_at", "2026-07-16 00:00:00.000"),
                     ("filing_metadata_hash", "456"),
+                    ("source_authority_version", str(SOURCE_AUTHORITY_VERSION)),
                 ],
             )
             connection.commit()
@@ -462,6 +467,35 @@ class SecRenderedV3RebuildTest(unittest.TestCase):
             load_or_create_run_manifest(root, args, "test", [], original, filing, partitions)
             with self.assertRaisesRegex(RuntimeError, "source changed since run started"):
                 load_or_create_run_manifest(root, args, "test", [], changed, filing, partitions)
+
+    def test_source_engine_rebase_updates_only_authority_contract(self) -> None:
+        args = SimpleNamespace(
+            database="q_live",
+            source_table="sec_filing_text_v3",
+            target_table="sec_filing_text_rendered_v3",
+            staging_table="sec_filing_text_rendered_stage_test_v3",
+            manifest_table="sec_filing_text_rendered_rebuild_manifest_v3",
+            workers=1,
+            row_groups_per_bundle=8,
+            max_concurrent_inserts=1,
+        )
+        old_source = SourceWatermark(10, 100, 7, "2026-07-16 00:00:00.000", 123)
+        new_source = SourceWatermark(10, 101, 8, "2026-07-16 00:00:00.000", 456)
+        filing = FilingWatermark(5, 5, "2026-07-16 00:00:00.000", 789)
+        old_partitions = [{"partition_id": 202208, "source_rows": 10, "source_chars": 90}]
+        new_partitions = [{"partition_id": 202210, "source_rows": 10, "source_chars": 91}]
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            load_or_create_run_manifest(root, args, "test", [], old_source, filing, old_partitions)
+            rebase_run_manifest_after_source_migration(
+                root, args, "test", new_source, filing, new_partitions, [202208, 202210]
+            )
+            payload = json.loads((root / "run_manifest.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["source_watermark"], asdict(new_source))
+        self.assertEqual(payload["partitions"], new_partitions)
+        self.assertEqual(payload["source_authority_version"], SOURCE_AUTHORITY_VERSION)
+        self.assertEqual(payload["source_engine_repair_partitions"], [202208, 202210])
 
 
 if __name__ == "__main__":

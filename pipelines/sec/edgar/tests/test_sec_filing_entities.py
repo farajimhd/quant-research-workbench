@@ -56,17 +56,27 @@ class SecFilingEntityTests(unittest.TestCase):
             {
                 "partition_key": "toYYYYMM(source_archive_date)",
                 "sorting_key": "cik, accession_number, document_id, content_format",
+                "engine_full": "ReplacingMergeTree(source_revision_rank)",
             }
         )[0]
         hash_partitioned = integrity_audit.check_text_source_layout(
             {
                 "partition_key": "cityHash64(cik) % 64",
                 "sorting_key": "cik, accession_number, document_id, content_format",
+                "engine_full": "ReplacingMergeTree(source_revision_rank)",
+            }
+        )[0]
+        insertion_ranked = integrity_audit.check_text_source_layout(
+            {
+                "partition_key": "toYYYYMM(source_archive_date)",
+                "sorting_key": "cik, accession_number, document_id, content_format",
+                "engine_full": "ReplacingMergeTree(inserted_at)",
             }
         )[0]
 
         self.assertEqual(monthly["status"], "pass")
         self.assertEqual(hash_partitioned["status"], "fail")
+        self.assertEqual(insertion_ranked["status"], "fail")
 
     def test_parses_all_roles_and_never_uses_accession_prefix_as_cik(self) -> None:
         raw = b"""<SEC-DOCUMENT>0002143285-26-000002.txt

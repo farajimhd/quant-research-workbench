@@ -77,6 +77,23 @@ and remove the temporary work and legacy staging tables. This gives live reads
 the required same-CIK revision locality without creating a merge storm during
 the historical build.
 
+Before rendering resumes, the script verifies that `sec_filing_text_v3` uses
+`ReplacingMergeTree(source_revision_rank)`. An older deployed table used
+`ReplacingMergeTree(inserted_at)`, which allowed a later database insert to
+override a newer SEC archive revision. The repair creates the canonical table,
+attaches each monthly partition from the old table without retransmitting or
+recompressing source text, validates physical row/byte/hash totals, repairs
+child `filing_id` values against the canonical `(CIK, accession)` parent, and
+atomically exchanges the tables. The insertion-ranked table is retained as
+`sec_filing_text_v3_inserted_at_engine_backup` with merges stopped.
+
+The migration report records every month where insertion-time and SEC-revision
+authority differed. On the same-run resume, only those rendered staging
+partitions, bundle checkpoints, exports, and lookup rows are invalidated. The
+run manifest is rebased to the revision-ranked source watermark. Unaffected
+completed months remain reusable, while no stale authority row can survive the
+final validation or cutover.
+
 The parent process owns each bounded monthly export. A renderer worker processes
 that export as deterministic bundles of eight Parquet row groups. Every bundle
 is rendered, inserted, checkpointed in
