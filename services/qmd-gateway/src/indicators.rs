@@ -3,7 +3,7 @@ use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::metrics::SharedMetrics;
 use crate::microstructure_forecast::{
-    MicrostructureForecastSnapshot, MicrostructureForecastWindow,
+    MicrostructureForecastSnapshot, MicrostructureForecastWindow, MicrostructureIntervalFeatures,
 };
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, NaiveDate, Timelike, Utc};
@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, sleep, Duration};
 
-pub const INDICATOR_SCHEMA_VERSION: u16 = 4;
+pub const INDICATOR_SCHEMA_VERSION: u16 = 5;
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 
 #[derive(Clone, Debug, Serialize)]
@@ -86,6 +86,29 @@ pub struct IndicatorRow {
     pub microstructure_unified_signal: f64,
     pub microstructure_unified_confidence: f64,
     pub microstructure_unified_action: String,
+    pub microstructure_buy_trade_count: u64,
+    pub microstructure_sell_trade_count: u64,
+    pub microstructure_classified_trade_count: u64,
+    pub microstructure_eligible_trade_count: u64,
+    pub microstructure_buy_volume: f64,
+    pub microstructure_sell_volume: f64,
+    pub microstructure_transaction_imbalance: f64,
+    pub microstructure_signed_volume_imbalance: f64,
+    pub microstructure_level1_ofi: f64,
+    pub microstructure_queue_imbalance: f64,
+    pub microstructure_microprice_lean: f64,
+    pub microstructure_midpoint_return_bps: f64,
+    pub microstructure_trade_return_bps: f64,
+    pub microstructure_aggressor_persistence: f64,
+    pub microstructure_arrival_intensity_imbalance: f64,
+    pub microstructure_arrival_rate_per_second: f64,
+    pub microstructure_resiliency: f64,
+    pub microstructure_aggressive_flow_score: f64,
+    pub microstructure_displayed_liquidity_score: f64,
+    pub microstructure_response_resiliency_score: f64,
+    pub microstructure_regime_reliability: f64,
+    #[serde(skip_serializing)]
+    pub microstructure_interval: MicrostructureIntervalFeatures,
 }
 
 impl IndicatorRow {
@@ -105,9 +128,35 @@ impl IndicatorRow {
         self.microstructure_context_signal = horizon(500).map(|item| item.score).unwrap_or(0.0);
         self.microstructure_context_confidence =
             horizon(500).map(|item| item.confidence).unwrap_or(0.0);
-        self.microstructure_unified_signal = forecast.unified.score;
-        self.microstructure_unified_confidence = forecast.unified.confidence;
-        self.microstructure_unified_action = forecast.unified.action.to_string();
+        self.apply_microstructure_interval(&forecast.interval);
+    }
+
+    fn apply_microstructure_interval(&mut self, interval: &MicrostructureIntervalFeatures) {
+        self.microstructure_buy_trade_count = interval.buy_trade_count;
+        self.microstructure_sell_trade_count = interval.sell_trade_count;
+        self.microstructure_classified_trade_count = interval.classified_trade_count;
+        self.microstructure_eligible_trade_count = interval.eligible_trade_count;
+        self.microstructure_buy_volume = interval.buy_volume;
+        self.microstructure_sell_volume = interval.sell_volume;
+        self.microstructure_transaction_imbalance = interval.transaction_imbalance;
+        self.microstructure_signed_volume_imbalance = interval.signed_volume_imbalance;
+        self.microstructure_level1_ofi = interval.level1_ofi;
+        self.microstructure_queue_imbalance = interval.queue_imbalance;
+        self.microstructure_microprice_lean = interval.microprice_lean;
+        self.microstructure_midpoint_return_bps = interval.midpoint_return_bps;
+        self.microstructure_trade_return_bps = interval.trade_return_bps;
+        self.microstructure_aggressor_persistence = interval.aggressor_persistence;
+        self.microstructure_arrival_intensity_imbalance = interval.arrival_intensity_imbalance;
+        self.microstructure_arrival_rate_per_second = interval.arrival_rate_per_second;
+        self.microstructure_resiliency = interval.resiliency;
+        self.microstructure_aggressive_flow_score = interval.aggressive_flow_score;
+        self.microstructure_displayed_liquidity_score = interval.displayed_liquidity_score;
+        self.microstructure_response_resiliency_score = interval.response_resiliency_score;
+        self.microstructure_regime_reliability = interval.regime_reliability;
+        self.microstructure_unified_signal = interval.unified_signal;
+        self.microstructure_unified_confidence = interval.unified_confidence;
+        self.microstructure_unified_action = interval.unified_action.to_string();
+        self.microstructure_interval = interval.clone();
     }
 }
 
@@ -461,10 +510,11 @@ impl IndicatorStore {
 /// O(1)-memory sufficient statistics for causal 100 ms forecast samples.
 #[derive(Clone, Debug, Default)]
 pub struct MicrostructureSampleAggregate {
+    sample_count: u64,
     fast: WeightedSignalAggregate,
     confirm: WeightedSignalAggregate,
     context: WeightedSignalAggregate,
-    unified: WeightedSignalAggregate,
+    interval: MicrostructureIntervalFeatures,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -501,6 +551,7 @@ impl WeightedSignalAggregate {
 
 impl MicrostructureSampleAggregate {
     pub fn push(&mut self, row: &IndicatorRow) {
+        self.sample_count += 1;
         self.fast.push(
             row.microstructure_fast_signal,
             row.microstructure_fast_confidence,
@@ -513,10 +564,7 @@ impl MicrostructureSampleAggregate {
             row.microstructure_context_signal,
             row.microstructure_context_confidence,
         );
-        self.unified.push(
-            row.microstructure_unified_signal,
-            row.microstructure_unified_confidence,
-        );
+        self.interval.merge(&row.microstructure_interval);
     }
 
     pub fn apply_to(&self, target: &mut IndicatorRow) {
@@ -532,24 +580,32 @@ impl MicrostructureSampleAggregate {
             target.microstructure_context_signal,
             target.microstructure_context_confidence,
         ) = self.context.value();
-        (
-            target.microstructure_unified_signal,
-            target.microstructure_unified_confidence,
-        ) = self.unified.value();
-        target.microstructure_unified_action = if target.microstructure_unified_confidence < 35.0
-            || target.microstructure_unified_signal.abs() < 0.15
-        {
-            "wait"
-        } else if target.microstructure_unified_signal > 0.0 {
-            "buy"
+        let mut interval = self.interval.clone();
+        let expected_samples = microstructure_expected_samples(&target.timeframe);
+        let coverage = if expected_samples == 0 {
+            0.0
         } else {
-            "sell"
-        }
-        .to_string();
+            (self.sample_count as f64 / expected_samples as f64).clamp(0.0, 1.0)
+        };
+        interval.refresh(coverage);
+        target.apply_microstructure_interval(&interval);
     }
 
     pub fn reset(&mut self) {
         *self = Self::default();
+    }
+}
+
+fn microstructure_expected_samples(timeframe: &str) -> u64 {
+    match canonical_timeframe(timeframe).as_str() {
+        "1s" => 10,
+        "5s" => 50,
+        "10s" => 100,
+        "30s" => 300,
+        "1m" => 600,
+        "5m" => 3_000,
+        "1h" => 36_000,
+        _ => 0,
     }
 }
 
@@ -829,6 +885,28 @@ impl BarIndicatorState {
             microstructure_unified_signal: 0.0,
             microstructure_unified_confidence: 0.0,
             microstructure_unified_action: "wait".to_string(),
+            microstructure_buy_trade_count: 0,
+            microstructure_sell_trade_count: 0,
+            microstructure_classified_trade_count: 0,
+            microstructure_eligible_trade_count: 0,
+            microstructure_buy_volume: 0.0,
+            microstructure_sell_volume: 0.0,
+            microstructure_transaction_imbalance: 0.0,
+            microstructure_signed_volume_imbalance: 0.0,
+            microstructure_level1_ofi: 0.0,
+            microstructure_queue_imbalance: 0.0,
+            microstructure_microprice_lean: 0.0,
+            microstructure_midpoint_return_bps: 0.0,
+            microstructure_trade_return_bps: 0.0,
+            microstructure_aggressor_persistence: 0.0,
+            microstructure_arrival_intensity_imbalance: 0.0,
+            microstructure_arrival_rate_per_second: 0.0,
+            microstructure_resiliency: 0.0,
+            microstructure_aggressive_flow_score: 0.0,
+            microstructure_displayed_liquidity_score: 0.0,
+            microstructure_response_resiliency_score: 0.0,
+            microstructure_regime_reliability: 0.0,
+            microstructure_interval: MicrostructureIntervalFeatures::default(),
         }
     }
 }
@@ -1138,7 +1216,28 @@ impl IndicatorClickHouseWriter {
                 microstructure_context_confidence Float64,
                 microstructure_unified_signal Float64,
                 microstructure_unified_confidence Float64,
-                microstructure_unified_action LowCardinality(String)
+                microstructure_unified_action LowCardinality(String),
+                microstructure_buy_trade_count UInt64,
+                microstructure_sell_trade_count UInt64,
+                microstructure_classified_trade_count UInt64,
+                microstructure_eligible_trade_count UInt64,
+                microstructure_buy_volume Float64,
+                microstructure_sell_volume Float64,
+                microstructure_transaction_imbalance Float64,
+                microstructure_signed_volume_imbalance Float64,
+                microstructure_level1_ofi Float64,
+                microstructure_queue_imbalance Float64,
+                microstructure_microprice_lean Float64,
+                microstructure_midpoint_return_bps Float64,
+                microstructure_trade_return_bps Float64,
+                microstructure_aggressor_persistence Float64,
+                microstructure_arrival_intensity_imbalance Float64,
+                microstructure_arrival_rate_per_second Float64,
+                microstructure_resiliency Float64,
+                microstructure_aggressive_flow_score Float64,
+                microstructure_displayed_liquidity_score Float64,
+                microstructure_response_resiliency_score Float64,
+                microstructure_regime_reliability Float64
             )
             ENGINE = ReplacingMergeTree
             PARTITION BY session_date
@@ -1162,7 +1261,28 @@ impl IndicatorClickHouseWriter {
                 ADD COLUMN IF NOT EXISTS microstructure_context_confidence Float64,
                 ADD COLUMN IF NOT EXISTS microstructure_unified_signal Float64,
                 ADD COLUMN IF NOT EXISTS microstructure_unified_confidence Float64,
-                ADD COLUMN IF NOT EXISTS microstructure_unified_action LowCardinality(String)"#,
+                ADD COLUMN IF NOT EXISTS microstructure_unified_action LowCardinality(String),
+                ADD COLUMN IF NOT EXISTS microstructure_buy_trade_count UInt64,
+                ADD COLUMN IF NOT EXISTS microstructure_sell_trade_count UInt64,
+                ADD COLUMN IF NOT EXISTS microstructure_classified_trade_count UInt64,
+                ADD COLUMN IF NOT EXISTS microstructure_eligible_trade_count UInt64,
+                ADD COLUMN IF NOT EXISTS microstructure_buy_volume Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_sell_volume Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_transaction_imbalance Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_signed_volume_imbalance Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_level1_ofi Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_queue_imbalance Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_microprice_lean Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_midpoint_return_bps Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_trade_return_bps Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_aggressor_persistence Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_arrival_intensity_imbalance Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_arrival_rate_per_second Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_resiliency Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_aggressive_flow_score Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_displayed_liquidity_score Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_response_resiliency_score Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_regime_reliability Float64"#,
             true,
         )
         .await?;
@@ -1319,6 +1439,27 @@ fn indicator_insert_row(row: &IndicatorRow) -> serde_json::Value {
         "microstructure_unified_signal": row.microstructure_unified_signal,
         "microstructure_unified_confidence": row.microstructure_unified_confidence,
         "microstructure_unified_action": &row.microstructure_unified_action,
+        "microstructure_buy_trade_count": row.microstructure_buy_trade_count,
+        "microstructure_sell_trade_count": row.microstructure_sell_trade_count,
+        "microstructure_classified_trade_count": row.microstructure_classified_trade_count,
+        "microstructure_eligible_trade_count": row.microstructure_eligible_trade_count,
+        "microstructure_buy_volume": row.microstructure_buy_volume,
+        "microstructure_sell_volume": row.microstructure_sell_volume,
+        "microstructure_transaction_imbalance": row.microstructure_transaction_imbalance,
+        "microstructure_signed_volume_imbalance": row.microstructure_signed_volume_imbalance,
+        "microstructure_level1_ofi": row.microstructure_level1_ofi,
+        "microstructure_queue_imbalance": row.microstructure_queue_imbalance,
+        "microstructure_microprice_lean": row.microstructure_microprice_lean,
+        "microstructure_midpoint_return_bps": row.microstructure_midpoint_return_bps,
+        "microstructure_trade_return_bps": row.microstructure_trade_return_bps,
+        "microstructure_aggressor_persistence": row.microstructure_aggressor_persistence,
+        "microstructure_arrival_intensity_imbalance": row.microstructure_arrival_intensity_imbalance,
+        "microstructure_arrival_rate_per_second": row.microstructure_arrival_rate_per_second,
+        "microstructure_resiliency": row.microstructure_resiliency,
+        "microstructure_aggressive_flow_score": row.microstructure_aggressive_flow_score,
+        "microstructure_displayed_liquidity_score": row.microstructure_displayed_liquidity_score,
+        "microstructure_response_resiliency_score": row.microstructure_response_resiliency_score,
+        "microstructure_regime_reliability": row.microstructure_regime_reliability,
     })
 }
 

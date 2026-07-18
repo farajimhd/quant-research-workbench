@@ -171,26 +171,31 @@ of the historical `market_sip_compact.events_YYYY` training tables.
 
 Strategies that need an explainable short-horizon directional feature can call
 `GET /snapshot/microstructure-forecast/{ticker}?limit=1024`. QMD returns the
-same deterministic `deterministic_microstructure_v1` contract used by QMD
-History and Canvas for 25-, 100-, and 500-event horizons. Each horizon includes
-the signed score, direction class, strength, confidence, regime, absorption
-flag, observation duration, and five normalized inputs: quote-flow imbalance,
-microprice lean, eligible trade-flow imbalance, persistence, and realized
-midpoint response. The fixed score weights are 35%, 20%, 20%, 15%, and 10%,
-respectively. The schema-v2 response also includes one `unified` result. It
-combines the three unique horizons with 50%, 30%, and 20% priors, weights each
-ready horizon by its evidence confidence, and discounts confidence when the
-horizons disagree. `action` is `buy` or `sell` only when confidence is at least
+same deterministic `deterministic_microstructure_v2` contract used by QMD
+History and Canvas. Schema v3 retains the 25-, 100-, and 500-event diagnostic
+horizons and adds one closed-100-ms `interval` contract. That interval exposes
+transaction and signed-volume imbalance, Level-1 OFI, queue imbalance,
+microprice lean, midpoint and trade return, aggressor persistence,
+arrival-intensity imbalance, arrival rate, and liquidity resiliency. The
+recommended signal architecture combines those features into Aggressive Flow
+(45%), Displayed Liquidity (35%), and Response & Resiliency (20%). Confidence
+separately measures event coverage, quote validity, trade classification,
+evidence density, and agreement among the three blocks. `action` is `buy` or
+`sell` only when confidence is at least
 35% and absolute score is at least 0.15; otherwise it is `wait`. This is a
 next-midpoint-direction feature, not an order
 instruction, return forecast, or price target; strategies must still apply
 market-state, LULD, spread, risk, and execution gates.
 
 Chart indicator rows use that contract on a fixed causal grid. QMD samples the
-rolling forecast once per closed 100 ms bar. For every higher timeframe, it
-combines only the 100 ms samples inside that bar using confidence-weighted
-signals and reduces confidence when the samples disagree. This makes a 1 minute
-indicator a summary of the minute rather than a snapshot of its final event.
+raw sufficient statistics once per closed 100 ms bar. For every higher
+timeframe, it sums counts and volume, chains log returns, accumulates raw OFI
+and liquidity depletion/replenishment, and sample-weights queue, microprice,
+persistence, and arrival evidence. QMD then calculates exactly one signal and
+confidence from the merged bar evidence. It never averages overlapping rolling
+forecast scores. This makes a 1-minute indicator describe the quotes and trades
+inside that minute rather than its final event or a series of overlapping
+windows.
 
 ## After-Hours Maintenance
 

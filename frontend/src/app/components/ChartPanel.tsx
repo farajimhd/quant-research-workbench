@@ -2452,6 +2452,9 @@ function buildOscillatorPaneGroups(series: ChartSeries[]): OscillatorPaneGroup[]
 function formatOscillatorPaneLabel(group: OscillatorPaneGroup) {
   if (group.key === "oscillator:portfolio_risk") return "Portfolio Risk";
   if (group.key === "oscillator:microstructure") return "QMD Microstructure Outlook";
+  if (group.key.startsWith("oscillator:qmd_")) {
+    return group.series.length === 1 ? group.series[0].label : `QMD ${group.key.slice("oscillator:qmd_".length).replaceAll("_", " ")}`;
+  }
   if (group.key === "oscillator:macd") return "MACD Pane";
   if (group.key === "oscillator:pane_2") return "Pane 2";
   if (group.key === "oscillator:pane_3") return "Pane 3";

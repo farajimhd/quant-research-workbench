@@ -104,7 +104,7 @@ class HistoricalTradingServiceTests(unittest.TestCase):
     def test_microstructure_forecast_uses_shared_history_gateway_contract(self, gateway_get) -> None:
         gateway_get.return_value = {
             "schema_version": 1,
-            "method": "deterministic_microstructure_v1",
+            "method": "deterministic_microstructure_v2",
             "ticker": "AAPL",
             "horizons": [{"horizon_events": 25, "direction": "up"}],
         }
@@ -115,7 +115,7 @@ class HistoricalTradingServiceTests(unittest.TestCase):
             end="2026-07-14T09:45:00-04:00",
         )
 
-        self.assertEqual(payload["method"], "deterministic_microstructure_v1")
+        self.assertEqual(payload["method"], "deterministic_microstructure_v2")
         gateway_get.assert_called_once_with(
             "/snapshot/microstructure-forecast/AAPL",
             {

@@ -23,11 +23,11 @@ class QmdGatewayClientTests(unittest.TestCase):
 
     @patch("src.backend.qmd_gateway_client.qmd_get_json")
     def test_microstructure_forecast_uses_canonical_qmd_route(self, get_json) -> None:
-        get_json.return_value = {"method": "deterministic_microstructure_v1", "horizons": []}
+        get_json.return_value = {"method": "deterministic_microstructure_v2", "horizons": []}
 
         self.assertEqual(
             qmd_microstructure_forecast("aapl"),
-            {"method": "deterministic_microstructure_v1", "horizons": []},
+            {"method": "deterministic_microstructure_v2", "horizons": []},
         )
         get_json.assert_called_once_with(
             "/snapshot/microstructure-forecast/AAPL",
