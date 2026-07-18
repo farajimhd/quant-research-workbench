@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
 
-pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v6";
+pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v7";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProfile {
@@ -604,22 +604,24 @@ impl HistoricalDerivedCache {
                             let interval = microstructure.interval_at(bar.bar_end, &worker_rules);
                             aggregate.push_interval(&interval);
                             if let Some(sequence) = sequence {
-                                let mut indicator = calculators
+                                let calculator = calculators
                                     .entry(bar.timeframe.clone())
-                                    .or_insert_with(BarIndicatorCalculator::new)
-                                    .apply_bar(&bar);
-                                indicator.apply_microstructure_interval(&interval);
+                                    .or_insert_with(BarIndicatorCalculator::new);
+                                let mut indicator = calculator.apply_bar(&bar);
+                                calculator.apply_microstructure_interval(&mut indicator, &interval);
+                                calculator.apply_cumulative_microstructure(&mut indicator);
                                 worker_entry
                                     .push_indicator(sequence, bar, indicator)
                                     .await?;
                             }
                         } else if let Some(sequence) = sequence {
-                            let mut indicator = calculators
+                            let calculator = calculators
                                 .entry(bar.timeframe.clone())
-                                .or_insert_with(BarIndicatorCalculator::new)
-                                .apply_bar(&bar);
+                                .or_insert_with(BarIndicatorCalculator::new);
+                            let mut indicator = calculator.apply_bar(&bar);
                             aggregate.apply_to(&mut indicator);
                             aggregate.reset();
+                            calculator.apply_cumulative_microstructure(&mut indicator);
                             worker_entry
                                 .push_indicator(sequence, bar, indicator)
                                 .await?;

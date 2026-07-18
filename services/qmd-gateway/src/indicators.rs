@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, sleep, Duration};
 
-pub const INDICATOR_SCHEMA_VERSION: u16 = 6;
+pub const INDICATOR_SCHEMA_VERSION: u16 = 7;
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 
 #[derive(Clone, Debug, Serialize)]
@@ -179,17 +179,35 @@ pub fn calculate_bar_indicators(bars: &[BarRow]) -> Vec<IndicatorRow> {
 /// accompanied by exactly the same causal indicator update as live QMD.
 pub struct BarIndicatorCalculator {
     state: BarIndicatorState,
+    cumulative_microstructure: MicrostructureCumulativeFlow,
 }
 
 impl BarIndicatorCalculator {
     pub fn new() -> Self {
         Self {
             state: BarIndicatorState::new(),
+            cumulative_microstructure: MicrostructureCumulativeFlow::default(),
         }
     }
 
     pub fn apply_bar(&mut self, bar: &BarRow) -> IndicatorRow {
         self.state.apply_bar(bar)
+    }
+
+    /// Apply interval-local microstructure values before the caller finalizes
+    /// the row's session-anchored cumulative flow.
+    pub fn apply_microstructure_interval(
+        &mut self,
+        row: &mut IndicatorRow,
+        interval: &MicrostructureIntervalFeatures,
+    ) {
+        row.apply_microstructure_interval(interval);
+    }
+
+    /// Advance anchored flow after a caller has populated an aggregated
+    /// interval on the row.
+    pub fn apply_cumulative_microstructure(&mut self, row: &mut IndicatorRow) {
+        self.cumulative_microstructure.apply_to(row);
     }
 }
 
@@ -222,7 +240,7 @@ struct IndicatorShardStore {
 }
 
 struct IndicatorStore {
-    bars: HashMap<IndicatorKey, BarIndicatorState>,
+    bars: HashMap<IndicatorKey, BarIndicatorCalculator>,
     history: HashMap<IndicatorKey, VecDeque<IndicatorRow>>,
     history_limits: HashMap<String, usize>,
     history_limit: usize,
@@ -230,7 +248,6 @@ struct IndicatorStore {
     ticks: HashMap<String, TickState>,
     microstructure: HashMap<String, MicrostructureForecastWindow>,
     microstructure_aggregates: HashMap<IndicatorKey, MicrostructureSampleAggregate>,
-    microstructure_cumulative_flows: HashMap<IndicatorKey, MicrostructureCumulativeFlow>,
     trade_rules: TradeAggregationRules,
 }
 
@@ -455,7 +472,6 @@ impl IndicatorShardStore {
                 ticks: HashMap::new(),
                 microstructure: HashMap::new(),
                 microstructure_aggregates: HashMap::new(),
-                microstructure_cumulative_flows: HashMap::new(),
                 trade_rules,
             })),
         }
@@ -534,13 +550,16 @@ impl IndicatorStore {
         let state = self
             .bars
             .entry(key.clone())
-            .or_insert_with(BarIndicatorState::new);
+            .or_insert_with(BarIndicatorCalculator::new);
         let mut row = state.apply_bar(&bar);
         let ticker = bar.sym.to_ascii_uppercase();
         if bar.timeframe.eq_ignore_ascii_case("100ms") {
             if let Some(window) = self.microstructure.get(&ticker) {
                 let interval = window.interval_at(bar.bar_end, &self.trade_rules);
-                row.apply_microstructure_interval(&interval);
+                self.bars
+                    .get_mut(&key)
+                    .expect("indicator calculator exists")
+                    .apply_microstructure_interval(&mut row, &interval);
             }
             for timeframe in MICROSTRUCTURE_AGGREGATE_TIMEFRAMES {
                 self.microstructure_aggregates
@@ -555,10 +574,10 @@ impl IndicatorStore {
             aggregate.apply_to(&mut row);
             aggregate.reset();
         }
-        self.microstructure_cumulative_flows
-            .entry(key.clone())
-            .or_default()
-            .apply_to(&mut row);
+        self.bars
+            .get_mut(&key)
+            .expect("indicator calculator exists")
+            .apply_cumulative_microstructure(&mut row);
         let history_limit = self.history_limit_for(&bar.timeframe);
         let history = self.history.entry(key).or_insert_with(VecDeque::new);
         history.push_back(row.clone());
