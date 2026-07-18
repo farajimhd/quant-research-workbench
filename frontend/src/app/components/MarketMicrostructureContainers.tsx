@@ -1,4 +1,4 @@
-import { Activity, BookOpen, ChevronRight, CircleHelp, Clock3, Radio, ShieldAlert, WifiOff } from "lucide-react";
+import { Activity, ArrowDownRight, ArrowUpRight, BookOpen, ChevronRight, CircleHelp, Clock3, Minus, Radio, ShieldAlert, WifiOff } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { api, query } from "../../api/client";
@@ -361,15 +361,31 @@ function MicrostructureForecastPanel({ forecast, marketState }: { forecast: Micr
   const halted = marketState?.trading_status?.toLowerCase() === "halted" || marketState?.is_tradable === false || marketState?.is_live_tradable === false;
   const horizons = forecast?.horizons ?? [];
   return <section aria-label="Deterministic short-term forecast" className="micro-forecast-panel" data-blocked={halted ? "true" : "false"}>
-    <header><span><strong>Deterministic outlook</strong><small>Next midpoint move · QMD quotes + eligible trades</small></span><em>{halted ? "Forecast blocked · halted" : forecast ? "Event-driven" : "Awaiting QMD signal"}</em></header>
+    <header><span><strong>Deterministic outlook</strong><small>Expected direction of the next NBBO midpoint move</small></span><em>{halted ? "Forecast blocked · halted" : forecast ? "QMD event signal" : "Awaiting QMD signal"}</em></header>
     <div>{[25, 100, 500].map((eventCount) => {
       const horizon = horizons.find((candidate) => candidate.horizon_events === eventCount);
       const tone = forecastTone(horizon?.direction);
-      return <article data-tone={tone} key={eventCount}>
-        <header><span>{eventCount} events</span><small>{horizon ? formatForecastDuration(horizon.observed_duration_ms) : "—"}</small></header>
-        <strong>{halted ? "BLOCKED" : horizon ? forecastDirectionLabel(horizon.direction) : "WAITING"}</strong>
-        <i aria-hidden="true"><b style={{ left: `${50 + (horizon?.score ?? 0) * 50}%` }} /></i>
-        <footer><span>Strength <b>{horizon ? `${Math.round(horizon.strength)}` : "—"}</b></span><span>Confidence <b>{horizon ? `${Math.round(horizon.confidence)}` : "—"}</b></span><span>{horizon?.regime?.replace(/_/g, " ") ?? "no signal"}</span></footer>
+      const strength = horizon ? Math.round(horizon.strength) : null;
+      const confidence = horizon ? Math.round(horizon.confidence) : null;
+      return <article data-confidence={forecastConfidenceBand(confidence)} data-tone={tone} key={eventCount}>
+        <header><span><b>{forecastHorizonRole(eventCount)}</b>{eventCount} events</span><small>{horizon ? formatForecastDuration(horizon.observed_duration_ms) : "—"}</small></header>
+        <div className="forecast-verdict">
+          <span className="forecast-direction-icon" aria-hidden="true">{forecastDirectionIcon(horizon?.direction)}</span>
+          <span><small>Next midpoint</small><strong>{halted ? "BLOCKED" : horizon ? forecastDirectionLabel(horizon.direction) : "WAITING"}</strong></span>
+        </div>
+        <div className="forecast-evidence-grid">
+          <section>
+            <MetricLabel help="Directional magnitude: the absolute deterministic score on a 0–100 scale. It says how forcefully the current evidence points up or down, not how reliable that evidence is." label="Signal strength" />
+            <strong>{strength ?? "—"}<small>{strength == null ? "" : "/100"}</small></strong>
+            <em>{strength == null ? "No reading" : forecastStrengthLabel(strength)}</em>
+          </section>
+          <section>
+            <MetricLabel help="Evidence quality after QMD penalizes incomplete samples, disagreement, locked or crossed quotes, and absorption. High strength can still have low confidence." label="Confidence" />
+            <strong>{confidence == null ? "—" : `${confidence}%`}</strong>
+            <em>{confidence == null ? "No reading" : forecastConfidenceLabel(confidence)}</em>
+          </section>
+        </div>
+        <footer><span>Score <b>{horizon ? formatForecastScore(horizon.score) : "—"}</b></span><span>Regime <b>{horizon?.regime?.replace(/_/g, " ") ?? "no signal"}</b></span><span>{horizon ? `${horizon.quote_count}Q · ${horizon.trade_count}T` : "No sample"}</span></footer>
       </article>;
     })}</div>
   </section>;
@@ -441,6 +457,12 @@ function signedPriceChange(value: number) { if (Math.abs(value) < 1) return sign
 function signedShares(value: number) { return `${value > 0 ? "+" : ""}${formatSize(value)}`; }
 function forecastTone(direction?: ForecastHorizon["direction"]): Direction { return direction === "up" || direction === "weak_up" ? "buy" : direction === "down" || direction === "weak_down" ? "sell" : "mid"; }
 function forecastDirectionLabel(direction: ForecastHorizon["direction"]) { return direction === "up" ? "UP" : direction === "weak_up" ? "WEAK UP" : direction === "down" ? "DOWN" : direction === "weak_down" ? "WEAK DOWN" : "NEUTRAL"; }
+function forecastDirectionIcon(direction?: ForecastHorizon["direction"]) { return direction === "up" || direction === "weak_up" ? <ArrowUpRight size={20} strokeWidth={2.5} /> : direction === "down" || direction === "weak_down" ? <ArrowDownRight size={20} strokeWidth={2.5} /> : <Minus size={20} strokeWidth={2.5} />; }
+function forecastHorizonRole(eventCount: number) { return eventCount === 25 ? "FAST" : eventCount === 100 ? "CONFIRM" : "CONTEXT"; }
+function forecastStrengthLabel(value: number) { return value >= 70 ? "Strong direction" : value >= 45 ? "Moderate direction" : value >= 20 ? "Light direction" : "Faint direction"; }
+function forecastConfidenceLabel(value: number) { return value >= 70 ? "High-quality evidence" : value >= 45 ? "Usable evidence" : value >= 25 ? "Low evidence" : "Very low evidence"; }
+function forecastConfidenceBand(value: number | null) { return value == null ? "none" : value >= 70 ? "high" : value >= 45 ? "medium" : "low"; }
+function formatForecastScore(value: number) { return `${value > 0 ? "+" : ""}${value.toFixed(2)}`; }
 function formatForecastDuration(milliseconds: number) { return milliseconds >= 1000 ? `${(milliseconds / 1000).toFixed(milliseconds >= 10_000 ? 0 : 1)}s observed` : `${Math.round(milliseconds)}ms observed`; }
 function directionLabel(direction: Direction) { return direction === "buy" ? "At ask" : direction === "sell" ? "At bid" : "Between market"; }
 function imbalanceLabel(value: number) { return value >= 0.25 ? "Bid-heavy" : value <= -0.25 ? "Ask-heavy" : "Balanced"; }
