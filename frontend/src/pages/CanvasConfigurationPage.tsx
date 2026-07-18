@@ -204,6 +204,17 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
   displayIndicator("indicator.qmd_transaction_imbalance", "QMD Transaction Imbalance", "microstructure", ["microstructure_transaction_imbalance", "microstructure_buy_trade_count", "microstructure_sell_trade_count"], "qmd_transaction", qmdIndicatorKnowledge("Buy-versus-sell trade-count imbalance", "Counts eligible prints classified at the ask as buys and at the bid as sells, then computes (buys - sells) / classified trades.", "Persistent positive readings mean buyer-initiated prints are arriving more often; negative readings mean seller-initiated prints dominate.", "It ignores trade size, so compare it with Signed-volume Imbalance.")),
   displayIndicator("indicator.qmd_signed_volume", "QMD Signed-volume Imbalance", "microstructure", ["microstructure_signed_volume_imbalance", "microstructure_buy_volume", "microstructure_sell_volume"], "qmd_signed_volume", qmdIndicatorKnowledge("Buy-versus-sell executed-volume imbalance", "Sums eligible volume at the ask and bid inside the selected bar, then computes (buy volume - sell volume) / classified volume.", "Positive values show aggressive buy volume; negative values show aggressive sell volume. Agreement with transaction imbalance is stronger evidence than either alone.", "A few large prints can dominate the value; inspect trade conditions and resiliency.")),
   displayIndicator("indicator.qmd_level1_ofi", "QMD Level-1 OFI", "microstructure", ["microstructure_level1_ofi"], "qmd_level1_ofi", qmdIndicatorKnowledge("Best-quote order-flow imbalance", "Measures price-improving and size-changing flow at the NBBO, normalized by exposed best-level depth and aggregated from raw quote transitions.", "Positive OFI indicates bid support or ask withdrawal; negative OFI indicates bid withdrawal or ask supply.", "Displayed orders can be cancelled and do not reveal deeper or hidden liquidity.")),
+  displayIndicator("indicator.qmd_anchored_flow", "QMD Anchored OFI + Trade Delta", "microstructure", ["microstructure_cumulative_level1_ofi", "microstructure_cumulative_signed_volume_delta", "microstructure_anchored_flow_relationship", "microstructure_anchored_flow_relationship_score", "microstructure_level1_ofi_delta", "microstructure_signed_volume_delta"], "qmd_anchored_flow", {
+    bearishEvidence: "Both cumulative lines below zero confirm seller and ask-side pressure. Negative OFI with positive trade delta is bearish absorption: buyers are crossing the spread while displayed offers strengthen or bids retreat.",
+    bullishEvidence: "Both cumulative lines above zero confirm buyer and bid-side pressure. Positive OFI with negative trade delta is bullish absorption: sellers are hitting bids while displayed bids strengthen or offers retreat.",
+    calculation: "The gateway sums raw Level-1 OFI increments and raw classified buy-minus-sell volume from the canonical market session anchor. It resets both O(1) accumulators whenever session_date changes; higher timeframes add the same underlying 100 ms sufficient statistics without averaging ratios.",
+    caveats: ["The anchor is the canonical QMD market session, so the absolute level depends on how much of that session has elapsed.", "OFI observes consolidated best quotes, not deeper or hidden liquidity.", "A relationship state is evidence of confirmation or absorption, not a guaranteed reversal or continuation."],
+    detailedDescription: "The solid OFI line measures cumulative displayed NBBO pressure in share-equivalent units. The dashed Trade Delta line measures cumulative buyer-initiated minus seller-initiated eligible volume in shares. The background ribbon classifies the sign relationship between them.",
+    interpretation: "Green means bullish confirmation; red means bearish confirmation; cyan means bullish absorption (positive OFI, negative trade delta); amber means bearish absorption (negative OFI, positive trade delta); gray means one side is neutral.",
+    readingGuide: "Read the ribbon first, then the distance and slope of the two cumulative lines. Agreement confirms pressure; disagreement identifies which side is being absorbed.",
+    shortDescription: "Session-anchored displayed-liquidity pressure and executed aggressive-flow delta in one relationship oscillator.",
+    timeframeBehavior: "Each chart bar contributes its raw OFI and signed-volume deltas. The gateway maintains the session cumulative values once, so changing chart timeframe preserves the same economic total at aligned endpoints.",
+  }),
   displayIndicator("indicator.qmd_queue_imbalance", "QMD Queue Imbalance", "microstructure", ["microstructure_queue_imbalance"], "qmd_queue", qmdIndicatorKnowledge("Displayed bid-versus-ask queue balance", "Averages (bid size - ask size) / (bid size + ask size) across quote observations in the selected bar.", "Positive readings mean more displayed size at the bid; negative readings mean more at the ask.", "Queue size is intention, not execution, and is vulnerable to cancellation.")),
   displayIndicator("indicator.qmd_microprice_lean", "QMD Microprice Lean", "microstructure", ["microstructure_microprice_lean"], "qmd_microprice", qmdIndicatorKnowledge("Size-weighted price location inside the spread", "Compares microprice with midpoint and normalizes the difference by half the spread.", "Positive lean means the ask queue is thinner and an upward move may be easier; negative lean means the bid is thinner.", "It is most useful when the spread is valid and the displayed queues persist.")),
   displayIndicator("indicator.qmd_recent_returns", "QMD Recent Midpoint & Trade Return", "microstructure", ["microstructure_midpoint_return_bps", "microstructure_trade_return_bps"], "qmd_returns", qmdIndicatorKnowledge("Realized price response within each chart bar", "Shows first-to-last midpoint and eligible-trade returns in basis points for exactly the selected timeframe.", "Agreement between flow and return suggests continuation; strong flow with little return can indicate absorption.", "This is realized response, not a future-return target.")),
@@ -238,6 +249,9 @@ const INDICATOR_SERIES = [
   { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Imbalance", column: "microstructure_transaction_imbalance", color: "var(--foreground)", displayItemId: "indicator.qmd_transaction_imbalance", label: "Transaction imbalance", pane: "qmd_transaction", style: "histogram" },
   { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Imbalance", column: "microstructure_signed_volume_imbalance", color: "var(--foreground)", displayItemId: "indicator.qmd_signed_volume", label: "Signed volume", pane: "qmd_signed_volume", style: "histogram" },
   { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "OFI", column: "microstructure_level1_ofi", color: "var(--foreground)", displayItemId: "indicator.qmd_level1_ofi", label: "Level-1 OFI", pane: "qmd_level1_ofi", style: "histogram" },
+  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Relationship", column: "microstructure_anchored_flow_relationship", color: "var(--muted-foreground)", displayItemId: "indicator.qmd_anchored_flow", label: "Relationship", opacity: 0.24, pane: "qmd_anchored_flow", priceScaleId: "left", style: "histogram" },
+  { axisTitle: "Net shares", column: "microstructure_cumulative_level1_ofi", color: "var(--info)", displayItemId: "indicator.qmd_anchored_flow", label: "Cumulative OFI", lineWidth: 3, pane: "qmd_anchored_flow" },
+  { axisTitle: "Net shares", column: "microstructure_cumulative_signed_volume_delta", color: "var(--warning)", displayItemId: "indicator.qmd_anchored_flow", label: "Cumulative trade delta", lineStyle: "dashed", lineWidth: 3, pane: "qmd_anchored_flow" },
   { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Queue", column: "microstructure_queue_imbalance", color: "var(--foreground)", displayItemId: "indicator.qmd_queue_imbalance", label: "Queue imbalance", pane: "qmd_queue", style: "histogram" },
   { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Lean", column: "microstructure_microprice_lean", color: "var(--foreground)", displayItemId: "indicator.qmd_microprice_lean", label: "Microprice lean", pane: "qmd_microprice", style: "histogram" },
   { axisTitle: "bps", column: "microstructure_midpoint_return_bps", color: "var(--info)", displayItemId: "indicator.qmd_recent_returns", label: "Midpoint return", pane: "qmd_returns" },
@@ -1173,23 +1187,20 @@ function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl,
 function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscillator" | "price", visibleIndicators: string[]): ChartPayload["overlay_series"] {
   const visible = new Set(visibleIndicators);
   const latestMicrostructure = [...rows].reverse().find((row) => Number.isFinite(Number(row.microstructure_unified_signal)));
+  const latestAnchoredFlow = [...rows].reverse().find((row) => Number.isFinite(Number(row.microstructure_cumulative_level1_ofi)) && Number.isFinite(Number(row.microstructure_cumulative_signed_volume_delta)));
   return INDICATOR_SERIES.filter((spec) => visible.has(spec.displayItemId) && (spec.pane === "price" ? "price" : "oscillator") === target).map((spec) => ({
     ...( "autoscaleMax" in spec ? { autoscaleMax: spec.autoscaleMax, autoscaleMin: spec.autoscaleMin } : {}),
     ...( "axisTitle" in spec ? { axisTitle: spec.axisTitle } : {}),
     color: spec.color,
     ...( "colorMode" in spec ? { colorMode: spec.colorMode } : {}),
     column: spec.column,
-    data: rows.map((row) => ({
-      ...(spec.column === "microstructure_unified_signal"
-        ? { tone: microstructureActionTone(String(row.microstructure_unified_action || "WAIT")) }
-        : qmdDirectionalColumn(spec.column)
-          ? { tone: microstructureValueTone(Number(row[spec.column])) }
-          : {}),
-      time: Date.parse(String(row.bar_start)) / 1000,
-      value: Number(row[spec.column]),
-    })).filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value)),
+    data: rows.map((row) => indicatorSeriesPoint(row, spec.column)).filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value)),
     displayItemId: spec.displayItemId,
-    label: spec.column === "microstructure_unified_signal" ? microstructureUnifiedLabel(latestMicrostructure) : spec.label,
+    label: spec.column === "microstructure_unified_signal"
+      ? microstructureUnifiedLabel(latestMicrostructure)
+      : spec.column === "microstructure_anchored_flow_relationship"
+        ? anchoredFlowRelationshipLabel(latestAnchoredFlow)
+        : spec.label,
     ...( "lastValueVisible" in spec ? { lastValueVisible: Boolean(spec.lastValueVisible) } : {}),
     ...( "lineStyle" in spec ? { lineStyle: spec.lineStyle } : {}),
     lineWidth: "lineWidth" in spec ? spec.lineWidth : 1,
@@ -1198,6 +1209,36 @@ function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscilla
     ...( "priceScaleId" in spec ? { priceScaleId: spec.priceScaleId } : {}),
     style: "style" in spec ? spec.style : "line",
   }));
+}
+
+function indicatorSeriesPoint(row: HistoricalIndicator, column: string) {
+  const time = Date.parse(String(row.bar_start)) / 1000;
+  if (column === "microstructure_anchored_flow_relationship") {
+    const relationship = anchoredFlowRelationship(String(row.microstructure_anchored_flow_relationship || "neutral"), Number(row.microstructure_anchored_flow_relationship_score));
+    return { color: relationship.color, time, value: relationship.value };
+  }
+  return {
+    ...(column === "microstructure_unified_signal"
+      ? { tone: microstructureActionTone(String(row.microstructure_unified_action || "WAIT")) }
+      : qmdDirectionalColumn(column)
+        ? { tone: microstructureValueTone(Number(row[column])) }
+        : {}),
+    time,
+    value: Number(row[column]),
+  };
+}
+
+function anchoredFlowRelationship(value: string, score: number) {
+  if (value === "bullish_confirmation") return { color: "var(--success)", label: "Bullish confirmation", value: 1 };
+  if (value === "bearish_confirmation") return { color: "var(--danger)", label: "Bearish confirmation", value: -1 };
+  if (value === "bullish_absorption") return { color: "var(--info)", label: "Bullish absorption", value: 0.55 };
+  if (value === "bearish_absorption") return { color: "var(--warning)", label: "Bearish absorption", value: -0.55 };
+  return { color: "var(--muted-foreground)", label: "Neutral", value: Number.isFinite(score) ? score : 0 };
+}
+
+function anchoredFlowRelationshipLabel(row?: HistoricalIndicator) {
+  if (!row) return "Relationship · waiting";
+  return `Relationship · ${anchoredFlowRelationship(String(row.microstructure_anchored_flow_relationship || "neutral"), Number(row.microstructure_anchored_flow_relationship_score)).label}`;
 }
 
 function microstructureActionTone(action: string): "buy" | "neutral" | "sell" {

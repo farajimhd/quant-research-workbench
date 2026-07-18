@@ -97,6 +97,7 @@ pub struct MicrostructureIntervalFeatures {
     pub classified_trade_count: u64,
     pub displayed_liquidity_score: f64,
     pub eligible_trade_count: u64,
+    pub level1_ofi_delta: f64,
     pub level1_ofi: f64,
     pub microprice_lean: f64,
     pub midpoint_return_bps: f64,
@@ -107,6 +108,7 @@ pub struct MicrostructureIntervalFeatures {
     pub response_resiliency_score: f64,
     pub sell_trade_count: u64,
     pub sell_volume: f64,
+    pub signed_volume_delta: f64,
     pub signed_volume_imbalance: f64,
     pub spread_bps: f64,
     pub trade_return_bps: f64,
@@ -188,6 +190,8 @@ impl MicrostructureIntervalFeatures {
     }
 
     pub fn refresh(&mut self, coverage: f64) {
+        self.signed_volume_delta = self.buy_volume - self.sell_volume;
+        self.level1_ofi_delta = self.ofi_numerator;
         self.transaction_imbalance = safe_ratio(
             self.buy_trade_count as f64 - self.sell_trade_count as f64,
             self.classified_trade_count as f64,
@@ -311,7 +315,9 @@ impl MicrostructureIntervalFeatures {
         self.unified_confidence = round2(confidence);
         self.unified_action = action;
         self.transaction_imbalance = round4(self.transaction_imbalance);
+        self.signed_volume_delta = round2(self.signed_volume_delta);
         self.signed_volume_imbalance = round4(self.signed_volume_imbalance);
+        self.level1_ofi_delta = round2(self.level1_ofi_delta);
         self.level1_ofi = round4(self.level1_ofi);
         self.queue_imbalance = round4(self.queue_imbalance);
         self.microprice_lean = round4(self.microprice_lean);
@@ -1072,7 +1078,9 @@ mod tests {
         assert_eq!(first.sell_trade_count, 4);
         assert_eq!(first.classified_trade_count, 8);
         assert!((first.transaction_imbalance - 0.0).abs() < 1e-9);
+        assert!((first.signed_volume_delta - 100.0).abs() < 1e-9);
         assert!((first.signed_volume_imbalance - 0.1667).abs() < 1e-4);
+        assert!((first.level1_ofi_delta - 100.0).abs() < 1e-9);
         assert!((first.level1_ofi - 0.125).abs() < 1e-9);
         assert!((first.queue_imbalance - 0.125).abs() < 1e-9);
         assert!((first.midpoint_return_bps - 0.0).abs() < 1e-6);

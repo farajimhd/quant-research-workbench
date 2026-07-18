@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, sleep, Duration};
 
-pub const INDICATOR_SCHEMA_VERSION: u16 = 5;
+pub const INDICATOR_SCHEMA_VERSION: u16 = 6;
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 
 #[derive(Clone, Debug, Serialize)]
@@ -92,8 +92,14 @@ pub struct IndicatorRow {
     pub microstructure_eligible_trade_count: u64,
     pub microstructure_buy_volume: f64,
     pub microstructure_sell_volume: f64,
+    pub microstructure_signed_volume_delta: f64,
+    pub microstructure_cumulative_signed_volume_delta: f64,
+    pub microstructure_anchored_flow_relationship: String,
+    pub microstructure_anchored_flow_relationship_score: f64,
     pub microstructure_transaction_imbalance: f64,
     pub microstructure_signed_volume_imbalance: f64,
+    pub microstructure_level1_ofi_delta: f64,
+    pub microstructure_cumulative_level1_ofi: f64,
     pub microstructure_level1_ofi: f64,
     pub microstructure_queue_imbalance: f64,
     pub microstructure_microprice_lean: f64,
@@ -138,8 +144,10 @@ impl IndicatorRow {
         self.microstructure_eligible_trade_count = interval.eligible_trade_count;
         self.microstructure_buy_volume = interval.buy_volume;
         self.microstructure_sell_volume = interval.sell_volume;
+        self.microstructure_signed_volume_delta = interval.signed_volume_delta;
         self.microstructure_transaction_imbalance = interval.transaction_imbalance;
         self.microstructure_signed_volume_imbalance = interval.signed_volume_imbalance;
+        self.microstructure_level1_ofi_delta = interval.level1_ofi_delta;
         self.microstructure_level1_ofi = interval.level1_ofi;
         self.microstructure_queue_imbalance = interval.queue_imbalance;
         self.microstructure_microprice_lean = interval.microprice_lean;
@@ -222,7 +230,64 @@ struct IndicatorStore {
     ticks: HashMap<String, TickState>,
     microstructure: HashMap<String, MicrostructureForecastWindow>,
     microstructure_aggregates: HashMap<IndicatorKey, MicrostructureSampleAggregate>,
+    microstructure_cumulative_flows: HashMap<IndicatorKey, MicrostructureCumulativeFlow>,
     trade_rules: TradeAggregationRules,
+}
+
+#[derive(Clone, Debug, Default)]
+struct MicrostructureCumulativeFlow {
+    level1_ofi: f64,
+    session_date: String,
+    signed_volume_delta: f64,
+}
+
+impl MicrostructureCumulativeFlow {
+    fn apply_to(&mut self, row: &mut IndicatorRow) {
+        let (level1_ofi, signed_volume_delta) = self.update(
+            &row.session_date,
+            row.microstructure_level1_ofi_delta,
+            row.microstructure_signed_volume_delta,
+        );
+        row.microstructure_cumulative_level1_ofi = level1_ofi;
+        row.microstructure_cumulative_signed_volume_delta = signed_volume_delta;
+        let (relationship, relationship_score) =
+            anchored_flow_relationship(level1_ofi, signed_volume_delta);
+        row.microstructure_anchored_flow_relationship = relationship.to_string();
+        row.microstructure_anchored_flow_relationship_score = relationship_score;
+    }
+
+    fn update(
+        &mut self,
+        session_date: &str,
+        level1_ofi_delta: f64,
+        signed_volume_delta: f64,
+    ) -> (f64, f64) {
+        if self.session_date != session_date {
+            self.level1_ofi = 0.0;
+            self.signed_volume_delta = 0.0;
+            self.session_date = session_date.to_string();
+        }
+        self.level1_ofi += level1_ofi_delta;
+        self.signed_volume_delta += signed_volume_delta;
+        (
+            round_indicator_value(self.level1_ofi),
+            round_indicator_value(self.signed_volume_delta),
+        )
+    }
+}
+
+fn anchored_flow_relationship(level1_ofi: f64, signed_volume_delta: f64) -> (&'static str, f64) {
+    if level1_ofi > 0.0 && signed_volume_delta > 0.0 {
+        ("bullish_confirmation", 1.0)
+    } else if level1_ofi < 0.0 && signed_volume_delta < 0.0 {
+        ("bearish_confirmation", -1.0)
+    } else if level1_ofi > 0.0 && signed_volume_delta < 0.0 {
+        ("bullish_absorption", 0.55)
+    } else if level1_ofi < 0.0 && signed_volume_delta > 0.0 {
+        ("bearish_absorption", -0.55)
+    } else {
+        ("neutral", 0.0)
+    }
 }
 
 struct TickState {
@@ -390,6 +455,7 @@ impl IndicatorShardStore {
                 ticks: HashMap::new(),
                 microstructure: HashMap::new(),
                 microstructure_aggregates: HashMap::new(),
+                microstructure_cumulative_flows: HashMap::new(),
                 trade_rules,
             })),
         }
@@ -489,6 +555,10 @@ impl IndicatorStore {
             aggregate.apply_to(&mut row);
             aggregate.reset();
         }
+        self.microstructure_cumulative_flows
+            .entry(key.clone())
+            .or_default()
+            .apply_to(&mut row);
         let history_limit = self.history_limit_for(&bar.timeframe);
         let history = self.history.entry(key).or_insert_with(VecDeque::new);
         history.push_back(row.clone());
@@ -894,8 +964,14 @@ impl BarIndicatorState {
             microstructure_eligible_trade_count: 0,
             microstructure_buy_volume: 0.0,
             microstructure_sell_volume: 0.0,
+            microstructure_signed_volume_delta: 0.0,
+            microstructure_cumulative_signed_volume_delta: 0.0,
+            microstructure_anchored_flow_relationship: "neutral".to_string(),
+            microstructure_anchored_flow_relationship_score: 0.0,
             microstructure_transaction_imbalance: 0.0,
             microstructure_signed_volume_imbalance: 0.0,
+            microstructure_level1_ofi_delta: 0.0,
+            microstructure_cumulative_level1_ofi: 0.0,
             microstructure_level1_ofi: 0.0,
             microstructure_queue_imbalance: 0.0,
             microstructure_microprice_lean: 0.0,
@@ -1226,8 +1302,14 @@ impl IndicatorClickHouseWriter {
                 microstructure_eligible_trade_count UInt64,
                 microstructure_buy_volume Float64,
                 microstructure_sell_volume Float64,
+                microstructure_signed_volume_delta Float64,
+                microstructure_cumulative_signed_volume_delta Float64,
+                microstructure_anchored_flow_relationship LowCardinality(String),
+                microstructure_anchored_flow_relationship_score Float64,
                 microstructure_transaction_imbalance Float64,
                 microstructure_signed_volume_imbalance Float64,
+                microstructure_level1_ofi_delta Float64,
+                microstructure_cumulative_level1_ofi Float64,
                 microstructure_level1_ofi Float64,
                 microstructure_queue_imbalance Float64,
                 microstructure_microprice_lean Float64,
@@ -1271,8 +1353,14 @@ impl IndicatorClickHouseWriter {
                 ADD COLUMN IF NOT EXISTS microstructure_eligible_trade_count UInt64,
                 ADD COLUMN IF NOT EXISTS microstructure_buy_volume Float64,
                 ADD COLUMN IF NOT EXISTS microstructure_sell_volume Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_signed_volume_delta Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_cumulative_signed_volume_delta Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_anchored_flow_relationship LowCardinality(String),
+                ADD COLUMN IF NOT EXISTS microstructure_anchored_flow_relationship_score Float64,
                 ADD COLUMN IF NOT EXISTS microstructure_transaction_imbalance Float64,
                 ADD COLUMN IF NOT EXISTS microstructure_signed_volume_imbalance Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_level1_ofi_delta Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_cumulative_level1_ofi Float64,
                 ADD COLUMN IF NOT EXISTS microstructure_level1_ofi Float64,
                 ADD COLUMN IF NOT EXISTS microstructure_queue_imbalance Float64,
                 ADD COLUMN IF NOT EXISTS microstructure_microprice_lean Float64,
@@ -1448,8 +1536,14 @@ fn indicator_insert_row(row: &IndicatorRow) -> serde_json::Value {
         "microstructure_eligible_trade_count": row.microstructure_eligible_trade_count,
         "microstructure_buy_volume": row.microstructure_buy_volume,
         "microstructure_sell_volume": row.microstructure_sell_volume,
+        "microstructure_signed_volume_delta": row.microstructure_signed_volume_delta,
+        "microstructure_cumulative_signed_volume_delta": row.microstructure_cumulative_signed_volume_delta,
+        "microstructure_anchored_flow_relationship": &row.microstructure_anchored_flow_relationship,
+        "microstructure_anchored_flow_relationship_score": row.microstructure_anchored_flow_relationship_score,
         "microstructure_transaction_imbalance": row.microstructure_transaction_imbalance,
         "microstructure_signed_volume_imbalance": row.microstructure_signed_volume_imbalance,
+        "microstructure_level1_ofi_delta": row.microstructure_level1_ofi_delta,
+        "microstructure_cumulative_level1_ofi": row.microstructure_cumulative_level1_ofi,
         "microstructure_level1_ofi": row.microstructure_level1_ofi,
         "microstructure_queue_imbalance": row.microstructure_queue_imbalance,
         "microstructure_microprice_lean": row.microstructure_microprice_lean,
@@ -1464,6 +1558,10 @@ fn indicator_insert_row(row: &IndicatorRow) -> serde_json::Value {
         "microstructure_response_resiliency_score": row.microstructure_response_resiliency_score,
         "microstructure_regime_reliability": row.microstructure_regime_reliability,
     })
+}
+
+fn round_indicator_value(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
 }
 
 fn canonical_timeframe(value: &str) -> String {
@@ -1531,7 +1629,10 @@ fn safe_div(numerator: f64, denominator: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionVwapState, WeightedSignalAggregate};
+    use super::{
+        anchored_flow_relationship, MicrostructureCumulativeFlow, SessionVwapState,
+        WeightedSignalAggregate,
+    };
     use chrono::{TimeZone, Utc};
 
     #[test]
@@ -1573,6 +1674,35 @@ mod tests {
         let (conflicting_signal, conflicting_confidence) = conflicting.value();
         assert!(conflicting_signal.abs() < 1e-9);
         assert!(conflicting_confidence < aligned_confidence);
+    }
+
+    #[test]
+    fn cumulative_microstructure_flow_adds_raw_deltas_and_resets_by_session() {
+        let mut state = MicrostructureCumulativeFlow::default();
+        assert_eq!(state.update("2026-07-14", 120.0, -40.0), (120.0, -40.0));
+        assert_eq!(state.update("2026-07-14", -20.0, 90.0), (100.0, 50.0));
+        assert_eq!(state.update("2026-07-15", -35.0, -10.0), (-35.0, -10.0));
+    }
+
+    #[test]
+    fn anchored_flow_relationship_distinguishes_confirmation_and_absorption() {
+        assert_eq!(
+            anchored_flow_relationship(100.0, 50.0),
+            ("bullish_confirmation", 1.0)
+        );
+        assert_eq!(
+            anchored_flow_relationship(-100.0, -50.0),
+            ("bearish_confirmation", -1.0)
+        );
+        assert_eq!(
+            anchored_flow_relationship(100.0, -50.0),
+            ("bullish_absorption", 0.55)
+        );
+        assert_eq!(
+            anchored_flow_relationship(-100.0, 50.0),
+            ("bearish_absorption", -0.55)
+        );
+        assert_eq!(anchored_flow_relationship(0.0, 50.0), ("neutral", 0.0));
     }
 
     #[test]
