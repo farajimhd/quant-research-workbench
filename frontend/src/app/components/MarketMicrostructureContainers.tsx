@@ -130,7 +130,7 @@ export function QuotesTapeContainer({ end, onSymbolChange, start, symbol }: Mark
           <div className="last-print" data-direction={last?.direction ?? "mid"}>
             <MetricLabel help="The most recent eligible trade print at or before the displayed time." label="Last print" />
             <strong>{last ? formatPrice(last.price) : "—"}</strong>
-            <span>{last ? `${directionLabel(last.direction)} · ${formatTradeSize(last.size)} sh` : "Waiting for a trade"}</span>
+            {last ? <div className="last-print-context"><span>{directionLabel(last.direction)}</span><b>{formatTradeSize(last.size)} <small>shares</small></b></div> : <span>Waiting for a trade</span>}
           </div>
           <div className="tape-flow">
             <SignalMetric help="At-ask volume divided by all directionally classified volume in the visible window." label="Buy share" tone={buyShare >= 0.5 ? "buy" : "sell"} value={`${Math.round(buyShare * 100)}%`} />

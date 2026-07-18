@@ -16,6 +16,7 @@ type ChartChoice = {
   label: string;
   question: string;
   read: string;
+  tone?: Direction;
   value?: string;
 };
 
@@ -25,41 +26,63 @@ const PAD_X = 48;
 const PAD_Y = 12;
 
 export function QuoteChartGallery({ quotes }: { quotes: MicroQuote[] }) {
-  const chart = useMemo(() => quoteChart(quotes), [quotes]);
-  return <ChartPanel chart={chart} empty="Quote updates are required to calculate size imbalance." title="Quote size imbalance" />;
+  const charts = useMemo(() => focusedQuoteCharts(quotes), [quotes]);
+  return <div className="quote-chart-stack">{charts.length
+    ? charts.map((chart) => <ChartPanel chart={chart} compact key={chart.id} />)
+    : <span className="visual-empty">Quote updates are required to calculate size imbalance and microprice.</span>}
+  </div>;
 }
 
-function quoteChart(quotes: MicroQuote[]): ChartChoice | undefined {
-  if (quotes.length < 2) return undefined;
-  const imbalance = quotes.slice(-96).map((quote) => quoteFrame(quote).imbalance);
-  return {
-    id: "imbalance",
-    label: "Size imbalance",
-    question: "Which NBBO side currently shows more displayed shares?",
-    value: signedPercent(imbalance.at(-1) ?? 0),
-    read: "Each bar is one quote update. Green above zero is bid-heavy; red below zero is ask-heavy. Oldest is left.",
-    bullish: "Persistent positive imbalance that survives updates and is followed by bid improvement.",
-    bearish: "Persistent negative imbalance that survives updates and is followed by ask-down or bid-fade events.",
-    caution: "Displayed size can cancel instantly and excludes hidden liquidity and all depth away from the NBBO.",
-    chart: <SignedBars values={imbalance} />,
-  };
+function focusedQuoteCharts(quotes: MicroQuote[]): ChartChoice[] {
+  if (quotes.length < 2) return [];
+  const frames = quotes.slice(-96).map((quote) => quoteFrame(quote));
+  const imbalance = frames.map((frame) => frame.imbalance);
+  const midpoint = frames.map((frame) => frame.midpoint);
+  const microprice = frames.map((frame) => frame.microprice);
+  const latestImbalance = imbalance.at(-1) ?? 0;
+  const midpointChange = ((midpoint.at(-1) ?? midpoint[0]) - midpoint[0]) * 100;
+  return [
+    {
+      id: "imbalance",
+      label: "Size imbalance",
+      question: "Which NBBO side currently shows more displayed shares?",
+      value: signedPercent(latestImbalance),
+      tone: directionFromValue(latestImbalance),
+      read: "Each bar is one quote update. Green above zero is bid-heavy; red below zero is ask-heavy. Oldest is left.",
+      bullish: "Persistent positive imbalance that survives updates and is followed by bid improvement.",
+      bearish: "Persistent negative imbalance that survives updates and is followed by ask-down or bid-fade events.",
+      caution: "Displayed size can cancel instantly and excludes hidden liquidity and all depth away from the NBBO.",
+      chart: <SignedBars values={imbalance} />,
+    },
+    {
+      id: "price",
+      label: "Midpoint + microprice",
+      question: "Is displayed liquidity leaning ahead of an NBBO price move?",
+      value: `${signed(midpointChange, 2)}¢`,
+      tone: directionFromValue(midpointChange),
+      read: "Oldest is left and newest is right. Black is NBBO midpoint; blue is size-weighted microprice. The value is midpoint change over 96 updates.",
+      bullish: "Both lines rise, or microprice remains above midpoint while midpoint begins to rise.",
+      bearish: "Both lines fall, or microprice remains below midpoint while midpoint begins to fall.",
+      caution: "A microprice lead without subsequent midpoint movement can be cancelled displayed size rather than executable demand.",
+      chart: <MultiLineChart format={formatPrice} series={[{ className: "chart-midpoint", label: "Midpoint", values: midpoint }, { className: "chart-microprice", label: "Microprice", values: microprice }]} />,
+    },
+  ];
 }
 
 export function TapeChartGallery({ trades }: { trades: MicroTrade[] }) {
   const chart = useMemo(() => tapeChart(trades), [trades]);
-  return <ChartPanel chart={chart} empty="Trade prints are required to calculate executed volume and aggressor mix." title="Tape volume and aggressor mix" />;
+  return chart ? <ChartPanel chart={chart} /> : <span className="visual-empty">Trade prints are required to calculate executed volume and aggressor mix.</span>;
 }
 
-function ChartPanel({ chart, empty, title }: { chart?: ChartChoice; empty: string; title: string }) {
+function ChartPanel({ chart, compact = false }: { chart: ChartChoice; compact?: boolean }) {
   const [guideOpen, setGuideOpen] = useState(false);
-  return <details className="microstructure-visual micro-chart-gallery" open>
-    <summary><span><strong>{title}</strong><small>One focused view; collapse it whenever you need more table rows.</small></span></summary>
-    {chart ? <div className="micro-chart-lab">
-      <header className="micro-chart-heading"><span><strong>{chart.label}</strong><small>{chart.question}</small></span><div>{chart.value ? <b>{chart.value}</b> : null}<button aria-label={`How to read ${chart.label}`} onClick={() => setGuideOpen(true)} type="button"><CircleHelp size={12} /> Guide</button></div></header>
+  return <div className="microstructure-visual micro-chart-gallery">
+    <div className={compact ? "micro-chart-lab compact" : "micro-chart-lab"}>
+      <header className="micro-chart-heading"><span><strong>{chart.label}</strong><small>{chart.question}</small></span><div>{chart.value ? <b data-tone={chart.tone ?? "mid"}>{chart.value}</b> : null}<button aria-label={`How to read ${chart.label}`} onClick={() => setGuideOpen(true)} type="button"><CircleHelp size={12} /> Guide</button></div></header>
       <div className="micro-chart-stage">{chart.chart}</div>
       {guideOpen ? <Modal className="micro-chart-guide-modal" onClose={() => setGuideOpen(false)} title={`How to read: ${chart.label}`}><div className="micro-chart-guide"><GuidePoint label="Read" text={chart.read} tone="mid" /><GuidePoint label="Bullish evidence" text={chart.bullish} tone="buy" /><GuidePoint label="Bearish evidence" text={chart.bearish} tone="sell" /><GuidePoint label="Do not overread" text={chart.caution} tone="warning" /></div></Modal> : null}
-    </div> : <span className="visual-empty">{empty}</span>}
-  </details>;
+    </div>
+  </div>;
 }
 
 function GuidePoint({ label, text, tone }: { label: string; text: string; tone: "buy" | "mid" | "sell" | "warning" }) {
@@ -196,12 +219,17 @@ function tapeChart(trades: MicroTrade[]): ChartChoice | undefined {
     label: "Executed volume by price + aggressor mix",
     question: "Where did trading concentrate, and who crossed the spread to create that volume?",
     value: `Δ ${signedCompact(profileDelta)}`,
+    tone: directionFromValue(profileDelta),
     read: "The upper profile places at-bid volume left and at-ask volume right at each price. The lower bar summarizes all visible volume as at bid, between market, or at ask.",
     bullish: "Green at-ask volume dominates the mix and concentrates at successively higher accepted prices; seller volume that cannot move price lower can also indicate bullish absorption.",
     bearish: "Red at-bid volume dominates the mix and concentrates at successively lower accepted prices; buyer volume that cannot lift price can indicate bearish absorption.",
     caution: "Volume concentration marks acceptance or a battleground, not automatic support, resistance, or a forecast.",
     chart: <div className="tape-profile-mix"><VolumeProfile levels={profile} /><AggressorMix mix={mix} /></div>,
   };
+}
+
+function directionFromValue(value: number): Direction {
+  return value > 0 ? "buy" : value < 0 ? "sell" : "mid";
 }
 
 function quoteFrame(quote: MicroQuote) {
