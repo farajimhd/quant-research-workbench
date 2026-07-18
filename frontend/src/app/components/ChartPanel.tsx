@@ -42,6 +42,7 @@ type Candle = { time: number; open: number; high: number; low: number; close: nu
 type ChartSeries = {
   autoscaleMax?: number;
   autoscaleMin?: number;
+  autoscaleScope?: "loaded-series";
   axisTitle?: string;
   bandFillColor?: string;
   bandFillOpacity?: number;
@@ -2924,10 +2925,12 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
 
 function applySeriesSettings(renderer: AnySeriesApi, source: ChartSeries, settings: Required<LegendSeriesSettings>, useAdaptivePriceFormat: boolean, appearance = defaultChartAppearanceSettings) {
   const priceFormatOptions = useAdaptivePriceFormat ? { priceFormat: adaptiveSeriesPriceFormat(source) } : {};
+  const autoscaleInfoProvider = seriesAutoscaleInfoProvider(source);
   if (source.style === "histogram") {
-    renderer.applyOptions({ color: colorWithOpacity(settings.color, effectiveSeriesOpacity(source, settings)), lastValueVisible: source.lastValueVisible ?? true, ...priceFormatOptions, title: source.axisTitle ?? source.label, visible: settings.visible } as never);
+    renderer.applyOptions({ autoscaleInfoProvider, color: colorWithOpacity(settings.color, effectiveSeriesOpacity(source, settings)), lastValueVisible: source.lastValueVisible ?? true, ...priceFormatOptions, title: source.axisTitle ?? source.label, visible: settings.visible } as never);
   } else {
     renderer.applyOptions({
+      autoscaleInfoProvider,
       color: colorWithOpacity(settings.color, effectiveSeriesOpacity(source, settings)),
       crosshairMarkerBorderWidth: 2,
       crosshairMarkerRadius: 4,
@@ -2944,7 +2947,7 @@ function applySeriesSettings(renderer: AnySeriesApi, source: ChartSeries, settin
 }
 
 function addChartSeries(chart: IChartApi, series: ChartSeries, settings: Required<LegendSeriesSettings>): AnySeriesApi {
-  const autoscaleInfoProvider = (baseImplementation: () => AutoscaleInfo | null) => includeRangeInAutoscale(baseImplementation, series.autoscaleMin ?? 0, series.autoscaleMax ?? 0);
+  const autoscaleInfoProvider = seriesAutoscaleInfoProvider(series);
   if (series.style === "histogram") {
     return chart.addHistogramSeries({
       autoscaleInfoProvider,
@@ -2972,6 +2975,22 @@ function addChartSeries(chart: IChartApi, series: ChartSeries, settings: Require
     title: series.axisTitle ?? series.label,
     visible: settings.visible
   });
+}
+
+function seriesAutoscaleInfoProvider(series: ChartSeries) {
+  let loadedMin = 0;
+  let loadedMax = 0;
+  if (series.autoscaleScope === "loaded-series") {
+    series.data.forEach((point) => {
+      const value = Number(point.value);
+      if (!Number.isFinite(value)) return;
+      loadedMin = Math.min(loadedMin, value);
+      loadedMax = Math.max(loadedMax, value);
+    });
+  }
+  const minValue = Math.min(series.autoscaleMin ?? 0, loadedMin);
+  const maxValue = Math.max(series.autoscaleMax ?? 0, loadedMax);
+  return (baseImplementation: () => AutoscaleInfo | null) => includeRangeInAutoscale(baseImplementation, minValue, maxValue);
 }
 
 function adaptiveSeriesPriceFormat(series: ChartSeries) {
