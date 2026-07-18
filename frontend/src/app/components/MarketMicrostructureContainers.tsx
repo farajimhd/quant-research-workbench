@@ -78,114 +78,122 @@ const TAPE_METRIC_GUIDE = [
   ["Absorption", "One-sided aggressive flow with less than half a quoted spread of price movement over 500 milliseconds.", "Suggests passive or hidden liquidity may be absorbing the flow."],
 ];
 
-export function TapeContainer({ end, start, symbol }: MarketContainerProps) {
+export function QuotesTapeContainer({ end, start, symbol }: MarketContainerProps) {
   const { connected, error, events, forecast, marketState, references } = useMarketEvents(symbol, start, end);
   const decoded = useMemo(() => decodeMarketEvents(events), [events]);
-  const chronological = decoded.trades.slice(-MARKET_EVENT_HISTORY_LIMIT);
-  const prints = [...chronological].reverse();
+  const quotes = decoded.quotes.slice(-MARKET_EVENT_HISTORY_LIMIT);
+  const trades = decoded.trades.slice(-MARKET_EVENT_HISTORY_LIMIT);
+  const prints = [...trades].reverse();
   const last = prints[0];
-  const buyVolume = chronological.reduce((sum, item) => sum + (item.direction === "buy" ? item.size : 0), 0);
-  const sellVolume = chronological.reduce((sum, item) => sum + (item.direction === "sell" ? item.size : 0), 0);
-  const directionalVolume = buyVolume + sellVolume;
-  const buyShare = directionalVolume ? buyVolume / directionalVolume : 0.5;
-  const pace = eventRate(chronological.map((item) => item.timestampUs));
-  const eligibleTrades = chronological.filter((print) => isPriceEligibleTrade(print, references));
-  const priceWindow = timeWindowPriceChange(eligibleTrades, 500_000);
-  const quoteSpread = decoded.quotes.length ? Math.max(0.0001, decoded.quotes.at(-1)!.ask - decoded.quotes.at(-1)!.bid) : 0.01;
-  const absorption = directionalVolume > 0 && Math.abs(buyShare - 0.5) >= 0.18 && priceWindow.ready && Math.abs(priceWindow.change) < quoteSpread * 0.5;
-  const presentations = useTickerPresentations([symbol]);
-
-  return <section aria-label={`${symbol} time and sales`} className="market-microstructure tape-surface" data-market-state={connected}>
-    <MicrostructureHeader connected={connected} end={end} kind="tape" logoUrl={presentations[symbol]?.logo_url} marketState={marketState} references={references} symbol={symbol} />
-    <QmdArchitecturePanel forecast={forecast} kind="tape" marketState={marketState} />
-    <div className="tape-overview" aria-label="Tape summary">
-      <div className="last-print" data-direction={last?.direction ?? "mid"}>
-        <MetricLabel help="The most recent eligible trade print at or before the displayed time." label="Last print" />
-        <strong>{last ? formatPrice(last.price) : "—"}</strong>
-        <span>{last ? `${directionLabel(last.direction)} · ${formatTradeSize(last.size)} sh` : "Waiting for a trade"}</span>
-      </div>
-      <div className="tape-flow">
-        <SignalMetric help="At-ask volume divided by all directionally classified volume in the visible window." label="Buy share" tone={buyShare >= 0.5 ? "buy" : "sell"} value={`${Math.round(buyShare * 100)}%`} />
-        <SignalMetric help="At-ask share volume minus at-bid share volume in the visible window." label="Net flow" tone={buyVolume >= sellVolume ? "buy" : "sell"} value={signedCompact(buyVolume - sellVolume)} />
-        <SignalMetric help="Average prints per second across the visible tape window." label="Pace" tone="mid" value={`${pace.toFixed(pace >= 10 ? 0 : 1)}/s`} />
-        <SignalMetric help="Possible absorption appears when aggressive flow is one-sided but price barely moves. It is a diagnostic, not proof of hidden liquidity." label="Absorption" tone="mid" value={absorption ? "Possible" : "Not detected"} />
-      </div>
-    </div>
-    <TapeChartGallery trades={chronological} />
-    {error && !prints.length ? <MicrostructureEmpty message={error} /> : prints.length ? <div className="microstructure-scroll">
-      <table className="tape-table">
-        <thead><tr><th>Time ET</th><th>Price</th><th>Size</th><th>Exchange</th><th>Condition</th></tr></thead>
-        <tbody>{prints.map((print) => {
-          const exchange = venueReference(print.exchange, references);
-          const condition = tradeCondition(print, references);
-          const conditions = tradeConditionItems(print, references);
-          return <tr data-condition-tone={condition.tone} data-direction={print.direction} key={print.id} title={print.issues ? `QMD issue flags: ${print.issues}` : directionLabel(print.direction)}>
-            <td><time>{formatEventTime(print.timestampUs)}</time></td>
-            <td className="numeric price">{formatPrice(print.price)}</td>
-            <td className="numeric size">{formatTradeSize(print.size)}</td>
-            <td><span className="venue-code" title={exchange.name}>{exchange.code}</span></td>
-            <td><span className="trade-condition-list">{conditions.length ? conditions.map((item) => <span className="condition-code" data-condition-tone={conditionTone(item.name)} data-special={item.special} key={`${item.token}-${item.slot}`}><small>C{item.slot}</small>{item.label}</span>) : <span className="condition-empty">—</span>}</span></td>
-          </tr>;
-        })}</tbody>
-      </table>
-    </div> : <MicrostructureEmpty message={connected === "point-in-time" ? "No trade prints were found before the Canvas clock." : connected === "live" ? "Waiting for the next eligible trade print." : "Connecting to the live tape…"} />}
-  </section>;
-}
-
-export function QuotesContainer({ end, start, symbol }: MarketContainerProps) {
-  const { connected, error, events, forecast, marketState, references } = useMarketEvents(symbol, start, end);
-  const chronological = useMemo(() => decodeMarketEvents(events).quotes.slice(-MARKET_EVENT_HISTORY_LIMIT), [events]);
-  const current = chronological.at(-1);
-  const signals = useMemo(() => quoteSignals(chronological).reverse(), [chronological]);
+  const current = quotes.at(-1);
+  const signals = useMemo(() => quoteSignals(quotes).reverse(), [quotes]);
   const groups = useMemo(() => groupQuoteSignals(signals), [signals]);
   const [expandedGroups, setExpandedGroups] = useState<Set<number>>(() => new Set());
+  const buyVolume = trades.reduce((sum, item) => sum + (item.direction === "buy" ? item.size : 0), 0);
+  const sellVolume = trades.reduce((sum, item) => sum + (item.direction === "sell" ? item.size : 0), 0);
+  const directionalVolume = buyVolume + sellVolume;
+  const buyShare = directionalVolume ? buyVolume / directionalVolume : 0.5;
+  const pace = eventRate(trades.map((item) => item.timestampUs));
+  const eligibleTrades = trades.filter((print) => isPriceEligibleTrade(print, references));
+  const priceWindow = timeWindowPriceChange(eligibleTrades, 500_000);
+  const quoteSpread = current ? Math.max(0.0001, current.ask - current.bid) : 0.01;
+  const absorption = directionalVolume > 0 && Math.abs(buyShare - 0.5) >= 0.18 && priceWindow.ready && Math.abs(priceWindow.change) < quoteSpread * 0.5;
   const presentations = useTickerPresentations([symbol]);
   const spread = current ? Math.max(0, current.ask - current.bid) : 0;
   const midpoint = current ? (current.ask + current.bid) / 2 : 0;
   const totalSize = current ? current.bidSize + current.askSize : 0;
   const imbalance = current && totalSize ? (current.bidSize - current.askSize) / totalSize : 0;
   const microprice = current && totalSize ? (current.ask * current.bidSize + current.bid * current.askSize) / totalSize : midpoint;
-  const spreadState = classifySpread(spread, chronological);
+  const spreadState = classifySpread(spread, quotes);
   const bidVenue = venueReference(current?.bidExchange ?? 0, references);
   const askVenue = venueReference(current?.askExchange ?? 0, references);
 
-  return <section aria-label={`${symbol} NBBO liquidity monitor`} className="market-microstructure quote-surface" data-market-state={connected}>
-    <MicrostructureHeader connected={connected} end={end} kind="quotes" logoUrl={presentations[symbol]?.logo_url} marketState={marketState} references={references} symbol={symbol} />
-    <QmdArchitecturePanel forecast={forecast} kind="quotes" marketState={marketState} />
-    <div className="nbbo-overview" aria-label="Current NBBO and liquidity signals">
-      <div className="nbbo-prices">
-        <QuoteSide exchange={bidVenue} label="Bid" price={current?.bid} size={current?.bidSize} tone="buy" />
-        <div className="spread-focus" data-tone={spreadState === "Tighter" ? "buy" : spreadState === "Wider" ? "sell" : "mid"}><MetricLabel help="Current best ask minus current best bid. Tight relative to this window is favorable for execution; wide is costly." label="Spread" /><strong>{current ? formatPrice(spread) : "—"}</strong><span>{spreadState}</span></div>
-        <QuoteSide exchange={askVenue} label="Ask" price={current?.ask} size={current?.askSize} tone="sell" />
-      </div>
-      <div className="liquidity-signals">
-        <div className="imbalance-signal" data-tone={imbalance >= 0 ? "buy" : "sell"}>
-          <span><MetricLabel help="(Bid size − ask size) ÷ total displayed NBBO size. Positive values are bid-heavy." label="Size imbalance" /><strong>{signedPercent(imbalance)}</strong></span>
-          <i aria-hidden="true"><b style={{ left: `${Math.round((imbalance + 1) * 50)}%` }} /></i>
-          <em>{imbalanceLabel(imbalance)}</em>
+  return <section aria-label={`${symbol} quotes and time and sales`} className="market-microstructure combined-microstructure" data-market-state={connected}>
+    <MicrostructureHeader connected={connected} end={end} logoUrl={presentations[symbol]?.logo_url} marketState={marketState} references={references} symbol={symbol} />
+    <QmdArchitecturePanel forecast={forecast} marketState={marketState} />
+    <div className="combined-market-overview">
+      <section aria-label="Current consolidated quote" className="market-overview-lane quote-overview-lane">
+        <header><span><strong>Quotes</strong><small>Consolidated NBBO</small></span><em>{formatCount(quotes.length)} updates</em></header>
+        <div className="nbbo-overview" aria-label="Current NBBO and liquidity signals">
+          <div className="nbbo-prices">
+            <QuoteSide exchange={bidVenue} label="Bid" price={current?.bid} size={current?.bidSize} tone="buy" />
+            <div className="spread-focus" data-tone={spreadState === "Tighter" ? "buy" : spreadState === "Wider" ? "sell" : "mid"}><MetricLabel help="Current best ask minus current best bid. Tight relative to this window is favorable for execution; wide is costly." label="Spread" /><strong>{current ? formatPrice(spread) : "—"}</strong><span>{spreadState}</span></div>
+            <QuoteSide exchange={askVenue} label="Ask" price={current?.ask} size={current?.askSize} tone="sell" />
+          </div>
+          <div className="liquidity-signals">
+            <div className="imbalance-signal" data-tone={imbalance >= 0 ? "buy" : "sell"}>
+              <span><MetricLabel help="(Bid size − ask size) ÷ total displayed NBBO size. Positive values are bid-heavy." label="Size imbalance" /><strong>{signedPercent(imbalance)}</strong></span>
+              <i aria-hidden="true"><b style={{ left: `${Math.round((imbalance + 1) * 50)}%` }} /></i>
+              <em>{imbalanceLabel(imbalance)}</em>
+            </div>
+            <SignalMetric help="Size-weighted NBBO price. It leans toward the side with less displayed liquidity." label="Microprice" tone={microprice >= midpoint ? "buy" : "sell"} value={current ? formatPrice(microprice) : "—"} />
+            <SignalMetric help="Average NBBO updates per second across the visible quote window." label="Quote rate" tone="mid" value={`${eventRate(quotes.map((quote) => quote.timestampUs)).toFixed(1)}/s`} />
+          </div>
         </div>
-        <SignalMetric help="Size-weighted NBBO price. It leans toward the side with less displayed liquidity." label="Microprice" tone={microprice >= midpoint ? "buy" : "sell"} value={current ? formatPrice(microprice) : "—"} />
-        <SignalMetric help="Average NBBO updates per second across the visible quote window." label="Quote rate" tone="mid" value={`${eventRate(chronological.map((quote) => quote.timestampUs)).toFixed(1)}/s`} />
-      </div>
+      </section>
+      <section aria-label="Current tape flow" className="market-overview-lane tape-overview-lane">
+        <header><span><strong>Tape</strong><small>Executed trades</small></span><em>{formatCount(trades.length)} prints</em></header>
+        <div className="tape-overview" aria-label="Tape summary">
+          <div className="last-print" data-direction={last?.direction ?? "mid"}>
+            <MetricLabel help="The most recent eligible trade print at or before the displayed time." label="Last print" />
+            <strong>{last ? formatPrice(last.price) : "—"}</strong>
+            <span>{last ? `${directionLabel(last.direction)} · ${formatTradeSize(last.size)} sh` : "Waiting for a trade"}</span>
+          </div>
+          <div className="tape-flow">
+            <SignalMetric help="At-ask volume divided by all directionally classified volume in the visible window." label="Buy share" tone={buyShare >= 0.5 ? "buy" : "sell"} value={`${Math.round(buyShare * 100)}%`} />
+            <SignalMetric help="At-ask share volume minus at-bid share volume in the visible window." label="Net flow" tone={buyVolume >= sellVolume ? "buy" : "sell"} value={signedCompact(buyVolume - sellVolume)} />
+            <SignalMetric help="Average prints per second across the visible tape window." label="Pace" tone="mid" value={`${pace.toFixed(pace >= 10 ? 0 : 1)}/s`} />
+            <SignalMetric help="Possible absorption appears when aggressive flow is one-sided but price barely moves. It is a diagnostic, not proof of hidden liquidity." label="Absorption" tone="mid" value={absorption ? "Possible" : "Not detected"} />
+          </div>
+        </div>
+      </section>
     </div>
-    <QuoteChartGallery quotes={chronological} />
-    {error && !groups.length ? <MicrostructureEmpty message={error} /> : groups.length ? <div className="microstructure-scroll">
-      <table className="quote-signal-table">
-        <thead><tr><th>Time ET</th><th>Liquidity event</th><th>Bid</th><th>Ask</th></tr></thead>
-        <tbody>{groups.flatMap((group, index) => {
-          const summary = group.signals[0];
-          const grouped = group.signals.length > 1;
-          const expanded = expandedGroups.has(group.id);
-          const rows = [<QuoteSignalRow current={index === 0} detail={grouped ? `${group.signals.length} updates · ${summarizeQuoteGroup(group)}` : summary.detail} expanded={expanded} grouped={grouped} key={`group-${group.id}`} onToggle={() => setExpandedGroups((currentGroups) => {
-            const next = new Set(currentGroups);
-            if (next.has(group.id)) next.delete(group.id); else next.add(group.id);
-            return next;
-          })} quote={group.quote} references={references} tone={group.tone} />];
-          if (grouped && expanded) rows.push(...group.signals.map((signal) => <QuoteSignalRow child detail={signal.detail} key={`signal-${signal.quote.id}`} quote={signal.quote} references={references} tone={signal.tone} />));
-          return rows;
-        })}</tbody>
-      </table>
-    </div> : <MicrostructureEmpty message={connected === "point-in-time" ? "No NBBO updates were found before the Canvas clock." : connected === "live" ? "Waiting for the next NBBO update." : "Connecting to live NBBO…"} />}
+    <div className="combined-analysis-grid" aria-label="Quote and tape chart comparison">
+      <div className="microstructure-analysis-lane"><QuoteChartGallery quotes={quotes} /></div>
+      <div className="microstructure-analysis-lane"><TapeChartGallery trades={trades} /></div>
+    </div>
+    <div className="combined-stream-grid">
+      <section aria-label="Quote liquidity events" className="microstructure-stream-lane">
+        <header className="market-stream-heading"><span><strong>Quote events</strong><small>NBBO price, size and venue changes</small></span><em>{formatCount(groups.length)} grouped rows</em></header>
+        {error && !groups.length ? <MicrostructureEmpty message={error} /> : groups.length ? <div className="microstructure-scroll">
+          <table className="quote-signal-table">
+            <thead><tr><th>Time ET</th><th>Liquidity event</th><th>Bid</th><th>Ask</th></tr></thead>
+            <tbody>{groups.flatMap((group, index) => {
+              const summary = group.signals[0];
+              const grouped = group.signals.length > 1;
+              const expanded = expandedGroups.has(group.id);
+              const rows = [<QuoteSignalRow current={index === 0} detail={grouped ? `${group.signals.length} updates · ${summarizeQuoteGroup(group)}` : summary.detail} expanded={expanded} grouped={grouped} key={`group-${group.id}`} onToggle={() => setExpandedGroups((currentGroups) => {
+                const next = new Set(currentGroups);
+                if (next.has(group.id)) next.delete(group.id); else next.add(group.id);
+                return next;
+              })} quote={group.quote} references={references} tone={group.tone} />];
+              if (grouped && expanded) rows.push(...group.signals.map((signal) => <QuoteSignalRow child detail={signal.detail} key={`signal-${signal.quote.id}`} quote={signal.quote} references={references} tone={signal.tone} />));
+              return rows;
+            })}</tbody>
+          </table>
+        </div> : <MicrostructureEmpty message={connected === "point-in-time" ? "No NBBO updates were found before the Canvas clock." : connected === "live" ? "Waiting for the next NBBO update." : "Connecting to live NBBO…"} />}
+      </section>
+      <section aria-label="Trade prints" className="microstructure-stream-lane">
+        <header className="market-stream-heading"><span><strong>Trade prints</strong><small>Price, size, venue and conditions</small></span><em>{formatCount(prints.length)} rows</em></header>
+        {error && !prints.length ? <MicrostructureEmpty message={error} /> : prints.length ? <div className="microstructure-scroll">
+          <table className="tape-table">
+            <thead><tr><th>Time ET</th><th>Price</th><th>Size</th><th>Exchange</th><th>Condition</th></tr></thead>
+            <tbody>{prints.map((print) => {
+              const exchange = venueReference(print.exchange, references);
+              const condition = tradeCondition(print, references);
+              const conditions = tradeConditionItems(print, references);
+              return <tr data-condition-tone={condition.tone} data-direction={print.direction} key={print.id} title={print.issues ? `QMD issue flags: ${print.issues}` : directionLabel(print.direction)}>
+                <td><time>{formatEventTime(print.timestampUs)}</time></td>
+                <td className="numeric price">{formatPrice(print.price)}</td>
+                <td className="numeric size">{formatTradeSize(print.size)}</td>
+                <td><span className="venue-code" title={exchange.name}>{exchange.code}</span></td>
+                <td><span className="trade-condition-list">{conditions.length ? conditions.map((item) => <span className="condition-code" data-condition-tone={conditionTone(item.name)} data-special={item.special} key={`${item.token}-${item.slot}`}><small>C{item.slot}</small>{item.label}</span>) : <span className="condition-empty">—</span>}</span></td>
+              </tr>;
+            })}</tbody>
+          </table>
+        </div> : <MicrostructureEmpty message={connected === "point-in-time" ? "No trade prints were found before the Canvas clock." : connected === "live" ? "Waiting for the next eligible trade print." : "Connecting to the live tape…"} />}
+      </section>
+    </div>
   </section>;
 }
 
@@ -337,7 +345,7 @@ function QuoteSignalRow({ child = false, current = false, detail, expanded = fal
   </tr>;
 }
 
-function QmdArchitecturePanel({ forecast, kind, marketState }: { forecast: MicrostructureForecast | null; kind: "quotes" | "tape"; marketState: MarketState | null }) {
+function QmdArchitecturePanel({ forecast, marketState }: { forecast: MicrostructureForecast | null; marketState: MarketState | null }) {
   const halted = marketState?.trading_status?.toLowerCase() === "halted" || marketState?.is_tradable === false || marketState?.is_live_tradable === false;
   const interval = forecast?.interval;
   const unified = forecast?.unified;
@@ -345,31 +353,30 @@ function QmdArchitecturePanel({ forecast, kind, marketState }: { forecast: Micro
   const unifiedScore = unified?.score ?? interval?.unified_signal;
   const confidence = unified?.confidence ?? interval?.unified_confidence;
   const tone: Direction = action === "BUY" ? "buy" : action === "SELL" ? "sell" : "mid";
-  return <section aria-label={kind === "quotes" ? "QMD displayed-liquidity architecture" : "QMD execution signal architecture"} className="qmd-architecture-panel" data-blocked={halted ? "true" : "false"} data-kind={kind}>
-    <header><span><strong>{kind === "quotes" ? "QMD · liquidity evidence" : "QMD · execution decision"}</strong><small>{kind === "quotes" ? "Displayed NBBO input and evidence quality" : "Combined action from flow, liquidity and response"}</small></span><em>{kind === "quotes" ? "Quote block · 35%" : "Canonical strategy signal"}</em></header>
-    {kind === "quotes" ? <div className="qmd-architecture-grid quote-architecture-grid">
-      <ArchitectureMetric help="The quote-side directional block combines level-1 order-flow imbalance, queue imbalance, microprice lean, and quote arrival imbalance. It contributes 35% of the combined QMD signal." label="Displayed liquidity" tone={scoreTone(interval?.displayed_liquidity_score)} value={formatArchitectureScore(interval?.displayed_liquidity_score)} />
-      <ArchitectureMetric help="Evidence quality from usable quotes, classified trades, activity, and agreement. Reliability controls confidence; it is not another directional vote." label="Reliability" tone="mid" value={interval ? `${Math.round(interval.regime_reliability * 100)}%` : "—"} />
-    </div> : <div className="qmd-architecture-grid tape-architecture-grid">
+  return <section aria-label="QMD execution signal architecture" className="qmd-architecture-panel combined-architecture-panel" data-blocked={halted ? "true" : "false"}>
+    <header><span><strong>QMD · unified decision</strong><small>Quote liquidity, executed flow and market response at the active clock</small></span><em>Canonical strategy signal</em></header>
+    <div className="qmd-architecture-grid combined-architecture-grid">
       <article className="architecture-decision" data-tone={tone}><span className="forecast-direction-icon" aria-hidden="true">{forecastDirectionIcon(unified?.direction as ForecastHorizon["direction"] | undefined)}</span><span><small>Combined action</small><strong>{action}</strong><em>{unifiedScore == null ? "No score" : `${formatArchitectureScore(unifiedScore)} score`}</em></span></article>
-      <ArchitectureMetric help="Trade-side directional block from transaction imbalance, signed volume, aggressor persistence, trade return, and directional arrivals. It contributes 45% of the combined signal." label="Aggressive flow · 45%" tone={scoreTone(interval?.aggressive_flow_score)} value={formatArchitectureScore(interval?.aggressive_flow_score)} />
+      <ArchitectureMetric help="The quote-side directional block combines level-1 order-flow imbalance, queue imbalance, microprice lean, and quote arrival imbalance. It contributes 35% of the combined QMD signal." label="Liquidity · 35%" tone={scoreTone(interval?.displayed_liquidity_score)} value={formatArchitectureScore(interval?.displayed_liquidity_score)} />
+      <ArchitectureMetric help="Trade-side directional block from transaction imbalance, signed volume, aggressor persistence, trade return, and directional arrivals. It contributes 45% of the combined signal." label="Flow · 45%" tone={scoreTone(interval?.aggressive_flow_score)} value={formatArchitectureScore(interval?.aggressive_flow_score)} />
       <ArchitectureMetric help="Whether price confirms aggressive flow and whether displayed liquidity replenishes or absorbs it. It contributes 20% of the combined signal." label="Response · 20%" tone={scoreTone(interval?.response_resiliency_score)} value={formatArchitectureScore(interval?.response_resiliency_score)} />
       <ArchitectureMetric help="Evidence quality after coverage and agreement penalties. QMD returns WAIT below 35% confidence or when the absolute combined score is below 0.15." label="Confidence" tone="mid" value={confidence == null ? "—" : `${Math.round(confidence)}%`} />
-    </div>}
+      <ArchitectureMetric help="Evidence quality from usable quotes, classified trades, activity, and agreement. Reliability controls confidence; it is not another directional vote." label="Reliability" tone="mid" value={interval ? `${Math.round(interval.regime_reliability * 100)}%` : "—"} />
+    </div>
   </section>;
 }
 
 function ArchitectureMetric({ help, label, tone, value }: { help: string; label: string; tone: Direction; value: string }) { return <article className="architecture-metric" data-tone={tone}><MetricLabel help={help} label={label} /><strong>{value}</strong><em>{tone === "buy" ? "Bullish" : tone === "sell" ? "Bearish" : "Neutral"}</em></article>; }
 
-function MicrostructureHeader({ connected, end, kind, logoUrl, marketState, references, symbol }: { connected: ConnectionState; end?: string; kind: "quotes" | "tape"; logoUrl?: string; marketState: MarketState | null; references: MarketReferences; symbol: string }) {
+function MicrostructureHeader({ connected, end, logoUrl, marketState, references, symbol }: { connected: ConnectionState; end?: string; logoUrl?: string; marketState: MarketState | null; references: MarketReferences; symbol: string }) {
   const [liveAsOf] = useState(() => new Date().toISOString());
   const changeAsOf = end || liveAsOf;
   const status = marketStatusPresentation(marketState);
   return <header className="microstructure-header">
     <div className="microstructure-identity"><TickerIdentityWithChange asOf={changeAsOf} logoUrl={logoUrl} ticker={symbol} /></div>
     <div className="microstructure-header-actions">
-      {kind === "quotes" ? <><span className="market-status-badge" data-status={status.tone} title={status.help}>{status.tone === "halted" ? <ShieldAlert size={13} /> : <Radio size={12} />}{status.label}</span><span className="luld-status-badge" data-status={status.luldTone} title={status.luldHelp}>LULD {status.luldLabel}<HelpTip label={status.luldHelp} /></span></> : null}
-      <MicrostructureGuide kind={kind} references={references} />
+      <span className="market-status-badge" data-status={status.tone} title={status.help}>{status.tone === "halted" ? <ShieldAlert size={13} /> : <Radio size={12} />}{status.label}</span><span className="luld-status-badge" data-status={status.luldTone} title={status.luldHelp}>LULD {status.luldLabel}<HelpTip label={status.luldHelp} /></span>
+      <MicrostructureGuide references={references} />
       {connected === "connecting" || connected === "reconnecting" ? <span className="market-context-badge" data-state={connected} title="Current QMD connection state.">{connected === "connecting" ? <Activity size={11} /> : <WifiOff size={11} />}{connected}</span> : null}
     </div>
   </header>;
@@ -377,19 +384,19 @@ function MicrostructureHeader({ connected, end, kind, logoUrl, marketState, refe
 function SignalMetric({ help, label, tone = "mid", value }: { help: string; label: string; tone?: Direction; value: string }) { return <div className="signal-metric" data-tone={tone}><MetricLabel help={help} label={label} /><strong>{value}</strong></div>; }
 function MetricLabel({ help, label }: { help: string; label: string }) { return <small className="metric-label">{label}<HelpTip label={help} /></small>; }
 function HelpTip({ label }: { label: string }) { return <span aria-label={label} className="micro-help-tip" role="img" tabIndex={0} title={label}><CircleHelp size={11} /></span>; }
-function MicrostructureGuide({ kind, references }: { kind: "quotes" | "tape"; references: MarketReferences }) {
+function MicrostructureGuide({ references }: { references: MarketReferences }) {
   const [open, setOpen] = useState(false);
-  return <><button className="microstructure-guide-button" onClick={() => setOpen(true)} type="button"><BookOpen size={13} /> Guide</button>{open ? <Modal className="microstructure-guide-modal" onClose={() => setOpen(false)} title={kind === "tape" ? "Tape conditions and signal guide" : "NBBO liquidity analysis guide"}>{kind === "tape" ? <TapeGuide references={references} /> : <QuoteGuide />}</Modal> : null}</>;
+  return <><button className="microstructure-guide-button" onClick={() => setOpen(true)} type="button"><BookOpen size={13} /> Guide</button>{open ? <Modal className="microstructure-guide-modal" onClose={() => setOpen(false)} title="Quotes, tape and QMD signal guide"><div className="microstructure-guide-content"><ForecastGuide /><QuoteGuide /><TapeGuide references={references} /></div></Modal> : null}</>;
 }
 
 function TapeGuide({ references }: { references: MarketReferences }) {
   const [search, setSearch] = useState("");
   const rows = Object.entries(references.conditions).filter(([, row]) => /trade_conditions|trade_corrections|held_trade/.test(row.type)).map(([token, row]) => ({ row, token })).filter(({ row }) => !search || `${row.name} ${row.sip_mapping} ${row.type}`.toLowerCase().includes(search.toLowerCase()));
-  return <div className="microstructure-guide-content"><ForecastGuide /><section className="guide-intro"><h3>How to read the tape</h3><p><b className="key-ask">Green rows</b> executed at the ask, <b className="key-bid">red rows</b> at the bid, and colored between-market rows use the condition family below. Direction is inferred against the preceding NBBO.</p><div className="guide-signal-grid"><GuideSignal label="Flow" text="Buy share, net flow and aggressor streak measure who is crossing the spread." /><GuideSignal label="Response" text="The 500ms price change shows whether that aggression is moving price in dollars or cents." /><GuideSignal label="Participation" text="Pace, large-print share and size acceleration describe urgency and trade-size regime." /><GuideSignal label="Absorption" text="One-sided aggression with little price response can suggest passive liquidity absorbing flow." /></div></section><section><h3>Tape metrics</h3><GuideTable headings={["Metric", "What it measures", "Typical implication"]} rows={TAPE_METRIC_GUIDE} /></section><section><h3>Executed-volume profile</h3><p>The profile aggregates the visible 1,024 prints at tradable price increments. At-bid volume extends left and at-ask volume extends right. Repeated volume at a price shows auction acceptance or a battleground—not automatic support or resistance. Compare its directional delta with price change and absorption.</p></section><section><div className="guide-search"><h3>Trade condition dictionary</h3><label><span>Find condition</span><input onChange={(event) => setSearch(event.target.value)} placeholder="Odd lot, ISO, out of sequence…" value={search} /></label></div><div className="condition-dictionary">{rows.map(({ row, token }) => <article data-condition-tone={conditionTone(row.name)} key={token}><header><strong>{shortConditionName(row)}</strong><span>{row.sip_mapping || `Token ${token}`}</span></header><p>{conditionDescription(row)}</p><footer><span>{row.update_last ? "Updates last" : "Does not update last"}</span><span>{row.update_volume ? "Counts volume" : "Excluded from volume"}</span><span>{row.update_high_low ? "Updates high/low" : "No high/low update"}</span></footer></article>)}</div></section></div>;
+  return <><section className="guide-intro"><h3>How to read the tape</h3><p><b className="key-ask">Green rows</b> executed at the ask, <b className="key-bid">red rows</b> at the bid, and colored between-market rows use the condition family below. Direction is inferred against the preceding NBBO.</p><div className="guide-signal-grid"><GuideSignal label="Flow" text="Buy share, net flow and aggressor streak measure who is crossing the spread." /><GuideSignal label="Response" text="The 500ms price change shows whether that aggression is moving price in dollars or cents." /><GuideSignal label="Participation" text="Pace, large-print share and size acceleration describe urgency and trade-size regime." /><GuideSignal label="Absorption" text="One-sided aggression with little price response can suggest passive liquidity absorbing flow." /></div></section><section><h3>Tape metrics</h3><GuideTable headings={["Metric", "What it measures", "Typical implication"]} rows={TAPE_METRIC_GUIDE} /></section><section><h3>Executed-volume profile</h3><p>The profile aggregates the visible 1,024 prints at tradable price increments. At-bid volume extends left and at-ask volume extends right. Repeated volume at a price shows auction acceptance or a battleground—not automatic support or resistance. Compare its directional delta with price change and absorption.</p></section><section><div className="guide-search"><h3>Trade condition dictionary</h3><label><span>Find condition</span><input onChange={(event) => setSearch(event.target.value)} placeholder="Odd lot, ISO, out of sequence…" value={search} /></label></div><div className="condition-dictionary">{rows.map(({ row, token }) => <article data-condition-tone={conditionTone(row.name)} key={token}><header><strong>{shortConditionName(row)}</strong><span>{row.sip_mapping || `Token ${token}`}</span></header><p>{conditionDescription(row)}</p><footer><span>{row.update_last ? "Updates last" : "Does not update last"}</span><span>{row.update_volume ? "Counts volume" : "Excluded from volume"}</span><span>{row.update_high_low ? "Updates high/low" : "No high/low update"}</span></footer></article>)}</div></section></>;
 }
 
-function QuoteGuide() { return <div className="microstructure-guide-content"><ForecastGuide /><section className="guide-intro"><h3>From updates to an organized signal</h3><p>Quote bursts group all NBBO changes with the same SIP timestamp. The collapsed row preserves screen space; opening it reveals each price, size, or venue transition.</p><div className="guide-signal-grid"><GuideSignal label="Price pressure" text="Direction of bid and ask repricing. This is usually the strongest quote-only short-horizon feature." /><GuideSignal label="Displayed size" text="Best-level size imbalance. Useful, but vulnerable to cancellations and hidden liquidity." /><GuideSignal label="Microprice" text="Size-weighted location inside the spread. It measures which side is thinner and easier to consume." /><GuideSignal label="Persistence" text="Agreement across recent events. Repeated pressure is usually more useful than one isolated update." /></div></section><section><h3>Incremental quote-event classes</h3><GuideTable headings={["Class", "Tone", "Meaning and likely implication"]} rows={QUOTE_EVENT_GUIDE} /></section><section><h3>How quote strength accumulates</h3><p>The pressure path analyzes every raw transition rather than relying on the single display label. Each update combines 70% normalized midpoint movement with 30% change in displayed-size imbalance. The prior score retains 72% of its value and the new impulse contributes 55%, clamped to ±100%. Subsequent updates in the same direction therefore reinforce one another; opposite updates cancel the sequence. Price remains dominant because displayed size can disappear without trading.</p></section></div>; }
-function ForecastGuide() { return <section className="guide-intro"><h3>QMD signal architecture</h3><p>QMD records additive quote-and-trade statistics in causal 100 ms buckets. A larger timeframe merges those statistics and calculates one signal once, so a 1-minute result describes that minute rather than an average of overlapping forecasts.</p><div className="guide-signal-grid"><GuideSignal label="Aggressive flow · 45%" text="Trade-count imbalance, signed volume, aggressor persistence, trade return, and directional arrivals." /><GuideSignal label="Displayed liquidity · 35%" text="Level-1 OFI, queue imbalance, microprice lean, and directional quote arrivals." /><GuideSignal label="Response & resiliency · 20%" text="Midpoint response, bid/ask replenishment after depletion, and absorption evidence." /><GuideSignal label="Confidence" text="Coverage, quote validity, trade classification, activity, block agreement, and signal strength. Sparse or conflicted evidence is penalized." /></div><p>The paired headers divide responsibility: Quotes shows displayed-liquidity evidence and reliability; Tape shows aggressive flow, response, confidence, and the final BUY, SELL, or WAIT decision. BUY or SELL requires confidence of at least 35% and an absolute score of at least 0.15. The chart indicators expose the same canonical architecture at the selected timeframe.</p></section>; }
+function QuoteGuide() { return <><section className="guide-intro"><h3>From updates to an organized signal</h3><p>Quote bursts group all NBBO changes with the same SIP timestamp. The collapsed row preserves screen space; opening it reveals each price, size, or venue transition.</p><div className="guide-signal-grid"><GuideSignal label="Price pressure" text="Direction of bid and ask repricing. This is usually the strongest quote-only short-horizon feature." /><GuideSignal label="Displayed size" text="Best-level size imbalance. Useful, but vulnerable to cancellations and hidden liquidity." /><GuideSignal label="Microprice" text="Size-weighted location inside the spread. It measures which side is thinner and easier to consume." /><GuideSignal label="Persistence" text="Agreement across recent events. Repeated pressure is usually more useful than one isolated update." /></div></section><section><h3>Incremental quote-event classes</h3><GuideTable headings={["Class", "Tone", "Meaning and likely implication"]} rows={QUOTE_EVENT_GUIDE} /></section><section><h3>How quote strength accumulates</h3><p>The pressure path analyzes every raw transition rather than relying on the single display label. Each update combines 70% normalized midpoint movement with 30% change in displayed-size imbalance. The prior score retains 72% of its value and the new impulse contributes 55%, clamped to ±100%. Subsequent updates in the same direction therefore reinforce one another; opposite updates cancel the sequence. Price remains dominant because displayed size can disappear without trading.</p></section></>; }
+function ForecastGuide() { return <section className="guide-intro"><h3>QMD signal architecture</h3><p>QMD records additive quote-and-trade statistics in causal 100 ms buckets. A larger timeframe merges those statistics and calculates one signal once, so a 1-minute result describes that minute rather than an average of overlapping forecasts.</p><div className="guide-signal-grid"><GuideSignal label="Aggressive flow · 45%" text="Trade-count imbalance, signed volume, aggressor persistence, trade return, and directional arrivals." /><GuideSignal label="Displayed liquidity · 35%" text="Level-1 OFI, queue imbalance, microprice lean, and directional quote arrivals." /><GuideSignal label="Response & resiliency · 20%" text="Midpoint response, bid/ask replenishment after depletion, and absorption evidence." /><GuideSignal label="Confidence" text="Coverage, quote validity, trade classification, activity, block agreement, and signal strength. Sparse or conflicted evidence is penalized." /></div><p>The unified header presents all four evidence blocks beside the final BUY, SELL, or WAIT decision. BUY or SELL requires confidence of at least 35% and an absolute score of at least 0.15. The chart indicators expose the same canonical architecture at the selected timeframe.</p></section>; }
 function GuideSignal({ label, text }: { label: string; text: string }) { return <article><strong>{label}</strong><p>{text}</p></article>; }
 function GuideTable({ headings, rows }: { headings: string[]; rows: string[][] }) { return <div className="guide-table-scroll"><table className="guide-table"><thead><tr>{headings.map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{rows.map((row) => <tr key={row[0]}>{row.map((cell, index) => <td data-tone={index === 1 && (cell === "Bullish" || cell === "Bearish") ? (cell === "Bullish" ? "buy" : "sell") : undefined} key={`${row[0]}-${index}`}>{cell}</td>)}</tr>)}</tbody></table></div>; }
 function QuoteSide({ exchange, label, price, size, tone }: { exchange: { code: string; name: string }; label: string; price?: number; size?: number; tone: "buy" | "sell" }) { return <div className="quote-side" data-tone={tone}><span><MetricLabel help={`${label} is the current consolidated national best ${label.toLowerCase()}; ${exchange.name} is posting it.`} label={label} /><abbr title={exchange.name}>{exchange.code}</abbr></span><strong>{price ? formatPrice(price) : "—"}</strong><em>{size != null ? `${formatSize(size)} shares` : "No quote"}</em></div>; }
@@ -397,6 +404,7 @@ function MicrostructureEmpty({ message }: { message: string }) { return <div cla
 function compareEvents(left: CompactEvent, right: CompactEvent) { return left.sip_timestamp_us - right.sip_timestamp_us || left.source_sequence - right.source_sequence || left.arrival_sequence - right.arrival_sequence; }
 function formatPrice(value: number) { return value >= 100 ? value.toFixed(2) : value.toFixed(4).replace(/0+$/, "").replace(/\.$/, ""); }
 function formatSize(value: number) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value); }
+function formatCount(value: number) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value); }
 function formatTradeSize(value: number) { return value > 0 && value < 1 ? value.toFixed(4).replace(/0+$/, "").replace(/\.$/, "") : formatSize(value); }
 function compactNumber(value: number) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 1, notation: "compact" }).format(value); }
 function signedCompact(value: number) { return `${value > 0 ? "+" : ""}${compactNumber(value)}`; }

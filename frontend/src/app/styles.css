@@ -21802,6 +21802,22 @@ button {
 
 /* Canvas market microstructure containers */
 .market-microstructure { background: var(--surface); color: var(--foreground); container-type: size; display: grid; font-variant-numeric: tabular-nums lining-nums; grid-template-rows: auto auto auto auto minmax(0, 1fr); height: 100%; min-height: 0; overflow: hidden; }
+.combined-microstructure { grid-template-rows: auto auto auto auto minmax(210px, 1fr); overflow: auto; scrollbar-gutter: stable; }
+.combined-market-overview, .combined-analysis-grid, .combined-stream-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); min-width: 0; }
+.combined-market-overview, .combined-analysis-grid { border-bottom: 1px solid var(--border); }
+.market-overview-lane, .microstructure-analysis-lane, .microstructure-stream-lane { min-width: 0; }
+.market-overview-lane, .microstructure-stream-lane { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.market-overview-lane + .market-overview-lane, .microstructure-analysis-lane + .microstructure-analysis-lane, .microstructure-stream-lane + .microstructure-stream-lane { border-left: 1px solid var(--border-strong); }
+.market-overview-lane > header, .market-stream-heading { align-items: center; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; gap: 10px; justify-content: space-between; min-height: 30px; padding: 5px 9px; }
+.market-overview-lane > header > span, .market-stream-heading > span { align-items: baseline; display: flex; gap: 7px; min-width: 0; }
+.market-overview-lane > header strong, .market-stream-heading strong { color: var(--foreground); font-size: 10.5px; font-weight: 720; }
+.market-overview-lane > header small, .market-stream-heading small { color: var(--muted-foreground); font-size: 8.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.market-overview-lane > header em, .market-stream-heading em { color: var(--muted-foreground); font-size: 8px; font-style: normal; white-space: nowrap; }
+.combined-market-overview .nbbo-overview, .combined-market-overview .tape-overview { border-bottom: 0; height: 100%; }
+.combined-analysis-grid { align-items: stretch; }
+.microstructure-analysis-lane { display: grid; }
+.combined-stream-grid { min-height: 0; }
+.microstructure-stream-lane { overflow: hidden; }
 .microstructure-header { align-items: center; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; gap: 8px; justify-content: space-between; min-width: 0; padding: 6px 8px; }
 .microstructure-header > div { align-items: center; display: flex; gap: 8px; min-width: 0; }
 .microstructure-header .ticker-identity { flex: 0 0 auto; }
@@ -21962,9 +21978,10 @@ button {
 .aggressor-mix-chart { align-content: center; display: grid; gap: 18px; height: 100%; padding: 8px 30px; }.aggressor-mix-chart > div { background: var(--surface-alt); display: flex; height: 28px; overflow: hidden; }.aggressor-mix-chart > div i.sell { background: var(--tape-bid); }.aggressor-mix-chart > div i.mid { background: var(--muted-foreground); }.aggressor-mix-chart > div i.buy { background: var(--tape-ask); }.aggressor-mix-chart section { display: flex; gap: 22px; justify-content: center; }.aggressor-mix-chart section span { font-size: 9px; }.aggressor-mix-chart section span.sell { color: var(--tape-bid); }.aggressor-mix-chart section span.mid { color: var(--muted-foreground); }.aggressor-mix-chart section span.buy { color: var(--tape-ask); }.aggressor-mix-chart section b { font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
 .micro-chart-guide article strong { font-size: 8.5px; }.micro-chart-guide article span { font-size: 9.5px; line-height: 1.35; }.chart-category-list { align-content: center; justify-content: stretch; width: 100%; }.chart-diverging-row, .chart-grouped-row { width: 100%; }
 
-/* Paired QMD architecture: Quotes owns liquidity evidence; Tape owns the final execution decision. */
+/* Unified QMD architecture combines quote liquidity and tape execution evidence. */
 .qmd-architecture-panel { background: var(--surface); border-bottom: 1px solid var(--border); min-width: 0; padding: 6px 8px 8px; }.qmd-architecture-panel > header { align-items: baseline; display: flex; gap: 9px; justify-content: space-between; margin-bottom: 6px; min-width: 0; }.qmd-architecture-panel > header > span { align-items: baseline; display: flex; gap: 8px; min-width: 0; }.qmd-architecture-panel > header strong { color: var(--foreground); font-size: 11px; font-weight: 740; white-space: nowrap; }.qmd-architecture-panel > header small { color: var(--muted-foreground); font-size: 8.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.qmd-architecture-panel > header em { color: var(--muted-foreground); font-size: 8px; font-style: normal; white-space: nowrap; }
 .qmd-architecture-grid { display: grid; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: thin; }.quote-architecture-grid { grid-template-columns: repeat(2, minmax(112px, 1fr)); }.tape-architecture-grid { grid-template-columns: minmax(142px, 1.3fr) repeat(3, minmax(98px, 1fr)); }
+.combined-architecture-grid { grid-template-columns: minmax(142px, 1.3fr) repeat(5, minmax(98px, 1fr)); }
 .qmd-architecture-grid > article { background: color-mix(in oklab, var(--surface-alt) 82%, var(--surface)); border: 1px solid var(--border); border-top: 3px solid var(--border-strong); min-width: 0; }.qmd-architecture-grid > article[data-tone="buy"] { background: color-mix(in oklab, var(--tape-ask) 5%, var(--surface)); border-top-color: var(--tape-ask); }.qmd-architecture-grid > article[data-tone="sell"] { background: color-mix(in oklab, var(--tape-bid) 5%, var(--surface)); border-top-color: var(--tape-bid); }
 .architecture-decision { align-items: center; display: flex; gap: 8px; min-height: 56px; padding: 6px 8px; }.architecture-decision .forecast-direction-icon { flex: 0 0 32px; height: 32px; width: 32px; }.architecture-decision[data-tone="buy"] .forecast-direction-icon { background: color-mix(in oklab, var(--tape-ask) 15%, var(--surface)); color: var(--tape-ask); }.architecture-decision[data-tone="sell"] .forecast-direction-icon { background: color-mix(in oklab, var(--tape-bid) 15%, var(--surface)); color: var(--tape-bid); }.architecture-decision > span:last-child { display: grid; gap: 1px; min-width: 0; }.architecture-decision small, .architecture-metric .metric-label { color: var(--muted-foreground); font-size: 8px; font-style: normal; font-weight: 560; letter-spacing: .025em; text-transform: uppercase; }.architecture-decision strong { color: var(--foreground); font-size: 17px; font-weight: 800; line-height: 1; }.architecture-decision[data-tone="buy"] strong { color: var(--tape-ask); }.architecture-decision[data-tone="sell"] strong { color: var(--tape-bid); }.architecture-decision em { color: var(--muted-foreground); font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: 8px; font-style: normal; }
 .architecture-metric { align-content: center; display: grid; gap: 2px; min-height: 56px; padding: 6px 8px; }.architecture-metric strong { color: var(--foreground); font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: 17px; font-weight: 700; line-height: 1; }.architecture-metric[data-tone="buy"] strong, .architecture-metric[data-tone="buy"] em { color: var(--tape-ask); }.architecture-metric[data-tone="sell"] strong, .architecture-metric[data-tone="sell"] em { color: var(--tape-bid); }.architecture-metric em { color: var(--muted-foreground); font-size: 8px; font-style: normal; }.qmd-architecture-panel[data-blocked="true"] { opacity: .7; }
@@ -21980,6 +21997,10 @@ button {
 
 @container (max-width: 760px) {
   .qmd-architecture-panel > header small { display: none; }
+  .combined-market-overview, .combined-analysis-grid, .combined-stream-grid { grid-template-columns: minmax(0, 1fr); }
+  .market-overview-lane + .market-overview-lane, .microstructure-analysis-lane + .microstructure-analysis-lane, .microstructure-stream-lane + .microstructure-stream-lane { border-left: 0; border-top: 1px solid var(--border-strong); }
+  .combined-microstructure { display: block; overflow: auto; }
+  .microstructure-stream-lane { min-height: 320px; }
 }
 
 @container (max-width: 650px) {

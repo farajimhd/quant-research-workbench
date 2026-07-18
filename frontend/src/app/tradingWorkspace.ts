@@ -2,8 +2,7 @@ export type TradingWorkspaceMode = "live" | "paper" | "replay" | "backtest" | "b
 
 export type WorkspaceContainerId =
   | "chart"
-  | "tape"
-  | "quotes"
+  | "microstructure"
   | "scanner"
   | "strategy"
   | "portfolio"
@@ -164,18 +163,9 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
     sourceByMode: marketSourceByMode,
   },
   {
-    id: "tape",
-    title: "Tape",
-    description: "Time-and-sales prints with resolved exchange and condition labels, plus direction, pace, largest print, and signed flow inferred from the preceding NBBO.",
-    linkScope: "single-symbol",
-    modes: allModes,
-    defaultOpen: {},
-    sourceByMode: marketSourceByMode,
-  },
-  {
-    id: "quotes",
-    title: "Quotes",
-    description: "Consolidated NBBO liquidity monitor with best bid and ask, resolved venues, size imbalance, microprice lean, spread state, quote rate, and interpreted liquidity changes; this is not venue-level depth.",
+    id: "microstructure",
+    title: "Quotes & Tape",
+    description: "One synchronized market-microstructure surface for consolidated NBBO liquidity, interpreted quote changes, time-and-sales prints, trade conditions, comparative charts, and the canonical QMD decision architecture.",
     linkScope: "single-symbol",
     modes: allModes,
     defaultOpen: {},

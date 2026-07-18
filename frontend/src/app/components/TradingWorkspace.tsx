@@ -6,7 +6,6 @@ import {
   ListChecks,
   LayoutGrid,
   Newspaper,
-  ListFilter,
   PanelTopOpen,
   RefreshCcw,
   ScanSearch,
@@ -19,7 +18,7 @@ import {
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
-import type { CanvasWorkspaceState } from "../canvasWorkspace";
+import { migrateLegacyMicrostructureState, type CanvasWorkspaceState } from "../canvasWorkspace";
 import {
   addWorkspaceNodesToGroup,
   createWorkspaceGroup,
@@ -91,7 +90,7 @@ type TradingWorkspaceProps = {
 };
 
 const DEFAULT_CANVAS_TARGETS: WorkspaceCanvasTarget[] = [{ color: "var(--primary)", id: "main", isCurrent: true, label: "Main" }];
-export const TRADING_WORKSPACE_LAYOUT_VERSION = 5;
+export const TRADING_WORKSPACE_LAYOUT_VERSION = 6;
 
 function groupSelectionAction(selectedNodeIds: string[], groups: Record<string, WorkspaceGroup>) {
   if (selectedNodeIds.length < 2) return "Select one more";
@@ -825,13 +824,14 @@ function readWorkspaceState(
 function parseWorkspaceState(raw: string, definitions: WorkspaceContainerDefinition[]): CanvasWorkspaceState | null {
   try {
     const parsed = JSON.parse(raw) as Partial<CanvasWorkspaceState>;
-    if (![3, 4, TRADING_WORKSPACE_LAYOUT_VERSION].includes(Number(parsed.layoutVersion)) || !parsed.layouts || !Array.isArray(parsed.openIds)) return null;
+    if (![3, 4, 5, TRADING_WORKSPACE_LAYOUT_VERSION].includes(Number(parsed.layoutVersion)) || !parsed.layouts || !Array.isArray(parsed.openIds)) return null;
+    const migrated = migrateLegacyMicrostructureState(parsed as CanvasWorkspaceState);
     const definitionById = new Map(definitions.map((definition) => [definition.id, definition]));
-    const parsedInstances = parsed.instances && typeof parsed.instances === "object" ? parsed.instances : {};
-    const openIds = parsed.openIds.filter((id) => definitionById.has(instanceKind(id, parsedInstances, definitionById)));
+    const parsedInstances = migrated.instances && typeof migrated.instances === "object" ? migrated.instances : {};
+    const openIds = migrated.openIds.filter((id) => definitionById.has(instanceKind(id, parsedInstances, definitionById)));
     const instances = Object.fromEntries(openIds.map((id) => [id, instanceKind(id, parsedInstances, definitionById)])) as Record<string, WorkspaceContainerId>;
-    const layouts = Object.fromEntries(openIds.flatMap((id) => parsed.layouts?.[id] ? [[id, parsed.layouts[id]]] : []));
-    const groups = normalizeWorkspaceGroups(parsed.groups, openIds);
+    const layouts = Object.fromEntries(openIds.flatMap((id) => migrated.layouts?.[id] ? [[id, migrated.layouts[id]]] : []));
+    const groups = normalizeWorkspaceGroups(migrated.groups, openIds);
     return { groups, instances, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts, openIds };
   } catch {
     return null;
@@ -851,8 +851,7 @@ function createGlobalLayouts(ids: string[], instances: Record<string, WorkspaceC
   const placements: Record<WorkspaceContainerId, Omit<WorkspaceWindowLayout, "fullscreen" | "minimized" | "z">> = {
     scanner: { h: 250, w: columnWidth, x: margin, y: 0 },
     chart: { h: 410, w: columnWidth, x: margin + columnWidth + gap, y: 0 },
-    tape: { h: 360, w: columnWidth, x: margin, y: 1972 },
-    quotes: { h: 360, w: columnWidth, x: margin + columnWidth + gap, y: 1972 },
+    microstructure: { h: 720, w: width, x: margin, y: 1972 },
     portfolio: { h: 230, w: columnWidth, x: margin, y: 252 },
     orders: { h: 230, w: columnWidth, x: margin + columnWidth + gap, y: 412 },
     fills: { h: 220, w: columnWidth, x: margin, y: 484 },
@@ -1012,8 +1011,7 @@ function workspaceRootMinHeight(
 function containerIcon(id: WorkspaceContainerId) {
   const icons = {
     chart: BarChart3,
-    tape: ListFilter,
-    quotes: Rows3,
+    microstructure: Rows3,
     fills: ListChecks,
     journal: ScrollText,
     news: Newspaper,

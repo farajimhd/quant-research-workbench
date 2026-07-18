@@ -87,7 +87,7 @@ export function readCanvasRegistry(): CanvasRegistry {
     return {
       canvases,
       defaultState: normalizeWorkspaceState(parsed.defaultState) ?? undefined,
-      instanceSettings: parsed.instanceSettings && typeof parsed.instanceSettings === "object" ? parsed.instanceSettings : {},
+      instanceSettings: normalizeInstanceSettings(parsed.instanceSettings),
       linkAssignments: normalizeLinkAssignments(parsed.linkAssignments),
       linkContexts: {
         A: normalizeLinkContext(parsed.linkContexts?.A, DEFAULT_LINK_CONTEXTS.A),
@@ -192,18 +192,77 @@ function normalizeLinkAssignments(value: CanvasRegistry["linkAssignments"] | und
   const candidates = { ...DEFAULT_LINK_ASSIGNMENTS, ...(value ?? {}) };
   const assignments: CanvasRegistry["linkAssignments"] = {};
   for (const [rawContainerId, rawGroup] of Object.entries(candidates)) {
-    const containerKind = rawContainerId.split("-")[0] as WorkspaceContainerId;
-    if (containerSupportsSymbolLink(containerKind) && isCanvasLinkGroupId(rawGroup)) assignments[rawContainerId] = rawGroup;
+    const containerId = microstructureInstanceId(rawContainerId);
+    const containerKind = containerId.replace(/-\d+$/, "") as WorkspaceContainerId;
+    if (containerSupportsSymbolLink(containerKind) && isCanvasLinkGroupId(rawGroup) && assignments[containerId] == null) assignments[containerId] = rawGroup;
   }
   return assignments;
 }
 
 function normalizeWorkspaceState(value: CanvasWorkspaceState | undefined | null): CanvasWorkspaceState | null {
   if (!value || !Array.isArray(value.openIds) || !value.layouts) return null;
-  const instances = value.instances && typeof value.instances === "object"
+  const rawInstances = value.instances && typeof value.instances === "object"
     ? value.instances
     : Object.fromEntries(value.openIds.map((id) => [id, id.split("-")[0] as WorkspaceContainerId]));
-  return { ...value, groups: normalizeWorkspaceGroups(value.groups, value.openIds), instances };
+  return migrateLegacyMicrostructureState({ ...value, groups: normalizeWorkspaceGroups(value.groups, value.openIds), instances: rawInstances });
+}
+
+export function migrateLegacyMicrostructureState(value: CanvasWorkspaceState): CanvasWorkspaceState {
+  const sourceInstances = value.instances && typeof value.instances === "object" ? value.instances : {};
+  const sourceLayouts = value.layouts && typeof value.layouts === "object" ? value.layouts : {};
+  const hasLegacyPair = value.openIds.some((id) => {
+    const kind = String(sourceInstances[id] ?? id.replace(/-\d+$/, ""));
+    return kind === "tape" || kind === "quotes";
+  });
+  const mappedIds = value.openIds.map((id) => microstructureInstanceId(id, sourceInstances[id]));
+  const openIds = [...new Set(mappedIds)];
+  const layouts: CanvasWorkspaceState["layouts"] = {};
+  const instances: CanvasWorkspaceState["instances"] = {};
+  value.openIds.forEach((id) => {
+    const targetId = microstructureInstanceId(id, sourceInstances[id]);
+    const sourceLayout = sourceLayouts[id];
+    if (sourceLayout) layouts[targetId] = layouts[targetId] ? mergeWorkspaceLayouts(layouts[targetId], sourceLayout) : sourceLayout;
+    instances[targetId] = targetId.startsWith("microstructure") ? "microstructure" : sourceInstances[id] ?? id.replace(/-\d+$/, "") as WorkspaceContainerId;
+  });
+  if (hasLegacyPair) Object.entries(instances).forEach(([id, kind]) => {
+    if (kind === "microstructure" && layouts[id]) layouts[id] = { ...layouts[id], h: Math.max(720, layouts[id].h) };
+  });
+  const migratedGroups = Object.fromEntries(Object.entries(value.groups ?? {}).map(([id, group]) => [id, {
+    ...group,
+    childIds: [...new Set(group.childIds.map((childId) => microstructureInstanceId(childId, sourceInstances[childId])))],
+  }]));
+  return { ...value, groups: normalizeWorkspaceGroups(migratedGroups, openIds), instances, layouts, openIds };
+}
+
+function microstructureInstanceId(instanceId: string, kind?: WorkspaceContainerId) {
+  const resolvedKind = String(kind ?? instanceId.replace(/-\d+$/, ""));
+  if (resolvedKind !== "tape" && resolvedKind !== "quotes") return instanceId;
+  return `microstructure${instanceId.match(/-\d+$/)?.[0] ?? ""}`;
+}
+
+function mergeWorkspaceLayouts(left: WorkspaceWindowLayout, right: WorkspaceWindowLayout): WorkspaceWindowLayout {
+  const x = Math.min(left.x, right.x);
+  const y = Math.min(left.y, right.y);
+  return {
+    ...left,
+    fullscreen: left.fullscreen || right.fullscreen,
+    h: Math.max(left.y + left.h, right.y + right.h) - y,
+    minimized: left.minimized && right.minimized,
+    w: Math.max(left.x + left.w, right.x + right.w) - x,
+    x,
+    y,
+    z: Math.max(left.z, right.z),
+  };
+}
+
+function normalizeInstanceSettings(value: unknown): CanvasRegistry["instanceSettings"] {
+  if (!value || typeof value !== "object") return {};
+  const normalized: CanvasRegistry["instanceSettings"] = {};
+  Object.entries(value).forEach(([id, settings]) => {
+    const targetId = microstructureInstanceId(id);
+    if (normalized[targetId] == null) normalized[targetId] = settings;
+  });
+  return normalized;
 }
 
 function isCanvasLinkGroupId(value: unknown): value is CanvasLinkGroupId {

@@ -31,7 +31,7 @@ import { ChartPanel, type ChartCatalogKnowledge, type ChartDisplayItem, type Cha
 import { AllNewsContainer, NewsDetailContainer, TickerNewsContainer } from "../app/components/NewsContainers";
 import { MarketTime } from "../app/components/MarketTime";
 import { MarketStatusBadge, historicalMarketStatus } from "../app/components/MarketStatusBadge";
-import { QuotesContainer, TapeContainer } from "../app/components/MarketMicrostructureContainers";
+import { QuotesTapeContainer } from "../app/components/MarketMicrostructureContainers";
 import { TickerIdentity, useTickerPresentations } from "../app/components/TickerIdentity";
 import { TRADING_WORKSPACE_LAYOUT_VERSION, TradingWorkspace, createFocusLayouts } from "../app/components/TradingWorkspace";
 import type { WorkspaceWindowLayout, WorkspaceWindowMeta, WorkspaceWindowStatus } from "../app/components/WorkspaceCanvas";
@@ -101,10 +101,9 @@ type CanvasLiveChartState = {
 };
 
 type ContainerSettings = {
-  version: 6;
+  version: 7;
   chart: { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
-  tape: { limit: number };
-  quotes: { limit: number };
+  microstructure: { limit: number };
   fills: { limit: number; showCommission: boolean };
   journal: { limit: number };
   news: { content: string; kind: string; lookbackHours: number; ticker: string };
@@ -123,10 +122,9 @@ type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; tit
 
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 6,
+  version: 7,
   chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.microstructure_outlook"] },
-  tape: { limit: 1024 },
-  quotes: { limit: 1024 },
+  microstructure: { limit: 1024 },
   fills: { limit: 5, showCommission: true },
   journal: { limit: 6 },
   news: { content: "all", kind: "all", lookbackHours: 6, ticker: "" },
@@ -662,7 +660,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
   const currentCanvas = registry.canvases.find((canvas) => canvas.id === canvasId) ?? { id: canvasId, label: canvasId === MAIN_CANVAS_ID ? "Main" : "Focus canvas" };
   const primaryChartId = (workspaceState?.openIds ?? []).find((id) => workspaceContainerKind(id, workspaceState) === "chart") ?? "chart";
   const primarySettings = instanceSettings(registry, primaryChartId);
-  const dedicatedContainers = new Set<WorkspaceContainerId>(["chart", "tape", "quotes", "news", "ticker_news", "news_detail"]);
+  const dedicatedContainers = new Set<WorkspaceContainerId>(["chart", "microstructure", "news", "ticker_news", "news_detail"]);
   const previewContainerKey = (workspaceState?.openIds ?? []).filter((id) => !dedicatedContainers.has(workspaceContainerKind(id, workspaceState))).sort().join(",");
   const activeLinkGroup = registry.linkAssignments[primaryChartId] ?? "none";
   const activeSymbol = activeLinkGroup === "none" ? primarySettings.chart.symbol : registry.linkContexts[activeLinkGroup].symbol;
@@ -767,9 +765,9 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
         status: contextError ? "error" : "ready",
       };
     }
-    if (definition.id === "tape" || definition.id === "quotes") {
+    if (definition.id === "microstructure") {
       return {
-        detail: definition.id === "tape" ? "Canonical historical trade prints classified against the preceding NBBO." : "Historical consolidated best-bid and best-ask updates; not venue-level depth.",
+        detail: "Canonical historical NBBO updates and trade prints decoded once against the same event sequence and active clock.",
         freshness: previewContext.previewTime,
         sourceLabel: "QMD History",
         status: contextError ? "error" : "ready",
@@ -1060,10 +1058,8 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
     {settingsOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} settings`}>{containerFields(definition.id, settings, linkContext, updateSettings, onLinkContextChange)}</div> : null}
     <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{definition.id === "chart"
       ? <ChartContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} linkGroup={linkGroup} onLinkContextChange={onLinkContextChange} previewContext={previewContext} settings={settings} updateSettings={updateSettings} />
-      : definition.id === "tape"
-        ? <TapeContainer end={new Date(chartCutoffMs).toISOString()} settings={settings.tape} start={dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()} symbol={linkContext.symbol} />
-      : definition.id === "quotes"
-        ? <QuotesContainer end={new Date(chartCutoffMs).toISOString()} settings={settings.quotes} start={dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()} symbol={linkContext.symbol} />
+      : definition.id === "microstructure"
+        ? <QuotesTapeContainer end={new Date(chartCutoffMs).toISOString()} settings={settings.microstructure} start={dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()} symbol={linkContext.symbol} />
       : definition.id === "news"
         ? <AllNewsContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, news: { ...state.news, ...patch } }))} settings={settings.news} />
       : definition.id === "ticker_news"
@@ -1261,7 +1257,7 @@ function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, 
   const current = settings[id] as Record<string, unknown>;
   function patch(value: Record<string, unknown>) { updateSettings((state) => ({ ...state, [id]: { ...state[id], ...value } })); }
   if (id === "chart") return <><TextField label="Symbol" onChange={(value) => { patch({ symbol: value.toUpperCase() }); onLinkContextChange({ symbol: value.toUpperCase() }); }} value={linkContext.symbol} /><SelectField label="Bar interval" onChange={(value) => patch({ timeframe: value as CanvasChartTimeframe })} optionLabel={formatChartTimeframe} options={HISTORICAL_TIMEFRAMES} value={settings.chart.timeframe} /><CheckField checked={Boolean(current.showVolume)} label="Show volume" onChange={(value) => patch({ showVolume: value })} /></>;
-  if (id === "tape" || id === "quotes") return <><TextField label="Symbol" onChange={(value) => { const symbol = value.toUpperCase(); updateSettings((state) => ({ ...state, chart: { ...state.chart, symbol } })); onLinkContextChange({ symbol }); }} value={linkContext.symbol} /><div className="canvas-settings-note">The symbol follows the selected link color. Each table retains its latest 1,024 decoded rows and remains bounded by the shared historical clock.</div></>;
+  if (id === "microstructure") return <><TextField label="Symbol" onChange={(value) => { const symbol = value.toUpperCase(); updateSettings((state) => ({ ...state, chart: { ...state.chart, symbol } })); onLinkContextChange({ symbol }); }} value={linkContext.symbol} /><div className="canvas-settings-note">The symbol follows the selected link color. Quotes and trades share one QMD event stream; each table retains its latest 1,024 decoded rows at the shared historical clock.</div></>;
   if (id === "portfolio") return <><CheckField checked={Boolean(current.showPositions)} label="Show positions" onChange={(value) => patch({ showPositions: value })} /><CheckField checked={Boolean(current.showPnl)} label="Show P&L" onChange={(value) => patch({ showPnl: value })} /></>;
   if (id === "strategy") return <CheckField checked={Boolean(current.showSignals)} label="Show recent signals" onChange={(value) => patch({ showSignals: value })} />;
   if (id === "scanner") return <><NumberField label="Rows" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showActivity)} label="Show market activity" onChange={(value) => patch({ showActivity: value })} /></>;
@@ -1299,8 +1295,7 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
   return {
     version: DEFAULT_SETTINGS.version,
     chart: { ...DEFAULT_SETTINGS.chart, ...(stored.chart ?? {}), timeframe, visibleIndicators: [...visibleIndicators] },
-    tape: { limit: 1024 },
-    quotes: { limit: 1024 },
+    microstructure: { limit: 1024 },
     fills: { ...DEFAULT_SETTINGS.fills, ...(stored.fills ?? {}) },
     journal: { ...DEFAULT_SETTINGS.journal, ...(stored.journal ?? {}) },
     news: { ...DEFAULT_SETTINGS.news, ...(stored.news ?? {}) },
