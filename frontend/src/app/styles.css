@@ -12786,7 +12786,7 @@ button {
   display: grid;
   gap: 7px;
   position: fixed;
-  z-index: 2600;
+  z-index: 10120;
   width: min(220px, calc(100vw - 16px));
   max-height: calc(100vh - 16px);
   overflow-y: auto;
@@ -12805,6 +12805,16 @@ button {
   color: var(--foreground);
   font-size: 11px;
   font-weight: 750;
+}
+
+.chart-legend-editor-section-title {
+  border-top: 1px solid var(--border);
+  color: var(--foreground);
+  font-size: 10px;
+  font-weight: 750;
+  margin-top: 2px;
+  padding-top: 7px;
+  text-transform: uppercase;
 }
 
 .chart-legend-editor label {
@@ -12833,6 +12843,17 @@ button {
   color: var(--foreground);
   padding: 0 7px;
   font-size: 11px;
+}
+
+.chart-legend-editor .legend-number-input {
+  width: 100%;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--control-bg, var(--surface));
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+  padding: 0 7px;
 }
 
 .legend-checkbox {

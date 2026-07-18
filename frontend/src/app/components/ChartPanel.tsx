@@ -196,6 +196,14 @@ type LegendSeriesSettings = {
   visible?: boolean;
 };
 type LegendSettingsMap = Record<string, LegendSeriesSettings>;
+type OscillatorThresholdSettings = {
+  color: string;
+  lineStyle: LegendLineStyle;
+  lineWidth: number;
+  value: number;
+  visible: boolean;
+};
+type OscillatorThresholdSettingsMap = Record<string, OscillatorThresholdSettings>;
 type DaySeparatorStyle = "solid" | "dashed" | "dotted";
 type ChartAppearanceSettings = {
   afterHoursColor: string;
@@ -306,6 +314,7 @@ const defaultChartAppearanceSettings: ChartAppearanceSettings = {
 };
 
 const LEGEND_SETTINGS_STORAGE_KEY = "quant-research-workbench.chart.legend-settings.v1";
+const OSCILLATOR_THRESHOLD_STORAGE_KEY = "quant-research-workbench.chart.oscillator-thresholds.v1";
 const CHART_APPEARANCE_STORAGE_KEY = "quant-research-workbench.chart.appearance-settings.v1";
 const CHART_PRICE_SCALE_MIN_WIDTH = 84;
 
@@ -402,10 +411,12 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const [fullscreen, setFullscreen] = useState(false);
   const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
   const legendStorageKey = settingsStorageKey ? `${settingsStorageKey}.legend` : LEGEND_SETTINGS_STORAGE_KEY;
+  const oscillatorThresholdStorageKey = settingsStorageKey ? `${settingsStorageKey}.oscillator-thresholds` : OSCILLATOR_THRESHOLD_STORAGE_KEY;
   const appearanceStorageKey = settingsStorageKey ? `${settingsStorageKey}.appearance` : CHART_APPEARANCE_STORAGE_KEY;
   const paneHeightStorageKey = settingsStorageKey ? `${settingsStorageKey}.pane-heights` : `${LEGEND_SETTINGS_STORAGE_KEY}.pane-heights`;
   const [chartSettings, setChartSettings] = useState<ChartAppearanceSettings>(() => loadChartAppearanceSettings(appearanceStorageKey));
   const [legendSettings, setLegendSettings] = useState<LegendSettingsMap>(() => loadLegendSettings(legendStorageKey));
+  const [oscillatorThresholdSettings, setOscillatorThresholdSettings] = useState<OscillatorThresholdSettingsMap>(() => loadOscillatorThresholdSettings(oscillatorThresholdStorageKey));
   const [oscillatorPaneHeights, setOscillatorPaneHeights] = useState<Record<string, number>>(() => loadOscillatorPaneHeights(paneHeightStorageKey));
   const [periodMenuOpen, setPeriodMenuOpen] = useState(false);
   const [themeSignature, setThemeSignature] = useState(() => document.documentElement.dataset.shellTheme ?? "");
@@ -473,6 +484,23 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       const next = { ...current };
       delete next[key];
       saveLegendSettings(next, legendStorageKey);
+      return next;
+    });
+  };
+
+  const updateOscillatorThreshold = (group: OscillatorPaneGroup, patch: Partial<OscillatorThresholdSettings>) => {
+    setOscillatorThresholdSettings((current) => {
+      const next = { ...current, [group.key]: { ...resolveOscillatorThresholdSettings(current[group.key], group), ...patch } };
+      saveOscillatorThresholdSettings(next, oscillatorThresholdStorageKey);
+      return next;
+    });
+  };
+
+  const resetOscillatorThreshold = (group: OscillatorPaneGroup) => {
+    setOscillatorThresholdSettings((current) => {
+      const next = { ...current };
+      delete next[group.key];
+      saveOscillatorThresholdSettings(next, oscillatorThresholdStorageKey);
       return next;
     });
   };
@@ -675,6 +703,14 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       applySeriesSettings(renderer, source, settings, key.startsWith("oscillator:"), chartSettingsRef.current);
     });
   }, [legendSettings]);
+
+  useEffect(() => {
+    oscillatorPaneGroups.forEach((group) => {
+      const runtime = oscillatorPaneRuntimesRef.current.get(group.key);
+      if (!runtime?.renderer || !runtime.primaryKey) return;
+      syncOscillatorThresholdLine(runtime, runtime.renderer, runtime.primaryKey, resolveOscillatorThresholdSettings(oscillatorThresholdSettings[group.key], group));
+    });
+  }, [oscillatorThresholdSettings, themeSignature]);
 
   useEffect(() => {
     chartSettingsRef.current = effectiveChartSettings;
@@ -922,6 +958,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
 
   function updateOscillatorPaneSeries(runtime: OscillatorPaneRuntime, seriesList: ChartSeries[]) {
     const layeredSeries = [...seriesList].sort((left, right) => Number(left.style === "line") - Number(right.style === "line"));
+    const requestedPrimaryKey = seriesList[0] ? legendSeriesKey("oscillator", seriesList[0]) : "";
     const layerSignature = layeredSeries.map((series) => `${legendSeriesKey("oscillator", series)}:${series.style}:${series.priceScaleId || "right"}`).join("|");
     if (runtime.layerSignature && runtime.layerSignature !== layerSignature) {
       if (runtime.zeroLine && runtime.zeroLineRenderer) runtime.zeroLineRenderer.removePriceLine(runtime.zeroLine);
@@ -970,7 +1007,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       }
       indicatorSourceRef.current.set(key, series);
       runtime.seriesKeys.add(key);
-      if (!primaryRenderer) {
+      if (key === requestedPrimaryKey) {
         primaryRenderer = renderer;
         primaryKey = key;
         primaryValuesByTime = new Map(series.data.map((point) => [point.time, point.value]));
@@ -980,11 +1017,12 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       runtime.primaryKey = primaryKey;
       runtime.renderer = primaryRenderer;
       runtime.valuesByTime = primaryValuesByTime;
-      syncOscillatorZeroLine(runtime, primaryRenderer, primaryKey);
+      const group = oscillatorPaneGroups.find((candidate) => candidate.key === oscillatorPaneKey(seriesList[0]));
+      syncOscillatorThresholdLine(runtime, primaryRenderer, primaryKey, resolveOscillatorThresholdSettings(group ? oscillatorThresholdSettings[group.key] : undefined, group));
     }
   }
 
-  function syncOscillatorZeroLine(runtime: OscillatorPaneRuntime, renderer: AnySeriesApi, seriesKey: string) {
+  function syncOscillatorThresholdLine(runtime: OscillatorPaneRuntime, renderer: AnySeriesApi, seriesKey: string, threshold: OscillatorThresholdSettings) {
     if (runtime.zeroLine && runtime.zeroLineSeriesKey !== seriesKey && runtime.zeroLineRenderer) {
       runtime.zeroLineRenderer.removePriceLine(runtime.zeroLine);
       runtime.zeroLine = null;
@@ -993,24 +1031,24 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     }
     if (!runtime.zeroLine) {
       runtime.zeroLine = renderer.createPriceLine({
-        axisLabelVisible: false,
-        color: readChartPalette().grid,
-        lineStyle: LineStyle.Solid,
-        lineVisible: true,
-        lineWidth: 1 as LineWidth,
-        price: 0,
+        axisLabelVisible: threshold.visible,
+        color: threshold.color,
+        lineStyle: toChartLineStyle(threshold.lineStyle),
+        lineVisible: threshold.visible,
+        lineWidth: toLineWidth(threshold.lineWidth),
+        price: threshold.value,
         title: ""
       });
       runtime.zeroLineRenderer = renderer;
       runtime.zeroLineSeriesKey = seriesKey;
     } else {
       runtime.zeroLine.applyOptions({
-        axisLabelVisible: false,
-        color: readChartPalette().grid,
-        lineStyle: LineStyle.Solid,
-        lineVisible: true,
-        lineWidth: 1 as LineWidth,
-        price: 0,
+        axisLabelVisible: threshold.visible,
+        color: threshold.color,
+        lineStyle: toChartLineStyle(threshold.lineStyle),
+        lineVisible: threshold.visible,
+        lineWidth: toLineWidth(threshold.lineWidth),
+        price: threshold.value,
         title: ""
       });
     }
@@ -1376,7 +1414,10 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
                   items={buildSeriesLegendItems(group.series, "oscillator", legendSettings, displayItemOptions, catalogColumns)}
                   leftScale={oscillatorGroupUsesLeftScale(group)}
                   onReset={resetLegendSettings}
+                  onThresholdReset={() => resetOscillatorThreshold(group)}
+                  onThresholdUpdate={(patch) => updateOscillatorThreshold(group, patch)}
                   onUpdate={updateLegendSettings}
+                  threshold={resolveOscillatorThresholdSettings(oscillatorThresholdSettings[group.key], group)}
                   title={formatOscillatorPaneLabel(group)}
                 />
               </div>
@@ -1512,6 +1553,9 @@ function ChartLegend({
   leftScale = false,
   onReset,
   onUpdate,
+  onThresholdReset,
+  onThresholdUpdate,
+  threshold,
   title,
 }: {
   indicatorCount: number;
@@ -1519,6 +1563,9 @@ function ChartLegend({
   leftScale?: boolean;
   onReset: (key: string) => void;
   onUpdate: (key: string, patch: LegendSeriesSettings) => void;
+  onThresholdReset?: () => void;
+  onThresholdUpdate?: (patch: Partial<OscillatorThresholdSettings>) => void;
+  threshold?: OscillatorThresholdSettings;
   title?: string;
 }) {
   const [collapsed, setCollapsed] = useState(true);
@@ -1605,7 +1652,10 @@ function ChartLegend({
                 setEditorAnchor(null);
               }}
               onReset={() => onReset(editingItem.key)}
+              onThresholdReset={onThresholdReset}
+              onThresholdUpdate={onThresholdUpdate}
               onUpdate={(patch) => onUpdate(editingItem.key, patch)}
+              threshold={threshold}
             />
           ) : null}
           {guideItem?.guideHelp ? <IndicatorGuideModal help={guideItem.guideHelp} onClose={() => setGuideItem(null)} title={guideItem.guideTitle || guideItem.label} /> : null}
@@ -1620,12 +1670,18 @@ function LegendEditor({
   item,
   onClose,
   onReset,
+  onThresholdReset,
+  onThresholdUpdate,
+  threshold,
   onUpdate
 }: {
   anchor: HTMLElement | null;
   item: LegendItem;
   onClose: () => void;
   onReset: () => void;
+  onThresholdReset?: () => void;
+  onThresholdUpdate?: (patch: Partial<OscillatorThresholdSettings>) => void;
+  threshold?: OscillatorThresholdSettings;
   onUpdate: (patch: LegendSeriesSettings) => void;
 }) {
   const editorRef = useRef<HTMLDivElement | null>(null);
@@ -1718,6 +1774,36 @@ function LegendEditor({
         <input checked={item.showValue} type="checkbox" onChange={(event) => onUpdate({ showValue: event.target.checked })} />
         Value in legend
       </label>
+      {threshold && onThresholdUpdate ? (
+        <>
+          <div className="chart-legend-editor-section-title">Pane threshold</div>
+          <label className="legend-checkbox">
+            <input checked={threshold.visible} type="checkbox" onChange={(event) => onThresholdUpdate({ visible: event.target.checked })} />
+            Show baseline
+          </label>
+          <label>
+            Value
+            <input className="legend-number-input" step="any" type="number" value={threshold.value} onChange={(event) => onThresholdUpdate({ value: Number(event.target.value) })} />
+          </label>
+          <label>
+            Color
+            <input type="color" value={threshold.color} onChange={(event) => onThresholdUpdate({ color: event.target.value })} />
+          </label>
+          <label>
+            Shape
+            <select value={threshold.lineStyle} onChange={(event) => onThresholdUpdate({ lineStyle: event.target.value as LegendLineStyle })}>
+              <option value="solid">Solid</option>
+              <option value="dashed">Dashed</option>
+              <option value="dotted">Dotted</option>
+            </select>
+          </label>
+          <label>
+            Width
+            <input min={1} max={4} type="range" value={threshold.lineWidth} onChange={(event) => onThresholdUpdate({ lineWidth: Number(event.target.value) })} />
+          </label>
+          {onThresholdReset ? <button className="legend-reset-button" onClick={onThresholdReset} type="button">Reset threshold</button> : null}
+        </>
+      ) : null}
       <button className="legend-reset-button" onClick={onReset} type="button">Reset</button>
     </div>,
     document.body
@@ -2566,6 +2652,35 @@ function saveLegendSettings(settings: LegendSettingsMap, storageKey = LEGEND_SET
   window.localStorage.setItem(storageKey, JSON.stringify(settings));
 }
 
+function loadOscillatorThresholdSettings(storageKey = OSCILLATOR_THRESHOLD_STORAGE_KEY): OscillatorThresholdSettingsMap {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(storageKey);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as OscillatorThresholdSettingsMap;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveOscillatorThresholdSettings(settings: OscillatorThresholdSettingsMap, storageKey = OSCILLATOR_THRESHOLD_STORAGE_KEY) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(storageKey, JSON.stringify(settings));
+}
+
+function resolveOscillatorThresholdSettings(settings?: Partial<OscillatorThresholdSettings>, group?: OscillatorPaneGroup): OscillatorThresholdSettings {
+  const defaultValue = group?.key === "oscillator:rsi" ? 50 : 0;
+  const defaultColor = validHexColor(readNeutralChartColor(), "#667085");
+  return {
+    color: validHexColor(settings?.color, defaultColor),
+    lineStyle: settings?.lineStyle === "solid" || settings?.lineStyle === "dotted" ? settings.lineStyle : "dashed",
+    lineWidth: Math.max(1, Math.min(4, Math.round(Number(settings?.lineWidth) || 1))),
+    value: Number.isFinite(Number(settings?.value)) ? Number(settings?.value) : defaultValue,
+    visible: settings?.visible !== false,
+  };
+}
+
 function loadChartAppearanceSettings(storageKey = CHART_APPEARANCE_STORAGE_KEY): ChartAppearanceSettings {
   if (typeof window === "undefined") return { ...defaultChartAppearanceSettings };
   try {
@@ -2779,6 +2894,9 @@ function applySeriesSettings(renderer: AnySeriesApi, source: ChartSeries, settin
   } else {
     renderer.applyOptions({
       color: colorWithOpacity(settings.color, effectiveSeriesOpacity(source, settings)),
+      crosshairMarkerBorderWidth: 2,
+      crosshairMarkerRadius: 4,
+      crosshairMarkerVisible: true,
       lineStyle: toChartLineStyle(settings.lineStyle),
       lineWidth: toLineWidth(settings.lineWidth),
       lastValueVisible: source.lastValueVisible ?? true,
@@ -2807,6 +2925,9 @@ function addChartSeries(chart: IChartApi, series: ChartSeries, settings: Require
   return chart.addLineSeries({
     autoscaleInfoProvider,
     color: colorWithOpacity(settings.color, effectiveSeriesOpacity(series, settings)),
+    crosshairMarkerBorderWidth: 2,
+    crosshairMarkerRadius: 4,
+    crosshairMarkerVisible: true,
     lineStyle: toChartLineStyle(settings.lineStyle),
     lineWidth: toLineWidth(settings.lineWidth),
     priceFormat: adaptiveSeriesPriceFormat(series),
@@ -2979,7 +3100,11 @@ function chartOptions(
     localization: {
       timeFormatter: (timeValue: Time) => formatMarketDateTime(timeValue, timeframe)
     },
-    crosshair: { mode: 0 },
+    crosshair: {
+      horzLine: { color: palette.text, labelBackgroundColor: palette.text, labelVisible: true, style: LineStyle.Dotted, visible: true, width: 1 as LineWidth },
+      mode: 0,
+      vertLine: { color: palette.grid, labelBackgroundColor: palette.text, labelVisible: true, style: LineStyle.Dotted, visible: true, width: 1 as LineWidth },
+    },
     rightPriceScale: { borderColor: palette.grid, minimumWidth: CHART_PRICE_SCALE_MIN_WIDTH },
     leftPriceScale: { borderColor: palette.grid, minimumWidth: CHART_PRICE_SCALE_MIN_WIDTH, visible: showLeftPriceScale },
     timeScale: {
@@ -3409,28 +3534,31 @@ function syncCrosshairs(
     syncing = false;
   };
 
-  const syncToPriceAndPeers = (sourceChart: IChartApi, param: MouseEventParams<Time>) => {
+  const syncToPriceAndPeers = (sourcePane: OscillatorPaneRuntime, param: MouseEventParams<Time>) => {
     if (syncing) return;
     if (!param.time) {
       priceChart.clearCrosshairPosition();
-      clearOscillatorCrosshairs(sourceChart);
-      return;
-    }
-    const value = closeByTime.get(Number(param.time));
-    if (typeof value !== "number" || !Number.isFinite(value)) {
-      priceChart.clearCrosshairPosition();
-      clearOscillatorCrosshairs(sourceChart);
+      clearOscillatorCrosshairs(sourcePane.chart);
       return;
     }
     syncing = true;
-    priceChart.setCrosshairPosition(value, param.time, candleSeries);
-    setOscillatorCrosshairs(param.time, sourceChart);
+    const pointValue = sourcePane.valuesByTime.get(Number(param.time));
+    if (sourcePane.renderer && typeof pointValue === "number" && Number.isFinite(pointValue)) {
+      sourcePane.chart.setCrosshairPosition(pointValue, param.time, sourcePane.renderer);
+    }
+    const priceValue = closeByTime.get(Number(param.time));
+    if (typeof priceValue === "number" && Number.isFinite(priceValue)) {
+      priceChart.setCrosshairPosition(priceValue, param.time, candleSeries);
+    } else {
+      priceChart.clearCrosshairPosition();
+    }
+    setOscillatorCrosshairs(param.time, sourcePane.chart);
     syncing = false;
   };
 
   priceChart.subscribeCrosshairMove(syncToOscillators);
   const paneHandlers = oscillatorPanes.map((pane) => {
-    const handler = (param: MouseEventParams<Time>) => syncToPriceAndPeers(pane.chart, param);
+    const handler = (param: MouseEventParams<Time>) => syncToPriceAndPeers(pane, param);
     pane.chart.subscribeCrosshairMove(handler);
     return { pane, handler };
   });
@@ -3501,7 +3629,8 @@ function syncZoomCorrectedCrosshairs(
     const renderer = runtime.renderer ?? runtime.timelineRenderer;
     if (!element || !renderer) return;
     addCorrectedMouseMove(element, runtime.chart, renderer, (time, value) => {
-      runtime.chart.setCrosshairPosition(value, time, renderer);
+      const pointValue = runtime.valuesByTime.get(Number(time));
+      runtime.chart.setCrosshairPosition(typeof pointValue === "number" && Number.isFinite(pointValue) ? pointValue : value, time, renderer);
       const close = closeByTime.get(Number(time));
       if (typeof close === "number" && Number.isFinite(close)) {
         priceChart.setCrosshairPosition(close, time, candleSeries);
