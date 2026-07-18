@@ -988,7 +988,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     if (!runtime.zeroLine) {
       runtime.zeroLine = renderer.createPriceLine({
         axisLabelVisible: false,
-        color: "#000000",
+        color: readChartPalette().grid,
         lineStyle: LineStyle.Solid,
         lineVisible: true,
         lineWidth: 1 as LineWidth,
@@ -1000,7 +1000,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     } else {
       runtime.zeroLine.applyOptions({
         axisLabelVisible: false,
-        color: "#000000",
+        color: readChartPalette().grid,
         lineStyle: LineStyle.Solid,
         lineVisible: true,
         lineWidth: 1 as LineWidth,
@@ -1331,7 +1331,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         <div className="chart-canvas-stack">
           {loading ? <div className="chart-update-status">Updating chart...</div> : null}
           {loadingEarlier ? <div className="chart-update-status">Loading earlier data...</div> : null}
-          {errorMessage ? <div className="chart-update-status error">Chart update failed</div> : null}
+          {errorMessage ? <div aria-label={`Chart update failed: ${errorMessage}`} className="chart-update-status error" role="status" title={errorMessage}>Chart update failed</div> : null}
           <div className="chart-reference-stack-layer" ref={referenceLayerRef} />
           <div className="chart-price">
             <div className="chart-pane-canvas" ref={priceRef} />
@@ -2825,6 +2825,7 @@ function seriesDataForSettings(series: ChartSeries, settings: Required<LegendSer
   const defaultColor = defaultLegendSettings(series).color;
   const opacity = effectiveSeriesOpacity(series, settings);
   const applyOpacity = (color: string) => colorWithOpacity(color, opacity);
+  const neutralColor = readNeutralChartColor();
   if (series.style !== "histogram") {
     if (settings.color && settings.color !== defaultColor) {
       return series.data.map(({ tone: _tone, ...point }) => ({ ...point, color: applyOpacity(settings.color) }));
@@ -2835,6 +2836,8 @@ function seriesDataForSettings(series: ChartSeries, settings: Required<LegendSer
         ? { color: applyOpacity(appearance.upColor) }
         : tone === "sell"
           ? { color: applyOpacity(appearance.downColor) }
+          : tone === "neutral"
+            ? { color: applyOpacity(neutralColor) }
           : point.color
             ? { color: applyOpacity(point.color) }
             : {}),
@@ -2844,9 +2847,26 @@ function seriesDataForSettings(series: ChartSeries, settings: Required<LegendSer
     if (series.column === "macd_histogram") {
       return series.data.map((point) => ({ ...point, color: applyOpacity(point.value >= 0 ? appearance.upColor : appearance.downColor) }));
     }
-    return series.data.map((point) => ({ ...point, ...(point.color ? { color: applyOpacity(point.color) } : {}) }));
+    return series.data.map(({ tone, ...point }) => ({
+      ...point,
+      ...(tone === "buy"
+        ? { color: applyOpacity(appearance.upColor) }
+        : tone === "sell"
+          ? { color: applyOpacity(appearance.downColor) }
+          : tone === "neutral"
+            ? { color: applyOpacity(neutralColor) }
+          : point.color
+            ? { color: applyOpacity(point.color) }
+            : {}),
+    }));
   }
   return series.data.map((point) => ({ ...point, color: applyOpacity(settings.color) }));
+}
+
+function readNeutralChartColor() {
+  if (typeof window === "undefined") return "#667085";
+  const styles = window.getComputedStyle(document.documentElement);
+  return styles.getPropertyValue("--muted-foreground").trim() || readChartPalette().text;
 }
 
 function toChartLineStyle(style: LegendLineStyle) {

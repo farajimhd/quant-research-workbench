@@ -4925,6 +4925,7 @@ async def trading_historical_stream(websocket: WebSocket, symbol: str) -> None:
                     await websocket.send_bytes(message)
                 else:
                     await websocket.send_text(message)
+        await websocket.send_json({"type": "complete"})
         await websocket.close(code=1000)
     except WebSocketDisconnect:
         return

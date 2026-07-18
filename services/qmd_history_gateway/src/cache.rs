@@ -557,6 +557,7 @@ impl HistoricalDerivedCache {
         _ticker: String,
         profile: CacheProfile,
     ) -> Result<u64, String> {
+        let builds_products = matches!(&profile, CacheProfile::Products);
         let resolutions = self
             .config
             .product_timeframes
@@ -598,27 +599,27 @@ impl HistoricalDerivedCache {
                         }
                         IndicatorWork::Finalize { bars } => bars,
                     };
-                    let mut forecasts = HashMap::new();
                     for (sequence, bar) in bars {
-                        let mut indicator = calculators
-                            .entry(bar.timeframe.clone())
-                            .or_insert_with(BarIndicatorCalculator::new)
-                            .apply_bar(&bar);
                         if bar.timeframe.eq_ignore_ascii_case("100ms") {
-                            let forecast = forecasts.entry(bar.bar_end).or_insert_with(|| {
-                                microstructure.snapshot_at(
-                                    bar.bar_end,
-                                    &worker_rules,
-                                    "qmd-history-indicators",
-                                )
-                            });
-                            indicator.apply_microstructure(forecast);
-                            aggregate.push(&indicator);
-                        } else {
+                            let interval = microstructure.interval_at(bar.bar_end, &worker_rules);
+                            aggregate.push_interval(&interval);
+                            if let Some(sequence) = sequence {
+                                let mut indicator = calculators
+                                    .entry(bar.timeframe.clone())
+                                    .or_insert_with(BarIndicatorCalculator::new)
+                                    .apply_bar(&bar);
+                                indicator.apply_microstructure_interval(&interval);
+                                worker_entry
+                                    .push_indicator(sequence, bar, indicator)
+                                    .await?;
+                            }
+                        } else if let Some(sequence) = sequence {
+                            let mut indicator = calculators
+                                .entry(bar.timeframe.clone())
+                                .or_insert_with(BarIndicatorCalculator::new)
+                                .apply_bar(&bar);
                             aggregate.apply_to(&mut indicator);
                             aggregate.reset();
-                        }
-                        if let Some(sequence) = sequence {
                             worker_entry
                                 .push_indicator(sequence, bar, indicator)
                                 .await?;
@@ -632,16 +633,18 @@ impl HistoricalDerivedCache {
             None
         };
         let mut indicator_sender = indicator_worker.as_ref().map(|(sender, _)| sender.clone());
-        let mut products = MarketProductEngine::new(
-            resolutions,
-            ProductCacheLimits {
-                max_bytes: self.config.cache_max_bytes / 2,
-                max_partitions: self.config.cache_max_entries.max(1),
-                max_rows: self.config.product_cache_max_rows_per_entry,
-            },
-            self.source.trade_aggregation_rules(),
-            ConditionClassifier::training_aligned(),
-        );
+        let mut products = builds_products.then(|| {
+            MarketProductEngine::new(
+                resolutions,
+                ProductCacheLimits {
+                    max_bytes: self.config.cache_max_bytes / 2,
+                    max_partitions: self.config.cache_max_entries.max(1),
+                    max_rows: self.config.product_cache_max_rows_per_entry,
+                },
+                self.source.trade_aggregation_rules(),
+                ConditionClassifier::training_aligned(),
+            )
+        });
         let mut events_processed = 0_u64;
         let chunks = split_event_window(&window, self.config.fetch_chunk_hours);
         let per_build_fetches = self
@@ -669,7 +672,9 @@ impl HistoricalDerivedCache {
                 }
                 for compact in &events {
                     let event = self.source.market_event(compact);
-                    products.apply_event(&event, event.ts());
+                    if let Some(products) = products.as_mut() {
+                        products.apply_event(&event, event.ts());
+                    }
                     let mut indicator_bars = Vec::new();
                     for bar in shard.apply_event(&event).await {
                         let base_only = bar.timeframe.eq_ignore_ascii_case("100ms")
@@ -700,7 +705,9 @@ impl HistoricalDerivedCache {
                     }
                 }
                 events_processed += count as u64;
-                entry.set_product_bytes(products.metrics().estimated_bytes)?;
+                if let Some(products) = products.as_ref() {
+                    entry.set_product_bytes(products.metrics().estimated_bytes)?;
+                }
                 let mut state = entry.state.lock().await;
                 state.events_processed = events_processed;
             }
@@ -745,18 +752,20 @@ impl HistoricalDerivedCache {
                 .await
                 .map_err(|error| format!("historical indicator worker panicked: {error}"))??;
         }
-        let product_metrics = products.metrics();
-        entry.set_product_bytes(product_metrics.estimated_bytes)?;
-        if product_metrics.evictions > 0 {
-            return Err(format!(
-                "historical canonical product build exceeded its bounded cache: evictions={} rows={} estimated_bytes={}",
-                product_metrics.evictions,
-                product_metrics.family_rows + product_metrics.condition_rows,
-                product_metrics.estimated_bytes,
-            ));
+        if let Some(products) = products {
+            let product_metrics = products.metrics();
+            entry.set_product_bytes(product_metrics.estimated_bytes)?;
+            if product_metrics.evictions > 0 {
+                return Err(format!(
+                    "historical canonical product build exceeded its bounded cache: evictions={} rows={} estimated_bytes={}",
+                    product_metrics.evictions,
+                    product_metrics.family_rows + product_metrics.condition_rows,
+                    product_metrics.estimated_bytes,
+                ));
+            }
+            let mut state = entry.state.lock().await;
+            state.products = Some(products);
         }
-        let mut state = entry.state.lock().await;
-        state.products = Some(products);
         Ok(events_processed)
     }
 

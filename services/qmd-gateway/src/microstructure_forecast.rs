@@ -403,6 +403,61 @@ impl MicrostructureForecastWindow {
             .collect::<Vec<_>>();
         forecast_market_events_at(&events, as_of, trade_rules, source)
     }
+
+    /// Calculate only the closed 100 ms interval contract used by chart bars.
+    ///
+    /// Unlike `snapshot_at`, this does not clone and rescan the rolling event
+    /// horizons. It walks each event in the requested bucket once and looks
+    /// backward only far enough to recover the preceding quote and eligible
+    /// trade needed for causal classification and chained returns.
+    pub fn interval_at(
+        &self,
+        as_of: DateTime<Utc>,
+        trade_rules: &TradeAggregationRules,
+    ) -> MicrostructureIntervalFeatures {
+        let (interval_start_us, interval_end_us) = closed_100ms_bounds(as_of);
+        let mut window = Vec::new();
+        let mut seed_quote = None;
+        let mut seed_trade_price = None;
+        for event in self.events.iter().rev() {
+            let timestamp_us = event.ts().timestamp_micros();
+            if timestamp_us >= interval_end_us {
+                continue;
+            }
+            if timestamp_us >= interval_start_us {
+                window.push(event.clone());
+                continue;
+            }
+            match event {
+                MarketEvent::Quote(quote) if seed_quote.is_none() && valid_quote(quote) => {
+                    seed_quote = Some(quote.clone());
+                }
+                MarketEvent::Trade(trade) if seed_trade_price.is_none() => {
+                    let rule = trade_rules.resolve(&trade.conditions, trade.ts);
+                    if rule.update_last
+                        && rule.update_volume
+                        && trade.price > 0.0
+                        && trade.size > 0.0
+                    {
+                        seed_trade_price = Some(trade.price);
+                    }
+                }
+                _ => {}
+            }
+            if seed_quote.is_some() && seed_trade_price.is_some() {
+                break;
+            }
+        }
+        window.reverse();
+        calculate_interval_features(
+            &window,
+            seed_quote,
+            seed_trade_price,
+            trade_rules,
+            100_000,
+            1.0,
+        )
+    }
 }
 
 pub fn forecast_compact_events(
@@ -466,13 +521,7 @@ fn calculate_100ms_interval(
     as_of: DateTime<Utc>,
     trade_rules: &TradeAggregationRules,
 ) -> MicrostructureIntervalFeatures {
-    let as_of_us = as_of.timestamp_micros();
-    let interval_end_us = if as_of_us.rem_euclid(100_000) == 0 {
-        as_of_us
-    } else {
-        as_of_us.div_euclid(100_000).saturating_add(1) * 100_000
-    };
-    let interval_start_us = interval_end_us.saturating_sub(100_000);
+    let (interval_start_us, interval_end_us) = closed_100ms_bounds(as_of);
     let start = events.partition_point(|event| event.ts().timestamp_micros() < interval_start_us);
     let end = events.partition_point(|event| event.ts().timestamp_micros() < interval_end_us);
     let seed_quote = events[..start].iter().rev().find_map(|event| match event {
@@ -488,6 +537,16 @@ fn calculate_100ms_interval(
         100_000,
         1.0,
     )
+}
+
+fn closed_100ms_bounds(as_of: DateTime<Utc>) -> (i64, i64) {
+    let as_of_us = as_of.timestamp_micros();
+    let interval_end_us = if as_of_us.rem_euclid(100_000) == 0 {
+        as_of_us
+    } else {
+        as_of_us.div_euclid(100_000).saturating_add(1) * 100_000
+    };
+    (interval_end_us.saturating_sub(100_000), interval_end_us)
 }
 
 fn calculate_interval_features(
@@ -1071,6 +1130,21 @@ mod tests {
             forecast_market_events(&events, &rules(), "test"),
             forecast_market_events(&events, &rules(), "test")
         );
+    }
+
+    #[test]
+    fn interval_only_path_matches_the_full_snapshot_contract() {
+        let events = bullish_events(false);
+        let as_of = Utc.timestamp_micros(700_000).unwrap();
+        let mut window = MicrostructureForecastWindow::default();
+        for event in &events {
+            window.apply_event(event);
+        }
+
+        let interval = window.interval_at(as_of, &rules());
+        let snapshot = window.snapshot_at(as_of, &rules(), "test");
+
+        assert_eq!(interval, snapshot.interval);
     }
 
     #[test]

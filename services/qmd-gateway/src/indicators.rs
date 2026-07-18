@@ -131,7 +131,7 @@ impl IndicatorRow {
         self.apply_microstructure_interval(&forecast.interval);
     }
 
-    fn apply_microstructure_interval(&mut self, interval: &MicrostructureIntervalFeatures) {
+    pub fn apply_microstructure_interval(&mut self, interval: &MicrostructureIntervalFeatures) {
         self.microstructure_buy_trade_count = interval.buy_trade_count;
         self.microstructure_sell_trade_count = interval.sell_trade_count;
         self.microstructure_classified_trade_count = interval.classified_trade_count;
@@ -473,9 +473,8 @@ impl IndicatorStore {
         let ticker = bar.sym.to_ascii_uppercase();
         if bar.timeframe.eq_ignore_ascii_case("100ms") {
             if let Some(window) = self.microstructure.get(&ticker) {
-                let forecast =
-                    window.snapshot_at(bar.bar_end, &self.trade_rules, "qmd-gateway-indicators");
-                row.apply_microstructure(&forecast);
+                let interval = window.interval_at(bar.bar_end, &self.trade_rules);
+                row.apply_microstructure_interval(&interval);
             }
             for timeframe in MICROSTRUCTURE_AGGREGATE_TIMEFRAMES {
                 self.microstructure_aggregates
@@ -551,7 +550,6 @@ impl WeightedSignalAggregate {
 
 impl MicrostructureSampleAggregate {
     pub fn push(&mut self, row: &IndicatorRow) {
-        self.sample_count += 1;
         self.fast.push(
             row.microstructure_fast_signal,
             row.microstructure_fast_confidence,
@@ -564,7 +562,12 @@ impl MicrostructureSampleAggregate {
             row.microstructure_context_signal,
             row.microstructure_context_confidence,
         );
-        self.interval.merge(&row.microstructure_interval);
+        self.push_interval(&row.microstructure_interval);
+    }
+
+    pub fn push_interval(&mut self, interval: &MicrostructureIntervalFeatures) {
+        self.sample_count += 1;
+        self.interval.merge(interval);
     }
 
     pub fn apply_to(&self, target: &mut IndicatorRow) {

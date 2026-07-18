@@ -102,7 +102,7 @@ if (-not $BuildOnly -and (Test-ExistingHistoryGateway -Endpoint $endpoint)) {
 Push-Location $repoRoot
 try {
     Write-Host "Building qmd-history-gateway from shared qmd_core..."
-    cargo build --offline --manifest-path $manifest
+    cargo build --offline --release --manifest-path $manifest
     if ($LASTEXITCODE -ne 0) {
         throw "qmd-history-gateway build failed with exit code $LASTEXITCODE"
     }
@@ -113,7 +113,7 @@ try {
         return
     }
     Write-Host "Starting qmd-history-gateway at $($endpoint.BaseUrl)..."
-    cargo run --offline --manifest-path $manifest
+    cargo run --offline --release --manifest-path $manifest
     if ($LASTEXITCODE -ne 0) {
         throw "qmd-history-gateway exited with code $LASTEXITCODE"
     }
