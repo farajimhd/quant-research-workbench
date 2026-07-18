@@ -176,12 +176,13 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     ],
     "microstructure",
     {
-      shortDescription: "Causal QMD quote-and-trade pressure across 25, 100, and 500 market events, plus one confidence-gated unified action.",
-      detailedDescription: "Each horizon score runs from -1 (sell pressure) to +1 (buy pressure). Confidence runs from 0% to 100% on the left scale. The unified score combines the three unique horizons with 50%, 30%, and 20% priors, weights them by their evidence confidence, and reduces confidence when the horizons disagree.",
+      shortDescription: "Timeframe-consistent QMD quote-and-trade pressure sampled at 100 ms across 25, 100, and 500 market-event horizons.",
+      detailedDescription: "QMD samples the causal rolling forecast once at each closed 100 ms boundary. A higher-timeframe chart bar combines only the 100 ms samples inside that bar: signals use confidence weighting and confidence is reduced when those samples disagree. Each score runs from -1 (sell pressure) to +1 (buy pressure), while confidence runs from 0% to 100% on the left scale.",
       interpretation: "Read the zero line first: bars above zero favor buying and bars below zero favor selling. Then check confidence on the left axis. The unified label reports BUY, SELL, or WAIT; WAIT means the score is weak, confidence is below 35%, or the horizons conflict. A fast move confirmed by the 100- and 500-event lines is stronger than a fast-only spike.",
       caveats: [
         "This is a deterministic microstructure estimate, not a guaranteed price forecast.",
         "Event horizons are activity-based rather than fixed clock durations, so they cover less time in a fast market.",
+        "Higher-timeframe values summarize the closed 100 ms samples inside that chart bar; they are not a final-tick snapshot.",
         "Displayed NBBO and eligible trades do not reveal all hidden liquidity or execution intent.",
       ],
     },
@@ -375,9 +376,36 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
       };
     };
 
+    const connectHistorical = (kind: "bars" | "indicators") => {
+      if (!active) return;
+      const socket = new WebSocket(canvasHistoricalStreamUrl(kind, ticker, timeframe, sessionDate, cutoffMs));
+      sockets[kind] = socket;
+      socket.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(String(event.data)) as (QmdLiveBar | HistoricalIndicator) & { error?: string };
+          if (payload.error) {
+            if (kind === "bars") setState((current) => ({ ...current, historyError: payload.error || "QMD historical bars are unavailable." }));
+            return;
+          }
+          if (!payload.bar_start) return;
+          setState((current) => ({
+            ...current,
+            bars: kind === "bars" ? mergeRowsByTime(current.bars, [payload as QmdLiveBar]) : current.bars,
+            indicators: kind === "indicators" ? mergeRowsByTime(current.indicators, [payload as HistoricalIndicator]) : current.indicators,
+            loading: kind === "bars" ? false : current.loading,
+          }));
+        } catch {
+          if (kind === "bars") setState((current) => ({ ...current, historyError: "QMD historical bar stream returned invalid data." }));
+        }
+      };
+    };
+
     if (!pointInTime) {
       connect("bars");
       if (ENRICHED_QMD_TIMEFRAMES.has(timeframe)) connect("indicators");
+    } else {
+      connectHistorical("bars");
+      if (ENRICHED_QMD_TIMEFRAMES.has(timeframe)) connectHistorical("indicators");
     }
     return () => {
       active = false;
@@ -470,6 +498,11 @@ function marketSessionDate(timestamp: string) {
 function canvasLiveStreamUrl(kind: "bars" | "indicators", symbol: string, timeframe: string) {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${window.location.host}/api/trading/canvas-live-chart/stream/${kind}/${encodeURIComponent(symbol)}${query({ limit: 500, timeframe })}`;
+}
+
+function canvasHistoricalStreamUrl(kind: "bars" | "indicators", symbol: string, timeframe: string, sessionDate: string, cutoffMs: number) {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}/api/trading/historical-stream/${encodeURIComponent(symbol)}${query({ as_of: new Date(cutoffMs).toISOString(), session_date: sessionDate, stream: kind, timeframe })}`;
 }
 
 export function CanvasConfigurationPage() {

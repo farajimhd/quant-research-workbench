@@ -186,6 +186,12 @@ next-midpoint-direction feature, not an order
 instruction, return forecast, or price target; strategies must still apply
 market-state, LULD, spread, risk, and execution gates.
 
+Chart indicator rows use that contract on a fixed causal grid. QMD samples the
+rolling forecast once per closed 100 ms bar. For every higher timeframe, it
+combines only the 100 ms samples inside that bar using confidence-weighted
+signals and reduces confidence when the samples disagree. This makes a 1 minute
+indicator a summary of the minute rather than a snapshot of its final event.
+
 ## After-Hours Maintenance
 
 The QMD maintenance source of truth for historical event availability is

@@ -427,6 +427,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const displayedOverlaySeries = (payload?.overlay_series ?? []).filter((series) => visibleColumnLookup.has(seriesSelectionKey(series)));
   const displayedOscillatorSeries = (payload?.oscillator_series ?? []).filter((series) => visibleColumnLookup.has(seriesSelectionKey(series)));
   const oscillatorPaneGroups = buildOscillatorPaneGroups(displayedOscillatorSeries);
+  const alignLeftPriceScale = oscillatorPaneGroups.some(oscillatorGroupUsesLeftScale);
   const priceLegendItems = buildSeriesLegendItems(displayedOverlaySeries, "price", legendSettings);
   const hasChartData = Boolean(payload?.candles.length);
   const referenceKey = reference ? `${reference.time ?? ""}:${reference.startTime ?? ""}:${reference.endTime ?? ""}:${reference.sessionDate ?? ""}:${reference.minuteOfDay ?? ""}:${reference.label ?? ""}` : "";
@@ -681,7 +682,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     }
     if (!priceRef.current || priceChartRef.current) return undefined;
     const palette = readChartPalette();
-    const priceChart = createChart(priceRef.current, chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettingsRef.current, timeframe));
+    const priceChart = createChart(priceRef.current, chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettingsRef.current, timeframe, oscillatorPaneGroups.length === 0, alignLeftPriceScale));
     priceChartRef.current = priceChart;
     const candleSeries = priceChart.addCandlestickSeries({
       ...candleSeriesOptions(chartSettingsRef.current),
@@ -793,7 +794,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const palette = readChartPalette();
     const priceChart = priceChartRef.current;
     if (priceChart && priceRef.current) {
-      priceChart.applyOptions(chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettingsRef.current, timeframe, oscillatorPaneGroups.length === 0));
+      priceChart.applyOptions(chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettingsRef.current, timeframe, oscillatorPaneGroups.length === 0, alignLeftPriceScale));
       candleRef.current?.applyOptions(candleSeriesOptions(chartSettingsRef.current));
       if (payloadRef.current && volumeRef.current) {
         volumeRef.current.setData(volumeDataForSettings(payloadRef.current, chartSettingsRef.current) as never);
@@ -802,7 +803,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     oscillatorChartRefs.current.forEach((chart, key) => {
       const pane = oscillatorPaneRefs.current.get(key);
       const paneIndex = oscillatorPaneGroups.findIndex((group) => group.key === key);
-      if (pane) chart.applyOptions(chartOptions(pane.clientWidth, pane.clientHeight, false, palette, chartSettingsRef.current, timeframe, paneIndex === oscillatorPaneGroups.length - 1, oscillatorGroupUsesLeftScale(oscillatorPaneGroups[paneIndex])));
+      if (pane) chart.applyOptions(chartOptions(pane.clientWidth, pane.clientHeight, false, palette, chartSettingsRef.current, timeframe, paneIndex === oscillatorPaneGroups.length - 1, alignLeftPriceScale));
     });
     indicatorSeriesRef.current.forEach((renderer, key) => {
       const source = indicatorSourceRef.current.get(key);
@@ -858,6 +859,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
 
   function updateOscillatorPanes(groups: OscillatorPaneGroup[]) {
     const nextPaneKeys = new Set(groups.map((group) => group.key));
+    const alignGroupLeftPriceScale = groups.some(oscillatorGroupUsesLeftScale);
     Array.from(oscillatorPaneRuntimesRef.current.keys()).forEach((key) => {
       if (!nextPaneKeys.has(key)) removeOscillatorPaneRuntime(key);
     });
@@ -866,7 +868,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       if (!pane) return;
       let runtime = oscillatorPaneRuntimesRef.current.get(group.key);
       if (!runtime) {
-        const chart = createChart(pane, chartOptions(pane.clientWidth, pane.clientHeight, false, readChartPalette(), chartSettingsRef.current, timeframe, groupIndex === groups.length - 1, oscillatorGroupUsesLeftScale(group)));
+        const chart = createChart(pane, chartOptions(pane.clientWidth, pane.clientHeight, false, readChartPalette(), chartSettingsRef.current, timeframe, groupIndex === groups.length - 1, alignGroupLeftPriceScale));
         runtime = {
           chart,
           layerSignature: "",
@@ -885,11 +887,11 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       }
       updateOscillatorPaneTimeline(runtime, chartTimelineData(payloadRef.current?.candles ?? [], timeframe));
       updateOscillatorPaneSeries(runtime, group.series);
-      runtime.chart.applyOptions(chartOptions(pane.clientWidth, pane.clientHeight, false, readChartPalette(), chartSettingsRef.current, timeframe, groupIndex === groups.length - 1, oscillatorGroupUsesLeftScale(group)));
+      runtime.chart.applyOptions(chartOptions(pane.clientWidth, pane.clientHeight, false, readChartPalette(), chartSettingsRef.current, timeframe, groupIndex === groups.length - 1, alignGroupLeftPriceScale));
     });
     const price = priceRef.current;
     if (price && priceChartRef.current) {
-      priceChartRef.current.applyOptions(chartOptions(price.clientWidth, price.clientHeight, false, readChartPalette(), chartSettingsRef.current, timeframe, groups.length === 0));
+      priceChartRef.current.applyOptions(chartOptions(price.clientWidth, price.clientHeight, false, readChartPalette(), chartSettingsRef.current, timeframe, groups.length === 0, alignGroupLeftPriceScale));
     }
   }
 

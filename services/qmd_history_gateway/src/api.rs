@@ -138,6 +138,7 @@ pub fn app(state: AppState) -> Router {
         .route("/stream/compact-events", get(compact_event_stream))
         .route("/stream/events", get(event_stream))
         .route("/stream/bars/{ticker}", get(bar_stream))
+        .route("/stream/indicators/{ticker}", get(indicator_stream))
         .route("/stream/derived/{ticker}", get(derived_stream))
         .layer(CorsLayer::permissive())
         .with_state(Arc::new(state))
@@ -517,6 +518,21 @@ async fn derived_stream(
     }))
 }
 
+async fn indicator_stream(
+    Path(ticker): Path<String>,
+    websocket: WebSocketUpgrade,
+    Query(query): Query<StreamQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let mut window = stream_window(&query)?;
+    window.tickers = vec![ticker];
+    let timeframe = query.timeframe.unwrap_or_else(|| "1m".to_string());
+    validate_timeframe(&timeframe)?;
+    let cache = state.cache.clone();
+    Ok(websocket
+        .on_upgrade(move |socket| stream_cached_indicators(socket, cache, window, timeframe)))
+}
+
 async fn stream_compact(
     mut socket: WebSocket,
     source: HistoricalEventSource,
@@ -589,17 +605,20 @@ async fn stream_cached_bars(
     timeframe: String,
 ) {
     let ticker = window.tickers[0].clone();
-    let lease = match cache.acquire(window, ticker).await {
+    let lease = match cache
+        .acquire_derived(window, ticker, timeframe.clone())
+        .await
+    {
         Ok(lease) => lease,
         Err(error) => {
             send_stream_error(&mut socket, error).await;
             return;
         }
     };
-    let mut receiver = lease.entry.subscribe();
+    let mut receiver = lease.entry.subscribe_bars();
     let mut last_sequence = 0;
     loop {
-        let (frames, complete, error, _) = lease.entry.current().await;
+        let (frames, complete, error, _) = lease.entry.current_bars().await;
         if let Some(error) = error {
             send_stream_error(&mut socket, error).await;
             return;
@@ -608,10 +627,10 @@ async fn stream_cached_bars(
             if frame.sequence <= last_sequence {
                 continue;
             }
-            if frame.bar.timeframe.eq_ignore_ascii_case(&timeframe) {
-                if send_json(&mut socket, &frame.bar).await.is_err() {
-                    return;
-                }
+            if frame.bar.timeframe.eq_ignore_ascii_case(&timeframe)
+                && send_json(&mut socket, &frame.bar).await.is_err()
+            {
+                return;
             }
             last_sequence = frame.sequence;
         }
@@ -634,6 +653,61 @@ async fn stream_cached_bars(
     }
 }
 
+async fn stream_cached_indicators(
+    mut socket: WebSocket,
+    cache: HistoricalDerivedCache,
+    window: EventWindow,
+    timeframe: String,
+) {
+    let ticker = window.tickers[0].clone();
+    let lease = match cache
+        .acquire_derived(window, ticker, timeframe.clone())
+        .await
+    {
+        Ok(lease) => lease,
+        Err(error) => {
+            send_stream_error(&mut socket, error).await;
+            return;
+        }
+    };
+    let mut receiver = lease.entry.subscribe();
+    let mut last_sequence = 0;
+    loop {
+        let (frames, complete, error, _) = lease.entry.current().await;
+        if let Some(error) = error {
+            send_stream_error(&mut socket, error).await;
+            return;
+        }
+        for frame in &frames {
+            if frame.sequence <= last_sequence {
+                continue;
+            }
+            if frame.bar.timeframe.eq_ignore_ascii_case(&timeframe)
+                && send_json(&mut socket, &frame.indicator).await.is_err()
+            {
+                return;
+            }
+            last_sequence = frame.sequence;
+        }
+        if complete {
+            let _ = socket.close().await;
+            return;
+        }
+        match receiver.recv().await {
+            Ok(frame) if frame.sequence > last_sequence => {
+                if frame.bar.timeframe.eq_ignore_ascii_case(&timeframe)
+                    && send_json(&mut socket, &frame.indicator).await.is_err()
+                {
+                    return;
+                }
+                last_sequence = frame.sequence;
+            }
+            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn stream_derived(
     mut socket: WebSocket,
@@ -647,7 +721,10 @@ async fn stream_derived(
     max_updates: Option<u64>,
     updates_per_second: f64,
 ) {
-    let lease = match cache.acquire(window, ticker.clone()).await {
+    let lease = match cache
+        .acquire_derived(window, ticker.clone(), timeframe.clone())
+        .await
+    {
         Ok(lease) => lease,
         Err(error) => {
             send_stream_error(&mut socket, error).await;

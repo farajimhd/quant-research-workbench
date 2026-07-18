@@ -4839,12 +4839,18 @@ async def trading_historical_stream(websocket: WebSocket, symbol: str) -> None:
     after_sequence_text = websocket.query_params.get("after_sequence", "0")
     updates_per_second_text = websocket.query_params.get("updates_per_second", "0")
     max_updates_text = websocket.query_params.get("max_updates", "")
+    stream_kind = websocket.query_params.get("stream", "derived")
+    as_of_text = websocket.query_params.get("as_of", "")
     if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
         await websocket.send_json({"error": "Invalid historical ticker."})
         await websocket.close(code=1008)
         return
-    if timeframe not in {"1s", "10s", "30s", "1m", "5m", "1h"}:
+    if timeframe not in ENRICHED_QMD_TIMEFRAMES:
         await websocket.send_json({"error": "Invalid historical timeframe."})
+        await websocket.close(code=1008)
+        return
+    if stream_kind not in {"bars", "indicators", "derived"}:
+        await websocket.send_json({"error": "stream must be bars, indicators, or derived."})
         await websocket.close(code=1008)
         return
     try:
@@ -4870,18 +4876,43 @@ async def trading_historical_stream(websocket: WebSocket, symbol: str) -> None:
         session_count=1,
         replay_end_date=session_date,
     )
+    if as_of_text:
+        try:
+            as_of_timestamp = datetime.fromisoformat(as_of_text.replace("Z", "+00:00"))
+            window_start = datetime.fromisoformat(str(window["start"]).replace("Z", "+00:00"))
+            window_end = datetime.fromisoformat(str(window["end"]).replace("Z", "+00:00"))
+        except ValueError:
+            await websocket.send_json({"error": "as_of must be an ISO timestamp."})
+            await websocket.close(code=1008)
+            return
+        if as_of_timestamp.utcoffset() is None:
+            await websocket.send_json({"error": "as_of must include an explicit timezone."})
+            await websocket.close(code=1008)
+            return
+        if not window_start < as_of_timestamp <= window_end:
+            await websocket.send_json({"error": "as_of must be inside the historical session."})
+            await websocket.close(code=1008)
+            return
+        window["end"] = as_of_timestamp.isoformat()
     try:
+        upstream_path = f"/stream/{stream_kind}/{ticker}"
+        upstream_params = {
+            "end": window["end"],
+            "start": window["start"],
+            "timeframe": timeframe,
+        }
+        if stream_kind == "derived":
+            upstream_params.update(
+                {
+                    "after_sequence": after_sequence,
+                    "emit": "updates",
+                    "max_updates": max_updates,
+                    "updates_per_second": updates_per_second,
+                }
+            )
         upstream_url = historical_gateway_websocket_url(
-            f"/stream/derived/{ticker}",
-            {
-                "after_sequence": after_sequence,
-                "emit": "updates",
-                "end": window["end"],
-                "start": window["start"],
-                "timeframe": timeframe,
-                "max_updates": max_updates,
-                "updates_per_second": updates_per_second,
-            },
+            upstream_path,
+            upstream_params,
         )
         async with websockets.connect(
             upstream_url,

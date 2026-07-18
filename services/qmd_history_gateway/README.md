@@ -77,8 +77,8 @@ All timestamps must be RFC3339 with an explicit timezone. Historical requests
 are half-open: `start <= event_time < end`.
 Product snapshots additionally clamp their build horizon to `min(end, as_of)`;
 future events never enter an as-of cache entry.
-Supported bar timeframes are the live QMD set: `1s`, `10s`, `30s`, `1m`, `5m`,
-and `1h`.
+Supported bar timeframes are the live QMD set: `100ms`, `1s`, `5s`, `10s`,
+`30s`, `1m`, `5m`, and `1h`.
 
 - `GET /health`
 - `GET /config`
@@ -95,7 +95,15 @@ and `1h`.
 - `WS /stream/compact-events?start=...&end=...&tickers=AAPL,MSFT`
 - `WS /stream/events?start=...&end=...&tickers=AAPL,MSFT`
 - `WS /stream/bars/{ticker}?start=...&end=...&timeframe=1m`
+- `WS /stream/indicators/{ticker}?start=...&end=...&timeframe=1m`
 - `WS /stream/derived/{ticker}?start=...&end=...&timeframe=1m&emit=updates`
+
+Bars and indicators have separate ordered streams. A cold derived build emits
+each finalized bar before the bounded indicator worker calculates its forecast,
+so chart price data is never held behind indicator calculation. Builds calculate
+only the requested output timeframe plus the canonical 100 ms forecast grid.
+Each higher-timeframe microstructure row confidence-weights the 100 ms samples
+inside that bar and applies an agreement penalty to confidence.
 
 `/stream/derived` supports `emit=full`, `emit=updates`, and
 `emit=full_then_updates`. Incremental messages contain a monotonic sequence,

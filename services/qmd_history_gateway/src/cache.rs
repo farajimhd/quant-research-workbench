@@ -3,7 +3,10 @@ use crate::source::{EventWindow, HistoricalCursor, HistoricalEventSource, Source
 use chrono::{DateTime, Duration, Utc};
 use qmd_core::bars::{BarRow, BarSnapshot, SharedBarStore, BAR_SCHEMA_VERSION};
 use qmd_core::compact_event::LiveCompactEvent;
-use qmd_core::indicators::{BarIndicatorCalculator, IndicatorRow, INDICATOR_SCHEMA_VERSION};
+use qmd_core::event::MarketEvent;
+use qmd_core::indicators::{
+    BarIndicatorCalculator, IndicatorRow, MicrostructureSampleAggregate, INDICATOR_SCHEMA_VERSION,
+};
 use qmd_core::market_products::{
     parse_resolution_us, ConditionBarSnapshot, ConditionClassifier, FamilyBarRow,
     FamilyBarSnapshot, MacroBarSnapshot, MarketProductEngine, ProductCacheLimits, ProductState,
@@ -17,7 +20,22 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
 
-pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v3";
+pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v4";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CacheProfile {
+    Derived(String),
+    Products,
+}
+
+impl CacheProfile {
+    fn key(&self) -> String {
+        match self {
+            Self::Derived(timeframe) => format!("derived:{timeframe}"),
+            Self::Products => "products".to_string(),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct DerivedUpdate {
@@ -27,6 +45,12 @@ pub struct DerivedUpdate {
     pub sequence: u64,
     #[serde(rename = "type")]
     pub update_type: &'static str,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct BarUpdate {
+    pub bar: BarRow,
+    pub sequence: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -118,6 +142,7 @@ pub struct CacheEntry {
     global_max_bytes: u64,
     notify: Notify,
     state: Mutex<EntryState>,
+    bar_updates: broadcast::Sender<BarUpdate>,
     updates: broadcast::Sender<DerivedUpdate>,
     estimated_bytes: AtomicU64,
     max_update_bytes: usize,
@@ -135,6 +160,7 @@ struct EntryState {
     complete: bool,
     error: Option<String>,
     events_processed: u64,
+    bars: Vec<BarUpdate>,
     frames: Vec<DerivedUpdate>,
     products: Option<MarketProductEngine>,
 }
@@ -145,6 +171,16 @@ struct CacheStats {
     evictions: AtomicU64,
     hits: AtomicU64,
     misses: AtomicU64,
+}
+
+enum IndicatorWork {
+    Event {
+        event: MarketEvent,
+        bars: Vec<(Option<u64>, BarRow)>,
+    },
+    Finalize {
+        bars: Vec<(Option<u64>, BarRow)>,
+    },
 }
 
 impl HistoricalDerivedCache {
@@ -166,9 +202,14 @@ impl HistoricalDerivedCache {
         }
     }
 
-    pub async fn acquire(&self, window: EventWindow, ticker: String) -> Result<CacheLease, String> {
+    async fn acquire(
+        &self,
+        window: EventWindow,
+        ticker: String,
+        profile: CacheProfile,
+    ) -> Result<CacheLease, String> {
         let source_revision = self.source.source_revision(&window).await?;
-        let key = cache_key(&window, &ticker, &source_revision);
+        let key = cache_key(&window, &ticker, &source_revision, &profile);
         let mut index = self.inner.lock().await;
         if let Some(entry) = index.entries.get(&key).cloned() {
             touch(&mut index.order, &key);
@@ -197,6 +238,7 @@ impl HistoricalDerivedCache {
                 self.stats.evictions.fetch_add(1, Ordering::Relaxed);
             }
         }
+        let (bar_updates, _) = broadcast::channel(self.config.cache_update_capacity.max(16));
         let (updates, _) = broadcast::channel(self.config.cache_update_capacity.max(16));
         let entry = Arc::new(CacheEntry {
             allocated_bytes: self.allocated_bytes.clone(),
@@ -205,6 +247,7 @@ impl HistoricalDerivedCache {
             global_max_bytes: self.config.cache_max_bytes as u64,
             notify: Notify::new(),
             state: Mutex::new(EntryState::default()),
+            bar_updates,
             updates,
             estimated_bytes: AtomicU64::new(0),
             max_update_bytes: self.config.cache_max_bytes / 2,
@@ -219,13 +262,23 @@ impl HistoricalDerivedCache {
         let builder = self.clone();
         let build_entry = entry.clone();
         tokio::spawn(async move {
-            builder.build(build_entry, window, ticker).await;
+            builder.build(build_entry, window, ticker, profile).await;
         });
         Ok(CacheLease {
             entry,
             hit: false,
             source_revision,
         })
+    }
+
+    pub async fn acquire_derived(
+        &self,
+        window: EventWindow,
+        ticker: String,
+        timeframe: String,
+    ) -> Result<CacheLease, String> {
+        self.acquire(window, ticker, CacheProfile::Derived(timeframe))
+            .await
     }
 
     pub async fn snapshot(
@@ -236,7 +289,13 @@ impl HistoricalDerivedCache {
         limit: usize,
     ) -> Result<DerivedSnapshot, String> {
         let as_of = window.end;
-        let lease = self.acquire(window, ticker.clone()).await?;
+        let lease = self
+            .acquire(
+                window,
+                ticker.clone(),
+                CacheProfile::Derived(timeframe.clone()),
+            )
+            .await?;
         let (frames, event_count) = lease.entry.wait_complete().await?;
         let matching = frames
             .iter()
@@ -288,7 +347,12 @@ impl HistoricalDerivedCache {
     ) -> Result<ChartSnapshot, String> {
         let resolution_us = parse_resolution_us(&timeframe)
             .ok_or_else(|| format!("unsupported chart timeframe {timeframe}"))?;
-        let lease = self.acquire(window, ticker.clone()).await?;
+        let profile = if qmd_core::bars::is_supported_timeframe(&timeframe) {
+            CacheProfile::Derived(timeframe.clone())
+        } else {
+            CacheProfile::Products
+        };
+        let lease = self.acquire(window, ticker.clone(), profile).await?;
         let event_count = lease.entry.wait_ready().await?;
         let cache = CacheEvidence {
             engine_version: HISTORICAL_ENGINE_VERSION,
@@ -380,7 +444,9 @@ impl HistoricalDerivedCache {
         limit: usize,
         as_of: DateTime<Utc>,
     ) -> Result<FamilyBarSnapshot, String> {
-        let lease = self.acquire(window, ticker.clone()).await?;
+        let lease = self
+            .acquire(window, ticker.clone(), CacheProfile::Products)
+            .await?;
         lease.entry.wait_complete().await?;
         let mut state = lease.entry.state.lock().await;
         let products = state
@@ -398,7 +464,9 @@ impl HistoricalDerivedCache {
         limit: usize,
         as_of: DateTime<Utc>,
     ) -> Result<ConditionBarSnapshot, String> {
-        let lease = self.acquire(window, ticker.clone()).await?;
+        let lease = self
+            .acquire(window, ticker.clone(), CacheProfile::Products)
+            .await?;
         lease.entry.wait_complete().await?;
         let mut state = lease.entry.state.lock().await;
         let products = state
@@ -416,7 +484,9 @@ impl HistoricalDerivedCache {
         limit: usize,
         as_of: DateTime<Utc>,
     ) -> Result<MacroBarSnapshot, String> {
-        let lease = self.acquire(window, ticker.clone()).await?;
+        let lease = self
+            .acquire(window, ticker.clone(), CacheProfile::Products)
+            .await?;
         lease.entry.wait_complete().await?;
         let mut state = lease.entry.state.lock().await;
         let products = state
@@ -441,7 +511,13 @@ impl HistoricalDerivedCache {
         }
     }
 
-    async fn build(&self, entry: Arc<CacheEntry>, window: EventWindow, ticker: String) {
+    async fn build(
+        &self,
+        entry: Arc<CacheEntry>,
+        window: EventWindow,
+        ticker: String,
+        profile: CacheProfile,
+    ) {
         let permit = match self.build_permits.acquire().await {
             Ok(permit) => permit,
             Err(_) => {
@@ -453,7 +529,9 @@ impl HistoricalDerivedCache {
                 return;
             }
         };
-        let result = self.build_inner(entry.clone(), window, ticker).await;
+        let result = self
+            .build_inner(entry.clone(), window, ticker, profile)
+            .await;
         drop(permit);
         let mut state = entry.state.lock().await;
         match result {
@@ -477,6 +555,7 @@ impl HistoricalDerivedCache {
         entry: Arc<CacheEntry>,
         window: EventWindow,
         _ticker: String,
+        profile: CacheProfile,
     ) -> Result<u64, String> {
         let resolutions = self
             .config
@@ -484,16 +563,75 @@ impl HistoricalDerivedCache {
             .iter()
             .filter_map(|value| parse_resolution_us(value))
             .collect::<Vec<_>>();
+        let requested_timeframe = match &profile {
+            CacheProfile::Derived(timeframe) => Some(timeframe.clone()),
+            CacheProfile::Products => None,
+        };
+        let derived_timeframes = match &requested_timeframe {
+            Some(timeframe) if timeframe.eq_ignore_ascii_case("100ms") => vec![timeframe.clone()],
+            Some(timeframe) => vec!["100ms".to_string(), timeframe.clone()],
+            None => Vec::new(),
+        };
         let bars = SharedBarStore::new(
-            self.config.product_timeframes.clone(),
+            derived_timeframes,
             self.config.cache_max_bars_per_entry,
             1,
             self.source.trade_aggregation_rules(),
         );
         let shard = bars.shard(0);
-        let mut indicators = HashMap::<String, BarIndicatorCalculator>::new();
-        let mut microstructure = MicrostructureForecastWindow::default();
         let trade_rules = self.source.trade_aggregation_rules();
+        let indicator_worker = if matches!(profile, CacheProfile::Derived(_)) {
+            let (sender, mut receiver) = mpsc::channel::<IndicatorWork>(
+                self.config.cache_update_capacity.clamp(16, 100_000),
+            );
+            let worker_entry = entry.clone();
+            let worker_rules = trade_rules.clone();
+            let handle = tokio::spawn(async move {
+                let mut calculators = HashMap::<String, BarIndicatorCalculator>::new();
+                let mut microstructure = MicrostructureForecastWindow::default();
+                let mut aggregate = MicrostructureSampleAggregate::default();
+                while let Some(work) = receiver.recv().await {
+                    let bars = match work {
+                        IndicatorWork::Event { event, bars } => {
+                            microstructure.apply_event(&event);
+                            bars
+                        }
+                        IndicatorWork::Finalize { bars } => bars,
+                    };
+                    let mut forecasts = HashMap::new();
+                    for (sequence, bar) in bars {
+                        let mut indicator = calculators
+                            .entry(bar.timeframe.clone())
+                            .or_insert_with(BarIndicatorCalculator::new)
+                            .apply_bar(&bar);
+                        if bar.timeframe.eq_ignore_ascii_case("100ms") {
+                            let forecast = forecasts.entry(bar.bar_end).or_insert_with(|| {
+                                microstructure.snapshot_at(
+                                    bar.bar_end,
+                                    &worker_rules,
+                                    "qmd-history-indicators",
+                                )
+                            });
+                            indicator.apply_microstructure(forecast);
+                            aggregate.push(&indicator);
+                        } else {
+                            aggregate.apply_to(&mut indicator);
+                            aggregate.reset();
+                        }
+                        if let Some(sequence) = sequence {
+                            worker_entry
+                                .push_indicator(sequence, bar, indicator)
+                                .await?;
+                        }
+                    }
+                }
+                Ok::<(), String>(())
+            });
+            Some((sender, handle))
+        } else {
+            None
+        };
+        let mut indicator_sender = indicator_worker.as_ref().map(|(sender, _)| sender.clone());
         let mut products = MarketProductEngine::new(
             resolutions,
             ProductCacheLimits {
@@ -531,22 +669,34 @@ impl HistoricalDerivedCache {
                 }
                 for compact in &events {
                     let event = self.source.market_event(compact);
-                    microstructure.apply_event(&event);
                     products.apply_event(&event, event.ts());
+                    let mut indicator_bars = Vec::new();
                     for bar in shard.apply_event(&event).await {
-                        if valid_price_bar(&bar) {
-                            let mut indicator = indicators
-                                .entry(bar.timeframe.clone())
-                                .or_insert_with(BarIndicatorCalculator::new)
-                                .apply_bar(&bar);
-                            let forecast = microstructure.snapshot_at(
-                                bar.bar_end,
-                                &trade_rules,
-                                "qmd-history-indicators",
-                            );
-                            indicator.apply_microstructure(&forecast);
-                            entry.push(bar, indicator).await?;
+                        let base_only = bar.timeframe.eq_ignore_ascii_case("100ms")
+                            && requested_timeframe
+                                .as_ref()
+                                .is_some_and(|timeframe| !timeframe.eq_ignore_ascii_case("100ms"));
+                        if !valid_price_bar(&bar) && !base_only {
+                            continue;
                         }
+                        let sequence = if requested_timeframe
+                            .as_ref()
+                            .is_some_and(|timeframe| bar.timeframe.eq_ignore_ascii_case(timeframe))
+                        {
+                            Some(entry.push_bar(bar.clone()).await?)
+                        } else {
+                            None
+                        };
+                        indicator_bars.push((sequence, bar));
+                    }
+                    if let Some(sender) = indicator_sender.as_mut() {
+                        sender
+                            .send(IndicatorWork::Event {
+                                event,
+                                bars: indicator_bars,
+                            })
+                            .await
+                            .map_err(|_| "historical indicator worker stopped early".to_string())?;
                     }
                 }
                 events_processed += count as u64;
@@ -559,17 +709,41 @@ impl HistoricalDerivedCache {
                 next_chunk += 1;
             }
         }
+        let mut final_indicator_bars = Vec::new();
         for bar in shard.finalize_due(window.end).await {
-            if valid_price_bar(&bar) {
-                let mut indicator = indicators
-                    .entry(bar.timeframe.clone())
-                    .or_insert_with(BarIndicatorCalculator::new)
-                    .apply_bar(&bar);
-                let forecast =
-                    microstructure.snapshot_at(bar.bar_end, &trade_rules, "qmd-history-indicators");
-                indicator.apply_microstructure(&forecast);
-                entry.push(bar, indicator).await?;
+            let base_only = bar.timeframe.eq_ignore_ascii_case("100ms")
+                && requested_timeframe
+                    .as_ref()
+                    .is_some_and(|timeframe| !timeframe.eq_ignore_ascii_case("100ms"));
+            if !valid_price_bar(&bar) && !base_only {
+                continue;
             }
+            let sequence = if requested_timeframe
+                .as_ref()
+                .is_some_and(|timeframe| bar.timeframe.eq_ignore_ascii_case(timeframe))
+            {
+                Some(entry.push_bar(bar.clone()).await?)
+            } else {
+                None
+            };
+            final_indicator_bars.push((sequence, bar));
+        }
+        if let Some(sender) = indicator_sender.take() {
+            sender
+                .send(IndicatorWork::Finalize {
+                    bars: final_indicator_bars,
+                })
+                .await
+                .map_err(|_| {
+                    "historical indicator worker stopped before finalization".to_string()
+                })?;
+            drop(sender);
+        }
+        if let Some((original_sender, handle)) = indicator_worker {
+            drop(original_sender);
+            handle
+                .await
+                .map_err(|error| format!("historical indicator worker panicked: {error}"))??;
         }
         let product_metrics = products.metrics();
         entry.set_product_bytes(product_metrics.estimated_bytes)?;
@@ -664,6 +838,10 @@ impl CacheEntry {
         self.updates.subscribe()
     }
 
+    pub fn subscribe_bars(&self) -> broadcast::Receiver<BarUpdate> {
+        self.bar_updates.subscribe()
+    }
+
     pub async fn current(&self) -> (Vec<DerivedUpdate>, bool, Option<String>, u64) {
         let state = self.state.lock().await;
         (
@@ -674,17 +852,25 @@ impl CacheEntry {
         )
     }
 
-    async fn push(&self, bar: BarRow, indicator: IndicatorRow) -> Result<(), String> {
+    pub async fn current_bars(&self) -> (Vec<BarUpdate>, bool, Option<String>, u64) {
+        let state = self.state.lock().await;
+        (
+            state.bars.clone(),
+            state.complete,
+            state.error.clone(),
+            state.events_processed,
+        )
+    }
+
+    async fn push_bar(&self, bar: BarRow) -> Result<u64, String> {
         let mut state = self.state.lock().await;
-        let frame_bytes = state
-            .frames
-            .len()
-            .saturating_add(1)
-            .saturating_mul(size_of::<DerivedUpdate>() + 512);
-        if state.frames.len() >= self.max_updates || frame_bytes > self.max_update_bytes {
+        let update_count = state.bars.len().saturating_add(1);
+        let frame_bytes =
+            update_count.saturating_mul(size_of::<BarUpdate>() + size_of::<DerivedUpdate>() + 768);
+        if state.bars.len() >= self.max_updates || frame_bytes > self.max_update_bytes {
             return Err(format!(
                 "historical derived entry exceeded cache limit: updates={} max_updates={} estimated_bytes={} max_update_bytes={}",
-                state.frames.len() + 1,
+                update_count,
                 self.max_updates,
                 frame_bytes,
                 self.max_update_bytes,
@@ -693,11 +879,32 @@ impl CacheEntry {
         self.set_estimated_bytes(frame_bytes as u64 + self.product_bytes.load(Ordering::Acquire))?;
         self.frame_bytes
             .store(frame_bytes as u64, Ordering::Release);
+        let sequence = state.bars.len() as u64 + 1;
+        let update = BarUpdate { bar, sequence };
+        state.bars.push(update.clone());
+        drop(state);
+        let _ = self.bar_updates.send(update);
+        Ok(sequence)
+    }
+
+    async fn push_indicator(
+        &self,
+        sequence: u64,
+        bar: BarRow,
+        indicator: IndicatorRow,
+    ) -> Result<(), String> {
+        let mut state = self.state.lock().await;
+        let expected = state.frames.len() as u64 + 1;
+        if sequence != expected {
+            return Err(format!(
+                "historical indicator sequence gap: expected={expected} received={sequence}"
+            ));
+        }
         let update = DerivedUpdate {
             as_of: bar.bar_end,
             bar,
             indicator,
-            sequence: state.frames.len() as u64 + 1,
+            sequence,
             update_type: "update",
         };
         state.frames.push(update.clone());
@@ -851,9 +1058,14 @@ fn split_event_window(window: &EventWindow, chunk_hours: usize) -> Vec<EventWind
     chunks
 }
 
-fn cache_key(window: &EventWindow, ticker: &str, revision: &SourceRevision) -> String {
+fn cache_key(
+    window: &EventWindow,
+    ticker: &str,
+    revision: &SourceRevision,
+    profile: &CacheProfile,
+) -> String {
     format!(
-        "{}:{}:{}:{}:{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}:{}:{}:{}:{}",
         ticker.to_ascii_uppercase(),
         window.start.timestamp_micros(),
         window.end.timestamp_micros(),
@@ -862,6 +1074,7 @@ fn cache_key(window: &EventWindow, ticker: &str, revision: &SourceRevision) -> S
         BAR_SCHEMA_VERSION,
         INDICATOR_SCHEMA_VERSION,
         MARKET_PRODUCT_SCHEMA_VERSION,
+        profile.key(),
     )
 }
 
@@ -884,7 +1097,7 @@ fn valid_price_bar(bar: &BarRow) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        cache_key, split_event_window, CacheEntry, EntryState, SourceRevision,
+        cache_key, split_event_window, CacheEntry, CacheProfile, EntryState, SourceRevision,
         HISTORICAL_ENGINE_VERSION,
     };
     use crate::source::EventWindow;
@@ -911,16 +1124,65 @@ mod tests {
             ..first.clone()
         };
         assert_ne!(
-            cache_key(&window, "AAPL", &first),
-            cache_key(&window, "AAPL", &second)
+            cache_key(
+                &window,
+                "AAPL",
+                &first,
+                &CacheProfile::Derived("1m".to_string())
+            ),
+            cache_key(
+                &window,
+                "AAPL",
+                &second,
+                &CacheProfile::Derived("1m".to_string())
+            )
         );
-        assert!(cache_key(&window, "AAPL", &first).contains(HISTORICAL_ENGINE_VERSION));
+        assert!(cache_key(
+            &window,
+            "AAPL",
+            &first,
+            &CacheProfile::Derived("1m".to_string())
+        )
+        .contains(HISTORICAL_ENGINE_VERSION));
+    }
+
+    #[test]
+    fn cache_key_separates_derived_timeframes_from_product_builds() {
+        let window = EventWindow {
+            start: Utc.with_ymd_and_hms(2026, 7, 10, 8, 0, 0).unwrap(),
+            end: Utc.with_ymd_and_hms(2026, 7, 10, 13, 45, 0).unwrap(),
+            tickers: vec!["AAPL".to_string()],
+        };
+        let revision = SourceRevision {
+            event_count: 10,
+            max_build_step: 1,
+            max_updated_at: "2026-07-10 13:45:00".to_string(),
+            token: "1:10:2026-07-10 13:45:00".to_string(),
+        };
+        let one_minute = cache_key(
+            &window,
+            "AAPL",
+            &revision,
+            &CacheProfile::Derived("1m".to_string()),
+        );
+        let five_minute = cache_key(
+            &window,
+            "AAPL",
+            &revision,
+            &CacheProfile::Derived("5m".to_string()),
+        );
+        let products = cache_key(&window, "AAPL", &revision, &CacheProfile::Products);
+
+        assert_ne!(one_minute, five_minute);
+        assert_ne!(one_minute, products);
+        assert_ne!(five_minute, products);
     }
 
     #[test]
     fn cache_entry_reservations_enforce_the_service_byte_ceiling() {
         let allocated = Arc::new(AtomicU64::new(0));
         let (updates, _) = broadcast::channel(16);
+        let (bar_updates, _) = broadcast::channel(16);
         let entry = CacheEntry {
             allocated_bytes: allocated.clone(),
             complete: AtomicBool::new(false),
@@ -928,6 +1190,7 @@ mod tests {
             global_max_bytes: 1_000,
             notify: Notify::new(),
             state: Mutex::new(EntryState::default()),
+            bar_updates,
             updates,
             estimated_bytes: AtomicU64::new(0),
             max_update_bytes: 1_000,

@@ -16,7 +16,8 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, sleep, Duration};
 
-pub const INDICATOR_SCHEMA_VERSION: u16 = 3;
+pub const INDICATOR_SCHEMA_VERSION: u16 = 4;
+const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 
 #[derive(Clone, Debug, Serialize)]
 pub struct IndicatorSnapshot {
@@ -171,6 +172,7 @@ struct IndicatorStore {
     tick_window_seconds: i64,
     ticks: HashMap<String, TickState>,
     microstructure: HashMap<String, MicrostructureForecastWindow>,
+    microstructure_aggregates: HashMap<IndicatorKey, MicrostructureSampleAggregate>,
     trade_rules: TradeAggregationRules,
 }
 
@@ -338,6 +340,7 @@ impl IndicatorShardStore {
                 tick_window_seconds: tick_window_seconds.max(60),
                 ticks: HashMap::new(),
                 microstructure: HashMap::new(),
+                microstructure_aggregates: HashMap::new(),
                 trade_rules,
             })),
         }
@@ -418,10 +421,25 @@ impl IndicatorStore {
             .entry(key.clone())
             .or_insert_with(BarIndicatorState::new);
         let mut row = state.apply_bar(&bar);
-        if let Some(window) = self.microstructure.get(&bar.sym.to_ascii_uppercase()) {
-            let forecast =
-                window.snapshot_at(bar.bar_end, &self.trade_rules, "qmd-gateway-indicators");
-            row.apply_microstructure(&forecast);
+        let ticker = bar.sym.to_ascii_uppercase();
+        if bar.timeframe.eq_ignore_ascii_case("100ms") {
+            if let Some(window) = self.microstructure.get(&ticker) {
+                let forecast =
+                    window.snapshot_at(bar.bar_end, &self.trade_rules, "qmd-gateway-indicators");
+                row.apply_microstructure(&forecast);
+            }
+            for timeframe in MICROSTRUCTURE_AGGREGATE_TIMEFRAMES {
+                self.microstructure_aggregates
+                    .entry(IndicatorKey {
+                        sym: ticker.clone(),
+                        timeframe: timeframe.to_string(),
+                    })
+                    .or_default()
+                    .push(&row);
+            }
+        } else if let Some(aggregate) = self.microstructure_aggregates.get_mut(&key) {
+            aggregate.apply_to(&mut row);
+            aggregate.reset();
         }
         let history_limit = self.history_limit_for(&bar.timeframe);
         let history = self.history.entry(key).or_insert_with(VecDeque::new);
@@ -437,6 +455,101 @@ impl IndicatorStore {
             .get(&canonical_timeframe(timeframe))
             .copied()
             .unwrap_or(self.history_limit)
+    }
+}
+
+/// O(1)-memory sufficient statistics for causal 100 ms forecast samples.
+#[derive(Clone, Debug, Default)]
+pub struct MicrostructureSampleAggregate {
+    fast: WeightedSignalAggregate,
+    confirm: WeightedSignalAggregate,
+    context: WeightedSignalAggregate,
+    unified: WeightedSignalAggregate,
+}
+
+#[derive(Clone, Debug, Default)]
+struct WeightedSignalAggregate {
+    count: u64,
+    sum_confidence: f64,
+    sum_weighted_signal: f64,
+    sum_weighted_signal_sq: f64,
+}
+
+impl WeightedSignalAggregate {
+    fn push(&mut self, signal: f64, confidence: f64) {
+        if !signal.is_finite() || !confidence.is_finite() || confidence <= 0.0 {
+            return;
+        }
+        self.count += 1;
+        self.sum_confidence += confidence;
+        self.sum_weighted_signal += signal * confidence;
+        self.sum_weighted_signal_sq += signal * signal * confidence;
+    }
+
+    fn value(&self) -> (f64, f64) {
+        if self.count == 0 || self.sum_confidence <= f64::EPSILON {
+            return (0.0, 0.0);
+        }
+        let signal = (self.sum_weighted_signal / self.sum_confidence).clamp(-1.0, 1.0);
+        let variance =
+            (self.sum_weighted_signal_sq / self.sum_confidence - signal * signal).max(0.0);
+        let agreement = 1.0 - variance.sqrt().clamp(0.0, 1.0);
+        let mean_confidence = self.sum_confidence / self.count as f64;
+        (signal, (mean_confidence * agreement).clamp(0.0, 100.0))
+    }
+}
+
+impl MicrostructureSampleAggregate {
+    pub fn push(&mut self, row: &IndicatorRow) {
+        self.fast.push(
+            row.microstructure_fast_signal,
+            row.microstructure_fast_confidence,
+        );
+        self.confirm.push(
+            row.microstructure_confirm_signal,
+            row.microstructure_confirm_confidence,
+        );
+        self.context.push(
+            row.microstructure_context_signal,
+            row.microstructure_context_confidence,
+        );
+        self.unified.push(
+            row.microstructure_unified_signal,
+            row.microstructure_unified_confidence,
+        );
+    }
+
+    pub fn apply_to(&self, target: &mut IndicatorRow) {
+        (
+            target.microstructure_fast_signal,
+            target.microstructure_fast_confidence,
+        ) = self.fast.value();
+        (
+            target.microstructure_confirm_signal,
+            target.microstructure_confirm_confidence,
+        ) = self.confirm.value();
+        (
+            target.microstructure_context_signal,
+            target.microstructure_context_confidence,
+        ) = self.context.value();
+        (
+            target.microstructure_unified_signal,
+            target.microstructure_unified_confidence,
+        ) = self.unified.value();
+        target.microstructure_unified_action = if target.microstructure_unified_confidence < 35.0
+            || target.microstructure_unified_signal.abs() < 0.15
+        {
+            "wait"
+        } else if target.microstructure_unified_signal > 0.0 {
+            "buy"
+        } else {
+            "sell"
+        }
+        .to_string();
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::default();
     }
 }
 
@@ -1274,7 +1387,7 @@ fn safe_div(numerator: f64, denominator: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::SessionVwapState;
+    use super::{SessionVwapState, WeightedSignalAggregate};
     use chrono::{TimeZone, Utc};
 
     #[test]
@@ -1299,6 +1412,23 @@ mod tests {
 
         assert!((first - 10.0).abs() < 1e-9);
         assert!((second - 17.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn streaming_microstructure_aggregate_penalizes_conflicting_samples() {
+        let mut aligned = WeightedSignalAggregate::default();
+        aligned.push(0.5, 80.0);
+        aligned.push(0.5, 80.0);
+        let (aligned_signal, aligned_confidence) = aligned.value();
+        assert!((aligned_signal - 0.5).abs() < 1e-9);
+        assert!((aligned_confidence - 80.0).abs() < 1e-9);
+
+        let mut conflicting = WeightedSignalAggregate::default();
+        conflicting.push(1.0, 80.0);
+        conflicting.push(-1.0, 80.0);
+        let (conflicting_signal, conflicting_confidence) = conflicting.value();
+        assert!(conflicting_signal.abs() < 1e-9);
+        assert!(conflicting_confidence < aligned_confidence);
     }
 
     #[test]
