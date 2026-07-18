@@ -10,7 +10,8 @@ This file documents the values produced by `qmd-gateway`. A **formula** is the e
 | Raw Massive trades | `schema_version` | `1` | Increment when durable raw table semantics change. |
 | Raw Massive quotes | `schema_version` | `1` | Increment when durable raw table semantics change. |
 | Bars | `schema_version` | `2` | Increment when bar fields or formulas change. |
-| Bar indicators | `schema_version` | `1` | Increment when persisted indicator fields or formulas change. |
+| Bar indicators | `schema_version` | `3` | Increment when persisted indicator fields or formulas change. |
+| Deterministic microstructure forecast | `schema_version` | `2` | Increment when horizon or unified-action fields or formulas change. |
 | Scanner primitives | `schema_version` | `1` | Increment when primitive output contract changes. |
 | Live abnormal market-state events | `schema_version` | `1` | Increment when abnormal state event semantics change. |
 
@@ -432,7 +433,7 @@ Table: `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`.
 
 | Field | Formula | Streaming Method |
 |---|---|---|
-| `schema_version` | Current value is `2`. | Constant per row. |
+| `schema_version` | Current value is `3`. | Constant per row. |
 | `session_date`, `timeframe`, `sym`, `bar_start`, `bar_end` | Copied from closed bar. | One row per closed bar. |
 | `close`, `volume` | Copied from closed bar. | Inputs for chart and indicator display. |
 | `vwap` | Session-anchored cumulative `sum(hlc3 * volume) / sum(volume)`. Premarket has its own accumulation and the regular-session benchmark resets at the exchange's 09:30 New York open; after-hours continues the regular-session anchor. The canonical bar's own `vwap` remains its event-level `dollar_volume / volume`. | Keep cumulative typical-price notional and volume per ticker/timeframe/market-session anchor. |
@@ -452,6 +453,11 @@ Table: `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`.
 | `price_vs_ema20_pct` | `(close - ema_20) / ema_20 * 100`. | Derived after EMA update. |
 | `price_vs_vwap_pct` | `(close - session_vwap) / session_vwap * 100`. | Derived from the cumulative session VWAP. |
 | `trend_score` | Fraction of 5 checks that pass: `close > ema_20`, `ema_9 > ema_20`, `ema_20 > ema_50`, `rsi_14 >= 50`, `macd_histogram > 0`. | Updated per closed bar. Range is 0 to 1. |
+| `microstructure_fast_signal`, `microstructure_confirm_signal`, `microstructure_context_signal` | Canonical deterministic microstructure scores for the latest 25, 100, and 500 quote/trade events. Range is -1 to +1. | Event state is sampled causally at `bar_end`; later events are excluded. |
+| `microstructure_fast_confidence`, `microstructure_confirm_confidence`, `microstructure_context_confidence` | Evidence coverage and quality for each event horizon. Range is 0 to 100. | Uses the same canonical forecast snapshot as the score. |
+| `microstructure_unified_signal` | Confidence-weighted mean of the three ready horizon scores with fixed priors 50%, 30%, and 20%. Range is -1 to +1. | Updated from the causal horizon snapshot at every closed bar. |
+| `microstructure_unified_confidence` | Prior-weighted horizon confidence discounted by cross-horizon disagreement. Range is 0 to 100. | Missing horizons and disagreement reduce confidence. |
+| `microstructure_unified_action` | `buy` when score is positive, confidence is at least 35%, and absolute score is at least 0.15; `sell` under the symmetric negative rule; otherwise `wait`. | Deterministic strategy gate, not an order instruction. |
 
 ## Indicator Persistence Policy
 

@@ -39,6 +39,9 @@ import { TickerChangeBadge, TickerLogo } from "./TickerIdentity";
 
 type Candle = { time: number; open: number; high: number; low: number; close: number };
 type ChartSeries = {
+  autoscaleMax?: number;
+  autoscaleMin?: number;
+  axisTitle?: string;
   bandFillColor?: string;
   bandFillOpacity?: number;
   chartRole?: string;
@@ -49,9 +52,11 @@ type ChartSeries = {
   style: "line" | "histogram";
   color: string;
   legend?: boolean;
+  lastValueVisible?: boolean;
   lineStyle?: "solid" | "dashed" | "dotted";
   lineWidth: number;
   opacity?: number;
+  priceScaleId?: "left" | "right";
   data: Array<{ color?: string; time: number; value: number }>;
 };
 type Region = { start: number; end: number; color: string; label: string };
@@ -797,7 +802,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     oscillatorChartRefs.current.forEach((chart, key) => {
       const pane = oscillatorPaneRefs.current.get(key);
       const paneIndex = oscillatorPaneGroups.findIndex((group) => group.key === key);
-      if (pane) chart.applyOptions(chartOptions(pane.clientWidth, pane.clientHeight, false, palette, chartSettingsRef.current, timeframe, paneIndex === oscillatorPaneGroups.length - 1));
+      if (pane) chart.applyOptions(chartOptions(pane.clientWidth, pane.clientHeight, false, palette, chartSettingsRef.current, timeframe, paneIndex === oscillatorPaneGroups.length - 1, oscillatorGroupUsesLeftScale(oscillatorPaneGroups[paneIndex])));
     });
     indicatorSeriesRef.current.forEach((renderer, key) => {
       const source = indicatorSourceRef.current.get(key);
@@ -861,7 +866,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       if (!pane) return;
       let runtime = oscillatorPaneRuntimesRef.current.get(group.key);
       if (!runtime) {
-        const chart = createChart(pane, chartOptions(pane.clientWidth, pane.clientHeight, false, readChartPalette(), chartSettingsRef.current, timeframe, groupIndex === groups.length - 1));
+        const chart = createChart(pane, chartOptions(pane.clientWidth, pane.clientHeight, false, readChartPalette(), chartSettingsRef.current, timeframe, groupIndex === groups.length - 1, oscillatorGroupUsesLeftScale(group)));
         runtime = {
           chart,
           layerSignature: "",
@@ -880,7 +885,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       }
       updateOscillatorPaneTimeline(runtime, chartTimelineData(payloadRef.current?.candles ?? [], timeframe));
       updateOscillatorPaneSeries(runtime, group.series);
-      runtime.chart.applyOptions(chartOptions(pane.clientWidth, pane.clientHeight, false, readChartPalette(), chartSettingsRef.current, timeframe, groupIndex === groups.length - 1));
+      runtime.chart.applyOptions(chartOptions(pane.clientWidth, pane.clientHeight, false, readChartPalette(), chartSettingsRef.current, timeframe, groupIndex === groups.length - 1, oscillatorGroupUsesLeftScale(group)));
     });
     const price = priceRef.current;
     if (price && priceChartRef.current) {
@@ -909,7 +914,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
 
   function updateOscillatorPaneSeries(runtime: OscillatorPaneRuntime, seriesList: ChartSeries[]) {
     const layeredSeries = [...seriesList].sort((left, right) => Number(left.style === "line") - Number(right.style === "line"));
-    const layerSignature = layeredSeries.map((series) => `${legendSeriesKey("oscillator", series)}:${series.style}`).join("|");
+    const layerSignature = layeredSeries.map((series) => `${legendSeriesKey("oscillator", series)}:${series.style}:${series.priceScaleId || "right"}`).join("|");
     if (runtime.layerSignature && runtime.layerSignature !== layerSignature) {
       if (runtime.zeroLine && runtime.zeroLineRenderer) runtime.zeroLineRenderer.removePriceLine(runtime.zeroLine);
       runtime.zeroLine = null;
@@ -1338,7 +1343,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           </div>
           {oscillatorPaneGroups.map((group) => {
             return (
-              <div className="chart-osc" key={group.key} style={{ flexBasis: oscillatorPaneHeights[group.key] ?? undefined }}>
+              <div className="chart-osc" key={group.key} style={{ flexBasis: oscillatorPaneHeights[group.key] ?? defaultOscillatorPaneHeight(group) }}>
                 <div className="chart-pane-canvas" ref={(node) => setOscillatorPaneRef(group.key, node)} />
                 <div className="session-layer" ref={(node) => setOscillatorLayerRef(group.key, node)} />
                 <button
@@ -1361,8 +1366,10 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
                 <ChartLegend
                   indicatorCount={group.series.length}
                   items={buildSeriesLegendItems(group.series, "oscillator", legendSettings)}
+                  leftScale={oscillatorGroupUsesLeftScale(group)}
                   onReset={resetLegendSettings}
                   onUpdate={updateLegendSettings}
+                  title={formatOscillatorPaneLabel(group)}
                 />
               </div>
             );
@@ -1492,13 +1499,17 @@ type LegendItem = {
 function ChartLegend({
   indicatorCount,
   items,
+  leftScale = false,
   onReset,
-  onUpdate
+  onUpdate,
+  title,
 }: {
   indicatorCount: number;
   items: LegendItem[];
+  leftScale?: boolean;
   onReset: (key: string) => void;
   onUpdate: (key: string, patch: LegendSeriesSettings) => void;
+  title?: string;
 }) {
   const [collapsed, setCollapsed] = useState(true);
   const [editingKey, setEditingKey] = useState<string | null>(null);
@@ -1506,7 +1517,7 @@ function ChartLegend({
   if (!items.length) return null;
   const editingItem = items.find((item) => item.key === editingKey && item.configurable);
   return (
-    <div className={collapsed ? "chart-legend collapsed" : "chart-legend"}>
+    <div className={`${collapsed ? "chart-legend collapsed" : "chart-legend"}${leftScale ? " left-scale" : ""}`}>
       <button
         aria-label={collapsed ? "Expand legend" : "Collapse legend"}
         className="chart-legend-header"
@@ -1521,7 +1532,7 @@ function ChartLegend({
         type="button"
       >
         {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
-        <b>{formatIndicatorCount(indicatorCount)}</b>
+        <b>{title || formatIndicatorCount(indicatorCount)}</b>
       </button>
       {!collapsed ? (
         <>
@@ -2438,11 +2449,20 @@ function buildOscillatorPaneGroups(series: ChartSeries[]): OscillatorPaneGroup[]
 
 function formatOscillatorPaneLabel(group: OscillatorPaneGroup) {
   if (group.key === "oscillator:portfolio_risk") return "Portfolio Risk";
+  if (group.key === "oscillator:microstructure") return "QMD Microstructure Outlook";
   if (group.key === "oscillator:macd") return "MACD Pane";
   if (group.key === "oscillator:pane_2") return "Pane 2";
   if (group.key === "oscillator:pane_3") return "Pane 3";
   if (group.series.length === 1) return group.series[0].label;
   return `${group.series.length} indicators`;
+}
+
+function oscillatorGroupUsesLeftScale(group?: OscillatorPaneGroup) {
+  return Boolean(group?.series.some((series) => series.priceScaleId === "left"));
+}
+
+function defaultOscillatorPaneHeight(group: OscillatorPaneGroup) {
+  return group.key === "oscillator:microstructure" ? 200 : undefined;
 }
 
 function oscillatorPaneKey(series: ChartSeries) {
@@ -2687,13 +2707,15 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
 function applySeriesSettings(renderer: AnySeriesApi, source: ChartSeries, settings: Required<LegendSeriesSettings>, useAdaptivePriceFormat: boolean, appearance = defaultChartAppearanceSettings) {
   const priceFormatOptions = useAdaptivePriceFormat ? { priceFormat: adaptiveSeriesPriceFormat(source) } : {};
   if (source.style === "histogram") {
-    renderer.applyOptions({ color: colorWithOpacity(settings.color, effectiveSeriesOpacity(source, settings)), ...priceFormatOptions, visible: settings.visible } as never);
+    renderer.applyOptions({ color: colorWithOpacity(settings.color, effectiveSeriesOpacity(source, settings)), lastValueVisible: source.lastValueVisible ?? true, ...priceFormatOptions, title: source.axisTitle ?? source.label, visible: settings.visible } as never);
   } else {
     renderer.applyOptions({
       color: colorWithOpacity(settings.color, effectiveSeriesOpacity(source, settings)),
       lineStyle: toChartLineStyle(settings.lineStyle),
       lineWidth: toLineWidth(settings.lineWidth),
+      lastValueVisible: source.lastValueVisible ?? true,
       ...priceFormatOptions,
+      title: source.axisTitle ?? source.label,
       visible: settings.visible
     } as never);
   }
@@ -2701,24 +2723,29 @@ function applySeriesSettings(renderer: AnySeriesApi, source: ChartSeries, settin
 }
 
 function addChartSeries(chart: IChartApi, series: ChartSeries, settings: Required<LegendSeriesSettings>): AnySeriesApi {
+  const autoscaleInfoProvider = (baseImplementation: () => AutoscaleInfo | null) => includeRangeInAutoscale(baseImplementation, series.autoscaleMin ?? 0, series.autoscaleMax ?? 0);
   if (series.style === "histogram") {
     return chart.addHistogramSeries({
-      autoscaleInfoProvider: includeZeroInAutoscale,
+      autoscaleInfoProvider,
       color: colorWithOpacity(settings.color, effectiveSeriesOpacity(series, settings)),
       priceFormat: adaptiveSeriesPriceFormat(series),
       priceLineVisible: false,
-      title: series.label,
+      priceScaleId: series.priceScaleId,
+      lastValueVisible: series.lastValueVisible ?? true,
+      title: series.axisTitle ?? series.label,
       visible: settings.visible
     });
   }
   return chart.addLineSeries({
-    autoscaleInfoProvider: includeZeroInAutoscale,
+    autoscaleInfoProvider,
     color: colorWithOpacity(settings.color, effectiveSeriesOpacity(series, settings)),
     lineStyle: toChartLineStyle(settings.lineStyle),
     lineWidth: toLineWidth(settings.lineWidth),
     priceFormat: adaptiveSeriesPriceFormat(series),
     priceLineVisible: false,
-    title: series.label,
+    priceScaleId: series.priceScaleId,
+    lastValueVisible: series.lastValueVisible ?? true,
+    title: series.axisTitle ?? series.label,
     visible: settings.visible
   });
 }
@@ -2740,13 +2767,17 @@ function seriesPriceFormat(precision: number, minMove: number) {
 }
 
 function includeZeroInAutoscale(baseImplementation: () => AutoscaleInfo | null): AutoscaleInfo | null {
+  return includeRangeInAutoscale(baseImplementation, 0, 0);
+}
+
+function includeRangeInAutoscale(baseImplementation: () => AutoscaleInfo | null, minValue: number, maxValue: number): AutoscaleInfo | null {
   const autoscale = baseImplementation();
   if (!autoscale) return autoscale;
   return {
     ...autoscale,
     priceRange: {
-      minValue: Math.min(autoscale.priceRange.minValue, 0),
-      maxValue: Math.max(autoscale.priceRange.maxValue, 0)
+      minValue: Math.min(autoscale.priceRange.minValue, minValue),
+      maxValue: Math.max(autoscale.priceRange.maxValue, maxValue)
     }
   };
 }
@@ -2826,7 +2857,8 @@ function chartOptions(
   palette: ChartPalette = readChartPalette(),
   settings: ChartAppearanceSettings = defaultChartAppearanceSettings,
   timeframe = "1m",
-  showTimeScale = true
+  showTimeScale = true,
+  showLeftPriceScale = false,
 ) {
   const timeframeSeconds = chartTimeframeSeconds(timeframe);
   const showSeconds = timeframeSeconds !== null && timeframeSeconds < 60;
@@ -2847,6 +2879,7 @@ function chartOptions(
     },
     crosshair: { mode: 0 },
     rightPriceScale: { borderColor: palette.grid, minimumWidth: CHART_PRICE_SCALE_MIN_WIDTH },
+    leftPriceScale: { borderColor: palette.grid, minimumWidth: CHART_PRICE_SCALE_MIN_WIDTH, visible: showLeftPriceScale },
     timeScale: {
       borderColor: palette.grid,
       rightOffset: compact ? 1 : 2,

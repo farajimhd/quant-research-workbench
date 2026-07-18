@@ -1,7 +1,10 @@
-use crate::bars::BarRow;
+use crate::bars::{BarRow, TradeAggregationRules};
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::metrics::SharedMetrics;
+use crate::microstructure_forecast::{
+    MicrostructureForecastSnapshot, MicrostructureForecastWindow,
+};
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use chrono_tz::America::New_York;
@@ -13,7 +16,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, sleep, Duration};
 
-pub const INDICATOR_SCHEMA_VERSION: u16 = 2;
+pub const INDICATOR_SCHEMA_VERSION: u16 = 3;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct IndicatorSnapshot {
@@ -73,6 +76,38 @@ pub struct IndicatorRow {
     pub price_vs_ema20_pct: f64,
     pub price_vs_vwap_pct: f64,
     pub trend_score: f64,
+    pub microstructure_fast_signal: f64,
+    pub microstructure_fast_confidence: f64,
+    pub microstructure_confirm_signal: f64,
+    pub microstructure_confirm_confidence: f64,
+    pub microstructure_context_signal: f64,
+    pub microstructure_context_confidence: f64,
+    pub microstructure_unified_signal: f64,
+    pub microstructure_unified_confidence: f64,
+    pub microstructure_unified_action: String,
+}
+
+impl IndicatorRow {
+    pub fn apply_microstructure(&mut self, forecast: &MicrostructureForecastSnapshot) {
+        let horizon = |events| {
+            forecast
+                .horizons
+                .iter()
+                .find(|item| item.horizon_events == events)
+        };
+        self.microstructure_fast_signal = horizon(25).map(|item| item.score).unwrap_or(0.0);
+        self.microstructure_fast_confidence =
+            horizon(25).map(|item| item.confidence).unwrap_or(0.0);
+        self.microstructure_confirm_signal = horizon(100).map(|item| item.score).unwrap_or(0.0);
+        self.microstructure_confirm_confidence =
+            horizon(100).map(|item| item.confidence).unwrap_or(0.0);
+        self.microstructure_context_signal = horizon(500).map(|item| item.score).unwrap_or(0.0);
+        self.microstructure_context_confidence =
+            horizon(500).map(|item| item.confidence).unwrap_or(0.0);
+        self.microstructure_unified_signal = forecast.unified.score;
+        self.microstructure_unified_confidence = forecast.unified.confidence;
+        self.microstructure_unified_action = forecast.unified.action.to_string();
+    }
 }
 
 /// Calculate canonical indicators for an ordered batch of bars.
@@ -135,6 +170,8 @@ struct IndicatorStore {
     history_limit: usize,
     tick_window_seconds: i64,
     ticks: HashMap<String, TickState>,
+    microstructure: HashMap<String, MicrostructureForecastWindow>,
+    trade_rules: TradeAggregationRules,
 }
 
 struct TickState {
@@ -232,11 +269,17 @@ impl SharedIndicatorStore {
         history_limits: HashMap<String, usize>,
         tick_window_seconds: i64,
         shard_count: usize,
+        trade_rules: TradeAggregationRules,
     ) -> Self {
         let shard_count = shard_count.max(1);
         let shards = (0..shard_count)
             .map(|_| {
-                IndicatorShardStore::new(history_limit, history_limits.clone(), tick_window_seconds)
+                IndicatorShardStore::new(
+                    history_limit,
+                    history_limits.clone(),
+                    tick_window_seconds,
+                    trade_rules.clone(),
+                )
             })
             .collect::<Vec<_>>();
         Self {
@@ -284,6 +327,7 @@ impl IndicatorShardStore {
         history_limit: usize,
         history_limits: HashMap<String, usize>,
         tick_window_seconds: i64,
+        trade_rules: TradeAggregationRules,
     ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(IndicatorStore {
@@ -293,6 +337,8 @@ impl IndicatorShardStore {
                 history_limit,
                 tick_window_seconds: tick_window_seconds.max(60),
                 ticks: HashMap::new(),
+                microstructure: HashMap::new(),
+                trade_rules,
             })),
         }
     }
@@ -350,12 +396,16 @@ impl IndicatorStore {
         let tick_window_seconds = self.tick_window_seconds;
         let tick = self
             .ticks
-            .entry(ticker)
+            .entry(ticker.clone())
             .or_insert_with(|| TickState::new(tick_window_seconds));
         match event {
             MarketEvent::Trade(trade) => tick.apply_trade(trade),
             MarketEvent::Quote(quote) => tick.apply_quote(quote),
         }
+        self.microstructure
+            .entry(ticker)
+            .or_default()
+            .apply_event(event);
     }
 
     fn apply_bar(&mut self, bar: BarRow) -> IndicatorRow {
@@ -367,7 +417,12 @@ impl IndicatorStore {
             .bars
             .entry(key.clone())
             .or_insert_with(BarIndicatorState::new);
-        let row = state.apply_bar(&bar);
+        let mut row = state.apply_bar(&bar);
+        if let Some(window) = self.microstructure.get(&bar.sym.to_ascii_uppercase()) {
+            let forecast =
+                window.snapshot_at(bar.bar_end, &self.trade_rules, "qmd-gateway-indicators");
+            row.apply_microstructure(&forecast);
+        }
         let history_limit = self.history_limit_for(&bar.timeframe);
         let history = self.history.entry(key).or_insert_with(VecDeque::new);
         history.push_back(row.clone());
@@ -652,6 +707,15 @@ impl BarIndicatorState {
             price_vs_ema20_pct: pct_change(bar.close, ema_20),
             price_vs_vwap_pct: pct_change(bar.close, session_vwap),
             trend_score: trend_score(bar.close, ema_9, ema_20, ema_50, rsi_14, macd_histogram),
+            microstructure_fast_signal: 0.0,
+            microstructure_fast_confidence: 0.0,
+            microstructure_confirm_signal: 0.0,
+            microstructure_confirm_confidence: 0.0,
+            microstructure_context_signal: 0.0,
+            microstructure_context_confidence: 0.0,
+            microstructure_unified_signal: 0.0,
+            microstructure_unified_confidence: 0.0,
+            microstructure_unified_action: "wait".to_string(),
         }
     }
 }
@@ -952,7 +1016,16 @@ impl IndicatorClickHouseWriter {
                 return_1_bar Float64,
                 price_vs_ema20_pct Float64,
                 price_vs_vwap_pct Float64,
-                trend_score Float64
+                trend_score Float64,
+                microstructure_fast_signal Float64,
+                microstructure_fast_confidence Float64,
+                microstructure_confirm_signal Float64,
+                microstructure_confirm_confidence Float64,
+                microstructure_context_signal Float64,
+                microstructure_context_confidence Float64,
+                microstructure_unified_signal Float64,
+                microstructure_unified_confidence Float64,
+                microstructure_unified_action LowCardinality(String)
             )
             ENGINE = ReplacingMergeTree
             PARTITION BY session_date
@@ -963,6 +1036,20 @@ impl IndicatorClickHouseWriter {
         .await?;
         self.execute(
             "ALTER TABLE live_market_indicators ADD COLUMN IF NOT EXISTS schema_version UInt16 AFTER session_date",
+            true,
+        )
+        .await?;
+        self.execute(
+            r#"ALTER TABLE live_market_indicators
+                ADD COLUMN IF NOT EXISTS microstructure_fast_signal Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_fast_confidence Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_confirm_signal Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_confirm_confidence Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_context_signal Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_context_confidence Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_unified_signal Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_unified_confidence Float64,
+                ADD COLUMN IF NOT EXISTS microstructure_unified_action LowCardinality(String)"#,
             true,
         )
         .await?;
@@ -1110,6 +1197,15 @@ fn indicator_insert_row(row: &IndicatorRow) -> serde_json::Value {
         "price_vs_ema20_pct": row.price_vs_ema20_pct,
         "price_vs_vwap_pct": row.price_vs_vwap_pct,
         "trend_score": row.trend_score,
+        "microstructure_fast_signal": row.microstructure_fast_signal,
+        "microstructure_fast_confidence": row.microstructure_fast_confidence,
+        "microstructure_confirm_signal": row.microstructure_confirm_signal,
+        "microstructure_confirm_confidence": row.microstructure_confirm_confidence,
+        "microstructure_context_signal": row.microstructure_context_signal,
+        "microstructure_context_confidence": row.microstructure_context_confidence,
+        "microstructure_unified_signal": row.microstructure_unified_signal,
+        "microstructure_unified_confidence": row.microstructure_unified_confidence,
+        "microstructure_unified_action": &row.microstructure_unified_action,
     })
 }
 

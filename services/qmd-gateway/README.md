@@ -177,7 +177,12 @@ the signed score, direction class, strength, confidence, regime, absorption
 flag, observation duration, and five normalized inputs: quote-flow imbalance,
 microprice lean, eligible trade-flow imbalance, persistence, and realized
 midpoint response. The fixed score weights are 35%, 20%, 20%, 15%, and 10%,
-respectively. This is a next-midpoint-direction feature, not an order
+respectively. The schema-v2 response also includes one `unified` result. It
+combines the three unique horizons with 50%, 30%, and 20% priors, weights each
+ready horizon by its evidence confidence, and discounts confidence when the
+horizons disagree. `action` is `buy` or `sell` only when confidence is at least
+35% and absolute score is at least 0.15; otherwise it is `wait`. This is a
+next-midpoint-direction feature, not an order
 instruction, return forecast, or price target; strategies must still apply
 market-state, LULD, spread, risk, and execution gates.
 

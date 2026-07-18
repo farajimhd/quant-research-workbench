@@ -137,6 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.indicator_history_by_timeframe.clone(),
         config.tick_indicator_window_seconds,
         config.indicator_shard_count,
+        trade_aggregation_rules.clone(),
     );
     let scanner = SharedScannerStore::new(config.scanner_primitive_history_limit);
     let live_market_state = SharedLiveMarketStateStore::new(config.live_market_state_history_limit);

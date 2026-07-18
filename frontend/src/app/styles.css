@@ -12644,6 +12644,10 @@ button {
   min-width: 0;
 }
 
+.chart-legend.left-scale {
+  left: calc(var(--chart-price-scale-min-width, 56px) + 10px);
+}
+
 .chart-legend-header {
   display: flex;
   width: max-content;

@@ -121,6 +121,7 @@ pub fn indicator_catalog() -> &'static [IndicatorCatalogEntry] {
 }
 
 const ALL_LIVE_TFS: &[&str] = &["1s", "10s", "30s", "1m", "5m", "1h"];
+const ENRICHED_QMD_TFS: &[&str] = &["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const BAR_TFS: &[&str] = &["10s", "30s", "1m", "5m", "1h"];
 const SHORT_TFS: &[&str] = &["1s", "10s", "30s", "1m"];
 const SESSION_TFS: &[&str] = &["1m", "5m"];
@@ -274,6 +275,30 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
         typical_timeframes: SHORT_TFS,
         storage_target: "memory_enriched_bars,scanner_signal_snapshots",
         rationale: "Core order-flow proxy available from tape and NBBO; persist bar summaries and signal-time snapshots, not duplicate tick streams.",
+    },
+    IndicatorCatalogEntry {
+        key: "microstructure_outlook",
+        label: "Deterministic Microstructure Outlook",
+        category: IndicatorCategory::TapeMicrostructure,
+        priority: IndicatorPriority::P0,
+        compute_mode: ComputeMode::RealtimeTick,
+        persist_policy: PersistPolicy::IfSignalUses,
+        status: ImplementationStatus::Implemented,
+        inputs: &["quotes", "trades", "trade_aggregation_rules"],
+        fields: &[
+            "microstructure_fast_signal",
+            "microstructure_fast_confidence",
+            "microstructure_confirm_signal",
+            "microstructure_confirm_confidence",
+            "microstructure_context_signal",
+            "microstructure_context_confidence",
+            "microstructure_unified_signal",
+            "microstructure_unified_confidence",
+            "microstructure_unified_action",
+        ],
+        typical_timeframes: ENRICHED_QMD_TFS,
+        storage_target: "memory_enriched_bars,live_market_indicators_if_enabled",
+        rationale: "Provides one causal quote-and-trade pressure contract for chart oscillators and strategy gates without duplicating the live and historical algorithms.",
     },
     IndicatorCatalogEntry {
         key: "large_trade_activity",

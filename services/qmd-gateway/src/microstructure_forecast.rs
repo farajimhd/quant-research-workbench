@@ -1,11 +1,14 @@
 use crate::bars::TradeAggregationRules;
 use crate::compact_event::{CompactEventDecoder, LiveCompactEvent};
 use crate::event::{MarketEvent, QuoteEvent};
+use chrono::{DateTime, Utc};
 use serde::Serialize;
+use std::collections::VecDeque;
 
-pub const MICROSTRUCTURE_FORECAST_SCHEMA_VERSION: u16 = 1;
+pub const MICROSTRUCTURE_FORECAST_SCHEMA_VERSION: u16 = 2;
 pub const MICROSTRUCTURE_FORECAST_METHOD: &str = "deterministic_microstructure_v1";
 pub const MICROSTRUCTURE_FORECAST_HORIZONS: [usize; 3] = [25, 100, 500];
+pub const MICROSTRUCTURE_FORECAST_HORIZON_WEIGHTS: [f64; 3] = [0.50, 0.30, 0.20];
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct MicrostructureForecastSnapshot {
@@ -16,6 +19,18 @@ pub struct MicrostructureForecastSnapshot {
     pub source: String,
     pub target: &'static str,
     pub ticker: String,
+    pub unified: MicrostructureUnifiedForecast,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct MicrostructureUnifiedForecast {
+    pub action: &'static str,
+    pub agreement: f64,
+    pub confidence: f64,
+    pub direction: &'static str,
+    pub score: f64,
+    pub status: &'static str,
+    pub strength: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -42,6 +57,58 @@ pub struct MicrostructureForecastComponents {
     pub price_response: f64,
     pub quote_flow_imbalance: f64,
     pub trade_flow_imbalance: f64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct MicrostructureForecastWindow {
+    events: VecDeque<MarketEvent>,
+}
+
+impl MicrostructureForecastWindow {
+    pub fn apply_event(&mut self, event: &MarketEvent) {
+        self.events.push_back(event.clone());
+        while self.events.len() > 2_048 {
+            self.events.pop_front();
+        }
+    }
+
+    pub fn snapshot(
+        &self,
+        trade_rules: &TradeAggregationRules,
+        source: impl Into<String>,
+    ) -> MicrostructureForecastSnapshot {
+        let events = self
+            .events
+            .iter()
+            .rev()
+            .take(MICROSTRUCTURE_FORECAST_HORIZONS[2] + 1)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>();
+        forecast_market_events(&events, trade_rules, source)
+    }
+
+    pub fn snapshot_at(
+        &self,
+        as_of: DateTime<Utc>,
+        trade_rules: &TradeAggregationRules,
+        source: impl Into<String>,
+    ) -> MicrostructureForecastSnapshot {
+        let events = self
+            .events
+            .iter()
+            .rev()
+            .filter(|event| event.ts() <= as_of)
+            .take(MICROSTRUCTURE_FORECAST_HORIZONS[2] + 1)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>();
+        forecast_market_events(&events, trade_rules, source)
+    }
 }
 
 pub fn forecast_compact_events(
@@ -74,7 +141,8 @@ pub fn forecast_market_events(
     let horizons = MICROSTRUCTURE_FORECAST_HORIZONS
         .into_iter()
         .map(|horizon| calculate_horizon(events, horizon, trade_rules))
-        .collect();
+        .collect::<Vec<_>>();
+    let unified = unified_forecast(&horizons);
     MicrostructureForecastSnapshot {
         as_of_timestamp_us,
         horizons,
@@ -83,6 +151,70 @@ pub fn forecast_market_events(
         source: source.into(),
         target: "next_midpoint_move",
         ticker,
+        unified,
+    }
+}
+
+fn unified_forecast(horizons: &[MicrostructureForecastHorizon]) -> MicrostructureUnifiedForecast {
+    let mut weighted_score = 0.0;
+    let mut effective_weight = 0.0;
+    let mut base_confidence = 0.0;
+    for (index, horizon) in horizons.iter().enumerate() {
+        let prior = MICROSTRUCTURE_FORECAST_HORIZON_WEIGHTS
+            .get(index)
+            .copied()
+            .unwrap_or(0.0);
+        if horizon.status != "ready" {
+            continue;
+        }
+        let evidence_weight = prior * horizon.confidence / 100.0;
+        weighted_score += evidence_weight * horizon.score;
+        effective_weight += evidence_weight;
+        base_confidence += prior * horizon.confidence;
+    }
+    if effective_weight <= f64::EPSILON {
+        return MicrostructureUnifiedForecast {
+            action: "wait",
+            agreement: 0.0,
+            confidence: 0.0,
+            direction: "neutral",
+            score: 0.0,
+            status: "insufficient_data",
+            strength: 0.0,
+        };
+    }
+    let score = clamp(weighted_score / effective_weight, -1.0, 1.0);
+    let disagreement = horizons
+        .iter()
+        .enumerate()
+        .filter(|(_, horizon)| horizon.status == "ready")
+        .map(|(index, horizon)| {
+            let prior = MICROSTRUCTURE_FORECAST_HORIZON_WEIGHTS
+                .get(index)
+                .copied()
+                .unwrap_or(0.0);
+            let evidence_weight = prior * horizon.confidence / 100.0;
+            evidence_weight * (horizon.score - score).abs() / 2.0
+        })
+        .sum::<f64>()
+        / effective_weight;
+    let agreement = clamp(1.0 - disagreement, 0.0, 1.0);
+    let confidence = clamp(base_confidence * (0.5 + 0.5 * agreement), 0.0, 100.0);
+    let action = if confidence < 35.0 || score.abs() < 0.15 {
+        "wait"
+    } else if score > 0.0 {
+        "buy"
+    } else {
+        "sell"
+    };
+    MicrostructureUnifiedForecast {
+        action,
+        agreement: round2(agreement * 100.0),
+        confidence: round2(confidence),
+        direction: direction(score),
+        score: round4(score),
+        status: "ready",
+        strength: round2(score.abs() * 100.0),
     }
 }
 
@@ -468,8 +600,84 @@ mod tests {
         );
     }
 
+    #[test]
+    fn bar_snapshot_excludes_events_after_its_close() {
+        let events = bullish_events(false);
+        let as_of = events.last().unwrap().ts();
+        let expected = forecast_market_events(&events, &rules(), "test");
+        let mut window = MicrostructureForecastWindow::default();
+        for event in &events {
+            window.apply_event(event);
+        }
+        let mut future = events[0].clone();
+        match &mut future {
+            MarketEvent::Quote(quote) => {
+                quote.ts = as_of + chrono::Duration::seconds(1);
+                quote.ingest_ts = quote.ts;
+                quote.bid_price = 90.0;
+                quote.ask_price = 90.01;
+            }
+            MarketEvent::Trade(_) => unreachable!(),
+        }
+        window.apply_event(&future);
+        assert_eq!(window.snapshot_at(as_of, &rules(), "test"), expected);
+    }
+
+    #[test]
+    fn unified_forecast_weights_unique_horizons_and_emits_buy_only_with_evidence() {
+        let horizons = vec![
+            ready_horizon(25, 0.60, 80.0),
+            ready_horizon(100, 0.40, 70.0),
+            ready_horizon(500, 0.20, 60.0),
+        ];
+        let unified = unified_forecast(&horizons);
+        assert_eq!(unified.action, "buy");
+        assert!(unified.score > 0.4);
+        assert!(unified.confidence >= 35.0);
+    }
+
+    #[test]
+    fn unified_forecast_waits_when_horizons_conflict() {
+        let horizons = vec![
+            ready_horizon(25, 0.55, 45.0),
+            ready_horizon(100, -0.50, 45.0),
+            ready_horizon(500, 0.05, 45.0),
+        ];
+        let unified = unified_forecast(&horizons);
+        assert_eq!(unified.action, "wait");
+        assert!(unified.score.abs() < 0.15);
+    }
+
     fn rules() -> TradeAggregationRules {
         TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap()
+    }
+
+    fn ready_horizon(
+        horizon_events: usize,
+        score: f64,
+        confidence: f64,
+    ) -> MicrostructureForecastHorizon {
+        MicrostructureForecastHorizon {
+            absorption: false,
+            confidence,
+            direction: direction(score),
+            horizon_events,
+            observed_duration_ms: 1_000.0,
+            observed_events: horizon_events,
+            quote_count: horizon_events,
+            regime: "continuation",
+            score,
+            status: "ready",
+            strength: score.abs() * 100.0,
+            trade_count: 0,
+            components: MicrostructureForecastComponents {
+                microprice_lean: score,
+                persistence: score,
+                price_response: score,
+                quote_flow_imbalance: score,
+                trade_flow_imbalance: score,
+            },
+        }
     }
 
     fn bullish_events(flat: bool) -> Vec<MarketEvent> {

@@ -101,7 +101,7 @@ type CanvasLiveChartState = {
 };
 
 type ContainerSettings = {
-  version: 5;
+  version: 6;
   chart: { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
   tape: { limit: number };
   quotes: { limit: number };
@@ -123,8 +123,8 @@ type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; tit
 
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 5,
-  chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd"] },
+  version: 6,
+  chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.microstructure_outlook"] },
   tape: { limit: 1024 },
   quotes: { limit: 1024 },
   fills: { limit: 5, showCommission: true },
@@ -159,6 +159,33 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
   displayIndicator("indicator.price_ema", "Price vs EMA 20", "momentum", ["price_vs_ema20_pct"], "distance"),
   displayIndicator("indicator.price_vwap", "Price vs VWAP", "volume_liquidity", ["price_vs_vwap_pct"], "distance"),
   displayIndicator("indicator.trend_score", "Trend Score", "momentum", ["trend_score"], "trend"),
+  displayIndicator(
+    "indicator.microstructure_outlook",
+    "QMD Microstructure Outlook",
+    "microstructure",
+    [
+      "microstructure_fast_signal",
+      "microstructure_fast_confidence",
+      "microstructure_confirm_signal",
+      "microstructure_confirm_confidence",
+      "microstructure_context_signal",
+      "microstructure_context_confidence",
+      "microstructure_unified_signal",
+      "microstructure_unified_confidence",
+      "microstructure_unified_action",
+    ],
+    "microstructure",
+    {
+      shortDescription: "Causal QMD quote-and-trade pressure across 25, 100, and 500 market events, plus one confidence-gated unified action.",
+      detailedDescription: "Each horizon score runs from -1 (sell pressure) to +1 (buy pressure). Confidence runs from 0% to 100% on the left scale. The unified score combines the three unique horizons with 50%, 30%, and 20% priors, weights them by their evidence confidence, and reduces confidence when the horizons disagree.",
+      interpretation: "Read the zero line first: bars above zero favor buying and bars below zero favor selling. Then check confidence on the left axis. The unified label reports BUY, SELL, or WAIT; WAIT means the score is weak, confidence is below 35%, or the horizons conflict. A fast move confirmed by the 100- and 500-event lines is stronger than a fast-only spike.",
+      caveats: [
+        "This is a deterministic microstructure estimate, not a guaranteed price forecast.",
+        "Event horizons are activity-based rather than fixed clock durations, so they cover less time in a fast market.",
+        "Displayed NBBO and eligible trades do not reveal all hidden liquidity or execution intent.",
+      ],
+    },
+  ),
 ];
 
 const INDICATOR_SERIES = [
@@ -181,10 +208,18 @@ const INDICATOR_SERIES = [
   { column: "price_vs_ema20_pct", color: "var(--info)", displayItemId: "indicator.price_ema", label: "Price vs EMA 20", pane: "distance" },
   { column: "price_vs_vwap_pct", color: "var(--warning)", displayItemId: "indicator.price_vwap", label: "Price vs VWAP", pane: "distance" },
   { column: "trend_score", color: "var(--primary)", displayItemId: "indicator.trend_score", label: "Trend Score", pane: "trend" },
+  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "25S", column: "microstructure_fast_signal", color: "var(--info)", displayItemId: "indicator.microstructure_outlook", label: "25 score", lastValueVisible: false, lineWidth: 1, pane: "microstructure", priceScaleId: "right" },
+  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "100S", column: "microstructure_confirm_signal", color: "var(--warning)", displayItemId: "indicator.microstructure_outlook", label: "100 score", lastValueVisible: false, lineWidth: 2, pane: "microstructure", priceScaleId: "right" },
+  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "500S", column: "microstructure_context_signal", color: "var(--primary)", displayItemId: "indicator.microstructure_outlook", label: "500 score", lastValueVisible: false, lineWidth: 2, pane: "microstructure", priceScaleId: "right" },
+  { autoscaleMax: 1, autoscaleMin: -1, column: "microstructure_unified_signal", color: "var(--foreground)", displayItemId: "indicator.microstructure_outlook", label: "Unified WAIT", lineWidth: 2, pane: "microstructure", priceScaleId: "right", style: "histogram" },
+  { autoscaleMax: 100, autoscaleMin: 0, axisTitle: "25C", column: "microstructure_fast_confidence", color: "var(--info)", displayItemId: "indicator.microstructure_outlook", label: "25 conf", lastValueVisible: false, lineStyle: "dotted", opacity: 0.5, pane: "microstructure", priceScaleId: "left" },
+  { autoscaleMax: 100, autoscaleMin: 0, axisTitle: "100C", column: "microstructure_confirm_confidence", color: "var(--warning)", displayItemId: "indicator.microstructure_outlook", label: "100 conf", lastValueVisible: false, lineStyle: "dotted", opacity: 0.5, pane: "microstructure", priceScaleId: "left" },
+  { autoscaleMax: 100, autoscaleMin: 0, axisTitle: "500C", column: "microstructure_context_confidence", color: "var(--primary)", displayItemId: "indicator.microstructure_outlook", label: "500 conf", lastValueVisible: false, lineStyle: "dotted", opacity: 0.5, pane: "microstructure", priceScaleId: "left" },
+  { autoscaleMax: 100, autoscaleMin: 0, axisTitle: "UC", column: "microstructure_unified_confidence", color: "var(--foreground)", displayItemId: "indicator.microstructure_outlook", label: "Unified conf", lineStyle: "dashed", lineWidth: 2, opacity: 0.75, pane: "microstructure", priceScaleId: "left" },
 ] as const;
 
-function displayIndicator(id: string, title: string, group: string, sourceColumns: string[], pane = "price"): ChartDisplayItem {
-  return { category: pane === "price" ? "Price overlay" : "Oscillator pane", group, id, presentation: { chartRole: pane === "price" ? "overlay" : "oscillator", pane, selectable: true }, sourceColumns, title };
+function displayIndicator(id: string, title: string, group: string, sourceColumns: string[], pane = "price", knowledge?: ChartDisplayItem["knowledge"]): ChartDisplayItem {
+  return { category: pane === "price" ? "Price overlay" : "Oscillator pane", group, id, knowledge, presentation: { chartRole: pane === "price" ? "overlay" : "oscillator", pane, selectable: true }, sourceColumns, title };
 }
 
 function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cutoffMs: number, sessionDate: string): CanvasLiveChartState {
@@ -981,16 +1016,39 @@ function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl,
 
 function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscillator" | "price", visibleIndicators: string[]): ChartPayload["overlay_series"] {
   const visible = new Set(visibleIndicators);
+  const latestMicrostructure = [...rows].reverse().find((row) => Number.isFinite(Number(row.microstructure_unified_signal)));
   return INDICATOR_SERIES.filter((spec) => visible.has(spec.displayItemId) && (spec.pane === "price" ? "price" : "oscillator") === target).map((spec) => ({
+    ...( "autoscaleMax" in spec ? { autoscaleMax: spec.autoscaleMax, autoscaleMin: spec.autoscaleMin } : {}),
+    ...( "axisTitle" in spec ? { axisTitle: spec.axisTitle } : {}),
     color: spec.color,
     column: spec.column,
-    data: rows.map((row) => ({ time: Date.parse(String(row.bar_start)) / 1000, value: Number(row[spec.column]) })).filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value)),
+    data: rows.map((row) => ({
+      ...(spec.column === "microstructure_unified_signal" ? { color: microstructureActionColor(String(row.microstructure_unified_action || "WAIT")) } : {}),
+      time: Date.parse(String(row.bar_start)) / 1000,
+      value: Number(row[spec.column]),
+    })).filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value)),
     displayItemId: spec.displayItemId,
-    label: spec.label,
-    lineWidth: 1,
+    label: spec.column === "microstructure_unified_signal" ? microstructureUnifiedLabel(latestMicrostructure) : spec.label,
+    ...( "lastValueVisible" in spec ? { lastValueVisible: spec.lastValueVisible } : {}),
+    ...( "lineStyle" in spec ? { lineStyle: spec.lineStyle } : {}),
+    lineWidth: "lineWidth" in spec ? spec.lineWidth : 1,
+    ...( "opacity" in spec ? { opacity: spec.opacity } : {}),
     paneKey: spec.pane,
+    ...( "priceScaleId" in spec ? { priceScaleId: spec.priceScaleId } : {}),
     style: "style" in spec ? spec.style : "line",
   }));
+}
+
+function microstructureActionColor(action: string) {
+  if (action.toUpperCase() === "BUY") return "var(--success)";
+  if (action.toUpperCase() === "SELL") return "var(--danger)";
+  return "var(--muted-foreground)";
+}
+
+function microstructureUnifiedLabel(row?: HistoricalIndicator) {
+  const action = String(row?.microstructure_unified_action || "WAIT").toUpperCase();
+  const confidence = Number(row?.microstructure_unified_confidence);
+  return `Unified ${action}${Number.isFinite(confidence) ? ` · ${Math.round(confidence)}%` : ""}`;
 }
 
 function PreviewTable({ columns, onSymbolSelect, rows }: { columns: string[]; onSymbolSelect?: (symbol: string) => void; rows: PreviewRow[] }) {
@@ -1057,7 +1115,8 @@ function readSettings(): ContainerSettings {
 
 function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSettings {
   const storedIndicators = Array.isArray(stored.chart?.visibleIndicators) ? stored.chart.visibleIndicators : DEFAULT_SETTINGS.chart.visibleIndicators;
-  const visibleIndicators = stored.version === DEFAULT_SETTINGS.version || storedIndicators.includes("indicator.macd") ? storedIndicators : [...storedIndicators, "indicator.macd"];
+  const migratedIndicators = stored.version === DEFAULT_SETTINGS.version || storedIndicators.includes("indicator.macd") ? storedIndicators : [...storedIndicators, "indicator.macd"];
+  const visibleIndicators = stored.version === DEFAULT_SETTINGS.version || migratedIndicators.includes("indicator.microstructure_outlook") ? migratedIndicators : [...migratedIndicators, "indicator.microstructure_outlook"];
   const timeframe = HISTORICAL_TIMEFRAMES.includes(stored.chart?.timeframe as CanvasChartTimeframe) ? stored.chart!.timeframe! : DEFAULT_SETTINGS.chart.timeframe;
   return {
     version: DEFAULT_SETTINGS.version,

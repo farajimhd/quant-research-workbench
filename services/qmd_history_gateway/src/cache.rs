@@ -9,6 +9,7 @@ use qmd_core::market_products::{
     FamilyBarSnapshot, MacroBarSnapshot, MarketProductEngine, ProductCacheLimits, ProductState,
     MARKET_PRODUCT_SCHEMA_VERSION,
 };
+use qmd_core::microstructure_forecast::MicrostructureForecastWindow;
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::mem::size_of;
@@ -16,7 +17,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
 
-pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v2";
+pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v3";
 
 #[derive(Clone, Debug, Serialize)]
 pub struct DerivedUpdate {
@@ -491,6 +492,8 @@ impl HistoricalDerivedCache {
         );
         let shard = bars.shard(0);
         let mut indicators = HashMap::<String, BarIndicatorCalculator>::new();
+        let mut microstructure = MicrostructureForecastWindow::default();
+        let trade_rules = self.source.trade_aggregation_rules();
         let mut products = MarketProductEngine::new(
             resolutions,
             ProductCacheLimits {
@@ -528,13 +531,20 @@ impl HistoricalDerivedCache {
                 }
                 for compact in &events {
                     let event = self.source.market_event(compact);
+                    microstructure.apply_event(&event);
                     products.apply_event(&event, event.ts());
                     for bar in shard.apply_event(&event).await {
                         if valid_price_bar(&bar) {
-                            let indicator = indicators
+                            let mut indicator = indicators
                                 .entry(bar.timeframe.clone())
                                 .or_insert_with(BarIndicatorCalculator::new)
                                 .apply_bar(&bar);
+                            let forecast = microstructure.snapshot_at(
+                                bar.bar_end,
+                                &trade_rules,
+                                "qmd-history-indicators",
+                            );
+                            indicator.apply_microstructure(&forecast);
                             entry.push(bar, indicator).await?;
                         }
                     }
@@ -551,10 +561,13 @@ impl HistoricalDerivedCache {
         }
         for bar in shard.finalize_due(window.end).await {
             if valid_price_bar(&bar) {
-                let indicator = indicators
+                let mut indicator = indicators
                     .entry(bar.timeframe.clone())
                     .or_insert_with(BarIndicatorCalculator::new)
                     .apply_bar(&bar);
+                let forecast =
+                    microstructure.snapshot_at(bar.bar_end, &trade_rules, "qmd-history-indicators");
+                indicator.apply_microstructure(&forecast);
                 entry.push(bar, indicator).await?;
             }
         }
