@@ -79,10 +79,14 @@ The reaction build reads canonical compact events directly. The anchor is the
 last eligible trade strictly before publication; terminal/high/low values use
 all exact events in each news-relative interval, including partial seconds at
 both boundaries. Price eligibility reuses QMD's condition-token last/extrema
-rules, including extended-hours Form T. Months are processed sequentially. Each
-distinct requested ticker is assigned to one of 32 deterministic event-cache
-shards, so its required days are read once into a shared monthly cache; SPY is
-loaded once. Four bounded day-chunk workers reuse that cache and dynamically
+rules, including extended-hours Form T. Months are processed sequentially. A
+bounded news/ticker input cache is first built from the canonical normalized and
+ticker tables. Event-cache shards, day workers, and overlap checks reuse it
+instead of rebuilding the same full canonical joins for every query. Each
+distinct requested ticker is then assigned to one of 32 deterministic
+event-cache shards, so its required days are read once into a shared monthly
+cache; SPY is loaded once. Four bounded day-chunk workers reuse both caches and
+dynamically
 divide each day's links at a default target of 100 links per query, capped at 64
 queries. Sparse and empty days therefore avoid the previous fixed 32-query
 overhead. Day workers also restrict monthly-cache reads to their active tickers

@@ -98,11 +98,15 @@ only the required trade fields, and calculates all horizons in one insert.
 Canonical SIP tickers are already uppercase, so the raw event predicate remains
 on the stored `ticker` ordering key; applying a case-conversion function there
 would prevent primary-key pruning. Publication months are processed
-sequentially. For each month, the extractor partitions the distinct requested
-tickers into 32 deterministic shards and reads every ticker's required event
-days once into one shared, short-lived MergeTree cache. SPY is loaded once per
-month. Cache rows contain compact, sorted event tuples by ticker and event date,
-including the prior eligible anchor needed at the month boundary.
+sequentially. For each month, the extractor first materializes the bounded
+canonical news/ticker inputs, including publication and availability timestamps,
+into a small short-lived cache. Event-cache shards, day workers, and overlap
+checks all reuse it instead of independently rebuilding multi-million-row news
+joins. The extractor then partitions the distinct requested tickers into 32
+deterministic shards and reads every ticker's required event days once into one
+shared, short-lived MergeTree cache. SPY is loaded once per month. Event-cache
+rows contain compact, sorted tuples by ticker and event date, including the prior
+eligible anchor needed at the month boundary.
 
 Bounded day workers then calculate all news-relative anchors, terminal values,
 highs, lows, and aligned SPY observations from that read-only monthly cache.

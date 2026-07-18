@@ -18,6 +18,7 @@ from pipelines.news.benzinga.news_reaction_extract import (
     event_coverage_sql,
     monitored_execute,
     is_clickhouse_memory_limit,
+    news_cache_create_sql,
     parse_args,
     reaction_insert_sql,
     reaction_news_shard_count,
@@ -140,8 +141,11 @@ class NewsReactionExtractTests(unittest.TestCase):
             ticker_shard_index=3,
             ticker_shard_count=8,
             event_cache_table_name=cache_name,
+            news_cache_table_name="_news_reaction_news_cache_test",
         )
         self.assertIn(f"FROM `q_live`.`{cache_name}`", cached_reaction_sql)
+        self.assertIn("FROM `q_live`.`_news_reaction_news_cache_test` AS t", cached_reaction_sql)
+        self.assertNotIn("benzinga_news_normalized_v1` FINAL", cached_reaction_sql)
         self.assertIn("cityHash64(t.canonical_news_id, upperUTF8(t.ticker)) % toUInt64(8) = toUInt64(3)", cached_reaction_sql)
         self.assertIn("active_cache_tickers AS", cached_reaction_sql)
         self.assertEqual(
@@ -155,6 +159,16 @@ class NewsReactionExtractTests(unittest.TestCase):
             cached_reaction_sql.index("window_event_dates AS"),
             cached_reaction_sql.index("active_cache_tickers AS"),
         )
+
+        news_cache_sql = news_cache_create_sql(
+            self.args,
+            dt.date(2019, 1, 2),
+            dt.date(2019, 2, 1),
+            "_news_reaction_news_cache_test",
+        )
+        self.assertIn("CREATE TABLE `q_live`.`_news_reaction_news_cache_test`", news_cache_sql)
+        self.assertIn("published_at_utc >= toDateTime64('2018-12-25", news_cache_sql)
+        self.assertIn("published_at_utc < toDateTime64('2019-02-09", news_cache_sql)
 
         append_sql = event_cache_create_sql(
             self.args,
@@ -208,6 +222,7 @@ class NewsReactionExtractTests(unittest.TestCase):
                 query_memory=6 * 1024**3,
                 query_id="retry-test",
                 cache_table_name="_cache",
+                news_cache_table_name="_news_cache",
                 news_shard_count=2,
             )
         self.assertEqual(result.inserted_rows, 20)

@@ -817,14 +817,26 @@ def run_reaction_chunks(
             continue
 
         cache_table_name = "_news_reaction_event_cache_month_" + uuid.uuid4().hex[-24:]
+        news_cache_table_name = "_news_reaction_news_cache_month_" + uuid.uuid4().hex[-24:]
         cache_target = table(args.news_database, cache_table_name)
+        news_cache_target = table(args.news_database, news_cache_table_name)
         cache_query_prefix = "news-reaction-cache-" + uuid.uuid4().hex
         reporter.message(
-            f"building monthly exact-event cache month={month_start:%Y-%m} "
+            f"building monthly news + exact-event caches month={month_start:%Y-%m} "
             f"ticker_shards={args.reaction_ticker_shards} active_chunks={len(active)}"
         )
         primary_error: BaseException | None = None
         try:
+            build_month_news_cache(
+                client,
+                args,
+                cache_start,
+                cache_end,
+                news_cache_table_name,
+                query_id=f"{cache_query_prefix}_news",
+                query_threads=int(args.max_threads),
+                query_memory=total_memory,
+            )
             build_month_event_cache(
                 client,
                 args,
@@ -834,6 +846,7 @@ def run_reaction_chunks(
                 query_id_prefix=cache_query_prefix,
                 query_threads=int(args.max_threads),
                 query_memory=total_memory,
+                news_cache_table_name=news_cache_table_name,
             )
             workers = min(int(args.reaction_workers), len(active))
             query_threads = max(1, int(args.max_threads) // workers)
@@ -858,6 +871,7 @@ def run_reaction_chunks(
                         query_memory,
                         query_id,
                         cache_table_name,
+                        news_cache_table_name,
                         reaction_news_shard_count(args, link_count),
                         reporter,
                     )
@@ -888,12 +902,22 @@ def run_reaction_chunks(
             raise
         finally:
             cancel_reaction_queries(client, [cache_query_prefix], reporter)
-            try:
-                client.execute(f"DROP TABLE IF EXISTS {cache_target} SYNC", query_id=f"{cache_query_prefix}_drop")
-            except Exception as cleanup_exc:  # noqa: BLE001
-                if primary_error is None:
-                    raise
-                primary_error.add_note(f"monthly event-cache cleanup also failed: {cleanup_exc}")
+            cleanup_errors: list[Exception] = []
+            for cleanup_target, cleanup_suffix in (
+                (cache_target, "drop"),
+                (news_cache_target, "news_drop"),
+            ):
+                try:
+                    client.execute(
+                        f"DROP TABLE IF EXISTS {cleanup_target} SYNC",
+                        query_id=f"{cache_query_prefix}_{cleanup_suffix}",
+                    )
+                except Exception as cleanup_exc:  # noqa: BLE001
+                    cleanup_errors.append(cleanup_exc)
+                    if primary_error is not None:
+                        primary_error.add_note(f"monthly cache cleanup also failed for {cleanup_target}: {cleanup_exc}")
+            if primary_error is None and cleanup_errors:
+                raise cleanup_errors[0]
     return sorted(results, key=lambda item: item.start_date)
 
 
@@ -958,6 +982,7 @@ def build_month_event_cache(
     query_id_prefix: str,
     query_threads: int,
     query_memory: int,
+    news_cache_table_name: str,
 ) -> None:
     cache_target = table(args.news_database, cache_table_name)
     client.execute(f"DROP TABLE IF EXISTS {cache_target} SYNC", query_id=f"{query_id_prefix}_reset")
@@ -972,6 +997,7 @@ def build_month_event_cache(
                 ticker_shard_count=int(args.reaction_ticker_shards),
                 create_table=shard_index == 0,
                 include_benchmark=shard_index == 0,
+                news_cache_table_name=news_cache_table_name,
             )
             + settings_sql(
                 args,
@@ -983,6 +1009,24 @@ def build_month_event_cache(
         )
 
 
+def build_month_news_cache(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    start: dt.date,
+    end: dt.date,
+    cache_table_name: str,
+    *,
+    query_id: str,
+    query_threads: int,
+    query_memory: int,
+) -> None:
+    client.execute(
+        news_cache_create_sql(args, start, end, cache_table_name)
+        + settings_sql(args, max_threads=query_threads, max_memory_usage=query_memory),
+        query_id=query_id,
+    )
+
+
 def execute_reaction_chunk(
     args: argparse.Namespace,
     start: dt.date,
@@ -991,6 +1035,7 @@ def execute_reaction_chunk(
     query_memory: int,
     query_id: str,
     cache_table_name: str,
+    news_cache_table_name: str,
     news_shard_count: int,
     reporter: NewsReactionProgress | None = None,
 ) -> ChunkResult:
@@ -1016,6 +1061,7 @@ def execute_reaction_chunk(
                         ticker_shard_index=shard_index,
                         ticker_shard_count=active_shard_count,
                         event_cache_table_name=cache_table_name,
+                        news_cache_table_name=news_cache_table_name,
                     )
                     + settings_sql(
                         args,
@@ -1075,6 +1121,7 @@ def reaction_insert_sql(
     event_ticker_shard_count: int | None = None,
     include_benchmark: bool = True,
     event_cache_table_name: str | None = None,
+    news_cache_table_name: str | None = None,
 ) -> str:
     if (ticker_shard_index is None) != (ticker_shard_count is None):
         raise ValueError("ticker shard index and count must be provided together")
@@ -1103,7 +1150,10 @@ def reaction_insert_sql(
             f" AND cityHash64(upperUTF8(ticker)) % toUInt64({int(event_ticker_shard_count)}) "
             f"= toUInt64({int(event_ticker_shard_index)})"
         )
-    ticker_source = table(args.news_database, args.ticker_table)
+    ticker_source = table(
+        args.news_database,
+        news_cache_table_name if news_cache_table_name else args.ticker_table,
+    )
     normalized = table(args.news_database, args.normalized_table)
     calendar_table = table(args.news_database, args.calendar_table)
     target = table(args.news_database, args.reactions_table)
@@ -1127,6 +1177,17 @@ def reaction_insert_sql(
     source_revision = sql_string(f"compact_events_exact_v1:{args.market_database}.{source_name}")
     condition_reference = table(args.market_database, args.condition_reference_table)
     benchmark_event_prefix = f"ticker = {sql_string(args.benchmark_ticker.upper())} OR " if include_benchmark else ""
+    if news_cache_table_name:
+        news_source = f"{ticker_source} AS t"
+        normalized_join = ""
+        available_at_expression = "t.downloaded_at_utc"
+    else:
+        news_source = f"(SELECT * FROM {ticker_source} FINAL) AS t"
+        normalized_join = (
+            f"INNER JOIN (SELECT * FROM {normalized} FINAL) AS n "
+            "ON n.canonical_news_id = t.canonical_news_id"
+        )
+        available_at_expression = "n.downloaded_at_utc"
     sql = f"""
 INSERT INTO {target}
 WITH
@@ -1261,7 +1322,7 @@ news_base AS
         t.canonical_news_id AS canonical_news_id,
         upperUTF8(t.ticker) AS ticker,
         t.published_at_utc AS published_at_utc,
-        n.downloaded_at_utc AS available_at_utc,
+        {available_at_expression} AS available_at_utc,
         toUInt64(toUnixTimestamp64Micro(t.published_at_utc)) AS pub_us,
         toDate(toTimeZone(t.published_at_utc, 'America/New_York')) AS local_publication_date,
         c.is_session AS is_session,
@@ -1270,8 +1331,8 @@ news_base AS
         if(c.is_session = 1 AND t.published_at_utc < c.current_extended_close_utc, assumeNotNull(c.current_regular_open_utc), c.next_regular_open_utc) AS regular_open_utc,
         if(c.is_session = 1 AND t.published_at_utc < c.current_extended_close_utc, assumeNotNull(c.current_regular_close_utc), c.next_regular_close_utc) AS regular_close_utc,
         if(c.is_session = 1 AND t.published_at_utc < c.current_extended_close_utc, assumeNotNull(c.current_extended_close_utc), c.next_extended_close_utc) AS extended_close_utc
-    FROM (SELECT * FROM {ticker_source} FINAL) AS t
-    INNER JOIN (SELECT * FROM {normalized} FINAL) AS n ON n.canonical_news_id = t.canonical_news_id
+    FROM {news_source}
+    {normalized_join}
     INNER JOIN
     (
         SELECT * FROM {calendar_table} FINAL
@@ -1649,6 +1710,7 @@ def event_cache_create_sql(
     ticker_shard_count: int,
     create_table: bool = True,
     include_benchmark: bool = True,
+    news_cache_table_name: str | None = None,
 ) -> str:
     """Materialize one ticker shard in a shared monthly compact-event cache."""
     raw_sql = reaction_insert_sql(
@@ -1658,6 +1720,7 @@ def event_cache_create_sql(
         event_ticker_shard_index=ticker_shard_index,
         event_ticker_shard_count=ticker_shard_count,
         include_benchmark=include_benchmark,
+        news_cache_table_name=news_cache_table_name,
     )
     with_body = raw_sql.split("\nWITH\n", 1)[1]
     event_ctes = with_body.split("news_base AS\n(", 1)[0]
@@ -1688,6 +1751,46 @@ WITH
 )
 SELECT ticker, event_date, eligible_events
 FROM cache_rows
+"""
+
+
+def news_cache_create_sql(
+    args: argparse.Namespace,
+    start: dt.date,
+    end: dt.date,
+    cache_table_name: str,
+) -> str:
+    """Materialize the bounded news inputs reused by every day/shard query in a month."""
+    ticker_source = table(args.news_database, args.ticker_table)
+    normalized = table(args.news_database, args.normalized_table)
+    target = table(args.news_database, cache_table_name)
+    cache_start = start - dt.timedelta(days=8)
+    cache_end = end + dt.timedelta(days=8)
+    return f"""
+CREATE TABLE {target}
+ENGINE = MergeTree
+ORDER BY (published_at_utc, ticker, canonical_news_id)
+AS
+SELECT
+    t.canonical_news_id AS canonical_news_id,
+    upperUTF8(t.ticker) AS ticker,
+    t.published_at_utc AS published_at_utc,
+    n.downloaded_at_utc AS downloaded_at_utc
+FROM
+(
+    SELECT canonical_news_id, ticker, published_at_utc
+    FROM {ticker_source} FINAL
+    WHERE published_at_utc >= {dt_sql(cache_start.isoformat())}
+      AND published_at_utc < {dt_sql(cache_end.isoformat())}
+      AND ticker != ''
+) AS t
+INNER JOIN
+(
+    SELECT canonical_news_id, downloaded_at_utc
+    FROM {normalized} FINAL
+    WHERE published_at_utc >= {dt_sql(cache_start.isoformat())}
+      AND published_at_utc < {dt_sql(cache_end.isoformat())}
+) AS n USING (canonical_news_id)
 """
 
 
