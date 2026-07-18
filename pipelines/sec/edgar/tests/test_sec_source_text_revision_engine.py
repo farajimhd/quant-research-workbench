@@ -27,6 +27,11 @@ class RecordingClient:
                 if "sec_filing_text_v3_revision_engine_migration" in normalized
                 else "ReplacingMergeTree(inserted_at)"
             )
+            engine += (
+                " PARTITION BY toYYYYMM(source_archive_date)"
+                " ORDER BY (cik, accession_number, document_id, content_format)"
+                " SETTINGS index_granularity = 8192, storage_policy = 'live_market_ssd'"
+            )
             return json.dumps(
                 {
                     "engine_full": engine,
@@ -76,6 +81,18 @@ class SourceTextRevisionEngineTest(unittest.TestCase):
     def test_revision_engine_matching_is_whitespace_insensitive(self) -> None:
         self.assertTrue(
             revision_engine_matches({"engine_full": "ReplacingMergeTree( source_revision_rank )"})
+        )
+        self.assertTrue(
+            revision_engine_matches(
+                {
+                    "engine_full": (
+                        "ReplacingMergeTree(source_revision_rank) "
+                        "PARTITION BY toYYYYMM(source_archive_date) "
+                        "ORDER BY (cik, accession_number, document_id, content_format) "
+                        "SETTINGS index_granularity = 8192, storage_policy = 'live_market_ssd'"
+                    )
+                }
+            )
         )
         self.assertFalse(revision_engine_matches({"engine_full": "ReplacingMergeTree(inserted_at)"}))
 

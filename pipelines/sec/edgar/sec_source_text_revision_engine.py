@@ -7,6 +7,7 @@ from typing import Any
 from pipelines.sec.edgar.sec_text_layout import (
     TEXT_SOURCE_PARTITION_KEY,
     TEXT_SOURCE_SORTING_KEY,
+    replacing_merge_tree_version_matches,
     text_source_layout_matches,
 )
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_string
@@ -44,7 +45,7 @@ def ensure_source_revision_engine(
             return {int(value) for value in report.get("affected_partitions", [])}
         return set()
 
-    if normalize_engine(layout.get("engine_full")) != normalize_engine("ReplacingMergeTree(inserted_at)"):
+    if not replacing_merge_tree_version_matches(str(layout.get("engine_full") or ""), "inserted_at"):
         raise RuntimeError(
             f"unsupported source replacement engine {layout.get('engine_full')!r}; "
             f"expected stale ReplacingMergeTree(inserted_at) or {SOURCE_REVISION_ENGINE}"
@@ -208,11 +209,9 @@ def load_source_layout(client: ClickHouseHttpClient, database: str, table_name: 
 
 
 def revision_engine_matches(layout: dict[str, Any]) -> bool:
-    return normalize_engine(layout.get("engine_full")) == normalize_engine(SOURCE_REVISION_ENGINE)
-
-
-def normalize_engine(value: Any) -> str:
-    return "".join(str(value or "").split()).lower()
+    return replacing_merge_tree_version_matches(
+        str(layout.get("engine_full") or ""), "source_revision_rank"
+    )
 
 
 def load_authority_drift(

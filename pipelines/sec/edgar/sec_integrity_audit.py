@@ -30,6 +30,7 @@ from pipelines.sec.edgar.sec_pipeline.submissions import parse_acceptance_dateti
 from pipelines.sec.edgar.sec_text_layout import (  # noqa: E402
     TEXT_SOURCE_PARTITION_KEY,
     TEXT_SOURCE_SORTING_KEY,
+    replacing_merge_tree_version_matches,
     text_source_layout_matches,
 )
 
@@ -563,9 +564,11 @@ def check_text_source_shape(column_map: dict[str, set[str]]) -> list[dict[str, A
 def check_text_source_layout(table_metadata: dict[str, Any]) -> list[dict[str, Any]]:
     partition_key = str(table_metadata.get("partition_key") or "")
     sorting_key = str(table_metadata.get("sorting_key") or "")
-    engine_full = "".join(str(table_metadata.get("engine_full") or "").split()).lower()
-    expected_engine = "replacingmergetree(source_revision_rank)"
-    matches = text_source_layout_matches(partition_key, sorting_key) and engine_full == expected_engine
+    matches = text_source_layout_matches(
+        partition_key, sorting_key
+    ) and replacing_merge_tree_version_matches(
+        str(table_metadata.get("engine_full") or ""), "source_revision_rank"
+    )
     return [
         check(
             "sec_filing_text_v3_physical_layout",
