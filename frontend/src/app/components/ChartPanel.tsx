@@ -36,7 +36,7 @@ import { createPortal } from "react-dom";
 import { displayName } from "../format";
 import { buildSegmentButtonClassName } from "../selectionStyles";
 import { Modal } from "./Modal";
-import { TickerChangeBadge, TickerLogo } from "./TickerIdentity";
+import { TickerChangeBadge, TickerIdentity, TickerLogo } from "./TickerIdentity";
 
 type Candle = { time: number; open: number; high: number; low: number; close: number };
 type ChartSeries = {
@@ -286,6 +286,7 @@ type ChartPanelProps = {
   settingsStorageKey?: string;
   ticker: string;
   tickerChangeAsOf?: string;
+  tickerEditable?: boolean;
   tickerLogoUrl?: string;
   tickerInputWidth?: number | string;
   tickerMaxLength?: number;
@@ -360,6 +361,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   settingsStorageKey,
   ticker,
   tickerChangeAsOf,
+  tickerEditable = true,
   tickerLogoUrl,
   tickerInputWidth,
   tickerMaxLength = 10,
@@ -1236,7 +1238,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       ref={shellRef}
     >
       <div className="chart-component-toolbar">
-        <form className="chart-ticker-form" onSubmit={commitTicker}>
+        {tickerEditable ? <form className="chart-ticker-form" onSubmit={commitTicker}>
           <TickerLogo logoUrl={tickerLogoUrl} ticker={ticker} />
           <input
             aria-label="Ticker"
@@ -1247,7 +1249,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
             style={{ textTransform: normalizeTicker ? "uppercase" : "none", width: tickerInputWidth }}
             value={draftTicker}
           />
-        </form>
+        </form> : <TickerIdentity className="chart-ticker-readonly" logoUrl={tickerLogoUrl} ticker={ticker} />}
         {tickerChangeAsOf ? <TickerChangeBadge asOf={tickerChangeAsOf} ticker={ticker} /> : null}
         {periodStart && periodEnd && onPeriodChange ? (
           <ChartPeriodSelect

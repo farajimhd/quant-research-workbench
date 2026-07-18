@@ -503,6 +503,46 @@ def validate_canvas_interactions(
             issues.append("All News incorrectly exposes symbol linking")
         if scanner.get_by_label("Linked container color").count() or news.get_by_label("Linked container color").count() or portfolio.get_by_label("Linked container color").count():
             issues.append("non-linkable containers expose a title color marker")
+        microstructure = page.get_by_role("region", name="Quotes & Tape", exact=True)
+        ticker_news = page.get_by_role("region", name="Ticker News", exact=True)
+        if chart.get_by_role("textbox", name="Ticker", exact=True).count() != 1:
+            issues.append("the first Blue-linked Chart does not retain the group ticker input")
+        if microstructure.get_by_role("textbox", name="Quotes and tape ticker", exact=True).count() != 1:
+            issues.append("unlinked Quotes & Tape does not expose its own ticker input")
+        if ticker_news.get_by_role("textbox", name="Ticker news symbol", exact=True).count() != 1:
+            issues.append("unlinked Ticker News does not expose its own ticker input")
+        microstructure.get_by_role("button", name="Link Quotes & Tape", exact=True).click()
+        microstructure.get_by_role("button", name="Assign Quotes & Tape to Blue", exact=True).click()
+        if microstructure.get_by_role("textbox", name="Quotes and tape ticker", exact=True).count():
+            issues.append("a child linked Quotes & Tape retains a redundant ticker input")
+        if chart.get_by_role("textbox", name="Ticker", exact=True).count() != 1:
+            issues.append("linking a child removed the ticker input from the original group parent")
+        parent_ticker = chart.get_by_role("textbox", name="Ticker", exact=True)
+        parent_ticker.fill("MSFT")
+        parent_ticker.press("Enter")
+        page.wait_for_timeout(100)
+        if "MSFT" not in microstructure.locator(".microstructure-header .ticker-identity").inner_text():
+            issues.append("changing the parent ticker did not propagate to a linked child")
+        parent_ticker.fill("AAPL")
+        parent_ticker.press("Enter")
+        chart.get_by_role("button", name="Link Chart", exact=True).click()
+        chart.get_by_role("button", name="Unlink Chart", exact=True).click()
+        if microstructure.get_by_role("textbox", name="Quotes and tape ticker", exact=True).count() != 1:
+            issues.append("unlinking the group parent did not promote the next linked container")
+        chart.get_by_role("button", name="Assign Chart to Blue", exact=True).click()
+        if chart.get_by_role("textbox", name="Ticker", exact=True).count():
+            issues.append("a Chart joining an established group incorrectly took ticker ownership")
+        microstructure.get_by_role("button", name="Link Quotes & Tape", exact=True).click()
+        microstructure.get_by_role("button", name="Unlink Quotes & Tape", exact=True).click()
+        if chart.get_by_role("textbox", name="Ticker", exact=True).count() != 1:
+            issues.append("the remaining linked Chart did not inherit ticker ownership")
+        ticker_news.get_by_role("button", name="Link Ticker News", exact=True).click()
+        ticker_news.get_by_role("button", name="Assign Ticker News to Blue", exact=True).click()
+        if ticker_news.get_by_role("textbox", name="Ticker news symbol", exact=True).count():
+            issues.append("a child linked Ticker News retains a redundant ticker input")
+        ticker_news.get_by_role("button", name="Link Ticker News", exact=True).click()
+        ticker_news.get_by_role("button", name="Link Ticker News", exact=True).click()
+        ticker_news.get_by_role("button", name="Unlink Ticker News", exact=True).click()
         initial_link_border = link_button.evaluate("element => getComputedStyle(element).borderColor")
         link_button.click()
         if chart.get_by_label("Chart link configuration").count() != 1:

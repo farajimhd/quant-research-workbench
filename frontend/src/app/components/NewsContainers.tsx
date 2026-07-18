@@ -105,7 +105,7 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
   </section>;
 }
 
-export function TickerNewsContainer({ asOf, live = false, settings, symbol }: { asOf: string; live?: boolean; settings: { lookbackHours: number; showTeaser: boolean }; symbol: string }) {
+export function TickerNewsContainer({ asOf, live = false, onSymbolChange, settings, symbol }: { asOf: string; live?: boolean; onSymbolChange?: (symbol: string) => void; settings: { lookbackHours: number; showTeaser: boolean }; symbol: string }) {
   const state = useNewsQuery({ asOf, content: "all", hours: settings.lookbackHours, kind: "all", live, refreshKey: 0, search: "", ticker: symbol });
   const presentations = useTickerPresentations([symbol]);
   const effectiveAsOf = state.asOf || asOf;
@@ -114,7 +114,7 @@ export function TickerNewsContainer({ asOf, live = false, settings, symbol }: { 
   const companyRows = orderedRows.filter(isCompanyNews);
   const otherRows = orderedRows.filter((row) => !isCompanyNews(row));
   return <section className="ticker-news" aria-label={`${symbol} news`}>
-    <header><div><TickerIdentityWithChange asOf={effectiveAsOf} className="ticker-news-symbol" logoUrl={presentations[symbol]?.logo_url} ticker={symbol} /><span>Recent coverage</span></div><small>{state.rows.length} stories · through <MarketTime value={effectiveAsOf} /></small></header>
+    <header><div><TickerIdentityWithChange asOf={effectiveAsOf} className="ticker-news-symbol" inputAriaLabel="Ticker news symbol" logoUrl={presentations[symbol]?.logo_url} onTickerChange={onSymbolChange} ticker={symbol} /><span>Recent coverage</span></div><small>{state.rows.length} stories · through <MarketTime value={effectiveAsOf} /></small></header>
     <NewsStatus state={state} compact />
     <div className="ticker-news-feed">
       <TickerNewsSection asOf={effectiveAsOf} asOfMs={asOfMs} emptyLabel="No company-specific news in this window." label="Company news" rows={companyRows} showTeaser={settings.showTeaser} />

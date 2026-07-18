@@ -768,7 +768,18 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
 
   function setContainerLink(instanceId: string, containerId: WorkspaceContainerId, group: CanvasLinkGroupId) {
     if (!containerSupportsSymbolLink(containerId)) return;
-    updateRegistry((current) => ({ ...current, linkAssignments: { ...current.linkAssignments, [instanceId]: group } }));
+    updateRegistry((current) => {
+      const previousGroup = current.linkAssignments[instanceId] ?? "none";
+      const linkAssignments = { ...current.linkAssignments, [instanceId]: group };
+      const linkOwners = { ...current.linkOwners };
+      if (previousGroup !== "none" && previousGroup !== group && linkOwners[previousGroup] === instanceId) {
+        const nextOwner = Object.keys(linkAssignments).find((candidateId) => candidateId !== instanceId && linkAssignments[candidateId] === previousGroup);
+        if (nextOwner) linkOwners[previousGroup] = nextOwner;
+        else delete linkOwners[previousGroup];
+      }
+      if (group !== "none" && (!linkOwners[group] || linkAssignments[linkOwners[group]!] !== group)) linkOwners[group] = instanceId;
+      return { ...current, linkAssignments, linkOwners };
+    });
   }
 
   function registerContainerInstance(instanceId: string) {
@@ -914,6 +925,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
           const linkable = definition.linkScope === "single-symbol";
           const group = linkable ? registry.linkAssignments[instanceId] ?? "none" : "none";
           const linkContext = group === "none" ? { symbol: settings.chart.symbol } : registry.linkContexts[group];
+          const symbolEditable = linkable && (group === "none" || registry.linkOwners[group] === instanceId);
           const linkedContainers: LinkedContainerState[] = group === "none" ? [] : (workspaceState?.openIds ?? [])
             .filter((candidateId) => {
               const candidateKind = workspaceContainerKind(candidateId, workspaceState);
@@ -935,12 +947,16 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
             linkedContainers={linkedContainers}
             loading={loading}
             onLinkChange={(nextGroup) => setContainerLink(instanceId, definition.id, nextGroup)}
-            onLinkContextChange={(patch) => { if (group !== "none") updateLinkContext(group, patch); }}
+            onLinkContextChange={(patch) => {
+              if (group !== "none") updateLinkContext(group, patch);
+              else if (patch.symbol) updateInstanceSettings(instanceId, (current) => ({ ...current, chart: { ...current.chart, symbol: patch.symbol!.trim().toUpperCase() } }));
+            }}
             preview={preview}
             previewContext={previewContext}
             requestedNewsId={requestedNewsId}
             settings={settings}
             settingsOpen={settingsContainerId === instanceId}
+            symbolEditable={symbolEditable}
             updateSettings={(update) => updateInstanceSettings(instanceId, update)}
           />;
         }}
@@ -990,7 +1006,7 @@ function CanvasManager({ onCreate, onOpen, onRemove, registry }: { onCreate: () 
 
 type SettingsUpdater = (update: ContainerSettings | ((current: ContainerSettings) => ContainerSettings)) => void;
 
-function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, linkContext, linkGroup, linkedContainers, linkOpen, loading, onLinkChange, onLinkContextChange, preview, previewContext, requestedNewsId, settings, settingsOpen, updateSettings }: {
+function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, linkContext, linkGroup, linkedContainers, linkOpen, loading, onLinkChange, onLinkContextChange, preview, previewContext, requestedNewsId, settings, settingsOpen, symbolEditable, updateSettings }: {
   canvasId: string;
   chartCutoffMs: number;
   definition: WorkspaceContainerDefinition;
@@ -1007,6 +1023,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
   requestedNewsId?: string;
   settings: ContainerSettings;
   settingsOpen: boolean;
+  symbolEditable: boolean;
   updateSettings: SettingsUpdater;
 }) {
   const overlayOpen = linkOpen || settingsOpen;
@@ -1014,13 +1031,13 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
     {linkOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} link configuration`} data-canvas-link-popover={instanceId}><div className="canvas-link-guide"><strong>Link color</strong><small>Same color = linked</small></div><LinkColorPicker containerTitle={definition.title} onChange={onLinkChange} value={linkGroup} /><LinkedContainerList containerTitle={definition.title} containers={linkedContainers} /></div> : null}
     {settingsOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} settings`}>{containerFields(definition.id, settings, linkContext, updateSettings, onLinkContextChange)}</div> : null}
     <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{definition.id === "chart"
-      ? <ChartContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} linkGroup={linkGroup} onLinkContextChange={onLinkContextChange} previewContext={previewContext} settings={settings} updateSettings={updateSettings} />
+      ? <ChartContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} linkGroup={linkGroup} onLinkContextChange={onLinkContextChange} previewContext={previewContext} settings={settings} symbolEditable={symbolEditable} updateSettings={updateSettings} />
       : definition.id === "microstructure"
-        ? <QuotesTapeContainer end={new Date(chartCutoffMs).toISOString()} settings={settings.microstructure} start={dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()} symbol={linkContext.symbol} />
+        ? <QuotesTapeContainer end={new Date(chartCutoffMs).toISOString()} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} settings={settings.microstructure} start={dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()} symbol={linkContext.symbol} />
       : definition.id === "news"
         ? <AllNewsContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, news: { ...state.news, ...patch } }))} settings={settings.news} />
       : definition.id === "ticker_news"
-        ? <TickerNewsContainer asOf={new Date(chartCutoffMs).toISOString()} settings={settings.ticker_news} symbol={linkContext.symbol} />
+        ? <TickerNewsContainer asOf={new Date(chartCutoffMs).toISOString()} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} settings={settings.ticker_news} symbol={linkContext.symbol} />
       : definition.id === "news_detail"
         ? <NewsDetailContainer asOf={new Date(chartCutoffMs).toISOString()} canvasId={canvasId} requestedNewsId={requestedNewsId} />
       : loading && !preview
@@ -1075,13 +1092,14 @@ type ChartContainerPreviewProps = {
   onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void;
   previewContext: CanvasPreviewContext;
   settings: ContainerSettings;
+  symbolEditable: boolean;
   updateSettings: SettingsUpdater;
 };
 
-const ChartContainerPreview = memo(function ChartContainerPreview({ cutoffMs, instanceId, linkContext, onLinkContextChange, previewContext, settings, updateSettings }: ChartContainerPreviewProps) {
+const ChartContainerPreview = memo(function ChartContainerPreview({ cutoffMs, instanceId, linkContext, onLinkContextChange, previewContext, settings, symbolEditable, updateSettings }: ChartContainerPreviewProps) {
   const liveChart = useCanvasLiveChart(linkContext.symbol, settings.chart.timeframe, cutoffMs, previewContext.sessionDate);
   const presentations = useTickerPresentations([linkContext.symbol]);
-  return <ChartPreview changeAsOf={new Date(cutoffMs).toISOString()} instanceId={instanceId} linkContext={linkContext} liveChart={liveChart} logoUrl={presentations[linkContext.symbol]?.logo_url} onLinkContextChange={onLinkContextChange} settings={settings} updateSettings={updateSettings} />;
+  return <ChartPreview changeAsOf={new Date(cutoffMs).toISOString()} instanceId={instanceId} linkContext={linkContext} liveChart={liveChart} logoUrl={presentations[linkContext.symbol]?.logo_url} onLinkContextChange={onLinkContextChange} settings={settings} symbolEditable={symbolEditable} updateSettings={updateSettings} />;
 }, chartContainerPreviewPropsEqual);
 
 function chartContainerPreviewPropsEqual(previous: ChartContainerPreviewProps, next: ChartContainerPreviewProps) {
@@ -1093,6 +1111,7 @@ function chartContainerPreviewPropsEqual(previous: ChartContainerPreviewProps, n
     && previous.linkContext.symbol === next.linkContext.symbol
     && previous.previewContext.sessionDate === next.previewContext.sessionDate
     && previous.previewContext.previewTime === next.previewContext.previewTime
+    && previous.symbolEditable === next.symbolEditable
     && previousChart.symbol === nextChart.symbol
     && previousChart.timeframe === nextChart.timeframe
     && previousChart.showVolume === nextChart.showVolume
@@ -1103,7 +1122,7 @@ function stringArraysEqual(previous: readonly string[], next: readonly string[])
   return previous.length === next.length && previous.every((value, index) => value === next[index]);
 }
 
-function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl, onLinkContextChange, settings, updateSettings }: { changeAsOf: string; instanceId: string; linkContext: CanvasLinkContext; liveChart: CanvasLiveChartState; logoUrl?: string; onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void; settings: ContainerSettings; updateSettings: SettingsUpdater }) {
+function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl, onLinkContextChange, settings, symbolEditable, updateSettings }: { changeAsOf: string; instanceId: string; linkContext: CanvasLinkContext; liveChart: CanvasLiveChartState; logoUrl?: string; onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void; settings: ContainerSettings; symbolEditable: boolean; updateSettings: SettingsUpdater }) {
   const indicators = liveChart.indicators;
   const visibleIndicators = liveChart.indicatorsAvailable ? settings.chart.visibleIndicators : [];
   const timeframe = settings.chart.timeframe;
@@ -1124,7 +1143,7 @@ function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl,
   const emptyMessage = liveChart.connected
     ? `Waiting for the first live ${linkContext.symbol} ${timeframe} bar.`
     : "Start QMD Gateway to stream canonical live bars.";
-  return <ChartPanel canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={liveChart.indicatorsAvailable ? CHART_INDICATORS : []} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} indicatorOptions={[]} initialFitMode="recent" loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => updateSettings((current) => ({ ...current, chart: { ...current.chart, visibleIndicators: nextVisibleIndicators } }))} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={HISTORICAL_TIMEFRAMES} visibleColumns={visibleIndicators} />;
+  return <ChartPanel canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={liveChart.indicatorsAvailable ? CHART_INDICATORS : []} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} indicatorOptions={[]} initialFitMode="recent" loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => updateSettings((current) => ({ ...current, chart: { ...current.chart, visibleIndicators: nextVisibleIndicators } }))} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={HISTORICAL_TIMEFRAMES} visibleColumns={visibleIndicators} />;
 }
 
 function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscillator" | "price", visibleIndicators: string[]): ChartPayload["overlay_series"] {

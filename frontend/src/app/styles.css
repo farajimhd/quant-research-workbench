@@ -21930,6 +21930,11 @@ button {
 
 /* Shared single-ticker change: prior QMD 20:00 ET session close to point-in-time price. */
 .ticker-identity-with-change { align-items: center; display: inline-flex; gap: 7px; min-width: 0; }
+.ticker-identity-input { align-items: center; display: inline-flex; gap: 5px; min-width: 0; }
+.ticker-identity-input input { background: var(--control-bg, var(--card)); border: 1px solid var(--border); border-radius: 5px; color: var(--foreground); font-size: 14px; font-variant-numeric: tabular-nums; font-weight: 650; height: 27px; min-width: 0; padding: 0 7px; text-transform: uppercase; width: 76px; }
+.ticker-identity-input input:focus-visible { border-color: var(--primary); box-shadow: 0 0 0 2px color-mix(in oklab, var(--primary) 22%, transparent); outline: 0; }
+.chart-ticker-readonly { font-size: 14px; font-weight: 650; padding-inline: 3px; }
+.chart-ticker-readonly img { height: 24px; width: 24px; }
 .ticker-change-badge { align-items: center; border: 1px solid currentColor; border-radius: 5px; display: inline-flex; font-variant-numeric: tabular-nums lining-nums; gap: 4px; justify-content: center; min-height: 25px; min-width: 118px; padding: 2px 7px; white-space: nowrap; }
 .ticker-change-badge strong { font-size: 11px; font-weight: 680; }.ticker-change-badge small { font-size: 9px; font-weight: 480; opacity: .82; }
 .ticker-change-badge[data-tone="up"] { background: color-mix(in oklab, var(--tape-ask) 9%, var(--surface)); color: var(--tape-ask); }.ticker-change-badge[data-tone="down"] { background: color-mix(in oklab, var(--tape-bid) 9%, var(--surface)); color: var(--tape-bid); }.ticker-change-badge[data-tone="flat"] { color: var(--muted-foreground); }.ticker-change-badge[data-tone="unavailable"] { border-color: var(--border); color: var(--muted-foreground); }

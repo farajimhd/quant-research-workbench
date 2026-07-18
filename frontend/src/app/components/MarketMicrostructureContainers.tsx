@@ -41,7 +41,7 @@ type TapePrint = { conditionTokens: number[]; direction: Direction; exchange: nu
 type QuoteSignal = { detail: string; quote: QuoteUpdate; tone: Direction };
 type QuoteSignalGroup = { id: number; quote: QuoteUpdate; signals: QuoteSignal[]; tone: Direction };
 
-type MarketContainerProps = { end?: string; settings: MarketEventSettings; start?: string; symbol: string };
+type MarketContainerProps = { end?: string; onSymbolChange?: (symbol: string) => void; settings: MarketEventSettings; start?: string; symbol: string };
 const EMPTY_REFERENCES: MarketReferences = { conditions: {}, exchanges: {} };
 const MARKET_EVENT_HISTORY_LIMIT = 1024;
 const MARKET_EVENT_SOURCE_LIMIT = 5000;
@@ -72,7 +72,7 @@ const TAPE_METRIC_GUIDE = [
   ["Absorption", "One-sided aggressive flow with less than half a quoted spread of price movement over 500 milliseconds.", "Suggests passive or hidden liquidity may be absorbing the flow."],
 ];
 
-export function QuotesTapeContainer({ end, start, symbol }: MarketContainerProps) {
+export function QuotesTapeContainer({ end, onSymbolChange, start, symbol }: MarketContainerProps) {
   const { connected, error, events, marketState, references } = useMarketEvents(symbol, start, end);
   const decoded = useMemo(() => decodeMarketEvents(events), [events]);
   const quotes = decoded.quotes.slice(-MARKET_EVENT_HISTORY_LIMIT);
@@ -103,7 +103,7 @@ export function QuotesTapeContainer({ end, start, symbol }: MarketContainerProps
   const askVenue = venueReference(current?.askExchange ?? 0, references);
 
   return <section aria-label={`${symbol} quotes and time and sales`} className="market-microstructure combined-microstructure" data-market-state={connected}>
-    <MicrostructureHeader connected={connected} end={end} logoUrl={presentations[symbol]?.logo_url} marketState={marketState} references={references} symbol={symbol} />
+    <MicrostructureHeader connected={connected} end={end} logoUrl={presentations[symbol]?.logo_url} marketState={marketState} onSymbolChange={onSymbolChange} references={references} symbol={symbol} />
     <div className="combined-market-overview">
       <section aria-label="Current consolidated quote" className="market-overview-lane quote-overview-lane">
         <header><span><strong>Quotes</strong><small>Consolidated NBBO</small></span><em>{formatCount(quotes.length)} updates</em></header>
@@ -332,12 +332,12 @@ function QuoteSignalRow({ child = false, current = false, detail, expanded = fal
   </tr>;
 }
 
-function MicrostructureHeader({ connected, end, logoUrl, marketState, references, symbol }: { connected: ConnectionState; end?: string; logoUrl?: string; marketState: MarketState | null; references: MarketReferences; symbol: string }) {
+function MicrostructureHeader({ connected, end, logoUrl, marketState, onSymbolChange, references, symbol }: { connected: ConnectionState; end?: string; logoUrl?: string; marketState: MarketState | null; onSymbolChange?: (symbol: string) => void; references: MarketReferences; symbol: string }) {
   const [liveAsOf] = useState(() => new Date().toISOString());
   const changeAsOf = end || liveAsOf;
   const status = marketStatusPresentation(marketState);
   return <header className="microstructure-header">
-    <div className="microstructure-identity"><TickerIdentityWithChange asOf={changeAsOf} logoUrl={logoUrl} ticker={symbol} /></div>
+    <div className="microstructure-identity"><TickerIdentityWithChange asOf={changeAsOf} inputAriaLabel="Quotes and tape ticker" logoUrl={logoUrl} onTickerChange={onSymbolChange} ticker={symbol} /></div>
     <div className="microstructure-header-actions">
       <span className="market-status-badge" data-status={status.tone} title={status.help}>{status.tone === "halted" ? <ShieldAlert size={13} /> : <Radio size={12} />}{status.label}</span><span className="luld-status-badge" data-status={status.luldTone} title={status.luldHelp}>LULD {status.luldLabel}<HelpTip label={status.luldHelp} /></span>
       <MicrostructureGuide references={references} />

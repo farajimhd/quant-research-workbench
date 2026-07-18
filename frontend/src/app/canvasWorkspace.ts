@@ -36,7 +36,8 @@ export type CanvasRegistry = {
   instanceSettings: Record<string, unknown>;
   linkAssignments: Partial<Record<string, CanvasLinkGroupId>>;
   linkContexts: Record<CanvasAssignedLinkGroupId, CanvasLinkContext>;
-  version: 2;
+  linkOwners: Partial<Record<CanvasAssignedLinkGroupId, string>>;
+  version: 3;
 };
 
 export const MAIN_CANVAS_ID = "main";
@@ -80,15 +81,16 @@ export function canvasWorkspaceStorageKey(canvasId: string) {
 export function readCanvasRegistry(): CanvasRegistry {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(CANVAS_REGISTRY_STORAGE_KEY) || "null") as Partial<CanvasRegistry> | null;
-    if (!parsed || ![1, 2].includes(Number(parsed.version)) || !Array.isArray(parsed.canvases)) return defaultCanvasRegistry();
+    if (!parsed || ![1, 2, 3].includes(Number(parsed.version)) || !Array.isArray(parsed.canvases)) return defaultCanvasRegistry();
     const canvases = parsed.canvases.some((canvas) => canvas.id === MAIN_CANVAS_ID)
       ? parsed.canvases
       : [{ id: MAIN_CANVAS_ID, label: "Main" }, ...parsed.canvases];
+    const linkAssignments = normalizeLinkAssignments(parsed.linkAssignments);
     return {
       canvases,
       defaultState: normalizeWorkspaceState(parsed.defaultState) ?? undefined,
       instanceSettings: normalizeInstanceSettings(parsed.instanceSettings),
-      linkAssignments: normalizeLinkAssignments(parsed.linkAssignments),
+      linkAssignments,
       linkContexts: {
         A: normalizeLinkContext(parsed.linkContexts?.A, DEFAULT_LINK_CONTEXTS.A),
         B: normalizeLinkContext(parsed.linkContexts?.B, DEFAULT_LINK_CONTEXTS.B),
@@ -98,7 +100,8 @@ export function readCanvasRegistry(): CanvasRegistry {
         F: normalizeLinkContext(parsed.linkContexts?.F, DEFAULT_LINK_CONTEXTS.F),
         G: normalizeLinkContext(parsed.linkContexts?.G, DEFAULT_LINK_CONTEXTS.G),
       },
-      version: 2,
+      linkOwners: normalizeLinkOwners(linkAssignments, parsed.linkOwners),
+      version: 3,
     };
   } catch {
     return defaultCanvasRegistry();
@@ -175,7 +178,8 @@ function defaultCanvasRegistry(): CanvasRegistry {
       F: { ...DEFAULT_LINK_CONTEXTS.F },
       G: { ...DEFAULT_LINK_CONTEXTS.G },
     },
-    version: 2,
+    linkOwners: { A: "chart" },
+    version: 3,
   };
 }
 
@@ -197,6 +201,20 @@ function normalizeLinkAssignments(value: CanvasRegistry["linkAssignments"] | und
     if (containerSupportsSymbolLink(containerKind) && isCanvasLinkGroupId(rawGroup) && assignments[containerId] == null) assignments[containerId] = rawGroup;
   }
   return assignments;
+}
+
+function normalizeLinkOwners(assignments: CanvasRegistry["linkAssignments"], value: CanvasRegistry["linkOwners"] | undefined): CanvasRegistry["linkOwners"] {
+  const owners: CanvasRegistry["linkOwners"] = {};
+  for (const group of CANVAS_LINK_GROUPS) {
+    const storedOwner = value?.[group.id];
+    if (storedOwner && assignments[storedOwner] === group.id) {
+      owners[group.id] = storedOwner;
+      continue;
+    }
+    const firstMember = Object.keys(assignments).find((instanceId) => assignments[instanceId] === group.id);
+    if (firstMember) owners[group.id] = firstMember;
+  }
+  return owners;
 }
 
 function normalizeWorkspaceState(value: CanvasWorkspaceState | undefined | null): CanvasWorkspaceState | null {

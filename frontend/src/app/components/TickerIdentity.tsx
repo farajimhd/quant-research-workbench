@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { ArrowDownRight, ArrowRight, ArrowUpRight } from "lucide-react";
 
 import { api, query } from "../../api/client";
@@ -58,8 +58,32 @@ export function TickerIdentity({ className = "", logoUrl = "", ticker }: { class
   </span>;
 }
 
-export function TickerIdentityWithChange({ asOf, className = "", logoUrl = "", ticker }: { asOf: string; className?: string; logoUrl?: string; ticker: string }) {
-  return <span className="ticker-identity-with-change"><TickerIdentity className={className} logoUrl={logoUrl} ticker={ticker} /><TickerChangeBadge asOf={asOf} ticker={ticker} /></span>;
+export function TickerIdentityWithChange({ asOf, className = "", inputAriaLabel = "Ticker", logoUrl = "", onTickerChange, ticker }: { asOf: string; className?: string; inputAriaLabel?: string; logoUrl?: string; onTickerChange?: (ticker: string) => void; ticker: string }) {
+  return <span className="ticker-identity-with-change">{onTickerChange
+    ? <TickerIdentityInput ariaLabel={inputAriaLabel} className={className} logoUrl={logoUrl} onTickerChange={onTickerChange} ticker={ticker} />
+    : <TickerIdentity className={className} logoUrl={logoUrl} ticker={ticker} />}
+    <TickerChangeBadge asOf={asOf} ticker={ticker} />
+  </span>;
+}
+
+export function TickerIdentityInput({ ariaLabel = "Ticker", className = "", logoUrl = "", onTickerChange, ticker }: { ariaLabel?: string; className?: string; logoUrl?: string; onTickerChange: (ticker: string) => void; ticker: string }) {
+  const normalizedTicker = normalizeTicker(ticker);
+  const [draftTicker, setDraftTicker] = useState(normalizedTicker);
+  useEffect(() => setDraftTicker(normalizedTicker), [normalizedTicker]);
+  function commitTicker(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const nextTicker = normalizeTicker(draftTicker);
+    if (!nextTicker) {
+      setDraftTicker(normalizedTicker);
+      return;
+    }
+    setDraftTicker(nextTicker);
+    if (nextTicker !== normalizedTicker) onTickerChange(nextTicker);
+  }
+  return <form className={`ticker-identity-input${className ? ` ${className}` : ""}`} onSubmit={commitTicker}>
+    <TickerLogo logoUrl={logoUrl} ticker={ticker} />
+    <input aria-label={ariaLabel} autoCapitalize="characters" maxLength={16} onChange={(event) => setDraftTicker(normalizeTicker(event.target.value))} spellCheck={false} value={draftTicker} />
+  </form>;
 }
 
 export function TickerChangeBadge({ asOf, ticker }: { asOf: string; ticker: string }) {
@@ -77,6 +101,10 @@ export function TickerLogo({ logoUrl, ticker }: { logoUrl?: string; ticker: stri
 
 function normalizeTickers(tickers: string[]) {
   return [...new Set(tickers.map((ticker) => String(ticker || "").trim().toUpperCase()).filter((ticker) => /^[A-Z][A-Z0-9.\-]{0,15}$/.test(ticker)))].sort();
+}
+
+function normalizeTicker(value: string) {
+  return String(value || "").trim().toUpperCase().replace(/[^A-Z0-9.\-]/g, "").slice(0, 16);
 }
 
 function useTickerChange(ticker: string, asOf: string) {
