@@ -434,7 +434,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const displayedOscillatorSeries = (payload?.oscillator_series ?? []).filter((series) => visibleColumnLookup.has(seriesSelectionKey(series)));
   const oscillatorPaneGroups = buildOscillatorPaneGroups(displayedOscillatorSeries);
   const alignLeftPriceScale = oscillatorPaneGroups.some(oscillatorGroupUsesLeftScale);
-  const priceLegendItems = buildSeriesLegendItems(displayedOverlaySeries, "price", legendSettings);
+  const priceLegendItems = buildSeriesLegendItems(displayedOverlaySeries, "price", legendSettings, displayItemOptions, catalogColumns);
   const hasChartData = Boolean(payload?.candles.length);
   const referenceKey = reference ? `${reference.time ?? ""}:${reference.startTime ?? ""}:${reference.endTime ?? ""}:${reference.sessionDate ?? ""}:${reference.minuteOfDay ?? ""}:${reference.label ?? ""}` : "";
   const liveEntryLineKey = liveEntryLine ? `${liveEntryLine.price}:${liveEntryLine.quantity}:${liveEntryLine.pnl}:${liveEntryLine.color}` : "";
@@ -1373,7 +1373,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
                 </button>
                 <ChartLegend
                   indicatorCount={group.series.length}
-                  items={buildSeriesLegendItems(group.series, "oscillator", legendSettings)}
+                  items={buildSeriesLegendItems(group.series, "oscillator", legendSettings, displayItemOptions, catalogColumns)}
                   leftScale={oscillatorGroupUsesLeftScale(group)}
                   onReset={resetLegendSettings}
                   onUpdate={updateLegendSettings}
@@ -1493,6 +1493,8 @@ function ChartPeriodSelect({
 type LegendItem = {
   color: string;
   configurable: boolean;
+  guideHelp?: ChartColumnHelp;
+  guideTitle?: string;
   key: string;
   label: string;
   lineStyle: LegendLineStyle;
@@ -1522,6 +1524,7 @@ function ChartLegend({
   const [collapsed, setCollapsed] = useState(true);
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editorAnchor, setEditorAnchor] = useState<HTMLElement | null>(null);
+  const [guideItem, setGuideItem] = useState<LegendItem | null>(null);
   if (!items.length) return null;
   const editingItem = items.find((item) => item.key === editingKey && item.configurable);
   return (
@@ -1562,6 +1565,20 @@ function ChartLegend({
                     >
                       {item.visible ? <Eye size={13} /> : <EyeOff size={13} />}
                     </button>
+                    {item.guideHelp ? (
+                      <button
+                        aria-label={`Guide ${item.guideTitle || item.label}`}
+                        onClick={() => {
+                          setEditingKey(null);
+                          setEditorAnchor(null);
+                          setGuideItem(item);
+                        }}
+                        title="Guide"
+                        type="button"
+                      >
+                        <CircleHelp size={13} />
+                      </button>
+                    ) : null}
                     <button
                       aria-label={`Configure ${item.label}`}
                       onClick={(event) => {
@@ -1591,6 +1608,7 @@ function ChartLegend({
               onUpdate={(patch) => onUpdate(editingItem.key, patch)}
             />
           ) : null}
+          {guideItem?.guideHelp ? <IndicatorGuideModal help={guideItem.guideHelp} onClose={() => setGuideItem(null)} title={guideItem.guideTitle || guideItem.label} /> : null}
         </>
       ) : null}
     </div>
@@ -2071,25 +2089,30 @@ function ChartColumnMenuItem({
       <button aria-expanded={helpOpen} aria-label={`Explain ${title}`} className="chart-column-help-button" onClick={onHelpToggle} type="button">
         <CircleHelp size={13} />
       </button>
-      {helpOpen ? (
-        <Modal className="chart-indicator-guide-modal" onClose={onHelpToggle} title={`How to read: ${title}`}>
-          <div className="chart-indicator-guide-content">
-            {help.futureLooking ? <div className="chart-indicator-guide-alert"><strong>LOOKAHEAD ONLY</strong><span>This uses future bars. Use it for review, training, and validation—not as a live tradable signal.</span></div> : null}
-            <div className="chart-indicator-guide-grid">
-              <IndicatorGuideSection label="Read" text={help.readingGuide || help.summary} tone="read" />
-              {help.bullishEvidence ? <IndicatorGuideSection label="Bullish evidence" text={help.bullishEvidence} tone="buy" /> : null}
-              {help.bearishEvidence ? <IndicatorGuideSection label="Bearish evidence" text={help.bearishEvidence} tone="sell" /> : null}
-              {help.calculation || help.detail ? <IndicatorGuideSection label="Calculation & scale" text={help.calculation || help.detail || ""} tone="info" /> : null}
-              {help.timeframeBehavior ? <IndicatorGuideSection label="Timeframe behavior" text={help.timeframeBehavior} tone="info" /> : null}
-              <section className="chart-indicator-guide-section" data-tone="warning">
-                <strong>Do not overread</strong>
-                {help.caveats.length ? <ul>{help.caveats.map((caveat) => <li key={caveat}>{caveat}</li>)}</ul> : <p>No single indicator is a complete forecast. Confirm the reading with price response, liquidity, and the trading regime.</p>}
-              </section>
-            </div>
-          </div>
-        </Modal>
-      ) : null}
+      {helpOpen ? <IndicatorGuideModal help={help} onClose={onHelpToggle} title={title} /> : null}
     </div>
+  );
+}
+
+function IndicatorGuideModal({ help, onClose, title }: { help: ChartColumnHelp; onClose: () => void; title: string }) {
+  return createPortal(
+    <Modal className="chart-indicator-guide-modal" onClose={onClose} title={`How to read: ${title}`}>
+      <div className="chart-indicator-guide-content">
+        {help.futureLooking ? <div className="chart-indicator-guide-alert"><strong>LOOKAHEAD ONLY</strong><span>This uses future bars. Use it for review, training, and validation—not as a live tradable signal.</span></div> : null}
+        <div className="chart-indicator-guide-grid">
+          <IndicatorGuideSection label="Read" text={help.readingGuide || help.summary} tone="read" />
+          {help.bullishEvidence ? <IndicatorGuideSection label="Bullish evidence" text={help.bullishEvidence} tone="buy" /> : null}
+          {help.bearishEvidence ? <IndicatorGuideSection label="Bearish evidence" text={help.bearishEvidence} tone="sell" /> : null}
+          {help.calculation || help.detail ? <IndicatorGuideSection label="Calculation & scale" text={help.calculation || help.detail || ""} tone="info" /> : null}
+          {help.timeframeBehavior ? <IndicatorGuideSection label="Timeframe behavior" text={help.timeframeBehavior} tone="info" /> : null}
+          <section className="chart-indicator-guide-section" data-tone="warning">
+            <strong>Do not overread</strong>
+            {help.caveats.length ? <ul>{help.caveats.map((caveat) => <li key={caveat}>{caveat}</li>)}</ul> : <p>No single indicator is a complete forecast. Confirm the reading with price response, liquidity, and the trading regime.</p>}
+          </section>
+        </div>
+      </div>
+    </Modal>,
+    document.body,
   );
 }
 
@@ -2427,14 +2450,28 @@ function ChartSettingsSection({ children, title }: { children: ReactNode; title:
   );
 }
 
-function buildSeriesLegendItems(series: ChartSeries[], pane: LegendPane, settingsMap: LegendSettingsMap): LegendItem[] {
+function buildSeriesLegendItems(series: ChartSeries[], pane: LegendPane, settingsMap: LegendSettingsMap, displayItemOptions: ChartDisplayItem[], catalogColumns: ChartCatalogItem[]): LegendItem[] {
+  const displayItemById = new Map(displayItemOptions.map((item) => [item.id, item]));
+  const catalogByColumn = new Map(catalogColumns.map((item) => [item.column, item]));
   return series.filter((item) => item.legend !== false).map((item) => {
     const key = legendSeriesKey(pane, item);
     const settings = resolveLegendSettings(settingsMap, key, item);
     const latest = latestSeriesValue(item.data);
+    const displayItem = item.displayItemId ? displayItemById.get(item.displayItemId) : undefined;
+    const sourceColumn = displayItem?.sourceColumns?.map((column) => catalogByColumn.get(column)).find((column) => column?.knowledge) ?? catalogByColumn.get(item.column);
+    const guideTitle = displayItem?.title ?? sourceColumn?.title ?? item.label;
+    const guideHelp = displayItem
+      ? chartColumnHelp({
+          ...displayItem,
+          knowledge: displayItem.knowledge ?? sourceColumn?.knowledge,
+          leakage: displayItem.leakage ?? sourceColumn?.leakage,
+        }, guideTitle, chartMenuItemUsesLookahead(displayItem) || chartMenuItemUsesLookahead(sourceColumn))
+      : sourceColumn ? chartColumnHelp(sourceColumn, guideTitle) : undefined;
     return {
       color: settings.color,
       configurable: true,
+      guideHelp,
+      guideTitle,
       key,
       label: item.label,
       lineStyle: settings.lineStyle,

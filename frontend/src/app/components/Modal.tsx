@@ -3,8 +3,9 @@ import { X } from "lucide-react";
 
 export function Modal({ children, className, onClose, title }: { children: ReactNode; className?: string; onClose: () => void; title: string }) {
   const panelClassName = className ? `modal-panel ${className}` : "modal-panel";
+  const backdropClassName = className ? `modal-backdrop ${className}-backdrop` : "modal-backdrop";
   return (
-    <div className="modal-backdrop" role="presentation">
+    <div className={backdropClassName} role="presentation">
       <div className={panelClassName} role="dialog" aria-modal="true" aria-label={title}>
         <div className="modal-header">
           <h2>{title}</h2>

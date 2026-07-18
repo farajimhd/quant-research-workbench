@@ -21891,6 +21891,7 @@ button {
 .guide-table-scroll { border: 1px solid var(--border); max-width: 100%; overflow-x: auto; }.guide-table { border-collapse: collapse; min-width: 840px; width: 100%; }.guide-table th { background: var(--surface-alt); color: var(--muted-foreground); font-size: 11.25px; font-weight: 600; letter-spacing: .04em; padding: 9px 11px; text-align: left; text-transform: uppercase; }.guide-table td { border-top: 1px solid var(--border); color: var(--muted-foreground); font-size: 13.125px; line-height: 1.45; padding: 9px 11px; vertical-align: top; }.guide-table td:first-child { color: var(--foreground); font-weight: 620; white-space: nowrap; }.guide-table td[data-tone="buy"] { color: var(--tape-ask); font-weight: 650; }.guide-table td[data-tone="sell"] { color: var(--tape-bid); font-weight: 650; }
 
 /* Complete indicator interpretation uses the same readable guide hierarchy as Quotes and Tape. */
+.chart-indicator-guide-modal-backdrop { bottom: auto; height: var(--app-zoomed-viewport-height, 100vh); right: auto; width: var(--app-zoomed-viewport-width, 100vw); zoom: var(--app-zoom); }
 .modal-panel.chart-indicator-guide-modal { max-height: min(820px, calc(var(--app-zoomed-viewport-height, 100vh) - 42px)); max-width: min(1040px, calc(var(--app-zoomed-viewport-width, 100vw) - 42px)); width: min(1040px, calc(var(--app-zoomed-viewport-width, 100vw) - 42px)); }
 .chart-indicator-guide-modal .modal-header h2 { font-size: 24px; }
 .chart-indicator-guide-content { padding: 18px; }
