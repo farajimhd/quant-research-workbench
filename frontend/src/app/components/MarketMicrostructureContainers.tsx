@@ -1,4 +1,4 @@
-import { Activity, ArrowDownRight, ArrowUpRight, BookOpen, ChevronRight, CircleHelp, Minus, Radio, ShieldAlert, WifiOff } from "lucide-react";
+import { Activity, BookOpen, ChevronRight, CircleHelp, Radio, ShieldAlert, WifiOff } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { api, query } from "../../api/client";
@@ -33,12 +33,7 @@ type ExchangeReference = { acronym: string; mic: string; name: string; participa
 type ConditionReference = { name: string; sip_mapping: string; type: string; update_high_low: boolean; update_last: boolean; update_volume: boolean };
 type MarketReferences = { conditions: Record<string, ConditionReference>; exchanges: Record<string, ExchangeReference> };
 type MarketState = { active?: Array<{ event_type?: string; event_status?: string }>; as_of?: string; is_live_tradable?: boolean; is_tradable?: boolean; luld_active?: boolean; luld_distance_to_lower_pct?: number; luld_distance_to_upper_pct?: number; luld_lower_price?: number; luld_state?: string; luld_upper_price?: number; recent?: Array<{ event_type?: string; event_status?: string }>; trading_status?: string };
-type ForecastComponents = { aggressive_flow: number; arrival_intensity_imbalance: number; displayed_liquidity: number; level1_ofi: number; microprice_lean: number; midpoint_return: number; persistence: number; price_response: number; queue_imbalance: number; quote_flow_imbalance: number; regime_reliability: number; resiliency: number; response_resiliency: number; signed_volume_imbalance: number; trade_flow_imbalance: number; trade_return: number; transaction_imbalance: number };
-type ForecastHorizon = { absorption: boolean; components: ForecastComponents; confidence: number; direction: "down" | "neutral" | "up" | "weak_down" | "weak_up"; horizon_events: number; observed_duration_ms: number; observed_events: number; quote_count: number; regime: string; score: number; status: string; strength: number; trade_count: number };
-type ForecastInterval = { aggressive_flow_score: number; displayed_liquidity_score: number; regime_reliability: number; response_resiliency_score: number; unified_action: string; unified_confidence: number; unified_signal: number };
-type UnifiedForecast = { action: string; agreement: number; confidence: number; direction: string; score: number; status: string; strength: number };
-type MicrostructureForecast = { as_of_timestamp_us: number; horizons: ForecastHorizon[]; interval?: ForecastInterval; method: string; schema_version: number; source: string; target: string; ticker: string; unified?: UnifiedForecast };
-type MarketEventsPayload = { events: CompactEvent[]; forecast?: MicrostructureForecast; market_state?: MarketState | null; market_state_error?: string; references: MarketReferences; source: string; symbol: string };
+type MarketEventsPayload = { events: CompactEvent[]; references: MarketReferences; source: string; symbol: string };
 type ConnectionState = "connecting" | "live" | "point-in-time" | "reconnecting";
 type Direction = "buy" | "mid" | "sell";
 type QuoteUpdate = { ask: number; askExchange: number; askSize: number; bid: number; bidExchange: number; bidSize: number; id: number; issues: number; timestampUs: number };
@@ -50,7 +45,6 @@ type MarketContainerProps = { end?: string; settings: MarketEventSettings; start
 const EMPTY_REFERENCES: MarketReferences = { conditions: {}, exchanges: {} };
 const MARKET_EVENT_HISTORY_LIMIT = 1024;
 const MARKET_EVENT_SOURCE_LIMIT = 5000;
-const MICROSTRUCTURE_FORECAST_SOURCE_LIMIT = 1024;
 const MARKET_EVENTS_UNAVAILABLE = "Live market events are unavailable. Start or reconnect QMD Gateway.";
 const HISTORICAL_EVENTS_UNAVAILABLE = "Historical market events are unavailable. Start or reconnect QMD History.";
 const QUOTE_EVENT_GUIDE = [
@@ -79,7 +73,7 @@ const TAPE_METRIC_GUIDE = [
 ];
 
 export function QuotesTapeContainer({ end, start, symbol }: MarketContainerProps) {
-  const { connected, error, events, forecast, marketState, references } = useMarketEvents(symbol, start, end);
+  const { connected, error, events, marketState, references } = useMarketEvents(symbol, start, end);
   const decoded = useMemo(() => decodeMarketEvents(events), [events]);
   const quotes = decoded.quotes.slice(-MARKET_EVENT_HISTORY_LIMIT);
   const trades = decoded.trades.slice(-MARKET_EVENT_HISTORY_LIMIT);
@@ -110,7 +104,6 @@ export function QuotesTapeContainer({ end, start, symbol }: MarketContainerProps
 
   return <section aria-label={`${symbol} quotes and time and sales`} className="market-microstructure combined-microstructure" data-market-state={connected}>
     <MicrostructureHeader connected={connected} end={end} logoUrl={presentations[symbol]?.logo_url} marketState={marketState} references={references} symbol={symbol} />
-    <QmdArchitecturePanel forecast={forecast} marketState={marketState} />
     <div className="combined-market-overview">
       <section aria-label="Current consolidated quote" className="market-overview-lane quote-overview-lane">
         <header><span><strong>Quotes</strong><small>Consolidated NBBO</small></span><em>{formatCount(quotes.length)} updates</em></header>
@@ -148,7 +141,7 @@ export function QuotesTapeContainer({ end, start, symbol }: MarketContainerProps
         </div>
       </section>
     </div>
-    <div className="combined-analysis-grid" aria-label="Quote and tape chart comparison">
+    <div className="combined-analysis-grid" aria-label="Quote and tape microstructure charts">
       <div className="microstructure-analysis-lane"><QuoteChartGallery quotes={quotes} /></div>
       <div className="microstructure-analysis-lane"><TapeChartGallery trades={trades} /></div>
     </div>
@@ -199,7 +192,6 @@ export function QuotesTapeContainer({ end, start, symbol }: MarketContainerProps
 
 function useMarketEvents(symbol: string, start?: string, end?: string) {
   const [events, setEvents] = useState<CompactEvent[]>([]);
-  const [forecast, setForecast] = useState<MicrostructureForecast | null>(null);
   const [references, setReferences] = useState<MarketReferences>(EMPTY_REFERENCES);
   const [marketState, setMarketState] = useState<MarketState | null>(null);
   const [connected, setConnected] = useState<ConnectionState>("connecting");
@@ -212,7 +204,6 @@ function useMarketEvents(symbol: string, start?: string, end?: string) {
     let retryAttempt = 0;
     const ticker = symbol.trim().toUpperCase();
     setEvents([]);
-    setForecast(null);
     setConnected("connecting");
     setError("");
     setMarketState(null);
@@ -224,20 +215,16 @@ function useMarketEvents(symbol: string, start?: string, end?: string) {
     });
 
     const historical = Boolean(start && end);
-    const loadForecast = () => api<MicrostructureForecast>(`/api/trading/canvas-microstructure-forecast/${encodeURIComponent(ticker)}${query({ end, row_limit: MICROSTRUCTURE_FORECAST_SOURCE_LIMIT, start })}`, { timeoutMs: historical ? 20000 : 10000 })
-      .then((payload) => { if (active) setForecast(payload); })
-      .catch(() => { if (active && historical) setForecast(null); });
     const loadMarketState = () => api<MarketState>(`/api/trading/canvas-market-state/${encodeURIComponent(ticker)}${query({ end, start })}`, { timeoutMs: historical ? 120000 : 10000 })
       .then((payload) => { if (active) setMarketState(payload); })
       .catch(() => { if (active) setMarketState(null); });
     void loadMarketState();
     api<MarketEventsPayload>(`/api/trading/canvas-market-events/${encodeURIComponent(ticker)}${query({ end, row_limit: MARKET_EVENT_SOURCE_LIMIT, start })}`, { timeoutMs: historical ? 20000 : 10000 })
-      .then((payload) => { if (active) { merge(payload.events); setForecast(payload.forecast ?? null); setReferences(payload.references ?? EMPTY_REFERENCES); if (historical) setConnected("point-in-time"); } })
+      .then((payload) => { if (active) { merge(payload.events); setReferences(payload.references ?? EMPTY_REFERENCES); if (historical) setConnected("point-in-time"); } })
       .catch(() => { if (active) setError(historical ? HISTORICAL_EVENTS_UNAVAILABLE : MARKET_EVENTS_UNAVAILABLE); });
 
     if (historical) return () => { active = false; };
     const marketStateTimer = window.setInterval(loadMarketState, 2_000);
-    const forecastTimer = window.setInterval(loadForecast, 500);
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const connect = () => {
@@ -262,10 +249,10 @@ function useMarketEvents(symbol: string, start?: string, end?: string) {
       };
     };
     connect();
-    return () => { active = false; window.clearInterval(forecastTimer); window.clearInterval(marketStateTimer); if (retryTimer) window.clearTimeout(retryTimer); socket?.close(); };
+    return () => { active = false; window.clearInterval(marketStateTimer); if (retryTimer) window.clearTimeout(retryTimer); socket?.close(); };
   }, [end, start, symbol]);
 
-  return { connected, error, events, forecast, marketState, references };
+  return { connected, error, events, marketState, references };
 }
 
 function decodeMarketEvents(events: CompactEvent[]) {
@@ -345,29 +332,6 @@ function QuoteSignalRow({ child = false, current = false, detail, expanded = fal
   </tr>;
 }
 
-function QmdArchitecturePanel({ forecast, marketState }: { forecast: MicrostructureForecast | null; marketState: MarketState | null }) {
-  const halted = marketState?.trading_status?.toLowerCase() === "halted" || marketState?.is_tradable === false || marketState?.is_live_tradable === false;
-  const interval = forecast?.interval;
-  const unified = forecast?.unified;
-  const action = halted ? "BLOCKED" : unified?.action?.toUpperCase() || interval?.unified_action?.toUpperCase() || "WAITING";
-  const unifiedScore = unified?.score ?? interval?.unified_signal;
-  const confidence = unified?.confidence ?? interval?.unified_confidence;
-  const tone: Direction = action === "BUY" ? "buy" : action === "SELL" ? "sell" : "mid";
-  return <section aria-label="QMD execution signal architecture" className="qmd-architecture-panel combined-architecture-panel" data-blocked={halted ? "true" : "false"}>
-    <header><span><strong>QMD · unified decision</strong><small>Quote liquidity, executed flow and market response at the active clock</small></span><em>Canonical strategy signal</em></header>
-    <div className="qmd-architecture-grid combined-architecture-grid">
-      <article className="architecture-decision" data-tone={tone}><span className="forecast-direction-icon" aria-hidden="true">{forecastDirectionIcon(unified?.direction as ForecastHorizon["direction"] | undefined)}</span><span><small>Combined action</small><strong>{action}</strong><em>{unifiedScore == null ? "No score" : `${formatArchitectureScore(unifiedScore)} score`}</em></span></article>
-      <ArchitectureMetric help="The quote-side directional block combines level-1 order-flow imbalance, queue imbalance, microprice lean, and quote arrival imbalance. It contributes 35% of the combined QMD signal." label="Liquidity · 35%" tone={scoreTone(interval?.displayed_liquidity_score)} value={formatArchitectureScore(interval?.displayed_liquidity_score)} />
-      <ArchitectureMetric help="Trade-side directional block from transaction imbalance, signed volume, aggressor persistence, trade return, and directional arrivals. It contributes 45% of the combined signal." label="Flow · 45%" tone={scoreTone(interval?.aggressive_flow_score)} value={formatArchitectureScore(interval?.aggressive_flow_score)} />
-      <ArchitectureMetric help="Whether price confirms aggressive flow and whether displayed liquidity replenishes or absorbs it. It contributes 20% of the combined signal." label="Response · 20%" tone={scoreTone(interval?.response_resiliency_score)} value={formatArchitectureScore(interval?.response_resiliency_score)} />
-      <ArchitectureMetric help="Evidence quality after coverage and agreement penalties. QMD returns WAIT below 35% confidence or when the absolute combined score is below 0.15." label="Confidence" tone="mid" value={confidence == null ? "—" : `${Math.round(confidence)}%`} />
-      <ArchitectureMetric help="Evidence quality from usable quotes, classified trades, activity, and agreement. Reliability controls confidence; it is not another directional vote." label="Reliability" tone="mid" value={interval ? `${Math.round(interval.regime_reliability * 100)}%` : "—"} />
-    </div>
-  </section>;
-}
-
-function ArchitectureMetric({ help, label, tone, value }: { help: string; label: string; tone: Direction; value: string }) { return <article className="architecture-metric" data-tone={tone}><MetricLabel help={help} label={label} /><strong>{value}</strong><em>{tone === "buy" ? "Bullish" : tone === "sell" ? "Bearish" : "Neutral"}</em></article>; }
-
 function MicrostructureHeader({ connected, end, logoUrl, marketState, references, symbol }: { connected: ConnectionState; end?: string; logoUrl?: string; marketState: MarketState | null; references: MarketReferences; symbol: string }) {
   const [liveAsOf] = useState(() => new Date().toISOString());
   const changeAsOf = end || liveAsOf;
@@ -386,7 +350,7 @@ function MetricLabel({ help, label }: { help: string; label: string }) { return 
 function HelpTip({ label }: { label: string }) { return <span aria-label={label} className="micro-help-tip" role="img" tabIndex={0} title={label}><CircleHelp size={11} /></span>; }
 function MicrostructureGuide({ references }: { references: MarketReferences }) {
   const [open, setOpen] = useState(false);
-  return <><button className="microstructure-guide-button" onClick={() => setOpen(true)} type="button"><BookOpen size={13} /> Guide</button>{open ? <Modal className="microstructure-guide-modal" onClose={() => setOpen(false)} title="Quotes, tape and QMD signal guide"><div className="microstructure-guide-content"><ForecastGuide /><QuoteGuide /><TapeGuide references={references} /></div></Modal> : null}</>;
+  return <><button className="microstructure-guide-button" onClick={() => setOpen(true)} type="button"><BookOpen size={13} /> Guide</button>{open ? <Modal className="microstructure-guide-modal" onClose={() => setOpen(false)} title="Quotes and tape guide"><div className="microstructure-guide-content"><QuoteGuide /><TapeGuide references={references} /></div></Modal> : null}</>;
 }
 
 function TapeGuide({ references }: { references: MarketReferences }) {
@@ -396,7 +360,6 @@ function TapeGuide({ references }: { references: MarketReferences }) {
 }
 
 function QuoteGuide() { return <><section className="guide-intro"><h3>From updates to an organized signal</h3><p>Quote bursts group all NBBO changes with the same SIP timestamp. The collapsed row preserves screen space; opening it reveals each price, size, or venue transition.</p><div className="guide-signal-grid"><GuideSignal label="Price pressure" text="Direction of bid and ask repricing. This is usually the strongest quote-only short-horizon feature." /><GuideSignal label="Displayed size" text="Best-level size imbalance. Useful, but vulnerable to cancellations and hidden liquidity." /><GuideSignal label="Microprice" text="Size-weighted location inside the spread. It measures which side is thinner and easier to consume." /><GuideSignal label="Persistence" text="Agreement across recent events. Repeated pressure is usually more useful than one isolated update." /></div></section><section><h3>Incremental quote-event classes</h3><GuideTable headings={["Class", "Tone", "Meaning and likely implication"]} rows={QUOTE_EVENT_GUIDE} /></section><section><h3>How quote strength accumulates</h3><p>The pressure path analyzes every raw transition rather than relying on the single display label. Each update combines 70% normalized midpoint movement with 30% change in displayed-size imbalance. The prior score retains 72% of its value and the new impulse contributes 55%, clamped to ±100%. Subsequent updates in the same direction therefore reinforce one another; opposite updates cancel the sequence. Price remains dominant because displayed size can disappear without trading.</p></section></>; }
-function ForecastGuide() { return <section className="guide-intro"><h3>QMD signal architecture</h3><p>QMD records additive quote-and-trade statistics in causal 100 ms buckets. A larger timeframe merges those statistics and calculates one signal once, so a 1-minute result describes that minute rather than an average of overlapping forecasts.</p><div className="guide-signal-grid"><GuideSignal label="Aggressive flow · 45%" text="Trade-count imbalance, signed volume, aggressor persistence, trade return, and directional arrivals." /><GuideSignal label="Displayed liquidity · 35%" text="Level-1 OFI, queue imbalance, microprice lean, and directional quote arrivals." /><GuideSignal label="Response & resiliency · 20%" text="Midpoint response, bid/ask replenishment after depletion, and absorption evidence." /><GuideSignal label="Confidence" text="Coverage, quote validity, trade classification, activity, block agreement, and signal strength. Sparse or conflicted evidence is penalized." /></div><p>The unified header presents all four evidence blocks beside the final BUY, SELL, or WAIT decision. BUY or SELL requires confidence of at least 35% and an absolute score of at least 0.15. The chart indicators expose the same canonical architecture at the selected timeframe.</p></section>; }
 function GuideSignal({ label, text }: { label: string; text: string }) { return <article><strong>{label}</strong><p>{text}</p></article>; }
 function GuideTable({ headings, rows }: { headings: string[]; rows: string[][] }) { return <div className="guide-table-scroll"><table className="guide-table"><thead><tr>{headings.map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{rows.map((row) => <tr key={row[0]}>{row.map((cell, index) => <td data-tone={index === 1 && (cell === "Bullish" || cell === "Bearish") ? (cell === "Bullish" ? "buy" : "sell") : undefined} key={`${row[0]}-${index}`}>{cell}</td>)}</tr>)}</tbody></table></div>; }
 function QuoteSide({ exchange, label, price, size, tone }: { exchange: { code: string; name: string }; label: string; price?: number; size?: number; tone: "buy" | "sell" }) { return <div className="quote-side" data-tone={tone}><span><MetricLabel help={`${label} is the current consolidated national best ${label.toLowerCase()}; ${exchange.name} is posting it.`} label={label} /><abbr title={exchange.name}>{exchange.code}</abbr></span><strong>{price ? formatPrice(price) : "—"}</strong><em>{size != null ? `${formatSize(size)} shares` : "No quote"}</em></div>; }
@@ -411,9 +374,6 @@ function signedCompact(value: number) { return `${value > 0 ? "+" : ""}${compact
 function signedPercent(value: number) { return `${value > 0 ? "+" : ""}${Math.round(value * 100)}%`; }
 function signedCents(value: number) { const cents = value * 100; return `${cents > 0 ? "+" : ""}${cents.toFixed(Math.abs(cents) < 0.1 ? 2 : 1)}¢`; }
 function signedShares(value: number) { return `${value > 0 ? "+" : ""}${formatSize(value)}`; }
-function forecastDirectionIcon(direction?: ForecastHorizon["direction"]) { return direction === "up" || direction === "weak_up" ? <ArrowUpRight size={20} strokeWidth={2.5} /> : direction === "down" || direction === "weak_down" ? <ArrowDownRight size={20} strokeWidth={2.5} /> : <Minus size={20} strokeWidth={2.5} />; }
-function scoreTone(value?: number): Direction { return value == null || Math.abs(value) < 0.08 ? "mid" : value > 0 ? "buy" : "sell"; }
-function formatArchitectureScore(value?: number) { return value == null ? "—" : `${value > 0 ? "+" : ""}${Math.round(value * 100)}`; }
 function directionLabel(direction: Direction) { return direction === "buy" ? "At ask" : direction === "sell" ? "At bid" : "Between market"; }
 function imbalanceLabel(value: number) { return value >= 0.25 ? "Bid-heavy" : value <= -0.25 ? "Ask-heavy" : "Balanced"; }
 function eventRate(timestamps: number[]) { if (timestamps.length < 2) return 0; const seconds = Math.max(0.001, (timestamps.at(-1)! - timestamps[0]) / 1_000_000); return (timestamps.length - 1) / seconds; }

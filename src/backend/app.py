@@ -4605,31 +4605,15 @@ def trading_canvas_market_events(
     try:
         if start and end:
             events = historical_compact_events(ticker, start=start, end=end, row_limit=row_limit)
-            forecast = None
-            forecast_error = ""
-            try:
-                forecast = historical_microstructure_forecast(ticker, start=start, end=end, row_limit=min(row_limit, 1_024))
-            except Exception as exc:
-                forecast_error = str(exc)
             return {
                 "events": events,
-                "forecast": forecast,
-                "forecast_error": forecast_error,
                 "references": market_event_references(),
                 "source": "qmd-history-gateway",
                 "symbol": ticker,
             }
         events = qmd_compact_events(ticker, row_limit=row_limit)
-        forecast = None
-        forecast_error = ""
-        try:
-            forecast = qmd_microstructure_forecast(ticker, row_limit=min(row_limit, 1_024))
-        except Exception as exc:
-            forecast_error = str(exc)
         return {
             "events": events,
-            "forecast": forecast,
-            "forecast_error": forecast_error,
             "references": market_event_references(),
             "source": "qmd-gateway",
             "symbol": ticker,

@@ -701,6 +701,11 @@ def _historical_gateway_get(path: str, params: dict[str, Any], *, timeout: float
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"QMD History returned HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            f"QMD History gateway is not reachable at {historical_gateway_base_url()}. "
+            "Start scripts/run_qmd_history_gateway.ps1 and wait for its /health status to be ready."
+        ) from exc
     except Exception as exc:
         raise RuntimeError(f"QMD History request failed: {exc}") from exc
 

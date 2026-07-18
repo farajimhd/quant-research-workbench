@@ -364,7 +364,6 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
     const sockets: Partial<Record<"bars" | "indicators", WebSocket>> = {};
     const reconnectTimers: number[] = [];
     const attempts = { bars: 0, indicators: 0 };
-    const historicalBuffers: { bars: QmdLiveBar[]; indicators: HistoricalIndicator[] } = { bars: [], indicators: [] };
     const requestController = new AbortController();
     const historyController = new AbortController();
     const ticker = symbol.trim().toUpperCase();
@@ -418,7 +417,7 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
         });
     }
 
-    const fetchHistoricalPage = (background: boolean) => {
+    const fetchHistoricalPage = () => {
       historyRequestRef.current = true;
       api<QmdBarHistory>(`/api/trading/canvas-live-chart/history${query({ as_of: new Date(cutoffMs).toISOString(), row_limit: chartPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe })}`, { signal: historyController.signal, timeoutMs: 120000 })
         .then((payload) => {
@@ -442,7 +441,7 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
         .catch((reason) => {
           if (historyController.signal.aborted) return;
           if (!active || requestKeyRef.current !== requestKey) return;
-          setState((current) => ({ ...current, historyError: reason instanceof Error ? reason.message : String(reason), loading: background ? current.loading : false }));
+          setState((current) => ({ ...current, historyError: reason instanceof Error ? reason.message : String(reason), loading: false }));
         })
         .finally(() => {
           historyRequestRef.current = false;
@@ -450,7 +449,7 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
         });
     };
 
-    if (!pointInTime || !ENRICHED_QMD_TIMEFRAMES.has(timeframe)) fetchHistoricalPage(false);
+    fetchHistoricalPage();
 
     const connect = (kind: "bars" | "indicators") => {
       if (!active) return;
@@ -476,60 +475,9 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
       };
     };
 
-    const connectHistorical = () => {
-      if (!active) return;
-      const socket = new WebSocket(canvasHistoricalStreamUrl("derived", ticker, timeframe, sessionDate, cutoffMs));
-      sockets.bars = socket;
-      let streamError = "";
-      let streamCompleted = false;
-      let finished = false;
-      const finishHistoricalStream = () => {
-        if (finished) return;
-        finished = true;
-        if (!active) return;
-        if (!streamCompleted && !streamError) streamError = "QMD historical chart stream disconnected before completion.";
-        const aligned = alignHistoricalChartRows(
-          historicalBuffers.bars,
-          historicalBuffers.indicators,
-          true,
-        );
-        setState((current) => ({
-          ...current,
-          bars: mergeRowsByTime(current.bars, aligned.bars),
-          historyError: streamError,
-          indicators: mergeRowsByTime(current.indicators, aligned.indicators),
-          loading: false,
-        }));
-        if (!streamError) fetchHistoricalPage(true);
-      };
-      socket.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(String(event.data)) as { bar?: QmdLiveBar; error?: string; indicator?: HistoricalIndicator; type?: string };
-          if (payload.error) {
-            streamError = payload.error || "QMD historical chart data are unavailable.";
-            return;
-          }
-          if (payload.type === "complete") {
-            streamCompleted = true;
-            return;
-          }
-          if (payload.bar?.bar_start && payload.indicator?.bar_start) {
-            historicalBuffers.bars.push(payload.bar);
-            historicalBuffers.indicators.push(payload.indicator);
-          }
-        } catch {
-          streamError = "QMD historical chart stream returned invalid data.";
-        }
-      };
-      socket.onclose = finishHistoricalStream;
-      socket.onerror = () => undefined;
-    };
-
     if (!pointInTime) {
       connect("bars");
       if (ENRICHED_QMD_TIMEFRAMES.has(timeframe)) connect("indicators");
-    } else {
-      if (ENRICHED_QMD_TIMEFRAMES.has(timeframe)) connectHistorical();
     }
     return () => {
       active = false;
@@ -637,11 +585,6 @@ function marketSessionDate(timestamp: string) {
 function canvasLiveStreamUrl(kind: "bars" | "indicators", symbol: string, timeframe: string) {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${window.location.host}/api/trading/canvas-live-chart/stream/${kind}/${encodeURIComponent(symbol)}${query({ limit: 500, timeframe })}`;
-}
-
-function canvasHistoricalStreamUrl(kind: "derived", symbol: string, timeframe: string, sessionDate: string, cutoffMs: number) {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${window.location.host}/api/trading/historical-stream/${encodeURIComponent(symbol)}${query({ as_of: new Date(cutoffMs).toISOString(), session_date: sessionDate, stream: kind, timeframe })}`;
 }
 
 export function CanvasConfigurationPage() {

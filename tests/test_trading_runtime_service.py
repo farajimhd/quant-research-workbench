@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import unittest
+import urllib.error
 from datetime import date
 from unittest.mock import patch
 
 from src.backend.trading_runtime_service import (
+    _historical_gateway_get,
     historical_bar_chunk,
     historical_compact_events,
     historical_latest_coverage,
@@ -18,6 +20,16 @@ from src.backend.trading_runtime_service import (
 
 
 class HistoricalTradingServiceTests(unittest.TestCase):
+    @patch("src.backend.trading_runtime_service.urllib.request.urlopen")
+    def test_history_gateway_connection_failure_is_actionable(self, urlopen) -> None:
+        urlopen.side_effect = urllib.error.URLError(ConnectionRefusedError(10061, "refused"))
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"QMD History gateway is not reachable at .*run_qmd_history_gateway\.ps1.*health status",
+        ):
+            _historical_gateway_get("/health", {}, timeout=3)
+
     @patch("src.backend.trading_runtime_service.historical_compact_events")
     @patch("src.backend.trading_runtime_service.historical_macro_bar_history")
     def test_ticker_change_compares_current_trade_with_prior_20_et_close(self, macro_history, compact_events) -> None:

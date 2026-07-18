@@ -25,26 +25,39 @@ const PAD_X = 48;
 const PAD_Y = 12;
 
 export function QuoteChartGallery({ quotes }: { quotes: MicroQuote[] }) {
-  const charts = useMemo(() => quoteCharts(quotes), [quotes]);
-  return <ChartGallery charts={charts} defaultId="price" empty="Quote updates are required to compare chart views." kind="Quote" />;
+  const chart = useMemo(() => quoteChart(quotes), [quotes]);
+  return <ChartPanel chart={chart} empty="Quote updates are required to calculate size imbalance." title="Quote size imbalance" />;
+}
+
+function quoteChart(quotes: MicroQuote[]): ChartChoice | undefined {
+  if (quotes.length < 2) return undefined;
+  const imbalance = quotes.slice(-96).map((quote) => quoteFrame(quote).imbalance);
+  return {
+    id: "imbalance",
+    label: "Size imbalance",
+    question: "Which NBBO side currently shows more displayed shares?",
+    value: signedPercent(imbalance.at(-1) ?? 0),
+    read: "Each bar is one quote update. Green above zero is bid-heavy; red below zero is ask-heavy. Oldest is left.",
+    bullish: "Persistent positive imbalance that survives updates and is followed by bid improvement.",
+    bearish: "Persistent negative imbalance that survives updates and is followed by ask-down or bid-fade events.",
+    caution: "Displayed size can cancel instantly and excludes hidden liquidity and all depth away from the NBBO.",
+    chart: <SignedBars values={imbalance} />,
+  };
 }
 
 export function TapeChartGallery({ trades }: { trades: MicroTrade[] }) {
-  const charts = useMemo(() => tapeCharts(trades), [trades]);
-  return <ChartGallery charts={charts} defaultId="profile" empty="Trade prints are required to compare chart views." kind="Tape" />;
+  const chart = useMemo(() => tapeChart(trades), [trades]);
+  return <ChartPanel chart={chart} empty="Trade prints are required to calculate executed volume and aggressor mix." title="Tape volume and aggressor mix" />;
 }
 
-function ChartGallery({ charts, defaultId, empty, kind }: { charts: ChartChoice[]; defaultId: string; empty: string; kind: string }) {
-  const [selectedId, setSelectedId] = useState(defaultId);
+function ChartPanel({ chart, empty, title }: { chart?: ChartChoice; empty: string; title: string }) {
   const [guideOpen, setGuideOpen] = useState(false);
-  const selected = charts.find((chart) => chart.id === selectedId) ?? charts[0];
   return <details className="microstructure-visual micro-chart-gallery" open>
-    <summary><span><strong>{kind} chart comparison</strong><small>Select a view and read its guide; collapse this panel whenever you need more table rows.</small></span><b>{charts.length} views</b></summary>
-    {selected ? <div className="micro-chart-lab">
-      <div aria-label={`${kind} chart choices`} className="micro-chart-tabs" role="tablist">{charts.map((chart) => <button aria-selected={chart.id === selected.id} key={chart.id} onClick={() => setSelectedId(chart.id)} role="tab" type="button">{chart.label}</button>)}</div>
-      <header className="micro-chart-heading"><span><strong>{selected.label}</strong><small>{selected.question}</small></span><div>{selected.value ? <b>{selected.value}</b> : null}<button aria-label={`How to read ${selected.label}`} onClick={() => setGuideOpen(true)} type="button"><CircleHelp size={12} /> Guide</button></div></header>
-      <div className="micro-chart-stage">{selected.chart}</div>
-      {guideOpen ? <Modal className="micro-chart-guide-modal" onClose={() => setGuideOpen(false)} title={`How to read: ${selected.label}`}><div className="micro-chart-guide"><GuidePoint label="Read" text={selected.read} tone="mid" /><GuidePoint label="Bullish evidence" text={selected.bullish} tone="buy" /><GuidePoint label="Bearish evidence" text={selected.bearish} tone="sell" /><GuidePoint label="Do not overread" text={selected.caution} tone="warning" /></div></Modal> : null}
+    <summary><span><strong>{title}</strong><small>One focused view; collapse it whenever you need more table rows.</small></span></summary>
+    {chart ? <div className="micro-chart-lab">
+      <header className="micro-chart-heading"><span><strong>{chart.label}</strong><small>{chart.question}</small></span><div>{chart.value ? <b>{chart.value}</b> : null}<button aria-label={`How to read ${chart.label}`} onClick={() => setGuideOpen(true)} type="button"><CircleHelp size={12} /> Guide</button></div></header>
+      <div className="micro-chart-stage">{chart.chart}</div>
+      {guideOpen ? <Modal className="micro-chart-guide-modal" onClose={() => setGuideOpen(false)} title={`How to read: ${chart.label}`}><div className="micro-chart-guide"><GuidePoint label="Read" text={chart.read} tone="mid" /><GuidePoint label="Bullish evidence" text={chart.bullish} tone="buy" /><GuidePoint label="Bearish evidence" text={chart.bearish} tone="sell" /><GuidePoint label="Do not overread" text={chart.caution} tone="warning" /></div></Modal> : null}
     </div> : <span className="visual-empty">{empty}</span>}
   </details>;
 }
@@ -114,7 +127,7 @@ function quoteCharts(quotes: MicroQuote[]): ChartChoice[] {
   ];
 }
 
-function tapeCharts(trades: MicroTrade[]): ChartChoice[] {
+function legacyTapeCharts(trades: MicroTrade[]): ChartChoice[] {
   if (!trades.length) return [];
   const recent = trades.slice(-256);
   const profile = tapeVolumeProfile(trades.slice(-1024));
@@ -171,6 +184,24 @@ function tapeCharts(trades: MicroTrade[]): ChartChoice[] {
       caution: "This diagnoses response inside the visible sample; it does not prove hidden orders or predict reversal timing.", chart: <DeltaResponseScatter points={response} />,
     },
   ];
+}
+
+function tapeChart(trades: MicroTrade[]): ChartChoice | undefined {
+  if (!trades.length) return undefined;
+  const profile = tapeVolumeProfile(trades.slice(-1024));
+  const mix = tradeMix(trades.slice(-1024));
+  const profileDelta = profile.reduce((sum, level) => sum + level.buy - level.sell, 0);
+  return {
+    id: "profile-mix",
+    label: "Executed volume by price + aggressor mix",
+    question: "Where did trading concentrate, and who crossed the spread to create that volume?",
+    value: `Δ ${signedCompact(profileDelta)}`,
+    read: "The upper profile places at-bid volume left and at-ask volume right at each price. The lower bar summarizes all visible volume as at bid, between market, or at ask.",
+    bullish: "Green at-ask volume dominates the mix and concentrates at successively higher accepted prices; seller volume that cannot move price lower can also indicate bullish absorption.",
+    bearish: "Red at-bid volume dominates the mix and concentrates at successively lower accepted prices; buyer volume that cannot lift price can indicate bearish absorption.",
+    caution: "Volume concentration marks acceptance or a battleground, not automatic support, resistance, or a forecast.",
+    chart: <div className="tape-profile-mix"><VolumeProfile levels={profile} /><AggressorMix mix={mix} /></div>,
+  };
 }
 
 function quoteFrame(quote: MicroQuote) {
