@@ -21827,7 +21827,7 @@ button {
 .microstructure-header > span[data-state="point-in-time"] { color: var(--info); }
 .microstructure-header > span[data-state="reconnecting"] { color: var(--warning); }
 .tape-overview, .nbbo-overview { background: var(--surface-alt); border-bottom: 1px solid var(--border); }
-.tape-overview { display: grid; grid-template-columns: minmax(118px, .72fr) minmax(280px, 1.7fr); }
+.tape-overview { display: grid; grid-template-columns: minmax(118px, .72fr) minmax(0, 1.7fr); }
 .last-print { border-right: 1px solid var(--border); display: grid; min-width: 0; padding: 8px 11px 9px; }
 .last-print small, .signal-metric small, .quote-side small, .spread-focus small, .imbalance-signal small { color: var(--muted-foreground); font-size: 7px; font-style: normal; font-weight: 650; letter-spacing: .07em; text-transform: uppercase; }
 .last-print strong { color: var(--foreground); font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: clamp(17px, 5cqw, 24px); font-weight: 760; letter-spacing: -.045em; line-height: 1.05; }
@@ -21837,9 +21837,11 @@ button {
 .last-print-context > span { color: var(--muted-foreground); font-size: 9px; font-weight: 480; line-height: 1.15; }
 .last-print-context > b { color: var(--foreground); font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: 15px; font-weight: 680; line-height: 1.15; }
 .last-print-context > b > small { color: var(--muted-foreground); font-size: 8px; font-weight: 520; letter-spacing: .02em; text-transform: uppercase; }
-.tape-flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); min-width: 0; }
+.tape-flow { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); min-width: 0; }
 .signal-metric { display: grid; gap: 2px; min-width: 0; overflow: hidden; padding: 8px 9px; }
-.signal-metric:not(:last-child) { border-right: 1px solid var(--border); }
+.liquidity-signals .signal-metric:not(:last-child) { border-right: 1px solid var(--border); }
+.tape-flow .signal-metric:nth-child(odd) { border-right: 1px solid var(--border); }
+.tape-flow .signal-metric:nth-child(-n + 2) { border-bottom: 1px solid var(--border); }
 .signal-metric strong { color: var(--foreground); font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: 11px; font-weight: 750; letter-spacing: -.025em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .signal-metric[data-tone="buy"] strong, [data-tone="buy"] > strong { color: var(--success); }
 .signal-metric[data-tone="sell"] strong, [data-tone="sell"] > strong { color: var(--danger); }
