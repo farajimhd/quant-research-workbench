@@ -12,11 +12,12 @@ from pipelines.sec.edgar.sec_source_text_revision_engine import (
 
 
 class RecordingClient:
-    def __init__(self) -> None:
+    def __init__(self, parent_mismatches: int = 0) -> None:
         self.sql: list[str] = []
         self.migration_exists = False
         self.backup_exists = False
         self.attached = False
+        self.parent_mismatches = parent_mismatches
 
     def execute(self, sql: str) -> str:
         normalized = " ".join(sql.split())
@@ -55,6 +56,24 @@ class RecordingClient:
                     "filings": 62,
                 }
             ) + "\n"
+        if "SELECT count()" in normalized and "WHERE s.filing_id != f.filing_id" in normalized:
+            return str(self.parent_mismatches)
+        if "WHERE s.old_filing_id != f.filing_id" in normalized:
+            return json.dumps(
+                {
+                    "cik": "0000000001",
+                    "accession_number": "0000000001-26-000001",
+                    "document_id": "primary.htm",
+                    "content_format": "html",
+                    "old_filing_id": "old-id",
+                    "canonical_filing_id": "canonical-id",
+                    "authority_source_version_key": "version-key",
+                    "authority_revision_rank": 42,
+                }
+            ) + "\n"
+        if normalized.startswith("INSERT INTO") and "source_parent_identity_repair" in normalized:
+            self.parent_mismatches = 0
+            return ""
         if normalized.startswith("CREATE TABLE"):
             self.migration_exists = True
             return ""
@@ -115,6 +134,30 @@ class SourceTextRevisionEngineTest(unittest.TestCase):
         self.assertTrue(any("ATTACH PARTITION ID '202208'" in sql for sql in client.sql))
         self.assertTrue(any(sql.startswith("EXCHANGE TABLES") for sql in client.sql))
         self.assertTrue(client.backup_exists)
+
+    def test_parent_correction_reads_only_exact_authoritative_filing(self) -> None:
+        client = RecordingClient(parent_mismatches=1)
+        with TemporaryDirectory() as temporary:
+            ensure_source_revision_engine(
+                client,
+                database="q_live",
+                table_name="sec_filing_text_v3",
+                report_path=Path(temporary) / "source_engine_migration.json",
+                run_id="renderer-run",
+            )
+
+        correction_sql = next(
+            sql for sql in client.sql if sql.startswith("INSERT INTO") and "source_parent_identity_repair" in sql
+        )
+        self.assertIn(
+            "PREWHERE cik='0000000001' AND accession_number='0000000001-26-000001'",
+            correction_sql,
+        )
+        self.assertIn("FROM `q_live`.`sec_filing_text_v3` PREWHERE", correction_sql)
+        self.assertIn("('primary.htm','html','version-key',42)", correction_sql)
+        self.assertIn("source_revision_rank + 1 AS source_revision_rank", correction_sql)
+        self.assertIn("insert_deduplicate=0", correction_sql)
+        self.assertNotIn("INNER JOIN", correction_sql)
 
 
 if __name__ == "__main__":

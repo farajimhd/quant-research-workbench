@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -159,6 +160,14 @@ def ensure_source_revision_engine(
         client, database, migration_table
     )
     if remaining_parent_mismatches:
+        corrections = load_authoritative_parent_corrections(
+            client, database, migration_table
+        )
+        if len(corrections) != remaining_parent_mismatches:
+            raise RuntimeError(
+                "source parent identity repair key count disagrees with mismatch audit "
+                f"keys={len(corrections):,} mismatches={remaining_parent_mismatches:,}"
+            )
         print(
             f"source_parent_identity_repair status=active documents={remaining_parent_mismatches:,}",
             flush=True,
@@ -169,6 +178,7 @@ def ensure_source_revision_engine(
             source_table=table_name,
             destination_table=migration_table,
             run_id=run_id,
+            corrections=corrections,
         )
         remaining_parent_mismatches = authoritative_parent_mismatch_count(
             client, database, migration_table
@@ -307,32 +317,91 @@ def insert_parent_identity_corrections(
     source_table: str,
     destination_table: str,
     run_id: str,
-    accessions: set[str] | None = None,
+    corrections: list[dict[str, Any]],
 ) -> None:
-    conditions = ["s.filing_id != f.filing_id"]
-    if accessions:
-        conditions.append("s.accession_number IN (" + ",".join(sql_string(value) for value in sorted(accessions)) + ")")
-    client.execute(
-        f"""
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in corrections:
+        grouped[(str(row["cik"]), str(row["accession_number"]), str(row["canonical_filing_id"]))].append(row)
+
+    for index, ((cik, accession, canonical_filing_id), rows) in enumerate(
+        sorted(grouped.items()), start=1
+    ):
+        winner_keys = ",".join(
+            "(" + ",".join(
+                (
+                    sql_string(str(row["document_id"])),
+                    sql_string(str(row["content_format"])),
+                    sql_string(str(row["authority_source_version_key"])),
+                    str(int(row["authority_revision_rank"])),
+                )
+            ) + ")"
+            for row in rows
+        )
+        print(
+            f"source_parent_identity_repair filing={index}/{len(grouped)} "
+            f"cik={cik} accession={accession} documents={len(rows)}",
+            flush=True,
+        )
+        client.execute(
+            f"""
 INSERT INTO {table(database, destination_table)}
-WITH f AS
-(
-    SELECT cik, accession_number, filing_id
-    FROM {table(database, 'sec_filing_v3')} FINAL
-)
 SELECT s.* REPLACE
 (
-    f.filing_id AS filing_id,
+    {sql_string(canonical_filing_id)} AS filing_id,
+    source_revision_rank + 1 AS source_revision_rank,
     'source_parent_identity_repair' AS source_revision_kind,
     {sql_string(run_id)} AS source_run_id,
     now64(3, 'UTC') AS inserted_at
 )
-FROM {table(database, source_table)} AS s
-INNER JOIN f USING (cik, accession_number)
-WHERE {" AND ".join(conditions)}
-SETTINGS max_threads=4, max_insert_threads=1, max_memory_usage=68719476736,
-         max_bytes_before_external_sort=4294967296
+FROM
+(
+    SELECT *
+    FROM {table(database, source_table)}
+    PREWHERE cik={sql_string(cik)} AND accession_number={sql_string(accession)}
+    WHERE filing_id!={sql_string(canonical_filing_id)}
+      AND (document_id, content_format, source_version_key, source_revision_rank) IN ({winner_keys})
+    ORDER BY inserted_at DESC
+    LIMIT 1 BY document_id, content_format
+) AS s
+SETTINGS max_threads=2, max_insert_threads=1, max_memory_usage=68719476736,
+         insert_deduplicate=0
 """
+        )
+
+
+def load_authoritative_parent_corrections(
+    client: ClickHouseHttpClient,
+    database: str,
+    table_name: str,
+) -> list[dict[str, Any]]:
+    return json_rows(
+        client.execute(
+            f"""
+WITH
+f AS
+(
+    SELECT cik, accession_number, filing_id
+    FROM {table(database, 'sec_filing_v3')} FINAL
+),
+s AS
+(
+    SELECT cik, accession_number, document_id, content_format,
+           argMax(filing_id, tuple(source_revision_rank, source_text_byte_count, source_version_key)) AS old_filing_id,
+           argMax(source_version_key, tuple(source_revision_rank, source_text_byte_count, source_version_key)) AS authority_source_version_key,
+           argMax(source_revision_rank, tuple(source_revision_rank, source_text_byte_count, source_version_key)) AS authority_revision_rank
+    FROM {table(database, table_name)}
+    GROUP BY cik, accession_number, document_id, content_format
+)
+SELECT s.cik, s.accession_number, s.document_id, s.content_format,
+       s.old_filing_id, f.filing_id AS canonical_filing_id,
+       s.authority_source_version_key, s.authority_revision_rank
+FROM s INNER JOIN f USING (cik, accession_number)
+WHERE s.old_filing_id != f.filing_id
+ORDER BY s.cik, s.accession_number, s.document_id, s.content_format
+SETTINGS max_threads=4, max_memory_usage=68719476736
+FORMAT JSONEachRow
+"""
+        )
     )
 
 
