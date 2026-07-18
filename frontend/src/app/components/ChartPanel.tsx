@@ -30,7 +30,7 @@ import {
   SlidersHorizontal,
   X
 } from "lucide-react";
-import { forwardRef, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { displayName } from "../format";
@@ -46,6 +46,7 @@ type ChartSeries = {
   bandFillColor?: string;
   bandFillOpacity?: number;
   chartRole?: string;
+  colorMode?: "sign";
   column: string;
   displayItemId?: string;
   label: string;
@@ -445,7 +446,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const displayedOscillatorSeries = (payload?.oscillator_series ?? []).filter((series) => visibleColumnLookup.has(seriesSelectionKey(series)));
   const oscillatorPaneGroups = buildOscillatorPaneGroups(displayedOscillatorSeries);
   const alignLeftPriceScale = oscillatorPaneGroups.some(oscillatorGroupUsesLeftScale);
-  const priceLegendItems = buildSeriesLegendItems(displayedOverlaySeries, "price", legendSettings, displayItemOptions, catalogColumns);
+  const priceLegendItems = buildSeriesLegendItems(displayedOverlaySeries, "price", legendSettings, displayItemOptions, catalogColumns, chartSettings);
   const hasChartData = Boolean(payload?.candles.length);
   const referenceKey = reference ? `${reference.time ?? ""}:${reference.startTime ?? ""}:${reference.endTime ?? ""}:${reference.sessionDate ?? ""}:${reference.minuteOfDay ?? ""}:${reference.label ?? ""}` : "";
   const liveEntryLineKey = liveEntryLine ? `${liveEntryLine.price}:${liveEntryLine.quantity}:${liveEntryLine.pnl}:${liveEntryLine.color}` : "";
@@ -1411,7 +1412,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
                 </button>
                 <ChartLegend
                   indicatorCount={group.series.length}
-                  items={buildSeriesLegendItems(group.series, "oscillator", legendSettings, displayItemOptions, catalogColumns)}
+                  items={buildSeriesLegendItems(group.series, "oscillator", legendSettings, displayItemOptions, catalogColumns, chartSettings)}
                   leftScale={oscillatorGroupUsesLeftScale(group)}
                   onReset={resetLegendSettings}
                   onThresholdReset={() => resetOscillatorThreshold(group)}
@@ -1542,6 +1543,8 @@ type LegendItem = {
   lineWidth: number;
   opacity: number;
   seriesStyle: "candlestick" | "histogram" | "line";
+  semanticColor: boolean;
+  semanticColors: { down: string; neutral: string; up: string };
   showValue: boolean;
   value: string;
   visible: boolean;
@@ -1737,7 +1740,18 @@ function LegendEditor({
       </div>
       <label>
         Color
-        <input type="color" value={item.color} onChange={(event) => onUpdate({ color: event.target.value })} />
+        {item.semanticColor ? (
+          <span
+            className="legend-semantic-colors"
+            style={{
+              "--legend-semantic-down": item.semanticColors.down,
+              "--legend-semantic-neutral": item.semanticColors.neutral,
+              "--legend-semantic-up": item.semanticColors.up,
+            } as CSSProperties}
+          >
+            <i data-tone="buy" />+ <i data-tone="sell" />− <i data-tone="neutral" />0
+          </span>
+        ) : <input type="color" value={item.color} onChange={(event) => onUpdate({ color: event.target.value })} />}
       </label>
       {item.seriesStyle === "line" ? (
         <>
@@ -2536,7 +2550,7 @@ function ChartSettingsSection({ children, title }: { children: ReactNode; title:
   );
 }
 
-function buildSeriesLegendItems(series: ChartSeries[], pane: LegendPane, settingsMap: LegendSettingsMap, displayItemOptions: ChartDisplayItem[], catalogColumns: ChartCatalogItem[]): LegendItem[] {
+function buildSeriesLegendItems(series: ChartSeries[], pane: LegendPane, settingsMap: LegendSettingsMap, displayItemOptions: ChartDisplayItem[], catalogColumns: ChartCatalogItem[], appearance = defaultChartAppearanceSettings): LegendItem[] {
   const displayItemById = new Map(displayItemOptions.map((item) => [item.id, item]));
   const catalogByColumn = new Map(catalogColumns.map((item) => [item.column, item]));
   return series.filter((item) => item.legend !== false).map((item) => {
@@ -2554,7 +2568,7 @@ function buildSeriesLegendItems(series: ChartSeries[], pane: LegendPane, setting
         }, guideTitle, chartMenuItemUsesLookahead(displayItem) || chartMenuItemUsesLookahead(sourceColumn))
       : sourceColumn ? chartColumnHelp(sourceColumn, guideTitle) : undefined;
     return {
-      color: settings.color,
+      color: item.colorMode === "sign" ? signColor(latest, appearance) : settings.color,
       configurable: true,
       guideHelp,
       guideTitle,
@@ -2564,6 +2578,8 @@ function buildSeriesLegendItems(series: ChartSeries[], pane: LegendPane, setting
       lineWidth: settings.lineWidth,
       opacity: settings.opacity,
       seriesStyle: item.style,
+      semanticColor: item.colorMode === "sign",
+      semanticColors: { down: appearance.downColor, neutral: readNeutralChartColor(), up: appearance.upColor },
       showValue: settings.showValue,
       value: latest === null ? "-" : formatPrice(latest),
       visible: settings.visible
@@ -3010,6 +3026,12 @@ function seriesDataForSettings(series: ChartSeries, settings: Required<LegendSer
   const opacity = effectiveSeriesOpacity(series, settings);
   const applyOpacity = (color: string) => colorWithOpacity(color, opacity);
   const neutralColor = readNeutralChartColor();
+  if (series.colorMode === "sign") {
+    return series.data.map(({ tone: _tone, ...point }) => ({
+      ...point,
+      color: applyOpacity(signColor(point.value, appearance)),
+    }));
+  }
   if (series.style !== "histogram") {
     if (settings.color && settings.color !== defaultColor) {
       return series.data.map(({ tone: _tone, ...point }) => ({ ...point, color: applyOpacity(settings.color) }));
@@ -3045,6 +3067,12 @@ function seriesDataForSettings(series: ChartSeries, settings: Required<LegendSer
     }));
   }
   return series.data.map((point) => ({ ...point, color: applyOpacity(settings.color) }));
+}
+
+function signColor(value: number | null, appearance = defaultChartAppearanceSettings) {
+  if (value != null && value > 0) return appearance.upColor;
+  if (value != null && value < 0) return appearance.downColor;
+  return readNeutralChartColor();
 }
 
 function readNeutralChartColor() {

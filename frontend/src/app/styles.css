@@ -12845,6 +12845,25 @@ button {
   font-size: 11px;
 }
 
+.legend-semantic-colors {
+  align-items: center;
+  color: var(--muted-foreground);
+  display: inline-flex;
+  font-variant-numeric: tabular-nums;
+  gap: 4px;
+}
+
+.legend-semantic-colors i {
+  background: var(--legend-semantic-neutral);
+  border-radius: 50%;
+  display: inline-block;
+  height: 8px;
+  width: 8px;
+}
+
+.legend-semantic-colors i[data-tone="buy"] { background: var(--legend-semantic-up); }
+.legend-semantic-colors i[data-tone="sell"] { background: var(--legend-semantic-down); }
+
 .chart-legend-editor .legend-number-input {
   width: 100%;
   height: 26px;

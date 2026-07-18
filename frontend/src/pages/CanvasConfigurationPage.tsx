@@ -247,11 +247,11 @@ const INDICATOR_SERIES = [
   { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Persistence", column: "microstructure_aggressor_persistence", color: "var(--foreground)", displayItemId: "indicator.qmd_aggressor_persistence", label: "Aggressor persistence", pane: "qmd_persistence", style: "histogram" },
   { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Imbalance", column: "microstructure_arrival_intensity_imbalance", color: "var(--foreground)", displayItemId: "indicator.qmd_arrival_intensity", label: "Arrival imbalance", pane: "qmd_arrival", style: "histogram" },
   { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Resiliency", column: "microstructure_resiliency", color: "var(--foreground)", displayItemId: "indicator.qmd_resiliency", label: "Liquidity resiliency", pane: "qmd_resiliency", style: "histogram" },
-  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Combined", column: "microstructure_unified_signal", color: "var(--foreground)", displayItemId: "indicator.qmd_architecture", label: "Combined signal", pane: "qmd_architecture", lineWidth: 3 },
-  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Score", column: "microstructure_aggressive_flow_score", color: "var(--success)", displayItemId: "indicator.qmd_architecture", label: "Aggressive flow", pane: "qmd_architecture", lineWidth: 2 },
-  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Score", column: "microstructure_displayed_liquidity_score", color: "var(--info)", displayItemId: "indicator.qmd_architecture", label: "Displayed liquidity", pane: "qmd_architecture", lineWidth: 2 },
-  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Score", column: "microstructure_response_resiliency_score", color: "var(--warning)", displayItemId: "indicator.qmd_architecture", label: "Response & resiliency", pane: "qmd_architecture", lineWidth: 2 },
-  { autoscaleMax: 1, autoscaleMin: 0, axisTitle: "Reliability", column: "microstructure_regime_reliability", color: "var(--muted-foreground)", displayItemId: "indicator.qmd_architecture", label: "Reliability", lineStyle: "dashed", pane: "qmd_architecture", priceScaleId: "left" },
+  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Combined", colorMode: "sign", column: "microstructure_unified_signal", color: "var(--foreground)", displayItemId: "indicator.qmd_architecture", label: "Combined signal", pane: "qmd_architecture", lineWidth: 3 },
+  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Score", colorMode: "sign", column: "microstructure_aggressive_flow_score", color: "var(--success)", displayItemId: "indicator.qmd_architecture", label: "Aggressive flow", pane: "qmd_architecture", lineWidth: 2 },
+  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Score", colorMode: "sign", column: "microstructure_displayed_liquidity_score", color: "var(--info)", displayItemId: "indicator.qmd_architecture", label: "Displayed liquidity", pane: "qmd_architecture", lineWidth: 2 },
+  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Score", colorMode: "sign", column: "microstructure_response_resiliency_score", color: "var(--warning)", displayItemId: "indicator.qmd_architecture", label: "Response & resiliency", pane: "qmd_architecture", lineWidth: 2 },
+  { autoscaleMax: 1, autoscaleMin: 0, axisTitle: "Reliability", colorMode: "sign", column: "microstructure_regime_reliability", color: "var(--muted-foreground)", displayItemId: "indicator.qmd_architecture", label: "Reliability", lineStyle: "dashed", pane: "qmd_architecture", priceScaleId: "left" },
 ] as const;
 
 function displayIndicator(id: string, title: string, group: string, sourceColumns: string[], pane = "price", knowledge?: ChartDisplayItem["knowledge"]): ChartDisplayItem {
@@ -1181,6 +1181,7 @@ function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscilla
     ...( "autoscaleMax" in spec ? { autoscaleMax: spec.autoscaleMax, autoscaleMin: spec.autoscaleMin } : {}),
     ...( "axisTitle" in spec ? { axisTitle: spec.axisTitle } : {}),
     color: spec.color,
+    ...( "colorMode" in spec ? { colorMode: spec.colorMode } : {}),
     column: spec.column,
     data: rows.map((row) => ({
       ...(spec.column === "microstructure_unified_signal"
