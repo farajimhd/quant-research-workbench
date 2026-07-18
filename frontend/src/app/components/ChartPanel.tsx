@@ -127,6 +127,7 @@ export type ChartCatalogKnowledge = {
   readingGuide?: string;
   timeframeBehavior?: string;
   caveats?: string[];
+  components?: Array<{ description: string; label: string; tone?: "buy" | "info" | "neutral" | "sell" | "warning" }>;
   equations?: Array<{ markdown: string; title: string; variables: Record<string, string> }>;
 };
 export type ChartReference = {
@@ -2153,6 +2154,7 @@ type ChartColumnHelp = {
   bullishEvidence?: string;
   calculation?: string;
   caveats: string[];
+  components: Array<{ description: string; label: string; tone?: "buy" | "info" | "neutral" | "sell" | "warning" }>;
   detail?: string;
   futureLooking: boolean;
   readingGuide?: string;
@@ -2203,6 +2205,19 @@ function IndicatorGuideModal({ help, onClose, title }: { help: ChartColumnHelp; 
         {help.futureLooking ? <div className="chart-indicator-guide-alert"><strong>LOOKAHEAD ONLY</strong><span>This uses future bars. Use it for review, training, and validation—not as a live tradable signal.</span></div> : null}
         <div className="chart-indicator-guide-grid">
           <IndicatorGuideSection label="Read" text={help.readingGuide || help.summary} tone="read" />
+          {help.components.length ? (
+            <section className="chart-indicator-guide-section chart-indicator-guide-components" data-tone="read">
+              <strong>What is drawn</strong>
+              <div className="chart-indicator-guide-component-list">
+                {help.components.map((component) => (
+                  <div className="chart-indicator-guide-component" data-tone={component.tone || "neutral"} key={component.label}>
+                    <span aria-hidden="true" className="chart-indicator-guide-component-swatch" />
+                    <div><b>{component.label}</b><p>{component.description}</p></div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
           {help.bullishEvidence ? <IndicatorGuideSection label="Bullish evidence" text={help.bullishEvidence} tone="buy" /> : null}
           {help.bearishEvidence ? <IndicatorGuideSection label="Bearish evidence" text={help.bearishEvidence} tone="sell" /> : null}
           {help.calculation || help.detail ? <IndicatorGuideSection label="Calculation & scale" text={help.calculation || help.detail || ""} tone="info" /> : null}
@@ -2240,6 +2255,7 @@ function chartColumnHelp(source: ChartMenuHelpSource | undefined, title: string,
     bullishEvidence: compactHelpText(knowledge?.bullishEvidence) || undefined,
     calculation: compactHelpText(knowledge?.calculation) || undefined,
     caveats: (knowledge?.caveats ?? []).map(compactHelpText).filter(Boolean),
+    components: (knowledge?.components ?? []).map((component) => ({ ...component, description: compactHelpText(component.description), label: compactHelpText(component.label) })).filter((component) => component.label && component.description),
     detail: detailed && detailed !== summary ? detailed : undefined,
     futureLooking: futureLooking || chartMenuItemUsesLookahead(source),
     readingGuide: compactHelpText(knowledge?.readingGuide) || undefined,

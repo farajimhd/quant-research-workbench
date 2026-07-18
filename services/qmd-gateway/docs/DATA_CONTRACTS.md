@@ -10,7 +10,7 @@ This file documents the values produced by `qmd-gateway`. A **formula** is the e
 | Raw Massive trades | `schema_version` | `1` | Increment when durable raw table semantics change. |
 | Raw Massive quotes | `schema_version` | `1` | Increment when durable raw table semantics change. |
 | Bars | `schema_version` | `2` | Increment when bar fields or formulas change. |
-| Bar indicators | `schema_version` | `3` | Increment when persisted indicator fields or formulas change. |
+| Bar indicators | `schema_version` | `9` | Increment when persisted indicator fields or formulas change. |
 | Deterministic microstructure forecast | `schema_version` | `2` | Increment when horizon or unified-action fields or formulas change. |
 | Scanner primitives | `schema_version` | `1` | Increment when primitive output contract changes. |
 | Live abnormal market-state events | `schema_version` | `1` | Increment when abnormal state event semantics change. |
@@ -433,10 +433,10 @@ Table: `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`.
 
 | Field | Formula | Streaming Method |
 |---|---|---|
-| `schema_version` | Current value is `3`. | Constant per row. |
+| `schema_version` | Current value is `9`. | Constant per row. |
 | `session_date`, `timeframe`, `sym`, `bar_start`, `bar_end` | Copied from closed bar. | One row per closed bar. |
 | `close`, `volume` | Copied from closed bar. | Inputs for chart and indicator display. |
-| `vwap` | Session-anchored cumulative `sum(hlc3 * volume) / sum(volume)`. Premarket has its own accumulation and the regular-session benchmark resets at the exchange's 09:30 New York open; after-hours continues the regular-session anchor. The canonical bar's own `vwap` remains its event-level `dollar_volume / volume`. | Keep cumulative typical-price notional and volume per ticker/timeframe/market-session anchor. |
+| `vwap` | TradingView-compatible session VWAP: cumulative `sum(hlc3 * volume) / sum(volume)` from the 04:00 New York extended-session open. It continues through 09:30 without resetting and remains anchored through after-hours. The canonical bar's own `vwap` remains its event-level `dollar_volume / volume`. | Keep cumulative typical-price notional and volume per ticker/timeframe/market-session anchor. |
 | `ema_9`, `ema_20`, `ema_50` | `EMA_t = alpha * close_t + (1 - alpha) * EMA_{t-1}`, `alpha = 2 / (period + 1)`. | Keep last EMA value per ticker/timeframe. |
 | `rsi_14` | Wilder RSI: `100 - 100 / (1 + avg_gain / avg_loss)`. | Seed first 14 changes, then update Wilder averages. |
 | `atr_14` | Wilder average of true range. True range is `max(high-low, abs(high-prev_close), abs(low-prev_close))`. | Seed first 14 true ranges, then update Wilder average. |

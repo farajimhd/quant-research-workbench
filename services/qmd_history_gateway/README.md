@@ -111,6 +111,12 @@ reset at the 09:30 regular-session open. The DST-aware anchor is shared by live
 and historical QMD, preserving cumulative-flow and confirmation/absorption
 semantics at every supported timeframe.
 
+The chart `vwap` indicator uses the same 04:00 New York session anchor and
+continues through the 09:30 regular open. It accumulates each selected
+timeframe bar's `hlc3 * volume`, matching TradingView's default Session VWAP
+source and extended-hours anchor semantics. The canonical bar-level `vwap`
+remains the eligible trade-price notional divided by eligible volume.
+
 `/stream/derived` supports `emit=full`, `emit=updates`, and
 `emit=full_then_updates`. Incremental messages contain a monotonic sequence,
 the causal finalized bar, its canonical indicator row, and the bar's event-time

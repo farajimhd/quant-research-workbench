@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, sleep, Duration};
 
-pub const INDICATOR_SCHEMA_VERSION: u16 = 8;
+pub const INDICATOR_SCHEMA_VERSION: u16 = 9;
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const PREMARKET_SESSION_START_SECONDS: u32 = 4 * 60 * 60;
 
@@ -296,12 +296,7 @@ impl MicrostructureCumulativeFlow {
 }
 
 fn anchored_market_session_date(bar_start: DateTime<Utc>) -> String {
-    let local = bar_start.with_timezone(&New_York);
-    let mut session_date = local.date_naive();
-    if local.num_seconds_from_midnight() < PREMARKET_SESSION_START_SECONDS {
-        session_date = session_date.pred_opt().unwrap_or(session_date);
-    }
-    session_date.to_string()
+    market_session_anchor_date(bar_start).to_string()
 }
 
 fn anchored_flow_relationship(level1_ofi: f64, signed_volume_delta: f64) -> (&'static str, f64) {
@@ -364,19 +359,7 @@ struct BarIndicatorState {
 struct SessionVwapState {
     cumulative_typical_notional: f64,
     cumulative_volume: f64,
-    anchor: Option<SessionVwapAnchor>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SessionVwapAnchor {
-    market_date: NaiveDate,
-    phase: SessionVwapPhase,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SessionVwapPhase {
-    Premarket,
-    Regular,
+    anchor: Option<NaiveDate>,
 }
 
 struct EmaState {
@@ -1038,7 +1021,7 @@ impl SessionVwapState {
         volume: f64,
         fallback: f64,
     ) -> f64 {
-        let anchor = session_vwap_anchor(bar_start);
+        let anchor = market_session_anchor_date(bar_start);
         if self.anchor != Some(anchor) {
             self.anchor = Some(anchor);
             self.cumulative_typical_notional = 0.0;
@@ -1057,16 +1040,13 @@ impl SessionVwapState {
     }
 }
 
-fn session_vwap_anchor(bar_start: DateTime<Utc>) -> SessionVwapAnchor {
+fn market_session_anchor_date(bar_start: DateTime<Utc>) -> NaiveDate {
     let local = bar_start.with_timezone(&New_York);
-    let phase = if (local.hour(), local.minute()) < (9, 30) {
-        SessionVwapPhase::Premarket
+    let session_date = local.date_naive();
+    if local.num_seconds_from_midnight() < PREMARKET_SESSION_START_SECONDS {
+        session_date.pred_opt().unwrap_or(session_date)
     } else {
-        SessionVwapPhase::Regular
-    };
-    SessionVwapAnchor {
-        market_date: local.date_naive(),
-        phase,
+        session_date
     }
 }
 
@@ -1760,7 +1740,7 @@ mod tests {
     }
 
     #[test]
-    fn session_vwap_resets_at_the_regular_session_open() {
+    fn session_vwap_continues_through_the_regular_session_open() {
         let mut state = SessionVwapState::new();
         state.update(
             Utc.with_ymd_and_hms(2026, 7, 14, 13, 29, 0).unwrap(),
@@ -1779,22 +1759,22 @@ mod tests {
             0.0,
         );
 
-        assert!((regular_session - 30.0).abs() < 1e-9);
+        assert!((regular_session - (2500.0 / 150.0)).abs() < 1e-9);
     }
 
     #[test]
-    fn session_vwap_uses_new_york_time_across_daylight_saving() {
+    fn session_vwap_resets_at_four_new_york_across_daylight_saving() {
         let mut state = SessionVwapState::new();
         state.update(
-            Utc.with_ymd_and_hms(2026, 1, 14, 14, 29, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 1, 14, 8, 59, 0).unwrap(),
             11.0,
             9.0,
             10.0,
             100.0,
             0.0,
         );
-        let winter_regular_session = state.update(
-            Utc.with_ymd_and_hms(2026, 1, 14, 14, 30, 0).unwrap(),
+        let winter_premarket = state.update(
+            Utc.with_ymd_and_hms(2026, 1, 14, 9, 0, 0).unwrap(),
             31.0,
             29.0,
             30.0,
@@ -1802,6 +1782,6 @@ mod tests {
             0.0,
         );
 
-        assert!((winter_regular_session - 30.0).abs() < 1e-9);
+        assert!((winter_premarket - 30.0).abs() < 1e-9);
     }
 }
