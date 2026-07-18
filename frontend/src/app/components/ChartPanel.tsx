@@ -2925,7 +2925,9 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
 
 function applySeriesSettings(renderer: AnySeriesApi, source: ChartSeries, settings: Required<LegendSeriesSettings>, useAdaptivePriceFormat: boolean, appearance = defaultChartAppearanceSettings) {
   const priceFormatOptions = useAdaptivePriceFormat ? { priceFormat: adaptiveSeriesPriceFormat(source) } : {};
-  const autoscaleInfoProvider = seriesAutoscaleInfoProvider(source);
+  // Price overlays share the candle chart and must never widen its price range.
+  // Oscillators live on independent charts and own their zero/range contract.
+  const autoscaleInfoProvider = useAdaptivePriceFormat ? seriesAutoscaleInfoProvider(source) : () => null;
   if (source.style === "histogram") {
     renderer.applyOptions({ autoscaleInfoProvider, color: colorWithOpacity(settings.color, effectiveSeriesOpacity(source, settings)), lastValueVisible: source.lastValueVisible ?? true, ...priceFormatOptions, title: source.axisTitle ?? source.label, visible: settings.visible } as never);
   } else {
