@@ -109,7 +109,16 @@ highs, lows, and aligned SPY observations from that read-only monthly cache.
 News-link inserts are sharded independently and dynamically: the default target
 is 100 links per query with a hard maximum of 64 shards, so sparse days no
 longer execute 32 mostly empty queries while heavily covered tickers still have
-their articles distributed. Days with no ticker-linked news are checkpointed
+their articles distributed. Each worker pushes its shard ticker set and the
+exact horizon-derived event dates into both current-event and prior-anchor cache
+reads; it never decodes the entire monthly cache for one publication day. SPY
+retains a continuous causal event spine across the bounded lookahead because it
+is the benchmark used at every asset target and extrema timestamp. Each
+article/ticker event set is assembled once through its maximum horizon, then
+reused with an exact per-horizon timestamp cap. If a genuinely dense shard still
+hits ClickHouse's memory limit, that day is cleared and retried with twice as
+many deterministic news shards, up to the configured hard bound. Days
+with no ticker-linked news are checkpointed
 without reading events. This avoids fixed bars, repeated ticker/day event reads,
 and the many-to-many news-horizon/event join expansion while keeping memory and
 query concurrency bounded. Completed publication-day checkpoints remain

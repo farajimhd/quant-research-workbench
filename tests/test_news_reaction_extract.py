@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import unittest
+from unittest.mock import patch
 
 from pipelines.news.benzinga.news_reaction_extract import (
     HORIZONS,
@@ -12,9 +13,11 @@ from pipelines.news.benzinga.news_reaction_extract import (
     expected_event_tables,
     feature_insert_sql,
     event_source_table,
+    execute_reaction_chunk,
     event_cache_create_sql,
     event_coverage_sql,
     monitored_execute,
+    is_clickhouse_memory_limit,
     parse_args,
     reaction_insert_sql,
     reaction_news_shard_count,
@@ -76,7 +79,8 @@ class NewsReactionExtractTests(unittest.TestCase):
         self.assertIn("tupleElement(event, 1) < pub_us", sql)
         self.assertIn("tupleElement(event, 1) > pub_us", sql)
         self.assertIn("tupleElement(event, 1) <= target_us, market_events.all_market_events", sql)
-        self.assertIn("arrayFilter(event -> tupleElement(event, 1) <= day_window.target_us", sql)
+        self.assertIn("arrayFilter(event -> tupleElement(event, 1) <= day_window.max_target_us", sql)
+        self.assertIn("asset_event_sets AS", sql)
         self.assertIn("ON day_window.ticker = p.ticker", sql)
         self.assertIn("ifNull(o.overlapping_news_count, toUInt32(0)) AS overlap_count", sql)
         self.assertIn("overlap_count AS overlapping_news_count", sql)
@@ -139,8 +143,18 @@ class NewsReactionExtractTests(unittest.TestCase):
         )
         self.assertIn(f"FROM `q_live`.`{cache_name}`", cached_reaction_sql)
         self.assertIn("cityHash64(t.canonical_news_id, upperUTF8(t.ticker)) % toUInt64(8) = toUInt64(3)", cached_reaction_sql)
-        self.assertIn("WHERE event_date >= toDate('2019-01-02')", cached_reaction_sql)
+        self.assertIn("active_cache_tickers AS", cached_reaction_sql)
+        self.assertEqual(
+            cached_reaction_sql.count("ticker IN (SELECT ticker FROM active_cache_tickers)"),
+            2,
+        )
+        self.assertIn("AND event_date IN (SELECT window_event_date FROM window_event_dates)", cached_reaction_sql)
+        self.assertIn("ticker = 'SPY'", cached_reaction_sql)
         self.assertIn("WHERE event_date < toDate('2019-01-02')", cached_reaction_sql)
+        self.assertLess(
+            cached_reaction_sql.index("window_event_dates AS"),
+            cached_reaction_sql.index("active_cache_tickers AS"),
+        )
 
         append_sql = event_cache_create_sql(
             self.args,
@@ -161,6 +175,45 @@ class NewsReactionExtractTests(unittest.TestCase):
         self.assertEqual(reaction_news_shard_count(self.args, 100), 1)
         self.assertEqual(reaction_news_shard_count(self.args, 101), 2)
         self.assertEqual(reaction_news_shard_count(self.args, 100_000), 64)
+        self.assertTrue(is_clickhouse_memory_limit(RuntimeError("MEMORY_LIMIT_EXCEEDED")))
+        self.assertTrue(is_clickhouse_memory_limit(RuntimeError("Query memory limit exceeded")))
+        self.assertFalse(is_clickhouse_memory_limit(RuntimeError("network reset")))
+
+    def test_reaction_chunk_retries_memory_failure_with_finer_news_shards(self) -> None:
+        class FakeClient:
+            def __init__(self) -> None:
+                self.query_ids: list[str] = []
+                self.failed = False
+
+            def execute(self, sql: str, *, query_id: str | None = None) -> str:
+                if query_id:
+                    self.query_ids.append(query_id)
+                if query_id and query_id.endswith("attempt_00_shard_000") and not self.failed:
+                    self.failed = True
+                    raise RuntimeError("MEMORY_LIMIT_EXCEEDED")
+                if "SELECT count()" in sql:
+                    return "20"
+                return ""
+
+        fake = FakeClient()
+        with patch(
+            "pipelines.news.benzinga.news_reaction_extract.ClickHouseHttpClient",
+            return_value=fake,
+        ):
+            result = execute_reaction_chunk(
+                self.args,
+                dt.date(2019, 1, 2),
+                dt.date(2019, 1, 3),
+                query_threads=2,
+                query_memory=6 * 1024**3,
+                query_id="retry-test",
+                cache_table_name="_cache",
+                news_shard_count=2,
+            )
+        self.assertEqual(result.inserted_rows, 20)
+        self.assertIn("retry-test_attempt_00_reset", fake.query_ids)
+        self.assertIn("retry-test_attempt_01_reset", fake.query_ids)
+        self.assertIn("retry-test_attempt_01_shard_003", fake.query_ids)
 
     def test_reaction_months_use_calendar_boundaries_when_resuming_mid_month(self) -> None:
         chunks = list(calendar_month_chunks(dt.date(2019, 3, 28), dt.date(2019, 5, 2)))

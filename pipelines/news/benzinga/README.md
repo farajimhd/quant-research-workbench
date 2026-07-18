@@ -85,7 +85,14 @@ shards, so its required days are read once into a shared monthly cache; SPY is
 loaded once. Four bounded day-chunk workers reuse that cache and dynamically
 divide each day's links at a default target of 100 links per query, capped at 64
 queries. Sparse and empty days therefore avoid the previous fixed 32-query
-overhead. The raw ticker predicate stays on the ClickHouse ordering key,
+overhead. Day workers also restrict monthly-cache reads to their active tickers
+plus SPY and to the exact event dates derived from the requested horizons. SPY
+keeps its continuous bounded lookahead for benchmark alignment. An
+article/ticker event array is assembled once at its maximum horizon and reused
+with exact per-horizon caps, rather than expanded ten times. A memory-limit
+failure clears the incomplete day and retries it with twice as many deterministic
+news shards, up to the configured maximum. The
+raw ticker predicate stays on the ClickHouse ordering key,
 avoiding whole-market scans, repeated ticker/day reads, and a many-to-many event
 join. Workers share the configured total ClickHouse CPU and memory budgets.
 Defaults are eight total ClickHouse threads and 24 GiB shared across workers.
