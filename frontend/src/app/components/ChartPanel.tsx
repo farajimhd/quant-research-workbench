@@ -1112,9 +1112,10 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const currentPayload = payloadRef.current;
     if (!chart || !currentPayload) return;
     const selectedZones = (currentPayload.price_zones ?? []).filter((zone) => !zone.displayItemId || visibleSelectionRef.current.has(zone.displayItemId.toLowerCase()));
-    drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, selectedZones, currentPayload.trade_annotations ?? [], currentPayload.candles, chartSettingsRef.current, liveEntryLineRef.current);
+    const timeline = chartTimelineData(currentPayload.candles, timeframe);
+    drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, selectedZones, currentPayload.trade_annotations ?? [], currentPayload.candles, timeline, chartSettingsRef.current, liveEntryLineRef.current);
     oscillatorPaneRuntimesRef.current.forEach((runtime, key) => {
-      drawSessionRegions(runtime.chart, oscillatorLayerRefs.current.get(key) ?? null, currentPayload.regions, currentPayload.candles, chartSettingsRef.current, false);
+      drawSessionRegions(runtime.chart, oscillatorLayerRefs.current.get(key) ?? null, currentPayload.regions, timeline, currentPayload.candles, chartSettingsRef.current, false);
     });
     drawReferenceLine(chart, referenceLayerRef.current, currentPayload.candles, showReferenceLineRef.current ? referenceRef.current : null);
   }
@@ -3710,12 +3711,13 @@ function drawRegions(
   priceZones: PriceZone[],
   tradeAnnotations: TradeAnnotation[],
   candles: Candle[],
+  timeline: CandleSeriesDatum[],
   settings: ChartAppearanceSettings,
   liveEntryLine?: LiveEntryLine | null
 ) {
   if (!layer) return;
   layer.innerHTML = "";
-  const plotLayer = drawSessionRegions(chart, layer, regions, candles, settings, true);
+  const plotLayer = drawSessionRegions(chart, layer, regions, timeline, candles, settings, true);
   if (!plotLayer) return;
   const barWidth = estimateBarWidth(chart, candles);
   const candleDuration = estimateCandleDuration(candles);
@@ -3728,6 +3730,7 @@ function drawSessionRegions(
   chart: IChartApi,
   layer: HTMLDivElement | null,
   regions: Region[],
+  timeline: CandleSeriesDatum[],
   candles: Candle[],
   settings: ChartAppearanceSettings,
   drawSeparators: boolean
@@ -3736,17 +3739,16 @@ function drawSessionRegions(
   layer.innerHTML = "";
   const plotLayer = document.createElement("div");
   plotLayer.className = "session-plot-region";
-  const renderedScale = elementRenderedScale(layer);
-  plotLayer.style.right = `${chart.priceScale("right").width() / renderedScale.x}px`;
-  plotLayer.style.bottom = `${chart.timeScale().height() / renderedScale.y}px`;
+  plotLayer.style.left = `${chart.priceScale("left").width()}px`;
+  plotLayer.style.right = `${chart.priceScale("right").width()}px`;
+  plotLayer.style.bottom = `${chart.timeScale().height()}px`;
   layer.appendChild(plotLayer);
   const barWidth = estimateBarWidth(chart, candles);
-  const candleDuration = estimateCandleDuration(candles);
   regions.forEach((region) => {
-    const coordinates = regionCoordinates(chart, region, candles, barWidth, candleDuration);
+    const coordinates = sessionRegionCoordinates(chart, region, timeline);
     if (!coordinates) return;
-    const left = Math.min(coordinates.start, coordinates.end) / renderedScale.x;
-    const width = Math.abs(coordinates.end - coordinates.start) / renderedScale.x;
+    const left = Math.min(coordinates.start, coordinates.end);
+    const width = Math.abs(coordinates.end - coordinates.start);
     if (width < 1) return;
     const node = document.createElement("div");
     node.className = "session-region";
@@ -3756,7 +3758,7 @@ function drawSessionRegions(
     node.style.background = sessionRegionColor(region, settings);
     plotLayer.appendChild(node);
   });
-  if (drawSeparators) drawDaySeparators(chart, plotLayer, candles, settings, barWidth, renderedScale.x);
+  if (drawSeparators) drawDaySeparators(chart, plotLayer, candles, settings, barWidth);
   return plotLayer;
 }
 
@@ -3897,7 +3899,7 @@ function sessionRegionColor(region: Region, settings: ChartAppearanceSettings) {
   return region.color;
 }
 
-function drawDaySeparators(chart: IChartApi, layer: HTMLDivElement, candles: Candle[], settings: ChartAppearanceSettings, barWidth: number, renderedScaleX = 1) {
+function drawDaySeparators(chart: IChartApi, layer: HTMLDivElement, candles: Candle[], settings: ChartAppearanceSettings, barWidth: number) {
   if (!settings.daySeparatorsVisible || candles.length < 2) return;
   let previousDate = marketDate(candles[0].time);
   candles.slice(1).forEach((candle) => {
@@ -3909,7 +3911,7 @@ function drawDaySeparators(chart: IChartApi, layer: HTMLDivElement, candles: Can
     const node = document.createElement("div");
     node.className = "day-separator";
     node.title = currentDate;
-    node.style.left = `${(coordinate - barWidth / 2) / renderedScaleX}px`;
+    node.style.left = `${coordinate - barWidth / 2}px`;
     node.style.borderLeft = `1px ${settings.daySeparatorStyle} ${rgbaFromHex(settings.daySeparatorColor, 0.78)}`;
     layer.appendChild(node);
   });
@@ -4114,6 +4116,49 @@ function regionCoordinates(chart: IChartApi, region: Region, candles: Candle[], 
   if (start !== null && end !== null) return { end, start };
 
   return null;
+}
+
+function sessionRegionCoordinates(chart: IChartApi, region: Region, timeline: CandleSeriesDatum[]) {
+  if (!timeline.length || region.end <= region.start) return null;
+  const firstIndex = lowerBoundTimelineTime(timeline, region.start);
+  const endIndex = lowerBoundTimelineTime(timeline, region.end);
+  const lastIndex = endIndex - 1;
+  if (firstIndex >= timeline.length || lastIndex < firstIndex) return null;
+
+  const firstTime = Number(timeline[firstIndex]?.time);
+  const lastTime = Number(timeline[lastIndex]?.time);
+  if (!Number.isFinite(firstTime) || !Number.isFinite(lastTime) || firstTime >= region.end || lastTime < region.start) return null;
+
+  const start = timelinePointEdgeCoordinate(chart, timeline, firstIndex, "leading");
+  const end = timelinePointEdgeCoordinate(chart, timeline, lastIndex, "trailing");
+  return start === null || end === null ? null : { end, start };
+}
+
+function lowerBoundTimelineTime(timeline: CandleSeriesDatum[], target: number) {
+  let left = 0;
+  let right = timeline.length;
+  while (left < right) {
+    const middle = left + Math.floor((right - left) / 2);
+    if (Number(timeline[middle]?.time) < target) left = middle + 1;
+    else right = middle;
+  }
+  return left;
+}
+
+function timelinePointEdgeCoordinate(chart: IChartApi, timeline: CandleSeriesDatum[], index: number, edge: "leading" | "trailing") {
+  const center = chart.timeScale().timeToCoordinate(timeline[index]?.time as Time);
+  if (center === null) return null;
+  const neighborIndex = edge === "leading" ? index - 1 : index + 1;
+  const neighborTime = timeline[neighborIndex]?.time;
+  const neighbor = neighborTime === undefined ? null : chart.timeScale().timeToCoordinate(neighborTime as Time);
+  if (neighbor !== null) return (center + neighbor) / 2;
+
+  const fallbackIndex = edge === "leading" ? index + 1 : index - 1;
+  const fallbackTime = timeline[fallbackIndex]?.time;
+  const fallback = fallbackTime === undefined ? null : chart.timeScale().timeToCoordinate(fallbackTime as Time);
+  if (fallback === null) return center;
+  const spacing = Math.abs(center - fallback) / 2;
+  return edge === "leading" ? center - spacing : center + spacing;
 }
 
 function estimateBarWidth(chart: IChartApi, candles: Candle[]) {
