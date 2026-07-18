@@ -3883,9 +3883,9 @@ function drawPriceZones(
     node.style.top = `${top}px`;
     node.style.width = `${width}px`;
     node.style.height = `${height}px`;
-    const fillColor = validHexColor(zone.fillColor, validHexColor(zone.color, "#1E3A5F"));
+    const fillColor = validHexColor(resolveChartColor(zone.fillColor || zone.color), "#1E3A5F");
     const fillOpacity = clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08);
-    const borderColor = validHexColor(zone.borderColor, fillColor);
+    const borderColor = validHexColor(resolveChartColor(zone.borderColor || fillColor), fillColor);
     const borderOpacity = clampNumber(zone.borderOpacity, 0, 0.35, Math.max(fillOpacity * 1.8, 0.12));
     node.style.borderColor = rgbaFromHex(borderColor, borderOpacity);
     node.style.borderStyle = zoneBorderStyle(zone.borderStyle);

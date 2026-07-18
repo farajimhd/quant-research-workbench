@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
 
-pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v9";
+pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v10";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProfile {
@@ -610,6 +610,7 @@ impl HistoricalDerivedCache {
                                 let mut indicator = calculator.apply_bar(&bar);
                                 calculator.apply_microstructure_interval(&mut indicator, &interval);
                                 calculator.apply_cumulative_microstructure(&mut indicator);
+                                calculator.apply_market_levels(&mut indicator, &bar);
                                 worker_entry
                                     .push_indicator(sequence, bar, indicator)
                                     .await?;
@@ -622,6 +623,7 @@ impl HistoricalDerivedCache {
                             aggregate.apply_to(&mut indicator);
                             aggregate.reset();
                             calculator.apply_cumulative_microstructure(&mut indicator);
+                            calculator.apply_market_levels(&mut indicator, &bar);
                             worker_entry
                                 .push_indicator(sequence, bar, indicator)
                                 .await?;

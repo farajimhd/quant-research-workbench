@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, sleep, Duration};
 
-pub const INDICATOR_SCHEMA_VERSION: u16 = 9;
+pub const INDICATOR_SCHEMA_VERSION: u16 = 10;
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const PREMARKET_SESSION_START_SECONDS: u32 = 4 * 60 * 60;
 
@@ -114,6 +114,26 @@ pub struct IndicatorRow {
     pub microstructure_displayed_liquidity_score: f64,
     pub microstructure_response_resiliency_score: f64,
     pub microstructure_regime_reliability: f64,
+    pub liquidity_support_price: f64,
+    pub liquidity_support_strength: f64,
+    pub liquidity_support_confidence: f64,
+    pub liquidity_resistance_price: f64,
+    pub liquidity_resistance_strength: f64,
+    pub liquidity_resistance_confidence: f64,
+    pub liquidity_level_pressure: f64,
+    pub market_level_support_score: f64,
+    pub market_level_resistance_score: f64,
+    pub market_level_bias: f64,
+    pub structure_session_high: f64,
+    pub structure_session_low: f64,
+    pub structure_premarket_high: f64,
+    pub structure_premarket_low: f64,
+    pub structure_opening_range_high: f64,
+    pub structure_opening_range_low: f64,
+    pub structure_swing_high: f64,
+    pub structure_swing_low: f64,
+    pub structure_volume_poc: f64,
+    pub structure_nearest_round: f64,
     #[serde(skip_serializing)]
     pub microstructure_interval: MicrostructureIntervalFeatures,
 }
@@ -181,6 +201,7 @@ pub fn calculate_bar_indicators(bars: &[BarRow]) -> Vec<IndicatorRow> {
 pub struct BarIndicatorCalculator {
     state: BarIndicatorState,
     cumulative_microstructure: MicrostructureCumulativeFlow,
+    liquidity_levels: LiquidityLevelState,
 }
 
 impl BarIndicatorCalculator {
@@ -188,6 +209,7 @@ impl BarIndicatorCalculator {
         Self {
             state: BarIndicatorState::new(),
             cumulative_microstructure: MicrostructureCumulativeFlow::default(),
+            liquidity_levels: LiquidityLevelState::default(),
         }
     }
 
@@ -209,6 +231,12 @@ impl BarIndicatorCalculator {
     /// interval on the row.
     pub fn apply_cumulative_microstructure(&mut self, row: &mut IndicatorRow) {
         self.cumulative_microstructure.apply_to(row);
+    }
+
+    /// Update causal support/resistance candidates after the row has received
+    /// its timeframe-native microstructure interval.
+    pub fn apply_market_levels(&mut self, row: &mut IndicatorRow, bar: &BarRow) {
+        self.liquidity_levels.apply_to(row, bar);
     }
 }
 
@@ -257,6 +285,423 @@ struct MicrostructureCumulativeFlow {
     anchor_session_date: String,
     level1_ofi: f64,
     signed_volume_delta: f64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct LiquidityLevelState {
+    anchor_session_date: String,
+    support: HashMap<i64, LevelEvidence>,
+    resistance: HashMap<i64, LevelEvidence>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct LevelEvidence {
+    price: f64,
+    score: f64,
+    evidence: f64,
+    touches: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct MarketStructureState {
+    anchor: Option<NaiveDate>,
+    session_high: f64,
+    session_low: f64,
+    premarket_high: f64,
+    premarket_low: f64,
+    opening_range_high: f64,
+    opening_range_low: f64,
+    swing_high: f64,
+    swing_low: f64,
+    recent_bars: VecDeque<(f64, f64)>,
+    volume_by_price: HashMap<i64, f64>,
+    volume_poc: f64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct MarketStructureSnapshot {
+    session_high: f64,
+    session_low: f64,
+    premarket_high: f64,
+    premarket_low: f64,
+    opening_range_high: f64,
+    opening_range_low: f64,
+    swing_high: f64,
+    swing_low: f64,
+    volume_poc: f64,
+    nearest_round: f64,
+}
+
+impl LiquidityLevelState {
+    fn apply_to(&mut self, row: &mut IndicatorRow, bar: &BarRow) {
+        let anchor = anchored_market_session_date(bar.bar_start);
+        if self.anchor_session_date != anchor {
+            self.anchor_session_date = anchor;
+            self.support.clear();
+            self.resistance.clear();
+        }
+
+        let decay = 0.5_f64.powf(timeframe_seconds(&bar.timeframe) / 900.0);
+        decay_levels(&mut self.support, decay);
+        decay_levels(&mut self.resistance, decay);
+
+        let range = (bar.high - bar.low).abs().max(price_tick(bar.close));
+        let lower_rejection = ((bar.close - bar.low) / range).clamp(0.0, 1.0);
+        let upper_rejection = ((bar.high - bar.close) / range).clamp(0.0, 1.0);
+        let price_response = (row.microstructure_midpoint_return_bps.abs()
+            / (row.microstructure_interval.spread_bps.abs().max(0.25)))
+        .clamp(0.0, 1.0);
+        let sell_absorption =
+            (-row.microstructure_signed_volume_imbalance).max(0.0) * (1.0 - price_response);
+        let buy_absorption =
+            row.microstructure_signed_volume_imbalance.max(0.0) * (1.0 - price_response);
+        let bid_recovery = recovery_ratio(
+            row.microstructure_interval.bid_replenishment,
+            row.microstructure_interval.bid_depletion,
+        );
+        let ask_recovery = recovery_ratio(
+            row.microstructure_interval.ask_replenishment,
+            row.microstructure_interval.ask_depletion,
+        );
+        let support_raw = 0.30 * row.microstructure_level1_ofi.max(0.0)
+            + 0.25 * bid_recovery
+            + 0.25 * sell_absorption
+            + 0.20 * lower_rejection;
+        let resistance_raw = 0.30 * (-row.microstructure_level1_ofi).max(0.0)
+            + 0.25 * ask_recovery
+            + 0.25 * buy_absorption
+            + 0.20 * upper_rejection;
+        let reliability = row.microstructure_regime_reliability.clamp(0.0, 1.0);
+        let support_price = positive_or(bar.bid_low, bar.low);
+        let resistance_price = positive_or(bar.ask_high, bar.high);
+        update_level(&mut self.support, support_price, support_raw, reliability);
+        update_level(
+            &mut self.resistance,
+            resistance_price,
+            resistance_raw,
+            reliability,
+        );
+        bound_levels(&mut self.support, 128);
+        bound_levels(&mut self.resistance, 128);
+
+        if let Some(level) = select_level(&self.support, bar.close, true, row.atr_14) {
+            row.liquidity_support_price = level.price;
+            row.liquidity_support_strength = normalized_level_strength(level.score);
+            row.liquidity_support_confidence = level_confidence(level);
+        }
+        if let Some(level) = select_level(&self.resistance, bar.close, false, row.atr_14) {
+            row.liquidity_resistance_price = level.price;
+            row.liquidity_resistance_strength = normalized_level_strength(level.score);
+            row.liquidity_resistance_confidence = level_confidence(level);
+        }
+        row.liquidity_level_pressure = (row.liquidity_support_strength
+            * row.liquidity_support_confidence
+            - row.liquidity_resistance_strength * row.liquidity_resistance_confidence)
+            .clamp(-1.0, 1.0);
+
+        let tolerance = row.atr_14.max(price_tick(bar.close) * 4.0) * 0.20;
+        let support_confluence = structure_confluence(row.liquidity_support_price, row, tolerance);
+        let resistance_confluence =
+            structure_confluence(row.liquidity_resistance_price, row, tolerance);
+        row.market_level_support_score =
+            (0.65 * row.liquidity_support_strength * row.liquidity_support_confidence
+                + 0.35 * support_confluence)
+                .clamp(0.0, 1.0);
+        row.market_level_resistance_score =
+            (0.65 * row.liquidity_resistance_strength * row.liquidity_resistance_confidence
+                + 0.35 * resistance_confluence)
+                .clamp(0.0, 1.0);
+        row.market_level_bias =
+            (row.market_level_support_score - row.market_level_resistance_score).clamp(-1.0, 1.0);
+    }
+}
+
+impl MarketStructureState {
+    fn update(&mut self, bar: &BarRow) -> MarketStructureSnapshot {
+        let anchor = market_session_anchor_date(bar.bar_start);
+        if self.anchor != Some(anchor) {
+            *self = Self {
+                anchor: Some(anchor),
+                ..Self::default()
+            };
+        }
+        update_high_low(
+            &mut self.session_high,
+            &mut self.session_low,
+            bar.high,
+            bar.low,
+        );
+        let local_seconds = bar
+            .bar_start
+            .with_timezone(&New_York)
+            .time()
+            .num_seconds_from_midnight();
+        let local_end_seconds = bar
+            .bar_end
+            .with_timezone(&New_York)
+            .time()
+            .num_seconds_from_midnight();
+        if exact_clock_level_supported(&bar.timeframe, 1800.0)
+            && (PREMARKET_SESSION_START_SECONDS..(9 * 3600 + 30 * 60)).contains(&local_seconds)
+            && local_end_seconds <= 9 * 3600 + 30 * 60
+        {
+            update_high_low(
+                &mut self.premarket_high,
+                &mut self.premarket_low,
+                bar.high,
+                bar.low,
+            );
+        }
+        if exact_clock_level_supported(&bar.timeframe, 300.0)
+            && (9 * 3600 + 30 * 60..9 * 3600 + 35 * 60).contains(&local_seconds)
+            && local_end_seconds <= 9 * 3600 + 35 * 60
+        {
+            update_high_low(
+                &mut self.opening_range_high,
+                &mut self.opening_range_low,
+                bar.high,
+                bar.low,
+            );
+        }
+
+        self.recent_bars.push_back((bar.high, bar.low));
+        while self.recent_bars.len() > 5 {
+            self.recent_bars.pop_front();
+        }
+        if self.recent_bars.len() == 5 {
+            let center = self.recent_bars[2];
+            if self
+                .recent_bars
+                .iter()
+                .enumerate()
+                .all(|(index, value)| index == 2 || center.0 > value.0)
+            {
+                self.swing_high = center.0;
+            }
+            if self
+                .recent_bars
+                .iter()
+                .enumerate()
+                .all(|(index, value)| index == 2 || center.1 < value.1)
+            {
+                self.swing_low = center.1;
+            }
+        }
+
+        if bar.volume > 0.0 {
+            let typical = (bar.high + bar.low + bar.close) / 3.0;
+            let key = structure_price_key(typical);
+            *self.volume_by_price.entry(key).or_default() += bar.volume;
+            self.volume_poc = self
+                .volume_by_price
+                .iter()
+                .max_by(|left, right| left.1.total_cmp(right.1))
+                .map(|(key, _)| structure_price_from_key(*key))
+                .unwrap_or(0.0);
+        }
+
+        MarketStructureSnapshot {
+            session_high: self.session_high,
+            session_low: self.session_low,
+            premarket_high: self.premarket_high,
+            premarket_low: self.premarket_low,
+            opening_range_high: self.opening_range_high,
+            opening_range_low: self.opening_range_low,
+            swing_high: self.swing_high,
+            swing_low: self.swing_low,
+            volume_poc: self.volume_poc,
+            nearest_round: nearest_round_price(bar.close),
+        }
+    }
+}
+
+fn update_high_low(high: &mut f64, low: &mut f64, candidate_high: f64, candidate_low: f64) {
+    if candidate_high > 0.0 {
+        *high = if *high > 0.0 {
+            (*high).max(candidate_high)
+        } else {
+            candidate_high
+        };
+    }
+    if candidate_low > 0.0 {
+        *low = if *low > 0.0 {
+            (*low).min(candidate_low)
+        } else {
+            candidate_low
+        };
+    }
+}
+
+fn timeframe_seconds(timeframe: &str) -> f64 {
+    match timeframe.to_ascii_lowercase().as_str() {
+        "100ms" => 0.1,
+        "1s" => 1.0,
+        "5s" => 5.0,
+        "10s" => 10.0,
+        "30s" => 30.0,
+        "1m" => 60.0,
+        "5m" => 300.0,
+        "1h" => 3600.0,
+        _ => 1.0,
+    }
+}
+
+fn exact_clock_level_supported(timeframe: &str, max_seconds: f64) -> bool {
+    timeframe_seconds(timeframe) <= max_seconds
+}
+
+fn price_tick(price: f64) -> f64 {
+    if price >= 1.0 {
+        0.01
+    } else {
+        0.0001
+    }
+}
+
+fn price_key(price: f64) -> i64 {
+    (price / price_tick(price)).round() as i64
+}
+
+fn price_from_key(key: i64, reference: f64) -> f64 {
+    key as f64 * price_tick(reference)
+}
+
+fn structure_price_key(price: f64) -> i64 {
+    (price * 10_000.0).round() as i64
+}
+
+fn structure_price_from_key(key: i64) -> f64 {
+    key as f64 / 10_000.0
+}
+
+fn positive_or(primary: f64, fallback: f64) -> f64 {
+    if primary.is_finite() && primary > 0.0 {
+        primary
+    } else {
+        fallback
+    }
+}
+
+fn recovery_ratio(replenishment: f64, depletion: f64) -> f64 {
+    let total = replenishment.max(0.0) + depletion.max(0.0);
+    if total > 0.0 {
+        (replenishment.max(0.0) / total).clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+fn decay_levels(levels: &mut HashMap<i64, LevelEvidence>, decay: f64) {
+    levels.values_mut().for_each(|level| {
+        level.score *= decay;
+        level.evidence *= decay;
+    });
+    levels.retain(|_, level| level.score > 0.005);
+}
+
+fn update_level(
+    levels: &mut HashMap<i64, LevelEvidence>,
+    price: f64,
+    score: f64,
+    reliability: f64,
+) {
+    if !price.is_finite() || price <= 0.0 || !score.is_finite() || score <= 0.0 {
+        return;
+    }
+    let key = price_key(price);
+    let entry = levels.entry(key).or_insert_with(|| LevelEvidence {
+        price: price_from_key(key, price),
+        ..LevelEvidence::default()
+    });
+    entry.score += score.clamp(0.0, 1.0);
+    entry.evidence += reliability;
+    entry.touches += 1;
+}
+
+fn bound_levels(levels: &mut HashMap<i64, LevelEvidence>, limit: usize) {
+    while levels.len() > limit {
+        let Some(key) = levels
+            .iter()
+            .min_by(|left, right| left.1.score.total_cmp(&right.1.score))
+            .map(|(key, _)| *key)
+        else {
+            break;
+        };
+        levels.remove(&key);
+    }
+}
+
+fn select_level<'a>(
+    levels: &'a HashMap<i64, LevelEvidence>,
+    close: f64,
+    support: bool,
+    atr: f64,
+) -> Option<&'a LevelEvidence> {
+    let scale = atr.max(price_tick(close) * 8.0);
+    levels
+        .values()
+        .filter(|level| {
+            if support {
+                level.price <= close + price_tick(close)
+            } else {
+                level.price >= close - price_tick(close)
+            }
+        })
+        .max_by(|left, right| {
+            let left_rank = left.score / (1.0 + (left.price - close).abs() / scale);
+            let right_rank = right.score / (1.0 + (right.price - close).abs() / scale);
+            left_rank.total_cmp(&right_rank)
+        })
+}
+
+fn normalized_level_strength(score: f64) -> f64 {
+    (1.0 - (-score.max(0.0)).exp()).clamp(0.0, 1.0)
+}
+
+fn level_confidence(level: &LevelEvidence) -> f64 {
+    if level.touches == 0 {
+        return 0.0;
+    }
+    ((level.touches as f64 / 4.0).sqrt().min(1.0)
+        * (level.evidence / level.touches as f64).clamp(0.0, 1.0))
+    .clamp(0.0, 1.0)
+}
+
+fn structure_confluence(price: f64, row: &IndicatorRow, tolerance: f64) -> f64 {
+    if price <= 0.0 {
+        return 0.0;
+    }
+    let levels = [
+        row.structure_session_high,
+        row.structure_session_low,
+        row.structure_premarket_high,
+        row.structure_premarket_low,
+        row.structure_opening_range_high,
+        row.structure_opening_range_low,
+        row.structure_swing_high,
+        row.structure_swing_low,
+        row.structure_volume_poc,
+        row.structure_nearest_round,
+    ];
+    (levels
+        .iter()
+        .filter(|level| **level > 0.0 && (**level - price).abs() <= tolerance)
+        .count() as f64
+        / 4.0)
+        .clamp(0.0, 1.0)
+}
+
+fn nearest_round_price(price: f64) -> f64 {
+    let interval = if price >= 100.0 {
+        1.0
+    } else if price >= 10.0 {
+        0.5
+    } else if price >= 1.0 {
+        0.10
+    } else {
+        0.01
+    };
+    (price / interval).round() * interval
 }
 
 impl MicrostructureCumulativeFlow {
@@ -354,6 +799,7 @@ struct BarIndicatorState {
     rsi_14: RsiState,
     session_vwap: SessionVwapState,
     volume_sma_20: RollingStats,
+    market_structure: MarketStructureState,
 }
 
 struct SessionVwapState {
@@ -572,6 +1018,10 @@ impl IndicatorStore {
             .get_mut(&key)
             .expect("indicator calculator exists")
             .apply_cumulative_microstructure(&mut row);
+        self.bars
+            .get_mut(&key)
+            .expect("indicator calculator exists")
+            .apply_market_levels(&mut row, &bar);
         let history_limit = self.history_limit_for(&bar.timeframe);
         let history = self.history.entry(key).or_insert_with(VecDeque::new);
         history.push_back(row.clone());
@@ -891,6 +1341,7 @@ impl BarIndicatorState {
             rsi_14: RsiState::new(14),
             session_vwap: SessionVwapState::new(),
             volume_sma_20: RollingStats::new(20),
+            market_structure: MarketStructureState::default(),
         }
     }
 
@@ -929,6 +1380,7 @@ impl BarIndicatorState {
             bar.volume,
             bar.vwap,
         );
+        let structure = self.market_structure.update(bar);
 
         IndicatorRow {
             schema_version: INDICATOR_SCHEMA_VERSION,
@@ -998,6 +1450,26 @@ impl BarIndicatorState {
             microstructure_displayed_liquidity_score: 0.0,
             microstructure_response_resiliency_score: 0.0,
             microstructure_regime_reliability: 0.0,
+            liquidity_support_price: 0.0,
+            liquidity_support_strength: 0.0,
+            liquidity_support_confidence: 0.0,
+            liquidity_resistance_price: 0.0,
+            liquidity_resistance_strength: 0.0,
+            liquidity_resistance_confidence: 0.0,
+            liquidity_level_pressure: 0.0,
+            market_level_support_score: 0.0,
+            market_level_resistance_score: 0.0,
+            market_level_bias: 0.0,
+            structure_session_high: structure.session_high,
+            structure_session_low: structure.session_low,
+            structure_premarket_high: structure.premarket_high,
+            structure_premarket_low: structure.premarket_low,
+            structure_opening_range_high: structure.opening_range_high,
+            structure_opening_range_low: structure.opening_range_low,
+            structure_swing_high: structure.swing_high,
+            structure_swing_low: structure.swing_low,
+            structure_volume_poc: structure.volume_poc,
+            structure_nearest_round: structure.nearest_round,
             microstructure_interval: MicrostructureIntervalFeatures::default(),
         }
     }
@@ -1332,7 +1804,27 @@ impl IndicatorClickHouseWriter {
                 microstructure_aggressive_flow_score Float64,
                 microstructure_displayed_liquidity_score Float64,
                 microstructure_response_resiliency_score Float64,
-                microstructure_regime_reliability Float64
+                microstructure_regime_reliability Float64,
+                liquidity_support_price Float64,
+                liquidity_support_strength Float64,
+                liquidity_support_confidence Float64,
+                liquidity_resistance_price Float64,
+                liquidity_resistance_strength Float64,
+                liquidity_resistance_confidence Float64,
+                liquidity_level_pressure Float64,
+                market_level_support_score Float64,
+                market_level_resistance_score Float64,
+                market_level_bias Float64,
+                structure_session_high Float64,
+                structure_session_low Float64,
+                structure_premarket_high Float64,
+                structure_premarket_low Float64,
+                structure_opening_range_high Float64,
+                structure_opening_range_low Float64,
+                structure_swing_high Float64,
+                structure_swing_low Float64,
+                structure_volume_poc Float64,
+                structure_nearest_round Float64
             )
             ENGINE = ReplacingMergeTree
             PARTITION BY session_date
@@ -1383,7 +1875,27 @@ impl IndicatorClickHouseWriter {
                 ADD COLUMN IF NOT EXISTS microstructure_aggressive_flow_score Float64,
                 ADD COLUMN IF NOT EXISTS microstructure_displayed_liquidity_score Float64,
                 ADD COLUMN IF NOT EXISTS microstructure_response_resiliency_score Float64,
-                ADD COLUMN IF NOT EXISTS microstructure_regime_reliability Float64"#,
+                ADD COLUMN IF NOT EXISTS microstructure_regime_reliability Float64,
+                ADD COLUMN IF NOT EXISTS liquidity_support_price Float64,
+                ADD COLUMN IF NOT EXISTS liquidity_support_strength Float64,
+                ADD COLUMN IF NOT EXISTS liquidity_support_confidence Float64,
+                ADD COLUMN IF NOT EXISTS liquidity_resistance_price Float64,
+                ADD COLUMN IF NOT EXISTS liquidity_resistance_strength Float64,
+                ADD COLUMN IF NOT EXISTS liquidity_resistance_confidence Float64,
+                ADD COLUMN IF NOT EXISTS liquidity_level_pressure Float64,
+                ADD COLUMN IF NOT EXISTS market_level_support_score Float64,
+                ADD COLUMN IF NOT EXISTS market_level_resistance_score Float64,
+                ADD COLUMN IF NOT EXISTS market_level_bias Float64,
+                ADD COLUMN IF NOT EXISTS structure_session_high Float64,
+                ADD COLUMN IF NOT EXISTS structure_session_low Float64,
+                ADD COLUMN IF NOT EXISTS structure_premarket_high Float64,
+                ADD COLUMN IF NOT EXISTS structure_premarket_low Float64,
+                ADD COLUMN IF NOT EXISTS structure_opening_range_high Float64,
+                ADD COLUMN IF NOT EXISTS structure_opening_range_low Float64,
+                ADD COLUMN IF NOT EXISTS structure_swing_high Float64,
+                ADD COLUMN IF NOT EXISTS structure_swing_low Float64,
+                ADD COLUMN IF NOT EXISTS structure_volume_poc Float64,
+                ADD COLUMN IF NOT EXISTS structure_nearest_round Float64"#,
             true,
         )
         .await?;
@@ -1567,6 +2079,26 @@ fn indicator_insert_row(row: &IndicatorRow) -> serde_json::Value {
         "microstructure_displayed_liquidity_score": row.microstructure_displayed_liquidity_score,
         "microstructure_response_resiliency_score": row.microstructure_response_resiliency_score,
         "microstructure_regime_reliability": row.microstructure_regime_reliability,
+        "liquidity_support_price": row.liquidity_support_price,
+        "liquidity_support_strength": row.liquidity_support_strength,
+        "liquidity_support_confidence": row.liquidity_support_confidence,
+        "liquidity_resistance_price": row.liquidity_resistance_price,
+        "liquidity_resistance_strength": row.liquidity_resistance_strength,
+        "liquidity_resistance_confidence": row.liquidity_resistance_confidence,
+        "liquidity_level_pressure": row.liquidity_level_pressure,
+        "market_level_support_score": row.market_level_support_score,
+        "market_level_resistance_score": row.market_level_resistance_score,
+        "market_level_bias": row.market_level_bias,
+        "structure_session_high": row.structure_session_high,
+        "structure_session_low": row.structure_session_low,
+        "structure_premarket_high": row.structure_premarket_high,
+        "structure_premarket_low": row.structure_premarket_low,
+        "structure_opening_range_high": row.structure_opening_range_high,
+        "structure_opening_range_low": row.structure_opening_range_low,
+        "structure_swing_high": row.structure_swing_high,
+        "structure_swing_low": row.structure_swing_low,
+        "structure_volume_poc": row.structure_volume_poc,
+        "structure_nearest_round": row.structure_nearest_round,
     })
 }
 
@@ -1640,10 +2172,74 @@ fn safe_div(numerator: f64, denominator: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        anchored_flow_relationship, anchored_market_session_date, MicrostructureCumulativeFlow,
-        SessionVwapState, WeightedSignalAggregate,
+        anchored_flow_relationship, anchored_market_session_date, decay_levels,
+        exact_clock_level_supported, level_confidence, normalized_level_strength, select_level,
+        update_level, LevelEvidence, MicrostructureCumulativeFlow, SessionVwapState,
+        WeightedSignalAggregate,
     };
     use chrono::{TimeZone, Utc};
+    use std::collections::HashMap;
+
+    #[test]
+    fn exact_clock_levels_reject_bars_that_straddle_the_window() {
+        assert!(exact_clock_level_supported("30s", 1800.0));
+        assert!(!exact_clock_level_supported("1h", 1800.0));
+        assert!(exact_clock_level_supported("5m", 300.0));
+        assert!(!exact_clock_level_supported("1h", 300.0));
+    }
+
+    #[test]
+    fn liquidity_evidence_accumulates_by_price_and_decays_on_elapsed_time() {
+        let mut levels = HashMap::new();
+        update_level(&mut levels, 100.004, 0.5, 0.8);
+        update_level(&mut levels, 100.003, 0.5, 0.8);
+        let level = levels.values().next().expect("one tick-binned level");
+        assert_eq!(level.touches, 2);
+        assert!((level.score - 1.0).abs() < 1e-9);
+        assert!(level_confidence(level) > 0.5);
+        decay_levels(&mut levels, 0.5);
+        assert!((levels.values().next().unwrap().score - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn liquidity_selection_prefers_relevant_nearby_side() {
+        let mut levels = HashMap::from([
+            (
+                9_900,
+                LevelEvidence {
+                    price: 99.0,
+                    score: 4.0,
+                    evidence: 3.0,
+                    touches: 4,
+                },
+            ),
+            (
+                9_990,
+                LevelEvidence {
+                    price: 99.9,
+                    score: 2.0,
+                    evidence: 2.0,
+                    touches: 3,
+                },
+            ),
+            (
+                10_010,
+                LevelEvidence {
+                    price: 100.1,
+                    score: 3.0,
+                    evidence: 2.0,
+                    touches: 3,
+                },
+            ),
+        ]);
+        let support = select_level(&levels, 100.0, true, 0.5).unwrap();
+        let resistance = select_level(&levels, 100.0, false, 0.5).unwrap();
+        assert_eq!(support.price, 99.9);
+        assert_eq!(resistance.price, 100.1);
+        assert!(normalized_level_strength(support.score) > 0.8);
+        levels.clear();
+        assert!(select_level(&levels, 100.0, true, 0.5).is_none());
+    }
 
     #[test]
     fn session_vwap_accumulates_hlc3_weighted_by_volume() {

@@ -228,6 +228,55 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
   displayIndicator("indicator.qmd_arrival_intensity", "QMD Arrival-intensity Imbalance", "microstructure", ["microstructure_arrival_intensity_imbalance", "microstructure_arrival_rate_per_second"], "qmd_arrival", qmdIndicatorKnowledge("Direction of information arrival", "Combines directional quote transitions and classified trade arrivals, while retaining total arrivals per second as an activity diagnostic.", "A directional imbalance with a rising arrival rate signals urgent pressure; low-rate readings deserve less weight.", "Bursts can be fleeting and should be confirmed by price response or OFI.")),
   displayIndicator("indicator.qmd_resiliency", "QMD Liquidity Resiliency", "microstructure", ["microstructure_resiliency"], "qmd_resiliency", qmdIndicatorKnowledge("How displayed liquidity replenishes after depletion", "Compares same-side best-level replenishment with depletion across raw quote transitions and signs the result by the side recovering more effectively.", "Positive values favor bid recovery; negative values favor ask recovery. Near zero means balanced or insufficient recovery evidence.", "NBBO-only resiliency cannot observe deeper-book replenishment.")),
   displayIndicator("indicator.qmd_architecture", "QMD Signal Architecture", "microstructure", ["microstructure_unified_signal", "microstructure_aggressive_flow_score", "microstructure_displayed_liquidity_score", "microstructure_response_resiliency_score", "microstructure_regime_reliability"], "qmd_architecture", qmdIndicatorKnowledge("The canonical combined signal and the four properties that explain it", "Combined Signal is 45% Aggressive Flow, 35% Displayed Liquidity, and 20% Response & Resiliency, clamped to -1 through +1. Aggressive Flow combines trade counts, volume, persistence, trade return, and arrivals. Displayed Liquidity combines OFI, queue, microprice, and arrivals. Response & Resiliency combines midpoint response, replenishment, and absorption. Reliability measures evidence quality and block agreement and controls confidence rather than adding another directional vote.", "Read Combined Signal for direction, the three directional blocks for attribution, and Reliability for whether the evidence is trustworthy enough to act. Agreement among the blocks strengthens the result; low reliability warns that the direction is poorly supported.", "The combined line is the same canonical gateway signal used by strategies and the QMD Outlook pane; do not combine the four diagnostics again in the frontend.")),
+  displayIndicator("indicator.qmd_liquidity_levels", "QMD Liquidity Support & Resistance", "volume_liquidity", ["liquidity_support_price", "liquidity_support_strength", "liquidity_support_confidence", "liquidity_resistance_price", "liquidity_resistance_strength", "liquidity_resistance_confidence"], "price", {
+    shortDescription: "Causal support and resistance candidates inferred from consolidated NBBO behavior and eligible trades.",
+    detailedDescription: "Green zones are price levels where bid reinforcement, bid recovery after depletion, seller absorption, and lower-price rejection accumulated. Red zones use the symmetric ask-side evidence. Evidence decays with a 15-minute half-life, so stale levels weaken rather than remaining permanent.",
+    calculation: "For each selected-timeframe bar, support weights positive Level-1 OFI 30%, bid recovery 25%, absorbed aggressive selling 25%, and lower-range rejection 20%. Resistance mirrors those inputs. Repeated observations accumulate by minimum price increment; strength is a bounded transform of cumulative evidence and confidence combines touch count with QMD evidence reliability.",
+    readingGuide: "Treat each band as an area, not an exact tick. A green zone below price is useful only if price approaches it and bids replenish or selling fails to move the midpoint. A red zone above price is useful only if asks replenish or buying fails. A close and acceptance through a zone invalidates its prior role faster than a brief wick.",
+    bullishEvidence: "A nearby green zone with high strength and confidence, followed by seller absorption, positive OFI, and price rejection upward, supports a short-horizon bounce or continuation.",
+    bearishEvidence: "A nearby red zone with high strength and confidence, followed by buyer absorption, negative OFI, and price rejection downward, supports a short-horizon rejection or continuation lower.",
+    timeframeBehavior: "Raw 100 ms quote-and-trade sufficient statistics are merged once into the selected bar. Level evidence then decays by elapsed time, so changing timeframe changes observation granularity without changing the 15-minute economic half-life.",
+    components: [
+      { label: "Green zone · Liquidity support", description: "Best candidate at or below price. Width is visual; the label reports strength and confidence.", tone: "buy" },
+      { label: "Red zone · Liquidity resistance", description: "Best candidate at or above price. It represents observed ask-side evidence, not guaranteed supply.", tone: "sell" },
+      { label: "Strength", description: "How much decayed evidence has accumulated at the level, normalized from 0% to 100%.", tone: "info" },
+      { label: "Confidence", description: "Whether the level has repeated observations supported by reliable quote/trade coverage; it is not win probability.", tone: "warning" },
+    ],
+    caveats: ["QMD sees consolidated Level-1 NBBO, not venue depth, hidden liquidity, or the full order book.", "Displayed liquidity can be cancelled before execution; require price response and persistence.", "A candidate level is causal evidence, not a claim that the market must reverse there."],
+  }),
+  displayIndicator("indicator.market_structure_levels", "Market Structure Levels", "price_action", ["structure_session_high", "structure_session_low", "structure_premarket_high", "structure_premarket_low", "structure_opening_range_high", "structure_opening_range_low", "structure_swing_high", "structure_swing_low", "structure_volume_poc", "structure_nearest_round"], "price", {
+    shortDescription: "Important price references derived from the current 04:00 ET session and confirmed chart structure.",
+    detailedDescription: "The overlay tracks the developing session high and low, premarket high and low, 09:30–09:35 opening range, causally confirmed five-bar swing high and low, bar-volume point of control, and nearest adaptive round price.",
+    calculation: "Session and premarket extrema update only when a completed bar makes a new extreme. Opening range freezes after 09:35 ET. A swing is confirmed only after two later bars fail to exceed the center bar, avoiding future leakage. Volume POC bins each bar's volume at HLC3; the round reference uses $1, 50¢, 10¢, or 1¢ spacing by price scale.",
+    readingGuide: "Start with session and premarket extremes, then opening range. These are widely observed auction boundaries. Use the latest confirmed swing for local structure, POC for accepted value, and the round level as a clustering reference. Multiple lines near the same price create confluence; they do not become independent votes simply because they overlap.",
+    bullishEvidence: "Reclaim and acceptance above a prior high, opening-range high, or swing high—especially with positive flow—supports continuation. A defended low or POC can support a bounce.",
+    bearishEvidence: "Loss and acceptance below a prior low, opening-range low, or swing low—especially with negative flow—supports continuation lower. Rejection at a high or POC can act as resistance.",
+    timeframeBehavior: "Session anchors retain their clock meaning. Premarket H/L requires bars of 30 minutes or less, and the five-minute opening range requires bars of five minutes or less, because a larger bar would straddle the boundary and create a false precise level. Swing confirmation and bar-volume POC depend on the selected timeframe because their bars change.",
+    components: [
+      { label: "Session H/L", description: "Developing extremes since the 04:00 ET session anchor.", tone: "info" },
+      { label: "Premarket H/L", description: "Extremes from 04:00 through 09:29:59 ET; fixed after the regular open.", tone: "warning" },
+      { label: "Opening range H/L", description: "Developing 09:30–09:35 ET extremes, fixed after five minutes.", tone: "neutral" },
+      { label: "Confirmed swing H/L", description: "Local pivot confirmed only after two following bars; it intentionally appears with a two-bar delay.", tone: "info" },
+      { label: "Bar-volume POC", description: "Price bin with the most accumulated bar volume using each bar's HLC3 proxy; it is not a tick-accurate volume profile.", tone: "buy" },
+      { label: "Round price", description: "Nearest psychologically salient price increment; useful as a clustering reference, never sufficient alone.", tone: "neutral" },
+    ],
+    caveats: ["Structure describes where reactions may matter, not which direction wins.", "Premarket and opening-range fields remain unavailable when the selected bar is too large to isolate their exact clock window.", "The POC is estimated from bar-level data and can differ from a trade-by-trade volume profile.", "Swing levels are timeframe-dependent and deliberately delayed to remain causal."],
+  }),
+  displayIndicator("indicator.qmd_level_confluence", "QMD Level Confluence", "microstructure", ["market_level_bias", "market_level_support_score", "market_level_resistance_score", "liquidity_level_pressure"], "qmd_level_confluence", {
+    shortDescription: "One signed oscillator comparing nearby support evidence with nearby resistance evidence.",
+    detailedDescription: "The histogram is combined level bias from -1 to +1. Green means stronger support evidence, red means stronger resistance evidence, and gray means balanced or weak evidence. Support and resistance lines show each side's absolute 0–100% score.",
+    calculation: "Each side is 65% liquidity strength × confidence plus 35% structural confluence. Structural confluence counts independent session, premarket, opening-range, swing, volume-POC, and round-price references within 20% of ATR (minimum four ticks) of the liquidity level. Bias equals support score minus resistance score.",
+    readingGuide: "Read bias first for direction, then compare the two side scores. A strong green bias caused by high support and low resistance is clearer than green bias where both sides are high. When both scores are elevated, expect compression, two-sided liquidity, or a breakout decision rather than an easy directional trade.",
+    bullishEvidence: "Positive and rising bias with support score expanding, resistance score fading, and price holding above the support zone indicates improving upside asymmetry.",
+    bearishEvidence: "Negative and falling bias with resistance score expanding, support score fading, and price holding below the resistance zone indicates improving downside asymmetry.",
+    timeframeBehavior: "The oscillator is calculated once per closed selected-timeframe bar from the same gateway state used to draw the zones; it is strategy-readable and is not recomputed in the browser.",
+    components: [
+      { label: "Histogram · Level bias", description: "Support score minus resistance score. Sign gives the stronger side; magnitude gives separation, not probability.", tone: "neutral" },
+      { label: "Green line · Support score", description: "Absolute combined support evidence from 0 to 100%.", tone: "buy" },
+      { label: "Red line · Resistance score", description: "Absolute combined resistance evidence from 0 to 100%.", tone: "sell" },
+    ],
+    caveats: ["Confluence is not a forecast probability or a substitute for price confirmation.", "Closely related structure levels are clustered evidence, not independent statistical samples.", "News, halts, auctions, and gaps can invalidate previously observed levels immediately."],
+  }),
 ];
 
 const INDICATOR_SERIES = [
@@ -270,6 +319,9 @@ const INDICATOR_SERIES = [
   { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Score", colorMode: "sign", column: "microstructure_displayed_liquidity_score", color: "var(--info)", displayItemId: "indicator.qmd_architecture", label: "Displayed liquidity", pane: "qmd_architecture", lineWidth: 2 },
   { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Score", colorMode: "sign", column: "microstructure_response_resiliency_score", color: "var(--warning)", displayItemId: "indicator.qmd_architecture", label: "Response & resiliency", pane: "qmd_architecture", lineWidth: 2 },
   { autoscaleMax: 1, autoscaleMin: 0, axisTitle: "Reliability", colorMode: "sign", column: "microstructure_regime_reliability", color: "var(--muted-foreground)", displayItemId: "indicator.qmd_architecture", label: "Reliability", lineStyle: "dashed", pane: "qmd_architecture", priceScaleId: "left" },
+  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Bias", colorMode: "sign", column: "market_level_bias", color: "var(--foreground)", displayItemId: "indicator.qmd_level_confluence", label: "Level bias", pane: "qmd_level_confluence", style: "histogram" },
+  { autoscaleMax: 1, autoscaleMin: 0, axisTitle: "Evidence", column: "market_level_support_score", color: "var(--success)", displayItemId: "indicator.qmd_level_confluence", label: "Support score", lineWidth: 2, pane: "qmd_level_confluence", priceScaleId: "left" },
+  { autoscaleMax: 1, autoscaleMin: 0, axisTitle: "Evidence", column: "market_level_resistance_score", color: "var(--danger)", displayItemId: "indicator.qmd_level_confluence", label: "Resistance score", lineWidth: 2, pane: "qmd_level_confluence", priceScaleId: "left" },
 ] as const;
 
 function displayIndicator(id: string, title: string, group: string, sourceColumns: string[], pane = "price", knowledge?: ChartDisplayItem["knowledge"]): ChartDisplayItem {
@@ -1137,6 +1189,7 @@ function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl,
     markers: [],
     oscillator_series: historicalIndicatorSeries(indicators, "oscillator", visibleIndicators),
     overlay_series: historicalIndicatorSeries(indicators, "price", visibleIndicators),
+    price_zones: historicalMarketLevelZones(indicators, liveChart.bars, visibleIndicators),
     regions: MACRO_TIMEFRAMES.has(timeframe) ? [] : extendedSessionRegions(liveChart.bars),
     volume: settings.chart.showVolume ? liveChart.bars.map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
   }), [indicators, liveChart.bars, settings.chart.showVolume, timeframe, visibleIndicators]);
@@ -1150,6 +1203,95 @@ function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl,
     ? `Waiting for the first live ${linkContext.symbol} ${timeframe} bar.`
     : "Start QMD Gateway to stream canonical live bars.";
   return <ChartPanel canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={liveChart.indicatorsAvailable ? CHART_INDICATORS : []} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} indicatorOptions={[]} initialFitMode="recent" loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => updateSettings((current) => ({ ...current, chart: { ...current.chart, visibleIndicators: nextVisibleIndicators } }))} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={HISTORICAL_TIMEFRAMES} visibleColumns={visibleIndicators} />;
+}
+
+function historicalMarketLevelZones(rows: HistoricalIndicator[], bars: HistoricalBar[], visibleIndicators: string[]): NonNullable<ChartPayload["price_zones"]> {
+  if (!rows.length || !bars.length) return [];
+  const visible = new Set(visibleIndicators);
+  const latest = rows[rows.length - 1];
+  const chartEnd = Date.parse(bars[bars.length - 1].bar_end || bars[bars.length - 1].bar_start) / 1000 + 1;
+  const zones: NonNullable<ChartPayload["price_zones"]> = [];
+  if (visible.has("indicator.qmd_liquidity_levels")) {
+    const supportStrength = finiteNumber(latest.liquidity_support_strength);
+    const supportConfidence = finiteNumber(latest.liquidity_support_confidence);
+    const resistanceStrength = finiteNumber(latest.liquidity_resistance_strength);
+    const resistanceConfidence = finiteNumber(latest.liquidity_resistance_confidence);
+    pushLatestLevelZone(zones, rows, "liquidity_support_price", chartEnd, {
+      color: "var(--success)", displayItemId: "indicator.qmd_liquidity_levels", fillOpacity: 0.05 + 0.14 * supportStrength * supportConfidence,
+      label: `Liquidity support · ${percentLabel(supportStrength)} strength · ${percentLabel(supportConfidence)} confidence`, minPixelHeight: 8,
+    });
+    pushLatestLevelZone(zones, rows, "liquidity_resistance_price", chartEnd, {
+      color: "var(--danger)", displayItemId: "indicator.qmd_liquidity_levels", fillOpacity: 0.05 + 0.14 * resistanceStrength * resistanceConfidence,
+      label: `Liquidity resistance · ${percentLabel(resistanceStrength)} strength · ${percentLabel(resistanceConfidence)} confidence`, minPixelHeight: 8,
+    });
+  }
+  if (visible.has("indicator.market_structure_levels")) {
+    const specs = [
+      ["structure_session_high", "Session high", "var(--info)"],
+      ["structure_session_low", "Session low", "var(--info)"],
+      ["structure_premarket_high", "Premarket high", "var(--warning)"],
+      ["structure_premarket_low", "Premarket low", "var(--warning)"],
+      ["structure_opening_range_high", "Opening range high", "var(--foreground)"],
+      ["structure_opening_range_low", "Opening range low", "var(--foreground)"],
+      ["structure_swing_high", "Confirmed swing high", "var(--danger)"],
+      ["structure_swing_low", "Confirmed swing low", "var(--success)"],
+      ["structure_volume_poc", "Bar-volume POC", "var(--success)"],
+      ["structure_nearest_round", "Nearest round price", "var(--muted-foreground)"],
+    ] as const;
+    specs.forEach(([column, label, color]) => pushLatestLevelZone(zones, rows, column, chartEnd, {
+      color, displayItemId: "indicator.market_structure_levels", fillOpacity: 0.035, label, minPixelHeight: 3,
+    }));
+  }
+  return zones;
+}
+
+function pushLatestLevelZone(
+  zones: NonNullable<ChartPayload["price_zones"]>,
+  rows: HistoricalIndicator[],
+  column: string,
+  end: number,
+  style: { color: string; displayItemId: string; fillOpacity: number; label: string; minPixelHeight: number },
+) {
+  const latestValue = finiteNumber(rows[rows.length - 1][column]);
+  if (latestValue <= 0) return;
+  let startIndex = rows.length - 1;
+  while (startIndex > 0 && pricesMatch(finiteNumber(rows[startIndex - 1][column]), latestValue)) startIndex -= 1;
+  const start = Date.parse(String(rows[startIndex].bar_start)) / 1000;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+  zones.push({
+    borderColor: style.color,
+    borderOpacity: Math.min(0.4, style.fillOpacity * 2.5),
+    borderStyle: "solid",
+    borderWidth: 1,
+    color: style.color,
+    displayItemId: style.displayItemId,
+    end,
+    fillColor: style.color,
+    fillOpacity: style.fillOpacity,
+    label: `${style.label} · ${formatLevelPrice(latestValue)}`,
+    lower: latestValue,
+    minPixelHeight: style.minPixelHeight,
+    start,
+    upper: latestValue,
+    zoneHeightMode: "fixed_px",
+  });
+}
+
+function finiteNumber(value: unknown) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function pricesMatch(left: number, right: number) {
+  return left > 0 && right > 0 && Math.abs(left - right) <= Math.max(0.00005, Math.abs(right) * 1e-8);
+}
+
+function percentLabel(value: number) {
+  return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
+}
+
+function formatLevelPrice(value: number) {
+  return value >= 1 ? `$${value.toFixed(2)}` : `$${value.toFixed(4)}`;
 }
 
 function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscillator" | "price", visibleIndicators: string[]): ChartPayload["overlay_series"] {
