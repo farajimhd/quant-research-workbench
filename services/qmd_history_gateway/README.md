@@ -106,8 +106,9 @@ Each higher-timeframe microstructure row confidence-weights the 100 ms samples
 inside that bar and applies an agreement penalty to confidence.
 Session-anchored cumulative Level-1 OFI and signed trade-volume delta are then
 advanced from those interval-local values by the shared stateful indicator
-calculator. They reset only when `session_date` changes, so historical and live
-QMD expose the same cumulative-flow and confirmation/absorption relationship
+calculator. Both start from one zero baseline at 04:00 New York time and do not
+reset at the 09:30 regular-session open. The DST-aware anchor is shared by live
+and historical QMD, preserving cumulative-flow and confirmation/absorption
 semantics at every supported timeframe.
 
 `/stream/derived` supports `emit=full`, `emit=updates`, and

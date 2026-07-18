@@ -3720,16 +3720,17 @@ function drawSessionRegions(
   layer.innerHTML = "";
   const plotLayer = document.createElement("div");
   plotLayer.className = "session-plot-region";
-  plotLayer.style.right = `${chart.priceScale("right").width()}px`;
-  plotLayer.style.bottom = `${chart.timeScale().height()}px`;
+  const renderedScale = elementRenderedScale(layer);
+  plotLayer.style.right = `${chart.priceScale("right").width() / renderedScale.x}px`;
+  plotLayer.style.bottom = `${chart.timeScale().height() / renderedScale.y}px`;
   layer.appendChild(plotLayer);
   const barWidth = estimateBarWidth(chart, candles);
   const candleDuration = estimateCandleDuration(candles);
   regions.forEach((region) => {
     const coordinates = regionCoordinates(chart, region, candles, barWidth, candleDuration);
     if (!coordinates) return;
-    const left = Math.min(coordinates.start, coordinates.end);
-    const width = Math.abs(coordinates.end - coordinates.start);
+    const left = Math.min(coordinates.start, coordinates.end) / renderedScale.x;
+    const width = Math.abs(coordinates.end - coordinates.start) / renderedScale.x;
     if (width < 1) return;
     const node = document.createElement("div");
     node.className = "session-region";
@@ -3739,7 +3740,7 @@ function drawSessionRegions(
     node.style.background = sessionRegionColor(region, settings);
     plotLayer.appendChild(node);
   });
-  if (drawSeparators) drawDaySeparators(chart, plotLayer, candles, settings, barWidth);
+  if (drawSeparators) drawDaySeparators(chart, plotLayer, candles, settings, barWidth, renderedScale.x);
   return plotLayer;
 }
 
@@ -3880,7 +3881,7 @@ function sessionRegionColor(region: Region, settings: ChartAppearanceSettings) {
   return region.color;
 }
 
-function drawDaySeparators(chart: IChartApi, layer: HTMLDivElement, candles: Candle[], settings: ChartAppearanceSettings, barWidth: number) {
+function drawDaySeparators(chart: IChartApi, layer: HTMLDivElement, candles: Candle[], settings: ChartAppearanceSettings, barWidth: number, renderedScaleX = 1) {
   if (!settings.daySeparatorsVisible || candles.length < 2) return;
   let previousDate = marketDate(candles[0].time);
   candles.slice(1).forEach((candle) => {
@@ -3892,7 +3893,7 @@ function drawDaySeparators(chart: IChartApi, layer: HTMLDivElement, candles: Can
     const node = document.createElement("div");
     node.className = "day-separator";
     node.title = currentDate;
-    node.style.left = `${coordinate - barWidth / 2}px`;
+    node.style.left = `${(coordinate - barWidth / 2) / renderedScaleX}px`;
     node.style.borderLeft = `1px ${settings.daySeparatorStyle} ${rgbaFromHex(settings.daySeparatorColor, 0.78)}`;
     layer.appendChild(node);
   });

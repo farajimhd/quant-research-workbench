@@ -16,8 +16,9 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, sleep, Duration};
 
-pub const INDICATOR_SCHEMA_VERSION: u16 = 7;
+pub const INDICATOR_SCHEMA_VERSION: u16 = 8;
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
+const PREMARKET_SESSION_START_SECONDS: u32 = 4 * 60 * 60;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct IndicatorSnapshot {
@@ -253,15 +254,16 @@ struct IndicatorStore {
 
 #[derive(Clone, Debug, Default)]
 struct MicrostructureCumulativeFlow {
+    anchor_session_date: String,
     level1_ofi: f64,
-    session_date: String,
     signed_volume_delta: f64,
 }
 
 impl MicrostructureCumulativeFlow {
     fn apply_to(&mut self, row: &mut IndicatorRow) {
+        let anchor_session_date = anchored_market_session_date(row.bar_start);
         let (level1_ofi, signed_volume_delta) = self.update(
-            &row.session_date,
+            &anchor_session_date,
             row.microstructure_level1_ofi_delta,
             row.microstructure_signed_volume_delta,
         );
@@ -275,14 +277,14 @@ impl MicrostructureCumulativeFlow {
 
     fn update(
         &mut self,
-        session_date: &str,
+        anchor_session_date: &str,
         level1_ofi_delta: f64,
         signed_volume_delta: f64,
     ) -> (f64, f64) {
-        if self.session_date != session_date {
+        if self.anchor_session_date != anchor_session_date {
             self.level1_ofi = 0.0;
             self.signed_volume_delta = 0.0;
-            self.session_date = session_date.to_string();
+            self.anchor_session_date = anchor_session_date.to_string();
         }
         self.level1_ofi += level1_ofi_delta;
         self.signed_volume_delta += signed_volume_delta;
@@ -291,6 +293,15 @@ impl MicrostructureCumulativeFlow {
             round_indicator_value(self.signed_volume_delta),
         )
     }
+}
+
+fn anchored_market_session_date(bar_start: DateTime<Utc>) -> String {
+    let local = bar_start.with_timezone(&New_York);
+    let mut session_date = local.date_naive();
+    if local.num_seconds_from_midnight() < PREMARKET_SESSION_START_SECONDS {
+        session_date = session_date.pred_opt().unwrap_or(session_date);
+    }
+    session_date.to_string()
 }
 
 fn anchored_flow_relationship(level1_ofi: f64, signed_volume_delta: f64) -> (&'static str, f64) {
@@ -1649,8 +1660,8 @@ fn safe_div(numerator: f64, denominator: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        anchored_flow_relationship, MicrostructureCumulativeFlow, SessionVwapState,
-        WeightedSignalAggregate,
+        anchored_flow_relationship, anchored_market_session_date, MicrostructureCumulativeFlow,
+        SessionVwapState, WeightedSignalAggregate,
     };
     use chrono::{TimeZone, Utc};
 
@@ -1701,6 +1712,30 @@ mod tests {
         assert_eq!(state.update("2026-07-14", 120.0, -40.0), (120.0, -40.0));
         assert_eq!(state.update("2026-07-14", -20.0, 90.0), (100.0, 50.0));
         assert_eq!(state.update("2026-07-15", -35.0, -10.0), (-35.0, -10.0));
+    }
+
+    #[test]
+    fn anchored_flow_session_starts_at_four_new_york_across_dst() {
+        assert_eq!(
+            anchored_market_session_date(Utc.with_ymd_and_hms(2026, 7, 14, 7, 59, 59).unwrap()),
+            "2026-07-13"
+        );
+        assert_eq!(
+            anchored_market_session_date(Utc.with_ymd_and_hms(2026, 7, 14, 8, 0, 0).unwrap()),
+            "2026-07-14"
+        );
+        assert_eq!(
+            anchored_market_session_date(Utc.with_ymd_and_hms(2026, 1, 14, 8, 59, 59).unwrap()),
+            "2026-01-13"
+        );
+        assert_eq!(
+            anchored_market_session_date(Utc.with_ymd_and_hms(2026, 1, 14, 9, 0, 0).unwrap()),
+            "2026-01-14"
+        );
+        assert_eq!(
+            anchored_market_session_date(Utc.with_ymd_and_hms(2026, 7, 14, 13, 30, 0).unwrap()),
+            "2026-07-14"
+        );
     }
 
     #[test]
