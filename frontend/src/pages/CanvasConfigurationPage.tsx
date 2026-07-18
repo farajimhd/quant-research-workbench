@@ -27,7 +27,7 @@ import {
   type CanvasRegistry,
   type CanvasWorkspaceState,
 } from "../app/canvasWorkspace";
-import { ChartPanel, type ChartDisplayItem, type ChartPayload } from "../app/components/ChartPanel";
+import { ChartPanel, type ChartCatalogKnowledge, type ChartDisplayItem, type ChartPayload } from "../app/components/ChartPanel";
 import { AllNewsContainer, NewsDetailContainer, TickerNewsContainer } from "../app/components/NewsContainers";
 import { MarketTime } from "../app/components/MarketTime";
 import { MarketStatusBadge, historicalMarketStatus } from "../app/components/MarketStatusBadge";
@@ -143,6 +143,23 @@ const DEFAULT_SETTINGS: ContainerSettings = {
 const HISTORICAL_TIMEFRAMES: CanvasChartTimeframe[] = ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h", "1d", "1mo"];
 const ENRICHED_QMD_TIMEFRAMES = new Set<CanvasChartTimeframe>(["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"]);
 const MACRO_TIMEFRAMES = new Set<CanvasChartTimeframe>(["1d", "1mo"]);
+const INDICATOR_GUIDES: Record<string, ChartCatalogKnowledge> = {
+  "indicator.vwap": indicatorGuide("Compare price with the session's volume-weighted average transaction price. VWAP is the purple price overlay and resets at the regular-session open.", "Cumulative typical price × eligible volume divided by cumulative eligible volume for the current regular session.", "Price holding above a rising VWAP suggests buyers are accepting progressively higher prices; a reclaim that persists is stronger than a brief cross.", "Price holding below a falling VWAP suggests sellers control the session auction; repeated rejection at VWAP reinforces that evidence.", "VWAP is session cumulative, so it moves slowly later in the day and is identical across chart timeframes when built from the same underlying session trades.", ["VWAP is a benchmark, not automatic support or resistance.", "Opening and closing auctions or a few very large prints can materially shift it."]),
+  "indicator.ema_9": movingAverageGuide("EMA 9", 9, "fast"),
+  "indicator.ema_20": movingAverageGuide("EMA 20", 20, "short-term"),
+  "indicator.ema_50": movingAverageGuide("EMA 50", 50, "intermediate"),
+  "indicator.sma_20": indicatorGuide("Read the equally weighted mean of the latest 20 closes against current price and its own slope.", "Arithmetic mean of the latest 20 closed-bar prices; every observation has equal weight.", "Price above a rising SMA, especially after a successful retest, supports an advancing trend.", "Price below a falling SMA, especially after rejection from underneath, supports a declining trend.", "Twenty bars means 20 minutes on a 1-minute chart and 100 minutes on a 5-minute chart, so changing timeframe changes the economic horizon.", ["A moving average lags turning points.", "Repeated crosses in a flat market are noise, not repeated independent signals."]),
+  "indicator.bollinger": indicatorGuide("Read price relative to the 20-bar mean and its volatility envelope. Band slope, width, and whether price accepts outside a band matter more than a single touch.", "Middle band is the 20-bar average; upper and lower bands are two rolling standard deviations above and below it.", "Rising bands with price walking the upper band indicate persistent upside expansion; a lower-band rejection followed by a middle-band reclaim can show recovery.", "Falling bands with price walking the lower band indicate downside expansion; an upper-band rejection followed by loss of the middle band can show renewed selling.", "The lookback always spans 20 selected-timeframe bars, so band width and reaction speed expand materially on higher timeframes.", ["Touching an outer band does not by itself mean overbought, oversold, or reversal.", "Volatility expansion can keep price outside a band longer than expected."]),
+  "indicator.rsi": indicatorGuide("Read the balance of recent up and down closes on a 0–100 scale. Direction, regime, and divergences are more useful than fixed thresholds alone.", "Wilder-smoothed ratio of average gains to average losses over 14 closed bars, transformed to RSI = 100 − 100/(1 + RS).", "RSI holding above 50 and making higher lows supports positive momentum; recovery from below 30 matters most when price also stabilizes.", "RSI holding below 50 and making lower highs supports negative momentum; rejection after an overbought reading matters most when price also weakens.", "Fourteen bars means 14 minutes on 1-minute data and 70 minutes on 5-minute data; readings are not directly interchangeable across timeframes.", ["Overbought can describe strong trend continuation rather than an immediate short.", "Divergence can persist and requires price confirmation."]),
+  "indicator.macd": indicatorGuide("Compare the fast and slow exponential trends, then compare their difference with its signal line. The histogram shows whether momentum is accelerating or decelerating.", "MACD line = EMA(12) − EMA(26); signal = EMA(9) of MACD; histogram = MACD − signal.", "MACD above signal and rising, especially above zero with an expanding positive histogram, supports strengthening upside momentum.", "MACD below signal and falling, especially below zero with an expanding negative histogram, supports strengthening downside momentum.", "All periods are bar counts. On a 1-minute chart the slow leg spans 26 minutes; on a 5-minute chart it spans 130 minutes.", ["Crossovers in a sideways market whipsaw frequently.", "A shrinking histogram signals deceleration, not necessarily reversal."]),
+  "indicator.atr": indicatorGuide("Read recent trading range in price units. ATR describes movement capacity and risk, not direction.", "Wilder-smoothed 14-bar true range, where true range includes the current high-low and gaps from the previous close.", "Rising ATR accompanying an upside breakout supports expansion and helps size realistic stops or targets; ATR itself is not bullish.", "Rising ATR accompanying a downside break supports bearish expansion; falling ATR can precede compression but has no directional sign.", "ATR covers 14 selected-timeframe bars and is stated in dollars, so both horizon and magnitude change with timeframe and price level.", ["High ATR is not a buy or sell signal.", "Comparing raw ATR across differently priced securities is misleading without normalization."]),
+  "indicator.bollinger_std": indicatorGuide("Read the dispersion of closes around their 20-bar mean. Rising values mean volatility expansion; falling values mean compression.", "Population-style rolling standard deviation used by the 20-bar Bollinger envelope, expressed in price units.", "Expansion during rising price confirms active upside movement, while very low compression can precede a breakout whose direction is still unknown.", "Expansion during falling price confirms active downside movement; the indicator alone cannot assign direction.", "The measure spans 20 selected-timeframe bars and naturally grows on higher timeframes or higher-priced securities.", ["Low volatility does not predict breakout direction.", "A one-bar shock can inflate the value after the move is already underway."]),
+  "indicator.volume_sma": indicatorGuide("Compare current bar volume with the average volume of the previous 20 bars to judge participation.", "Arithmetic mean of eligible volume across the latest 20 closed bars.", "Upside price movement on volume above a rising average has stronger participation than the same move on thin volume.", "Downside price movement on volume above average shows stronger selling participation; low volume weakens either directional claim.", "The average covers 20 selected-timeframe bars. Intraday seasonality means opening volume should be compared carefully with midday volume.", ["Volume confirms participation, not direction by itself.", "Auctions, news, and condition eligibility can create exceptional bars."]),
+  "indicator.return": indicatorGuide("Read the signed close-to-close change for one completed chart bar. It is the most local realized price response.", "Current close divided by previous close minus one, shown as a signed return.", "Positive returns that persist and agree with volume or microstructure pressure support short-term continuation.", "Negative returns that persist and agree with selling pressure support short-term continuation lower.", "One bar means the selected timeframe exactly; a 100 ms return and a 5-minute return answer very different questions.", ["This is realized movement, not a forward forecast.", "One isolated return can be a gap, bad print, or temporary liquidity event."]),
+  "indicator.price_ema": indicatorGuide("Read the percentage distance between price and EMA 20 to see extension relative to the short-term trend.", "100 × (close − EMA20) / EMA20.", "A positive distance that grows with a rising EMA supports upside momentum; a controlled pullback toward zero can be a trend retest.", "A negative distance that grows with a falling EMA supports downside momentum; rejection near zero can reinforce resistance.", "EMA 20 spans 20 selected-timeframe bars, so the same percentage has different persistence across timeframes.", ["Large distance can mean trend strength or late-stage overextension.", "Use slope and volatility before treating zero as support or resistance."]),
+  "indicator.price_vwap": indicatorGuide("Read the percentage distance between price and session VWAP to measure where the current auction sits versus the session's volume-weighted consensus.", "100 × (close − session VWAP) / session VWAP.", "A sustained positive distance with rising VWAP indicates acceptance above session value.", "A sustained negative distance with falling VWAP indicates acceptance below session value.", "VWAP is session cumulative, while the sampled close follows the selected chart timeframe; changing timeframe changes sampling, not the underlying benchmark.", ["A large distance can be momentum or temporary extension.", "Premarket interpretation differs because the canonical session VWAP resets at the regular open."]),
+  "indicator.trend_score": indicatorGuide("Read the combined direction and agreement of the configured trend inputs on a normalized negative-to-positive scale.", "Composite normalization of price location and moving-trend evidence; positive components add bullish weight and negative components add bearish weight.", "A positive score that strengthens and remains supported by price above its trend references indicates aligned upside structure.", "A negative score that weakens further and remains supported by price below trend references indicates aligned downside structure.", "Every component is calculated from the selected timeframe, so higher timeframes produce slower and usually more persistent scores.", ["A composite can hide disagreement between its inputs.", "Inspect the underlying averages and price response before acting on the score alone."]),
+};
 const CHART_INDICATORS: ChartDisplayItem[] = [
   displayIndicator("indicator.vwap", "VWAP", "volume_liquidity", ["vwap"]),
   displayIndicator("indicator.ema_9", "EMA 9", "momentum", ["ema_9"]),
@@ -170,9 +187,14 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     ],
     "microstructure",
     {
+      bearishEvidence: "A negative signal with rising confidence, negative aggressive flow, ask-side displayed pressure, and negative price response indicates aligned short-horizon sell pressure.",
+      bullishEvidence: "A positive signal with rising confidence, positive aggressive flow, bid-side displayed pressure, and positive price response indicates aligned short-horizon buy pressure.",
+      calculation: "The directional blocks are weighted 45% aggressive flow, 35% displayed liquidity, and 20% response and resiliency, then attenuated by evidence reliability. Action thresholds require both sufficient score magnitude and at least 35% confidence.",
       shortDescription: "One timeframe-consistent direction signal and its confidence, derived from QMD quotes and trades.",
       detailedDescription: "QMD first records additive quote-and-trade statistics in closed 100 ms buckets. For every larger chart bar it merges counts, volume, Level-1 order flow, queue samples, returns, arrival signs, and liquidity recovery, then calculates the signal once. This avoids averaging overlapping forecasts. Signal runs from -1 (sell pressure) to +1 (buy pressure); confidence runs from 0% to 100% on the left scale.",
       interpretation: "Read the signal line against zero: neon green favors buying, neon red favors selling, and neutral gray means WAIT. Then check the confidence line on the left axis. WAIT means the score is weak, confidence is below 35%, or the flow, liquidity, and response blocks conflict. The three architecture blocks and all nine inputs are available as optional diagnostic panes.",
+      readingGuide: "Read the signed signal on the right axis first, then confidence on the 0-100% left axis. Direction without confidence is weak evidence; confidence without a meaningful signed score remains WAIT.",
+      timeframeBehavior: "QMD closes causal 100 ms sufficient-statistic buckets and merges their raw counts, volume, quote transitions, and returns into exactly one calculation per selected chart bar. A 1-minute result therefore summarizes that minute rather than averaging sixty 1-second forecasts.",
       caveats: [
         "This is a deterministic microstructure estimate, not a guaranteed price forecast.",
         "A bar is causal and final only after its timeframe closes; live partial bars can still change.",
@@ -232,11 +254,45 @@ const INDICATOR_SERIES = [
 ] as const;
 
 function displayIndicator(id: string, title: string, group: string, sourceColumns: string[], pane = "price", knowledge?: ChartDisplayItem["knowledge"]): ChartDisplayItem {
-  return { category: pane === "price" ? "Price overlay" : "Oscillator pane", group, id, knowledge, presentation: { chartRole: pane === "price" ? "overlay" : "oscillator", pane, selectable: true }, sourceColumns, title };
+  return { category: pane === "price" ? "Price overlay" : "Oscillator pane", group, id, knowledge: knowledge ?? INDICATOR_GUIDES[id], presentation: { chartRole: pane === "price" ? "overlay" : "oscillator", pane, selectable: true }, sourceColumns, title };
+}
+
+function indicatorGuide(readingGuide: string, calculation: string, bullishEvidence: string, bearishEvidence: string, timeframeBehavior: string, caveats: string[]): ChartCatalogKnowledge {
+  return {
+    bearishEvidence,
+    bullishEvidence,
+    calculation,
+    caveats,
+    detailedDescription: calculation,
+    readingGuide,
+    shortDescription: readingGuide,
+    timeframeBehavior,
+  };
+}
+
+function movingAverageGuide(title: string, period: number, horizon: string): ChartCatalogKnowledge {
+  return indicatorGuide(
+    `Compare price with the ${title} and read the average's slope. This is a ${horizon} trend reference that weights recent closes more heavily.`,
+    `Exponential moving average of ${period} closed bars using smoothing factor 2 / (${period} + 1).`,
+    `Price holding above a rising ${title}, with pullbacks finding acceptance near it, supports bullish trend continuation.`,
+    `Price holding below a falling ${title}, with rebounds rejected near it, supports bearish trend continuation.`,
+    `${period} bars means ${period} minutes on a 1-minute chart and ${period * 5} minutes on a 5-minute chart; changing timeframe changes the signal horizon.`,
+    ["Moving averages lag price and turn only after the underlying closes change.", "Repeated crosses around a flat average indicate chop rather than a strong trend."],
+  );
 }
 
 function qmdIndicatorKnowledge(shortDescription: string, detailedDescription: string, interpretation: string, caveat: string): ChartDisplayItem["knowledge"] {
-  return { caveats: [caveat, "Positive and negative readings are evidence, not guaranteed forecasts."], detailedDescription, interpretation, shortDescription };
+  return {
+    bearishEvidence: "Sustained negative readings, especially when price response and other QMD blocks agree, indicate seller or ask-side pressure.",
+    bullishEvidence: "Sustained positive readings, especially when price response and other QMD blocks agree, indicate buyer or bid-side pressure.",
+    calculation: detailedDescription,
+    caveats: [caveat, "Positive and negative readings are evidence, not guaranteed forecasts."],
+    detailedDescription,
+    interpretation,
+    readingGuide: `${shortDescription}. ${interpretation}`,
+    shortDescription,
+    timeframeBehavior: "QMD first forms causal 100 ms sufficient statistics, then merges those raw counts, volume, quote transitions, and returns once for the selected chart bar. Higher timeframes therefore describe their own interval rather than averaging overlapping forecasts.",
+  };
 }
 
 function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cutoffMs: number, sessionDate: string): CanvasLiveChartState {

@@ -35,6 +35,7 @@ import { createPortal } from "react-dom";
 
 import { displayName } from "../format";
 import { buildSegmentButtonClassName } from "../selectionStyles";
+import { Modal } from "./Modal";
 import { TickerChangeBadge, TickerLogo } from "./TickerIdentity";
 
 type Candle = { time: number; open: number; high: number; low: number; close: number };
@@ -115,10 +116,15 @@ export type LiveEntryLine = {
   quantity: number;
 };
 export type ChartCatalogKnowledge = {
+  bearishEvidence?: string;
+  bullishEvidence?: string;
+  calculation?: string;
   shortDescription?: string;
   detailedDescription?: string;
   theory?: string;
   interpretation?: string;
+  readingGuide?: string;
+  timeframeBehavior?: string;
   caveats?: string[];
   equations?: Array<{ markdown: string; title: string; variables: Record<string, string> }>;
 };
@@ -2023,10 +2029,15 @@ function SupervisionSelect({
 }
 
 type ChartColumnHelp = {
+  bearishEvidence?: string;
+  bullishEvidence?: string;
+  calculation?: string;
   caveats: string[];
   detail?: string;
   futureLooking: boolean;
+  readingGuide?: string;
   summary: string;
+  timeframeBehavior?: string;
 };
 
 function ChartColumnMenuItem({
@@ -2061,19 +2072,29 @@ function ChartColumnMenuItem({
         <CircleHelp size={13} />
       </button>
       {helpOpen ? (
-        <div className="chart-column-help-panel">
-          {help.futureLooking ? <b>Uses lookahead. This is derived from future bars and should not be used as a live tradable signal.</b> : null}
-          <p>{help.summary}</p>
-          {help.detail ? <p>{help.detail}</p> : null}
-          {help.caveats.length ? (
-            <ul>
-              {help.caveats.map((caveat) => <li key={caveat}>{caveat}</li>)}
-            </ul>
-          ) : null}
-        </div>
+        <Modal className="chart-indicator-guide-modal" onClose={onHelpToggle} title={`How to read: ${title}`}>
+          <div className="chart-indicator-guide-content">
+            {help.futureLooking ? <div className="chart-indicator-guide-alert"><strong>LOOKAHEAD ONLY</strong><span>This uses future bars. Use it for review, training, and validation—not as a live tradable signal.</span></div> : null}
+            <div className="chart-indicator-guide-grid">
+              <IndicatorGuideSection label="Read" text={help.readingGuide || help.summary} tone="read" />
+              {help.bullishEvidence ? <IndicatorGuideSection label="Bullish evidence" text={help.bullishEvidence} tone="buy" /> : null}
+              {help.bearishEvidence ? <IndicatorGuideSection label="Bearish evidence" text={help.bearishEvidence} tone="sell" /> : null}
+              {help.calculation || help.detail ? <IndicatorGuideSection label="Calculation & scale" text={help.calculation || help.detail || ""} tone="info" /> : null}
+              {help.timeframeBehavior ? <IndicatorGuideSection label="Timeframe behavior" text={help.timeframeBehavior} tone="info" /> : null}
+              <section className="chart-indicator-guide-section" data-tone="warning">
+                <strong>Do not overread</strong>
+                {help.caveats.length ? <ul>{help.caveats.map((caveat) => <li key={caveat}>{caveat}</li>)}</ul> : <p>No single indicator is a complete forecast. Confirm the reading with price response, liquidity, and the trading regime.</p>}
+              </section>
+            </div>
+          </div>
+        </Modal>
       ) : null}
     </div>
   );
+}
+
+function IndicatorGuideSection({ label, text, tone }: { label: string; text: string; tone: "buy" | "info" | "read" | "sell" }) {
+  return <section className="chart-indicator-guide-section" data-tone={tone}><strong>{label}</strong><p>{text}</p></section>;
 }
 
 type ChartMenuHelpSource = {
@@ -2090,10 +2111,15 @@ function chartColumnHelp(source: ChartMenuHelpSource | undefined, title: string,
   const summary = compactHelpText(knowledge?.shortDescription) || `${title} is available from the provider catalog for chart review.`;
   const detailed = compactHelpText(knowledge?.detailedDescription || knowledge?.theory || knowledge?.interpretation);
   return {
-    caveats: (knowledge?.caveats ?? []).map(compactHelpText).filter(Boolean).slice(0, 2),
+    bearishEvidence: compactHelpText(knowledge?.bearishEvidence) || undefined,
+    bullishEvidence: compactHelpText(knowledge?.bullishEvidence) || undefined,
+    calculation: compactHelpText(knowledge?.calculation) || undefined,
+    caveats: (knowledge?.caveats ?? []).map(compactHelpText).filter(Boolean),
     detail: detailed && detailed !== summary ? detailed : undefined,
     futureLooking: futureLooking || chartMenuItemUsesLookahead(source),
+    readingGuide: compactHelpText(knowledge?.readingGuide) || undefined,
     summary,
+    timeframeBehavior: compactHelpText(knowledge?.timeframeBehavior) || undefined,
   };
 }
 
