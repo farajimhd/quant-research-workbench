@@ -11,7 +11,7 @@ import sys
 import time
 from collections import defaultdict, deque
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -115,8 +115,6 @@ from research.mlops.clickhouse import (  # noqa: E402
 from research.mlops.env import load_env_files, secret_status  # noqa: E402
 
 
-DEFAULT_START_DATE = "2025-01-01"
-DEFAULT_END_DATE = "2026-12-31"
 DEFAULT_DOWNLOAD_WORKERS = 8
 DEFAULT_MAX_THREADS = 64
 DEFAULT_TEST_TABLE_PREFIX = "test_flatfile_event_update"
@@ -165,6 +163,24 @@ class SourceDayFileIdentity:
     trade_file_mtime_ns: int
 
 
+@dataclass(frozen=True, slots=True)
+class RemoteDayInventory:
+    complete_days: tuple[DayFiles, ...]
+    incomplete_days: tuple[tuple[str, tuple[str, ...]], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AutoUpdatePlan:
+    database_frontier: str
+    latest_complete_remote_day: str
+    days: tuple[DayFiles, ...]
+    complete_remote_days_after_frontier: int
+    cached_files: int
+    download_files: int
+    download_bytes: int
+    waiting_incomplete_days: tuple[tuple[str, tuple[str, ...]], ...]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -194,8 +210,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bar-keep-staging-table", action="store_true")
     parser.add_argument("--bar-copy-at-end", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--bar-summarize-chunks", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--start-date", default=DEFAULT_START_DATE)
-    parser.add_argument("--end-date", default=DEFAULT_END_DATE)
+    parser.add_argument(
+        "--start-date",
+        default=None,
+        help=(
+            "Manual mode first source date, inclusive. Omit both date arguments to discover and propose "
+            "the next remote source days after the database frontier."
+        ),
+    )
+    parser.add_argument(
+        "--end-date",
+        default=None,
+        help=(
+            "Manual mode last source date, inclusive. Omit both date arguments to discover and propose "
+            "the next remote source days after the database frontier."
+        ),
+    )
     parser.add_argument("--flatfiles-root-win", default=str(DEFAULT_FLATFILES_ROOT_WIN))
     parser.add_argument("--flatfiles-root-ch", default=default_clickhouse_file_root())
     parser.add_argument("--storage-policy", default=default_storage_policy())
@@ -298,23 +328,49 @@ def download_config(args: argparse.Namespace) -> DownloadConfig:
     )
 
 
-def source_days(args: argparse.Namespace, config: DownloadConfig) -> list[DayFiles]:
-    flatfiles_root = Path(args.flatfiles_root_win)
-    jobs = build_remote_jobs(flatfiles_root, args.start_date, args.end_date, parse_kinds("quotes,trades"), config)
+def discover_remote_day_inventory(
+    flatfiles_root: Path,
+    start_date: str,
+    end_date: str,
+    config: DownloadConfig,
+) -> RemoteDayInventory:
+    jobs = build_remote_jobs(flatfiles_root, start_date, end_date, parse_kinds("quotes,trades"), config)
     jobs = [normalize_download_job_destination(job, flatfiles_root) for job in jobs]
     by_day: dict[str, dict[str, DownloadJob]] = {}
     for job in jobs:
         by_day.setdefault(job.session_date, {})[job.kind] = job
-    days = [
+    complete_days = tuple(
         DayFiles(source_date=source_date, quote_job=kinds["quotes"], trade_job=kinds["trades"])
         for source_date, kinds in sorted(by_day.items())
         if "quotes" in kinds and "trades" in kinds
-    ]
+    )
+    incomplete_days = tuple(
+        (source_date, tuple(kind for kind in ("quotes", "trades") if kind not in kinds))
+        for source_date, kinds in sorted(by_day.items())
+        if "quotes" not in kinds or "trades" not in kinds
+    )
+    return RemoteDayInventory(complete_days=complete_days, incomplete_days=incomplete_days)
+
+
+def select_source_days(inventory: RemoteDayInventory, args: argparse.Namespace) -> list[DayFiles]:
+    start = date.fromisoformat(str(args.start_date))
+    end = date.fromisoformat(str(args.end_date))
+    days = [day for day in inventory.complete_days if start <= date.fromisoformat(day.source_date) <= end]
     if args.day_offset:
         days = days[int(args.day_offset) :]
     if args.limit_days:
         days = days[: int(args.limit_days)]
     return days
+
+
+def source_days(args: argparse.Namespace, config: DownloadConfig) -> list[DayFiles]:
+    inventory = discover_remote_day_inventory(
+        Path(args.flatfiles_root_win),
+        str(args.start_date),
+        str(args.end_date),
+        config,
+    )
+    return select_source_days(inventory, args)
 
 
 def normalize_download_job_destination(job: DownloadJob, flatfiles_root: Path) -> DownloadJob:
@@ -1899,6 +1955,240 @@ def first_tsv_row(client: ClickHouseHttpClient, sql: str) -> list[str]:
     return text.splitlines()[0].split("\t") if text else []
 
 
+def clickhouse_table_exists(client: ClickHouseHttpClient, database: str, table: str) -> bool:
+    row = first_tsv_row(
+        client,
+        f"""
+SELECT count()
+FROM system.tables
+WHERE database = {sql_string(database)}
+  AND name = {sql_string(table)}
+""",
+    )
+    return bool(row and int(float(row[0] or 0)) > 0)
+
+
+def query_database_frontier(client: ClickHouseHttpClient, args: argparse.Namespace, *, required: bool) -> str:
+    if not clickhouse_table_exists(client, args.database, args.continuity_table):
+        if required:
+            raise RuntimeError(
+                f"Auto-update requires an existing {args.database}.{args.continuity_table} frontier. "
+                "Bootstrap an empty database with an explicit --start-date and --end-date range."
+            )
+        return ""
+    row = first_tsv_row(
+        client,
+        f"""
+SELECT count(), toString(max(source_date))
+FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
+""",
+    )
+    if not row or int(float(row[0] or 0)) <= 0:
+        if required:
+            raise RuntimeError(
+                f"Auto-update found no source-day frontier in {args.database}.{args.continuity_table}. "
+                "Bootstrap with an explicit --start-date and --end-date range."
+            )
+        return ""
+    frontier = row[1]
+    scoped_args = event_args_for_day(args, frontier)
+    status = latest_day_status(client, scoped_args, DayJob(frontier, build_step_for_date(frontier)))
+    if status != "ok":
+        raise RuntimeError(
+            f"Database frontier {frontier} has latest manifest status {status or 'missing'} for "
+            f"{args.database}.{scoped_args.events_table}; refusing to append until that day is recovered."
+        )
+    return frontier
+
+
+def _file_is_complete_on_disk(job: DownloadJob) -> bool:
+    path = Path(job.destination)
+    expected_size = int(job.remote_size or 0)
+    try:
+        return expected_size > 0 and path.is_file() and path.stat().st_size == expected_size
+    except OSError:
+        return False
+
+
+def _format_source_date_ranges(values: list[str] | tuple[str, ...]) -> str:
+    if not values:
+        return "none"
+    parsed = [date.fromisoformat(value) for value in values]
+    ranges: list[tuple[date, date]] = []
+    start = previous = parsed[0]
+    for current in parsed[1:]:
+        if current == previous + timedelta(days=1):
+            previous = current
+            continue
+        ranges.append((start, previous))
+        start = previous = current
+    ranges.append((start, previous))
+    return ", ".join(
+        left.isoformat() if left == right else f"{left.isoformat()} -> {right.isoformat()}"
+        for left, right in ranges
+    )
+
+
+def build_auto_update_plan(
+    inventory: RemoteDayInventory,
+    database_frontier: str,
+    *,
+    limit_days: int = 0,
+) -> AutoUpdatePlan:
+    frontier_day = date.fromisoformat(database_frontier)
+    available = [day for day in inventory.complete_days if date.fromisoformat(day.source_date) > frontier_day]
+    latest_complete = available[-1].source_date if available else ""
+    blocking_incomplete = [
+        (source_date, missing)
+        for source_date, missing in inventory.incomplete_days
+        if date.fromisoformat(source_date) > frontier_day
+        and latest_complete
+        and source_date < latest_complete
+    ]
+    if blocking_incomplete:
+        details = ", ".join(f"{source_date} missing {'/'.join(missing)}" for source_date, missing in blocking_incomplete)
+        raise RuntimeError(
+            f"Remote discovery found incomplete source-day pairs before later complete days: {details}. "
+            "Refusing to jump over an unresolved source day."
+        )
+    selected = available[: max(0, int(limit_days))] if int(limit_days) > 0 else available
+    cached_files = 0
+    download_files = 0
+    download_bytes = 0
+    for day in selected:
+        for job in (day.quote_job, day.trade_job):
+            if _file_is_complete_on_disk(job):
+                cached_files += 1
+            else:
+                download_files += 1
+                download_bytes += max(0, int(job.remote_size or 0))
+    waiting_incomplete = tuple(
+        (source_date, missing)
+        for source_date, missing in inventory.incomplete_days
+        if date.fromisoformat(source_date) > frontier_day
+        and (not latest_complete or source_date >= latest_complete)
+    )
+    return AutoUpdatePlan(
+        database_frontier=database_frontier,
+        latest_complete_remote_day=latest_complete,
+        days=tuple(selected),
+        complete_remote_days_after_frontier=len(available),
+        cached_files=cached_files,
+        download_files=download_files,
+        download_bytes=download_bytes,
+        waiting_incomplete_days=waiting_incomplete,
+    )
+
+
+def format_auto_update_summary(plan: AutoUpdatePlan) -> str:
+    dates = [day.source_date for day in plan.days]
+    selected_range = f"{dates[0]} -> {dates[-1]}" if dates else "none"
+    waiting = (
+        ", ".join(f"{source_date} missing {'/'.join(missing)}" for source_date, missing in plan.waiting_incomplete_days)
+        if plan.waiting_incomplete_days
+        else "none"
+    )
+    total_files = plan.cached_files + plan.download_files
+    limited_note = ""
+    if len(plan.days) < plan.complete_remote_days_after_frontier:
+        limited_note = f" (limited from {plan.complete_remote_days_after_frontier})"
+    return "\n".join(
+        [
+            "AUTO UPDATE DISCOVERY",
+            "",
+            f"Database complete through: {plan.database_frontier}",
+            f"Latest complete remote:  {plan.latest_complete_remote_day or 'none'}",
+            f"Suggested update range:  {selected_range}",
+            f"Source days selected:    {len(plan.days):,}{limited_note}",
+            f"Missing from database:   {_format_source_date_ranges(dates)}",
+            f"Incomplete remote pairs: {waiting}",
+            "",
+            "Local flatfiles:",
+            f"  Complete on disk:      {plan.cached_files:,} / {total_files:,} files",
+            f"  Need downloading:      {plan.download_files:,} / {total_files:,} files",
+            f"  Estimated download:    {format_bytes(plan.download_bytes)}",
+        ]
+    )
+
+
+def confirm_auto_update(plan: AutoUpdatePlan) -> bool:
+    print(format_auto_update_summary(plan), flush=True)
+    if not plan.days:
+        print("AUTO UPDATE CURRENT No complete remote source days are waiting for insertion.", flush=True)
+        return False
+    if not sys.stdin.isatty():
+        print("AUTO UPDATE CANCELLED Interactive approval is required, but stdin is not a terminal.", flush=True)
+        return False
+    try:
+        answer = input("\nProceed with downloading and inserting these days? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("\nAUTO UPDATE CANCELLED No changes were made.", flush=True)
+        return False
+    if answer not in {"y", "yes"}:
+        print("AUTO UPDATE CANCELLED No changes were made.", flush=True)
+        return False
+    print("AUTO UPDATE APPROVED Starting download and insertion.", flush=True)
+    return True
+
+
+def validate_manual_append_selection(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    inventory: RemoteDayInventory,
+    days: list[DayFiles],
+    database_frontier: str,
+) -> None:
+    if not database_frontier or args.test_mode:
+        return
+    frontier_day = date.fromisoformat(database_frontier)
+    historical_missing: list[str] = []
+    for day in days:
+        if date.fromisoformat(day.source_date) > frontier_day:
+            continue
+        scoped_args = event_args_for_day(args, day)
+        status = latest_day_status(client, scoped_args, DayJob(day.source_date, build_step_for_date(day.source_date)))
+        if status != "ok":
+            historical_missing.append(f"{day.source_date} status={status or 'missing'}")
+    if historical_missing:
+        raise RuntimeError(
+            "Manual range contains source days at or before the database frontier that are not complete: "
+            + ", ".join(historical_missing)
+            + ". Rebuilding an internal hole requires rebuilding that day and every later ordinal-dependent day."
+        )
+
+    selected_new = [day.source_date for day in days if date.fromisoformat(day.source_date) > frontier_day]
+    if not selected_new:
+        return
+    available_new = [
+        day.source_date for day in inventory.complete_days if date.fromisoformat(day.source_date) > frontier_day
+    ]
+    expected_prefix = available_new[: len(selected_new)]
+    if selected_new != expected_prefix:
+        raise RuntimeError(
+            f"Manual range would append out of order after database frontier {database_frontier}. "
+            f"Expected next complete remote source days {_format_source_date_ranges(expected_prefix)}, "
+            f"but selected {_format_source_date_ranges(selected_new)}."
+        )
+    last_selected = selected_new[-1]
+    blocking_incomplete = [
+        (source_date, missing)
+        for source_date, missing in inventory.incomplete_days
+        if database_frontier < source_date < last_selected
+    ]
+    if blocking_incomplete:
+        details = ", ".join(f"{source_date} missing {'/'.join(missing)}" for source_date, missing in blocking_incomplete)
+        raise RuntimeError(f"Manual range would jump over incomplete remote source days: {details}.")
+
+
+def assert_database_frontier(client: ClickHouseHttpClient, args: argparse.Namespace, expected_frontier: str) -> None:
+    actual_frontier = query_database_frontier(client, args, required=True)
+    if actual_frontier != expected_frontier:
+        raise RuntimeError(
+            f"Database frontier changed after discovery: expected {expected_frontier}, found {actual_frontier}. "
+            "Refusing to insert with a stale ordinal plan; rerun discovery."
+        )
+
+
 def allowed_utc_event_dates(days: list[DayFiles]) -> list[str]:
     values: set[str] = set()
     for day in days:
@@ -3202,12 +3492,65 @@ def main() -> None:
     loaded_env_files = load_env_files(discover_clickhouse_env_files(), verbose=True)
     args = parse_args()
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    manual_start = args.start_date
+    manual_end = args.end_date
+    if (manual_start is None) != (manual_end is None):
+        raise ValueError("Pass both --start-date and --end-date for manual mode, or omit both for auto-update mode.")
+    auto_update = manual_start is None and manual_end is None
+    if auto_update and args.test_mode:
+        raise ValueError("--test-mode requires an explicit --start-date and --end-date range.")
+    if auto_update and int(args.day_offset) > 0:
+        raise ValueError("--day-offset is unsafe in auto-update mode because it would skip the next ordinal-dependent source day.")
+
+    config = download_config(args)
+    client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
+    database_frontier = "" if args.test_mode else query_database_frontier(client, args, required=auto_update)
+    if auto_update:
+        args.start_date = (date.fromisoformat(database_frontier) + timedelta(days=1)).isoformat()
+        args.end_date = date.today().isoformat()
+        discovery_start = args.start_date
+    else:
+        args.start_date = str(manual_start)
+        args.end_date = str(manual_end)
+        discovery_start = args.start_date
+        if database_frontier:
+            next_after_frontier = (date.fromisoformat(database_frontier) + timedelta(days=1)).isoformat()
+            if args.start_date > next_after_frontier:
+                discovery_start = next_after_frontier
+
+    if date.fromisoformat(discovery_start) <= date.fromisoformat(args.end_date):
+        inventory = discover_remote_day_inventory(
+            Path(args.flatfiles_root_win),
+            discovery_start,
+            args.end_date,
+            config,
+        )
+    else:
+        inventory = RemoteDayInventory(complete_days=(), incomplete_days=())
+
+    if auto_update:
+        plan = build_auto_update_plan(inventory, database_frontier, limit_days=int(args.limit_days))
+        if args.dry_run:
+            print(format_auto_update_summary(plan), flush=True)
+            print("AUTO UPDATE DRY RUN No changes were made.", flush=True)
+            return
+        if not confirm_auto_update(plan):
+            return
+        days = list(plan.days)
+    else:
+        days = select_source_days(inventory, args)
+        validate_manual_append_selection(client, args, inventory, days, database_frontier)
+        if not days:
+            print("No complete quote/trade day pairs discovered for the requested manual range.", flush=True)
+            return
+
     if args.test_mode:
         configure_test_tables(args, run_id)
     report_path = Path(args.output_root_win) / f"flatfile_event_update_{run_id}.jsonl"
     bar_tables = bar_table_specs(args)
     print("=" * 100, flush=True)
     print("Massive SIP flatfile download + direct event update", flush=True)
+    print(f"update_mode={'auto' if auto_update else 'manual'}", flush=True)
     print(f"database={args.database} events_table={args.events_table}", flush=True)
     if events_table_uses_year_suffix(str(args.events_table)):
         print("events_table_routing=yearly (source day YYYY -> events_YYYY)", flush=True)
@@ -3237,15 +3580,8 @@ def main() -> None:
     print(f"secret_status={secret_status(env_status_keys() + ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'S3_ENDPOINT_URL', 'BUCKET'])}", flush=True)
     print(f"loaded_env_files={loaded_env_files}", flush=True)
     print("=" * 100, flush=True)
-
-    config = download_config(args)
-    days = source_days(args, config)
-    if not days:
-        print("No complete quote/trade day pairs discovered.", flush=True)
-        return
     print(f"Discovered {len(days):,} complete quote/trade day pairs", flush=True)
 
-    client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
     total_download_bytes = sum(int(day.quote_job.remote_size or 0) + int(day.trade_job.remote_size or 0) for day in days)
     with UpdateProgressReporter(args, total_days=len(days), total_files=len(days) * 2, total_bytes=total_download_bytes) as reporter:
         reporter.log(f"report={report_path}")
@@ -3278,27 +3614,46 @@ def main() -> None:
         reporter.set_stage("insert events")
         completed = 0
         bar_days: list[DayFiles] = []
-        for day in sorted(days, key=lambda item: item.source_date):
+        ordered_days = sorted(days, key=lambda item: item.source_date)
+        expected_append_frontier = database_frontier
+        for day_index, day in enumerate(ordered_days):
             if not download_results.get(day.source_date, {}).get("ok"):
                 reporter.handle_day_done(day.source_date, "download_failed")
-                continue
+                reporter.notice(
+                    f"Stopping before {day.source_date}; later source days will not be inserted because ordinals require a complete chronological prefix.",
+                    style="bold red",
+                )
+                for blocked_day in ordered_days[day_index + 1 :]:
+                    reporter.handle_day_done(blocked_day.source_date, "blocked_by_prior_download")
+                break
             completed += 1
             reporter.handle_day_start(day.source_date, completed)
-            if args.dry_run:
-                reporter.handle_day_done(day.source_date, "dry_run")
-                continue
+            is_new_append = not args.test_mode and (
+                not database_frontier or date.fromisoformat(day.source_date) > date.fromisoformat(database_frontier)
+            )
+            if is_new_append and expected_append_frontier:
+                assert_database_frontier(client, args, expected_append_frontier)
             result_status = run_day(client, args, day, run_id, report_path, reporter=reporter)
             reporter.handle_day_done(day.source_date, result_status)
             if result_status in {"ok", "skipped"}:
                 bar_days.append(day)
+                if is_new_append:
+                    expected_append_frontier = day.source_date
+            elif is_new_append:
+                reporter.notice(
+                    f"Stopping after {day.source_date} status={result_status}; later source days will not be inserted.",
+                    style="bold red",
+                )
+                for blocked_day in ordered_days[day_index + 1 :]:
+                    reporter.handle_day_done(blocked_day.source_date, "blocked_by_prior_day")
+                break
 
-        if args.test_mode and not args.dry_run:
+        if args.test_mode:
             reporter.set_stage("test audit")
-            audited_days = [day for day in sorted(days, key=lambda item: item.source_date) if download_results.get(day.source_date, {}).get("ok")]
-            audit_test_events(client, args, audited_days, report_path)
+            audit_test_events(client, args, bar_days, report_path)
         reporter.set_stage("build bars")
         build_updated_bars(client, args, bar_days, report_path, reporter=reporter)
-        if args.test_mode and not args.dry_run:
+        if args.test_mode:
             if not args.test_keep_tables:
                 reporter.set_stage("drop test tables")
                 reporter.notice("Dropping isolated test tables after successful test-mode audit.", style="bold yellow")

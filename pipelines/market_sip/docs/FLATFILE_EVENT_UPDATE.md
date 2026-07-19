@@ -30,33 +30,46 @@ It does not write `market_sip_compact.quotes` or `market_sip_compact.trades`.
 
 ## End-To-End Flow
 
-1. Discover remote Massive SIP quote/trade flatfiles for the requested date
-   range. Missing weekends/holidays are naturally skipped because discovery is
-   based on remote objects, not a hard-coded calendar.
-2. Download missing or incomplete quote/trade flatfiles to the configured
+1. With no date arguments, read the latest completed source-day frontier from
+   ClickHouse and discover every complete remote Massive quote/trade pair after
+   it through today. Explicit `--start-date` and `--end-date` arguments select
+   manual-range mode instead.
+2. Reject a remote quote/trade mismatch before a later complete source day, or
+   a manual range that skips the next available source day. Missing
+   weekends/holidays are naturally skipped because discovery is based on remote
+   objects, not a hard-coded calendar.
+3. In automatic mode, show the database frontier, latest complete remote day,
+   proposed source dates, local flatfile reuse, required file count, and
+   estimated download size. No tables or files are changed until the operator
+   explicitly approves the proposal.
+4. Download missing or incomplete quote/trade flatfiles to the configured
    flatfile root with atomic `.part` replacement.
-3. Wait until both quote and trade files for a day are complete.
-4. For each completed day, in chronological order, resolve raw source-day
+5. Wait until both quote and trade files for a day are complete. If one planned
+   day fails, retain completed downloads but do not insert that day or any later
+   day from the run.
+6. For each completed day, in chronological order, resolve raw source-day
    metadata from `events_source_day_stats` when the exact quote/trade file
    identity and filter version match. On a cache miss, compute the same metadata
    from the raw files and persist it before continuing.
-5. Have ClickHouse read the
+7. Have ClickHouse read the
    quote/trade gzip CSV files through `file()`.
-6. Convert raw rows directly to the current `market_sip_compact.events_YYYY` schema:
+8. Convert raw rows directly to the current `market_sip_compact.events_YYYY` schema:
    price integer plus scale flags, size fields, exchanges, packed conditions,
    event type, event date, and SIP timestamp in microseconds.
-7. Filter rows that cannot be placed in the stream, such as blank ticker,
+9. Filter rows that cannot be placed in the stream, such as blank ticker,
    missing SIP timestamp, or missing sequence number. Rows with price, size, or
    crossed-quote issues are kept, but the affected numeric event fields are set
    to zero so condition/indicator signals such as halts are not lost.
-8. Assign ticker-local ordinals using `events_ordinal_continuity`.
-9. Write `events_build_manifest` and `events_ordinal_continuity` rows for the
+10. Recheck the database frontier immediately before every new source-day
+    append, then assign ticker-local ordinals using
+    `events_ordinal_continuity`.
+11. Write `events_build_manifest` and `events_ordinal_continuity` rows for the
    processed day.
-10. Rebuild the neutral ticker/day event index for that source day from the
+12. Rebuild the neutral ticker/day event index for that source day from the
    latest continuity state. This table is the loader-facing discovery/index
    table; train and validation periods are selected by the loader instead of
    being baked into table names.
-11. Rebuild daily macro bar rows for the successfully updated date range
+13. Rebuild daily macro bar rows for the successfully updated date range
    directly from the same yearly event table. The direct flatfile update default is `1d` only,
    which matches the current training data requirement. Daily bars use the New
    York extended-hours session, 04:00 ET through 20:00 ET, so the daily close is
@@ -199,8 +212,22 @@ D:\market-data\flatfiles\us_stocks_sip
 
 ## Recommended Smoke Test
 
-Use `--limit-days 1` first. `--dry-run` checks discovery and download planning
-without inserting events.
+The normal production command is the script name with no date arguments. It
+automatically proposes the next remote source-day prefix and requires an
+interactive `y` or `yes` before starting downloads or database writes:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\flatfiles\download_update_events.py
+```
+
+Use `--dry-run` first to print the same automatic discovery summary and exit
+without prompting, creating tables, downloading files, or inserting rows:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\flatfiles\download_update_events.py --dry-run
+```
+
+For an isolated one-day manual smoke test, pass both dates and `--limit-days 1`:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\flatfiles\download_update_events.py `
@@ -274,6 +301,37 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_si
 
 ## Typical Production Run
 
+Automatic append is the recommended production mode:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\flatfiles\download_update_events.py
+```
+
+The discovery phase is read-only and prints a confirmation summary such as:
+
+```text
+AUTO UPDATE DISCOVERY
+
+Database complete through: 2026-07-14
+Latest complete remote:  2026-07-17
+Suggested update range:  2026-07-15 -> 2026-07-17
+Source days selected:    3
+Missing from database:   2026-07-15 -> 2026-07-17
+Incomplete remote pairs: none
+
+Local flatfiles:
+  Complete on disk:      0 / 6 files
+  Need downloading:      6 / 6 files
+  Estimated download:    35.5 GiB
+
+Proceed with downloading and inserting these days? [y/N]:
+```
+
+Pressing Enter, answering anything other than `y` or `yes`, receiving EOF, or
+running automatic mode without an interactive stdin cancels before changes.
+
+Explicit dates retain manual mode for a controlled range:
+
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\flatfiles\download_update_events.py `
   --database market_sip_compact `
@@ -303,12 +361,20 @@ Reports are written under:
 
 Date and scope:
 
-- `--start-date`: first source date to discover, inclusive.
-- `--end-date`: last source date to discover, inclusive.
+- no date arguments: automatic append mode. The script reads the latest valid
+  continuity/manifest frontier, discovers the complete remote quote/trade days
+  after it through today, summarizes the proposal, and requires interactive
+  approval.
+- `--start-date` and `--end-date`: select manual-range mode. Both must be
+  supplied. Production manual ranges must begin with the next complete remote
+  source-day prefix after the database frontier; ranges that skip an available
+  source day are rejected.
 - `--limit-days`: process only the first N complete quote/trade day pairs after
-  filtering. Use for smoke tests.
-- `--day-offset`: skip the first N complete day pairs. Use to continue a manual
-  staged run.
+  filtering. In automatic mode the confirmation summary identifies that the
+  proposal is limited.
+- `--day-offset`: skip the first N complete day pairs in manual mode. It is
+  rejected in automatic mode and cannot be used to jump over the next required
+  production source day.
 
 ClickHouse:
 
@@ -367,7 +433,8 @@ Retry and safety:
   overlapping bars are deleted before reinserting the updated range. Keep the
   default enabled for normal updates. This is a row-level replacement for the
   current bar range, not a table drop.
-- `--dry-run`: discover/download-plan only; no event inserts.
+- `--dry-run`: in automatic mode, print the discovery/flatfile summary and exit
+  before prompting or changing files or tables.
 - `--test-mode`: build isolated temp events/manifest/continuity tables and
   audit them against the raw quote/trade CSVs used for that run. Production
   event tables are not modified.
@@ -375,6 +442,10 @@ Retry and safety:
   inspection. Failed test tables are always kept.
 
 ## Retry Safety
+
+An empty database has no trustworthy automatic frontier. Bootstrap it once
+with an explicit manual `--start-date` and `--end-date`; bare automatic mode is
+available after that first source day is complete.
 
 Days with latest manifest status `ok` are skipped. Failed, started, or
 interrupted days are not rebuilt unless retry flags are provided. Use
