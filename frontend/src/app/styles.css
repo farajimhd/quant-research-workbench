@@ -12219,6 +12219,29 @@ button {
   overflow: hidden;
 }
 
+.chart-native-surface {
+  position: relative;
+  min-height: 320px;
+  overflow: hidden;
+}
+
+.chart-native-pane-overlay {
+  position: absolute;
+  z-index: 2;
+  min-height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.chart-native-pane-overlay.chart-osc {
+  position: absolute;
+  border-top: 0;
+}
+
+.chart-native-pane-overlay :is(.chart-legend, .chart-pane-close, .chart-pane-resize) {
+  pointer-events: auto;
+}
+
 .chart-update-status.info {
   background: color-mix(in srgb, var(--card) 94%, var(--accent));
   border-color: color-mix(in srgb, var(--border) 68%, var(--accent));

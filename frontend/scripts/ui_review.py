@@ -180,7 +180,7 @@ def validate_price_zone_legend(
     issues: list[str],
     interaction_screenshot: Path | None = None,
 ) -> None:
-    price_legend = chart.locator(".chart-price .chart-legend")
+    price_legend = chart.locator('[data-chart-pane="price"] .chart-legend')
     if price_legend.count() != 1:
         issues.append("price chart does not expose one overlay legend")
         return
@@ -225,7 +225,7 @@ def validate_price_zone_legend(
                 if (a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top) overlaps += 1;
             }
         }
-        const legend = document.querySelector('.chart-price .chart-legend')?.getBoundingClientRect();
+        const legend = document.querySelector('[data-chart-pane="price"] .chart-legend')?.getBoundingClientRect();
         const legendOverlaps = legend
             ? boxes.filter(box => box.left < legend.right && box.right > legend.left && box.top < legend.bottom && box.bottom > legend.top).length
             : 0;
@@ -385,17 +385,17 @@ def validate_canvas_interactions(
                 for _ in range(4):
                     resize_handle.press("Shift+ArrowUp")
                 page.wait_for_timeout(180)
-                bottom_oscillator = chart.locator(".chart-osc").last
-                time_axis_is_contained = bottom_oscillator.evaluate(
-                    """pane => {
-                        const paneBounds = pane.getBoundingClientRect();
-                        const stackBounds = pane.closest('.chart-canvas-stack')?.getBoundingClientRect();
-                        const chartTable = pane.querySelector('table')?.getBoundingClientRect();
+                native_surface = chart.locator(".chart-native-surface").first
+                time_axis_is_contained = native_surface.evaluate(
+                    """surface => {
+                        const surfaceBounds = surface.getBoundingClientRect();
+                        const stackBounds = surface.closest('.chart-canvas-stack')?.getBoundingClientRect();
+                        const chartTable = surface.querySelector('table')?.getBoundingClientRect();
                         return Boolean(
                             stackBounds
                             && chartTable
-                            && paneBounds.bottom <= stackBounds.bottom + 1
-                            && chartTable.bottom <= paneBounds.bottom + 1
+                            && surfaceBounds.bottom <= stackBounds.bottom + 1
+                            && chartTable.bottom <= surfaceBounds.bottom + 1
                         );
                     }"""
                 )
@@ -500,7 +500,7 @@ def validate_canvas_interactions(
         if grouped_price.count() != 1 or grouped_chart.locator(".chart-osc").count() < oscillator_count_before_group:
             issues.append("grouping removes a Chart pane or its independent time-axis surface")
         elif oscillator_count_before_group:
-            price_regions = grouped_price.locator(".session-region")
+            price_regions = grouped_chart.locator('[data-chart-pane="price"] .session-region')
             oscillator_regions = grouped_oscillator.locator(".session-region")
             if price_regions.count() != oscillator_regions.count() or price_regions.count() == 0:
                 issues.append("grouped Chart does not retain matching extended-hours regions across panes")
