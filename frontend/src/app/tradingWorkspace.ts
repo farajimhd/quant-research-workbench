@@ -2,6 +2,7 @@ export type TradingWorkspaceMode = "live" | "paper" | "replay" | "backtest" | "b
 
 export type WorkspaceContainerId =
   | "chart"
+  | "facts"
   | "microstructure"
   | "scanner"
   | "strategy"
@@ -112,6 +113,15 @@ const liveBroker: WorkspaceSourceLayer = {
   updateModel: "poll",
 };
 
+const referenceFacts: WorkspaceSourceLayer = {
+  authority: "q_live canonical reference, market publication, and SEC fact tables",
+  description: "Point-in-time issuer identity, listing, shares, short positioning, borrow, corporate actions, and reported fundamentals.",
+  id: "reference-facts",
+  label: "Reference Facts",
+  timeBasis: "point-in-time",
+  updateModel: "request",
+};
+
 const simulatedBroker: WorkspaceSourceLayer = {
   authority: "src/trading_runtime/simulated_broker.py",
   description: "Deterministic IBKR-shaped account, order, execution, position, and portfolio simulation.",
@@ -161,6 +171,15 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
     modes: allModes,
     defaultOpen: { live: true, paper: true, replay: true, backtest_debug: true },
     sourceByMode: marketSourceByMode,
+  },
+  {
+    id: "facts",
+    title: "Stock Facts",
+    description: "Auditable issuer, security, listing, capitalization, share supply, volume, short positioning, IBKR borrow, identifiers, corporate actions, and SEC-reported fundamentals for the linked symbol.",
+    linkScope: "single-symbol",
+    modes: allModes,
+    defaultOpen: {},
+    sourceByMode: Object.fromEntries(allModes.map((mode) => [mode, historicalBinding("Point-in-time stock facts from canonical reference authorities", [referenceFacts, mode === "live" || mode === "paper" ? qmdLive : qmdHistory])])),
   },
   {
     id: "microstructure",

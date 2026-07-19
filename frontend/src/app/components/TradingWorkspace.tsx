@@ -2,6 +2,7 @@ import {
   BarChart3,
   BriefcaseBusiness,
   Building2,
+  BadgeInfo,
   FileSearch,
   ListChecks,
   LayoutGrid,
@@ -851,7 +852,8 @@ function createGlobalLayouts(ids: string[], instances: Record<string, WorkspaceC
   const placements: Record<WorkspaceContainerId, Omit<WorkspaceWindowLayout, "fullscreen" | "minimized" | "z">> = {
     scanner: { h: 250, w: columnWidth, x: margin, y: 0 },
     chart: { h: 410, w: columnWidth, x: margin + columnWidth + gap, y: 0 },
-    microstructure: { h: 720, w: width, x: margin, y: 1972 },
+    facts: { h: 620, w: columnWidth, x: margin, y: 1680 },
+    microstructure: { h: 720, w: width, x: margin, y: 2302 },
     portfolio: { h: 230, w: columnWidth, x: margin, y: 252 },
     orders: { h: 230, w: columnWidth, x: margin + columnWidth + gap, y: 412 },
     fills: { h: 220, w: columnWidth, x: margin, y: 484 },
@@ -1011,6 +1013,7 @@ function workspaceRootMinHeight(
 function containerIcon(id: WorkspaceContainerId) {
   const icons = {
     chart: BarChart3,
+    facts: BadgeInfo,
     microstructure: Rows3,
     fills: ListChecks,
     journal: ScrollText,
