@@ -91,7 +91,7 @@ type TradingWorkspaceProps = {
 };
 
 const DEFAULT_CANVAS_TARGETS: WorkspaceCanvasTarget[] = [{ color: "var(--primary)", id: "main", isCurrent: true, label: "Main" }];
-export const TRADING_WORKSPACE_LAYOUT_VERSION = 6;
+export const TRADING_WORKSPACE_LAYOUT_VERSION = 7;
 
 function groupSelectionAction(selectedNodeIds: string[], groups: Record<string, WorkspaceGroup>) {
   if (selectedNodeIds.length < 2) return "Select one more";
@@ -862,8 +862,10 @@ function createGlobalLayouts(ids: string[], instances: Record<string, WorkspaceC
     ticker_news: { h: 360, w: columnWidth, x: margin, y: 998 },
     news_detail: { h: 520, w: columnWidth, x: margin + columnWidth + gap, y: 866 },
     sec: { h: 290, w: columnWidth, x: margin + columnWidth + gap, y: 1388 },
+    ticker_sec: { h: 620, w: columnWidth, x: margin + columnWidth + gap, y: 1680 },
+    sec_detail: { h: 700, w: columnWidth, x: margin + columnWidth + gap, y: 3024 },
     xbrl: { h: 290, w: columnWidth, x: margin, y: 1360 },
-    journal: { h: 290, w: columnWidth, x: margin + columnWidth + gap, y: 1680 },
+    journal: { h: 290, w: columnWidth, x: margin, y: 3024 },
   };
   return Object.fromEntries(ids.map((id, index) => {
     const kind = instanceKind(id, instances);
@@ -1024,6 +1026,8 @@ function containerIcon(id: WorkspaceContainerId) {
     portfolio: BriefcaseBusiness,
     scanner: ScanSearch,
     sec: FileSearch,
+    ticker_sec: FileSearch,
+    sec_detail: FileSearch,
     strategy: Settings2,
     xbrl: Building2,
   } satisfies Record<WorkspaceContainerId, typeof BarChart3>;

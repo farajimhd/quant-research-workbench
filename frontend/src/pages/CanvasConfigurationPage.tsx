@@ -10,6 +10,7 @@ import {
   CANVAS_LINK_GROUPS,
   MAIN_CANVAS_ID,
   NEWS_READER_CANVAS_ID,
+  SEC_READER_CANVAS_ID,
   canvasLinkGroupDefinition,
   canvasWorkspaceStorageKey,
   createCanvasRecord,
@@ -29,6 +30,7 @@ import {
 } from "../app/canvasWorkspace";
 import { ChartPanel, type ChartCatalogKnowledge, type ChartDisplayItem, type ChartPayload } from "../app/components/ChartPanel";
 import { AllNewsContainer, NewsDetailContainer, TickerNewsContainer } from "../app/components/NewsContainers";
+import { AllSecContainer, SecDetailContainer, TickerSecContainer } from "../app/components/SecContainers";
 import { MarketTime } from "../app/components/MarketTime";
 import { MarketStatusBadge, historicalMarketStatus } from "../app/components/MarketStatusBadge";
 import { QuotesTapeContainer } from "../app/components/MarketMicrostructureContainers";
@@ -102,7 +104,7 @@ type CanvasLiveChartState = {
 };
 
 type ContainerSettings = {
-  version: 7;
+  version: 8;
   chart: { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
   microstructure: { limit: number };
   fills: { limit: number; showCommission: boolean };
@@ -113,7 +115,9 @@ type ContainerSettings = {
   orders: { limit: number; showOrderIds: boolean };
   portfolio: { showPositions: boolean; showPnl: boolean };
   scanner: { limit: number; showActivity: boolean };
-  sec: { limit: number; form: string };
+  sec: { content: string; label: string; lookbackHours: number; ticker: string };
+  ticker_sec: { lookbackHours: number };
+  sec_detail: Record<string, never>;
   strategy: { showSignals: boolean };
   xbrl: { limit: number; showPeriod: boolean };
 };
@@ -123,7 +127,7 @@ type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; tit
 
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 7,
+  version: 8,
   chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.microstructure_outlook"] },
   microstructure: { limit: 1024 },
   fills: { limit: 5, showCommission: true },
@@ -134,7 +138,9 @@ const DEFAULT_SETTINGS: ContainerSettings = {
   orders: { limit: 6, showOrderIds: true },
   portfolio: { showPositions: true, showPnl: true },
   scanner: { limit: 6, showActivity: true },
-  sec: { limit: 5, form: "All" },
+  sec: { content: "all", label: "", lookbackHours: 168, ticker: "" },
+  ticker_sec: { lookbackHours: 720 },
+  sec_detail: {},
   strategy: { showSignals: true },
   xbrl: { limit: 6, showPeriod: true },
 };
@@ -660,10 +666,12 @@ export function CanvasFocusPage() {
   const canvasId = params.get("canvas") || MAIN_CANVAS_ID;
   const requestedInstanceId = params.get("container") || undefined;
   const requestedNewsId = params.get("news") || undefined;
-  return <CanvasWorkspaceSurface canvasId={canvasId} manager={false} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} />;
+  const requestedSecCik = params.get("sec_cik") || undefined;
+  const requestedSecAccession = params.get("sec_accession") || undefined;
+  return <CanvasWorkspaceSurface canvasId={canvasId} manager={false} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} />;
 }
 
-function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, requestedNewsId }: { canvasId: string; manager: boolean; requestedInstanceId?: string; requestedNewsId?: string }) {
+function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik }: { canvasId: string; manager: boolean; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string }) {
   const [initialCanvasState] = useState<CanvasWorkspaceState | null>(() => focusCanvasState(canvasId, requestedInstanceId));
   const [registry, setRegistry] = useState<CanvasRegistry>(readCanvasRegistry);
   const [previewContext, setPreviewContext] = useState<CanvasPreviewContext>(readPreviewContext);
@@ -681,7 +689,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
   const currentCanvas = registry.canvases.find((canvas) => canvas.id === canvasId) ?? { id: canvasId, label: canvasId === MAIN_CANVAS_ID ? "Main" : "Focus canvas" };
   const primaryChartId = (workspaceState?.openIds ?? []).find((id) => workspaceContainerKind(id, workspaceState) === "chart") ?? "chart";
   const primarySettings = instanceSettings(registry, primaryChartId);
-  const dedicatedContainers = new Set<WorkspaceContainerId>(["chart", "facts", "microstructure", "news", "ticker_news", "news_detail"]);
+  const dedicatedContainers = new Set<WorkspaceContainerId>(["chart", "facts", "microstructure", "news", "ticker_news", "news_detail", "sec", "ticker_sec", "sec_detail"]);
   const previewContainerKey = (workspaceState?.openIds ?? []).filter((id) => !dedicatedContainers.has(workspaceContainerKind(id, workspaceState))).sort().join(",");
   const activeLinkGroup = registry.linkAssignments[primaryChartId] ?? "none";
   const activeSymbol = activeLinkGroup === "none" ? primarySettings.chart.symbol : registry.linkContexts[activeLinkGroup].symbol;
@@ -691,8 +699,8 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
   const marketStatus = useMemo(() => historicalMarketStatus(previewContext.sessionDate, previewContext.previewTime), [previewContext]);
 
   useEffect(() => {
-    if (canvasId !== NEWS_READER_CANVAS_ID) return;
-    ensureNewsReaderCanvas();
+    if (canvasId !== NEWS_READER_CANVAS_ID && canvasId !== SEC_READER_CANVAS_ID) return;
+    if (canvasId === NEWS_READER_CANVAS_ID) ensureNewsReaderCanvas();
     setRegistry(readCanvasRegistry());
   }, [canvasId]);
 
@@ -804,11 +812,12 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
     }
     const sourceError = preview?.errors[definition.id] ?? preview?.errors[definition.id === "sec" ? "sec" : definition.id === "xbrl" ? "xbrl" : ""];
     const newsContainer = ["news", "ticker_news", "news_detail"].includes(definition.id);
+    const secContainer = ["sec", "ticker_sec", "sec_detail"].includes(definition.id);
     return {
       detail: `${definition.title} rendered at the shared configuration clock.`,
       freshness: previewContext.previewTime,
-      sourceLabel: sourceError ? "Unavailable" : definition.id === "scanner" ? "QMD History" : newsContainer || ["sec", "xbrl"].includes(definition.id) ? "Point-in-time" : "IBKR preview",
-      status: sourceError ? "error" : newsContainer || preview ? "ready" : "idle",
+      sourceLabel: sourceError ? "Unavailable" : definition.id === "scanner" ? "QMD History" : newsContainer || secContainer || definition.id === "xbrl" ? "Point-in-time" : "IBKR preview",
+      status: sourceError ? "error" : newsContainer || secContainer || preview ? "ready" : "idle",
     };
   }, [contextError, preview, previewContext.previewTime]);
 
@@ -1026,6 +1035,8 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
             preview={preview}
             previewContext={previewContext}
             requestedNewsId={requestedNewsId}
+            requestedSecAccession={requestedSecAccession}
+            requestedSecCik={requestedSecCik}
             settings={settings}
             settingsOpen={settingsContainerId === instanceId}
             symbolEditable={symbolEditable}
@@ -1078,7 +1089,7 @@ function CanvasManager({ onCreate, onOpen, onRemove, registry }: { onCreate: () 
 
 type SettingsUpdater = (update: ContainerSettings | ((current: ContainerSettings) => ContainerSettings)) => void;
 
-function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, linkContext, linkGroup, linkedContainers, linkOpen, loading, onLinkChange, onLinkContextChange, preview, previewContext, requestedNewsId, settings, settingsOpen, symbolEditable, updateSettings }: {
+function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, linkContext, linkGroup, linkedContainers, linkOpen, loading, onLinkChange, onLinkContextChange, preview, previewContext, requestedNewsId, requestedSecAccession, requestedSecCik, settings, settingsOpen, symbolEditable, updateSettings }: {
   canvasId: string;
   chartCutoffMs: number;
   definition: WorkspaceContainerDefinition;
@@ -1093,6 +1104,8 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
   preview: CanvasPreview | null;
   previewContext: CanvasPreviewContext;
   requestedNewsId?: string;
+  requestedSecAccession?: string;
+  requestedSecCik?: string;
   settings: ContainerSettings;
   settingsOpen: boolean;
   symbolEditable: boolean;
@@ -1114,6 +1127,12 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
         ? <TickerNewsContainer asOf={new Date(chartCutoffMs).toISOString()} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} settings={settings.ticker_news} symbol={linkContext.symbol} />
       : definition.id === "news_detail"
         ? <NewsDetailContainer asOf={new Date(chartCutoffMs).toISOString()} canvasId={canvasId} requestedNewsId={requestedNewsId} />
+      : definition.id === "sec"
+        ? <AllSecContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, sec: { ...state.sec, ...patch } }))} settings={settings.sec} />
+      : definition.id === "ticker_sec"
+        ? <TickerSecContainer asOf={new Date(chartCutoffMs).toISOString()} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} settings={settings.ticker_sec} symbol={linkContext.symbol} />
+      : definition.id === "sec_detail"
+        ? <SecDetailContainer asOf={new Date(chartCutoffMs).toISOString()} canvasId={canvasId} requestedAccession={requestedSecAccession} requestedCik={requestedSecCik} />
       : loading && !preview
         ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div>
         : renderPreview(definition.id, preview, settings, linkGroup, onLinkContextChange)}</div>
@@ -1150,10 +1169,6 @@ function renderPreview(id: WorkspaceContainerId, preview: CanvasPreview | null, 
   if (id === "orders") return <PreviewTable columns={settings.orders.showOrderIds ? ["orderId", "ticker", "side", "orderType", "quantity", "status"] : ["ticker", "side", "orderType", "quantity", "status"]} rows={preview.orders.slice(0, settings.orders.limit)} />;
   if (id === "fills") return <PreviewTable columns={settings.fills.showCommission ? ["time", "ticker", "side", "shares", "price", "commission"] : ["time", "ticker", "side", "shares", "price"]} rows={preview.fills.slice(0, settings.fills.limit)} />;
   if (id === "strategy") return <StrategyPreview data={preview.strategy} showSignals={settings.strategy.showSignals} />;
-  if (id === "sec") {
-    const rows = settings.sec.form === "All" ? preview.sec : preview.sec.filter((row) => row.form_type === settings.sec.form);
-    return <PreviewTable columns={["accepted_at_utc", "form_type", "company_name", "accession_number"]} rows={rows.slice(0, settings.sec.limit)} />;
-  }
   if (id === "xbrl") return <PreviewTable columns={settings.xbrl.showPeriod ? ["filed_at_utc", "tag", "value", "unit_code", "fiscal_period"] : ["filed_at_utc", "tag", "value", "unit_code"]} rows={preview.xbrl.slice(0, settings.xbrl.limit)} />;
   return <PreviewTable columns={["time", "category", "event", "detail"]} rows={preview.journal.slice(0, settings.journal.limit)} />;
 }
@@ -1475,7 +1490,9 @@ function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, 
   if (id === "news") return <><SelectField label="Lookback hours" onChange={(value) => patch({ lookbackHours: Number(value) })} options={["1", "6", "24", "168", "720"]} value={String(current.lookbackHours)} /><SelectField label="News type" onChange={(value) => patch({ kind: value })} options={["all", "company", "insights", "analyst", "multi", "ai", "market"]} value={String(current.kind)} /><SelectField label="Text coverage" onChange={(value) => patch({ content: value })} options={["all", "full", "title"]} value={String(current.content)} /></>;
   if (id === "ticker_news") return <><SelectField label="Lookback hours" onChange={(value) => patch({ lookbackHours: Number(value) })} options={["24", "72", "168", "720"]} value={String(current.lookbackHours)} /><CheckField checked={Boolean(current.showTeaser)} label="Show teaser" onChange={(value) => patch({ showTeaser: value })} /><div className="canvas-settings-note">Ticker comes from the selected link color. Hot, cold, and old states use the shared clock.</div></>;
   if (id === "news_detail") return <div className="canvas-settings-note">This reader follows the most recently selected news article in this canvas.</div>;
-  if (id === "sec") return <><NumberField label="Last N filings" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><SelectField label="Form" onChange={(value) => patch({ form: value })} options={["All", "10-K", "10-Q", "8-K"]} value={String(current.form)} /></>;
+  if (id === "sec") return <><SelectField label="Lookback hours" onChange={(value) => patch({ lookbackHours: Number(value) })} options={["24", "72", "168", "720", "8760"]} value={String(current.lookbackHours)} /><SelectField label="Content" onChange={(value) => patch({ content: value })} options={["all", "readable", "xbrl"]} value={String(current.content)} /><div className="canvas-settings-note">Search, ticker, and filing labels are available in the container query bar. Results are constrained to the shared point-in-time clock.</div></>;
+  if (id === "ticker_sec") return <><SelectField label="Lookback hours" onChange={(value) => patch({ lookbackHours: Number(value) })} options={["24", "72", "168", "720", "8760"]} value={String(current.lookbackHours)} /><div className="canvas-settings-note">Ticker follows the selected link color. Hot means accepted within four hours, cold within 24 hours, and old is older.</div></>;
+  if (id === "sec_detail") return <div className="canvas-settings-note">This reader follows the most recently selected filing in this canvas.</div>;
   if (id === "xbrl") return <><NumberField label="Last N facts" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showPeriod)} label="Show fiscal period" onChange={(value) => patch({ showPeriod: value })} /></>;
   return <NumberField label="Last N events" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} />;
 }
@@ -1514,6 +1531,8 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
     portfolio: { ...DEFAULT_SETTINGS.portfolio, ...(stored.portfolio ?? {}) },
     scanner: { ...DEFAULT_SETTINGS.scanner, ...(stored.scanner ?? {}) },
     sec: { ...DEFAULT_SETTINGS.sec, ...(stored.sec ?? {}) },
+    ticker_sec: { ...DEFAULT_SETTINGS.ticker_sec, ...(stored.ticker_sec ?? {}) },
+    sec_detail: {},
     strategy: { ...DEFAULT_SETTINGS.strategy, ...(stored.strategy ?? {}) },
     xbrl: { ...DEFAULT_SETTINGS.xbrl, ...(stored.xbrl ?? {}) },
   };

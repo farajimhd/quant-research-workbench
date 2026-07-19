@@ -42,6 +42,7 @@ export type CanvasRegistry = {
 
 export const MAIN_CANVAS_ID = "main";
 export const NEWS_READER_CANVAS_ID = "news-reader";
+export const SEC_READER_CANVAS_ID = "sec-reader";
 export const CANVAS_REGISTRY_UPDATED_EVENT = "quant-canvas-registry-updated";
 export const CANVAS_REGISTRY_STORAGE_KEY = "quant-research-workbench.canvas.registry.v1";
 export const CANVAS_PREVIEW_CONTEXT_STORAGE_KEY = "quant-research-workbench.canvas.preview-context.v1";
@@ -117,6 +118,16 @@ export function ensureNewsReaderCanvas(): CanvasRecord {
   const existing = registry.canvases.find((canvas) => canvas.id === NEWS_READER_CANVAS_ID);
   if (existing) return existing;
   const canvas = { id: NEWS_READER_CANVAS_ID, label: "News Reader" };
+  writeCanvasRegistry({ ...registry, canvases: [...registry.canvases, canvas] });
+  window.dispatchEvent(new CustomEvent(CANVAS_REGISTRY_UPDATED_EVENT));
+  return canvas;
+}
+
+export function ensureSecReaderCanvas(): CanvasRecord {
+  const registry = readCanvasRegistry();
+  const existing = registry.canvases.find((canvas) => canvas.id === SEC_READER_CANVAS_ID);
+  if (existing) return existing;
+  const canvas = { id: SEC_READER_CANVAS_ID, label: "SEC Reader" };
   writeCanvasRegistry({ ...registry, canvases: [...registry.canvases, canvas] });
   window.dispatchEvent(new CustomEvent(CANVAS_REGISTRY_UPDATED_EVENT));
   return canvas;

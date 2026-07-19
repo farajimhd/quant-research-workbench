@@ -67,6 +67,7 @@ from src.backend.market_data_service import (
 )
 from src.backend.news_service import ensure_benzinga_news_cache, news_at_payload
 from src.backend.news_classification import classify_news, classify_news_kind, news_classification_sql
+from src.backend.sec_canvas_service import sec_filing_detail_payload, sec_filings_payload
 from src.backend.progress_model import build_progress_model
 from src.backend.qmd_gateway_client import (
     ENRICHED_QMD_TIMEFRAMES,
@@ -3379,6 +3380,39 @@ def trading_ticker_facts(symbol: str, as_of: str | None = None) -> dict[str, Any
 @app.get("/api/trading/news/detail/{canonical_news_id}")
 def trading_news_detail_route(canonical_news_id: str) -> dict[str, Any]:
     return trading_news_detail(canonical_news_id)
+
+
+@app.get("/api/trading/sec")
+def trading_sec_filings(
+    as_of: str | None = None,
+    before: str = "",
+    before_accession: str = "",
+    content: str = "all",
+    label: str = "",
+    limit: int = 100,
+    lookback_hours: int = 168,
+    search: str = "",
+    ticker: str = "",
+) -> dict[str, Any]:
+    try:
+        return sec_filings_payload(as_of=as_of, before=before, before_accession=before_accession, content=content, label=label, limit=limit, lookback_hours=lookback_hours, search=search, ticker=ticker)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="SEC filings are temporarily unavailable.") from error
+
+
+@app.get("/api/trading/sec/detail/{cik}/{accession_number}")
+def trading_sec_filing_detail(cik: str, accession_number: str, as_of: str | None = None) -> dict[str, Any]:
+    try:
+        payload = sec_filing_detail_payload(cik, accession_number, as_of=as_of)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="SEC filing detail is temporarily unavailable.") from error
+    if payload.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="SEC filing was not available at this point in time.")
+    return payload
 
 
 @app.get("/api/services/sec/today")

@@ -13,6 +13,8 @@ export type WorkspaceContainerId =
   | "ticker_news"
   | "news_detail"
   | "sec"
+  | "ticker_sec"
+  | "sec_detail"
   | "xbrl"
   | "journal";
 
@@ -275,8 +277,8 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   },
   {
     id: "sec",
-    title: "SEC Filings",
-    description: "Point-in-time filings, documents, and readable filing text for the active security.",
+    title: "All SEC",
+    description: "Searchable point-in-time filing inventory with form labels, content coverage, and filing selection.",
     modes: allModes,
     defaultOpen: {},
     sourceByMode: {
@@ -286,6 +288,29 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
       backtest: historicalBinding("Persisted filings accepted by each backtest event time", [secHistory]),
       backtest_debug: historicalBinding("Persisted filings accepted by the debug cursor", [secHistory]),
     },
+  },
+  {
+    id: "ticker_sec",
+    title: "Ticker SEC",
+    description: "Recent hot, cold, and older SEC disclosures for the linked symbol at the workspace clock.",
+    linkScope: "single-symbol",
+    modes: allModes,
+    defaultOpen: {},
+    sourceByMode: {
+      live: hybridBinding("Linked-symbol SEC filings from current processing and persisted history", [secLive, secHistory]),
+      paper: hybridBinding("Linked-symbol SEC filings from current processing and persisted history", [secLive, secHistory]),
+      replay: historicalBinding("Linked-symbol filings accepted by the replay clock", [secHistory]),
+      backtest: historicalBinding("Linked-symbol filings accepted by each backtest event time", [secHistory]),
+      backtest_debug: historicalBinding("Linked-symbol filings accepted by the debug cursor", [secHistory]),
+    },
+  },
+  {
+    id: "sec_detail",
+    title: "SEC Detail",
+    description: "Readable filing documents, XBRL facts, identity, and label evidence for the selected filing.",
+    modes: allModes,
+    defaultOpen: {},
+    sourceByMode: Object.fromEntries(allModes.map((mode) => [mode, historicalBinding("Canonical persisted filing and document inventory", [secHistory, xbrlHistory])])),
   },
   {
     id: "xbrl",
