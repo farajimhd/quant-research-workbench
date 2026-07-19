@@ -239,15 +239,16 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     shortDescription: "Causal support and resistance candidates inferred from consolidated NBBO behavior and eligible trades.",
     detailedDescription: "Green zones are price levels where bid reinforcement, bid recovery after depletion, seller absorption, and lower-price rejection accumulated. Red zones use the symmetric ask-side evidence. Evidence decays with a 15-minute half-life, so stale levels weaken rather than remaining permanent.",
     calculation: "For each selected-timeframe bar, support weights positive Level-1 OFI 30%, bid recovery 25%, absorbed aggressive selling 25%, and lower-range rejection 20%. Resistance mirrors those inputs. Repeated observations accumulate by minimum price increment; strength is a bounded transform of cumulative evidence and confidence combines touch count with QMD evidence reliability.",
-    readingGuide: "Treat each band as an area, not an exact tick. A green zone below price is useful only if price approaches it and bids replenish or selling fails to move the midpoint. A red zone above price is useful only if asks replenish or buying fails. A close and acceptance through a zone invalidates its prior role faster than a brief wick.",
+    readingGuide: "Treat each level as an area, not an exact tick. The newest active support and resistance receive full strength and confidence labels. Older states use compact SUP and RES tags so you can see where evidence migrated without covering price. A green level below price matters only if bids replenish or selling fails to move the midpoint; the red case is symmetric.",
     bullishEvidence: "A nearby green zone with high strength and confidence, followed by seller absorption, positive OFI, and price rejection upward, supports a short-horizon bounce or continuation.",
     bearishEvidence: "A nearby red zone with high strength and confidence, followed by buyer absorption, negative OFI, and price rejection downward, supports a short-horizon rejection or continuation lower.",
-    timeframeBehavior: "Raw 100 ms quote-and-trade sufficient statistics are merged once into the selected bar. Level evidence then decays by elapsed time, so changing timeframe changes observation granularity without changing the 15-minute economic half-life.",
+    timeframeBehavior: "Raw 100 ms quote-and-trade sufficient statistics are merged once into the selected bar. Level evidence then decays by elapsed time, so changing timeframe changes observation granularity without changing the 15-minute economic half-life. The legend configures support and resistance independently, including history length, latest labels, historical tags, line style, width, opacity, and marker size.",
     components: [
       { label: "Green zone · Liquidity support", description: "Best candidate at or below price. Width is visual; the label reports strength and confidence.", tone: "buy" },
       { label: "Red zone · Liquidity resistance", description: "Best candidate at or above price. It represents observed ask-side evidence, not guaranteed supply.", tone: "sell" },
       { label: "Strength", description: "How much decayed evidence has accumulated at the level, normalized from 0% to 100%.", tone: "info" },
       { label: "Confidence", description: "Whether the level has repeated observations supported by reliable quote/trade coverage; it is not win probability.", tone: "warning" },
+      { label: "SUP / RES history", description: "Compact historical tags show where the selected candidate changed. The full label is reserved for the current candidate.", tone: "neutral" },
     ],
     caveats: ["QMD sees consolidated Level-1 NBBO, not venue depth, hidden liquidity, or the full order book.", "Displayed liquidity can be cancelled before execution; require price response and persistence.", "A candidate level is causal evidence, not a claim that the market must reverse there."],
   }),
@@ -255,17 +256,17 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     shortDescription: "Important price references derived from the current 04:00 ET session and confirmed chart structure.",
     detailedDescription: "The overlay combines intraday auction boundaries, causally confirmed swing structure, BOS/CHoCH events, locally estimated LULD bands, and higher-timeframe references from completed daily trade bars.",
     calculation: "A swing is confirmed only after two later bars fail to exceed the center bar. BOS is a close through a confirmed swing in the established structure direction; CHoCH is the first confirmed-swing break against that direction. QMD LULD is a local five-minute rolling reference estimate, not an official SIP band. The 52-week and prior-month levels are queried once from completed daily trade bars before intraday replay.",
-    readingGuide: "Start with session and premarket extremes, then opening range. These are widely observed auction boundaries. Use the latest confirmed swing for local structure, POC for accepted value, and the round level as a clustering reference. Multiple lines near the same price create confluence; they do not become independent votes simply because they overlap.",
+    readingGuide: "Start with session and premarket extremes, then opening range. Full text is reserved for the newest active state. Historical states use compact tags such as SwH, SwL, BoS, and CHoCH. A BoS or CHoCH connector begins where the broken swing first became causally confirmed and ends at the closing bar that broke it; this preserves the relationship without backpainting the original pivot.",
     bullishEvidence: "Reclaim and acceptance above a prior high, opening-range high, or swing high—especially with positive flow—supports continuation. A defended low or POC can support a bounce.",
     bearishEvidence: "Loss and acceptance below a prior low, opening-range low, or swing low—especially with negative flow—supports continuation lower. Rejection at a high or POC can act as resistance.",
-    timeframeBehavior: "Session anchors retain their clock meaning. Premarket H/L requires bars of 30 minutes or less and the opening range requires bars of five minutes or less. Swing, BOS, CHoCH, and bar-volume POC depend on the selected timeframe. The 52-week and prior-month references do not change when the intraday timeframe changes because they come from the same completed daily bars. Canvas draws causal level segments for the latest 100 selected-timeframe bars; every segment shows the value known on those bars rather than projecting the newest value backward.",
+    timeframeBehavior: "Session anchors retain their clock meaning. Premarket H/L requires bars of 30 minutes or less and the opening range requires bars of five minutes or less. Swing, BoS, CHoCH, and bar-volume POC depend on the selected timeframe. The 52-week and prior-month references come from completed daily bars. Canvas keeps up to 500 causal source bars and defaults each configurable group to a 100-bar view; every segment shows the value known at that time rather than projecting the newest value backward.",
     components: [
       { label: "Session H/L", description: "Developing extremes since the 04:00 ET session anchor.", tone: "info" },
       { label: "Premarket H/L", description: "Extremes from 04:00 through 09:29:59 ET; fixed after the regular open.", tone: "warning" },
       { label: "Opening range H/L", description: "Developing 09:30–09:35 ET extremes, fixed after five minutes.", tone: "neutral" },
-      { label: "Confirmed swing H/L", description: "Local pivot confirmed only after two following bars; it intentionally appears with a two-bar delay.", tone: "info" },
-      { label: "BOS", description: "Break of Structure: price closes through a confirmed swing in the established trend direction. Green is bullish; red is bearish.", tone: "buy" },
-      { label: "CHoCH", description: "Change of Character: price closes through the opposite confirmed swing, warning that the prior structure direction has changed.", tone: "warning" },
+      { label: "SwH / SwL", description: "Confirmed swing high and low markers. They appear when the pivot becomes known, after two following bars, rather than being backpainted onto the earlier pivot candle.", tone: "info" },
+      { label: "BoS", description: "Break of Structure: a close through a confirmed swing in the established trend direction. The square marks the break and its line connects back to the confirmed swing state.", tone: "buy" },
+      { label: "CHoCH", description: "Change of Character: the first confirmed-swing break against the prior structure direction. The X marks the break and its dashed line connects to the confirmed swing state.", tone: "warning" },
       { label: "Estimated LULD", description: "QMD's locally estimated upper and lower volatility bands from a rolling five-minute trade-price reference. These are not official SIP bands or halt declarations.", tone: "sell" },
       { label: "52-week H/L", description: "Highest high and lowest low from completed daily trade bars in the trailing year, excluding the developing session.", tone: "info" },
       { label: "Prior month H/L/C", description: "Previous calendar month's high, low, and final close from completed daily trade bars.", tone: "neutral" },
@@ -1239,87 +1240,103 @@ function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl,
 function historicalMarketLevelZones(rows: HistoricalIndicator[], bars: HistoricalBar[], visibleIndicators: string[]): NonNullable<ChartPayload["price_zones"]> {
   if (!rows.length || !bars.length) return [];
   const visible = new Set(visibleIndicators);
-  const latest = rows[rows.length - 1];
   const chartEnd = Date.parse(bars[bars.length - 1].bar_end || bars[bars.length - 1].bar_start) / 1000 + 1;
   const zones: NonNullable<ChartPayload["price_zones"]> = [];
   if (visible.has("indicator.qmd_liquidity_levels")) {
-    const supportStrength = finiteNumber(latest.liquidity_support_strength);
-    const supportConfidence = finiteNumber(latest.liquidity_support_confidence);
-    const resistanceStrength = finiteNumber(latest.liquidity_resistance_strength);
-    const resistanceConfidence = finiteNumber(latest.liquidity_resistance_confidence);
-    pushLatestLevelZone(zones, rows, "liquidity_support_price", chartEnd, {
-      color: "var(--success)", displayItemId: "indicator.qmd_liquidity_levels", fillOpacity: 0.05 + 0.14 * supportStrength * supportConfidence,
-      label: `Liquidity support · ${percentLabel(supportStrength)} strength · ${percentLabel(supportConfidence)} confidence`, minPixelHeight: 8,
+    pushTrailingLiquidityZones(zones, rows, "liquidity_support_price", "liquidity_support_strength", "liquidity_support_confidence", chartEnd, {
+      annotationKind: "liquidity-support", color: "var(--success)", compactLabel: "SUP", label: "Liquidity support",
+      legendLabel: "QMD support", settingsId: "indicator.qmd_liquidity_levels.support",
     });
-    pushLatestLevelZone(zones, rows, "liquidity_resistance_price", chartEnd, {
-      color: "var(--danger)", displayItemId: "indicator.qmd_liquidity_levels", fillOpacity: 0.05 + 0.14 * resistanceStrength * resistanceConfidence,
-      label: `Liquidity resistance · ${percentLabel(resistanceStrength)} strength · ${percentLabel(resistanceConfidence)} confidence`, minPixelHeight: 8,
+    pushTrailingLiquidityZones(zones, rows, "liquidity_resistance_price", "liquidity_resistance_strength", "liquidity_resistance_confidence", chartEnd, {
+      annotationKind: "liquidity-resistance", color: "var(--danger)", compactLabel: "RES", label: "Liquidity resistance",
+      legendLabel: "QMD resistance", settingsId: "indicator.qmd_liquidity_levels.resistance",
     });
   }
   if (visible.has("indicator.market_structure_levels")) {
     const specs = [
-      ["structure_session_high", "Session high", "var(--info)"],
-      ["structure_session_low", "Session low", "var(--info)"],
-      ["structure_premarket_high", "Premarket high", "var(--warning)"],
-      ["structure_premarket_low", "Premarket low", "var(--warning)"],
-      ["structure_opening_range_high", "Opening range high", "var(--foreground)"],
-      ["structure_opening_range_low", "Opening range low", "var(--foreground)"],
-      ["structure_swing_high", "Confirmed swing high", "var(--danger)"],
-      ["structure_swing_low", "Confirmed swing low", "var(--success)"],
-      ["structure_luld_upper", "Estimated LULD upper", "var(--danger)"],
-      ["structure_luld_lower", "Estimated LULD lower", "var(--danger)"],
-      ["structure_52_week_high", "52-week high", "var(--warning)"],
-      ["structure_52_week_low", "52-week low", "var(--info)"],
-      ["structure_prior_month_high", "Prior-month high", "var(--primary)"],
-      ["structure_prior_month_low", "Prior-month low", "var(--primary)"],
-      ["structure_prior_month_close", "Prior-month close", "var(--muted-foreground)"],
-      ["structure_volume_poc", "Bar-volume POC", "var(--success)"],
-      ["structure_nearest_round", "Nearest round price", "var(--muted-foreground)"],
+      ["structure_session_high", "Session high", "Sess H", "var(--info)", "session", "Session H/L", "level"],
+      ["structure_session_low", "Session low", "Sess L", "var(--info)", "session", "Session H/L", "level"],
+      ["structure_premarket_high", "Premarket high", "PM H", "var(--warning)", "premarket", "Premarket H/L", "level"],
+      ["structure_premarket_low", "Premarket low", "PM L", "var(--warning)", "premarket", "Premarket H/L", "level"],
+      ["structure_opening_range_high", "Opening range high", "OR H", "var(--foreground)", "opening-range", "Opening range", "level"],
+      ["structure_opening_range_low", "Opening range low", "OR L", "var(--foreground)", "opening-range", "Opening range", "level"],
+      ["structure_swing_high", "Confirmed swing high", "SwH", "var(--danger)", "swings", "Swing H/L", "swing-high"],
+      ["structure_swing_low", "Confirmed swing low", "SwL", "var(--success)", "swings", "Swing H/L", "swing-low"],
+      ["structure_luld_upper", "Estimated LULD upper", "LULD U", "var(--danger)", "luld", "Estimated LULD", "level"],
+      ["structure_luld_lower", "Estimated LULD lower", "LULD L", "var(--danger)", "luld", "Estimated LULD", "level"],
+      ["structure_52_week_high", "52-week high", "52W H", "var(--warning)", "52-week", "52-week H/L", "level"],
+      ["structure_52_week_low", "52-week low", "52W L", "var(--info)", "52-week", "52-week H/L", "level"],
+      ["structure_prior_month_high", "Prior-month high", "PrevM H", "var(--primary)", "prior-month", "Prior month H/L/C", "level"],
+      ["structure_prior_month_low", "Prior-month low", "PrevM L", "var(--primary)", "prior-month", "Prior month H/L/C", "level"],
+      ["structure_prior_month_close", "Prior-month close", "PrevM C", "var(--muted-foreground)", "prior-month", "Prior month H/L/C", "level"],
+      ["structure_volume_poc", "Bar-volume POC", "POC", "var(--success)", "poc", "Bar-volume POC", "level"],
+      ["structure_nearest_round", "Nearest round price", "Round", "var(--muted-foreground)", "round", "Round price", "level"],
     ] as const;
-    specs.forEach(([column, label, color]) => pushTrailingLevelZones(zones, rows, column, chartEnd, MARKET_STRUCTURE_HISTORY_BARS, {
-      color, displayItemId: "indicator.market_structure_levels", fillOpacity: 0.035, label, minPixelHeight: 3,
+    specs.forEach(([column, label, compactLabel, color, settingsSuffix, legendLabel, annotationKind]) => pushTrailingLevelZones(zones, rows, column, chartEnd, LEVEL_SOURCE_HISTORY_BARS, {
+      annotationKind, color, compactLabel, displayItemId: "indicator.market_structure_levels", fillOpacity: 0.035,
+      historicalLabelsDefault: settingsSuffix === "swings",
+      historicalTagLimitDefault: settingsSuffix === "swings" ? 8 : 0,
+      label,
+      latestLabelDefault: settingsSuffix === "opening-range" || settingsSuffix === "swings" || settingsSuffix === "poc",
+      legendLabel, minPixelHeight: 3,
+      settingsId: `indicator.market_structure_levels.${settingsSuffix}`,
     }));
-    pushTrailingStructureBreakZones(zones, rows, "structure_bos_price", "structure_bos_direction", "BOS", chartEnd, MARKET_STRUCTURE_HISTORY_BARS);
-    pushTrailingStructureBreakZones(zones, rows, "structure_choch_price", "structure_choch_direction", "CHoCH", chartEnd, MARKET_STRUCTURE_HISTORY_BARS);
+    pushStructureBreakEvents(zones, rows, "structure_bos_price", "structure_bos_direction", "BoS", "bos", chartEnd, LEVEL_SOURCE_HISTORY_BARS);
+    pushStructureBreakEvents(zones, rows, "structure_choch_price", "structure_choch_direction", "CHoCH", "choch", chartEnd, LEVEL_SOURCE_HISTORY_BARS);
   }
   return zones;
 }
 
-function pushLatestLevelZone(
+type LevelZoneStyle = {
+  annotationKind: "level" | "liquidity-resistance" | "liquidity-support" | "swing-high" | "swing-low";
+  color: string;
+  compactLabel: string;
+  displayItemId: string;
+  fillOpacity: number;
+  historicalLabelsDefault?: boolean;
+  historicalTagLimitDefault?: number;
+  label: string;
+  latestLabelDefault?: boolean;
+  legendLabel: string;
+  minPixelHeight: number;
+  settingsId: string;
+};
+
+const LEVEL_SOURCE_HISTORY_BARS = 500;
+
+function pushTrailingLiquidityZones(
   zones: NonNullable<ChartPayload["price_zones"]>,
   rows: HistoricalIndicator[],
-  column: string,
-  end: number,
-  style: { color: string; displayItemId: string; fillOpacity: number; label: string; minPixelHeight: number },
+  priceColumn: string,
+  strengthColumn: string,
+  confidenceColumn: string,
+  chartEnd: number,
+  style: Pick<LevelZoneStyle, "annotationKind" | "color" | "compactLabel" | "label" | "legendLabel" | "settingsId">,
 ) {
-  const latestIndex = findLatestPositiveIndex(rows, column);
-  if (latestIndex < 0) return;
-  const latestValue = finiteNumber(rows[latestIndex][column]);
-  if (latestValue <= 0) return;
-  let startIndex = latestIndex;
-  while (startIndex > 0 && pricesMatch(finiteNumber(rows[startIndex - 1][column]), latestValue)) startIndex -= 1;
-  const start = Date.parse(String(rows[startIndex].bar_start)) / 1000;
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
-  zones.push({
-    borderColor: style.color,
-    borderOpacity: Math.min(0.4, style.fillOpacity * 2.5),
-    borderStyle: "solid",
-    borderWidth: 1,
-    color: style.color,
-    displayItemId: style.displayItemId,
-    end,
-    fillColor: style.color,
-    fillOpacity: style.fillOpacity,
-    label: `${style.label} · ${formatLevelPrice(latestValue)}`,
-    lower: latestValue,
-    minPixelHeight: style.minPixelHeight,
-    start,
-    upper: latestValue,
-    zoneHeightMode: "fixed_px",
-  });
+  const firstIndex = Math.max(0, rows.length - LEVEL_SOURCE_HISTORY_BARS);
+  let segmentStart = firstIndex;
+  let segmentValue = finiteNumber(rows[firstIndex]?.[priceColumn]);
+  for (let index = firstIndex + 1; index <= rows.length; index += 1) {
+    const nextValue = index < rows.length ? finiteNumber(rows[index][priceColumn]) : Number.NaN;
+    if (index < rows.length && pricesMatch(nextValue, segmentValue)) continue;
+    const evidenceIndex = Math.max(segmentStart, Math.min(rows.length - 1, index - 1));
+    const strength = finiteNumber(rows[evidenceIndex]?.[strengthColumn]);
+    const confidence = finiteNumber(rows[evidenceIndex]?.[confidenceColumn]);
+    const sideLabel = style.annotationKind === "liquidity-support" ? "Support" : "Resistance";
+    pushHistoricalLevelSegment(zones, rows, segmentStart, index, segmentValue, chartEnd, {
+      ...style,
+      displayItemId: "indicator.qmd_liquidity_levels",
+      fillOpacity: 0.04 + 0.12 * Math.max(0, Math.min(1, strength)) * Math.max(0, Math.min(1, confidence)),
+      historicalLabelsDefault: true,
+      historicalTagLimitDefault: 4,
+      label: `${sideLabel} · ${percentLabel(strength)} strength · ${percentLabel(confidence)} conf.`,
+      latestLabelDefault: true,
+      minPixelHeight: 7,
+    });
+    segmentStart = index;
+    segmentValue = nextValue;
+  }
 }
-
-const MARKET_STRUCTURE_HISTORY_BARS = 100;
 
 function pushTrailingLevelZones(
   zones: NonNullable<ChartPayload["price_zones"]>,
@@ -1327,7 +1344,7 @@ function pushTrailingLevelZones(
   column: string,
   chartEnd: number,
   barCount: number,
-  style: { color: string; displayItemId: string; fillOpacity: number; label: string; minPixelHeight: number },
+  style: LevelZoneStyle,
 ) {
   const firstIndex = Math.max(0, rows.length - Math.max(1, barCount));
   let segmentStart = firstIndex;
@@ -1341,37 +1358,72 @@ function pushTrailingLevelZones(
   }
 }
 
-function pushTrailingStructureBreakZones(
+function pushStructureBreakEvents(
   zones: NonNullable<ChartPayload["price_zones"]>,
   rows: HistoricalIndicator[],
   priceColumn: string,
   directionColumn: string,
   eventLabel: string,
+  annotationKind: "bos" | "choch",
   chartEnd: number,
   barCount: number,
 ) {
   const firstIndex = Math.max(0, rows.length - Math.max(1, barCount));
-  let segmentStart = firstIndex;
-  let price = finiteNumber(rows[firstIndex]?.[priceColumn]);
-  let direction = finiteNumber(rows[firstIndex]?.[directionColumn]);
-  for (let index = firstIndex + 1; index <= rows.length; index += 1) {
-    const nextPrice = index < rows.length ? finiteNumber(rows[index][priceColumn]) : Number.NaN;
-    const nextDirection = index < rows.length ? finiteNumber(rows[index][directionColumn]) : Number.NaN;
-    if (index < rows.length && pricesMatch(nextPrice, price) && nextDirection === direction) continue;
-    if (direction !== 0) {
+  let previousPrice = firstIndex > 0 ? finiteNumber(rows[firstIndex - 1]?.[priceColumn]) : Number.NaN;
+  let previousDirection = firstIndex > 0 ? finiteNumber(rows[firstIndex - 1]?.[directionColumn]) : 0;
+  for (let index = firstIndex; index < rows.length; index += 1) {
+    const price = finiteNumber(rows[index]?.[priceColumn]);
+    const direction = finiteNumber(rows[index]?.[directionColumn]);
+    const changed = direction !== 0 && (!pricesMatch(price, previousPrice) || direction !== previousDirection);
+    if (changed && price > 0) {
       const bullish = direction > 0;
-      pushHistoricalLevelSegment(zones, rows, segmentStart, index, price, chartEnd, {
-        color: bullish ? "var(--success)" : "var(--danger)",
-        displayItemId: "indicator.market_structure_levels",
-        fillOpacity: 0.07,
-        label: `${bullish ? "Bullish" : "Bearish"} ${eventLabel}`,
-        minPixelHeight: 5,
-      });
+      const swingColumn = bullish ? "structure_swing_high" : "structure_swing_low";
+      const anchorIndex = findPriorMatchingSwingIndex(rows, index, swingColumn, price);
+      const eventTime = rowTimestamp(rows[index]);
+      const end = index + 1 < rows.length ? rowTimestamp(rows[index + 1]) : chartEnd;
+      const start = anchorIndex >= 0 ? rowTimestamp(rows[anchorIndex]) : eventTime;
+      if (Number.isFinite(start) && Number.isFinite(eventTime) && Number.isFinite(end) && end > start) {
+        zones.push({
+          annotationKind,
+          borderColor: bullish ? "var(--success)" : "var(--danger)",
+          borderOpacity: 0.72,
+          borderStyle: annotationKind === "choch" ? "dashed" : "solid",
+          borderWidth: 2,
+          color: bullish ? "var(--success)" : "var(--danger)",
+          compactLabel: `${eventLabel}${bullish ? "+" : "-"}`,
+          displayItemId: "indicator.market_structure_levels",
+          end,
+          eventTime,
+          fillOpacity: 0.08,
+          historicalLabelsDefault: true,
+          historicalTagLimitDefault: 6,
+          label: `${bullish ? "Bullish" : "Bearish"} ${eventLabel} · ${formatLevelPrice(price)}`,
+          latest: index >= rows.length - 8,
+          latestLabelDefault: true,
+          legendLabel: eventLabel,
+          lower: price,
+          minPixelHeight: 5,
+          settingsId: `indicator.market_structure_levels.${annotationKind}`,
+          start,
+          upper: price,
+          zoneHeightMode: "fixed_px",
+        });
+      }
     }
-    segmentStart = index;
-    price = nextPrice;
-    direction = nextDirection;
+    previousPrice = price;
+    previousDirection = direction;
   }
+}
+
+function findPriorMatchingSwingIndex(rows: HistoricalIndicator[], eventIndex: number, column: string, price: number) {
+  let match = -1;
+  for (let index = eventIndex - 1; index >= 0; index -= 1) {
+    if (!pricesMatch(finiteNumber(rows[index]?.[column]), price)) continue;
+    match = index;
+    while (match > 0 && pricesMatch(finiteNumber(rows[match - 1]?.[column]), price)) match -= 1;
+    break;
+  }
+  return match;
 }
 
 function pushHistoricalLevelSegment(
@@ -1381,25 +1433,33 @@ function pushHistoricalLevelSegment(
   endIndex: number,
   value: number,
   chartEnd: number,
-  style: { color: string; displayItemId: string; fillOpacity: number; label: string; minPixelHeight: number },
+  style: LevelZoneStyle,
 ) {
   if (!(value > 0) || startIndex >= rows.length) return;
   const start = rowTimestamp(rows[startIndex]);
   const end = endIndex < rows.length ? rowTimestamp(rows[endIndex]) : chartEnd;
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
   zones.push({
+    annotationKind: style.annotationKind,
     borderColor: style.color,
     borderOpacity: Math.min(0.4, style.fillOpacity * 2.5),
     borderStyle: "solid",
     borderWidth: 1,
     color: style.color,
+    compactLabel: style.compactLabel,
     displayItemId: style.displayItemId,
     end,
     fillColor: style.color,
     fillOpacity: style.fillOpacity,
+    historicalLabelsDefault: style.historicalLabelsDefault,
+    historicalTagLimitDefault: style.historicalTagLimitDefault,
     label: `${style.label} · ${formatLevelPrice(value)}`,
+    latest: endIndex >= rows.length,
+    latestLabelDefault: style.latestLabelDefault,
+    legendLabel: style.legendLabel,
     lower: value,
     minPixelHeight: style.minPixelHeight,
+    settingsId: style.settingsId,
     start,
     upper: value,
     zoneHeightMode: "fixed_px",
@@ -1407,13 +1467,6 @@ function pushHistoricalLevelSegment(
 }
 
 function rowTimestamp(row?: HistoricalIndicator) { return row ? Date.parse(String(row.bar_start)) / 1000 : Number.NaN; }
-
-function findLatestPositiveIndex(rows: HistoricalIndicator[], column: string) {
-  for (let index = rows.length - 1; index >= 0; index -= 1) {
-    if (finiteNumber(rows[index][column]) > 0) return index;
-  }
-  return -1;
-}
 
 function finiteNumber(value: unknown) {
   const numeric = Number(value);

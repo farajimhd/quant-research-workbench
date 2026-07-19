@@ -92,19 +92,28 @@ type TradeAnnotation = {
   triggerPrice?: number;
 };
 type PriceZone = {
+  annotationKind?: "band" | "bos" | "choch" | "level" | "liquidity-resistance" | "liquidity-support" | "swing-high" | "swing-low";
   borderColor?: string;
   borderOpacity?: number;
   borderStyle?: string;
   borderWidth?: number;
   color: string;
+  compactLabel?: string;
   displayItemId?: string;
   end: number;
+  eventTime?: number;
   fillColor?: string;
   fillOpacity?: number;
+  historicalLabelsDefault?: boolean;
+  historicalTagLimitDefault?: number;
   label: string;
+  latest?: boolean;
+  latestLabelDefault?: boolean;
+  legendLabel?: string;
   lower: number;
   maxPixelHeight?: number;
   minPixelHeight?: number;
+  settingsId?: string;
   start: number;
   upper: number;
   zoneHeightMode?: string;
@@ -192,10 +201,16 @@ type OscillatorPaneGroup = {
 type LegendLineStyle = "solid" | "dashed" | "dotted";
 type LegendSeriesSettings = {
   color?: string;
+  historyBars?: number;
   labelFontSize?: number;
   lineStyle?: LegendLineStyle;
   lineWidth?: number;
+  markerSize?: number;
+  maxHistoricalTags?: number;
   opacity?: number;
+  showConnectors?: boolean;
+  showHistoricalLabels?: boolean;
+  showLatestLabels?: boolean;
   showLabels?: boolean;
   showValue?: boolean;
   visible?: boolean;
@@ -1147,13 +1162,10 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     if (overlayRedrawTimerRef.current !== null) {
       window.clearTimeout(overlayRedrawTimerRef.current);
     }
-    let remainingTicks = 12;
-    const tick = () => {
+    overlayRedrawTimerRef.current = window.setTimeout(() => {
       scheduleOverlayRedraw();
-      remainingTicks -= 1;
-      overlayRedrawTimerRef.current = remainingTicks > 0 ? window.setTimeout(tick, 16) : null;
-    };
-    overlayRedrawTimerRef.current = window.setTimeout(tick, 16);
+      overlayRedrawTimerRef.current = null;
+    }, 48);
   }
 
   function cleanupChartRuntime() {
@@ -1555,18 +1567,28 @@ type LegendItem = {
   configurable: boolean;
   guideHelp?: ChartColumnHelp;
   guideTitle?: string;
+  historyBars?: number;
   itemKind: "series" | "zone";
   key: string;
   labelFontSize?: number;
   label: string;
   lineStyle: LegendLineStyle;
   lineWidth: number;
+  markerSize?: number;
+  maxHistoricalTags?: number;
   opacity: number;
   seriesStyle: "candlestick" | "histogram" | "line";
   semanticColor: boolean;
   semanticColors: { down: string; neutral: string; up: string };
+  showConnectors?: boolean;
+  showHistoricalLabels?: boolean;
+  showLatestLabels?: boolean;
   showLabels?: boolean;
   showValue: boolean;
+  supportsConnectors?: boolean;
+  supportsHistoricalLabels?: boolean;
+  supportsHistoryWindow?: boolean;
+  supportsMarkers?: boolean;
   value: string;
   visible: boolean;
 };
@@ -1792,7 +1814,7 @@ function LegendEditor({
       ) : null}
       {item.itemKind === "zone" ? (
         <label>
-          Text size
+          Latest label size
           <span className="legend-range-control">
             <input
               aria-label={`${item.label} label text size`}
@@ -1804,6 +1826,32 @@ function LegendEditor({
               onChange={(event) => onUpdate({ labelFontSize: Number(event.target.value) })}
             />
             <output>{item.labelFontSize ?? 11}px</output>
+          </span>
+        </label>
+      ) : null}
+      {item.itemKind === "zone" && item.supportsHistoryWindow ? (
+        <label>
+          History
+          <span className="legend-range-control">
+            <input
+              aria-label={`${item.label} history bars`}
+              min={10}
+              max={500}
+              step={10}
+              type="range"
+              value={item.historyBars ?? 100}
+              onChange={(event) => onUpdate({ historyBars: Number(event.target.value) })}
+            />
+            <output>{item.historyBars ?? 100} bars</output>
+          </span>
+        </label>
+      ) : null}
+      {item.itemKind === "zone" && item.supportsMarkers ? (
+        <label>
+          Marker size
+          <span className="legend-range-control">
+            <input min={2} max={12} step={1} type="range" value={item.markerSize ?? 5} onChange={(event) => onUpdate({ markerSize: Number(event.target.value) })} />
+            <output>{item.markerSize ?? 5}px</output>
           </span>
         </label>
       ) : null}
@@ -1823,10 +1871,33 @@ function LegendEditor({
         </span>
       </label>
       {item.itemKind === "zone" ? (
-        <label className="legend-checkbox">
-          <input checked={item.showLabels !== false} type="checkbox" onChange={(event) => onUpdate({ showLabels: event.target.checked })} />
-          Show chart labels
-        </label>
+        <>
+          <label className="legend-checkbox">
+            <input checked={item.showLatestLabels !== false} type="checkbox" onChange={(event) => onUpdate({ showLatestLabels: event.target.checked })} />
+            Latest detail labels
+          </label>
+          {item.supportsHistoricalLabels ? (
+            <>
+              <label className="legend-checkbox">
+                <input checked={item.showHistoricalLabels !== false} type="checkbox" onChange={(event) => onUpdate({ showHistoricalLabels: event.target.checked })} />
+                Historical compact tags
+              </label>
+              <label>
+                Tag limit
+                <span className="legend-range-control">
+                  <input min={0} max={30} step={1} type="range" value={item.maxHistoricalTags ?? 10} onChange={(event) => onUpdate({ maxHistoricalTags: Number(event.target.value) })} />
+                  <output>{item.maxHistoricalTags ?? 10}</output>
+                </span>
+              </label>
+            </>
+          ) : null}
+          {item.supportsConnectors ? (
+            <label className="legend-checkbox">
+              <input checked={item.showConnectors !== false} type="checkbox" onChange={(event) => onUpdate({ showConnectors: event.target.checked })} />
+              Swing-to-break connectors
+            </label>
+          ) : null}
+        </>
       ) : (
         <label className="legend-checkbox">
           <input checked={item.showValue} type="checkbox" onChange={(event) => onUpdate({ showValue: event.target.checked })} />
@@ -2659,11 +2730,11 @@ function buildPriceZoneLegendItems(
   const catalogByColumn = new Map(catalogColumns.map((item) => [item.column, item]));
   const grouped = new Map<string, PriceZone[]>();
   zones.forEach((zone) => {
-    const id = zone.displayItemId || `zone:${zone.label}`;
+    const id = zone.settingsId || zone.displayItemId || `zone:${zone.label}`;
     grouped.set(id, [...(grouped.get(id) ?? []), zone]);
   });
   return Array.from(grouped, ([id, itemZones]) => {
-    const displayItem = displayItemById.get(id);
+    const displayItem = displayItemById.get(itemZones[0]?.displayItemId || id);
     const sourceColumn = displayItem?.sourceColumns?.map((column) => catalogByColumn.get(column)).find((column) => column?.knowledge);
     const guideTitle = displayItem?.title ?? sourceColumn?.title ?? itemZones[0]?.label ?? "Price levels";
     const guideHelp = displayItem
@@ -2680,18 +2751,27 @@ function buildPriceZoneLegendItems(
       configurable: true,
       guideHelp,
       guideTitle,
+      historyBars: settings.historyBars,
       itemKind: "zone" as const,
       key,
-      label: guideTitle,
+      label: itemZones[0]?.legendLabel ?? guideTitle,
       labelFontSize: settings.labelFontSize,
       lineStyle: settings.lineStyle,
       lineWidth: settings.lineWidth,
+      markerSize: settings.markerSize,
+      maxHistoricalTags: settings.maxHistoricalTags,
       opacity: settings.opacity,
       seriesStyle: "line" as const,
       semanticColor: true,
       semanticColors: { down: appearance.downColor, neutral: readNeutralChartColor(), up: appearance.upColor },
-      showLabels: settings.showLabels,
+      showConnectors: settings.showConnectors,
+      showHistoricalLabels: settings.showHistoricalLabels,
+      showLatestLabels: settings.showLatestLabels,
       showValue: true,
+      supportsConnectors: itemZones.some((zone) => zone.annotationKind === "bos" || zone.annotationKind === "choch"),
+      supportsHistoricalLabels: itemZones.some((zone) => Boolean(zone.compactLabel)),
+      supportsHistoryWindow: itemZones.some((zone) => !zone.latest),
+      supportsMarkers: itemZones.some((zone) => zone.annotationKind === "bos" || zone.annotationKind === "choch" || zone.annotationKind === "liquidity-resistance" || zone.annotationKind === "liquidity-support" || zone.annotationKind === "swing-high" || zone.annotationKind === "swing-low"),
       value: `${itemZones.length} level${itemZones.length === 1 ? "" : "s"}`,
       visible: settings.visible,
     };
@@ -2997,10 +3077,16 @@ function rgbaFromHex(hex: string, opacity: number) {
 function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettings> {
   return {
     color: resolveChartColor(series.color),
+    historyBars: 100,
     labelFontSize: 11,
     lineStyle: series.lineStyle ?? "solid",
     lineWidth: Math.max(1, Math.min(4, Math.round(series.lineWidth || 1))),
+    markerSize: 5,
+    maxHistoricalTags: 10,
     opacity: 1,
+    showConnectors: true,
+    showHistoricalLabels: true,
+    showLatestLabels: true,
     showLabels: true,
     showValue: true,
     visible: true
@@ -3012,10 +3098,16 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
   const stored = settingsMap[key] ?? {};
   return {
     color: resolveChartColor(stored.color || defaults.color),
+    historyBars: Math.max(10, Math.min(500, Math.round(stored.historyBars ?? defaults.historyBars))),
     labelFontSize: Math.max(9, Math.min(18, Math.round(stored.labelFontSize ?? defaults.labelFontSize))),
     lineStyle: stored.lineStyle || defaults.lineStyle,
     lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? defaults.lineWidth))),
+    markerSize: Math.max(2, Math.min(12, Math.round(stored.markerSize ?? defaults.markerSize))),
+    maxHistoricalTags: Math.max(0, Math.min(30, Math.round(stored.maxHistoricalTags ?? defaults.maxHistoricalTags))),
     opacity: clampNumber(stored.opacity ?? defaults.opacity, 0, 1, 1),
+    showConnectors: stored.showConnectors ?? defaults.showConnectors,
+    showHistoricalLabels: stored.showHistoricalLabels ?? defaults.showHistoricalLabels,
+    showLatestLabels: stored.showLatestLabels ?? stored.showLabels ?? defaults.showLatestLabels,
     showLabels: stored.showLabels ?? defaults.showLabels,
     showValue: stored.showValue ?? defaults.showValue,
     visible: stored.visible ?? defaults.visible
@@ -3023,22 +3115,32 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
 }
 
 type ResolvedPriceZoneLegendSettings = {
+  historyBars: number;
   labelFontSize: number;
   lineStyle: LegendLineStyle;
   lineWidth: number;
+  markerSize: number;
+  maxHistoricalTags: number;
   opacity: number;
-  showLabels: boolean;
+  showConnectors: boolean;
+  showHistoricalLabels: boolean;
+  showLatestLabels: boolean;
   visible: boolean;
 };
 
 function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: string, zone?: PriceZone): ResolvedPriceZoneLegendSettings {
   const stored = settingsMap[key] ?? {};
   return {
+    historyBars: Math.max(10, Math.min(500, Math.round(stored.historyBars ?? 100))),
     labelFontSize: Math.max(9, Math.min(18, Math.round(stored.labelFontSize ?? 11))),
     lineStyle: stored.lineStyle ?? zoneBorderStyle(zone?.borderStyle),
     lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? zone?.borderWidth ?? 1))),
+    markerSize: Math.max(2, Math.min(12, Math.round(stored.markerSize ?? 5))),
+    maxHistoricalTags: Math.max(0, Math.min(30, Math.round(stored.maxHistoricalTags ?? zone?.historicalTagLimitDefault ?? 10))),
     opacity: clampNumber(stored.opacity ?? 1, 0, 1, 1),
-    showLabels: stored.showLabels !== false,
+    showConnectors: stored.showConnectors !== false,
+    showHistoricalLabels: stored.showHistoricalLabels ?? zone?.historicalLabelsDefault ?? false,
+    showLatestLabels: stored.showLatestLabels ?? stored.showLabels ?? zone?.latestLabelDefault ?? true,
     visible: stored.visible !== false,
   };
 }
@@ -3971,20 +4073,46 @@ function drawPriceZones(
   legendSettings: LegendSettingsMap,
 ) {
   if (!priceSeries || !zones.length) return;
+  const width = Math.max(1, layer.clientWidth);
+  const height = Math.max(1, layer.clientHeight);
+  const pixelRatio = Math.max(1, window.devicePixelRatio || 1);
+  const canvas = document.createElement("canvas");
+  canvas.className = "price-zone-canvas";
+  canvas.width = Math.round(width * pixelRatio);
+  canvas.height = Math.round(height * pixelRatio);
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+  layer.appendChild(canvas);
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  context.scale(pixelRatio, pixelRatio);
+  const plotBottom = Math.max(0, height - chart.timeScale().height());
   const labelCandidates: Array<{ element: HTMLSpanElement; preferredTop: number; priority: number }> = [];
+  const compactTagBoxes: Array<{ bottom: number; left: number; right: number; top: number }> = [];
+  const historicalTagZones = new Set<PriceZone>();
+  const historicalBySettings = new Map<string, PriceZone[]>();
+  zones.filter((zone) => !zone.latest && Boolean(zone.compactLabel)).forEach((zone) => {
+    const id = zone.settingsId || zone.displayItemId || `zone:${zone.label}`;
+    historicalBySettings.set(id, [...(historicalBySettings.get(id) ?? []), zone]);
+  });
+  historicalBySettings.forEach((itemZones, id) => {
+    const settings = resolvePriceZoneLegendSettings(legendSettings, priceZoneLegendKey(id), itemZones[itemZones.length - 1]);
+    if (settings.maxHistoricalTags > 0) itemZones.slice(-settings.maxHistoricalTags).forEach((zone) => historicalTagZones.add(zone));
+  });
   zones.forEach((zone) => {
-    const settings = resolvePriceZoneLegendSettings(legendSettings, priceZoneLegendKey(zone.displayItemId || `zone:${zone.label}`), zone);
+    const settings = resolvePriceZoneLegendSettings(legendSettings, priceZoneLegendKey(zone.settingsId || zone.displayItemId || `zone:${zone.label}`), zone);
     if (!settings.visible) return;
+    const historyStart = candles[Math.max(0, candles.length - settings.historyBars)]?.time ?? Number.NEGATIVE_INFINITY;
+    if (!zone.latest && zone.end <= historyStart) return;
     const coordinates = priceZoneCoordinates(chart, zone, candles, barWidth, candleDuration);
     if (!coordinates) return;
     const upper = priceSeries.priceToCoordinate(zone.upper);
     const lower = priceSeries.priceToCoordinate(zone.lower);
     if (upper === null || lower === null) return;
-    const plotBottom = Math.max(0, layer.clientHeight - chart.timeScale().height());
     const center = (upper + lower) / 2;
     if (center < 0 || center > plotBottom) return;
     const left = Math.min(coordinates.start, coordinates.end);
-    const width = Math.abs(coordinates.end - coordinates.start);
+    const zoneWidth = Math.abs(coordinates.end - coordinates.start);
     let top = Math.min(upper, lower);
     let height = Math.max(2, Math.abs(lower - upper));
     const minPixelHeight = clampNumber(zone.minPixelHeight, 0, 32, 0);
@@ -4002,43 +4130,149 @@ function drawPriceZones(
         top = center - height / 2;
       }
     }
-    if (width < 1 || height < 1) return;
-    const node = document.createElement("div");
-    node.className = "price-zone";
-    node.title = zone.label;
-    node.style.left = `${left}px`;
-    node.style.top = `${top}px`;
-    node.style.width = `${width}px`;
-    node.style.height = `${height}px`;
+    if (zoneWidth < 1 || height < 1) return;
     const fillColor = validHexColor(resolveChartColor(zone.fillColor || zone.color), "#1E3A5F");
     const fillOpacity = clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08) * settings.opacity;
     const borderColor = validHexColor(resolveChartColor(zone.borderColor || fillColor), fillColor);
     const borderOpacity = clampNumber(zone.borderOpacity, 0, 0.35, Math.max(clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08) * 1.8, 0.12)) * settings.opacity;
-    node.style.borderColor = rgbaFromHex(borderColor, borderOpacity);
-    node.style.borderStyle = settings.lineStyle;
-    node.style.borderWidth = `${settings.lineWidth}px`;
-    node.style.background = rgbaFromHex(fillColor, fillOpacity);
-    layer.appendChild(node);
-    if (settings.showLabels) {
+    context.save();
+    context.globalAlpha = 1;
+    context.fillStyle = rgbaFromHex(fillColor, fillOpacity);
+    context.strokeStyle = rgbaFromHex(borderColor, borderOpacity);
+    context.lineWidth = settings.lineWidth;
+    context.setLineDash(canvasLineDash(settings.lineStyle, settings.lineWidth));
+    if (zone.annotationKind === "bos" || zone.annotationKind === "choch") {
+      const eventX = zone.eventTime ? chart.timeScale().timeToCoordinate(zone.eventTime as Time) : coordinates.end;
+      if (settings.showConnectors) {
+        context.beginPath();
+        context.moveTo(coordinates.start, center);
+        context.lineTo(eventX ?? coordinates.end, center);
+        context.stroke();
+      }
+      if (eventX !== null) drawEventGlyph(context, eventX, center, settings.markerSize, fillColor, zone.annotationKind);
+    } else {
+      context.fillRect(left, top, zoneWidth, height);
+      context.strokeRect(left, top, zoneWidth, height);
+      if (zone.annotationKind === "swing-high" || zone.annotationKind === "swing-low") {
+        drawSwingGlyph(context, coordinates.start, center, settings.markerSize, fillColor, zone.annotationKind === "swing-high");
+      } else if (zone.annotationKind === "liquidity-support" || zone.annotationKind === "liquidity-resistance") {
+        drawLiquidityGlyph(context, coordinates.start, center, settings.markerSize, fillColor, zone.annotationKind === "liquidity-support");
+      }
+    }
+    context.restore();
+    if (!zone.latest && zone.compactLabel && settings.showHistoricalLabels && historicalTagZones.has(zone)) {
+      const tagX = zone.eventTime ? chart.timeScale().timeToCoordinate(zone.eventTime as Time) : coordinates.start;
+      if (tagX !== null) drawCompactPriceTag(context, zone.compactLabel, tagX, center, fillColor, settings, compactTagBoxes, width, plotBottom);
+    }
+    if ((zone.latest ?? !zone.compactLabel) && settings.showLatestLabels) {
       const label = document.createElement("span");
-      label.className = "price-zone-label";
+      label.className = "price-zone-label latest";
       label.textContent = zone.label;
       label.title = zone.label;
       label.style.borderColor = rgbaFromHex(fillColor, Math.max(0.45, settings.opacity));
       label.style.color = fillColor;
       label.style.fontSize = `${settings.labelFontSize}px`;
-      label.style.left = `${Math.max(4, left + 4)}px`;
       label.style.opacity = `${settings.opacity}`;
       label.style.visibility = "hidden";
       layer.appendChild(label);
+      const preferredLeft = zone.latest ? coordinates.end - label.offsetWidth - 6 : left + 4;
+      label.style.left = `${Math.max(4, Math.min(preferredLeft, width - label.offsetWidth - 4))}px`;
       labelCandidates.push({
         element: label,
         preferredTop: top - label.offsetHeight - 3,
-        priority: zone.displayItemId === "indicator.qmd_liquidity_levels" ? 2 : 1,
+        priority: zone.displayItemId === "indicator.qmd_liquidity_levels" ? 3 : zone.annotationKind === "bos" || zone.annotationKind === "choch" || zone.annotationKind === "swing-high" || zone.annotationKind === "swing-low" ? 2 : 1,
       });
     }
   });
   placePriceZoneLabels(layer, chart.timeScale().height(), labelCandidates);
+}
+
+function canvasLineDash(style: LegendLineStyle, lineWidth: number) {
+  if (style === "dashed") return [Math.max(4, lineWidth * 4), Math.max(3, lineWidth * 3)];
+  if (style === "dotted") return [Math.max(1, lineWidth), Math.max(3, lineWidth * 3)];
+  return [];
+}
+
+function drawSwingGlyph(context: CanvasRenderingContext2D, x: number, y: number, size: number, color: string, high: boolean) {
+  const direction = high ? -1 : 1;
+  context.save();
+  context.fillStyle = color;
+  context.beginPath();
+  context.moveTo(x, y + direction * size);
+  context.lineTo(x - size, y - direction * size * 0.55);
+  context.lineTo(x + size, y - direction * size * 0.55);
+  context.closePath();
+  context.fill();
+  context.restore();
+}
+
+function drawEventGlyph(context: CanvasRenderingContext2D, x: number, y: number, size: number, color: string, kind: "bos" | "choch") {
+  context.save();
+  context.strokeStyle = color;
+  context.fillStyle = color;
+  context.lineWidth = Math.max(1, size / 3);
+  context.beginPath();
+  if (kind === "choch") {
+    context.moveTo(x - size, y - size);
+    context.lineTo(x + size, y + size);
+    context.moveTo(x + size, y - size);
+    context.lineTo(x - size, y + size);
+  } else {
+    context.rect(x - size * 0.75, y - size * 0.75, size * 1.5, size * 1.5);
+  }
+  context.stroke();
+  context.restore();
+}
+
+function drawLiquidityGlyph(context: CanvasRenderingContext2D, x: number, y: number, size: number, color: string, support: boolean) {
+  const direction = support ? 1 : -1;
+  context.save();
+  context.strokeStyle = color;
+  context.lineWidth = Math.max(1, size / 3);
+  context.beginPath();
+  context.moveTo(x, y - direction * size);
+  context.lineTo(x, y + direction * size);
+  context.lineTo(x + size, y + direction * size);
+  context.stroke();
+  context.restore();
+}
+
+function drawCompactPriceTag(
+  context: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  color: string,
+  settings: ResolvedPriceZoneLegendSettings,
+  placed: Array<{ bottom: number; left: number; right: number; top: number }>,
+  layerWidth: number,
+  plotBottom: number,
+) {
+  if (x < 2 || x > layerWidth - 2 || y < 2 || y > plotBottom - 2) return;
+  const fontSize = Math.max(8, settings.labelFontSize - 2);
+  context.save();
+  context.font = `700 ${fontSize}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+  const textWidth = Math.ceil(context.measureText(text).width);
+  const tagWidth = textWidth + 8;
+  const tagHeight = fontSize + 6;
+  const left = Math.max(2, Math.min(x + 4, layerWidth - tagWidth - 2));
+  const top = Math.max(2, Math.min(y - tagHeight - 4, plotBottom - tagHeight - 2));
+  const box = { bottom: top + tagHeight, left, right: left + tagWidth, top };
+  const overlaps = placed.some((item) => box.left < item.right + 3 && box.right + 3 > item.left && box.top < item.bottom + 3 && box.bottom + 3 > item.top);
+  if (!overlaps) {
+    context.fillStyle = readChartPalette().background;
+    context.globalAlpha = 0.88 * settings.opacity;
+    context.fillRect(left, top, tagWidth, tagHeight);
+    context.globalAlpha = settings.opacity;
+    context.strokeStyle = color;
+    context.lineWidth = 1;
+    context.strokeRect(left, top, tagWidth, tagHeight);
+    context.fillStyle = color;
+    context.textBaseline = "middle";
+    context.fillText(text, left + 4, top + tagHeight / 2);
+    placed.push(box);
+  }
+  context.restore();
 }
 
 function placePriceZoneLabels(
@@ -4095,11 +4329,35 @@ function placePriceZoneLabels(
 }
 
 function priceZoneCoordinates(chart: IChartApi, zone: PriceZone, candles: Candle[], barWidth: number, candleDuration: number) {
-  const coordinates = regionCoordinates(chart, { start: zone.start, end: zone.end, color: zone.color, label: zone.label }, candles, barWidth, candleDuration);
-  if (!coordinates) return null;
+  let firstIndex = lowerBoundCandleTime(candles, zone.start - candleDuration);
+  while (firstIndex < candles.length && !(candles[firstIndex].time < zone.end && candles[firstIndex].time + candleDuration > zone.start)) firstIndex += 1;
+  const endIndex = lowerBoundCandleTime(candles, zone.end);
+  const lastIndex = endIndex - 1;
+  let coordinates: { end: number; start: number } | null = null;
+  if (firstIndex < candles.length && lastIndex >= firstIndex) {
+    const first = chart.timeScale().timeToCoordinate(candles[firstIndex].time as Time);
+    const last = chart.timeScale().timeToCoordinate(candles[lastIndex].time as Time);
+    if (first !== null && last !== null) coordinates = { end: last + barWidth / 2, start: first - barWidth / 2 };
+  }
+  if (!coordinates) {
+    const start = chart.timeScale().timeToCoordinate(zone.start as Time);
+    const end = chart.timeScale().timeToCoordinate(zone.end as Time);
+    if (start === null || end === null) return null;
+    coordinates = { end, start };
+  }
   const exactStart = chart.timeScale().timeToCoordinate(zone.start as Time);
-  if (exactStart === null) return coordinates;
-  return { ...coordinates, start: exactStart };
+  return exactStart === null ? coordinates : { ...coordinates, start: exactStart };
+}
+
+function lowerBoundCandleTime(candles: Candle[], target: number) {
+  let left = 0;
+  let right = candles.length;
+  while (left < right) {
+    const middle = left + Math.floor((right - left) / 2);
+    if (candles[middle].time < target) left = middle + 1;
+    else right = middle;
+  }
+  return left;
 }
 
 function sessionRegionColor(region: Region, settings: ChartAppearanceSettings) {
