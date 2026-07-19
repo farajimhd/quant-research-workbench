@@ -188,6 +188,7 @@ type AnySeriesApi = ISeriesApi<SeriesType>;
 type CandleSeriesDatum = Candle | { time: number };
 type ChartMarker = SeriesMarker<Time> & { displayItemId?: string };
 type LegendPane = "price" | "oscillator";
+type NumericBounds = { max: number; min: number } | null;
 type OscillatorPaneRuntime = {
   layerSignature: string;
   paneIndex: number;
@@ -410,6 +411,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const indicatorSeriesRef = useRef<Map<string, AnySeriesApi>>(new Map());
   const indicatorSourceRef = useRef<Map<string, ChartSeries>>(new Map());
+  const indicatorBoundsRef = useRef<Map<string, NumericBounds>>(new Map());
   const oscillatorPaneRuntimesRef = useRef<Map<string, OscillatorPaneRuntime>>(new Map());
   const payloadRef = useRef<ChartPayload | null>(payload);
   const liveEntryLineRef = useRef<LiveEntryLine | null>(null);
@@ -423,6 +425,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const overlayInteractionCleanupRef = useRef<(() => void) | null>(null);
   const overlayRedrawFrameRef = useRef<number | null>(null);
   const overlayRedrawTimerRef = useRef<number | null>(null);
+  const scaleStabilizationFrameRef = useRef<number | null>(null);
+  const scaleRecoveryCountRef = useRef(0);
   const regionDrawRef = useRef<((range: LogicalRange | null) => void) | null>(null);
   const canLoadEarlierRef = useRef(canLoadEarlier);
   const loadingEarlierRef = useRef(loadingEarlier);
@@ -430,6 +434,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const suppressEarlierLoadUntilRef = useRef(0);
   const fittedChartKeyRef = useRef("");
   const candleWindowRef = useRef<{ first: number; last: number } | null>(null);
+  const candleBoundsRef = useRef<NumericBounds>(null);
   const normalizeTickerValue = (value: string) => (normalizeTicker ? value.toUpperCase() : value);
   const [draftTicker, setDraftTicker] = useState(normalizeTickerValue(ticker));
   const [columnMenuOpen, setColumnMenuOpen] = useState(false);
@@ -606,7 +611,34 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }
 
   function finishViewportInteraction() {
+    scheduleScaleStabilization();
     scheduleOverlayRedrawBurst();
+  }
+
+  function scheduleScaleStabilization() {
+    if (scaleStabilizationFrameRef.current !== null) return;
+    scaleStabilizationFrameRef.current = window.requestAnimationFrame(() => {
+      scaleStabilizationFrameRef.current = null;
+      stabilizeNativePaneScales();
+    });
+  }
+
+  function stabilizeNativePaneScales() {
+    const chart = priceChartRef.current;
+    const candle = candleRef.current;
+    if (!chart || !candle) return;
+    let recovered = stabilizeSeriesScale(candle, chart.panes()[0]?.getHeight() ?? 0, candleBoundsRef.current);
+    oscillatorPaneRuntimesRef.current.forEach((runtime) => {
+      const paneHeight = chart.panes()[runtime.paneIndex]?.getHeight() ?? 0;
+      runtime.seriesKeys.forEach((key) => {
+        const renderer = indicatorSeriesRef.current.get(key);
+        if (renderer) recovered = stabilizeSeriesScale(renderer, paneHeight, indicatorBoundsRef.current.get(key) ?? null) || recovered;
+      });
+    });
+    if (recovered && shellRef.current) {
+      scaleRecoveryCountRef.current += 1;
+      shellRef.current.dataset.chartScaleRecoveries = String(scaleRecoveryCountRef.current);
+    }
   }
 
   function executeViewportCommand(command: () => void) {
@@ -797,6 +829,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const currentRange = shouldAutoFit ? null : priceChartRef.current.timeScale().getVisibleLogicalRange();
     const currentTimeRange = !shouldAutoFit && earlierBarsPrepended ? priceChartRef.current.timeScale().getVisibleRange() : null;
     const timeline = chartTimelineData(payload.candles, timeframe);
+    candleBoundsRef.current = candleValueBounds(payload.candles);
     syncRendererData(candleRef.current, timeline as unknown as RendererDatum[], `candles:${timeframe}`);
     syncRendererData(volumeRef.current, volumeDataForSettings(payload, chartSettingsRef.current) as unknown as RendererDatum[], volumeStyleKey(chartSettingsRef.current));
     candleWindowRef.current = nextCandleWindow;
@@ -907,6 +940,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         indicatorSeriesRef.current.set(key, renderer);
       }
       indicatorSourceRef.current.set(key, series);
+      indicatorBoundsRef.current.set(key, seriesValueBounds(series));
     });
   }
 
@@ -982,6 +1016,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         if (renderer) chart.removeSeries(renderer);
         indicatorSeriesRef.current.delete(key);
         indicatorSourceRef.current.delete(key);
+        indicatorBoundsRef.current.delete(key);
       });
       runtime.seriesKeys.clear();
     }
@@ -1017,6 +1052,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         indicatorSeriesRef.current.set(key, renderer);
       }
       indicatorSourceRef.current.set(key, series);
+      indicatorBoundsRef.current.set(key, seriesValueBounds(series));
       runtime.seriesKeys.add(key);
       if (key === requestedPrimaryKey) {
         primaryRenderer = renderer;
@@ -1075,6 +1111,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       if (renderer) chart.removeSeries(renderer);
       indicatorSeriesRef.current.delete(seriesKey);
       indicatorSourceRef.current.delete(seriesKey);
+      indicatorBoundsRef.current.delete(seriesKey);
     });
     if (runtime.timelineRenderer) chart.removeSeries(runtime.timelineRenderer);
     runtime.timelineRenderer = null;
@@ -1118,6 +1155,10 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       window.clearTimeout(initialFitTimerRef.current);
       initialFitTimerRef.current = null;
     }
+    if (scaleStabilizationFrameRef.current !== null) {
+      window.cancelAnimationFrame(scaleStabilizationFrameRef.current);
+      scaleStabilizationFrameRef.current = null;
+    }
     if (overlayRedrawFrameRef.current !== null) {
       window.cancelAnimationFrame(overlayRedrawFrameRef.current);
       overlayRedrawFrameRef.current = null;
@@ -1145,8 +1186,12 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     volumeRef.current = null;
     indicatorSeriesRef.current.clear();
     indicatorSourceRef.current.clear();
+    indicatorBoundsRef.current.clear();
     fittedChartKeyRef.current = "";
     candleWindowRef.current = null;
+    candleBoundsRef.current = null;
+    scaleRecoveryCountRef.current = 0;
+    if (shellRef.current) delete shellRef.current.dataset.chartScaleRecoveries;
   }
 
   function resizeCharts() {
@@ -1206,11 +1251,17 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       onPointerDownCapture={(event) => {
         if ((event.target as HTMLElement).closest(".chart-pane-canvas")) claimViewportForUser(event.target);
       }}
+      onPointerMoveCapture={(event) => {
+        if (event.buttons !== 0 && (event.target as HTMLElement).closest(".chart-pane-canvas")) {
+          scheduleScaleStabilization();
+        }
+      }}
       onPointerCancelCapture={finishViewportInteraction}
       onPointerUpCapture={finishViewportInteraction}
       onWheelCapture={(event) => {
         if ((event.target as HTMLElement).closest(".chart-pane-canvas")) {
           claimViewportForUser(event.target);
+          scheduleScaleStabilization();
           scheduleOverlayRedrawBurst();
         }
       }}
@@ -2981,6 +3032,70 @@ function candleDataForTimeframe(candles: Candle[], timeframe: string): CandleSer
 
 function chartTimelineData(candles: Candle[], timeframe: string): CandleSeriesDatum[] {
   return candleDataForTimeframe(candles, timeframe);
+}
+
+function candleValueBounds(candles: Candle[]): NumericBounds {
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  candles.forEach((candle) => {
+    [candle.low, candle.high].forEach((candidate) => {
+      const value = Number(candidate);
+      if (!Number.isFinite(value)) return;
+      min = Math.min(min, value);
+      max = Math.max(max, value);
+    });
+  });
+  return Number.isFinite(min) && Number.isFinite(max) ? { max, min } : null;
+}
+
+function seriesValueBounds(series: ChartSeries): NumericBounds {
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  series.data.forEach((point) => {
+    const value = Number(point.value);
+    if (!Number.isFinite(value)) return;
+    min = Math.min(min, value);
+    max = Math.max(max, value);
+  });
+  return Number.isFinite(min) && Number.isFinite(max) ? { max, min } : null;
+}
+
+function stabilizeSeriesScale(renderer: AnySeriesApi, paneHeight: number, bounds: NumericBounds) {
+  if (!bounds || paneHeight <= 1) return false;
+  let top: number | null = null;
+  let bottom: number | null = null;
+  try {
+    top = renderer.coordinateToPrice(0);
+    bottom = renderer.coordinateToPrice(paneHeight);
+  } catch {
+    renderer.priceScale().applyOptions({ autoScale: true });
+    return true;
+  }
+
+  const topValue = Number(top);
+  const bottomValue = Number(bottom);
+  const visibleMin = Math.min(topValue, bottomValue);
+  const visibleMax = Math.max(topValue, bottomValue);
+  const visibleSpan = visibleMax - visibleMin;
+  const referenceMagnitude = Math.max(Math.abs(bounds.min), Math.abs(bounds.max), 1e-9);
+  const referenceSpan = Math.max(bounds.max - bounds.min, referenceMagnitude / 10_000, 1e-9);
+  const minimumVisibleSpan = referenceSpan / 10_000;
+  const maximumVisibleSpan = referenceSpan * 10_000;
+  const maximumVisibleMagnitude = referenceMagnitude + maximumVisibleSpan;
+  const invalidTransform = (
+    !Number.isFinite(topValue)
+    || !Number.isFinite(bottomValue)
+    || !Number.isFinite(visibleSpan)
+    || visibleSpan < minimumVisibleSpan
+    || visibleSpan > maximumVisibleSpan
+    || Math.abs(visibleMin) > maximumVisibleMagnitude
+    || Math.abs(visibleMax) > maximumVisibleMagnitude
+  );
+  if (invalidTransform) {
+    renderer.priceScale().applyOptions({ autoScale: true });
+    return true;
+  }
+  return false;
 }
 
 function buildTimelineDataSignature(timeline: CandleSeriesDatum[]) {

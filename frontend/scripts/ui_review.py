@@ -244,6 +244,10 @@ def validate_canvas_interactions(
     page: Any,
     scenario: dict[str, Any],
     interaction_screenshot: Path | None = None,
+    chart_timeframe: str = "1m",
+    chart_stress_cycles: int = 24,
+    chart_stress_pattern: str = "mixed",
+    chart_stress_only: bool = False,
 ) -> list[str]:
     """Exercise the Canvas behaviors that static screenshots cannot prove."""
     issues: list[str] = []
@@ -277,6 +281,18 @@ def validate_canvas_interactions(
         return ["main canvas does not render a Chart container"]
     chart = charts.first
     try:
+        chart.get_by_text("Loading chart data...", exact=True).wait_for(state="hidden", timeout=120_000)
+        chart.locator(".chart-pane-canvas canvas").first.wait_for(state="visible", timeout=30_000)
+        timeframe_button = chart.get_by_role("button", name=chart_timeframe, exact=True)
+        if timeframe_button.count() != 1:
+            issues.append(f"chart does not expose the requested {chart_timeframe} stress timeframe")
+        else:
+            timeframe_button.click()
+            chart.get_by_text("Loading chart data...", exact=True).wait_for(state="hidden", timeout=120_000)
+            chart.locator(".chart-pane-canvas canvas").first.wait_for(state="visible", timeout=30_000)
+            page.wait_for_timeout(350)
+            if timeframe_button.get_attribute("aria-pressed") == "false":
+                issues.append(f"chart did not activate the requested {chart_timeframe} stress timeframe")
         sidebar_toggle = page.get_by_role("button", name="Toggle sidebar")
         toggle_box = sidebar_toggle.bounding_box()
         if not toggle_box or not page.evaluate(
@@ -455,24 +471,38 @@ def validate_canvas_interactions(
             center_y = price_box["y"] + price_box["height"] * 0.5
             right_axis_x = price_box["x"] + price_box["width"] - 18
             time_axis_y = price_box["y"] + price_box["height"] - 8
-            for interaction_index in range(24):
+            for interaction_index in range(chart_stress_cycles):
+                pathological = chart_stress_pattern == "pathological"
                 page.mouse.move(center_x, center_y)
-                page.mouse.wheel(0, -180 if interaction_index % 2 == 0 else 150)
+                page.mouse.wheel(0, -180 if pathological or interaction_index % 2 == 0 else 150)
                 page.mouse.move(center_x, center_y)
                 page.mouse.down()
-                page.mouse.move(center_x + (95 if interaction_index % 2 == 0 else -75), center_y, steps=3)
+                page.mouse.move(center_x + (95 if pathological or interaction_index % 2 == 0 else -75), center_y, steps=3)
                 page.mouse.up()
                 page.mouse.move(right_axis_x, center_y)
                 page.mouse.down()
-                page.mouse.move(right_axis_x, center_y + (35 if interaction_index % 2 == 0 else -30), steps=2)
+                page.mouse.move(right_axis_x, center_y + (35 if pathological or interaction_index % 2 == 0 else -30), steps=2)
                 page.mouse.up()
                 page.mouse.move(center_x, time_axis_y)
                 page.mouse.down()
-                page.mouse.move(center_x + (70 if interaction_index % 2 == 0 else -60), time_axis_y, steps=2)
+                page.mouse.move(center_x + (70 if pathological or interaction_index % 2 == 0 else -60), time_axis_y, steps=2)
                 page.mouse.up()
+                if interaction_index % 20 == 19:
+                    print(f"chart stress: {interaction_index + 1}/{chart_stress_cycles} cycles", flush=True)
+                    if not page.locator(".app-shell").is_visible():
+                        issues.append(f"application became blank after {interaction_index + 1} chart interaction cycles")
+                        break
             page.wait_for_timeout(500)
-            if not chart.is_visible() or price_pane.locator("canvas").count() < 1:
+            if not chart.is_visible() or price_pane.locator("canvas").count() < 1 or not page.locator(".app-shell").is_visible():
                 issues.append("chart becomes blank after repeated pan, zoom, and axis-scale interactions")
+            if chart_stress_pattern == "pathological" and chart_stress_cycles >= 100:
+                recovery_count = int(chart.locator(".chart-shell").get_attribute("data-chart-scale-recoveries") or "0")
+                if recovery_count < 1:
+                    issues.append("chart scale-safety boundary was not exercised by the pathological interaction stress")
+            if chart_stress_only:
+                if interaction_screenshot:
+                    page.screenshot(path=str(interaction_screenshot.with_name(interaction_screenshot.stem + "__stress-final.png")), full_page=True)
+                return issues
 
         # Verify grouping while the deterministic AAPL payload is still loaded.
         # Later link-management checks intentionally change shared ticker state.
@@ -1167,6 +1197,8 @@ def capture(args: argparse.Namespace) -> int:
                     ) else None
                     issues.extend(validate_canvas_interactions(
                         page, scenario, interaction_screenshot,
+                        args.canvas_chart_timeframe, args.chart_stress_cycles,
+                        args.chart_stress_pattern, args.chart_stress_only,
                     ))
                     objective_issues += len(issues)
                     result.update({
@@ -1220,6 +1252,10 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--canvas-id", help="open trading routes directly in the named child canvas")
     result.add_argument("--canvas-session-date", help="seed a deterministic Canvas preview session date (YYYY-MM-DD)")
     result.add_argument("--canvas-preview-time", default="09:45", help="preview time paired with --canvas-session-date (HH:MM)")
+    result.add_argument("--canvas-chart-timeframe", default="1m", help="timeframe selected before Canvas interaction stress")
+    result.add_argument("--chart-stress-cycles", type=int, default=24, help="mixed pan, zoom, and axis-scale cycles in the Canvas interaction stress")
+    result.add_argument("--chart-stress-pattern", choices=("mixed", "pathological"), default="mixed", help="alternate gestures or accumulate them in one direction")
+    result.add_argument("--chart-stress-only", action="store_true", help="stop the Canvas interaction review after chart stress")
     result.add_argument("--seed-core-containers", action="store_true", help="seed portfolio and scanner containers for child-canvas review")
     result.add_argument("--mode", choices=("targeted", "full"), default="targeted")
     result.add_argument("--matrix", choices=("bounded", "exhaustive"), default="bounded")
