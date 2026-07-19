@@ -204,6 +204,41 @@ class HistoricalContractTests(unittest.TestCase):
         self.assertEqual(len(result["indicators"]), 1)
 
     @patch("src.backend.trading_runtime_service._historical_gateway_get")
+    def test_chart_history_orders_fractional_rfc3339_timestamps_chronologically(self, gateway_get) -> None:
+        gateway_get.return_value = {
+            "as_of": "2026-07-14T13:45:00Z",
+            "bars": [
+                {"bar_start": "2026-07-14T12:54:14.400Z", "close": 315.4},
+                {"bar_start": "2026-07-14T12:54:14Z", "close": 315.0},
+            ],
+            "has_more": False,
+            "indicators": [
+                {"bar_start": "2026-07-14T12:54:14.400Z", "ema_20": 315.2},
+                {"bar_start": "2026-07-14T12:54:14Z", "ema_20": 315.0},
+            ],
+            "indicators_available": True,
+        }
+
+        result = historical_bar_history_before(
+            before=date(2026, 7, 15),
+            session_date=date(2026, 7, 14),
+            as_of="2026-07-14T13:45:00Z",
+            before_bar=None,
+            ticker="AAPL",
+            timeframe="100ms",
+            row_limit=5_000,
+        )
+
+        self.assertEqual(
+            [row["bar_start"] for row in result["history"]],
+            ["2026-07-14T12:54:14Z", "2026-07-14T12:54:14.400Z"],
+        )
+        self.assertEqual(
+            [row["bar_start"] for row in result["indicators"]],
+            ["2026-07-14T12:54:14Z", "2026-07-14T12:54:14.400Z"],
+        )
+
+    @patch("src.backend.trading_runtime_service._historical_gateway_get")
     def test_monthly_chart_history_requests_exact_24_month_macro_window(self, gateway_get) -> None:
         gateway_get.return_value = {
             "bars": [

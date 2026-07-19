@@ -94,6 +94,7 @@ type CanvasLiveChartState = {
   connected: boolean;
   error: string;
   historyError: string;
+  historyNotice: string;
   indicators: HistoricalIndicator[];
   indicatorsAvailable: boolean;
   lastUpdateAt: string;
@@ -382,7 +383,8 @@ function qmdIndicatorKnowledge(shortDescription: string, detailedDescription: st
 function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cutoffMs: number, sessionDate: string, visibleIndicatorIds: string[]): CanvasLiveChartState {
   const pointInTime = cutoffMs < Date.now() - 5_000;
   const indicatorColumns = useMemo(() => requestedIndicatorColumns(visibleIndicatorIds), [visibleIndicatorIds]);
-  const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier">>({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime });
+  const rowBudget = useMemo(() => chartRowBudget(indicatorColumns), [indicatorColumns]);
+  const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier">>({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime });
   const historyCursorRef = useRef<ChartHistoryCursor | null>(null);
   const historyRequestRef = useRef(false);
   const historyAbortRef = useRef<AbortController | null>(null);
@@ -410,14 +412,18 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
           closedRowsAtCutoff(payload.indicators, timeframe, cutoffMs),
           payload.indicators_available,
         );
-        setState((current) => ({
-          ...current,
-          bars: mergeRowsByTime(aligned.bars, current.bars),
-          canLoadEarlier: payload.has_more,
-          historyError: "",
-          indicators: mergeRowsByTime(aligned.indicators, current.indicators),
-          indicatorsAvailable: payload.indicators_available,
-        }));
+        setState((current) => {
+          const merged = mergeHistoricalChartPage(current.bars, current.indicators, aligned.bars, aligned.indicators, rowBudget);
+          return {
+            ...current,
+            bars: merged.bars,
+            canLoadEarlier: payload.has_more && !merged.atCapacity,
+            historyError: "",
+            historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : "",
+            indicators: merged.indicators,
+            indicatorsAvailable: payload.indicators_available,
+          };
+        });
       })
       .catch((reason) => {
         if (controller.signal.aborted) return;
@@ -429,7 +435,7 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
         if (historyAbortRef.current === controller) historyAbortRef.current = null;
         if (requestKeyRef.current === requestKey) setState((current) => ({ ...current, loadingEarlier: false }));
       });
-  }, [cutoffMs, indicatorColumns, symbol, timeframe]);
+  }, [cutoffMs, indicatorColumns, rowBudget, symbol, timeframe]);
 
   useEffect(() => {
     let active = true;
@@ -445,7 +451,7 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
     requestKeyRef.current = requestKey;
     historyCursorRef.current = null;
     historyRequestRef.current = false;
-    setState({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime });
+    setState({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime });
 
     const applySnapshot = (kind: "bars" | "indicators", payload: QmdSnapshot<QmdLiveBar> | QmdSnapshot<HistoricalIndicator>, live: boolean) => {
       if (!active) return;
@@ -456,15 +462,21 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
       const rows = kind === "bars"
         ? closedQmdSnapshotRows(payload as QmdSnapshot<QmdLiveBar>, timeframe, cutoffMs)
         : closedQmdSnapshotRows(payload as QmdSnapshot<HistoricalIndicator>, timeframe, cutoffMs);
-      setState((current) => ({
-        ...current,
-        bars: kind === "bars" ? mergeRowsByTime(current.bars, rows as QmdLiveBar[]) : current.bars,
-        connected: kind === "bars" && live ? true : current.connected,
-        error: kind === "bars" ? "" : current.error,
-        indicators: kind === "indicators" ? mergeRowsByTime(current.indicators, rows as HistoricalIndicator[]) : current.indicators,
-        lastUpdateAt: kind === "bars" && live ? new Date().toISOString() : current.lastUpdateAt,
-        loading: kind === "bars" ? false : current.loading,
-      }));
+      setState((current) => {
+        const bars = kind === "bars" ? limitRowsToLatest(mergeRowsByTime(current.bars, rows as QmdLiveBar[]), rowBudget) : current.bars;
+        const indicators = kind === "indicators" ? limitRowsToLatest(mergeRowsByTime(current.indicators, rows as HistoricalIndicator[]), rowBudget) : current.indicators;
+        return {
+          ...current,
+          bars,
+          canLoadEarlier: kind === "bars" && bars.length >= rowBudget ? false : current.canLoadEarlier,
+          connected: kind === "bars" && live ? true : current.connected,
+          error: kind === "bars" ? "" : current.error,
+          indicators,
+          historyNotice: bars.length >= rowBudget ? chartHistoryLimitNotice(rowBudget) : current.historyNotice,
+          lastUpdateAt: kind === "bars" && live ? new Date().toISOString() : current.lastUpdateAt,
+          loading: kind === "bars" ? false : current.loading,
+        };
+      });
     };
 
     if (!pointInTime) {
@@ -473,14 +485,19 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
           if (!active) return;
           const historicalRows = payload.historical_bars?.history ?? [];
           if (payload.historical_bars) updateHistoryCursor(historyCursorRef, payload.historical_bars);
-          setState((current) => ({
-            ...current,
-            bars: mergeRowsByTime(closedRowsAtCutoff(historicalRows, timeframe, cutoffMs), [...closedQmdSnapshotRows(payload.bars, timeframe, cutoffMs), ...current.bars]),
-            canLoadEarlier: historicalRows.length > 0 && Boolean(payload.historical_bars?.has_more),
-            error: payload.bars.error ?? "",
-            historyError: payload.errors.history ?? "",
-            loading: false,
-          }));
+          setState((current) => {
+            const bars = limitRowsToLatest(mergeRowsByTime(closedRowsAtCutoff(historicalRows, timeframe, cutoffMs), [...closedQmdSnapshotRows(payload.bars, timeframe, cutoffMs), ...current.bars]), rowBudget);
+            const atCapacity = bars.length >= rowBudget;
+            return {
+              ...current,
+              bars,
+              canLoadEarlier: historicalRows.length > 0 && Boolean(payload.historical_bars?.has_more) && !atCapacity,
+              error: payload.bars.error ?? "",
+              historyError: payload.errors.history ?? "",
+              historyNotice: atCapacity ? chartHistoryLimitNotice(rowBudget) : "",
+              loading: false,
+            };
+          });
           applySnapshot("indicators", payload.indicators, false);
         })
         .catch((reason) => {
@@ -500,15 +517,19 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
             closedRowsAtCutoff(payload.indicators, timeframe, cutoffMs),
             payload.indicators_available,
           );
-          setState((current) => ({
-            ...current,
-            bars: mergeRowsByTime(aligned.bars, current.bars),
-            canLoadEarlier: payload.has_more,
-            historyError: "",
-            indicators: mergeRowsByTime(aligned.indicators, current.indicators),
-            indicatorsAvailable: payload.indicators_available,
-            loading: false,
-          }));
+          setState((current) => {
+            const merged = mergeHistoricalChartPage(current.bars, current.indicators, aligned.bars, aligned.indicators, rowBudget);
+            return {
+              ...current,
+              bars: merged.bars,
+              canLoadEarlier: payload.has_more && !merged.atCapacity,
+              historyError: "",
+              historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : "",
+              indicators: merged.indicators,
+              indicatorsAvailable: payload.indicators_available,
+              loading: false,
+            };
+          });
         })
         .catch((reason) => {
           if (historyController.signal.aborted) return;
@@ -559,13 +580,22 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
       reconnectTimers.forEach((timer) => window.clearTimeout(timer));
       Object.values(sockets).forEach((socket) => socket?.close());
     };
-  }, [cutoffMs, indicatorColumns, pointInTime, sessionDate, symbol, timeframe]);
+  }, [cutoffMs, indicatorColumns, pointInTime, rowBudget, sessionDate, symbol, timeframe]);
 
   return { ...state, loadEarlier };
 }
 
 function chartPageSize(timeframe: string) {
   return 5_000;
+}
+
+function chartRowBudget(indicatorColumns: string): number {
+  const projectedColumnCount = indicatorColumns ? indicatorColumns.split(",").length : 1;
+  return Math.max(5_000, Math.min(25_000, Math.floor(500_000 / (projectedColumnCount + 20))));
+}
+
+function chartHistoryLimitNotice(rowBudget: number): string {
+  return `${rowBudget.toLocaleString()} chart points loaded. Choose a higher timeframe to inspect earlier history.`;
 }
 
 function requestedIndicatorColumns(visibleIndicatorIds: string[]): string {
@@ -641,12 +671,14 @@ function mergeRowsByTime<T extends { bar_start: string }>(existing: T[], incomin
   while (leftIndex < existing.length || rightIndex < nextRows.length) {
     const left = existing[leftIndex];
     const right = nextRows[rightIndex];
-    if (!right || (left && left.bar_start < right.bar_start)) {
+    const leftTime = left ? barStartTime(left) : Number.POSITIVE_INFINITY;
+    const rightTime = right ? barStartTime(right) : Number.POSITIVE_INFINITY;
+    if (!right || (left && leftTime < rightTime)) {
       merged.push(left);
       leftIndex += 1;
       continue;
     }
-    if (!left || right.bar_start < left.bar_start) {
+    if (!left || rightTime < leftTime) {
       merged.push(right);
       rightIndex += 1;
       changed = true;
@@ -662,23 +694,58 @@ function mergeRowsByTime<T extends { bar_start: string }>(existing: T[], incomin
   return merged;
 }
 
+function mergeHistoricalChartPage(
+  currentBars: QmdLiveBar[],
+  currentIndicators: HistoricalIndicator[],
+  incomingBars: QmdLiveBar[],
+  incomingIndicators: HistoricalIndicator[],
+  rowBudget: number,
+) {
+  const existingTimes = new Set(currentBars.map(barStartTime));
+  const availableSlots = Math.max(0, rowBudget - currentBars.length);
+  const newBars = incomingBars.filter((row) => !existingTimes.has(barStartTime(row)));
+  const admittedBars = availableSlots < newBars.length ? newBars.slice(newBars.length - availableSlots) : newBars;
+  const bars = limitRowsToLatest(mergeRowsByTime(currentBars, admittedBars), rowBudget);
+  const admittedTimes = new Set(bars.map(barStartTime));
+  const indicators = limitRowsToLatest(
+    mergeRowsByTime(currentIndicators, incomingIndicators.filter((row) => admittedTimes.has(barStartTime(row)))),
+    rowBudget,
+  ).filter((row) => admittedTimes.has(barStartTime(row)));
+  return { atCapacity: bars.length >= rowBudget, bars, indicators };
+}
+
+function limitRowsToLatest<T>(rows: T[], rowBudget: number): T[] {
+  return rows.length <= rowBudget ? rows : rows.slice(rows.length - rowBudget);
+}
+
 function normalizedRowsByTime<T extends { bar_start: string }>(rows: T[]): T[] {
-  const valid = rows.filter((row) => row && typeof row.bar_start === "string" && row.bar_start);
+  const valid = rows.filter((row) => row && Number.isFinite(barStartTime(row)));
   let ordered = true;
   for (let index = 1; index < valid.length; index += 1) {
-    if (valid[index - 1].bar_start > valid[index].bar_start) {
+    if (barStartTime(valid[index - 1]) > barStartTime(valid[index])) {
       ordered = false;
       break;
     }
   }
-  const sorted = ordered ? valid : [...valid].sort((left, right) => left.bar_start.localeCompare(right.bar_start));
+  const sorted = ordered ? valid : [...valid].sort((left, right) => barStartTime(left) - barStartTime(right));
   if (sorted.length < 2) return sorted;
   const deduplicated: T[] = [];
   sorted.forEach((row) => {
-    if (deduplicated.at(-1)?.bar_start === row.bar_start) deduplicated[deduplicated.length - 1] = row;
+    if (deduplicated.length && barStartTime(deduplicated[deduplicated.length - 1]) === barStartTime(row)) deduplicated[deduplicated.length - 1] = row;
     else deduplicated.push(row);
   });
   return deduplicated;
+}
+
+const barStartTimeCache = new WeakMap<object, number>();
+
+function barStartTime(row: { bar_start: string }): number {
+  const cached = barStartTimeCache.get(row);
+  if (cached !== undefined) return cached;
+  const parsed = Date.parse(row.bar_start);
+  const value = Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
+  barStartTimeCache.set(row, value);
+  return value;
 }
 
 function shallowRowEqual<T extends object>(left: T, right: T): boolean {
@@ -1296,7 +1363,7 @@ function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl,
   const emptyMessage = liveChart.connected
     ? `Waiting for the first live ${linkContext.symbol} ${timeframe} bar.`
     : "Start QMD Gateway to stream canonical live bars.";
-  return <ChartPanel canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={liveChart.indicatorsAvailable ? CHART_INDICATORS : []} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} indicatorOptions={[]} initialFitMode="recent" loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => updateSettings((current) => ({ ...current, chart: { ...current.chart, visibleIndicators: nextVisibleIndicators } }))} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={HISTORICAL_TIMEFRAMES} visibleColumns={visibleIndicators} />;
+  return <ChartPanel canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={liveChart.indicatorsAvailable ? CHART_INDICATORS : []} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} indicatorOptions={[]} initialFitMode="recent" infoMessage={liveChart.historyNotice} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => updateSettings((current) => ({ ...current, chart: { ...current.chart, visibleIndicators: nextVisibleIndicators } }))} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={HISTORICAL_TIMEFRAMES} visibleColumns={visibleIndicators} />;
 }
 
 function historicalMarketLevelZones(rows: HistoricalIndicator[], bars: HistoricalBar[], visibleIndicators: string[]): NonNullable<ChartPayload["price_zones"]> {

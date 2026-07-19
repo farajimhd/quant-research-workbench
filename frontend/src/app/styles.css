@@ -12219,6 +12219,31 @@ button {
   overflow: hidden;
 }
 
+.chart-update-status.info {
+  background: color-mix(in srgb, var(--card) 94%, var(--accent));
+  border-color: color-mix(in srgb, var(--border) 68%, var(--accent));
+  color: var(--text-secondary);
+  max-width: min(34rem, calc(100% - 2rem));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chart-renderer-error {
+  align-content: center;
+  display: grid;
+  gap: 0.55rem;
+  justify-items: center;
+  min-height: 12rem;
+  padding: 1rem;
+  text-align: center;
+}
+
+.chart-renderer-error span {
+  color: var(--text-secondary);
+  max-width: 42rem;
+}
+
 .chart-pane-resize {
   position: absolute;
   top: 0;

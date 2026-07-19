@@ -30,7 +30,7 @@ import {
   SlidersHorizontal,
   X
 } from "lucide-react";
-import { forwardRef, type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Component, forwardRef, type CSSProperties, type ErrorInfo, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { displayName } from "../format";
@@ -278,6 +278,7 @@ type ChartPanelProps = {
   displayItemOptions?: ChartDisplayItem[];
   emptyMessage?: string;
   errorMessage?: string;
+  infoMessage?: string;
   featureOptions: string[];
   indicatorOptions: string[];
   initialFitMode?: "default" | "last_market_day" | "live_first_10" | "recent";
@@ -348,11 +349,12 @@ type ChartPalette = {
   text: string;
 };
 
-export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
+const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   catalogColumns = [],
   displayItemOptions = [],
   emptyMessage = "No chart data for the selected ticker/date range/timeframe.",
   errorMessage,
+  infoMessage,
   featureOptions,
   indicatorOptions,
   initialFitMode = "default",
@@ -1416,6 +1418,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         <div className="chart-canvas-stack">
           {loading ? <div className="chart-update-status">Updating chart...</div> : null}
           {loadingEarlier ? <div className="chart-update-status">Loading earlier data...</div> : null}
+          {infoMessage ? <div aria-label={infoMessage} className="chart-update-status info" role="status" title={infoMessage}>{infoMessage}</div> : null}
           {errorMessage ? <div aria-label={`Chart update failed: ${errorMessage}`} className="chart-update-status error" role="status" title={errorMessage}>Chart update failed</div> : null}
           <div className="chart-reference-stack-layer" ref={referenceLayerRef} />
           <div className="chart-price">
@@ -1469,6 +1472,41 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     </div>
   );
 });
+
+class ChartPanelErrorBoundary extends Component<{ children: ReactNode; resetKey: string }, { error: string }> {
+  state = { error: "" };
+
+  static getDerivedStateFromError(error: unknown) {
+    return { error: error instanceof Error ? error.message : "The chart renderer stopped unexpectedly." };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("Chart renderer failure", error, info.componentStack);
+  }
+
+  componentDidUpdate(previous: Readonly<{ children: ReactNode; resetKey: string }>) {
+    if (previous.resetKey !== this.props.resetKey && this.state.error) this.setState({ error: "" });
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="empty-state chart-empty-state chart-renderer-error" role="alert">
+        <strong>Chart renderer stopped</strong>
+        <span>{this.state.error}</span>
+        <button className="button secondary compact" onClick={() => this.setState({ error: "" })} type="button">Retry chart</button>
+      </div>
+    );
+  }
+}
+
+export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>((props, ref) => (
+  <ChartPanelErrorBoundary resetKey={`${props.ticker}:${props.timeframe}:${props.periodStart ?? ""}:${props.periodEnd ?? ""}`}>
+    <ChartPanelCore {...props} ref={ref} />
+  </ChartPanelErrorBoundary>
+));
+
+ChartPanel.displayName = "ChartPanel";
 
 function attachOverlayRedrawListeners(target: HTMLElement | null, redraw: () => void, redrawBurst: () => void) {
   if (!target) return () => undefined;

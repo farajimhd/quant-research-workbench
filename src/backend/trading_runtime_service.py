@@ -401,8 +401,8 @@ def historical_bar_history_before(
     )
     bars = list(snapshot.get("bars") or []) if isinstance(snapshot, dict) else []
     indicators = list(snapshot.get("indicators") or []) if isinstance(snapshot, dict) else []
-    bars.sort(key=lambda row: str(row.get("bar_start") or ""))
-    indicators.sort(key=lambda row: str(row.get("bar_start") or ""))
+    bars.sort(key=_bar_start_sort_key)
+    indicators.sort(key=_bar_start_sort_key)
     has_more_in_session = bool(snapshot.get("has_more")) if isinstance(snapshot, dict) else False
     previous_session_before = ""
     if not has_more_in_session:
@@ -481,7 +481,7 @@ def historical_macro_bar_history(
         for row in (payload.get("bars") or [])
         if isinstance(row, dict) and row.get("bar_family") == "trade"
     ] if isinstance(payload, dict) else []
-    rows.sort(key=lambda row: str(row.get("bar_start") or ""))
+    rows.sort(key=_bar_start_sort_key)
     return {
         "ticker": ticker,
         "timeframe": timeframe,
@@ -496,6 +496,16 @@ def historical_macro_bar_history(
         "as_of": resolved_as_of.isoformat(),
         "source": payload.get("source", "qmd_history_gateway") if isinstance(payload, dict) else "qmd_history_gateway",
     }
+
+
+def _bar_start_sort_key(row: dict[str, Any]) -> float:
+    value = row.get("bar_start")
+    if not isinstance(value, str) or not value:
+        return float("inf")
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return float("inf")
 
 
 def historical_day_coverage(anchor_date: date) -> dict[str, Any]:
