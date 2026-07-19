@@ -345,6 +345,7 @@ def historical_bar_history_before(
     session_date: date | None = None,
     as_of: str | None = None,
     before_bar: str | None = None,
+    indicator_columns: list[str] | None = None,
 ) -> dict[str, Any]:
     resolved_ticker = _historical_ticker(ticker)
     resolved_timeframe = _historical_timeframe(timeframe)
@@ -392,6 +393,7 @@ def historical_bar_history_before(
             "end": window["end"],
             "as_of": resolved_as_of.isoformat(),
             "before": before_bar,
+            "indicator_columns": ",".join(dict.fromkeys(indicator_columns)) if indicator_columns else None,
             "timeframe": resolved_timeframe,
             "limit": max(1, min(row_limit, 50_000)),
         },

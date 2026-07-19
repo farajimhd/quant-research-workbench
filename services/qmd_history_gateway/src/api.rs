@@ -22,6 +22,7 @@ use qmd_core::market_products::{
 use qmd_core::microstructure_forecast::{forecast_compact_events, MicrostructureForecastSnapshot};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 
@@ -59,6 +60,7 @@ struct ChartQuery {
     as_of: Option<String>,
     before: Option<String>,
     end: String,
+    indicator_columns: Option<String>,
     limit: Option<usize>,
     start: String,
     timeframe: Option<String>,
@@ -263,7 +265,7 @@ async fn chart_bar_snapshot(
     State(state): State<Arc<AppState>>,
     Path(ticker): Path<String>,
     Query(query): Query<ChartQuery>,
-) -> Result<Json<ChartSnapshot>, ApiError> {
+) -> Result<Json<Value>, ApiError> {
     let ticker = normalize_ticker(&ticker)?;
     let timeframe = query.timeframe.unwrap_or_else(|| "1m".to_string());
     if !state
@@ -287,7 +289,8 @@ async fn chart_bar_snapshot(
     };
     let (window, as_of) = causal_product_window(&product_query, &ticker)?;
     let before = query.before.as_deref().map(parse_timestamp).transpose()?;
-    state
+    let indicator_columns = parse_indicator_projection(query.indicator_columns.as_deref())?;
+    let snapshot = state
         .cache
         .chart_snapshot(
             window,
@@ -298,8 +301,68 @@ async fn chart_bar_snapshot(
             before,
         )
         .await
-        .map(Json)
-        .map_err(service_error)
+        .map_err(service_error)?;
+    project_chart_snapshot(snapshot, indicator_columns.as_ref()).map(Json)
+}
+
+fn parse_indicator_projection(raw: Option<&str>) -> Result<Option<BTreeSet<String>>, ApiError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let mut columns = BTreeSet::from(["bar_start".to_string()]);
+    for column in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if column.len() > 64
+            || !column
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            return Err(bad_request(format!("invalid indicator column {column}")));
+        }
+        columns.insert(column.to_string());
+        if columns.len() > 128 {
+            return Err(bad_request("too many projected indicator columns"));
+        }
+    }
+    Ok(Some(columns))
+}
+
+fn project_chart_snapshot(
+    snapshot: ChartSnapshot,
+    columns: Option<&BTreeSet<String>>,
+) -> Result<Value, ApiError> {
+    let Some(columns) = columns else {
+        return serde_json::to_value(snapshot).map_err(|error| {
+            service_error(format!("failed to serialize chart snapshot: {error}"))
+        });
+    };
+    let indicators = snapshot
+        .indicators
+        .into_iter()
+        .map(|indicator| {
+            let mut value = serde_json::to_value(indicator).map_err(|error| {
+                service_error(format!("failed to serialize chart indicator: {error}"))
+            })?;
+            if let Some(object) = value.as_object_mut() {
+                object.retain(|key, _| columns.contains(key));
+            }
+            Ok(value)
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?;
+    Ok(json!({
+        "as_of": snapshot.as_of,
+        "bars": snapshot.bars,
+        "cache": snapshot.cache,
+        "has_more": snapshot.has_more,
+        "indicators": indicators,
+        "indicators_available": snapshot.indicators_available,
+        "next_before": snapshot.next_before,
+        "ticker": snapshot.ticker,
+        "timeframe": snapshot.timeframe,
+    }))
 }
 
 async fn family_bar_snapshot(
@@ -948,8 +1011,8 @@ fn service_error(message: String) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        causal_product_window, parse_timestamp, product_resolution, validate_timeframe,
-        ProductQuery,
+        causal_product_window, parse_indicator_projection, parse_timestamp, product_resolution,
+        validate_timeframe, ProductQuery,
     };
 
     #[test]
@@ -992,5 +1055,16 @@ mod tests {
             timeframe: None,
         };
         assert!(product_resolution(&query).is_err());
+    }
+
+    #[test]
+    fn chart_indicator_projection_is_bounded_and_keeps_the_time_key() {
+        let columns = parse_indicator_projection(Some("ema_20,rsi_14,ema_20"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(columns.len(), 3);
+        assert!(columns.contains("bar_start"));
+        assert!(columns.contains("ema_20"));
+        assert!(parse_indicator_projection(Some("ema-20")).is_err());
     }
 }

@@ -379,8 +379,9 @@ function qmdIndicatorKnowledge(shortDescription: string, detailedDescription: st
   };
 }
 
-function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cutoffMs: number, sessionDate: string): CanvasLiveChartState {
+function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cutoffMs: number, sessionDate: string, visibleIndicatorIds: string[]): CanvasLiveChartState {
   const pointInTime = cutoffMs < Date.now() - 5_000;
+  const indicatorColumns = useMemo(() => requestedIndicatorColumns(visibleIndicatorIds), [visibleIndicatorIds]);
   const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier">>({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime });
   const historyCursorRef = useRef<ChartHistoryCursor | null>(null);
   const historyRequestRef = useRef(false);
@@ -389,7 +390,7 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
 
   const loadEarlier = useCallback(() => {
     const ticker = symbol.trim().toUpperCase();
-    const requestKey = `${ticker}:${timeframe}`;
+    const requestKey = `${ticker}:${timeframe}:${indicatorColumns}`;
     const cursor = historyCursorRef.current;
     if (!cursor || historyRequestRef.current || requestKeyRef.current !== requestKey) return;
     if (!cursor.nextBefore && !cursor.previousSessionBefore) return;
@@ -398,8 +399,8 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
     historyRequestRef.current = true;
     setState((current) => ({ ...current, historyError: "", loadingEarlier: true }));
     const params = cursor.nextBefore
-      ? { as_of: cursor.asOf, before_bar: cursor.nextBefore, row_limit: chartPageSize(timeframe), session_date: cursor.sessionDate, symbol: ticker, timeframe }
-      : { before: cursor.previousSessionBefore, row_limit: chartPageSize(timeframe), symbol: ticker, timeframe };
+      ? { as_of: cursor.asOf, before_bar: cursor.nextBefore, indicator_columns: indicatorColumns, row_limit: chartPageSize(timeframe), session_date: cursor.sessionDate, symbol: ticker, timeframe }
+      : { before: cursor.previousSessionBefore, indicator_columns: indicatorColumns, row_limit: chartPageSize(timeframe), symbol: ticker, timeframe };
     api<QmdBarHistory>(`/api/trading/canvas-live-chart/history${query(params)}`, { signal: controller.signal, timeoutMs: 120000 })
       .then((payload) => {
         if (requestKeyRef.current !== requestKey) return;
@@ -428,7 +429,7 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
         if (historyAbortRef.current === controller) historyAbortRef.current = null;
         if (requestKeyRef.current === requestKey) setState((current) => ({ ...current, loadingEarlier: false }));
       });
-  }, [cutoffMs, symbol, timeframe]);
+  }, [cutoffMs, indicatorColumns, symbol, timeframe]);
 
   useEffect(() => {
     let active = true;
@@ -438,7 +439,7 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
     const requestController = new AbortController();
     const historyController = new AbortController();
     const ticker = symbol.trim().toUpperCase();
-    const requestKey = `${ticker}:${timeframe}`;
+    const requestKey = `${ticker}:${timeframe}:${indicatorColumns}`;
     historyAbortRef.current?.abort();
     historyAbortRef.current = historyController;
     requestKeyRef.current = requestKey;
@@ -490,7 +491,7 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
 
     const fetchHistoricalPage = () => {
       historyRequestRef.current = true;
-      api<QmdBarHistory>(`/api/trading/canvas-live-chart/history${query({ as_of: new Date(cutoffMs).toISOString(), row_limit: chartPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe })}`, { signal: historyController.signal, timeoutMs: 120000 })
+      api<QmdBarHistory>(`/api/trading/canvas-live-chart/history${query({ as_of: new Date(cutoffMs).toISOString(), indicator_columns: indicatorColumns, row_limit: chartPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe })}`, { signal: historyController.signal, timeoutMs: 120000 })
         .then((payload) => {
           if (!active || requestKeyRef.current !== requestKey) return;
           updateHistoryCursor(historyCursorRef, payload);
@@ -558,13 +559,23 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
       reconnectTimers.forEach((timer) => window.clearTimeout(timer));
       Object.values(sockets).forEach((socket) => socket?.close());
     };
-  }, [cutoffMs, pointInTime, sessionDate, symbol, timeframe]);
+  }, [cutoffMs, indicatorColumns, pointInTime, sessionDate, symbol, timeframe]);
 
   return { ...state, loadEarlier };
 }
 
 function chartPageSize(timeframe: string) {
-  return timeframe === "100ms" ? 5_000 : timeframe === "1s" || timeframe === "5s" ? 10_000 : 5_000;
+  return 5_000;
+}
+
+function requestedIndicatorColumns(visibleIndicatorIds: string[]): string {
+  const selected = new Set(visibleIndicatorIds.map((value) => value.toLowerCase()));
+  const columns = new Set<string>(["bar_start"]);
+  CHART_INDICATORS.forEach((indicator) => {
+    if (!selected.has(indicator.id.toLowerCase())) return;
+    indicator.sourceColumns?.forEach((column) => columns.add(column));
+  });
+  return [...columns].sort().join(",");
 }
 
 function alignHistoricalChartRows(
@@ -621,11 +632,62 @@ function timeframeDurationMs(timeframe: string): number {
 }
 
 function mergeRowsByTime<T extends { bar_start: string }>(existing: T[], incoming: T[]): T[] {
-  const rows = new Map(existing.map((row) => [row.bar_start, row]));
-  incoming.forEach((row) => {
-    if (row && typeof row.bar_start === "string" && row.bar_start) rows.set(row.bar_start, row);
+  const nextRows = normalizedRowsByTime(incoming);
+  if (!nextRows.length) return existing;
+  const merged: T[] = [];
+  let leftIndex = 0;
+  let rightIndex = 0;
+  let changed = false;
+  while (leftIndex < existing.length || rightIndex < nextRows.length) {
+    const left = existing[leftIndex];
+    const right = nextRows[rightIndex];
+    if (!right || (left && left.bar_start < right.bar_start)) {
+      merged.push(left);
+      leftIndex += 1;
+      continue;
+    }
+    if (!left || right.bar_start < left.bar_start) {
+      merged.push(right);
+      rightIndex += 1;
+      changed = true;
+      continue;
+    }
+    const replacement = shallowRowEqual(left, right) ? left : right;
+    merged.push(replacement);
+    changed ||= replacement !== left;
+    leftIndex += 1;
+    rightIndex += 1;
+  }
+  if (!changed && merged.length === existing.length) return existing;
+  return merged;
+}
+
+function normalizedRowsByTime<T extends { bar_start: string }>(rows: T[]): T[] {
+  const valid = rows.filter((row) => row && typeof row.bar_start === "string" && row.bar_start);
+  let ordered = true;
+  for (let index = 1; index < valid.length; index += 1) {
+    if (valid[index - 1].bar_start > valid[index].bar_start) {
+      ordered = false;
+      break;
+    }
+  }
+  const sorted = ordered ? valid : [...valid].sort((left, right) => left.bar_start.localeCompare(right.bar_start));
+  if (sorted.length < 2) return sorted;
+  const deduplicated: T[] = [];
+  sorted.forEach((row) => {
+    if (deduplicated.at(-1)?.bar_start === row.bar_start) deduplicated[deduplicated.length - 1] = row;
+    else deduplicated.push(row);
   });
-  return [...rows.values()].sort((left, right) => Date.parse(left.bar_start) - Date.parse(right.bar_start));
+  return deduplicated;
+}
+
+function shallowRowEqual<T extends object>(left: T, right: T): boolean {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) return false;
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  return leftKeys.every((key) => leftRecord[key] === rightRecord[key]);
 }
 
 function extendedSessionRegions(bars: QmdLiveBar[]) {
@@ -1187,7 +1249,7 @@ type ChartContainerPreviewProps = {
 };
 
 const ChartContainerPreview = memo(function ChartContainerPreview({ cutoffMs, instanceId, linkContext, onLinkContextChange, previewContext, settings, symbolEditable, updateSettings }: ChartContainerPreviewProps) {
-  const liveChart = useCanvasLiveChart(linkContext.symbol, settings.chart.timeframe, cutoffMs, previewContext.sessionDate);
+  const liveChart = useCanvasLiveChart(linkContext.symbol, settings.chart.timeframe, cutoffMs, previewContext.sessionDate, settings.chart.visibleIndicators);
   const presentations = useTickerPresentations([linkContext.symbol]);
   return <ChartPreview changeAsOf={new Date(cutoffMs).toISOString()} instanceId={instanceId} linkContext={linkContext} liveChart={liveChart} logoUrl={presentations[linkContext.symbol]?.logo_url} onLinkContextChange={onLinkContextChange} settings={settings} symbolEditable={symbolEditable} updateSettings={updateSettings} />;
 }, chartContainerPreviewPropsEqual);

@@ -190,6 +190,7 @@ class HistoricalContractTests(unittest.TestCase):
             ticker="AAPL",
             timeframe="100ms",
             row_limit=5_000,
+            indicator_columns=["bar_start", "ema_20", "ema_20"],
         )
 
         path, params = gateway_get.call_args.args[:2]
@@ -197,6 +198,7 @@ class HistoricalContractTests(unittest.TestCase):
         self.assertEqual(params["timeframe"], "100ms")
         self.assertEqual(params["as_of"], "2026-07-10T13:45:00+00:00")
         self.assertEqual(params["before"], "2026-07-10T13:44:00+00:00")
+        self.assertEqual(params["indicator_columns"], "bar_start,ema_20")
         self.assertEqual(result["next_before"], "2026-07-10T13:44:00+00:00")
         self.assertTrue(result["has_more_in_session"])
         self.assertEqual(len(result["indicators"]), 1)

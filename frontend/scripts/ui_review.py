@@ -450,6 +450,30 @@ def validate_canvas_interactions(
                 if interaction_baseline != price_pane.screenshot():
                     issues.append(f"{label} reverses after the first chart click")
 
+        if price_pane.count() and price_box:
+            center_x = price_box["x"] + price_box["width"] * 0.55
+            center_y = price_box["y"] + price_box["height"] * 0.5
+            right_axis_x = price_box["x"] + price_box["width"] - 18
+            time_axis_y = price_box["y"] + price_box["height"] - 8
+            for interaction_index in range(24):
+                page.mouse.move(center_x, center_y)
+                page.mouse.wheel(0, -180 if interaction_index % 2 == 0 else 150)
+                page.mouse.move(center_x, center_y)
+                page.mouse.down()
+                page.mouse.move(center_x + (95 if interaction_index % 2 == 0 else -75), center_y, steps=3)
+                page.mouse.up()
+                page.mouse.move(right_axis_x, center_y)
+                page.mouse.down()
+                page.mouse.move(right_axis_x, center_y + (35 if interaction_index % 2 == 0 else -30), steps=2)
+                page.mouse.up()
+                page.mouse.move(center_x, time_axis_y)
+                page.mouse.down()
+                page.mouse.move(center_x + (70 if interaction_index % 2 == 0 else -60), time_axis_y, steps=2)
+                page.mouse.up()
+            page.wait_for_timeout(500)
+            if not chart.is_visible() or price_pane.locator("canvas").count() < 1:
+                issues.append("chart becomes blank after repeated pan, zoom, and axis-scale interactions")
+
         # Verify grouping while the deterministic AAPL payload is still loaded.
         # Later link-management checks intentionally change shared ticker state.
         chart_shell_before_group = chart.locator(".chart-shell").bounding_box()

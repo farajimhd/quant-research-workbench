@@ -4726,6 +4726,7 @@ def trading_canvas_live_chart_history(
     session_date: str | None = None,
     as_of: str | None = None,
     before_bar: str | None = None,
+    indicator_columns: str | None = None,
     days: int = Query(default=1, ge=1, le=1),
     row_limit: int = Query(default=20_000, ge=1, le=50_000),
 ) -> dict[str, Any]:
@@ -4739,6 +4740,11 @@ def trading_canvas_live_chart_history(
             date.fromisoformat(before)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="before must be an ISO date") from exc
+    projected_columns = None
+    if indicator_columns is not None:
+        projected_columns = [column.strip() for column in indicator_columns.split(",") if column.strip()]
+        if len(projected_columns) > 128 or any(not re.fullmatch(r"[A-Za-z0-9_]{1,64}", column) for column in projected_columns):
+            raise HTTPException(status_code=400, detail="indicator_columns contains an invalid column")
     try:
         return _canvas_live_chart_history(
             ticker=ticker,
@@ -4747,6 +4753,7 @@ def trading_canvas_live_chart_history(
             session_date=session_date,
             as_of=as_of,
             before_bar=before_bar,
+            indicator_columns=projected_columns,
             row_limit=row_limit,
         )
     except Exception as exc:
@@ -4761,6 +4768,7 @@ def _canvas_live_chart_history(
     session_date: str | None,
     as_of: str | None,
     before_bar: str | None,
+    indicator_columns: list[str] | None,
     row_limit: int,
 ) -> dict[str, Any]:
     before_date = date.fromisoformat(before) if before else datetime.now(ZoneInfo(EXCHANGE_TIME_ZONE)).date()
@@ -4772,6 +4780,7 @@ def _canvas_live_chart_history(
         session_date=date.fromisoformat(session_date) if session_date else None,
         as_of=as_of,
         before_bar=before_bar,
+        indicator_columns=indicator_columns,
     )
 
 

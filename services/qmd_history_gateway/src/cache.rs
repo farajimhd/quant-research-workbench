@@ -364,17 +364,20 @@ impl HistoricalDerivedCache {
 
         if qmd_core::bars::is_supported_timeframe(&timeframe) {
             let state = lease.entry.state.lock().await;
-            let matching = state
+            let mut selected = state
                 .frames
                 .iter()
+                .rev()
                 .filter(|frame| {
                     frame.bar.timeframe.eq_ignore_ascii_case(&timeframe)
                         && frame.bar.bar_end <= as_of
                         && before.is_none_or(|bound| frame.bar.bar_start < bound)
                 })
+                .take(limit.saturating_add(1))
                 .collect::<Vec<_>>();
-            let has_more = matching.len() > limit;
-            let selected = &matching[matching.len().saturating_sub(limit)..];
+            let has_more = selected.len() > limit;
+            selected.truncate(limit);
+            selected.reverse();
             let bars = selected
                 .iter()
                 .map(|frame| ChartBarRow::from_bar(&frame.bar))
