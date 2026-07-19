@@ -3832,22 +3832,33 @@ function syncChartRanges(
 ): ChartRangeSyncController {
   if (charts.length < 2) return { cleanup: () => undefined, synchronizeFrom: () => onSynchronized() };
   let authoritativeRange = primary.timeScale().getVisibleLogicalRange();
+  let synchronizing = false;
   const pendingProgrammaticRanges = new Map<IChartApi, LogicalRange>();
   const writeAuthoritativeRange = (range: LogicalRange, source?: IChartApi) => {
+    if (!logicalRangeIsFinite(range)) return;
     authoritativeRange = range;
-    charts.forEach((target) => {
-      if (target === source) return;
-      const current = target.timeScale().getVisibleLogicalRange();
-      if (current && logicalRangesEqual(current, range)) return;
-      pendingProgrammaticRanges.set(target, range);
-      target.timeScale().setVisibleLogicalRange(range);
-    });
+    synchronizing = true;
+    try {
+      charts.forEach((target) => {
+        if (target === source) return;
+        const current = target.timeScale().getVisibleLogicalRange();
+        if (current && logicalRangesEqual(current, range)) return;
+        pendingProgrammaticRanges.set(target, range);
+        target.timeScale().setVisibleLogicalRange(range);
+      });
+    } finally {
+      synchronizing = false;
+    }
     onSynchronized();
   };
   const handlers = charts.map((source) => {
     const handler = (range: LogicalRange | null) => {
-      if (!range) return;
+      if (!range || !logicalRangeIsFinite(range)) return;
       const pendingRange = pendingProgrammaticRanges.get(source);
+      if (synchronizing) {
+        pendingProgrammaticRanges.delete(source);
+        return;
+      }
       if (pendingRange && logicalRangesEqual(range, pendingRange)) {
         pendingProgrammaticRanges.delete(source);
         onSynchronized();
@@ -3884,6 +3895,10 @@ function syncChartRanges(
 
 function logicalRangesEqual(left: LogicalRange, right: LogicalRange) {
   return Math.abs(left.from - right.from) < 0.001 && Math.abs(left.to - right.to) < 0.001;
+}
+
+function logicalRangeIsFinite(range: LogicalRange) {
+  return Number.isFinite(range.from) && Number.isFinite(range.to) && range.to > range.from;
 }
 
 function syncCrosshairs(

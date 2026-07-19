@@ -446,6 +446,8 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
     const historyController = new AbortController();
     const ticker = symbol.trim().toUpperCase();
     const requestKey = `${ticker}:${timeframe}:${indicatorColumns}`;
+    const pendingLiveSnapshots: Partial<Record<"bars" | "indicators", QmdSnapshot<QmdLiveBar> | QmdSnapshot<HistoricalIndicator>>> = {};
+    let liveSnapshotFrame: number | null = null;
     historyAbortRef.current?.abort();
     historyAbortRef.current = historyController;
     requestKeyRef.current = requestKey;
@@ -463,8 +465,12 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
         ? closedQmdSnapshotRows(payload as QmdSnapshot<QmdLiveBar>, timeframe, cutoffMs)
         : closedQmdSnapshotRows(payload as QmdSnapshot<HistoricalIndicator>, timeframe, cutoffMs);
       setState((current) => {
-        const bars = kind === "bars" ? limitRowsToLatest(mergeRowsByTime(current.bars, rows as QmdLiveBar[]), rowBudget) : current.bars;
-        const indicators = kind === "indicators" ? limitRowsToLatest(mergeRowsByTime(current.indicators, rows as HistoricalIndicator[]), rowBudget) : current.indicators;
+        const bars = kind === "bars" ? limitLiveRowsWithHysteresis(mergeRowsByTime(current.bars, rows as QmdLiveBar[]), rowBudget) : current.bars;
+        const earliestBarTime = bars.length ? barStartTime(bars[0]) : Number.NEGATIVE_INFINITY;
+        const indicators = (kind === "indicators"
+          ? limitLiveRowsWithHysteresis(mergeRowsByTime(current.indicators, rows as HistoricalIndicator[]), rowBudget)
+          : current.indicators
+        ).filter((row) => barStartTime(row) >= earliestBarTime);
         return {
           ...current,
           bars,
@@ -476,6 +482,20 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
           lastUpdateAt: kind === "bars" && live ? new Date().toISOString() : current.lastUpdateAt,
           loading: kind === "bars" ? false : current.loading,
         };
+      });
+    };
+
+    const enqueueLiveSnapshot = (kind: "bars" | "indicators", payload: QmdSnapshot<QmdLiveBar> | QmdSnapshot<HistoricalIndicator>) => {
+      pendingLiveSnapshots[kind] = payload;
+      if (liveSnapshotFrame !== null) return;
+      liveSnapshotFrame = window.requestAnimationFrame(() => {
+        liveSnapshotFrame = null;
+        const bars = pendingLiveSnapshots.bars;
+        const indicators = pendingLiveSnapshots.indicators;
+        delete pendingLiveSnapshots.bars;
+        delete pendingLiveSnapshots.indicators;
+        if (bars) applySnapshot("bars", bars, true);
+        if (indicators) applySnapshot("indicators", indicators, true);
       });
     };
 
@@ -554,7 +574,7 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
       socket.onmessage = (event) => {
         try {
           const payload = JSON.parse(String(event.data)) as QmdSnapshot<QmdLiveBar> | QmdSnapshot<HistoricalIndicator>;
-          applySnapshot(kind, payload, true);
+          enqueueLiveSnapshot(kind, payload);
         } catch {
           if (kind === "bars") setState((current) => ({ ...current, connected: false, error: "QMD live bars returned invalid data.", loading: false }));
         }
@@ -577,6 +597,7 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
       if (requestKeyRef.current === requestKey) requestKeyRef.current = "";
       requestController.abort();
       historyController.abort();
+      if (liveSnapshotFrame !== null) window.cancelAnimationFrame(liveSnapshotFrame);
       reconnectTimers.forEach((timer) => window.clearTimeout(timer));
       Object.values(sockets).forEach((socket) => socket?.close());
     };
@@ -716,6 +737,11 @@ function mergeHistoricalChartPage(
 
 function limitRowsToLatest<T>(rows: T[], rowBudget: number): T[] {
   return rows.length <= rowBudget ? rows : rows.slice(rows.length - rowBudget);
+}
+
+function limitLiveRowsWithHysteresis<T>(rows: T[], rowBudget: number): T[] {
+  const evictionChunk = Math.max(250, Math.min(2_000, Math.floor(rowBudget * 0.2)));
+  return rows.length <= rowBudget + evictionChunk ? rows : rows.slice(rows.length - rowBudget);
 }
 
 function normalizedRowsByTime<T extends { bar_start: string }>(rows: T[]): T[] {

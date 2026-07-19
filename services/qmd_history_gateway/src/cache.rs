@@ -905,6 +905,10 @@ impl CacheEntry {
 
     async fn push_bar(&self, bar: BarRow) -> Result<u64, String> {
         let mut state = self.state.lock().await;
+        ensure_monotonic_bar_start(
+            state.bars.last().map(|update| update.bar.bar_start),
+            bar.bar_start,
+        )?;
         let update_count = state.bars.len().saturating_add(1);
         let frame_bytes =
             update_count.saturating_mul(size_of::<BarUpdate>() + size_of::<DerivedUpdate>() + 768);
@@ -1020,6 +1024,20 @@ impl CacheEntry {
             notified.await;
         }
     }
+}
+
+fn ensure_monotonic_bar_start(
+    previous: Option<DateTime<Utc>>,
+    next: DateTime<Utc>,
+) -> Result<(), String> {
+    if let Some(previous) = previous {
+        if next <= previous {
+            return Err(format!(
+                "historical chart bars must be strictly chronological: previous={previous} next={next}",
+            ));
+        }
+    }
+    Ok(())
 }
 
 impl ChartBarRow {
@@ -1138,8 +1156,8 @@ fn valid_price_bar(bar: &BarRow) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        cache_key, split_event_window, CacheEntry, CacheProfile, EntryState, SourceRevision,
-        HISTORICAL_ENGINE_VERSION,
+        cache_key, ensure_monotonic_bar_start, split_event_window, CacheEntry, CacheProfile,
+        EntryState, SourceRevision, HISTORICAL_ENGINE_VERSION,
     };
     use crate::source::EventWindow;
     use chrono::{TimeZone, Utc};
@@ -1259,5 +1277,14 @@ mod tests {
         for pair in chunks.windows(2) {
             assert_eq!(pair[0].end, pair[1].start);
         }
+    }
+
+    #[test]
+    fn chart_cache_rejects_duplicate_and_descending_bar_times() {
+        let first = Utc.with_ymd_and_hms(2026, 7, 14, 13, 45, 0).unwrap();
+        let next = first + chrono::Duration::milliseconds(100);
+        assert!(ensure_monotonic_bar_start(Some(first), next).is_ok());
+        assert!(ensure_monotonic_bar_start(Some(first), first).is_err());
+        assert!(ensure_monotonic_bar_start(Some(next), first).is_err());
     }
 }
