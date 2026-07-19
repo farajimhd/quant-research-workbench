@@ -3399,6 +3399,8 @@ function chartOptions(
     leftPriceScale: { borderColor: palette.grid, minimumWidth: CHART_PRICE_SCALE_MIN_WIDTH, visible: showLeftPriceScale },
     timeScale: {
       borderColor: palette.grid,
+      fixLeftEdge: true,
+      fixRightEdge: true,
       rightOffset: compact ? 1 : 2,
       barSpacing: compact ? Math.max(12, Math.round(settings.candleSize * 0.55)) : settings.candleSize,
       minBarSpacing: 0.2,
@@ -3960,8 +3962,7 @@ function drawRegions(
   liveEntryLine?: LiveEntryLine | null
 ) {
   if (!layer) return;
-  layer.innerHTML = "";
-  const plotLayer = drawSessionRegions(chart, layer, regions, timeline, candles, settings, true);
+  const plotLayer = drawSessionRegions(chart, layer, regions, timeline, candles, settings, true, true);
   if (!plotLayer) return;
   const barWidth = estimateBarWidth(chart, candles);
   const candleDuration = estimateCandleDuration(candles);
@@ -3977,10 +3978,11 @@ function drawSessionRegions(
   timeline: CandleSeriesDatum[],
   candles: Candle[],
   settings: ChartAppearanceSettings,
-  drawSeparators: boolean
+  drawSeparators: boolean,
+  preservePriceZoneCanvas = false,
 ) {
   if (!layer) return null;
-  layer.innerHTML = "";
+  clearOverlayLayer(layer, preservePriceZoneCanvas);
   const plotLayer = document.createElement("div");
   plotLayer.className = "session-plot-region";
   plotLayer.style.left = `${chart.priceScale("left").width()}px`;
@@ -3991,19 +3993,25 @@ function drawSessionRegions(
   regions.forEach((region) => {
     const coordinates = sessionRegionCoordinates(chart, region, timeline);
     if (!coordinates) return;
-    const left = Math.min(coordinates.start, coordinates.end);
-    const width = Math.abs(coordinates.end - coordinates.start);
-    if (width < 1) return;
+    const span = clippedHorizontalSpan(coordinates.start, coordinates.end, layer.clientWidth);
+    if (!span) return;
     const node = document.createElement("div");
     node.className = "session-region";
     node.title = region.label;
-    node.style.left = `${left}px`;
-    node.style.width = `${width}px`;
+    node.style.left = `${span.left}px`;
+    node.style.width = `${span.width}px`;
     node.style.background = sessionRegionColor(region, settings);
     plotLayer.appendChild(node);
   });
   if (drawSeparators) drawDaySeparators(chart, plotLayer, candles, settings, barWidth);
   return plotLayer;
+}
+
+function clearOverlayLayer(layer: HTMLDivElement, preservePriceZoneCanvas: boolean) {
+  Array.from(layer.children).forEach((child) => {
+    if (preservePriceZoneCanvas && child.classList.contains("price-zone-canvas")) return;
+    child.remove();
+  });
 }
 
 function drawLiveEntryLine(
@@ -4072,119 +4080,157 @@ function drawPriceZones(
   candleDuration: number,
   legendSettings: LegendSettingsMap,
 ) {
-  if (!priceSeries || !zones.length) return;
   const width = Math.max(1, layer.clientWidth);
   const height = Math.max(1, layer.clientHeight);
   const pixelRatio = Math.max(1, window.devicePixelRatio || 1);
-  const canvas = document.createElement("canvas");
-  canvas.className = "price-zone-canvas";
-  canvas.width = Math.round(width * pixelRatio);
-  canvas.height = Math.round(height * pixelRatio);
+  let canvas = Array.from(layer.children).find((child): child is HTMLCanvasElement => child instanceof HTMLCanvasElement && child.classList.contains("price-zone-canvas"));
+  if (!canvas) {
+    canvas = document.createElement("canvas");
+    canvas.className = "price-zone-canvas";
+    layer.prepend(canvas);
+  }
+  const bitmapWidth = Math.max(1, Math.round(width * pixelRatio));
+  const bitmapHeight = Math.max(1, Math.round(height * pixelRatio));
+  if (canvas.width !== bitmapWidth) canvas.width = bitmapWidth;
+  if (canvas.height !== bitmapHeight) canvas.height = bitmapHeight;
   canvas.style.width = `${width}px`;
   canvas.style.height = `${height}px`;
-  layer.appendChild(canvas);
   const context = canvas.getContext("2d");
   if (!context) return;
-  context.scale(pixelRatio, pixelRatio);
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.clearRect(0, 0, bitmapWidth, bitmapHeight);
+  if (!priceSeries || !zones.length) return;
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
   const plotBottom = Math.max(0, height - chart.timeScale().height());
   const labelCandidates: Array<{ element: HTMLSpanElement; preferredTop: number; priority: number }> = [];
   const compactTagBoxes: Array<{ bottom: number; left: number; right: number; top: number }> = [];
-  const historicalTagZones = new Set<PriceZone>();
   const historicalBySettings = new Map<string, PriceZone[]>();
-  zones.filter((zone) => !zone.latest && Boolean(zone.compactLabel)).forEach((zone) => {
+  zones.forEach((zone) => {
     const id = zone.settingsId || zone.displayItemId || `zone:${zone.label}`;
-    historicalBySettings.set(id, [...(historicalBySettings.get(id) ?? []), zone]);
+    const group = historicalBySettings.get(id);
+    if (group) group.push(zone);
+    else historicalBySettings.set(id, [zone]);
   });
   historicalBySettings.forEach((itemZones, id) => {
     const settings = resolvePriceZoneLegendSettings(legendSettings, priceZoneLegendKey(id), itemZones[itemZones.length - 1]);
-    if (settings.maxHistoricalTags > 0) itemZones.slice(-settings.maxHistoricalTags).forEach((zone) => historicalTagZones.add(zone));
-  });
-  zones.forEach((zone) => {
-    const settings = resolvePriceZoneLegendSettings(legendSettings, priceZoneLegendKey(zone.settingsId || zone.displayItemId || `zone:${zone.label}`), zone);
     if (!settings.visible) return;
     const historyStart = candles[Math.max(0, candles.length - settings.historyBars)]?.time ?? Number.NEGATIVE_INFINITY;
-    if (!zone.latest && zone.end <= historyStart) return;
-    const coordinates = priceZoneCoordinates(chart, zone, candles, barWidth, candleDuration);
-    if (!coordinates) return;
-    const upper = priceSeries.priceToCoordinate(zone.upper);
-    const lower = priceSeries.priceToCoordinate(zone.lower);
-    if (upper === null || lower === null) return;
-    const center = (upper + lower) / 2;
-    if (center < 0 || center > plotBottom) return;
-    const left = Math.min(coordinates.start, coordinates.end);
-    const zoneWidth = Math.abs(coordinates.end - coordinates.start);
-    let top = Math.min(upper, lower);
-    let height = Math.max(2, Math.abs(lower - upper));
-    const minPixelHeight = clampNumber(zone.minPixelHeight, 0, 32, 0);
-    const maxPixelHeight = clampNumber(zone.maxPixelHeight, 0, 96, 0);
-    if (zone.zoneHeightMode === "fixed_px") {
-      height = Math.max(2, minPixelHeight, maxPixelHeight || minPixelHeight || 3);
-      top = center - height / 2;
-    } else {
-      if (minPixelHeight > 0 && height < minPixelHeight) {
-        height = minPixelHeight;
+    const eligibleZones = itemZones.filter((zone) => zone.latest || zone.end > historyStart);
+    const historicalTagZones = new Set(
+      settings.maxHistoricalTags > 0
+        ? eligibleZones.filter((zone) => !zone.latest && Boolean(zone.compactLabel)).slice(-settings.maxHistoricalTags)
+        : [],
+    );
+    eligibleZones.forEach((zone) => {
+      const coordinates = priceZoneCoordinates(chart, zone, candles, barWidth, candleDuration);
+      if (!coordinates) return;
+      const upper = priceSeries.priceToCoordinate(zone.upper);
+      const lower = priceSeries.priceToCoordinate(zone.lower);
+      if (upper === null || lower === null) return;
+      const center = (upper + lower) / 2;
+      if (center < 0 || center > plotBottom) return;
+      const span = clippedHorizontalSpan(coordinates.start, coordinates.end, width);
+      if (!span) return;
+      const left = span.left;
+      const zoneWidth = span.width;
+      let top = Math.min(upper, lower);
+      let height = Math.max(2, Math.abs(lower - upper));
+      const minPixelHeight = clampNumber(zone.minPixelHeight, 0, 32, 0);
+      const maxPixelHeight = clampNumber(zone.maxPixelHeight, 0, 96, 0);
+      if (zone.zoneHeightMode === "fixed_px") {
+        height = Math.max(2, minPixelHeight, maxPixelHeight || minPixelHeight || 3);
         top = center - height / 2;
+      } else {
+        if (minPixelHeight > 0 && height < minPixelHeight) {
+          height = minPixelHeight;
+          top = center - height / 2;
+        }
+        if (maxPixelHeight > 0 && height > maxPixelHeight) {
+          height = maxPixelHeight;
+          top = center - height / 2;
+        }
       }
-      if (maxPixelHeight > 0 && height > maxPixelHeight) {
-        height = maxPixelHeight;
-        top = center - height / 2;
+      if (zoneWidth < 1 || height < 1) return;
+      const fillColor = validHexColor(resolveChartColor(zone.fillColor || zone.color), "#1E3A5F");
+      const fillOpacity = clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08) * settings.opacity;
+      const borderColor = validHexColor(resolveChartColor(zone.borderColor || fillColor), fillColor);
+      const borderOpacity = clampNumber(zone.borderOpacity, 0, 0.35, Math.max(clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08) * 1.8, 0.12)) * settings.opacity;
+      context.save();
+      context.globalAlpha = 1;
+      context.fillStyle = rgbaFromHex(fillColor, fillOpacity);
+      context.strokeStyle = rgbaFromHex(borderColor, borderOpacity);
+      context.lineWidth = settings.lineWidth;
+      context.setLineDash(canvasLineDash(settings.lineStyle, settings.lineWidth));
+      if (zone.annotationKind === "bos" || zone.annotationKind === "choch") {
+        const eventX = zone.eventTime ? chart.timeScale().timeToCoordinate(zone.eventTime as Time) : coordinates.end;
+        if (settings.showConnectors) {
+          const connector = clippedHorizontalSpan(coordinates.start, eventX ?? coordinates.end, width);
+          if (connector) {
+            context.beginPath();
+            context.moveTo(connector.left, center);
+            context.lineTo(connector.right, center);
+            context.stroke();
+          }
+        }
+        if (isVisibleCoordinate(eventX, width)) drawEventGlyph(context, Number(eventX), center, settings.markerSize, fillColor, zone.annotationKind);
+      } else {
+        context.fillRect(left, top, zoneWidth, height);
+        context.strokeRect(left, top, zoneWidth, height);
+        if (zone.annotationKind === "swing-high" || zone.annotationKind === "swing-low") {
+          const markerX = clippedCoordinate(coordinates.start, width);
+          if (markerX !== null) drawSwingGlyph(context, markerX, center, settings.markerSize, fillColor, zone.annotationKind === "swing-high");
+        } else if (zone.annotationKind === "liquidity-support" || zone.annotationKind === "liquidity-resistance") {
+          const markerX = clippedCoordinate(coordinates.start, width);
+          if (markerX !== null) drawLiquidityGlyph(context, markerX, center, settings.markerSize, fillColor, zone.annotationKind === "liquidity-support");
+        }
       }
-    }
-    if (zoneWidth < 1 || height < 1) return;
-    const fillColor = validHexColor(resolveChartColor(zone.fillColor || zone.color), "#1E3A5F");
-    const fillOpacity = clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08) * settings.opacity;
-    const borderColor = validHexColor(resolveChartColor(zone.borderColor || fillColor), fillColor);
-    const borderOpacity = clampNumber(zone.borderOpacity, 0, 0.35, Math.max(clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08) * 1.8, 0.12)) * settings.opacity;
-    context.save();
-    context.globalAlpha = 1;
-    context.fillStyle = rgbaFromHex(fillColor, fillOpacity);
-    context.strokeStyle = rgbaFromHex(borderColor, borderOpacity);
-    context.lineWidth = settings.lineWidth;
-    context.setLineDash(canvasLineDash(settings.lineStyle, settings.lineWidth));
-    if (zone.annotationKind === "bos" || zone.annotationKind === "choch") {
-      const eventX = zone.eventTime ? chart.timeScale().timeToCoordinate(zone.eventTime as Time) : coordinates.end;
-      if (settings.showConnectors) {
-        context.beginPath();
-        context.moveTo(coordinates.start, center);
-        context.lineTo(eventX ?? coordinates.end, center);
-        context.stroke();
+      context.restore();
+      if (!zone.latest && zone.compactLabel && settings.showHistoricalLabels && historicalTagZones.has(zone)) {
+        const tagX = zone.eventTime ? chart.timeScale().timeToCoordinate(zone.eventTime as Time) : coordinates.start;
+        if (isVisibleCoordinate(tagX, width)) drawCompactPriceTag(context, zone.compactLabel, Number(tagX), center, fillColor, settings, compactTagBoxes, width, plotBottom);
       }
-      if (eventX !== null) drawEventGlyph(context, eventX, center, settings.markerSize, fillColor, zone.annotationKind);
-    } else {
-      context.fillRect(left, top, zoneWidth, height);
-      context.strokeRect(left, top, zoneWidth, height);
-      if (zone.annotationKind === "swing-high" || zone.annotationKind === "swing-low") {
-        drawSwingGlyph(context, coordinates.start, center, settings.markerSize, fillColor, zone.annotationKind === "swing-high");
-      } else if (zone.annotationKind === "liquidity-support" || zone.annotationKind === "liquidity-resistance") {
-        drawLiquidityGlyph(context, coordinates.start, center, settings.markerSize, fillColor, zone.annotationKind === "liquidity-support");
+      if ((zone.latest ?? !zone.compactLabel) && settings.showLatestLabels) {
+        const label = document.createElement("span");
+        label.className = "price-zone-label latest";
+        label.textContent = zone.label;
+        label.title = zone.label;
+        label.style.borderColor = rgbaFromHex(fillColor, Math.max(0.45, settings.opacity));
+        label.style.color = fillColor;
+        label.style.fontSize = `${settings.labelFontSize}px`;
+        label.style.opacity = `${settings.opacity}`;
+        label.style.visibility = "hidden";
+        layer.appendChild(label);
+        const preferredLeft = zone.latest ? coordinates.end - label.offsetWidth - 6 : left + 4;
+        label.style.left = `${Math.max(4, Math.min(preferredLeft, width - label.offsetWidth - 4))}px`;
+        labelCandidates.push({
+          element: label,
+          preferredTop: top - label.offsetHeight - 3,
+          priority: zone.displayItemId === "indicator.qmd_liquidity_levels" ? 3 : zone.annotationKind === "bos" || zone.annotationKind === "choch" || zone.annotationKind === "swing-high" || zone.annotationKind === "swing-low" ? 2 : 1,
+        });
       }
-    }
-    context.restore();
-    if (!zone.latest && zone.compactLabel && settings.showHistoricalLabels && historicalTagZones.has(zone)) {
-      const tagX = zone.eventTime ? chart.timeScale().timeToCoordinate(zone.eventTime as Time) : coordinates.start;
-      if (tagX !== null) drawCompactPriceTag(context, zone.compactLabel, tagX, center, fillColor, settings, compactTagBoxes, width, plotBottom);
-    }
-    if ((zone.latest ?? !zone.compactLabel) && settings.showLatestLabels) {
-      const label = document.createElement("span");
-      label.className = "price-zone-label latest";
-      label.textContent = zone.label;
-      label.title = zone.label;
-      label.style.borderColor = rgbaFromHex(fillColor, Math.max(0.45, settings.opacity));
-      label.style.color = fillColor;
-      label.style.fontSize = `${settings.labelFontSize}px`;
-      label.style.opacity = `${settings.opacity}`;
-      label.style.visibility = "hidden";
-      layer.appendChild(label);
-      const preferredLeft = zone.latest ? coordinates.end - label.offsetWidth - 6 : left + 4;
-      label.style.left = `${Math.max(4, Math.min(preferredLeft, width - label.offsetWidth - 4))}px`;
-      labelCandidates.push({
-        element: label,
-        preferredTop: top - label.offsetHeight - 3,
-        priority: zone.displayItemId === "indicator.qmd_liquidity_levels" ? 3 : zone.annotationKind === "bos" || zone.annotationKind === "choch" || zone.annotationKind === "swing-high" || zone.annotationKind === "swing-low" ? 2 : 1,
-      });
-    }
+    });
   });
   placePriceZoneLabels(layer, chart.timeScale().height(), labelCandidates);
+}
+
+function clippedHorizontalSpan(start: number, end: number, viewportWidth: number, overscan = 24) {
+  if (!Number.isFinite(start) || !Number.isFinite(end) || !(viewportWidth > 0)) return null;
+  const rawLeft = Math.min(start, end);
+  const rawRight = Math.max(start, end);
+  if (rawRight < -overscan || rawLeft > viewportWidth + overscan) return null;
+  const left = Math.max(-overscan, Math.min(viewportWidth + overscan, rawLeft));
+  const right = Math.max(-overscan, Math.min(viewportWidth + overscan, rawRight));
+  const width = right - left;
+  return width >= 1 ? { left, right, width } : null;
+}
+
+function isVisibleCoordinate(coordinate: number | null, viewportWidth: number, overscan = 24) {
+  return coordinate !== null && Number.isFinite(coordinate) && coordinate >= -overscan && coordinate <= viewportWidth + overscan;
+}
+
+function clippedCoordinate(coordinate: number, viewportWidth: number, overscan = 24) {
+  if (!Number.isFinite(coordinate) || coordinate < -overscan || coordinate > viewportWidth + overscan) return null;
+  return Math.max(-overscan, Math.min(viewportWidth + overscan, coordinate));
 }
 
 function canvasLineDash(style: LegendLineStyle, lineWidth: number) {
@@ -4380,11 +4426,12 @@ function drawDaySeparators(chart: IChartApi, layer: HTMLDivElement, candles: Can
     if (currentDate === previousDate) return;
     previousDate = currentDate;
     const coordinate = chart.timeScale().timeToCoordinate(candle.time as Time);
-    if (coordinate === null) return;
+    if (!isVisibleCoordinate(coordinate, layer.clientWidth)) return;
+    const visibleCoordinate = Number(coordinate);
     const node = document.createElement("div");
     node.className = "day-separator";
     node.title = currentDate;
-    node.style.left = `${coordinate - barWidth / 2}px`;
+    node.style.left = `${visibleCoordinate - barWidth / 2}px`;
     node.style.borderLeft = `1px ${settings.daySeparatorStyle} ${rgbaFromHex(settings.daySeparatorColor, 0.78)}`;
     layer.appendChild(node);
   });
@@ -4405,9 +4452,10 @@ function drawTradeAnnotations(
     const entryY = priceSeries.priceToCoordinate(annotation.entryPrice);
     const exitY = priceSeries.priceToCoordinate(annotation.exitPrice);
     if (entryX === null || exitX === null || entryY === null || exitY === null) return;
-    const left = Math.min(entryX, exitX) - barWidth / 2;
-    const right = Math.max(entryX, exitX) + barWidth / 2;
-    const width = Math.max(3, right - left);
+    const span = clippedHorizontalSpan(entryX - barWidth / 2, exitX + barWidth / 2, layer.clientWidth);
+    if (!span) return;
+    const left = span.left;
+    const width = Math.max(3, span.width);
     const color = validHexColor(annotation.color, annotation.pnl !== undefined && annotation.pnl < 0 ? "#dc2626" : "#16a34a");
     const selected = annotation.selected === true;
     const region = document.createElement("div");
@@ -4423,13 +4471,13 @@ function drawTradeAnnotations(
 
     drawTradePriceLine(layer, left, width, entryY, color, annotation.entryLabel ?? "Entry", annotation.entryLabelParts, "entry", selected, annotation.entryLabelSide ?? "left");
     drawTradePriceLine(layer, left, width, exitY, color, annotation.exitLabel ?? "Exit", annotation.exitLabelParts, "exit", selected, annotation.exitLabelSide ?? "right");
-    drawTradeArrow(layer, entryX, entryY, color, "entry", selected);
-    drawTradeArrow(layer, exitX, exitY, color, "exit", selected);
+    if (isVisibleCoordinate(entryX, layer.clientWidth)) drawTradeArrow(layer, entryX, entryY, color, "entry", selected);
+    if (isVisibleCoordinate(exitX, layer.clientWidth)) drawTradeArrow(layer, exitX, exitY, color, "exit", selected);
     annotation.fills?.forEach((fill) => {
       const fillX = xForAnnotationTime(chart, fill.time, candles);
       const fillY = priceSeries.priceToCoordinate(fill.price);
       if (fillX === null || fillY === null) return;
-      drawTradeFillMarker(layer, fillX, fillY, color, fill, selected);
+      if (isVisibleCoordinate(fillX, layer.clientWidth)) drawTradeFillMarker(layer, fillX, fillY, color, fill, selected);
     });
     if (typeof annotation.stopPrice === "number" && Number.isFinite(annotation.stopPrice)) {
       const stopY = priceSeries.priceToCoordinate(annotation.stopPrice);
@@ -4526,14 +4574,15 @@ function drawReferenceLine(chart: IChartApi, layer: HTMLDivElement | null, candl
   const referenceTime = resolveReferenceTime(reference, candles);
   if (referenceTime === null) return;
   const coordinate = chart.timeScale().timeToCoordinate(referenceTime as Time);
-  if (coordinate === null) return;
+  if (!isVisibleCoordinate(coordinate, layer.clientWidth)) return;
+  const visibleCoordinate = Number(coordinate);
   const node = document.createElement("div");
   node.className = "chart-reference-line";
   node.title = reference.label || "Selected row";
-  node.style.left = `${coordinate}px`;
-  if (coordinate < 90) {
+  node.style.left = `${visibleCoordinate}px`;
+  if (visibleCoordinate < 90) {
     node.classList.add("near-left");
-  } else if (coordinate > layer.clientWidth - 90) {
+  } else if (visibleCoordinate > layer.clientWidth - 90) {
     node.classList.add("near-right");
   }
   if (reference.label) {
