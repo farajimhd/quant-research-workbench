@@ -174,6 +174,72 @@ def slug_scale(scale: float) -> str:
     return str(scale).replace(".", "p")
 
 
+def validate_price_zone_legend(
+    page: Any,
+    chart: Any,
+    issues: list[str],
+    interaction_screenshot: Path | None = None,
+) -> None:
+    price_legend = chart.locator(".chart-price .chart-legend")
+    if price_legend.count() != 1:
+        issues.append("price chart does not expose one overlay legend")
+        return
+    price_legend.locator(".chart-legend-header").click()
+    legend_text = price_legend.inner_text()
+    for expected_level_indicator in (
+        "QMD Liquidity Support & Resistance",
+        "Market Structure Levels",
+    ):
+        if expected_level_indicator not in legend_text:
+            issues.append(f"price legend omits {expected_level_indicator}")
+    configure_levels = price_legend.get_by_role(
+        "button", name="Configure QMD Liquidity Support & Resistance"
+    )
+    if configure_levels.count() != 1:
+        issues.append("liquidity levels do not expose legend configuration")
+    else:
+        configure_levels.click()
+        levels_editor = page.get_by_role(
+            "dialog", name="QMD Liquidity Support & Resistance indicator settings"
+        )
+        text_size = levels_editor.get_by_role(
+            "slider", name="QMD Liquidity Support & Resistance label text size"
+        )
+        if text_size.count() != 1:
+            issues.append("liquidity-level settings omit label text size")
+        else:
+            text_size.fill("15")
+            if text_size.input_value() != "15":
+                issues.append("liquidity-level label text size does not update")
+        if levels_editor.get_by_label("Shape").count() != 1:
+            issues.append("liquidity-level settings omit line style")
+        levels_editor.get_by_role("button", name="Close indicator settings").click()
+    overlap_counts = page.evaluate("""() => {
+        const labels = Array.from(document.querySelectorAll('.price-zone-label'));
+        const boxes = labels.map(label => label.getBoundingClientRect());
+        let overlaps = 0;
+        for (let left = 0; left < boxes.length; left += 1) {
+            for (let right = left + 1; right < boxes.length; right += 1) {
+                const a = boxes[left];
+                const b = boxes[right];
+                if (a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top) overlaps += 1;
+            }
+        }
+        const legend = document.querySelector('.chart-price .chart-legend')?.getBoundingClientRect();
+        const legendOverlaps = legend
+            ? boxes.filter(box => box.left < legend.right && box.right > legend.left && box.top < legend.bottom && box.bottom > legend.top).length
+            : 0;
+        return { labels: overlaps, legend: legendOverlaps };
+    }""")
+    if overlap_counts["labels"]:
+        issues.append(f"price-level labels still overlap ({overlap_counts['labels']} collisions)")
+    if overlap_counts["legend"]:
+        issues.append(f"price-level labels overlap the chart legend ({overlap_counts['legend']} collisions)")
+    if interaction_screenshot:
+        page.screenshot(path=str(interaction_screenshot.with_name(interaction_screenshot.stem + "__price-level-legend.png")), full_page=True)
+    price_legend.locator(".chart-legend-header").click()
+
+
 def validate_canvas_interactions(
     page: Any,
     scenario: dict[str, Any],
@@ -195,6 +261,7 @@ def validate_canvas_interactions(
                 issues.append(
                     f"focus container does not fill the working page ({actual} < {minimum_height})"
                 )
+            validate_price_zone_legend(page, chart, issues, interaction_screenshot)
         return issues
 
     if not (
@@ -897,12 +964,29 @@ def capture(args: argparse.Namespace) -> int:
                             "C": {"symbol": "NVDA", "timeframe": "5m"},
                         },
                     }
+                    focus_chart_settings = {
+                        "version": 7,
+                        "chart": {
+                            "showVolume": True,
+                            "symbol": "AAPL",
+                            "timeframe": "1m",
+                            "visibleIndicators": [
+                                "indicator.vwap",
+                                "indicator.macd",
+                                "indicator.microstructure_outlook",
+                                "indicator.qmd_liquidity_levels",
+                                "indicator.market_structure_levels",
+                            ],
+                        },
+                    }
                     context.add_init_script(
                         "localStorage.setItem('quant-research-workbench.canvas.registry.v1', "
                         + json.dumps(json.dumps(focus_registry))
                         + "); localStorage.setItem("
                         + json.dumps(f"quant-research-workbench.trading-workspace.canvas.{focus_id}.v1")
-                        + ", " + json.dumps(json.dumps(focus_state)) + ");"
+                        + ", " + json.dumps(json.dumps(focus_state))
+                        + "); localStorage.setItem('quant-research-workbench.canvas.container-settings.v1', "
+                        + json.dumps(json.dumps(focus_chart_settings)) + ");"
                     )
                 if args.seed_core_containers and args.canvas_id and scenario["page"] == "real-live-trading":
                     viewport_width = scenario["viewport"]["width"]

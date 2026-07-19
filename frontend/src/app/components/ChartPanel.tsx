@@ -192,9 +192,11 @@ type OscillatorPaneGroup = {
 type LegendLineStyle = "solid" | "dashed" | "dotted";
 type LegendSeriesSettings = {
   color?: string;
+  labelFontSize?: number;
   lineStyle?: LegendLineStyle;
   lineWidth?: number;
   opacity?: number;
+  showLabels?: boolean;
   showValue?: boolean;
   visible?: boolean;
 };
@@ -391,6 +393,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const showReferenceLineRef = useRef(showReferenceLine);
   const visibleSelectionRef = useRef<Set<string>>(new Set());
   const chartSettingsRef = useRef<ChartAppearanceSettings>(defaultChartAppearanceSettings);
+  const legendSettingsRef = useRef<LegendSettingsMap>({});
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const initialFitTimerRef = useRef<number | null>(null);
   const rangeCleanupRef = useRef<(() => void) | null>(null);
@@ -433,6 +436,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     [chartSettings, daySeparatorsVisible]
   );
   chartSettingsRef.current = effectiveChartSettings;
+  legendSettingsRef.current = legendSettings;
   const visibleColumnKey = visibleColumns.map((column) => column.toLowerCase()).join("|");
   const visibleSupervisionKey = visibleSupervisionGroups.map((group) => group.toLowerCase()).join("|");
   const visibleColumnLookup = new Set(visibleColumns.map((column) => column.toLowerCase()));
@@ -447,10 +451,18 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   });
   visibleSelectionRef.current = visibleSelectionLookup;
   const displayedOverlaySeries = (payload?.overlay_series ?? []).filter((series) => visibleColumnLookup.has(seriesSelectionKey(series)));
+  const displayedPriceZones = (payload?.price_zones ?? []).filter((zone) => !zone.displayItemId || visibleSelectionLookup.has(zone.displayItemId.toLowerCase()));
   const displayedOscillatorSeries = (payload?.oscillator_series ?? []).filter((series) => visibleColumnLookup.has(seriesSelectionKey(series)));
   const oscillatorPaneGroups = buildOscillatorPaneGroups(displayedOscillatorSeries);
   const alignLeftPriceScale = oscillatorPaneGroups.some(oscillatorGroupUsesLeftScale);
-  const priceLegendItems = buildSeriesLegendItems(displayedOverlaySeries, "price", legendSettings, displayItemOptions, catalogColumns, chartSettings);
+  const priceLegendItems = [
+    ...buildSeriesLegendItems(displayedOverlaySeries, "price", legendSettings, displayItemOptions, catalogColumns, chartSettings),
+    ...buildPriceZoneLegendItems(displayedPriceZones, legendSettings, displayItemOptions, catalogColumns, chartSettings),
+  ];
+  const priceIndicatorCount = new Set([
+    ...displayedOverlaySeries.map((series) => seriesSelectionKey(series)),
+    ...displayedPriceZones.map((zone) => String(zone.displayItemId || zone.label).toLowerCase()),
+  ]).size;
   const hasChartData = Boolean(payload?.candles.length);
   const referenceKey = reference ? `${reference.time ?? ""}:${reference.startTime ?? ""}:${reference.endTime ?? ""}:${reference.sessionDate ?? ""}:${reference.minuteOfDay ?? ""}:${reference.label ?? ""}` : "";
   const liveEntryLineKey = liveEntryLine ? `${liveEntryLine.price}:${liveEntryLine.quantity}:${liveEntryLine.pnl}:${liveEntryLine.color}` : "";
@@ -707,6 +719,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       const settings = resolveLegendSettings(legendSettings, key, source);
       applySeriesSettings(renderer, source, settings, key.startsWith("oscillator:"), chartSettingsRef.current);
     });
+    drawCurrentRegions();
   }, [legendSettings]);
 
   useEffect(() => {
@@ -1114,7 +1127,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     if (!chart || !currentPayload) return;
     const selectedZones = (currentPayload.price_zones ?? []).filter((zone) => !zone.displayItemId || visibleSelectionRef.current.has(zone.displayItemId.toLowerCase()));
     const timeline = chartTimelineData(currentPayload.candles, timeframe);
-    drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, selectedZones, currentPayload.trade_annotations ?? [], currentPayload.candles, timeline, chartSettingsRef.current, liveEntryLineRef.current);
+    drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, selectedZones, currentPayload.trade_annotations ?? [], currentPayload.candles, timeline, chartSettingsRef.current, legendSettingsRef.current, liveEntryLineRef.current);
     oscillatorPaneRuntimesRef.current.forEach((runtime, key) => {
       drawSessionRegions(runtime.chart, oscillatorLayerRefs.current.get(key) ?? null, currentPayload.regions, timeline, currentPayload.candles, chartSettingsRef.current, false);
     });
@@ -1387,7 +1400,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
             <div className="chart-pane-canvas" ref={priceRef} />
             <div className="session-layer" ref={priceLayerRef} />
             <ChartLegend
-              indicatorCount={displayedOverlaySeries.length}
+              indicatorCount={priceIndicatorCount}
               items={priceLegendItems}
               onReset={resetLegendSettings}
               onUpdate={updateLegendSettings}
@@ -1542,7 +1555,9 @@ type LegendItem = {
   configurable: boolean;
   guideHelp?: ChartColumnHelp;
   guideTitle?: string;
+  itemKind: "series" | "zone";
   key: string;
+  labelFontSize?: number;
   label: string;
   lineStyle: LegendLineStyle;
   lineWidth: number;
@@ -1550,6 +1565,7 @@ type LegendItem = {
   seriesStyle: "candlestick" | "histogram" | "line";
   semanticColor: boolean;
   semanticColors: { down: string; neutral: string; up: string };
+  showLabels?: boolean;
   showValue: boolean;
   value: string;
   visible: boolean;
@@ -1774,6 +1790,23 @@ function LegendEditor({
           </label>
         </>
       ) : null}
+      {item.itemKind === "zone" ? (
+        <label>
+          Text size
+          <span className="legend-range-control">
+            <input
+              aria-label={`${item.label} label text size`}
+              min={9}
+              max={18}
+              step={1}
+              type="range"
+              value={item.labelFontSize ?? 11}
+              onChange={(event) => onUpdate({ labelFontSize: Number(event.target.value) })}
+            />
+            <output>{item.labelFontSize ?? 11}px</output>
+          </span>
+        </label>
+      ) : null}
       <label>
         Opacity
         <span className="legend-range-control">
@@ -1789,10 +1822,17 @@ function LegendEditor({
           <output>{Math.round(item.opacity * 100)}%</output>
         </span>
       </label>
-      <label className="legend-checkbox">
-        <input checked={item.showValue} type="checkbox" onChange={(event) => onUpdate({ showValue: event.target.checked })} />
-        Value in legend
-      </label>
+      {item.itemKind === "zone" ? (
+        <label className="legend-checkbox">
+          <input checked={item.showLabels !== false} type="checkbox" onChange={(event) => onUpdate({ showLabels: event.target.checked })} />
+          Show chart labels
+        </label>
+      ) : (
+        <label className="legend-checkbox">
+          <input checked={item.showValue} type="checkbox" onChange={(event) => onUpdate({ showValue: event.target.checked })} />
+          Value in legend
+        </label>
+      )}
       {threshold && onThresholdUpdate ? (
         <>
           <div className="chart-legend-editor-section-title">Pane threshold</div>
@@ -2592,6 +2632,7 @@ function buildSeriesLegendItems(series: ChartSeries[], pane: LegendPane, setting
       configurable: true,
       guideHelp,
       guideTitle,
+      itemKind: "series" as const,
       key,
       label: item.label,
       lineStyle: settings.lineStyle,
@@ -2603,6 +2644,56 @@ function buildSeriesLegendItems(series: ChartSeries[], pane: LegendPane, setting
       showValue: settings.showValue,
       value: latest === null ? "-" : formatPrice(latest),
       visible: settings.visible
+    };
+  });
+}
+
+function buildPriceZoneLegendItems(
+  zones: PriceZone[],
+  settingsMap: LegendSettingsMap,
+  displayItemOptions: ChartDisplayItem[],
+  catalogColumns: ChartCatalogItem[],
+  appearance = defaultChartAppearanceSettings,
+): LegendItem[] {
+  const displayItemById = new Map(displayItemOptions.map((item) => [item.id, item]));
+  const catalogByColumn = new Map(catalogColumns.map((item) => [item.column, item]));
+  const grouped = new Map<string, PriceZone[]>();
+  zones.forEach((zone) => {
+    const id = zone.displayItemId || `zone:${zone.label}`;
+    grouped.set(id, [...(grouped.get(id) ?? []), zone]);
+  });
+  return Array.from(grouped, ([id, itemZones]) => {
+    const displayItem = displayItemById.get(id);
+    const sourceColumn = displayItem?.sourceColumns?.map((column) => catalogByColumn.get(column)).find((column) => column?.knowledge);
+    const guideTitle = displayItem?.title ?? sourceColumn?.title ?? itemZones[0]?.label ?? "Price levels";
+    const guideHelp = displayItem
+      ? chartColumnHelp({
+          ...displayItem,
+          knowledge: displayItem.knowledge ?? sourceColumn?.knowledge,
+          leakage: displayItem.leakage ?? sourceColumn?.leakage,
+        }, guideTitle, chartMenuItemUsesLookahead(displayItem) || chartMenuItemUsesLookahead(sourceColumn))
+      : sourceColumn ? chartColumnHelp(sourceColumn, guideTitle) : undefined;
+    const key = priceZoneLegendKey(id);
+    const settings = resolvePriceZoneLegendSettings(settingsMap, key, itemZones[0]);
+    return {
+      color: readNeutralChartColor(),
+      configurable: true,
+      guideHelp,
+      guideTitle,
+      itemKind: "zone" as const,
+      key,
+      label: guideTitle,
+      labelFontSize: settings.labelFontSize,
+      lineStyle: settings.lineStyle,
+      lineWidth: settings.lineWidth,
+      opacity: settings.opacity,
+      seriesStyle: "line" as const,
+      semanticColor: true,
+      semanticColors: { down: appearance.downColor, neutral: readNeutralChartColor(), up: appearance.upColor },
+      showLabels: settings.showLabels,
+      showValue: true,
+      value: `${itemZones.length} level${itemZones.length === 1 ? "" : "s"}`,
+      visible: settings.visible,
     };
   });
 }
@@ -2665,6 +2756,10 @@ function oscillatorPaneKey(series: ChartSeries) {
 
 function legendSeriesKey(pane: LegendPane, series: ChartSeries) {
   return `${pane}:${series.displayItemId || "column"}:${series.column || series.label}`;
+}
+
+function priceZoneLegendKey(displayItemId: string) {
+  return `price-zone:${displayItemId}`;
 }
 
 function seriesSelectionKey(series: ChartSeries) {
@@ -2902,9 +2997,11 @@ function rgbaFromHex(hex: string, opacity: number) {
 function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettings> {
   return {
     color: resolveChartColor(series.color),
+    labelFontSize: 11,
     lineStyle: series.lineStyle ?? "solid",
     lineWidth: Math.max(1, Math.min(4, Math.round(series.lineWidth || 1))),
     opacity: 1,
+    showLabels: true,
     showValue: true,
     visible: true
   };
@@ -2915,11 +3012,34 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
   const stored = settingsMap[key] ?? {};
   return {
     color: resolveChartColor(stored.color || defaults.color),
+    labelFontSize: Math.max(9, Math.min(18, Math.round(stored.labelFontSize ?? defaults.labelFontSize))),
     lineStyle: stored.lineStyle || defaults.lineStyle,
     lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? defaults.lineWidth))),
     opacity: clampNumber(stored.opacity ?? defaults.opacity, 0, 1, 1),
+    showLabels: stored.showLabels ?? defaults.showLabels,
     showValue: stored.showValue ?? defaults.showValue,
     visible: stored.visible ?? defaults.visible
+  };
+}
+
+type ResolvedPriceZoneLegendSettings = {
+  labelFontSize: number;
+  lineStyle: LegendLineStyle;
+  lineWidth: number;
+  opacity: number;
+  showLabels: boolean;
+  visible: boolean;
+};
+
+function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: string, zone?: PriceZone): ResolvedPriceZoneLegendSettings {
+  const stored = settingsMap[key] ?? {};
+  return {
+    labelFontSize: Math.max(9, Math.min(18, Math.round(stored.labelFontSize ?? 11))),
+    lineStyle: stored.lineStyle ?? zoneBorderStyle(zone?.borderStyle),
+    lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? zone?.borderWidth ?? 1))),
+    opacity: clampNumber(stored.opacity ?? 1, 0, 1, 1),
+    showLabels: stored.showLabels !== false,
+    visible: stored.visible !== false,
   };
 }
 
@@ -3734,6 +3854,7 @@ function drawRegions(
   candles: Candle[],
   timeline: CandleSeriesDatum[],
   settings: ChartAppearanceSettings,
+  legendSettings: LegendSettingsMap,
   liveEntryLine?: LiveEntryLine | null
 ) {
   if (!layer) return;
@@ -3742,7 +3863,7 @@ function drawRegions(
   if (!plotLayer) return;
   const barWidth = estimateBarWidth(chart, candles);
   const candleDuration = estimateCandleDuration(candles);
-  drawPriceZones(chart, priceSeries, layer, priceZones, candles, barWidth, candleDuration);
+  drawPriceZones(chart, priceSeries, layer, priceZones, candles, barWidth, candleDuration, legendSettings);
   drawTradeAnnotations(chart, priceSeries, layer, tradeAnnotations, candles, barWidth);
   drawLiveEntryLine(chart, priceSeries, layer, candles, liveEntryLine);
 }
@@ -3846,10 +3967,14 @@ function drawPriceZones(
   zones: PriceZone[],
   candles: Candle[],
   barWidth: number,
-  candleDuration: number
+  candleDuration: number,
+  legendSettings: LegendSettingsMap,
 ) {
   if (!priceSeries || !zones.length) return;
+  const labelCandidates: Array<{ element: HTMLSpanElement; preferredTop: number; priority: number }> = [];
   zones.forEach((zone) => {
+    const settings = resolvePriceZoneLegendSettings(legendSettings, priceZoneLegendKey(zone.displayItemId || `zone:${zone.label}`), zone);
+    if (!settings.visible) return;
     const coordinates = priceZoneCoordinates(chart, zone, candles, barWidth, candleDuration);
     if (!coordinates) return;
     const upper = priceSeries.priceToCoordinate(zone.upper);
@@ -3884,20 +4009,87 @@ function drawPriceZones(
     node.style.width = `${width}px`;
     node.style.height = `${height}px`;
     const fillColor = validHexColor(resolveChartColor(zone.fillColor || zone.color), "#1E3A5F");
-    const fillOpacity = clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08);
+    const fillOpacity = clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08) * settings.opacity;
     const borderColor = validHexColor(resolveChartColor(zone.borderColor || fillColor), fillColor);
-    const borderOpacity = clampNumber(zone.borderOpacity, 0, 0.35, Math.max(fillOpacity * 1.8, 0.12));
+    const borderOpacity = clampNumber(zone.borderOpacity, 0, 0.35, Math.max(clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08) * 1.8, 0.12)) * settings.opacity;
     node.style.borderColor = rgbaFromHex(borderColor, borderOpacity);
-    node.style.borderStyle = zoneBorderStyle(zone.borderStyle);
-    node.style.borderWidth = `${Math.max(0, Math.min(3, Math.round(zone.borderWidth ?? 1)))}px`;
+    node.style.borderStyle = settings.lineStyle;
+    node.style.borderWidth = `${settings.lineWidth}px`;
     node.style.background = rgbaFromHex(fillColor, fillOpacity);
-    const label = document.createElement("span");
-    label.textContent = zone.label;
-    label.style.color = fillColor;
-    label.style.opacity = "1";
-    node.appendChild(label);
     layer.appendChild(node);
+    if (settings.showLabels) {
+      const label = document.createElement("span");
+      label.className = "price-zone-label";
+      label.textContent = zone.label;
+      label.title = zone.label;
+      label.style.borderColor = rgbaFromHex(fillColor, Math.max(0.45, settings.opacity));
+      label.style.color = fillColor;
+      label.style.fontSize = `${settings.labelFontSize}px`;
+      label.style.left = `${Math.max(4, left + 4)}px`;
+      label.style.opacity = `${settings.opacity}`;
+      label.style.visibility = "hidden";
+      layer.appendChild(label);
+      labelCandidates.push({
+        element: label,
+        preferredTop: top - label.offsetHeight - 3,
+        priority: zone.displayItemId === "indicator.qmd_liquidity_levels" ? 2 : 1,
+      });
+    }
   });
+  placePriceZoneLabels(layer, chart.timeScale().height(), labelCandidates);
+}
+
+function placePriceZoneLabels(
+  layer: HTMLDivElement,
+  timeScaleHeight: number,
+  candidates: Array<{ element: HTMLSpanElement; preferredTop: number; priority: number }>,
+) {
+  const gap = 3;
+  const plotBottom = Math.max(0, layer.clientHeight - timeScaleHeight - 3);
+  const placed: Array<{ bottom: number; left: number; right: number; top: number }> = [];
+  const legend = layer.parentElement?.querySelector<HTMLElement>(".chart-legend");
+  if (legend) {
+    const layerBounds = layer.getBoundingClientRect();
+    const legendBounds = legend.getBoundingClientRect();
+    const scaleX = layerBounds.width > 0 ? layerBounds.width / Math.max(1, layer.clientWidth) : 1;
+    const scaleY = layerBounds.height > 0 ? layerBounds.height / Math.max(1, layer.clientHeight) : 1;
+    placed.push({
+      bottom: (legendBounds.bottom - layerBounds.top) / scaleY,
+      left: (legendBounds.left - layerBounds.left) / scaleX,
+      right: (legendBounds.right - layerBounds.left) / scaleX,
+      top: (legendBounds.top - layerBounds.top) / scaleY,
+    });
+  }
+  candidates
+    .sort((left, right) => right.priority - left.priority || left.preferredTop - right.preferredTop)
+    .forEach(({ element, preferredTop }) => {
+      const width = element.offsetWidth;
+      const height = element.offsetHeight;
+      const maxLeft = Math.max(4, layer.clientWidth - width - 4);
+      const left = Math.max(4, Math.min(Number.parseFloat(element.style.left) || 4, maxLeft));
+      const maxTop = Math.max(3, plotBottom - height);
+      const initialTop = Math.max(3, Math.min(preferredTop, maxTop));
+      const overlaps = (top: number) => placed.some((box) => (
+        left < box.right + gap
+        && left + width + gap > box.left
+        && top < box.bottom + gap
+        && top + height + gap > box.top
+      ));
+      let top = initialTop;
+      while (top <= maxTop && overlaps(top)) top += height + gap;
+      if (top > maxTop) {
+        top = initialTop - height - gap;
+        while (top >= 3 && overlaps(top)) top -= height + gap;
+      }
+      if (top < 3 || overlaps(top)) {
+        element.remove();
+        return;
+      }
+      element.style.left = `${left}px`;
+      element.style.top = `${top}px`;
+      element.style.visibility = "visible";
+      placed.push({ bottom: top + height, left, right: left + width, top });
+    });
 }
 
 function priceZoneCoordinates(chart: IChartApi, zone: PriceZone, candles: Candle[], barWidth: number, candleDuration: number) {
