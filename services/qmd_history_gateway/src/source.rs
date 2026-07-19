@@ -7,6 +7,10 @@ use qmd_core::compact_event::{
     LIVE_COMPACT_EVENT_SCHEMA_VERSION,
 };
 use qmd_core::event::MarketEvent;
+use qmd_core::indicators::{
+    market_structure_reference_sql, parse_market_structure_reference_rows,
+    MarketStructureReferenceLevels,
+};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
@@ -493,6 +497,24 @@ impl HistoricalEventSource {
             ticker,
             timeframe: timeframe.to_string(),
         })
+    }
+
+    pub async fn market_structure_reference_levels(
+        &self,
+        ticker: &str,
+        as_of: DateTime<Utc>,
+    ) -> Result<MarketStructureReferenceLevels, String> {
+        let ticker = normalize_ticker(ticker)?;
+        let sql = market_structure_reference_sql(
+            &self.config.clickhouse_database,
+            &self.config.macro_bars_table,
+            Some(&ticker),
+            as_of,
+        )?;
+        let text = self.query(&sql).await?;
+        Ok(parse_market_structure_reference_rows(&text)?
+            .remove(&ticker)
+            .unwrap_or_default())
     }
 
     pub async fn latest_coverage_before(

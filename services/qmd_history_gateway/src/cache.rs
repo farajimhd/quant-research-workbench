@@ -5,7 +5,8 @@ use qmd_core::bars::{BarRow, BarSnapshot, SharedBarStore, BAR_SCHEMA_VERSION};
 use qmd_core::compact_event::LiveCompactEvent;
 use qmd_core::event::MarketEvent;
 use qmd_core::indicators::{
-    BarIndicatorCalculator, IndicatorRow, MicrostructureSampleAggregate, INDICATOR_SCHEMA_VERSION,
+    BarIndicatorCalculator, IndicatorRow, MarketStructureReferenceLevels,
+    MicrostructureSampleAggregate, INDICATOR_SCHEMA_VERSION,
 };
 use qmd_core::market_products::{
     parse_resolution_us, ConditionBarSnapshot, ConditionClassifier, FamilyBarRow,
@@ -20,7 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
 
-pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v10";
+pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v11";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProfile {
@@ -554,7 +555,7 @@ impl HistoricalDerivedCache {
         &self,
         entry: Arc<CacheEntry>,
         window: EventWindow,
-        _ticker: String,
+        ticker: String,
         profile: CacheProfile,
     ) -> Result<u64, String> {
         let builds_products = matches!(&profile, CacheProfile::Products);
@@ -581,12 +582,26 @@ impl HistoricalDerivedCache {
         );
         let shard = bars.shard(0);
         let trade_rules = self.source.trade_aggregation_rules();
+        let structure_references = if matches!(profile, CacheProfile::Derived(_)) {
+            self.source
+                .market_structure_reference_levels(&ticker, window.start)
+                .await
+                .unwrap_or_else(|error| {
+                    eprintln!(
+                        "QMD historical daily market-structure references unavailable for {ticker}: {error}"
+                    );
+                    MarketStructureReferenceLevels::default()
+                })
+        } else {
+            MarketStructureReferenceLevels::default()
+        };
         let indicator_worker = if matches!(profile, CacheProfile::Derived(_)) {
             let (sender, mut receiver) = mpsc::channel::<IndicatorWork>(
                 self.config.cache_update_capacity.clamp(16, 100_000),
             );
             let worker_entry = entry.clone();
             let worker_rules = trade_rules.clone();
+            let worker_structure_references = structure_references;
             let handle = tokio::spawn(async move {
                 let mut calculators = HashMap::<String, BarIndicatorCalculator>::new();
                 let mut microstructure = MicrostructureForecastWindow::default();
@@ -604,9 +619,14 @@ impl HistoricalDerivedCache {
                             let interval = microstructure.interval_at(bar.bar_end, &worker_rules);
                             aggregate.push_interval(&interval);
                             if let Some(sequence) = sequence {
-                                let calculator = calculators
-                                    .entry(bar.timeframe.clone())
-                                    .or_insert_with(BarIndicatorCalculator::new);
+                                let calculator =
+                                    calculators.entry(bar.timeframe.clone()).or_insert_with(|| {
+                                        let mut calculator = BarIndicatorCalculator::new();
+                                        calculator.set_market_structure_references(
+                                            worker_structure_references,
+                                        );
+                                        calculator
+                                    });
                                 let mut indicator = calculator.apply_bar(&bar);
                                 calculator.apply_microstructure_interval(&mut indicator, &interval);
                                 calculator.apply_cumulative_microstructure(&mut indicator);
@@ -616,9 +636,14 @@ impl HistoricalDerivedCache {
                                     .await?;
                             }
                         } else if let Some(sequence) = sequence {
-                            let calculator = calculators
-                                .entry(bar.timeframe.clone())
-                                .or_insert_with(BarIndicatorCalculator::new);
+                            let calculator =
+                                calculators.entry(bar.timeframe.clone()).or_insert_with(|| {
+                                    let mut calculator = BarIndicatorCalculator::new();
+                                    calculator.set_market_structure_references(
+                                        worker_structure_references,
+                                    );
+                                    calculator
+                                });
                             let mut indicator = calculator.apply_bar(&bar);
                             aggregate.apply_to(&mut indicator);
                             aggregate.reset();

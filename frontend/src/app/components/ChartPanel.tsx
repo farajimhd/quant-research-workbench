@@ -3980,11 +3980,13 @@ function drawPriceZones(
     const upper = priceSeries.priceToCoordinate(zone.upper);
     const lower = priceSeries.priceToCoordinate(zone.lower);
     if (upper === null || lower === null) return;
+    const plotBottom = Math.max(0, layer.clientHeight - chart.timeScale().height());
+    const center = (upper + lower) / 2;
+    if (center < 0 || center > plotBottom) return;
     const left = Math.min(coordinates.start, coordinates.end);
     const width = Math.abs(coordinates.end - coordinates.start);
     let top = Math.min(upper, lower);
     let height = Math.max(2, Math.abs(lower - upper));
-    const center = (upper + lower) / 2;
     const minPixelHeight = clampNumber(zone.minPixelHeight, 0, 32, 0);
     const maxPixelHeight = clampNumber(zone.maxPixelHeight, 0, 96, 0);
     if (zone.zoneHeightMode === "fixed_px") {

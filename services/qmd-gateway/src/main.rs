@@ -11,7 +11,8 @@ use qmd_core::config::{load_env_files, GatewayConfig};
 use qmd_core::event::MarketEvent;
 use qmd_core::gapfill::{run_gap_fill_service, run_startup_maintenance};
 use qmd_core::indicators::{
-    spawn_indicator_engines, IndicatorClickHouseWriter, IndicatorRow, SharedIndicatorStore,
+    load_live_market_structure_references, spawn_indicator_engines, IndicatorClickHouseWriter,
+    IndicatorRow, SharedIndicatorStore,
 };
 use qmd_core::intraday_bars::spawn_intraday_bar_service;
 use qmd_core::live_market_state::{
@@ -29,7 +30,7 @@ use qmd_core::state::SharedMarketState;
 use std::net::SocketAddr;
 use std::{error::Error, io};
 use tokio::sync::{broadcast, mpsc, watch};
-use tokio::time::{timeout, Duration};
+use tokio::time::{sleep, timeout, Duration};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -132,13 +133,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         trade_aggregation_rules.clone(),
         ConditionClassifier::training_aligned(),
     );
+    let market_structure_references = load_live_market_structure_references(&config, Utc::now())
+        .await
+        .unwrap_or_else(|error| {
+            eprintln!("qmd daily market-structure references unavailable: {error}");
+            Default::default()
+        });
     let indicators = SharedIndicatorStore::new(
         config.indicator_history_limit,
         config.indicator_history_by_timeframe.clone(),
         config.tick_indicator_window_seconds,
         config.indicator_shard_count,
         trade_aggregation_rules.clone(),
+        market_structure_references,
     );
+    let reference_refresh_indicators = indicators.clone();
     let scanner = SharedScannerStore::new(config.scanner_primitive_history_limit);
     let live_market_state = SharedLiveMarketStateStore::new(config.live_market_state_history_limit);
     let maintenance = SharedMaintenanceState::new();
@@ -329,6 +338,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .snapshot(Utc::now())
         .active_collection_window;
     let mut producer_handles = Vec::new();
+    producer_handles.push(tokio::spawn(run_market_structure_reference_refresh(
+        config.clone(),
+        reference_refresh_indicators,
+    )));
     if active_collection_window {
         producer_handles.push(tokio::spawn(run_massive_ingest(
             config.clone(),
@@ -408,6 +421,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
     Ok(())
+}
+
+async fn run_market_structure_reference_refresh(
+    config: GatewayConfig,
+    indicators: SharedIndicatorStore,
+) {
+    loop {
+        sleep(Duration::from_secs(60 * 60)).await;
+        match load_live_market_structure_references(&config, Utc::now()).await {
+            Ok(references) => {
+                let count = references.len();
+                indicators
+                    .replace_market_structure_references(references)
+                    .await;
+                eprintln!("qmd refreshed daily market-structure references for {count} symbols");
+            }
+            Err(error) => {
+                eprintln!("qmd daily market-structure reference refresh failed: {error}")
+            }
+        }
+    }
 }
 
 fn preflight_config(config: &GatewayConfig) -> Result<(), String> {

@@ -9,14 +9,14 @@ use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use chrono_tz::America::New_York;
 use reqwest::Client;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, sleep, Duration};
 
-pub const INDICATOR_SCHEMA_VERSION: u16 = 10;
+pub const INDICATOR_SCHEMA_VERSION: u16 = 11;
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const PREMARKET_SESSION_START_SECONDS: u32 = 4 * 60 * 60;
 
@@ -134,6 +134,17 @@ pub struct IndicatorRow {
     pub structure_swing_low: f64,
     pub structure_volume_poc: f64,
     pub structure_nearest_round: f64,
+    pub structure_bos_price: f64,
+    pub structure_bos_direction: i8,
+    pub structure_choch_price: f64,
+    pub structure_choch_direction: i8,
+    pub structure_luld_upper: f64,
+    pub structure_luld_lower: f64,
+    pub structure_52_week_high: f64,
+    pub structure_52_week_low: f64,
+    pub structure_prior_month_high: f64,
+    pub structure_prior_month_low: f64,
+    pub structure_prior_month_close: f64,
     #[serde(skip_serializing)]
     pub microstructure_interval: MicrostructureIntervalFeatures,
 }
@@ -204,6 +215,130 @@ pub struct BarIndicatorCalculator {
     liquidity_levels: LiquidityLevelState,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MarketStructureReferenceLevels {
+    pub high_52_week: f64,
+    pub low_52_week: f64,
+    pub prior_month_high: f64,
+    pub prior_month_low: f64,
+    pub prior_month_close: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct MarketStructureReferenceRow {
+    sym: String,
+    high_52_week: f64,
+    low_52_week: f64,
+    prior_month_high: f64,
+    prior_month_low: f64,
+    prior_month_close: f64,
+}
+
+pub async fn load_live_market_structure_references(
+    config: &GatewayConfig,
+    as_of: DateTime<Utc>,
+) -> Result<HashMap<String, MarketStructureReferenceLevels>, String> {
+    let sql = market_structure_reference_sql(
+        &config.historical_clickhouse_database,
+        "macro_bars_by_time_symbol",
+        None,
+        as_of,
+    )?;
+    let url = format!(
+        "{}/",
+        config.historical_clickhouse_url.trim_end_matches('/')
+    );
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|error| format!("daily market-structure client failed: {error}"))?;
+    let mut request = client
+        .post(url)
+        .header("X-ClickHouse-User", &config.historical_clickhouse_user)
+        .body(sql);
+    let password = config.historical_clickhouse_password();
+    if !password.is_empty() {
+        request = request.header("X-ClickHouse-Key", password);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|error| format!("daily market-structure query failed: {error}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|error| format!("daily market-structure response failed: {error}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "daily market-structure query returned HTTP {status}: {text}"
+        ));
+    }
+    parse_market_structure_reference_rows(&text)
+}
+
+pub fn market_structure_reference_sql(
+    database: &str,
+    table: &str,
+    ticker: Option<&str>,
+    as_of: DateTime<Utc>,
+) -> Result<String, String> {
+    for (name, value) in [("database", database), ("table", table)] {
+        if value.is_empty()
+            || !value
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        {
+            return Err(format!("market-structure {name} is not a valid identifier"));
+        }
+    }
+    let ticker_filter = ticker
+        .map(|value| format!("AND sym = '{}'", value.replace('\'', "''")))
+        .unwrap_or_default();
+    let as_of_date = as_of.with_timezone(&New_York).date_naive();
+    Ok(format!(
+        r#"SELECT
+            sym,
+            ifNull(maxIf(high, session_date >= addDays(toDate('{as_of_date}'), -364) AND session_date < toDate('{as_of_date}')), 0) AS high_52_week,
+            ifNull(minIf(low, low > 0 AND session_date >= addDays(toDate('{as_of_date}'), -364) AND session_date < toDate('{as_of_date}')), 0) AS low_52_week,
+            ifNull(maxIf(high, toStartOfMonth(session_date) = addMonths(toStartOfMonth(toDate('{as_of_date}')), -1)), 0) AS prior_month_high,
+            ifNull(minIf(low, low > 0 AND toStartOfMonth(session_date) = addMonths(toStartOfMonth(toDate('{as_of_date}')), -1)), 0) AS prior_month_low,
+            ifNull(argMaxIf(close, bar_end, toStartOfMonth(session_date) = addMonths(toStartOfMonth(toDate('{as_of_date}')), -1)), 0) AS prior_month_close
+        FROM `{database}`.`{table}` FINAL
+        WHERE timeframe = '1d'
+          AND bar_family = 'trade'
+          AND session_date >= addDays(toDate('{as_of_date}'), -364)
+          AND session_date < toDate('{as_of_date}')
+          AND bar_end <= parseDateTime64BestEffort('{as_of}')
+          {ticker_filter}
+        GROUP BY sym
+        FORMAT JSONEachRow"#,
+        as_of = as_of.to_rfc3339(),
+    ))
+}
+
+pub fn parse_market_structure_reference_rows(
+    text: &str,
+) -> Result<HashMap<String, MarketStructureReferenceLevels>, String> {
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let row = serde_json::from_str::<MarketStructureReferenceRow>(line)
+                .map_err(|error| format!("invalid daily market-structure row: {error}"))?;
+            Ok((
+                row.sym.to_ascii_uppercase(),
+                MarketStructureReferenceLevels {
+                    high_52_week: row.high_52_week,
+                    low_52_week: row.low_52_week,
+                    prior_month_high: row.prior_month_high,
+                    prior_month_low: row.prior_month_low,
+                    prior_month_close: row.prior_month_close,
+                },
+            ))
+        })
+        .collect()
+}
+
 impl BarIndicatorCalculator {
     pub fn new() -> Self {
         Self {
@@ -215,6 +350,10 @@ impl BarIndicatorCalculator {
 
     pub fn apply_bar(&mut self, bar: &BarRow) -> IndicatorRow {
         self.state.apply_bar(bar)
+    }
+
+    pub fn set_market_structure_references(&mut self, references: MarketStructureReferenceLevels) {
+        self.state.market_structure.references = references;
     }
 
     /// Apply interval-local microstructure values before the caller finalizes
@@ -278,6 +417,7 @@ struct IndicatorStore {
     microstructure: HashMap<String, MicrostructureForecastWindow>,
     microstructure_aggregates: HashMap<IndicatorKey, MicrostructureSampleAggregate>,
     trade_rules: TradeAggregationRules,
+    market_structure_references: Arc<StdRwLock<HashMap<String, MarketStructureReferenceLevels>>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -316,6 +456,15 @@ struct MarketStructureState {
     recent_bars: VecDeque<(f64, f64)>,
     volume_by_price: HashMap<i64, f64>,
     volume_poc: f64,
+    previous_close: f64,
+    previous_swing_high: f64,
+    previous_swing_low: f64,
+    trend_direction: i8,
+    bos_price: f64,
+    bos_direction: i8,
+    choch_price: f64,
+    choch_direction: i8,
+    references: MarketStructureReferenceLevels,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -330,6 +479,17 @@ struct MarketStructureSnapshot {
     swing_low: f64,
     volume_poc: f64,
     nearest_round: f64,
+    bos_price: f64,
+    bos_direction: i8,
+    choch_price: f64,
+    choch_direction: i8,
+    luld_upper: f64,
+    luld_lower: f64,
+    high_52_week: f64,
+    low_52_week: f64,
+    prior_month_high: f64,
+    prior_month_low: f64,
+    prior_month_close: f64,
 }
 
 impl LiquidityLevelState {
@@ -420,8 +580,10 @@ impl MarketStructureState {
     fn update(&mut self, bar: &BarRow) -> MarketStructureSnapshot {
         let anchor = market_session_anchor_date(bar.bar_start);
         if self.anchor != Some(anchor) {
+            let references = self.references;
             *self = Self {
                 anchor: Some(anchor),
+                references,
                 ..Self::default()
             };
         }
@@ -468,6 +630,7 @@ impl MarketStructureState {
         while self.recent_bars.len() > 5 {
             self.recent_bars.pop_front();
         }
+        let mut swing_updated = false;
         if self.recent_bars.len() == 5 {
             let center = self.recent_bars[2];
             if self
@@ -476,7 +639,9 @@ impl MarketStructureState {
                 .enumerate()
                 .all(|(index, value)| index == 2 || center.0 > value.0)
             {
+                self.previous_swing_high = self.swing_high;
                 self.swing_high = center.0;
+                swing_updated = true;
             }
             if self
                 .recent_bars
@@ -484,9 +649,54 @@ impl MarketStructureState {
                 .enumerate()
                 .all(|(index, value)| index == 2 || center.1 < value.1)
             {
+                self.previous_swing_low = self.swing_low;
                 self.swing_low = center.1;
+                swing_updated = true;
             }
         }
+
+        if swing_updated
+            && self.previous_swing_high > 0.0
+            && self.previous_swing_low > 0.0
+            && self.swing_high > 0.0
+            && self.swing_low > 0.0
+        {
+            if self.swing_high > self.previous_swing_high
+                && self.swing_low > self.previous_swing_low
+            {
+                self.trend_direction = 1;
+            } else if self.swing_high < self.previous_swing_high
+                && self.swing_low < self.previous_swing_low
+            {
+                self.trend_direction = -1;
+            }
+        }
+
+        let (bos_direction, choch_direction, next_trend) = classify_structure_break(
+            self.previous_close,
+            bar.close,
+            self.swing_high,
+            self.swing_low,
+            self.trend_direction,
+        );
+        if bos_direction != 0 {
+            self.bos_direction = bos_direction;
+            self.bos_price = if bos_direction > 0 {
+                self.swing_high
+            } else {
+                self.swing_low
+            };
+        }
+        if choch_direction != 0 {
+            self.choch_direction = choch_direction;
+            self.choch_price = if choch_direction > 0 {
+                self.swing_high
+            } else {
+                self.swing_low
+            };
+        }
+        self.trend_direction = next_trend;
+        self.previous_close = bar.close;
 
         if bar.volume > 0.0 {
             let typical = (bar.high + bar.low + bar.close) / 3.0;
@@ -511,7 +721,48 @@ impl MarketStructureState {
             swing_low: self.swing_low,
             volume_poc: self.volume_poc,
             nearest_round: nearest_round_price(bar.close),
+            bos_price: self.bos_price,
+            bos_direction: self.bos_direction,
+            choch_price: self.choch_price,
+            choch_direction: self.choch_direction,
+            luld_upper: bar.estimated_luld_upper_price,
+            luld_lower: bar.estimated_luld_lower_price,
+            high_52_week: self.references.high_52_week,
+            low_52_week: self.references.low_52_week,
+            prior_month_high: self.references.prior_month_high,
+            prior_month_low: self.references.prior_month_low,
+            prior_month_close: self.references.prior_month_close,
         }
+    }
+}
+
+fn classify_structure_break(
+    previous_close: f64,
+    close: f64,
+    swing_high: f64,
+    swing_low: f64,
+    trend_direction: i8,
+) -> (i8, i8, i8) {
+    let crossed_above = swing_high > 0.0
+        && previous_close > 0.0
+        && previous_close <= swing_high
+        && close > swing_high;
+    let crossed_below =
+        swing_low > 0.0 && previous_close > 0.0 && previous_close >= swing_low && close < swing_low;
+    if crossed_above {
+        if trend_direction < 0 {
+            (0, 1, 1)
+        } else {
+            (1, 0, 1)
+        }
+    } else if crossed_below {
+        if trend_direction > 0 {
+            (0, -1, -1)
+        } else {
+            (-1, 0, -1)
+        }
+    } else {
+        (0, 0, trend_direction)
     }
 }
 
@@ -682,6 +933,11 @@ fn structure_confluence(price: f64, row: &IndicatorRow, tolerance: f64) -> f64 {
         row.structure_swing_low,
         row.structure_volume_poc,
         row.structure_nearest_round,
+        row.structure_52_week_high,
+        row.structure_52_week_low,
+        row.structure_prior_month_high,
+        row.structure_prior_month_low,
+        row.structure_prior_month_close,
     ];
     (levels
         .iter()
@@ -843,8 +1099,10 @@ impl SharedIndicatorStore {
         tick_window_seconds: i64,
         shard_count: usize,
         trade_rules: TradeAggregationRules,
+        market_structure_references: HashMap<String, MarketStructureReferenceLevels>,
     ) -> Self {
         let shard_count = shard_count.max(1);
+        let market_structure_references = Arc::new(StdRwLock::new(market_structure_references));
         let shards = (0..shard_count)
             .map(|_| {
                 IndicatorShardStore::new(
@@ -852,6 +1110,7 @@ impl SharedIndicatorStore {
                     history_limits.clone(),
                     tick_window_seconds,
                     trade_rules.clone(),
+                    market_structure_references.clone(),
                 )
             })
             .collect::<Vec<_>>();
@@ -874,6 +1133,34 @@ impl SharedIndicatorStore {
         self.shard_for_ticker(&ticker)
             .snapshot(&ticker, &timeframe, limit)
             .await
+    }
+
+    pub async fn replace_market_structure_references(
+        &self,
+        references: HashMap<String, MarketStructureReferenceLevels>,
+    ) {
+        let Some(first_shard) = self.shards.first() else {
+            return;
+        };
+        let shared_references = {
+            let store = first_shard.inner.lock().await;
+            store.market_structure_references.clone()
+        };
+        *shared_references
+            .write()
+            .expect("market-structure reference lock poisoned") = references;
+        let references = shared_references
+            .read()
+            .expect("market-structure reference lock poisoned")
+            .clone();
+        for shard in self.shards.iter() {
+            let mut store = shard.inner.lock().await;
+            for (key, calculator) in store.bars.iter_mut() {
+                calculator.set_market_structure_references(
+                    references.get(&key.sym).copied().unwrap_or_default(),
+                );
+            }
+        }
     }
 
     fn shard_for_ticker(&self, ticker: &str) -> IndicatorShardStore {
@@ -901,6 +1188,9 @@ impl IndicatorShardStore {
         history_limits: HashMap<String, usize>,
         tick_window_seconds: i64,
         trade_rules: TradeAggregationRules,
+        market_structure_references: Arc<
+            StdRwLock<HashMap<String, MarketStructureReferenceLevels>>,
+        >,
     ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(IndicatorStore {
@@ -913,6 +1203,7 @@ impl IndicatorShardStore {
                 microstructure: HashMap::new(),
                 microstructure_aggregates: HashMap::new(),
                 trade_rules,
+                market_structure_references,
             })),
         }
     }
@@ -987,10 +1278,18 @@ impl IndicatorStore {
             sym: bar.sym.clone(),
             timeframe: bar.timeframe.clone(),
         };
-        let state = self
-            .bars
-            .entry(key.clone())
-            .or_insert_with(BarIndicatorCalculator::new);
+        let references = self
+            .market_structure_references
+            .read()
+            .expect("market-structure reference lock poisoned")
+            .get(&bar.sym.to_ascii_uppercase())
+            .copied()
+            .unwrap_or_default();
+        let state = self.bars.entry(key.clone()).or_insert_with(|| {
+            let mut calculator = BarIndicatorCalculator::new();
+            calculator.set_market_structure_references(references);
+            calculator
+        });
         let mut row = state.apply_bar(&bar);
         let ticker = bar.sym.to_ascii_uppercase();
         if bar.timeframe.eq_ignore_ascii_case("100ms") {
@@ -1470,6 +1769,17 @@ impl BarIndicatorState {
             structure_swing_low: structure.swing_low,
             structure_volume_poc: structure.volume_poc,
             structure_nearest_round: structure.nearest_round,
+            structure_bos_price: structure.bos_price,
+            structure_bos_direction: structure.bos_direction,
+            structure_choch_price: structure.choch_price,
+            structure_choch_direction: structure.choch_direction,
+            structure_luld_upper: structure.luld_upper,
+            structure_luld_lower: structure.luld_lower,
+            structure_52_week_high: structure.high_52_week,
+            structure_52_week_low: structure.low_52_week,
+            structure_prior_month_high: structure.prior_month_high,
+            structure_prior_month_low: structure.prior_month_low,
+            structure_prior_month_close: structure.prior_month_close,
             microstructure_interval: MicrostructureIntervalFeatures::default(),
         }
     }
@@ -1824,7 +2134,18 @@ impl IndicatorClickHouseWriter {
                 structure_swing_high Float64,
                 structure_swing_low Float64,
                 structure_volume_poc Float64,
-                structure_nearest_round Float64
+                structure_nearest_round Float64,
+                structure_bos_price Float64,
+                structure_bos_direction Int8,
+                structure_choch_price Float64,
+                structure_choch_direction Int8,
+                structure_luld_upper Float64,
+                structure_luld_lower Float64,
+                structure_52_week_high Float64,
+                structure_52_week_low Float64,
+                structure_prior_month_high Float64,
+                structure_prior_month_low Float64,
+                structure_prior_month_close Float64
             )
             ENGINE = ReplacingMergeTree
             PARTITION BY session_date
@@ -1895,7 +2216,18 @@ impl IndicatorClickHouseWriter {
                 ADD COLUMN IF NOT EXISTS structure_swing_high Float64,
                 ADD COLUMN IF NOT EXISTS structure_swing_low Float64,
                 ADD COLUMN IF NOT EXISTS structure_volume_poc Float64,
-                ADD COLUMN IF NOT EXISTS structure_nearest_round Float64"#,
+                ADD COLUMN IF NOT EXISTS structure_nearest_round Float64,
+                ADD COLUMN IF NOT EXISTS structure_bos_price Float64,
+                ADD COLUMN IF NOT EXISTS structure_bos_direction Int8,
+                ADD COLUMN IF NOT EXISTS structure_choch_price Float64,
+                ADD COLUMN IF NOT EXISTS structure_choch_direction Int8,
+                ADD COLUMN IF NOT EXISTS structure_luld_upper Float64,
+                ADD COLUMN IF NOT EXISTS structure_luld_lower Float64,
+                ADD COLUMN IF NOT EXISTS structure_52_week_high Float64,
+                ADD COLUMN IF NOT EXISTS structure_52_week_low Float64,
+                ADD COLUMN IF NOT EXISTS structure_prior_month_high Float64,
+                ADD COLUMN IF NOT EXISTS structure_prior_month_low Float64,
+                ADD COLUMN IF NOT EXISTS structure_prior_month_close Float64"#,
             true,
         )
         .await?;
@@ -2099,6 +2431,17 @@ fn indicator_insert_row(row: &IndicatorRow) -> serde_json::Value {
         "structure_swing_low": row.structure_swing_low,
         "structure_volume_poc": row.structure_volume_poc,
         "structure_nearest_round": row.structure_nearest_round,
+        "structure_bos_price": row.structure_bos_price,
+        "structure_bos_direction": row.structure_bos_direction,
+        "structure_choch_price": row.structure_choch_price,
+        "structure_choch_direction": row.structure_choch_direction,
+        "structure_luld_upper": row.structure_luld_upper,
+        "structure_luld_lower": row.structure_luld_lower,
+        "structure_52_week_high": row.structure_52_week_high,
+        "structure_52_week_low": row.structure_52_week_low,
+        "structure_prior_month_high": row.structure_prior_month_high,
+        "structure_prior_month_low": row.structure_prior_month_low,
+        "structure_prior_month_close": row.structure_prior_month_close,
     })
 }
 
@@ -2172,10 +2515,11 @@ fn safe_div(numerator: f64, denominator: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        anchored_flow_relationship, anchored_market_session_date, decay_levels,
-        exact_clock_level_supported, level_confidence, normalized_level_strength, select_level,
-        update_level, LevelEvidence, MicrostructureCumulativeFlow, SessionVwapState,
-        WeightedSignalAggregate,
+        anchored_flow_relationship, anchored_market_session_date, classify_structure_break,
+        decay_levels, exact_clock_level_supported, level_confidence,
+        market_structure_reference_sql, normalized_level_strength,
+        parse_market_structure_reference_rows, select_level, update_level, LevelEvidence,
+        MicrostructureCumulativeFlow, SessionVwapState, WeightedSignalAggregate,
     };
     use chrono::{TimeZone, Utc};
     use std::collections::HashMap;
@@ -2186,6 +2530,52 @@ mod tests {
         assert!(!exact_clock_level_supported("1h", 1800.0));
         assert!(exact_clock_level_supported("5m", 300.0));
         assert!(!exact_clock_level_supported("1h", 300.0));
+    }
+
+    #[test]
+    fn structure_break_distinguishes_continuation_from_character_change() {
+        assert_eq!(
+            classify_structure_break(99.5, 100.5, 100.0, 98.0, 1),
+            (1, 0, 1)
+        );
+        assert_eq!(
+            classify_structure_break(98.5, 97.5, 100.0, 98.0, 1),
+            (0, -1, -1)
+        );
+        assert_eq!(
+            classify_structure_break(99.5, 100.5, 100.0, 98.0, -1),
+            (0, 1, 1)
+        );
+        assert_eq!(
+            classify_structure_break(98.5, 97.5, 100.0, 98.0, -1),
+            (-1, 0, -1)
+        );
+        assert_eq!(
+            classify_structure_break(99.0, 99.5, 100.0, 98.0, 1),
+            (0, 0, 1)
+        );
+    }
+
+    #[test]
+    fn daily_structure_reference_contract_is_causal_and_parseable() {
+        let as_of = Utc.with_ymd_and_hms(2026, 7, 14, 13, 45, 0).unwrap();
+        let sql = market_structure_reference_sql(
+            "market_sip_compact",
+            "macro_bars_by_time_symbol",
+            Some("AAPL"),
+            as_of,
+        )
+        .unwrap();
+        assert!(sql.contains("addDays(toDate('2026-07-14'), -364)"));
+        assert!(sql.contains("session_date < toDate('2026-07-14')"));
+        assert!(sql.contains("AND sym = 'AAPL'"));
+        let rows = parse_market_structure_reference_rows(
+            r#"{"sym":"AAPL","high_52_week":331.78,"low_52_week":181.46,"prior_month_high":324.09,"prior_month_low":246.63,"prior_month_close":289.0}"#,
+        )
+        .unwrap();
+        let aapl = rows.get("AAPL").unwrap();
+        assert_eq!(aapl.high_52_week, 331.78);
+        assert_eq!(aapl.prior_month_close, 289.0);
     }
 
     #[test]

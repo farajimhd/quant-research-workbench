@@ -244,23 +244,28 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     ],
     caveats: ["QMD sees consolidated Level-1 NBBO, not venue depth, hidden liquidity, or the full order book.", "Displayed liquidity can be cancelled before execution; require price response and persistence.", "A candidate level is causal evidence, not a claim that the market must reverse there."],
   }),
-  displayIndicator("indicator.market_structure_levels", "Market Structure Levels", "price_action", ["structure_session_high", "structure_session_low", "structure_premarket_high", "structure_premarket_low", "structure_opening_range_high", "structure_opening_range_low", "structure_swing_high", "structure_swing_low", "structure_volume_poc", "structure_nearest_round"], "price", {
+  displayIndicator("indicator.market_structure_levels", "Market Structure Levels", "price_action", ["structure_session_high", "structure_session_low", "structure_premarket_high", "structure_premarket_low", "structure_opening_range_high", "structure_opening_range_low", "structure_swing_high", "structure_swing_low", "structure_bos_price", "structure_bos_direction", "structure_choch_price", "structure_choch_direction", "structure_luld_upper", "structure_luld_lower", "structure_52_week_high", "structure_52_week_low", "structure_prior_month_high", "structure_prior_month_low", "structure_prior_month_close", "structure_volume_poc", "structure_nearest_round"], "price", {
     shortDescription: "Important price references derived from the current 04:00 ET session and confirmed chart structure.",
-    detailedDescription: "The overlay tracks the developing session high and low, premarket high and low, 09:30–09:35 opening range, causally confirmed five-bar swing high and low, bar-volume point of control, and nearest adaptive round price.",
-    calculation: "Session and premarket extrema update only when a completed bar makes a new extreme. Opening range freezes after 09:35 ET. A swing is confirmed only after two later bars fail to exceed the center bar, avoiding future leakage. Volume POC bins each bar's volume at HLC3; the round reference uses $1, 50¢, 10¢, or 1¢ spacing by price scale.",
+    detailedDescription: "The overlay combines intraday auction boundaries, causally confirmed swing structure, BOS/CHoCH events, locally estimated LULD bands, and higher-timeframe references from completed daily trade bars.",
+    calculation: "A swing is confirmed only after two later bars fail to exceed the center bar. BOS is a close through a confirmed swing in the established structure direction; CHoCH is the first confirmed-swing break against that direction. QMD LULD is a local five-minute rolling reference estimate, not an official SIP band. The 52-week and prior-month levels are queried once from completed daily trade bars before intraday replay.",
     readingGuide: "Start with session and premarket extremes, then opening range. These are widely observed auction boundaries. Use the latest confirmed swing for local structure, POC for accepted value, and the round level as a clustering reference. Multiple lines near the same price create confluence; they do not become independent votes simply because they overlap.",
     bullishEvidence: "Reclaim and acceptance above a prior high, opening-range high, or swing high—especially with positive flow—supports continuation. A defended low or POC can support a bounce.",
     bearishEvidence: "Loss and acceptance below a prior low, opening-range low, or swing low—especially with negative flow—supports continuation lower. Rejection at a high or POC can act as resistance.",
-    timeframeBehavior: "Session anchors retain their clock meaning. Premarket H/L requires bars of 30 minutes or less, and the five-minute opening range requires bars of five minutes or less, because a larger bar would straddle the boundary and create a false precise level. Swing confirmation and bar-volume POC depend on the selected timeframe because their bars change.",
+    timeframeBehavior: "Session anchors retain their clock meaning. Premarket H/L requires bars of 30 minutes or less and the opening range requires bars of five minutes or less. Swing, BOS, and CHoCH depend on the selected timeframe. The 52-week and prior-month references do not change when the intraday timeframe changes because they come from the same completed daily bars.",
     components: [
       { label: "Session H/L", description: "Developing extremes since the 04:00 ET session anchor.", tone: "info" },
       { label: "Premarket H/L", description: "Extremes from 04:00 through 09:29:59 ET; fixed after the regular open.", tone: "warning" },
       { label: "Opening range H/L", description: "Developing 09:30–09:35 ET extremes, fixed after five minutes.", tone: "neutral" },
       { label: "Confirmed swing H/L", description: "Local pivot confirmed only after two following bars; it intentionally appears with a two-bar delay.", tone: "info" },
+      { label: "BOS", description: "Break of Structure: price closes through a confirmed swing in the established trend direction. Green is bullish; red is bearish.", tone: "buy" },
+      { label: "CHoCH", description: "Change of Character: price closes through the opposite confirmed swing, warning that the prior structure direction has changed.", tone: "warning" },
+      { label: "Estimated LULD", description: "QMD's locally estimated upper and lower volatility bands from a rolling five-minute trade-price reference. These are not official SIP bands or halt declarations.", tone: "sell" },
+      { label: "52-week H/L", description: "Highest high and lowest low from completed daily trade bars in the trailing year, excluding the developing session.", tone: "info" },
+      { label: "Prior month H/L/C", description: "Previous calendar month's high, low, and final close from completed daily trade bars.", tone: "neutral" },
       { label: "Bar-volume POC", description: "Price bin with the most accumulated bar volume using each bar's HLC3 proxy; it is not a tick-accurate volume profile.", tone: "buy" },
       { label: "Round price", description: "Nearest psychologically salient price increment; useful as a clustering reference, never sufficient alone.", tone: "neutral" },
     ],
-    caveats: ["Structure describes where reactions may matter, not which direction wins.", "Premarket and opening-range fields remain unavailable when the selected bar is too large to isolate their exact clock window.", "The POC is estimated from bar-level data and can differ from a trade-by-trade volume profile.", "Swing levels are timeframe-dependent and deliberately delayed to remain causal."],
+    caveats: ["Structure describes where reactions may matter, not which direction wins.", "BOS and CHoCH require a close beyond a confirmed pivot; intrabar wicks do not trigger them.", "Estimated LULD can differ from official SIP reference prices and bands.", "Daily references remain unavailable when the canonical daily-bar store has no causal history for the symbol.", "Swing levels are timeframe-dependent and deliberately delayed to remain causal."],
   }),
   displayIndicator("indicator.qmd_level_confluence", "QMD Level Confluence", "microstructure", ["market_level_bias", "market_level_support_score", "market_level_resistance_score", "liquidity_level_pressure"], "qmd_level_confluence", {
     shortDescription: "One signed oscillator comparing nearby support evidence with nearby resistance evidence.",
@@ -1235,12 +1240,21 @@ function historicalMarketLevelZones(rows: HistoricalIndicator[], bars: Historica
       ["structure_opening_range_low", "Opening range low", "var(--foreground)"],
       ["structure_swing_high", "Confirmed swing high", "var(--danger)"],
       ["structure_swing_low", "Confirmed swing low", "var(--success)"],
+      ["structure_luld_upper", "Estimated LULD upper", "var(--danger)"],
+      ["structure_luld_lower", "Estimated LULD lower", "var(--danger)"],
+      ["structure_52_week_high", "52-week high", "var(--warning)"],
+      ["structure_52_week_low", "52-week low", "var(--info)"],
+      ["structure_prior_month_high", "Prior-month high", "var(--primary)"],
+      ["structure_prior_month_low", "Prior-month low", "var(--primary)"],
+      ["structure_prior_month_close", "Prior-month close", "var(--muted-foreground)"],
       ["structure_volume_poc", "Bar-volume POC", "var(--success)"],
       ["structure_nearest_round", "Nearest round price", "var(--muted-foreground)"],
     ] as const;
     specs.forEach(([column, label, color]) => pushLatestLevelZone(zones, rows, column, chartEnd, {
       color, displayItemId: "indicator.market_structure_levels", fillOpacity: 0.035, label, minPixelHeight: 3,
     }));
+    pushStructureBreakZone(zones, rows, "structure_bos_price", "structure_bos_direction", "BOS", chartEnd);
+    pushStructureBreakZone(zones, rows, "structure_choch_price", "structure_choch_direction", "CHoCH", chartEnd);
   }
   return zones;
 }
@@ -1252,9 +1266,11 @@ function pushLatestLevelZone(
   end: number,
   style: { color: string; displayItemId: string; fillOpacity: number; label: string; minPixelHeight: number },
 ) {
-  const latestValue = finiteNumber(rows[rows.length - 1][column]);
+  const latestIndex = findLatestPositiveIndex(rows, column);
+  if (latestIndex < 0) return;
+  const latestValue = finiteNumber(rows[latestIndex][column]);
   if (latestValue <= 0) return;
-  let startIndex = rows.length - 1;
+  let startIndex = latestIndex;
   while (startIndex > 0 && pricesMatch(finiteNumber(rows[startIndex - 1][column]), latestValue)) startIndex -= 1;
   const start = Date.parse(String(rows[startIndex].bar_start)) / 1000;
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
@@ -1275,6 +1291,34 @@ function pushLatestLevelZone(
     upper: latestValue,
     zoneHeightMode: "fixed_px",
   });
+}
+
+function pushStructureBreakZone(
+  zones: NonNullable<ChartPayload["price_zones"]>,
+  rows: HistoricalIndicator[],
+  priceColumn: string,
+  directionColumn: string,
+  eventLabel: string,
+  end: number,
+) {
+  const index = findLatestPositiveIndex(rows, priceColumn);
+  if (index < 0) return;
+  const direction = finiteNumber(rows[index][directionColumn]);
+  const bullish = direction > 0;
+  pushLatestLevelZone(zones, rows.slice(0, index + 1), priceColumn, end, {
+    color: bullish ? "var(--success)" : "var(--danger)",
+    displayItemId: "indicator.market_structure_levels",
+    fillOpacity: 0.07,
+    label: `${bullish ? "Bullish" : "Bearish"} ${eventLabel}`,
+    minPixelHeight: 5,
+  });
+}
+
+function findLatestPositiveIndex(rows: HistoricalIndicator[], column: string) {
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    if (finiteNumber(rows[index][column]) > 0) return index;
+  }
+  return -1;
 }
 
 function finiteNumber(value: unknown) {
