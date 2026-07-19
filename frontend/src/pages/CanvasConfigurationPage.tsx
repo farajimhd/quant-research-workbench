@@ -258,7 +258,7 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     readingGuide: "Start with session and premarket extremes, then opening range. These are widely observed auction boundaries. Use the latest confirmed swing for local structure, POC for accepted value, and the round level as a clustering reference. Multiple lines near the same price create confluence; they do not become independent votes simply because they overlap.",
     bullishEvidence: "Reclaim and acceptance above a prior high, opening-range high, or swing high—especially with positive flow—supports continuation. A defended low or POC can support a bounce.",
     bearishEvidence: "Loss and acceptance below a prior low, opening-range low, or swing low—especially with negative flow—supports continuation lower. Rejection at a high or POC can act as resistance.",
-    timeframeBehavior: "Session anchors retain their clock meaning. Premarket H/L requires bars of 30 minutes or less and the opening range requires bars of five minutes or less. Swing, BOS, and CHoCH depend on the selected timeframe. The 52-week and prior-month references do not change when the intraday timeframe changes because they come from the same completed daily bars.",
+    timeframeBehavior: "Session anchors retain their clock meaning. Premarket H/L requires bars of 30 minutes or less and the opening range requires bars of five minutes or less. Swing, BOS, CHoCH, and bar-volume POC depend on the selected timeframe. The 52-week and prior-month references do not change when the intraday timeframe changes because they come from the same completed daily bars. Canvas draws causal level segments for the latest 100 selected-timeframe bars; every segment shows the value known on those bars rather than projecting the newest value backward.",
     components: [
       { label: "Session H/L", description: "Developing extremes since the 04:00 ET session anchor.", tone: "info" },
       { label: "Premarket H/L", description: "Extremes from 04:00 through 09:29:59 ET; fixed after the regular open.", tone: "warning" },
@@ -1276,11 +1276,11 @@ function historicalMarketLevelZones(rows: HistoricalIndicator[], bars: Historica
       ["structure_volume_poc", "Bar-volume POC", "var(--success)"],
       ["structure_nearest_round", "Nearest round price", "var(--muted-foreground)"],
     ] as const;
-    specs.forEach(([column, label, color]) => pushLatestLevelZone(zones, rows, column, chartEnd, {
+    specs.forEach(([column, label, color]) => pushTrailingLevelZones(zones, rows, column, chartEnd, MARKET_STRUCTURE_HISTORY_BARS, {
       color, displayItemId: "indicator.market_structure_levels", fillOpacity: 0.035, label, minPixelHeight: 3,
     }));
-    pushStructureBreakZone(zones, rows, "structure_bos_price", "structure_bos_direction", "BOS", chartEnd);
-    pushStructureBreakZone(zones, rows, "structure_choch_price", "structure_choch_direction", "CHoCH", chartEnd);
+    pushTrailingStructureBreakZones(zones, rows, "structure_bos_price", "structure_bos_direction", "BOS", chartEnd, MARKET_STRUCTURE_HISTORY_BARS);
+    pushTrailingStructureBreakZones(zones, rows, "structure_choch_price", "structure_choch_direction", "CHoCH", chartEnd, MARKET_STRUCTURE_HISTORY_BARS);
   }
   return zones;
 }
@@ -1319,26 +1319,94 @@ function pushLatestLevelZone(
   });
 }
 
-function pushStructureBreakZone(
+const MARKET_STRUCTURE_HISTORY_BARS = 100;
+
+function pushTrailingLevelZones(
+  zones: NonNullable<ChartPayload["price_zones"]>,
+  rows: HistoricalIndicator[],
+  column: string,
+  chartEnd: number,
+  barCount: number,
+  style: { color: string; displayItemId: string; fillOpacity: number; label: string; minPixelHeight: number },
+) {
+  const firstIndex = Math.max(0, rows.length - Math.max(1, barCount));
+  let segmentStart = firstIndex;
+  let segmentValue = finiteNumber(rows[firstIndex]?.[column]);
+  for (let index = firstIndex + 1; index <= rows.length; index += 1) {
+    const nextValue = index < rows.length ? finiteNumber(rows[index][column]) : Number.NaN;
+    if (index < rows.length && pricesMatch(nextValue, segmentValue)) continue;
+    pushHistoricalLevelSegment(zones, rows, segmentStart, index, segmentValue, chartEnd, style);
+    segmentStart = index;
+    segmentValue = nextValue;
+  }
+}
+
+function pushTrailingStructureBreakZones(
   zones: NonNullable<ChartPayload["price_zones"]>,
   rows: HistoricalIndicator[],
   priceColumn: string,
   directionColumn: string,
   eventLabel: string,
-  end: number,
+  chartEnd: number,
+  barCount: number,
 ) {
-  const index = findLatestPositiveIndex(rows, priceColumn);
-  if (index < 0) return;
-  const direction = finiteNumber(rows[index][directionColumn]);
-  const bullish = direction > 0;
-  pushLatestLevelZone(zones, rows.slice(0, index + 1), priceColumn, end, {
-    color: bullish ? "var(--success)" : "var(--danger)",
-    displayItemId: "indicator.market_structure_levels",
-    fillOpacity: 0.07,
-    label: `${bullish ? "Bullish" : "Bearish"} ${eventLabel}`,
-    minPixelHeight: 5,
+  const firstIndex = Math.max(0, rows.length - Math.max(1, barCount));
+  let segmentStart = firstIndex;
+  let price = finiteNumber(rows[firstIndex]?.[priceColumn]);
+  let direction = finiteNumber(rows[firstIndex]?.[directionColumn]);
+  for (let index = firstIndex + 1; index <= rows.length; index += 1) {
+    const nextPrice = index < rows.length ? finiteNumber(rows[index][priceColumn]) : Number.NaN;
+    const nextDirection = index < rows.length ? finiteNumber(rows[index][directionColumn]) : Number.NaN;
+    if (index < rows.length && pricesMatch(nextPrice, price) && nextDirection === direction) continue;
+    if (direction !== 0) {
+      const bullish = direction > 0;
+      pushHistoricalLevelSegment(zones, rows, segmentStart, index, price, chartEnd, {
+        color: bullish ? "var(--success)" : "var(--danger)",
+        displayItemId: "indicator.market_structure_levels",
+        fillOpacity: 0.07,
+        label: `${bullish ? "Bullish" : "Bearish"} ${eventLabel}`,
+        minPixelHeight: 5,
+      });
+    }
+    segmentStart = index;
+    price = nextPrice;
+    direction = nextDirection;
+  }
+}
+
+function pushHistoricalLevelSegment(
+  zones: NonNullable<ChartPayload["price_zones"]>,
+  rows: HistoricalIndicator[],
+  startIndex: number,
+  endIndex: number,
+  value: number,
+  chartEnd: number,
+  style: { color: string; displayItemId: string; fillOpacity: number; label: string; minPixelHeight: number },
+) {
+  if (!(value > 0) || startIndex >= rows.length) return;
+  const start = rowTimestamp(rows[startIndex]);
+  const end = endIndex < rows.length ? rowTimestamp(rows[endIndex]) : chartEnd;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+  zones.push({
+    borderColor: style.color,
+    borderOpacity: Math.min(0.4, style.fillOpacity * 2.5),
+    borderStyle: "solid",
+    borderWidth: 1,
+    color: style.color,
+    displayItemId: style.displayItemId,
+    end,
+    fillColor: style.color,
+    fillOpacity: style.fillOpacity,
+    label: `${style.label} · ${formatLevelPrice(value)}`,
+    lower: value,
+    minPixelHeight: style.minPixelHeight,
+    start,
+    upper: value,
+    zoneHeightMode: "fixed_px",
   });
 }
+
+function rowTimestamp(row?: HistoricalIndicator) { return row ? Date.parse(String(row.bar_start)) / 1000 : Number.NaN; }
 
 function findLatestPositiveIndex(rows: HistoricalIndicator[], column: string) {
   for (let index = rows.length - 1; index >= 0; index -= 1) {
