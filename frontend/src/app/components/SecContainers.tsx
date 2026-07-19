@@ -8,12 +8,15 @@ import { TickerIdentity, TickerIdentityWithChange, useTickerPresentations } from
 
 export type SecSettings = { content: string; label: string; lookbackHours: number; ticker: string };
 type SecLabel = { id: string; label: string };
-type SecRow = { accession_number: string; accepted_at_utc: string; cik: string; company_name: string; document_rows?: number; filing_detail_url?: string; filing_label: string; filing_label_text: string; filing_size?: number; form_type: string; items?: string[]; label_evidence?: string[]; primary_document_url?: string; text_chars?: number; text_rows?: number; tickers?: string[]; xbrl_rows?: number };
+type SecRow = { accession_number: string; accepted_at_utc: string; cik: string; company_name: string; document_rows?: number; filing_detail_url?: string; filing_label: string; filing_label_text: string; filing_size?: number; form_type: string; items: string[]; label_evidence: string[]; primary_document_url?: string; text_chars?: number; text_rows?: number; tickers: string[]; xbrl_rows?: number };
+type SecRowWire = Omit<SecRow, "items" | "label_evidence" | "tickers"> & { items?: unknown; label_evidence?: unknown; tickers?: unknown };
 type SecPayload = { as_of: string; has_more: boolean; labels: SecLabel[]; next_before: string; next_before_accession: string; rows: SecRow[]; window_start: string };
+type SecPayloadWire = Omit<SecPayload, "rows"> & { rows: SecRowWire[] };
 type SecDocument = { description?: string; document_id: string; document_name: string; document_role: string; document_type: string; document_url?: string; extraction_status?: string; has_normalized_text?: number; sequence_number?: number };
 type SecText = { document_id: string; text: string; text_char_count: number; text_kind: string };
 type SecFact = { fiscal_period?: string; fiscal_year?: number; period_end_date?: string; tag: string; unit_code: string; value: string };
 type SecDetail = { documents: SecDocument[]; errors: Record<string, string>; facts: SecFact[]; filing: SecRow; identity: { exchange_code?: string; sic_description?: string; ticker?: string; tickers?: string[] }; status: string; texts: SecText[] };
+type SecDetailWire = Omit<SecDetail, "filing"> & { filing: SecRowWire };
 type Temperature = "hot" | "cold" | "old";
 const SEC_SELECTION_EVENT = "quant-sec-selection";
 const INITIAL_LABELS: SecLabel[] = [
@@ -59,7 +62,7 @@ function TickerSecSection({ asOf, label, rows }: { asOf: string; label: string; 
 export function SecDetailContainer({ asOf, canvasId, requestedCik, requestedAccession }: { asOf: string; canvasId: string; requestedCik?: string; requestedAccession?: string }) {
   const initial = requestedCik && requestedAccession ? `${requestedCik}/${requestedAccession}` : readSelectedSec(canvasId); const [key, setKey] = useState(initial); const [detail, setDetail] = useState<SecDetail | null>(null); const [loading, setLoading] = useState(false); const [error, setError] = useState(""); const [documentId, setDocumentId] = useState("");
   useEffect(() => { const listener = (event: Event) => { const value = (event as CustomEvent<{ canvasId: string; key: string }>).detail; if (value.canvasId === canvasId) setKey(value.key); }; window.addEventListener(SEC_SELECTION_EVENT, listener); return () => window.removeEventListener(SEC_SELECTION_EVENT, listener); }, [canvasId]);
-  useEffect(() => { if (!key) return; const [cik, accession] = key.split("/"); const controller = new AbortController(); setLoading(true); setError(""); api<SecDetail>(`/api/trading/sec/detail/${encodeURIComponent(cik)}/${encodeURIComponent(accession)}${query({ as_of: asOf })}`, { signal: controller.signal, timeoutMs: 30000 }).then((value) => { setDetail(value); setDocumentId(value.texts[0]?.document_id ?? ""); }).catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); }); return () => controller.abort(); }, [asOf, key]);
+  useEffect(() => { if (!key) return; const [cik, accession] = key.split("/"); const controller = new AbortController(); setLoading(true); setError(""); api<SecDetailWire>(`/api/trading/sec/detail/${encodeURIComponent(cik)}/${encodeURIComponent(accession)}${query({ as_of: asOf })}`, { signal: controller.signal, timeoutMs: 30000 }).then((value) => { const normalized = normalizeSecDetail(value); setDetail(normalized); setDocumentId(normalized.texts[0]?.document_id ?? ""); }).catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); }); return () => controller.abort(); }, [asOf, key]);
   const detailTickers = detail?.identity.tickers ?? detail?.filing.tickers ?? []; const presentations = useTickerPresentations(detailTickers);
   if (!key) return <SecEmpty label="Choose a filing in All SEC or Ticker SEC to read it here." />; if (loading && !detail) return <div className="canvas-preview-loading">Loading filing…</div>; if (error) return <SecEmpty label={error} />; if (!detail) return null;
   const row = detail.filing; const tickers = detailTickers; const selectedText = detail.texts.find((text) => text.document_id === documentId) ?? detail.texts[0]; const tone = temperature(row.accepted_at_utc, Date.parse(asOf));
@@ -70,7 +73,40 @@ export function SecDetailContainer({ asOf, canvasId, requestedCik, requestedAcce
     <footer>{safeUrl(row.filing_detail_url) ? <a href={row.filing_detail_url} rel="noreferrer" target="_blank">Open filing on SEC.gov <ExternalLink size={12} /></a> : null}</footer></article>;
 }
 
-function useSecQuery({ asOf, refreshKey, search, settings }: { asOf: string; refreshKey: number; search: string; settings: SecSettings }) { const [payload, setPayload] = useState<SecPayload | null>(null); const [rows, setRows] = useState<SecRow[]>([]); const [loading, setLoading] = useState(true); const [loadingMore, setLoadingMore] = useState(false); const [error, setError] = useState(""); const load = useCallback(async (before = "", beforeAccession = "", pageAsOf = "") => { const next = await api<SecPayload>(`/api/trading/sec${query({ as_of: pageAsOf || asOf, before: before || undefined, before_accession: beforeAccession || undefined, content: settings.content, label: settings.label || undefined, limit: 100, lookback_hours: settings.lookbackHours, search: search || undefined, ticker: settings.ticker || undefined })}`, { timeoutMs: 30000 }); setPayload(next); setRows((current) => before ? [...current, ...next.rows.filter((row) => !current.some((item) => item.accession_number === row.accession_number))] : next.rows); setError(""); }, [asOf, search, settings.content, settings.label, settings.lookbackHours, settings.ticker]); useEffect(() => { setLoading(true); load().catch((reason) => setError(reason instanceof Error ? reason.message : String(reason))).finally(() => setLoading(false)); }, [load, refreshKey]); const loadMore = useCallback(() => { if (!payload?.next_before) return; setLoadingMore(true); load(payload.next_before, payload.next_before_accession, payload.as_of).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason))).finally(() => setLoadingMore(false)); }, [load, payload]); return { asOf: payload?.as_of ?? asOf, error, hasMore: Boolean(payload?.has_more), labels: payload?.labels ?? [], loadMore, loading, loadingMore, rows, windowStart: payload?.window_start ?? "" }; }
+function useSecQuery({ asOf, refreshKey, search, settings }: { asOf: string; refreshKey: number; search: string; settings: SecSettings }) { const [payload, setPayload] = useState<SecPayload | null>(null); const [rows, setRows] = useState<SecRow[]>([]); const [loading, setLoading] = useState(true); const [loadingMore, setLoadingMore] = useState(false); const [error, setError] = useState(""); const load = useCallback(async (before = "", beforeAccession = "", pageAsOf = "") => { const response = await api<SecPayloadWire>(`/api/trading/sec${query({ as_of: pageAsOf || asOf, before: before || undefined, before_accession: beforeAccession || undefined, content: settings.content, label: settings.label || undefined, limit: 100, lookback_hours: settings.lookbackHours, search: search || undefined, ticker: settings.ticker || undefined })}`, { timeoutMs: 30000 }); const next = normalizeSecPayload(response); setPayload(next); setRows((current) => before ? [...current, ...next.rows.filter((row) => !current.some((item) => item.accession_number === row.accession_number))] : next.rows); setError(""); }, [asOf, search, settings.content, settings.label, settings.lookbackHours, settings.ticker]); useEffect(() => { setLoading(true); load().catch((reason) => setError(reason instanceof Error ? reason.message : String(reason))).finally(() => setLoading(false)); }, [load, refreshKey]); const loadMore = useCallback(() => { if (!payload?.next_before) return; setLoadingMore(true); load(payload.next_before, payload.next_before_accession, payload.as_of).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason))).finally(() => setLoadingMore(false)); }, [load, payload]); return { asOf: payload?.as_of ?? asOf, error, hasMore: Boolean(payload?.has_more), labels: payload?.labels ?? [], loadMore, loading, loadingMore, rows, windowStart: payload?.window_start ?? "" }; }
+
+function normalizeSecPayload(value: SecPayloadWire): SecPayload {
+  return { ...value, rows: Array.isArray(value.rows) ? value.rows.map(normalizeSecRow) : [] };
+}
+
+function normalizeSecDetail(value: SecDetailWire): SecDetail {
+  return { ...value, filing: normalizeSecRow(value.filing) };
+}
+
+function normalizeSecRow(value: SecRowWire): SecRow {
+  return {
+    ...value,
+    items: normalizeSecStringList(value.items),
+    label_evidence: normalizeSecStringList(value.label_evidence),
+    tickers: normalizeSecStringList(value.tickers).map((ticker) => ticker.toUpperCase()),
+  };
+}
+
+function normalizeSecStringList(value: unknown): string[] {
+  if (Array.isArray(value)) return [...new Set(value.map((item) => String(item).trim()).filter(Boolean))];
+  if (typeof value !== "string") return [];
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) return normalizeSecStringList(parsed);
+    } catch {
+      // Fall through to the legacy comma-delimited representation.
+    }
+  }
+  return [...new Set(trimmed.split(",").map((item) => item.trim()).filter(Boolean))];
+}
 function SecStatus({ compact, state }: { compact?: boolean; state: ReturnType<typeof useSecQuery> }) { return <div className="news-status" data-compact={compact ? "true" : "false"}>{state.loading ? <span>Querying filings…</span> : state.error ? <strong>{state.error}</strong> : <><span>{state.rows.length} returned</span>{!compact && state.windowStart ? <span className="news-window-start"><span>Since</span><MarketTime dateStyle="short" includeDate layout="inline" value={state.windowStart} /></span> : null}<span className="news-source-label">Point-in-time</span></>}</div>; }
 function SecEmpty({ label }: { label: string }) { return <div className="news-empty"><BookOpen size={18} /><span>{label}</span></div>; }
 function SecLabel({ label, tone }: { label: string; tone: Temperature }) { return <span className="sec-label" data-tone={tone}><FileCheck2 size={11} />{label}</span>; }

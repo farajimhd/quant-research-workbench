@@ -266,6 +266,51 @@ def validate_canvas_interactions(
                     f"focus container does not fill the working page ({actual} < {minimum_height})"
                 )
             validate_price_zone_legend(page, chart, issues, interaction_screenshot)
+            try:
+                chart.get_by_text("Loading chart data...", exact=True).wait_for(state="hidden", timeout=120_000)
+                price_pane = chart.locator(".chart-price").first
+                price_pane.locator(".chart-pane-canvas canvas").first.wait_for(state="visible", timeout=30_000)
+                price_box = price_pane.bounding_box()
+                if price_box:
+                    center_x = price_box["x"] + price_box["width"] * 0.55
+                    center_y = price_box["y"] + price_box["height"] * 0.5
+                    right_axis_x = price_box["x"] + price_box["width"] - 18
+                    time_axis_y = price_box["y"] + price_box["height"] - 8
+                    for interaction_index in range(chart_stress_cycles):
+                        page.mouse.move(center_x, center_y)
+                        page.mouse.wheel(0, -180 if interaction_index % 2 == 0 else 150)
+                        page.mouse.move(center_x, center_y)
+                        page.mouse.down()
+                        page.mouse.move(center_x + (160 if interaction_index % 2 == 0 else -125), center_y, steps=4)
+                        page.mouse.up()
+                        page.mouse.move(right_axis_x, center_y)
+                        page.mouse.down()
+                        page.mouse.move(right_axis_x, center_y + (42 if interaction_index % 2 == 0 else -36), steps=3)
+                        page.mouse.up()
+                        page.mouse.move(center_x, time_axis_y)
+                        page.mouse.down()
+                        page.mouse.move(center_x + (110 if interaction_index % 2 == 0 else -90), time_axis_y, steps=3)
+                        page.mouse.up()
+                        if chart_stress_cycles <= 20 or interaction_index % 20 == 19:
+                            render_state = page.evaluate("""() => {
+                                const shell = document.querySelector('.chart-shell');
+                                const canvases = Array.from(shell?.querySelectorAll('canvas') || []);
+                                return {
+                                    appShell: Boolean(document.querySelector('.app-shell')),
+                                    bodyTextLength: (document.body?.innerText || '').length,
+                                    canvasCount: canvases.length,
+                                    canvasPixels: canvases.reduce((total, canvas) => total + canvas.width * canvas.height, 0),
+                                    scaleRecoveries: Number(shell?.getAttribute('data-chart-scale-recoveries') || 0),
+                                };
+                            }""")
+                            print(f"focus chart render state {interaction_index + 1}: {json.dumps(render_state, sort_keys=True)}", flush=True)
+                    page.wait_for_timeout(500)
+                    if not chart.is_visible() or price_pane.locator("canvas").count() < 1 or not page.locator(".app-shell").is_visible():
+                        issues.append("focus chart becomes blank after repeated pan, zoom, and axis-scale interactions")
+                    if interaction_screenshot:
+                        page.screenshot(path=str(interaction_screenshot.with_name(interaction_screenshot.stem + "__stress-final.png")), full_page=True)
+            except Exception as exc:
+                issues.append(f"Focus chart interaction check failed: {exc}")
         return issues
 
     if not (
@@ -473,20 +518,51 @@ def validate_canvas_interactions(
             time_axis_y = price_box["y"] + price_box["height"] - 8
             for interaction_index in range(chart_stress_cycles):
                 pathological = chart_stress_pattern == "pathological"
+                left_paging = chart_stress_pattern == "left-paging"
                 page.mouse.move(center_x, center_y)
-                page.mouse.wheel(0, -180 if pathological or interaction_index % 2 == 0 else 150)
+                if not left_paging:
+                    page.mouse.wheel(0, -180 if pathological or interaction_index % 2 == 0 else 150)
                 page.mouse.move(center_x, center_y)
                 page.mouse.down()
-                page.mouse.move(center_x + (95 if pathological or interaction_index % 2 == 0 else -75), center_y, steps=3)
+                page.mouse.move(
+                    price_box["x"] + price_box["width"] - 80
+                    if left_paging
+                    else center_x + (95 if pathological or interaction_index % 2 == 0 else -75),
+                    center_y,
+                    steps=8 if left_paging else 3,
+                )
                 page.mouse.up()
-                page.mouse.move(right_axis_x, center_y)
-                page.mouse.down()
-                page.mouse.move(right_axis_x, center_y + (35 if pathological or interaction_index % 2 == 0 else -30), steps=2)
-                page.mouse.up()
-                page.mouse.move(center_x, time_axis_y)
-                page.mouse.down()
-                page.mouse.move(center_x + (70 if pathological or interaction_index % 2 == 0 else -60), time_axis_y, steps=2)
-                page.mouse.up()
+                if not left_paging or interaction_index % 2:
+                    page.mouse.move(right_axis_x, center_y)
+                    page.mouse.down()
+                    page.mouse.move(right_axis_x, center_y + (35 if pathological or interaction_index % 2 == 0 else -30), steps=2)
+                    page.mouse.up()
+                if not left_paging or interaction_index % 3 == 2:
+                    page.mouse.move(center_x, time_axis_y)
+                    page.mouse.down()
+                    page.mouse.move(center_x + (70 if pathological or interaction_index % 2 == 0 else -60), time_axis_y, steps=2)
+                    page.mouse.up()
+                if left_paging:
+                    page.wait_for_timeout(120)
+                if chart_stress_cycles <= 20 or interaction_index % 20 == 19:
+                    render_state = page.evaluate("""() => {
+                        const app = document.querySelector('.app-shell');
+                        const chartShell = document.querySelector('.workspace-window[data-window-kind="chart"] .chart-shell');
+                        const chartSurface = chartShell?.querySelector('.chart-native-surface');
+                        const canvases = Array.from(chartShell?.querySelectorAll('canvas') || []);
+                        const rect = chartSurface?.getBoundingClientRect();
+                        return {
+                            appShell: Boolean(app),
+                            bodyTextLength: (document.body?.innerText || '').length,
+                            canvasCount: canvases.length,
+                            canvasPixels: canvases.reduce((total, canvas) => total + canvas.width * canvas.height, 0),
+                            chartHeight: rect ? Math.round(rect.height) : null,
+                            chartScaleRecoveries: Number(chartShell?.getAttribute('data-chart-scale-recoveries') || 0),
+                            chartWidth: rect ? Math.round(rect.width) : null,
+                            nativePaneCount: chartShell?.querySelectorAll('.chart-native-pane-overlay').length || 0,
+                        };
+                    }""")
+                    print(f"chart render state {interaction_index + 1}: {json.dumps(render_state, sort_keys=True)}", flush=True)
                 if interaction_index % 20 == 19:
                     print(f"chart stress: {interaction_index + 1}/{chart_stress_cycles} cycles", flush=True)
                     if not page.locator(".app-shell").is_visible():
@@ -984,6 +1060,25 @@ def capture(args: argparse.Namespace) -> int:
                     + json.dumps(scale_value)
                     + ");"
                 )
+                if args.canvas_visible_indicators:
+                    canvas_settings = {
+                        "version": 8,
+                        "chart": {
+                            "showVolume": True,
+                            "symbol": "AAPL",
+                            "timeframe": args.canvas_chart_timeframe,
+                            "visibleIndicators": [
+                                value.strip()
+                                for value in args.canvas_visible_indicators.split(",")
+                                if value.strip()
+                            ],
+                        },
+                    }
+                    context.add_init_script(
+                        "localStorage.setItem('quant-research-workbench.canvas.container-settings.v1', "
+                        + json.dumps(json.dumps(canvas_settings))
+                        + ");"
+                    )
                 if args.canvas_session_date:
                     preview_context = {
                         "previewTime": args.canvas_preview_time,
@@ -1013,23 +1108,21 @@ def capture(args: argparse.Namespace) -> int:
                         "canvases": [{"id": "main", "label": "Main"}, {"id": focus_id, "label": "Chart focus"}],
                         "linkAssignments": {"chart": "A"},
                         "linkContexts": {
-                            "A": {"symbol": "AAPL", "timeframe": "1m"},
+                            "A": {"symbol": "AAPL", "timeframe": args.canvas_chart_timeframe},
                             "B": {"symbol": "MSFT", "timeframe": "1m"},
                             "C": {"symbol": "NVDA", "timeframe": "5m"},
                         },
                     }
                     focus_chart_settings = {
-                        "version": 7,
+                        "version": 8,
                         "chart": {
                             "showVolume": True,
                             "symbol": "AAPL",
-                            "timeframe": "1m",
+                            "timeframe": args.canvas_chart_timeframe,
                             "visibleIndicators": [
-                                "indicator.vwap",
-                                "indicator.macd",
-                                "indicator.microstructure_outlook",
-                                "indicator.qmd_liquidity_levels",
-                                "indicator.market_structure_levels",
+                                value.strip()
+                                for value in (args.canvas_visible_indicators or "indicator.vwap,indicator.macd,indicator.microstructure_outlook,indicator.qmd_liquidity_levels,indicator.market_structure_levels").split(",")
+                                if value.strip()
                             ],
                         },
                     }
@@ -1076,6 +1169,7 @@ def capture(args: argparse.Namespace) -> int:
                     )
                 console_errors: list[str] = []
                 page_errors: list[str] = []
+                page_crashes: list[str] = []
                 failed_requests: list[str] = []
                 page.on(
                     "console",
@@ -1083,6 +1177,7 @@ def capture(args: argparse.Namespace) -> int:
                     if message.type == "error" else None,
                 )
                 page.on("pageerror", lambda error: page_errors.append(str(error)))
+                page.on("crash", lambda: page_crashes.append("Chromium renderer process crashed"))
                 page.on(
                     "requestfailed",
                     lambda request: failed_requests.append(
@@ -1216,6 +1311,7 @@ def capture(args: argparse.Namespace) -> int:
                 finally:
                     result["console_errors"] = console_errors
                     result["page_errors"] = page_errors
+                    result["page_crashes"] = page_crashes
                     result["failed_requests"] = failed_requests
                     results.append(result)
                     context.close()
@@ -1253,8 +1349,9 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--canvas-session-date", help="seed a deterministic Canvas preview session date (YYYY-MM-DD)")
     result.add_argument("--canvas-preview-time", default="09:45", help="preview time paired with --canvas-session-date (HH:MM)")
     result.add_argument("--canvas-chart-timeframe", default="1m", help="timeframe selected before Canvas interaction stress")
+    result.add_argument("--canvas-visible-indicators", help="comma-separated Canvas chart indicator IDs to seed before capture")
     result.add_argument("--chart-stress-cycles", type=int, default=24, help="mixed pan, zoom, and axis-scale cycles in the Canvas interaction stress")
-    result.add_argument("--chart-stress-pattern", choices=("mixed", "pathological"), default="mixed", help="alternate gestures or accumulate them in one direction")
+    result.add_argument("--chart-stress-pattern", choices=("mixed", "pathological", "left-paging"), default="mixed", help="alternate gestures, accumulate them in one direction, or force left-edge history paging")
     result.add_argument("--chart-stress-only", action="store_true", help="stop the Canvas interaction review after chart stress")
     result.add_argument("--seed-core-containers", action="store_true", help="seed portfolio and scanner containers for child-canvas review")
     result.add_argument("--mode", choices=("targeted", "full"), default="targeted")

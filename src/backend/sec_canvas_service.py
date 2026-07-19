@@ -120,7 +120,7 @@ def sec_filing_detail_payload(cik: str, accession_number: str, *, as_of: str | N
                 results[name] = []
                 errors[name] = f"{name.title()} are temporarily unavailable."
     identity_rows = results.get("identity", [])
-    filing.update(classify_sec_filing(str(filing.get("form_type") or ""), filing.get("items")))
+    normalize_sec_filing_row(filing)
     filing["tickers"] = sorted({str(row.get("ticker") or "") for row in identity_rows if row.get("ticker")})
     return {
         "accession_number": accession,
@@ -247,9 +247,17 @@ def enrich_filing_rows(client: ClickHouseHttpClient, rows: list[dict[str, Any]],
         if ticker and ticker not in tickers.setdefault(cik, []):
             tickers[cik].append(ticker)
     for row in rows:
-        row.update(classify_sec_filing(str(row.get("form_type") or ""), row.get("items")))
+        normalize_sec_filing_row(row)
         row.update(coverage.get((str(row.get("cik") or ""), str(row.get("accession_number") or "")), {}))
         row["tickers"] = tickers.get(str(row.get("cik") or ""), [])[:8]
+
+
+def normalize_sec_filing_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Apply the public SEC filing schema at the service boundary."""
+    items = normalize_string_list(row.get("items"))
+    row["items"] = items
+    row.update(classify_sec_filing(str(row.get("form_type") or ""), items))
+    return row
 
 
 def coverage_sql(keys: list[tuple[str, str]], cutoff: datetime, database: str) -> str:

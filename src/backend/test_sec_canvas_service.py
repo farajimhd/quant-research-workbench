@@ -3,7 +3,14 @@ from __future__ import annotations
 import unittest
 from datetime import UTC, datetime
 
-from src.backend.sec_canvas_service import classify_sec_filing, filing_list_sql, normalize_accession, normalize_cik, parse_as_of
+from src.backend.sec_canvas_service import (
+    classify_sec_filing,
+    filing_list_sql,
+    normalize_accession,
+    normalize_cik,
+    normalize_sec_filing_row,
+    parse_as_of,
+)
 
 
 class SecCanvasServiceTests(unittest.TestCase):
@@ -33,6 +40,15 @@ class SecCanvasServiceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_as_of("2026-07-18T09:45:00")
         self.assertEqual(parse_as_of("2026-07-18T09:45:00-04:00").tzinfo, UTC)
+
+    def test_public_filing_rows_always_expose_list_items(self) -> None:
+        scalar = normalize_sec_filing_row({"form_type": "8-K", "items": "8.01, 9.01"})
+        self.assertEqual(scalar["items"], ["8.01", "9.01"])
+        self.assertEqual(scalar["filing_label"], "material_event")
+        self.assertIn("Items 8.01, 9.01", scalar["label_evidence"])
+
+        missing = normalize_sec_filing_row({"form_type": "D", "items": None})
+        self.assertEqual(missing["items"], [])
 
 
 if __name__ == "__main__":

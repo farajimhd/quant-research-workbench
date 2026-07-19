@@ -16,7 +16,7 @@ import {
   ShoppingCart,
   X,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Component, useEffect, useLayoutEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import { migrateLegacyMicrostructureState, type CanvasWorkspaceState } from "../canvasWorkspace";
@@ -89,6 +89,37 @@ type TradingWorkspaceProps = {
   managementOpen?: boolean;
   onManagementClose?: () => void;
 };
+
+class WorkspaceContainerErrorBoundary extends Component<
+  { children: ReactNode; containerId: string; title: string },
+  { error: string }
+> {
+  state = { error: "" };
+
+  static getDerivedStateFromError(error: unknown) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("Workspace container render failure", {
+      componentStack: info.componentStack,
+      containerId: this.props.containerId,
+      error,
+      title: this.props.title,
+    });
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="empty-state workspace-container-error" role="alert">
+        <strong>{this.props.title} stopped rendering</strong>
+        <span>{this.state.error}</span>
+        <button className="button secondary compact" onClick={() => this.setState({ error: "" })} type="button">Retry container</button>
+      </div>
+    );
+  }
+}
 
 const DEFAULT_CANVAS_TARGETS: WorkspaceCanvasTarget[] = [{ color: "var(--primary)", id: "main", isCurrent: true, label: "Main" }];
 export const TRADING_WORKSPACE_LAYOUT_VERSION = 7;
@@ -578,7 +609,11 @@ export function TradingWorkspace({
     <div className="trading-workspace-shell" data-command-bar-visible={commandBarVisible ? "true" : "false"} data-library-open={libraryOpen ? "true" : "false"} data-management-open={managementOpen ? "true" : "false"} data-workspace-mode={mode}>
       {openIds.filter((id) => visibleContainerIds.has(id)).map((id) => {
         const view = containerView(id);
-        return view ? createPortal(view.content, contentHost(id), id) : null;
+        return view ? createPortal(
+          <WorkspaceContainerErrorBoundary containerId={id} title={view.title}>{view.content}</WorkspaceContainerErrorBoundary>,
+          contentHost(id),
+          id,
+        ) : null;
       })}
       {commandBarVisible ? <section className="trading-workspace-command" aria-label="Workspace context and controls">
         <div className="trading-workspace-identity">

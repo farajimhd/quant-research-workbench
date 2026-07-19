@@ -11667,6 +11667,25 @@ button {
   gap: 5px;
 }
 
+.workspace-container-error {
+  box-sizing: border-box;
+  height: 100%;
+  min-height: 160px;
+  padding: 24px;
+  text-align: center;
+}
+
+.workspace-container-error strong {
+  color: var(--danger);
+  font-size: 15px;
+}
+
+.workspace-container-error span {
+  max-width: 68ch;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+
 .ticker-logo,
 .ticker-identity img {
   background: var(--surface);
