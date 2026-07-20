@@ -179,7 +179,7 @@ function MetricValue({ change, label, title, value }: { change?: MetricChange; l
   const comparison = change?.previous == null
     ? "No earlier reported value"
     : `${direction === "up" ? "Increased" : direction === "down" ? "Decreased" : "Unchanged"} from ${formatTrendValue(change.previous)}${change.previous_at ? ` on ${String(change.previous_at).slice(0, 10)}` : ""}`;
-  return <div className="facts-metric-value"><i aria-label={`${label}: ${comparison}`} data-direction={direction} title={`${comparison}. This is numeric movement, not a bullish or bearish judgment.`}><Arrow size={12} /></i><strong title={title}>{value}</strong></div>;
+  return <div className="facts-metric-value" data-direction={direction}><i aria-label={`${label}: ${comparison}`} data-direction={direction} title={`${comparison}. This is numeric movement, not a bullish or bearish judgment.`}><Arrow size={12} /></i><strong title={title}>{value}</strong></div>;
 }
 
 function FactHistoryModal({ asOf, descriptor, onClose, symbol }: { asOf: string; descriptor: MetricDescriptor; onClose: () => void; symbol: string }) {
@@ -267,7 +267,7 @@ function FactsGuide({ onClose }: { onClose: () => void }) {
     <div className="facts-guide-intro"><strong>Use facts as context, not a directional signal.</strong><p>Every value keeps its source date. Compare market activity, share supply, short positioning, and reported company results without treating differently dated publications as if they arrived together.</p></div>
     <div className="facts-guide-grid">
       <GuideItem title="Market cap and shares" text="Massive's dated market snapshot. Market cap measures company scale; shares outstanding is issued equity. Free float is the subset generally available to public trading and remains blank when the float table has no row." />
-      <GuideItem title="Arrows and history charts" text="The arrow compares a metric with its immediately prior reported observation: up means numerically higher, down lower, and a right arrow means unchanged or no prior value. It is not a bullish/bearish rating. Select the chart icon to plot every available point-in-time observation with report time on the x-axis." />
+      <GuideItem title="Arrows, value color, and history charts" text="The arrow and value color compare a metric with its immediately prior reported observation: green means numerically higher, red lower, and neutral means unchanged or no prior value. This is not a bullish/bearish rating because a numeric increase can have different implications for different metrics. Select the chart icon to plot every available point-in-time observation with report time on the x-axis." />
       <GuideItem title="Volume and relative volume" text="Latest completed QMD daily trade volume compared with the mean of the latest 20 completed daily sessions. Above 1× means activity is elevated; it says nothing about direction without price and flow." />
       <GuideItem title="Short interest" text="A settlement-date stock of shares sold short. Days to cover divides short interest by the publication's average daily volume. A high value can create covering pressure, but can also reflect persistent bearish positioning." />
       <GuideItem title="FINRA short volume" text="Daily off-exchange and exchange short-sale marking volume for the available FINRA venue file. It is transaction flow, not the outstanding short-interest stock, and should never be used as a substitute for short interest." />
