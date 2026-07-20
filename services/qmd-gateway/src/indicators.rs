@@ -20,7 +20,7 @@ use std::sync::{Arc, RwLock as StdRwLock};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, sleep, Duration};
 
-pub const INDICATOR_SCHEMA_VERSION: u16 = 14;
+pub const INDICATOR_SCHEMA_VERSION: u16 = 15;
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const PREMARKET_SESSION_START_SECONDS: u32 = 4 * 60 * 60;
 
@@ -156,6 +156,11 @@ pub struct IndicatorRow {
     pub qmd_structure_agreement: f64,
     pub qmd_structure_strength: f64,
     pub qmd_structure_confidence: f64,
+    pub qmd_structure_support_field: f64,
+    pub qmd_structure_resistance_field: f64,
+    pub qmd_structure_pressure_bias: f64,
+    pub qmd_structure_pressure_confidence: f64,
+    pub qmd_structure_up_probability: f64,
     pub qmd_structure_support_price: f64,
     pub qmd_structure_support_lower: f64,
     pub qmd_structure_support_upper: f64,
@@ -1356,6 +1361,11 @@ impl BarIndicatorState {
             qmd_structure_agreement: structure.agreement,
             qmd_structure_strength: structure.strength,
             qmd_structure_confidence: structure.confidence,
+            qmd_structure_support_field: structure.support_field,
+            qmd_structure_resistance_field: structure.resistance_field,
+            qmd_structure_pressure_bias: structure.pressure_bias,
+            qmd_structure_pressure_confidence: structure.pressure_confidence,
+            qmd_structure_up_probability: structure.up_probability,
             qmd_structure_support_price: structure.support.price,
             qmd_structure_support_lower: structure.support.lower,
             qmd_structure_support_upper: structure.support.upper,
@@ -1893,6 +1903,11 @@ impl IndicatorClickHouseWriter {
                 ADD COLUMN IF NOT EXISTS qmd_structure_agreement Float64,
                 ADD COLUMN IF NOT EXISTS qmd_structure_strength Float64,
                 ADD COLUMN IF NOT EXISTS qmd_structure_confidence Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_support_field Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_resistance_field Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_pressure_bias Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_pressure_confidence Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_up_probability Float64,
                 ADD COLUMN IF NOT EXISTS qmd_structure_support_price Float64,
                 ADD COLUMN IF NOT EXISTS qmd_structure_support_lower Float64,
                 ADD COLUMN IF NOT EXISTS qmd_structure_support_upper Float64,

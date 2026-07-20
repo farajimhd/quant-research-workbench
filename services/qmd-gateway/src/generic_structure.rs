@@ -13,6 +13,7 @@ const MOVE_HALF_LIFE_SECONDS: f64 = 30.0;
 const SPREAD_HALF_LIFE_SECONDS: f64 = 15.0;
 const MAX_ZONES_PER_SIDE: usize = 48;
 const MAX_EXPOSED_LEVELS_PER_SIDE: usize = 8;
+const MAX_PRESSURE_CLUSTERS_PER_SIDE: usize = 12;
 
 #[derive(Clone, Copy, Debug)]
 struct ScaleConfig {
@@ -99,6 +100,16 @@ pub struct GenericStructureSnapshot {
     pub agreement: f64,
     pub strength: f64,
     pub confidence: f64,
+    #[serde(default)]
+    pub support_field: f64,
+    #[serde(default)]
+    pub resistance_field: f64,
+    #[serde(default)]
+    pub pressure_bias: f64,
+    #[serde(default)]
+    pub pressure_confidence: f64,
+    #[serde(default = "default_up_probability")]
+    pub up_probability: f64,
     pub support: StructureLevelSnapshot,
     pub resistance: StructureLevelSnapshot,
     #[serde(default)]
@@ -121,6 +132,38 @@ pub struct GenericStructureSnapshot {
     pub opening_range_low: f64,
     pub trade_volume_poc: f64,
     pub nearest_round: f64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct StructuralPressureField {
+    support: f64,
+    resistance: f64,
+    bias: f64,
+    confidence: f64,
+    up_probability: f64,
+}
+
+#[derive(Clone, Debug)]
+struct PressureCluster {
+    lower: f64,
+    upper: f64,
+    distance: f64,
+    evidence: f64,
+    scales: HashSet<&'static str>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PressureEvidence {
+    scale: &'static str,
+    side: i8,
+    lower: f64,
+    upper: f64,
+    distance: f64,
+    evidence: f64,
+}
+
+fn default_up_probability() -> f64 {
+    0.5
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -613,6 +656,7 @@ impl GenericStructureEngine {
     }
 
     pub fn snapshot(&self, now: DateTime<Utc>) -> GenericStructureSnapshot {
+        let base_threshold = self.base_threshold(self.last_reference_price);
         let snapshots = SCALE_CONFIGS
             .iter()
             .enumerate()
@@ -621,7 +665,7 @@ impl GenericStructureEngine {
                     &self.scales[index],
                     *config,
                     self.last_reference_price,
-                    self.base_threshold(self.last_reference_price),
+                    base_threshold,
                     now,
                 )
             })
@@ -673,6 +717,8 @@ impl GenericStructureEngine {
         let support = select_unified_level(&snapshots, true, self.last_reference_price);
         let resistance = select_unified_level(&snapshots, false, self.last_reference_price);
         let active_levels = exposed_active_levels(&self.scales, self.last_reference_price, now);
+        let pressure =
+            structural_pressure_field(&self.scales, self.last_reference_price, base_threshold, now);
         let last = self.last_event.as_ref();
         GenericStructureSnapshot {
             algorithm_version: GENERIC_STRUCTURE_ALGORITHM_VERSION,
@@ -681,6 +727,11 @@ impl GenericStructureEngine {
             agreement,
             strength,
             confidence,
+            support_field: pressure.support,
+            resistance_field: pressure.resistance,
+            pressure_bias: pressure.bias,
+            pressure_confidence: pressure.confidence,
+            up_probability: pressure.up_probability,
             support,
             resistance,
             active_levels,
@@ -710,6 +761,127 @@ impl GenericStructureEngine {
             nearest_round: nearest_round_price(self.last_reference_price),
         }
     }
+}
+
+fn structural_pressure_field(
+    states: &[ScaleState],
+    reference: f64,
+    base_threshold: f64,
+    now: DateTime<Utc>,
+) -> StructuralPressureField {
+    if reference <= 0.0 || !reference.is_finite() || base_threshold <= 0.0 {
+        return StructuralPressureField {
+            up_probability: 0.5,
+            ..StructuralPressureField::default()
+        };
+    }
+
+    let evidence = states
+        .iter()
+        .zip(SCALE_CONFIGS)
+        .flat_map(|(state, config)| {
+            state
+                .support_zones
+                .iter()
+                .chain(state.resistance_zones.iter())
+                .filter(|zone| zone.is_active() && zone_is_on_expected_side(zone, reference))
+                .filter_map(move |zone| {
+                    let snapshot = zone_snapshot(zone, config, now);
+                    let distance = zone_distance(zone, reference);
+                    let normalized_distance =
+                        distance / (base_threshold * config.threshold_multiplier).max(f64::EPSILON);
+                    let proximity = (-normalized_distance / 6.0).exp();
+                    let scale_reliability = 0.75 + 0.25 * (config.weight / 0.45);
+                    let score =
+                        snapshot.strength * snapshot.confidence * scale_reliability * proximity;
+                    (score > 0.0 && score.is_finite()).then_some(PressureEvidence {
+                        scale: config.name,
+                        side: zone.side,
+                        lower: zone.lower,
+                        upper: zone.upper,
+                        distance,
+                        evidence: score.clamp(0.0, 1.0),
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+
+    let support = pressure_side_field(&evidence, 1, base_threshold);
+    let resistance = pressure_side_field(&evidence, -1, base_threshold);
+    let total = support + resistance;
+    let bias = ((support - resistance) / (total + 0.20)).clamp(-1.0, 1.0);
+    let coverage = (1.0 - (1.0 - support) * (1.0 - resistance)).clamp(0.0, 1.0);
+    let separation = if total > f64::EPSILON {
+        ((support - resistance).abs() / total).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let confidence = (coverage * separation).clamp(0.0, 1.0);
+    let up_probability = (0.5 + 0.5 * bias * confidence).clamp(0.0, 1.0);
+
+    StructuralPressureField {
+        support,
+        resistance,
+        bias,
+        confidence,
+        up_probability,
+    }
+}
+
+fn pressure_side_field(evidence: &[PressureEvidence], side: i8, base_threshold: f64) -> f64 {
+    let merge_gap = base_threshold * 0.75;
+    let mut side_evidence = evidence
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.side == side)
+        .collect::<Vec<_>>();
+    side_evidence.sort_by(|left, right| {
+        left.lower
+            .total_cmp(&right.lower)
+            .then_with(|| left.upper.total_cmp(&right.upper))
+            .then_with(|| right.evidence.total_cmp(&left.evidence))
+    });
+
+    let mut clusters: Vec<PressureCluster> = Vec::new();
+    for candidate in side_evidence {
+        if let Some(cluster) = clusters.iter_mut().find(|cluster| {
+            candidate.lower <= cluster.upper + merge_gap
+                && candidate.upper >= cluster.lower - merge_gap
+        }) {
+            let independence = if cluster.scales.contains(candidate.scale) {
+                0.35
+            } else {
+                0.65
+            };
+            cluster.evidence = 1.0
+                - (1.0 - cluster.evidence)
+                    * (1.0 - candidate.evidence * independence).clamp(0.0, 1.0);
+            cluster.lower = cluster.lower.min(candidate.lower);
+            cluster.upper = cluster.upper.max(candidate.upper);
+            cluster.distance = cluster.distance.min(candidate.distance);
+            cluster.scales.insert(candidate.scale);
+        } else {
+            clusters.push(PressureCluster {
+                lower: candidate.lower,
+                upper: candidate.upper,
+                distance: candidate.distance,
+                evidence: candidate.evidence,
+                scales: HashSet::from([candidate.scale]),
+            });
+        }
+    }
+
+    clusters.sort_by(|left, right| {
+        left.distance
+            .total_cmp(&right.distance)
+            .then_with(|| right.evidence.total_cmp(&left.evidence))
+    });
+    1.0 - clusters
+        .iter()
+        .take(MAX_PRESSURE_CLUSTERS_PER_SIDE)
+        .fold(1.0, |remaining, cluster| {
+            remaining * (1.0 - cluster.evidence).clamp(0.0, 1.0)
+        })
 }
 
 fn exposed_active_levels(
@@ -1942,6 +2114,100 @@ mod tests {
             in_contact: false,
             lifecycle: ZoneLifecycle::Active,
         }
+    }
+
+    fn evidenced_zone(side: i8, price: f64, now: DateTime<Utc>) -> Zone {
+        Zone {
+            touch_count: 6,
+            hold_count: 4,
+            trade_confirmations: 3,
+            ..zone_at(side, price, now)
+        }
+    }
+
+    #[test]
+    fn structural_pressure_is_directional_and_shrinks_unbalanced_evidence() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 20, 13, 30, 0).unwrap();
+        let support_states = vec![
+            ScaleState {
+                support_zones: vec![evidenced_zone(1, 99.8, now)],
+                ..ScaleState::default()
+            },
+            ScaleState::default(),
+            ScaleState::default(),
+        ];
+        let bullish = structural_pressure_field(&support_states, 100.0, 0.05, now);
+        assert!(bullish.support > bullish.resistance);
+        assert!(bullish.bias > 0.0);
+        assert!(bullish.confidence > 0.0);
+        assert!(bullish.up_probability > 0.5);
+
+        let resistance_states = vec![
+            ScaleState {
+                resistance_zones: vec![evidenced_zone(-1, 100.2, now)],
+                ..ScaleState::default()
+            },
+            ScaleState::default(),
+            ScaleState::default(),
+        ];
+        let bearish = structural_pressure_field(&resistance_states, 100.0, 0.05, now);
+        assert!(bearish.resistance > bearish.support);
+        assert!(bearish.bias < 0.0);
+        assert!(bearish.up_probability < 0.5);
+    }
+
+    #[test]
+    fn structural_pressure_treats_balanced_fields_as_uncertain() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 20, 13, 30, 0).unwrap();
+        let states = vec![
+            ScaleState {
+                support_zones: vec![evidenced_zone(1, 99.8, now)],
+                resistance_zones: vec![evidenced_zone(-1, 100.2, now)],
+                ..ScaleState::default()
+            },
+            ScaleState::default(),
+            ScaleState::default(),
+        ];
+        let pressure = structural_pressure_field(&states, 100.0, 0.05, now);
+        assert!(pressure.support > 0.0 && pressure.resistance > 0.0);
+        assert!(pressure.bias.abs() < 0.05);
+        assert!(pressure.confidence < 0.05);
+        assert!((pressure.up_probability - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn structural_pressure_distance_decay_and_cluster_discount_prevent_double_counting() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 20, 13, 30, 0).unwrap();
+        let near = vec![
+            ScaleState {
+                support_zones: vec![evidenced_zone(1, 99.8, now)],
+                ..ScaleState::default()
+            },
+            ScaleState::default(),
+            ScaleState::default(),
+        ];
+        let far = vec![
+            ScaleState {
+                support_zones: vec![evidenced_zone(1, 98.0, now)],
+                ..ScaleState::default()
+            },
+            ScaleState::default(),
+            ScaleState::default(),
+        ];
+        let duplicate = vec![
+            ScaleState {
+                support_zones: vec![evidenced_zone(1, 99.80, now), evidenced_zone(1, 99.82, now)],
+                ..ScaleState::default()
+            },
+            ScaleState::default(),
+            ScaleState::default(),
+        ];
+        let near_score = structural_pressure_field(&near, 100.0, 0.05, now).support;
+        let far_score = structural_pressure_field(&far, 100.0, 0.05, now).support;
+        let duplicate_score = structural_pressure_field(&duplicate, 100.0, 0.05, now).support;
+        assert!(near_score > far_score);
+        assert!(duplicate_score > near_score);
+        assert!(duplicate_score < near_score + near_score * 0.5);
     }
 
     #[test]
