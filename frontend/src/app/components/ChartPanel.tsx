@@ -217,6 +217,8 @@ type PriceZoneMarkerAnchor = {
   x: number;
   y: number;
 };
+type CanvasBox = { bottom: number; left: number; right: number; top: number };
+type HorizontalSpan = { left: number; right: number; width: number };
 type LegendLineStyle = "solid" | "dashed" | "dotted";
 type LegendSeriesSettings = {
   color?: string;
@@ -1869,7 +1871,7 @@ function LegendEditor({
       ) : null}
       {item.itemKind === "zone" ? (
         <label>
-          Compact tag size
+          Line label size
           <span className="legend-range-control">
             <input
               aria-label={`${item.label} label text size`}
@@ -1937,10 +1939,10 @@ function LegendEditor({
             <>
               <label className="legend-checkbox">
                 <input checked={item.showHistoricalLabels !== false} type="checkbox" onChange={(event) => onUpdate({ showHistoricalLabels: event.target.checked })} />
-                Historical compact tags
+                Labels on historical lines
               </label>
               <label>
-                Tag limit
+                Line label limit
                 <span className="legend-range-control">
                   <input min={0} max={30} step={1} type="range" value={item.maxHistoricalTags ?? 10} onChange={(event) => onUpdate({ maxHistoricalTags: Number(event.target.value) })} />
                   <output>{item.maxHistoricalTags ?? 10}</output>
@@ -4128,7 +4130,8 @@ function drawPriceZones(
   context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
   const plotBottom = Math.max(0, height - chart.timeScale().height());
   const chartBackground = validHexColor(readChartPalette().background, "#ffffff");
-  const compactTagBoxes: Array<{ bottom: number; left: number; right: number; top: number }> = [];
+  const lineLabelBoxes: CanvasBox[] = [];
+  let candleBoxes: CanvasBox[] | null = null;
   const historicalBySettings = new Map<string, PriceZone[]>();
   zones.forEach((zone) => {
     const id = zone.settingsId || zone.displayItemId || `zone:${zone.label}`;
@@ -4143,7 +4146,7 @@ function drawPriceZones(
     const eligibleZones = itemZones.filter((zone) => zone.latest || zone.end > historyStart);
     const historicalTagZones = new Set(
       settings.maxHistoricalTags > 0
-        ? eligibleZones.filter((zone) => !zone.latest && Boolean(zone.compactLabel)).slice(-settings.maxHistoricalTags)
+        ? eligibleZones.filter((zone) => Boolean(zone.compactLabel) && (!zone.latest || isStructureBreakZone(zone))).slice(-settings.maxHistoricalTags)
         : [],
     );
     eligibleZones.forEach((zone) => {
@@ -4186,6 +4189,7 @@ function drawPriceZones(
         ? settings.lineWidth
         : Math.max(1, Math.min(6, settings.lineWidth * (0.75 + 1.25 * confidence)));
       const markerAnchor = priceZoneMarkerAnchor(chart, priceSeries, zone, candles, center, settings.markerSize, barWidth, plotBottom);
+      let labelSpan: HorizontalSpan | null = span;
       context.save();
       context.globalAlpha = 1;
       context.fillStyle = rgbaFromHex(fillColor, fillOpacity);
@@ -4194,12 +4198,12 @@ function drawPriceZones(
       context.setLineDash(canvasLineDash(settings.lineStyle, lineWidth));
       if (zone.annotationKind === "bos" || zone.annotationKind === "choch") {
         const eventX = zone.eventTime ? chart.timeScale().timeToCoordinate(zone.eventTime as Time) : coordinates.end;
+        labelSpan = settings.showConnectors ? clippedHorizontalSpan(coordinates.start, eventX ?? coordinates.end, width) : null;
         if (settings.showConnectors) {
-          const connector = clippedHorizontalSpan(coordinates.start, eventX ?? coordinates.end, width);
-          if (connector) {
+          if (labelSpan) {
             context.beginPath();
-            context.moveTo(connector.left, center);
-            context.lineTo(connector.right, center);
+            context.moveTo(labelSpan.left, center);
+            context.lineTo(labelSpan.right, center);
             context.stroke();
           }
         }
@@ -4220,25 +4224,28 @@ function drawPriceZones(
         }
       }
       context.restore();
-      if (!zone.latest && zone.compactLabel && settings.showHistoricalLabels && historicalTagZones.has(zone)) {
-        if (markerAnchor && isVisibleCoordinate(markerAnchor.x, width)) {
-          drawCompactPriceTag(
-            context,
-            zone.compactLabel,
-            markerAnchor,
-            fillColor,
-            settings,
-            compactTagBoxes,
-            width,
-            plotBottom,
-          );
-        }
+      if (zone.compactLabel && labelSpan && settings.showHistoricalLabels && historicalTagZones.has(zone)) {
+        candleBoxes ??= visibleCandleBoxes(chart, priceSeries, candles, barWidth, width, plotBottom);
+        drawPriceZoneLineLabel(
+          context,
+          zone.compactLabel,
+          labelSpan,
+          center,
+          borderColor,
+          chartBackground,
+          priceZoneLineLabelPlacement(zone),
+          settings,
+          lineLabelBoxes,
+          candleBoxes,
+          width,
+          plotBottom,
+        );
       }
     });
   });
 }
 
-function clippedHorizontalSpan(start: number, end: number, viewportWidth: number, overscan = 24) {
+function clippedHorizontalSpan(start: number, end: number, viewportWidth: number, overscan = 24): HorizontalSpan | null {
   if (!Number.isFinite(start) || !Number.isFinite(end) || !(viewportWidth > 0)) return null;
   const rawLeft = Math.min(start, end);
   const rawRight = Math.max(start, end);
@@ -4247,6 +4254,10 @@ function clippedHorizontalSpan(start: number, end: number, viewportWidth: number
   const right = Math.max(-overscan, Math.min(viewportWidth + overscan, rawRight));
   const width = right - left;
   return width >= 1 ? { left, right, width } : null;
+}
+
+function isStructureBreakZone(zone: PriceZone) {
+  return zone.annotationKind === "bos" || zone.annotationKind === "choch";
 }
 
 function isVisibleCoordinate(coordinate: number | null, viewportWidth: number, overscan = 24) {
@@ -4260,6 +4271,10 @@ function priceZoneMarkerPlacement(zone: PriceZone): PriceZoneMarkerPlacement {
     return zone.compactLabel?.endsWith("-") ? "below" : "above";
   }
   return "left";
+}
+
+function priceZoneLineLabelPlacement(zone: PriceZone): "above" | "below" {
+  return priceZoneMarkerPlacement(zone) === "below" ? "below" : "above";
 }
 
 function priceZoneMarkerAnchor(
@@ -4354,49 +4369,86 @@ function drawLiquidityGlyph(context: CanvasRenderingContext2D, x: number, y: num
   context.restore();
 }
 
-function drawCompactPriceTag(
-  context: CanvasRenderingContext2D,
-  text: string,
-  anchor: PriceZoneMarkerAnchor,
-  color: string,
-  settings: ResolvedPriceZoneLegendSettings,
-  placed: Array<{ bottom: number; left: number; right: number; top: number }>,
+function visibleCandleBoxes(
+  chart: IChartApi,
+  priceSeries: ISeriesApi<"Candlestick">,
+  candles: Candle[],
+  barWidth: number,
   layerWidth: number,
   plotBottom: number,
 ) {
-  if (anchor.x < 2 || anchor.x > layerWidth - 2 || anchor.y < 2 || anchor.y > plotBottom - 2) return;
-  const fontSize = Math.max(8, settings.labelFontSize - 2);
+  const halfWidth = Math.max(1.5, barWidth * 0.46);
+  const boxes: CanvasBox[] = [];
+  candles.forEach((candle) => {
+    const x = chart.timeScale().timeToCoordinate(candle.time as Time);
+    if (x === null || x + halfWidth < 0 || x - halfWidth > layerWidth) return;
+    const highY = priceSeries.priceToCoordinate(candle.high);
+    const lowY = priceSeries.priceToCoordinate(candle.low);
+    if (highY === null || lowY === null) return;
+    const top = Math.max(0, Math.min(highY, lowY));
+    const bottom = Math.min(plotBottom, Math.max(highY, lowY));
+    if (bottom < 0 || top > plotBottom) return;
+    boxes.push({ bottom, left: x - halfWidth, right: x + halfWidth, top });
+  });
+  return boxes;
+}
+
+function boxesOverlap(first: CanvasBox, second: CanvasBox, gap = 0) {
+  return first.left < second.right + gap
+    && first.right + gap > second.left
+    && first.top < second.bottom + gap
+    && first.bottom + gap > second.top;
+}
+
+function drawPriceZoneLineLabel(
+  context: CanvasRenderingContext2D,
+  text: string,
+  span: HorizontalSpan,
+  lineY: number,
+  color: string,
+  chartBackground: string,
+  placement: "above" | "below",
+  settings: ResolvedPriceZoneLegendSettings,
+  placed: CanvasBox[],
+  candleBoxes: CanvasBox[],
+  layerWidth: number,
+  plotBottom: number,
+) {
+  if (lineY < 2 || lineY > plotBottom - 2 || span.width < 8) return;
+  const fontSize = Math.max(9, settings.labelFontSize);
   context.save();
-  context.font = `700 ${fontSize}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+  context.font = `600 ${fontSize}px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
   const textWidth = Math.ceil(context.measureText(text).width);
-  const tagWidth = textWidth + 8;
-  const tagHeight = fontSize + 6;
-  let left = anchor.x - tagWidth / 2;
-  let top = anchor.y - settings.markerSize - tagHeight - 3;
-  if (anchor.placement === "below") {
-    top = anchor.y + settings.markerSize + 3;
-  } else if (anchor.placement === "left") {
-    left = anchor.x - settings.markerSize - tagWidth - 3;
-    top = anchor.y - tagHeight / 2;
-  }
-  if (left < 2 || left + tagWidth > layerWidth - 2 || top < 2 || top + tagHeight > plotBottom - 2) {
+  const labelWidth = textWidth + 8;
+  const labelHeight = fontSize + 5;
+  if (labelWidth + 4 > span.width) {
     context.restore();
     return;
   }
-  const box = { bottom: top + tagHeight, left, right: left + tagWidth, top };
-  const overlaps = placed.some((item) => box.left < item.right + 3 && box.right + 3 > item.left && box.top < item.bottom + 3 && box.bottom + 3 > item.top);
-  if (!overlaps) {
-    context.fillStyle = readChartPalette().background;
-    context.globalAlpha = 0.88 * settings.opacity;
-    context.fillRect(left, top, tagWidth, tagHeight);
+  const candidateFractions = [0.5, 0.38, 0.62, 0.25, 0.75];
+  let selected: CanvasBox | null = null;
+  for (const fraction of candidateFractions) {
+    const centerX = span.left + span.width * fraction;
+    const left = centerX - labelWidth / 2;
+    const top = placement === "above" ? lineY - labelHeight - 2 : lineY + 2;
+    const box = { bottom: top + labelHeight, left, right: left + labelWidth, top };
+    const insideSpan = box.left >= span.left + 2 && box.right <= span.right - 2;
+    const insidePlot = box.left >= 2 && box.right <= layerWidth - 2 && box.top >= 2 && box.bottom <= plotBottom - 2;
+    if (!insideSpan || !insidePlot) continue;
+    if (placed.some((item) => boxesOverlap(box, item, 3))) continue;
+    if (candleBoxes.some((candleBox) => boxesOverlap(box, candleBox, 2))) continue;
+    selected = box;
+    break;
+  }
+  if (selected) {
+    context.fillStyle = chartBackground;
+    context.globalAlpha = 0.96 * settings.opacity;
+    context.fillRect(selected.left, selected.top, labelWidth, labelHeight);
     context.globalAlpha = settings.opacity;
-    context.strokeStyle = color;
-    context.lineWidth = 1;
-    context.strokeRect(left, top, tagWidth, tagHeight);
     context.fillStyle = color;
     context.textBaseline = "middle";
-    context.fillText(text, left + 4, top + tagHeight / 2);
-    placed.push(box);
+    context.fillText(text, selected.left + 4, selected.top + labelHeight / 2);
+    placed.push(selected);
   }
   context.restore();
 }
