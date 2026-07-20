@@ -227,6 +227,11 @@ Their opacity control is the final line opacity from 0-100%; shape, width,
 history window, historical labels, label size/limit, and axis tags are exposed
 only where the corresponding visual supports them.
 
+Current support and resistance axis tags use the same confidence-adjusted
+semantic color and configured opacity as their chart regions. Setting opacity
+to zero removes both the region and its axis tag; the axis-tag toggle remains
+an independent visibility control.
+
 Structural Pressure exposes series visibility/style, a configurable horizontal
 threshold, and pane height. Price-axis labels use the app's standard axis label
 size; controls that cannot affect their rendering should not be added.

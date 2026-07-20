@@ -4152,9 +4152,10 @@ function syncPriceZoneAxisLines(
     if (!compactLabel || !Number.isFinite(price) || price <= 0) return;
     const settingsId = zone.settingsId || zone.displayItemId || `zone:${zone.label}`;
     const settings = resolvePriceZoneLegendSettings(legendSettings, priceZoneLegendKey(settingsId), zone);
-    if (!settings.visible || !settings.showAxisLabel) return;
+    if (!settings.visible || !settings.showAxisLabel || settings.opacity <= 0) return;
     const key = `${settingsId}:${compactLabel}`;
-    const color = priceZonePresentationColors(zone, chartBackground).borderColor;
+    const presentationColor = priceZonePresentationColors(zone, chartBackground).borderColor;
+    const color = colorWithOpacity(presentationColor, settings.opacity);
     const signature = `${compactLabel}|${price}|${color}`;
     const existing = runtimes.get(key);
     nextKeys.add(key);
