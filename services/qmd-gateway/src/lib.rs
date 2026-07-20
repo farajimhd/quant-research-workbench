@@ -1,11 +1,11 @@
-#![recursion_limit = "512"]
-
 //! Shared QMD market-data contracts and processing engines.
 //!
 //! The live `qmd-gateway` binary and the historical gateway compile against
 //! these exact modules. Keeping the existing live implementation here avoids a
 //! copied historical implementation and makes contract drift a compile-time
 //! dependency change rather than a manual synchronization task.
+
+#![recursion_limit = "512"]
 
 pub mod api;
 pub mod bars;
@@ -15,6 +15,7 @@ pub mod config;
 pub mod event;
 pub mod flatfile;
 pub mod gapfill;
+pub mod generic_structure;
 pub mod indicator_catalog;
 pub mod indicators;
 pub mod intraday_bars;

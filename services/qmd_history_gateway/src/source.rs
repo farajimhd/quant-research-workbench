@@ -7,12 +7,15 @@ use qmd_core::compact_event::{
     LIVE_COMPACT_EVENT_SCHEMA_VERSION,
 };
 use qmd_core::event::MarketEvent;
+use qmd_core::generic_structure::{GenericStructureEvent, GENERIC_STRUCTURE_ALGORITHM_VERSION};
 use qmd_core::indicators::{
     market_structure_reference_sql, parse_market_structure_reference_rows,
     MarketStructureReferenceLevels,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::OnceCell;
 
 #[derive(Clone, Debug)]
 pub struct EventWindow {
@@ -87,6 +90,7 @@ pub struct HistoricalEventSource {
     client: Client,
     config: HistoricalGatewayConfig,
     decoder: CompactEventDecoder,
+    structure_table_available: Arc<OnceCell<bool>>,
     trade_rules: TradeAggregationRules,
 }
 
@@ -148,6 +152,23 @@ struct MacroQueryRow {
     timeframe: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct PersistedStructureEventRow {
+    algorithm_version: u16,
+    event_id: String,
+    sym: String,
+    scale: String,
+    event_kind: String,
+    direction: i8,
+    price: f64,
+    lower: f64,
+    upper: f64,
+    strength: f64,
+    confidence: f64,
+    pivot_at: String,
+    confirmed_at: String,
+}
+
 impl HistoricalEventSource {
     pub async fn initialize(config: HistoricalGatewayConfig) -> Result<Self, String> {
         let references = CompactEventReferences::load_from_clickhouse(
@@ -161,6 +182,7 @@ impl HistoricalEventSource {
             client: Client::new(),
             config,
             decoder: references.decoder(),
+            structure_table_available: Arc::new(OnceCell::new()),
             trade_rules: references.trade_aggregation_rules()?,
         };
         source.health().await?;
@@ -515,6 +537,88 @@ impl HistoricalEventSource {
         Ok(parse_market_structure_reference_rows(&text)?
             .remove(&ticker)
             .unwrap_or_default())
+    }
+
+    pub async fn persisted_structure_events_before(
+        &self,
+        ticker: &str,
+        before: DateTime<Utc>,
+    ) -> Result<Vec<GenericStructureEvent>, String> {
+        let ticker = normalize_ticker(ticker)?;
+        let table = format!(
+            "{}.{}",
+            self.config.structure_database, self.config.structure_events_table
+        );
+        let exists_sql = format!(
+            "SELECT count() FROM system.tables WHERE database = {} AND name = {} FORMAT TSV",
+            sql_literal(&self.config.structure_database),
+            sql_literal(&self.config.structure_events_table)
+        );
+        let available = *self
+            .structure_table_available
+            .get_or_try_init(|| async {
+                Ok::<bool, String>(self.query(&exists_sql).await?.trim() == "1")
+            })
+            .await?;
+        if !available {
+            return Ok(Vec::new());
+        }
+        let sql = format!(
+            r#"SELECT
+                algorithm_version,
+                toString(event_id) AS event_id,
+                sym,
+                scale,
+                event_kind,
+                direction,
+                price,
+                lower,
+                upper,
+                strength,
+                confidence,
+                formatDateTime(pivot_at, '%Y-%m-%dT%H:%i:%s.%fZ', 'UTC') AS pivot_at,
+                formatDateTime(confirmed_at, '%Y-%m-%dT%H:%i:%s.%fZ', 'UTC') AS confirmed_at
+            FROM {table} FINAL
+            WHERE algorithm_version = {version}
+              AND sym = {ticker}
+              AND confirmed_at < parseDateTime64BestEffort({before})
+              AND confirmed_at >= parseDateTime64BestEffort({before}) - INTERVAL 90 DAY
+            ORDER BY confirmed_at DESC, event_id DESC
+            LIMIT 5000
+            FORMAT JSONEachRow"#,
+            table = table,
+            version = GENERIC_STRUCTURE_ALGORITHM_VERSION,
+            ticker = sql_literal(&ticker),
+            before = sql_literal(&before.to_rfc3339()),
+        );
+        let text = self.query(&sql).await?;
+        let mut events = text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let row = serde_json::from_str::<PersistedStructureEventRow>(line)
+                    .map_err(|error| format!("invalid persisted structure event row: {error}"))?;
+                Ok(GenericStructureEvent {
+                    algorithm_version: row.algorithm_version,
+                    event_id: row.event_id.parse::<u64>().map_err(|error| {
+                        format!("invalid persisted structure event id: {error}")
+                    })?,
+                    sym: row.sym,
+                    scale: row.scale,
+                    event_kind: row.event_kind,
+                    direction: row.direction,
+                    price: row.price,
+                    lower: row.lower,
+                    upper: row.upper,
+                    strength: row.strength,
+                    confidence: row.confidence,
+                    pivot_at: parse_clickhouse_datetime(&row.pivot_at)?,
+                    confirmed_at: parse_clickhouse_datetime(&row.confirmed_at)?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        events.sort_by_key(|event| (event.confirmed_at, event.event_id));
+        Ok(events)
     }
 
     pub async fn latest_coverage_before(

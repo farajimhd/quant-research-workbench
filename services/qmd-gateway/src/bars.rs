@@ -1,4 +1,8 @@
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
+use crate::generic_structure::{
+    GenericStructureCheckpoint, GenericStructureEngine, GenericStructureEvent,
+    GenericStructureSnapshot,
+};
 use crate::live_market_state::LiveMarketStateRouter;
 use crate::market_products::FamilyBarRow;
 use crate::metrics::SharedMetrics;
@@ -348,6 +352,11 @@ pub struct BarRow {
     pub estimated_luld_distance_to_lower_pct: f64,
     /// Compact state for scanner/UI: `inactive`, `unknown`, `inside`, `near_upper`, `near_lower`, `above_upper`, or `below_lower`.
     pub estimated_luld_state: String,
+    /// Canonical event-native, multi-scale QMD structure sampled causally at this bar's last event.
+    pub qmd_structure: GenericStructureSnapshot,
+    /// Exact structural changes confirmed inside this bar. Persisted by the canonical 100 ms indicator lane.
+    #[serde(skip_serializing)]
+    pub qmd_structure_events: Vec<GenericStructureEvent>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -379,9 +388,11 @@ pub struct BarShardStore {
 
 struct BarStore {
     frames: Vec<BarFrame>,
+    structure_event_frame_label: String,
     history_limit: usize,
     trade_rules: TradeAggregationRules,
     luld: HashMap<String, EstimatedLuldState>,
+    structure: HashMap<String, GenericStructureEngine>,
     open: HashMap<BarKey, MutableBar>,
     closed: HashMap<BarKey, VecDeque<BarRow>>,
 }
@@ -467,6 +478,8 @@ struct MutableBar {
     sell_dollar_volume: f64,
     effective_spread_sum: f64,
     estimated_luld: EstimatedLuldSnapshot,
+    qmd_structure: GenericStructureSnapshot,
+    qmd_structure_events: Vec<GenericStructureEvent>,
 }
 
 impl SharedBarStore {
@@ -505,6 +518,74 @@ impl SharedBarStore {
             .await
     }
 
+    pub async fn seed_structure_events(&self, events: Vec<GenericStructureEvent>) {
+        let mut by_shard =
+            vec![HashMap::<String, Vec<GenericStructureEvent>>::new(); self.shards.len()];
+        for event in events {
+            let sym = event.sym.to_ascii_uppercase();
+            let index = shard_index(&sym, self.shards.len());
+            by_shard[index].entry(sym).or_default().push(event);
+        }
+        for (index, symbols) in by_shard.into_iter().enumerate() {
+            if symbols.is_empty() {
+                continue;
+            }
+            self.shards[index].seed_structure_events(symbols).await;
+        }
+    }
+
+    pub async fn seed_structure_snapshots(
+        &self,
+        snapshots: Vec<(String, GenericStructureSnapshot)>,
+    ) {
+        let mut by_shard =
+            vec![HashMap::<String, GenericStructureSnapshot>::new(); self.shards.len()];
+        for (sym, snapshot) in snapshots {
+            let sym = sym.to_ascii_uppercase();
+            let index = shard_index(&sym, self.shards.len());
+            by_shard[index].insert(sym, snapshot);
+        }
+        for (index, symbols) in by_shard.into_iter().enumerate() {
+            if symbols.is_empty() {
+                continue;
+            }
+            self.shards[index].seed_structure_snapshots(symbols).await;
+        }
+    }
+
+    pub async fn seed_structure_checkpoints(
+        &self,
+        checkpoints: Vec<(String, GenericStructureCheckpoint)>,
+    ) {
+        let mut by_shard = vec![HashMap::new(); self.shards.len()];
+        for (sym, checkpoint) in checkpoints {
+            let index = shard_index(&sym, self.shards.len());
+            by_shard[index].insert(sym, checkpoint);
+        }
+        for (index, symbols) in by_shard.into_iter().enumerate() {
+            self.shards[index].seed_structure_checkpoints(symbols).await;
+        }
+    }
+
+    pub async fn structure_checkpoints_since(
+        &self,
+        watermarks: &HashMap<String, i64>,
+    ) -> Vec<(String, GenericStructureCheckpoint)> {
+        let mut checkpoints = Vec::new();
+        for shard in self.shards.iter() {
+            let store = shard.inner.lock().await;
+            checkpoints.extend(store.structure.iter().filter_map(|(sym, engine)| {
+                let updated_at_ms = engine.updated_at_ms();
+                if updated_at_ms <= watermarks.get(sym).copied().unwrap_or_default() {
+                    return None;
+                }
+                Some((sym.clone(), engine.checkpoint()))
+            }));
+        }
+        checkpoints.sort_by(|left, right| left.0.cmp(&right.0));
+        checkpoints
+    }
+
     fn shard_for_ticker(&self, ticker: &str) -> BarShardStore {
         self.shard(shard_index(ticker, self.shards.len()))
     }
@@ -526,12 +607,19 @@ impl BarShardStore {
         history_limit: usize,
         trade_rules: TradeAggregationRules,
     ) -> Self {
+        let structure_event_frame_label = frames
+            .iter()
+            .min_by_key(|frame| frame.duration_millis)
+            .map(|frame| frame.label.clone())
+            .unwrap_or_default();
         Self {
             inner: Arc::new(Mutex::new(BarStore {
                 frames,
+                structure_event_frame_label,
                 history_limit,
                 trade_rules,
                 luld: HashMap::new(),
+                structure: HashMap::new(),
                 open: HashMap::new(),
                 closed: HashMap::new(),
             })),
@@ -546,6 +634,42 @@ impl BarShardStore {
     pub async fn finalize_due(&self, now: DateTime<Utc>) -> Vec<BarRow> {
         let mut store = self.inner.lock().await;
         store.finalize_due(now)
+    }
+
+    async fn seed_structure_events(&self, symbols: HashMap<String, Vec<GenericStructureEvent>>) {
+        let mut store = self.inner.lock().await;
+        for (sym, events) in symbols {
+            store
+                .structure
+                .entry(sym.clone())
+                .or_insert_with(|| GenericStructureEngine::new(&sym))
+                .seed_events(&events);
+        }
+    }
+
+    async fn seed_structure_snapshots(&self, symbols: HashMap<String, GenericStructureSnapshot>) {
+        let mut store = self.inner.lock().await;
+        for (sym, snapshot) in symbols {
+            store
+                .structure
+                .entry(sym.clone())
+                .or_insert_with(|| GenericStructureEngine::new(&sym))
+                .seed_snapshot(&snapshot);
+        }
+    }
+
+    async fn seed_structure_checkpoints(
+        &self,
+        symbols: HashMap<String, GenericStructureCheckpoint>,
+    ) {
+        let mut store = self.inner.lock().await;
+        for (sym, checkpoint) in symbols {
+            store
+                .structure
+                .entry(sym.clone())
+                .or_insert_with(|| GenericStructureEngine::new(&sym))
+                .seed_checkpoint(&checkpoint);
+        }
     }
 
     async fn snapshot(&self, ticker: &str, timeframe: &str, limit: usize) -> BarSnapshot {
@@ -582,15 +706,23 @@ impl BarStore {
     fn apply_event(&mut self, event: &MarketEvent) -> Vec<BarRow> {
         let mut finalized = Vec::new();
         let sym = event.ticker().to_ascii_uppercase();
+        let trade_rule = match event {
+            MarketEvent::Trade(trade) => self.trade_rules.resolve(&trade.conditions, trade.ts),
+            MarketEvent::Quote(_) => TradeUpdateRule::excluded(),
+        };
         if let MarketEvent::Trade(trade) = event {
-            let rule = self.trade_rules.resolve(&trade.conditions, trade.ts);
-            if rule.update_last {
+            if trade_rule.update_last {
                 self.luld
                     .entry(sym.clone())
                     .or_default()
                     .observe_trade(trade.ts, trade.price);
             }
         }
+        let (structure_snapshot, structure_events) = self
+            .structure
+            .entry(sym.clone())
+            .or_insert_with(|| GenericStructureEngine::new(&sym))
+            .apply_event(event, trade_rule);
         for frame in self.frames.clone() {
             let start = aligned_start(event.ts(), frame.duration_millis);
             let end = start + chrono::Duration::milliseconds(frame.duration_millis);
@@ -641,13 +773,16 @@ impl BarStore {
                 )
             });
             match event {
-                MarketEvent::Trade(trade) => {
-                    bar.apply_trade(trade, self.trade_rules.resolve(&trade.conditions, trade.ts))
-                }
+                MarketEvent::Trade(trade) => bar.apply_trade(trade, trade_rule),
                 MarketEvent::Quote(quote) => bar.apply_quote(quote),
             }
             if let Some(luld) = self.luld.get_mut(&sym) {
                 bar.estimated_luld = luld.snapshot(event.ts(), bar.luld_price());
+            }
+            bar.qmd_structure = structure_snapshot.clone();
+            if bar.timeframe == self.structure_event_frame_label {
+                bar.qmd_structure_events
+                    .extend(structure_events.iter().cloned());
             }
         }
         finalized
@@ -851,6 +986,8 @@ impl BarStore {
             estimated_luld_distance_to_upper_pct: bar.estimated_luld.distance_to_upper_pct,
             estimated_luld_distance_to_lower_pct: bar.estimated_luld.distance_to_lower_pct,
             estimated_luld_state: bar.estimated_luld.state.clone(),
+            qmd_structure: bar.qmd_structure.clone(),
+            qmd_structure_events: bar.qmd_structure_events.clone(),
         }
     }
 
@@ -1019,6 +1156,8 @@ impl MutableBar {
             sell_dollar_volume: 0.0,
             effective_spread_sum: 0.0,
             estimated_luld: EstimatedLuldSnapshot::unknown(),
+            qmd_structure: GenericStructureSnapshot::default(),
+            qmd_structure_events: Vec::new(),
         }
     }
 
@@ -1450,6 +1589,77 @@ mod tests {
             trf_ts: None,
             ts,
         }
+    }
+
+    fn quote(ts: DateTime<Utc>, bid: f64, ask: f64, sequence: u64) -> QuoteEvent {
+        QuoteEvent {
+            ask_exchange: 12,
+            ask_price: ask,
+            ask_size: 100,
+            bid_exchange: 11,
+            bid_price: bid,
+            bid_size: 100,
+            conditions: Vec::new(),
+            indicators: Vec::new(),
+            ingest_ts: ts,
+            raw: serde_json::Value::Null,
+            sequence,
+            tape: 3,
+            ticker: "AAPL".into(),
+            ts,
+        }
+    }
+
+    #[tokio::test]
+    async fn event_native_structure_matches_at_aligned_timeframe_endpoints() {
+        let rules = TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap();
+        let bars = SharedBarStore::new(
+            vec!["100ms".into(), "1s".into(), "5s".into()],
+            100,
+            1,
+            rules,
+        );
+        let shard = bars.shard(0);
+        let start = Utc.with_ymd_and_hms(2026, 7, 20, 13, 30, 0).unwrap();
+        for (index, (offset, mid)) in [(0, 100.00), (200, 100.03), (400, 100.06), (900, 100.02)]
+            .into_iter()
+            .enumerate()
+        {
+            let ts = start + chrono::Duration::milliseconds(offset);
+            shard
+                .apply_event(&MarketEvent::Quote(quote(
+                    ts,
+                    mid - 0.005,
+                    mid + 0.005,
+                    index as u64,
+                )))
+                .await;
+        }
+        shard
+            .finalize_due(start + chrono::Duration::seconds(6))
+            .await;
+        let fine = bars.snapshot("AAPL", "100ms", 20).await;
+        let one_second = bars.snapshot("AAPL", "1s", 20).await;
+        let five_second = bars.snapshot("AAPL", "5s", 20).await;
+        let fine_state = &fine.history.last().unwrap().qmd_structure;
+        let one_state = &one_second.history.last().unwrap().qmd_structure;
+        let five_state = &five_second.history.last().unwrap().qmd_structure;
+        assert_eq!(fine_state.reference_price, one_state.reference_price);
+        assert_eq!(one_state.reference_price, five_state.reference_price);
+        assert_eq!(fine_state.micro.direction, one_state.micro.direction);
+        assert_eq!(one_state.tactical.direction, five_state.tactical.direction);
+        assert_eq!(fine_state.last_event_id, five_state.last_event_id);
+        let checkpoints = bars.structure_checkpoints_since(&HashMap::new()).await;
+        assert_eq!(checkpoints.len(), 1);
+        let mut watermarks = HashMap::new();
+        watermarks.insert(
+            "AAPL".to_string(),
+            checkpoints[0].1.updated_at.unwrap().timestamp_millis(),
+        );
+        assert!(bars
+            .structure_checkpoints_since(&watermarks)
+            .await
+            .is_empty());
     }
 
     #[test]

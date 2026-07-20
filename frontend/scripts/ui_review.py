@@ -187,26 +187,28 @@ def validate_price_zone_legend(
     price_legend.locator(".chart-legend-header").click()
     legend_text = price_legend.inner_text()
     for expected_level_indicator in (
-        "QMD Liquidity Support & Resistance",
-        "Market Structure Levels",
+        "Unified support",
+        "Unified resistance",
+        "BoS",
+        "CHoCH",
     ):
         if expected_level_indicator not in legend_text:
             issues.append(f"price legend omits {expected_level_indicator}")
     configure_levels = price_legend.get_by_role(
-        "button", name="Configure QMD Liquidity Support & Resistance"
+        "button", name="Configure Unified support"
     )
     if configure_levels.count() != 1:
-        issues.append("liquidity levels do not expose legend configuration")
+        issues.append("generic structure levels do not expose legend configuration")
     else:
         configure_levels.click()
         levels_editor = page.get_by_role(
-            "dialog", name="QMD Liquidity Support & Resistance indicator settings"
+            "dialog", name="Unified support indicator settings"
         )
         text_size = levels_editor.get_by_role(
-            "slider", name="QMD Liquidity Support & Resistance label text size"
+            "slider", name="Unified support label text size"
         )
         if text_size.count() != 1:
-            issues.append("liquidity-level settings omit label text size")
+            issues.append("generic-structure settings omit label text size")
         else:
             text_size.fill("15")
             if text_size.input_value() != "15":
@@ -265,11 +267,11 @@ def validate_canvas_interactions(
                 issues.append(
                     f"focus container does not fill the working page ({actual} < {minimum_height})"
                 )
-            validate_price_zone_legend(page, chart, issues, interaction_screenshot)
             try:
                 chart.get_by_text("Loading chart data...", exact=True).wait_for(state="hidden", timeout=120_000)
                 price_pane = chart.locator(".chart-price").first
                 price_pane.locator(".chart-pane-canvas canvas").first.wait_for(state="visible", timeout=30_000)
+                validate_price_zone_legend(page, chart, issues, interaction_screenshot)
                 price_box = price_pane.bounding_box()
                 if price_box:
                     center_x = price_box["x"] + price_box["width"] * 0.55

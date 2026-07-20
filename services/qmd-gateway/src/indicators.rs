@@ -1,6 +1,9 @@
-use crate::bars::{BarRow, TradeAggregationRules};
+use crate::bars::{BarRow, SharedBarStore, TradeAggregationRules};
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
+use crate::generic_structure::{
+    GenericStructureCheckpoint, GenericStructureEvent, GenericStructureSnapshot,
+};
 use crate::metrics::SharedMetrics;
 use crate::microstructure_forecast::{
     MicrostructureForecastSnapshot, MicrostructureForecastWindow, MicrostructureIntervalFeatures,
@@ -16,7 +19,7 @@ use std::sync::{Arc, RwLock as StdRwLock};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, sleep, Duration};
 
-pub const INDICATOR_SCHEMA_VERSION: u16 = 11;
+pub const INDICATOR_SCHEMA_VERSION: u16 = 12;
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const PREMARKET_SESSION_START_SECONDS: u32 = 4 * 60 * 60;
 
@@ -145,6 +148,91 @@ pub struct IndicatorRow {
     pub structure_prior_month_high: f64,
     pub structure_prior_month_low: f64,
     pub structure_prior_month_close: f64,
+    pub qmd_structure_algorithm_version: u16,
+    pub qmd_structure_reference_price: f64,
+    pub qmd_structure_direction: i8,
+    pub qmd_structure_score: f64,
+    pub qmd_structure_agreement: f64,
+    pub qmd_structure_strength: f64,
+    pub qmd_structure_confidence: f64,
+    pub qmd_structure_support_price: f64,
+    pub qmd_structure_support_lower: f64,
+    pub qmd_structure_support_upper: f64,
+    pub qmd_structure_support_strength: f64,
+    pub qmd_structure_support_confidence: f64,
+    pub qmd_structure_resistance_price: f64,
+    pub qmd_structure_resistance_lower: f64,
+    pub qmd_structure_resistance_upper: f64,
+    pub qmd_structure_resistance_strength: f64,
+    pub qmd_structure_resistance_confidence: f64,
+    pub qmd_structure_micro_direction: i8,
+    pub qmd_structure_micro_threshold: f64,
+    pub qmd_structure_micro_swing_high: f64,
+    pub qmd_structure_micro_swing_low: f64,
+    pub qmd_structure_micro_support_price: f64,
+    pub qmd_structure_micro_support_lower: f64,
+    pub qmd_structure_micro_support_upper: f64,
+    pub qmd_structure_micro_support_strength: f64,
+    pub qmd_structure_micro_support_confidence: f64,
+    pub qmd_structure_micro_resistance_price: f64,
+    pub qmd_structure_micro_resistance_lower: f64,
+    pub qmd_structure_micro_resistance_upper: f64,
+    pub qmd_structure_micro_resistance_strength: f64,
+    pub qmd_structure_micro_resistance_confidence: f64,
+    pub qmd_structure_tactical_direction: i8,
+    pub qmd_structure_tactical_threshold: f64,
+    pub qmd_structure_tactical_swing_high: f64,
+    pub qmd_structure_tactical_swing_low: f64,
+    pub qmd_structure_tactical_support_price: f64,
+    pub qmd_structure_tactical_support_lower: f64,
+    pub qmd_structure_tactical_support_upper: f64,
+    pub qmd_structure_tactical_support_strength: f64,
+    pub qmd_structure_tactical_support_confidence: f64,
+    pub qmd_structure_tactical_resistance_price: f64,
+    pub qmd_structure_tactical_resistance_lower: f64,
+    pub qmd_structure_tactical_resistance_upper: f64,
+    pub qmd_structure_tactical_resistance_strength: f64,
+    pub qmd_structure_tactical_resistance_confidence: f64,
+    pub qmd_structure_context_direction: i8,
+    pub qmd_structure_context_threshold: f64,
+    pub qmd_structure_context_swing_high: f64,
+    pub qmd_structure_context_swing_low: f64,
+    pub qmd_structure_context_support_price: f64,
+    pub qmd_structure_context_support_lower: f64,
+    pub qmd_structure_context_support_upper: f64,
+    pub qmd_structure_context_support_strength: f64,
+    pub qmd_structure_context_support_confidence: f64,
+    pub qmd_structure_context_resistance_price: f64,
+    pub qmd_structure_context_resistance_lower: f64,
+    pub qmd_structure_context_resistance_upper: f64,
+    pub qmd_structure_context_resistance_strength: f64,
+    pub qmd_structure_context_resistance_confidence: f64,
+    pub qmd_structure_event_id: u64,
+    pub qmd_structure_event_pivot_at_ms: i64,
+    pub qmd_structure_event_at_ms: i64,
+    pub qmd_structure_event_kind: String,
+    pub qmd_structure_event_scale: String,
+    pub qmd_structure_event_direction: i8,
+    pub qmd_structure_event_price: f64,
+    pub qmd_structure_session_high: f64,
+    pub qmd_structure_session_low: f64,
+    pub qmd_structure_premarket_high: f64,
+    pub qmd_structure_premarket_low: f64,
+    pub qmd_structure_opening_range_high: f64,
+    pub qmd_structure_opening_range_low: f64,
+    pub qmd_structure_trade_volume_poc: f64,
+    pub qmd_structure_nearest_round: f64,
+    pub qmd_structure_luld_upper: f64,
+    pub qmd_structure_luld_lower: f64,
+    pub qmd_structure_52_week_high: f64,
+    pub qmd_structure_52_week_low: f64,
+    pub qmd_structure_prior_month_high: f64,
+    pub qmd_structure_prior_month_low: f64,
+    pub qmd_structure_prior_month_close: f64,
+    #[serde(skip_serializing)]
+    pub qmd_structure_snapshot: GenericStructureSnapshot,
+    #[serde(skip_serializing)]
+    pub qmd_structure_events: Vec<GenericStructureEvent>,
     #[serde(skip_serializing)]
     pub microstructure_interval: MicrostructureIntervalFeatures,
 }
@@ -212,7 +300,6 @@ pub fn calculate_bar_indicators(bars: &[BarRow]) -> Vec<IndicatorRow> {
 pub struct BarIndicatorCalculator {
     state: BarIndicatorState,
     cumulative_microstructure: MicrostructureCumulativeFlow,
-    liquidity_levels: LiquidityLevelState,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -344,7 +431,6 @@ impl BarIndicatorCalculator {
         Self {
             state: BarIndicatorState::new(),
             cumulative_microstructure: MicrostructureCumulativeFlow::default(),
-            liquidity_levels: LiquidityLevelState::default(),
         }
     }
 
@@ -353,7 +439,7 @@ impl BarIndicatorCalculator {
     }
 
     pub fn set_market_structure_references(&mut self, references: MarketStructureReferenceLevels) {
-        self.state.market_structure.references = references;
+        self.state.market_structure_references = references;
     }
 
     /// Apply interval-local microstructure values before the caller finalizes
@@ -372,10 +458,17 @@ impl BarIndicatorCalculator {
         self.cumulative_microstructure.apply_to(row);
     }
 
-    /// Update causal support/resistance candidates after the row has received
-    /// its timeframe-native microstructure interval.
-    pub fn apply_market_levels(&mut self, row: &mut IndicatorRow, bar: &BarRow) {
-        self.liquidity_levels.apply_to(row, bar);
+    /// The event-native QMD structure is attached upstream by the ordered bar
+    /// engine. This method now only derives the legacy confluence scalar used
+    /// by existing strategy screens from the canonical support/resistance state.
+    pub fn apply_market_levels(&mut self, row: &mut IndicatorRow, _bar: &BarRow) {
+        row.market_level_support_score =
+            row.qmd_structure_support_strength * row.qmd_structure_support_confidence;
+        row.market_level_resistance_score =
+            row.qmd_structure_resistance_strength * row.qmd_structure_resistance_confidence;
+        row.market_level_bias =
+            (row.market_level_support_score - row.market_level_resistance_score).clamp(-1.0, 1.0);
+        row.liquidity_level_pressure = row.market_level_bias;
     }
 }
 
@@ -425,539 +518,6 @@ struct MicrostructureCumulativeFlow {
     anchor_session_date: String,
     level1_ofi: f64,
     signed_volume_delta: f64,
-}
-
-#[derive(Clone, Debug, Default)]
-struct LiquidityLevelState {
-    anchor_session_date: String,
-    support: HashMap<i64, LevelEvidence>,
-    resistance: HashMap<i64, LevelEvidence>,
-}
-
-#[derive(Clone, Debug, Default)]
-struct LevelEvidence {
-    price: f64,
-    score: f64,
-    evidence: f64,
-    touches: u64,
-}
-
-#[derive(Clone, Debug, Default)]
-struct MarketStructureState {
-    anchor: Option<NaiveDate>,
-    session_high: f64,
-    session_low: f64,
-    premarket_high: f64,
-    premarket_low: f64,
-    opening_range_high: f64,
-    opening_range_low: f64,
-    swing_high: f64,
-    swing_low: f64,
-    recent_bars: VecDeque<(f64, f64)>,
-    volume_by_price: HashMap<i64, f64>,
-    volume_poc: f64,
-    previous_close: f64,
-    previous_swing_high: f64,
-    previous_swing_low: f64,
-    trend_direction: i8,
-    bos_price: f64,
-    bos_direction: i8,
-    choch_price: f64,
-    choch_direction: i8,
-    references: MarketStructureReferenceLevels,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct MarketStructureSnapshot {
-    session_high: f64,
-    session_low: f64,
-    premarket_high: f64,
-    premarket_low: f64,
-    opening_range_high: f64,
-    opening_range_low: f64,
-    swing_high: f64,
-    swing_low: f64,
-    volume_poc: f64,
-    nearest_round: f64,
-    bos_price: f64,
-    bos_direction: i8,
-    choch_price: f64,
-    choch_direction: i8,
-    luld_upper: f64,
-    luld_lower: f64,
-    high_52_week: f64,
-    low_52_week: f64,
-    prior_month_high: f64,
-    prior_month_low: f64,
-    prior_month_close: f64,
-}
-
-impl LiquidityLevelState {
-    fn apply_to(&mut self, row: &mut IndicatorRow, bar: &BarRow) {
-        let anchor = anchored_market_session_date(bar.bar_start);
-        if self.anchor_session_date != anchor {
-            self.anchor_session_date = anchor;
-            self.support.clear();
-            self.resistance.clear();
-        }
-
-        let decay = 0.5_f64.powf(timeframe_seconds(&bar.timeframe) / 900.0);
-        decay_levels(&mut self.support, decay);
-        decay_levels(&mut self.resistance, decay);
-
-        let range = (bar.high - bar.low).abs().max(price_tick(bar.close));
-        let lower_rejection = ((bar.close - bar.low) / range).clamp(0.0, 1.0);
-        let upper_rejection = ((bar.high - bar.close) / range).clamp(0.0, 1.0);
-        let price_response = (row.microstructure_midpoint_return_bps.abs()
-            / (row.microstructure_interval.spread_bps.abs().max(0.25)))
-        .clamp(0.0, 1.0);
-        let sell_absorption =
-            (-row.microstructure_signed_volume_imbalance).max(0.0) * (1.0 - price_response);
-        let buy_absorption =
-            row.microstructure_signed_volume_imbalance.max(0.0) * (1.0 - price_response);
-        let bid_recovery = recovery_ratio(
-            row.microstructure_interval.bid_replenishment,
-            row.microstructure_interval.bid_depletion,
-        );
-        let ask_recovery = recovery_ratio(
-            row.microstructure_interval.ask_replenishment,
-            row.microstructure_interval.ask_depletion,
-        );
-        let support_raw = 0.30 * row.microstructure_level1_ofi.max(0.0)
-            + 0.25 * bid_recovery
-            + 0.25 * sell_absorption
-            + 0.20 * lower_rejection;
-        let resistance_raw = 0.30 * (-row.microstructure_level1_ofi).max(0.0)
-            + 0.25 * ask_recovery
-            + 0.25 * buy_absorption
-            + 0.20 * upper_rejection;
-        let reliability = row.microstructure_regime_reliability.clamp(0.0, 1.0);
-        let support_price = positive_or(bar.bid_low, bar.low);
-        let resistance_price = positive_or(bar.ask_high, bar.high);
-        update_level(&mut self.support, support_price, support_raw, reliability);
-        update_level(
-            &mut self.resistance,
-            resistance_price,
-            resistance_raw,
-            reliability,
-        );
-        bound_levels(&mut self.support, 128);
-        bound_levels(&mut self.resistance, 128);
-
-        if let Some(level) = select_level(&self.support, bar.close, true, row.atr_14) {
-            row.liquidity_support_price = level.price;
-            row.liquidity_support_strength = normalized_level_strength(level.score);
-            row.liquidity_support_confidence = level_confidence(level);
-        }
-        if let Some(level) = select_level(&self.resistance, bar.close, false, row.atr_14) {
-            row.liquidity_resistance_price = level.price;
-            row.liquidity_resistance_strength = normalized_level_strength(level.score);
-            row.liquidity_resistance_confidence = level_confidence(level);
-        }
-        row.liquidity_level_pressure = (row.liquidity_support_strength
-            * row.liquidity_support_confidence
-            - row.liquidity_resistance_strength * row.liquidity_resistance_confidence)
-            .clamp(-1.0, 1.0);
-
-        let tolerance = row.atr_14.max(price_tick(bar.close) * 4.0) * 0.20;
-        let support_confluence = structure_confluence(row.liquidity_support_price, row, tolerance);
-        let resistance_confluence =
-            structure_confluence(row.liquidity_resistance_price, row, tolerance);
-        row.market_level_support_score =
-            (0.65 * row.liquidity_support_strength * row.liquidity_support_confidence
-                + 0.35 * support_confluence)
-                .clamp(0.0, 1.0);
-        row.market_level_resistance_score =
-            (0.65 * row.liquidity_resistance_strength * row.liquidity_resistance_confidence
-                + 0.35 * resistance_confluence)
-                .clamp(0.0, 1.0);
-        row.market_level_bias =
-            (row.market_level_support_score - row.market_level_resistance_score).clamp(-1.0, 1.0);
-    }
-}
-
-impl MarketStructureState {
-    fn update(&mut self, bar: &BarRow) -> MarketStructureSnapshot {
-        let anchor = market_session_anchor_date(bar.bar_start);
-        if self.anchor != Some(anchor) {
-            let references = self.references;
-            *self = Self {
-                anchor: Some(anchor),
-                references,
-                ..Self::default()
-            };
-        }
-        update_high_low(
-            &mut self.session_high,
-            &mut self.session_low,
-            bar.high,
-            bar.low,
-        );
-        let local_seconds = bar
-            .bar_start
-            .with_timezone(&New_York)
-            .time()
-            .num_seconds_from_midnight();
-        let local_end_seconds = bar
-            .bar_end
-            .with_timezone(&New_York)
-            .time()
-            .num_seconds_from_midnight();
-        if exact_clock_level_supported(&bar.timeframe, 1800.0)
-            && (PREMARKET_SESSION_START_SECONDS..(9 * 3600 + 30 * 60)).contains(&local_seconds)
-            && local_end_seconds <= 9 * 3600 + 30 * 60
-        {
-            update_high_low(
-                &mut self.premarket_high,
-                &mut self.premarket_low,
-                bar.high,
-                bar.low,
-            );
-        }
-        if exact_clock_level_supported(&bar.timeframe, 300.0)
-            && (9 * 3600 + 30 * 60..9 * 3600 + 35 * 60).contains(&local_seconds)
-            && local_end_seconds <= 9 * 3600 + 35 * 60
-        {
-            update_high_low(
-                &mut self.opening_range_high,
-                &mut self.opening_range_low,
-                bar.high,
-                bar.low,
-            );
-        }
-
-        self.recent_bars.push_back((bar.high, bar.low));
-        while self.recent_bars.len() > 5 {
-            self.recent_bars.pop_front();
-        }
-        let mut swing_updated = false;
-        if self.recent_bars.len() == 5 {
-            let center = self.recent_bars[2];
-            if self
-                .recent_bars
-                .iter()
-                .enumerate()
-                .all(|(index, value)| index == 2 || center.0 > value.0)
-            {
-                self.previous_swing_high = self.swing_high;
-                self.swing_high = center.0;
-                swing_updated = true;
-            }
-            if self
-                .recent_bars
-                .iter()
-                .enumerate()
-                .all(|(index, value)| index == 2 || center.1 < value.1)
-            {
-                self.previous_swing_low = self.swing_low;
-                self.swing_low = center.1;
-                swing_updated = true;
-            }
-        }
-
-        if swing_updated
-            && self.previous_swing_high > 0.0
-            && self.previous_swing_low > 0.0
-            && self.swing_high > 0.0
-            && self.swing_low > 0.0
-        {
-            if self.swing_high > self.previous_swing_high
-                && self.swing_low > self.previous_swing_low
-            {
-                self.trend_direction = 1;
-            } else if self.swing_high < self.previous_swing_high
-                && self.swing_low < self.previous_swing_low
-            {
-                self.trend_direction = -1;
-            }
-        }
-
-        let (bos_direction, choch_direction, next_trend) = classify_structure_break(
-            self.previous_close,
-            bar.close,
-            self.swing_high,
-            self.swing_low,
-            self.trend_direction,
-        );
-        if bos_direction != 0 {
-            self.bos_direction = bos_direction;
-            self.bos_price = if bos_direction > 0 {
-                self.swing_high
-            } else {
-                self.swing_low
-            };
-        }
-        if choch_direction != 0 {
-            self.choch_direction = choch_direction;
-            self.choch_price = if choch_direction > 0 {
-                self.swing_high
-            } else {
-                self.swing_low
-            };
-        }
-        self.trend_direction = next_trend;
-        self.previous_close = bar.close;
-
-        if bar.volume > 0.0 {
-            let typical = (bar.high + bar.low + bar.close) / 3.0;
-            let key = structure_price_key(typical);
-            *self.volume_by_price.entry(key).or_default() += bar.volume;
-            self.volume_poc = self
-                .volume_by_price
-                .iter()
-                .max_by(|left, right| left.1.total_cmp(right.1))
-                .map(|(key, _)| structure_price_from_key(*key))
-                .unwrap_or(0.0);
-        }
-
-        MarketStructureSnapshot {
-            session_high: self.session_high,
-            session_low: self.session_low,
-            premarket_high: self.premarket_high,
-            premarket_low: self.premarket_low,
-            opening_range_high: self.opening_range_high,
-            opening_range_low: self.opening_range_low,
-            swing_high: self.swing_high,
-            swing_low: self.swing_low,
-            volume_poc: self.volume_poc,
-            nearest_round: nearest_round_price(bar.close),
-            bos_price: self.bos_price,
-            bos_direction: self.bos_direction,
-            choch_price: self.choch_price,
-            choch_direction: self.choch_direction,
-            luld_upper: bar.estimated_luld_upper_price,
-            luld_lower: bar.estimated_luld_lower_price,
-            high_52_week: self.references.high_52_week,
-            low_52_week: self.references.low_52_week,
-            prior_month_high: self.references.prior_month_high,
-            prior_month_low: self.references.prior_month_low,
-            prior_month_close: self.references.prior_month_close,
-        }
-    }
-}
-
-fn classify_structure_break(
-    previous_close: f64,
-    close: f64,
-    swing_high: f64,
-    swing_low: f64,
-    trend_direction: i8,
-) -> (i8, i8, i8) {
-    let crossed_above = swing_high > 0.0
-        && previous_close > 0.0
-        && previous_close <= swing_high
-        && close > swing_high;
-    let crossed_below =
-        swing_low > 0.0 && previous_close > 0.0 && previous_close >= swing_low && close < swing_low;
-    if crossed_above {
-        if trend_direction < 0 {
-            (0, 1, 1)
-        } else {
-            (1, 0, 1)
-        }
-    } else if crossed_below {
-        if trend_direction > 0 {
-            (0, -1, -1)
-        } else {
-            (-1, 0, -1)
-        }
-    } else {
-        (0, 0, trend_direction)
-    }
-}
-
-fn update_high_low(high: &mut f64, low: &mut f64, candidate_high: f64, candidate_low: f64) {
-    if candidate_high > 0.0 {
-        *high = if *high > 0.0 {
-            (*high).max(candidate_high)
-        } else {
-            candidate_high
-        };
-    }
-    if candidate_low > 0.0 {
-        *low = if *low > 0.0 {
-            (*low).min(candidate_low)
-        } else {
-            candidate_low
-        };
-    }
-}
-
-fn timeframe_seconds(timeframe: &str) -> f64 {
-    match timeframe.to_ascii_lowercase().as_str() {
-        "100ms" => 0.1,
-        "1s" => 1.0,
-        "5s" => 5.0,
-        "10s" => 10.0,
-        "30s" => 30.0,
-        "1m" => 60.0,
-        "5m" => 300.0,
-        "1h" => 3600.0,
-        _ => 1.0,
-    }
-}
-
-fn exact_clock_level_supported(timeframe: &str, max_seconds: f64) -> bool {
-    timeframe_seconds(timeframe) <= max_seconds
-}
-
-fn price_tick(price: f64) -> f64 {
-    if price >= 1.0 {
-        0.01
-    } else {
-        0.0001
-    }
-}
-
-fn price_key(price: f64) -> i64 {
-    (price / price_tick(price)).round() as i64
-}
-
-fn price_from_key(key: i64, reference: f64) -> f64 {
-    key as f64 * price_tick(reference)
-}
-
-fn structure_price_key(price: f64) -> i64 {
-    (price * 10_000.0).round() as i64
-}
-
-fn structure_price_from_key(key: i64) -> f64 {
-    key as f64 / 10_000.0
-}
-
-fn positive_or(primary: f64, fallback: f64) -> f64 {
-    if primary.is_finite() && primary > 0.0 {
-        primary
-    } else {
-        fallback
-    }
-}
-
-fn recovery_ratio(replenishment: f64, depletion: f64) -> f64 {
-    let total = replenishment.max(0.0) + depletion.max(0.0);
-    if total > 0.0 {
-        (replenishment.max(0.0) / total).clamp(0.0, 1.0)
-    } else {
-        0.0
-    }
-}
-
-fn decay_levels(levels: &mut HashMap<i64, LevelEvidence>, decay: f64) {
-    levels.values_mut().for_each(|level| {
-        level.score *= decay;
-        level.evidence *= decay;
-    });
-    levels.retain(|_, level| level.score > 0.005);
-}
-
-fn update_level(
-    levels: &mut HashMap<i64, LevelEvidence>,
-    price: f64,
-    score: f64,
-    reliability: f64,
-) {
-    if !price.is_finite() || price <= 0.0 || !score.is_finite() || score <= 0.0 {
-        return;
-    }
-    let key = price_key(price);
-    let entry = levels.entry(key).or_insert_with(|| LevelEvidence {
-        price: price_from_key(key, price),
-        ..LevelEvidence::default()
-    });
-    entry.score += score.clamp(0.0, 1.0);
-    entry.evidence += reliability;
-    entry.touches += 1;
-}
-
-fn bound_levels(levels: &mut HashMap<i64, LevelEvidence>, limit: usize) {
-    while levels.len() > limit {
-        let Some(key) = levels
-            .iter()
-            .min_by(|left, right| left.1.score.total_cmp(&right.1.score))
-            .map(|(key, _)| *key)
-        else {
-            break;
-        };
-        levels.remove(&key);
-    }
-}
-
-fn select_level<'a>(
-    levels: &'a HashMap<i64, LevelEvidence>,
-    close: f64,
-    support: bool,
-    atr: f64,
-) -> Option<&'a LevelEvidence> {
-    let scale = atr.max(price_tick(close) * 8.0);
-    levels
-        .values()
-        .filter(|level| {
-            if support {
-                level.price <= close + price_tick(close)
-            } else {
-                level.price >= close - price_tick(close)
-            }
-        })
-        .max_by(|left, right| {
-            let left_rank = left.score / (1.0 + (left.price - close).abs() / scale);
-            let right_rank = right.score / (1.0 + (right.price - close).abs() / scale);
-            left_rank.total_cmp(&right_rank)
-        })
-}
-
-fn normalized_level_strength(score: f64) -> f64 {
-    (1.0 - (-score.max(0.0)).exp()).clamp(0.0, 1.0)
-}
-
-fn level_confidence(level: &LevelEvidence) -> f64 {
-    if level.touches == 0 {
-        return 0.0;
-    }
-    ((level.touches as f64 / 4.0).sqrt().min(1.0)
-        * (level.evidence / level.touches as f64).clamp(0.0, 1.0))
-    .clamp(0.0, 1.0)
-}
-
-fn structure_confluence(price: f64, row: &IndicatorRow, tolerance: f64) -> f64 {
-    if price <= 0.0 {
-        return 0.0;
-    }
-    let levels = [
-        row.structure_session_high,
-        row.structure_session_low,
-        row.structure_premarket_high,
-        row.structure_premarket_low,
-        row.structure_opening_range_high,
-        row.structure_opening_range_low,
-        row.structure_swing_high,
-        row.structure_swing_low,
-        row.structure_volume_poc,
-        row.structure_nearest_round,
-        row.structure_52_week_high,
-        row.structure_52_week_low,
-        row.structure_prior_month_high,
-        row.structure_prior_month_low,
-        row.structure_prior_month_close,
-    ];
-    (levels
-        .iter()
-        .filter(|level| **level > 0.0 && (**level - price).abs() <= tolerance)
-        .count() as f64
-        / 4.0)
-        .clamp(0.0, 1.0)
-}
-
-fn nearest_round_price(price: f64) -> f64 {
-    let interval = if price >= 100.0 {
-        1.0
-    } else if price >= 10.0 {
-        0.5
-    } else if price >= 1.0 {
-        0.10
-    } else {
-        0.01
-    };
-    (price / interval).round() * interval
 }
 
 impl MicrostructureCumulativeFlow {
@@ -1055,7 +615,7 @@ struct BarIndicatorState {
     rsi_14: RsiState,
     session_vwap: SessionVwapState,
     volume_sma_20: RollingStats,
-    market_structure: MarketStructureState,
+    market_structure_references: MarketStructureReferenceLevels,
 }
 
 struct SessionVwapState {
@@ -1640,7 +1200,7 @@ impl BarIndicatorState {
             rsi_14: RsiState::new(14),
             session_vwap: SessionVwapState::new(),
             volume_sma_20: RollingStats::new(20),
-            market_structure: MarketStructureState::default(),
+            market_structure_references: MarketStructureReferenceLevels::default(),
         }
     }
 
@@ -1679,7 +1239,8 @@ impl BarIndicatorState {
             bar.volume,
             bar.vwap,
         );
-        let structure = self.market_structure.update(bar);
+        let structure = &bar.qmd_structure;
+        let references = self.market_structure_references;
 
         IndicatorRow {
             schema_version: INDICATOR_SCHEMA_VERSION,
@@ -1759,27 +1320,113 @@ impl BarIndicatorState {
             market_level_support_score: 0.0,
             market_level_resistance_score: 0.0,
             market_level_bias: 0.0,
-            structure_session_high: structure.session_high,
-            structure_session_low: structure.session_low,
-            structure_premarket_high: structure.premarket_high,
-            structure_premarket_low: structure.premarket_low,
-            structure_opening_range_high: structure.opening_range_high,
-            structure_opening_range_low: structure.opening_range_low,
-            structure_swing_high: structure.swing_high,
-            structure_swing_low: structure.swing_low,
-            structure_volume_poc: structure.volume_poc,
-            structure_nearest_round: structure.nearest_round,
-            structure_bos_price: structure.bos_price,
-            structure_bos_direction: structure.bos_direction,
-            structure_choch_price: structure.choch_price,
-            structure_choch_direction: structure.choch_direction,
-            structure_luld_upper: structure.luld_upper,
-            structure_luld_lower: structure.luld_lower,
-            structure_52_week_high: structure.high_52_week,
-            structure_52_week_low: structure.low_52_week,
-            structure_prior_month_high: structure.prior_month_high,
-            structure_prior_month_low: structure.prior_month_low,
-            structure_prior_month_close: structure.prior_month_close,
+            structure_session_high: 0.0,
+            structure_session_low: 0.0,
+            structure_premarket_high: 0.0,
+            structure_premarket_low: 0.0,
+            structure_opening_range_high: 0.0,
+            structure_opening_range_low: 0.0,
+            structure_swing_high: 0.0,
+            structure_swing_low: 0.0,
+            structure_volume_poc: 0.0,
+            structure_nearest_round: 0.0,
+            structure_bos_price: 0.0,
+            structure_bos_direction: 0,
+            structure_choch_price: 0.0,
+            structure_choch_direction: 0,
+            structure_luld_upper: 0.0,
+            structure_luld_lower: 0.0,
+            structure_52_week_high: 0.0,
+            structure_52_week_low: 0.0,
+            structure_prior_month_high: 0.0,
+            structure_prior_month_low: 0.0,
+            structure_prior_month_close: 0.0,
+            qmd_structure_algorithm_version: structure.algorithm_version,
+            qmd_structure_reference_price: structure.reference_price,
+            qmd_structure_direction: structure.direction,
+            qmd_structure_score: structure.direction as f64
+                * structure.strength
+                * structure.confidence
+                * (0.5 + 0.5 * structure.agreement),
+            qmd_structure_agreement: structure.agreement,
+            qmd_structure_strength: structure.strength,
+            qmd_structure_confidence: structure.confidence,
+            qmd_structure_support_price: structure.support.price,
+            qmd_structure_support_lower: structure.support.lower,
+            qmd_structure_support_upper: structure.support.upper,
+            qmd_structure_support_strength: structure.support.strength,
+            qmd_structure_support_confidence: structure.support.confidence,
+            qmd_structure_resistance_price: structure.resistance.price,
+            qmd_structure_resistance_lower: structure.resistance.lower,
+            qmd_structure_resistance_upper: structure.resistance.upper,
+            qmd_structure_resistance_strength: structure.resistance.strength,
+            qmd_structure_resistance_confidence: structure.resistance.confidence,
+            qmd_structure_micro_direction: structure.micro.direction,
+            qmd_structure_micro_threshold: structure.micro.threshold,
+            qmd_structure_micro_swing_high: structure.micro.swing_high,
+            qmd_structure_micro_swing_low: structure.micro.swing_low,
+            qmd_structure_micro_support_price: structure.micro.support.price,
+            qmd_structure_micro_support_lower: structure.micro.support.lower,
+            qmd_structure_micro_support_upper: structure.micro.support.upper,
+            qmd_structure_micro_support_strength: structure.micro.support.strength,
+            qmd_structure_micro_support_confidence: structure.micro.support.confidence,
+            qmd_structure_micro_resistance_price: structure.micro.resistance.price,
+            qmd_structure_micro_resistance_lower: structure.micro.resistance.lower,
+            qmd_structure_micro_resistance_upper: structure.micro.resistance.upper,
+            qmd_structure_micro_resistance_strength: structure.micro.resistance.strength,
+            qmd_structure_micro_resistance_confidence: structure.micro.resistance.confidence,
+            qmd_structure_tactical_direction: structure.tactical.direction,
+            qmd_structure_tactical_threshold: structure.tactical.threshold,
+            qmd_structure_tactical_swing_high: structure.tactical.swing_high,
+            qmd_structure_tactical_swing_low: structure.tactical.swing_low,
+            qmd_structure_tactical_support_price: structure.tactical.support.price,
+            qmd_structure_tactical_support_lower: structure.tactical.support.lower,
+            qmd_structure_tactical_support_upper: structure.tactical.support.upper,
+            qmd_structure_tactical_support_strength: structure.tactical.support.strength,
+            qmd_structure_tactical_support_confidence: structure.tactical.support.confidence,
+            qmd_structure_tactical_resistance_price: structure.tactical.resistance.price,
+            qmd_structure_tactical_resistance_lower: structure.tactical.resistance.lower,
+            qmd_structure_tactical_resistance_upper: structure.tactical.resistance.upper,
+            qmd_structure_tactical_resistance_strength: structure.tactical.resistance.strength,
+            qmd_structure_tactical_resistance_confidence: structure.tactical.resistance.confidence,
+            qmd_structure_context_direction: structure.context.direction,
+            qmd_structure_context_threshold: structure.context.threshold,
+            qmd_structure_context_swing_high: structure.context.swing_high,
+            qmd_structure_context_swing_low: structure.context.swing_low,
+            qmd_structure_context_support_price: structure.context.support.price,
+            qmd_structure_context_support_lower: structure.context.support.lower,
+            qmd_structure_context_support_upper: structure.context.support.upper,
+            qmd_structure_context_support_strength: structure.context.support.strength,
+            qmd_structure_context_support_confidence: structure.context.support.confidence,
+            qmd_structure_context_resistance_price: structure.context.resistance.price,
+            qmd_structure_context_resistance_lower: structure.context.resistance.lower,
+            qmd_structure_context_resistance_upper: structure.context.resistance.upper,
+            qmd_structure_context_resistance_strength: structure.context.resistance.strength,
+            qmd_structure_context_resistance_confidence: structure.context.resistance.confidence,
+            qmd_structure_event_id: structure.last_event_id,
+            qmd_structure_event_pivot_at_ms: structure.last_event_pivot_at_ms,
+            qmd_structure_event_at_ms: structure.last_event_at_ms,
+            qmd_structure_event_kind: structure.last_event_kind.clone(),
+            qmd_structure_event_scale: structure.last_event_scale.clone(),
+            qmd_structure_event_direction: structure.last_event_direction,
+            qmd_structure_event_price: structure.last_event_price,
+            qmd_structure_session_high: structure.session_high,
+            qmd_structure_session_low: structure.session_low,
+            qmd_structure_premarket_high: structure.premarket_high,
+            qmd_structure_premarket_low: structure.premarket_low,
+            qmd_structure_opening_range_high: structure.opening_range_high,
+            qmd_structure_opening_range_low: structure.opening_range_low,
+            qmd_structure_trade_volume_poc: structure.trade_volume_poc,
+            qmd_structure_nearest_round: structure.nearest_round,
+            qmd_structure_luld_upper: bar.estimated_luld_upper_price,
+            qmd_structure_luld_lower: bar.estimated_luld_lower_price,
+            qmd_structure_52_week_high: references.high_52_week,
+            qmd_structure_52_week_low: references.low_52_week,
+            qmd_structure_prior_month_high: references.prior_month_high,
+            qmd_structure_prior_month_low: references.prior_month_low,
+            qmd_structure_prior_month_close: references.prior_month_close,
+            qmd_structure_snapshot: structure.clone(),
+            qmd_structure_events: bar.qmd_structure_events.clone(),
             microstructure_interval: MicrostructureIntervalFeatures::default(),
         }
     }
@@ -2231,11 +1878,177 @@ impl IndicatorClickHouseWriter {
             true,
         )
         .await?;
+        self.execute(
+            r#"ALTER TABLE live_market_indicators
+                ADD COLUMN IF NOT EXISTS qmd_structure_algorithm_version UInt16,
+                ADD COLUMN IF NOT EXISTS qmd_structure_reference_price Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_direction Int8,
+                ADD COLUMN IF NOT EXISTS qmd_structure_score Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_agreement Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_strength Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_confidence Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_support_price Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_support_lower Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_support_upper Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_support_strength Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_support_confidence Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_resistance_price Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_resistance_lower Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_resistance_upper Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_resistance_strength Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_resistance_confidence Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_micro_direction Int8,
+                ADD COLUMN IF NOT EXISTS qmd_structure_micro_threshold Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_micro_swing_high Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_micro_swing_low Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_micro_support_price Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_micro_support_lower Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_micro_support_upper Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_micro_support_strength Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_micro_support_confidence Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_micro_resistance_price Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_micro_resistance_lower Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_micro_resistance_upper Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_micro_resistance_strength Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_micro_resistance_confidence Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_tactical_direction Int8,
+                ADD COLUMN IF NOT EXISTS qmd_structure_tactical_threshold Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_tactical_swing_high Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_tactical_swing_low Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_tactical_support_price Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_tactical_support_lower Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_tactical_support_upper Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_tactical_support_strength Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_tactical_support_confidence Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_tactical_resistance_price Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_tactical_resistance_lower Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_tactical_resistance_upper Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_tactical_resistance_strength Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_tactical_resistance_confidence Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_context_direction Int8,
+                ADD COLUMN IF NOT EXISTS qmd_structure_context_threshold Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_context_swing_high Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_context_swing_low Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_context_support_price Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_context_support_lower Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_context_support_upper Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_context_support_strength Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_context_support_confidence Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_context_resistance_price Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_context_resistance_lower Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_context_resistance_upper Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_context_resistance_strength Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_context_resistance_confidence Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_event_id UInt64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_event_pivot_at_ms Int64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_event_at_ms Int64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_event_kind LowCardinality(String),
+                ADD COLUMN IF NOT EXISTS qmd_structure_event_scale LowCardinality(String),
+                ADD COLUMN IF NOT EXISTS qmd_structure_event_direction Int8,
+                ADD COLUMN IF NOT EXISTS qmd_structure_event_price Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_session_high Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_session_low Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_premarket_high Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_premarket_low Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_opening_range_high Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_opening_range_low Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_trade_volume_poc Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_nearest_round Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_luld_upper Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_luld_lower Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_52_week_high Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_52_week_low Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_prior_month_high Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_prior_month_low Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_prior_month_close Float64"#,
+            true,
+        )
+        .await?;
+        self.execute(
+            r#"CREATE TABLE IF NOT EXISTS qmd_structure_events_v1
+            (
+                event_date Date,
+                algorithm_version UInt16,
+                event_id UInt64,
+                sym LowCardinality(String),
+                scale LowCardinality(String),
+                event_kind LowCardinality(String),
+                direction Int8,
+                price Float64,
+                lower Float64,
+                upper Float64,
+                strength Float64,
+                confidence Float64,
+                pivot_at DateTime64(6, 'UTC'),
+                confirmed_at DateTime64(6, 'UTC')
+            )
+            ENGINE = ReplacingMergeTree
+            PARTITION BY toYYYYMM(event_date)
+            ORDER BY (sym, confirmed_at, scale, event_kind, event_id)"#,
+            true,
+        )
+        .await?;
+        self.execute(
+            r#"CREATE TABLE IF NOT EXISTS qmd_structure_state_v1
+            (
+                algorithm_version UInt16,
+                sym LowCardinality(String),
+                updated_at DateTime64(3, 'UTC'),
+                snapshot_json String
+            )
+            ENGINE = ReplacingMergeTree(updated_at)
+            ORDER BY sym"#,
+            true,
+        )
+        .await?;
         Ok(())
     }
 
-    pub async fn run(self, mut receiver: mpsc::Receiver<IndicatorRow>) {
-        if !self.config.persist_indicators {
+    pub async fn load_structure_checkpoints(
+        &self,
+    ) -> Result<Vec<(String, GenericStructureCheckpoint)>, String> {
+        let sql = format!(
+            r#"SELECT sym, argMax(snapshot_json, updated_at) AS snapshot_json
+            FROM qmd_structure_state_v1
+            WHERE algorithm_version = {}
+            GROUP BY sym
+            FORMAT JSONEachRow"#,
+            crate::generic_structure::GENERIC_STRUCTURE_ALGORITHM_VERSION
+        );
+        let text = self.query(&sql, true).await?;
+        text.lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let value = serde_json::from_str::<serde_json::Value>(line)
+                    .map_err(|error| format!("invalid QMD structure state row: {error}"))?;
+                let sym = value
+                    .get("sym")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_ascii_uppercase();
+                let checkpoint_json = value
+                    .get("snapshot_json")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                if sym.is_empty() || checkpoint_json.is_empty() {
+                    return Err("QMD structure state row omitted symbol or checkpoint".to_string());
+                }
+                let checkpoint = serde_json::from_str::<GenericStructureCheckpoint>(
+                    checkpoint_json,
+                )
+                .map_err(|error| format!("invalid QMD structure checkpoint for {sym}: {error}"))?;
+                Ok((sym, checkpoint))
+            })
+            .collect()
+    }
+
+    pub async fn run(
+        self,
+        mut receiver: mpsc::Receiver<IndicatorRow>,
+        bars: SharedBarStore,
+        mut structure_watermarks: HashMap<String, i64>,
+    ) {
+        if !self.config.persist_indicators && !self.config.persist_structure_events {
             while receiver.recv().await.is_some() {}
             return;
         }
@@ -2247,21 +2060,21 @@ impl IndicatorClickHouseWriter {
                     match row {
                         Some(row) => batch.push(row),
                         None => {
-                            while !batch.is_empty() {
-                                self.flush(&mut batch).await;
-                                if !batch.is_empty() {
-                                    sleep(Duration::from_millis(250)).await;
+                            loop {
+                                let flushed = self.flush(&mut batch, &bars, &mut structure_watermarks).await;
+                                if flushed && batch.is_empty() {
+                                    return;
                                 }
+                                sleep(Duration::from_millis(250)).await;
                             }
-                            return;
                         }
                     }
                     if batch.len() >= self.config.max_clickhouse_batch {
-                        self.flush(&mut batch).await;
+                        self.flush(&mut batch, &bars, &mut structure_watermarks).await;
                     }
                 }
                 _ = flush_interval.tick() => {
-                    self.flush(&mut batch).await;
+                    self.flush(&mut batch, &bars, &mut structure_watermarks).await;
                 }
             }
             self.metrics
@@ -2269,25 +2082,74 @@ impl IndicatorClickHouseWriter {
         }
     }
 
-    async fn flush(&self, batch: &mut Vec<IndicatorRow>) {
-        if batch.is_empty() {
-            return;
-        }
-        self.metrics
-            .set_lane_pending("indicators", batch.len() as u64);
-        if let Err(error) = self.insert_indicators(batch).await {
-            self.metrics.record_lane_failure("indicators", &error);
-            eprintln!("ClickHouse indicator insert failed: {error}");
+    async fn flush(
+        &self,
+        batch: &mut Vec<IndicatorRow>,
+        bars: &SharedBarStore,
+        structure_watermarks: &mut HashMap<String, i64>,
+    ) -> bool {
+        let mut structure_events = batch
+            .iter()
+            .flat_map(|row| row.qmd_structure_events.iter().cloned())
+            .fold(
+                HashMap::<u64, GenericStructureEvent>::new(),
+                |mut events, event| {
+                    events.entry(event.event_id).or_insert(event);
+                    events
+                },
+            )
+            .into_values()
+            .collect::<Vec<_>>();
+        structure_events.sort_by_key(|event| (event.confirmed_at, event.event_id));
+        let structure_states = if self.config.persist_structure_events {
+            bars.structure_checkpoints_since(structure_watermarks).await
         } else {
-            let count = batch.len() as u64;
-            batch.clear();
+            Vec::new()
+        };
+        if self.config.persist_indicators && !batch.is_empty() {
+            self.metrics
+                .set_lane_pending("indicators", batch.len() as u64);
+            if let Err(error) = self.insert_indicators(batch).await {
+                self.metrics.record_lane_failure("indicators", &error);
+                eprintln!("ClickHouse indicator insert failed: {error}");
+                return false;
+            }
             self.metrics.record_lane_success(
                 "indicators",
-                count,
+                batch.len() as u64,
                 "Committed closed indicator rows.",
             );
             self.metrics.set_lane_pending("indicators", 0);
         }
+        if self.config.persist_structure_events && !structure_events.is_empty() {
+            self.metrics
+                .set_lane_pending("structure_events", structure_events.len() as u64);
+            if let Err(error) = self.insert_structure_events(&structure_events).await {
+                self.metrics.record_lane_failure("structure_events", &error);
+                eprintln!("ClickHouse QMD structure-event insert failed: {error}");
+                return false;
+            }
+            self.metrics.record_lane_success(
+                "structure_events",
+                structure_events.len() as u64,
+                "Committed canonical QMD structure events.",
+            );
+            self.metrics.set_lane_pending("structure_events", 0);
+        }
+        if self.config.persist_structure_events && !structure_states.is_empty() {
+            if let Err(error) = self.insert_structure_states(&structure_states).await {
+                self.metrics.record_lane_failure("structure_events", &error);
+                eprintln!("ClickHouse QMD structure-state insert failed: {error}");
+                return false;
+            }
+            for (sym, checkpoint) in &structure_states {
+                if let Some(updated_at) = checkpoint.updated_at {
+                    structure_watermarks.insert(sym.clone(), updated_at.timestamp_millis());
+                }
+            }
+        }
+        batch.clear();
+        true
     }
 
     async fn insert_indicators(&self, rows: &[IndicatorRow]) -> Result<(), String> {
@@ -2301,6 +2163,69 @@ impl IndicatorClickHouseWriter {
             .join("\n");
         self.query_with_body(
             "INSERT INTO live_market_indicators FORMAT JSONEachRow",
+            body,
+        )
+        .await
+    }
+
+    async fn insert_structure_events(
+        &self,
+        events: &[GenericStructureEvent],
+    ) -> Result<(), String> {
+        let body = events
+            .iter()
+            .map(|event| {
+                serde_json::to_string(&json!({
+                    "event_date": event.confirmed_at.date_naive().to_string(),
+                    "algorithm_version": event.algorithm_version,
+                    "event_id": event.event_id,
+                    "sym": &event.sym,
+                    "scale": &event.scale,
+                    "event_kind": &event.event_kind,
+                    "direction": event.direction,
+                    "price": event.price,
+                    "lower": event.lower,
+                    "upper": event.upper,
+                    "strength": event.strength,
+                    "confidence": event.confidence,
+                    "pivot_at": event.pivot_at.format("%Y-%m-%d %H:%M:%S%.6f").to_string(),
+                    "confirmed_at": event.confirmed_at.format("%Y-%m-%d %H:%M:%S%.6f").to_string(),
+                }))
+                .unwrap_or_else(|_| "{}".to_string())
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.query_with_body(
+            "INSERT INTO qmd_structure_events_v1 FORMAT JSONEachRow",
+            body,
+        )
+        .await
+    }
+
+    async fn insert_structure_states(
+        &self,
+        rows: &[(String, GenericStructureCheckpoint)],
+    ) -> Result<(), String> {
+        let body = rows
+            .iter()
+            .filter_map(|(sym, checkpoint)| {
+                let updated_at = checkpoint.updated_at.as_ref()?;
+                let checkpoint_json =
+                    serde_json::to_string(checkpoint).unwrap_or_else(|_| "{}".to_string());
+                Some(
+                    serde_json::to_string(&json!({
+                        "algorithm_version": checkpoint.algorithm_version,
+                        "sym": sym,
+                        "updated_at": clickhouse_datetime64(updated_at),
+                        "snapshot_json": checkpoint_json,
+                    }))
+                    .unwrap_or_else(|_| "{}".to_string()),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.query_with_body(
+            "INSERT INTO qmd_structure_state_v1 FORMAT JSONEachRow",
             body,
         )
         .await
@@ -2347,102 +2272,18 @@ impl IndicatorClickHouseWriter {
 }
 
 fn indicator_insert_row(row: &IndicatorRow) -> serde_json::Value {
-    json!({
-        "session_date": &row.session_date,
-        "schema_version": row.schema_version,
-        "timeframe": &row.timeframe,
-        "sym": &row.sym,
-        "bar_start": clickhouse_datetime64(&row.bar_start),
-        "bar_end": clickhouse_datetime64(&row.bar_end),
-        "close": row.close,
-        "volume": row.volume,
-        "vwap": row.vwap,
-        "ema_9": row.ema_9,
-        "ema_20": row.ema_20,
-        "ema_50": row.ema_50,
-        "rsi_14": row.rsi_14,
-        "atr_14": row.atr_14,
-        "macd_line": row.macd_line,
-        "macd_signal": row.macd_signal,
-        "macd_histogram": row.macd_histogram,
-        "bollinger_mid_20": row.bollinger_mid_20,
-        "bollinger_upper_20": row.bollinger_upper_20,
-        "bollinger_lower_20": row.bollinger_lower_20,
-        "bollinger_std_20": row.bollinger_std_20,
-        "close_sma_20": row.close_sma_20,
-        "volume_sma_20": row.volume_sma_20,
-        "return_1_bar": row.return_1_bar,
-        "price_vs_ema20_pct": row.price_vs_ema20_pct,
-        "price_vs_vwap_pct": row.price_vs_vwap_pct,
-        "trend_score": row.trend_score,
-        "microstructure_fast_signal": row.microstructure_fast_signal,
-        "microstructure_fast_confidence": row.microstructure_fast_confidence,
-        "microstructure_confirm_signal": row.microstructure_confirm_signal,
-        "microstructure_confirm_confidence": row.microstructure_confirm_confidence,
-        "microstructure_context_signal": row.microstructure_context_signal,
-        "microstructure_context_confidence": row.microstructure_context_confidence,
-        "microstructure_unified_signal": row.microstructure_unified_signal,
-        "microstructure_unified_confidence": row.microstructure_unified_confidence,
-        "microstructure_unified_action": &row.microstructure_unified_action,
-        "microstructure_buy_trade_count": row.microstructure_buy_trade_count,
-        "microstructure_sell_trade_count": row.microstructure_sell_trade_count,
-        "microstructure_classified_trade_count": row.microstructure_classified_trade_count,
-        "microstructure_eligible_trade_count": row.microstructure_eligible_trade_count,
-        "microstructure_buy_volume": row.microstructure_buy_volume,
-        "microstructure_sell_volume": row.microstructure_sell_volume,
-        "microstructure_signed_volume_delta": row.microstructure_signed_volume_delta,
-        "microstructure_cumulative_signed_volume_delta": row.microstructure_cumulative_signed_volume_delta,
-        "microstructure_anchored_flow_relationship": &row.microstructure_anchored_flow_relationship,
-        "microstructure_anchored_flow_relationship_score": row.microstructure_anchored_flow_relationship_score,
-        "microstructure_transaction_imbalance": row.microstructure_transaction_imbalance,
-        "microstructure_signed_volume_imbalance": row.microstructure_signed_volume_imbalance,
-        "microstructure_level1_ofi_delta": row.microstructure_level1_ofi_delta,
-        "microstructure_cumulative_level1_ofi": row.microstructure_cumulative_level1_ofi,
-        "microstructure_level1_ofi": row.microstructure_level1_ofi,
-        "microstructure_queue_imbalance": row.microstructure_queue_imbalance,
-        "microstructure_microprice_lean": row.microstructure_microprice_lean,
-        "microstructure_midpoint_return_bps": row.microstructure_midpoint_return_bps,
-        "microstructure_trade_return_bps": row.microstructure_trade_return_bps,
-        "microstructure_aggressor_persistence": row.microstructure_aggressor_persistence,
-        "microstructure_arrival_intensity_imbalance": row.microstructure_arrival_intensity_imbalance,
-        "microstructure_arrival_rate_per_second": row.microstructure_arrival_rate_per_second,
-        "microstructure_resiliency": row.microstructure_resiliency,
-        "microstructure_aggressive_flow_score": row.microstructure_aggressive_flow_score,
-        "microstructure_displayed_liquidity_score": row.microstructure_displayed_liquidity_score,
-        "microstructure_response_resiliency_score": row.microstructure_response_resiliency_score,
-        "microstructure_regime_reliability": row.microstructure_regime_reliability,
-        "liquidity_support_price": row.liquidity_support_price,
-        "liquidity_support_strength": row.liquidity_support_strength,
-        "liquidity_support_confidence": row.liquidity_support_confidence,
-        "liquidity_resistance_price": row.liquidity_resistance_price,
-        "liquidity_resistance_strength": row.liquidity_resistance_strength,
-        "liquidity_resistance_confidence": row.liquidity_resistance_confidence,
-        "liquidity_level_pressure": row.liquidity_level_pressure,
-        "market_level_support_score": row.market_level_support_score,
-        "market_level_resistance_score": row.market_level_resistance_score,
-        "market_level_bias": row.market_level_bias,
-        "structure_session_high": row.structure_session_high,
-        "structure_session_low": row.structure_session_low,
-        "structure_premarket_high": row.structure_premarket_high,
-        "structure_premarket_low": row.structure_premarket_low,
-        "structure_opening_range_high": row.structure_opening_range_high,
-        "structure_opening_range_low": row.structure_opening_range_low,
-        "structure_swing_high": row.structure_swing_high,
-        "structure_swing_low": row.structure_swing_low,
-        "structure_volume_poc": row.structure_volume_poc,
-        "structure_nearest_round": row.structure_nearest_round,
-        "structure_bos_price": row.structure_bos_price,
-        "structure_bos_direction": row.structure_bos_direction,
-        "structure_choch_price": row.structure_choch_price,
-        "structure_choch_direction": row.structure_choch_direction,
-        "structure_luld_upper": row.structure_luld_upper,
-        "structure_luld_lower": row.structure_luld_lower,
-        "structure_52_week_high": row.structure_52_week_high,
-        "structure_52_week_low": row.structure_52_week_low,
-        "structure_prior_month_high": row.structure_prior_month_high,
-        "structure_prior_month_low": row.structure_prior_month_low,
-        "structure_prior_month_close": row.structure_prior_month_close,
-    })
+    let mut value = serde_json::to_value(row).unwrap_or_else(|_| json!({}));
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "bar_start".to_string(),
+            serde_json::Value::String(clickhouse_datetime64(&row.bar_start)),
+        );
+        object.insert(
+            "bar_end".to_string(),
+            serde_json::Value::String(clickhouse_datetime64(&row.bar_end)),
+        );
+    }
+    value
 }
 
 fn round_indicator_value(value: f64) -> f64 {
@@ -2515,46 +2356,11 @@ fn safe_div(numerator: f64, denominator: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        anchored_flow_relationship, anchored_market_session_date, classify_structure_break,
-        decay_levels, exact_clock_level_supported, level_confidence,
-        market_structure_reference_sql, normalized_level_strength,
-        parse_market_structure_reference_rows, select_level, update_level, LevelEvidence,
-        MicrostructureCumulativeFlow, SessionVwapState, WeightedSignalAggregate,
+        anchored_flow_relationship, anchored_market_session_date, market_structure_reference_sql,
+        parse_market_structure_reference_rows, MicrostructureCumulativeFlow, SessionVwapState,
+        WeightedSignalAggregate,
     };
     use chrono::{TimeZone, Utc};
-    use std::collections::HashMap;
-
-    #[test]
-    fn exact_clock_levels_reject_bars_that_straddle_the_window() {
-        assert!(exact_clock_level_supported("30s", 1800.0));
-        assert!(!exact_clock_level_supported("1h", 1800.0));
-        assert!(exact_clock_level_supported("5m", 300.0));
-        assert!(!exact_clock_level_supported("1h", 300.0));
-    }
-
-    #[test]
-    fn structure_break_distinguishes_continuation_from_character_change() {
-        assert_eq!(
-            classify_structure_break(99.5, 100.5, 100.0, 98.0, 1),
-            (1, 0, 1)
-        );
-        assert_eq!(
-            classify_structure_break(98.5, 97.5, 100.0, 98.0, 1),
-            (0, -1, -1)
-        );
-        assert_eq!(
-            classify_structure_break(99.5, 100.5, 100.0, 98.0, -1),
-            (0, 1, 1)
-        );
-        assert_eq!(
-            classify_structure_break(98.5, 97.5, 100.0, 98.0, -1),
-            (-1, 0, -1)
-        );
-        assert_eq!(
-            classify_structure_break(99.0, 99.5, 100.0, 98.0, 1),
-            (0, 0, 1)
-        );
-    }
 
     #[test]
     fn daily_structure_reference_contract_is_causal_and_parseable() {
@@ -2576,59 +2382,6 @@ mod tests {
         let aapl = rows.get("AAPL").unwrap();
         assert_eq!(aapl.high_52_week, 331.78);
         assert_eq!(aapl.prior_month_close, 289.0);
-    }
-
-    #[test]
-    fn liquidity_evidence_accumulates_by_price_and_decays_on_elapsed_time() {
-        let mut levels = HashMap::new();
-        update_level(&mut levels, 100.004, 0.5, 0.8);
-        update_level(&mut levels, 100.003, 0.5, 0.8);
-        let level = levels.values().next().expect("one tick-binned level");
-        assert_eq!(level.touches, 2);
-        assert!((level.score - 1.0).abs() < 1e-9);
-        assert!(level_confidence(level) > 0.5);
-        decay_levels(&mut levels, 0.5);
-        assert!((levels.values().next().unwrap().score - 0.5).abs() < 1e-9);
-    }
-
-    #[test]
-    fn liquidity_selection_prefers_relevant_nearby_side() {
-        let mut levels = HashMap::from([
-            (
-                9_900,
-                LevelEvidence {
-                    price: 99.0,
-                    score: 4.0,
-                    evidence: 3.0,
-                    touches: 4,
-                },
-            ),
-            (
-                9_990,
-                LevelEvidence {
-                    price: 99.9,
-                    score: 2.0,
-                    evidence: 2.0,
-                    touches: 3,
-                },
-            ),
-            (
-                10_010,
-                LevelEvidence {
-                    price: 100.1,
-                    score: 3.0,
-                    evidence: 2.0,
-                    touches: 3,
-                },
-            ),
-        ]);
-        let support = select_level(&levels, 100.0, true, 0.5).unwrap();
-        let resistance = select_level(&levels, 100.0, false, 0.5).unwrap();
-        assert_eq!(support.price, 99.9);
-        assert_eq!(resistance.price, 100.1);
-        assert!(normalized_level_strength(support.score) > 0.8);
-        levels.clear();
-        assert!(select_level(&levels, 100.0, true, 0.5).is_none());
     }
 
     #[test]

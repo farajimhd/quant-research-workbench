@@ -98,6 +98,7 @@ persistence. `QMD_INTRADAY_BAR_TIMEFRAMES` defaults to
 | `QMD_INDICATOR_HISTORY_LIMIT` | `1000` | Fallback indicator history limit. | Used only for unlisted timeframes. |
 | `QMD_INDICATOR_SHARD_COUNT` | `8` | Number of indicator worker shards. | Increase if indicator latency rises. |
 | `QMD_PERSIST_INDICATORS` | `false` | Persist closed bar-level indicator rows to ClickHouse. | Keep false by default because these indicators can be recomputed from compact events and `intraday_family_bars_v2`. |
+| `QMD_PERSIST_STRUCTURE_EVENTS` | `true` | Persist confirmed generic-structure events plus the latest full versioned engine checkpoint. | Keep enabled for strategy history and exact restart continuity; changed symbols are coalesced per writer flush and this does not require full bar-indicator persistence. |
 
 ## ClickHouse Batch Writes
 

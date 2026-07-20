@@ -433,7 +433,7 @@ Table: `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`.
 
 | Field | Formula | Streaming Method |
 |---|---|---|
-| `schema_version` | Current value is `9`. | Constant per row. |
+| `schema_version` | Current value is `12`. | Constant per row. |
 | `session_date`, `timeframe`, `sym`, `bar_start`, `bar_end` | Copied from closed bar. | One row per closed bar. |
 | `close`, `volume` | Copied from closed bar. | Inputs for chart and indicator display. |
 | `vwap` | TradingView-compatible session VWAP: cumulative `sum(hlc3 * volume) / sum(volume)` from the 04:00 New York extended-session open. It continues through 09:30 without resetting and remains anchored through after-hours. The canonical bar's own `vwap` remains its event-level `dollar_volume / volume`. | Keep cumulative typical-price notional and volume per ticker/timeframe/market-session anchor. |
@@ -458,10 +458,27 @@ Table: `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`.
 | `microstructure_unified_signal` | Confidence-weighted mean of the three ready horizon scores with fixed priors 50%, 30%, and 20%. Range is -1 to +1. | Updated from the causal horizon snapshot at every closed bar. |
 | `microstructure_unified_confidence` | Prior-weighted horizon confidence discounted by cross-horizon disagreement. Range is 0 to 100. | Missing horizons and disagreement reduce confidence. |
 | `microstructure_unified_action` | `buy` when score is positive, confidence is at least 35%, and absolute score is at least 0.15; `sell` under the symmetric negative rule; otherwise `wait`. | Deterministic strategy gate, not an order instruction. |
+| `qmd_structure_direction`, `qmd_structure_strength`, `qmd_structure_confidence`, `qmd_structure_agreement`, `qmd_structure_score` | Unified event-native market structure. Score is `direction * strength * confidence * (0.5 + 0.5 * agreement)`. | One symbol engine processes ordered NBBO and eligible trades once, then every timeframe samples the same causal snapshot at `bar_end`. |
+| `qmd_structure_{micro,tactical,context}_*` | Directional-change pivots, accepted breaks, and active support/resistance zones at fixed price-response scales. | Thresholds adapt to tick size, spread, midpoint movement, and price; they do not depend on candle timeframe. |
+| `qmd_structure_event_*` | Latest confirmed BoS, CHoCH, touch, hold, or break event. `event_pivot_at_ms` is the causal origin and `event_at_ms` is confirmation time. | Strategies must gate on confirmation time; pivot time is descriptive and never authorizes lookahead. |
+| `qmd_structure_session_*`, `qmd_structure_premarket_*`, `qmd_structure_opening_range_*`, `qmd_structure_trade_volume_poc` | Event-native reference levels. | NBBO midpoint owns structure; eligible trades confirm accepted breaks and build the exact trade-volume POC. |
+
+## Generic Structure Persistence Contract
+
+`qmd_structure_events_v1` stores the confirmed causal event history keyed by a
+deterministic event id. `qmd_structure_state_v1` is a `ReplacingMergeTree`
+latest-state table containing the full versioned engine checkpoint: adaptive
+threshold EWMAs, pending directional state, zones, session references, eligible
+trade volume-at-price, and the last causal event. This restores the next event
+exactly without replaying an entire session. Changed symbols are coalesced once
+per bounded writer flush rather than cloned for every event or chart timeframe.
+Both tables are written when `QMD_PERSIST_STRUCTURE_EVENTS=true`, independently
+of `QMD_PERSIST_INDICATORS`. Historical reconstruction may warm-start from
+confirmed rows before its requested window, but never from future events.
 
 ## Indicator Persistence Policy
 
-Tick indicators are memory-first and are not persisted continuously. Closed bar-level indicators are also memory-first by default because the current set can be recomputed from compact events and `intraday_family_bars_v2`. Set `QMD_PERSIST_INDICATORS=true` only when a run needs a materialized indicator table for chart-load speed or audit.
+Tick indicators are memory-first and are not persisted continuously. Closed bar-level indicators are also memory-first by default because the current set can be recomputed from compact events and `intraday_family_bars_v2`. Set `QMD_PERSIST_INDICATORS=true` only when a run needs a materialized indicator table for chart-load speed or audit. Generic-structure event/state persistence is the exception: it defaults on because it is the durable strategy and restart contract rather than a duplicate bar cache.
 
 ## Indicator Catalog Summary
 

@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
 
-pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v11";
+pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v12";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProfile {
@@ -583,6 +583,18 @@ impl HistoricalDerivedCache {
             1,
             self.source.trade_aggregation_rules(),
         );
+        if matches!(&profile, CacheProfile::Derived(_)) {
+            match self
+                .source
+                .persisted_structure_events_before(&ticker, window.start)
+                .await
+            {
+                Ok(events) => bars.seed_structure_events(events).await,
+                Err(error) => eprintln!(
+                    "QMD historical structure warm start unavailable for {ticker}: {error}"
+                ),
+            }
+        }
         let shard = bars.shard(0);
         let trade_rules = self.source.trade_aggregation_rules();
         let structure_references = if matches!(profile, CacheProfile::Derived(_)) {

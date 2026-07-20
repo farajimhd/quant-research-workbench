@@ -195,6 +195,8 @@ Default durable writes:
 | `intraday_family_bars_v2` | `intraday_bars.rs` | yes | Rolling sparse family bars from 100ms through 1h |
 | `live_symbol_market_event_v1` | `live_market_state.rs` | yes | Abnormal live market-state transition audit |
 | `live_market_indicators` | `indicators.rs` | no | Optional materialized bar-level indicator rows |
+| `qmd_structure_events_v1` | `indicators.rs` | yes | Confirmed causal event-native structure history for strategies and historical warm starts |
+| `qmd_structure_state_v1` | `indicators.rs` | yes | Full versioned per-symbol generic-structure engine checkpoint for exact restart continuity |
 | `qmd_gap_fill_runs` | `gapfill.rs` | yes | Gap-fill audit log |
 | `qmd_market_coverage_manifest_v1` | `gapfill.rs` | yes | Coarse startup repair and historical flatfile planning manifest |
 | `qmd_live_event_coverage_v1` | `compact_event.rs`, `intraday_bars.rs`, `gapfill.rs` | yes | Recent q_live coverage manifest for compact events and canonical intraday bars |
@@ -228,7 +230,7 @@ exact command on laptops or launches the unchanged updater asynchronously on
 the workstation after collection closes. Live events are never merged into the
 historical `events_YYYY` tables.
 
-`QMD_PERSIST_INDICATORS` defaults to `false` because the current bar-level indicators can be recomputed from compact events and `intraday_family_bars_v2`. Enable it only when a run specifically needs a materialized indicator table.
+`QMD_PERSIST_INDICATORS` defaults to `false` because bar-level indicators can be recomputed from compact events and `intraday_family_bars_v2`. Generic structure is computed once per ordered symbol event, independently of chart timeframe, before bars sample it. `QMD_PERSIST_STRUCTURE_EVENTS` therefore defaults to `true`: confirmed event history and one full versioned engine checkpoint per changed symbol are durable strategy/restart state, not a materialized copy for every timeframe. Checkpoints are cloned and written only at the bounded writer flush after an engine watermark advances, rather than on every event or bar.
 
 ## Replay Flow
 

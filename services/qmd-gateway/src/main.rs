@@ -27,6 +27,7 @@ use qmd_core::massive::{run_massive_ingest, MarketEventFanout};
 use qmd_core::metrics::SharedMetrics;
 use qmd_core::scanner::{spawn_scanner_primitive_engine, ScannerPrimitive, SharedScannerStore};
 use qmd_core::state::SharedMarketState;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::{error::Error, io};
 use tokio::sync::{broadcast, mpsc, watch};
@@ -236,22 +237,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "Live event and canonical intraday-bar coverage ledger initialized.",
     );
     let indicator_writer = IndicatorClickHouseWriter::new(config.clone(), metrics.clone());
-    if config.persist_indicators {
+    let mut structure_watermarks = HashMap::new();
+    if config.persist_indicators || config.persist_structure_events {
         indicator_writer.initialize().await.map_err(|error| {
             startup_error(format!(
                 "qmd-gateway indicator ClickHouse preflight failed: {error}"
             ))
         })?;
+        if config.persist_structure_events {
+            let checkpoints = indicator_writer
+                .load_structure_checkpoints()
+                .await
+                .map_err(|error| {
+                    startup_error(format!(
+                        "qmd-gateway structure-state restore failed: {error}"
+                    ))
+                })?;
+            let restored = checkpoints.len();
+            for (sym, checkpoint) in &checkpoints {
+                if let Some(updated_at) = checkpoint.updated_at {
+                    structure_watermarks.insert(sym.clone(), updated_at.timestamp_millis());
+                }
+            }
+            bars.seed_structure_checkpoints(checkpoints).await;
+            eprintln!("Restored {restored} canonical QMD structure states.");
+        }
+    }
+    if config.persist_indicators {
         metrics.set_lane_state(
             "indicators",
             "healthy",
             "Indicator writer initialized; awaiting rows.",
         );
     }
+    if config.persist_structure_events {
+        metrics.set_lane_state(
+            "structure_events",
+            "healthy",
+            "Canonical QMD structure-event writer initialized; awaiting confirmed events.",
+        );
+    }
 
-    writer_handles.push(tokio::spawn(
-        indicator_writer.run(indicator_writer_receiver),
-    ));
+    writer_handles.push(tokio::spawn(indicator_writer.run(
+        indicator_writer_receiver,
+        bars.clone(),
+        structure_watermarks,
+    )));
     let indicator_router = spawn_indicator_engines(
         indicators.clone(),
         config.indicator_channel_capacity,

@@ -46,6 +46,7 @@ address-conflict message instead of attempting a duplicate bind.
 Configuration uses `QMD_HISTORY_CLICKHOUSE_URL`, `QMD_HISTORY_DATABASE`,
 `QMD_HISTORY_TABLE_PREFIX`, `QMD_HISTORY_MACRO_BARS_TABLE`, `QMD_HISTORY_CLICKHOUSE_USER`,
 `QMD_HISTORY_CLICKHOUSE_PASSWORD`, `QMD_HISTORY_BIND`,
+`QMD_HISTORY_STRUCTURE_DATABASE`, `QMD_HISTORY_STRUCTURE_EVENTS_TABLE`,
 `QMD_HISTORY_BATCH_SIZE`, `QMD_HISTORY_MAX_EVENTS_PER_REQUEST`,
 `QMD_HISTORY_CACHE_MAX_ENTRIES`, `QMD_HISTORY_CACHE_MAX_BARS_PER_ENTRY`, and
 `QMD_HISTORY_CACHE_UPDATE_CAPACITY`. Memory/concurrency controls are
@@ -60,6 +61,7 @@ Defaults:
 - database: `market_sip_compact`
 - yearly-table prefix: `events_`
 - durable macro table: `macro_bars_by_time_symbol`
+- generic-structure database/table: `q_live.qmd_structure_events_v1`
 - batch size: `25000`
 - maximum events in one derived calculation: `10000000`
 - revision-aware derived cache entries: `256`
@@ -69,6 +71,12 @@ Defaults:
 - service-wide concurrent ClickHouse chunk fetches: `8`
 - source fetch chunk width: `24 hours`
 - maximum derived updates per entry: `500000`
+
+Historical bar reconstruction loads at most 5,000 confirmed generic-structure
+events for the requested symbol from the 90 days preceding the requested
+window. The warm start is causal: only rows confirmed before the window are
+eligible, and the reconstructed event-native state is sampled at each bar end
+without changing semantics across chart timeframes.
 - maximum canonical product rows per entry: `2000000`
 
 ## API

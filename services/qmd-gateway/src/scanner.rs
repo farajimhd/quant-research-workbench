@@ -368,6 +368,8 @@ mod tests {
             estimated_luld_distance_to_upper_pct: 5.26,
             estimated_luld_distance_to_lower_pct: 13.88,
             estimated_luld_state: "inside".to_string(),
+            qmd_structure: Default::default(),
+            qmd_structure_events: Vec::new(),
         }
     }
 

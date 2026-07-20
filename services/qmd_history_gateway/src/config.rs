@@ -24,6 +24,8 @@ pub struct HistoricalGatewayConfig {
     pub fetch_chunk_hours: usize,
     pub product_timeframes: Vec<String>,
     pub product_cache_max_rows_per_entry: usize,
+    pub structure_database: String,
+    pub structure_events_table: String,
     pub table_prefix: String,
 }
 
@@ -70,6 +72,11 @@ impl HistoricalGatewayConfig {
                 2_000_000,
             )
             .clamp(10_000, 20_000_000),
+            structure_database: env_string("QMD_HISTORY_STRUCTURE_DATABASE", "q_live"),
+            structure_events_table: env_string(
+                "QMD_HISTORY_STRUCTURE_EVENTS_TABLE",
+                "qmd_structure_events_v1",
+            ),
             table_prefix: env_string("QMD_HISTORY_TABLE_PREFIX", "events_"),
         }
     }
@@ -89,6 +96,16 @@ impl HistoricalGatewayConfig {
         }
         if !valid_identifier(&self.macro_bars_table) {
             return Err("QMD_HISTORY_MACRO_BARS_TABLE must be a ClickHouse identifier".to_string());
+        }
+        if !valid_identifier(&self.structure_database) {
+            return Err(
+                "QMD_HISTORY_STRUCTURE_DATABASE must be a ClickHouse identifier".to_string(),
+            );
+        }
+        if !valid_identifier(&self.structure_events_table) {
+            return Err(
+                "QMD_HISTORY_STRUCTURE_EVENTS_TABLE must be a ClickHouse identifier".to_string(),
+            );
         }
         Ok(())
     }
