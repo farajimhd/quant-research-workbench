@@ -121,7 +121,8 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
               <FactSection icon={Landmark} subtitle="Latest SEC-reported observations available at this clock" title="Fundamentals">
                 {payload?.fundamentals.length ? <div className="fundamental-list">{payload.fundamentals.map((fact) => {
                   const metric = `fundamental:${text(fact.tag).toLowerCase()}`;
-                  return <article key={String(fact.label)}><div className="facts-metric-label"><span>{fact.label}</span><MetricActions change={metricChanges[metric]} label={text(fact.label)} onHistory={() => setHistoryMetric({ label: text(fact.label), metric })} /></div><strong>{formatFundamental(fact)}</strong><small>{fundamentalMeta(fact)}</small></article>;
+                  const label = text(fact.label);
+                  return <article key={String(fact.label)}><MetricLabel label={label} onHistory={() => setHistoryMetric({ label, metric })} /><MetricValue change={metricChanges[metric]} label={label} value={formatFundamental(fact)} /><small>{fundamentalMeta(fact)}</small></article>;
                 })}</div> : <FactsInlineEmpty label="No selected SEC-reported facts available." />}
               </FactSection>
               <FactSection icon={Building2} subtitle="Issuer, security, listing, and corporate-action context" title="Company & listing">
@@ -157,7 +158,7 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
 }
 
 function FactMetric({ change, detail, label, onHistory, tone = "neutral", value }: { change?: MetricChange; detail: string; label: string; onHistory: () => void; tone?: string; value: string }) {
-  return <article className="facts-primary-metric" data-tone={tone}><div className="facts-metric-label"><span>{label}</span><MetricActions change={change} label={label} onHistory={onHistory} /></div><strong>{value}</strong><small>{detail}</small></article>;
+  return <article className="facts-primary-metric" data-tone={tone}><MetricLabel label={label} onHistory={onHistory} /><MetricValue change={change} label={label} value={value} /><small>{detail}</small></article>;
 }
 
 function FactSection({ children, className = "", icon: Icon, subtitle, title }: { children: ReactNode; className?: string; icon: typeof Building2; subtitle: string; title: string }) {
@@ -165,19 +166,20 @@ function FactSection({ children, className = "", icon: Icon, subtitle, title }: 
 }
 
 function FactDatum({ change, label, meta, onHistory, tone = "neutral", value }: { change?: MetricChange; label: string; meta?: string; onHistory?: () => void; tone?: string; value: string }) {
-  return <article className="facts-datum" data-tone={tone}><div className="facts-metric-label"><span>{label}</span>{onHistory ? <MetricActions change={change} label={label} onHistory={onHistory} /> : null}</div><strong title={value}>{value || "—"}</strong>{meta ? <small>{meta}</small> : null}</article>;
+  return <article className="facts-datum" data-tone={tone}>{onHistory ? <MetricLabel label={label} onHistory={onHistory} /> : <span>{label}</span>}{onHistory ? <MetricValue change={change} label={label} title={value} value={value || "—"} /> : <strong title={value}>{value || "—"}</strong>}{meta ? <small>{meta}</small> : null}</article>;
 }
 
-function MetricActions({ change, label, onHistory }: { change?: MetricChange; label: string; onHistory: () => void }) {
+function MetricLabel({ label, onHistory }: { label: string; onHistory: () => void }) {
+  return <div className="facts-metric-label"><span>{label}</span><button aria-label={`Chart history for ${label}`} onClick={onHistory} title={`Plot all available reported values for ${label}`} type="button"><ChartNoAxesColumnIncreasing size={12} /></button></div>;
+}
+
+function MetricValue({ change, label, title, value }: { change?: MetricChange; label: string; title?: string; value: string }) {
   const direction = change?.direction ?? "unavailable";
   const Arrow = direction === "up" ? ArrowUp : direction === "down" ? ArrowDown : ArrowRight;
   const comparison = change?.previous == null
     ? "No earlier reported value"
     : `${direction === "up" ? "Increased" : direction === "down" ? "Decreased" : "Unchanged"} from ${formatTrendValue(change.previous)}${change.previous_at ? ` on ${String(change.previous_at).slice(0, 10)}` : ""}`;
-  return <span className="facts-metric-actions">
-    <i aria-label={`${label}: ${comparison}`} data-direction={direction} title={`${comparison}. This is numeric movement, not a bullish or bearish judgment.`}><Arrow size={11} /></i>
-    <button aria-label={`Chart history for ${label}`} onClick={onHistory} title={`Plot all available reported values for ${label}`} type="button"><ChartNoAxesColumnIncreasing size={12} /></button>
-  </span>;
+  return <div className="facts-metric-value"><i aria-label={`${label}: ${comparison}`} data-direction={direction} title={`${comparison}. This is numeric movement, not a bullish or bearish judgment.`}><Arrow size={12} /></i><strong title={title}>{value}</strong></div>;
 }
 
 function FactHistoryModal({ asOf, descriptor, onClose, symbol }: { asOf: string; descriptor: MetricDescriptor; onClose: () => void; symbol: string }) {
