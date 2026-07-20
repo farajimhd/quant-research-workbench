@@ -3684,8 +3684,11 @@ function chartOptions(
       mode: 0,
       vertLine: { color: palette.grid, labelBackgroundColor: palette.text, labelVisible: true, style: LineStyle.Dotted, visible: true, width: 1 as LineWidth },
     },
-    rightPriceScale: { borderColor: palette.grid, minimumWidth: CHART_PRICE_SCALE_MIN_WIDTH },
-    leftPriceScale: { borderColor: palette.grid, minimumWidth: CHART_PRICE_SCALE_MIN_WIDTH, visible: showLeftPriceScale },
+    // Price-axis labels must remain at their actual value coordinate. The library's
+    // default collision alignment stacks dense indicator tags at screen-stable offsets,
+    // which visually detaches them from the scale while the chart is panned vertically.
+    rightPriceScale: { alignLabels: false, borderColor: palette.grid, minimumWidth: CHART_PRICE_SCALE_MIN_WIDTH },
+    leftPriceScale: { alignLabels: false, borderColor: palette.grid, minimumWidth: CHART_PRICE_SCALE_MIN_WIDTH, visible: showLeftPriceScale },
     timeScale: {
       borderColor: palette.grid,
       fixLeftEdge: true,
