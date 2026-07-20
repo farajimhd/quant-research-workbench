@@ -12376,26 +12376,6 @@ button {
   pointer-events: none;
 }
 
-.price-zone-label {
-  position: absolute;
-  z-index: 5;
-  max-width: min(280px, calc(100% - 8px));
-  overflow: hidden;
-  border-left: 3px solid;
-  border-radius: 3px;
-  background: color-mix(in oklab, var(--surface) 94%, transparent);
-  box-shadow: 0 1px 4px color-mix(in oklab, var(--foreground) 10%, transparent);
-  color: var(--foreground);
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.25;
-  opacity: 1;
-  padding: 2px 5px;
-  pointer-events: none;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .trade-annotation-region {
   position: absolute;
   z-index: 4;

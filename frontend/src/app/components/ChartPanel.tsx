@@ -117,7 +117,6 @@ type PriceZone = {
   historicalTagLimitDefault?: number;
   label: string;
   latest?: boolean;
-  latestLabelDefault?: boolean;
   legendLabel?: string;
   lower: number;
   maxPixelHeight?: number;
@@ -212,6 +211,12 @@ type PriceZoneAxisLineRuntime = {
   line: IPriceLine;
   signature: string;
 };
+type PriceZoneMarkerPlacement = "above" | "below" | "left";
+type PriceZoneMarkerAnchor = {
+  placement: PriceZoneMarkerPlacement;
+  x: number;
+  y: number;
+};
 type LegendLineStyle = "solid" | "dashed" | "dotted";
 type LegendSeriesSettings = {
   color?: string;
@@ -225,7 +230,6 @@ type LegendSeriesSettings = {
   showConnectors?: boolean;
   showAxisLabel?: boolean;
   showHistoricalLabels?: boolean;
-  showLatestLabels?: boolean;
   showLabels?: boolean;
   showValue?: boolean;
   visible?: boolean;
@@ -1633,7 +1637,6 @@ type LegendItem = {
   showConnectors?: boolean;
   showAxisLabel?: boolean;
   showHistoricalLabels?: boolean;
-  showLatestLabels?: boolean;
   showLabels?: boolean;
   showValue: boolean;
   supportsConnectors?: boolean;
@@ -1866,7 +1869,7 @@ function LegendEditor({
       ) : null}
       {item.itemKind === "zone" ? (
         <label>
-          Latest label size
+          Compact tag size
           <span className="legend-range-control">
             <input
               aria-label={`${item.label} label text size`}
@@ -1930,10 +1933,6 @@ function LegendEditor({
               Compact tag on price axis
             </label>
           ) : null}
-          <label className="legend-checkbox">
-            <input checked={item.showLatestLabels !== false} type="checkbox" onChange={(event) => onUpdate({ showLatestLabels: event.target.checked })} />
-            Latest detail labels
-          </label>
           {item.supportsHistoricalLabels ? (
             <>
               <label className="legend-checkbox">
@@ -2825,7 +2824,6 @@ function buildPriceZoneLegendItems(
       showConnectors: settings.showConnectors,
       showAxisLabel: settings.showAxisLabel,
       showHistoricalLabels: settings.showHistoricalLabels,
-      showLatestLabels: settings.showLatestLabels,
       showValue: true,
       supportsConnectors: itemZones.some((zone) => zone.annotationKind === "bos" || zone.annotationKind === "choch"),
       supportsAxisLabel: itemZones.some((zone) => typeof zone.axisLabelDefault === "boolean"),
@@ -3239,7 +3237,6 @@ function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettin
     showConnectors: true,
     showAxisLabel: false,
     showHistoricalLabels: true,
-    showLatestLabels: true,
     showLabels: true,
     showValue: true,
     visible: true
@@ -3261,7 +3258,6 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
     showConnectors: stored.showConnectors ?? defaults.showConnectors,
     showAxisLabel: stored.showAxisLabel ?? defaults.showAxisLabel,
     showHistoricalLabels: stored.showHistoricalLabels ?? defaults.showHistoricalLabels,
-    showLatestLabels: stored.showLatestLabels ?? stored.showLabels ?? defaults.showLatestLabels,
     showLabels: stored.showLabels ?? defaults.showLabels,
     showValue: stored.showValue ?? defaults.showValue,
     visible: stored.visible ?? defaults.visible
@@ -3279,7 +3275,6 @@ type ResolvedPriceZoneLegendSettings = {
   showConnectors: boolean;
   showAxisLabel: boolean;
   showHistoricalLabels: boolean;
-  showLatestLabels: boolean;
   visible: boolean;
 };
 
@@ -3296,7 +3291,6 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     showConnectors: stored.showConnectors !== false,
     showAxisLabel: stored.showAxisLabel ?? zone?.axisLabelDefault ?? false,
     showHistoricalLabels: stored.showHistoricalLabels ?? zone?.historicalLabelsDefault ?? false,
-    showLatestLabels: stored.showLatestLabels ?? stored.showLabels ?? zone?.latestLabelDefault ?? true,
     visible: stored.visible !== false,
   };
 }
@@ -4134,7 +4128,6 @@ function drawPriceZones(
   context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
   const plotBottom = Math.max(0, height - chart.timeScale().height());
   const chartBackground = validHexColor(readChartPalette().background, "#ffffff");
-  const labelCandidates: Array<{ element: HTMLSpanElement; preferredTop: number; priority: number }> = [];
   const compactTagBoxes: Array<{ bottom: number; left: number; right: number; top: number }> = [];
   const historicalBySettings = new Map<string, PriceZone[]>();
   zones.forEach((zone) => {
@@ -4192,6 +4185,7 @@ function drawPriceZones(
       const lineWidth = confidence === null
         ? settings.lineWidth
         : Math.max(1, Math.min(6, settings.lineWidth * (0.75 + 1.25 * confidence)));
+      const markerAnchor = priceZoneMarkerAnchor(chart, priceSeries, zone, candles, center, settings.markerSize, barWidth, plotBottom);
       context.save();
       context.globalAlpha = 1;
       context.fillStyle = rgbaFromHex(fillColor, fillOpacity);
@@ -4209,58 +4203,39 @@ function drawPriceZones(
             context.stroke();
           }
         }
-        if (isVisibleCoordinate(eventX, width)) drawEventGlyph(context, Number(eventX), center, settings.markerSize, fillColor, zone.annotationKind);
+        if (markerAnchor && isVisibleCoordinate(markerAnchor.x, width)) {
+          drawEventGlyph(context, markerAnchor.x, markerAnchor.y, settings.markerSize, fillColor, zone.annotationKind);
+        }
       } else {
         context.fillRect(left, top, zoneWidth, height);
         context.strokeRect(left, top, zoneWidth, height);
         if (zone.annotationKind === "swing-high" || zone.annotationKind === "swing-low") {
-          const markerX = clippedCoordinate(coordinates.start, width);
-          if (markerX !== null) drawSwingGlyph(context, markerX, center, settings.markerSize, fillColor, zone.annotationKind === "swing-high");
+          if (markerAnchor && isVisibleCoordinate(markerAnchor.x, width)) {
+            drawSwingGlyph(context, markerAnchor.x, markerAnchor.y, settings.markerSize, fillColor, zone.annotationKind === "swing-high");
+          }
         } else if (zone.annotationKind === "liquidity-support" || zone.annotationKind === "liquidity-resistance") {
-          const markerX = clippedCoordinate(coordinates.start, width);
-          if (markerX !== null) drawLiquidityGlyph(context, markerX, center, settings.markerSize, fillColor, zone.annotationKind === "liquidity-support");
+          if (markerAnchor && isVisibleCoordinate(markerAnchor.x, width)) {
+            drawLiquidityGlyph(context, markerAnchor.x, markerAnchor.y, settings.markerSize, fillColor, zone.annotationKind === "liquidity-support");
+          }
         }
       }
       context.restore();
       if (!zone.latest && zone.compactLabel && settings.showHistoricalLabels && historicalTagZones.has(zone)) {
-        const tagX = zone.eventTime ? chart.timeScale().timeToCoordinate(zone.eventTime as Time) : coordinates.start;
-        if (isVisibleCoordinate(tagX, width)) drawCompactPriceTag(context, zone.compactLabel, Number(tagX), center, fillColor, settings, compactTagBoxes, width, plotBottom);
-      }
-      if ((zone.latest ?? !zone.compactLabel) && settings.showLatestLabels) {
-        const label = document.createElement("span");
-        label.className = "price-zone-label latest";
-        label.textContent = latestPriceZoneLabel(zone);
-        label.title = zone.label;
-        if (confidence !== null) label.dataset.confidence = confidence.toFixed(3);
-        if (typeof zone.strength === "number" && Number.isFinite(zone.strength)) {
-          label.dataset.strength = clampNumber(zone.strength, 0, 1, 0).toFixed(3);
+        if (markerAnchor && isVisibleCoordinate(markerAnchor.x, width)) {
+          drawCompactPriceTag(
+            context,
+            zone.compactLabel,
+            markerAnchor,
+            fillColor,
+            settings,
+            compactTagBoxes,
+            width,
+            plotBottom,
+          );
         }
-        label.style.borderColor = rgbaFromHex(fillColor, Math.max(0.45, settings.opacity));
-        label.style.color = fillColor;
-        label.style.fontSize = `${settings.labelFontSize}px`;
-        label.style.opacity = `${settings.opacity}`;
-        label.style.visibility = "hidden";
-        layer.appendChild(label);
-        const preferredLeft = zone.latest ? coordinates.end - label.offsetWidth - 6 : left + 4;
-        label.style.left = `${Math.max(4, Math.min(preferredLeft, width - label.offsetWidth - 4))}px`;
-        labelCandidates.push({
-          element: label,
-          preferredTop: top - label.offsetHeight - 3,
-          priority: zone.displayItemId === "indicator.qmd_liquidity_levels" ? 3 : zone.annotationKind === "bos" || zone.annotationKind === "choch" || zone.annotationKind === "swing-high" || zone.annotationKind === "swing-low" ? 2 : 1,
-        });
       }
     });
   });
-  placePriceZoneLabels(layer, chart.timeScale().height(), labelCandidates);
-}
-
-function latestPriceZoneLabel(zone: PriceZone) {
-  const compactLabel = zone.compactLabel?.trim();
-  if (!compactLabel) return zone.label;
-  const price = (zone.lower + zone.upper) / 2;
-  if (!Number.isFinite(price)) return compactLabel;
-  const formattedPrice = price >= 1 ? price.toFixed(2) : price.toFixed(4);
-  return `${compactLabel} · $${formattedPrice}`;
 }
 
 function clippedHorizontalSpan(start: number, end: number, viewportWidth: number, overscan = 24) {
@@ -4278,9 +4253,55 @@ function isVisibleCoordinate(coordinate: number | null, viewportWidth: number, o
   return coordinate !== null && Number.isFinite(coordinate) && coordinate >= -overscan && coordinate <= viewportWidth + overscan;
 }
 
-function clippedCoordinate(coordinate: number, viewportWidth: number, overscan = 24) {
-  if (!Number.isFinite(coordinate) || coordinate < -overscan || coordinate > viewportWidth + overscan) return null;
-  return Math.max(-overscan, Math.min(viewportWidth + overscan, coordinate));
+function priceZoneMarkerPlacement(zone: PriceZone): PriceZoneMarkerPlacement {
+  if (zone.annotationKind === "swing-high" || zone.annotationKind === "liquidity-resistance") return "above";
+  if (zone.annotationKind === "swing-low" || zone.annotationKind === "liquidity-support") return "below";
+  if (zone.annotationKind === "bos" || zone.annotationKind === "choch") {
+    return zone.compactLabel?.endsWith("-") ? "below" : "above";
+  }
+  return "left";
+}
+
+function priceZoneMarkerAnchor(
+  chart: IChartApi,
+  priceSeries: ISeriesApi<"Candlestick">,
+  zone: PriceZone,
+  candles: Candle[],
+  levelY: number,
+  markerSize: number,
+  barWidth: number,
+  plotBottom: number,
+): PriceZoneMarkerAnchor | null {
+  const candle = nearestCandle(candles, zone.eventTime ?? zone.start);
+  if (!candle) return null;
+  const x = chart.timeScale().timeToCoordinate(candle.time as Time);
+  const highY = priceSeries.priceToCoordinate(candle.high);
+  const lowY = priceSeries.priceToCoordinate(candle.low);
+  if (x === null || highY === null || lowY === null) return null;
+  const placement = priceZoneMarkerPlacement(zone);
+  const top = Math.min(highY, lowY);
+  const bottom = Math.max(highY, lowY);
+  const gap = markerSize + 4;
+  if (placement === "above") {
+    const y = top - gap;
+    if (y - markerSize >= 2) return { placement, x, y };
+  } else if (placement === "below") {
+    const y = bottom + gap;
+    if (y + markerSize <= plotBottom - 2) return { placement, x, y };
+  }
+  const leftX = x - Math.max(barWidth / 2 + markerSize + 4, markerSize * 2 + 4);
+  const boundedY = Math.max(markerSize + 2, Math.min(levelY, plotBottom - markerSize - 2));
+  return leftX - markerSize >= 2 ? { placement: "left", x: leftX, y: boundedY } : null;
+}
+
+function nearestCandle(candles: Candle[], time: number) {
+  if (!candles.length || !Number.isFinite(time)) return null;
+  const index = lowerBoundCandleTime(candles, time);
+  if (index <= 0) return candles[0];
+  if (index >= candles.length) return candles[candles.length - 1];
+  const previous = candles[index - 1];
+  const next = candles[index];
+  return Math.abs(previous.time - time) <= Math.abs(next.time - time) ? previous : next;
 }
 
 function canvasLineDash(style: LegendLineStyle, lineWidth: number) {
@@ -4336,23 +4357,32 @@ function drawLiquidityGlyph(context: CanvasRenderingContext2D, x: number, y: num
 function drawCompactPriceTag(
   context: CanvasRenderingContext2D,
   text: string,
-  x: number,
-  y: number,
+  anchor: PriceZoneMarkerAnchor,
   color: string,
   settings: ResolvedPriceZoneLegendSettings,
   placed: Array<{ bottom: number; left: number; right: number; top: number }>,
   layerWidth: number,
   plotBottom: number,
 ) {
-  if (x < 2 || x > layerWidth - 2 || y < 2 || y > plotBottom - 2) return;
+  if (anchor.x < 2 || anchor.x > layerWidth - 2 || anchor.y < 2 || anchor.y > plotBottom - 2) return;
   const fontSize = Math.max(8, settings.labelFontSize - 2);
   context.save();
   context.font = `700 ${fontSize}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
   const textWidth = Math.ceil(context.measureText(text).width);
   const tagWidth = textWidth + 8;
   const tagHeight = fontSize + 6;
-  const left = Math.max(2, Math.min(x + 4, layerWidth - tagWidth - 2));
-  const top = Math.max(2, Math.min(y - tagHeight - 4, plotBottom - tagHeight - 2));
+  let left = anchor.x - tagWidth / 2;
+  let top = anchor.y - settings.markerSize - tagHeight - 3;
+  if (anchor.placement === "below") {
+    top = anchor.y + settings.markerSize + 3;
+  } else if (anchor.placement === "left") {
+    left = anchor.x - settings.markerSize - tagWidth - 3;
+    top = anchor.y - tagHeight / 2;
+  }
+  if (left < 2 || left + tagWidth > layerWidth - 2 || top < 2 || top + tagHeight > plotBottom - 2) {
+    context.restore();
+    return;
+  }
   const box = { bottom: top + tagHeight, left, right: left + tagWidth, top };
   const overlaps = placed.some((item) => box.left < item.right + 3 && box.right + 3 > item.left && box.top < item.bottom + 3 && box.bottom + 3 > item.top);
   if (!overlaps) {
@@ -4369,59 +4399,6 @@ function drawCompactPriceTag(
     placed.push(box);
   }
   context.restore();
-}
-
-function placePriceZoneLabels(
-  layer: HTMLDivElement,
-  timeScaleHeight: number,
-  candidates: Array<{ element: HTMLSpanElement; preferredTop: number; priority: number }>,
-) {
-  const gap = 3;
-  const plotBottom = Math.max(0, layer.clientHeight - timeScaleHeight - 3);
-  const placed: Array<{ bottom: number; left: number; right: number; top: number }> = [];
-  const legend = layer.parentElement?.querySelector<HTMLElement>(".chart-legend");
-  if (legend) {
-    const layerBounds = layer.getBoundingClientRect();
-    const legendBounds = legend.getBoundingClientRect();
-    const scaleX = layerBounds.width > 0 ? layerBounds.width / Math.max(1, layer.clientWidth) : 1;
-    const scaleY = layerBounds.height > 0 ? layerBounds.height / Math.max(1, layer.clientHeight) : 1;
-    placed.push({
-      bottom: (legendBounds.bottom - layerBounds.top) / scaleY,
-      left: (legendBounds.left - layerBounds.left) / scaleX,
-      right: (legendBounds.right - layerBounds.left) / scaleX,
-      top: (legendBounds.top - layerBounds.top) / scaleY,
-    });
-  }
-  candidates
-    .sort((left, right) => right.priority - left.priority || left.preferredTop - right.preferredTop)
-    .forEach(({ element, preferredTop }) => {
-      const width = element.offsetWidth;
-      const height = element.offsetHeight;
-      const maxLeft = Math.max(4, layer.clientWidth - width - 4);
-      const left = Math.max(4, Math.min(Number.parseFloat(element.style.left) || 4, maxLeft));
-      const maxTop = Math.max(3, plotBottom - height);
-      const initialTop = Math.max(3, Math.min(preferredTop, maxTop));
-      const overlaps = (top: number) => placed.some((box) => (
-        left < box.right + gap
-        && left + width + gap > box.left
-        && top < box.bottom + gap
-        && top + height + gap > box.top
-      ));
-      let top = initialTop;
-      while (top <= maxTop && overlaps(top)) top += height + gap;
-      if (top > maxTop) {
-        top = initialTop - height - gap;
-        while (top >= 3 && overlaps(top)) top -= height + gap;
-      }
-      if (top < 3 || overlaps(top)) {
-        element.remove();
-        return;
-      }
-      element.style.left = `${left}px`;
-      element.style.top = `${top}px`;
-      element.style.visibility = "visible";
-      placed.push({ bottom: top + height, left, right: left + width, top });
-    });
 }
 
 function priceZoneCoordinates(chart: IChartApi, zone: PriceZone, candles: Candle[], barWidth: number, candleDuration: number) {
