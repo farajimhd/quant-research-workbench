@@ -240,7 +240,7 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     shortDescription: "Causal support and resistance candidates inferred from consolidated NBBO behavior and eligible trades.",
     detailedDescription: "Green zones are price levels where bid reinforcement, bid recovery after depletion, seller absorption, and lower-price rejection accumulated. Red zones use the symmetric ask-side evidence. Evidence decays with a 15-minute half-life, so stale levels weaken rather than remaining permanent.",
     calculation: "For each selected-timeframe bar, support weights positive Level-1 OFI 30%, bid recovery 25%, absorbed aggressive selling 25%, and lower-range rejection 20%. Resistance mirrors those inputs. Repeated observations accumulate by minimum price increment; strength is a bounded transform of cumulative evidence and confidence combines touch count with QMD evidence reliability.",
-    readingGuide: "Treat each level as an area, not an exact tick. Current and historical tags use SUP and RES so the overlay stays clear; the guide and legend retain the full meaning. Read region density for accumulated strength, then read border weight and color intensity for confidence. A green level below price matters only if bids replenish or selling fails to move the midpoint; the red case is symmetric.",
+    readingGuide: "Treat each level as an area, not an exact tick. Current and historical tags use SUP and RES so the overlay stays clear; current SUP and RES also publish compact native tags at their prices on the right axis. Read region density for accumulated strength, then read border weight and color intensity for confidence. A green level below price matters only if bids replenish or selling fails to move the midpoint; the red case is symmetric.",
     bullishEvidence: "A nearby green zone with high strength and confidence, followed by seller absorption, positive OFI, and price rejection upward, supports a short-horizon bounce or continuation.",
     bearishEvidence: "A nearby red zone with high strength and confidence, followed by buyer absorption, negative OFI, and price rejection downward, supports a short-horizon rejection or continuation lower.",
     timeframeBehavior: "Raw 100 ms quote-and-trade sufficient statistics are merged once into the selected bar. Level evidence then decays by elapsed time, so changing timeframe changes observation granularity without changing the 15-minute economic half-life. The legend configures support and resistance independently, including history length, latest labels, historical tags, line style, width, opacity, and marker size.",
@@ -250,6 +250,7 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
       { label: "Strength · region density", description: "How much decayed evidence has accumulated at the level, normalized from 0% to 100%. Stronger evidence produces a denser filled region.", tone: "info" },
       { label: "Confidence · border emphasis", description: "Repeated observations and reliable quote/trade coverage make the border thicker, more opaque, and more saturated. Pale thin borders mean lower confidence; confidence is not win probability.", tone: "warning" },
       { label: "SUP / RES tags", description: "Short tags identify support and resistance without covering candles. The full evidence description remains available in this guide and the overlay metadata.", tone: "neutral" },
+      { label: "Price-axis tags", description: "The current candidate can appear beside the right-axis price like VWAP. Toggle it independently for support and resistance in the chart legend settings.", tone: "neutral" },
     ],
     caveats: ["QMD sees consolidated Level-1 NBBO, not venue depth, hidden liquidity, or the full order book.", "Displayed liquidity can be cancelled before execution; require price response and persistence.", "A candidate level is causal evidence, not a claim that the market must reverse there."],
   }),
@@ -257,7 +258,7 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     shortDescription: "Important price references derived from the current 04:00 ET session and confirmed chart structure.",
     detailedDescription: "The overlay combines intraday auction boundaries, causally confirmed swing structure, BOS/CHoCH events, locally estimated LULD bands, and higher-timeframe references from completed daily trade bars.",
     calculation: "A swing is confirmed only after two later bars fail to exceed the center bar. BOS is a close through a confirmed swing in the established structure direction; CHoCH is the first confirmed-swing break against that direction. QMD LULD is a local five-minute rolling reference estimate, not an official SIP band. The 52-week and prior-month levels are queried once from completed daily trade bars before intraday replay.",
-    readingGuide: "Start with session and premarket extremes, then opening range. Both current and historical states use compact tags such as Sess H, PM L, SwH, SwL, BoS, and CHoCH so labels do not cover candles. A BoS or CHoCH connector begins where the broken swing first became causally confirmed and ends at the closing bar that broke it; this preserves the relationship without backpainting the original pivot. These deterministic structure levels do not expose a confidence score, so their weight and opacity remain neutral rather than implying one.",
+    readingGuide: "Start with session and premarket extremes, then opening range. Both current and historical states use compact tags such as Sess H, PM L, SwH, SwL, BoS, and CHoCH so labels do not cover candles. Selected current levels can also publish compact native tags beside their right-axis prices; premarket H/L, opening-range H/L, and POC enable this by default, while every eligible level group can be configured independently in the legend. A BoS or CHoCH connector begins where the broken swing first became causally confirmed and ends at the closing bar that broke it; this preserves the relationship without backpainting the original pivot. These deterministic structure levels do not expose a confidence score, so their weight and opacity remain neutral rather than implying one.",
     bullishEvidence: "Reclaim and acceptance above a prior high, opening-range high, or swing high—especially with positive flow—supports continuation. A defended low or POC can support a bounce.",
     bearishEvidence: "Loss and acceptance below a prior low, opening-range low, or swing low—especially with negative flow—supports continuation lower. Rejection at a high or POC can act as resistance.",
     timeframeBehavior: "Session anchors retain their clock meaning. Premarket H/L requires bars of 30 minutes or less and the opening range requires bars of five minutes or less. Swing, BoS, CHoCH, and bar-volume POC depend on the selected timeframe. The 52-week and prior-month references come from completed daily bars. Canvas keeps up to 500 causal source bars and defaults each configurable group to a 100-bar view; every segment shows the value known at that time rather than projecting the newest value backward.",
@@ -1409,26 +1410,26 @@ function historicalMarketLevelZones(rows: HistoricalIndicator[], bars: Historica
   }
   if (visible.has("indicator.market_structure_levels")) {
     const specs = [
-      ["structure_session_high", "Session high", "Sess H", "var(--info)", "session", "Session H/L", "level"],
-      ["structure_session_low", "Session low", "Sess L", "var(--info)", "session", "Session H/L", "level"],
-      ["structure_premarket_high", "Premarket high", "PM H", "var(--warning)", "premarket", "Premarket H/L", "level"],
-      ["structure_premarket_low", "Premarket low", "PM L", "var(--warning)", "premarket", "Premarket H/L", "level"],
-      ["structure_opening_range_high", "Opening range high", "OR H", "var(--foreground)", "opening-range", "Opening range", "level"],
-      ["structure_opening_range_low", "Opening range low", "OR L", "var(--foreground)", "opening-range", "Opening range", "level"],
-      ["structure_swing_high", "Confirmed swing high", "SwH", "var(--danger)", "swings", "Swing H/L", "swing-high"],
-      ["structure_swing_low", "Confirmed swing low", "SwL", "var(--success)", "swings", "Swing H/L", "swing-low"],
-      ["structure_luld_upper", "Estimated LULD upper", "LULD U", "var(--danger)", "luld", "Estimated LULD", "level"],
-      ["structure_luld_lower", "Estimated LULD lower", "LULD L", "var(--danger)", "luld", "Estimated LULD", "level"],
-      ["structure_52_week_high", "52-week high", "52W H", "var(--warning)", "52-week", "52-week H/L", "level"],
-      ["structure_52_week_low", "52-week low", "52W L", "var(--info)", "52-week", "52-week H/L", "level"],
-      ["structure_prior_month_high", "Prior-month high", "PrevM H", "var(--primary)", "prior-month", "Prior month H/L/C", "level"],
-      ["structure_prior_month_low", "Prior-month low", "PrevM L", "var(--primary)", "prior-month", "Prior month H/L/C", "level"],
-      ["structure_prior_month_close", "Prior-month close", "PrevM C", "var(--muted-foreground)", "prior-month", "Prior month H/L/C", "level"],
-      ["structure_volume_poc", "Bar-volume POC", "POC", "var(--success)", "poc", "Bar-volume POC", "level"],
-      ["structure_nearest_round", "Nearest round price", "Round", "var(--muted-foreground)", "round", "Round price", "level"],
+      ["structure_session_high", "Session high", "Sess H", "var(--info)", "session", "Session H/L", "level", false],
+      ["structure_session_low", "Session low", "Sess L", "var(--info)", "session", "Session H/L", "level", false],
+      ["structure_premarket_high", "Premarket high", "PM H", "var(--warning)", "premarket", "Premarket H/L", "level", true],
+      ["structure_premarket_low", "Premarket low", "PM L", "var(--warning)", "premarket", "Premarket H/L", "level", true],
+      ["structure_opening_range_high", "Opening range high", "OR H", "var(--foreground)", "opening-range", "Opening range", "level", true],
+      ["structure_opening_range_low", "Opening range low", "OR L", "var(--foreground)", "opening-range", "Opening range", "level", true],
+      ["structure_swing_high", "Confirmed swing high", "SwH", "var(--danger)", "swings", "Swing H/L", "swing-high", false],
+      ["structure_swing_low", "Confirmed swing low", "SwL", "var(--success)", "swings", "Swing H/L", "swing-low", false],
+      ["structure_luld_upper", "Estimated LULD upper", "LULD U", "var(--danger)", "luld", "Estimated LULD", "level", false],
+      ["structure_luld_lower", "Estimated LULD lower", "LULD L", "var(--danger)", "luld", "Estimated LULD", "level", false],
+      ["structure_52_week_high", "52-week high", "52W H", "var(--warning)", "52-week", "52-week H/L", "level", false],
+      ["structure_52_week_low", "52-week low", "52W L", "var(--info)", "52-week", "52-week H/L", "level", false],
+      ["structure_prior_month_high", "Prior-month high", "PrevM H", "var(--primary)", "prior-month", "Prior month H/L/C", "level", false],
+      ["structure_prior_month_low", "Prior-month low", "PrevM L", "var(--primary)", "prior-month", "Prior month H/L/C", "level", false],
+      ["structure_prior_month_close", "Prior-month close", "PrevM C", "var(--muted-foreground)", "prior-month", "Prior month H/L/C", "level", false],
+      ["structure_volume_poc", "Bar-volume POC", "POC", "var(--success)", "poc", "Bar-volume POC", "level", true],
+      ["structure_nearest_round", "Nearest round price", "Round", "var(--muted-foreground)", "round", "Round price", "level", false],
     ] as const;
-    specs.forEach(([column, label, compactLabel, color, settingsSuffix, legendLabel, annotationKind]) => pushTrailingLevelZones(zones, rows, column, chartEnd, LEVEL_SOURCE_HISTORY_BARS, {
-      annotationKind, color, compactLabel, displayItemId: "indicator.market_structure_levels", fillOpacity: 0.035,
+    specs.forEach(([column, label, compactLabel, color, settingsSuffix, legendLabel, annotationKind, axisLabelDefault]) => pushTrailingLevelZones(zones, rows, column, chartEnd, LEVEL_SOURCE_HISTORY_BARS, {
+      annotationKind, axisLabelDefault, color, compactLabel, displayItemId: "indicator.market_structure_levels", fillOpacity: 0.035,
       historicalLabelsDefault: settingsSuffix === "swings",
       historicalTagLimitDefault: settingsSuffix === "swings" ? 8 : 0,
       label,
@@ -1444,6 +1445,7 @@ function historicalMarketLevelZones(rows: HistoricalIndicator[], bars: Historica
 
 type LevelZoneStyle = {
   annotationKind: "level" | "liquidity-resistance" | "liquidity-support" | "swing-high" | "swing-low";
+  axisLabelDefault?: boolean;
   color: string;
   compactLabel: string;
   confidence?: number;
@@ -1482,6 +1484,7 @@ function pushTrailingLiquidityZones(
     const sideLabel = style.annotationKind === "liquidity-support" ? "Support" : "Resistance";
     pushHistoricalLevelSegment(zones, rows, segmentStart, index, segmentValue, chartEnd, {
       ...style,
+      axisLabelDefault: true,
       confidence,
       displayItemId: "indicator.qmd_liquidity_levels",
       fillOpacity: 0.035 + 0.14 * strength,
@@ -1600,6 +1603,7 @@ function pushHistoricalLevelSegment(
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
   zones.push({
     annotationKind: style.annotationKind,
+    axisLabelDefault: style.axisLabelDefault,
     borderColor: style.color,
     borderOpacity: Math.min(0.4, style.fillOpacity * 2.5),
     borderStyle: "solid",

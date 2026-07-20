@@ -100,6 +100,7 @@ type TradeAnnotation = {
 };
 type PriceZone = {
   annotationKind?: "band" | "bos" | "choch" | "level" | "liquidity-resistance" | "liquidity-support" | "swing-high" | "swing-low";
+  axisLabelDefault?: boolean;
   borderColor?: string;
   borderOpacity?: number;
   borderStyle?: string;
@@ -207,6 +208,10 @@ type OscillatorPaneGroup = {
   key: string;
   series: ChartSeries[];
 };
+type PriceZoneAxisLineRuntime = {
+  line: IPriceLine;
+  signature: string;
+};
 type LegendLineStyle = "solid" | "dashed" | "dotted";
 type LegendSeriesSettings = {
   color?: string;
@@ -218,6 +223,7 @@ type LegendSeriesSettings = {
   maxHistoricalTags?: number;
   opacity?: number;
   showConnectors?: boolean;
+  showAxisLabel?: boolean;
   showHistoricalLabels?: boolean;
   showLatestLabels?: boolean;
   showLabels?: boolean;
@@ -415,6 +421,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const indicatorSourceRef = useRef<Map<string, ChartSeries>>(new Map());
   const indicatorBoundsRef = useRef<Map<string, NumericBounds>>(new Map());
   const oscillatorPaneRuntimesRef = useRef<Map<string, OscillatorPaneRuntime>>(new Map());
+  const priceZoneAxisLinesRef = useRef<Map<string, PriceZoneAxisLineRuntime>>(new Map());
   const payloadRef = useRef<ChartPayload | null>(payload);
   const liveEntryLineRef = useRef<LiveEntryLine | null>(null);
   const referenceRef = useRef<ChartReference | null>(reference ?? null);
@@ -1126,6 +1133,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     if (!chart || !currentPayload) return;
     const selectedZones = (currentPayload.price_zones ?? []).filter((zone) => !zone.displayItemId || visibleSelectionRef.current.has(zone.displayItemId.toLowerCase()));
     const timeline = chartTimelineData(currentPayload.candles, timeframe);
+    syncPriceZoneAxisLines(candleRef.current, selectedZones, legendSettingsRef.current, priceZoneAxisLinesRef.current);
     drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, selectedZones, currentPayload.trade_annotations ?? [], currentPayload.candles, timeline, chartSettingsRef.current, legendSettingsRef.current, liveEntryLineRef.current);
     oscillatorPaneRuntimesRef.current.forEach((_runtime, key) => {
       drawSessionRegions(chart, oscillatorLayerRefs.current.get(key) ?? null, currentPayload.regions, timeline, currentPayload.candles, chartSettingsRef.current, false);
@@ -1178,6 +1186,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       regionDrawRef.current = null;
     }
     oscillatorPaneRuntimesRef.current.clear();
+    priceZoneAxisLinesRef.current.clear();
     candleMarkersRef.current?.detach();
     candleMarkersRef.current = null;
     if (priceChartRef.current) {
@@ -1622,11 +1631,13 @@ type LegendItem = {
   semanticColor: boolean;
   semanticColors: { down: string; neutral: string; up: string };
   showConnectors?: boolean;
+  showAxisLabel?: boolean;
   showHistoricalLabels?: boolean;
   showLatestLabels?: boolean;
   showLabels?: boolean;
   showValue: boolean;
   supportsConnectors?: boolean;
+  supportsAxisLabel?: boolean;
   supportsHistoricalLabels?: boolean;
   supportsHistoryWindow?: boolean;
   supportsMarkers?: boolean;
@@ -1913,6 +1924,12 @@ function LegendEditor({
       </label>
       {item.itemKind === "zone" ? (
         <>
+          {item.supportsAxisLabel ? (
+            <label className="legend-checkbox">
+              <input checked={Boolean(item.showAxisLabel)} type="checkbox" onChange={(event) => onUpdate({ showAxisLabel: event.target.checked })} />
+              Compact tag on price axis
+            </label>
+          ) : null}
           <label className="legend-checkbox">
             <input checked={item.showLatestLabels !== false} type="checkbox" onChange={(event) => onUpdate({ showLatestLabels: event.target.checked })} />
             Latest detail labels
@@ -2806,10 +2823,12 @@ function buildPriceZoneLegendItems(
       semanticColor: true,
       semanticColors: { down: appearance.downColor, neutral: readNeutralChartColor(), up: appearance.upColor },
       showConnectors: settings.showConnectors,
+      showAxisLabel: settings.showAxisLabel,
       showHistoricalLabels: settings.showHistoricalLabels,
       showLatestLabels: settings.showLatestLabels,
       showValue: true,
       supportsConnectors: itemZones.some((zone) => zone.annotationKind === "bos" || zone.annotationKind === "choch"),
+      supportsAxisLabel: itemZones.some((zone) => typeof zone.axisLabelDefault === "boolean"),
       supportsHistoricalLabels: itemZones.some((zone) => Boolean(zone.compactLabel)),
       supportsHistoryWindow: itemZones.some((zone) => !zone.latest),
       supportsMarkers: itemZones.some((zone) => zone.annotationKind === "bos" || zone.annotationKind === "choch" || zone.annotationKind === "liquidity-resistance" || zone.annotationKind === "liquidity-support" || zone.annotationKind === "swing-high" || zone.annotationKind === "swing-low"),
@@ -3190,6 +3209,23 @@ function mixHexColors(background: string, foreground: string, foregroundWeight: 
   return `#${channel(0)}${channel(2)}${channel(4)}`;
 }
 
+function priceZonePresentationColors(zone: PriceZone, chartBackground: string) {
+  const confidence = typeof zone.confidence === "number" && Number.isFinite(zone.confidence)
+    ? clampNumber(zone.confidence, 0, 1, 0)
+    : null;
+  const semanticFillColor = validHexColor(resolveChartColor(zone.fillColor || zone.color), "#1E3A5F");
+  const semanticBorderColor = validHexColor(resolveChartColor(zone.borderColor || semanticFillColor), semanticFillColor);
+  return {
+    borderColor: confidence === null
+      ? semanticBorderColor
+      : mixHexColors(chartBackground, semanticBorderColor, 0.34 + 0.66 * confidence),
+    confidence,
+    fillColor: confidence === null
+      ? semanticFillColor
+      : mixHexColors(chartBackground, semanticFillColor, 0.28 + 0.72 * confidence),
+  };
+}
+
 function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettings> {
   return {
     color: resolveChartColor(series.color),
@@ -3201,6 +3237,7 @@ function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettin
     maxHistoricalTags: 10,
     opacity: 1,
     showConnectors: true,
+    showAxisLabel: false,
     showHistoricalLabels: true,
     showLatestLabels: true,
     showLabels: true,
@@ -3222,6 +3259,7 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
     maxHistoricalTags: Math.max(0, Math.min(30, Math.round(stored.maxHistoricalTags ?? defaults.maxHistoricalTags))),
     opacity: clampNumber(stored.opacity ?? defaults.opacity, 0, 1, 1),
     showConnectors: stored.showConnectors ?? defaults.showConnectors,
+    showAxisLabel: stored.showAxisLabel ?? defaults.showAxisLabel,
     showHistoricalLabels: stored.showHistoricalLabels ?? defaults.showHistoricalLabels,
     showLatestLabels: stored.showLatestLabels ?? stored.showLabels ?? defaults.showLatestLabels,
     showLabels: stored.showLabels ?? defaults.showLabels,
@@ -3239,6 +3277,7 @@ type ResolvedPriceZoneLegendSettings = {
   maxHistoricalTags: number;
   opacity: number;
   showConnectors: boolean;
+  showAxisLabel: boolean;
   showHistoricalLabels: boolean;
   showLatestLabels: boolean;
   visible: boolean;
@@ -3255,6 +3294,7 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     maxHistoricalTags: Math.max(0, Math.min(30, Math.round(stored.maxHistoricalTags ?? zone?.historicalTagLimitDefault ?? 10))),
     opacity: clampNumber(stored.opacity ?? 1, 0, 1, 1),
     showConnectors: stored.showConnectors !== false,
+    showAxisLabel: stored.showAxisLabel ?? zone?.axisLabelDefault ?? false,
     showHistoricalLabels: stored.showHistoricalLabels ?? zone?.historicalLabelsDefault ?? false,
     showLatestLabels: stored.showLatestLabels ?? stored.showLabels ?? zone?.latestLabelDefault ?? true,
     visible: stored.visible !== false,
@@ -4010,6 +4050,57 @@ function formatMoneyValue(value: number) {
   return `${sign}$${Math.abs(value).toFixed(2)}`;
 }
 
+function syncPriceZoneAxisLines(
+  priceSeries: ISeriesApi<"Candlestick"> | null,
+  zones: PriceZone[],
+  legendSettings: LegendSettingsMap,
+  runtimes: Map<string, PriceZoneAxisLineRuntime>,
+) {
+  if (!priceSeries) return;
+  const nextKeys = new Set<string>();
+  const chartBackground = validHexColor(readChartPalette().background, "#ffffff");
+  zones.forEach((zone) => {
+    if (!zone.latest || typeof zone.axisLabelDefault !== "boolean") return;
+    const compactLabel = zone.compactLabel?.trim();
+    const price = (zone.lower + zone.upper) / 2;
+    if (!compactLabel || !Number.isFinite(price) || price <= 0) return;
+    const settingsId = zone.settingsId || zone.displayItemId || `zone:${zone.label}`;
+    const settings = resolvePriceZoneLegendSettings(legendSettings, priceZoneLegendKey(settingsId), zone);
+    if (!settings.visible || !settings.showAxisLabel) return;
+    const key = `${settingsId}:${compactLabel}`;
+    const color = priceZonePresentationColors(zone, chartBackground).borderColor;
+    const signature = `${compactLabel}|${price}|${color}`;
+    const existing = runtimes.get(key);
+    nextKeys.add(key);
+    if (!existing) {
+      runtimes.set(key, {
+        line: priceSeries.createPriceLine({
+          axisLabelVisible: true,
+          color,
+          lineVisible: false,
+          price,
+          title: compactLabel,
+        }),
+        signature,
+      });
+    } else if (existing.signature !== signature) {
+      existing.line.applyOptions({
+        axisLabelVisible: true,
+        color,
+        lineVisible: false,
+        price,
+        title: compactLabel,
+      });
+      existing.signature = signature;
+    }
+  });
+  runtimes.forEach((runtime, key) => {
+    if (nextKeys.has(key)) return;
+    priceSeries.removePriceLine(runtime.line);
+    runtimes.delete(key);
+  });
+}
+
 function drawPriceZones(
   chart: IChartApi,
   priceSeries: ISeriesApi<"Candlestick"> | null,
@@ -4092,17 +4183,7 @@ function drawPriceZones(
         }
       }
       if (zoneWidth < 1 || height < 1) return;
-      const confidence = typeof zone.confidence === "number" && Number.isFinite(zone.confidence)
-        ? clampNumber(zone.confidence, 0, 1, 0)
-        : null;
-      const semanticFillColor = validHexColor(resolveChartColor(zone.fillColor || zone.color), "#1E3A5F");
-      const semanticBorderColor = validHexColor(resolveChartColor(zone.borderColor || semanticFillColor), semanticFillColor);
-      const fillColor = confidence === null
-        ? semanticFillColor
-        : mixHexColors(chartBackground, semanticFillColor, 0.28 + 0.72 * confidence);
-      const borderColor = confidence === null
-        ? semanticBorderColor
-        : mixHexColors(chartBackground, semanticBorderColor, 0.34 + 0.66 * confidence);
+      const { borderColor, confidence, fillColor } = priceZonePresentationColors(zone, chartBackground);
       const baseFillOpacity = clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08);
       const fillOpacity = baseFillOpacity * (confidence === null ? 1 : 0.45 + 0.55 * confidence) * settings.opacity;
       const borderOpacity = confidence === null
