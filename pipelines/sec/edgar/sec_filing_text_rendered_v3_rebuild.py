@@ -62,6 +62,8 @@ DEFAULT_FILE_ROOT_CH = "/mnt/d/market-data"
 BUILD_PARTITION_KEY = "toYYYYMM(source_archive_date)"
 FINAL_PARTITION_KEY = "cityHash64(cik) % 64"
 RENDERED_SORTING_KEY = "cik, accession_number, document_id, text_kind"
+CUTOVER_SOURCE_BLOCK_BYTES = 1 << 30
+CUTOVER_MAX_BLOCK_ROWS = 256
 
 _INSERT_SEMAPHORE: Any | None = None
 
@@ -775,7 +777,10 @@ def create_rendered_table(
     deduplication_window: int = 0,
 ) -> None:
     storage_policy = load_table_layout(client, database, schema_table)["storage_policy"]
-    settings = "index_granularity=8192"
+    settings = (
+        "index_granularity=8192, index_granularity_bytes=10485760, "
+        "enable_mixed_granularity_parts=1"
+    )
     if storage_policy:
         settings += f", storage_policy={sql_string(storage_policy)}"
     if deduplication_window:
@@ -864,12 +869,22 @@ WHERE active
     )
 
 
+def cutover_source_block_rows(max_text_byte_count: int) -> int:
+    if max_text_byte_count <= 0:
+        return CUTOVER_MAX_BLOCK_ROWS
+    return max(
+        1,
+        min(CUTOVER_MAX_BLOCK_ROWS, CUTOVER_SOURCE_BLOCK_BYTES // max_text_byte_count),
+    )
+
+
 def rebuild_cutover_partition(
     client: ClickHouseHttpClient,
     args: argparse.Namespace,
     cutover_table: str,
     partition_id: int,
     source_stats: tuple[int, int],
+    max_block_rows: int,
 ) -> None:
     if physical_partition_rows(client, args.database, cutover_table, partition_id):
         client.execute(f"ALTER TABLE {table(args.database, cutover_table)} DROP PARTITION {partition_id}")
@@ -888,10 +903,13 @@ PREWHERE {predicate}
 SETTINGS max_threads=1,
          max_insert_threads=1,
          max_memory_usage=8589934592,
-         max_block_size=2048,
-         max_insert_block_size=2048,
+         max_block_size={max_block_rows},
+         preferred_block_size_bytes=67108864,
+         preferred_max_column_in_block_size_bytes=67108864,
+         max_insert_block_size=4096,
+         max_insert_block_size_bytes=1073741824,
          min_insert_block_size_rows=0,
-         min_insert_block_size_bytes=0,
+         min_insert_block_size_bytes=536870912,
          insert_deduplicate=0
 """
     )
@@ -2200,6 +2218,16 @@ def prepare_hash_cutover_table(client: ClickHouseHttpClient, args: argparse.Name
     layout = load_table_layout(client, args.database, cutover_table)
     if normalized_layout_key(layout["partition_key"]) != normalized_layout_key(FINAL_PARTITION_KEY):
         raise RuntimeError(f"cutover table has wrong partition key: {layout['partition_key']}")
+    max_text_byte_count = scalar_int(
+        client,
+        f"SELECT coalesce(max(text_byte_count), 0) FROM {table(args.database, args.staging_table)}",
+    )
+    max_block_rows = cutover_source_block_rows(max_text_byte_count)
+    print(
+        f"cutover_source_blocks max_text_byte_count={max_text_byte_count:,} "
+        f"max_block_rows={max_block_rows} target_block_bytes={CUTOVER_SOURCE_BLOCK_BYTES:,}",
+        flush=True,
+    )
     for partition_id in range(64):
         predicate = f"cityHash64(cik) % 64={partition_id}"
         source_stats = rendered_table_stats(
@@ -2224,7 +2252,14 @@ def prepare_hash_cutover_table(client: ClickHouseHttpClient, args: argparse.Name
             f"cutover_repartition={partition_id + 1}/64 status=active rows={source_stats[0]:,}",
             flush=True,
         )
-        rebuild_cutover_partition(client, args, cutover_table, partition_id, source_stats)
+        rebuild_cutover_partition(
+            client,
+            args,
+            cutover_table,
+            partition_id,
+            source_stats,
+            max_block_rows,
+        )
         print(
             f"cutover_repartition={partition_id + 1}/64 status=completed reused=false rows={source_stats[0]:,}",
             flush=True,

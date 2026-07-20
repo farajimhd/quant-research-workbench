@@ -73,10 +73,17 @@ CIK-hash table and streams one hash partition at a time from the monthly work
 table. The transfer intentionally has neither source `FINAL` nor a global
 `ORDER BY`: both materialize all text in a CIK partition and the original
 bucket-7 transfer exceeded its 32 GiB query limit while executing
-`ReplacingSorted`. Instead, the destination MergeTree sorts 2,048-row insert
-blocks under an 8 GiB query ceiling. If source revisions produce more physical
-than logical rows, a synchronous destination-partition `OPTIMIZE ... FINAL`
-selects the authoritative `source_revision_rank` winner before validation.
+`ReplacingSorted`. A later fixed 2,048-row stream exposed the other side of the
+same defect: row counts do not bound variable-width SEC text, and bucket 9
+requested an 8 GiB text-column allocation. Cutover now reads the largest stored
+`text_byte_count` before transfer and derives
+`max_block_size=floor(1 GiB / max_text_byte_count)`, bounded to 1-256 rows. The
+current 254,521,551-byte maximum therefore uses four-row source blocks.
+Destination blocks are independently formed between 512 MiB and 1 GiB under an
+8 GiB query ceiling. New rendered tables explicitly enable adaptive 10 MiB
+MergeTree granules. If source revisions produce more physical than logical
+rows, a synchronous destination-partition `OPTIMIZE ... FINAL` selects the
+authoritative `source_revision_rank` winner before validation.
 Every partition must match the source logical row count and checksum. A partial
 partition is dropped and rebuilt on resume with insert deduplication disabled;
 completed partitions are reused. Only after all 64 partitions match does the
@@ -90,6 +97,12 @@ staging corpus in a temporary table: 375,581 rows copied and matched checksum
 `14158962764992567782` in 568 seconds. Observed query memory remained below
 1 GiB, compared with the former 32 GiB failure. The temporary table was dropped
 after validation.
+
+The subsequent bucket-9 failure was also reproduced and retested against the
+exact production staging rows. Its 407,229 logical and physical rows matched
+checksum `1437036227408557971`; observed memory peaked near 3.25 GiB instead of
+requesting an 8 GiB text-column allocation. The independent post-query audit
+passed and removed the temporary table.
 
 Corpus validation is bounded in the same way. Eight validation lanes recalculate
 text hashes, UTF-8 character counts, byte counts, and renderer-version fields one

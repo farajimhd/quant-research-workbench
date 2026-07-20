@@ -27,6 +27,7 @@ from pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild import (
     collect_partition_results,
     clickhouse_insert_slot,
     create_rendered_table,
+    cutover_source_block_rows,
     export_source_partition,
     load_or_create_run_manifest,
     load_filing_forms,
@@ -67,14 +68,18 @@ class SecRenderedV3RebuildTest(unittest.TestCase):
 
         client = RecordingClient()
         args = SimpleNamespace(database="q_live", staging_table="stage_v3")
-        rebuild_cutover_partition(client, args, "final_v3", 7, (10, 20))
+        rebuild_cutover_partition(client, args, "final_v3", 7, (10, 20), 4)
 
         insert_sql = next(sql for sql in client.sql if "INSERT INTO" in sql)
         self.assertIn("FROM `q_live`.`stage_v3`\nPREWHERE cityHash64(cik) % 64=7", insert_sql)
         self.assertNotIn(" FINAL", insert_sql)
         self.assertNotIn("ORDER BY", insert_sql)
         self.assertIn("max_memory_usage=8589934592", insert_sql)
-        self.assertIn("max_block_size=2048", insert_sql)
+        self.assertIn("max_block_size=4", insert_sql)
+        self.assertIn("preferred_block_size_bytes=67108864", insert_sql)
+        self.assertIn("preferred_max_column_in_block_size_bytes=67108864", insert_sql)
+        self.assertIn("max_insert_block_size_bytes=1073741824", insert_sql)
+        self.assertIn("min_insert_block_size_bytes=536870912", insert_sql)
         self.assertIn("insert_deduplicate=0", insert_sql)
         self.assertTrue(any("DROP PARTITION 7" in sql for sql in client.sql))
         self.assertTrue(any("OPTIMIZE TABLE `q_live`.`final_v3` PARTITION 7 FINAL" in sql for sql in client.sql))
@@ -95,10 +100,17 @@ class SecRenderedV3RebuildTest(unittest.TestCase):
 
         client = RecordingClient()
         args = SimpleNamespace(database="q_live", staging_table="stage_v3")
-        rebuild_cutover_partition(client, args, "final_v3", 8, (10, 20))
+        rebuild_cutover_partition(client, args, "final_v3", 8, (10, 20), 4)
 
         self.assertFalse(any("DROP PARTITION" in sql for sql in client.sql))
         self.assertFalse(any("OPTIMIZE TABLE" in sql for sql in client.sql))
+
+    def test_cutover_source_rows_are_bounded_by_largest_text(self) -> None:
+        self.assertEqual(cutover_source_block_rows(0), 256)
+        self.assertEqual(cutover_source_block_rows(1 << 20), 256)
+        self.assertEqual(cutover_source_block_rows(254_521_551), 4)
+        self.assertEqual(cutover_source_block_rows(1 << 30), 1)
+        self.assertEqual(cutover_source_block_rows(2 << 30), 1)
 
     def test_rendered_table_stats_are_aggregated_in_final_layout_buckets(self) -> None:
         class RecordingClient:
@@ -208,6 +220,8 @@ class SecRenderedV3RebuildTest(unittest.TestCase):
         ddl = client.sql[-1]
         self.assertIn("ReplacingMergeTree(source_revision_rank)", ddl)
         self.assertIn("PARTITION BY toYYYYMM(source_archive_date)", ddl)
+        self.assertIn("index_granularity_bytes=10485760", ddl)
+        self.assertIn("enable_mixed_granularity_parts=1", ddl)
         self.assertIn("storage_policy='live_market_ssd'", ddl)
 
     def test_row_group_bundles_are_bounded_and_cover_every_group_once(self) -> None:

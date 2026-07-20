@@ -134,9 +134,13 @@ The rebuild writes bundles into a monthly work table to avoid scattering every
 insert across 64 hash partitions. Validated cutover then streams one CIK hash
 partition at a time into the canonical final layout without source `FINAL` or a
 global `ORDER BY`. The destination `ReplacingMergeTree(source_revision_rank)`
-sorts bounded blocks and performs a verified partition-level final compaction
-only where physical revision rows exceed the logical source count. A partial
-partition is dropped and rebuilt on resume; completed partitions are reused.
+sorts bounded blocks. Cutover derives the source row-block limit from the
+largest stored `text_byte_count`, keeping each source block near 1 GiB or less,
+and separately caps destination blocks at 1 GiB. It performs a verified
+partition-level final compaction only where physical revision rows exceed the
+logical source count. A partial partition is dropped and rebuilt on resume;
+completed partitions are reused. New rendered tables explicitly use adaptive
+10 MiB MergeTree granules for large variable-width text.
 Existing stale hash staging is migrated server-side on resume, preserving all
 successful bundle checkpoints and rendered rows.
 Final rendered-text validation is likewise bounded: text integrity is checked
