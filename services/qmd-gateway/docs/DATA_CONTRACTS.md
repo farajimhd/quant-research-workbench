@@ -433,7 +433,7 @@ Table: `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`.
 
 | Field | Formula | Streaming Method |
 |---|---|---|
-| `schema_version` | Current value is `12`. | Constant per row. |
+| `schema_version` | Current value is `15`. | Constant per row. |
 | `session_date`, `timeframe`, `sym`, `bar_start`, `bar_end` | Copied from closed bar. | One row per closed bar. |
 | `close`, `volume` | Copied from closed bar. | Inputs for chart and indicator display. |
 | `vwap` | TradingView-compatible session VWAP: cumulative `sum(hlc3 * volume) / sum(volume)` from the 04:00 New York extended-session open. It continues through 09:30 without resetting and remains anchored through after-hours. The canonical bar's own `vwap` remains its event-level `dollar_volume / volume`. | Keep cumulative typical-price notional and volume per ticker/timeframe/market-session anchor. |
@@ -455,13 +455,18 @@ Table: `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`.
 | `trend_score` | Fraction of 5 checks that pass: `close > ema_20`, `ema_9 > ema_20`, `ema_20 > ema_50`, `rsi_14 >= 50`, `macd_histogram > 0`. | Updated per closed bar. Range is 0 to 1. |
 | `microstructure_fast_signal`, `microstructure_confirm_signal`, `microstructure_context_signal` | Canonical deterministic microstructure scores for the latest 25, 100, and 500 quote/trade events. Range is -1 to +1. | Event state is sampled causally at `bar_end`; later events are excluded. |
 | `microstructure_fast_confidence`, `microstructure_confirm_confidence`, `microstructure_context_confidence` | Evidence coverage and quality for each event horizon. Range is 0 to 100. | Uses the same canonical forecast snapshot as the score. |
-| `microstructure_unified_signal` | Confidence-weighted mean of the three ready horizon scores with fixed priors 50%, 30%, and 20%. Range is -1 to +1. | Updated from the causal horizon snapshot at every closed bar. |
-| `microstructure_unified_confidence` | Prior-weighted horizon confidence discounted by cross-horizon disagreement. Range is 0 to 100. | Missing horizons and disagreement reduce confidence. |
+| `microstructure_unified_signal` | Timeframe-consistent combined signal: 45% aggressive flow, 35% displayed liquidity, and 20% response/resiliency. Range is -1 to +1. | Raw sufficient statistics are merged to the selected bar and calculated once; child-bar ratios are never averaged. |
+| `microstructure_unified_confidence` | `100 * reliability * (0.55 + 0.45 * abs(signal))`, clamped to 0-100. | Reliability combines coverage, quote and classification quality, evidence density, and directional-block agreement. |
 | `microstructure_unified_action` | `buy` when score is positive, confidence is at least 35%, and absolute score is at least 0.15; `sell` under the symmetric negative rule; otherwise `wait`. | Deterministic strategy gate, not an order instruction. |
 | `qmd_structure_direction`, `qmd_structure_strength`, `qmd_structure_confidence`, `qmd_structure_agreement`, `qmd_structure_score` | Unified event-native market structure. Score is `direction * strength * confidence * (0.5 + 0.5 * agreement)`. | One symbol engine processes ordered NBBO and eligible trades once, then every timeframe samples the same causal snapshot at `bar_end`. |
 | `qmd_structure_{micro,tactical,context}_*` | Directional-change pivots, accepted breaks, and active support/resistance zones at fixed price-response scales. | Thresholds adapt to tick size, spread, midpoint movement, and price; they do not depend on candle timeframe. |
 | `qmd_structure_event_*` | Latest confirmed BoS, CHoCH, touch, hold, or break event. `event_pivot_at_ms` is the causal origin and `event_at_ms` is confirmation time. | Strategies must gate on confirmation time; pivot time is descriptive and never authorizes lookahead. |
 | `qmd_structure_session_*`, `qmd_structure_premarket_*`, `qmd_structure_opening_range_*`, `qmd_structure_trade_volume_poc` | Event-native reference levels. | NBBO midpoint owns structure; eligible trades confirm accepted breaks and build the exact trade-volume POC. |
+| `qmd_structure_support_field`, `qmd_structure_resistance_field`, `qmd_structure_pressure_bias`, `qmd_structure_pressure_confidence`, `qmd_structure_up_probability` | Clustered proximity-weighted evidence from all active correctly sided zones. | Produces a deterministic structural-pressure summary; `up_probability` is not empirically calibrated. |
+
+The complete formulas, lifecycle, field-selection guidance, and compatibility
+status are documented in
+[QMD_LIQUIDITY_SUPPORT_STRUCTURE.md](QMD_LIQUIDITY_SUPPORT_STRUCTURE.md).
 
 ## Generic Structure Persistence Contract
 

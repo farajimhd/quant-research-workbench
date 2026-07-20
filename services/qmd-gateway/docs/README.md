@@ -14,9 +14,11 @@ Use it to comment on the market-data gateway without mixing in app-backend topic
    - Every environment variable, default value, effect, and tuning note.
 4. [DATA_CONTRACTS.md](DATA_CONTRACTS.md)
    - Raw trade/quote rows, bar fields, tick indicators, bar indicators, formulas, and persistence rules.
-5. [SCANNER_AND_SIGNALS.md](SCANNER_AND_SIGNALS.md)
+5. [QMD_LIQUIDITY_SUPPORT_STRUCTURE.md](QMD_LIQUIDITY_SUPPORT_STRUCTURE.md)
+   - Complete calculation, interpretation, causality, persistence, and strategy-use guide for QMD microstructure liquidity, anchored flow, generic support/resistance and market structure, and structural pressure.
+6. [SCANNER_AND_SIGNALS.md](SCANNER_AND_SIGNALS.md)
    - Current Massive-only scanner primitives and the signal-method catalog contracts.
-6. [OPERATIONS.md](OPERATIONS.md)
+7. [OPERATIONS.md](OPERATIONS.md)
    - Gap fill, replay, metrics, backpressure, failure behavior, and review checklist.
 
 ## Terms Used In These Docs
