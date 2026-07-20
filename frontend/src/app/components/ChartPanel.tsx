@@ -8,8 +8,11 @@ import {
   LineSeries,
   LineStyle,
   type IChartApi,
+  type IPrimitivePaneRenderer,
+  type IPrimitivePaneView,
   type IPriceLine,
   type ISeriesApi,
+  type ISeriesPrimitive,
   type LineWidth,
   type LogicalRange,
   type SeriesMarker,
@@ -237,6 +240,61 @@ type LegendSeriesSettings = {
   visible?: boolean;
 };
 type LegendSettingsMap = Record<string, LegendSeriesSettings>;
+
+type PriceZonePrimitiveState = {
+  candles: Candle[];
+  legendSettings: LegendSettingsMap;
+  zones: PriceZone[];
+};
+
+class PriceZonePrimitive implements ISeriesPrimitive<Time> {
+  private chart: IChartApi | null = null;
+  private requestUpdate: (() => void) | null = null;
+  private series: ISeriesApi<"Candlestick"> | null = null;
+  private state: PriceZonePrimitiveState = { candles: [], legendSettings: {}, zones: [] };
+  private readonly rendererImpl: IPrimitivePaneRenderer = {
+    draw: (target) => {
+      if (!this.chart || !this.series) return;
+      target.useMediaCoordinateSpace(({ context, mediaSize }) => {
+        drawPriceZonePrimitiveGeometry(
+          this.chart as IChartApi,
+          this.series as ISeriesApi<"Candlestick">,
+          context,
+          mediaSize.width,
+          mediaSize.height,
+          this.state.zones,
+          this.state.candles,
+          this.state.legendSettings,
+        );
+      });
+    },
+  };
+  private readonly paneView: IPrimitivePaneView = {
+    renderer: () => this.rendererImpl,
+    zOrder: () => "bottom",
+  };
+
+  attached({ chart, requestUpdate, series }: Parameters<NonNullable<ISeriesPrimitive<Time>["attached"]>>[0]) {
+    this.chart = chart as IChartApi;
+    this.series = series as ISeriesApi<"Candlestick">;
+    this.requestUpdate = requestUpdate;
+  }
+
+  detached() {
+    this.chart = null;
+    this.series = null;
+    this.requestUpdate = null;
+  }
+
+  paneViews() {
+    return [this.paneView];
+  }
+
+  setState(state: PriceZonePrimitiveState) {
+    this.state = state;
+    this.requestUpdate?.();
+  }
+}
 type OscillatorThresholdSettings = {
   color: string;
   lineStyle: LegendLineStyle;
@@ -428,6 +486,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const indicatorBoundsRef = useRef<Map<string, NumericBounds>>(new Map());
   const oscillatorPaneRuntimesRef = useRef<Map<string, OscillatorPaneRuntime>>(new Map());
   const priceZoneAxisLinesRef = useRef<Map<string, PriceZoneAxisLineRuntime>>(new Map());
+  const priceZonePrimitiveRef = useRef<PriceZonePrimitive | null>(null);
   const payloadRef = useRef<ChartPayload | null>(payload);
   const liveEntryLineRef = useRef<LiveEntryLine | null>(null);
   const referenceRef = useRef<ChartReference | null>(reference ?? null);
@@ -779,6 +838,9 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     });
     candleRef.current = candleSeries;
     candleMarkersRef.current = createSeriesMarkers(candleSeries, []);
+    const priceZonePrimitive = new PriceZonePrimitive();
+    candleSeries.attachPrimitive(priceZonePrimitive);
+    priceZonePrimitiveRef.current = priceZonePrimitive;
     const volume = priceChart.addSeries(HistogramSeries, {
       base: 0,
       lastValueVisible: false,
@@ -1126,6 +1188,11 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     if (!chart || !currentPayload) return;
     const selectedZones = (currentPayload.price_zones ?? []).filter((zone) => !zone.displayItemId || visibleSelectionRef.current.has(zone.displayItemId.toLowerCase()));
     const timeline = chartTimelineData(currentPayload.candles, timeframe);
+    priceZonePrimitiveRef.current?.setState({
+      candles: currentPayload.candles,
+      legendSettings: legendSettingsRef.current,
+      zones: selectedZones,
+    });
     syncPriceZoneAxisLines(candleRef.current, selectedZones, legendSettingsRef.current, priceZoneAxisLinesRef.current);
     drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, selectedZones, currentPayload.trade_annotations ?? [], currentPayload.candles, timeline, chartSettingsRef.current, legendSettingsRef.current, liveEntryLineRef.current);
     oscillatorPaneRuntimesRef.current.forEach((_runtime, key) => {
@@ -1184,6 +1251,10 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     priceZoneAxisLinesRef.current.clear();
     candleMarkersRef.current?.detach();
     candleMarkersRef.current = null;
+    if (priceZonePrimitiveRef.current && candleRef.current) {
+      candleRef.current.detachPrimitive(priceZonePrimitiveRef.current);
+    }
+    priceZonePrimitiveRef.current = null;
     if (priceChartRef.current) {
       priceChartRef.current.remove();
     }
@@ -4115,6 +4186,103 @@ function syncPriceZoneAxisLines(
   });
 }
 
+function drawPriceZonePrimitiveGeometry(
+  chart: IChartApi,
+  priceSeries: ISeriesApi<"Candlestick">,
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  zones: PriceZone[],
+  candles: Candle[],
+  legendSettings: LegendSettingsMap,
+) {
+  if (!zones.length || width < 1 || height < 1) return;
+  const barWidth = estimateBarWidth(chart, candles);
+  const candleDuration = estimateCandleDuration(candles);
+  const chartBackground = validHexColor(readChartPalette().background, "#ffffff");
+  const historicalBySettings = new Map<string, PriceZone[]>();
+  zones.forEach((zone) => {
+    const id = zone.settingsId || zone.displayItemId || `zone:${zone.label}`;
+    const group = historicalBySettings.get(id);
+    if (group) group.push(zone);
+    else historicalBySettings.set(id, [zone]);
+  });
+  historicalBySettings.forEach((itemZones, id) => {
+    const settings = resolvePriceZoneLegendSettings(legendSettings, priceZoneLegendKey(id), itemZones[itemZones.length - 1]);
+    if (!settings.visible) return;
+    const historyStart = candles[Math.max(0, candles.length - settings.historyBars)]?.time ?? Number.NEGATIVE_INFINITY;
+    itemZones.forEach((zone) => {
+      if (!(zone.latest || zone.end > historyStart)) return;
+      if (
+        zone.currentLevelSide
+        && !zone.currentLevelStrongest
+        && (zone.currentLevelDistanceRank ?? Number.POSITIVE_INFINITY) > settings.currentLevelCount
+      ) return;
+      const coordinates = priceZoneCoordinates(chart, zone, candles, barWidth, candleDuration);
+      if (!coordinates) return;
+      const upper = priceSeries.priceToCoordinate(zone.upper);
+      const lower = priceSeries.priceToCoordinate(zone.lower);
+      if (upper === null || lower === null) return;
+      const center = (upper + lower) / 2;
+      if (center < 0 || center > height) return;
+      const span = clippedHorizontalSpan(
+        coordinates.start,
+        zone.extendToRightEdge ? Math.max(coordinates.end, chart.timeScale().width() - 4) : coordinates.end,
+        width,
+      );
+      if (!span) return;
+      let top = Math.min(upper, lower);
+      let zoneHeight = Math.max(2, Math.abs(lower - upper));
+      const minPixelHeight = clampNumber(zone.minPixelHeight, 0, 32, 0);
+      const maxPixelHeight = clampNumber(zone.maxPixelHeight, 0, 96, 0);
+      if (zone.zoneHeightMode === "fixed_px") {
+        zoneHeight = Math.max(2, minPixelHeight, maxPixelHeight || minPixelHeight || 3);
+        top = center - zoneHeight / 2;
+      } else {
+        if (minPixelHeight > 0 && zoneHeight < minPixelHeight) {
+          zoneHeight = minPixelHeight;
+          top = center - zoneHeight / 2;
+        }
+        if (maxPixelHeight > 0 && zoneHeight > maxPixelHeight) {
+          zoneHeight = maxPixelHeight;
+          top = center - zoneHeight / 2;
+        }
+      }
+      if (span.width < 1 || zoneHeight < 1) return;
+      const { borderColor, confidence, fillColor } = priceZonePresentationColors(zone, chartBackground);
+      const baseFillOpacity = clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08);
+      const fillOpacity = baseFillOpacity * (confidence === null ? 1 : 0.45 + 0.55 * confidence) * settings.opacity;
+      const borderOpacity = zone.currentLevelSide ? 0 : confidence === null
+        ? clampNumber(zone.borderOpacity, 0, 0.35, Math.max(baseFillOpacity * 1.8, 0.12)) * settings.opacity
+        : (0.24 + 0.7 * confidence) * settings.opacity;
+      const lineWidth = confidence === null
+        ? settings.lineWidth
+        : Math.max(1, Math.min(6, settings.lineWidth * (0.75 + 1.25 * confidence)));
+      context.save();
+      context.fillStyle = rgbaFromHex(fillColor, fillOpacity);
+      context.strokeStyle = rgbaFromHex(borderColor, borderOpacity);
+      context.lineWidth = lineWidth;
+      context.setLineDash(canvasLineDash(settings.lineStyle, lineWidth));
+      if (zone.annotationKind === "bos" || zone.annotationKind === "choch") {
+        if (settings.showConnectors) {
+          const eventX = zone.eventTime ? chart.timeScale().timeToCoordinate(zone.eventTime as Time) : coordinates.end;
+          const connector = clippedHorizontalSpan(coordinates.start, eventX ?? coordinates.end, width);
+          if (connector) {
+            context.beginPath();
+            context.moveTo(connector.left, center);
+            context.lineTo(connector.right, center);
+            context.stroke();
+          }
+        }
+      } else {
+        context.fillRect(span.left, top, span.width, zoneHeight);
+        if (borderOpacity > 0 && lineWidth > 0) context.strokeRect(span.left, top, span.width, zoneHeight);
+      }
+      context.restore();
+    });
+  });
+}
+
 function drawPriceZones(
   chart: IChartApi,
   priceSeries: ISeriesApi<"Candlestick"> | null,
@@ -4186,58 +4354,12 @@ function drawPriceZones(
         width,
       );
       if (!span) return;
-      const left = span.left;
-      const zoneWidth = span.width;
-      let top = Math.min(upper, lower);
-      let height = Math.max(2, Math.abs(lower - upper));
-      const minPixelHeight = clampNumber(zone.minPixelHeight, 0, 32, 0);
-      const maxPixelHeight = clampNumber(zone.maxPixelHeight, 0, 96, 0);
-      if (zone.zoneHeightMode === "fixed_px") {
-        height = Math.max(2, minPixelHeight, maxPixelHeight || minPixelHeight || 3);
-        top = center - height / 2;
-      } else {
-        if (minPixelHeight > 0 && height < minPixelHeight) {
-          height = minPixelHeight;
-          top = center - height / 2;
-        }
-        if (maxPixelHeight > 0 && height > maxPixelHeight) {
-          height = maxPixelHeight;
-          top = center - height / 2;
-        }
-      }
-      if (zoneWidth < 1 || height < 1) return;
-      const { borderColor, confidence, fillColor } = priceZonePresentationColors(zone, chartBackground);
-      const baseFillOpacity = clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08);
-      const fillOpacity = baseFillOpacity * (confidence === null ? 1 : 0.45 + 0.55 * confidence) * settings.opacity;
-      const borderOpacity = zone.currentLevelSide ? 0 : confidence === null
-        ? clampNumber(zone.borderOpacity, 0, 0.35, Math.max(baseFillOpacity * 1.8, 0.12)) * settings.opacity
-        : (0.24 + 0.7 * confidence) * settings.opacity;
-      const lineWidth = confidence === null
-        ? settings.lineWidth
-        : Math.max(1, Math.min(6, settings.lineWidth * (0.75 + 1.25 * confidence)));
+      const { borderColor } = priceZonePresentationColors(zone, chartBackground);
       let labelSpan: HorizontalSpan | null = span;
-      context.save();
-      context.globalAlpha = 1;
-      context.fillStyle = rgbaFromHex(fillColor, fillOpacity);
-      context.strokeStyle = rgbaFromHex(borderColor, borderOpacity);
-      context.lineWidth = lineWidth;
-      context.setLineDash(canvasLineDash(settings.lineStyle, lineWidth));
       if (zone.annotationKind === "bos" || zone.annotationKind === "choch") {
         const eventX = zone.eventTime ? chart.timeScale().timeToCoordinate(zone.eventTime as Time) : coordinates.end;
         labelSpan = settings.showConnectors ? clippedHorizontalSpan(coordinates.start, eventX ?? coordinates.end, width) : null;
-        if (settings.showConnectors) {
-          if (labelSpan) {
-            context.beginPath();
-            context.moveTo(labelSpan.left, center);
-            context.lineTo(labelSpan.right, center);
-            context.stroke();
-          }
-        }
-      } else {
-        context.fillRect(left, top, zoneWidth, height);
-        if (borderOpacity > 0 && lineWidth > 0) context.strokeRect(left, top, zoneWidth, height);
       }
-      context.restore();
       if (zone.currentLevelSide && zone.compactLabel && labelSpan) {
         candleBoxes ??= visibleCandleBoxes(chart, priceSeries, candles, barWidth, width, plotBottom);
         drawCurrentLevelConfidenceLabel(
@@ -4273,31 +4395,6 @@ function drawPriceZones(
       }
     });
   });
-  // Price annotations are contextual evidence, never the visual authority.
-  // Remove only the actual candle geometry from the overlay. The broader
-  // high-to-low candle boxes above are intentionally conservative for label
-  // collision, but using them as a compositor mask creates visible rectangular
-  // holes around narrow wicks.
-  const candleOcclusionBoxes = visibleCandleOcclusionBoxes(
-    chart,
-    priceSeries,
-    candles,
-    barWidth,
-    width,
-    plotBottom,
-  );
-  context.save();
-  context.globalCompositeOperation = "destination-out";
-  candleOcclusionBoxes.forEach((box) => {
-    const padding = 0.6;
-    context.fillRect(
-      box.left - padding,
-      box.top - padding,
-      box.right - box.left + padding * 2,
-      box.bottom - box.top + padding * 2,
-    );
-  });
-  context.restore();
 }
 
 function drawCurrentLevelConfidenceLabel(
@@ -4391,48 +4488,6 @@ function visibleCandleBoxes(
     const bottom = Math.min(plotBottom, Math.max(highY, lowY));
     if (bottom < 0 || top > plotBottom) return;
     boxes.push({ bottom, left: x - halfWidth, right: x + halfWidth, top });
-  });
-  return boxes;
-}
-
-function visibleCandleOcclusionBoxes(
-  chart: IChartApi,
-  priceSeries: ISeriesApi<"Candlestick">,
-  candles: Candle[],
-  barWidth: number,
-  layerWidth: number,
-  plotBottom: number,
-) {
-  const bodyHalfWidth = Math.max(1.5, barWidth * 0.46);
-  const wickHalfWidth = 0.5;
-  const boxes: CanvasBox[] = [];
-  candles.forEach((candle) => {
-    const x = chart.timeScale().timeToCoordinate(candle.time as Time);
-    if (x === null || x + bodyHalfWidth < 0 || x - bodyHalfWidth > layerWidth) return;
-    const highY = priceSeries.priceToCoordinate(candle.high);
-    const lowY = priceSeries.priceToCoordinate(candle.low);
-    const openY = priceSeries.priceToCoordinate(candle.open);
-    const closeY = priceSeries.priceToCoordinate(candle.close);
-    if (highY === null || lowY === null || openY === null || closeY === null) return;
-
-    const wickTop = Math.max(0, Math.min(highY, lowY));
-    const wickBottom = Math.min(plotBottom, Math.max(highY, lowY));
-    if (wickBottom >= 0 && wickTop <= plotBottom) {
-      boxes.push({ bottom: wickBottom, left: x - wickHalfWidth, right: x + wickHalfWidth, top: wickTop });
-    }
-
-    const bodyCenter = (openY + closeY) / 2;
-    const bodyHeight = Math.max(1, Math.abs(closeY - openY));
-    const bodyTop = Math.max(0, bodyCenter - bodyHeight / 2);
-    const bodyBottom = Math.min(plotBottom, bodyCenter + bodyHeight / 2);
-    if (bodyBottom >= 0 && bodyTop <= plotBottom) {
-      boxes.push({
-        bottom: bodyBottom,
-        left: x - bodyHalfWidth,
-        right: x + bodyHalfWidth,
-        top: bodyTop,
-      });
-    }
   });
   return boxes;
 }
