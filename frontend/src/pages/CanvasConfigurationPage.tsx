@@ -41,7 +41,25 @@ import type { WorkspaceWindowLayout, WorkspaceWindowMeta, WorkspaceWindowStatus 
 import { TRADING_WORKSPACE_CONTAINERS, containerSupportsSymbolLink, type WorkspaceContainerDefinition, type WorkspaceContainerId } from "../app/tradingWorkspace";
 
 type HistoricalBar = { bar_end?: string; bar_start: string; close: number; high: number; is_closed?: boolean; low: number; open: number; volume: number };
-type HistoricalIndicator = { bar_start: string } & Record<string, number | string>;
+type QmdStructureLevelCandidate = {
+  confidence: number;
+  created_at_ms: number;
+  distance: number;
+  evidence_score: number;
+  hold_count: number;
+  last_test_at_ms: number;
+  lower: number;
+  price: number;
+  scale: "micro" | "tactical" | "context" | string;
+  side: number;
+  strength: number;
+  touch_count: number;
+  upper: number;
+};
+type HistoricalIndicator = {
+  bar_start: string;
+  qmd_structure_active_levels?: QmdStructureLevelCandidate[];
+} & Record<string, number | string | QmdStructureLevelCandidate[] | undefined>;
 type PreviewRow = Record<string, unknown>;
 type CanvasPreview = {
   as_of: string;
@@ -240,6 +258,7 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     "qmd_structure_score", "qmd_structure_direction", "qmd_structure_agreement", "qmd_structure_strength", "qmd_structure_confidence",
     "qmd_structure_support_price", "qmd_structure_support_lower", "qmd_structure_support_upper", "qmd_structure_support_strength", "qmd_structure_support_confidence",
     "qmd_structure_resistance_price", "qmd_structure_resistance_lower", "qmd_structure_resistance_upper", "qmd_structure_resistance_strength", "qmd_structure_resistance_confidence",
+    "qmd_structure_active_levels",
     "qmd_structure_micro_direction", "qmd_structure_micro_threshold", "qmd_structure_micro_swing_high", "qmd_structure_micro_swing_low",
     "qmd_structure_micro_support_price", "qmd_structure_micro_support_lower", "qmd_structure_micro_support_upper", "qmd_structure_micro_support_strength", "qmd_structure_micro_support_confidence",
     "qmd_structure_micro_resistance_price", "qmd_structure_micro_resistance_lower", "qmd_structure_micro_resistance_upper", "qmd_structure_micro_resistance_strength", "qmd_structure_micro_resistance_confidence",
@@ -256,25 +275,25 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     "qmd_structure_prior_month_high", "qmd_structure_prior_month_low", "qmd_structure_prior_month_close",
   ], "price", {
     shortDescription: "One causal, event-native map of market structure and support/resistance that remains the same across chart timeframes.",
-    detailedDescription: "QMD follows consolidated NBBO midpoint changes directly and uses eligible trades to confirm accepted breaks. It extracts three simultaneous price-response scales—micro, tactical, and context—then clusters confirmed pivots into persistent support and resistance zones. The chart samples this same event state at each bar end; candles do not define or recalculate the structure.",
+    detailedDescription: "QMD follows consolidated NBBO midpoint changes directly and uses eligible trades to confirm accepted breaks. It extracts three simultaneous price-response scales—micro, tactical, and context—then clusters confirmed pivots into persistent support and resistance zones. The chart samples this same event state at each bar end; candles do not define or recalculate the structure. At the live edge, the chart selects active candidates from the gateway state instead of projecting one winning level backward.",
     calculation: "The adaptive base reversal threshold is the maximum of two price ticks, 1.25 times the recent spread, 1.5 times the recent midpoint move, and 0.5 basis point of price. Micro, tactical, and context use 1×, 3×, and 8× that threshold. A pivot is published only after price reverses by the scale threshold. A break requires the midpoint beyond the pivot plus an eligible trade beyond it and scale-specific persistence. A break with the prior structure is BoS; the first accepted break against it is CHoCH.",
-    readingGuide: "Begin with the thick unified SUP and RES regions nearest price. Darker fill means greater accumulated strength; a heavier border means greater confidence. Then inspect tactical and context zones for broader structure and micro zones for immediate reactions. BoS and CHoCH connectors begin at the causally known pivot and end at confirmation; their labels sit between those points and never on candles. The optional oscillator shows signed structure score as green/red bars and agreement as a neutral line.",
+    readingGuide: "Begin with Current support & resistance. By default it shows the three nearest active zones below and above price; configure the count from 1 to 6. The strongest support and resistance by confidence-adjusted evidence are always retained when they fall outside that nearest set and carry an asterisk. S1/R1 are closest to price. Each region is borderless: darker shading and the printed percentage indicate current confidence, not a win probability. Historical regions preserve the evidence bucket known at that time and are never restyled with later confidence. BoS and CHoCH connectors begin at the causally known pivot and end at confirmation.",
     bullishEvidence: "Support below price gains weight when it is retested and holds, tactical/context direction is positive, accepted bullish BoS events persist, and eligible buying moves the midpoint beyond resistance.",
     bearishEvidence: "Resistance above price gains weight when it is retested and holds, tactical/context direction is negative, accepted bearish BoS events persist, and eligible selling moves the midpoint below support.",
     timeframeBehavior: "Structure is independent of the selected candle timeframe. Every chart interval samples the same ordered quote/trade engine at that bar's end, so aligned timestamps carry the same state. Confirmed events are stored durably; live restarts restore one compact state per symbol, and historical requests warm from that ticker's earlier persisted events without using future data.",
     components: [
-      { label: "SUP / RES · Unified zones", description: "The strongest relevant support below price and resistance above price across all three scales. These receive the clearest fill and right-axis tags.", tone: "neutral" },
+      { label: "S1–S6 / R1–R6 · Current zones", description: "Nearest active support and resistance candidates ranked by distance from current NBBO midpoint. The configured nearest count is shown on each side, plus the strongest omitted candidate when necessary. An asterisk marks that strongest candidate.", tone: "neutral" },
       { label: "μ-S / μ-R · Micro", description: "Fast reactions using the base adaptive threshold. Useful for execution and immediate liquidity response; decays with a 30-minute half-life.", tone: "info" },
       { label: "T-S / T-R · Tactical", description: "Intermediate zones using three times the base threshold. Useful for intraday trade structure; decays with a five-day half-life.", tone: "warning" },
       { label: "C-S / C-R · Context", description: "Broad zones using eight times the base threshold. Useful for multi-session structure; decays with a 45-day half-life.", tone: "neutral" },
       { label: "BoS", description: "Break of Structure: an accepted pivot break in the established direction. Acceptance requires both midpoint persistence and an eligible trade beyond the level.", tone: "buy" },
       { label: "CHoCH", description: "Change of Character: an accepted pivot break against the established direction. It warns of a possible regime change; it does not guarantee reversal.", tone: "warning" },
-      { label: "Strength", description: "Accumulated and time-decayed pivot, touch, hold, and trade-confirmation evidence. It controls region density.", tone: "info" },
-      { label: "Confidence", description: "Evidence repeatability and freshness. It controls border emphasis and is not a forecast probability.", tone: "warning" },
+      { label: "Strength", description: "Accumulated and time-decayed pivot, touch, hold, and trade-confirmation evidence. It contributes to strongest-level selection; it is not displayed as a second competing visual encoding.", tone: "info" },
+      { label: "Confidence", description: "Evidence repeatability and freshness. It controls borderless region density and appears as a percentage inside each current zone. It is not a forecast probability.", tone: "warning" },
       { label: "Structure score", description: "Direction × strength × confidence × an agreement adjustment. Positive is bullish, negative bearish, and near zero means weak or conflicted structure.", tone: "neutral" },
       { label: "Auction references", description: "04:00 ET session and premarket extremes, 09:30–09:35 opening range, exact eligible-trade volume POC, estimated LULD, completed 52-week/prior-month levels, and nearest round price.", tone: "neutral" },
     ],
-    caveats: ["QMD observes consolidated Level-1 NBBO and eligible prints, not full venue depth or hidden liquidity.", "Displayed liquidity can be cancelled; trade confirmation and subsequent price response still matter.", "BoS, CHoCH, support, and resistance are deterministic evidence states—not trade instructions or win probabilities.", "Only confirmed events are durable. An unconfirmed reversal candidate is intentionally rebuilt after a restart rather than persisted as structure."],
+    caveats: ["QMD observes consolidated Level-1 NBBO and eligible prints, not full venue depth or hidden liquidity.", "Displayed liquidity can be cancelled; trade confirmation and subsequent price response still matter.", "Nearest means absolute distance from the current NBBO midpoint. Strongest means strength × confidence × scale weight; it does not necessarily mean closest or most likely to hold.", "BoS, CHoCH, support, and resistance are deterministic evidence states—not trade instructions or win probabilities.", "Only confirmed events are durable. An unconfirmed reversal candidate is intentionally rebuilt after a restart rather than persisted as structure."],
   }),
 ];
 
@@ -1381,6 +1400,7 @@ function historicalMarketLevelZones(rows: HistoricalIndicator[], bars: Historica
   if (!rows.length || !bars.length || !visibleIndicators.includes("indicator.qmd_generic_structure")) return [];
   const chartEnd = Date.parse(bars[bars.length - 1].bar_end || bars[bars.length - 1].bar_start) / 1000 + 1;
   const zones: NonNullable<ChartPayload["price_zones"]> = [];
+  pushCurrentStructureLevels(zones, rows, chartEnd);
   pushStructureZoneSegments(zones, rows, chartEnd, {
     compactLabel: "SUP", label: "Unified support", prefix: "qmd_structure_support", scope: "unified", side: "support",
   });
@@ -1467,31 +1487,38 @@ function pushStructureZoneSegments(
   let segmentPrice = finiteNumber(rows[firstIndex]?.[`${spec.prefix}_price`]);
   let segmentLower = finiteNumber(rows[firstIndex]?.[`${spec.prefix}_lower`]);
   let segmentUpper = finiteNumber(rows[firstIndex]?.[`${spec.prefix}_upper`]);
+  let segmentStrength = boundedUnit(rows[firstIndex]?.[`${spec.prefix}_strength`]);
+  let segmentConfidence = boundedUnit(rows[firstIndex]?.[`${spec.prefix}_confidence`]);
   for (let index = firstIndex + 1; index <= rows.length; index += 1) {
     const nextPrice = index < rows.length ? finiteNumber(rows[index]?.[`${spec.prefix}_price`]) : Number.NaN;
     const nextLower = index < rows.length ? finiteNumber(rows[index]?.[`${spec.prefix}_lower`]) : Number.NaN;
     const nextUpper = index < rows.length ? finiteNumber(rows[index]?.[`${spec.prefix}_upper`]) : Number.NaN;
-    if (index < rows.length && structureValueMatches(nextPrice, segmentPrice) && structureValueMatches(nextLower, segmentLower) && structureValueMatches(nextUpper, segmentUpper)) continue;
-    const evidenceIndex = Math.max(segmentStart, Math.min(rows.length - 1, index - 1));
-    const strength = boundedUnit(rows[evidenceIndex]?.[`${spec.prefix}_strength`]);
-    const confidence = boundedUnit(rows[evidenceIndex]?.[`${spec.prefix}_confidence`]);
+    const nextStrength = index < rows.length ? boundedUnit(rows[index]?.[`${spec.prefix}_strength`]) : Number.NaN;
+    const nextConfidence = index < rows.length ? boundedUnit(rows[index]?.[`${spec.prefix}_confidence`]) : Number.NaN;
+    if (index < rows.length
+      && structureValueMatches(nextPrice, segmentPrice)
+      && structureValueMatches(nextLower, segmentLower)
+      && structureValueMatches(nextUpper, segmentUpper)
+      && evidenceBucket(nextStrength) === evidenceBucket(segmentStrength)
+      && evidenceBucket(nextConfidence) === evidenceBucket(segmentConfidence)) continue;
     segments.push({
       ...spec,
-      confidence,
+      confidence: segmentConfidence,
       endIndex: index,
       lower: segmentLower,
       price: segmentPrice,
       startIndex: segmentStart,
-      strength,
+      strength: segmentStrength,
       upper: segmentUpper,
     });
     segmentStart = index;
     segmentPrice = nextPrice;
     segmentLower = nextLower;
     segmentUpper = nextUpper;
+    segmentStrength = nextStrength;
+    segmentConfidence = nextConfidence;
   }
 
-  const current = segments.filter((segment) => segment.endIndex >= rows.length && segment.price > 0);
   const historicalPolicy = {
     context: { maxSegments: 3, minConfidence: 0.5, minDurationSeconds: 300, minStrength: 0.45 },
     micro: { maxSegments: 0, minConfidence: 1, minDurationSeconds: Number.POSITIVE_INFINITY, minStrength: 1 },
@@ -1521,9 +1548,91 @@ function pushStructureZoneSegments(
     .slice(0, historicalPolicy.maxSegments)
     .sort((left, right) => left.startIndex - right.startIndex);
 
-  [...historical, ...current].forEach((segment) => {
+  historical.forEach((segment) => {
     pushStructureZoneSegment(zones, rows, segment.startIndex, segment.endIndex, chartEnd, segment);
   });
+}
+
+function evidenceBucket(value: number) {
+  return Number.isFinite(value) ? Math.floor(Math.max(0, Math.min(1, value)) * 10 + 1e-9) : -1;
+}
+
+function pushCurrentStructureLevels(
+  zones: NonNullable<ChartPayload["price_zones"]>,
+  rows: HistoricalIndicator[],
+  chartEnd: number,
+) {
+  const latestIndex = rows.length - 1;
+  const latest = rows[latestIndex];
+  const candidates = Array.isArray(latest?.qmd_structure_active_levels)
+    ? latest.qmd_structure_active_levels.filter(isQmdStructureLevelCandidate)
+    : [];
+  if (!candidates.length) return;
+  const startIndex = Math.max(0, latestIndex - 11);
+  const start = rowTimestamp(rows[startIndex]);
+  if (!Number.isFinite(start) || !(chartEnd > start)) return;
+
+  ([
+    ["support", 1, "var(--success)", "S"],
+    ["resistance", -1, "var(--danger)", "R"],
+  ] as const).forEach(([sideName, side, color, shortSide]) => {
+    const sideCandidates = candidates
+      .filter((candidate) => candidate.side === side)
+      .sort((left, right) => left.distance - right.distance || right.evidence_score - left.evidence_score);
+    const strongest = sideCandidates.reduce<QmdStructureLevelCandidate | null>(
+      (best, candidate) => !best || candidate.evidence_score > best.evidence_score ? candidate : best,
+      null,
+    );
+    sideCandidates.forEach((candidate, index) => {
+      const confidence = boundedUnit(candidate.confidence);
+      const strength = boundedUnit(candidate.strength);
+      const strongestLevel = strongest === candidate;
+      zones.push({
+        annotationKind: side > 0 ? "liquidity-support" : "liquidity-resistance",
+        axisLabelDefault: index === 0,
+        borderColor: color,
+        borderOpacity: 0,
+        borderWidth: 0,
+        color,
+        compactLabel: `${shortSide}${index + 1}${strongestLevel ? "*" : ""} · ${Math.round(confidence * 100)}%`,
+        confidence,
+        currentLevelDistanceRank: index + 1,
+        currentLevelSide: sideName,
+        currentLevelStrongest: strongestLevel,
+        defaultVisible: true,
+        displayItemId: "indicator.qmd_generic_structure",
+        end: chartEnd,
+        extendToRightEdge: true,
+        fillColor: color,
+        fillOpacity: 0.04 + 0.16 * confidence,
+        historicalLabelsDefault: false,
+        historicalTagLimitDefault: 0,
+        label: `${sideName === "support" ? "Support" : "Resistance"} ${index + 1} · ${candidate.scale} · ${percentLabel(confidence)} confidence · ${percentLabel(strength)} strength`,
+        latest: true,
+        legendLabel: "Current support & resistance",
+        lower: candidate.lower > 0 ? candidate.lower : candidate.price,
+        minPixelHeight: 15,
+        settingsId: "indicator.qmd_generic_structure.current-levels",
+        start,
+        strength,
+        upper: candidate.upper > 0 ? candidate.upper : candidate.price,
+      });
+    });
+  });
+}
+
+function isQmdStructureLevelCandidate(value: unknown): value is QmdStructureLevelCandidate {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<QmdStructureLevelCandidate>;
+  return Number.isFinite(candidate.price)
+    && Number(candidate.price) > 0
+    && Number.isFinite(candidate.lower)
+    && Number.isFinite(candidate.upper)
+    && Number.isFinite(candidate.confidence)
+    && Number.isFinite(candidate.strength)
+    && Number.isFinite(candidate.distance)
+    && Number.isFinite(candidate.evidence_score)
+    && (candidate.side === 1 || candidate.side === -1);
 }
 
 function pushStructureZoneSegment(

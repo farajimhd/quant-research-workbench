@@ -109,9 +109,13 @@ type PriceZone = {
   color: string;
   compactLabel?: string;
   confidence?: number;
+  currentLevelDistanceRank?: number;
+  currentLevelSide?: "support" | "resistance";
+  currentLevelStrongest?: boolean;
   defaultVisible?: boolean;
   displayItemId?: string;
   end: number;
+  extendToRightEdge?: boolean;
   eventTime?: number;
   fillColor?: string;
   fillOpacity?: number;
@@ -217,6 +221,7 @@ type CanvasBox = { bottom: number; left: number; right: number; top: number };
 type HorizontalSpan = { left: number; right: number; width: number };
 type LegendLineStyle = "solid" | "dashed" | "dotted";
 type LegendSeriesSettings = {
+  currentLevelCount?: number;
   color?: string;
   historyBars?: number;
   labelFontSize?: number;
@@ -1599,6 +1604,7 @@ function ChartPeriodSelect({
 type LegendItem = {
   color: string;
   configurable: boolean;
+  currentLevelCount?: number;
   guideHelp?: ChartColumnHelp;
   guideTitle?: string;
   historyBars?: number;
@@ -1619,9 +1625,11 @@ type LegendItem = {
   showLabels?: boolean;
   showValue: boolean;
   supportsConnectors?: boolean;
+  supportsCurrentLevelCount?: boolean;
   supportsAxisLabel?: boolean;
   supportsHistoricalLabels?: boolean;
   supportsHistoryWindow?: boolean;
+  supportsStroke?: boolean;
   value: string;
   visible: boolean;
 };
@@ -1829,7 +1837,7 @@ function LegendEditor({
           </span>
         ) : <input type="color" value={item.color} onChange={(event) => onUpdate({ color: event.target.value })} />}
       </label>
-      {item.seriesStyle === "line" ? (
+      {item.seriesStyle === "line" && item.supportsStroke !== false ? (
         <>
           <label>
             Shape
@@ -1876,6 +1884,23 @@ function LegendEditor({
               onChange={(event) => onUpdate({ historyBars: Number(event.target.value) })}
             />
             <output>{item.historyBars ?? 100} bars</output>
+          </span>
+        </label>
+      ) : null}
+      {item.itemKind === "zone" && item.supportsCurrentLevelCount ? (
+        <label>
+          Nearest levels per side
+          <span className="legend-range-control">
+            <input
+              aria-label={`${item.label} nearest levels per side`}
+              min={1}
+              max={6}
+              step={1}
+              type="range"
+              value={item.currentLevelCount ?? 3}
+              onChange={(event) => onUpdate({ currentLevelCount: Number(event.target.value) })}
+            />
+            <output>{item.currentLevelCount ?? 3}</output>
           </span>
         </label>
       ) : null}
@@ -2777,6 +2802,7 @@ function buildPriceZoneLegendItems(
     return {
       color: readNeutralChartColor(),
       configurable: true,
+      currentLevelCount: settings.currentLevelCount,
       guideHelp,
       guideTitle,
       historyBars: settings.historyBars,
@@ -2796,9 +2822,11 @@ function buildPriceZoneLegendItems(
       showHistoricalLabels: settings.showHistoricalLabels,
       showValue: true,
       supportsConnectors: itemZones.some((zone) => zone.annotationKind === "bos" || zone.annotationKind === "choch"),
+      supportsCurrentLevelCount: itemZones.some((zone) => Boolean(zone.currentLevelSide)),
       supportsAxisLabel: itemZones.some((zone) => typeof zone.axisLabelDefault === "boolean"),
       supportsHistoricalLabels: itemZones.some((zone) => zone.historicalLabelsDefault === true || isStructureBreakZone(zone)),
       supportsHistoryWindow: itemZones.some((zone) => !zone.latest),
+      supportsStroke: !itemZones.some((zone) => Boolean(zone.currentLevelSide)),
       value: `${itemZones.length} level${itemZones.length === 1 ? "" : "s"}`,
       visible: settings.visible,
     };
@@ -3204,6 +3232,7 @@ function priceZonePresentationColors(zone: PriceZone, chartBackground: string) {
 function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettings> {
   return {
     color: resolveChartColor(series.color),
+    currentLevelCount: 3,
     historyBars: 100,
     labelFontSize: 11,
     lineStyle: series.lineStyle ?? "solid",
@@ -3224,6 +3253,7 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
   const stored = settingsMap[key] ?? {};
   return {
     color: resolveChartColor(stored.color || defaults.color),
+    currentLevelCount: Math.max(1, Math.min(6, Math.round(stored.currentLevelCount ?? defaults.currentLevelCount))),
     historyBars: Math.max(10, Math.min(500, Math.round(stored.historyBars ?? defaults.historyBars))),
     labelFontSize: Math.max(9, Math.min(18, Math.round(stored.labelFontSize ?? defaults.labelFontSize))),
     lineStyle: stored.lineStyle || defaults.lineStyle,
@@ -3240,6 +3270,7 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
 }
 
 type ResolvedPriceZoneLegendSettings = {
+  currentLevelCount: number;
   historyBars: number;
   labelFontSize: number;
   lineStyle: LegendLineStyle;
@@ -3255,6 +3286,7 @@ type ResolvedPriceZoneLegendSettings = {
 function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: string, zone?: PriceZone): ResolvedPriceZoneLegendSettings {
   const stored = settingsMap[key] ?? {};
   return {
+    currentLevelCount: Math.max(1, Math.min(6, Math.round(stored.currentLevelCount ?? 3))),
     historyBars: Math.max(10, Math.min(500, Math.round(stored.historyBars ?? 100))),
     labelFontSize: Math.max(9, Math.min(18, Math.round(stored.labelFontSize ?? 11))),
     lineStyle: stored.lineStyle ?? zoneBorderStyle(zone?.borderStyle),
@@ -4129,7 +4161,12 @@ function drawPriceZones(
     const settings = resolvePriceZoneLegendSettings(legendSettings, priceZoneLegendKey(id), itemZones[itemZones.length - 1]);
     if (!settings.visible) return;
     const historyStart = candles[Math.max(0, candles.length - settings.historyBars)]?.time ?? Number.NEGATIVE_INFINITY;
-    const eligibleZones = itemZones.filter((zone) => zone.latest || zone.end > historyStart);
+    const eligibleZones = itemZones.filter((zone) => {
+      if (!(zone.latest || zone.end > historyStart)) return false;
+      if (!zone.currentLevelSide) return true;
+      return Boolean(zone.currentLevelStrongest)
+        || (zone.currentLevelDistanceRank ?? Number.POSITIVE_INFINITY) <= settings.currentLevelCount;
+    });
     const historicalTagZones = new Set(
       settings.maxHistoricalTags > 0
         ? eligibleZones.filter((zone) => Boolean(zone.compactLabel) && (!zone.latest || isStructureBreakZone(zone))).slice(-settings.maxHistoricalTags)
@@ -4143,7 +4180,11 @@ function drawPriceZones(
       if (upper === null || lower === null) return;
       const center = (upper + lower) / 2;
       if (center < 0 || center > plotBottom) return;
-      const span = clippedHorizontalSpan(coordinates.start, coordinates.end, width);
+      const span = clippedHorizontalSpan(
+        coordinates.start,
+        zone.extendToRightEdge ? Math.max(coordinates.end, chart.timeScale().width() - 4) : coordinates.end,
+        width,
+      );
       if (!span) return;
       const left = span.left;
       const zoneWidth = span.width;
@@ -4168,7 +4209,7 @@ function drawPriceZones(
       const { borderColor, confidence, fillColor } = priceZonePresentationColors(zone, chartBackground);
       const baseFillOpacity = clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08);
       const fillOpacity = baseFillOpacity * (confidence === null ? 1 : 0.45 + 0.55 * confidence) * settings.opacity;
-      const borderOpacity = confidence === null
+      const borderOpacity = zone.currentLevelSide ? 0 : confidence === null
         ? clampNumber(zone.borderOpacity, 0, 0.35, Math.max(baseFillOpacity * 1.8, 0.12)) * settings.opacity
         : (0.24 + 0.7 * confidence) * settings.opacity;
       const lineWidth = confidence === null
@@ -4194,9 +4235,25 @@ function drawPriceZones(
         }
       } else {
         context.fillRect(left, top, zoneWidth, height);
-        context.strokeRect(left, top, zoneWidth, height);
+        if (borderOpacity > 0 && lineWidth > 0) context.strokeRect(left, top, zoneWidth, height);
       }
       context.restore();
+      if (zone.currentLevelSide && zone.compactLabel && labelSpan) {
+        candleBoxes ??= visibleCandleBoxes(chart, priceSeries, candles, barWidth, width, plotBottom);
+        drawCurrentLevelConfidenceLabel(
+          context,
+          zone.compactLabel,
+          labelSpan,
+          center,
+          borderColor,
+          chartBackground,
+          settings,
+          lineLabelBoxes,
+          candleBoxes,
+          width,
+          plotBottom,
+        );
+      }
       if (zone.compactLabel && labelSpan && settings.showHistoricalLabels && historicalTagZones.has(zone)) {
         candleBoxes ??= visibleCandleBoxes(chart, priceSeries, candles, barWidth, width, plotBottom);
         drawPriceZoneLineLabel(
@@ -4231,6 +4288,46 @@ function drawPriceZones(
       box.bottom - box.top + padding * 2,
     );
   });
+  context.restore();
+}
+
+function drawCurrentLevelConfidenceLabel(
+  context: CanvasRenderingContext2D,
+  text: string,
+  span: HorizontalSpan,
+  centerY: number,
+  color: string,
+  chartBackground: string,
+  settings: ResolvedPriceZoneLegendSettings,
+  placed: CanvasBox[],
+  candleBoxes: CanvasBox[],
+  layerWidth: number,
+  plotBottom: number,
+) {
+  const fontSize = 10;
+  context.save();
+  context.font = `700 ${fontSize}px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+  const labelWidth = Math.ceil(context.measureText(text).width) + 8;
+  const labelHeight = fontSize + 5;
+  const candidates = [span.right - labelWidth - 6, span.left + 6, span.left + span.width / 2 - labelWidth / 2];
+  let selected: CanvasBox | null = null;
+  for (const left of candidates) {
+    const top = centerY - labelHeight / 2;
+    const box = { bottom: top + labelHeight, left, right: left + labelWidth, top };
+    if (box.left < 2 || box.right > layerWidth - 2 || box.top < 2 || box.bottom > plotBottom - 2) continue;
+    if (placed.some((item) => boxesOverlap(box, item, 3))) continue;
+    if (candleBoxes.some((candle) => boxesOverlap(box, candle, 2))) continue;
+    selected = box;
+    break;
+  }
+  if (selected) {
+    context.fillStyle = rgbaFromHex(chartBackground, 0.88 * settings.opacity);
+    context.fillRect(selected.left, selected.top, labelWidth, labelHeight);
+    context.fillStyle = rgbaFromHex(color, settings.opacity);
+    context.textBaseline = "middle";
+    context.fillText(text, selected.left + 4, selected.top + labelHeight / 2);
+    placed.push(selected);
+  }
   context.restore();
 }
 

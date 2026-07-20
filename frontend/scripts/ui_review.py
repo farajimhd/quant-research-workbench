@@ -187,8 +187,7 @@ def validate_price_zone_legend(
     price_legend.locator(".chart-legend-header").click()
     legend_text = price_legend.inner_text()
     for expected_level_indicator in (
-        "Decision zones",
-        "Tactical zones",
+        "Current support & resistance",
         "Structure breaks",
         "Opening range",
         "Trade-volume POC",
@@ -196,21 +195,47 @@ def validate_price_zone_legend(
         if expected_level_indicator not in legend_text:
             issues.append(f"price legend omits {expected_level_indicator}")
     configure_levels = price_legend.get_by_role(
-        "button", name="Configure Decision zones"
+        "button", name="Configure Current support & resistance"
     )
     if configure_levels.count() != 1:
         issues.append("generic structure levels do not expose legend configuration")
     else:
         configure_levels.click()
         levels_editor = page.get_by_role(
-            "dialog", name="Decision zones indicator settings"
+            "dialog", name="Current support & resistance indicator settings"
         )
         if levels_editor.get_by_text("Connector label size", exact=True).count():
             issues.append("price-axis-only decision zones expose irrelevant label-size settings")
-        if levels_editor.get_by_label("Shape").count() != 1:
-            issues.append("decision-zone settings omit border style")
-        if levels_editor.get_by_role("slider", name="Decision zones opacity").count() != 1:
-            issues.append("decision-zone settings omit visibility strength")
+        if levels_editor.get_by_label("Shape").count():
+            issues.append("borderless current zones expose a nonfunctional edge-style setting")
+        nearest_count = levels_editor.get_by_role(
+            "slider", name="Current support & resistance nearest levels per side"
+        )
+        if nearest_count.count() != 1:
+            issues.append("current structure settings omit nearest-level count")
+        else:
+            nearest_count.evaluate("""element => {
+                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                setter.call(element, '2');
+                element.dispatchEvent(new Event('input', { bubbles: true }));
+                element.dispatchEvent(new Event('change', { bubbles: true }));
+            }""")
+            page.wait_for_timeout(150)
+            nearest_count = levels_editor.get_by_role(
+                "slider", name="Current support & resistance nearest levels per side"
+            )
+            if nearest_count.input_value() != "2":
+                issues.append(
+                    f"current structure nearest-level count does not update (value={nearest_count.input_value()})"
+                )
+            nearest_count.evaluate("""element => {
+                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                setter.call(element, '3');
+                element.dispatchEvent(new Event('input', { bubbles: true }));
+                element.dispatchEvent(new Event('change', { bubbles: true }));
+            }""")
+        if levels_editor.get_by_role("slider", name="Current support & resistance opacity").count() != 1:
+            issues.append("current structure settings omit confidence-region opacity")
         levels_editor.get_by_role("button", name="Close indicator settings").click()
     configure_breaks = price_legend.get_by_role(
         "button", name="Configure Structure breaks"

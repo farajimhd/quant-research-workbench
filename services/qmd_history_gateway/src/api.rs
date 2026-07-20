@@ -339,15 +339,20 @@ fn project_chart_snapshot(
             service_error(format!("failed to serialize chart snapshot: {error}"))
         });
     };
+    let indicator_count = snapshot.indicators.len();
     let indicators = snapshot
         .indicators
         .into_iter()
-        .map(|indicator| {
+        .enumerate()
+        .map(|(index, indicator)| {
             let mut value = serde_json::to_value(indicator).map_err(|error| {
                 service_error(format!("failed to serialize chart indicator: {error}"))
             })?;
             if let Some(object) = value.as_object_mut() {
                 object.retain(|key, _| columns.contains(key));
+                if index + 1 < indicator_count {
+                    object.remove("qmd_structure_active_levels");
+                }
             }
             Ok(value)
         })

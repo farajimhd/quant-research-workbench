@@ -594,6 +594,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "qmd_structure_resistance_price",
             "qmd_structure_resistance_lower",
             "qmd_structure_resistance_upper",
+            "qmd_structure_active_levels",
             "qmd_structure_micro_direction",
             "qmd_structure_micro_swing_high",
             "qmd_structure_micro_swing_low",

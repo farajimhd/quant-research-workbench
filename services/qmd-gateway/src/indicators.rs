@@ -3,6 +3,7 @@ use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::generic_structure::{
     GenericStructureCheckpoint, GenericStructureEvent, GenericStructureSnapshot,
+    StructureLevelCandidate,
 };
 use crate::metrics::SharedMetrics;
 use crate::microstructure_forecast::{
@@ -19,7 +20,7 @@ use std::sync::{Arc, RwLock as StdRwLock};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, sleep, Duration};
 
-pub const INDICATOR_SCHEMA_VERSION: u16 = 12;
+pub const INDICATOR_SCHEMA_VERSION: u16 = 13;
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const PREMARKET_SESSION_START_SECONDS: u32 = 4 * 60 * 60;
 
@@ -165,6 +166,7 @@ pub struct IndicatorRow {
     pub qmd_structure_resistance_upper: f64,
     pub qmd_structure_resistance_strength: f64,
     pub qmd_structure_resistance_confidence: f64,
+    pub qmd_structure_active_levels: Vec<StructureLevelCandidate>,
     pub qmd_structure_micro_direction: i8,
     pub qmd_structure_micro_threshold: f64,
     pub qmd_structure_micro_swing_high: f64,
@@ -791,7 +793,7 @@ impl IndicatorShardStore {
             .and_then(|rows| rows.back())
             .cloned();
         let history_limit = store.history_limit_for(&timeframe);
-        let history = store
+        let mut history = store
             .history
             .get(&key)
             .map(|rows| {
@@ -805,6 +807,9 @@ impl IndicatorShardStore {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        history
+            .iter_mut()
+            .for_each(|row| row.qmd_structure_active_levels.clear());
         IndicatorSnapshot {
             ticker: ticker.to_string(),
             tick,
@@ -1361,6 +1366,7 @@ impl BarIndicatorState {
             qmd_structure_resistance_upper: structure.resistance.upper,
             qmd_structure_resistance_strength: structure.resistance.strength,
             qmd_structure_resistance_confidence: structure.resistance.confidence,
+            qmd_structure_active_levels: structure.active_levels.clone(),
             qmd_structure_micro_direction: structure.micro.direction,
             qmd_structure_micro_threshold: structure.micro.threshold,
             qmd_structure_micro_swing_high: structure.micro.swing_high,
@@ -2274,6 +2280,11 @@ impl IndicatorClickHouseWriter {
 fn indicator_insert_row(row: &IndicatorRow) -> serde_json::Value {
     let mut value = serde_json::to_value(row).unwrap_or_else(|_| json!({}));
     if let Some(object) = value.as_object_mut() {
+        // Active candidates are a bounded streaming/chart state carried by the
+        // canonical in-memory snapshot. Durable reconstruction comes from the
+        // versioned generic-structure checkpoint and event tables, so the wide
+        // per-bar indicator table intentionally does not duplicate this array.
+        object.remove("qmd_structure_active_levels");
         object.insert(
             "bar_start".to_string(),
             serde_json::Value::String(clickhouse_datetime64(&row.bar_start)),

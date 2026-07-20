@@ -12,6 +12,7 @@ const OPENING_RANGE_END_SECONDS: u32 = 9 * 60 * 60 + 35 * 60;
 const MOVE_HALF_LIFE_SECONDS: f64 = 30.0;
 const SPREAD_HALF_LIFE_SECONDS: f64 = 15.0;
 const MAX_ZONES_PER_SIDE: usize = 48;
+const MAX_EXPOSED_LEVELS_PER_SIDE: usize = 8;
 
 #[derive(Clone, Copy, Debug)]
 struct ScaleConfig {
@@ -64,6 +65,23 @@ pub struct StructureLevelSnapshot {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct StructureLevelCandidate {
+    pub scale: String,
+    pub side: i8,
+    pub price: f64,
+    pub lower: f64,
+    pub upper: f64,
+    pub strength: f64,
+    pub confidence: f64,
+    pub evidence_score: f64,
+    pub distance: f64,
+    pub touch_count: u32,
+    pub hold_count: u32,
+    pub created_at_ms: i64,
+    pub last_test_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct StructureScaleSnapshot {
     pub direction: i8,
     pub threshold: f64,
@@ -83,6 +101,8 @@ pub struct GenericStructureSnapshot {
     pub confidence: f64,
     pub support: StructureLevelSnapshot,
     pub resistance: StructureLevelSnapshot,
+    #[serde(default)]
+    pub active_levels: Vec<StructureLevelCandidate>,
     pub micro: StructureScaleSnapshot,
     pub tactical: StructureScaleSnapshot,
     pub context: StructureScaleSnapshot,
@@ -614,6 +634,12 @@ impl GenericStructureEngine {
             .clamp(0.0, 1.0);
         let support = select_unified_level(&snapshots, true, self.last_reference_price);
         let resistance = select_unified_level(&snapshots, false, self.last_reference_price);
+        let active_levels = exposed_active_levels(
+            &self.scales,
+            self.last_reference_price,
+            self.base_threshold(self.last_reference_price),
+            now,
+        );
         let last = self.last_event.as_ref();
         GenericStructureSnapshot {
             algorithm_version: GENERIC_STRUCTURE_ALGORITHM_VERSION,
@@ -624,6 +650,7 @@ impl GenericStructureEngine {
             confidence,
             support,
             resistance,
+            active_levels,
             micro: snapshots.first().cloned().unwrap_or_default(),
             tactical: snapshots.get(1).cloned().unwrap_or_default(),
             context: snapshots.get(2).cloned().unwrap_or_default(),
@@ -650,6 +677,86 @@ impl GenericStructureEngine {
             nearest_round: nearest_round_price(self.last_reference_price),
         }
     }
+}
+
+fn exposed_active_levels(
+    states: &[ScaleState],
+    reference: f64,
+    base_threshold: f64,
+    now: DateTime<Utc>,
+) -> Vec<StructureLevelCandidate> {
+    let mut candidates = states
+        .iter()
+        .zip(SCALE_CONFIGS)
+        .flat_map(|(state, config)| {
+            let threshold = base_threshold * config.threshold_multiplier;
+            state
+                .support_zones
+                .iter()
+                .chain(state.resistance_zones.iter())
+                .filter(|zone| zone.active)
+                .filter(move |zone| {
+                    if zone.side > 0 {
+                        zone.price <= reference + threshold
+                    } else {
+                        zone.price >= reference - threshold
+                    }
+                })
+                .map(move |zone| {
+                    let snapshot = zone_snapshot(zone, config, now);
+                    let distance = (zone.price - reference).abs();
+                    StructureLevelCandidate {
+                        scale: config.name.to_string(),
+                        side: zone.side,
+                        price: snapshot.price,
+                        lower: snapshot.lower,
+                        upper: snapshot.upper,
+                        strength: snapshot.strength,
+                        confidence: snapshot.confidence,
+                        evidence_score: snapshot.strength * snapshot.confidence * config.weight,
+                        distance,
+                        touch_count: snapshot.touch_count,
+                        hold_count: snapshot.hold_count,
+                        created_at_ms: snapshot.created_at_ms,
+                        last_test_at_ms: snapshot.last_test_at_ms,
+                    }
+                })
+        })
+        .filter(|level| level.price > 0.0 && level.price.is_finite())
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        left.side
+            .cmp(&right.side)
+            .then_with(|| left.distance.total_cmp(&right.distance))
+            .then_with(|| right.evidence_score.total_cmp(&left.evidence_score))
+    });
+
+    let mut exposed = Vec::new();
+    for side in [1_i8, -1_i8] {
+        let side_candidates = candidates
+            .iter()
+            .filter(|candidate| candidate.side == side)
+            .collect::<Vec<_>>();
+        exposed.extend(
+            side_candidates
+                .iter()
+                .take(MAX_EXPOSED_LEVELS_PER_SIDE)
+                .map(|candidate| (*candidate).clone()),
+        );
+        if let Some(strongest) = side_candidates
+            .iter()
+            .max_by(|left, right| left.evidence_score.total_cmp(&right.evidence_score))
+        {
+            if !exposed.iter().any(|candidate| {
+                candidate.side == side
+                    && candidate.scale == strongest.scale
+                    && (candidate.price - strongest.price).abs() <= price_tick(strongest.price)
+            }) {
+                exposed.push((**strongest).clone());
+            }
+        }
+    }
+    exposed
 }
 
 fn seed_scale_snapshot(state: &mut ScaleState, snapshot: &StructureScaleSnapshot) {
@@ -1570,6 +1677,45 @@ mod tests {
         let snapshot = engine.snapshot(Utc.with_ymd_and_hms(2026, 7, 20, 13, 30, 0).unwrap());
         assert_eq!(snapshot.direction, 0);
         assert!(snapshot.agreement < 0.2);
+    }
+
+    #[test]
+    fn active_level_payload_keeps_nearest_candidates_and_distant_strongest() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 20, 13, 30, 0).unwrap();
+        let mut engine = GenericStructureEngine::new("TEST");
+        engine.last_reference_price = 100.0;
+        engine.spread_ewma.value = 0.01;
+        for index in 0..10 {
+            engine.scales[0].support_zones.push(Zone {
+                side: 1,
+                price: 99.9 - index as f64 * 0.1,
+                lower: 99.89 - index as f64 * 0.1,
+                upper: 99.91 - index as f64 * 0.1,
+                created_at: now,
+                last_test_at: now,
+                touch_count: if index == 9 { 6 } else { 1 },
+                hold_count: if index == 9 { 4 } else { 0 },
+                break_count: 0,
+                trade_confirmations: if index == 9 { 3 } else { 0 },
+                seeded_confidence: 0.0,
+                seeded_strength: 0.0,
+                in_contact: false,
+                active: true,
+            });
+        }
+        let snapshot = engine.snapshot(now);
+        let supports = snapshot
+            .active_levels
+            .iter()
+            .filter(|level| level.side > 0)
+            .collect::<Vec<_>>();
+        assert_eq!(supports.len(), MAX_EXPOSED_LEVELS_PER_SIDE + 1);
+        assert!(supports
+            .iter()
+            .any(|level| (level.price - 99.9).abs() < 1e-9));
+        assert!(supports
+            .iter()
+            .any(|level| (level.price - 99.0).abs() < 1e-9));
     }
 
     #[test]
