@@ -135,6 +135,10 @@ insert across 64 hash partitions. Validated cutover then repartitions one CIK
 hash partition at a time into the canonical final layout. Existing stale hash
 staging is migrated server-side on resume, preserving all successful bundle
 checkpoints and rendered rows.
+Final rendered-text validation is likewise bounded: text integrity is checked
+per monthly partition in eight one-thread lanes, and cross-partition key
+identity plus cutover checksums are verified through 64 CIK buckets. No final
+validation query performs a whole-corpus text scan under global `FINAL`.
 The same preflight repairs a deployed `sec_filing_text_v3` table whose
 replacement version is still `inserted_at`. Monthly partitions are attached
 into the canonical revision-ranked engine, source-parent IDs are reconciled by

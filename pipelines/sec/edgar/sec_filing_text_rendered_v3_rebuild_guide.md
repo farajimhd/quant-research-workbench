@@ -77,6 +77,14 @@ and remove the temporary work and legacy staging tables. This gives live reads
 the required same-CIK revision locality without creating a merge storm during
 the historical build.
 
+Corpus validation is bounded in the same way. Eight validation lanes recalculate
+text hashes, UTF-8 character counts, byte counts, and renderer-version fields one
+monthly partition at a time. Cross-month logical-key identity is then checked in
+the 64 CIK buckets used by the final layout. Each query uses one ClickHouse
+thread and an 8 GiB limit, so validation has a 64 GiB aggregate ceiling instead
+of a whole-corpus `FINAL` query. Final source/target checksums are also summed
+from those 64 bounded buckets.
+
 Before rendering resumes, the script verifies that `sec_filing_text_v3` uses
 `ReplacingMergeTree(source_revision_rank)`. An older deployed table used
 `ReplacingMergeTree(inserted_at)`, which allowed a later database insert to
