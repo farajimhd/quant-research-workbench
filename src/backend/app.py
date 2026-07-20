@@ -124,7 +124,7 @@ from src.backend.trading_runtime_service import (
     save_strategy_definition,
 )
 from src.backend.ticker_presentation_service import ticker_presentation_payload
-from src.backend.ticker_facts_service import ticker_facts_payload
+from src.backend.ticker_facts_service import ticker_fact_history_payload, ticker_facts_payload
 from src.data_provider.calendar import market_sessions, scan_market_source
 from src.data_provider.catalog import provider_catalog, save_presentation_override
 from src.data_provider.config import (
@@ -3375,6 +3375,16 @@ def trading_ticker_facts(symbol: str, as_of: str | None = None) -> dict[str, Any
         raise HTTPException(status_code=400, detail=str(error)) from error
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=f"Ticker facts are temporarily unavailable: {error}") from error
+
+
+@app.get("/api/trading/ticker-facts/{symbol}/history/{metric:path}")
+def trading_ticker_fact_history(symbol: str, metric: str, as_of: str | None = None) -> dict[str, Any]:
+    try:
+        return ticker_fact_history_payload(symbol, metric, as_of=as_of)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=f"Ticker fact history is temporarily unavailable: {error}") from error
 
 
 @app.get("/api/trading/news/detail/{canonical_news_id}")

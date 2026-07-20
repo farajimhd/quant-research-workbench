@@ -4397,7 +4397,7 @@ function drawPriceZones(
       }
       if (zone.compactLabel && labelSpan && settings.showHistoricalLabels && historicalTagZones.has(zone)) {
         candleBoxes ??= visibleCandleBoxes(chart, priceSeries, candles, barWidth, width, plotBottom);
-        drawPriceZoneLineLabel(
+        const labelDrawn = drawPriceZoneLineLabel(
           context,
           zone.compactLabel,
           labelSpan,
@@ -4411,6 +4411,24 @@ function drawPriceZones(
           width,
           plotBottom,
         );
+        if (!labelDrawn && isStructureBreakZone(zone)) {
+          const eventX = xForAnnotationTime(chart, zone.eventTime ?? zone.end, candles) ?? coordinates.end;
+          drawStructureBreakEventLabel(
+            context,
+            zone.compactLabel,
+            eventX,
+            center,
+            borderColor,
+            chartBackground,
+            priceZoneLineLabelPlacement(zone),
+            settings,
+            lineLabelBoxes,
+            candleBoxes,
+            Math.max(3, barWidth),
+            width,
+            plotBottom,
+          );
+        }
       }
     });
   });
@@ -4532,7 +4550,7 @@ function drawPriceZoneLineLabel(
   layerWidth: number,
   plotBottom: number,
 ) {
-  if (lineY < 2 || lineY > plotBottom - 2 || span.width < 8) return;
+  if (lineY < 2 || lineY > plotBottom - 2 || span.width < 8) return false;
   const fontSize = Math.max(9, settings.labelFontSize);
   context.save();
   context.font = `600 ${fontSize}px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
@@ -4541,7 +4559,7 @@ function drawPriceZoneLineLabel(
   const labelHeight = fontSize + 5;
   if (labelWidth + 4 > span.width) {
     context.restore();
-    return;
+    return false;
   }
   const candidateFractions = [0.5, 0.38, 0.62, 0.25, 0.75];
   let selected: CanvasBox | null = null;
@@ -4569,6 +4587,56 @@ function drawPriceZoneLineLabel(
     placed.push(selected);
   }
   context.restore();
+  return selected !== null;
+}
+
+function drawStructureBreakEventLabel(
+  context: CanvasRenderingContext2D,
+  text: string,
+  eventX: number,
+  lineY: number,
+  color: string,
+  chartBackground: string,
+  placement: "above" | "below",
+  settings: ResolvedPriceZoneLegendSettings,
+  placed: CanvasBox[],
+  candleBoxes: CanvasBox[],
+  barWidth: number,
+  layerWidth: number,
+  plotBottom: number,
+) {
+  if (!Number.isFinite(eventX) || lineY < 2 || lineY > plotBottom - 2) return false;
+  const fontSize = Math.max(9, settings.labelFontSize);
+  context.save();
+  context.font = `600 ${fontSize}px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+  const labelWidth = Math.ceil(context.measureText(text).width) + 8;
+  const labelHeight = fontSize + 5;
+  const horizontalCandidates = [eventX - labelWidth - barWidth, eventX + barWidth, eventX - labelWidth / 2];
+  const direction = placement === "above" ? -1 : 1;
+  let selected: CanvasBox | null = null;
+  for (let lane = 1; lane <= 4 && !selected; lane += 1) {
+    const top = lineY + direction * (lane * (labelHeight + 3)) - (placement === "above" ? labelHeight : 0);
+    for (const left of horizontalCandidates) {
+      const box = { bottom: top + labelHeight, left, right: left + labelWidth, top };
+      if (box.left < 2 || box.right > layerWidth - 2 || box.top < 2 || box.bottom > plotBottom - 2) continue;
+      if (placed.some((item) => boxesOverlap(box, item, 3))) continue;
+      if (candleBoxes.some((candle) => boxesOverlap(box, candle, 2))) continue;
+      selected = box;
+      break;
+    }
+  }
+  if (selected) {
+    context.fillStyle = chartBackground;
+    context.globalAlpha = 0.94 * settings.opacity;
+    context.fillRect(selected.left, selected.top, labelWidth, labelHeight);
+    context.globalAlpha = settings.opacity;
+    context.fillStyle = color;
+    context.textBaseline = "middle";
+    context.fillText(text, selected.left + 4, selected.top + labelHeight / 2);
+    placed.push(selected);
+  }
+  context.restore();
+  return selected !== null;
 }
 
 function priceZoneCoordinates(chart: IChartApi, zone: PriceZone, candles: Candle[], barWidth: number, candleDuration: number) {

@@ -5,7 +5,12 @@ import unittest
 from unittest.mock import patch
 
 from src.backend.ticker_facts_service import (
+    aggregate_daily_volume,
+    aggregate_short_volume,
+    company_country_code,
+    daily_volume_history_points,
     identity_anchor_sql,
+    metric_changes,
     normalize_ticker,
     parse_as_of,
     ratio_percent,
@@ -53,3 +58,43 @@ class TickerFactsServiceTest(unittest.TestCase):
         self.assertEqual(selected[1], {"label": "Assets", "tag": "Assets", "value": 300.0})
         self.assertEqual(ratio_percent(10.0, 200.0), 5.0)
         self.assertIsNone(ratio_percent(10.0, None))
+
+    def test_daily_and_short_volume_snapshots_preserve_prior_comparisons(self) -> None:
+        daily = [
+            {"session_date": "2026-07-17", "close": 11, "size_sum": 200},
+            {"session_date": "2026-07-16", "close": 10, "size_sum": 100},
+        ]
+        current = aggregate_daily_volume(daily)
+        previous = aggregate_daily_volume(daily, 1)
+        self.assertEqual(current["latest_volume"], 200)
+        self.assertEqual(current["relative_volume_20d"], 200 / 150)
+        self.assertEqual(previous["latest_volume"], 100)
+        self.assertEqual(daily_volume_history_points(daily, relative=True)[-1]["value"], current["relative_volume_20d"])
+        short = [
+            {"trade_date": "2026-07-17", "short_volume": 40, "total_volume": 100, "short_volume_ratio": 0.4},
+            {"trade_date": "2026-07-16", "short_volume": 30, "total_volume": 100, "short_volume_ratio": 0.3},
+        ]
+        self.assertEqual(aggregate_short_volume(short)["ratio_20d"], 0.35)
+        self.assertEqual(aggregate_short_volume(short, 1)["latest_short_volume_ratio"], 0.3)
+
+    def test_metric_changes_report_numeric_direction_without_directional_advice(self) -> None:
+        changes = metric_changes(
+            market_rows=[
+                {"market_cap": 120, "share_class_shares_outstanding": 12, "observed_at_utc": "2026-07-17"},
+                {"market_cap": 100, "share_class_shares_outstanding": 10, "observed_at_utc": "2026-07-16"},
+            ],
+            float_rows=[],
+            short_interest_rows=[],
+            short_volume_rows=[],
+            borrow_rows=[],
+            volume_rows=[],
+            fundamental_rows=[],
+        )
+        self.assertEqual(changes["market_cap"]["direction"], "up")
+        self.assertEqual(changes["market_cap"]["delta"], 20)
+        self.assertEqual(changes["shares_outstanding"]["previous"], 10)
+
+    def test_company_country_prefers_domicile_and_uses_known_us_incorporation_codes(self) -> None:
+        self.assertEqual(company_country_code({"domicile_country_code": "gb", "state_of_incorporation": "CA"}), "GB")
+        self.assertEqual(company_country_code({"domicile_country_code": None, "state_of_incorporation": "CA"}), "US")
+        self.assertIsNone(company_country_code({"domicile_country_code": None, "state_of_incorporation": "E9"}))

@@ -1,10 +1,11 @@
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 
 export function Modal({ children, className, onClose, title }: { children: ReactNode; className?: string; onClose: () => void; title: string }) {
   const panelClassName = className ? `modal-panel ${className}` : "modal-panel";
   const backdropClassName = className ? `modal-backdrop ${className}-backdrop` : "modal-backdrop";
-  return (
+  const modal = (
     <div className={backdropClassName} role="presentation">
       <div className={panelClassName} role="dialog" aria-modal="true" aria-label={title}>
         <div className="modal-header">
@@ -17,4 +18,5 @@ export function Modal({ children, className, onClose, title }: { children: React
       </div>
     </div>
   );
+  return typeof document === "undefined" ? modal : createPortal(modal, document.body);
 }
