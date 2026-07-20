@@ -276,6 +276,16 @@ def validate_canvas_interactions(
                     center_y = price_box["y"] + price_box["height"] * 0.5
                     right_axis_x = price_box["x"] + price_box["width"] - 18
                     time_axis_y = price_box["y"] + price_box["height"] - 8
+                    page.mouse.move(8, 8)
+                    future_space_baseline = price_pane.screenshot()
+                    page.mouse.move(center_x, center_y)
+                    page.mouse.down()
+                    page.mouse.move(center_x - 160, center_y, steps=8)
+                    page.mouse.up()
+                    page.mouse.move(8, 8)
+                    page.wait_for_timeout(250)
+                    if future_space_baseline == price_pane.screenshot():
+                        issues.append("focus chart prevents panning the latest bar left to create future space")
                     for interaction_index in range(chart_stress_cycles):
                         page.mouse.move(center_x, center_y)
                         page.mouse.wheel(0, -180 if interaction_index % 2 == 0 else 150)
@@ -481,6 +491,17 @@ def validate_canvas_interactions(
                 page.wait_for_timeout(350)
                 if click_baseline != price_pane.screenshot():
                     issues.append("chart reverses a fit command after the first chart click")
+                future_space_baseline = price_pane.screenshot()
+                page.mouse.move(start_x, start_y)
+                page.mouse.down()
+                page.mouse.move(start_x - 160, start_y, steps=8)
+                page.mouse.up()
+                page.mouse.move(8, 8)
+                page.wait_for_timeout(250)
+                if future_space_baseline == price_pane.screenshot():
+                    issues.append("chart prevents panning the latest bar left to create future space")
+                latest_fit.click()
+                page.wait_for_timeout(180)
                 page.mouse.move(start_x, start_y)
                 page.mouse.down()
                 page.mouse.move(start_x + 90, start_y, steps=6)

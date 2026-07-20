@@ -3550,8 +3550,12 @@ function chartOptions(
     timeScale: {
       borderColor: palette.grid,
       fixLeftEdge: true,
-      fixRightEdge: true,
+      // Keep history bounded on the left, but leave the future side navigable so
+      // traders can move the latest bar away from the price scale and reserve
+      // working space for bars that have not arrived yet.
+      fixRightEdge: false,
       rightOffset: compact ? 1 : 2,
+      shiftVisibleRangeOnNewBar: true,
       barSpacing: compact ? Math.max(12, Math.round(settings.candleSize * 0.55)) : settings.candleSize,
       minBarSpacing: 0.2,
       visible: showTimeScale,
