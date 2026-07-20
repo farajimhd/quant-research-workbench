@@ -240,16 +240,16 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     shortDescription: "Causal support and resistance candidates inferred from consolidated NBBO behavior and eligible trades.",
     detailedDescription: "Green zones are price levels where bid reinforcement, bid recovery after depletion, seller absorption, and lower-price rejection accumulated. Red zones use the symmetric ask-side evidence. Evidence decays with a 15-minute half-life, so stale levels weaken rather than remaining permanent.",
     calculation: "For each selected-timeframe bar, support weights positive Level-1 OFI 30%, bid recovery 25%, absorbed aggressive selling 25%, and lower-range rejection 20%. Resistance mirrors those inputs. Repeated observations accumulate by minimum price increment; strength is a bounded transform of cumulative evidence and confidence combines touch count with QMD evidence reliability.",
-    readingGuide: "Treat each level as an area, not an exact tick. The newest active support and resistance receive full strength and confidence labels. Older states use compact SUP and RES tags so you can see where evidence migrated without covering price. A green level below price matters only if bids replenish or selling fails to move the midpoint; the red case is symmetric.",
+    readingGuide: "Treat each level as an area, not an exact tick. Current and historical tags use SUP and RES so the overlay stays clear; the guide and legend retain the full meaning. Read region density for accumulated strength, then read border weight and color intensity for confidence. A green level below price matters only if bids replenish or selling fails to move the midpoint; the red case is symmetric.",
     bullishEvidence: "A nearby green zone with high strength and confidence, followed by seller absorption, positive OFI, and price rejection upward, supports a short-horizon bounce or continuation.",
     bearishEvidence: "A nearby red zone with high strength and confidence, followed by buyer absorption, negative OFI, and price rejection downward, supports a short-horizon rejection or continuation lower.",
     timeframeBehavior: "Raw 100 ms quote-and-trade sufficient statistics are merged once into the selected bar. Level evidence then decays by elapsed time, so changing timeframe changes observation granularity without changing the 15-minute economic half-life. The legend configures support and resistance independently, including history length, latest labels, historical tags, line style, width, opacity, and marker size.",
     components: [
-      { label: "Green zone · Liquidity support", description: "Best candidate at or below price. Width is visual; the label reports strength and confidence.", tone: "buy" },
+      { label: "Green zone · Liquidity support", description: "Best candidate at or below price. Its short chart tag is SUP.", tone: "buy" },
       { label: "Red zone · Liquidity resistance", description: "Best candidate at or above price. It represents observed ask-side evidence, not guaranteed supply.", tone: "sell" },
-      { label: "Strength", description: "How much decayed evidence has accumulated at the level, normalized from 0% to 100%.", tone: "info" },
-      { label: "Confidence", description: "Whether the level has repeated observations supported by reliable quote/trade coverage; it is not win probability.", tone: "warning" },
-      { label: "SUP / RES history", description: "Compact historical tags show where the selected candidate changed. The full label is reserved for the current candidate.", tone: "neutral" },
+      { label: "Strength · region density", description: "How much decayed evidence has accumulated at the level, normalized from 0% to 100%. Stronger evidence produces a denser filled region.", tone: "info" },
+      { label: "Confidence · border emphasis", description: "Repeated observations and reliable quote/trade coverage make the border thicker, more opaque, and more saturated. Pale thin borders mean lower confidence; confidence is not win probability.", tone: "warning" },
+      { label: "SUP / RES tags", description: "Short tags identify support and resistance without covering candles. The full evidence description remains available in this guide and the overlay metadata.", tone: "neutral" },
     ],
     caveats: ["QMD sees consolidated Level-1 NBBO, not venue depth, hidden liquidity, or the full order book.", "Displayed liquidity can be cancelled before execution; require price response and persistence.", "A candidate level is causal evidence, not a claim that the market must reverse there."],
   }),
@@ -257,7 +257,7 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     shortDescription: "Important price references derived from the current 04:00 ET session and confirmed chart structure.",
     detailedDescription: "The overlay combines intraday auction boundaries, causally confirmed swing structure, BOS/CHoCH events, locally estimated LULD bands, and higher-timeframe references from completed daily trade bars.",
     calculation: "A swing is confirmed only after two later bars fail to exceed the center bar. BOS is a close through a confirmed swing in the established structure direction; CHoCH is the first confirmed-swing break against that direction. QMD LULD is a local five-minute rolling reference estimate, not an official SIP band. The 52-week and prior-month levels are queried once from completed daily trade bars before intraday replay.",
-    readingGuide: "Start with session and premarket extremes, then opening range. Full text is reserved for the newest active state. Historical states use compact tags such as SwH, SwL, BoS, and CHoCH. A BoS or CHoCH connector begins where the broken swing first became causally confirmed and ends at the closing bar that broke it; this preserves the relationship without backpainting the original pivot.",
+    readingGuide: "Start with session and premarket extremes, then opening range. Both current and historical states use compact tags such as Sess H, PM L, SwH, SwL, BoS, and CHoCH so labels do not cover candles. A BoS or CHoCH connector begins where the broken swing first became causally confirmed and ends at the closing bar that broke it; this preserves the relationship without backpainting the original pivot. These deterministic structure levels do not expose a confidence score, so their weight and opacity remain neutral rather than implying one.",
     bullishEvidence: "Reclaim and acceptance above a prior high, opening-range high, or swing high—especially with positive flow—supports continuation. A defended low or POC can support a bounce.",
     bearishEvidence: "Loss and acceptance below a prior low, opening-range low, or swing low—especially with negative flow—supports continuation lower. Rejection at a high or POC can act as resistance.",
     timeframeBehavior: "Session anchors retain their clock meaning. Premarket H/L requires bars of 30 minutes or less and the opening range requires bars of five minutes or less. Swing, BoS, CHoCH, and bar-volume POC depend on the selected timeframe. The 52-week and prior-month references come from completed daily bars. Canvas keeps up to 500 causal source bars and defaults each configurable group to a 100-bar view; every segment shows the value known at that time rather than projecting the newest value backward.",
@@ -1446,6 +1446,7 @@ type LevelZoneStyle = {
   annotationKind: "level" | "liquidity-resistance" | "liquidity-support" | "swing-high" | "swing-low";
   color: string;
   compactLabel: string;
+  confidence?: number;
   displayItemId: string;
   fillOpacity: number;
   historicalLabelsDefault?: boolean;
@@ -1455,6 +1456,7 @@ type LevelZoneStyle = {
   legendLabel: string;
   minPixelHeight: number;
   settingsId: string;
+  strength?: number;
 };
 
 const LEVEL_SOURCE_HISTORY_BARS = 500;
@@ -1475,18 +1477,20 @@ function pushTrailingLiquidityZones(
     const nextValue = index < rows.length ? finiteNumber(rows[index][priceColumn]) : Number.NaN;
     if (index < rows.length && pricesMatch(nextValue, segmentValue)) continue;
     const evidenceIndex = Math.max(segmentStart, Math.min(rows.length - 1, index - 1));
-    const strength = finiteNumber(rows[evidenceIndex]?.[strengthColumn]);
-    const confidence = finiteNumber(rows[evidenceIndex]?.[confidenceColumn]);
+    const strength = Math.max(0, Math.min(1, finiteNumber(rows[evidenceIndex]?.[strengthColumn])));
+    const confidence = Math.max(0, Math.min(1, finiteNumber(rows[evidenceIndex]?.[confidenceColumn])));
     const sideLabel = style.annotationKind === "liquidity-support" ? "Support" : "Resistance";
     pushHistoricalLevelSegment(zones, rows, segmentStart, index, segmentValue, chartEnd, {
       ...style,
+      confidence,
       displayItemId: "indicator.qmd_liquidity_levels",
-      fillOpacity: 0.04 + 0.12 * Math.max(0, Math.min(1, strength)) * Math.max(0, Math.min(1, confidence)),
+      fillOpacity: 0.035 + 0.14 * strength,
       historicalLabelsDefault: true,
       historicalTagLimitDefault: 4,
       label: `${sideLabel} · ${percentLabel(strength)} strength · ${percentLabel(confidence)} conf.`,
       latestLabelDefault: true,
       minPixelHeight: 7,
+      strength,
     });
     segmentStart = index;
     segmentValue = nextValue;
@@ -1602,6 +1606,7 @@ function pushHistoricalLevelSegment(
     borderWidth: 1,
     color: style.color,
     compactLabel: style.compactLabel,
+    confidence: style.confidence,
     displayItemId: style.displayItemId,
     end,
     fillColor: style.color,
@@ -1616,6 +1621,7 @@ function pushHistoricalLevelSegment(
     minPixelHeight: style.minPixelHeight,
     settingsId: style.settingsId,
     start,
+    strength: style.strength,
     upper: value,
     zoneHeightMode: "fixed_px",
   });

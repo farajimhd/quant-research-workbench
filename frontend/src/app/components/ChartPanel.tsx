@@ -106,6 +106,7 @@ type PriceZone = {
   borderWidth?: number;
   color: string;
   compactLabel?: string;
+  confidence?: number;
   displayItemId?: string;
   end: number;
   eventTime?: number;
@@ -122,6 +123,7 @@ type PriceZone = {
   minPixelHeight?: number;
   settingsId?: string;
   start: number;
+  strength?: number;
   upper: number;
   zoneHeightMode?: string;
 };
@@ -3177,6 +3179,17 @@ function rgbaFromHex(hex: string, opacity: number) {
   return `rgba(${red}, ${green}, ${blue}, ${clampNumber(opacity, 0, 1, 1)})`;
 }
 
+function mixHexColors(background: string, foreground: string, foregroundWeight: number) {
+  const from = validHexColor(background, "#ffffff").replace("#", "");
+  const to = validHexColor(foreground, "#344054").replace("#", "");
+  const weight = clampNumber(foregroundWeight, 0, 1, 1);
+  const channel = (offset: number) => Math.round(
+    parseInt(from.slice(offset, offset + 2), 16) * (1 - weight)
+      + parseInt(to.slice(offset, offset + 2), 16) * weight,
+  ).toString(16).padStart(2, "0");
+  return `#${channel(0)}${channel(2)}${channel(4)}`;
+}
+
 function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettings> {
   return {
     color: resolveChartColor(series.color),
@@ -4029,6 +4042,7 @@ function drawPriceZones(
   if (!priceSeries || !zones.length) return;
   context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
   const plotBottom = Math.max(0, height - chart.timeScale().height());
+  const chartBackground = validHexColor(readChartPalette().background, "#ffffff");
   const labelCandidates: Array<{ element: HTMLSpanElement; preferredTop: number; priority: number }> = [];
   const compactTagBoxes: Array<{ bottom: number; left: number; right: number; top: number }> = [];
   const historicalBySettings = new Map<string, PriceZone[]>();
@@ -4078,16 +4092,31 @@ function drawPriceZones(
         }
       }
       if (zoneWidth < 1 || height < 1) return;
-      const fillColor = validHexColor(resolveChartColor(zone.fillColor || zone.color), "#1E3A5F");
-      const fillOpacity = clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08) * settings.opacity;
-      const borderColor = validHexColor(resolveChartColor(zone.borderColor || fillColor), fillColor);
-      const borderOpacity = clampNumber(zone.borderOpacity, 0, 0.35, Math.max(clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08) * 1.8, 0.12)) * settings.opacity;
+      const confidence = typeof zone.confidence === "number" && Number.isFinite(zone.confidence)
+        ? clampNumber(zone.confidence, 0, 1, 0)
+        : null;
+      const semanticFillColor = validHexColor(resolveChartColor(zone.fillColor || zone.color), "#1E3A5F");
+      const semanticBorderColor = validHexColor(resolveChartColor(zone.borderColor || semanticFillColor), semanticFillColor);
+      const fillColor = confidence === null
+        ? semanticFillColor
+        : mixHexColors(chartBackground, semanticFillColor, 0.28 + 0.72 * confidence);
+      const borderColor = confidence === null
+        ? semanticBorderColor
+        : mixHexColors(chartBackground, semanticBorderColor, 0.34 + 0.66 * confidence);
+      const baseFillOpacity = clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08);
+      const fillOpacity = baseFillOpacity * (confidence === null ? 1 : 0.45 + 0.55 * confidence) * settings.opacity;
+      const borderOpacity = confidence === null
+        ? clampNumber(zone.borderOpacity, 0, 0.35, Math.max(baseFillOpacity * 1.8, 0.12)) * settings.opacity
+        : (0.24 + 0.7 * confidence) * settings.opacity;
+      const lineWidth = confidence === null
+        ? settings.lineWidth
+        : Math.max(1, Math.min(6, settings.lineWidth * (0.75 + 1.25 * confidence)));
       context.save();
       context.globalAlpha = 1;
       context.fillStyle = rgbaFromHex(fillColor, fillOpacity);
       context.strokeStyle = rgbaFromHex(borderColor, borderOpacity);
-      context.lineWidth = settings.lineWidth;
-      context.setLineDash(canvasLineDash(settings.lineStyle, settings.lineWidth));
+      context.lineWidth = lineWidth;
+      context.setLineDash(canvasLineDash(settings.lineStyle, lineWidth));
       if (zone.annotationKind === "bos" || zone.annotationKind === "choch") {
         const eventX = zone.eventTime ? chart.timeScale().timeToCoordinate(zone.eventTime as Time) : coordinates.end;
         if (settings.showConnectors) {
@@ -4119,8 +4148,12 @@ function drawPriceZones(
       if ((zone.latest ?? !zone.compactLabel) && settings.showLatestLabels) {
         const label = document.createElement("span");
         label.className = "price-zone-label latest";
-        label.textContent = zone.label;
+        label.textContent = latestPriceZoneLabel(zone);
         label.title = zone.label;
+        if (confidence !== null) label.dataset.confidence = confidence.toFixed(3);
+        if (typeof zone.strength === "number" && Number.isFinite(zone.strength)) {
+          label.dataset.strength = clampNumber(zone.strength, 0, 1, 0).toFixed(3);
+        }
         label.style.borderColor = rgbaFromHex(fillColor, Math.max(0.45, settings.opacity));
         label.style.color = fillColor;
         label.style.fontSize = `${settings.labelFontSize}px`;
@@ -4138,6 +4171,15 @@ function drawPriceZones(
     });
   });
   placePriceZoneLabels(layer, chart.timeScale().height(), labelCandidates);
+}
+
+function latestPriceZoneLabel(zone: PriceZone) {
+  const compactLabel = zone.compactLabel?.trim();
+  if (!compactLabel) return zone.label;
+  const price = (zone.lower + zone.upper) / 2;
+  if (!Number.isFinite(price)) return compactLabel;
+  const formattedPrice = price >= 1 ? price.toFixed(2) : price.toFixed(4);
+  return `${compactLabel} · $${formattedPrice}`;
 }
 
 function clippedHorizontalSpan(start: number, end: number, viewportWidth: number, overscan = 24) {
