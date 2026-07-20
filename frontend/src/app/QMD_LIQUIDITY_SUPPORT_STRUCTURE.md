@@ -230,7 +230,10 @@ only where the corresponding visual supports them.
 Current support and resistance axis tags use the same confidence-adjusted
 semantic color and configured opacity as their chart regions. Setting opacity
 to zero removes both the region and its axis tag; the axis-tag toggle remains
-an independent visibility control.
+an independent visibility control. Because the chart library renders price-axis
+tags as opaque swatches, the app precomposes the requested opacity against the
+active chart background. This preserves the intended visible tint at settings
+such as 30% in both light and dark themes while retaining readable tag text.
 
 Structural Pressure exposes series visibility/style, a configurable horizontal
 threshold, and pane height. Price-axis labels use the app's standard axis label

@@ -4155,15 +4155,20 @@ function syncPriceZoneAxisLines(
     if (!settings.visible || !settings.showAxisLabel || settings.opacity <= 0) return;
     const key = `${settingsId}:${compactLabel}`;
     const presentationColor = priceZonePresentationColors(zone, chartBackground).borderColor;
-    const color = colorWithOpacity(presentationColor, settings.opacity);
-    const signature = `${compactLabel}|${price}|${color}`;
+    // Lightweight Charts intentionally converts price-axis label colors to opaque RGB
+    // while deriving contrast text, so an RGBA alpha channel is discarded. Precompose
+    // the requested opacity against the active chart surface to preserve the same visible
+    // result across themes without bypassing the library's accessible text-color choice.
+    const axisLabelColor = mixHexColors(chartBackground, presentationColor, settings.opacity);
+    const signature = `${compactLabel}|${price}|${axisLabelColor}`;
     const existing = runtimes.get(key);
     nextKeys.add(key);
     if (!existing) {
       runtimes.set(key, {
         line: priceSeries.createPriceLine({
+          axisLabelColor,
           axisLabelVisible: true,
-          color,
+          color: axisLabelColor,
           lineVisible: false,
           price,
           title: compactLabel,
@@ -4172,8 +4177,9 @@ function syncPriceZoneAxisLines(
       });
     } else if (existing.signature !== signature) {
       existing.line.applyOptions({
+        axisLabelColor,
         axisLabelVisible: true,
-        color,
+        color: axisLabelColor,
         lineVisible: false,
         price,
         title: compactLabel,
