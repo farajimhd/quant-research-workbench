@@ -211,12 +211,6 @@ type PriceZoneAxisLineRuntime = {
   line: IPriceLine;
   signature: string;
 };
-type PriceZoneMarkerPlacement = "above" | "below" | "left";
-type PriceZoneMarkerAnchor = {
-  placement: PriceZoneMarkerPlacement;
-  x: number;
-  y: number;
-};
 type CanvasBox = { bottom: number; left: number; right: number; top: number };
 type HorizontalSpan = { left: number; right: number; width: number };
 type LegendLineStyle = "solid" | "dashed" | "dotted";
@@ -226,7 +220,6 @@ type LegendSeriesSettings = {
   labelFontSize?: number;
   lineStyle?: LegendLineStyle;
   lineWidth?: number;
-  markerSize?: number;
   maxHistoricalTags?: number;
   opacity?: number;
   showConnectors?: boolean;
@@ -1630,7 +1623,6 @@ type LegendItem = {
   label: string;
   lineStyle: LegendLineStyle;
   lineWidth: number;
-  markerSize?: number;
   maxHistoricalTags?: number;
   opacity: number;
   seriesStyle: "candlestick" | "histogram" | "line";
@@ -1645,7 +1637,6 @@ type LegendItem = {
   supportsAxisLabel?: boolean;
   supportsHistoricalLabels?: boolean;
   supportsHistoryWindow?: boolean;
-  supportsMarkers?: boolean;
   value: string;
   visible: boolean;
 };
@@ -1900,15 +1891,6 @@ function LegendEditor({
               onChange={(event) => onUpdate({ historyBars: Number(event.target.value) })}
             />
             <output>{item.historyBars ?? 100} bars</output>
-          </span>
-        </label>
-      ) : null}
-      {item.itemKind === "zone" && item.supportsMarkers ? (
-        <label>
-          Marker size
-          <span className="legend-range-control">
-            <input min={2} max={12} step={1} type="range" value={item.markerSize ?? 5} onChange={(event) => onUpdate({ markerSize: Number(event.target.value) })} />
-            <output>{item.markerSize ?? 5}px</output>
           </span>
         </label>
       ) : null}
@@ -2817,7 +2799,6 @@ function buildPriceZoneLegendItems(
       labelFontSize: settings.labelFontSize,
       lineStyle: settings.lineStyle,
       lineWidth: settings.lineWidth,
-      markerSize: settings.markerSize,
       maxHistoricalTags: settings.maxHistoricalTags,
       opacity: settings.opacity,
       seriesStyle: "line" as const,
@@ -2831,7 +2812,6 @@ function buildPriceZoneLegendItems(
       supportsAxisLabel: itemZones.some((zone) => typeof zone.axisLabelDefault === "boolean"),
       supportsHistoricalLabels: itemZones.some((zone) => Boolean(zone.compactLabel)),
       supportsHistoryWindow: itemZones.some((zone) => !zone.latest),
-      supportsMarkers: itemZones.some((zone) => zone.annotationKind === "bos" || zone.annotationKind === "choch" || zone.annotationKind === "liquidity-resistance" || zone.annotationKind === "liquidity-support" || zone.annotationKind === "swing-high" || zone.annotationKind === "swing-low"),
       value: `${itemZones.length} level${itemZones.length === 1 ? "" : "s"}`,
       visible: settings.visible,
     };
@@ -3233,7 +3213,6 @@ function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettin
     labelFontSize: 11,
     lineStyle: series.lineStyle ?? "solid",
     lineWidth: Math.max(1, Math.min(4, Math.round(series.lineWidth || 1))),
-    markerSize: 5,
     maxHistoricalTags: 10,
     opacity: 1,
     showConnectors: true,
@@ -3254,7 +3233,6 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
     labelFontSize: Math.max(9, Math.min(18, Math.round(stored.labelFontSize ?? defaults.labelFontSize))),
     lineStyle: stored.lineStyle || defaults.lineStyle,
     lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? defaults.lineWidth))),
-    markerSize: Math.max(2, Math.min(12, Math.round(stored.markerSize ?? defaults.markerSize))),
     maxHistoricalTags: Math.max(0, Math.min(30, Math.round(stored.maxHistoricalTags ?? defaults.maxHistoricalTags))),
     opacity: clampNumber(stored.opacity ?? defaults.opacity, 0, 1, 1),
     showConnectors: stored.showConnectors ?? defaults.showConnectors,
@@ -3271,7 +3249,6 @@ type ResolvedPriceZoneLegendSettings = {
   labelFontSize: number;
   lineStyle: LegendLineStyle;
   lineWidth: number;
-  markerSize: number;
   maxHistoricalTags: number;
   opacity: number;
   showConnectors: boolean;
@@ -3287,7 +3264,6 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     labelFontSize: Math.max(9, Math.min(18, Math.round(stored.labelFontSize ?? 11))),
     lineStyle: stored.lineStyle ?? zoneBorderStyle(zone?.borderStyle),
     lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? zone?.borderWidth ?? 1))),
-    markerSize: Math.max(2, Math.min(12, Math.round(stored.markerSize ?? 5))),
     maxHistoricalTags: Math.max(0, Math.min(30, Math.round(stored.maxHistoricalTags ?? zone?.historicalTagLimitDefault ?? 10))),
     opacity: clampNumber(stored.opacity ?? 1, 0, 1, 1),
     showConnectors: stored.showConnectors !== false,
@@ -4188,7 +4164,6 @@ function drawPriceZones(
       const lineWidth = confidence === null
         ? settings.lineWidth
         : Math.max(1, Math.min(6, settings.lineWidth * (0.75 + 1.25 * confidence)));
-      const markerAnchor = priceZoneMarkerAnchor(chart, priceSeries, zone, candles, center, settings.markerSize, barWidth, plotBottom);
       let labelSpan: HorizontalSpan | null = span;
       context.save();
       context.globalAlpha = 1;
@@ -4207,21 +4182,9 @@ function drawPriceZones(
             context.stroke();
           }
         }
-        if (markerAnchor && isVisibleCoordinate(markerAnchor.x, width)) {
-          drawEventGlyph(context, markerAnchor.x, markerAnchor.y, settings.markerSize, fillColor, zone.annotationKind);
-        }
       } else {
         context.fillRect(left, top, zoneWidth, height);
         context.strokeRect(left, top, zoneWidth, height);
-        if (zone.annotationKind === "swing-high" || zone.annotationKind === "swing-low") {
-          if (markerAnchor && isVisibleCoordinate(markerAnchor.x, width)) {
-            drawSwingGlyph(context, markerAnchor.x, markerAnchor.y, settings.markerSize, fillColor, zone.annotationKind === "swing-high");
-          }
-        } else if (zone.annotationKind === "liquidity-support" || zone.annotationKind === "liquidity-resistance") {
-          if (markerAnchor && isVisibleCoordinate(markerAnchor.x, width)) {
-            drawLiquidityGlyph(context, markerAnchor.x, markerAnchor.y, settings.markerSize, fillColor, zone.annotationKind === "liquidity-support");
-          }
-        }
       }
       context.restore();
       if (zone.compactLabel && labelSpan && settings.showHistoricalLabels && historicalTagZones.has(zone)) {
@@ -4264,109 +4227,16 @@ function isVisibleCoordinate(coordinate: number | null, viewportWidth: number, o
   return coordinate !== null && Number.isFinite(coordinate) && coordinate >= -overscan && coordinate <= viewportWidth + overscan;
 }
 
-function priceZoneMarkerPlacement(zone: PriceZone): PriceZoneMarkerPlacement {
-  if (zone.annotationKind === "swing-high" || zone.annotationKind === "liquidity-resistance") return "above";
-  if (zone.annotationKind === "swing-low" || zone.annotationKind === "liquidity-support") return "below";
-  if (zone.annotationKind === "bos" || zone.annotationKind === "choch") {
-    return zone.compactLabel?.endsWith("-") ? "below" : "above";
-  }
-  return "left";
-}
-
 function priceZoneLineLabelPlacement(zone: PriceZone): "above" | "below" {
-  return priceZoneMarkerPlacement(zone) === "below" ? "below" : "above";
-}
-
-function priceZoneMarkerAnchor(
-  chart: IChartApi,
-  priceSeries: ISeriesApi<"Candlestick">,
-  zone: PriceZone,
-  candles: Candle[],
-  levelY: number,
-  markerSize: number,
-  barWidth: number,
-  plotBottom: number,
-): PriceZoneMarkerAnchor | null {
-  const candle = nearestCandle(candles, zone.eventTime ?? zone.start);
-  if (!candle) return null;
-  const x = chart.timeScale().timeToCoordinate(candle.time as Time);
-  const highY = priceSeries.priceToCoordinate(candle.high);
-  const lowY = priceSeries.priceToCoordinate(candle.low);
-  if (x === null || highY === null || lowY === null) return null;
-  const placement = priceZoneMarkerPlacement(zone);
-  const top = Math.min(highY, lowY);
-  const bottom = Math.max(highY, lowY);
-  const gap = markerSize + 4;
-  if (placement === "above") {
-    const y = top - gap;
-    if (y - markerSize >= 2) return { placement, x, y };
-  } else if (placement === "below") {
-    const y = bottom + gap;
-    if (y + markerSize <= plotBottom - 2) return { placement, x, y };
-  }
-  const leftX = x - Math.max(barWidth / 2 + markerSize + 4, markerSize * 2 + 4);
-  const boundedY = Math.max(markerSize + 2, Math.min(levelY, plotBottom - markerSize - 2));
-  return leftX - markerSize >= 2 ? { placement: "left", x: leftX, y: boundedY } : null;
-}
-
-function nearestCandle(candles: Candle[], time: number) {
-  if (!candles.length || !Number.isFinite(time)) return null;
-  const index = lowerBoundCandleTime(candles, time);
-  if (index <= 0) return candles[0];
-  if (index >= candles.length) return candles[candles.length - 1];
-  const previous = candles[index - 1];
-  const next = candles[index];
-  return Math.abs(previous.time - time) <= Math.abs(next.time - time) ? previous : next;
+  if (zone.annotationKind === "swing-low" || zone.annotationKind === "liquidity-support") return "below";
+  if ((zone.annotationKind === "bos" || zone.annotationKind === "choch") && zone.compactLabel?.endsWith("-")) return "below";
+  return "above";
 }
 
 function canvasLineDash(style: LegendLineStyle, lineWidth: number) {
   if (style === "dashed") return [Math.max(4, lineWidth * 4), Math.max(3, lineWidth * 3)];
   if (style === "dotted") return [Math.max(1, lineWidth), Math.max(3, lineWidth * 3)];
   return [];
-}
-
-function drawSwingGlyph(context: CanvasRenderingContext2D, x: number, y: number, size: number, color: string, high: boolean) {
-  const direction = high ? -1 : 1;
-  context.save();
-  context.fillStyle = color;
-  context.beginPath();
-  context.moveTo(x, y + direction * size);
-  context.lineTo(x - size, y - direction * size * 0.55);
-  context.lineTo(x + size, y - direction * size * 0.55);
-  context.closePath();
-  context.fill();
-  context.restore();
-}
-
-function drawEventGlyph(context: CanvasRenderingContext2D, x: number, y: number, size: number, color: string, kind: "bos" | "choch") {
-  context.save();
-  context.strokeStyle = color;
-  context.fillStyle = color;
-  context.lineWidth = Math.max(1, size / 3);
-  context.beginPath();
-  if (kind === "choch") {
-    context.moveTo(x - size, y - size);
-    context.lineTo(x + size, y + size);
-    context.moveTo(x + size, y - size);
-    context.lineTo(x - size, y + size);
-  } else {
-    context.rect(x - size * 0.75, y - size * 0.75, size * 1.5, size * 1.5);
-  }
-  context.stroke();
-  context.restore();
-}
-
-function drawLiquidityGlyph(context: CanvasRenderingContext2D, x: number, y: number, size: number, color: string, support: boolean) {
-  const direction = support ? 1 : -1;
-  context.save();
-  context.strokeStyle = color;
-  context.lineWidth = Math.max(1, size / 3);
-  context.beginPath();
-  context.moveTo(x, y - direction * size);
-  context.lineTo(x, y + direction * size);
-  context.lineTo(x + size, y + direction * size);
-  context.stroke();
-  context.restore();
 }
 
 function visibleCandleBoxes(
