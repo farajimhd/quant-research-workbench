@@ -829,6 +829,25 @@ FROM {table(database, table_name)} FINAL
     return int(row["rows"]), int(row["checksum"] or 0)
 
 
+def rendered_table_stats_bounded(
+    client: ClickHouseHttpClient, database: str, table_name: str
+) -> tuple[int, int]:
+    rows = 0
+    checksum = 0
+    for bucket in range(64):
+        bucket_rows, bucket_checksum = rendered_table_stats(
+            client,
+            database,
+            table_name,
+            f"PREWHERE cityHash64(cik) % 64={bucket} "
+            "SETTINGS do_not_merge_across_partitions_select_final=0, "
+            "max_threads=1, max_memory_usage=8589934592",
+        )
+        rows += bucket_rows
+        checksum += bucket_checksum
+    return rows, checksum
+
+
 def migrate_hash_staging_to_monthly(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
     migration_table = f"{args.staging_table}_monthly_migration"
     legacy_table = f"{args.staging_table}_hash_legacy"
@@ -1915,19 +1934,7 @@ FROM {table(args.database, args.manifest_table)} FINAL
 WHERE run_id={sql_string(run_id)}
 """,
     )
-    staging = query_one(
-        client,
-        f"""
-SELECT count() AS rows, countIf(normalizer_version!={sql_string(SEC_PACKED_TEXT_RENDERER_VERSION)}) AS stale_rows,
-       countIf(extraction_method!={sql_string(SEC_PACKED_TEXT_RENDERER_VERSION)}) AS stale_methods,
-       countIf(text='' OR text_char_count=0) AS empty_rows,
-       countIf(text_char_count!=lengthUTF8(text)) AS bad_char_counts,
-       countIf(text_byte_count!=length(text)) AS bad_byte_counts,
-       countIf(lower(hex(SHA256(text)))!=text_sha256) AS bad_hashes,
-       uniqExact(tuple(cik,accession_number,document_id,text_kind)) AS unique_keys
-FROM {table(args.database, args.staging_table)} FINAL
-""",
-    )
+    staging = validate_staging_rows_bounded(client, args, partitions)
     expected_source_rows = sum(int(row["source_rows"]) for row in partitions)
     errors: list[str] = []
     if current_watermark != initial_watermark:
@@ -1951,7 +1958,12 @@ FROM {table(args.database, args.staging_table)} FINAL
     for key in ("stale_rows", "stale_methods", "empty_rows", "bad_char_counts", "bad_byte_counts", "bad_hashes"):
         if int(staging[key]):
             errors.append(f"{key}={staging[key]}")
-    if int(staging["unique_keys"]) != int(staging["rows"]):
+    if int(staging["global_final_rows"]) != int(staging["rows"]):
+        errors.append(
+            "cross-partition duplicate logical keys "
+            f"partition_rows={staging['rows']} global_final_rows={staging['global_final_rows']}"
+        )
+    if int(staging["unique_keys"]) != int(staging["global_final_rows"]):
         errors.append(f"duplicate logical keys rows={staging['rows']} unique={staging['unique_keys']}")
     validation = {
         "status": "ok" if not errors else "error",
@@ -1967,6 +1979,96 @@ FROM {table(args.database, args.staging_table)} FINAL
     if errors:
         raise RuntimeError("staging validation failed: " + "; ".join(errors))
     return validation
+
+
+def validate_staging_rows_bounded(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    partitions: list[dict[str, int]],
+) -> dict[str, int]:
+    validation_workers = 8
+    validation_query_memory = 8589934592
+    metric_names = (
+        "rows",
+        "stale_rows",
+        "stale_methods",
+        "empty_rows",
+        "bad_char_counts",
+        "bad_byte_counts",
+        "bad_hashes",
+    )
+    totals = {name: 0 for name in metric_names}
+
+    def validate_partition(partition: dict[str, int]) -> tuple[int, dict[str, Any]]:
+        partition_id = int(partition["partition_id"])
+        stats = query_one(
+            client,
+            f"""
+SELECT count() AS rows, countIf(normalizer_version!={sql_string(SEC_PACKED_TEXT_RENDERER_VERSION)}) AS stale_rows,
+       countIf(extraction_method!={sql_string(SEC_PACKED_TEXT_RENDERER_VERSION)}) AS stale_methods,
+       countIf(text='' OR text_char_count=0) AS empty_rows,
+       countIf(text_char_count!=lengthUTF8(text)) AS bad_char_counts,
+       countIf(text_byte_count!=length(text)) AS bad_byte_counts,
+       countIf(lower(hex(SHA256(text)))!=text_sha256) AS bad_hashes
+FROM {table(args.database, args.staging_table)} FINAL
+PREWHERE _partition_id={sql_string(str(partition_id))}
+SETTINGS max_threads=1, max_memory_usage={validation_query_memory}
+""",
+        )
+        return partition_id, stats
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=validation_workers) as executor:
+        partition_futures = {
+            executor.submit(validate_partition, partition): int(partition["partition_id"])
+            for partition in partitions
+        }
+        completed_partitions = 0
+        for future in concurrent.futures.as_completed(partition_futures):
+            partition_id, stats = future.result()
+            completed_partitions += 1
+            for name in metric_names:
+                totals[name] += int(stats[name])
+            print(
+                f"validation_partition={completed_partitions}/{len(partitions)} partition={partition_id} "
+                f"rows={int(stats['rows']):,} bad_hashes={int(stats['bad_hashes']):,}",
+                flush=True,
+            )
+
+    def validate_key_bucket(bucket: int) -> tuple[int, dict[str, Any]]:
+        stats = query_one(
+            client,
+            f"""
+SELECT count() AS rows,
+       uniqExact(tuple(cik, accession_number, document_id, text_kind)) AS unique_keys
+FROM {table(args.database, args.staging_table)} FINAL
+PREWHERE cityHash64(cik) % 64={bucket}
+SETTINGS do_not_merge_across_partitions_select_final=0,
+         max_threads=1, max_memory_usage={validation_query_memory}
+""",
+        )
+        return bucket, stats
+
+    global_final_rows = 0
+    unique_keys = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=validation_workers) as executor:
+        bucket_futures = [executor.submit(validate_key_bucket, bucket) for bucket in range(64)]
+        completed_buckets = 0
+        for future in concurrent.futures.as_completed(bucket_futures):
+            bucket, stats = future.result()
+            completed_buckets += 1
+            global_final_rows += int(stats["rows"])
+            unique_keys += int(stats["unique_keys"])
+            print(
+                f"validation_key_bucket={completed_buckets}/64 bucket={bucket} "
+                f"rows={int(stats['rows']):,} unique_keys={int(stats['unique_keys']):,}",
+                flush=True,
+            )
+
+    totals["global_final_rows"] = global_final_rows
+    totals["unique_keys"] = unique_keys
+    totals["validated_partitions"] = len(partitions)
+    totals["validated_key_buckets"] = 64
+    return totals
 
 
 def cutover(
@@ -1994,8 +2096,8 @@ def cutover(
     client.execute(
         f"RENAME TABLE {table(args.database, cutover_table)} TO {table(args.database, backup_table)}"
     )
-    target_stats = rendered_table_stats(client, args.database, args.target_table)
-    staging_stats = rendered_table_stats(client, args.database, args.staging_table)
+    target_stats = rendered_table_stats_bounded(client, args.database, args.target_table)
+    staging_stats = rendered_table_stats_bounded(client, args.database, args.staging_table)
     if target_stats != staging_stats:
         raise RuntimeError(f"post-cutover row validation failed target={target_stats} staging={staging_stats}")
     client.execute(f"DROP TABLE {table(args.database, args.staging_table)}")
@@ -2073,8 +2175,8 @@ SETTINGS max_threads=2, max_insert_threads=1, max_memory_usage={parse_size_bytes
             f"cutover_repartition={partition_id + 1}/64 status=completed reused=false rows={source_stats[0]:,}",
             flush=True,
         )
-    source_stats = rendered_table_stats(client, args.database, args.staging_table)
-    target_stats = rendered_table_stats(client, args.database, cutover_table)
+    source_stats = rendered_table_stats_bounded(client, args.database, args.staging_table)
+    target_stats = rendered_table_stats_bounded(client, args.database, cutover_table)
     if target_stats != source_stats:
         raise RuntimeError(f"cutover table validation failed source={source_stats} target={target_stats}")
     return cutover_table

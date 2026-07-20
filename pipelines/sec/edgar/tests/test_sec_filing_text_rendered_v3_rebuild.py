@@ -39,15 +39,77 @@ from pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild import (
     initialize_rebuild_worker,
     rebuild_stop_path,
     request_rebuild_stop,
+    rendered_table_stats_bounded,
     reset_invalidated_partition,
     run_jobs,
     staging_table_for_run,
     validate_completed_bundle_prefix,
+    validate_staging_rows_bounded,
 )
 from pipelines.sec.edgar.sec_pipeline.text_renderer import SEC_PACKED_TEXT_RENDERER_VERSION
 
 
 class SecRenderedV3RebuildTest(unittest.TestCase):
+    def test_rendered_table_stats_are_aggregated_in_final_layout_buckets(self) -> None:
+        class RecordingClient:
+            def __init__(self) -> None:
+                self.sql: list[str] = []
+
+            def execute(self, sql: str) -> str:
+                self.sql.append(sql)
+                return '{"rows":1,"checksum":2}\n'
+
+        client = RecordingClient()
+        stats = rendered_table_stats_bounded(client, "q_live", "stage_v3")
+
+        self.assertEqual(stats, (64, 128))
+        self.assertEqual(len(client.sql), 64)
+        self.assertTrue(all("cityHash64(cik) % 64=" in sql for sql in client.sql))
+        self.assertTrue(all("max_memory_usage=8589934592" in sql for sql in client.sql))
+
+    def test_staging_validation_bounds_text_scans_and_key_buckets(self) -> None:
+        class RecordingClient:
+            def __init__(self) -> None:
+                self.sql: list[str] = []
+
+            def execute(self, sql: str) -> str:
+                self.sql.append(sql)
+                if "SHA256(text)" in sql:
+                    rows = 10 if "_partition_id='202001'" in sql else 20
+                    return json.dumps(
+                        {
+                            "rows": rows,
+                            "stale_rows": 0,
+                            "stale_methods": 0,
+                            "empty_rows": 0,
+                            "bad_char_counts": 0,
+                            "bad_byte_counts": 0,
+                            "bad_hashes": 0,
+                        }
+                    ) + "\n"
+                if "uniqExact(tuple" in sql:
+                    rows = 30 if "cityHash64(cik) % 64=0" in sql else 0
+                    return json.dumps({"rows": rows, "unique_keys": rows}) + "\n"
+                raise AssertionError(sql)
+
+        client = RecordingClient()
+        result = validate_staging_rows_bounded(
+            client,
+            SimpleNamespace(database="q_live", staging_table="stage_v3"),
+            [{"partition_id": 202001}, {"partition_id": 202002}],
+        )
+
+        self.assertEqual(result["rows"], 30)
+        self.assertEqual(result["global_final_rows"], 30)
+        self.assertEqual(result["unique_keys"], 30)
+        text_queries = [sql for sql in client.sql if "SHA256(text)" in sql]
+        key_queries = [sql for sql in client.sql if "uniqExact(tuple" in sql]
+        self.assertEqual(len(text_queries), 2)
+        self.assertEqual(len(key_queries), 64)
+        self.assertTrue(all("_partition_id=" in sql for sql in text_queries))
+        self.assertTrue(all("max_threads=1" in sql for sql in client.sql))
+        self.assertTrue(all("max_memory_usage=8589934592" in sql for sql in client.sql))
+
     def test_hash_staging_merges_stop_before_migration_preflight(self) -> None:
         class RecordingClient:
             def __init__(self) -> None:
