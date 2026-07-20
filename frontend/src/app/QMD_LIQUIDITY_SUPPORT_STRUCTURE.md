@@ -126,7 +126,7 @@ Generic Structure comes from ordered NBBO midpoint and eligible trades, not
 from the selected candle OHLC. Changing timeframe changes sampling density and
 chart history, but it does not redefine the underlying pivots or zones.
 
-### Current decision zones
+### Current support and resistance zones
 
 At the right edge, the app shows a configurable one-to-six nearest supports and
 resistances per side (default three). It also includes the strongest support or
@@ -138,6 +138,21 @@ intensity; labels include side/rank and confidence. Support is only shown when
 the full zone is below current reference price. Resistance is only shown when
 the full zone is above. A crossed or in-play zone is omitted until its causal
 lifecycle resolves.
+
+### Selected and scale-specific zones
+
+**Selected structure zones** are the optional single support and resistance
+winners chosen across micro, tactical, and context using strength, confidence,
+scale weight, and distance. They were previously called Decision zones. They
+are not a separate decision signal and are disabled by default because Current
+support & resistance preserves more of the active candidate map.
+
+Micro, Tactical, and Context zones expose the winning zones within an individual
+event-response scale. They are also disabled by default and are intended for
+diagnosis. Tactical zones use three times the adaptive base threshold, require
+three events or 300 ms of break acceptance, carry a five-day evidence half-life,
+and are useful for intraday retests, invalidation, and breakout context. The
+half-life is evidence retention, not a five-day forecast horizon.
 
 ### Historical structure
 
@@ -204,6 +219,13 @@ Generic Structure exposes useful controls for:
 - fill intensity and line style where a line is actually drawn;
 - structure-score, confidence, and agreement series visibility; and
 - oscillator thresholds and native pane height.
+
+Swing references, session/premarket levels, opening range, POC, estimated LULD,
+completed higher-timeframe references, round price, and structure-break
+connectors render as true lines rather than translucent fixed-height bands.
+Their opacity control is the final line opacity from 0-100%; shape, width,
+history window, historical labels, label size/limit, and axis tags are exposed
+only where the corresponding visual supports them.
 
 Structural Pressure exposes series visibility/style, a configurable horizontal
 threshold, and pane height. Price-axis labels use the app's standard axis label

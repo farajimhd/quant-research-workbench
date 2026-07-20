@@ -296,12 +296,13 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     shortDescription: "One causal, event-native map of market structure and support/resistance that remains the same across chart timeframes.",
     detailedDescription: "QMD follows consolidated NBBO midpoint changes directly and uses eligible trades to confirm accepted breaks. It extracts three simultaneous price-response scales—micro, tactical, and context—then clusters confirmed pivots into persistent support and resistance zones. The chart samples this same event state at each bar end; candles do not define or recalculate the structure. At the live edge, the chart selects active candidates from the gateway state instead of projecting one winning level backward.",
     calculation: "The adaptive base reversal threshold is the maximum of two price ticks, 1.25 times the recent spread, 1.5 times the recent midpoint move, and 0.5 basis point of price. Micro, tactical, and context use 1×, 3×, and 8× that threshold. A pivot is published only after price reverses by the scale threshold. A break requires the midpoint beyond the pivot plus an eligible trade beyond it and scale-specific persistence. A break with the prior structure is BoS; the first accepted break against it is CHoCH.",
-    readingGuide: "Begin with Current support & resistance. By default it shows the three nearest active zones below and above price; configure the count from 1 to 6. The strongest support and resistance by confidence-adjusted evidence are always retained when they fall outside that nearest set and carry an asterisk. S1/R1 are closest to price. Each region is borderless: darker shading and the printed percentage indicate current confidence, not a win probability. A zone containing current price is temporarily in play and is omitted from both sides. A confirmed break retires the original role; the opposite role appears only after price retests the zone from the other side and confirms rejection with persistence plus an eligible trade. Historical regions preserve the evidence bucket known at that time and are never restyled with later confidence. BoS and CHoCH connectors begin at the causally known pivot and end at confirmation.",
+    readingGuide: "Begin with Current support & resistance. By default it shows the three nearest active zones below and above price; configure the count from 1 to 6. The strongest support and resistance by confidence-adjusted evidence are always retained when they fall outside that nearest set and carry an asterisk. S1/R1 are closest to price. Each region is borderless: darker shading and the printed percentage indicate current confidence, not a win probability. Selected structure zones are an optional single-winner view across micro, tactical, and context scales; tactical and the other scale-specific zones are optional diagnostics and are off by default to avoid duplicate shading. Swing and auction references are true configurable lines: opacity is the final rendered opacity, and shape, width, history, labels, and axis tags are available where applicable. A zone containing current price is temporarily in play and is omitted from both sides. A confirmed break retires the original role; the opposite role appears only after price retests the zone from the other side and confirms rejection with persistence plus an eligible trade. Historical regions preserve the evidence bucket known at that time and are never restyled with later confidence. BoS and CHoCH connectors begin at the causally known pivot and end at confirmation.",
     bullishEvidence: "Support below price gains weight when it is retested and holds, tactical/context direction is positive, accepted bullish BoS events persist, and eligible buying moves the midpoint beyond resistance.",
     bearishEvidence: "Resistance above price gains weight when it is retested and holds, tactical/context direction is negative, accepted bearish BoS events persist, and eligible selling moves the midpoint below support.",
     timeframeBehavior: "Structure is independent of the selected candle timeframe. Every chart interval samples the same ordered quote/trade engine at that bar's end, so aligned timestamps carry the same state. Confirmed events are stored durably; live restarts restore one compact state per symbol, and historical requests warm from that ticker's earlier persisted events without using future data.",
     components: [
       { label: "S1–S6 / R1–R6 · Current zones", description: "Nearest active support and resistance candidates ranked by distance from current NBBO midpoint. The configured nearest count is shown on each side, plus the strongest omitted candidate when necessary. An asterisk marks that strongest candidate.", tone: "neutral" },
+      { label: "Selected S / R", description: "Optional single support and resistance winners selected across micro, tactical, and context by strength, confidence, scale weight, and distance. This is not another signal and is off by default because Current zones retain more information.", tone: "neutral" },
       { label: "μ-S / μ-R · Micro", description: "Fast reactions using the base adaptive threshold. Useful for execution and immediate liquidity response; decays with a 30-minute half-life.", tone: "info" },
       { label: "T-S / T-R · Tactical", description: "Intermediate zones using three times the base threshold. Useful for intraday trade structure; decays with a five-day half-life.", tone: "warning" },
       { label: "C-S / C-R · Context", description: "Broad zones using eight times the base threshold. Useful for multi-session structure; decays with a 45-day half-life.", tone: "neutral" },
@@ -1456,17 +1457,17 @@ function pushStructureSwingLevels(
   chartEnd: number,
 ) {
   ([
-    ["micro", "μH", "μL", "Micro", "dotted"],
-    ["tactical", "TH", "TL", "Tactical", "solid"],
-    ["context", "CH", "CL", "Context", "dashed"],
-  ] as const).forEach(([scope, highTag, lowTag, title, borderStyle]) => {
+    ["micro", "μH", "μL", "Micro"],
+    ["tactical", "TH", "TL", "Tactical"],
+    ["context", "CH", "CL", "Context"],
+  ] as const).forEach(([scope, highTag, lowTag, title]) => {
     ([
       ["high", highTag, "var(--danger)", "swing-high"],
       ["low", lowTag, "var(--success)", "swing-low"],
     ] as const).forEach(([side, compactLabel, color, annotationKind]) => {
       pushTrailingLevelZones(zones, rows, `qmd_structure_${scope}_swing_${side}`, chartEnd, LEVEL_SOURCE_HISTORY_BARS, {
         annotationKind,
-        borderStyle,
+        borderStyle: "solid",
         borderWidth: scope === "context" ? 2 : 1,
         color,
         compactLabel,
@@ -1478,6 +1479,7 @@ function pushStructureSwingLevels(
         label: `${title} swing ${side}`,
         legendLabel: "Swing references",
         minPixelHeight: 3,
+        renderMode: "line",
         settingsId: "indicator.qmd_generic_structure.swings",
       });
     });
@@ -1689,7 +1691,7 @@ function pushStructureZoneSegment(
     color,
     compactLabel: spec.compactLabel,
     confidence: spec.confidence,
-    defaultVisible: unified || spec.scope === "tactical",
+    defaultVisible: false,
     displayItemId: "indicator.qmd_generic_structure",
     end,
     fillColor: color,
@@ -1698,10 +1700,10 @@ function pushStructureZoneSegment(
     historicalTagLimitDefault: unified ? 3 : 0,
     label: `${spec.label} · ${percentLabel(spec.strength)} strength · ${percentLabel(spec.confidence)} confidence`,
     latest,
-    legendLabel: unified ? "Decision zones" : `${spec.scope[0].toUpperCase()}${spec.scope.slice(1)} zones`,
+    legendLabel: unified ? "Selected structure zones" : `${spec.scope[0].toUpperCase()}${spec.scope.slice(1)} zones`,
     lower: spec.lower > 0 ? spec.lower : spec.price,
     minPixelHeight: unified ? 8 : 4,
-    settingsId: `indicator.qmd_generic_structure.${unified ? "decision-zones" : spec.scope}`,
+    settingsId: `indicator.qmd_generic_structure.${unified ? "selected-zones" : `${spec.scope}-zones`}`,
     start,
     strength: spec.strength,
     upper: spec.upper > 0 ? spec.upper : spec.price,
@@ -1759,6 +1761,7 @@ function pushStructureEvents(
       legendLabel: "Structure breaks",
       lower: price,
       minPixelHeight: 1,
+      renderMode: "line",
       settingsId: "indicator.qmd_generic_structure.breaks",
       start: pivotAt,
       upper: price,
@@ -1813,6 +1816,7 @@ function pushGenericStructureReferences(
       label,
       legendLabel: groupedLegendLabel,
       minPixelHeight: 3,
+      renderMode: "line",
       settingsId: `indicator.qmd_generic_structure.reference.${settingsGroup}`,
     });
   });
@@ -1834,6 +1838,7 @@ type LevelZoneStyle = {
   label: string;
   legendLabel: string;
   minPixelHeight: number;
+  renderMode?: "line" | "zone";
   settingsId: string;
   strength?: number;
 };
@@ -1897,6 +1902,7 @@ function pushHistoricalLevelSegment(
     legendLabel: style.legendLabel,
     lower: value,
     minPixelHeight: style.minPixelHeight,
+    renderMode: style.renderMode ?? "zone",
     settingsId: style.settingsId,
     start,
     strength: style.strength,

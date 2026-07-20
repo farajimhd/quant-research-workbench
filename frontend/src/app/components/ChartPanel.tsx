@@ -130,6 +130,7 @@ type PriceZone = {
   lower: number;
   maxPixelHeight?: number;
   minPixelHeight?: number;
+  renderMode?: "line" | "zone";
   settingsId?: string;
   start: number;
   strength?: number;
@@ -2895,7 +2896,7 @@ function buildPriceZoneLegendItems(
       supportsConnectors: itemZones.some((zone) => zone.annotationKind === "bos" || zone.annotationKind === "choch"),
       supportsCurrentLevelCount: itemZones.some((zone) => Boolean(zone.currentLevelSide)),
       supportsAxisLabel: itemZones.some((zone) => typeof zone.axisLabelDefault === "boolean"),
-      supportsHistoricalLabels: itemZones.some((zone) => zone.historicalLabelsDefault === true || isStructureBreakZone(zone)),
+      supportsHistoricalLabels: itemZones.some((zone) => (zone.renderMode === "line" && Boolean(zone.compactLabel)) || isStructureBreakZone(zone)),
       supportsHistoryWindow: itemZones.some((zone) => !zone.latest),
       supportsStroke: !itemZones.some((zone) => Boolean(zone.currentLevelSide)),
       value: `${itemZones.length} level${itemZones.length === 1 ? "" : "s"}`,
@@ -2979,7 +2980,7 @@ function loadLegendSettings(storageKey = LEGEND_SETTINGS_STORAGE_KEY): LegendSet
     if (!raw) return {};
     const parsed = JSON.parse(raw) as LegendSettingsMap;
     if (!parsed || typeof parsed !== "object") return {};
-    const staleQmdZonePattern = /^price-zone:indicator\.qmd_generic_structure\.(?:unified\.(?:support|resistance)|(?:micro|tactical|context)\.(?:support|resistance|swings)|bos|choch|reference\.(?:session|premarket|52-week|prior-month))$/;
+    const staleQmdZonePattern = /^price-zone:indicator\.qmd_generic_structure\.(?:decision-zones|micro|tactical|context|unified\.(?:support|resistance)|(?:micro|tactical|context)\.(?:support|resistance|swings)|bos|choch|reference\.(?:session|premarket|52-week|prior-month))$/;
     const normalized = Object.fromEntries(Object.entries(parsed).filter(([key]) => !staleQmdZonePattern.test(key)));
     const agreementKey = Object.keys(normalized).find((key) => key.includes("indicator.qmd_generic_structure") && key.endsWith(":qmd_structure_agreement"));
     if (agreementKey && normalized[agreementKey]) {
@@ -4250,12 +4251,15 @@ function drawPriceZonePrimitiveGeometry(
       }
       if (span.width < 1 || zoneHeight < 1) return;
       const { borderColor, confidence, fillColor } = priceZonePresentationColors(zone, chartBackground);
+      const lineOnly = zone.renderMode === "line" || zone.annotationKind === "bos" || zone.annotationKind === "choch";
       const baseFillOpacity = clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08);
-      const fillOpacity = baseFillOpacity * (confidence === null ? 1 : 0.45 + 0.55 * confidence) * settings.opacity;
-      const borderOpacity = zone.currentLevelSide ? 0 : confidence === null
+      const fillOpacity = lineOnly ? 0 : baseFillOpacity * (confidence === null ? 1 : 0.45 + 0.55 * confidence) * settings.opacity;
+      const borderOpacity = lineOnly
+        ? settings.opacity
+        : zone.currentLevelSide ? 0 : confidence === null
         ? clampNumber(zone.borderOpacity, 0, 0.35, Math.max(baseFillOpacity * 1.8, 0.12)) * settings.opacity
         : (0.24 + 0.7 * confidence) * settings.opacity;
-      const lineWidth = confidence === null
+      const lineWidth = lineOnly || confidence === null
         ? settings.lineWidth
         : Math.max(1, Math.min(6, settings.lineWidth * (0.75 + 1.25 * confidence)));
       context.save();
@@ -4274,6 +4278,11 @@ function drawPriceZonePrimitiveGeometry(
             context.stroke();
           }
         }
+      } else if (lineOnly) {
+        context.beginPath();
+        context.moveTo(span.left, center);
+        context.lineTo(span.right, center);
+        context.stroke();
       } else {
         context.fillRect(span.left, top, span.width, zoneHeight);
         if (borderOpacity > 0 && lineWidth > 0) context.strokeRect(span.left, top, span.width, zoneHeight);
