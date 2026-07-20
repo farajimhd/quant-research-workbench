@@ -4274,13 +4274,22 @@ function drawPriceZones(
     });
   });
   // Price annotations are contextual evidence, never the visual authority.
-  // Punch every candle body/wick out of the overlay canvas so zones,
-  // connectors, and their labels always read as being behind the candles.
-  candleBoxes ??= visibleCandleBoxes(chart, priceSeries, candles, barWidth, width, plotBottom);
+  // Remove only the actual candle geometry from the overlay. The broader
+  // high-to-low candle boxes above are intentionally conservative for label
+  // collision, but using them as a compositor mask creates visible rectangular
+  // holes around narrow wicks.
+  const candleOcclusionBoxes = visibleCandleOcclusionBoxes(
+    chart,
+    priceSeries,
+    candles,
+    barWidth,
+    width,
+    plotBottom,
+  );
   context.save();
   context.globalCompositeOperation = "destination-out";
-  candleBoxes.forEach((box) => {
-    const padding = 1.5;
+  candleOcclusionBoxes.forEach((box) => {
+    const padding = 0.6;
     context.fillRect(
       box.left - padding,
       box.top - padding,
@@ -4382,6 +4391,48 @@ function visibleCandleBoxes(
     const bottom = Math.min(plotBottom, Math.max(highY, lowY));
     if (bottom < 0 || top > plotBottom) return;
     boxes.push({ bottom, left: x - halfWidth, right: x + halfWidth, top });
+  });
+  return boxes;
+}
+
+function visibleCandleOcclusionBoxes(
+  chart: IChartApi,
+  priceSeries: ISeriesApi<"Candlestick">,
+  candles: Candle[],
+  barWidth: number,
+  layerWidth: number,
+  plotBottom: number,
+) {
+  const bodyHalfWidth = Math.max(1.5, barWidth * 0.46);
+  const wickHalfWidth = 0.5;
+  const boxes: CanvasBox[] = [];
+  candles.forEach((candle) => {
+    const x = chart.timeScale().timeToCoordinate(candle.time as Time);
+    if (x === null || x + bodyHalfWidth < 0 || x - bodyHalfWidth > layerWidth) return;
+    const highY = priceSeries.priceToCoordinate(candle.high);
+    const lowY = priceSeries.priceToCoordinate(candle.low);
+    const openY = priceSeries.priceToCoordinate(candle.open);
+    const closeY = priceSeries.priceToCoordinate(candle.close);
+    if (highY === null || lowY === null || openY === null || closeY === null) return;
+
+    const wickTop = Math.max(0, Math.min(highY, lowY));
+    const wickBottom = Math.min(plotBottom, Math.max(highY, lowY));
+    if (wickBottom >= 0 && wickTop <= plotBottom) {
+      boxes.push({ bottom: wickBottom, left: x - wickHalfWidth, right: x + wickHalfWidth, top: wickTop });
+    }
+
+    const bodyCenter = (openY + closeY) / 2;
+    const bodyHeight = Math.max(1, Math.abs(closeY - openY));
+    const bodyTop = Math.max(0, bodyCenter - bodyHeight / 2);
+    const bodyBottom = Math.min(plotBottom, bodyCenter + bodyHeight / 2);
+    if (bodyBottom >= 0 && bodyTop <= plotBottom) {
+      boxes.push({
+        bottom: bodyBottom,
+        left: x - bodyHalfWidth,
+        right: x + bodyHalfWidth,
+        top: bodyTop,
+      });
+    }
   });
   return boxes;
 }
