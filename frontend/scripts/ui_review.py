@@ -237,6 +237,35 @@ def validate_price_zone_legend(
         if levels_editor.get_by_role("slider", name="Current support & resistance opacity").count() != 1:
             issues.append("current structure settings omit confidence-region opacity")
         levels_editor.get_by_role("button", name="Close indicator settings").click()
+    structure_guides = price_legend.get_by_role(
+        "button", name=re.compile(r"^Guide QMD generic structure$", re.IGNORECASE)
+    )
+    if structure_guides.count() < 1:
+        issues.append("generic structure levels do not expose a guide")
+    else:
+        structure_guides.first.click()
+        guide = page.get_by_role(
+            "dialog", name=re.compile(r"^How to read: QMD generic structure$", re.IGNORECASE)
+        )
+        guide_text = guide.inner_text()
+        for expected_explanation in (
+            "temporarily in play",
+            "confirmed break retires the original role",
+            "retests the zone from the other side",
+            "simple cross never flips the label",
+        ):
+            if expected_explanation not in guide_text:
+                issues.append(
+                    f"generic structure guide omits role-reversal rule: {expected_explanation}"
+                )
+        if interaction_screenshot:
+            page.screenshot(
+                path=str(interaction_screenshot.with_name(
+                    interaction_screenshot.stem + "__structure-guide.png"
+                )),
+                full_page=True,
+            )
+        guide.get_by_role("button", name="Close").click()
     configure_breaks = price_legend.get_by_role(
         "button", name="Configure Structure breaks"
     )
@@ -1389,6 +1418,11 @@ def capture(args: argparse.Namespace) -> int:
                         and scenario["theme"] == "light"
                         and scenario["scale"] == 1.0
                         and scenario["viewport_name"] == "normal"
+                    ) else screenshot_path.with_name(
+                        f"{screenshot_path.stem}__qmd-review.png"
+                    ) if (
+                        scenario["page"] == "canvas-focus"
+                        and "indicator.qmd_generic_structure" in str(args.canvas_visible_indicators or "")
                     ) else None
                     issues.extend(validate_canvas_interactions(
                         page, scenario, interaction_screenshot,

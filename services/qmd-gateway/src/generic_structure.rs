@@ -5,7 +5,7 @@ use chrono_tz::America::New_York;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 2;
+pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 3;
 const SESSION_ANCHOR_SECONDS: u32 = 4 * 60 * 60;
 const REGULAR_OPEN_SECONDS: u32 = 9 * 60 * 60 + 30 * 60;
 const OPENING_RANGE_END_SECONDS: u32 = 9 * 60 * 60 + 35 * 60;
@@ -162,7 +162,25 @@ struct Zone {
     seeded_confidence: f64,
     seeded_strength: f64,
     in_contact: bool,
-    active: bool,
+    lifecycle: ZoneLifecycle,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+enum ZoneLifecycle {
+    #[default]
+    Active,
+    BreachCandidate(BoundaryAcceptance),
+    AwaitingRetest,
+    RetestContact,
+    RejectionCandidate(BoundaryAcceptance),
+    Retired,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct BoundaryAcceptance {
+    first_observed_at: DateTime<Utc>,
+    beyond_events: u32,
+    trade_confirmed: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -172,6 +190,24 @@ struct BreakCandidate {
     first_crossed_at: DateTime<Utc>,
     beyond_events: u32,
     trade_confirmed: bool,
+}
+
+impl Zone {
+    fn is_active(&self) -> bool {
+        matches!(
+            self.lifecycle,
+            ZoneLifecycle::Active | ZoneLifecycle::BreachCandidate(_)
+        )
+    }
+
+    fn is_pending_reversal(&self) -> bool {
+        matches!(
+            self.lifecycle,
+            ZoneLifecycle::AwaitingRetest
+                | ZoneLifecycle::RetestContact
+                | ZoneLifecycle::RejectionCandidate(_)
+        )
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -359,6 +395,8 @@ impl GenericStructureEngine {
                 state,
                 config,
                 reference,
+                eligible_trade_price,
+                eligible_trade_size,
                 threshold,
                 ts,
                 &mut emitted,
@@ -634,12 +672,7 @@ impl GenericStructureEngine {
             .clamp(0.0, 1.0);
         let support = select_unified_level(&snapshots, true, self.last_reference_price);
         let resistance = select_unified_level(&snapshots, false, self.last_reference_price);
-        let active_levels = exposed_active_levels(
-            &self.scales,
-            self.last_reference_price,
-            self.base_threshold(self.last_reference_price),
-            now,
-        );
+        let active_levels = exposed_active_levels(&self.scales, self.last_reference_price, now);
         let last = self.last_event.as_ref();
         GenericStructureSnapshot {
             algorithm_version: GENERIC_STRUCTURE_ALGORITHM_VERSION,
@@ -682,29 +715,21 @@ impl GenericStructureEngine {
 fn exposed_active_levels(
     states: &[ScaleState],
     reference: f64,
-    base_threshold: f64,
     now: DateTime<Utc>,
 ) -> Vec<StructureLevelCandidate> {
     let mut candidates = states
         .iter()
         .zip(SCALE_CONFIGS)
         .flat_map(|(state, config)| {
-            let threshold = base_threshold * config.threshold_multiplier;
             state
                 .support_zones
                 .iter()
                 .chain(state.resistance_zones.iter())
-                .filter(|zone| zone.active)
-                .filter(move |zone| {
-                    if zone.side > 0 {
-                        zone.price <= reference + threshold
-                    } else {
-                        zone.price >= reference - threshold
-                    }
-                })
+                .filter(|zone| zone.is_active())
+                .filter(move |zone| zone_is_on_expected_side(zone, reference))
                 .map(move |zone| {
                     let snapshot = zone_snapshot(zone, config, now);
-                    let distance = (zone.price - reference).abs();
+                    let distance = zone_distance(zone, reference);
                     StructureLevelCandidate {
                         scale: config.name.to_string(),
                         side: zone.side,
@@ -812,7 +837,7 @@ fn zone_from_snapshot(side: i8, snapshot: &StructureLevelSnapshot) -> Zone {
         seeded_confidence: snapshot.confidence.clamp(0.0, 1.0),
         seeded_strength: snapshot.strength.clamp(0.0, 1.0),
         in_contact: false,
-        active: true,
+        lifecycle: ZoneLifecycle::Active,
     }
 }
 
@@ -853,7 +878,7 @@ fn seed_scale_event(state: &mut ScaleState, event: &GenericStructureEvent) {
                 &mut state.support_zones
             };
             let zone = seed_zone(zones, -event.direction, event, false);
-            zone.active = false;
+            zone.lifecycle = ZoneLifecycle::AwaitingRetest;
             zone.break_count = zone.break_count.saturating_add(1);
             zone.trade_confirmations = zone.trade_confirmations.saturating_add(1);
             let fingerprint = stable_event_id(
@@ -870,7 +895,54 @@ fn seed_scale_event(state: &mut ScaleState, event: &GenericStructureEvent) {
                 state.last_broken_low_event = fingerprint;
             }
         }
+        "level_break" => {
+            let original_side = -event.direction;
+            let zones = if original_side > 0 {
+                &mut state.support_zones
+            } else {
+                &mut state.resistance_zones
+            };
+            let zone = seed_zone(zones, original_side, event, false);
+            zone.lifecycle = ZoneLifecycle::AwaitingRetest;
+            zone.break_count = zone.break_count.saturating_add(1);
+            zone.trade_confirmations = zone.trade_confirmations.saturating_add(1);
+        }
+        "role_reversal" => {
+            let original_zones = if event.direction > 0 {
+                &mut state.resistance_zones
+            } else {
+                &mut state.support_zones
+            };
+            retire_matching_zone(original_zones, event.price, event.lower, event.upper);
+            let zones = if event.direction > 0 {
+                &mut state.support_zones
+            } else {
+                &mut state.resistance_zones
+            };
+            let zone = seed_zone(zones, event.direction, event, true);
+            zone.lifecycle = ZoneLifecycle::Active;
+            zone.touch_count = zone.touch_count.max(1);
+            zone.hold_count = zone.hold_count.max(1);
+            zone.trade_confirmations = zone.trade_confirmations.saturating_add(1);
+        }
         _ => {}
+    }
+}
+
+fn retire_matching_zone(zones: &mut [Zone], price: f64, lower: f64, upper: f64) {
+    let tolerance = (upper - lower).abs().max(price_tick(price) * 2.0);
+    if let Some(zone) = zones
+        .iter_mut()
+        .filter(|zone| !matches!(zone.lifecycle, ZoneLifecycle::Retired))
+        .min_by(|left, right| {
+            (left.price - price)
+                .abs()
+                .total_cmp(&(right.price - price).abs())
+        })
+        .filter(|zone| (zone.price - price).abs() <= tolerance)
+    {
+        zone.lifecycle = ZoneLifecycle::Retired;
+        zone.in_contact = false;
     }
 }
 
@@ -901,7 +973,9 @@ fn seed_zone<'a>(
         zone.last_test_at = zone.last_test_at.max(event.confirmed_at);
         zone.seeded_strength = zone.seeded_strength.max(event.strength);
         zone.seeded_confidence = zone.seeded_confidence.max(event.confidence);
-        zone.active = zone.active || active;
+        if active {
+            zone.lifecycle = ZoneLifecycle::Active;
+        }
         return zone;
     }
     zones.push(Zone {
@@ -918,7 +992,11 @@ fn seed_zone<'a>(
         seeded_confidence: event.confidence.clamp(0.0, 1.0),
         seeded_strength: event.strength.clamp(0.0, 1.0),
         in_contact: false,
-        active,
+        lifecycle: if active {
+            ZoneLifecycle::Active
+        } else {
+            ZoneLifecycle::Retired
+        },
     });
     let index = zones.len() - 1;
     &mut zones[index]
@@ -1138,16 +1216,24 @@ fn update_structure_break(
         seeded_confidence: 0.0,
         seeded_strength: 0.0,
         in_contact: false,
-        active: false,
+        lifecycle: ZoneLifecycle::AwaitingRetest,
     };
-    if let Some(zone) = zones.iter_mut().min_by(|left, right| {
-        (left.price - level)
-            .abs()
-            .total_cmp(&(right.price - level).abs())
-    }) {
-        zone.break_count = zone.break_count.saturating_add(1);
-        zone.trade_confirmations = zone.trade_confirmations.saturating_add(1);
-        zone.active = false;
+    if let Some(zone) = zones
+        .iter_mut()
+        .filter(|zone| !matches!(zone.lifecycle, ZoneLifecycle::Retired))
+        .min_by(|left, right| {
+            (left.price - level)
+                .abs()
+                .total_cmp(&(right.price - level).abs())
+        })
+        .filter(|zone| (zone.price - level).abs() <= threshold)
+    {
+        if zone.is_active() {
+            zone.break_count = zone.break_count.saturating_add(1);
+            zone.trade_confirmations = zone.trade_confirmations.saturating_add(1);
+            zone.lifecycle = ZoneLifecycle::AwaitingRetest;
+            zone.in_contact = false;
+        }
         zone.last_test_at = ts;
         broken_zone = zone.clone();
     }
@@ -1164,8 +1250,163 @@ fn update_structure_break(
     state.break_candidate = None;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_zones(
     state: &mut ScaleState,
+    config: ScaleConfig,
+    reference: f64,
+    trade_price: f64,
+    trade_size: f64,
+    threshold: f64,
+    ts: DateTime<Utc>,
+    emitted: &mut Vec<GenericStructureEvent>,
+    sym: &str,
+) {
+    let mut new_resistance = update_zone_collection(
+        &mut state.support_zones,
+        config,
+        reference,
+        trade_price,
+        trade_size,
+        threshold,
+        ts,
+        emitted,
+        sym,
+    );
+    let mut new_support = update_zone_collection(
+        &mut state.resistance_zones,
+        config,
+        reference,
+        trade_price,
+        trade_size,
+        threshold,
+        ts,
+        emitted,
+        sym,
+    );
+    for zone in new_resistance.drain(..) {
+        insert_role_reversed_zone(&mut state.resistance_zones, zone, threshold);
+    }
+    for zone in new_support.drain(..) {
+        insert_role_reversed_zone(&mut state.support_zones, zone, threshold);
+    }
+    prune_zones(&mut state.support_zones);
+    prune_zones(&mut state.resistance_zones);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_zone_collection(
+    zones: &mut [Zone],
+    config: ScaleConfig,
+    reference: f64,
+    trade_price: f64,
+    trade_size: f64,
+    threshold: f64,
+    ts: DateTime<Utc>,
+    emitted: &mut Vec<GenericStructureEvent>,
+    sym: &str,
+) -> Vec<Zone> {
+    let mut reversed = Vec::new();
+    let contact_buffer = threshold * 0.10;
+    for zone in zones {
+        let inside =
+            reference >= zone.lower - contact_buffer && reference <= zone.upper + contact_buffer;
+        let broken_side = zone_broken_side(zone, reference, contact_buffer);
+        let reclaimed_side = zone_reclaimed_side(zone, reference, threshold);
+        match zone.lifecycle.clone() {
+            ZoneLifecycle::Retired => {}
+            ZoneLifecycle::Active => {
+                if broken_side {
+                    zone.in_contact = false;
+                    zone.lifecycle = ZoneLifecycle::BreachCandidate(new_acceptance(
+                        zone,
+                        trade_price,
+                        trade_size,
+                        ts,
+                    ));
+                } else {
+                    update_active_contact(zone, config, reference, threshold, ts, emitted, sym);
+                }
+            }
+            ZoneLifecycle::BreachCandidate(mut candidate) => {
+                if !broken_side {
+                    zone.lifecycle = ZoneLifecycle::Active;
+                    update_active_contact(zone, config, reference, threshold, ts, emitted, sym);
+                    continue;
+                }
+                advance_acceptance(&mut candidate, zone, trade_price, trade_size);
+                if acceptance_confirmed(&candidate, config, ts) {
+                    zone.lifecycle = ZoneLifecycle::AwaitingRetest;
+                    zone.in_contact = false;
+                    zone.break_count = zone.break_count.saturating_add(1);
+                    zone.trade_confirmations = zone.trade_confirmations.saturating_add(1);
+                    zone.last_test_at = ts;
+                    let pivot = zone_pivot(zone, ts);
+                    emitted.push(structure_event(
+                        sym,
+                        config.name,
+                        "level_break",
+                        -zone.side,
+                        &pivot,
+                        zone,
+                    ));
+                } else {
+                    zone.lifecycle = ZoneLifecycle::BreachCandidate(candidate);
+                }
+            }
+            ZoneLifecycle::AwaitingRetest => {
+                if reclaimed_side {
+                    zone.lifecycle = ZoneLifecycle::Retired;
+                } else if inside {
+                    zone.lifecycle = ZoneLifecycle::RetestContact;
+                    zone.last_test_at = ts;
+                }
+            }
+            ZoneLifecycle::RetestContact => {
+                if reclaimed_side {
+                    zone.lifecycle = ZoneLifecycle::Retired;
+                } else if broken_side {
+                    zone.lifecycle = ZoneLifecycle::RejectionCandidate(new_acceptance(
+                        zone,
+                        trade_price,
+                        trade_size,
+                        ts,
+                    ));
+                }
+            }
+            ZoneLifecycle::RejectionCandidate(mut candidate) => {
+                if reclaimed_side {
+                    zone.lifecycle = ZoneLifecycle::Retired;
+                } else if !broken_side {
+                    zone.lifecycle = ZoneLifecycle::RetestContact;
+                } else {
+                    advance_acceptance(&mut candidate, zone, trade_price, trade_size);
+                    if acceptance_confirmed(&candidate, config, ts) {
+                        let reversed_zone = role_reversed_zone(zone, ts);
+                        let pivot = zone_pivot(&reversed_zone, ts);
+                        emitted.push(structure_event(
+                            sym,
+                            config.name,
+                            "role_reversal",
+                            reversed_zone.side,
+                            &pivot,
+                            &reversed_zone,
+                        ));
+                        reversed.push(reversed_zone);
+                        zone.lifecycle = ZoneLifecycle::Retired;
+                        zone.last_test_at = ts;
+                    } else {
+                        zone.lifecycle = ZoneLifecycle::RejectionCandidate(candidate);
+                    }
+                }
+            }
+        }
+    }
+    reversed
+}
+
+fn update_active_contact(
+    zone: &mut Zone,
     config: ScaleConfig,
     reference: f64,
     threshold: f64,
@@ -1173,55 +1414,173 @@ fn update_zones(
     emitted: &mut Vec<GenericStructureEvent>,
     sym: &str,
 ) {
-    for zone in state
-        .support_zones
-        .iter_mut()
-        .chain(state.resistance_zones.iter_mut())
-    {
-        if !zone.active {
-            continue;
-        }
-        let inside = reference >= zone.lower - threshold * 0.10
-            && reference <= zone.upper + threshold * 0.10;
-        if inside && !zone.in_contact {
-            zone.in_contact = true;
-            zone.touch_count = zone.touch_count.saturating_add(1);
+    let inside =
+        reference >= zone.lower - threshold * 0.10 && reference <= zone.upper + threshold * 0.10;
+    if inside && !zone.in_contact {
+        zone.in_contact = true;
+        zone.touch_count = zone.touch_count.saturating_add(1);
+        zone.last_test_at = ts;
+        let pivot = zone_pivot(zone, ts);
+        emitted.push(structure_event(
+            sym,
+            config.name,
+            "touch",
+            zone.side,
+            &pivot,
+            zone,
+        ));
+    } else if zone.in_contact {
+        let held = (zone.side > 0 && reference >= zone.upper + threshold)
+            || (zone.side < 0 && reference <= zone.lower - threshold);
+        if held {
+            zone.in_contact = false;
+            zone.hold_count = zone.hold_count.saturating_add(1);
             zone.last_test_at = ts;
-            let pivot = Pivot {
-                price: zone.price,
-                pivot_at: zone.created_at,
-                confirmed_at: ts,
-            };
+            let pivot = zone_pivot(zone, ts);
             emitted.push(structure_event(
                 sym,
                 config.name,
-                "touch",
+                "hold",
                 zone.side,
                 &pivot,
                 zone,
             ));
-        } else if zone.in_contact {
-            let held = (zone.side > 0 && reference >= zone.upper + threshold)
-                || (zone.side < 0 && reference <= zone.lower - threshold);
-            if held {
-                zone.in_contact = false;
-                zone.hold_count = zone.hold_count.saturating_add(1);
-                zone.last_test_at = ts;
-                let pivot = Pivot {
-                    price: zone.price,
-                    pivot_at: zone.created_at,
-                    confirmed_at: ts,
-                };
-                emitted.push(structure_event(
-                    sym,
-                    config.name,
-                    "hold",
-                    zone.side,
-                    &pivot,
-                    zone,
-                ));
-            }
         }
+    }
+}
+
+fn new_acceptance(
+    zone: &Zone,
+    trade_price: f64,
+    trade_size: f64,
+    ts: DateTime<Utc>,
+) -> BoundaryAcceptance {
+    BoundaryAcceptance {
+        first_observed_at: ts,
+        beyond_events: 1,
+        trade_confirmed: qualifying_boundary_trade(zone, trade_price, trade_size),
+    }
+}
+
+fn advance_acceptance(
+    candidate: &mut BoundaryAcceptance,
+    zone: &Zone,
+    trade_price: f64,
+    trade_size: f64,
+) {
+    candidate.beyond_events = candidate.beyond_events.saturating_add(1);
+    candidate.trade_confirmed |= qualifying_boundary_trade(zone, trade_price, trade_size);
+}
+
+fn acceptance_confirmed(
+    candidate: &BoundaryAcceptance,
+    config: ScaleConfig,
+    ts: DateTime<Utc>,
+) -> bool {
+    let elapsed = (ts - candidate.first_observed_at).num_milliseconds().max(0);
+    candidate.trade_confirmed
+        && (candidate.beyond_events >= config.acceptance_events
+            || elapsed >= config.acceptance_millis)
+}
+
+fn qualifying_boundary_trade(zone: &Zone, trade_price: f64, trade_size: f64) -> bool {
+    trade_size > 0.0
+        && if zone.side > 0 {
+            trade_price < zone.lower
+        } else {
+            trade_price > zone.upper
+        }
+}
+
+fn zone_broken_side(zone: &Zone, reference: f64, buffer: f64) -> bool {
+    if zone.side > 0 {
+        reference < zone.lower - buffer
+    } else {
+        reference > zone.upper + buffer
+    }
+}
+
+fn zone_reclaimed_side(zone: &Zone, reference: f64, threshold: f64) -> bool {
+    if zone.side > 0 {
+        reference > zone.upper + threshold
+    } else {
+        reference < zone.lower - threshold
+    }
+}
+
+fn zone_pivot(zone: &Zone, confirmed_at: DateTime<Utc>) -> Pivot {
+    Pivot {
+        price: zone.price,
+        pivot_at: zone.created_at,
+        confirmed_at,
+    }
+}
+
+fn role_reversed_zone(zone: &Zone, ts: DateTime<Utc>) -> Zone {
+    Zone {
+        side: -zone.side,
+        price: zone.price,
+        lower: zone.lower,
+        upper: zone.upper,
+        created_at: ts,
+        last_test_at: ts,
+        touch_count: 1,
+        hold_count: 1,
+        break_count: 0,
+        trade_confirmations: 1,
+        seeded_confidence: 0.0,
+        seeded_strength: 0.0,
+        in_contact: false,
+        lifecycle: ZoneLifecycle::Active,
+    }
+}
+
+fn insert_role_reversed_zone(zones: &mut Vec<Zone>, reversed: Zone, threshold: f64) {
+    if let Some(existing) = zones
+        .iter_mut()
+        .filter(|zone| zone.is_active())
+        .min_by(|left, right| {
+            (left.price - reversed.price)
+                .abs()
+                .total_cmp(&(right.price - reversed.price).abs())
+        })
+        .filter(|zone| (zone.price - reversed.price).abs() <= threshold * 0.75)
+    {
+        let existing_weight = existing.touch_count.max(1) as f64;
+        existing.price =
+            (existing.price * existing_weight + reversed.price) / (existing_weight + 1.0);
+        existing.lower = existing.lower.min(reversed.lower);
+        existing.upper = existing.upper.max(reversed.upper);
+        existing.touch_count = existing.touch_count.saturating_add(reversed.touch_count);
+        existing.hold_count = existing.hold_count.saturating_add(reversed.hold_count);
+        existing.trade_confirmations = existing
+            .trade_confirmations
+            .saturating_add(reversed.trade_confirmations);
+        existing.last_test_at = existing.last_test_at.max(reversed.last_test_at);
+        return;
+    }
+    zones.push(reversed);
+}
+
+fn prune_zones(zones: &mut Vec<Zone>) {
+    while zones.len() > MAX_ZONES_PER_SIDE {
+        let remove_index = zones
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, zone)| (zone_retention_rank(zone), zone.last_test_at))
+            .map(|(index, _)| index)
+            .unwrap_or_default();
+        zones.remove(remove_index);
+    }
+}
+
+fn zone_retention_rank(zone: &Zone) -> u8 {
+    if matches!(zone.lifecycle, ZoneLifecycle::Retired) {
+        0
+    } else if zone.is_pending_reversal() {
+        1
+    } else {
+        2
     }
 }
 
@@ -1229,7 +1588,7 @@ fn add_or_merge_zone(zones: &mut Vec<Zone>, side: i8, pivot: &Pivot, threshold: 
     let half_width = (threshold * 0.30).max(price_tick(pivot.price));
     if let Some(zone) = zones
         .iter_mut()
-        .filter(|zone| zone.active)
+        .filter(|zone| zone.is_active())
         .min_by(|left, right| {
             (left.price - pivot.price)
                 .abs()
@@ -1259,18 +1618,10 @@ fn add_or_merge_zone(zones: &mut Vec<Zone>, side: i8, pivot: &Pivot, threshold: 
         seeded_confidence: 0.0,
         seeded_strength: 0.0,
         in_contact: false,
-        active: true,
+        lifecycle: ZoneLifecycle::Active,
     };
     zones.push(zone.clone());
-    if zones.len() > MAX_ZONES_PER_SIDE {
-        let remove_index = zones
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, candidate)| (candidate.active, candidate.last_test_at))
-            .map(|(index, _)| index)
-            .unwrap_or_default();
-        zones.remove(remove_index);
-    }
+    prune_zones(zones);
     zone
 }
 
@@ -1324,23 +1675,34 @@ fn select_level(
 ) -> StructureLevelSnapshot {
     zones
         .iter()
-        .filter(|zone| zone.active)
-        .filter(|zone| {
-            if support {
-                zone.price <= reference + threshold
-            } else {
-                zone.price >= reference - threshold
-            }
-        })
+        .filter(|zone| zone.is_active())
+        .filter(|zone| (zone.side > 0) == support)
+        .filter(|zone| zone_is_on_expected_side(zone, reference))
         .map(|zone| {
             let snapshot = zone_snapshot(zone, config, now);
-            let distance = (zone.price - reference).abs() / threshold.max(price_tick(reference));
+            let distance = zone_distance(zone, reference) / threshold.max(price_tick(reference));
             let score = snapshot.strength * snapshot.confidence / (1.0 + 0.12 * distance);
             (score, snapshot)
         })
         .max_by(|left, right| left.0.total_cmp(&right.0))
         .map(|(_, snapshot)| snapshot)
         .unwrap_or_default()
+}
+
+fn zone_is_on_expected_side(zone: &Zone, reference: f64) -> bool {
+    if zone.side > 0 {
+        zone.upper < reference
+    } else {
+        zone.lower > reference
+    }
+}
+
+fn zone_distance(zone: &Zone, reference: f64) -> f64 {
+    if zone.side > 0 {
+        (reference - zone.upper).max(0.0)
+    } else {
+        (zone.lower - reference).max(0.0)
+    }
 }
 
 fn zone_snapshot(zone: &Zone, config: ScaleConfig, now: DateTime<Utc>) -> StructureLevelSnapshot {
@@ -1387,12 +1749,22 @@ fn select_unified_level(
             } else {
                 &snapshot.resistance
             };
-            let distance =
-                (level.price - reference).abs() / snapshot.threshold.max(price_tick(reference));
+            let distance = if support {
+                (reference - level.upper).max(0.0)
+            } else {
+                (level.lower - reference).max(0.0)
+            } / snapshot.threshold.max(price_tick(reference));
             let score = level.strength * level.confidence * config.weight / (1.0 + 0.08 * distance);
             (score, level)
         })
-        .filter(|(_, level)| level.price > 0.0)
+        .filter(|(_, level)| {
+            level.price > 0.0
+                && if support {
+                    level.upper < reference
+                } else {
+                    level.lower > reference
+                }
+        })
         .max_by(|left, right| left.0.total_cmp(&right.0))
         .map(|(_, level)| level.clone())
         .unwrap_or_default()
@@ -1553,6 +1925,185 @@ mod tests {
         })
     }
 
+    fn zone_at(side: i8, price: f64, now: DateTime<Utc>) -> Zone {
+        Zone {
+            side,
+            price,
+            lower: price - 0.10,
+            upper: price + 0.10,
+            created_at: now,
+            last_test_at: now,
+            touch_count: 1,
+            hold_count: 0,
+            break_count: 0,
+            trade_confirmations: 0,
+            seeded_confidence: 0.0,
+            seeded_strength: 0.0,
+            in_contact: false,
+            lifecycle: ZoneLifecycle::Active,
+        }
+    }
+
+    #[test]
+    fn active_snapshot_never_labels_crossed_or_in_play_zones_as_support_or_resistance() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 20, 13, 30, 0).unwrap();
+        let mut engine = GenericStructureEngine::new("TEST");
+        engine.last_reference_price = 100.0;
+        engine.spread_ewma.value = 0.01;
+        engine.scales[0].support_zones.push(zone_at(1, 100.20, now));
+        engine.scales[0].support_zones.push(zone_at(1, 100.00, now));
+        engine.scales[0]
+            .resistance_zones
+            .push(zone_at(-1, 99.80, now));
+        engine.scales[0]
+            .resistance_zones
+            .push(zone_at(-1, 100.00, now));
+
+        let snapshot = engine.snapshot(now);
+        assert_eq!(snapshot.micro.support.price, 0.0);
+        assert_eq!(snapshot.micro.resistance.price, 0.0);
+        assert!(snapshot.active_levels.is_empty());
+    }
+
+    #[test]
+    fn broken_support_only_becomes_resistance_after_confirmed_retest_rejection() {
+        let start = Utc.with_ymd_and_hms(2026, 7, 20, 13, 30, 0).unwrap();
+        let mut state = ScaleState {
+            support_zones: vec![zone_at(1, 100.0, start)],
+            ..ScaleState::default()
+        };
+        let config = SCALE_CONFIGS[0];
+        let mut emitted = Vec::new();
+
+        update_zones(
+            &mut state,
+            config,
+            99.70,
+            0.0,
+            0.0,
+            0.10,
+            start + chrono::Duration::milliseconds(10),
+            &mut emitted,
+            "TEST",
+        );
+        update_zones(
+            &mut state,
+            config,
+            99.70,
+            99.70,
+            100.0,
+            0.10,
+            start + chrono::Duration::milliseconds(120),
+            &mut emitted,
+            "TEST",
+        );
+        assert!(matches!(
+            state.support_zones[0].lifecycle,
+            ZoneLifecycle::AwaitingRetest
+        ));
+        assert!(state.resistance_zones.is_empty());
+        assert_eq!(
+            emitted
+                .iter()
+                .filter(|event| event.event_kind == "level_break")
+                .count(),
+            1
+        );
+
+        update_zones(
+            &mut state,
+            config,
+            100.0,
+            0.0,
+            0.0,
+            0.10,
+            start + chrono::Duration::milliseconds(200),
+            &mut emitted,
+            "TEST",
+        );
+        update_zones(
+            &mut state,
+            config,
+            99.70,
+            0.0,
+            0.0,
+            0.10,
+            start + chrono::Duration::milliseconds(220),
+            &mut emitted,
+            "TEST",
+        );
+        assert!(state.resistance_zones.is_empty());
+
+        update_zones(
+            &mut state,
+            config,
+            99.70,
+            99.70,
+            100.0,
+            0.10,
+            start + chrono::Duration::milliseconds(340),
+            &mut emitted,
+            "TEST",
+        );
+        assert!(matches!(
+            state.support_zones[0].lifecycle,
+            ZoneLifecycle::Retired
+        ));
+        assert_eq!(state.resistance_zones.len(), 1);
+        assert_eq!(state.resistance_zones[0].side, -1);
+        assert!(state.resistance_zones[0].is_active());
+        assert_eq!(
+            emitted
+                .iter()
+                .filter(|event| event.event_kind == "role_reversal")
+                .count(),
+            1
+        );
+
+        let snapshot = scale_snapshot(&state, config, 99.70, 0.10, start);
+        assert_eq!(snapshot.support.price, 0.0);
+        assert_eq!(snapshot.resistance.price, 100.0);
+    }
+
+    #[test]
+    fn durable_level_break_and_role_reversal_events_restore_the_flipped_side() {
+        let start = Utc.with_ymd_and_hms(2026, 7, 20, 13, 30, 0).unwrap();
+        let event = |kind: &str, direction: i8, millis: i64, event_id: u64| GenericStructureEvent {
+            algorithm_version: GENERIC_STRUCTURE_ALGORITHM_VERSION,
+            event_id,
+            sym: "TEST".to_string(),
+            scale: "micro".to_string(),
+            event_kind: kind.to_string(),
+            direction,
+            price: 100.0,
+            lower: 99.90,
+            upper: 100.10,
+            strength: 0.50,
+            confidence: 0.50,
+            pivot_at: start,
+            confirmed_at: start + chrono::Duration::milliseconds(millis),
+        };
+        let mut engine = GenericStructureEngine::new("TEST");
+        engine.last_reference_price = 99.70;
+        engine.seed_events(&[
+            event("pivot_low", 1, 0, 1),
+            event("level_break", -1, 100, 2),
+            event("role_reversal", -1, 300, 3),
+        ]);
+
+        let snapshot = engine.snapshot(start + chrono::Duration::milliseconds(400));
+        assert_eq!(snapshot.micro.support.price, 0.0);
+        assert_eq!(snapshot.micro.resistance.price, 100.0);
+        assert!(matches!(
+            engine.scales[0].support_zones[0].lifecycle,
+            ZoneLifecycle::Retired
+        ));
+        assert!(snapshot
+            .active_levels
+            .iter()
+            .all(|level| level.side < 0 && level.lower > snapshot.reference_price));
+    }
+
     #[test]
     fn pivot_is_only_published_after_a_causal_reversal() {
         let mut engine = GenericStructureEngine::new("TEST");
@@ -1640,7 +2191,7 @@ mod tests {
                 seeded_confidence: 0.0,
                 seeded_strength: 0.0,
                 in_contact: false,
-                active: true,
+                lifecycle: ZoneLifecycle::Active,
             }],
             ..ScaleState::default()
         };
@@ -1700,7 +2251,7 @@ mod tests {
                 seeded_confidence: 0.0,
                 seeded_strength: 0.0,
                 in_contact: false,
-                active: true,
+                lifecycle: ZoneLifecycle::Active,
             });
         }
         let snapshot = engine.snapshot(now);
@@ -1738,7 +2289,7 @@ mod tests {
             seeded_confidence: 0.0,
             seeded_strength: 0.0,
             in_contact: false,
-            active: true,
+            lifecycle: ZoneLifecycle::Active,
         });
         let checkpoint = source.snapshot(now);
         let mut restored = GenericStructureEngine::new("TEST");
