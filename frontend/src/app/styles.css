@@ -12257,7 +12257,7 @@ button {
   border-top: 0;
 }
 
-.chart-native-pane-overlay :is(.chart-legend, .chart-pane-close, .chart-pane-resize) {
+.chart-native-pane-overlay :is(.chart-legend, .chart-pane-close) {
   pointer-events: auto;
 }
 
@@ -12284,36 +12284,6 @@ button {
 .chart-renderer-error span {
   color: var(--text-secondary);
   max-width: 42rem;
-}
-
-.chart-pane-resize {
-  position: absolute;
-  top: 0;
-  left: 50%;
-  z-index: 7;
-  width: 72px;
-  height: 9px;
-  border: 0;
-  background: transparent;
-  cursor: ns-resize;
-  padding: 0;
-  transform: translate(-50%, -50%);
-}
-
-.chart-pane-resize::after {
-  position: absolute;
-  top: 4px;
-  left: 20px;
-  width: 32px;
-  height: 2px;
-  border-radius: 999px;
-  background: color-mix(in oklab, var(--muted-foreground) 46%, transparent);
-  content: "";
-}
-
-.chart-pane-resize:hover::after,
-.chart-pane-resize:focus-visible::after {
-  background: var(--foreground);
 }
 
 .chart-pane-close {

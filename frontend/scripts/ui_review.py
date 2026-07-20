@@ -187,35 +187,46 @@ def validate_price_zone_legend(
     price_legend.locator(".chart-legend-header").click()
     legend_text = price_legend.inner_text()
     for expected_level_indicator in (
-        "Unified support",
-        "Unified resistance",
-        "BoS",
-        "CHoCH",
+        "Decision zones",
+        "Tactical zones",
+        "Structure breaks",
+        "Opening range",
+        "Trade-volume POC",
     ):
         if expected_level_indicator not in legend_text:
             issues.append(f"price legend omits {expected_level_indicator}")
     configure_levels = price_legend.get_by_role(
-        "button", name="Configure Unified support"
+        "button", name="Configure Decision zones"
     )
     if configure_levels.count() != 1:
         issues.append("generic structure levels do not expose legend configuration")
     else:
         configure_levels.click()
         levels_editor = page.get_by_role(
-            "dialog", name="Unified support indicator settings"
+            "dialog", name="Decision zones indicator settings"
         )
-        text_size = levels_editor.get_by_role(
-            "slider", name="Unified support label text size"
-        )
-        if text_size.count() != 1:
-            issues.append("generic-structure settings omit label text size")
-        else:
-            text_size.fill("15")
-            if text_size.input_value() != "15":
-                issues.append("liquidity-level label text size does not update")
+        if levels_editor.get_by_text("Connector label size", exact=True).count():
+            issues.append("price-axis-only decision zones expose irrelevant label-size settings")
         if levels_editor.get_by_label("Shape").count() != 1:
-            issues.append("liquidity-level settings omit line style")
+            issues.append("decision-zone settings omit border style")
+        if levels_editor.get_by_role("slider", name="Decision zones opacity").count() != 1:
+            issues.append("decision-zone settings omit visibility strength")
         levels_editor.get_by_role("button", name="Close indicator settings").click()
+    configure_breaks = price_legend.get_by_role(
+        "button", name="Configure Structure breaks"
+    )
+    if configure_breaks.count() != 1:
+        issues.append("generic structure breaks do not expose one configuration")
+    else:
+        configure_breaks.click()
+        breaks_editor = page.get_by_role(
+            "dialog", name="Structure breaks indicator settings"
+        )
+        if breaks_editor.get_by_role("slider", name="Structure breaks label text size").count() != 1:
+            issues.append("structure-break settings omit connector label sizing")
+        if breaks_editor.get_by_text("Swing-to-break connectors", exact=True).count() != 1:
+            issues.append("structure-break settings omit connector visibility")
+        breaks_editor.get_by_role("button", name="Close indicator settings").click()
     overlap_counts = page.evaluate("""() => {
         const labels = Array.from(document.querySelectorAll('.price-zone-label'));
         const boxes = labels.map(label => label.getBoundingClientRect());
@@ -240,6 +251,46 @@ def validate_price_zone_legend(
     if interaction_screenshot:
         page.screenshot(path=str(interaction_screenshot.with_name(interaction_screenshot.stem + "__price-level-legend.png")), full_page=True)
     price_legend.locator(".chart-legend-header").click()
+
+
+def validate_native_pane_resize(page: Any, chart: Any, issues: list[str]) -> None:
+    if chart.locator(".chart-native-pane-overlay.chart-osc").count() < 2:
+        return
+    if chart.locator(".chart-pane-resize").count():
+        issues.append("chart still renders duplicate custom pane resize handles")
+    native_handles = chart.locator(
+        '.chart-pane-canvas div[style*="position: absolute"][style*="cursor: row-resize"]'
+    )
+    if native_handles.count() < 2:
+        issues.append("chart does not expose one native separator per pane boundary")
+        return
+    before = chart.locator(".chart-native-pane-overlay").evaluate_all(
+        "elements => elements.map(element => { const box = element.getBoundingClientRect(); return { top: box.top, height: box.height }; })"
+    )
+    handle_box = native_handles.first.bounding_box()
+    if not handle_box:
+        issues.append("first native pane separator is not measurable")
+        return
+    page.mouse.move(handle_box["x"] + handle_box["width"] / 2, handle_box["y"] + handle_box["height"] / 2)
+    page.mouse.down()
+    page.mouse.move(handle_box["x"] + handle_box["width"] / 2, handle_box["y"] + handle_box["height"] / 2 + 70, steps=8)
+    page.mouse.up()
+    page.wait_for_timeout(250)
+    after = chart.locator(".chart-native-pane-overlay").evaluate_all(
+        "elements => elements.map(element => { const box = element.getBoundingClientRect(); const legend = element.querySelector('.chart-legend')?.getBoundingClientRect(); return { top: box.top, height: box.height, legendTop: legend?.top ?? null, legendBottom: legend?.bottom ?? null, bottom: box.bottom }; })"
+    )
+    if len(before) != len(after) or abs(after[0]["height"] - before[0]["height"]) < 24:
+        issues.append("native separator does not resize the top price pane")
+    for index, pane in enumerate(after):
+        if pane["legendTop"] is not None and (pane["legendTop"] < pane["top"] - 1 or pane["legendBottom"] > pane["bottom"] + 1):
+            issues.append(f"pane {index + 1} legend moved outside its owning pane after resize")
+    persisted = page.evaluate("""() => Object.entries(localStorage)
+        .filter(([key]) => key.endsWith('.pane-layout-v2'))
+        .map(([, value]) => { try { return JSON.parse(value); } catch { return {}; } })
+        .some(value => Number(value.price) > 0 && Object.keys(value).some(key => key.startsWith('oscillator:')))
+    """)
+    if not persisted:
+        issues.append("native pane proportions are not persisted after resize")
 
 
 def validate_canvas_interactions(
@@ -272,6 +323,7 @@ def validate_canvas_interactions(
                 price_pane = chart.locator(".chart-price").first
                 price_pane.locator(".chart-pane-canvas canvas").first.wait_for(state="visible", timeout=30_000)
                 validate_price_zone_legend(page, chart, issues, interaction_screenshot)
+                validate_native_pane_resize(page, chart, issues)
                 price_box = price_pane.bounding_box()
                 if price_box:
                     center_x = price_box["x"] + price_box["width"] * 0.55

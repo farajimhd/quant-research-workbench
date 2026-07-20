@@ -34,7 +34,7 @@ import {
   SlidersHorizontal,
   X
 } from "lucide-react";
-import { Component, forwardRef, type CSSProperties, type ErrorInfo, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Component, forwardRef, type CSSProperties, type ErrorInfo, type FormEvent, type ReactNode, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { displayName } from "../format";
@@ -51,20 +51,21 @@ type ChartSeries = {
   bandFillColor?: string;
   bandFillOpacity?: number;
   chartRole?: string;
-  colorMode?: "sign";
+  colorMode?: "confidence-sign" | "sign";
   column: string;
   displayItemId?: string;
   label: string;
   paneKey?: string;
   style: "line" | "histogram";
   color: string;
+  defaultVisible?: boolean;
   legend?: boolean;
   lastValueVisible?: boolean;
   lineStyle?: "solid" | "dashed" | "dotted";
   lineWidth: number;
   opacity?: number;
   priceScaleId?: "left" | "right";
-  data: Array<{ color?: string; time: number; tone?: "buy" | "neutral" | "sell"; value: number }>;
+  data: Array<{ color?: string; confidence?: number; time: number; tone?: "buy" | "neutral" | "sell"; value: number }>;
 };
 type RendererDatum = { time: Time; [key: string]: unknown };
 type RendererDataCache = { data: RendererDatum[]; styleKey: string };
@@ -108,6 +109,7 @@ type PriceZone = {
   color: string;
   compactLabel?: string;
   confidence?: number;
+  defaultVisible?: boolean;
   displayItemId?: string;
   end: number;
   eventTime?: number;
@@ -429,6 +431,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const chartSettingsRef = useRef<ChartAppearanceSettings>(defaultChartAppearanceSettings);
   const legendSettingsRef = useRef<LegendSettingsMap>({});
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const paneResizeObserverRef = useRef<ResizeObserver | null>(null);
   const initialFitTimerRef = useRef<number | null>(null);
   const overlayInteractionCleanupRef = useRef<(() => void) | null>(null);
   const overlayRedrawFrameRef = useRef<number | null>(null);
@@ -452,11 +455,11 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const legendStorageKey = settingsStorageKey ? `${settingsStorageKey}.legend` : LEGEND_SETTINGS_STORAGE_KEY;
   const oscillatorThresholdStorageKey = settingsStorageKey ? `${settingsStorageKey}.oscillator-thresholds` : OSCILLATOR_THRESHOLD_STORAGE_KEY;
   const appearanceStorageKey = settingsStorageKey ? `${settingsStorageKey}.appearance` : CHART_APPEARANCE_STORAGE_KEY;
-  const paneHeightStorageKey = settingsStorageKey ? `${settingsStorageKey}.pane-heights` : `${LEGEND_SETTINGS_STORAGE_KEY}.pane-heights`;
+  const paneLayoutStorageKey = settingsStorageKey ? `${settingsStorageKey}.pane-layout-v2` : `${LEGEND_SETTINGS_STORAGE_KEY}.pane-layout-v2`;
   const [chartSettings, setChartSettings] = useState<ChartAppearanceSettings>(() => loadChartAppearanceSettings(appearanceStorageKey));
   const [legendSettings, setLegendSettings] = useState<LegendSettingsMap>(() => loadLegendSettings(legendStorageKey));
   const [oscillatorThresholdSettings, setOscillatorThresholdSettings] = useState<OscillatorThresholdSettingsMap>(() => loadOscillatorThresholdSettings(oscillatorThresholdStorageKey));
-  const [oscillatorPaneHeights, setOscillatorPaneHeights] = useState<Record<string, number>>(() => loadOscillatorPaneHeights(paneHeightStorageKey));
+  const [paneStretchFactors, setPaneStretchFactors] = useState<Record<string, number>>(() => loadPaneStretchFactors(paneLayoutStorageKey));
   const [periodMenuOpen, setPeriodMenuOpen] = useState(false);
   const [themeSignature, setThemeSignature] = useState(() => document.documentElement.dataset.shellTheme ?? "");
   const effectiveChartSettings = useMemo(
@@ -485,7 +488,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const displayedPriceZones = (payload?.price_zones ?? []).filter((zone) => !zone.displayItemId || visibleSelectionLookup.has(zone.displayItemId.toLowerCase()));
   const displayedOscillatorSeries = (payload?.oscillator_series ?? []).filter((series) => visibleColumnLookup.has(seriesSelectionKey(series)));
   const oscillatorPaneGroups = buildOscillatorPaneGroups(displayedOscillatorSeries);
-  const oscillatorPaneTotalHeight = oscillatorPaneGroups.reduce((total, group) => total + (oscillatorPaneHeights[group.key] ?? defaultOscillatorPaneHeight(group)), 0);
+  const oscillatorPaneTotalHeight = oscillatorPaneGroups.reduce((total, group) => total + defaultOscillatorPaneHeight(group), 0);
   const nativeChartHeight: CSSProperties["height"] = fullscreen
     ? `calc(100vh - 322px + ${oscillatorPaneTotalHeight}px)`
     : 620 + oscillatorPaneTotalHeight;
@@ -589,7 +592,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   useEffect(() => {
     const timer = window.setTimeout(() => resizeCharts(), 0);
     return () => window.clearTimeout(timer);
-  }, [oscillatorPaneHeights]);
+  }, [paneStretchFactors]);
 
   useEffect(() => {
     const release = () => finishViewportInteraction();
@@ -619,6 +622,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }
 
   function finishViewportInteraction() {
+    persistNativePaneLayout();
     scheduleScaleStabilization();
     scheduleOverlayRedrawBurst();
   }
@@ -656,42 +660,22 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     window.requestAnimationFrame(scheduleOverlayRedrawBurst);
   }
 
-  function updateOscillatorPaneHeight(key: string, height: number) {
-    const maxHeight = Math.max(96, Math.floor((shellRef.current?.clientHeight ?? 640) * 0.65));
-    setOscillatorPaneHeights((current) => {
-      const next = { ...current, [key]: Math.max(72, Math.min(maxHeight, Math.round(height))) };
-      saveOscillatorPaneHeights(next, paneHeightStorageKey);
-      return next;
+  function persistNativePaneLayout() {
+    window.requestAnimationFrame(() => {
+      const chart = priceChartRef.current;
+      if (!chart) return;
+      const next: Record<string, number> = {};
+      const priceFactor = chart.panes()[0]?.getStretchFactor();
+      if (Number.isFinite(priceFactor) && Number(priceFactor) > 0) next.price = Number(priceFactor);
+      oscillatorPaneRuntimesRef.current.forEach((runtime, key) => {
+        const factor = chart.panes()[runtime.paneIndex]?.getStretchFactor();
+        if (Number.isFinite(factor) && Number(factor) > 0) next[key] = Number(factor);
+      });
+      if (!Object.keys(next).length) return;
+      savePaneStretchFactors(next, paneLayoutStorageKey);
+      setPaneStretchFactors(next);
+      layoutNativePaneOverlays();
     });
-  }
-
-  function startOscillatorPaneResize(key: string, event: ReactPointerEvent<HTMLButtonElement>) {
-    const runtime = oscillatorPaneRuntimesRef.current.get(key);
-    const pane = runtime ? priceChartRef.current?.panes()[runtime.paneIndex] : null;
-    if (!pane) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const startY = event.clientY;
-    const startHeight = pane.getHeight();
-    const target = event.currentTarget;
-    target.setPointerCapture(event.pointerId);
-    const move = (moveEvent: globalThis.PointerEvent) => updateOscillatorPaneHeight(key, startHeight - (moveEvent.clientY - startY));
-    const stop = () => {
-      target.removeEventListener("pointermove", move);
-      target.removeEventListener("pointerup", stop);
-      target.removeEventListener("pointercancel", stop);
-    };
-    target.addEventListener("pointermove", move);
-    target.addEventListener("pointerup", stop);
-    target.addEventListener("pointercancel", stop);
-  }
-
-  function resizeOscillatorPaneWithKeyboard(key: string, event: ReactKeyboardEvent<HTMLButtonElement>) {
-    if (!["ArrowUp", "ArrowDown"].includes(event.key)) return;
-    event.preventDefault();
-    const runtime = oscillatorPaneRuntimesRef.current.get(key);
-    const current = (runtime ? priceChartRef.current?.panes()[runtime.paneIndex]?.getHeight() : undefined) ?? oscillatorPaneHeights[key] ?? 104;
-    updateOscillatorPaneHeight(key, current + (event.key === "ArrowUp" ? 12 : -12));
   }
 
   useEffect(() => {
@@ -819,6 +803,10 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     });
     if (shellRef.current) observer.observe(shellRef.current);
     resizeObserverRef.current = observer;
+    paneResizeObserverRef.current = new ResizeObserver(() => {
+      layoutNativePaneOverlays();
+      scheduleOverlayRedraw();
+    });
     overlayInteractionCleanupRef.current = attachOverlayRedrawListeners(priceRef.current, scheduleOverlayRedraw, scheduleOverlayRedrawBurst);
     return () => cleanupChartRuntime();
   }, [hasChartData]);
@@ -983,8 +971,9 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       }
       updateOscillatorPaneTimeline(runtime, chartTimelineData(payloadRef.current?.candles ?? [], timeframe));
       updateOscillatorPaneSeries(runtime, group.series);
-      chart.panes()[runtime.paneIndex]?.setHeight(oscillatorPaneHeights[group.key] ?? defaultOscillatorPaneHeight(group));
+      chart.panes()[runtime.paneIndex]?.setStretchFactor(paneStretchFactors[group.key] ?? 1);
     });
+    chart.panes()[0]?.setStretchFactor(paneStretchFactors.price ?? 3.25);
     layoutNativePaneOverlays();
   }
 
@@ -1180,6 +1169,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     overlayInteractionCleanupRef.current = null;
     resizeObserverRef.current?.disconnect();
     resizeObserverRef.current = null;
+    paneResizeObserverRef.current?.disconnect();
+    paneResizeObserverRef.current = null;
     if (regionDrawRef.current && priceChartRef.current) {
       priceChartRef.current.timeScale().unsubscribeVisibleLogicalRangeChange(regionDrawRef.current);
       regionDrawRef.current = null;
@@ -1209,8 +1200,9 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     if (price && priceChartRef.current) {
       priceChartRef.current.applyOptions({ width: price.clientWidth, height: price.clientHeight });
     }
+    priceChartRef.current?.panes()[0]?.setStretchFactor(paneStretchFactors.price ?? 3.25);
     oscillatorPaneRuntimesRef.current.forEach((runtime, key) => {
-      priceChartRef.current?.panes()[runtime.paneIndex]?.setHeight(oscillatorPaneHeights[key] ?? 104);
+      priceChartRef.current?.panes()[runtime.paneIndex]?.setStretchFactor(paneStretchFactors[key] ?? 1);
     });
     layoutNativePaneOverlays();
     scheduleOverlayRedrawBurst();
@@ -1224,6 +1216,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const position = (overlay: HTMLElement | null, paneIndex: number) => {
       const paneElement = chart.panes()[paneIndex]?.getHTMLElement();
       if (!overlay || !paneElement) return;
+      paneResizeObserverRef.current?.observe(paneElement);
       const paneRect = paneElement.getBoundingClientRect();
       overlay.style.left = `${paneRect.left - rootRect.left}px`;
       overlay.style.top = `${paneRect.top - rootRect.top}px`;
@@ -1436,14 +1429,6 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
             return (
               <div className="chart-native-pane-overlay chart-osc" key={group.key} ref={(node) => setOscillatorPaneRef(group.key, node)}>
                 <div className="session-layer" ref={(node) => setOscillatorLayerRef(group.key, node)} />
-                <button
-                  aria-label={`Resize ${formatOscillatorPaneLabel(group)} pane. Use up and down arrow keys to resize.`}
-                  className="chart-pane-resize"
-                  onKeyDown={(event) => resizeOscillatorPaneWithKeyboard(group.key, event)}
-                  onPointerDown={(event) => startOscillatorPaneResize(group.key, event)}
-                  title="Drag to resize oscillator pane"
-                  type="button"
-                />
                 <button
                   aria-label={`Close ${formatOscillatorPaneLabel(group)} pane`}
                   className="chart-pane-close"
@@ -1860,9 +1845,9 @@ function LegendEditor({
           </label>
         </>
       ) : null}
-      {item.itemKind === "zone" ? (
+      {item.itemKind === "zone" && item.supportsHistoricalLabels ? (
         <label>
-          Line label size
+          Connector label size
           <span className="legend-range-control">
             <input
               aria-label={`${item.label} label text size`}
@@ -1923,13 +1908,15 @@ function LegendEditor({
                 <input checked={item.showHistoricalLabels !== false} type="checkbox" onChange={(event) => onUpdate({ showHistoricalLabels: event.target.checked })} />
                 Labels on historical lines
               </label>
-              <label>
-                Line label limit
-                <span className="legend-range-control">
-                  <input min={0} max={30} step={1} type="range" value={item.maxHistoricalTags ?? 10} onChange={(event) => onUpdate({ maxHistoricalTags: Number(event.target.value) })} />
-                  <output>{item.maxHistoricalTags ?? 10}</output>
-                </span>
-              </label>
+              {item.showHistoricalLabels !== false ? (
+                <label>
+                  Connector label limit
+                  <span className="legend-range-control">
+                    <input min={0} max={16} step={1} type="range" value={item.maxHistoricalTags ?? 6} onChange={(event) => onUpdate({ maxHistoricalTags: Number(event.target.value) })} />
+                    <output>{item.maxHistoricalTags ?? 6}</output>
+                  </span>
+                </label>
+              ) : null}
             </>
           ) : null}
           {item.supportsConnectors ? (
@@ -2810,7 +2797,7 @@ function buildPriceZoneLegendItems(
       showValue: true,
       supportsConnectors: itemZones.some((zone) => zone.annotationKind === "bos" || zone.annotationKind === "choch"),
       supportsAxisLabel: itemZones.some((zone) => typeof zone.axisLabelDefault === "boolean"),
-      supportsHistoricalLabels: itemZones.some((zone) => Boolean(zone.compactLabel)),
+      supportsHistoricalLabels: itemZones.some((zone) => zone.historicalLabelsDefault === true || isStructureBreakZone(zone)),
       supportsHistoryWindow: itemZones.some((zone) => !zone.latest),
       value: `${itemZones.length} level${itemZones.length === 1 ? "" : "s"}`,
       visible: settings.visible,
@@ -2892,7 +2879,15 @@ function loadLegendSettings(storageKey = LEGEND_SETTINGS_STORAGE_KEY): LegendSet
     const raw = window.localStorage.getItem(storageKey);
     if (!raw) return {};
     const parsed = JSON.parse(raw) as LegendSettingsMap;
-    return parsed && typeof parsed === "object" ? parsed : {};
+    if (!parsed || typeof parsed !== "object") return {};
+    const staleQmdZonePattern = /^price-zone:indicator\.qmd_generic_structure\.(?:unified\.(?:support|resistance)|(?:micro|tactical|context)\.(?:support|resistance|swings)|bos|choch|reference\.(?:session|premarket|52-week|prior-month))$/;
+    const normalized = Object.fromEntries(Object.entries(parsed).filter(([key]) => !staleQmdZonePattern.test(key)));
+    const agreementKey = Object.keys(normalized).find((key) => key.includes("indicator.qmd_generic_structure") && key.endsWith(":qmd_structure_agreement"));
+    if (agreementKey && normalized[agreementKey]) {
+      const { visible: _staleVisibility, ...agreementSettings } = normalized[agreementKey];
+      normalized[agreementKey] = agreementSettings;
+    }
+    return normalized;
   } catch {
     return {};
   }
@@ -2948,19 +2943,19 @@ function saveChartAppearanceSettings(settings: ChartAppearanceSettings, storageK
   window.localStorage.setItem(storageKey, JSON.stringify(settings));
 }
 
-function loadOscillatorPaneHeights(storageKey: string): Record<string, number> {
+function loadPaneStretchFactors(storageKey: string): Record<string, number> {
   if (typeof window === "undefined") return {};
   try {
     const parsed = JSON.parse(window.localStorage.getItem(storageKey) ?? "{}") as Record<string, number>;
-    return Object.fromEntries(Object.entries(parsed).filter(([, value]) => Number.isFinite(value) && value >= 72));
+    return Object.fromEntries(Object.entries(parsed).filter(([, value]) => Number.isFinite(value) && value > 0.01 && value <= 100));
   } catch {
     return {};
   }
 }
 
-function saveOscillatorPaneHeights(heights: Record<string, number>, storageKey: string) {
+function savePaneStretchFactors(factors: Record<string, number>, storageKey: string) {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(storageKey, JSON.stringify(heights));
+  window.localStorage.setItem(storageKey, JSON.stringify(factors));
 }
 
 function normalizeChartAppearanceSettings(settings: Partial<ChartAppearanceSettings>): ChartAppearanceSettings {
@@ -3220,7 +3215,7 @@ function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettin
     showHistoricalLabels: true,
     showLabels: true,
     showValue: true,
-    visible: true
+    visible: series.defaultVisible !== false
   };
 }
 
@@ -3269,7 +3264,7 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     showConnectors: stored.showConnectors !== false,
     showAxisLabel: stored.showAxisLabel ?? zone?.axisLabelDefault ?? false,
     showHistoricalLabels: stored.showHistoricalLabels ?? zone?.historicalLabelsDefault ?? false,
-    visible: stored.visible !== false,
+    visible: stored.visible ?? zone?.defaultVisible ?? true,
   };
 }
 
@@ -3469,6 +3464,12 @@ function seriesDataForSettings(series: ChartSeries, settings: Required<LegendSer
       color: applyOpacity(signColor(point.value, appearance)),
     }));
   }
+  if (series.colorMode === "confidence-sign") {
+    return series.data.map(({ tone: _tone, ...point }) => ({
+      ...point,
+      color: colorWithOpacity(signColor(point.value, appearance), opacity * (0.3 + 0.7 * clampNumber(point.confidence, 0, 1, 0))),
+    }));
+  }
   if (series.style !== "histogram") {
     if (settings.color && settings.color !== defaultColor) {
       return series.data.map(({ tone: _tone, ...point }) => ({ ...point, color: applyOpacity(settings.color) }));
@@ -3557,7 +3558,16 @@ function chartOptions(
     // internal minimum pushes the bottom-owned time scale below a resized pane,
     // where the chart shell clips it until the user moves a pane separator.
     height: Math.max(1, Math.floor(height)),
-    layout: { attributionLogo: false, background: { color: palette.background }, textColor: palette.text },
+    layout: {
+      attributionLogo: false,
+      background: { color: palette.background },
+      panes: {
+        enableResize: true,
+        separatorColor: palette.grid,
+        separatorHoverColor: colorWithOpacity(palette.text, 0.16),
+      },
+      textColor: palette.text,
+    },
     grid: {
       vertLines: { color: palette.grid },
       horzLines: { color: palette.grid }
@@ -4206,6 +4216,22 @@ function drawPriceZones(
       }
     });
   });
+  // Price annotations are contextual evidence, never the visual authority.
+  // Punch every candle body/wick out of the overlay canvas so zones,
+  // connectors, and their labels always read as being behind the candles.
+  candleBoxes ??= visibleCandleBoxes(chart, priceSeries, candles, barWidth, width, plotBottom);
+  context.save();
+  context.globalCompositeOperation = "destination-out";
+  candleBoxes.forEach((box) => {
+    const padding = 1.5;
+    context.fillRect(
+      box.left - padding,
+      box.top - padding,
+      box.right - box.left + padding * 2,
+      box.bottom - box.top + padding * 2,
+    );
+  });
+  context.restore();
 }
 
 function clippedHorizontalSpan(start: number, end: number, viewportWidth: number, overscan = 24): HorizontalSpan | null {

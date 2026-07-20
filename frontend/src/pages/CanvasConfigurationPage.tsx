@@ -318,9 +318,9 @@ const INDICATOR_SERIES = [
   { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Score", colorMode: "sign", column: "microstructure_displayed_liquidity_score", color: "var(--info)", displayItemId: "indicator.qmd_architecture", label: "Displayed liquidity", pane: "qmd_architecture", lineWidth: 2 },
   { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Score", colorMode: "sign", column: "microstructure_response_resiliency_score", color: "var(--warning)", displayItemId: "indicator.qmd_architecture", label: "Response & resiliency", pane: "qmd_architecture", lineWidth: 2 },
   { autoscaleMax: 1, autoscaleMin: 0, axisTitle: "Reliability", colorMode: "sign", column: "microstructure_regime_reliability", color: "var(--muted-foreground)", displayItemId: "indicator.qmd_architecture", label: "Reliability", lineStyle: "dashed", pane: "qmd_architecture", priceScaleId: "left" },
-  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Structure", colorMode: "sign", column: "qmd_structure_score", color: "var(--foreground)", displayItemId: "indicator.qmd_generic_structure", label: "Structure score", pane: "qmd_generic_structure", style: "histogram" },
-  { autoscaleMax: 1, autoscaleMin: 0, axisTitle: "Evidence", column: "qmd_structure_confidence", color: "var(--primary)", displayItemId: "indicator.qmd_generic_structure", label: "Confidence", lineStyle: "dashed", lineWidth: 2, pane: "qmd_generic_structure", priceScaleId: "left" },
-  { autoscaleMax: 1, autoscaleMin: 0, axisTitle: "Evidence", column: "qmd_structure_agreement", color: "var(--muted-foreground)", displayItemId: "indicator.qmd_generic_structure", label: "Scale agreement", lineWidth: 2, opacity: 0.8, pane: "qmd_generic_structure", priceScaleId: "left" },
+  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Structure", colorMode: "confidence-sign", column: "qmd_structure_score", color: "var(--foreground)", displayItemId: "indicator.qmd_generic_structure", label: "Structure score", pane: "qmd_generic_structure", style: "histogram" },
+  { autoscaleMax: 1, autoscaleMin: 0, axisTitle: "Confidence", column: "qmd_structure_confidence", color: "var(--info)", displayItemId: "indicator.qmd_generic_structure", label: "Confidence", lineStyle: "solid", lineWidth: 2, pane: "qmd_generic_structure", priceScaleId: "left" },
+  { autoscaleMax: 1, autoscaleMin: 0, axisTitle: "Agreement", column: "qmd_structure_agreement", color: "var(--muted-foreground)", defaultVisible: false, displayItemId: "indicator.qmd_generic_structure", label: "Scale agreement", lastValueVisible: false, lineStyle: "dashed", lineWidth: 1, opacity: 0.65, pane: "qmd_generic_structure", priceScaleId: "left" },
 ] as const;
 
 function displayIndicator(id: string, title: string, group: string, sourceColumns: string[], pane = "price", knowledge?: ChartDisplayItem["knowledge"]): ChartDisplayItem {
@@ -1425,14 +1425,15 @@ function pushStructureSwingLevels(
         borderWidth: scope === "context" ? 2 : 1,
         color,
         compactLabel,
+        defaultVisible: false,
         displayItemId: "indicator.qmd_generic_structure",
         fillOpacity: 0.018,
         historicalLabelsDefault: false,
         historicalTagLimitDefault: 0,
         label: `${title} swing ${side}`,
-        legendLabel: `${title} swings`,
+        legendLabel: "Swing references",
         minPixelHeight: 3,
-        settingsId: `indicator.qmd_generic_structure.${scope}.swings`,
+        settingsId: "indicator.qmd_generic_structure.swings",
       });
     });
   });
@@ -1534,7 +1535,10 @@ function pushStructureZoneSegment(
   spec: StructureZoneSpec & { confidence: number; lower: number; price: number; strength: number; upper: number },
 ) {
   if (!(spec.price > 0) || startIndex >= rows.length) return;
-  const start = rowTimestamp(rows[startIndex]);
+  const latest = endIndex >= rows.length;
+  const activeWindowBars = spec.scope === "micro" ? 10 : spec.scope === "tactical" ? 18 : spec.scope === "context" ? 30 : 16;
+  const visualStartIndex = latest ? Math.max(startIndex, rows.length - activeWindowBars) : startIndex;
+  const start = rowTimestamp(rows[visualStartIndex]);
   const end = endIndex < rows.length ? rowTimestamp(rows[endIndex]) : chartEnd;
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
   const support = spec.side === "support";
@@ -1551,6 +1555,7 @@ function pushStructureZoneSegment(
     color,
     compactLabel: spec.compactLabel,
     confidence: spec.confidence,
+    defaultVisible: unified || spec.scope === "tactical",
     displayItemId: "indicator.qmd_generic_structure",
     end,
     fillColor: color,
@@ -1558,11 +1563,11 @@ function pushStructureZoneSegment(
     historicalLabelsDefault: false,
     historicalTagLimitDefault: unified ? 3 : 0,
     label: `${spec.label} · ${percentLabel(spec.strength)} strength · ${percentLabel(spec.confidence)} confidence`,
-    latest: endIndex >= rows.length,
-    legendLabel: spec.label,
+    latest,
+    legendLabel: unified ? "Decision zones" : `${spec.scope[0].toUpperCase()}${spec.scope.slice(1)} zones`,
     lower: spec.lower > 0 ? spec.lower : spec.price,
     minPixelHeight: unified ? 8 : 4,
-    settingsId: `indicator.qmd_generic_structure.${spec.scope}.${spec.side}`,
+    settingsId: `indicator.qmd_generic_structure.${unified ? "decision-zones" : spec.scope}`,
     start,
     strength: spec.strength,
     upper: spec.upper > 0 ? spec.upper : spec.price,
@@ -1598,7 +1603,7 @@ function pushStructureEvents(
     events.push({ confirmedAt, direction, end, kind, pivotAt, price, scale });
     previousId = eventId;
   }
-  events.slice(-12).forEach(({ confirmedAt, direction, end, kind, pivotAt, price, scale }) => {
+  events.slice(-8).forEach(({ confirmedAt, direction, end, kind, pivotAt, price, scale }) => {
     const bullish = direction > 0;
     const label = kind === "choch" ? "CHoCH" : "BoS";
     zones.push({
@@ -1614,13 +1619,13 @@ function pushStructureEvents(
       eventTime: confirmedAt,
       fillOpacity: 0,
       historicalLabelsDefault: true,
-      historicalTagLimitDefault: 8,
+      historicalTagLimitDefault: 5,
       label: `${label}${bullish ? "+" : "-"} · ${scale || "structure"} · ${formatLevelPrice(price)}`,
       latest: false,
-      legendLabel: label,
+      legendLabel: "Structure breaks",
       lower: price,
       minPixelHeight: 1,
-      settingsId: `indicator.qmd_generic_structure.${kind}`,
+      settingsId: "indicator.qmd_generic_structure.breaks",
       start: pivotAt,
       upper: price,
       zoneHeightMode: "price",
@@ -1651,19 +1656,30 @@ function pushGenericStructureReferences(
     ["qmd_structure_nearest_round", "Nearest round price", "Round", "var(--muted-foreground)", "round", "Round price", false],
   ] as const;
   specs.forEach(([column, label, compactLabel, color, settingsSuffix, legendLabel, axisLabelDefault]) => {
+    const settingsGroup = ["session", "premarket"].includes(settingsSuffix)
+      ? "session-levels"
+      : ["52-week", "prior-month"].includes(settingsSuffix)
+        ? "higher-timeframe"
+        : settingsSuffix;
+    const groupedLegendLabel = settingsGroup === "session-levels"
+      ? "Session & premarket"
+      : settingsGroup === "higher-timeframe"
+        ? "Higher-timeframe levels"
+        : legendLabel;
     pushTrailingLevelZones(zones, rows, column, chartEnd, LEVEL_SOURCE_HISTORY_BARS, {
       annotationKind: "level",
       axisLabelDefault,
       color,
       compactLabel,
+      defaultVisible: ["opening-range", "poc"].includes(settingsGroup),
       displayItemId: "indicator.qmd_generic_structure",
       fillOpacity: 0.025,
       historicalLabelsDefault: false,
       historicalTagLimitDefault: 0,
       label,
-      legendLabel,
+      legendLabel: groupedLegendLabel,
       minPixelHeight: 3,
-      settingsId: `indicator.qmd_generic_structure.reference.${settingsSuffix}`,
+      settingsId: `indicator.qmd_generic_structure.reference.${settingsGroup}`,
     });
   });
 }
@@ -1676,6 +1692,7 @@ type LevelZoneStyle = {
   color: string;
   compactLabel: string;
   confidence?: number;
+  defaultVisible?: boolean;
   displayItemId: string;
   fillOpacity: number;
   historicalLabelsDefault?: boolean;
@@ -1734,6 +1751,7 @@ function pushHistoricalLevelSegment(
     color: style.color,
     compactLabel: style.compactLabel,
     confidence: style.confidence,
+    defaultVisible: style.defaultVisible,
     displayItemId: style.displayItemId,
     end,
     fillColor: style.color,
@@ -1791,7 +1809,8 @@ function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscilla
     color: spec.color,
     ...( "colorMode" in spec ? { colorMode: spec.colorMode } : {}),
     column: spec.column,
-    data: rows.map((row) => indicatorSeriesPoint(row, spec.column)).filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value)),
+    data: rows.map((row) => indicatorSeriesPoint(row, spec.column, "colorMode" in spec ? spec.colorMode : undefined)).filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value)),
+    ...( "defaultVisible" in spec ? { defaultVisible: Boolean(spec.defaultVisible) } : {}),
     displayItemId: spec.displayItemId,
     label: spec.column === "microstructure_unified_signal"
       ? microstructureUnifiedLabel(latestMicrostructure)
@@ -1808,13 +1827,14 @@ function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscilla
   }));
 }
 
-function indicatorSeriesPoint(row: HistoricalIndicator, column: string) {
+function indicatorSeriesPoint(row: HistoricalIndicator, column: string, colorMode?: string) {
   const time = Date.parse(String(row.bar_start)) / 1000;
   if (column === "microstructure_anchored_flow_relationship") {
     const relationship = anchoredFlowRelationship(String(row.microstructure_anchored_flow_relationship || "neutral"), Number(row.microstructure_anchored_flow_relationship_score));
     return { color: relationship.color, time, value: relationship.value };
   }
   return {
+    ...(colorMode === "confidence-sign" ? { confidence: boundedUnit(row.qmd_structure_confidence) } : {}),
     ...(column === "microstructure_unified_signal"
       ? { tone: microstructureActionTone(String(row.microstructure_unified_action || "WAIT")) }
       : qmdDirectionalColumn(column)
