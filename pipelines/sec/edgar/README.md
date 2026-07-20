@@ -131,10 +131,14 @@ the default global insert gate permits two concurrent Parquet inserts even when
 many renderer workers are active, preventing server-wide memory overcommit
 without serializing text rendering.
 The rebuild writes bundles into a monthly work table to avoid scattering every
-insert across 64 hash partitions. Validated cutover then repartitions one CIK
-hash partition at a time into the canonical final layout. Existing stale hash
-staging is migrated server-side on resume, preserving all successful bundle
-checkpoints and rendered rows.
+insert across 64 hash partitions. Validated cutover then streams one CIK hash
+partition at a time into the canonical final layout without source `FINAL` or a
+global `ORDER BY`. The destination `ReplacingMergeTree(source_revision_rank)`
+sorts bounded blocks and performs a verified partition-level final compaction
+only where physical revision rows exceed the logical source count. A partial
+partition is dropped and rebuilt on resume; completed partitions are reused.
+Existing stale hash staging is migrated server-side on resume, preserving all
+successful bundle checkpoints and rendered rows.
 Final rendered-text validation is likewise bounded: text integrity is checked
 per monthly partition in eight one-thread lanes, and cross-partition key
 identity plus cutover checksums are verified through 64 CIK buckets. No final

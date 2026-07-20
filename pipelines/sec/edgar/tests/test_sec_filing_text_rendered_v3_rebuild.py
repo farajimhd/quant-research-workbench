@@ -35,6 +35,7 @@ from pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild import (
     prepare_lookup_database,
     prepare_partition_export,
     process_row_group_bundle,
+    rebuild_cutover_partition,
     rebase_run_manifest_after_source_migration,
     initialize_rebuild_worker,
     rebuild_stop_path,
@@ -50,6 +51,55 @@ from pipelines.sec.edgar.sec_pipeline.text_renderer import SEC_PACKED_TEXT_RENDE
 
 
 class SecRenderedV3RebuildTest(unittest.TestCase):
+    def test_cutover_partition_streams_physical_rows_then_compacts_revisions(self) -> None:
+        class RecordingClient:
+            def __init__(self) -> None:
+                self.sql: list[str] = []
+                self.part_rows = iter((7, 11, 10))
+
+            def execute(self, sql: str) -> str:
+                self.sql.append(sql)
+                if "FROM system.parts" in sql:
+                    return f"{next(self.part_rows)}\n"
+                if "sum(cityHash64" in sql:
+                    return '{"rows":10,"checksum":20}\n'
+                return ""
+
+        client = RecordingClient()
+        args = SimpleNamespace(database="q_live", staging_table="stage_v3")
+        rebuild_cutover_partition(client, args, "final_v3", 7, (10, 20))
+
+        insert_sql = next(sql for sql in client.sql if "INSERT INTO" in sql)
+        self.assertIn("FROM `q_live`.`stage_v3`\nPREWHERE cityHash64(cik) % 64=7", insert_sql)
+        self.assertNotIn(" FINAL", insert_sql)
+        self.assertNotIn("ORDER BY", insert_sql)
+        self.assertIn("max_memory_usage=8589934592", insert_sql)
+        self.assertIn("max_block_size=2048", insert_sql)
+        self.assertIn("insert_deduplicate=0", insert_sql)
+        self.assertTrue(any("DROP PARTITION 7" in sql for sql in client.sql))
+        self.assertTrue(any("OPTIMIZE TABLE `q_live`.`final_v3` PARTITION 7 FINAL" in sql for sql in client.sql))
+
+    def test_cutover_partition_skips_compaction_without_physical_revisions(self) -> None:
+        class RecordingClient:
+            def __init__(self) -> None:
+                self.sql: list[str] = []
+                self.part_rows = iter((0, 10))
+
+            def execute(self, sql: str) -> str:
+                self.sql.append(sql)
+                if "FROM system.parts" in sql:
+                    return f"{next(self.part_rows)}\n"
+                if "sum(cityHash64" in sql:
+                    return '{"rows":10,"checksum":20}\n'
+                return ""
+
+        client = RecordingClient()
+        args = SimpleNamespace(database="q_live", staging_table="stage_v3")
+        rebuild_cutover_partition(client, args, "final_v3", 8, (10, 20))
+
+        self.assertFalse(any("DROP PARTITION" in sql for sql in client.sql))
+        self.assertFalse(any("OPTIMIZE TABLE" in sql for sql in client.sql))
+
     def test_rendered_table_stats_are_aggregated_in_final_layout_buckets(self) -> None:
         class RecordingClient:
             def __init__(self) -> None:

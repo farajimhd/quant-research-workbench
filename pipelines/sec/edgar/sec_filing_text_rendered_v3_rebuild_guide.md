@@ -69,13 +69,27 @@ copy. Existing renderer and bundle checkpoints remain valid; no source text is
 rerendered during this migration.
 
 After all bundle and corpus validations pass, cutover creates a fresh canonical
-CIK-hash table and copies one hash partition at a time from the monthly work
-table. Every partition is independently count/checksum validated and is
-restartable. Only after all 64 partitions match does the script exchange the
-new table with `sec_filing_text_rendered_v3`, retain the previous target backup,
-and remove the temporary work and legacy staging tables. This gives live reads
-the required same-CIK revision locality without creating a merge storm during
-the historical build.
+CIK-hash table and streams one hash partition at a time from the monthly work
+table. The transfer intentionally has neither source `FINAL` nor a global
+`ORDER BY`: both materialize all text in a CIK partition and the original
+bucket-7 transfer exceeded its 32 GiB query limit while executing
+`ReplacingSorted`. Instead, the destination MergeTree sorts 2,048-row insert
+blocks under an 8 GiB query ceiling. If source revisions produce more physical
+than logical rows, a synchronous destination-partition `OPTIMIZE ... FINAL`
+selects the authoritative `source_revision_rank` winner before validation.
+Every partition must match the source logical row count and checksum. A partial
+partition is dropped and rebuilt on resume with insert deduplication disabled;
+completed partitions are reused. Only after all 64 partitions match does the
+script exchange the new table with `sec_filing_text_rendered_v3`, retain the
+previous target backup, and remove the temporary work and legacy staging
+tables. This gives live reads the required same-CIK revision locality without
+creating a merge storm during the historical build.
+
+The exact previously failing bucket was exercised against the production
+staging corpus in a temporary table: 375,581 rows copied and matched checksum
+`14158962764992567782` in 568 seconds. Observed query memory remained below
+1 GiB, compared with the former 32 GiB failure. The temporary table was dropped
+after validation.
 
 Corpus validation is bounded in the same way. Eight validation lanes recalculate
 text hashes, UTF-8 character counts, byte counts, and renderer-version fields one

@@ -848,6 +848,85 @@ def rendered_table_stats_bounded(
     return rows, checksum
 
 
+def physical_partition_rows(
+    client: ClickHouseHttpClient, database: str, table_name: str, partition_id: int
+) -> int:
+    return scalar_int(
+        client,
+        f"""
+SELECT coalesce(sum(rows), 0)
+FROM system.parts
+WHERE active
+  AND database={sql_string(database)}
+  AND table={sql_string(table_name)}
+  AND partition={sql_string(str(partition_id))}
+""",
+    )
+
+
+def rebuild_cutover_partition(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    cutover_table: str,
+    partition_id: int,
+    source_stats: tuple[int, int],
+) -> None:
+    if physical_partition_rows(client, args.database, cutover_table, partition_id):
+        client.execute(f"ALTER TABLE {table(args.database, cutover_table)} DROP PARTITION {partition_id}")
+
+    columns = ", ".join(quote_ident(column) for column in TARGET_COLUMNS)
+    predicate = f"cityHash64(cik) % 64={partition_id}"
+    # The destination MergeTree sorts bounded insert blocks. A source FINAL or
+    # global ORDER BY would materialize an entire multi-billion-character CIK
+    # partition and defeats the streaming transfer.
+    client.execute(
+        f"""
+INSERT INTO {table(args.database, cutover_table)} ({columns})
+SELECT {columns}
+FROM {table(args.database, args.staging_table)}
+PREWHERE {predicate}
+SETTINGS max_threads=1,
+         max_insert_threads=1,
+         max_memory_usage=8589934592,
+         max_block_size=2048,
+         max_insert_block_size=2048,
+         min_insert_block_size_rows=0,
+         min_insert_block_size_bytes=0,
+         insert_deduplicate=0
+"""
+    )
+
+    physical_rows = physical_partition_rows(client, args.database, cutover_table, partition_id)
+    if physical_rows != source_stats[0]:
+        print(
+            f"cutover_repartition={partition_id + 1}/64 stage=compact "
+            f"physical_rows={physical_rows:,} logical_rows={source_stats[0]:,}",
+            flush=True,
+        )
+        client.execute(
+            f"OPTIMIZE TABLE {table(args.database, cutover_table)} "
+            f"PARTITION {partition_id} FINAL SETTINGS optimize_throw_if_noop=0"
+        )
+        physical_rows = physical_partition_rows(client, args.database, cutover_table, partition_id)
+    if physical_rows != source_stats[0]:
+        raise RuntimeError(
+            f"cutover physical-row validation failed partition={partition_id} "
+            f"source_rows={source_stats[0]} target_rows={physical_rows}"
+        )
+
+    target_stats = rendered_table_stats(
+        client,
+        args.database,
+        cutover_table,
+        f"PREWHERE {predicate}",
+    )
+    if target_stats != source_stats:
+        raise RuntimeError(
+            f"cutover partition validation failed partition={partition_id} "
+            f"source={source_stats} target={target_stats}"
+        )
+
+
 def migrate_hash_staging_to_monthly(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
     migration_table = f"{args.staging_table}_monthly_migration"
     legacy_table = f"{args.staging_table}_hash_legacy"
@@ -2121,7 +2200,6 @@ def prepare_hash_cutover_table(client: ClickHouseHttpClient, args: argparse.Name
     layout = load_table_layout(client, args.database, cutover_table)
     if normalized_layout_key(layout["partition_key"]) != normalized_layout_key(FINAL_PARTITION_KEY):
         raise RuntimeError(f"cutover table has wrong partition key: {layout['partition_key']}")
-    columns = ", ".join(quote_ident(column) for column in TARGET_COLUMNS)
     for partition_id in range(64):
         predicate = f"cityHash64(cik) % 64={partition_id}"
         source_stats = rendered_table_stats(
@@ -2142,35 +2220,11 @@ def prepare_hash_cutover_table(client: ClickHouseHttpClient, args: argparse.Name
                 flush=True,
             )
             continue
-        if target_stats[0]:
-            client.execute(
-                f"ALTER TABLE {table(args.database, cutover_table)} DROP PARTITION {partition_id}"
-            )
         print(
             f"cutover_repartition={partition_id + 1}/64 status=active rows={source_stats[0]:,}",
             flush=True,
         )
-        client.execute(
-            f"""
-INSERT INTO {table(args.database, cutover_table)} ({columns})
-SELECT {columns}
-FROM {table(args.database, args.staging_table)} FINAL
-PREWHERE {predicate}
-ORDER BY {RENDERED_SORTING_KEY}
-SETTINGS max_threads=2, max_insert_threads=1, max_memory_usage={parse_size_bytes(args.max_memory_usage)}
-"""
-        )
-        target_stats = rendered_table_stats(
-            client,
-            args.database,
-            cutover_table,
-            f"PREWHERE {predicate}",
-        )
-        if target_stats != source_stats:
-            raise RuntimeError(
-                f"cutover partition validation failed partition={partition_id} "
-                f"source={source_stats} target={target_stats}"
-            )
+        rebuild_cutover_partition(client, args, cutover_table, partition_id, source_stats)
         print(
             f"cutover_repartition={partition_id + 1}/64 status=completed reused=false rows={source_stats[0]:,}",
             flush=True,
