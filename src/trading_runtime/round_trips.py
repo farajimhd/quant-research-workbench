@@ -17,6 +17,11 @@ class _Lot:
     price: Decimal
     commission_per_unit: Decimal
     opened_at: datetime
+    strategy_id: str
+    strategy_revision: int
+    run_id: str
+    setup: str
+    planned_risk: Decimal | None
 
 
 def derive_round_trip_trades(executions: list[Execution]) -> list[RoundTripTrade]:
@@ -57,6 +62,12 @@ def derive_round_trip_trades(executions: list[Execution]) -> list[RoundTripTrade
                     fees=fees,
                     net_pnl=gross - fees,
                     side=trade_side,
+                    strategy_id=lot.strategy_id,
+                    strategy_revision=lot.strategy_revision,
+                    run_id=lot.run_id,
+                    setup=lot.setup,
+                    exit_reason=execution.exit_reason,
+                    planned_risk=lot.planned_risk,
                     execution_ids=(lot.execution_id, execution.execution_id),
                 )
             )
@@ -73,6 +84,11 @@ def derive_round_trip_trades(executions: list[Execution]) -> list[RoundTripTrade
                     price=execution.price,
                     commission_per_unit=commission_per_unit,
                     opened_at=execution.source_event_time,
+                    strategy_id=execution.strategy_id,
+                    strategy_revision=execution.strategy_revision,
+                    run_id=execution.run_id,
+                    setup=execution.setup,
+                    planned_risk=execution.planned_risk,
                 )
             )
     return trades

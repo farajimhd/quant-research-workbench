@@ -67,7 +67,8 @@ TWS can be added later as another adapter. Its account callback semantics are do
 | `AccountValue` | account + key + segment + currency | Extensible account-summary values |
 | `LedgerBalance` | account + currency | Complete multi-currency cash/value record |
 | `BrokerEventEnvelope` | UUID plus broker identity fields and payload hash | Immutable ordered audit evidence |
-| `RoundTripTrade` | deterministic derived id | FIFO strategy analytics, separate from executions |
+| `RoundTripTrade` | deterministic derived id | FIFO realization audit, separate from executions |
+| `TradeEpisode` | flat-to-flat account and instrument lifecycle | Performance reporting unit across live, paper, replay, and backtest |
 
 Monetary and quantity fields use `Decimal`; transport serialization uses exact decimal strings. Source event time, receive time, and durable record time remain distinct.
 

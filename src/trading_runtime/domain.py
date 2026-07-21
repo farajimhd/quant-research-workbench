@@ -208,6 +208,14 @@ class Execution:
     average_price: Decimal | None = None
     liquidity: str = ""
     liquidation_trade: bool = False
+    strategy_id: str = ""
+    strategy_revision: int = 0
+    run_id: str = ""
+    setup: str = ""
+    exit_reason: str = ""
+    signal_price: Decimal | None = None
+    arrival_midpoint: Decimal | None = None
+    planned_risk: Decimal | None = None
     received_at: datetime = field(default_factory=utc_now)
     raw: dict[str, Any] = field(default_factory=dict, compare=False)
 
@@ -355,8 +363,46 @@ class RoundTripTrade:
     net_pnl: Decimal
     side: str
     strategy_id: str = ""
+    strategy_revision: int = 0
+    run_id: str = ""
+    setup: str = ""
     exit_reason: str = ""
+    mae: Decimal | None = None
+    mfe: Decimal | None = None
+    planned_risk: Decimal | None = None
     execution_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class TradeEpisode:
+    """One strategy position lifecycle from flat to flat.
+
+    Episodes are the performance-reporting unit. They remain separate from
+    FIFO realization fragments and immutable broker executions.
+    """
+
+    episode_id: str
+    account_id: str
+    instrument: InstrumentContract
+    opened_at: datetime
+    closed_at: datetime
+    side: str
+    quantity: Decimal
+    entry_price: Decimal
+    exit_price: Decimal
+    gross_pnl: Decimal
+    fees: Decimal
+    net_pnl: Decimal
+    strategy_id: str = ""
+    strategy_revision: int = 0
+    run_id: str = ""
+    setup: str = ""
+    exit_reason: str = ""
+    mae: Decimal | None = None
+    mfe: Decimal | None = None
+    planned_risk: Decimal | None = None
+    execution_ids: tuple[str, ...] = ()
+    order_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

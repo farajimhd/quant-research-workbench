@@ -76,6 +76,30 @@ def get_strategy_definition(strategy_id: str, revision: int | None = None) -> di
     return result
 
 
+def get_trade_annotation(episode_id: str) -> dict[str, Any]:
+    return trading_journal().trade_annotation(episode_id) or {
+        "episode_id": episode_id,
+        "note": "",
+        "tags": [],
+        "review_status": "unreviewed",
+        "setup_override": "",
+        "updated_at": None,
+    }
+
+
+def save_trade_annotation(episode_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    normalized_id = str(episode_id or "").strip()
+    if not normalized_id:
+        raise ValueError("episode_id is required")
+    return trading_journal().save_trade_annotation(
+        normalized_id,
+        note=str(payload.get("note") or "").strip(),
+        tags=payload.get("tags") or (),
+        review_status=str(payload.get("review_status") or "unreviewed"),
+        setup_override=str(payload.get("setup_override") or "").strip(),
+    )
+
+
 def historical_gateway_base_url() -> str:
     configured = os.environ.get("QMD_HISTORY_GATEWAY_URL", "").strip()
     if configured:

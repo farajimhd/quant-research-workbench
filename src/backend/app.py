@@ -113,6 +113,7 @@ from src.backend.real_live_market_data import (
 from src.backend.real_live_market_data.config import market_gateway_config
 from src.backend.trading_runtime_service import (
     SUPPORTED_HISTORICAL_TIMEFRAMES,
+    get_trade_annotation,
     get_strategy_definition,
     historical_compact_events,
     historical_bar_history_before,
@@ -128,6 +129,7 @@ from src.backend.trading_runtime_service import (
     market_event_references,
     list_strategy_definitions,
     save_strategy_definition,
+    save_trade_annotation,
 )
 from src.backend.ticker_presentation_service import ticker_presentation_payload
 from src.backend.ticker_facts_service import ticker_fact_history_payload, ticker_facts_payload
@@ -495,6 +497,13 @@ class CanvasPreviewRequest(BaseModel):
     preview_time: str = "09:45"
     chart_symbol: str = "AAPL"
     chart_timeframe: str = "1m"
+
+
+class TradeAnnotationSubmit(BaseModel):
+    note: str = Field(default="", max_length=10_000)
+    tags: list[str] = Field(default_factory=list, max_length=32)
+    review_status: str = Field(default="unreviewed", pattern="^(unreviewed|reviewed|follow_up)$")
+    setup_override: str = Field(default="", max_length=200)
 
 
 def parse_date_param(value: date | None, fallback: str) -> date:
@@ -4655,6 +4664,25 @@ def trading_closed_trades(account_type: str = "paper", account_keys: str = "", r
 def trading_activity(account_type: str = "paper", account_keys: str = "", refresh: bool = False, mode: str = "paper", run_id: str = "", output_root: str = str(DEFAULT_OUTPUT_ROOT)) -> dict[str, Any]:
     state = _canonical_trading_state(account_type, account_keys, refresh, mode=mode, run_id=run_id, output_root=output_root)
     return {"schema_version": 2, "as_of": state["as_of"], "complete": state["complete"], "stale": state["stale"], "rows": state["activity"]}
+
+
+@app.get("/api/trading/journal/report")
+def trading_journal_report(account_type: str = "paper", account_keys: str = "", refresh: bool = False, mode: str = "paper", run_id: str = "", output_root: str = str(DEFAULT_OUTPUT_ROOT)) -> dict[str, Any]:
+    state = _canonical_trading_state(account_type, account_keys, refresh, mode=mode, run_id=run_id, output_root=output_root)
+    return {
+        "as_of": state["as_of"], "complete": state["complete"], "stale": state["stale"],
+        "mode": state["mode"], "provider": state["provider"], "report": state["performance_journal"],
+    }
+
+
+@app.get("/api/trading/journal/episodes/{episode_id}/annotation")
+def trading_episode_annotation(episode_id: str) -> dict[str, Any]:
+    return get_trade_annotation(episode_id)
+
+
+@app.put("/api/trading/journal/episodes/{episode_id}/annotation")
+def update_trading_episode_annotation(episode_id: str, payload: TradeAnnotationSubmit) -> dict[str, Any]:
+    return save_trade_annotation(episode_id, payload.model_dump())
 
 
 @app.get("/api/trading/strategies")

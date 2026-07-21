@@ -110,6 +110,26 @@ class JournalTests(unittest.TestCase):
             self.assertTrue(reopened.strategy("s")["automatic"])
             reopened.close()
 
+    def test_trade_annotations_are_durable_and_replace_by_episode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "journal.sqlite3"
+            journal = TradingJournal(path)
+            saved = journal.save_trade_annotation(
+                "episode-1",
+                note="Waited for confirmation.",
+                tags=["A+", "followed-plan", "A+"],
+                review_status="reviewed",
+                setup_override="Opening drive",
+            )
+            journal.close()
+
+            reopened = TradingJournal(path)
+            self.assertEqual(saved["tags"], ["A+", "followed-plan"])
+            self.assertEqual(reopened.trade_annotation("episode-1")["note"], "Waited for confirmation.")
+            reopened.save_trade_annotation("episode-1", note="Updated", tags=[], review_status="follow_up")
+            self.assertEqual(reopened.trade_annotation("episode-1")["review_status"], "follow_up")
+            reopened.close()
+
     def test_clickhouse_contract_uses_fixed_prefix_and_typed_order_rows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")

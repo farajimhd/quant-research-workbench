@@ -108,6 +108,43 @@ class TradingJournal:
             return None
         return {"run_id": row["run_id"], "cursor": row["cursor"], "event_time": row["event_time"], "state": json.loads(row["state_json"]), "updated_at": row["updated_at"]}
 
+    def save_trade_annotation(
+        self,
+        episode_id: str,
+        *,
+        note: str = "",
+        tags: Iterable[str] = (),
+        review_status: str = "unreviewed",
+        setup_override: str = "",
+    ) -> dict[str, Any]:
+        normalized_tags = tuple(dict.fromkeys(str(tag).strip() for tag in tags if str(tag).strip()))
+        updated_at = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO trade_annotations(episode_id, note, tags_json, review_status, setup_override, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(episode_id) DO UPDATE SET note=excluded.note, tags_json=excluded.tags_json,
+                    review_status=excluded.review_status, setup_override=excluded.setup_override,
+                    updated_at=excluded.updated_at
+                """,
+                (episode_id, note, json.dumps(normalized_tags), review_status, setup_override, updated_at),
+            )
+        return self.trade_annotation(episode_id) or {}
+
+    def trade_annotation(self, episode_id: str) -> dict[str, Any] | None:
+        row = self._connection.execute("SELECT * FROM trade_annotations WHERE episode_id = ?", (episode_id,)).fetchone()
+        if row is None:
+            return None
+        return {
+            "episode_id": row["episode_id"],
+            "note": row["note"],
+            "tags": json.loads(row["tags_json"]),
+            "review_status": row["review_status"],
+            "setup_override": row["setup_override"],
+            "updated_at": row["updated_at"],
+        }
+
     def save_strategy(
         self,
         *,
@@ -223,6 +260,10 @@ class TradingJournal:
                     implementation TEXT NOT NULL, automatic INTEGER NOT NULL, enabled INTEGER NOT NULL,
                     config_json TEXT NOT NULL, created_at TEXT NOT NULL,
                     PRIMARY KEY(strategy_id, revision)
+                );
+                CREATE TABLE IF NOT EXISTS trade_annotations(
+                    episode_id TEXT PRIMARY KEY, note TEXT NOT NULL, tags_json TEXT NOT NULL,
+                    review_status TEXT NOT NULL, setup_override TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
                 """
             )

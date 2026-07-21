@@ -31,6 +31,8 @@ def canonical_backtest_state(run_dir: Path) -> dict[str, Any]:
     """Adapt completed v1 run artifacts to the same v2 query model used by live trading."""
     metadata = read_run_metadata(run_dir) or {}
     run_id = str(metadata.get("run_id") or run_dir.name)
+    strategy_id = str(metadata.get("strategy_id") or metadata.get("strategy_name") or "")
+    strategy_revision = _integer(metadata.get("strategy_revision") or metadata.get("strategy_version"))
     account_id = f"backtest:{run_id}"
     projector = TradingStateProjector(TradingMode.BACKTEST, BrokerProvider.SIMULATED)
     projector.set_accounts([
@@ -79,10 +81,10 @@ def canonical_backtest_state(run_dir: Path) -> dict[str, Any]:
     ]
     projector.apply_position_snapshot(account_id, snapshot_id, True, positions)
     orders = [_order(account_id, row) for row in _latest_by(_read(run_dir / "orders.parquet"), "order_id")]
-    executions = [_execution(account_id, row) for row in _read(run_dir / "fills.parquet")]
+    executions = [_execution(account_id, run_id, strategy_id, strategy_revision, row) for row in _read(run_dir / "fills.parquet")]
     projector.set_orders(orders)
     projector.set_executions(executions)
-    projector.closed_trades = {trade.trade_id: trade for trade in (_trade(account_id, run_id, index, row) for index, row in enumerate(_read(run_dir / "trades.parquet")))}
+    projector.closed_trades = {trade.trade_id: trade for trade in (_trade(account_id, run_id, strategy_id, strategy_revision, index, row) for index, row in enumerate(_read(run_dir / "trades.parquet")))}
     for order in orders:
         projector.record_activity(_activity(BrokerEventType.ORDER_STATUS_CHANGED, account_id, run_id, order.source_event_time, order.raw, broker_order_id=order.broker_order_id))
     for execution in executions:
@@ -153,7 +155,7 @@ def _order(account_id: str, row: dict[str, Any]) -> OrderState:
     )
 
 
-def _execution(account_id: str, row: dict[str, Any]) -> Execution:
+def _execution(account_id: str, run_id: str, strategy_id: str, strategy_revision: int, row: dict[str, Any]) -> Execution:
     return Execution(
         execution_id=f"backtest-fill-{row.get('fill_id')}",
         account_id=account_id,
@@ -166,11 +168,19 @@ def _execution(account_id: str, row: dict[str, Any]) -> Execution:
         commission=_decimal(row.get("total_fee")),
         commission_currency="USD",
         commission_status="final",
+        strategy_id=strategy_id,
+        strategy_revision=strategy_revision,
+        run_id=run_id,
+        setup=str(row.get("setup") or row.get("tag") or ""),
+        exit_reason=str(row.get("exit_reason") or row.get("reason") or ""),
+        signal_price=_optional_decimal(row.get("signal_price")),
+        arrival_midpoint=_optional_decimal(row.get("arrival_midpoint")),
+        planned_risk=_optional_decimal(row.get("planned_risk")),
         raw=row,
     )
 
 
-def _trade(account_id: str, run_id: str, index: int, row: dict[str, Any]) -> RoundTripTrade:
+def _trade(account_id: str, run_id: str, strategy_id: str, strategy_revision: int, index: int, row: dict[str, Any]) -> RoundTripTrade:
     trade_id = str(uuid5(NAMESPACE_URL, f"{run_id}:{index}:{row.get('symbol')}:{row.get('entry_time')}:{row.get('exit_time')}"))
     return RoundTripTrade(
         trade_id=trade_id,
@@ -185,7 +195,14 @@ def _trade(account_id: str, run_id: str, index: int, row: dict[str, Any]) -> Rou
         fees=_decimal(row.get("fees")),
         net_pnl=_decimal(row.get("pnl")),
         side="LONG",
+        strategy_id=strategy_id,
+        strategy_revision=strategy_revision,
+        run_id=run_id,
+        setup=str(row.get("setup") or row.get("tag") or ""),
         exit_reason=str(row.get("exit_reason") or ""),
+        mae=_optional_decimal(row.get("mae")),
+        mfe=_optional_decimal(row.get("mfe")),
+        planned_risk=_optional_decimal(row.get("planned_risk")),
     )
 
 
@@ -217,3 +234,11 @@ def _decimal(value: Any) -> Decimal:
 
 def _optional_decimal(value: Any) -> Decimal | None:
     return None if value in (None, "") else _decimal(value)
+
+
+def _integer(value: Any) -> int:
+    text = str(value or "").strip().lower().lstrip("v")
+    try:
+        return int(text)
+    except ValueError:
+        return 0

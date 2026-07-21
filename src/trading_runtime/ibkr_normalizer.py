@@ -142,6 +142,9 @@ def normalize_order(row: dict[str, Any], fallback_account: str = "") -> OrderSta
 def normalize_execution(row: dict[str, Any], fallback_account: str = "") -> Execution:
     timestamp = ibkr_datetime(row.get("trade_time_r") or row.get("trade_time") or row.get("executionTime") or row.get("time"))
     commission_value = row.get("commission")
+    metadata = row.get("canonical_metadata") or row.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
     return Execution(
         execution_id=str(row.get("execution_id") or row.get("executionId") or row.get("execId") or row.get("tradeId") or row.get("id") or ""),
         account_id=str(row.get("account") or row.get("accountCode") or row.get("acctId") or fallback_account),
@@ -161,6 +164,14 @@ def normalize_execution(row: dict[str, Any], fallback_account: str = "") -> Exec
         average_price=_optional_decimal(row.get("avgPrice") or row.get("average_price")),
         liquidity=str(row.get("lastLiquidity") or row.get("liquidity") or ""),
         liquidation_trade=_bool(row.get("liquidation_trade") or row.get("liquidation")),
+        strategy_id=str(row.get("strategy_id") or row.get("strategy") or metadata.get("strategy_id") or ""),
+        strategy_revision=_integer(row.get("strategy_revision") or row.get("canonical_strategy_revision") or metadata.get("strategy_revision")),
+        run_id=str(row.get("run_id") or row.get("canonical_run_id") or metadata.get("run_id") or ""),
+        setup=str(row.get("setup") or metadata.get("setup") or metadata.get("tag") or ""),
+        exit_reason=str(row.get("exit_reason") or row.get("reason") or metadata.get("exit_reason") or ""),
+        signal_price=_optional_decimal(row.get("signal_price") or metadata.get("signal_price")),
+        arrival_midpoint=_optional_decimal(row.get("arrival_midpoint") or metadata.get("arrival_midpoint")),
+        planned_risk=_optional_decimal(row.get("planned_risk") or metadata.get("planned_risk")),
         raw=dict(row),
     )
 
@@ -353,6 +364,13 @@ def _summary_key(key: str) -> tuple[str, str]:
 
 def _optional_decimal(value: Any) -> Decimal | None:
     return None if value in (None, "") else decimal_value(value)
+
+
+def _integer(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _typed_ledger_value(value: Any) -> Decimal | str | bool:

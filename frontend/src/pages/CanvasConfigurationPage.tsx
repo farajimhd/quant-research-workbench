@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronRight, Clock3, ExternalLink, Filter, Link2, MapPin, PanelRightOpen, Plus, Search, Save, Settings2, Trash2, Unlink } from "lucide-react";
+import { Activity, ArrowDown, ArrowUp, ArrowUpDown, BarChart3, BookOpen, Check, ChevronDown, ChevronRight, Clock3, ExternalLink, Filter, Gauge, HelpCircle, Link2, MapPin, PanelRightOpen, Plus, Search, Save, Settings2, ShieldCheck, Target, Trash2, Unlink, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 
 import { api, query } from "../api/client";
@@ -61,6 +61,17 @@ type HistoricalIndicator = {
   qmd_structure_active_levels?: QmdStructureLevelCandidate[];
 } & Record<string, number | string | QmdStructureLevelCandidate[] | undefined>;
 type PreviewRow = Record<string, unknown>;
+type PerformanceJournalReport = {
+  schema_version: number;
+  episode_definition: string;
+  summary: Record<string, string | number | null>;
+  episodes: PreviewRow[];
+  equity_curve: Array<{ time: string; value: string | number; drawdown: string | number }>;
+  strategies: PreviewRow[];
+  execution: Record<string, unknown> & { venues?: PreviewRow[] };
+  risk: Record<string, string | number | null>;
+  scope: Record<string, string | number | null>;
+};
 type CanonicalTradingPreview = {
   schema_version: number;
   mode: string;
@@ -78,6 +89,7 @@ type CanonicalTradingPreview = {
   closed_trades: PreviewRow[];
   activity: PreviewRow[];
   closed_trades_note: string;
+  performance_journal: PerformanceJournalReport;
   portfolio: {
     metrics: Record<string, string | number>;
     exposure: { long_value?: string | number; short_value?: string | number; net_value?: string | number; gross_value?: string | number; by_currency?: Record<string, string | number>; by_asset_class?: Record<string, string | number> };
@@ -149,7 +161,7 @@ type CanvasLiveChartState = {
 };
 
 type ContainerSettings = {
-  version: 10;
+  version: 11;
   chart: { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
   microstructure: { limit: number };
   fills: { limit: number; showCommission: boolean };
@@ -157,6 +169,7 @@ type ContainerSettings = {
   closed_trades: { limit: number; showFees: boolean };
   activity: { limit: number };
   journal: { limit: number };
+  performance_journal: { limit: number; showRiskMultiple: boolean };
   news: { content: string; kind: string; lookbackHours: number; ticker: string };
   ticker_news: { lookbackHours: number; showTeaser: boolean };
   news_detail: Record<string, never>;
@@ -176,7 +189,7 @@ type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; tit
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const MANAGER_DEFAULT_CONTAINER_IDS: WorkspaceContainerId[] = ["scanner", "chart", "portfolio", "positions", "orders"];
 const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 10,
+  version: 11,
   chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.microstructure_outlook"] },
   microstructure: { limit: 1024 },
   fills: { limit: 5, showCommission: true },
@@ -184,6 +197,7 @@ const DEFAULT_SETTINGS: ContainerSettings = {
   closed_trades: { limit: 20, showFees: true },
   activity: { limit: 30 },
   journal: { limit: 6 },
+  performance_journal: { limit: 100, showRiskMultiple: true },
   news: { content: "all", kind: "all", lookbackHours: 6, ticker: "" },
   ticker_news: { lookbackHours: 72, showTeaser: true },
   news_detail: {},
@@ -1392,6 +1406,7 @@ function renderPreview(id: WorkspaceContainerId, preview: CanvasPreview | null, 
   if (id === "fills") return <ExecutionsPreview data={preview.trading} settings={settings.fills} />;
   if (id === "closed_trades") return <ClosedTradesPreview data={preview.trading} settings={settings.closed_trades} />;
   if (id === "activity") return <ActivityPreview data={preview.trading} settings={settings.activity} />;
+  if (id === "performance_journal") return <TradingJournalPreview data={preview.trading} settings={settings.performance_journal} />;
   if (id === "strategy") return <StrategyPreview data={preview.strategy} showSignals={settings.strategy.showSignals} />;
   return <PreviewTable columns={["time", "category", "event", "detail"]} rows={preview.journal.slice(0, settings.journal.limit)} />;
 }
@@ -2284,6 +2299,135 @@ function ActivityPreview({ data, settings }: { data: CanonicalTradingPreview; se
   return <section className="trading-preview"><TradingFreshness data={data} /><PreviewTable columns={["time", "event", "account", "order_id", "client_id", "execution_id", "provider", "correlation"]} rows={rows.slice(0, settings.limit)} /></section>;
 }
 
+function TradingJournalPreview({ data, settings }: { data: CanonicalTradingPreview; settings: ContainerSettings["performance_journal"] }) {
+  const [view, setView] = useState<"overview" | "strategies" | "trades" | "execution" | "risk">("overview");
+  const [guideOpen, setGuideOpen] = useState(false);
+  const report = data.performance_journal;
+  const summary = report?.summary ?? {};
+  const scope = report?.scope ?? {};
+  const risk = report?.risk ?? {};
+  const execution = report?.execution ?? {};
+  const episodes = (report?.episodes ?? []).slice(0, settings.limit).map((row) => ({
+    closed_at: row.closed_at,
+    symbol: nestedValue(row, "instrument", "symbol"),
+    side: row.side,
+    strategy: row.strategy_id || "Unattributed",
+    revision: Number(row.strategy_revision || 0) ? `v${row.strategy_revision}` : "—",
+    setup: row.setup || "—",
+    quantity: row.quantity,
+    entry_price: row.entry_price,
+    exit_price: row.exit_price,
+    net_pnl: row.net_pnl,
+    risk_multiple: row.risk_multiple,
+    duration: compactDuration(Number(row.duration_seconds || 0)),
+    exit_reason: row.exit_reason || "—",
+    _episode: row,
+  }));
+  const strategyRows = (report?.strategies ?? []).map((row) => ({
+    strategy: row.strategy_id,
+    revision: Number(row.strategy_revision || 0) ? `v${row.strategy_revision}` : "—",
+    trades: row.episode_count,
+    net_pnl: row.net_pnl,
+    win_rate_pct: ratioPct(row.win_rate),
+    expectancy: row.expectancy,
+    profit_factor: row.profit_factor,
+    payoff_ratio: row.payoff_ratio,
+    max_drawdown: row.maximum_drawdown,
+  }));
+  const tabs = [
+    { id: "overview", label: "Overview", count: Number(summary.episode_count || 0) },
+    { id: "strategies", label: "Strategies", count: strategyRows.length },
+    { id: "trades", label: "Trades", count: episodes.length },
+    { id: "execution", label: "Execution", count: Number(execution.fill_count || 0) },
+    { id: "risk", label: "Risk", count: Number(summary.loss_count || 0) },
+  ];
+  if (!report) return <section className="trading-preview"><TradingFreshness data={data} /><EmptyState label="Performance journal is unavailable for this trading state" /></section>;
+  return <section className="trading-preview performance-journal">
+    <header className="performance-journal-header">
+      <div><span>Decision record</span><strong>Trading performance</strong><small>Flat-to-flat episodes · net of available fees</small></div>
+      <div className="performance-journal-scope"><span>{Number(scope.episode_count || 0)} episodes</span><span>{ratioPct(scope.attribution_coverage)} attributed</span><button onClick={() => setGuideOpen(true)} type="button"><HelpCircle size={14} /> Guide</button></div>
+    </header>
+    <TradingFreshness data={data} />
+    <div className="performance-kpi-grid">
+      <JournalMetric detail="Closed episode profit after recorded commissions and fees." label="Net P&L" tone={numberTone(summary.net_pnl)} value={signedMoney(summary.net_pnl)} />
+      <JournalMetric detail="Average expected dollars per closed trade episode." label="Expectancy" tone={numberTone(summary.expectancy)} value={signedMoney(summary.expectancy)} />
+      <JournalMetric detail="Gross winning dollars divided by gross losing dollars." label="Profit factor" tone={metricThresholdTone(summary.profit_factor, 1)} value={ratioNumber(summary.profit_factor)} />
+      <JournalMetric detail="Winning episodes divided by all closed episodes." label="Win rate" tone={metricThresholdTone(summary.win_rate, 0.5)} value={ratioPct(summary.win_rate)} />
+      <JournalMetric detail="Average winning episode divided by average losing episode." label="Payoff" tone={metricThresholdTone(summary.payoff_ratio, 1)} value={ratioNumber(summary.payoff_ratio)} />
+      <JournalMetric detail="Largest peak-to-trough decline in cumulative closed P&L." label="Max drawdown" tone={Number(summary.maximum_drawdown || 0) > 0 ? "negative" : "neutral"} value={money(summary.maximum_drawdown)} />
+    </div>
+    <TradingTabs active={view} onChange={(value) => setView(value as typeof view)} tabs={tabs} />
+    {view === "overview" ? <div className="performance-overview-grid"><section className="performance-chart-card"><header><div><strong>Net P&L trajectory</strong><span>Closed episodes in source-time order</span></div><b data-tone={numberTone(summary.net_pnl)}>{signedMoney(summary.net_pnl)}</b></header><JournalAreaChart rows={report.equity_curve} /></section><section className="performance-diagnosis"><header><strong>Edge snapshot</strong><span>Read together, never from win rate alone</span></header><div><JournalFact label="Average win" tone="positive" value={money(summary.average_win)} /><JournalFact label="Average loss" tone="negative" value={money(summary.average_loss)} /><JournalFact label="Largest win" tone="positive" value={money(summary.largest_win)} /><JournalFact label="Largest loss" tone="negative" value={money(summary.largest_loss)} /><JournalFact label="Average hold" value={compactDuration(Number(summary.average_duration_seconds || 0))} /><JournalFact label="Fees" tone={Number(summary.total_fees || 0) > 0 ? "negative" : "neutral"} value={money(summary.total_fees)} /></div></section></div> : null}
+    {view === "strategies" ? <div className="performance-strategy-view"><StrategyComparisonChart rows={strategyRows} /><TradingDataTable columns={["strategy", "revision", "trades", "net_pnl", "win_rate_pct", "expectancy", "profit_factor", "payoff_ratio", "max_drawdown"]} defaultSort="net_pnl" filterColumn="strategy" filterLabel="All strategies" rows={strategyRows} searchPlaceholder="Search strategies and revisions…" /></div> : null}
+    {view === "trades" ? <TradingDataTable columns={settings.showRiskMultiple ? ["closed_at", "symbol", "side", "strategy", "revision", "setup", "quantity", "entry_price", "exit_price", "net_pnl", "risk_multiple", "duration", "exit_reason"] : ["closed_at", "symbol", "side", "strategy", "revision", "setup", "quantity", "entry_price", "exit_price", "net_pnl", "duration", "exit_reason"]} defaultSort="closed_at" filterColumn="strategy" filterLabel="All strategies" renderExpanded={(row) => <JournalEpisodeDetail row={row} />} rows={episodes} searchPlaceholder="Search trades, symbols, setups, exits…" /> : null}
+    {view === "execution" ? <ExecutionJournalView execution={execution} /> : null}
+    {view === "risk" ? <RiskJournalView risk={risk} summary={summary} /> : null}
+    {guideOpen ? <TradingJournalGuide onClose={() => setGuideOpen(false)} /> : null}
+  </section>;
+}
+
+function JournalMetric({ detail, label, tone, value }: { detail: string; label: string; tone: "negative" | "neutral" | "positive"; value: string }) {
+  return <div className={`journal-metric tone-${tone}`} title={detail}><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>;
+}
+
+function JournalFact({ label, tone = "neutral", value }: { label: string; tone?: "negative" | "neutral" | "positive"; value: string }) {
+  return <span className={`journal-fact tone-${tone}`}><small>{label}</small><strong>{value}</strong></span>;
+}
+
+function JournalAreaChart({ rows }: { rows: Array<{ time: string; value: string | number; drawdown: string | number }> }) {
+  if (!rows.length) return <EmptyState label="Close at least one flat-to-flat episode to build the performance curve" />;
+  const values = rows.map((row) => Number(row.value || 0));
+  const min = Math.min(0, ...values);
+  const max = Math.max(0, ...values);
+  const span = max - min || 1;
+  const points = values.map((value, index) => `${rows.length === 1 ? 100 : 12 + (index / (rows.length - 1)) * 376},${18 + ((max - value) / span) * 112}`).join(" ");
+  const area = `12,130 ${points} 388,130`;
+  return <svg aria-label="Cumulative net profit and loss" className="journal-area-chart" preserveAspectRatio="none" role="img" viewBox="0 0 400 150"><defs><linearGradient id="journal-equity-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stopColor="var(--primary)" stopOpacity="0.34" /><stop offset="1" stopColor="var(--primary)" stopOpacity="0.02" /></linearGradient></defs><line className="journal-chart-zero" x1="12" x2="388" y1={18 + ((max - 0) / span) * 112} y2={18 + ((max - 0) / span) * 112} /><polygon fill="url(#journal-equity-fill)" points={area} /><polyline fill="none" points={points} stroke="var(--primary)" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" /><text x="12" y="146">{formatJournalDate(rows[0].time)}</text><text textAnchor="end" x="388" y="146">{formatJournalDate(rows[rows.length - 1].time)}</text></svg>;
+}
+
+function StrategyComparisonChart({ rows }: { rows: PreviewRow[] }) {
+  if (!rows.length) return <EmptyState label="No attributed or unattributed strategy episodes in this scope" />;
+  const maximum = Math.max(1, ...rows.map((row) => Math.abs(Number(row.net_pnl || 0))));
+  return <section className="strategy-comparison-chart"><header><strong>Net result by strategy revision</strong><span>Width is relative net P&L; use expectancy and sample size before ranking.</span></header>{rows.slice(0, 8).map((row) => { const value = Number(row.net_pnl || 0); return <div key={`${row.strategy}-${row.revision}`}><span>{String(row.strategy)} <small>{String(row.revision)}</small></span><i><b data-tone={numberTone(value)} style={{ width: `${Math.max(2, Math.abs(value) / maximum * 100)}%` }} /></i><strong data-tone={numberTone(value)}>{signedMoney(value)}</strong></div>; })}</section>;
+}
+
+function JournalEpisodeDetail({ row }: { row: PreviewRow }) {
+  const episode = (row._episode as PreviewRow | undefined) ?? {};
+  const episodeId = String(episode.episode_id || "");
+  const [annotation, setAnnotation] = useState({ note: "", tags: [] as string[], review_status: "unreviewed", setup_override: "" });
+  const [annotationState, setAnnotationState] = useState<"idle" | "loading" | "saving" | "saved" | "error">("loading");
+  useEffect(() => {
+    let active = true;
+    setAnnotationState("loading");
+    api<{ note?: string; tags?: string[]; review_status?: string; setup_override?: string }>(`/api/trading/journal/episodes/${encodeURIComponent(episodeId)}/annotation`)
+      .then((payload) => { if (active) { setAnnotation({ note: payload.note ?? "", tags: payload.tags ?? [], review_status: payload.review_status ?? "unreviewed", setup_override: payload.setup_override ?? "" }); setAnnotationState("idle"); } })
+      .catch(() => { if (active) setAnnotationState("error"); });
+    return () => { active = false; };
+  }, [episodeId]);
+  async function saveAnnotation() {
+    setAnnotationState("saving");
+    try {
+      const saved = await api<typeof annotation>(`/api/trading/journal/episodes/${encodeURIComponent(episodeId)}/annotation`, { method: "PUT", body: JSON.stringify(annotation) });
+      setAnnotation(saved);
+      setAnnotationState("saved");
+    } catch { setAnnotationState("error"); }
+  }
+  return <div className="trading-row-detail journal-episode-detail"><div className="trading-detail-facts"><span><small>Episode ID</small><strong>{episodeId || "—"}</strong></span><span><small>Run</small><strong>{String(episode.run_id || "Unattributed")}</strong></span><span><small>Execution IDs</small><strong>{Array.isArray(episode.execution_ids) ? episode.execution_ids.join(", ") : "—"}</strong></span><span><small>Order IDs</small><strong>{Array.isArray(episode.order_ids) ? episode.order_ids.join(", ") : "—"}</strong></span></div><p>One episode begins when the position leaves flat and ends when it returns to flat. Scale-ins and partial exits remain one strategy decision.</p><section className="journal-review-editor"><header><div><strong>Review record</strong><span>Stored durably against this deterministic episode ID</span></div><em data-state={annotationState}>{annotationState === "loading" ? "Loading…" : annotationState === "saving" ? "Saving…" : annotationState === "saved" ? "Saved" : annotationState === "error" ? "Could not save" : "Ready"}</em></header><div><label><span>Status</span><select onChange={(event) => setAnnotation((current) => ({ ...current, review_status: event.target.value }))} value={annotation.review_status}><option value="unreviewed">Unreviewed</option><option value="reviewed">Reviewed</option><option value="follow_up">Follow up</option></select></label><label><span>Setup override</span><input onChange={(event) => setAnnotation((current) => ({ ...current, setup_override: event.target.value }))} placeholder={String(episode.setup || "Optional reviewed setup")} value={annotation.setup_override} /></label><label className="journal-review-tags"><span>Tags</span><input onChange={(event) => setAnnotation((current) => ({ ...current, tags: event.target.value.split(",").map((tag) => tag.trim()).filter(Boolean) }))} placeholder="A+, followed plan, late entry" value={annotation.tags.join(", ")} /></label><label className="journal-review-note"><span>Review note</span><textarea onChange={(event) => setAnnotation((current) => ({ ...current, note: event.target.value }))} placeholder="What was planned, what happened, and what should be repeated or changed?" value={annotation.note} /></label></div><button disabled={!episodeId || annotationState === "saving" || annotationState === "loading"} onClick={saveAnnotation} type="button"><Save size={13} /> Save review</button></section></div>;
+}
+
+function ExecutionJournalView({ execution }: { execution: Record<string, unknown> }) {
+  const venues = (execution.venues as PreviewRow[] | undefined) ?? [];
+  return <div className="execution-journal-view"><div className="trading-summary-strip"><TradingMetric label="Fill notional" value={money(execution.fill_notional)} tone="primary" /><TradingMetric label="Recorded fees" value={money(execution.total_fees)} tone={Number(execution.total_fees || 0) > 0 ? "negative" : "neutral"} /><TradingMetric label="Average fill" value={formatQuantity(execution.average_fill_size)} /><TradingMetric label="Pending fees" value={String(execution.pending_fee_count || 0)} tone={Number(execution.pending_fee_count || 0) ? "negative" : "neutral"} /></div><section className="execution-quality-card"><header><strong>Execution quality</strong><span>Positive slippage is adverse to the trade direction.</span></header><div><JournalFact label="Signal slippage" tone={slippageTone(execution.average_signal_slippage)} value={basisPoints(execution.average_signal_slippage)} /><JournalFact label="Arrival slippage" tone={slippageTone(execution.average_arrival_slippage)} value={basisPoints(execution.average_arrival_slippage)} /><JournalFact label="Slippage coverage" value={ratioPct(execution.slippage_coverage)} /><JournalFact label="Rejected orders" tone={Number(execution.rejected_order_count || 0) ? "negative" : "neutral"} value={String(execution.rejected_order_count || 0)} /></div></section><TradingDataTable columns={["venue", "notional", "share_pct"]} defaultSort="notional" rows={venues.map((row) => ({ ...row, share_pct: ratioPct(row.share) }))} searchPlaceholder="Search execution venues…" /></div>;
+}
+
+function RiskJournalView({ risk, summary }: { risk: Record<string, string | number | null>; summary: Record<string, string | number | null> }) {
+  return <div className="risk-journal-view"><section><header><ShieldCheck size={16} /><div><strong>Risk discipline</strong><span>Coverage states are shown explicitly; missing plans are never treated as zero risk.</span></div></header><div className="risk-journal-grid"><JournalFact label="Max drawdown" tone={Number(risk.maximum_drawdown || 0) ? "negative" : "neutral"} value={money(risk.maximum_drawdown)} /><JournalFact label="Loss streak" tone={Number(risk.maximum_losing_streak || 0) > 2 ? "negative" : "neutral"} value={String(risk.maximum_losing_streak || 0)} /><JournalFact label="Win streak" tone="positive" value={String(risk.maximum_winning_streak || 0)} /><JournalFact label="Planned-risk coverage" value={ratioPct(risk.planned_risk_coverage)} /><JournalFact label="Average R" tone={numberTone(risk.average_r_multiple)} value={ratioNumber(risk.average_r_multiple)} /><JournalFact label="Average hold" value={compactDuration(Number(summary.average_duration_seconds || 0))} /></div></section><section className="risk-coverage"><header><Target size={16} /><div><strong>Excursion evidence</strong><span>MAE and MFE require price-path observations while the episode is open.</span></div></header><div><JournalFact label="MAE coverage" value={ratioPct(risk.mae_coverage)} /><JournalFact label="Average MAE" tone="negative" value={money(risk.average_mae)} /><JournalFact label="MFE coverage" value={ratioPct(risk.mfe_coverage)} /><JournalFact label="Average MFE" tone="positive" value={money(risk.average_mfe)} /></div></section></div>;
+}
+
+function TradingJournalGuide({ onClose }: { onClose: () => void }) {
+  return <div className="journal-guide-backdrop" role="presentation"><section aria-label="Trading journal guide" aria-modal="true" className="journal-guide-modal" role="dialog"><header><div><BookOpen size={20} /><span><strong>How to read the Trading Journal</strong><small>Performance evidence, not a broker confirmation or tax-lot statement</small></span></div><button aria-label="Close guide" onClick={onClose} type="button"><X size={18} /></button></header><div className="journal-guide-grid"><article><Gauge size={17} /><strong>Trade episode</strong><p>One account, instrument, and strategy position from flat to flat. Scale-ins and partial exits stay together so win rate counts decisions rather than FIFO fragments.</p></article><article><Activity size={17} /><strong>Expectancy</strong><p>Win rate × average win minus loss rate × average loss. Positive expectancy after fees is more important than win rate by itself.</p></article><article><BarChart3 size={17} /><strong>Profit factor and payoff</strong><p>Profit factor compares all winning dollars with all losing dollars. Payoff compares the average winner with the average loser.</p></article><article><ShieldCheck size={17} /><strong>Drawdown and R</strong><p>Drawdown measures peak-to-trough closed P&L decline. R-multiple divides net P&L by the risk planned before entry and is unavailable when no plan was recorded.</p></article><article><Target size={17} /><strong>MAE and MFE</strong><p>Maximum adverse and favorable excursion describe the worst and best open-trade path. Coverage is shown because broker fills alone cannot reconstruct the entire price path.</p></article><article><BookOpen size={17} /><strong>Attribution</strong><p>Strategy reports require strategy ID and revision on the opening execution. Manual or older broker activity remains explicitly Unattributed instead of being guessed.</p></article></div></section></div>;
+}
+
 function TradingFreshness({ data }: { data: CanonicalTradingPreview }) {
   return <div className={`trading-freshness ${data.stale ? "is-stale" : "is-current"}`}><strong>{data.complete && !data.stale ? "Complete broker state" : data.stale ? "Stale or partial state" : "Snapshot assembling"}</strong><span>{data.provider.replaceAll("_", " ")} · {data.mode} · <MarketTime value={data.as_of} /></span>{data.stale_reason ? <em>{data.stale_reason}</em> : null}</div>;
 }
@@ -2322,6 +2466,7 @@ function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, 
   if (id === "positions") return <><NumberField label="Rows" max={100} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showPnl)} label="Show P&L" onChange={(value) => patch({ showPnl: value })} /></>;
   if (id === "closed_trades") return <><NumberField label="Rows" max={100} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showFees)} label="Show fees" onChange={(value) => patch({ showFees: value })} /></>;
   if (id === "activity") return <NumberField label="Rows" max={100} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} />;
+  if (id === "performance_journal") return <><NumberField label="Trade rows" max={500} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showRiskMultiple)} label="Show risk multiple" onChange={(value) => patch({ showRiskMultiple: value })} /><div className="canvas-settings-note">Reports count flat-to-flat episodes, not FIFO realization fragments. Strategy revisions stay separate.</div></>;
   if (id === "news") return <><SelectField label="Lookback hours" onChange={(value) => patch({ lookbackHours: Number(value) })} options={["1", "6", "24", "168", "720"]} value={String(current.lookbackHours)} /><SelectField label="News type" onChange={(value) => patch({ kind: value })} options={["all", "company", "insights", "analyst", "multi", "ai", "market"]} value={String(current.kind)} /><SelectField label="Text coverage" onChange={(value) => patch({ content: value })} options={["all", "full", "title"]} value={String(current.content)} /></>;
   if (id === "ticker_news") return <><SelectField label="Lookback hours" onChange={(value) => patch({ lookbackHours: Number(value) })} options={["24", "72", "168", "720"]} value={String(current.lookbackHours)} /><CheckField checked={Boolean(current.showTeaser)} label="Show teaser" onChange={(value) => patch({ showTeaser: value })} /><div className="canvas-settings-note">Ticker comes from the selected link color. Hot, cold, and old states use the shared clock.</div></>;
   if (id === "news_detail") return <div className="canvas-settings-note">This reader follows the most recently selected news article in this canvas.</div>;
@@ -2356,6 +2501,7 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
   const migratedIndicators = stored.version === DEFAULT_SETTINGS.version || canonicalIndicators.includes("indicator.macd") ? canonicalIndicators : [...canonicalIndicators, "indicator.macd"];
   const visibleIndicators = stored.version === DEFAULT_SETTINGS.version || migratedIndicators.includes("indicator.microstructure_outlook") ? migratedIndicators : [...migratedIndicators, "indicator.microstructure_outlook"];
   const timeframe = HISTORICAL_TIMEFRAMES.includes(stored.chart?.timeframe as CanvasChartTimeframe) ? stored.chart!.timeframe! : DEFAULT_SETTINGS.chart.timeframe;
+  const storedPerformance = stored.performance_journal as (Partial<ContainerSettings["performance_journal"]> & { showFees?: boolean }) | undefined;
   return {
     version: DEFAULT_SETTINGS.version,
     chart: { ...DEFAULT_SETTINGS.chart, ...(stored.chart ?? {}), timeframe, visibleIndicators: [...visibleIndicators] },
@@ -2365,6 +2511,11 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
     closed_trades: { ...DEFAULT_SETTINGS.closed_trades, ...(stored.closed_trades ?? {}) },
     activity: { ...DEFAULT_SETTINGS.activity, ...(stored.activity ?? {}) },
     journal: { ...DEFAULT_SETTINGS.journal, ...(stored.journal ?? {}) },
+    performance_journal: {
+      ...DEFAULT_SETTINGS.performance_journal,
+      ...(storedPerformance ?? {}),
+      showRiskMultiple: storedPerformance?.showRiskMultiple ?? storedPerformance?.showFees ?? DEFAULT_SETTINGS.performance_journal.showRiskMultiple,
+    },
     news: { ...DEFAULT_SETTINGS.news, ...(stored.news ?? {}) },
     ticker_news: { ...DEFAULT_SETTINGS.ticker_news, ...(stored.ticker_news ?? {}) },
     news_detail: {},
@@ -2424,11 +2575,19 @@ function formatChartTimeframe(value: string) {
 function statusLabel(value: WorkspaceWindowStatus) { return value.charAt(0).toUpperCase() + value.slice(1); }
 function previewRowKey(row: PreviewRow, columns: string[], index: number) { return `${columns.map((column) => String(row[column] ?? "")).join("|")}|${index}`; }
 function money(value: unknown) { const number = typeof value === "number" ? value : Number(value); return Number.isFinite(number) ? new Intl.NumberFormat("en-US", { currency: "USD", maximumFractionDigits: 2, style: "currency" }).format(number) : "—"; }
+function ratioPct(value: unknown) { const number = Number(value); return Number.isFinite(number) ? `${(number * 100).toFixed(number * 100 >= 10 ? 1 : 2)}%` : "—"; }
+function ratioNumber(value: unknown) { const number = Number(value); return Number.isFinite(number) ? `${number.toFixed(2)}×` : "—"; }
+function metricThresholdTone(value: unknown, threshold: number): "negative" | "neutral" | "positive" { const number = Number(value); return !Number.isFinite(number) ? "neutral" : number > threshold ? "positive" : number < threshold ? "negative" : "neutral"; }
+function compactDuration(seconds: number) { if (!Number.isFinite(seconds) || seconds < 0) return "—"; if (seconds < 60) return `${Math.round(seconds)}s`; if (seconds < 3600) return `${Math.round(seconds / 60)}m`; return `${(seconds / 3600).toFixed(seconds < 36_000 ? 1 : 0)}h`; }
+function formatJournalDate(value: string) { const date = new Date(value); return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat("en-US", { day: "numeric", hour: "numeric", minute: "2-digit", month: "short", timeZone: "America/New_York" }).format(date); }
+function basisPoints(value: unknown) { const number = Number(value); return Number.isFinite(number) ? `${number > 0 ? "+" : ""}${number.toFixed(2)} bp` : "—"; }
+function slippageTone(value: unknown): "negative" | "neutral" | "positive" { const number = Number(value); return !Number.isFinite(number) || number === 0 ? "neutral" : number > 0 ? "negative" : "positive"; }
+function formatQuantity(value: unknown) { const number = Number(value); return Number.isFinite(number) ? new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(number) : "—"; }
 function formatPreviewDate(value?: string) { if (!value) return "this date"; return new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(new Date(`${value}T12:00:00Z`)); }
 function formatCell(value: unknown, column: string) { if (value === null || value === undefined || value === "") return "—"; if (column.includes("time") || column.includes("at_utc")) { const date = new Date(String(value)); return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit", timeZone: "America/New_York" }).format(date); } const numeric = typeof value === "number" ? value : /^-?\d+(?:\.\d+)?$/.test(String(value)) ? Number(value) : Number.NaN; if (Number.isFinite(numeric)) { if (isMoneyColumn(column)) return new Intl.NumberFormat("en-US", { currency: "USD", maximumFractionDigits: 4, minimumFractionDigits: column.includes("price") || column === "mark" || column === "limit" || column === "stop" ? 2 : 0, style: "currency" }).format(numeric); return new Intl.NumberFormat("en-US", { maximumFractionDigits: column.includes("pct") ? 2 : 4 }).format(numeric); } if (Array.isArray(value)) return value.join(", "); return String(value); }
-function isMoneyColumn(column: string) { return ["price", "mark", "limit", "stop", "market_value", "average_price", "unrealized_pnl", "realized_pnl", "gross_pnl", "net_pnl", "fees", "commission", "net_amount", "cash", "settled", "net_liquidation", "entry_price", "exit_price"].some((key) => column === key || column.endsWith(`_${key}`)); }
+function isMoneyColumn(column: string) { return ["price", "mark", "limit", "stop", "market_value", "average_price", "unrealized_pnl", "realized_pnl", "gross_pnl", "net_pnl", "fees", "commission", "net_amount", "cash", "settled", "net_liquidation", "entry_price", "exit_price", "expectancy", "max_drawdown", "notional"].some((key) => column === key || column.endsWith(`_${key}`)); }
 function cellTone(value: unknown, column: string) {
-  if (["unrealized_pnl", "realized_pnl", "gross_pnl", "net_pnl", "return_pct"].includes(column)) { const number = Number(value); return number > 0 ? "positive" : number < 0 ? "negative" : "neutral"; }
+  if (["unrealized_pnl", "realized_pnl", "gross_pnl", "net_pnl", "return_pct", "expectancy", "risk_multiple"].includes(column)) { const number = Number(value); return number > 0 ? "positive" : number < 0 ? "negative" : "neutral"; }
   const normalized = String(value || "").toLowerCase();
   if (column === "side") return ["buy", "long"].includes(normalized) ? "positive" : ["sell", "short"].includes(normalized) ? "negative" : "neutral";
   if (column === "status") return ["filled"].includes(normalized) ? "positive" : ["rejected", "cancelled", "expired", "inactive"].includes(normalized) ? "negative" : ["working", "partially_filled", "pending_submission", "trigger_pending"].includes(normalized) ? "primary" : "neutral";

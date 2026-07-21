@@ -24,6 +24,7 @@ from src.trading_runtime.domain import (
 )
 from src.trading_runtime.ibkr_normalizer import normalize_accounts, normalize_ledger, normalize_order, normalize_position_snapshot
 from src.trading_runtime.projector import TradingStateProjector
+from src.trading_runtime.performance import build_performance_report, derive_trade_episodes
 from src.trading_runtime.round_trips import derive_round_trip_trades
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
 
@@ -93,6 +94,52 @@ class CanonicalProjectionTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(first[0].gross_pnl, Decimal("20"))
         self.assertEqual(first[0].net_pnl, Decimal("18"))
+
+    def test_trade_episode_counts_scale_in_and_partial_exits_as_one_decision(self) -> None:
+        executions = [
+            Execution("open-1", "DU1", instrument(), "BUY", Decimal("10"), Decimal("100"), NOW, commission=Decimal("1"), strategy_id="momentum", strategy_revision=3, run_id="run-7"),
+            Execution("open-2", "DU1", instrument(), "BUY", Decimal("10"), Decimal("102"), NOW + timedelta(seconds=1), commission=Decimal("1"), strategy_id="momentum", strategy_revision=3, run_id="run-7"),
+            Execution("close-1", "DU1", instrument(), "SELL", Decimal("5"), Decimal("103"), NOW + timedelta(minutes=1), commission=Decimal("0.5")),
+            Execution("close-2", "DU1", instrument(), "SELL", Decimal("15"), Decimal("104"), NOW + timedelta(minutes=2), commission=Decimal("1.5"), exit_reason="target"),
+        ]
+
+        episodes = derive_trade_episodes(executions)
+
+        self.assertEqual(len(episodes), 1)
+        self.assertEqual(episodes[0].quantity, Decimal("20"))
+        self.assertEqual(episodes[0].entry_price, Decimal("101"))
+        self.assertEqual(episodes[0].exit_price, Decimal("103.75"))
+        self.assertEqual(episodes[0].net_pnl, Decimal("51.00"))
+        self.assertEqual(episodes[0].strategy_id, "momentum")
+        self.assertEqual(episodes[0].strategy_revision, 3)
+        self.assertEqual(episodes[0].exit_reason, "target")
+
+    def test_trade_episode_reversal_closes_then_opens_a_new_episode(self) -> None:
+        executions = [
+            Execution("long", "DU1", instrument(), "BUY", Decimal("10"), Decimal("100"), NOW),
+            Execution("reverse", "DU1", instrument(), "SELL", Decimal("15"), Decimal("101"), NOW + timedelta(minutes=1)),
+            Execution("cover", "DU1", instrument(), "BUY", Decimal("5"), Decimal("99"), NOW + timedelta(minutes=2)),
+        ]
+
+        episodes = derive_trade_episodes(executions)
+
+        self.assertEqual([row.side for row in episodes], ["LONG", "SHORT"])
+        self.assertEqual([row.net_pnl for row in episodes], [Decimal("10"), Decimal("10")])
+
+    def test_performance_report_uses_episode_expectancy_and_strategy_revision(self) -> None:
+        executions = [
+            Execution("open", "DU1", instrument(), "BUY", Decimal("10"), Decimal("100"), NOW, strategy_id="breakout", strategy_revision=2),
+            Execution("close", "DU1", instrument(), "SELL", Decimal("10"), Decimal("102"), NOW + timedelta(minutes=1)),
+        ]
+        episodes = derive_trade_episodes(executions)
+
+        report = build_performance_report(episodes, executions, [])
+
+        self.assertEqual(report["summary"]["episode_count"], 1)
+        self.assertEqual(report["summary"]["win_rate"], "1")
+        self.assertEqual(report["summary"]["expectancy"], "20")
+        self.assertEqual(report["strategies"][0]["strategy_id"], "breakout")
+        self.assertEqual(report["strategies"][0]["strategy_revision"], 2)
 
 
 class CanonicalAdapterTests(unittest.IsolatedAsyncioTestCase):

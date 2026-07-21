@@ -12,6 +12,7 @@ export type WorkspaceContainerId =
   | "fills"
   | "closed_trades"
   | "activity"
+  | "performance_journal"
   | "news"
   | "ticker_news"
   | "news_detail"
@@ -269,6 +270,15 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
     sourceByMode: Object.fromEntries(allModes.map((mode) => [mode, runtimeBinding("Canonical immutable broker and runtime evidence", [mode === "live" || mode === "paper" ? liveBroker : simulatedBroker, tradingJournal])])),
   },
   {
+    id: "performance_journal",
+    title: "Trading Journal",
+    groupedTitle: "Trading performance",
+    description: "Flat-to-flat trade episodes, strategy-revision comparisons, expectancy, drawdown, execution quality, risk discipline, and expandable order/fill evidence.",
+    modes: allModes,
+    defaultOpen: { backtest: true },
+    sourceByMode: Object.fromEntries(allModes.map((mode) => [mode, runtimeBinding("Derived trade episodes and performance reports over canonical broker evidence", [mode === "live" || mode === "paper" ? liveBroker : simulatedBroker, strategyRuntime, tradingJournal])])),
+  },
+  {
     id: "news",
     title: "All News",
     groupedTitle: "Market news",
@@ -352,7 +362,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
     groupedTitle: "Run journal",
     description: "Ordered lifecycle, command, signal, broker, execution, snapshot, and checkpoint evidence.",
     modes: allModes,
-    defaultOpen: { backtest: true, backtest_debug: true },
+    defaultOpen: { backtest_debug: true },
     sourceByMode: Object.fromEntries(allModes.map((mode) => [mode, runtimeBinding("Durable run audit trail", [tradingJournal])])),
   },
 ];

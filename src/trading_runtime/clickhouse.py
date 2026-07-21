@@ -8,8 +8,9 @@ from uuid import uuid4
 from dataclasses import dataclass
 from typing import Any
 
+from src.trading_runtime.domain import BrokerEventEnvelope, OrderIntent, TradingMode, TradingStateSnapshot, json_safe
 from src.trading_runtime.journal import JournalRecord, TradingJournal
-from src.trading_runtime.domain import BrokerEventEnvelope, OrderIntent, TradingStateSnapshot, json_safe
+from src.trading_runtime.performance import derive_trade_episodes, episodes_from_round_trips
 
 
 TRADING_TABLE_DDL = (
@@ -144,6 +145,16 @@ TRADING_TABLE_DDL = (
         entry_price Decimal(38, 10), exit_price Decimal(38, 10), gross_pnl Decimal(38, 10),
         fees Decimal(38, 10), net_pnl Decimal(38, 10), strategy_id String, exit_reason String, execution_ids Array(String)
     ) ENGINE = MergeTree PARTITION BY toYYYYMM(closed_at) ORDER BY (account_id, closed_at, trade_id)""",
+    """CREATE TABLE IF NOT EXISTS q_live.tr_trade_episode_v1 (
+        episode_id String, account_id String, conid UInt64, symbol LowCardinality(String), side LowCardinality(String),
+        opened_at DateTime64(9, 'UTC'), closed_at DateTime64(9, 'UTC'), quantity Decimal(38, 10),
+        entry_price Decimal(38, 10), exit_price Decimal(38, 10), gross_pnl Decimal(38, 10),
+        fees Decimal(38, 10), net_pnl Decimal(38, 10), strategy_id String, strategy_revision UInt32,
+        run_id String, setup String, exit_reason String, mae Nullable(Decimal(38, 10)),
+        mfe Nullable(Decimal(38, 10)), planned_risk Nullable(Decimal(38, 10)),
+        execution_ids Array(String), order_ids Array(String)
+    ) ENGINE = ReplacingMergeTree(closed_at) PARTITION BY toYYYYMM(closed_at)
+      ORDER BY (account_id, closed_at, episode_id)""",
     """CREATE VIEW IF NOT EXISTS q_live.tr_order_current_v2 AS
         SELECT account_id, broker_order_id,
                argMax(client_order_id, source_event_time) AS client_order_id,
@@ -416,6 +427,28 @@ class ClickHouseTradingSink:
                     "execution_ids": list(row.execution_ids),
                 }
                 for row in snapshot.closed_trades
+            ],
+        )
+        episodes = (
+            episodes_from_round_trips(snapshot.closed_trades)
+            if snapshot.mode in {TradingMode.BACKTEST, TradingMode.BACKTEST_DEBUG} and snapshot.closed_trades
+            else derive_trade_episodes(snapshot.executions)
+        )
+        self._insert_rows(
+            "tr_trade_episode_v1",
+            [
+                {
+                    "episode_id": row.episode_id, "account_id": row.account_id,
+                    "conid": row.instrument.conid, "symbol": row.instrument.symbol, "side": row.side,
+                    "opened_at": row.opened_at.isoformat(), "closed_at": row.closed_at.isoformat(),
+                    "quantity": row.quantity, "entry_price": row.entry_price, "exit_price": row.exit_price,
+                    "gross_pnl": row.gross_pnl, "fees": row.fees, "net_pnl": row.net_pnl,
+                    "strategy_id": row.strategy_id, "strategy_revision": row.strategy_revision,
+                    "run_id": row.run_id, "setup": row.setup, "exit_reason": row.exit_reason,
+                    "mae": row.mae, "mfe": row.mfe, "planned_risk": row.planned_risk,
+                    "execution_ids": list(row.execution_ids), "order_ids": list(row.order_ids),
+                }
+                for row in episodes
             ],
         )
 

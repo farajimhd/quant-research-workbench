@@ -153,7 +153,12 @@ def _canonical_trading_fixture(
     projector.complete = True
     projector.stale = False
     projector.stale_reason = ""
-    return trading_state_payload(projector.snapshot())
+    payload = trading_state_payload(projector.snapshot())
+    # The preview is a point-in-time product. Projector construction happens at
+    # request time, but its presentation clock must remain the requested market
+    # instant rather than leaking wall-clock time into Replay/Backtest views.
+    payload["as_of"] = as_of.astimezone(UTC).isoformat()
+    return payload
 
 
 def _as_of(session_date: date, preview_time: str) -> datetime:
@@ -292,8 +297,13 @@ def _order_fixture(price: float) -> list[dict[str, Any]]:
 
 def _fill_fixture(as_of: datetime, price: float) -> list[dict[str, Any]]:
     return [
-        {"acctId": "DU0000000", "executionId": "0000.0001.01", "orderId": 73096, "conid": 4815747, "ticker": "MSFT", "side": "BOT", "shares": 35, "price": 497.18, "commission": 0.35, "time": (as_of - timedelta(minutes=9)).isoformat()},
-        {"acctId": "DU0000000", "executionId": "0000.0002.01", "orderId": 73091, "conid": 265598, "ticker": "AAPL", "side": "SLD", "shares": 40, "price": round(price - 0.34, 2), "commission": 0.40, "time": (as_of - timedelta(minutes=4)).isoformat()},
+        {"acctId": "DU0000000", "executionId": "0000.0001.01", "orderId": 73081, "conid": 76792991, "ticker": "NVDA", "side": "BOT", "shares": 80, "price": 172.10, "commission": 0.40, "time": (as_of - timedelta(minutes=42)).isoformat(), "strategy_id": "opening-range-breakout", "strategy_revision": 4, "run_id": "preview-run", "setup": "Opening drive", "planned_risk": 72.0, "signal_price": 172.04, "arrival_midpoint": 172.08},
+        {"acctId": "DU0000000", "executionId": "0000.0002.01", "orderId": 73082, "conid": 76792991, "ticker": "NVDA", "side": "SLD", "shares": 80, "price": 173.22, "commission": 0.40, "time": (as_of - timedelta(minutes=35)).isoformat(), "exit_reason": "target"},
+        {"acctId": "DU0000000", "executionId": "0000.0003.01", "orderId": 73083, "conid": 265598, "ticker": "AAPL", "side": "BOT", "shares": 120, "price": round(price - 0.82, 2), "commission": 0.60, "time": (as_of - timedelta(minutes=31)).isoformat(), "strategy_id": "opening-range-breakout", "strategy_revision": 4, "run_id": "preview-run", "setup": "Range break", "planned_risk": 96.0, "signal_price": round(price - 0.85, 2), "arrival_midpoint": round(price - 0.83, 2)},
+        {"acctId": "DU0000000", "executionId": "0000.0004.01", "orderId": 73084, "conid": 265598, "ticker": "AAPL", "side": "SLD", "shares": 120, "price": round(price - 1.31, 2), "commission": 0.60, "time": (as_of - timedelta(minutes=25)).isoformat(), "exit_reason": "stop"},
+        {"acctId": "DU0000000", "executionId": "0000.0005.01", "orderId": 73085, "conid": 272093, "ticker": "TSLA", "side": "SLD", "shares": 50, "price": 321.84, "commission": 0.30, "time": (as_of - timedelta(minutes=20)).isoformat(), "strategy_id": "liquidity-reversal", "strategy_revision": 2, "run_id": "preview-run", "setup": "Failed breakout", "planned_risk": 62.5, "signal_price": 321.88, "arrival_midpoint": 321.86},
+        {"acctId": "DU0000000", "executionId": "0000.0006.01", "orderId": 73086, "conid": 272093, "ticker": "TSLA", "side": "BOT", "shares": 50, "price": 320.72, "commission": 0.30, "time": (as_of - timedelta(minutes=13)).isoformat(), "exit_reason": "liquidity_target"},
+        {"acctId": "DU0000000", "executionId": "0000.0007.01", "orderId": 73096, "conid": 4815747, "ticker": "MSFT", "side": "BOT", "shares": 35, "price": 497.18, "commission": 0.35, "time": (as_of - timedelta(minutes=9)).isoformat(), "strategy_id": "opening-range-breakout", "strategy_revision": 4, "run_id": "preview-run", "setup": "Continuation"},
     ]
 
 
