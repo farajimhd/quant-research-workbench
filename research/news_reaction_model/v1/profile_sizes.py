@@ -58,7 +58,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     if args.real_data:
         audit = audit_prepared_dataset(loader, args.data_start, args.data_end_exclusive)
         print(f"DATASET ready | articles={audit['rows']:,} | version={loader.dataset_version}", flush=True)
-    source = load_one_real_batch(loader, args.data_start, args.data_end_exclusive) if args.real_data else make_dummy_batch(max_batch, loader)
+    source = load_real_sample(loader, args.data_start, args.data_end_exclusive, max_batch) if args.real_data else make_dummy_batch(max_batch, loader)
     if source.sample_count < max_batch:
         raise RuntimeError(
             f"Profile source contains {source.sample_count:,} articles but the largest requested batch is "
@@ -99,14 +99,44 @@ def main(argv: Iterable[str] | None = None) -> int:
     return 0 if viable else 1
 
 
-def load_one_real_batch(loader: LoaderConfig, start: str, end_exclusive: str) -> NewsReactionBatch:
+def load_real_sample(loader: LoaderConfig, start: str, end_exclusive: str, required_articles: int) -> NewsReactionBatch:
+    """Collect an exact bounded profile sample across month-partitioned loader batches."""
     dataset = ClickHouseNewsReactionDataset(loader, start=start, end_exclusive=end_exclusive)
     iterator = dataset.iter_batches()
+    batches: list[NewsReactionBatch] = []
+    collected = 0
     try:
-        return next(iterator)
+        for batch in iterator:
+            remaining = required_articles - collected
+            if remaining <= 0:
+                break
+            selected = slice_batch(batch, min(remaining, batch.sample_count), torch.device("cpu"))
+            batches.append(selected)
+            collected += selected.sample_count
+            if collected >= required_articles:
+                break
     finally:
         dataset.stop()
         iterator.close()
+    if not batches:
+        raise RuntimeError(f"No prepared articles were loaded from [{start}, {end_exclusive}).")
+    return concatenate_batches(batches)
+
+
+def concatenate_batches(batches: list[NewsReactionBatch]) -> NewsReactionBatch:
+    if not batches:
+        raise ValueError("At least one batch is required.")
+    return NewsReactionBatch(
+        x={key: torch.cat([batch.x[key] for batch in batches], dim=0) for key in batches[0].x},
+        class_targets=torch.cat([batch.class_targets for batch in batches], dim=0),
+        return_targets=torch.cat([batch.return_targets for batch in batches], dim=0),
+        label_mask=torch.cat([batch.label_mask for batch in batches], dim=0),
+        identity={
+            key: [value for batch in batches for value in batch.identity[key]]
+            for key in batches[0].identity
+        },
+        sample_count=sum(batch.sample_count for batch in batches),
+    )
 
 
 def slice_batch(batch: NewsReactionBatch, size: int, device: torch.device) -> NewsReactionBatch:

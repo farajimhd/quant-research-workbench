@@ -13,7 +13,7 @@ from research.news_reaction_model.v1.data import make_dummy_batch, prepared_batc
 from research.news_reaction_model.v1.losses import compute_loss
 from research.news_reaction_model.v1.inference import forecast_rows
 from research.news_reaction_model.v1.model import NewsReactionModelV1
-from research.news_reaction_model.v1.profile_sizes import main as profile_main
+from research.news_reaction_model.v1.profile_sizes import load_real_sample, main as profile_main
 from research.news_reaction_model.v1.prepare_data import (
     completed_range_sql,
     create_manifest_sql,
@@ -119,6 +119,18 @@ class NewsReactionModelV1Tests(unittest.TestCase):
                         "--warmup-steps", "0", "--profile-steps", "1",
                         "--output-root", temp_dir,
                     ])
+
+    def test_profiler_collects_exact_sample_across_month_batches(self) -> None:
+        loader = LoaderConfig(embedding_dim=8, max_chunks=2)
+        first = make_dummy_batch(4, loader)
+        second = make_dummy_batch(5, loader)
+        with patch("research.news_reaction_model.v1.profile_sizes.ClickHouseNewsReactionDataset") as dataset_type:
+            dataset_type.return_value.iter_batches.return_value = (batch for batch in (first, second))
+            sample = load_real_sample(loader, "2019-01-01", "2027-01-01", 7)
+        self.assertEqual(sample.sample_count, 7)
+        self.assertEqual(tuple(sample.x["embeddings"].shape), (7, 2, 8))
+        self.assertEqual(len(sample.identity["canonical_news_id"]), 7)
+        dataset_type.return_value.stop.assert_called_once()
 
 
 if __name__ == "__main__":
