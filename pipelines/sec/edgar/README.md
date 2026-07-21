@@ -141,6 +141,11 @@ partition-level final compaction only where physical revision rows exceed the
 logical source count. A partial partition is dropped and rebuilt on resume;
 completed partitions are reused. New rendered tables explicitly use adaptive
 10 MiB MergeTree granules for large variable-width text.
+After atomic exchange, the rebuild writes a run-scoped `cutover.json` before
+cleanup. A cleanup-only resume verifies the original run watermarks and bounded
+target/staging checksum, then drops only the renderer's run-scoped monthly and
+legacy staging names. The explicit ClickHouse large-drop override cannot target
+the canonical rendered table or retained backup.
 Existing stale hash staging is migrated server-side on resume, preserving all
 successful bundle checkpoints and rendered rows.
 Final rendered-text validation is likewise bounded: text integrity is checked

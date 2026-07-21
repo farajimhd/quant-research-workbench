@@ -92,6 +92,16 @@ previous target backup, and remove the temporary work and legacy staging
 tables. This gives live reads the required same-CIK revision locality without
 creating a merge storm during the historical build.
 
+The exchange and cleanup are separate durable phases. After bounded
+target/staging validation, the script atomically records `cutover.json` with the
+run identity, backup name, row count, and checksum before deleting staging. If
+cleanup is interrupted, resume detects the run-specific backup and absent
+final-hash table, verifies the immutable source and filing watermarks, reruns
+the bounded target/staging audit, and performs cleanup without rebuilding or
+exchanging data. ClickHouse's 50 GiB drop guard is overridden only for table
+names matching the renderer's run-scoped staging convention; canonical and
+backup names are rejected by construction.
+
 The exact previously failing bucket was exercised against the production
 staging corpus in a temporary table: 375,581 rows copied and matched checksum
 `14158962764992567782` in 568 seconds. Observed query memory remained below

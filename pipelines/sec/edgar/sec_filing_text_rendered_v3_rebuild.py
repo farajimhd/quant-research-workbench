@@ -287,6 +287,23 @@ def main() -> int:
         return 0
 
     verify_clickhouse_file_root(client, args, run_root)
+    if args.cutover:
+        recovered_backup = recover_post_exchange_cutover(
+            client,
+            args,
+            run_id,
+            run_root,
+            current_watermark,
+            current_filing_watermark,
+        )
+        if recovered_backup:
+            print(
+                f"cutover=complete recovered_post_exchange=true "
+                f"target={args.database}.{args.target_table} "
+                f"backup={args.database}.{recovered_backup}",
+                flush=True,
+            )
+            return 0
     ensure_manifest_table(client, args)
     ensure_staging_table(client, args)
     ensure_bundle_manifest_table(client, args)
@@ -2168,6 +2185,149 @@ SETTINGS do_not_merge_across_partitions_select_final=0,
     return totals
 
 
+def cutover_backup_table_name(run_id: str) -> str:
+    suffix = re.sub(r"[^0-9]", "", run_id)[-14:] or datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+    return f"sec_filing_text_rendered_pre_v8_{suffix}_v3"
+
+
+def cutover_state_path(run_root: Path) -> Path:
+    return run_root / "cutover.json"
+
+
+def write_cutover_state(
+    run_root: Path,
+    *,
+    status: str,
+    database: str,
+    target_table: str,
+    staging_table: str,
+    backup_table: str,
+    target_stats: tuple[int, int],
+    staging_stats: tuple[int, int],
+    recovered_post_exchange: bool,
+) -> None:
+    payload = {
+        "status": status,
+        "database": database,
+        "target_table": target_table,
+        "staging_table": staging_table,
+        "backup_table": backup_table,
+        "target_stats": list(target_stats),
+        "staging_stats": list(staging_stats),
+        "recovered_post_exchange": recovered_post_exchange,
+        "updated_at_utc": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+    }
+    path = cutover_state_path(run_root)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    temporary.replace(path)
+
+
+def cleanup_cutover_tables(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
+    if not re.fullmatch(r"sec_filing_text_rendered_stage_[A-Za-z0-9_]+_v3", args.staging_table):
+        raise RuntimeError(
+            f"refusing large-table cleanup for non-staging table name: {args.staging_table}"
+        )
+    allowed_tables = (
+        args.staging_table,
+        f"{args.staging_table}_hash_legacy",
+    )
+    for table_name in allowed_tables:
+        if table_exists(client, args.database, table_name):
+            client.execute(
+                f"DROP TABLE {table(args.database, table_name)} "
+                "SETTINGS max_table_size_to_drop=0"
+            )
+            print(f"cutover_cleanup table={args.database}.{table_name} status=dropped", flush=True)
+
+
+def recover_post_exchange_cutover(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    run_id: str,
+    run_root: Path,
+    watermark: SourceWatermark,
+    filing_watermark: FilingWatermark,
+) -> str | None:
+    backup_table = cutover_backup_table_name(run_id)
+    if not table_exists(client, args.database, backup_table):
+        return None
+
+    cutover_table = f"{args.staging_table}_final_hash"
+    if table_exists(client, args.database, cutover_table):
+        raise RuntimeError(
+            f"post-exchange recovery is ambiguous: both backup and cutover table exist "
+            f"backup={backup_table} cutover={cutover_table}"
+        )
+
+    manifest_path = run_root / "run_manifest.json"
+    if not manifest_path.exists():
+        raise RuntimeError(f"post-exchange recovery requires run manifest: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    expected_identity = {
+        "run_id": run_id,
+        "database": args.database,
+        "target_table": args.target_table,
+        "staging_table": args.staging_table,
+    }
+    actual_identity = {key: manifest.get(key) for key in expected_identity}
+    if actual_identity != expected_identity:
+        raise RuntimeError(
+            f"post-exchange run identity mismatch expected={expected_identity} actual={actual_identity}"
+        )
+    if manifest.get("source_watermark") != asdict(watermark):
+        raise RuntimeError("source watermark changed after exchange; refusing cleanup recovery")
+    if manifest.get("filing_watermark") != asdict(filing_watermark):
+        raise RuntimeError("filing watermark changed after exchange; refusing cleanup recovery")
+
+    state_path = cutover_state_path(run_root)
+    prior_state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else None
+    target_stats = rendered_table_stats_bounded(client, args.database, args.target_table)
+    if table_exists(client, args.database, args.staging_table):
+        staging_stats = rendered_table_stats_bounded(client, args.database, args.staging_table)
+        if target_stats != staging_stats:
+            raise RuntimeError(
+                f"post-exchange recovery validation failed target={target_stats} staging={staging_stats}"
+            )
+    else:
+        if not prior_state or prior_state.get("status") not in {"exchanged", "complete"}:
+            raise RuntimeError(
+                "staging table is absent and no durable exchanged cutover state exists; refusing recovery"
+            )
+        staging_stats = tuple(int(value) for value in prior_state.get("staging_stats", []))
+        recorded_target_stats = tuple(int(value) for value in prior_state.get("target_stats", []))
+        if len(staging_stats) != 2 or target_stats != recorded_target_stats or target_stats != staging_stats:
+            raise RuntimeError(
+                f"post-exchange state validation failed target={target_stats} "
+                f"recorded_target={recorded_target_stats} recorded_staging={staging_stats}"
+            )
+
+    write_cutover_state(
+        run_root,
+        status="exchanged",
+        database=args.database,
+        target_table=args.target_table,
+        staging_table=args.staging_table,
+        backup_table=backup_table,
+        target_stats=target_stats,
+        staging_stats=staging_stats,
+        recovered_post_exchange=True,
+    )
+    cleanup_cutover_tables(client, args)
+    write_cutover_state(
+        run_root,
+        status="complete",
+        database=args.database,
+        target_table=args.target_table,
+        staging_table=args.staging_table,
+        backup_table=backup_table,
+        target_stats=target_stats,
+        staging_stats=staging_stats,
+        recovered_post_exchange=True,
+    )
+    return backup_table
+
+
 def cutover(
     client: ClickHouseHttpClient,
     args: argparse.Namespace,
@@ -2180,8 +2340,7 @@ def cutover(
     if load_filing_watermark(client, args) != filing_watermark:
         raise RuntimeError("filing metadata watermark changed after validation; refusing cutover")
     cutover_table = prepare_hash_cutover_table(client, args)
-    suffix = re.sub(r"[^0-9]", "", run_id)[-14:] or datetime.now(UTC).strftime("%Y%m%d%H%M%S")
-    backup_table = f"sec_filing_text_rendered_pre_v8_{suffix}_v3"
+    backup_table = cutover_backup_table_name(run_id)
     if scalar_int(
         client,
         f"SELECT count() FROM system.tables WHERE database={sql_string(args.database)} AND name={sql_string(backup_table)}",
@@ -2197,10 +2356,30 @@ def cutover(
     staging_stats = rendered_table_stats_bounded(client, args.database, args.staging_table)
     if target_stats != staging_stats:
         raise RuntimeError(f"post-cutover row validation failed target={target_stats} staging={staging_stats}")
-    client.execute(f"DROP TABLE {table(args.database, args.staging_table)}")
-    legacy_table = f"{args.staging_table}_hash_legacy"
-    if table_exists(client, args.database, legacy_table):
-        client.execute(f"DROP TABLE {table(args.database, legacy_table)}")
+    run_root = Path(args.output_root_win) / run_id
+    write_cutover_state(
+        run_root,
+        status="exchanged",
+        database=args.database,
+        target_table=args.target_table,
+        staging_table=args.staging_table,
+        backup_table=backup_table,
+        target_stats=target_stats,
+        staging_stats=staging_stats,
+        recovered_post_exchange=False,
+    )
+    cleanup_cutover_tables(client, args)
+    write_cutover_state(
+        run_root,
+        status="complete",
+        database=args.database,
+        target_table=args.target_table,
+        staging_table=args.staging_table,
+        backup_table=backup_table,
+        target_stats=target_stats,
+        staging_stats=staging_stats,
+        recovered_post_exchange=False,
+    )
     return backup_table
 
 

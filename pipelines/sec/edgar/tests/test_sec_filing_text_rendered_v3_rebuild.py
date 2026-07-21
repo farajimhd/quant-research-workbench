@@ -26,6 +26,7 @@ from pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild import (
     build_rendered_row,
     collect_partition_results,
     clickhouse_insert_slot,
+    cleanup_cutover_tables,
     create_rendered_table,
     cutover_source_block_rows,
     export_source_partition,
@@ -37,6 +38,7 @@ from pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild import (
     prepare_partition_export,
     process_row_group_bundle,
     rebuild_cutover_partition,
+    recover_post_exchange_cutover,
     rebase_run_manifest_after_source_migration,
     initialize_rebuild_worker,
     rebuild_stop_path,
@@ -52,6 +54,100 @@ from pipelines.sec.edgar.sec_pipeline.text_renderer import SEC_PACKED_TEXT_RENDE
 
 
 class SecRenderedV3RebuildTest(unittest.TestCase):
+    def test_cutover_cleanup_overrides_drop_guard_only_for_exact_temp_tables(self) -> None:
+        class RecordingClient:
+            def __init__(self) -> None:
+                self.sql: list[str] = []
+
+            def execute(self, sql: str) -> str:
+                self.sql.append(sql)
+                return ""
+
+        client = RecordingClient()
+        args = SimpleNamespace(
+            database="q_live", staging_table="sec_filing_text_rendered_stage_test_v3"
+        )
+        with patch(
+            "pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild.table_exists",
+            return_value=True,
+        ):
+            cleanup_cutover_tables(client, args)
+
+        self.assertEqual(len(client.sql), 2)
+        self.assertIn("DROP TABLE `q_live`.`sec_filing_text_rendered_stage_test_v3`", client.sql[0])
+        self.assertIn(
+            "DROP TABLE `q_live`.`sec_filing_text_rendered_stage_test_v3_hash_legacy`",
+            client.sql[1],
+        )
+        self.assertTrue(all("SETTINGS max_table_size_to_drop=0" in sql for sql in client.sql))
+
+    def test_post_exchange_resume_validates_and_only_finishes_cleanup(self) -> None:
+        class RecordingClient:
+            def __init__(self) -> None:
+                self.sql: list[str] = []
+
+            def execute(self, sql: str) -> str:
+                self.sql.append(sql)
+                return ""
+
+        watermark = SourceWatermark(10, 100, 5, "2026-07-20 00:00:00", 99)
+        filing_watermark = FilingWatermark(8, 8, "2026-07-20 00:00:00", 88)
+        run_id = "sec_render_v8_20260716_151718"
+        args = SimpleNamespace(
+            database="q_live",
+            target_table="target_v3",
+            staging_table="sec_filing_text_rendered_stage_test_v3",
+        )
+        backup_table = "sec_filing_text_rendered_pre_v8_20260716151718_v3"
+        existing = {
+            backup_table,
+            "sec_filing_text_rendered_stage_test_v3",
+            "sec_filing_text_rendered_stage_test_v3_hash_legacy",
+        }
+
+        def exists(_client: object, _database: str, table_name: str) -> bool:
+            return table_name in existing
+
+        with TemporaryDirectory() as temp_dir:
+            run_root = Path(temp_dir)
+            (run_root / "run_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "run_id": run_id,
+                        "database": "q_live",
+                        "target_table": "target_v3",
+                        "staging_table": "sec_filing_text_rendered_stage_test_v3",
+                        "source_watermark": asdict(watermark),
+                        "filing_watermark": asdict(filing_watermark),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            client = RecordingClient()
+            with patch(
+                "pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild.table_exists",
+                side_effect=exists,
+            ), patch(
+                "pipelines.sec.edgar.sec_filing_text_rendered_v3_rebuild.rendered_table_stats_bounded",
+                side_effect=((10, 20), (10, 20)),
+            ):
+                recovered = recover_post_exchange_cutover(
+                    client,
+                    args,
+                    run_id,
+                    run_root,
+                    watermark,
+                    filing_watermark,
+                )
+
+            self.assertEqual(recovered, backup_table)
+            state = json.loads((run_root / "cutover.json").read_text(encoding="utf-8"))
+            self.assertEqual(state["status"], "complete")
+            self.assertTrue(state["recovered_post_exchange"])
+            self.assertEqual(state["target_stats"], [10, 20])
+            self.assertEqual(len(client.sql), 2)
+            self.assertTrue(all(sql.startswith("DROP TABLE") for sql in client.sql))
+
     def test_cutover_partition_streams_physical_rows_then_compacts_revisions(self) -> None:
         class RecordingClient:
             def __init__(self) -> None:
