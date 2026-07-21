@@ -328,18 +328,35 @@ function HealthOverview({ health, history, onGuide, onHistory, profile }: { heal
 function HealthSparkline({ history }: { history: MetricHistoryPayload | null }) {
   const gradientId = `facts-health-gradient-${useId().replace(/:/g, "")}`;
   const points = (history?.points ?? []).filter((point) => Number.isFinite(Number(point.value)));
-  const width = 360; const height = 92; const pad = 8;
+  const width = 360; const height = 82; const pad = 8;
+  const timestamps = points.map((point) => Date.parse(point.at));
+  const firstTimestamp = timestamps[0] ?? 0; const lastTimestamp = timestamps[timestamps.length - 1] ?? firstTimestamp;
+  const x = (index: number) => pad + (points.length <= 1 || firstTimestamp === lastTimestamp ? (width - pad * 2) / 2 : (timestamps[index] - firstTimestamp) / (lastTimestamp - firstTimestamp) * (width - pad * 2));
   const line = points.map((point, index) => {
-    const x = pad + (points.length <= 1 ? (width - pad * 2) / 2 : index / (points.length - 1) * (width - pad * 2));
     const y = height - pad - Number(point.value) / 100 * (height - pad * 2);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
+    return `${x(index).toFixed(1)},${y.toFixed(1)}`;
   }).join(" ");
   const area = line ? `${pad},${height - pad} ${line} ${width - pad},${height - pad}` : "";
+  const axisPoints = points.length ? [points[0], points[Math.floor((points.length - 1) / 2)], points[points.length - 1]] : [];
+  const currentScore = points.length ? Number(points[points.length - 1].value) : null;
   return <div className="facts-health-history">
     <header><span>Historical health trajectory</span><small>{points.length ? `${formatHistoryDate(points[0].at)} → ${formatHistoryDate(points[points.length - 1].at)}` : "Loading history…"}</small></header>
     <div className="facts-health-sparkline">{points.length ? <svg aria-label="Historical stock health trajectory" preserveAspectRatio="none" role="img" viewBox={`0 0 ${width} ${height}`}><defs><linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1"><stop className="facts-area-stop-strong" offset="0%" /><stop className="facts-area-stop-mid" offset="62%" /><stop className="facts-area-stop-clear" offset="100%" /></linearGradient></defs><line x1="0" x2={width} y1={height / 2} y2={height / 2} /><polygon className="facts-health-area" points={area} style={{ fill: `url(#${gradientId})` }} /><polyline fill="none" points={line} /></svg> : <span>Historical score is loaded separately so the current facts are not blocked.</span>}</div>
-    <div className="facts-health-comparisons">{(history?.comparisons ?? []).map((item) => <article data-tone={item.tone ?? "muted"} key={item.period}><small>{item.period}</small><strong>{item.score == null ? "—" : Math.round(item.score)}</strong><ToneBadge label={item.label || "Unavailable"} tone={item.tone || "muted"} /></article>)}</div>
+    {axisPoints.length ? <div className="facts-health-axis" aria-hidden="true">{axisPoints.map((point, index) => <span key={`${point.at}-${index}`}>{formatHealthAxisDate(point.at)}</span>)}</div> : null}
+    <div className="facts-health-comparisons">{(history?.comparisons ?? []).map((item) => <HealthComparisonCard currentScore={currentScore} item={item} key={item.period} />)}</div>
   </div>;
+}
+
+function HealthComparisonCard({ currentScore, item }: { currentScore: number | null; item: HealthComparison }) {
+  const score = item.score == null ? null : Number(item.score);
+  const delta = currentScore == null || score == null ? null : currentScore - score;
+  const DirectionIcon = delta == null || Math.abs(delta) < .5 ? ArrowRight : delta > 0 ? ArrowUp : ArrowDown;
+  const direction = delta == null ? "unavailable" : Math.abs(delta) < .5 ? "flat" : delta > 0 ? "up" : "down";
+  return <article data-tone={item.tone ?? "muted"}>
+    <header><span>{item.period} ago</span><time dateTime={item.at || undefined}>{item.at ? formatHealthAxisDate(item.at) : "No date"}</time></header>
+    <div><strong>{score == null ? "—" : Math.round(score)}{score == null ? null : <small>/100</small>}</strong><ToneBadge label={item.label || "Unavailable"} tone={item.tone || "muted"} /></div>
+    <footer data-direction={direction}><DirectionIcon size={10} /><span>{delta == null ? "No comparison" : Math.abs(delta) < .5 ? "Unchanged now" : `${delta > 0 ? "+" : ""}${Math.round(delta)} to current`}</span></footer>
+  </article>;
 }
 
 function SynthesisMetricCard({ card, onGuide }: { card: SynthesisCard; onGuide: () => void }) {
@@ -637,6 +654,7 @@ function borrowValue(row: FactRecord) { const status = text(row.borrow_status); 
 function formatBorrowRates(row: FactRecord) { const indicative = number(row.indicative_borrow_rate); const fee = number(row.fee_rate); return indicative == null && fee == null ? "—" : [indicative == null ? "" : `${formatPercent(indicative)} indicative`, fee == null ? "" : `${formatPercent(fee)} fee`].filter(Boolean).join(" · "); }
 function formatTrendValue(value: number) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 3, notation: Math.abs(value) >= 10_000 ? "compact" : "standard" }).format(value); }
 function formatHistoryDate(value: string) { const date = new Date(value.length === 10 ? `${value}T00:00:00Z` : value); return Number.isNaN(date.getTime()) ? value.slice(0, 10) : new Intl.DateTimeFormat("en-US", { day: "2-digit", month: "short", year: "2-digit", timeZone: "UTC" }).format(date); }
+function formatHealthAxisDate(value: string) { const date = new Date(value.length === 10 ? `${value}T00:00:00Z` : value); return Number.isNaN(date.getTime()) ? value.slice(0, 7) : new Intl.DateTimeFormat("en-US", { month: "short", year: "2-digit", timeZone: "UTC" }).format(date); }
 function formatHistoryValue(value: number, unit: string) { if (!Number.isFinite(value)) return "—"; const normalized = unit.toLowerCase(); if (normalized === "usd") return formatMoney(value); if (normalized === "shares") return formatCount(value); if (normalized === "percent") return `${value.toFixed(Math.abs(value) < 10 ? 2 : 1)}%`; if (normalized === "multiple") return `${value.toFixed(2)}×`; if (normalized === "days") return `${value.toFixed(2)} d`; if (normalized === "score") return `${Math.round(value)}/100`; if (normalized.includes("share")) return `$${formatNumber(value, 3)}`; return formatCount(value); }
 function countryName(value: unknown) { const code = text(value).toUpperCase(); if (!code) return ""; try { return new Intl.DisplayNames(["en"], { type: "region" }).of(code) || code; } catch { return code; } }
 function countryLabel(value: unknown) { const code = text(value).toUpperCase(); if (!code) return "—"; const display = countryName(code); return display && display !== code ? `${display} · ${code}` : code; }
