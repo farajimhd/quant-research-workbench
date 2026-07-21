@@ -1,5 +1,5 @@
 import { Activity, AlertTriangle, ArrowDown, ArrowRight, ArrowUp, BookOpen, Building2, CalendarDays, ChartNoAxesColumnIncreasing, CircleDollarSign, Clock3, Database, Droplets, Gauge, HelpCircle, Landmark, Layers3, List, Scale, ShieldCheck, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 import { api, query } from "../../api/client";
 import { Modal } from "./Modal";
@@ -326,6 +326,7 @@ function HealthOverview({ health, history, onGuide, onHistory, profile }: { heal
 }
 
 function HealthSparkline({ history }: { history: MetricHistoryPayload | null }) {
+  const gradientId = `facts-health-gradient-${useId().replace(/:/g, "")}`;
   const points = (history?.points ?? []).filter((point) => Number.isFinite(Number(point.value)));
   const width = 360; const height = 92; const pad = 8;
   const line = points.map((point, index) => {
@@ -336,7 +337,7 @@ function HealthSparkline({ history }: { history: MetricHistoryPayload | null }) 
   const area = line ? `${pad},${height - pad} ${line} ${width - pad},${height - pad}` : "";
   return <div className="facts-health-history">
     <header><span>Historical health trajectory</span><small>{points.length ? `${formatHistoryDate(points[0].at)} → ${formatHistoryDate(points[points.length - 1].at)}` : "Loading history…"}</small></header>
-    <div className="facts-health-sparkline">{points.length ? <svg aria-label="Historical stock health trajectory" preserveAspectRatio="none" role="img" viewBox={`0 0 ${width} ${height}`}><line x1="0" x2={width} y1={height / 2} y2={height / 2} /><polygon className="facts-health-area" points={area} /><polyline fill="none" points={line} /></svg> : <span>Historical score is loaded separately so the current facts are not blocked.</span>}</div>
+    <div className="facts-health-sparkline">{points.length ? <svg aria-label="Historical stock health trajectory" preserveAspectRatio="none" role="img" viewBox={`0 0 ${width} ${height}`}><defs><linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1"><stop className="facts-area-stop-strong" offset="0%" /><stop className="facts-area-stop-mid" offset="62%" /><stop className="facts-area-stop-clear" offset="100%" /></linearGradient></defs><line x1="0" x2={width} y1={height / 2} y2={height / 2} /><polygon className="facts-health-area" points={area} style={{ fill: `url(#${gradientId})` }} /><polyline fill="none" points={line} /></svg> : <span>Historical score is loaded separately so the current facts are not blocked.</span>}</div>
     <div className="facts-health-comparisons">{(history?.comparisons ?? []).map((item) => <article data-tone={item.tone ?? "muted"} key={item.period}><small>{item.period}</small><strong>{item.score == null ? "—" : Math.round(item.score)}</strong><ToneBadge label={item.label || "Unavailable"} tone={item.tone || "muted"} /></article>)}</div>
   </div>;
 }
@@ -524,6 +525,7 @@ function FactHistoryModal({ asOf, descriptor, onClose, symbol }: { asOf: string;
 }
 
 function FactHistoryChart({ history }: { history: MetricHistoryPayload }) {
+  const gradientId = `facts-history-gradient-${useId().replace(/:/g, "")}`;
   const points = history.points.filter((point) => Number.isFinite(Number(point.value)));
   const values = points.map((point) => Number(point.value));
   const isScore = history.unit.toLowerCase() === "score";
@@ -544,6 +546,7 @@ function FactHistoryChart({ history }: { history: MetricHistoryPayload }) {
   const x = (index: number) => left + (points.length === 1 ? chartWidth / 2 : index / (points.length - 1) * chartWidth);
   const y = (value: number) => top + (maxValue - value) / range * chartHeight;
   const linePoints = points.map((point, index) => `${x(index).toFixed(2)},${y(Number(point.value)).toFixed(2)}`).join(" ");
+  const areaPoints = `${x(0).toFixed(2)},${(top + chartHeight).toFixed(2)} ${linePoints} ${x(points.length - 1).toFixed(2)},${(top + chartHeight).toFixed(2)}`;
   const first = points[0];
   const latest = points[points.length - 1];
   const previous = points.length > 1 ? points[points.length - 2] : null;
@@ -558,12 +561,14 @@ function FactHistoryChart({ history }: { history: MetricHistoryPayload }) {
     </header>
     <div className="facts-history-chart" role="img" aria-label={`${history.label} history from ${formatHistoryDate(first.at)} to ${formatHistoryDate(latest.at)}`}>
       <svg preserveAspectRatio="none" viewBox={`0 0 ${width} ${height}`}>
+        <defs><linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1"><stop className="facts-area-stop-strong" offset="0%" /><stop className="facts-area-stop-mid" offset="58%" /><stop className="facts-area-stop-clear" offset="100%" /></linearGradient></defs>
         {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
           const lineY = top + ratio * chartHeight;
           const value = maxValue - ratio * range;
           return <g key={ratio}><line className="facts-history-grid" x1={left} x2={width - right} y1={lineY} y2={lineY} /><text className="facts-history-y-label" x={left - 9} y={lineY + 4}>{formatHistoryValue(value, history.unit)}</text></g>;
         })}
         {tickIndexes.map((index) => <line className="facts-history-grid facts-history-grid-vertical" key={`grid-${index}`} x1={x(index)} x2={x(index)} y1={top} y2={top + chartHeight} />)}
+        <polygon className="facts-history-area" points={areaPoints} style={{ fill: `url(#${gradientId})` }} />
         <polyline className="facts-history-line" fill="none" points={linePoints} />
         {points.length <= 120 ? points.map((point, index) => <circle className="facts-history-point" cx={x(index)} cy={y(Number(point.value))} key={`${point.at}-${index}`} r="2.5"><title>{`${formatHistoryDate(point.at)} · ${formatHistoryValue(Number(point.value), history.unit)}`}</title></circle>) : null}
         {tickIndexes.map((index) => <text className="facts-history-x-label" key={index} textAnchor={index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"} x={x(index)} y={height - 14}>{formatHistoryDate(points[index].at)}</text>)}

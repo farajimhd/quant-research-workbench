@@ -22110,6 +22110,12 @@ button {
 .facts-detail-guide-list article { grid-template-columns: 1fr; }.facts-detail-guide-list article[data-visible="false"] { background: color-mix(in oklab, var(--surface-alt) 72%, transparent); }.facts-detail-guide-list article[data-visible="false"] small { font-style: italic; }.facts-detail-guide-list article p { grid-column: 1; }
 .facts-history-comparisons { border: 1px solid var(--border); border-top: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }.facts-history-comparisons article { align-items: center; display: grid; gap: 6px; grid-template-columns: minmax(0, 1fr) auto auto; padding: 8px 10px; }.facts-history-comparisons article + article { border-left: 1px solid var(--border); }.facts-history-comparisons small { color: var(--muted-foreground); font-size: 9px; text-transform: uppercase; }.facts-history-comparisons strong { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
 
+.facts-area-stop-strong { stop-color: var(--info); stop-opacity: .42; }
+.facts-area-stop-mid { stop-color: var(--info); stop-opacity: .16; }
+.facts-area-stop-clear { stop-color: var(--info); stop-opacity: .025; }
+.facts-history-area { pointer-events: none; stroke: none; }
+.facts-history-line { stroke-linecap: round; }
+
 /* Fundamentals use a decision-first hierarchy: strength and derived metrics lead; reported XBRL remains supporting evidence. */
 .facts-fundamentals-section .fundamental-strength { background: color-mix(in oklab, var(--info) 4%, var(--surface-alt)); padding: 13px 12px 11px; }
 .facts-fundamentals-section .fundamental-strength > header { grid-template-columns: minmax(0, 1fr) auto auto; }
