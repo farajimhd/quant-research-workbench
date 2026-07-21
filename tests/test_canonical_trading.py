@@ -141,6 +141,30 @@ class CanonicalProjectionTests(unittest.TestCase):
         self.assertEqual(report["strategies"][0]["strategy_id"], "breakout")
         self.assertEqual(report["strategies"][0]["strategy_revision"], 2)
 
+    def test_performance_report_builds_exchange_time_pnl_candles(self) -> None:
+        executions = [
+            Execution("o1", "DU1", instrument(), "BUY", Decimal("10"), Decimal("100"), NOW - timedelta(minutes=25)),
+            Execution("c1", "DU1", instrument(), "SELL", Decimal("10"), Decimal("102"), NOW - timedelta(minutes=20)),
+            Execution("o2", "DU1", instrument(), "BUY", Decimal("10"), Decimal("100"), NOW - timedelta(minutes=15)),
+            Execution("c2", "DU1", instrument(), "SELL", Decimal("10"), Decimal("99"), NOW - timedelta(minutes=10)),
+            Execution("o3", "DU1", instrument(), "BUY", Decimal("5"), Decimal("100"), NOW + timedelta(minutes=2)),
+            Execution("c3", "DU1", instrument(), "SELL", Decimal("5"), Decimal("101"), NOW + timedelta(minutes=5)),
+        ]
+
+        report = build_performance_report(derive_trade_episodes(executions), executions, [])
+        candles = report["pnl_candles"]["30m"]
+
+        self.assertEqual(report["schema_version"], 2)
+        self.assertEqual(len(candles), 2)
+        self.assertEqual(candles[0]["open"], "0")
+        self.assertEqual(candles[0]["high"], "20")
+        self.assertEqual(candles[0]["low"], "0")
+        self.assertEqual(candles[0]["close"], "10")
+        self.assertEqual(candles[0]["episode_count"], 2)
+        self.assertEqual(candles[1]["open"], "10")
+        self.assertEqual(candles[1]["close"], "15")
+        self.assertEqual(set(report["pnl_candles"]), {"30m", "1h", "1d", "1M"})
+
 
 class CanonicalAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def test_simulated_adapter_accepts_canonical_intent_and_returns_audit_events(self) -> None:

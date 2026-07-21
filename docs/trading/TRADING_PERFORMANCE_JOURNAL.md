@@ -1,6 +1,6 @@
 # Canonical trading performance journal
 
-Status: implemented schema v1
+Status: implemented schema v2
 Scope: live, paper, replay, backtest, and backtest debug
 
 ## Purpose
@@ -39,6 +39,17 @@ The `TradeEpisode` contract carries account, instrument, side, peak quantity, av
 | MAE / MFE | adverse / favorable episode excursion | Available only when the execution engine or completed backtest recorded the path evidence |
 | Slippage | signed fill difference from signal price or arrival midpoint | Positive means worse execution for both buy and sell orders |
 
+### Realized P&L candles
+
+The report also returns cumulative realized net-P&L OHLC candles at `30m`, `1h`, `1d`, and `1M` resolutions. The final token means one calendar month, not one minute. Buckets use `America/New_York` boundaries so live, replay, and backtest reports share the same market-time semantics.
+
+- **Open** is cumulative closed-episode net P&L immediately before the first close in the bucket.
+- **High and low** are the best and worst cumulative realized levels reached as episodes close inside the bucket, including the opening value.
+- **Close** is cumulative realized net P&L after the final closed episode in the bucket.
+- **Change** is the sum of net P&L for episodes closed in the bucket.
+
+Empty buckets are omitted. This prevents overnight, weekend, and inactive intervals from appearing as synthetic trading performance. These candles are not account-equity candles: they exclude unrealized P&L, deposits, withdrawals, and FX translation.
+
 Missing values remain missing and coverage is shown explicitly. The report never replaces unavailable risk, excursion, or slippage evidence with zero.
 
 ## Strategy attribution
@@ -60,7 +71,7 @@ Broker events and executions remain the reconstruction authority. The episode ta
 
 The **Trading Journal** container provides five focused views:
 
-1. **Overview** — net P&L trajectory, expectancy, profit factor, win rate, payoff, drawdown, and edge diagnostics.
+1. **Overview** — net P&L trajectory with a labeled dollar axis, multi-timeframe realized P&L candles, expectancy, profit factor, win rate, payoff, drawdown, and edge diagnostics.
 2. **Strategies** — revision-separated comparison with sample size, expectancy, and risk statistics.
 3. **Trades** — searchable, sortable, filterable episodes with expandable evidence and review notes.
 4. **Execution** — fill and order counts, fee state, signal/arrival slippage coverage, and venue concentration.

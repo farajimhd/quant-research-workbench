@@ -2,15 +2,18 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Iterable
 from uuid import NAMESPACE_URL, uuid5
+from zoneinfo import ZoneInfo
 
 from src.trading_runtime.domain import Execution, RoundTripTrade, TradeEpisode, json_safe
 
 
 ZERO = Decimal("0")
+NEW_YORK = ZoneInfo("America/New_York")
+PNL_CANDLE_TIMEFRAMES = ("30m", "1h", "1d", "1M")
 
 
 @dataclass(slots=True)
@@ -146,11 +149,12 @@ def build_performance_report(
         "average_arrival_slippage": _average_slippage(fills, "arrival_midpoint"),
     }
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "episode_definition": "flat_to_flat_position_lifecycle",
         "summary": summary,
         "episodes": [_episode_row(row) for row in reversed(rows)],
         "equity_curve": equity_curve,
+        "pnl_candles": {timeframe: _pnl_candles(rows, timeframe) for timeframe in PNL_CANDLE_TIMEFRAMES},
         "strategies": strategies,
         "execution": execution,
         "risk": {
@@ -287,6 +291,69 @@ def _equity_curve(rows: list[TradeEpisode]) -> list[dict[str, Any]]:
         peak = max(peak, cumulative)
         result.append({"time": row.closed_at, "value": cumulative, "drawdown": cumulative - peak})
     return result
+
+
+def _pnl_candles(rows: list[TradeEpisode], timeframe: str) -> list[dict[str, Any]]:
+    """Aggregate cumulative realized net P&L into exchange-time OHLC buckets.
+
+    The candle opens at cumulative P&L immediately before the first episode in
+    its bucket. High and low include that opening value and every subsequent
+    closed-episode update. Empty market-time buckets are intentionally omitted
+    so overnight and non-trading gaps do not create synthetic activity.
+    """
+
+    result: list[dict[str, Any]] = []
+    cumulative = ZERO
+    current: dict[str, Any] | None = None
+    for row in rows:
+        bucket_start = _pnl_bucket_start(row.closed_at, timeframe)
+        if current is None or current["bucket_start"] != bucket_start:
+            if current is not None:
+                result.append(current)
+            current = {
+                "bucket_start": bucket_start,
+                "bucket_end": _pnl_bucket_end(bucket_start, timeframe),
+                "open": cumulative,
+                "high": cumulative,
+                "low": cumulative,
+                "close": cumulative,
+                "net_change": ZERO,
+                "episode_count": 0,
+            }
+        cumulative += row.net_pnl
+        current["high"] = max(current["high"], cumulative)
+        current["low"] = min(current["low"], cumulative)
+        current["close"] = cumulative
+        current["net_change"] += row.net_pnl
+        current["episode_count"] += 1
+    if current is not None:
+        result.append(current)
+    return result
+
+
+def _pnl_bucket_start(value: datetime, timeframe: str) -> datetime:
+    local = value.astimezone(NEW_YORK)
+    if timeframe == "30m":
+        return local.replace(minute=(local.minute // 30) * 30, second=0, microsecond=0)
+    if timeframe == "1h":
+        return local.replace(minute=0, second=0, microsecond=0)
+    if timeframe == "1d":
+        return local.replace(hour=0, minute=0, second=0, microsecond=0)
+    if timeframe == "1M":
+        return local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    raise ValueError(f"unsupported P&L candle timeframe: {timeframe}")
+
+
+def _pnl_bucket_end(start: datetime, timeframe: str) -> datetime:
+    if timeframe == "30m":
+        return start + timedelta(minutes=30)
+    if timeframe == "1h":
+        return start + timedelta(hours=1)
+    if timeframe == "1d":
+        return start + timedelta(days=1)
+    if timeframe == "1M":
+        return start.replace(year=start.year + 1, month=1) if start.month == 12 else start.replace(month=start.month + 1)
+    raise ValueError(f"unsupported P&L candle timeframe: {timeframe}")
 
 
 def _maximum_drawdown(rows: list[TradeEpisode]) -> Decimal:

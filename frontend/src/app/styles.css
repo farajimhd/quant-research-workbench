@@ -20638,6 +20638,11 @@ button {
 .journal-metric.tone-negative > strong { color: var(--danger); }
 
 .performance-journal > .trading-view-tabs { padding: 0 6px; }
+.performance-overview-stack {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
 .performance-overview-grid {
   display: grid;
   gap: 1px;
@@ -20680,8 +20685,75 @@ button {
 .performance-journal [data-tone="negative"] { color: var(--danger); }
 
 .journal-area-chart { height: 155px; margin-top: 5px; overflow: visible; width: 100%; }
-.journal-area-chart text { fill: var(--muted-foreground); font-size: 8px; }
+.journal-area-chart text,
+.journal-candle-chart text { fill: var(--muted-foreground); font-size: 8px; }
+.journal-chart-grid line { stroke: var(--border); stroke-width: 0.75; }
 .journal-chart-zero { stroke: var(--border); stroke-dasharray: 3 3; stroke-width: 1; }
+
+.performance-candle-card {
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  min-width: 0;
+  padding: 10px 12px 12px;
+}
+.performance-candle-card > header {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+.performance-candle-card > header > div:first-child { display: grid; gap: 2px; min-width: 0; }
+.performance-candle-card > header strong { font-size: 12px; }
+.performance-candle-card > header span { color: var(--muted-foreground); font-size: 9px; }
+.journal-timeframe-tabs {
+  align-items: center;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  display: inline-flex;
+  flex: 0 0 auto;
+  padding: 2px;
+}
+.journal-timeframe-tabs button {
+  background: transparent;
+  border: 0;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  font: inherit;
+  font-size: 9px;
+  font-weight: 720;
+  min-height: 28px;
+  min-width: 39px;
+  padding: 0 8px;
+}
+.journal-timeframe-tabs button:hover { color: var(--foreground); }
+.journal-timeframe-tabs button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.journal-timeframe-tabs button.is-active { background: var(--primary); color: var(--primary-foreground); }
+.journal-candle-readout {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 12px;
+  margin-top: 9px;
+  min-height: 28px;
+  overflow-x: auto;
+  padding: 4px 0;
+  white-space: nowrap;
+}
+.journal-candle-readout span { color: var(--muted-foreground); font-size: 8px; }
+.journal-candle-readout span:first-child { color: var(--foreground); font-weight: 700; }
+.journal-candle-readout b { color: var(--foreground); font-family: var(--font-mono); font-size: 9px; font-variant-numeric: tabular-nums; }
+.journal-candle-scroll { min-width: 0; overflow-x: auto; overflow-y: hidden; }
+.journal-candle-chart { display: block; height: 238px; width: 100%; }
+.journal-candle-wick { stroke-width: 1.4; }
+.journal-candle-body { stroke-width: 1; }
+.journal-candle-chart .is-up .journal-candle-wick,
+.journal-candle-chart .is-up .journal-candle-body { fill: var(--success); stroke: var(--success); }
+.journal-candle-chart .is-down .journal-candle-wick,
+.journal-candle-chart .is-down .journal-candle-body { fill: var(--danger); stroke: var(--danger); }
+.journal-candle-chart g[role="img"] { cursor: crosshair; opacity: 0.82; }
+.journal-candle-chart g[role="img"]:hover,
+.journal-candle-chart g[role="img"]:focus,
+.journal-candle-chart g.is-selected { opacity: 1; outline: none; }
 .performance-diagnosis > div,
 .execution-quality-card > div,
 .risk-journal-grid,
@@ -20780,6 +20852,7 @@ button {
   .risk-journal-view { grid-template-columns: 1fr; }
   .performance-chart-card,
   .risk-journal-view > section:first-child { border-bottom: 1px solid var(--border); border-right: 0; }
+  .performance-candle-card > header { align-items: flex-start; flex-direction: column; }
   .journal-guide-grid { grid-template-columns: 1fr; }
 }
 
