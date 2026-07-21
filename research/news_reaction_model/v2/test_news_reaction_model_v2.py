@@ -139,6 +139,10 @@ class NewsReactionModelV2Tests(unittest.TestCase):
         self.assertIn("scale_version", sql)
         self.assertIn("p.dataset_version", sql)
         self.assertIn("p.canonical_news_id", sql)
+        self.assertIn("r.canonical_news_id AS label_news_id", sql)
+        self.assertIn("r.ticker AS label_ticker", sql)
+        self.assertIn("r.published_at_utc AS label_published_at_utc", sql)
+        self.assertIn("labels.label_ticker = p.ticker", sql)
 
     def test_evaluation_batch_maps_raw_returns_and_scale_by_horizon(self) -> None:
         loader = LoaderConfig(embedding_dim=8, max_chunks=2)

@@ -61,7 +61,8 @@ scale_rows AS
 ),
 raw_labels AS
 (
- SELECT r.canonical_news_id, r.ticker, r.published_at_utc,
+ SELECT r.canonical_news_id AS label_news_id, r.ticker AS label_ticker,
+  r.published_at_utc AS label_published_at_utc,
   groupArray(tuple(
    toString(r.horizon_code), r.target_return, r.high_return, r.low_return,
    if(ts.robust_scale > 0, ts.robust_scale, gs.robust_scale)
@@ -77,14 +78,14 @@ raw_labels AS
   AND (ts.robust_scale > 0 OR gs.robust_scale > 0)
   AND r.published_at_utc >= toDateTime64({q(start.isoformat())}, 9, 'UTC')
   AND r.published_at_utc < toDateTime64({q(end.isoformat())}, 9, 'UTC')
- GROUP BY r.canonical_news_id, r.ticker, r.published_at_utc
+ GROUP BY label_news_id, label_ticker, label_published_at_utc
 )
 SELECT p.canonical_news_id AS source_id, p.ticker, p.published_at_utc, p.chunks,
  p.publication_session, p.horizon_codes, p.return_targets, labels.pnl_targets
 FROM {prepared} AS p FINAL
 INNER JOIN raw_labels AS labels
- ON labels.canonical_news_id = p.canonical_news_id AND labels.ticker = p.ticker
- AND labels.published_at_utc = p.published_at_utc
+ ON labels.label_news_id = p.canonical_news_id AND labels.label_ticker = p.ticker
+ AND labels.label_published_at_utc = p.published_at_utc
 WHERE p.dataset_version = {q(config.dataset_version)}
  AND p.published_at_utc >= toDateTime64({q(start.isoformat())}, 9, 'UTC')
  AND p.published_at_utc < toDateTime64({q(end.isoformat())}, 9, 'UTC')
