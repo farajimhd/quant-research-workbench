@@ -1,5 +1,5 @@
 import { Activity, AlertTriangle, ArrowDown, ArrowRight, ArrowUp, BookOpen, Building2, CalendarDays, ChartNoAxesColumnIncreasing, CircleDollarSign, Clock3, Database, Droplets, Gauge, HelpCircle, Landmark, Layers3, List, Scale, ShieldCheck, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 import { api, query } from "../../api/client";
 import { Modal } from "./Modal";
@@ -120,7 +120,6 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
   const synthesisCards = payload?.synthesis?.cards ?? [];
   const health = payload?.synthesis?.health;
   const fundamentalAnalysis = payload?.fundamental_analysis;
-  const primaryFundamentals = (payload?.fundamentals ?? []).slice(0, 8);
   const primaryDerivedFundamentals = selectPrimaryDerivedFundamentals(fundamentalAnalysis?.metrics ?? []);
   const companyName = text(identity.branding_name, identity.issuer_name, identity.legal_name, identity.security_name) || presentations[symbol]?.issuer_name || symbol;
   const companyCountry = countryName(identity.company_country_code);
@@ -176,13 +175,7 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
               <FactSection className="facts-fundamentals-section" icon={Landmark} onGuide={() => setSectionGuide("fundamentals")} subtitle="SEC-reported evidence and aligned strength measures" title="Fundamentals">
                 {fundamentalAnalysis ? <FundamentalStrength analysis={fundamentalAnalysis} /> : null}
                 {primaryDerivedFundamentals.length ? <section className="fundamental-decision-strip"><header><span><Sparkles size={12} /><strong>Decision metrics</strong></span><small>Derived from aligned SEC observations</small></header><div>{primaryDerivedFundamentals.map((metric) => <DerivedFundamentalCard compact key={metric.id} metric={metric} />)}</div></section> : null}
-                {primaryFundamentals.length ? <div className="fundamental-reported-heading"><strong>Reported anchors</strong><small>Latest standardized XBRL observations</small></div> : null}
-                {primaryFundamentals.length ? <div className="fundamental-list">{primaryFundamentals.map((fact) => {
-                  const metric = `fundamental:${text(fact.tag).toLowerCase()}`;
-                  const label = text(fact.label);
-                  return <article key={String(fact.label)}><MetricLabel freshness={fact.freshness ?? undefined} label={label} onHistory={() => setHistoryMetric({ label, metric })} /><MetricValue change={metricChanges[metric]} label={label} value={formatFundamental(fact)} /><small>{fundamentalMeta(fact)}</small></article>;
-                })}</div> : <FactsInlineEmpty label="No selected SEC-reported facts available." />}
-                {(payload?.fundamentals.length ?? 0) > primaryFundamentals.length || fundamentalAnalysis?.metrics.length ? <button className="facts-show-all" onClick={() => setFundamentalsOpen(true)} type="button"><List size={13} /> Show all fundamentals <span>{(payload?.fundamentals.length ?? 0) + (fundamentalAnalysis?.metrics.length ?? 0)}</span></button> : null}
+                {(payload?.fundamentals.length ?? 0) || fundamentalAnalysis?.metrics.length ? <button className="facts-show-all" onClick={() => setFundamentalsOpen(true)} type="button"><List size={13} /> Show all fundamentals <span>{(payload?.fundamentals.length ?? 0) + (fundamentalAnalysis?.metrics.length ?? 0)}</span></button> : <FactsInlineEmpty label="No SEC-reported or derived fundamentals available." />}
               </FactSection>
               <FactSection className="facts-company-section" icon={Building2} onGuide={() => setSectionGuide("company")} subtitle="Issuer, security, listing, and corporate-action context" title="Company & listing">
                 <div className="facts-detail-grid company-fact-grid">
@@ -428,7 +421,14 @@ function DerivedFundamentalCard({ compact = false, metric }: { compact?: boolean
 function FundamentalStrength({ analysis }: { analysis: FundamentalAnalysis }) {
   return <section className="fundamental-strength" data-tone={analysis.tone}>
     <header><span><Sparkles size={14} /><small>Financial strength</small><strong>{analysis.label}</strong></span><b>{analysis.score == null ? "—" : `${Math.round(analysis.score)}/100`}</b><em>{Math.round(analysis.coverage_percent)}% evidence</em></header>
-    <div>{analysis.facets.map((facet) => <article data-tone={facet.tone} key={facet.id}><span>{facet.label}<small>{facet.strength}</small></span><strong>{facet.score == null ? "—" : Math.round(facet.score)}</strong><i><b style={{ width: `${Math.max(0, Math.min(100, facet.score ?? 0))}%` }} /></i></article>)}</div>
+    <div className="fundamental-facet-grid">{analysis.facets.map((facet) => {
+      const score = facet.score == null ? null : Math.round(facet.score);
+      const angle = Math.max(0, Math.min(100, facet.score ?? 0)) * 3.6;
+      return <article aria-label={`${facet.label}: ${score == null ? "unavailable" : `${score} out of 100`}, ${facet.strength}`} data-tone={facet.tone} key={facet.id}>
+        <i aria-hidden="true" className="fundamental-facet-gauge" style={{ "--facet-angle": `${angle}deg` } as CSSProperties}><b>{score ?? "—"}</b></i>
+        <span><strong>{facet.label}</strong><small>{facet.strength}</small></span>
+      </article>;
+    })}</div>
   </section>;
 }
 

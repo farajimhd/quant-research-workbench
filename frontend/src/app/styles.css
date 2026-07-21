@@ -22123,13 +22123,12 @@ button {
 .facts-fundamentals-section .fundamental-strength article span { font-size: 9px; }
 .facts-fundamentals-section .fundamental-strength article span small { font-size: 8px; }
 .facts-fundamentals-section .fundamental-strength article strong { font-size: 14px; }
-.facts-fundamentals-section .fundamental-strength article > i { grid-column: 1; height: 5px; }
 .fundamental-decision-strip { background: var(--surface); border-bottom: 1px solid var(--border); }
-.fundamental-decision-strip > header, .fundamental-reported-heading { align-items: baseline; background: color-mix(in oklab, var(--surface-alt) 76%, var(--surface)); border-bottom: 1px solid var(--border); display: flex; gap: 7px; justify-content: space-between; padding: 7px 10px; }
+.fundamental-decision-strip > header { align-items: baseline; background: color-mix(in oklab, var(--surface-alt) 76%, var(--surface)); border-bottom: 1px solid var(--border); display: flex; gap: 7px; justify-content: space-between; padding: 7px 10px; }
 .fundamental-decision-strip > header > span { align-items: center; display: flex; gap: 5px; }
 .fundamental-decision-strip > header svg { color: var(--info); }
-.fundamental-decision-strip > header strong, .fundamental-reported-heading strong { font-size: 10px; }
-.fundamental-decision-strip > header small, .fundamental-reported-heading small { color: var(--muted-foreground); font-size: 8px; }
+.fundamental-decision-strip > header strong { font-size: 10px; }
+.fundamental-decision-strip > header small { color: var(--muted-foreground); font-size: 8px; }
 .fundamental-decision-strip > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .derived-fundamental-card { background: var(--surface); display: grid; gap: 4px; min-height: 112px; padding: 12px 13px; position: relative; }
 .derived-fundamental-card::before { background: var(--info); content: ""; height: 3px; inset: 0 0 auto; position: absolute; }
@@ -22156,8 +22155,6 @@ button {
 .derived-fundamental-card[data-compact="true"]:nth-child(n + 3) { border-top: 1px solid var(--border); }
 .derived-fundamental-card[data-compact="true"] > strong { font-size: 20px; }
 .derived-fundamental-card[data-compact="true"] > small { font-size: 8.5px; }
-.fundamental-reported-heading { border-top: 0; }
-.fundamental-reported-heading strong { color: var(--muted-foreground); letter-spacing: .04em; text-transform: uppercase; }
 .fundamental-modal-hero { align-items: center; background: color-mix(in oklab, var(--info) 5%, var(--surface-alt)); border: 1px solid var(--border); display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr) auto; padding: 18px 20px; }
 .fundamental-modal-hero > div { display: grid; gap: 6px; }
 .fundamental-modal-hero > div > small { color: var(--muted-foreground); font-size: 10px; font-weight: 720; letter-spacing: .07em; text-transform: uppercase; }
@@ -22176,7 +22173,6 @@ button {
 .facts-fundamentals-modal .fundamental-strength article span { font-size: 9px; }
 .facts-fundamentals-modal .fundamental-strength article span small { font-size: 8px; }
 .facts-fundamentals-modal .fundamental-strength article strong { font-size: 15px; }
-.facts-fundamentals-modal .fundamental-strength article > i { height: 5px; }
 .derived-decision-section { border-color: var(--border-strong); margin-top: 18px; }
 .derived-decision-section > header { align-items: center; min-height: 52px; padding: 10px 13px; }
 .derived-decision-section > header > span { font-size: 15px; }
@@ -22186,6 +22182,24 @@ button {
 .reported-fundamental-section { opacity: .92; }
 .reported-fundamental-section > header > span { font-size: 12px; }
 
+.fundamental-strength > .fundamental-facet-grid { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(108px, 1fr)); margin-top: 11px; overflow: visible; padding: 0; }
+.fundamental-strength .fundamental-facet-grid > article { --facet-color: var(--info); align-items: center; background: color-mix(in oklab, var(--surface) 82%, var(--surface-alt)); border: 1px solid var(--border); border-radius: 7px; display: grid; gap: 5px; grid-template-columns: 1fr; justify-items: center; min-height: 86px; min-width: 0; padding: 7px 6px; text-align: center; }
+.fundamental-strength .fundamental-facet-grid > article[data-tone="positive"] { --facet-color: var(--success); background: color-mix(in oklab, var(--success) 4%, var(--surface)); border-color: color-mix(in oklab, var(--success) 22%, var(--border)); }
+.fundamental-strength .fundamental-facet-grid > article[data-tone="warning"] { --facet-color: var(--warning); background: color-mix(in oklab, var(--warning) 5%, var(--surface)); border-color: color-mix(in oklab, var(--warning) 25%, var(--border)); }
+.fundamental-strength .fundamental-facet-grid > article[data-tone="negative"] { --facet-color: var(--danger); background: color-mix(in oklab, var(--danger) 4%, var(--surface)); border-color: color-mix(in oklab, var(--danger) 22%, var(--border)); }
+.fundamental-strength .fundamental-facet-grid > article[data-tone="muted"] { --facet-color: var(--muted-foreground); }
+.fundamental-strength .fundamental-facet-gauge { align-items: center; background: conic-gradient(var(--facet-color) var(--facet-angle), color-mix(in oklab, var(--border) 72%, transparent) 0); border-radius: 50%; display: inline-flex; flex: 0 0 auto; grid-column: auto; height: 42px; justify-content: center; overflow: hidden; position: relative; width: 42px; }
+.fundamental-strength .fundamental-facet-gauge::before { background: var(--surface); border-radius: inherit; content: ""; inset: 5px; position: absolute; }
+.fundamental-strength .fundamental-facet-grid > article > .fundamental-facet-gauge > b { background: transparent; color: var(--facet-color); display: block; font-family: ui-monospace, Consolas, monospace; font-size: 12px; font-style: normal; font-weight: 760; height: auto; line-height: 1; position: relative; z-index: 1; }
+.fundamental-strength .fundamental-facet-grid > article > span { color: var(--foreground); display: grid; gap: 2px; min-width: 0; overflow: visible; white-space: normal; }
+.fundamental-strength .fundamental-facet-grid > article > span strong { color: var(--foreground); font-family: inherit; font-size: 9px; font-weight: 680; line-height: 1.15; }
+.fundamental-strength .fundamental-facet-grid > article > span small { color: var(--facet-color); font-size: 8px; font-weight: 650; margin: 0; }
+.facts-fundamentals-section .fundamental-strength > .fundamental-facet-grid { gap: 7px; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.facts-fundamentals-section .fundamental-strength .fundamental-facet-grid > article { grid-template-columns: 1fr; min-width: 0; }
+.facts-fundamentals-section .fundamental-strength .fundamental-facet-gauge, .facts-fundamentals-modal .fundamental-strength .fundamental-facet-gauge { grid-column: auto; height: 42px; width: 42px; }
+.facts-fundamentals-modal .fundamental-strength > .fundamental-facet-grid { gap: 9px; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0; overflow: visible; }
+.facts-fundamentals-modal .fundamental-strength .fundamental-facet-grid > article { min-width: 0; }
+
 @container (max-width: 720px) {
   .facts-health { grid-template-columns: minmax(210px, .9fr) minmax(280px, 1.1fr); min-width: 560px; }.facts-health-components { border-left: 0; border-top: 1px solid var(--border); grid-column: 1 / -1; }.facts-health-components > div { grid-template-columns: repeat(3, minmax(0, 1fr)); }.facts-synthesis-grid { grid-template-columns: repeat(2, minmax(210px, 1fr)); min-width: 470px; }.facts-synthesis-card:nth-child(n) { border-left: 0; }.facts-synthesis-card:nth-child(even) { border-left: 1px solid var(--border); }.facts-synthesis-card:nth-child(n + 3) { border-top: 1px solid var(--border); }.facts-primary-grid { grid-template-columns: repeat(3, minmax(100px, 1fr)); min-width: 390px; }.facts-primary-metric:nth-child(4) { border-left: 0; }.facts-primary-metric:nth-child(n + 4) { border-top: 1px solid var(--border); }.facts-evidence-grid { grid-template-columns: 1fr; }.facts-section:nth-child(even) { border-left: 0; }.facts-section:nth-child(n + 2) { border-top: 1px solid var(--border); }.facts-source-section { grid-column: auto; }.facts-company-section, .facts-identifiers-section { grid-column: auto; }.company-fact-grid { grid-template-columns: repeat(2, minmax(150px, 1fr)); }.identifier-groups { grid-template-columns: 1fr; }.identifier-groups > section + section { border-left: 0; border-top: 1px solid var(--border); }.derived-fundamental-grid, .fundamental-modal-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }.derived-fundamental-grid article:nth-child(n), .fundamental-modal-list article:nth-child(n) { border-left: 0; }.derived-fundamental-grid article:nth-child(even), .fundamental-modal-list article:nth-child(even) { border-left: 1px solid var(--border); }.derived-fundamental-grid article:nth-child(n + 3), .fundamental-modal-list article:nth-child(n + 3) { border-top: 1px solid var(--border); }
 }
@@ -22194,9 +22208,9 @@ button {
 }
 @media (max-width: 700px) { .facts-guide-grid, .facts-guide-evidence { grid-template-columns: 1fr; }.facts-guide-evidence article:nth-child(even) { border-left: 0; }.facts-guide-evidence article:nth-child(n + 2) { border-top: 1px solid var(--border); } }
 @media (max-width: 700px) { .facts-history-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }.facts-history-summary > span:nth-child(3) { border-left: 0; }.facts-history-summary > span:nth-child(n + 3) { border-top: 1px solid var(--border); } }
-@container (max-width: 460px) { .facts-fundamentals-section .fundamental-strength > header { grid-template-columns: minmax(0, 1fr) auto; }.facts-fundamentals-section .fundamental-strength > header em { grid-column: 1 / -1; }.fundamental-decision-strip > header, .fundamental-reported-heading { align-items: flex-start; flex-direction: column; gap: 2px; }.fundamental-decision-strip > div { grid-template-columns: 1fr; }.derived-fundamental-card[data-compact="true"]:nth-child(n) { border-left: 0; }.derived-fundamental-card[data-compact="true"]:nth-child(n + 2) { border-top: 1px solid var(--border); } }
-@media (max-width: 850px) { .derived-decision-section .derived-fundamental-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 700px) { .fundamental-modal-hero { align-items: start; grid-template-columns: 1fr; }.fundamental-modal-hero > em { justify-self: start; }.fundamental-modal-hero > div strong { font-size: 23px; }.fundamental-modal-hero > div b { font-size: 29px; }.derived-decision-section > header { align-items: flex-start; flex-direction: column; }.derived-decision-section .derived-fundamental-grid { grid-template-columns: 1fr; } }
+@container (max-width: 460px) { .facts-fundamentals-section .fundamental-strength > header { grid-template-columns: minmax(0, 1fr) auto; }.facts-fundamentals-section .fundamental-strength > header em { grid-column: 1 / -1; }.facts-fundamentals-section .fundamental-strength > .fundamental-facet-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.fundamental-decision-strip > header { align-items: flex-start; flex-direction: column; gap: 2px; }.fundamental-decision-strip > div { grid-template-columns: 1fr; }.derived-fundamental-card[data-compact="true"]:nth-child(n) { border-left: 0; }.derived-fundamental-card[data-compact="true"]:nth-child(n + 2) { border-top: 1px solid var(--border); } }
+@media (max-width: 850px) { .facts-fundamentals-modal .fundamental-strength > .fundamental-facet-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }.derived-decision-section .derived-fundamental-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 700px) { .fundamental-modal-hero { align-items: start; grid-template-columns: 1fr; }.fundamental-modal-hero > em { justify-self: start; }.fundamental-modal-hero > div strong { font-size: 23px; }.fundamental-modal-hero > div b { font-size: 29px; }.facts-fundamentals-modal .fundamental-strength > .fundamental-facet-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.derived-decision-section > header { align-items: flex-start; flex-direction: column; }.derived-decision-section .derived-fundamental-grid { grid-template-columns: 1fr; } }
 
 /* SEC canvases mirror the proven news layout while preserving filing-specific density. */
 .sec-table { min-width: 860px; }.sec-table th:nth-child(1) { width: 118px; }.sec-table th:nth-child(2) { width: 92px; }.sec-table th:nth-child(3) { width: 142px; }.sec-table th:nth-child(5) { width: 170px; }.sec-table th:nth-child(6) { width: 120px; }
