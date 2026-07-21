@@ -288,7 +288,7 @@ function HealthOverview({ health, history, onGuide, onHistory, profile }: { heal
     <HealthSparkline history={history} />
     <div className="facts-health-components">
       <header><span>Health score composition</span><small>Six weighted inputs · score /100</small></header>
-      <div>{health.components.map((component) => {
+      <div>{[...health.components].sort((left, right) => right.weight - left.weight).map((component) => {
         const tone = componentScoreTone(component.score);
         return <article aria-label={`${component.label}: ${component.score == null ? "unavailable" : `${Math.round(component.score)} out of 100`}; ${component.weight}% weight`} data-tone={tone} key={component.label}>
           <span>{component.label}<small>{component.weight}% weight</small></span><strong>{component.score == null ? "—" : `${Math.round(component.score)}/100`}</strong><i aria-hidden="true"><b style={{ width: `${Math.max(0, Math.min(100, component.score ?? 0))}%` }} /></i>
