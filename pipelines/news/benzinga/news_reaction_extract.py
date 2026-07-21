@@ -1305,7 +1305,12 @@ prior_anchor_points AS
 ),
 market_prior_anchor AS
 (
-    SELECT prior_anchor_event AS market_prior_anchor_event
+    SELECT
+        argMaxIf(
+            prior_anchor_event,
+            tupleElement(prior_anchor_event, 1),
+            tupleElement(prior_anchor_event, 1) > 0
+        ) AS market_prior_anchor_event
     FROM prior_anchor_points
     WHERE ticker = {sql_string(args.benchmark_ticker.upper())}
 ),
@@ -1687,7 +1692,12 @@ prior_anchor_points AS
 ),
 market_prior_anchor AS
 (
-    SELECT prior_anchor_event AS market_prior_anchor_event
+    SELECT
+        argMaxIf(
+            prior_anchor_event,
+            tupleElement(prior_anchor_event, 1),
+            tupleElement(prior_anchor_event, 1) > 0
+        ) AS market_prior_anchor_event
     FROM prior_anchor_points
     WHERE ticker = {sql_string(args.benchmark_ticker.upper())}
 ),

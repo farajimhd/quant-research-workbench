@@ -929,15 +929,15 @@ WITH
 joined AS
 (
     SELECT
-        f.phrase_id,
-        r.horizon_code,
-        r.publication_session,
-        r.abnormal_target_return,
-        r.abnormal_high_return,
-        r.abnormal_low_return,
-        q.eligible_for_statistics,
-        q.corporate_action_overlap,
-        q.return_outlier
+        f.phrase_id AS phrase_id,
+        r.horizon_code AS horizon_code,
+        r.publication_session AS publication_session,
+        r.abnormal_target_return AS abnormal_target_return,
+        r.abnormal_high_return AS abnormal_high_return,
+        r.abnormal_low_return AS abnormal_low_return,
+        q.eligible_for_statistics AS eligible_for_statistics,
+        q.corporate_action_overlap AS corporate_action_overlap,
+        q.return_outlier AS return_outlier
     FROM (SELECT * FROM {table(args.news_database, args.features_table)} FINAL) AS f
     INNER JOIN (SELECT * FROM {table(args.news_database, args.reactions_table)} FINAL) AS r USING (canonical_news_id)
     INNER JOIN (SELECT * FROM {table(args.news_database, args.quality_table)} FINAL) AS q
@@ -1040,22 +1040,23 @@ def prediction_ctes(args: argparse.Namespace, watermarks: SourceWatermarks) -> s
 eligible AS
 (
     SELECT
-        r.canonical_news_id,
-        r.ticker,
-        r.published_at_utc,
-        r.horizon_code,
-        r.publication_session,
-        r.abnormal_target_return,
-        f.phrase_id,
-        s.eligible_sample_count,
-        s.negative_probability,
-        s.neutral_probability,
-        s.positive_probability
+        r.canonical_news_id AS canonical_news_id,
+        r.ticker AS ticker,
+        r.published_at_utc AS published_at_utc,
+        r.horizon_code AS horizon_code,
+        r.publication_session AS publication_session,
+        r.abnormal_target_return AS abnormal_target_return,
+        f.phrase_id AS phrase_id,
+        s.eligible_sample_count AS eligible_sample_count,
+        s.negative_probability AS negative_probability,
+        s.neutral_probability AS neutral_probability,
+        s.positive_probability AS positive_probability
     FROM (SELECT * FROM {table(args.news_database, args.reactions_table)} FINAL) AS r
     INNER JOIN (SELECT * FROM {table(args.news_database, args.quality_table)} FINAL) AS q
       ON q.label_version = r.label_version AND q.canonical_news_id = r.canonical_news_id
      AND q.ticker = r.ticker AND q.horizon_code = r.horizon_code
-    INNER JOIN (SELECT * FROM {table(args.news_database, args.features_table)} FINAL) AS f USING (canonical_news_id)
+    INNER JOIN (SELECT * FROM {table(args.news_database, args.features_table)} FINAL) AS f
+      ON f.canonical_news_id = r.canonical_news_id
     INNER JOIN (SELECT * FROM {table(args.news_database, args.robust_stats_table)} FINAL) AS s
       ON s.phrase_id = f.phrase_id AND s.horizon_code = r.horizon_code
      AND s.publication_session = r.publication_session
@@ -1200,10 +1201,11 @@ ranked AS
             ORDER BY cityHash64(p.canonical_news_id, p.ticker, p.horizon_code)
         ) AS stratum_rank
     FROM predictions AS p
-    INNER JOIN (SELECT * FROM {table(args.news_database, args.normalized_table)} FINAL) AS n USING (canonical_news_id)
+    INNER JOIN (SELECT * FROM {table(args.news_database, args.normalized_table)} FINAL) AS n
+      ON n.canonical_news_id = p.canonical_news_id
 )
 SELECT
-    hex(cityHash128(canonical_news_id, ticker, horizon_code)) AS review_id,
+    hex(sipHash128(canonical_news_id, ticker, horizon_code)) AS review_id,
     canonical_news_id,
     ticker,
     toString(published_at_utc) AS published_at_utc,
@@ -1216,6 +1218,7 @@ SELECT
     abnormal_target_return,
     title,
     teaser,
+    body_excerpt,
     provider_tags,
     channels,
     '' AS reviewer_sentiment,

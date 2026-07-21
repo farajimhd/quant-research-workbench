@@ -80,6 +80,8 @@ class NewsReactionExtractTests(unittest.TestCase):
         self.assertIn("tupleElement(event, 1) < pub_us", sql)
         self.assertIn("tupleElement(event, 1) > pub_us", sql)
         self.assertIn("tupleElement(event, 1) <= target_us, market_events.all_market_events", sql)
+        self.assertIn("argMaxIf(\n            prior_anchor_event", sql)
+        self.assertNotIn("SELECT prior_anchor_event AS market_prior_anchor_event", sql)
         self.assertIn("arrayFilter(event -> tupleElement(event, 1) <= day_window.max_target_us", sql)
         self.assertIn("asset_event_sets AS", sql)
         self.assertIn("ON day_window.ticker = p.ticker", sql)
@@ -155,6 +157,8 @@ class NewsReactionExtractTests(unittest.TestCase):
         self.assertIn("AND event_date IN (SELECT window_event_date FROM window_event_dates)", cached_reaction_sql)
         self.assertIn("ticker = 'SPY'", cached_reaction_sql)
         self.assertIn("WHERE event_date < toDate('2019-01-02')", cached_reaction_sql)
+        self.assertIn("argMaxIf(\n            prior_anchor_event", cached_reaction_sql)
+        self.assertNotIn("SELECT prior_anchor_event AS market_prior_anchor_event", cached_reaction_sql)
         self.assertLess(
             cached_reaction_sql.index("window_event_dates AS"),
             cached_reaction_sql.index("active_cache_tickers AS"),

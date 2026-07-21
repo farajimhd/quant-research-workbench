@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import unittest
 
 from pipelines.news.benzinga.news_reaction_finalize import (
@@ -17,6 +18,7 @@ from pipelines.news.benzinga.news_reaction_finalize import (
     reaction_repair_sql,
     robust_stats_insert_sql,
     validate_args,
+    write_review_sample,
 )
 
 
@@ -82,6 +84,9 @@ class NewsReactionFinalizeTests(unittest.TestCase):
 
     def test_robust_stats_use_presence_rows_and_trimmed_distributions(self) -> None:
         sql = robust_stats_insert_sql(self.args)
+        self.assertIn("f.phrase_id AS phrase_id", sql)
+        self.assertIn("r.horizon_code AS horizon_code", sql)
+        self.assertIn("r.publication_session AS publication_session", sql)
         self.assertIn("trimmed_mean_target_return", sql)
         self.assertIn("quantileTDigestIf(0.5)", sql)
         self.assertIn("corporate_action_excluded_count", sql)
@@ -93,6 +98,9 @@ class NewsReactionFinalizeTests(unittest.TestCase):
         sql = prediction_ctes(self.args, self.watermarks)
         self.assertIn("news_phrase_event_reaction_stats_v4", sql)
         self.assertIn("2026-01-01", sql)
+        self.assertIn("r.canonical_news_id AS canonical_news_id", sql)
+        self.assertIn("ON f.canonical_news_id = r.canonical_news_id", sql)
+        self.assertNotIn("AS f USING (canonical_news_id)", sql)
         self.assertIn("positive_probability - negative_probability", sql)
         self.assertIn("groupUniqArray(phrase_id)", sql)
 
@@ -106,6 +114,12 @@ class NewsReactionFinalizeTests(unittest.TestCase):
         )
         self.assertAlmostEqual(metrics["balanced_accuracy"], 0.8)
         self.assertAlmostEqual(metrics["macro_f1"], 0.8)
+
+    def test_review_sample_uses_supported_stable_id_and_exports_body(self) -> None:
+        source = inspect.getsource(write_review_sample)
+        self.assertIn("sipHash128", source)
+        self.assertNotIn("cityHash128", source)
+        self.assertIn("body_excerpt,", source)
 
 
 if __name__ == "__main__":
