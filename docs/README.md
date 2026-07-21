@@ -27,4 +27,5 @@ Start here before changing historical ingestion, live services, or trading UI co
 - [Benzinga News Ticker Join Table](data_contracts/benzinga_news_ticker_v1.md): derived ticker/time index for loaded Benzinga news.
 - [News URL Policy Table](data_contracts/news_url_policy_v1.md): compact domain/action policy used by item-level news processing.
 - [News Phrase and Reaction Reference v1](data_contracts/news_reaction_reference_v1.md): deterministic phrase-presence facts, causal intraday reaction labels, and the 2019-2025 training / 2026 holdout contract.
+- [Deterministic News Intelligence v2](data_contracts/news_deterministic_intelligence_v2.md): issuer relevance, structured mixed language evidence, volatility-normalized reaction classes, empirical-Bayes probabilities, and locked-review/holdout evaluation.
 - [SEC Filing Text Pipeline](data_contracts/sec_filing_text_pipeline.md): target SEC document and text contracts.

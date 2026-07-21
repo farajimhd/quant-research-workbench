@@ -13,6 +13,7 @@ This package contains the historical Benzinga news workflow:
 - one-item canonical ClickHouse upsert into normalized news and ticker-link tables.
 - reusable item-level package used by live ingestion and concurrent gap fills.
 - deterministic phrase-presence and causal post-news reaction reference tables.
+- versioned deterministic issuer relevance, structured language, and calibrated reaction intelligence.
 
 Preferred module path:
 
@@ -147,5 +148,23 @@ The first command is a read-only coverage preflight. See the
 [v1 data contract](../../../docs/data_contracts/news_reaction_reference_v1.md)
 for canonical-event prerequisites, causal horizons, table grains, quality rules,
 and the 2019-2025 training / 2026 holdout split.
+
+Deterministic news intelligence v2 keeps publication-time meaning separate from
+future market reaction. It classifies candidate ticker links as
+company-specific, ticker-related, or not relevant; extracts ticker-scoped
+semantic events; composes positive and negative language evidence without
+correlated family double counting; and trains volatility-normalized
+empirical-Bayes reaction probabilities from 2019-2025 before evaluating 2026.
+The default launcher is read-only:
+
+```powershell
+python pipelines\news\benzinga\run_news_reaction_deterministic_v2.py
+python pipelines\news\benzinga\run_news_reaction_deterministic_v2.py --execute `
+  --review-labels-csv <locked-reviewed-csv>
+```
+
+See the [v2 data contract](../../../docs/data_contracts/news_deterministic_intelligence_v2.md)
+for table grains, formulas, relevance rules, exact recovery semantics, and
+evaluation boundaries. The v2 workflow never mutates the v1 reference tables.
 
 Old `research/mlops/news_benzinga_*.py` wrappers are archived under `pipelines/archive/legacy_wrappers/research_mlops/`. Do not use them for new runs.
