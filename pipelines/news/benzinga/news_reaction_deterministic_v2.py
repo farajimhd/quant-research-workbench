@@ -50,14 +50,38 @@ from research.mlops.env import discover_env_files, load_env_files, secret_status
 
 
 UTC = dt.timezone.utc
-PIPELINE_VERSION = "news_deterministic_intelligence_v2"
-RELEVANCE_VERSION = "news_ticker_relevance_rules_v2"
-LANGUAGE_VERSION = "news_language_composition_v2"
-SCALE_VERSION = "news_reaction_robust_scale_v2"
-MODEL_VERSION = "news_reaction_empirical_bayes_v2"
-PREDICTION_VERSION = "news_reaction_probability_v2"
+PIPELINE_VERSION = "news_deterministic_intelligence_v2_1"
+RELEVANCE_VERSION = "news_ticker_relevance_rules_v2_1"
+LANGUAGE_VERSION = "news_language_composition_v2_1"
+SCALE_VERSION = "news_reaction_robust_scale_v2_1"
+MODEL_VERSION = "news_reaction_empirical_bayes_v2_1"
+PREDICTION_VERSION = "news_reaction_probability_v2_1"
 REVIEW_VERSION = "codex_blind_review_v1"
 ALLOWED_STAGES = ("extract", "scale", "train", "predict", "evaluate")
+
+# High-precision publication-time relevance vocabulary. Broad/analyst markers
+# affect relationship type; they never determine sentiment.
+BROAD_COVERAGE_MARKERS = (
+    "bulls and bears", "stories that matter", "consumer tech news", "consumer technology news",
+    "stock whisper index", "stocks to watch", "premarket movers", "pre-market movers",
+    "stocks moving premarket", "top gainers", "top losers", "market update", "midday report",
+    "midday update", "what's moving markets", "week in review", "weekly recap",
+)
+ANALYST_COVERAGE_MARKERS = (
+    "analyst ratings", "analyst color", "price target", "maintains buy", "maintains sell",
+    "maintains outperform", "maintains underperform", "maintains overweight", "maintains underweight",
+    "upgrades", "downgrades", "initiates coverage",
+)
+DIRECT_EVENT_MARKERS = (
+    "reports", "announces", "raises", "cuts", "lowers", "reaffirms", "withdraws", "acquires",
+    "merger", "offering", "contract", "approval", "clearance", "trial", "appoints", "resigns",
+    "dividend", "buyback", "investigation", "files for", "launches", "recalls", "authorizes",
+    "guidance", "results", "earnings", "revenue", "eps", "settlement", "restructuring",
+)
+
+
+def sql_array(values: Sequence[str]) -> str:
+    return "[" + ",".join(sql_string(value) for value in values) + "]"
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,8 +109,8 @@ def compose_language(
     evidence: Iterable[tuple[str, int, float, str]],
     *,
     language_threshold: float = 0.15,
-    mixed_min_mass: float = 0.35,
-    mixed_ratio: float = 0.45,
+    mixed_min_mass: float = 0.15,
+    mixed_ratio: float = 0.25,
 ) -> dict[str, Any]:
     """Compose independent positive/negative evidence after family de-correlation.
 
@@ -158,31 +182,45 @@ def shrunken_robust_scale(ticker_mad: float, global_mad: float, sample_count: in
 
 
 def confusion_metrics(rows: Iterable[dict[str, Any]], labels: Sequence[str]) -> dict[str, Any]:
-    counts = {(actual, predicted): 0 for actual in labels for predicted in labels}
+    label_set = set(labels)
+    counts: dict[tuple[str, str], int] = {(actual, predicted): 0 for actual in labels for predicted in labels}
+    unexpected_actuals: dict[str, int] = {}
+    unexpected_predictions: dict[str, int] = {}
     total = 0
     for row in rows:
         actual, predicted = str(row["actual_class"]), str(row["predicted_class"])
-        if actual not in labels or predicted not in labels:
-            continue
         count = int(row.get("sample_count") or 1)
-        counts[(actual, predicted)] += count
+        if actual not in label_set:
+            unexpected_actuals[actual] = unexpected_actuals.get(actual, 0) + count
+            continue
+        counts[(actual, predicted)] = counts.get((actual, predicted), 0) + count
+        if predicted not in label_set:
+            unexpected_predictions[predicted] = unexpected_predictions.get(predicted, 0) + count
         total += count
     per_class: dict[str, dict[str, float]] = {}
     for label in labels:
         tp = counts[(label, label)]
         fp = sum(counts[(actual, label)] for actual in labels if actual != label)
-        fn = sum(counts[(label, predicted)] for predicted in labels if predicted != label)
+        fn = sum(count for (actual, predicted), count in counts.items() if actual == label and predicted != label)
         precision = tp / (tp + fp) if tp + fp else 0.0
         recall = tp / (tp + fn) if tp + fn else 0.0
         f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
         per_class[label] = {"precision": precision, "recall": recall, "f1": f1, "support": tp + fn}
+    covered = total - sum(unexpected_predictions.values())
     return {
         "sample_count": total,
+        "prediction_coverage": covered / total if total else None,
         "accuracy": sum(counts[(label, label)] for label in labels) / total if total else None,
         "balanced_accuracy": sum(value["recall"] for value in per_class.values()) / len(labels) if total else None,
         "macro_f1": sum(value["f1"] for value in per_class.values()) / len(labels) if total else None,
         "per_class": per_class,
-        "confusion": {f"{actual}->{predicted}": counts[(actual, predicted)] for actual in labels for predicted in labels},
+        "unexpected_actuals": dict(sorted(unexpected_actuals.items())),
+        "unexpected_predictions": dict(sorted(unexpected_predictions.items())),
+        "confusion": {
+            f"{actual}->{predicted}": count
+            for (actual, predicted), count in sorted(counts.items())
+            if count or predicted in label_set
+        },
     }
 
 
@@ -211,8 +249,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--effect-min-support", type=int, default=20)
     parser.add_argument("--effect-prior-strength", type=float, default=60.0)
     parser.add_argument("--language-threshold", type=float, default=0.15)
-    parser.add_argument("--mixed-min-mass", type=float, default=0.35)
-    parser.add_argument("--mixed-ratio", type=float, default=0.45)
+    parser.add_argument("--mixed-min-mass", type=float, default=0.15)
+    parser.add_argument("--mixed-ratio", type=float, default=0.25)
     parser.add_argument("--review-labels-csv", default="")
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default="auto")
     parser.add_argument("--progress-refresh-per-second", type=float, default=2.0)
@@ -262,7 +300,7 @@ def validate_args(args: argparse.Namespace) -> tuple[str, ...]:
         raise SystemExit("shrinkage and prior strength must be positive")
     if not 0 < args.reaction_z_threshold < 5:
         raise SystemExit("--reaction-z-threshold must be between zero and five")
-    if not 0 < args.language_threshold < 1 or not 0 < args.mixed_ratio <= 1:
+    if not 0 < args.language_threshold < 1 or not 0 < args.mixed_min_mass <= 1 or not 0 < args.mixed_ratio <= 1:
         raise SystemExit("language thresholds must be in (0, 1]")
     return stages
 
@@ -442,11 +480,9 @@ def replace_dictionary(client: ClickHouseHttpClient, args: argparse.Namespace) -
     insert_json_rows(client, target, rows)
 
 
-def replace_identity_aliases(client: ClickHouseHttpClient, args: argparse.Namespace, reporter: NewsReactionProgress | None) -> int:
-    target = table(args.database, args.identity_alias_table)
-    monitored_execute(client, f"ALTER TABLE {target} DELETE WHERE identity_version = {sql_string(RELEVANCE_VERSION)} SETTINGS mutations_sync = 2", reporter, "replace identity aliases")
-    sql = f"""
-INSERT INTO {target}
+def identity_alias_insert_sql(args: argparse.Namespace) -> str:
+    return f"""
+INSERT INTO {table(args.database, args.identity_alias_table)}
 SELECT
  upperUTF8(sym.ticker_normalized) AS ticker,
  sec.issuer_id,
@@ -459,8 +495,16 @@ INNER JOIN {table(args.database, 'id_listing_v1')} AS listing FINAL ON listing.l
 INNER JOIN {table(args.database, 'id_security_v1')} AS sec FINAL ON sec.security_id = listing.security_id
 INNER JOIN {table(args.database, 'id_issuer_v1')} AS issuer FINAL ON issuer.issuer_id = sec.issuer_id
 WHERE sym.ticker_normalized != '' AND issuer.issuer_id != ''
+ AND listing.currency_code = 'USD'
+ AND sym.asset_type IN ('stock', 'fund', 'otc')
+ AND sym.instrument_type IN ('CS', 'common_stock', 'ADRC', 'OS', 'etf', 'FUND', 'SP', 'ETV')
 """ + query_settings(args)
-    monitored_execute(client, sql, reporter, "build identity aliases")
+
+
+def replace_identity_aliases(client: ClickHouseHttpClient, args: argparse.Namespace, reporter: NewsReactionProgress | None) -> int:
+    target = table(args.database, args.identity_alias_table)
+    monitored_execute(client, f"ALTER TABLE {target} DELETE WHERE identity_version = {sql_string(RELEVANCE_VERSION)} SETTINGS mutations_sync = 2", reporter, "replace identity aliases")
+    monitored_execute(client, identity_alias_insert_sql(args), reporter, "build identity aliases")
     return int(client.execute(f"SELECT count() FROM {target} FINAL WHERE identity_version = {sql_string(RELEVANCE_VERSION)}").strip() or 0)
 
 
@@ -468,8 +512,8 @@ def identity_alias_cte(args: argparse.Namespace) -> str:
     return f"""
 aliases AS
 (
- SELECT ticker, argMax(issuer_id, updated_at) AS issuer_id, argMax(issuer_name, updated_at) AS issuer_name,
-  argMax(issuer_alias, updated_at) AS issuer_alias, min(list_date) AS list_date, max(delisted_date) AS delisted_date
+ SELECT ticker,
+  groupUniqArray((issuer_id, issuer_name, issuer_alias, listing_id, list_date, delisted_date)) AS identities
  FROM {table(args.database, args.identity_alias_table)} FINAL
  WHERE identity_version = {sql_string(RELEVANCE_VERSION)}
  GROUP BY ticker
@@ -478,6 +522,9 @@ aliases AS
 
 
 def relevance_insert_sql(args: argparse.Namespace, start: dt.date, end: dt.date) -> str:
+    broad_sql = sql_array(BROAD_COVERAGE_MARKERS)
+    analyst_sql = sql_array(ANALYST_COVERAGE_MARKERS)
+    direct_sql = sql_array(DIRECT_EVENT_MARKERS)
     return f"""
 INSERT INTO {table(args.database, args.relevance_table)}
 WITH
@@ -485,43 +532,66 @@ WITH
 base AS
 (
  SELECT t.canonical_news_id AS canonical_news_id, upperUTF8(t.ticker) AS ticker, t.published_at_utc AS published_at_utc,
-  a.issuer_id AS issuer_id, a.issuer_name AS issuer_name, a.issuer_alias AS issuer_alias,
   lowerUTF8(concat(n.title, ' ', n.teaser)) AS head_text,
-  lowerUTF8(concat(n.title, ' ', n.teaser, ' ', n.body_text, ' ', n.external_text, ' ', n.pdf_text, ' ', arrayStringConcat(n.provider_tags, ' '), ' ', arrayStringConcat(n.channels, ' '))) AS all_text,
+  lowerUTF8(concat(n.title, ' ', n.teaser, ' ', n.body_text, ' ', n.external_text, ' ', n.pdf_text)) AS content_text,
   lowerUTF8(concat(arrayStringConcat(n.provider_tags, ' '), ' ', arrayStringConcat(n.channels, ' '))) AS metadata_text,
   length(n.tickers) > 1 AS multi_ticker,
+  arrayFilter(identity ->
+    (isNull(tupleElement(identity, 5)) OR toDate(t.published_at_utc, 'America/New_York') >= tupleElement(identity, 5)) AND
+    (isNull(tupleElement(identity, 6)) OR toDate(t.published_at_utc, 'America/New_York') <= tupleElement(identity, 6)),
+    a.identities) AS valid_identities,
   n.text_hash AS source_text_hash
  FROM {table(args.database, args.ticker_table)} AS t FINAL
  INNER JOIN {table(args.database, args.normalized_table)} AS n FINAL
   ON n.canonical_news_id = t.canonical_news_id AND n.published_at_utc = t.published_at_utc
  LEFT JOIN aliases AS a ON a.ticker = upperUTF8(t.ticker)
  WHERE t.published_at_utc >= {dt_sql(start.isoformat())} AND t.published_at_utc < {dt_sql(end.isoformat())}
-  AND (a.list_date IS NULL OR toDate(t.published_at_utc, 'America/New_York') >= a.list_date)
-  AND (a.delisted_date IS NULL OR toDate(t.published_at_utc, 'America/New_York') <= a.delisted_date)
 ),
 flags AS
 (
- SELECT canonical_news_id, ticker, published_at_utc, issuer_id, issuer_name, issuer_alias,
-  head_text, all_text, metadata_text, multi_ticker, source_text_hash,
-  match(all_text, concat('(^|[^a-z0-9])', regexpQuoteMeta(lowerUTF8(ticker)), '([^a-z0-9]|$)')) AS ticker_mentioned,
-  length(issuer_alias) >= 4 AND position(all_text, issuer_alias) > 0 AS issuer_mentioned,
-  multi_ticker OR multiSearchAny(metadata_text, ['benzinga insights','trading ideas','movers','analyst ratings','price target','top stories','why it is moving','why it''s moving','general']) > 0 AS roundup_or_analyst,
-  multiSearchAny(head_text, ['reports','announces','raises','cuts','lowers','reaffirms','withdraws','acquires','merger','offering','contract','approval','clearance','trial','appoints','resigns','dividend','buyback','investigation','files for','launches','recalls']) > 0 AS direct_event_language
+ SELECT canonical_news_id, ticker, published_at_utc, head_text, content_text, metadata_text,
+  multi_ticker, valid_identities, source_text_hash,
+  match(head_text, concat('(^|[^a-z0-9])', regexpQuoteMeta(lowerUTF8(ticker)), '([^a-z0-9]|$)')) AS headline_ticker_mentioned,
+  match(content_text, concat('(^|[^a-z0-9])', regexpQuoteMeta(lowerUTF8(ticker)), '([^a-z0-9]|$)')) AS ticker_mentioned,
+  arrayExists(identity -> length(tupleElement(identity, 3)) >= 4 AND position(head_text, tupleElement(identity, 3)) > 0, valid_identities) AS headline_issuer_mentioned,
+  arrayExists(identity -> length(tupleElement(identity, 3)) >= 4 AND position(content_text, tupleElement(identity, 3)) > 0, valid_identities) AS issuer_mentioned,
+  multiSearchAny(concat(head_text, ' ', metadata_text), {broad_sql}) > 0 AS broad_coverage,
+  multiSearchAny(concat(head_text, ' ', metadata_text), {analyst_sql}) > 0 AS analyst_coverage,
+  multiSearchAny(head_text, {direct_sql}) > 0 AS direct_event_language
  FROM base
+),
+selected AS
+(
+ SELECT *,
+  headline_ticker_mentioned OR headline_issuer_mentioned AS entity_in_headline,
+  ticker_mentioned OR issuer_mentioned AS entity_in_content,
+  broad_coverage OR analyst_coverage OR multi_ticker AS roundup_or_analyst,
+  arrayFirst(identity -> length(tupleElement(identity, 3)) >= 4 AND position(content_text, tupleElement(identity, 3)) > 0, valid_identities) AS mentioned_identity
+ FROM flags
 ),
 classified AS
 (
- SELECT canonical_news_id, ticker, published_at_utc, issuer_id, issuer_name, issuer_alias,
+ SELECT canonical_news_id, ticker, published_at_utc,
+  tupleElement(mentioned_identity, 1) AS issuer_id,
+  tupleElement(mentioned_identity, 2) AS issuer_name,
+  tupleElement(mentioned_identity, 3) AS issuer_alias,
   multi_ticker, source_text_hash, ticker_mentioned, issuer_mentioned, roundup_or_analyst, direct_event_language,
-  if(NOT ticker_mentioned AND NOT issuer_mentioned, 'not_relevant',
-    if(roundup_or_analyst OR multi_ticker OR NOT direct_event_language, 'ticker_related', 'company_specific')) AS relevance_class,
-  greatest(0., least(1., 0.15 + 0.35 * ticker_mentioned + 0.35 * issuer_mentioned + 0.25 * direct_event_language - 0.30 * roundup_or_analyst - 0.10 * multi_ticker)) AS relevance_score
- FROM flags
+  if(NOT entity_in_content OR (broad_coverage AND NOT entity_in_headline), 'not_relevant',
+    if(analyst_coverage OR multi_ticker OR broad_coverage OR NOT entity_in_headline OR NOT direct_event_language,
+      'ticker_related', 'company_specific')) AS relevance_class,
+  greatest(0., least(1., 0.10 + 0.25 * entity_in_content + 0.25 * entity_in_headline +
+    0.25 * direct_event_language + 0.15 * issuer_mentioned - 0.25 * broad_coverage -
+    0.15 * analyst_coverage - 0.10 * multi_ticker)) AS relevance_score,
+  entity_in_headline, broad_coverage, analyst_coverage
+ FROM selected
 )
 SELECT {sql_string(RELEVANCE_VERSION)}, canonical_news_id, ticker, published_at_utc,
  coalesce(issuer_id, ''), coalesce(issuer_name, ''), coalesce(issuer_alias, ''), relevance_class, relevance_score,
  ticker_mentioned, issuer_mentioned, direct_event_language, multi_ticker, roundup_or_analyst,
- arrayFilter(x -> x != '', [if(ticker_mentioned, 'ticker_mentioned', ''), if(issuer_mentioned, 'issuer_mentioned', ''), if(direct_event_language, 'direct_issuer_event', ''), if(roundup_or_analyst, 'roundup_or_analyst', ''), if(multi_ticker, 'multiple_tickers', '')]),
+ arrayFilter(x -> x != '', [if(ticker_mentioned, 'ticker_mentioned', ''), if(issuer_mentioned, 'issuer_mentioned', ''),
+  if(entity_in_headline, 'entity_in_headline', ''), if(direct_event_language, 'direct_issuer_event', ''),
+  if(broad_coverage, 'broad_coverage', ''), if(analyst_coverage, 'analyst_coverage', ''),
+  if(multi_ticker, 'multiple_tickers', '')]),
  source_text_hash, now64(6)
 FROM classified
 """ + query_settings(args, external_group_by=True)
@@ -1066,6 +1136,214 @@ def json_rows(text: str) -> list[dict[str, Any]]:
     return [json.loads(line) for line in text.splitlines() if line.strip()]
 
 
+def version_row_count(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    table_name: str,
+    version_column: str,
+    version: str,
+    conditions: Sequence[str] = (),
+) -> int:
+    where = " AND ".join(
+        [f"{quote_ident(version_column)} = {sql_string(version)}", *conditions]
+    )
+    return int(client.execute(
+        f"SELECT count() FROM {table(args.database, table_name)} FINAL "
+        f"WHERE {where}"
+    ).strip() or 0)
+
+
+def extraction_status_counts(client: ClickHouseHttpClient, args: argparse.Namespace) -> dict[str, int]:
+    rows = json_rows(client.execute(f"""
+SELECT status, count() AS chunks
+FROM
+(
+ SELECT chunk_start, chunk_end_exclusive, argMax(status, updated_at) AS status
+ FROM {table(args.database, args.status_table)} FINAL
+ WHERE pipeline_version = {sql_string(PIPELINE_VERSION)} AND stage = 'extract'
+  AND chunk_start >= toDate({sql_string(args.start_date)})
+  AND chunk_end_exclusive <= toDate({sql_string(args.end_date)})
+ GROUP BY chunk_start, chunk_end_exclusive
+)
+GROUP BY status FORMAT JSONEachRow
+"""))
+    return {str(row["status"]): int(row["chunks"]) for row in rows}
+
+
+def build_certification(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    months: Sequence[tuple[dt.date, dt.date]],
+    evaluation: dict[str, Any],
+) -> dict[str, Any]:
+    status_counts = extraction_status_counts(client, args)
+    publication_conditions = (
+        f"published_at_utc >= {dt_sql(args.start_date)}",
+        f"published_at_utc < {dt_sql(args.end_date)}",
+    )
+    holdout_conditions = (
+        f"published_at_utc >= {dt_sql(args.holdout_start_date)}",
+        f"published_at_utc < {dt_sql(args.holdout_end_date)}",
+    )
+    training_conditions = (
+        f"trained_start_date = toDate({sql_string(args.train_start_date)})",
+        f"trained_end_date_exclusive = toDate({sql_string(args.train_end_date)})",
+    )
+    counts = {
+        "identity_aliases": version_row_count(client, args, args.identity_alias_table, "identity_version", RELEVANCE_VERSION),
+        "relevance_rows": version_row_count(client, args, args.relevance_table, "relevance_version", RELEVANCE_VERSION, publication_conditions),
+        "event_dictionary_rows": version_row_count(client, args, args.event_dictionary_table, "dictionary_version", EVENT_DICTIONARY_VERSION),
+        "event_feature_rows": version_row_count(client, args, args.event_feature_table, "extraction_version", EVENT_DICTIONARY_VERSION, publication_conditions),
+        "language_rows": version_row_count(client, args, args.language_table, "language_version", LANGUAGE_VERSION, publication_conditions),
+        "scale_rows": version_row_count(client, args, args.scale_table, "scale_version", SCALE_VERSION, training_conditions),
+        "baseline_rows": version_row_count(client, args, args.baseline_table, "model_version", MODEL_VERSION, training_conditions),
+        "effect_rows": version_row_count(client, args, args.effect_table, "model_version", MODEL_VERSION, training_conditions),
+        "prediction_rows": version_row_count(client, args, args.prediction_table, "prediction_version", PREDICTION_VERSION, holdout_conditions),
+        "review_rows": version_row_count(client, args, args.review_table, "review_version", REVIEW_VERSION),
+    }
+    expected_months = len(months)
+    checks = {
+        "all_months_complete": status_counts.get("complete", 0) == expected_months,
+        "no_failed_months": status_counts.get("failed", 0) == 0,
+        "language_matches_relevance": counts["language_rows"] == counts["relevance_rows"] and counts["relevance_rows"] > 0,
+        "event_dictionary_complete": counts["event_dictionary_rows"] == len(EVENT_RULES),
+        "identity_authority_present": counts["identity_aliases"] > 0,
+        "trained_model_present": min(counts["scale_rows"], counts["baseline_rows"], counts["effect_rows"]) > 0,
+        "holdout_predictions_present": counts["prediction_rows"] > 0,
+        "locked_review_complete": counts["review_rows"] == 750,
+        "evaluation_population_present": int(evaluation.get("reaction_rows") or 0) > 0,
+    }
+    return {
+        "pipeline_version": PIPELINE_VERSION,
+        "versions": {
+            "relevance": RELEVANCE_VERSION,
+            "dictionary": EVENT_DICTIONARY_VERSION,
+            "language": LANGUAGE_VERSION,
+            "scale": SCALE_VERSION,
+            "model": MODEL_VERSION,
+            "prediction": PREDICTION_VERSION,
+            "review": REVIEW_VERSION,
+        },
+        "expected_extract_months": expected_months,
+        "extract_status_counts": status_counts,
+        "row_counts": counts,
+        "checks": checks,
+        "certified": all(checks.values()),
+        "certified_at_utc": dt.datetime.now(UTC).isoformat(),
+    }
+
+
+def build_model_diagnostics(client: ClickHouseHttpClient, args: argparse.Namespace) -> dict[str, Any]:
+    coverage = parse_one_json(client.execute(f"""
+WITH relevant AS
+(
+ SELECT canonical_news_id, ticker
+ FROM {table(args.database, args.relevance_table)} FINAL
+ WHERE relevance_version = {sql_string(RELEVANCE_VERSION)} AND relevance_class != 'not_relevant'
+  AND published_at_utc >= {dt_sql(args.train_start_date)} AND published_at_utc < {dt_sql(args.train_end_date)}
+),
+featured AS
+(
+ SELECT DISTINCT canonical_news_id, ticker
+ FROM {table(args.database, args.event_feature_table)} FINAL
+ WHERE extraction_version = {sql_string(EVENT_DICTIONARY_VERSION)}
+  AND published_at_utc >= {dt_sql(args.train_start_date)} AND published_at_utc < {dt_sql(args.train_end_date)}
+)
+SELECT count() AS relevant_news_tickers, countIf(f.ticker != '') AS event_featured_news_tickers,
+ countIf(f.ticker != '') / nullIf(count(), 0) AS event_feature_coverage
+FROM relevant AS r LEFT JOIN featured AS f USING (canonical_news_id, ticker) FORMAT JSONEachRow
+"""))
+    event_support = parse_one_json(client.execute(f"""
+WITH support AS
+(
+ SELECT event_id, uniqExact((canonical_news_id, ticker)) AS sample_count
+ FROM {table(args.database, args.event_feature_table)} FINAL
+ WHERE extraction_version = {sql_string(EVENT_DICTIONARY_VERSION)}
+  AND published_at_utc >= {dt_sql(args.train_start_date)} AND published_at_utc < {dt_sql(args.train_end_date)}
+ GROUP BY event_id
+)
+SELECT count() AS observed_events, min(sample_count) AS minimum_support,
+ quantileExact(0.25)(sample_count) AS p25_support, medianExact(sample_count) AS median_support,
+ quantileExact(0.75)(sample_count) AS p75_support, max(sample_count) AS maximum_support,
+ countIf(sample_count >= {int(args.effect_min_support)}) AS events_meeting_min_support
+FROM support FORMAT JSONEachRow
+"""))
+    effects = parse_one_json(client.execute(f"""
+SELECT count() AS effect_rows, uniqExact(event_id) AS effected_events,
+ min(reliability) AS minimum_reliability, quantileExact(0.25)(reliability) AS p25_reliability,
+ medianExact(reliability) AS median_reliability, quantileExact(0.75)(reliability) AS p75_reliability,
+ max(reliability) AS maximum_reliability, countIf(reliability >= 0.5) AS majority_data_weight_rows,
+ avg(abs(positive_log_effect) + abs(negative_log_effect) + abs(neutral_log_effect)) AS mean_total_log_effect
+FROM {table(args.database, args.effect_table)} FINAL
+WHERE model_version = {sql_string(MODEL_VERSION)}
+ AND trained_start_date = toDate({sql_string(args.train_start_date)})
+ AND trained_end_date_exclusive = toDate({sql_string(args.train_end_date)}) FORMAT JSONEachRow
+"""))
+    scales = parse_one_json(client.execute(f"""
+SELECT count() AS scale_rows, countIf(ticker = '*') AS global_scale_rows,
+ quantileExact(0.25)(sample_count) AS p25_sample_count, medianExact(sample_count) AS median_sample_count,
+ quantileExact(0.75)(sample_count) AS p75_sample_count,
+ avg(shrinkage_weight) AS mean_ticker_weight, countIf(ticker != '*' AND shrinkage_weight >= 0.5) AS majority_ticker_weight_rows
+FROM {table(args.database, args.scale_table)} FINAL
+WHERE scale_version = {sql_string(SCALE_VERSION)}
+ AND trained_start_date = toDate({sql_string(args.train_start_date)})
+ AND trained_end_date_exclusive = toDate({sql_string(args.train_end_date)}) FORMAT JSONEachRow
+"""))
+    prediction_distribution = json_rows(client.execute(f"""
+SELECT horizon_code, publication_session, predicted_class, count() AS sample_count,
+ avg(greatest(negative_probability, neutral_probability, positive_probability)) AS mean_confidence
+FROM {table(args.database, args.prediction_table)} FINAL
+WHERE prediction_version = {sql_string(PREDICTION_VERSION)}
+ AND published_at_utc >= {dt_sql(args.holdout_start_date)}
+ AND published_at_utc < {dt_sql(args.holdout_end_date)}
+GROUP BY horizon_code, publication_session, predicted_class
+ORDER BY horizon_code, publication_session, predicted_class FORMAT JSONEachRow
+"""))
+    return {
+        "event_feature_coverage": coverage,
+        "event_support": event_support,
+        "effect_shrinkage": effects,
+        "robust_scales": scales,
+        "prediction_distribution": prediction_distribution,
+        "diagnosed_at_utc": dt.datetime.now(UTC).isoformat(),
+    }
+
+
+def calibration_metrics(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    grouped: dict[str, list[float]] = {}
+    total = 0
+    weighted_accuracy = 0.0
+    weighted_confidence = 0.0
+    weighted_gap = 0.0
+    for row in rows:
+        count = int(row.get("sample_count") or 0)
+        accuracy = float(row.get("empirical_accuracy") or 0.0)
+        confidence = float(row.get("mean_confidence") or 0.0)
+        total += count
+        weighted_accuracy += count * accuracy
+        weighted_confidence += count * confidence
+        weighted_gap += count * abs(accuracy - confidence)
+        horizon = str(row.get("horizon_code") or "unknown")
+        values = grouped.setdefault(horizon, [0.0, 0.0, 0.0, 0.0])
+        values[0] += count
+        values[1] += count * accuracy
+        values[2] += count * confidence
+        values[3] += count * abs(accuracy - confidence)
+
+    def summarize(values: Sequence[float]) -> dict[str, Any]:
+        count = int(values[0])
+        return {
+            "sample_count": count,
+            "accuracy": values[1] / count if count else None,
+            "mean_confidence": values[2] / count if count else None,
+            "expected_calibration_error": values[3] / count if count else None,
+        }
+
+    overall = summarize([float(total), weighted_accuracy, weighted_confidence, weighted_gap])
+    overall["by_horizon"] = {key: summarize(values) for key, values in sorted(grouped.items())}
+    return overall
+
+
 def run_global_stage(client: ClickHouseHttpClient, args: argparse.Namespace, reporter: NewsReactionProgress, stage: str) -> int:
     start = date_arg(args.start_date)
     end = date_arg(args.end_date)
@@ -1240,6 +1518,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     review_rows = import_review_labels(client, args, Path(args.review_labels_csv))
                     reporter.message(f"imported locked review labels rows={review_rows:,}")
                 evaluation = parse_one_json(monitored_execute(client, evaluation_sql(args), reporter, "evaluate holdout"))
+                uniform_log_loss = math.log(3.0)
+                uniform_brier = 2.0 / 9.0
+                evaluation["uniform_baseline"] = {
+                    "log_loss": uniform_log_loss,
+                    "brier_score": uniform_brier,
+                    "log_loss_improvement": uniform_log_loss - float(evaluation.get("reaction_log_loss") or uniform_log_loss),
+                    "brier_improvement": uniform_brier - float(evaluation.get("reaction_brier_score") or uniform_brier),
+                }
                 reaction_confusion = json_rows(monitored_execute(client, reaction_confusion_sql(args), reporter, "reaction confusion"))
                 language_confusion = json_rows(monitored_execute(client, language_confusion_sql(args), reporter, "review confusion"))
                 evaluation["reaction_classification"] = confusion_metrics(reaction_confusion, ("negative", "neutral", "positive"))
@@ -1252,11 +1538,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ("negative", "neutral", "positive", "mixed"),
                 )
                 calibration = json_rows(monitored_execute(client, calibration_sql(args), reporter, "build calibration report"))
+                evaluation["calibration"] = calibration_metrics(calibration)
                 write_json(run_root / "evaluation.json", evaluation)
                 write_json(run_root / "calibration.json", calibration)
                 reporter.unit_done("evaluate", "holdout", status="complete", rows=int(evaluation.get("reaction_rows") or 0))
 
             reporter.stage_start("audit")
+            reporter.chunk_start("audit", "certification and diagnostics")
+            certification = build_certification(client, args, months, evaluation)
+            diagnostics = build_model_diagnostics(client, args)
+            write_json(run_root / "certification.json", certification)
+            write_json(run_root / "model_diagnostics.json", diagnostics)
             manifest = {
                 "run_id": run_id, "pipeline_version": PIPELINE_VERSION, "execute": True, "stages": list(stages),
                 "publication_range": {"start": args.start_date, "end_exclusive": args.end_date},
@@ -1264,12 +1556,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "holdout_range": {"start": args.holdout_start_date, "end_exclusive": args.holdout_end_date},
                 "workers": args.workers, "max_threads_per_query": args.max_threads_per_query,
                 "event_rule_count": len(EVENT_RULES), "month_results": [asdict(row) for row in sorted(results, key=lambda row: row.start_date)],
-                "evaluation": evaluation, "elapsed_seconds": time.perf_counter() - started,
+                "evaluation": evaluation, "certification": certification,
+                "elapsed_seconds": time.perf_counter() - started,
                 "secret_status": secret_status(["CLICKHOUSE_PASSWORD", "TD__DATABASE__CLICKHOUSE__PASSWORD", "CLICKHOUSE_WORKSTATION_PASSWORD"]),
             }
             write_json(run_root / "manifest.json", manifest)
             reporter.unit_done("audit", "manifest", status="complete")
-            reporter.finish()
+            reporter.finish("complete" if certification["certified"] else "complete_uncertified")
         return 0
     except KeyboardInterrupt:
         reporter.interrupted()

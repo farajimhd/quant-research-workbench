@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import datetime as dt
 from pathlib import Path
 
 from pipelines.news.benzinga.news_reaction_deterministic_v2 import (
@@ -10,12 +11,16 @@ from pipelines.news.benzinga.news_reaction_deterministic_v2 import (
     MODEL_VERSION,
     PREDICTION_VERSION,
     RELEVANCE_VERSION,
+    SCALE_VERSION,
     compose_language,
+    calibration_metrics,
     confusion_metrics,
     ddl_statements,
     empirical_bayes_effect,
+    identity_alias_insert_sql,
     load_review_labels,
     parse_args,
+    relevance_insert_sql,
     shrunken_robust_scale,
     required_sources,
     validate_args,
@@ -25,8 +30,9 @@ from pipelines.news.benzinga.news_reaction_event_dictionary_v2 import EVENT_RULE
 
 class DeterministicNewsV2Tests(unittest.TestCase):
     def test_versions_are_separate_from_v1(self) -> None:
-        for version in (RELEVANCE_VERSION, EVENT_DICTIONARY_VERSION, LANGUAGE_VERSION, MODEL_VERSION, PREDICTION_VERSION):
-            self.assertTrue(version.endswith("v2"))
+        for version in (RELEVANCE_VERSION, EVENT_DICTIONARY_VERSION, LANGUAGE_VERSION, SCALE_VERSION, MODEL_VERSION, PREDICTION_VERSION):
+            self.assertIn("v2", version)
+            self.assertNotEqual(version, "news_phrase_presence_v1")
 
     def test_dictionary_is_unique_and_covers_required_families(self) -> None:
         self.assertEqual(len(EVENT_RULES), len({rule.event_id for rule in EVENT_RULES}))
@@ -51,6 +57,13 @@ class DeterministicNewsV2Tests(unittest.TestCase):
         self.assertEqual(positive["language_class"], "positive")
         self.assertEqual(negative["language_class"], "negative")
 
+    def test_opposing_analyst_actions_form_mixed_language(self) -> None:
+        result = compose_language([
+            ("analyst_action", 1, 0.22, "analyst_maintains_positive"),
+            ("analyst_action", -1, 0.24, "price_target_lower"),
+        ])
+        self.assertEqual(result["language_class"], "mixed")
+
     def test_empirical_bayes_effect_shrinks_small_samples(self) -> None:
         posterior, effects, reliability = empirical_bayes_effect((0, 0, 2), (0.25, 0.5, 0.25), prior_strength=60)
         self.assertAlmostEqual(sum(posterior), 1.0)
@@ -74,6 +87,27 @@ class DeterministicNewsV2Tests(unittest.TestCase):
         self.assertEqual(metrics["accuracy"], 0.9)
         self.assertIn("macro_f1", metrics)
 
+    def test_confusion_metrics_count_unrecognized_predictions_as_misses(self) -> None:
+        metrics = confusion_metrics([
+            {"actual_class": "positive", "predicted_class": "positive", "sample_count": 8},
+            {"actual_class": "positive", "predicted_class": "not_applicable", "sample_count": 2},
+        ], ("negative", "neutral", "positive"))
+        self.assertEqual(metrics["sample_count"], 10)
+        self.assertEqual(metrics["accuracy"], 0.8)
+        self.assertEqual(metrics["prediction_coverage"], 0.8)
+        self.assertEqual(metrics["unexpected_predictions"], {"not_applicable": 2})
+        self.assertEqual(metrics["per_class"]["positive"]["recall"], 0.8)
+
+    def test_calibration_metrics_are_support_weighted(self) -> None:
+        metrics = calibration_metrics([
+            {"horizon_code": "1m", "sample_count": 90, "empirical_accuracy": 0.5, "mean_confidence": 0.4},
+            {"horizon_code": "1m", "sample_count": 10, "empirical_accuracy": 0.0, "mean_confidence": 0.8},
+        ])
+        self.assertEqual(metrics["sample_count"], 100)
+        self.assertAlmostEqual(metrics["accuracy"], 0.45)
+        self.assertAlmostEqual(metrics["mean_confidence"], 0.44)
+        self.assertAlmostEqual(metrics["expected_calibration_error"], 0.17)
+
     def test_default_plan_is_safe_and_bounded(self) -> None:
         args = parse_args([])
         stages = validate_args(args)
@@ -86,6 +120,16 @@ class DeterministicNewsV2Tests(unittest.TestCase):
         sources = required_sources(args)
         self.assertNotIn("benzinga_news_text_v1", sources)
         self.assertTrue({"body_text", "external_text", "pdf_text"} <= sources[args.normalized_table])
+
+    def test_relevance_uses_us_nonderivative_point_in_time_aliases(self) -> None:
+        args = parse_args([])
+        identity_sql = identity_alias_insert_sql(args)
+        sql = relevance_insert_sql(args, dt.date(2026, 1, 1), dt.date(2026, 2, 1))
+        self.assertIn("listing.currency_code = 'USD'", identity_sql)
+        self.assertIn("sym.instrument_type IN", identity_sql)
+        self.assertIn("arrayFilter(identity ->", sql)
+        self.assertIn("entity_in_headline", sql)
+        self.assertNotIn("argMax(issuer_alias", sql)
 
     def test_certified_reviewer_columns_are_imported(self) -> None:
         text = (

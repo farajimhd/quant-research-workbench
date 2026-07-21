@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pipelines.news.benzinga.news_reaction_phrase_dictionary import PHRASE_RULES
 
 
-EVENT_DICTIONARY_VERSION = "news_semantic_event_dictionary_v2"
+EVENT_DICTIONARY_VERSION = "news_semantic_event_dictionary_v2_1"
 
 
 @dataclass(frozen=True, slots=True)

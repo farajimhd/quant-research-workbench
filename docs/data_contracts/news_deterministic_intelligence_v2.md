@@ -1,9 +1,12 @@
-# Deterministic News Intelligence v2
+# Deterministic News Intelligence v2.1
 
 This contract separates what the article says at publication time from what the
 market does afterward. It replaces neither normalized source news nor exact
 event-relative reaction labels. It builds new versioned intelligence tables on
 top of those authorities and leaves all v1 products intact during validation.
+The physical `*_v2` tables also retain the earlier v2 rows; corrected v2.1 rows
+are isolated by their explicit version columns so they can be audited before a
+consumer cutover.
 
 ## Objectives
 
@@ -28,7 +31,8 @@ label, never a synonym for sentiment.
   currently loaded historical corpus and is not a v2 prerequisite.
 - Provider ticker links: `q_live.benzinga_news_ticker_v1`.
 - Issuer identity: `id_symbol_v1 -> id_listing_v1 -> id_security_v1 ->
-  id_issuer_v1`, constrained by listing dates where those dates exist.
+  id_issuer_v1`, restricted to USD non-derivative equity/fund listings and
+  constrained by listing validity at publication time.
 - Exact causal labels: `q_live.news_reaction_labels_v2`.
 - Model training: `[2019-01-01, 2026-01-01)`.
 - Locked holdout: `[2026-01-01, 2027-01-01)`.
@@ -64,6 +68,10 @@ This v2 job does not query fixed-clock intraday bars and does not rebuild prices
 Provider ticker links define candidates, not relevance truth. For every
 news/ticker pair, the classifier checks exact ticker and issuer-name mentions,
 direct issuer-event language, ticker count, and roundup/analyst/mover metadata.
+It retains every eligible point-in-time issuer candidate for a ticker rather
+than selecting one arbitrary worldwide listing with `argMax`. This prevents
+symbols such as `AAL` from resolving nondeterministically to unrelated foreign
+issuers or warrants.
 
 - `company_specific`: the issuer or ticker is identified, direct issuer-event
   language is present, and the item is not a roundup, analyst summary, mover
@@ -71,8 +79,9 @@ direct issuer-event language, ticker count, and roundup/analyst/mover metadata.
 - `ticker_related`: the ticker is genuinely discussed but the article is
   analysis, comparison, roundup, market reaction, or multi-company coverage.
 - `not_relevant`: neither the requested ticker nor its issuer is evidenced in
-  the supplied text/metadata. This catches provider-link contamination and
-  ticker-word collisions.
+  the supplied text, or a broad roundup links the ticker only in secondary body
+  coverage without identifying it in the headline. This catches provider-link
+  contamination, ticker-word collisions, and broad-story over-labeling.
 
 For `ticker_related` articles, body and external text are split into clauses.
 Only clauses containing the exact ticker or issuer alias may generate semantic
@@ -107,6 +116,11 @@ mixedness = min(positive_mass, negative_mass) /
 Strong evidence on both sides yields `mixed`; it is not forced into neutral.
 Explicit negation is handled before composition. For example, “no safety
 concern” cannot contribute the ordinary negative safety-event direction.
+
+The v2.1 defaults require both positive and negative evidence mass of at least
+`0.15` and an opposing-to-dominant mass ratio of at least `0.25`. These values
+recover genuinely mixed analyst and issuer events while preserving the
+family-level de-correlation rule.
 
 ## Reaction labels and model
 
@@ -150,6 +164,13 @@ The 2026 holdout reports:
 - relevance accuracy and macro F1 against the locked review;
 - language accuracy and macro F1 against relevant locked-review rows.
 
+Every locked review item whose actual class is in scope remains in the
+denominator. A classifier output such as `not_applicable` is an uncovered miss,
+not a row that evaluation may silently discard. Reports therefore include
+prediction coverage and unexpected-class counts. Reaction probability reports
+also compare log loss and Brier score with a uniform three-class baseline and
+publish support-weighted calibration error overall and by horizon.
+
 The language evaluation never reads future returns. Reaction evaluation never
 claims to measure language-sentiment accuracy.
 
@@ -176,5 +197,22 @@ restart. Scale, training, prediction, and evaluation are global versioned
 stages that run only after extraction. `--rebuild` explicitly replaces already
 completed v2 units. Memory, query threads, workers, and terminal refresh are all
 bounded.
+
+Every executed run writes these audit artifacts under its run directory:
+
+- `certification.json`: expected/completed month counts, failures, range-scoped
+  table counts, cross-table equality checks, locked-review completeness, and a
+  single explicit `certified` verdict;
+- `model_diagnostics.json`: event-feature coverage, event support, effect
+  reliability, shrinkage distributions, and prediction distributions;
+- `evaluation.json` and `calibration.json`: honest review/holdout metrics and
+  calibration evidence;
+- `manifest.json`: run ranges, versions, bounded execution settings, results,
+  evaluation, and certification;
+- `failure.json`: sanitized stage/unit/query evidence and traceback on failure.
+
+Certification applies only to the exact requested publication, training, and
+holdout ranges. A bounded development run can certify that bounded interval but
+does not certify the default 2019-2026 production build.
 
 No command in this workflow modifies a v1 table.
