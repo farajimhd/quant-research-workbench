@@ -14,6 +14,7 @@ from research.news_reaction_model.v1.losses import compute_loss
 from research.news_reaction_model.v1.inference import forecast_rows
 from research.news_reaction_model.v1.model import NewsReactionModelV1
 from research.news_reaction_model.v1.profile_sizes import load_real_sample, main as profile_main
+from research.news_reaction_model.v1.train import maybe_compile
 from research.news_reaction_model.v1.prepare_data import (
     completed_range_sql,
     create_manifest_sql,
@@ -131,6 +132,15 @@ class NewsReactionModelV1Tests(unittest.TestCase):
         self.assertEqual(tuple(sample.x["embeddings"].shape), (7, 2, 8))
         self.assertEqual(len(sample.identity["canonical_news_id"]), 7)
         dataset_type.return_value.stop.assert_called_once()
+
+    def test_compile_falls_back_to_eager_when_cuda_has_no_triton(self) -> None:
+        model = NewsReactionModelV1(ModelConfig(embedding_dim=8, d_model=16, hidden_dim=16, layers=1))
+        with patch("research.news_reaction_model.v1.train.torch.cuda.is_available", return_value=True):
+            with patch("research.news_reaction_model.v1.train.importlib.util.find_spec", return_value=None):
+                with patch("research.news_reaction_model.v1.train.torch.compile") as compile_model:
+                    selected = maybe_compile(model, True)
+        self.assertIs(selected, model)
+        compile_model.assert_not_called()
 
 
 if __name__ == "__main__":

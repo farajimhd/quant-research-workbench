@@ -75,6 +75,12 @@ metrics JSONL, W&B files, asynchronous latest/best/archive checkpoints, model
 details, parameter inventory, Mermaid architecture, optional torchinfo/torchview
 artifacts, and a final model card.
 
+Compilation is capability-aware. When CUDA is available but the installed
+PyTorch environment has no Triton backend, the trainer emits a visible warning
+and uses eager PyTorch with unchanged model, loss, optimizer, AMP, and
+checkpoint semantics. This matches the established temporal-v3 workstation
+behavior and prevents a lazy first-batch `torch.compile` failure.
+
 Two inspection notebooks follow the causal-v1 artifact workflow:
 
 - `plot_model_diagram.ipynb` regenerates the parameter inventory and architecture artifacts.

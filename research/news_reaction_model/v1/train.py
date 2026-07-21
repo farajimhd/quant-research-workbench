@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import math
 import random
@@ -150,7 +151,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         output_contract={"class_logits": ["B", 10, 3], "return_forecasts": ["B", 10, 3]},
         architecture_mermaid=build_model_mermaid(),
         summary_notes="Frozen Qwen article embeddings; every input is available at publication time.",
-        dummy_input_factory=lambda: ((make_dummy_batch(2, config.loader).x,), {}), wandb_run=wandb_run,
+        dummy_input_factory=lambda: ((make_dummy_batch(2, config.loader, device=device).x,), {}), wandb_run=wandb_run,
     )
     model = maybe_compile(raw_model, config.train.compile_model)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay, foreach=True)
@@ -309,7 +310,16 @@ def restore(path: str, model: torch.nn.Module, optimizer: torch.optim.Optimizer,
 
 
 def maybe_compile(model: torch.nn.Module, enabled: bool) -> torch.nn.Module:
-    return torch.compile(model) if enabled and hasattr(torch, "compile") else model
+    if not enabled:
+        return model
+    if not hasattr(torch, "compile"):
+        print("WARN --compile-model requested, but this PyTorch build does not expose torch.compile.", flush=True)
+        return model
+    if torch.cuda.is_available() and importlib.util.find_spec("triton") is None:
+        print("WARN --compile-model requested, but Triton is unavailable; continuing without torch.compile.", flush=True)
+        return model
+    print("Compiling model with torch.compile...", flush=True)
+    return torch.compile(model)
 
 
 def amp_dtype(name: str) -> torch.dtype:
