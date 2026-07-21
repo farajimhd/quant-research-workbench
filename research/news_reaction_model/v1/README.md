@@ -114,3 +114,18 @@ article contract into ten horizon forecasts. Every response retains
 `canonical_news_id`, ticker, and publication timestamp and exposes class
 probabilities plus abnormal target/high/low return forecasts. It does not query
 or consume post-publication market data.
+
+## Workstation sequence
+
+From the synced runtime:
+
+```powershell
+cd D:\TradingML\codes\news-reaction-model\v1
+python -m research.news_reaction_model.v1.run_prepare_data --execute
+python -m research.news_reaction_model.v1.run_profile_sizes --real-data
+python -m research.news_reaction_model.v1.run_train
+```
+
+Preparation is resumable. Run the GPU profiler after preparation, use its
+successful memory/throughput frontier to choose candidates, and compare those
+candidates by the 2026 per-horizon holdout metrics before selecting the model.
