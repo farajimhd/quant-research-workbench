@@ -1,12 +1,13 @@
-import { Activity, AlertTriangle, ArrowDown, ArrowRight, ArrowUp, BookOpen, Building2, CalendarDays, ChartNoAxesColumnIncreasing, CircleDollarSign, Database, Droplets, Gauge, HelpCircle, Landmark, Layers3, Scale, ShieldCheck, TrendingDown, TrendingUp } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Activity, AlertTriangle, ArrowDown, ArrowRight, ArrowUp, BookOpen, Building2, CalendarDays, ChartNoAxesColumnIncreasing, CircleDollarSign, Clock3, Database, Droplets, Gauge, HelpCircle, Landmark, Layers3, List, Scale, ShieldCheck, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { api, query } from "../../api/client";
 import { Modal } from "./Modal";
 import { TickerIdentityWithChange, useTickerPresentations } from "./TickerIdentity";
 
 type FactRecord = Record<string, unknown>;
-type FundamentalFact = FactRecord & { label?: string };
+type Freshness = { available_at: string; status: "new" | "recent" };
+type FundamentalFact = FactRecord & { description?: string; freshness?: Freshness | null; label?: string; tag?: string };
 type SourceFact = { available: boolean; label: string; table: string };
 type MetricChange = { current?: number; current_at?: string; delta?: number; direction: "down" | "flat" | "unavailable" | "up"; previous?: number; previous_at?: string };
 type MetricHistoryPoint = { at: string; value: number; [key: string]: unknown };
@@ -18,6 +19,9 @@ type SynthesisEvidence = { explanation: string; label: string; observed_at?: str
 type SynthesisCard = { confidence: string; decision_inputs?: { label: string; score?: number; weight: number }[]; evidence: SynthesisEvidence[]; id: string; label: string; method: string; risk_score?: number; title: string; tone: string; unit: string; value?: number; [key: string]: unknown };
 type HealthComponent = { label: string; score?: number; weight: number };
 type HealthSummary = { as_of: string; components: HealthComponent[]; confidence: string; coverage_percent: number; label: string; score?: number; tone: string };
+type FundamentalFacet = { coverage_percent: number; id: string; label: string; score?: number; strength: string; tone: string };
+type DerivedFundamental = { available_at?: string; formula: string; id: string; label: string; period_end_date?: string; unit: string; value: number };
+type FundamentalAnalysis = { coverage_percent: number; facets: FundamentalFacet[]; label: string; metrics: DerivedFundamental[]; score?: number; tone: string; version: string };
 type TickerFactsPayload = {
   as_of: string;
   errors: Record<string, string>;
@@ -33,6 +37,8 @@ type TickerFactsPayload = {
     volume?: FactRecord;
   };
   fundamentals: FundamentalFact[];
+  fundamental_analysis?: FundamentalAnalysis;
+  freshness: Record<string, Freshness>;
   identifiers: FactRecord[];
   metric_changes: Record<string, MetricChange>;
   synthesis?: { cards: SynthesisCard[]; health: HealthSummary; profile_summary: string; version: string };
@@ -57,6 +63,10 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
   const [metricGuide, setMetricGuide] = useState<SynthesisCard | "health" | null>(null);
   const [sectionGuide, setSectionGuide] = useState<FactSectionGuideId | null>(null);
   const [healthHistory, setHealthHistory] = useState<MetricHistoryPayload | null>(null);
+  const [fundamentalsOpen, setFundamentalsOpen] = useState(false);
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [inViewport, setInViewport] = useState(true);
+  const containerRef = useRef<HTMLElement | null>(null);
   const presentations = useTickerPresentations([symbol]);
   useEffect(() => {
     const controller = new AbortController();
@@ -69,7 +79,22 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
       .catch((reason) => { if (!controller.signal.aborted) { setPayload(null); setError(reason instanceof Error ? reason.message : String(reason)); } })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [asOf, symbol]);
+  }, [asOf, refreshTick, symbol]);
+
+  useEffect(() => {
+    const node = containerRef.current;
+    if (!node || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(([entry]) => setInViewport(entry.isIntersecting), { threshold: 0 });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      if (inViewport && document.visibilityState === "visible") setRefreshTick((current) => current + 1);
+    }, 300_000);
+    return () => window.clearInterval(interval);
+  }, [inViewport]);
 
   useEffect(() => {
     if (!payload?.synthesis?.health) return;
@@ -79,7 +104,7 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
       .then((next) => { if (!controller.signal.aborted) setHealthHistory(next); })
       .catch(() => { if (!controller.signal.aborted) setHealthHistory(null); });
     return () => controller.abort();
-  }, [asOf, payload?.synthesis?.health, symbol]);
+  }, [asOf, payload?.synthesis?.health?.as_of, symbol]);
 
   const facts = payload?.facts ?? {};
   const identity = facts.identity ?? {};
@@ -90,9 +115,12 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
   const volume = facts.volume ?? {};
   const borrow = facts.borrow ?? {};
   const metricChanges = payload?.metric_changes ?? {};
+  const freshness = payload?.freshness ?? {};
   const classifications = facts.classifications ?? [];
   const synthesisCards = payload?.synthesis?.cards ?? [];
   const health = payload?.synthesis?.health;
+  const fundamentalAnalysis = payload?.fundamental_analysis;
+  const primaryFundamentals = (payload?.fundamentals ?? []).slice(0, 8);
   const companyName = text(identity.branding_name, identity.issuer_name, identity.legal_name, identity.security_name) || presentations[symbol]?.issuer_name || symbol;
   const companyCountry = countryName(identity.company_country_code);
   const sharesOutstanding = number(float.shares_outstanding, market.share_class_shares_outstanding, market.weighted_shares_outstanding);
@@ -108,7 +136,7 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
     { detail: shortPercentBasis, label: "Short interest", metric: "short_interest", tone: toneShort(shortPercent), value: formatPercent(shortPercent) },
   ], [float, freeFloat, market, sharesOutstanding, shortPercent, shortPercentBasis, volume]);
 
-  return <section className="stock-facts" data-status={payload?.status ?? (loading ? "loading" : "error")}>
+  return <section className="stock-facts" data-status={payload?.status ?? (loading ? "loading" : "error")} ref={containerRef}>
     <header className="facts-header">
       <div className="facts-header-identity">
         <TickerIdentityWithChange asOf={asOf} inputAriaLabel="Facts ticker" logoUrl={presentations[symbol]?.logo_url} onTickerChange={onSymbolChange} ticker={symbol} />
@@ -127,35 +155,37 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
             {synthesisCards.length ? <section aria-label="Synthesized stock profile" className="facts-synthesis-grid">
               {synthesisCards.map((card) => <SynthesisMetricCard card={card} key={card.id} onGuide={() => setMetricGuide(card)} />)}
             </section> : <section aria-label="Primary stock facts" className="facts-primary-grid">
-              {compactFacts.map((fact) => <FactMetric {...fact} change={metricChanges[fact.metric]} key={fact.label} onHistory={() => setHistoryMetric({ label: fact.label, metric: fact.metric })} />)}
+              {compactFacts.map((fact) => <FactMetric {...fact} change={metricChanges[fact.metric]} freshness={freshness[fact.metric]} key={fact.label} onHistory={() => setHistoryMetric({ label: fact.label, metric: fact.metric })} />)}
             </section>}
             {(payload?.warnings.length || Object.keys(payload?.errors ?? {}).length) ? <FactsNotice errors={payload?.errors ?? {}} warnings={payload?.warnings ?? []} /> : null}
             <div className="facts-evidence-grid">
               <FactSection icon={Scale} onGuide={() => setSectionGuide("short_borrow")} subtitle="Positioning, locate evidence, and dated short activity" title="Short & borrow">
                 <div className="facts-detail-grid">
-                  <FactDatum change={metricChanges.short_interest} label="Short shares" meta={dateLabel(shortInterest.settlement_date, "settled")} onHistory={() => setHistoryMetric({ label: "Short interest", metric: "short_interest" })} value={formatCount(number(shortInterest.short_interest))} />
+                  <FactDatum change={metricChanges.short_interest} freshness={freshness.short_interest} label="Short shares" meta={dateLabel(shortInterest.settlement_date, "settled")} onHistory={() => setHistoryMetric({ label: "Short interest", metric: "short_interest" })} value={formatCount(number(shortInterest.short_interest))} />
                   <FactDatum label="Change" meta={previousLabel(shortInterest.previous_settlement_date)} tone={toneSigned(number(shortInterest.change_from_previous), true)} value={formatSignedCount(number(shortInterest.change_from_previous))} />
-                  <FactDatum change={metricChanges.days_to_cover} label="Days to cover" meta="SI ÷ average daily volume" onHistory={() => setHistoryMetric({ label: "Days to cover", metric: "days_to_cover" })} value={formatNumber(number(shortInterest.days_to_cover), 2)} />
-                  <FactDatum change={metricChanges.short_volume_ratio} label="FINRA short volume" meta={dateLabel(shortVolume.latest_trade_date)} onHistory={() => setHistoryMetric({ label: "FINRA short-volume ratio", metric: "short_volume_ratio" })} tone={toneShort(ratioToPercent(number(shortVolume.latest_short_volume_ratio)))} value={formatPercent(ratioToPercent(number(shortVolume.latest_short_volume_ratio)))} />
-                  <FactDatum change={metricChanges.short_volume_ratio_20d} label="20D short-volume ratio" meta={`${integer(shortVolume.sessions)} sessions`} onHistory={() => setHistoryMetric({ label: "20D short-volume ratio", metric: "short_volume_ratio_20d" })} tone={toneShort(ratioToPercent(number(shortVolume.ratio_20d)))} value={formatPercent(ratioToPercent(number(shortVolume.ratio_20d)))} />
-                  <FactDatum label="IBKR borrow" meta={dateLabel(borrow.observed_at_utc)} tone={borrowTone(text(borrow.borrow_status))} value={borrowValue(borrow)} />
-                  <FactDatum change={metricChanges.shortable_shares} label="Shortable shares" meta="Latest IBKR snapshot" onHistory={() => setHistoryMetric({ label: "IBKR shortable shares", metric: "shortable_shares" })} value={formatCount(number(borrow.shortable_shares))} />
-                  <FactDatum change={metricChanges.indicative_borrow_rate} label="Indicative borrow" meta="Latest IBKR snapshot" onHistory={() => setHistoryMetric({ label: "IBKR indicative borrow rate", metric: "indicative_borrow_rate" })} value={formatPercent(number(borrow.indicative_borrow_rate))} />
-                  <FactDatum change={metricChanges.fee_rate} label="Fee rate" meta="Latest IBKR snapshot" onHistory={() => setHistoryMetric({ label: "IBKR fee rate", metric: "fee_rate" })} value={formatPercent(number(borrow.fee_rate))} />
+                  <FactDatum change={metricChanges.days_to_cover} freshness={freshness.days_to_cover} label="Days to cover" meta="SI ÷ average daily volume" onHistory={() => setHistoryMetric({ label: "Days to cover", metric: "days_to_cover" })} value={formatNumber(number(shortInterest.days_to_cover), 2)} />
+                  <FactDatum change={metricChanges.short_volume_ratio} freshness={freshness.short_volume_ratio} label="FINRA short volume" meta={dateLabel(shortVolume.latest_trade_date)} onHistory={() => setHistoryMetric({ label: "FINRA short-volume ratio", metric: "short_volume_ratio" })} tone={toneShort(ratioToPercent(number(shortVolume.latest_short_volume_ratio)))} value={formatPercent(ratioToPercent(number(shortVolume.latest_short_volume_ratio)))} />
+                  <FactDatum change={metricChanges.short_volume_ratio_20d} freshness={freshness.short_volume_ratio_20d} label="20D short-volume ratio" meta={`${integer(shortVolume.sessions)} sessions`} onHistory={() => setHistoryMetric({ label: "20D short-volume ratio", metric: "short_volume_ratio_20d" })} tone={toneShort(ratioToPercent(number(shortVolume.ratio_20d)))} value={formatPercent(ratioToPercent(number(shortVolume.ratio_20d)))} />
+                  <FactDatum freshness={freshness.borrow} label="IBKR borrow" meta={dateLabel(borrow.observed_at_utc)} tone={borrowTone(text(borrow.borrow_status))} value={borrowValue(borrow)} />
+                  <FactDatum change={metricChanges.shortable_shares} freshness={freshness.shortable_shares} label="Shortable shares" meta="Latest IBKR snapshot" onHistory={() => setHistoryMetric({ label: "IBKR shortable shares", metric: "shortable_shares" })} value={formatCount(number(borrow.shortable_shares))} />
+                  <FactDatum change={metricChanges.indicative_borrow_rate} freshness={freshness.indicative_borrow_rate} label="Indicative borrow" meta="Latest IBKR snapshot" onHistory={() => setHistoryMetric({ label: "IBKR indicative borrow rate", metric: "indicative_borrow_rate" })} value={formatPercent(number(borrow.indicative_borrow_rate))} />
+                  <FactDatum change={metricChanges.fee_rate} freshness={freshness.fee_rate} label="Fee rate" meta="Latest IBKR snapshot" onHistory={() => setHistoryMetric({ label: "IBKR fee rate", metric: "fee_rate" })} value={formatPercent(number(borrow.fee_rate))} />
                 </div>
               </FactSection>
-              <FactSection icon={Landmark} onGuide={() => setSectionGuide("fundamentals")} subtitle="Latest SEC-reported observations available at this clock" title="Fundamentals">
-                {payload?.fundamentals.length ? <div className="fundamental-list">{payload.fundamentals.map((fact) => {
+              <FactSection className="facts-fundamentals-section" icon={Landmark} onGuide={() => setSectionGuide("fundamentals")} subtitle="SEC-reported evidence and aligned strength measures" title="Fundamentals">
+                {fundamentalAnalysis ? <FundamentalStrength analysis={fundamentalAnalysis} /> : null}
+                {primaryFundamentals.length ? <div className="fundamental-list">{primaryFundamentals.map((fact) => {
                   const metric = `fundamental:${text(fact.tag).toLowerCase()}`;
                   const label = text(fact.label);
-                  return <article key={String(fact.label)}><MetricLabel label={label} onHistory={() => setHistoryMetric({ label, metric })} /><MetricValue change={metricChanges[metric]} label={label} value={formatFundamental(fact)} /><small>{fundamentalMeta(fact)}</small></article>;
+                  return <article key={String(fact.label)}><MetricLabel freshness={fact.freshness ?? undefined} label={label} onHistory={() => setHistoryMetric({ label, metric })} /><MetricValue change={metricChanges[metric]} label={label} value={formatFundamental(fact)} /><small>{fundamentalMeta(fact)}</small></article>;
                 })}</div> : <FactsInlineEmpty label="No selected SEC-reported facts available." />}
+                {(payload?.fundamentals.length ?? 0) > primaryFundamentals.length || fundamentalAnalysis?.metrics.length ? <button className="facts-show-all" onClick={() => setFundamentalsOpen(true)} type="button"><List size={13} /> Show all fundamentals <span>{(payload?.fundamentals.length ?? 0) + (fundamentalAnalysis?.metrics.length ?? 0)}</span></button> : null}
               </FactSection>
-              <FactSection icon={Building2} onGuide={() => setSectionGuide("company")} subtitle="Issuer, security, listing, and corporate-action context" title="Company & listing">
+              <FactSection className="facts-company-section" icon={Building2} onGuide={() => setSectionGuide("company")} subtitle="Issuer, security, listing, and corporate-action context" title="Company & listing">
                 <div className="facts-detail-grid company-fact-grid">
-                  <FactDatum label="Issuer" value={text(identity.legal_name, identity.issuer_name)} />
-                  <FactDatum label="Security" value={text(identity.security_name, identity.security_type)} />
-                  <FactDatum label="Classification" value={text(identity.sic_description, identity.industry, identity.sector)} />
+                  <FactDatum className="company-primary-datum" label="Issuer" value={text(identity.legal_name, identity.issuer_name)} />
+                  <FactDatum className="company-primary-datum" label="Security" value={text(identity.security_name, identity.security_type)} />
+                  <FactDatum className="company-wide-datum" label="Classification" value={text(identity.sic_description, identity.industry, identity.sector)} />
                   <FactDatum label="SIC" value={text(identity.sic_code)} />
                   <FactDatum label="Entity / incorporation" value={[text(identity.entity_type), text(identity.state_of_incorporation)].filter(Boolean).join(" · ") || "—"} />
                   <FactDatum label="Country" meta={text(identity.company_country_source) || "Issuer country not published"} value={countryLabel(identity.company_country_code)} />
@@ -170,8 +200,8 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
                   <FactDatum label="Last dividend" meta={dateLabel(facts.corporate?.last_ex_dividend_date, "ex-date")} value={dividendValue(facts.corporate ?? {})} />
                 </div>
               </FactSection>
-              <FactSection icon={ShieldCheck} onGuide={() => setSectionGuide("identifiers")} subtitle="Canonical cross-provider keys for reconciliation" title="Identifiers">
-                {payload?.identifiers.length ? <div className="identifier-list">{payload.identifiers.map((item, index) => <article key={`${text(item.entity)}-${text(item.identifier_kind)}-${index}`}><span>{friendlyIdentifier(item.identifier_kind)}</span><strong>{text(item.identifier_value)}</strong><small>{text(item.source_system)}</small></article>)}</div> : <FactsInlineEmpty label="No canonical identifiers available." />}
+              <FactSection className="facts-identifiers-section" icon={ShieldCheck} onGuide={() => setSectionGuide("identifiers")} subtitle="Canonical cross-provider keys grouped by entity" title="Identifiers">
+                {payload?.identifiers.length ? <IdentifierGroups identifiers={payload.identifiers} /> : <FactsInlineEmpty label="No canonical identifiers available." />}
               </FactSection>
               <FactSection className="facts-source-section" icon={Database} onGuide={() => setSectionGuide("provenance")} subtitle="Availability reflects this ticker and selected clock" title="Data provenance">
                 <div className="facts-source-list">{payload?.sources.map((source) => <article data-available={source.available ? "true" : "false"} key={source.label}><i aria-hidden="true" /><span><strong>{source.label}</strong><small>{source.table}</small></span><em>{source.available ? "Available" : "No row"}</em></article>)}</div>
@@ -181,6 +211,7 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
     {guideOpen ? <FactsGuide onClose={() => setGuideOpen(false)} /> : null}
     {metricGuide ? <SynthesisGuide card={metricGuide === "health" ? null : metricGuide} health={metricGuide === "health" ? health : undefined} onClose={() => setMetricGuide(null)} /> : null}
     {sectionGuide ? <FactSectionGuide fundamentals={payload?.fundamentals ?? []} onClose={() => setSectionGuide(null)} section={sectionGuide} /> : null}
+    {fundamentalsOpen && payload ? <FundamentalsModal analysis={fundamentalAnalysis} facts={payload.fundamentals} metricChanges={metricChanges} onClose={() => setFundamentalsOpen(false)} onHistory={setHistoryMetric} /> : null}
     {historyMetric ? <FactHistoryModal asOf={asOf} descriptor={historyMetric} onClose={() => setHistoryMetric(null)} symbol={symbol} /> : null}
   </section>;
 }
@@ -359,12 +390,46 @@ const HEALTH_COMPONENT_EXPLANATIONS: Record<string, string> = {
 
 function HealthComponentGuide({ components }: { components: HealthComponent[] }) { return <div className="facts-guide-evidence">{components.map((component) => <article key={component.label}><span><strong>{component.label}</strong><small>{component.weight}% of final score</small></span><b>{component.score == null ? "Unavailable" : `${Math.round(component.score)}/100`}</b><p>{HEALTH_COMPONENT_EXPLANATIONS[component.label] || "Missing evidence lowers coverage and is not silently treated as a neutral score."}</p></article>)}</div>; }
 
+function FundamentalStrength({ analysis }: { analysis: FundamentalAnalysis }) {
+  return <section className="fundamental-strength" data-tone={analysis.tone}>
+    <header><span><Sparkles size={14} /><small>Financial strength</small><strong>{analysis.label}</strong></span><b>{analysis.score == null ? "—" : `${Math.round(analysis.score)}/100`}</b><em>{Math.round(analysis.coverage_percent)}% evidence</em></header>
+    <div>{analysis.facets.map((facet) => <article data-tone={facet.tone} key={facet.id}><span>{facet.label}<small>{facet.strength}</small></span><strong>{facet.score == null ? "—" : Math.round(facet.score)}</strong><i><b style={{ width: `${Math.max(0, Math.min(100, facet.score ?? 0))}%` }} /></i></article>)}</div>
+  </section>;
+}
+
+function FundamentalsModal({ analysis, facts, metricChanges, onClose, onHistory }: { analysis?: FundamentalAnalysis; facts: FundamentalFact[]; metricChanges: Record<string, MetricChange>; onClose: () => void; onHistory: (descriptor: MetricDescriptor) => void }) {
+  return <Modal className="facts-guide-modal facts-fundamentals-modal" onClose={onClose} title="Complete SEC fundamentals">
+    <div className="facts-guide-content">
+      {analysis ? <><div className="facts-guide-intro"><strong>{analysis.label}{analysis.score == null ? "" : ` · ${Math.round(analysis.score)}/100`}</strong><p>The strength label combines aligned profitability, growth, cash quality, balance-sheet, and capital-discipline evidence. It is an operating-quality summary, not a price forecast. Missing inputs reduce coverage instead of being treated as neutral.</p></div><FundamentalStrength analysis={analysis} /></> : null}
+      {analysis?.metrics.length ? <section className="fundamental-modal-section"><header><span><Sparkles size={14} /><strong>Derived decision metrics</strong></span><small>Exact formulas over aligned SEC observations</small></header><div className="derived-fundamental-grid">{analysis.metrics.map((metric) => <article key={metric.id}><span>{metric.label}</span><strong>{formatDerivedFundamental(metric)}</strong><small>{metric.formula}</small><em>{dateLabel(metric.period_end_date, "period")}</em></article>)}</div></section> : null}
+      <section className="fundamental-modal-section"><header><span><Landmark size={14} /><strong>Reported SEC observations</strong></span><small>{facts.length} selected standardized concepts</small></header><div className="fundamental-modal-list">{facts.map((fact) => {
+        const label = text(fact.label); const metric = `fundamental:${text(fact.tag).toLowerCase()}`;
+        return <article key={`${label}-${text(fact.tag)}`}><MetricLabel freshness={fact.freshness ?? undefined} label={label} onHistory={() => onHistory({ label, metric })} /><MetricValue change={metricChanges[metric]} label={label} value={formatFundamental(fact)} /><p>{text(fact.description)}</p><small>{fundamentalMeta(fact)} · {text(fact.taxonomy)}:{text(fact.tag)}</small></article>;
+      })}</div></section>
+      <p className="facts-history-note">Segment and geographic breakdowns are not fabricated from company-level totals. They require dimensional XBRL contexts, which are not present in the current company-fact contract, and will appear only after that separate canonical relationship is available.</p>
+    </div>
+  </Modal>;
+}
+
+function IdentifierGroups({ identifiers }: { identifiers: FactRecord[] }) {
+  const groups = ["issuer", "security"].map((entity) => ({ entity, rows: identifiers.filter((item) => text(item.entity).toLowerCase() === entity) })).filter((group) => group.rows.length);
+  const ungrouped = identifiers.filter((item) => !["issuer", "security"].includes(text(item.entity).toLowerCase()));
+  if (ungrouped.length) groups.push({ entity: "other", rows: ungrouped });
+  return <div className="identifier-groups">{groups.map((group) => <section key={group.entity}><header>{group.entity === "issuer" ? "Issuer keys" : group.entity === "security" ? "Security keys" : "Other keys"}<small>{group.rows.length}</small></header><div>{group.rows.map((item, index) => <article key={`${text(item.entity)}-${text(item.identifier_kind)}-${index}`}><span>{friendlyIdentifier(item.identifier_kind)}<FreshnessBadge freshness={item.freshness as Freshness | undefined} /></span><strong title={text(item.identifier_value)}>{text(item.identifier_value)}</strong><small>{text(item.source_system)}</small></article>)}</div></section>)}</div>;
+}
+
+function FreshnessBadge({ freshness }: { freshness?: Freshness | null }) {
+  if (!freshness) return null;
+  const label = freshness.status === "new" ? "New" : "Recent";
+  return <em className="facts-freshness" data-status={freshness.status} title={`${label} as of ${formatHistoryDate(freshness.available_at)}`}><Clock3 size={9} />{label}</em>;
+}
+
 function FactSectionGuide({ fundamentals, onClose, section }: { fundamentals: FundamentalFact[]; onClose: () => void; section: FactSectionGuideId }) {
   const visibleFundamentals = new Set(fundamentals.map((fact) => text(fact.label)));
   const definition = section === "short_borrow"
     ? { intro: "Short-position stock, short-sale flow, and broker inventory are different measurements with different clocks. Read their dates and never add them together.", items: SHORT_BORROW_GUIDE, title: "Short & borrow metrics" }
     : section === "fundamentals"
-      ? { intro: "Each value is the latest selected SEC XBRL observation known at the chosen clock. The fiscal period, form, period end, unit, and exact tag determine whether two values are comparable.", items: FUNDAMENTAL_GUIDE, title: "Fundamental metrics" }
+      ? { intro: "Each value is the latest selected SEC XBRL observation known at the chosen clock. The fiscal period, form, period end, unit, and exact tag determine whether two values are comparable.", items: fundamentals.length ? fundamentals.map((fact) => ({ label: text(fact.label), text: text(fact.description) || "SEC-reported XBRL observation; inspect the exact tag, unit, and fiscal period before comparison." })) : FUNDAMENTAL_GUIDE, title: "Fundamental metrics" }
       : SECTION_GUIDES[section];
   return <Modal className="facts-guide-modal facts-section-guide" onClose={onClose} title={`How to read: ${definition.title}`}><div className="facts-guide-content">
     <div className="facts-guide-intro"><strong>Metric-by-metric reference</strong><p>{definition.intro}</p></div>
@@ -373,20 +438,20 @@ function FactSectionGuide({ fundamentals, onClose, section }: { fundamentals: Fu
   </div></Modal>;
 }
 
-function FactMetric({ change, detail, label, onHistory, tone = "neutral", value }: { change?: MetricChange; detail: string; label: string; onHistory: () => void; tone?: string; value: string }) {
-  return <article className="facts-primary-metric" data-tone={tone}><MetricLabel label={label} onHistory={onHistory} /><MetricValue change={change} label={label} value={value} /><small>{detail}</small></article>;
+function FactMetric({ change, detail, freshness, label, onHistory, tone = "neutral", value }: { change?: MetricChange; detail: string; freshness?: Freshness; label: string; onHistory: () => void; tone?: string; value: string }) {
+  return <article className="facts-primary-metric" data-tone={tone}><MetricLabel freshness={freshness} label={label} onHistory={onHistory} /><MetricValue change={change} label={label} value={value} /><small>{detail}</small></article>;
 }
 
 function FactSection({ children, className = "", icon: Icon, onGuide, subtitle, title }: { children: ReactNode; className?: string; icon: typeof Building2; onGuide?: () => void; subtitle: string; title: string }) {
   return <section className={`facts-section${className ? ` ${className}` : ""}`}><header><Icon size={14} /><span><strong>{title}</strong><small>{subtitle}</small></span>{onGuide ? <button aria-label={`Guide for ${title}`} onClick={onGuide} title={`Explain every ${title} metric`} type="button"><HelpCircle size={14} /> Guide</button> : null}</header>{children}</section>;
 }
 
-function FactDatum({ change, label, meta, onHistory, tone = "neutral", value }: { change?: MetricChange; label: string; meta?: string; onHistory?: () => void; tone?: string; value: string }) {
-  return <article className="facts-datum" data-tone={tone}>{onHistory ? <MetricLabel label={label} onHistory={onHistory} /> : <span>{label}</span>}{onHistory ? <MetricValue change={change} label={label} title={value} value={value || "—"} /> : <strong title={value}>{value || "—"}</strong>}{meta ? <small>{meta}</small> : null}</article>;
+function FactDatum({ change, className = "", freshness, label, meta, onHistory, tone = "neutral", value }: { change?: MetricChange; className?: string; freshness?: Freshness; label: string; meta?: string; onHistory?: () => void; tone?: string; value: string }) {
+  return <article className={`facts-datum${className ? ` ${className}` : ""}`} data-tone={tone}>{onHistory ? <MetricLabel freshness={freshness} label={label} onHistory={onHistory} /> : <span>{label}<FreshnessBadge freshness={freshness} /></span>}{onHistory ? <MetricValue change={change} label={label} title={value} value={value || "—"} /> : <strong title={value}>{value || "—"}</strong>}{meta ? <small>{meta}</small> : null}</article>;
 }
 
-function MetricLabel({ label, onHistory }: { label: string; onHistory: () => void }) {
-  return <div className="facts-metric-label"><span>{label}</span><button aria-label={`Chart history for ${label}`} onClick={onHistory} title={`Plot all available reported values for ${label}`} type="button"><ChartNoAxesColumnIncreasing size={12} /></button></div>;
+function MetricLabel({ freshness, label, onHistory }: { freshness?: Freshness; label: string; onHistory?: () => void }) {
+  return <div className="facts-metric-label"><span>{label}<FreshnessBadge freshness={freshness} /></span>{onHistory ? <button aria-label={`Chart history for ${label}`} onClick={onHistory} title={`Plot all available reported values for ${label}`} type="button"><ChartNoAxesColumnIncreasing size={12} /></button> : null}</div>;
 }
 
 function MetricValue({ change, label, title, value }: { change?: MetricChange; label: string; title?: string; value: string }) {
@@ -496,7 +561,9 @@ function FactsGuide({ onClose }: { onClose: () => void }) {
       <GuideItem title="Short interest" text="A settlement-date stock of shares sold short. Days to cover divides short interest by the publication's average daily volume. A high value can create covering pressure, but can also reflect persistent bearish positioning." />
       <GuideItem title="FINRA short volume" text="Daily off-exchange and exchange short-sale marking volume for the available FINRA venue file. It is transaction flow, not the outstanding short-interest stock, and should never be used as a substitute for short interest." />
       <GuideItem title="IBKR borrow" text="The latest broker snapshot for locates, shortable shares, and indicative rates. Unknown means IBKR returned no usable borrow fields; it does not mean easy-to-borrow or hard-to-borrow." />
-      <GuideItem title="SEC fundamentals" text="Latest selected XBRL observations filed and recorded by the selected clock. Fiscal period, report date, unit, form, and exact tag remain visible because duration facts can represent quarterly, year-to-date, or annual values." />
+      <GuideItem title="SEC fundamentals" text="Latest selected US-GAAP or IFRS XBRL observations filed and recorded by the selected clock. Fiscal period, report date, unit, form, and exact tag remain visible because duration facts can represent quarterly, year-to-date, or annual values. Open Show all fundamentals for current assets and liabilities, receivables and payables, inventory, cash flow and capex, R&D, SG&A, stock compensation, financing, tax, goodwill, intangibles, share issuance, and every other available curated concept." />
+      <GuideItem title="Financial strength" text="A separate evidence-weighted label summarizes five aligned SEC facets: profitability, growth, cash quality, balance sheet, and capital discipline. Its detail view shows free cash flow, margins, returns, working capital, current ratio, leverage, net debt, interest coverage, growth, dilution, cash conversion, and expense intensity with the exact formula. Missing inputs lower coverage; they are not treated as zero." />
+      <GuideItem title="Recent-data badges and refresh" text="New marks a field published within 24 hours of the selected clock; Recent covers the following six days. The page refreshes its database snapshot every five minutes only while visible, preserving responsiveness and the selected point-in-time boundary. Fields outside the recent window stay visually quiet." />
       <GuideItem title="Corporate actions" text="Most recent known split and cash-dividend ex-date available by the selected clock. These describe capital history and should be checked against the event date before comparing unadjusted price or share quantities." />
       <GuideItem title="Company country and provenance" text="Country is the canonical issuer domicile when published, distinct from listing exchange country. CIK, CUSIP, FIGI, ISIN, IBKR conid, canonical entity keys, and table-level availability make cross-source mapping auditable. 'No row' is intentionally different from a numeric zero." />
     </div>
@@ -542,6 +609,7 @@ function displayHost(value: string) { try { return new URL(value).hostname.repla
 function friendlyIdentifier(value: unknown) { const label = text(value).replaceAll("_", " "); return label ? label.toUpperCase() : "Identifier"; }
 function fundamentalMeta(row: FactRecord) { return [text(row.fiscal_period), text(row.form_type), dateLabel(row.period_end_date, "period")].filter(Boolean).join(" · "); }
 function formatFundamental(row: FactRecord) { const value = number(row.value); const unit = text(row.unit_code); if (value == null) return "—"; if (unit === "USD") return formatMoney(value); if (unit.toLowerCase().includes("share")) return `$${formatNumber(value, 3)}`; return `${formatCount(value)}${unit ? ` ${unit}` : ""}`; }
+function formatDerivedFundamental(row: DerivedFundamental) { const value = number(row.value); if (value == null) return "—"; if (row.unit === "USD") return formatMoney(value); if (row.unit === "percent") return formatPercent(value); if (row.unit === "multiple") return `${formatNumber(value, 2)}×`; return formatNumber(value, 2); }
 function formatSynthesisValue(value: unknown, unit: string) { const parsed = number(value); if (parsed == null) return "—"; if (unit === "shares") return formatCount(parsed); if (unit === "percent") return formatPercent(parsed); if (unit === "multiple") return `${formatNumber(parsed, 1)}×`; if (unit === "score") return `${Math.round(parsed)}/100`; if (unit === "USD") return formatMoney(parsed); return formatNumber(parsed, 2); }
 function formatEvidence(value: unknown, unit: string) { const parsed = number(value); if (parsed == null) return "—"; const normalized = unit.toLowerCase(); if (normalized === "shares" || normalized === "shares/day") return formatCount(parsed); if (normalized === "percent") return formatPercent(parsed); if (normalized === "multiple") return `${formatNumber(parsed, 2)}×`; if (normalized === "days") return `${formatNumber(parsed, 2)} d`; if (normalized === "usd" || normalized === "usd/day") return formatMoney(parsed); if (normalized === "usd/share") return `$${formatNumber(parsed, 3)}`; return formatNumber(parsed, 2); }
 function friendlyMethod(value: string) { return ({ derived: "Derived", estimated: "Estimated", reported: "Reported", upper_bound: "Upper bound" } as Record<string, string>)[value] || value.replaceAll("_", " "); }

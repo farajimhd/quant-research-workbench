@@ -22,27 +22,88 @@ from research.mlops.clickhouse import (
 TICKER_PATTERN = re.compile(r"^[A-Z][A-Z0-9.\-]{0,15}$")
 DATABASE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 FUNDAMENTAL_TAGS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Revenue", ("RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet")),
+    ("Revenue", ("RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet", "Revenue", "RevenueFromContractsWithCustomers")),
     ("Gross profit", ("GrossProfit",)),
-    ("Net income", ("NetIncomeLoss", "ProfitLoss")),
-    ("Diluted EPS", ("EarningsPerShareDiluted",)),
-    ("Operating income", ("OperatingIncomeLoss",)),
-    ("Operating cash flow", ("NetCashProvidedByUsedInOperatingActivities",)),
-    ("Capital expenditure", ("PaymentsToAcquirePropertyPlantAndEquipment",)),
-    ("Cash", ("CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents")),
+    ("Operating income", ("OperatingIncomeLoss", "ProfitLossFromOperatingActivities")),
+    ("Net income", ("NetIncomeLoss", "ProfitLoss", "ProfitLossAttributableToOwnersOfParent")),
+    ("Diluted EPS", ("EarningsPerShareDiluted", "DilutedEarningsLossPerShare", "BasicAndDilutedEarningsLossPerShare")),
+    ("Operating cash flow", ("NetCashProvidedByUsedInOperatingActivities", "CashFlowsFromUsedInOperatingActivities", "CashFlowsFromUsedInOperations")),
+    ("Capital expenditure", ("PaymentsToAcquirePropertyPlantAndEquipment", "PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities")),
+    ("Cash", ("CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents", "CashAndCashEquivalents")),
+    ("Current assets", ("AssetsCurrent", "CurrentAssets")),
+    ("Current liabilities", ("LiabilitiesCurrent", "CurrentLiabilities")),
+    ("Accounts receivable", ("AccountsReceivableNetCurrent", "AccountsNotesAndLoansReceivableNetCurrent", "TradeAndOtherCurrentReceivables", "CurrentTradeReceivables", "TradeReceivables", "CurrentReceivablesFromContractsWithCustomers")),
+    ("Accounts payable", ("AccountsPayableCurrent", "AccountsPayableAndOtherAccruedLiabilitiesCurrent", "TradeAndOtherCurrentPayables", "TradeAndOtherCurrentPayablesToTradeSuppliers", "OtherCurrentPayables")),
+    ("Inventory", ("InventoryNet", "Inventories", "InventoriesAtNetRealisableValue")),
     ("Assets", ("Assets",)),
     ("Liabilities", ("Liabilities", "LiabilitiesCurrent")),
-    ("Stockholders' equity", ("StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest")),
-    ("Long-term debt", ("LongTermDebtNoncurrent",)),
-    ("Current debt", ("LongTermDebtCurrent",)),
+    ("Stockholders' equity", ("StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", "Equity")),
+    ("Long-term debt", ("LongTermDebtNoncurrent", "LongtermBorrowings", "NoncurrentPortionOfOtherNoncurrentBorrowings")),
+    ("Current debt", ("LongTermDebtCurrent", "ShorttermBorrowings", "CurrentPortionOfLongTermDebt")),
+    ("Research & development", ("ResearchAndDevelopmentExpense",)),
+    ("SG&A expense", ("SellingGeneralAndAdministrativeExpense",)),
+    ("Stock-based compensation", ("ShareBasedCompensation", "ShareBasedCompensationArrangementByShareBasedPaymentAwardEquityInstrumentsOtherThanOptionsGrantsInPeriodTotal", "AdjustmentsForSharebasedPayments", "IncreaseDecreaseThroughSharebasedPaymentTransactions")),
+    ("Interest expense", ("InterestExpenseNonOperating", "InterestAndDebtExpense", "InterestExpense", "FinanceCosts", "InterestExpenseOnDebtInstrumentsIssued")),
+    ("Income tax expense", ("IncomeTaxExpenseBenefit", "IncomeTaxExpenseContinuingOperations", "CurrentTaxExpenseIncome")),
+    ("Effective tax rate", ("EffectiveIncomeTaxRateContinuingOperations", "AverageEffectiveTaxRate", "ApplicableTaxRate")),
+    ("Goodwill", ("Goodwill", "GoodwillAndIntangibleAssetsNet")),
+    ("Intangible assets", ("FiniteLivedIntangibleAssetsNet", "IndefiniteLivedIntangibleAssetsExcludingGoodwill", "IntangibleAssetsNetExcludingGoodwill", "IntangibleAssetsAndGoodwill")),
+    ("Deferred revenue", ("ContractWithCustomerLiabilityCurrent", "DeferredRevenueCurrent", "ContractWithCustomerLiabilityNoncurrent", "DeferredIncomeIncludingContractLiabilities", "CurrentDeferredIncomeOtherThanCurrentContractLiabilities")),
+    ("Debt issued", ("ProceedsFromIssuanceOfLongTermDebt", "ProceedsFromIssuanceOfSeniorLongTermDebt", "ProceedsFromBorrowingsClassifiedAsFinancingActivities", "ProceedsFromNoncurrentBorrowings")),
+    ("Debt repaid", ("RepaymentsOfLongTermDebt", "RepaymentsOfDebt", "RepaymentsOfBondsNotesAndDebentures", "RepaymentsOfNoncurrentBorrowings")),
+    ("Common-stock issuance", ("ProceedsFromIssuanceOfCommonStock", "ProceedsFromIssuanceOrSaleOfEquity", "ProceedsFromStockOptionsExercised", "ProceedsFromIssuingShares", "IssueOfEquity")),
     ("Common shares outstanding", ("EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding")),
-    ("Weighted average basic shares", ("WeightedAverageNumberOfSharesOutstandingBasic",)),
-    ("Weighted average diluted shares", ("WeightedAverageNumberOfDilutedSharesOutstanding",)),
+    ("Weighted average basic shares", ("WeightedAverageNumberOfSharesOutstandingBasic", "WeightedAverageShares")),
+    ("Weighted average diluted shares", ("WeightedAverageNumberOfDilutedSharesOutstanding", "AdjustedWeightedAverageShares")),
     ("SEC public float value", ("EntityPublicFloat",)),
     ("Dividends per share", ("CommonStockDividendsPerShareDeclared",)),
     ("Share repurchases", ("PaymentsForRepurchaseOfCommonStock",)),
     ("Repurchased shares", ("StockRepurchasedAndRetiredDuringPeriodShares",)),
 )
+FUNDAMENTAL_DESCRIPTIONS: dict[str, str] = {
+    "Revenue": "Top-line sales for the reported fiscal duration.",
+    "Gross profit": "Revenue less direct cost of products or services.",
+    "Operating income": "Income from core operations before financing and most non-operating items.",
+    "Net income": "Profit or loss after operating costs, financing, taxes, and other reported items.",
+    "Diluted EPS": "Earnings per diluted weighted-average share for the reported period.",
+    "Operating cash flow": "Cash generated or consumed by operating activities.",
+    "Capital expenditure": "Cash invested in property, plant, and equipment.",
+    "Cash": "Cash and cash equivalents at the balance-sheet date.",
+    "Current assets": "Assets expected to be realized or consumed within the operating cycle.",
+    "Current liabilities": "Obligations expected to be settled within the operating cycle.",
+    "Accounts receivable": "Customer and trade amounts owed to the issuer.",
+    "Accounts payable": "Trade and supplier amounts owed by the issuer.",
+    "Inventory": "Reported inventory carried at the balance-sheet date.",
+    "Assets": "Total reported resources on the balance sheet.",
+    "Liabilities": "Total reported obligations on the balance sheet.",
+    "Stockholders' equity": "Residual shareholder interest after liabilities.",
+    "Long-term debt": "Interest-bearing borrowings due beyond the current reporting horizon.",
+    "Current debt": "Debt and long-term borrowings due within the current reporting horizon.",
+    "Research & development": "Reported spending on research and product development.",
+    "SG&A expense": "Selling, general, and administrative operating expense.",
+    "Stock-based compensation": "Reported equity compensation or the closest standardized cash-flow adjustment.",
+    "Interest expense": "Financing cost recognized for debt and other financial liabilities.",
+    "Income tax expense": "Current and deferred income-tax expense for the period.",
+    "Effective tax rate": "Reported effective or applicable income-tax rate.",
+    "Goodwill": "Acquisition goodwill carried on the balance sheet.",
+    "Intangible assets": "Reported non-physical assets; the exact tag shows whether goodwill is included.",
+    "Deferred revenue": "Customer consideration received before the related revenue is recognized.",
+    "Debt issued": "Cash proceeds from new borrowings during the period.",
+    "Debt repaid": "Cash used to repay borrowings during the period.",
+    "Common-stock issuance": "Cash or equity value associated with common-share issuance.",
+    "Common shares outstanding": "Common shares legally outstanding at the reported instant.",
+    "Weighted average basic shares": "Time-weighted basic shares used for basic EPS.",
+    "Weighted average diluted shares": "Time-weighted shares after dilutive instruments when applicable.",
+    "SEC public float value": "SEC-reported market value held by non-affiliates; this is currency, not shares.",
+    "Dividends per share": "Cash dividends declared per common share for the reported period.",
+    "Share repurchases": "Cash spent repurchasing common stock during the period.",
+    "Repurchased shares": "Shares repurchased and retired during the period.",
+}
+SEC_INCORPORATION_COUNTRY_CODES = {
+    # SEC EDGAR jurisdiction code used by foreign private issuers. Keep this
+    # separate from ISO country codes and from the exchange/listing country.
+    "L2": "IE",
+}
 LOGGER = logging.getLogger(__name__)
 HISTORY_LIMIT = 10_000
 MAIN_HISTORY_DAYS = 520
@@ -128,7 +189,12 @@ def ticker_facts_payload(symbol: str, *, as_of: str | None = None, database: str
     shares_outstanding = best_shares_outstanding(float_rows, market_rows, results.get("fundamentals", []))
     free_float = first_number(reported_float_row, "free_float")
     short_shares = first_number(short_interest, "short_interest")
-    fundamentals = select_fundamentals(results.get("fundamentals", []))
+    fundamentals = select_fundamentals(results.get("fundamentals", []), cutoff)
+    fundamental_analysis = analyze_fundamentals(results.get("fundamentals", []))
+    identifiers = [
+        {**row, "freshness": freshness_status(cutoff, row.get("last_seen_at_utc"))}
+        for row in results.get("identifiers", [])
+    ]
     synthesis = synthesize_stock_facts(
         as_of=cutoff,
         borrow=borrow,
@@ -164,7 +230,7 @@ def ticker_facts_payload(symbol: str, *, as_of: str | None = None, database: str
                 **anchor,
                 "cik": context["cik"] or None,
                 "company_country_code": company_country_code(anchor),
-                "company_country_source": "issuer domicile" if anchor.get("domicile_country_code") else "incorporation jurisdiction" if company_country_code(anchor) else None,
+                "company_country_source": company_country_source(anchor),
             },
             "market": market,
             "reg_sho": first(results.get("reg_sho")),
@@ -179,7 +245,18 @@ def ticker_facts_payload(symbol: str, *, as_of: str | None = None, database: str
             "volume": volume,
         },
         "fundamentals": fundamentals,
-        "identifiers": results.get("identifiers", []),
+        "fundamental_analysis": fundamental_analysis,
+        "freshness": fact_freshness(
+            cutoff=cutoff,
+            borrow=borrow,
+            float_row=reported_float_row or float_row,
+            fundamental_rows=fundamentals,
+            market=market,
+            short_interest=short_interest,
+            short_volume=short_volume,
+            volume=volume,
+        ),
+        "identifiers": identifiers,
         "metric_changes": metric_changes(
             market_rows=market_rows,
             float_rows=float_rows,
@@ -523,7 +600,7 @@ def identifiers_sql(issuer_id: str, security_id: str, cutoff: datetime, database
     db = quote_ident(database)
     instant = sql_string(clickhouse_timestamp(cutoff))
     return f"""
-        SELECT entity, identifier_kind, identifier_value, source_system, is_primary
+        SELECT entity, identifier_kind, identifier_value, source_system, is_primary, last_seen_at_utc
         FROM
         (
             SELECT 'issuer' AS entity, identifier_kind, identifier_value, source_system, is_primary, last_seen_at_utc
@@ -645,7 +722,7 @@ def latest_rows_sql(
     """
 
 
-def select_fundamentals(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def select_fundamentals(rows: list[dict[str, Any]], as_of: datetime | None = None) -> list[dict[str, Any]]:
     by_tag: dict[str, dict[str, Any]] = {}
     for row in rows:
         by_tag.setdefault(str(row.get("tag") or ""), row)
@@ -653,8 +730,215 @@ def select_fundamentals(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for label, alternatives in FUNDAMENTAL_TAGS:
         row = next((by_tag[tag] for tag in alternatives if tag in by_tag), None)
         if row:
-            selected.append({"label": label, **row})
+            selected.append({
+                "label": label,
+                "description": FUNDAMENTAL_DESCRIPTIONS.get(label, "SEC-reported XBRL observation; inspect the exact tag and period before comparison."),
+                **row,
+                **({"freshness": freshness_status(as_of, row.get("filed_at_utc") or row.get("recorded_at_utc"))} if as_of else {}),
+            })
     return selected
+
+
+def analyze_fundamentals(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build auditable financial-strength facets from aligned SEC observations."""
+    revenue = comparable_facts(rows, FUNDAMENTAL_TAGS[0][1])
+    gross_profit = comparable_facts(rows, FUNDAMENTAL_TAGS[1][1])
+    operating_income = comparable_facts(rows, FUNDAMENTAL_TAGS[2][1])
+    net_income = comparable_facts(rows, FUNDAMENTAL_TAGS[3][1])
+    operating_cash = comparable_facts(rows, FUNDAMENTAL_TAGS[5][1])
+    capex = comparable_facts(rows, FUNDAMENTAL_TAGS[6][1])
+    current_assets = fact_observations(rows, ("AssetsCurrent", "CurrentAssets"))
+    current_liabilities = fact_observations(rows, ("LiabilitiesCurrent", "CurrentLiabilities"))
+    assets = fact_observations(rows, ("Assets",))
+    equity = fact_observations(rows, ("StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", "Equity"))
+    cash = fact_observations(rows, ("CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents", "CashAndCashEquivalents"))
+    interest = comparable_facts(rows, ("InterestExpenseNonOperating", "InterestAndDebtExpense", "InterestExpense", "FinanceCosts", "InterestExpenseOnDebtInstrumentsIssued"))
+    research = comparable_facts(rows, ("ResearchAndDevelopmentExpense",))
+    sga = comparable_facts(rows, ("SellingGeneralAndAdministrativeExpense",))
+    basic_shares = comparable_facts(rows, ("WeightedAverageNumberOfSharesOutstandingBasic", "WeightedAverageShares"))
+    diluted_shares = comparable_facts(rows, ("WeightedAverageNumberOfDilutedSharesOutstanding", "AdjustedWeightedAverageShares"))
+
+    gross_value, gross_revenue = aligned_values(gross_profit, revenue)
+    operating_value, operating_revenue = aligned_values(operating_income, revenue)
+    income_value, income_revenue = aligned_values(net_income, revenue)
+    ocf_value, ocf_revenue = aligned_values(operating_cash, revenue)
+    capex_value, _ = aligned_values(capex, revenue)
+    free_cash_flow = ocf_value - abs(capex_value) if ocf_value is not None and capex_value is not None else None
+    assets_value = row_value(first(assets))
+    equity_value = row_value(first(equity))
+    current_assets_value, current_liabilities_value = aligned_values(current_assets, current_liabilities)
+    cash_value = row_value(first(cash))
+    debt_value = latest_total_debt(rows)
+    interest_value = row_value(first(interest))
+    basic_value = aligned_numerator_value(basic_shares, diluted_shares)
+    diluted_value = row_value(first(diluted_shares))
+
+    metrics = [
+        derived_fundamental("free_cash_flow", "Free cash flow", free_cash_flow, "USD", first(operating_cash), "Operating cash flow minus capital expenditure."),
+        derived_fundamental("gross_margin", "Gross margin", percent_ratio(gross_value, gross_revenue), "percent", first(gross_profit), "Gross profit divided by aligned revenue."),
+        derived_fundamental("operating_margin", "Operating margin", percent_ratio(operating_value, operating_revenue), "percent", first(operating_income), "Operating income divided by aligned revenue."),
+        derived_fundamental("net_margin", "Net margin", percent_ratio(income_value, income_revenue), "percent", first(net_income), "Net income divided by aligned revenue."),
+        derived_fundamental("free_cash_flow_margin", "Free-cash-flow margin", percent_ratio(free_cash_flow, ocf_revenue), "percent", first(operating_cash), "Free cash flow divided by aligned revenue."),
+        derived_fundamental("return_on_assets", "Return on assets", percent_ratio(income_value, assets_value), "percent", first(assets), "Latest comparable net income divided by latest assets; a point-in-time approximation."),
+        derived_fundamental("return_on_equity", "Return on equity", positive_denominator_percent(income_value, equity_value), "percent", first(equity), "Latest comparable net income divided by latest positive equity; a point-in-time approximation."),
+        derived_fundamental("working_capital", "Working capital", current_assets_value - current_liabilities_value if current_assets_value is not None and current_liabilities_value is not None else None, "USD", first(current_assets), "Current assets minus aligned current liabilities."),
+        derived_fundamental("current_ratio", "Current ratio", safe_ratio(current_assets_value, current_liabilities_value), "multiple", first(current_assets), "Current assets divided by aligned current liabilities."),
+        derived_fundamental("debt_to_equity", "Debt to equity", positive_denominator_ratio(debt_value, equity_value), "multiple", first(equity), "Current plus noncurrent borrowings divided by positive equity; withheld when equity is nonpositive."),
+        derived_fundamental("net_debt", "Net debt", debt_value - cash_value if debt_value is not None and cash_value is not None else None, "USD", first(cash), "Interest-bearing debt minus cash and equivalents."),
+        derived_fundamental("interest_coverage", "Interest coverage", safe_ratio(operating_value, abs(interest_value) if interest_value is not None else None), "multiple", first(interest), "Operating income divided by interest expense."),
+        derived_fundamental("revenue_growth", "Revenue growth", comparable_growth(revenue), "percent", first(revenue), "Change between the latest two comparable fiscal periods."),
+        derived_fundamental("earnings_growth", "Earnings growth", comparable_growth(net_income), "percent", first(net_income), "Change in net income between comparable fiscal periods."),
+        derived_fundamental("share_growth", "Basic share growth", comparable_growth(basic_shares), "percent", first(basic_shares), "Change in weighted-average basic shares between comparable periods."),
+        derived_fundamental("dilution", "Dilution spread", percent_ratio(diluted_value - basic_value if diluted_value is not None and basic_value is not None else None, basic_value), "percent", first(diluted_shares), "Diluted shares above basic shares for the aligned period."),
+        derived_fundamental("cash_conversion", "Cash conversion", safe_ratio(ocf_value, income_value), "multiple", first(operating_cash), "Operating cash flow divided by net income."),
+        derived_fundamental("research_intensity", "R&D intensity", percent_ratio(*aligned_values(research, revenue)), "percent", first(research), "Research and development expense divided by aligned revenue."),
+        derived_fundamental("sga_intensity", "SG&A intensity", percent_ratio(*aligned_values(sga, revenue)), "percent", first(sga), "Selling, general, and administrative expense divided by aligned revenue."),
+    ]
+    metrics = [metric for metric in metrics if metric["value"] is not None]
+
+    profitability, profitability_coverage = weighted_available([
+        ("Gross margin", scaled(percent_ratio(gross_value, gross_revenue), 10, 60), 20),
+        ("Operating margin", scaled(percent_ratio(operating_value, operating_revenue), -5, 25), 30),
+        ("Net margin", scaled(percent_ratio(income_value, income_revenue), -5, 20), 30),
+        ("Return on equity", scaled(positive_denominator_percent(income_value, equity_value), -10, 30), 20),
+    ])
+    growth, growth_coverage = weighted_available([
+        ("Revenue growth", scaled(comparable_growth(revenue), -10, 25), 55),
+        ("Earnings growth", scaled(comparable_growth(net_income), -25, 40), 45),
+    ])
+    cash_quality, cash_coverage = weighted_available([
+        ("Free-cash-flow margin", scaled(percent_ratio(free_cash_flow, ocf_revenue), -5, 20), 60),
+        ("Cash conversion", scaled(safe_ratio(ocf_value, income_value), 0.5, 1.5), 40),
+    ])
+    balance, balance_coverage = weighted_available([
+        ("Current ratio", scaled(safe_ratio(current_assets_value, current_liabilities_value), 0.5, 2.0), 40),
+        ("Debt / equity", inverse_scaled(positive_denominator_ratio(debt_value, equity_value), 0.0, 2.0), 35),
+        ("Interest coverage", scaled(safe_ratio(operating_value, abs(interest_value) if interest_value is not None else None), 1.0, 8.0), 25),
+    ])
+    capital_discipline, capital_coverage = weighted_available([
+        ("Share growth", inverse_scaled(comparable_growth(basic_shares), -2.0, 8.0), 60),
+        ("Dilution spread", inverse_scaled(percent_ratio(diluted_value - basic_value if diluted_value is not None and basic_value is not None else None, basic_value), 0.0, 10.0), 40),
+    ])
+    facets = [
+        fundamental_facet("profitability", "Profitability", profitability, profitability_coverage),
+        fundamental_facet("growth", "Growth", growth, growth_coverage),
+        fundamental_facet("cash_quality", "Cash quality", cash_quality, cash_coverage),
+        fundamental_facet("balance_sheet", "Balance sheet", balance, balance_coverage),
+        fundamental_facet("capital_discipline", "Capital discipline", capital_discipline, capital_coverage),
+    ]
+    overall, coverage = weighted_facets([
+        ("Profitability", profitability, profitability_coverage, 30),
+        ("Growth", growth, growth_coverage, 20),
+        ("Cash quality", cash_quality, cash_coverage, 20),
+        ("Balance sheet", balance, balance_coverage, 20),
+        ("Capital discipline", capital_discipline, capital_coverage, 10),
+    ])
+    label, tone = strength_label(overall, coverage)
+    return {
+        "coverage_percent": coverage,
+        "facets": facets,
+        "label": label,
+        "metrics": metrics,
+        "score": overall if coverage >= 50 else None,
+        "tone": tone,
+        "version": "sec_fundamental_strength_v1",
+    }
+
+
+def fundamental_facet(facet_id: str, label: str, score: float | None, coverage: float) -> dict[str, Any]:
+    strength, tone = strength_label(score, coverage)
+    return {"id": facet_id, "label": label, "score": score if coverage >= 40 else None, "coverage_percent": coverage, "strength": strength, "tone": tone}
+
+
+def strength_label(score: float | None, coverage: float) -> tuple[str, str]:
+    if score is None or coverage < 40:
+        return "Insufficient", "muted"
+    if score >= 80:
+        return "Robust", "positive"
+    if score >= 65:
+        return "Strong", "positive"
+    if score >= 45:
+        return "Mixed", "neutral"
+    if score >= 25:
+        return "Fragile", "warning"
+    return "Weak", "negative"
+
+
+def derived_fundamental(metric_id: str, label: str, value: float | None, unit: str, source_row: dict[str, Any], formula: str) -> dict[str, Any]:
+    return {
+        "id": metric_id,
+        "label": label,
+        "value": value,
+        "unit": unit,
+        "formula": formula,
+        "period_end_date": source_row.get("period_end_date"),
+        "available_at": source_row.get("filed_at_utc") or source_row.get("recorded_at_utc"),
+    }
+
+
+def aligned_numerator_value(numerator_rows: list[dict[str, Any]], denominator_rows: list[dict[str, Any]]) -> float | None:
+    return aligned_values(numerator_rows, denominator_rows)[0]
+
+
+def aligned_values(numerator_rows: list[dict[str, Any]], denominator_rows: list[dict[str, Any]]) -> tuple[float | None, float | None]:
+    if not numerator_rows or not denominator_rows:
+        return None, None
+    denominator_by_period = {(str(row.get("period_end_date") or ""), str(row.get("fiscal_period") or "")): row for row in denominator_rows}
+    numerator = next((row for row in numerator_rows if (str(row.get("period_end_date") or ""), str(row.get("fiscal_period") or "")) in denominator_by_period), None)
+    if not numerator:
+        return None, None
+    denominator = denominator_by_period[(str(numerator.get("period_end_date") or ""), str(numerator.get("fiscal_period") or ""))]
+    return row_value(numerator), row_value(denominator)
+
+
+def latest_total_debt(rows: list[dict[str, Any]]) -> float | None:
+    """Reconcile total debt without collapsing current and noncurrent components."""
+    total_tags = ("Borrowings",)
+    current_tags = ("LongTermDebtCurrent", "CurrentPortionOfLongTermDebt", "ShorttermBorrowings")
+    noncurrent_tags = ("LongTermDebtNoncurrent", "LongtermBorrowings", "NoncurrentPortionOfOtherNoncurrentBorrowings")
+    debt_tags = set(total_tags + current_tags + noncurrent_tags)
+    candidates = [row for row in rows if str(row.get("tag") or "") in debt_tags and row_value(row) is not None]
+    if not candidates:
+        return None
+    latest_period = max(str(row.get("period_end_date") or "") for row in candidates)
+    period_rows = [row for row in candidates if str(row.get("period_end_date") or "") == latest_period]
+
+    def priority_value(tags: tuple[str, ...]) -> float | None:
+        for tag in tags:
+            matching = [row for row in period_rows if str(row.get("tag") or "") == tag]
+            if matching:
+                matching.sort(key=lambda row: str(row.get("filed_at_utc") or row.get("recorded_at_utc") or ""), reverse=True)
+                return row_value(matching[0])
+        return None
+
+    total = priority_value(total_tags)
+    if total is not None:
+        return total
+    components = [value for value in (priority_value(current_tags), priority_value(noncurrent_tags)) if value is not None]
+    return sum(components) if components else None
+
+
+def safe_ratio(numerator: float | None, denominator: float | None) -> float | None:
+    return numerator / denominator if numerator is not None and denominator not in {None, 0} else None
+
+
+def positive_denominator_ratio(numerator: float | None, denominator: float | None) -> float | None:
+    return numerator / denominator if numerator is not None and denominator is not None and denominator > 0 else None
+
+
+def positive_denominator_percent(numerator: float | None, denominator: float | None) -> float | None:
+    ratio = positive_denominator_ratio(numerator, denominator)
+    return ratio * 100.0 if ratio is not None else None
+
+
+def percent_ratio(numerator: float | None, denominator: float | None) -> float | None:
+    ratio = safe_ratio(numerator, denominator)
+    return ratio * 100.0 if ratio is not None else None
+
+
+def inverse_scaled(value: float | None, low: float, high: float) -> float | None:
+    scaled_value = scaled(value, low, high)
+    return None if scaled_value is None else 100.0 - scaled_value
 
 
 def aggregate_daily_volume(rows: list[dict[str, Any]], offset: int = 0) -> dict[str, Any]:
@@ -869,7 +1153,7 @@ def share_base_card(
     float_rows: list[dict[str, Any]],
     market_rows: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], float | None]:
-    observations = fact_observations(fundamental_rows, ("EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding"))
+    observations = fact_observations(fundamental_rows, ("EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding", "NumberOfSharesIssued"))
     if len(observations) < 2:
         fallback = [
             {"value": first_number(row, "shares_outstanding", "share_class_shares_outstanding"), "period_end_date": row.get("effective_date") or row.get("observed_at_utc")}
@@ -894,14 +1178,14 @@ def share_base_card(
 
 
 def financial_card_and_scores(fundamental_rows: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, float | None]]:
-    revenue = comparable_facts(fundamental_rows, ("RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet"))
-    net_income = comparable_facts(fundamental_rows, ("NetIncomeLoss", "ProfitLoss"))
-    operating_income = comparable_facts(fundamental_rows, ("OperatingIncomeLoss",))
-    operating_cash = comparable_facts(fundamental_rows, ("NetCashProvidedByUsedInOperatingActivities",))
-    capex = comparable_facts(fundamental_rows, ("PaymentsToAcquirePropertyPlantAndEquipment",))
-    cash = latest_fact_value(fundamental_rows, ("CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"))
+    revenue = comparable_facts(fundamental_rows, ("RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet", "Revenue", "RevenueFromContractsWithCustomers"))
+    net_income = comparable_facts(fundamental_rows, ("NetIncomeLoss", "ProfitLoss", "ProfitLossAttributableToOwnersOfParent"))
+    operating_income = comparable_facts(fundamental_rows, ("OperatingIncomeLoss", "ProfitLossFromOperatingActivities"))
+    operating_cash = comparable_facts(fundamental_rows, ("NetCashProvidedByUsedInOperatingActivities", "CashFlowsFromUsedInOperatingActivities", "CashFlowsFromUsedInOperations"))
+    capex = comparable_facts(fundamental_rows, ("PaymentsToAcquirePropertyPlantAndEquipment", "PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities"))
+    cash = latest_fact_value(fundamental_rows, ("CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents", "CashAndCashEquivalents"))
     liabilities = latest_fact_value(fundamental_rows, ("Liabilities",))
-    debt = sum(value or 0.0 for value in (latest_fact_value(fundamental_rows, ("LongTermDebtCurrent",)), latest_fact_value(fundamental_rows, ("LongTermDebtNoncurrent",)))) or None
+    debt = latest_total_debt(fact_observations(fundamental_rows, ("LongTermDebtCurrent", "LongTermDebtNoncurrent", "CurrentPortionOfLongTermDebt", "ShorttermBorrowings", "LongtermBorrowings", "Borrowings")))
     revenue_growth = comparable_growth(revenue)
     income_growth = comparable_growth(net_income)
     latest_income = row_value(first(net_income))
@@ -951,8 +1235,8 @@ def financial_card_and_scores(fundamental_rows: list[dict[str, Any]]) -> tuple[d
 
 
 def valuation_card_from_facts(fundamental_rows: list[dict[str, Any]], latest_price: float | None, market_cap: float | None) -> dict[str, Any]:
-    eps_rows = comparable_facts(fundamental_rows, ("EarningsPerShareDiluted",))
-    net_rows = comparable_facts(fundamental_rows, ("NetIncomeLoss", "ProfitLoss"))
+    eps_rows = comparable_facts(fundamental_rows, ("EarningsPerShareDiluted", "DilutedEarningsLossPerShare", "BasicAndDilutedEarningsLossPerShare"))
+    net_rows = comparable_facts(fundamental_rows, ("NetIncomeLoss", "ProfitLoss", "ProfitLossAttributableToOwnersOfParent"))
     eps = row_value(first(eps_rows))
     net_income = row_value(first(net_rows))
     pe = latest_price / eps if latest_price is not None and eps is not None and eps > 0 else market_cap / net_income if market_cap is not None and net_income is not None and net_income > 0 else None
@@ -1044,7 +1328,7 @@ def market_cap_implied_shares(market_rows: list[dict[str, Any]], price_rows: lis
 
 def best_shares_outstanding(float_rows: list[dict[str, Any]], market_rows: list[dict[str, Any]], fundamental_rows: list[dict[str, Any]]) -> float | None:
     provider = first_number(first_with_number(float_rows, "shares_outstanding"), "shares_outstanding") or first_number(first_with_number(market_rows, "share_class_shares_outstanding", "weighted_shares_outstanding"), "share_class_shares_outstanding", "weighted_shares_outstanding")
-    sec = latest_fact_value(fundamental_rows, ("EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding"))
+    sec = latest_fact_value(fundamental_rows, ("EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding", "NumberOfSharesIssued"))
     return provider or sec
 
 
@@ -1055,7 +1339,7 @@ def latest_observation_date(float_rows: list[dict[str, Any]], market_rows: list[
     row = first_with_number(market_rows, "share_class_shares_outstanding", "weighted_shares_outstanding")
     if row:
         return row.get("observed_at_utc")
-    rows = fact_observations(fundamental_rows, ("EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding"))
+    rows = fact_observations(fundamental_rows, ("EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding", "NumberOfSharesIssued"))
     return first(rows).get("period_end_date")
 
 
@@ -1078,6 +1362,20 @@ def weighted_available(items: list[tuple[str, float | None, float]]) -> tuple[fl
     if not available_weight or not total_weight:
         return None, 0.0
     return sum(value * weight for value, weight in available) / available_weight, available_weight / total_weight * 100.0
+
+
+def weighted_facets(items: list[tuple[str, float | None, float, float]]) -> tuple[float | None, float]:
+    """Weight a facet by both its decision importance and its internal evidence coverage."""
+    total_weight = sum(weight for _, _, _, weight in items)
+    available = [
+        (clamp(score), weight * clamp(coverage) / 100.0)
+        for _, score, coverage, weight in items
+        if score is not None and coverage > 0
+    ]
+    evidence_weight = sum(weight for _, weight in available)
+    if not evidence_weight or not total_weight:
+        return None, 0.0
+    return sum(score * weight for score, weight in available) / evidence_weight, evidence_weight / total_weight * 100.0
 
 
 def scaled(value: float | None, low: float, high: float) -> float | None:
@@ -1374,7 +1672,79 @@ def company_country_code(identity: dict[str, Any]) -> str | None:
     if domicile:
         return domicile
     incorporation = str(identity.get("state_of_incorporation") or "").strip().upper()
-    return "US" if incorporation in US_INCORPORATION_CODES else None
+    if incorporation in US_INCORPORATION_CODES:
+        return "US"
+    return SEC_INCORPORATION_COUNTRY_CODES.get(incorporation)
+
+
+def company_country_source(identity: dict[str, Any]) -> str | None:
+    if str(identity.get("domicile_country_code") or "").strip():
+        return "issuer domicile"
+    incorporation = str(identity.get("state_of_incorporation") or "").strip().upper()
+    if incorporation in US_INCORPORATION_CODES:
+        return "SEC incorporation state"
+    if incorporation in SEC_INCORPORATION_COUNTRY_CODES:
+        return "SEC incorporation jurisdiction"
+    return None
+
+
+def freshness_status(as_of: datetime, available_at: Any) -> dict[str, Any] | None:
+    observed = parse_datetime(available_at)
+    if not observed or observed > as_of:
+        return None
+    age_seconds = (as_of - observed).total_seconds()
+    if age_seconds <= 86_400:
+        return {"available_at": observed.isoformat(), "status": "new"}
+    if age_seconds <= 7 * 86_400:
+        return {"available_at": observed.isoformat(), "status": "recent"}
+    return None
+
+
+def fact_freshness(
+    *,
+    cutoff: datetime,
+    borrow: dict[str, Any],
+    float_row: dict[str, Any],
+    fundamental_rows: list[dict[str, Any]],
+    market: dict[str, Any],
+    short_interest: dict[str, Any],
+    short_volume: dict[str, Any],
+    volume: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    candidates: dict[str, Any] = {
+        "market_cap": market.get("observed_at_utc"),
+        "free_float": float_row.get("effective_date"),
+        "shares_outstanding": float_row.get("effective_date") or market.get("observed_at_utc"),
+        "daily_volume": volume.get("session_date"),
+        "relative_volume_20d": volume.get("session_date"),
+        "short_interest": short_interest.get("published_at_utc") or short_interest.get("publication_date") or short_interest.get("inserted_at"),
+        "days_to_cover": short_interest.get("published_at_utc") or short_interest.get("publication_date") or short_interest.get("inserted_at"),
+        "short_volume_ratio": short_volume.get("latest_trade_date"),
+        "short_volume_ratio_20d": short_volume.get("latest_trade_date"),
+        "borrow": borrow.get("observed_at_utc"),
+        "shortable_shares": borrow.get("observed_at_utc"),
+        "indicative_borrow_rate": borrow.get("observed_at_utc"),
+        "fee_rate": borrow.get("observed_at_utc"),
+    }
+    for row in fundamental_rows:
+        tag = str(row.get("tag") or "").lower()
+        if tag:
+            candidates[f"fundamental:{tag}"] = row.get("filed_at_utc") or row.get("recorded_at_utc")
+    return {key: status for key, available_at in candidates.items() if (status := freshness_status(cutoff, available_at))}
+
+
+def parse_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = datetime.fromisoformat(f"{text[:10]}T00:00:00+00:00")
+        except ValueError:
+            return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
 
 
 def source_inventory(results: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:

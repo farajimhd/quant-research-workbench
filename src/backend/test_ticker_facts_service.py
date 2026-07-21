@@ -7,10 +7,13 @@ from unittest.mock import patch
 from src.backend.ticker_facts_service import (
     aggregate_daily_volume,
     aggregate_short_volume,
+    analyze_fundamentals,
     build_health_timeline,
     company_country_code,
     daily_volume_history_points,
+    freshness_status,
     identity_anchor_sql,
+    latest_total_debt,
     metric_changes,
     normalize_ticker,
     parse_as_of,
@@ -59,7 +62,10 @@ class TickerFactsServiceTest(unittest.TestCase):
         selected = select_fundamentals(rows)
         self.assertEqual(selected[0]["label"], "Revenue")
         self.assertEqual(selected[0]["value"], 120.0)
-        self.assertEqual(selected[1], {"label": "Assets", "tag": "Assets", "value": 300.0})
+        self.assertEqual(selected[1]["label"], "Assets")
+        self.assertEqual(selected[1]["tag"], "Assets")
+        self.assertEqual(selected[1]["value"], 300.0)
+        self.assertIn("balance sheet", selected[1]["description"])
         self.assertEqual(ratio_percent(10.0, 200.0), 5.0)
         self.assertIsNone(ratio_percent(10.0, None))
 
@@ -101,7 +107,44 @@ class TickerFactsServiceTest(unittest.TestCase):
     def test_company_country_prefers_domicile_and_uses_known_us_incorporation_codes(self) -> None:
         self.assertEqual(company_country_code({"domicile_country_code": "gb", "state_of_incorporation": "CA"}), "GB")
         self.assertEqual(company_country_code({"domicile_country_code": None, "state_of_incorporation": "CA"}), "US")
+        self.assertEqual(company_country_code({"domicile_country_code": None, "state_of_incorporation": "L2"}), "IE")
         self.assertIsNone(company_country_code({"domicile_country_code": None, "state_of_incorporation": "E9"}))
+
+    def test_ifrs_fundamentals_produce_auditable_strength_metrics(self) -> None:
+        rows = [
+            {"tag": "Revenue", "value": 1_000.0, "period_end_date": "2025-12-31", "fiscal_period": "FY", "filed_at_utc": "2026-03-01"},
+            {"tag": "Revenue", "value": 800.0, "period_end_date": "2024-12-31", "fiscal_period": "FY", "filed_at_utc": "2025-03-01"},
+            {"tag": "GrossProfit", "value": 600.0, "period_end_date": "2025-12-31", "fiscal_period": "FY"},
+            {"tag": "ProfitLossFromOperatingActivities", "value": 180.0, "period_end_date": "2025-12-31", "fiscal_period": "FY"},
+            {"tag": "ProfitLoss", "value": 120.0, "period_end_date": "2025-12-31", "fiscal_period": "FY"},
+            {"tag": "CashFlowsFromUsedInOperatingActivities", "value": 160.0, "period_end_date": "2025-12-31", "fiscal_period": "FY"},
+            {"tag": "PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities", "value": 40.0, "period_end_date": "2025-12-31", "fiscal_period": "FY"},
+            {"tag": "CurrentAssets", "value": 500.0, "period_end_date": "2025-12-31", "fiscal_period": "FY"},
+            {"tag": "CurrentLiabilities", "value": 250.0, "period_end_date": "2025-12-31", "fiscal_period": "FY"},
+            {"tag": "Equity", "value": 600.0, "period_end_date": "2025-12-31", "fiscal_period": "FY"},
+            {"tag": "Assets", "value": 1_200.0, "period_end_date": "2025-12-31", "fiscal_period": "FY"},
+        ]
+        analysis = analyze_fundamentals(rows)
+        metrics = {row["id"]: row["value"] for row in analysis["metrics"]}
+        self.assertAlmostEqual(metrics["gross_margin"], 60.0)
+        self.assertAlmostEqual(metrics["free_cash_flow"], 120.0)
+        self.assertAlmostEqual(metrics["current_ratio"], 2.0)
+        self.assertGreater(analysis["coverage_percent"], 40.0)
+
+    def test_total_debt_preserves_current_and_noncurrent_components(self) -> None:
+        rows = [
+            {"tag": "LongTermDebtCurrent", "value": 12.0, "period_end_date": "2026-03-31", "filed_at_utc": "2026-05-01"},
+            {"tag": "LongTermDebtNoncurrent", "value": 88.0, "period_end_date": "2026-03-31", "filed_at_utc": "2026-05-01"},
+            {"tag": "LongTermDebtCurrent", "value": 9.0, "period_end_date": "2025-12-31", "filed_at_utc": "2026-02-01"},
+        ]
+        self.assertEqual(latest_total_debt(rows), 100.0)
+        self.assertEqual(latest_total_debt(rows + [{"tag": "Borrowings", "value": 95.0, "period_end_date": "2026-03-31"}]), 95.0)
+
+    def test_recent_badges_use_publication_time_and_remain_quiet_when_old(self) -> None:
+        cutoff = datetime(2026, 7, 21, 12, 0, tzinfo=UTC)
+        self.assertEqual(freshness_status(cutoff, "2026-07-21T08:00:00Z")["status"], "new")
+        self.assertEqual(freshness_status(cutoff, "2026-07-17T12:00:00Z")["status"], "recent")
+        self.assertIsNone(freshness_status(cutoff, "2026-07-01T12:00:00Z"))
 
     def test_synthesis_reconciles_reported_and_estimated_float_without_replacing_reported_value(self) -> None:
         synthesis = synthesize_stock_facts(
