@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 from pipelines.news.benzinga.news_reaction_deterministic_v2 import (
     EVENT_DICTIONARY_VERSION,
@@ -12,6 +14,7 @@ from pipelines.news.benzinga.news_reaction_deterministic_v2 import (
     confusion_metrics,
     ddl_statements,
     empirical_bayes_effect,
+    load_review_labels,
     parse_args,
     shrunken_robust_scale,
     required_sources,
@@ -83,6 +86,19 @@ class DeterministicNewsV2Tests(unittest.TestCase):
         sources = required_sources(args)
         self.assertNotIn("benzinga_news_text_v1", sources)
         self.assertTrue({"body_text", "external_text", "pdf_text"} <= sources[args.normalized_table])
+
+    def test_certified_reviewer_columns_are_imported(self) -> None:
+        text = (
+            "review_id,canonical_news_id,ticker,published_at_utc,reviewer_sentiment,reviewer_relevance\n"
+            "review-1,news-1,AAPL,2026-07-14 13:41:00.000000000,positive,company_specific\n"
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "review.csv"
+            path.write_text(text, encoding="utf-8")
+            digest, rows = load_review_labels(path)
+        self.assertEqual(len(digest), 64)
+        self.assertEqual(rows[0]["sentiment_label"], "positive")
+        self.assertEqual(rows[0]["relevance_label"], "company_specific")
 
     def test_ddl_only_creates_v2_targets(self) -> None:
         args = parse_args([])

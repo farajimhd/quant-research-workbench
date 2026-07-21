@@ -895,18 +895,45 @@ FROM prob
 """ + query_settings(args, external_group_by=True)
 
 
-def import_review_labels(client: ClickHouseHttpClient, args: argparse.Namespace, path: Path) -> int:
+def resolve_review_column(
+    fieldnames: Sequence[str] | None,
+    *,
+    logical_name: str,
+    accepted_names: Sequence[str],
+) -> str:
+    available = set(fieldnames or ())
+    for name in accepted_names:
+        if name in available:
+            return name
+    raise ValueError(
+        f"review CSV is missing {logical_name}; expected one of {list(accepted_names)}, "
+        f"found {sorted(available)}"
+    )
+
+
+def load_review_labels(path: Path) -> tuple[str, list[dict[str, Any]]]:
     raw = path.read_bytes()
     digest = hashlib.sha256(raw).hexdigest()
     rows: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
-        for row in csv.DictReader(handle):
-            sentiment = (row.get("review_sentiment") or row.get("sentiment_label") or "").strip().lower()
-            relevance = (row.get("review_relevance") or row.get("relevance_label") or "").strip().lower()
+        reader = csv.DictReader(handle)
+        sentiment_column = resolve_review_column(
+            reader.fieldnames,
+            logical_name="reviewer sentiment",
+            accepted_names=("reviewer_sentiment", "review_sentiment", "sentiment_label"),
+        )
+        relevance_column = resolve_review_column(
+            reader.fieldnames,
+            logical_name="reviewer relevance",
+            accepted_names=("reviewer_relevance", "review_relevance", "relevance_label"),
+        )
+        for row_number, row in enumerate(reader, start=2):
+            sentiment = (row.get(sentiment_column) or "").strip().lower()
+            relevance = (row.get(relevance_column) or "").strip().lower()
             if sentiment not in {"positive", "negative", "neutral", "mixed"}:
-                raise ValueError(f"invalid review sentiment {sentiment!r}")
+                raise ValueError(f"invalid review sentiment {sentiment!r} at CSV row {row_number}")
             if relevance not in {"company_specific", "ticker_related", "not_relevant"}:
-                raise ValueError(f"invalid review relevance {relevance!r}")
+                raise ValueError(f"invalid review relevance {relevance!r} at CSV row {row_number}")
             rows.append({
                 "review_version": REVIEW_VERSION,
                 "review_id": row.get("review_id") or hashlib.sha256(f"{row.get('canonical_news_id')}|{row.get('ticker')}".encode()).hexdigest()[:24],
@@ -917,6 +944,11 @@ def import_review_labels(client: ClickHouseHttpClient, args: argparse.Namespace,
             })
     if len(rows) != len({row["review_id"] for row in rows}):
         raise ValueError("review CSV contains duplicate review IDs")
+    return digest, rows
+
+
+def import_review_labels(client: ClickHouseHttpClient, args: argparse.Namespace, path: Path) -> int:
+    _digest, rows = load_review_labels(path)
     target = table(args.database, args.review_table)
     client.execute(f"ALTER TABLE {target} DELETE WHERE review_version = {sql_string(REVIEW_VERSION)} SETTINGS mutations_sync = 2")
     insert_json_rows(client, target, rows)

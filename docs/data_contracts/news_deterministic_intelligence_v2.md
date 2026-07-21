@@ -34,6 +34,10 @@ label, never a synonym for sentiment.
 - Locked holdout: `[2026-01-01, 2027-01-01)`.
 - Blind language review: the locked 750-row Codex expert-adjudicated sample.
   This is provisional expert review, not independent human ground truth.
+  Its canonical label columns are `reviewer_sentiment` and
+  `reviewer_relevance`; the importer also accepts the documented legacy aliases
+  `review_sentiment`/`sentiment_label` and
+  `review_relevance`/`relevance_label` at the CSV boundary.
 
 The reaction source already contains event-relative 1m, 5m, 10m, 30m, 1h,
 2h, 3h, end-of-premarket, end-of-market-hours, and end-of-after-hours labels.
