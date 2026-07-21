@@ -149,13 +149,17 @@ The containers have distinct decisions and avoid redundant summaries:
 | Container | Primary question | Key fields |
 | --- | --- | --- |
 | Portfolio | What is the account's capacity and risk now? | net liquidation, funds, excess liquidity, buying power, realized/unrealized P&L, long/short/net/gross exposure, currency ledger |
-| Positions | What inventory is held? | account, symbol, conid, asset, currency, model, quantity, mark, cost, market value, P&L, source time |
-| Orders | What is working or terminal? | normalized and raw status, fill progress, type/prices/TIF, account and identities |
-| Executions | What actually filled? | execution time/id, instrument, side, size, price, venue, commission state, order identity |
-| Closed Trades | What round trips were derived? | entry/exit, side, size, gross P&L, fees, net P&L, explicit derivation disclosure |
+| Position Manager | What inventory is held, what is attached to it, and what happened previously? | Open positions with P&L and return, working-order and fill counts, expandable related evidence, derived closed round trips, and a position lifecycle timeline |
+| Orders & Fills | What is working, what happened to every order, and what actually filled? | Working/all/fills tabs, normalized and raw status, fill progress, type/prices/TIF, account and identities, with each order expandable to its immutable execution evidence |
+| Execution Audit | Does immutable broker fill evidence reconcile? | Advanced execution time/id, instrument, side, size, price, venue, commission state, and order correlation; not a required everyday container |
+| Round-trip Audit | How were derived FIFO round trips constructed? | Advanced entry/exit, side, size, gross P&L, fees, net P&L, and explicit derivation disclosure; normal closed-position review remains in Position Manager |
 | Activity | What happened and in what causal chain? | event type/time, provider, account, command/order/client/execution/correlation ids |
 
-Every surface displays snapshot completeness, freshness, provider, mode, and as-of time. Tables use fit-content columns with horizontal overflow instead of stretching sparse fields. Semantic colors are reserved for P&L, exposure direction, and lifecycle meaning.
+Every surface displays snapshot completeness, freshness, provider, mode, and as-of time. Trading tables use fit-content columns with horizontal overflow instead of stretching sparse fields and provide typed sorting, free-text search, semantic filters, stable row counts, and expandable evidence. Semantic colors are reserved for P&L, exposure direction, lifecycle state, and warnings.
+
+The linked price chart renders the canonical open position for its symbol as one native average-entry line. The line shows long/short direction, signed quantity, average price, and unrealized P&L. It is a projection of the same position row used by Position Manager, not a separately calculated chart position. Order and execution evidence remain in Orders & Fills so the chart stays readable.
+
+Canvas layout version 8 migrates everyday workspaces away from standalone Executions and Closed Trades windows. Existing standalone windows become the consolidated Orders & Fills and Position Manager surfaces at their prior positions. The advanced audit containers remain available from the library when reconciliation or debugging requires them.
 
 ## Compatibility and migration
 

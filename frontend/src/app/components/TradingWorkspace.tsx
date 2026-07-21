@@ -124,7 +124,7 @@ class WorkspaceContainerErrorBoundary extends Component<
 }
 
 const DEFAULT_CANVAS_TARGETS: WorkspaceCanvasTarget[] = [{ color: "var(--primary)", id: "main", isCurrent: true, label: "Main" }];
-export const TRADING_WORKSPACE_LAYOUT_VERSION = 7;
+export const TRADING_WORKSPACE_LAYOUT_VERSION = 8;
 
 function groupSelectionAction(selectedNodeIds: string[], groups: Record<string, WorkspaceGroup>) {
   if (selectedNodeIds.length < 2) return "Select one more";
@@ -195,7 +195,7 @@ export function TradingWorkspace({
   const definitionById = useMemo(() => new Map(definitions.map((definition) => [definition.id, definition])), [definitions]);
   const storageKey = storageKeyOverride ?? `quant-research-workbench.trading-workspace.${mode}`;
   const initial = useMemo(
-    () => initialStateOverride ?? readWorkspaceState(storageKey, mode, definitions, defaultOpenIds, layoutPreset),
+    () => initialStateOverride ? parseWorkspaceState(JSON.stringify(initialStateOverride), definitions) ?? initialStateOverride : readWorkspaceState(storageKey, mode, definitions, defaultOpenIds, layoutPreset),
     [defaultOpenIds, definitions, initialStateOverride, layoutPreset, mode, storageKey],
   );
   const [openIds, setOpenIds] = useState<string[]>(initial.openIds);
@@ -401,10 +401,11 @@ export function TradingWorkspace({
 
   function resetLayout() {
     if (defaultStateOverride) {
-      setOpenIds([...defaultStateOverride.openIds]);
-      setLayouts(cloneLayouts(defaultStateOverride.layouts));
-      setInstances({ ...defaultStateOverride.instances });
-      setGroups(cloneGroups(defaultStateOverride.groups ?? {}));
+      const next = parseWorkspaceState(JSON.stringify(defaultStateOverride), definitions) ?? defaultStateOverride;
+      setOpenIds([...next.openIds]);
+      setLayouts(cloneLayouts(next.layouts));
+      setInstances({ ...next.instances });
+      setGroups(cloneGroups(next.groups ?? {}));
       setSelectedNodeIds([]);
       return;
     }
@@ -868,9 +869,11 @@ function readWorkspaceState(
 function parseWorkspaceState(raw: string, definitions: WorkspaceContainerDefinition[]): CanvasWorkspaceState | null {
   try {
     const parsed = JSON.parse(raw) as Partial<CanvasWorkspaceState>;
-    if (![3, 4, 5, TRADING_WORKSPACE_LAYOUT_VERSION].includes(Number(parsed.layoutVersion)) || !parsed.layouts || !Array.isArray(parsed.openIds)) return null;
-    const migrated = migrateLegacyMicrostructureState(parsed as CanvasWorkspaceState);
+    const sourceVersion = Number(parsed.layoutVersion);
+    if (![3, 4, 5, 7, TRADING_WORKSPACE_LAYOUT_VERSION].includes(sourceVersion) || !parsed.layouts || !Array.isArray(parsed.openIds)) return null;
+    const legacyMigrated = migrateLegacyMicrostructureState(parsed as CanvasWorkspaceState);
     const definitionById = new Map(definitions.map((definition) => [definition.id, definition]));
+    const migrated = migrateTradingManagementState(legacyMigrated, sourceVersion, definitionById);
     const parsedInstances = migrated.instances && typeof migrated.instances === "object" ? migrated.instances : {};
     const openIds = migrated.openIds.filter((id) => definitionById.has(instanceKind(id, parsedInstances, definitionById)));
     const instances = Object.fromEntries(openIds.map((id) => [id, instanceKind(id, parsedInstances, definitionById)])) as Record<string, WorkspaceContainerId>;
@@ -880,6 +883,27 @@ function parseWorkspaceState(raw: string, definitions: WorkspaceContainerDefinit
   } catch {
     return null;
   }
+}
+
+function migrateTradingManagementState(state: CanvasWorkspaceState, sourceVersion: number, definitions: Map<WorkspaceContainerId, WorkspaceContainerDefinition>): CanvasWorkspaceState {
+  if (sourceVersion >= 8) return state;
+  const instances = { ...(state.instances ?? {}) };
+  const kinds = new Map(state.openIds.map((id) => [id, instanceKind(id, instances, definitions)]));
+  const executionAuditIds = state.openIds.filter((id) => kinds.get(id) === "fills");
+  const roundTripAuditIds = state.openIds.filter((id) => kinds.get(id) === "closed_trades");
+  const superseded = new Set([...executionAuditIds, ...roundTripAuditIds]);
+  const openIds = state.openIds.filter((id) => !superseded.has(id));
+  const layouts = { ...state.layouts };
+  const ensurePrimary = (kind: WorkspaceContainerId, fallbackId?: string) => {
+    if (!definitions.has(kind) || openIds.some((id) => instanceKind(id, instances, definitions) === kind)) return;
+    openIds.push(kind);
+    instances[kind] = kind;
+    layouts[kind] = fallbackId && state.layouts[fallbackId] ? { ...state.layouts[fallbackId] } : createAddedLayout(layouts, openIds.length - 1);
+  };
+  if (roundTripAuditIds.length) ensurePrimary("positions", roundTripAuditIds[0]);
+  if (executionAuditIds.length) ensurePrimary("orders", executionAuditIds[0]);
+  superseded.forEach((id) => { delete instances[id]; delete layouts[id]; });
+  return { ...state, groups: normalizeWorkspaceGroups(state.groups, openIds), instances, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts, openIds };
 }
 
 function createLayoutsForPreset(preset: "focus" | "global" | "mode", mode: TradingWorkspaceMode, ids: string[], instances: Record<string, WorkspaceContainerId> = {}) {

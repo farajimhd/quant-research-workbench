@@ -4100,14 +4100,24 @@ function drawLiveEntryLine(
   line.style.left = `${left}px`;
   line.style.top = `${y}px`;
   line.style.width = `${width}px`;
-  line.style.borderColor = "#2563eb";
+  line.style.borderColor = liveEntryLine.color;
 
   const control = document.createElement("div");
   control.className = "live-entry-position-control";
 
   const sizeBadge = document.createElement("span");
   sizeBadge.className = "live-entry-size-badge";
-  sizeBadge.textContent = liveEntryLine.quantity.toLocaleString();
+  sizeBadge.style.background = liveEntryLine.color;
+  if (liveEntryLine.labelParts?.length) {
+    liveEntryLine.labelParts.forEach((part) => {
+      const piece = document.createElement("b");
+      piece.className = `trade-label-part ${part.tone ?? "label"}`;
+      piece.textContent = part.text;
+      sizeBadge.appendChild(piece);
+    });
+  } else {
+    sizeBadge.textContent = liveEntryLine.quantity.toLocaleString();
+  }
   control.appendChild(sizeBadge);
 
   const pnlBadge = document.createElement("span");

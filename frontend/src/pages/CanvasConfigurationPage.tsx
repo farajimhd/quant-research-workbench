@@ -1,5 +1,5 @@
-import { Check, Clock3, ExternalLink, Link2, MapPin, PanelRightOpen, Plus, Save, Settings2, Trash2, Unlink } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronRight, Clock3, ExternalLink, Filter, Link2, MapPin, PanelRightOpen, Plus, Search, Save, Settings2, Trash2, Unlink } from "lucide-react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 
 import { api, query } from "../api/client";
 import {
@@ -28,7 +28,7 @@ import {
   type CanvasRegistry,
   type CanvasWorkspaceState,
 } from "../app/canvasWorkspace";
-import { ChartPanel, type ChartCatalogKnowledge, type ChartDisplayItem, type ChartPayload } from "../app/components/ChartPanel";
+import { ChartPanel, type ChartCatalogKnowledge, type ChartDisplayItem, type ChartPayload, type LiveEntryLine } from "../app/components/ChartPanel";
 import { AllNewsContainer, NewsDetailContainer, TickerNewsContainer } from "../app/components/NewsContainers";
 import { AllSecContainer, SecDetailContainer, TickerSecContainer } from "../app/components/SecContainers";
 import { MarketTime } from "../app/components/MarketTime";
@@ -174,6 +174,7 @@ type CanvasPreviewContext = { previewTime: string; sessionDate: string };
 type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; title: string };
 
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
+const MANAGER_DEFAULT_CONTAINER_IDS: WorkspaceContainerId[] = ["scanner", "chart", "portfolio", "positions", "orders"];
 const DEFAULT_SETTINGS: ContainerSettings = {
   version: 10,
   chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.microstructure_outlook"] },
@@ -1202,7 +1203,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
         clockLabel=""
         commandBarVisible={false}
         compact
-        defaultOpenIds={manager ? ALL_CONTAINER_IDS : initialCanvasState?.openIds ?? []}
+        defaultOpenIds={manager ? MANAGER_DEFAULT_CONTAINER_IDS : initialCanvasState?.openIds ?? []}
         defaultStateOverride={manager ? registry.defaultState ?? null : initialCanvasState}
         definitionsOverride={TRADING_WORKSPACE_CONTAINERS}
         historicalSourceReady={!error}
@@ -1334,7 +1335,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
     {linkOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} link configuration`} data-canvas-link-popover={instanceId}><div className="canvas-link-guide"><strong>Link color</strong><small>Same color = linked</small></div><LinkColorPicker containerTitle={definition.title} onChange={onLinkChange} value={linkGroup} /><LinkedContainerList containerTitle={definition.title} containers={linkedContainers} /></div> : null}
     {settingsOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} settings`}>{containerFields(definition.id, settings, linkContext, updateSettings, onLinkContextChange)}</div> : null}
     <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{definition.id === "chart"
-      ? <ChartContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} linkGroup={linkGroup} onLinkContextChange={onLinkContextChange} previewContext={previewContext} settings={settings} symbolEditable={symbolEditable} updateSettings={updateSettings} />
+      ? <ChartContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} linkGroup={linkGroup} onLinkContextChange={onLinkContextChange} previewContext={previewContext} settings={settings} symbolEditable={symbolEditable} trading={preview?.trading} updateSettings={updateSettings} />
       : definition.id === "microstructure"
         ? <QuotesTapeContainer end={new Date(chartCutoffMs).toISOString()} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} settings={settings.microstructure} start={dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()} symbol={linkContext.symbol} />
       : definition.id === "facts"
@@ -1386,8 +1387,8 @@ function renderPreview(id: WorkspaceContainerId, preview: CanvasPreview | null, 
   if (!preview) return <EmptyState label="No preview data" />;
   if (id === "scanner") return <PreviewTable columns={settings.scanner.showActivity ? ["symbol", "last", "change_pct", "volume", "trade_count"] : ["symbol", "last", "change_pct"]} onSymbolSelect={linkGroup === "none" ? undefined : (symbol) => onLinkContextChange({ symbol })} rows={preview.scanner.slice(0, settings.scanner.limit)} />;
   if (id === "portfolio") return <PortfolioPreview data={preview.trading} settings={settings.portfolio} />;
-  if (id === "positions") return <PositionsPreview data={preview.trading} settings={settings.positions} />;
-  if (id === "orders") return <OrdersPreview data={preview.trading} settings={settings.orders} />;
+  if (id === "positions") return <PositionsPreview data={preview.trading} onSymbolSelect={linkGroup === "none" ? undefined : (symbol) => onLinkContextChange({ symbol })} settings={settings.positions} />;
+  if (id === "orders") return <OrdersPreview data={preview.trading} onSymbolSelect={linkGroup === "none" ? undefined : (symbol) => onLinkContextChange({ symbol })} settings={settings.orders} />;
   if (id === "fills") return <ExecutionsPreview data={preview.trading} settings={settings.fills} />;
   if (id === "closed_trades") return <ClosedTradesPreview data={preview.trading} settings={settings.closed_trades} />;
   if (id === "activity") return <ActivityPreview data={preview.trading} settings={settings.activity} />;
@@ -1412,13 +1413,14 @@ type ChartContainerPreviewProps = {
   previewContext: CanvasPreviewContext;
   settings: ContainerSettings;
   symbolEditable: boolean;
+  trading?: CanonicalTradingPreview;
   updateSettings: SettingsUpdater;
 };
 
-const ChartContainerPreview = memo(function ChartContainerPreview({ cutoffMs, instanceId, linkContext, onLinkContextChange, previewContext, settings, symbolEditable, updateSettings }: ChartContainerPreviewProps) {
+const ChartContainerPreview = memo(function ChartContainerPreview({ cutoffMs, instanceId, linkContext, onLinkContextChange, previewContext, settings, symbolEditable, trading, updateSettings }: ChartContainerPreviewProps) {
   const liveChart = useCanvasLiveChart(linkContext.symbol, settings.chart.timeframe, cutoffMs, previewContext.sessionDate, settings.chart.visibleIndicators);
   const presentations = useTickerPresentations([linkContext.symbol]);
-  return <ChartPreview changeAsOf={new Date(cutoffMs).toISOString()} instanceId={instanceId} linkContext={linkContext} liveChart={liveChart} logoUrl={presentations[linkContext.symbol]?.logo_url} onLinkContextChange={onLinkContextChange} settings={settings} symbolEditable={symbolEditable} updateSettings={updateSettings} />;
+  return <ChartPreview changeAsOf={new Date(cutoffMs).toISOString()} instanceId={instanceId} linkContext={linkContext} liveChart={liveChart} logoUrl={presentations[linkContext.symbol]?.logo_url} onLinkContextChange={onLinkContextChange} settings={settings} symbolEditable={symbolEditable} trading={trading} updateSettings={updateSettings} />;
 }, chartContainerPreviewPropsEqual);
 
 function chartContainerPreviewPropsEqual(previous: ChartContainerPreviewProps, next: ChartContainerPreviewProps) {
@@ -1430,6 +1432,7 @@ function chartContainerPreviewPropsEqual(previous: ChartContainerPreviewProps, n
     && previous.linkContext.symbol === next.linkContext.symbol
     && previous.previewContext.sessionDate === next.previewContext.sessionDate
     && previous.previewContext.previewTime === next.previewContext.previewTime
+    && tradingPositionSignature(previous.trading, previous.linkContext.symbol) === tradingPositionSignature(next.trading, next.linkContext.symbol)
     && previous.symbolEditable === next.symbolEditable
     && previousChart.symbol === nextChart.symbol
     && previousChart.timeframe === nextChart.timeframe
@@ -1437,11 +1440,16 @@ function chartContainerPreviewPropsEqual(previous: ChartContainerPreviewProps, n
     && stringArraysEqual(previousChart.visibleIndicators, nextChart.visibleIndicators);
 }
 
+function tradingPositionSignature(trading: CanonicalTradingPreview | undefined, symbol: string) {
+  const row = trading?.positions.find((position) => nestedValue(position, "instrument", "symbol") === symbol);
+  return row ? `${row.account_id}:${row.quantity}:${row.average_price}:${row.market_price}:${row.unrealized_pnl}:${row.source_event_time}` : "";
+}
+
 function stringArraysEqual(previous: readonly string[], next: readonly string[]) {
   return previous.length === next.length && previous.every((value, index) => value === next[index]);
 }
 
-function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl, onLinkContextChange, settings, symbolEditable, updateSettings }: { changeAsOf: string; instanceId: string; linkContext: CanvasLinkContext; liveChart: CanvasLiveChartState; logoUrl?: string; onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void; settings: ContainerSettings; symbolEditable: boolean; updateSettings: SettingsUpdater }) {
+function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl, onLinkContextChange, settings, symbolEditable, trading, updateSettings }: { changeAsOf: string; instanceId: string; linkContext: CanvasLinkContext; liveChart: CanvasLiveChartState; logoUrl?: string; onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void; settings: ContainerSettings; symbolEditable: boolean; trading?: CanonicalTradingPreview; updateSettings: SettingsUpdater }) {
   const indicators = liveChart.indicators;
   const visibleIndicators = liveChart.indicatorsAvailable ? settings.chart.visibleIndicators : [];
   const timeframe = settings.chart.timeframe;
@@ -1460,10 +1468,20 @@ function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl,
   }
   const latestBar = liveChart.bars[liveChart.bars.length - 1];
   const sessionDate = latestBar?.session_date || latestBar?.bar_start.slice(0, 10);
+  const activePosition = trading?.positions.find((row) => nestedValue(row, "instrument", "symbol") === linkContext.symbol && Number(row.quantity || 0) !== 0);
+  const quantity = Number(activePosition?.quantity || 0);
+  const averagePrice = Number(activePosition?.average_price || 0);
+  const positionLine = activePosition && averagePrice > 0 ? {
+    color: quantity > 0 ? "var(--success)" : "var(--danger)",
+    labelParts: [{ text: quantity > 0 ? "LONG" : "SHORT", tone: "label" }, { text: `${Math.abs(quantity).toLocaleString()} @ ${money(averagePrice)}`, tone: "price" }],
+    pnl: Number(activePosition.unrealized_pnl || 0),
+    price: averagePrice,
+    quantity,
+  } satisfies LiveEntryLine : null;
   const emptyMessage = liveChart.connected
     ? `Waiting for the first live ${linkContext.symbol} ${timeframe} bar.`
     : "Start QMD Gateway to stream canonical live bars.";
-  return <ChartPanel canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={liveChart.indicatorsAvailable ? CHART_INDICATORS : []} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} indicatorOptions={[]} initialFitMode="recent" infoMessage={liveChart.historyNotice} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => updateSettings((current) => ({ ...current, chart: { ...current.chart, visibleIndicators: nextVisibleIndicators } }))} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={HISTORICAL_TIMEFRAMES} visibleColumns={visibleIndicators} />;
+  return <ChartPanel canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={liveChart.indicatorsAvailable ? CHART_INDICATORS : []} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} indicatorOptions={[]} initialFitMode="recent" infoMessage={liveChart.historyNotice} liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => updateSettings((current) => ({ ...current, chart: { ...current.chart, visibleIndicators: nextVisibleIndicators } }))} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={HISTORICAL_TIMEFRAMES} visibleColumns={visibleIndicators} />;
 }
 
 function historicalMarketLevelZones(rows: HistoricalIndicator[], bars: HistoricalBar[], visibleIndicators: string[]): NonNullable<ChartPayload["price_zones"]> {
@@ -2074,6 +2092,73 @@ function PreviewTable({ columns, onSymbolSelect, rows }: { columns: string[]; on
   return <div className="canvas-preview-table-wrap"><table className="canvas-preview-table"><thead><tr>{columns.map((column) => <th key={column}>{labelFor(column)}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={previewRowKey(row, columns, index)}>{columns.map((column) => <td className={`preview-cell-${column.replace(/[^a-z0-9_-]/gi, "-")}`} data-tone={cellTone(row[column], column)} key={column}><PreviewCell column={column} onSymbolSelect={onSymbolSelect} presentations={presentations} row={row} /></td>)}</tr>)}</tbody></table></div>;
 }
 
+type TradingDataTableProps = {
+  columns: string[];
+  defaultSort?: string;
+  filterColumn?: string;
+  filterLabel?: string;
+  onSymbolSelect?: (symbol: string) => void;
+  renderExpanded?: (row: PreviewRow) => ReactNode;
+  rows: PreviewRow[];
+  searchPlaceholder: string;
+};
+
+function TradingDataTable({ columns, defaultSort, filterColumn, filterLabel = "All", onSymbolSelect, renderExpanded, rows, searchPlaceholder }: TradingDataTableProps) {
+  const [queryText, setQueryText] = useState("");
+  const [filterValue, setFilterValue] = useState("all");
+  const [sortColumn, setSortColumn] = useState(defaultSort || columns[0] || "");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
+  const [expandedKey, setExpandedKey] = useState("");
+  const tickerColumns = columns.filter(isPreviewTickerColumn);
+  const presentations = useTickerPresentations(rows.flatMap((row) => tickerColumns.map((column) => String(row[column] || ""))));
+  const filterOptions = useMemo(() => filterColumn ? Array.from(new Set(rows.map((row) => String(row[filterColumn] ?? "").trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right)) : [], [filterColumn, rows]);
+  const visibleRows = useMemo(() => {
+    const queryValue = queryText.trim().toLowerCase();
+    const filtered = rows.filter((row) => {
+      if (filterColumn && filterValue !== "all" && String(row[filterColumn] ?? "") !== filterValue) return false;
+      if (!queryValue) return true;
+      return columns.some((column) => searchableValue(row[column]).includes(queryValue));
+    });
+    return [...filtered].sort((left, right) => compareTradingValues(left[sortColumn], right[sortColumn]) * (sortDirection === "asc" ? 1 : -1));
+  }, [columns, filterColumn, filterValue, queryText, rows, sortColumn, sortDirection]);
+  function changeSort(column: string) {
+    if (sortColumn === column) setSortDirection((current) => current === "asc" ? "desc" : "asc");
+    else { setSortColumn(column); setSortDirection("desc"); }
+  }
+  return <div className="trading-table-shell">
+    <div className="trading-table-toolbar">
+      <label className="trading-table-search"><Search aria-hidden="true" size={14} /><input aria-label={searchPlaceholder} onChange={(event) => setQueryText(event.target.value)} placeholder={searchPlaceholder} value={queryText} /></label>
+      {filterColumn ? <label className="trading-table-filter"><Filter aria-hidden="true" size={13} /><select aria-label={`Filter by ${filterLabel}`} onChange={(event) => setFilterValue(event.target.value)} value={filterValue}><option value="all">{filterLabel}</option>{filterOptions.map((option) => <option key={option} value={option}>{option}</option>)}</select></label> : null}
+      <span className="trading-table-count">{visibleRows.length} of {rows.length}</span>
+    </div>
+    {!visibleRows.length ? <EmptyState label={rows.length ? "No rows match the active search and filter" : "No point-in-time rows"} /> : <div className="canvas-preview-table-wrap"><table className="canvas-preview-table trading-data-table"><thead><tr>{renderExpanded ? <th aria-label="Expand row" className="trading-expand-column" /> : null}{columns.map((column) => <th aria-sort={sortColumn === column ? (sortDirection === "asc" ? "ascending" : "descending") : "none"} key={column}><button onClick={() => changeSort(column)} type="button"><span>{labelFor(column)}</span>{sortColumn === column ? sortDirection === "asc" ? <ArrowUp size={11} /> : <ArrowDown size={11} /> : <ArrowUpDown size={11} />}</button></th>)}</tr></thead><tbody>{visibleRows.map((row, index) => {
+      const key = previewRowKey(row, columns, index);
+      const expanded = expandedKey === key;
+      return <FragmentRow columns={columns} expanded={expanded} key={key} onExpand={renderExpanded ? () => setExpandedKey(expanded ? "" : key) : undefined} onSymbolSelect={onSymbolSelect} presentations={presentations} renderExpanded={renderExpanded} row={row} />;
+    })}</tbody></table></div>}
+  </div>;
+}
+
+function FragmentRow({ columns, expanded, onExpand, onSymbolSelect, presentations, renderExpanded, row }: { columns: string[]; expanded: boolean; onExpand?: () => void; onSymbolSelect?: (symbol: string) => void; presentations: ReturnType<typeof useTickerPresentations>; renderExpanded?: (row: PreviewRow) => ReactNode; row: PreviewRow }) {
+  return <>{<tr className={expanded ? "is-expanded" : undefined}>{renderExpanded ? <td className="trading-expand-column"><button aria-label={expanded ? "Collapse row" : "Expand row"} aria-expanded={expanded} onClick={onExpand} type="button">{expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button></td> : null}{columns.map((column) => <td className={`preview-cell-${column.replace(/[^a-z0-9_-]/gi, "-")}`} data-tone={cellTone(row[column], column)} key={column}><PreviewCell column={column} onSymbolSelect={onSymbolSelect} presentations={presentations} row={row} /></td>)}</tr>}{expanded && renderExpanded ? <tr className="trading-expanded-row"><td colSpan={columns.length + 1}>{renderExpanded(row)}</td></tr> : null}</>;
+}
+
+function searchableValue(value: unknown) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "object") return JSON.stringify(value).toLowerCase();
+  return String(value).toLowerCase();
+}
+
+function compareTradingValues(left: unknown, right: unknown) {
+  const leftNumber = Number(left);
+  const rightNumber = Number(right);
+  if (left !== "" && right !== "" && Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) return leftNumber - rightNumber;
+  const leftDate = Date.parse(String(left || ""));
+  const rightDate = Date.parse(String(right || ""));
+  if (Number.isFinite(leftDate) && Number.isFinite(rightDate)) return leftDate - rightDate;
+  return String(left ?? "").localeCompare(String(right ?? ""), undefined, { numeric: true, sensitivity: "base" });
+}
+
 function PreviewCell({ column, onSymbolSelect, presentations, row }: { column: string; onSymbolSelect?: (symbol: string) => void; presentations: ReturnType<typeof useTickerPresentations>; row: PreviewRow }) {
   if (isPreviewTickerColumn(column)) {
     const ticker = String(row[column] || "").trim().toUpperCase();
@@ -2107,29 +2192,92 @@ function PortfolioPreview({ data, settings }: { data: CanonicalTradingPreview; s
   </section>;
 }
 
-function PositionsPreview({ data, settings }: { data: CanonicalTradingPreview; settings: ContainerSettings["positions"] }) {
-  const rows = data.positions.map((row) => ({ account: row.account_id, symbol: nestedValue(row, "instrument", "symbol"), conid: nestedValue(row, "instrument", "conid"), asset: nestedValue(row, "instrument", "security_type"), currency: nestedValue(row, "instrument", "currency"), model: row.model, quantity: row.quantity, mark: row.market_price, market_value: row.market_value, average_price: row.average_price, unrealized_pnl: row.unrealized_pnl, realized_pnl: row.realized_pnl, updated_at: row.source_event_time }));
-  const columns = settings.showPnl ? ["account", "symbol", "conid", "asset", "currency", "model", "quantity", "mark", "market_value", "average_price", "unrealized_pnl", "realized_pnl", "updated_at"] : ["account", "symbol", "conid", "asset", "currency", "model", "quantity", "mark", "market_value", "average_price", "updated_at"];
-  return <section className="trading-preview"><TradingFreshness data={data} /><PreviewTable columns={columns} rows={rows.slice(0, settings.limit)} /></section>;
+function PositionsPreview({ data, onSymbolSelect, settings }: { data: CanonicalTradingPreview; onSymbolSelect?: (symbol: string) => void; settings: ContainerSettings["positions"] }) {
+  const [view, setView] = useState<"open" | "closed" | "timeline">("open");
+  const openRows = data.positions.map((row) => {
+    const symbol = nestedValue(row, "instrument", "symbol");
+    const account = String(row.account_id || "");
+    const quantity = Number(row.quantity || 0);
+    const averagePrice = Number(row.average_price || 0);
+    const mark = Number(row.market_price || 0);
+    const returnPct = averagePrice > 0 ? ((mark - averagePrice) / averagePrice) * 100 * (quantity < 0 ? -1 : 1) : 0;
+    const relatedOrders = data.orders.filter((order) => String(order.account_id || "") === account && nestedValue(order, "instrument", "symbol") === symbol && !terminalOrderState(String(order.lifecycle_state || "")));
+    const relatedExecutions = data.executions.filter((execution) => String(execution.account_id || "") === account && nestedValue(execution, "instrument", "symbol") === symbol);
+    return { account, symbol, side: quantity > 0 ? "Long" : quantity < 0 ? "Short" : "Flat", quantity, average_price: row.average_price, mark: row.market_price, return_pct: returnPct, market_value: row.market_value, unrealized_pnl: row.unrealized_pnl, realized_pnl: row.realized_pnl, working_orders: relatedOrders.length, fills: relatedExecutions.length, updated_at: row.source_event_time, _position: row, _orders: relatedOrders, _executions: relatedExecutions };
+  }).filter((row) => row.quantity !== 0);
+  const closedRows = data.closed_trades.map((row) => ({ closed_at: row.closed_at, symbol: nestedValue(row, "instrument", "symbol"), side: row.side, quantity: row.quantity, entry_price: row.entry_price, exit_price: row.exit_price, gross_pnl: row.gross_pnl, fees: row.fees, net_pnl: row.net_pnl, account: row.account_id, _trade: row }));
+  const timelineRows = data.activity.filter((row) => ["position_observed", "position_snapshot_completed", "execution_reported", "commission_reported"].includes(String(row.event_type || ""))).map((row) => ({ time: row.source_event_time, event: row.event_type, account: row.account_id, order_id: row.broker_order_id, execution_id: row.execution_id, provider: row.provider }));
+  const netPnl = openRows.reduce((total, row) => total + Number(row.unrealized_pnl || 0), 0);
+  const grossValue = openRows.reduce((total, row) => total + Math.abs(Number(row.market_value || 0)), 0);
+  const winners = openRows.filter((row) => Number(row.unrealized_pnl || 0) > 0).length;
+  const openColumns = settings.showPnl ? ["symbol", "side", "quantity", "average_price", "mark", "return_pct", "market_value", "unrealized_pnl", "working_orders", "fills", "account", "updated_at"] : ["symbol", "side", "quantity", "average_price", "mark", "market_value", "working_orders", "fills", "account", "updated_at"];
+  return <section className="trading-preview trading-position-manager"><TradingFreshness data={data} />
+    <div className="trading-summary-strip"><TradingMetric label="Open positions" value={String(openRows.length)} /><TradingMetric label="Winning" value={`${winners}/${openRows.length}`} tone={winners ? "positive" : "neutral"} /><TradingMetric label="Open P&L" value={signedMoney(netPnl)} tone={numberTone(netPnl)} /><TradingMetric label="Gross exposure" value={money(grossValue)} /></div>
+    <TradingTabs active={view} onChange={(value) => setView(value as typeof view)} tabs={[{ id: "open", label: "Open", count: openRows.length }, { id: "closed", label: "Closed", count: closedRows.length }, { id: "timeline", label: "Timeline", count: timelineRows.length }]} />
+    {view === "open" ? <TradingDataTable columns={openColumns} defaultSort="market_value" filterColumn="side" filterLabel="All directions" onSymbolSelect={onSymbolSelect} renderExpanded={(row) => <PositionDetail row={row} />} rows={openRows.slice(0, settings.limit)} searchPlaceholder="Search symbol, account, side…" /> : null}
+    {view === "closed" ? <><div className="trading-disclosure">{data.closed_trades_note}</div><TradingDataTable columns={settings.showPnl ? ["closed_at", "symbol", "side", "quantity", "entry_price", "exit_price", "gross_pnl", "fees", "net_pnl", "account"] : ["closed_at", "symbol", "side", "quantity", "entry_price", "exit_price", "account"]} defaultSort="closed_at" filterColumn="side" filterLabel="All directions" onSymbolSelect={onSymbolSelect} rows={closedRows.slice(0, settings.limit)} searchPlaceholder="Search closed positions…" /></> : null}
+    {view === "timeline" ? <TradingDataTable columns={["time", "event", "account", "order_id", "execution_id", "provider"]} defaultSort="time" filterColumn="event" filterLabel="All events" rows={timelineRows.slice(0, settings.limit)} searchPlaceholder="Search position history…" /> : null}
+  </section>;
 }
 
-function OrdersPreview({ data, settings }: { data: CanonicalTradingPreview; settings: ContainerSettings["orders"] }) {
-  const rows = data.orders.map((row) => ({ status: row.lifecycle_state, broker_status: row.broker_status_raw, symbol: nestedValue(row, "instrument", "symbol"), side: row.side, filled: row.filled_quantity, total: row.total_quantity, remaining: row.remaining_quantity, type: row.order_type, limit: row.limit_price, stop: row.stop_price, tif: row.time_in_force, account: row.account_id, order_id: row.broker_order_id, client_id: row.client_order_id, updated_at: row.source_event_time }));
-  const columns = settings.showOrderIds ? ["status", "broker_status", "symbol", "side", "filled", "total", "remaining", "type", "limit", "stop", "tif", "account", "order_id", "client_id", "updated_at"] : ["status", "broker_status", "symbol", "side", "filled", "total", "remaining", "type", "limit", "stop", "tif", "account", "updated_at"];
-  return <section className="trading-preview"><TradingFreshness data={data} /><PreviewTable columns={columns} rows={rows.slice(0, settings.limit)} /></section>;
+function PositionDetail({ row }: { row: PreviewRow }) {
+  const orders = (row._orders as PreviewRow[] | undefined) ?? [];
+  const executions = (row._executions as PreviewRow[] | undefined) ?? [];
+  const position = (row._position as PreviewRow | undefined) ?? {};
+  const orderRows = orders.map(orderTableRow);
+  const executionRows = executions.map(executionTableRow);
+  return <div className="trading-row-detail"><div className="trading-detail-facts"><span><small>Contract</small><strong>{String(nestedValue(position, "instrument", "conid") || "—")}</strong></span><span><small>Asset / currency</small><strong>{String(nestedValue(position, "instrument", "security_type") || "—")} · {String(nestedValue(position, "instrument", "currency") || "—")}</strong></span><span><small>Model</small><strong>{String(position.model || "Default")}</strong></span><span><small>Snapshot</small><strong>{String(position.snapshot_id || "—")}</strong></span></div><div className="trading-related-grid"><section><header><strong>Working orders</strong><span>{orders.length}</span></header>{orders.length ? <PreviewTable columns={["status", "side", "remaining", "type", "limit", "stop", "order_id"]} rows={orderRows} /> : <p>No working orders for this position.</p>}</section><section><header><strong>Recent fills</strong><span>{executions.length}</span></header>{executions.length ? <PreviewTable columns={["time", "side", "quantity", "price", "exchange", "commission"]} rows={executionRows} /> : <p>No execution evidence in the loaded window.</p>}</section></div></div>;
+}
+
+function OrdersPreview({ data, onSymbolSelect, settings }: { data: CanonicalTradingPreview; onSymbolSelect?: (symbol: string) => void; settings: ContainerSettings["orders"] }) {
+  const [view, setView] = useState<"working" | "all" | "fills">("working");
+  const orderRows: PreviewRow[] = data.orders.map((row) => ({ ...orderTableRow(row), _order: row, _executions: data.executions.filter((execution) => String(execution.account_id || "") === String(row.account_id || "") && String(execution.broker_order_id || "") === String(row.broker_order_id || "")) }));
+  const workingRows = orderRows.filter((row) => !terminalOrderState(String(row.status || "")));
+  const executionRows = data.executions.map(executionTableRow);
+  const filledCount = orderRows.filter((row) => String(row.status) === "filled").length;
+  const rejectedCount = orderRows.filter((row) => String(row.status) === "rejected").length;
+  const columns = settings.showOrderIds ? ["status", "broker_status", "symbol", "side", "progress", "remaining", "type", "limit", "stop", "tif", "account", "order_id", "updated_at"] : ["status", "symbol", "side", "progress", "remaining", "type", "limit", "stop", "tif", "account", "updated_at"];
+  const activeRows = view === "working" ? workingRows : orderRows;
+  return <section className="trading-preview trading-order-manager"><TradingFreshness data={data} />
+    <div className="trading-summary-strip"><TradingMetric label="Working" value={String(workingRows.length)} tone={workingRows.length ? "primary" : "neutral"} /><TradingMetric label="Filled" value={String(filledCount)} tone={filledCount ? "positive" : "neutral"} /><TradingMetric label="Rejected" value={String(rejectedCount)} tone={rejectedCount ? "negative" : "neutral"} /><TradingMetric label="Executions" value={String(executionRows.length)} /></div>
+    <TradingTabs active={view} onChange={(value) => setView(value as typeof view)} tabs={[{ id: "working", label: "Working", count: workingRows.length }, { id: "all", label: "All orders", count: orderRows.length }, { id: "fills", label: "Fills", count: executionRows.length }]} />
+    {view !== "fills" ? <TradingDataTable columns={columns} defaultSort="updated_at" filterColumn="status" filterLabel="All statuses" onSymbolSelect={onSymbolSelect} renderExpanded={(row) => <OrderDetail row={row} />} rows={activeRows.slice(0, settings.limit)} searchPlaceholder="Search orders, symbols, IDs…" /> : <TradingDataTable columns={["time", "symbol", "side", "quantity", "price", "exchange", "commission", "fee_state", "account", "order_id", "execution_id"]} defaultSort="time" filterColumn="side" filterLabel="All sides" onSymbolSelect={onSymbolSelect} rows={executionRows.slice(0, settings.limit)} searchPlaceholder="Search fills, venues, order IDs…" />}
+  </section>;
+}
+
+function OrderDetail({ row }: { row: PreviewRow }) {
+  const order = (row._order as PreviewRow | undefined) ?? {};
+  const executions = ((row._executions as PreviewRow[] | undefined) ?? []).map(executionTableRow);
+  return <div className="trading-row-detail"><div className="trading-detail-facts"><span><small>Client order</small><strong>{String(order.client_order_id || "—")}</strong></span><span><small>Command</small><strong>{String(order.command_id || "—")}</strong></span><span><small>Parent</small><strong>{String(order.parent_order_id || "—")}</strong></span><span><small>Broker message</small><strong>{String(order.warning || order.rejection_reason || "None")}</strong></span></div><section className="trading-fill-evidence"><header><strong>Execution evidence</strong><span>{executions.length} fill{executions.length === 1 ? "" : "s"}</span></header>{executions.length ? <PreviewTable columns={["time", "execution_id", "side", "quantity", "price", "exchange", "commission", "fee_state"]} rows={executions} /> : <p>This order has no fills in the loaded execution window.</p>}</section></div>;
 }
 
 function ExecutionsPreview({ data, settings }: { data: CanonicalTradingPreview; settings: ContainerSettings["fills"] }) {
-  const rows = data.executions.map((row) => ({ time: row.source_event_time, execution_id: row.execution_id, symbol: nestedValue(row, "instrument", "symbol"), side: row.side, quantity: row.quantity, price: row.price, exchange: row.exchange, commission: row.commission, fee_state: row.commission_status, net_amount: row.net_amount, account: row.account_id, order_id: row.broker_order_id }));
+  const rows = data.executions.map(executionTableRow);
   const columns = settings.showCommission ? ["time", "symbol", "side", "quantity", "price", "exchange", "commission", "fee_state", "net_amount", "account", "order_id", "execution_id"] : ["time", "symbol", "side", "quantity", "price", "exchange", "account", "order_id", "execution_id"];
-  return <section className="trading-preview"><TradingFreshness data={data} /><PreviewTable columns={columns} rows={rows.slice(0, settings.limit)} /></section>;
+  return <section className="trading-preview"><TradingFreshness data={data} /><div className="trading-disclosure">Advanced immutable execution audit. For routine management, use Orders &amp; Fills where each order expands into its related executions.</div><TradingDataTable columns={columns} defaultSort="time" filterColumn="side" filterLabel="All sides" rows={rows.slice(0, settings.limit)} searchPlaceholder="Search immutable execution evidence…" /></section>;
 }
 
 function ClosedTradesPreview({ data, settings }: { data: CanonicalTradingPreview; settings: ContainerSettings["closed_trades"] }) {
   const rows = data.closed_trades.map((row) => ({ closed_at: row.closed_at, symbol: nestedValue(row, "instrument", "symbol"), side: row.side, quantity: row.quantity, entry_price: row.entry_price, exit_price: row.exit_price, gross_pnl: row.gross_pnl, fees: row.fees, net_pnl: row.net_pnl, account: row.account_id }));
   const columns = settings.showFees ? ["closed_at", "symbol", "side", "quantity", "entry_price", "exit_price", "gross_pnl", "fees", "net_pnl", "account"] : ["closed_at", "symbol", "side", "quantity", "entry_price", "exit_price", "gross_pnl", "net_pnl", "account"];
-  return <section className="trading-preview"><div className="trading-disclosure">{data.closed_trades_note}</div><PreviewTable columns={columns} rows={rows.slice(0, settings.limit)} /></section>;
+  return <section className="trading-preview"><div className="trading-disclosure">Advanced derived round-trip audit. The Position Manager provides the normal open, closed, and lifecycle workflow. {data.closed_trades_note}</div><TradingDataTable columns={columns} defaultSort="closed_at" filterColumn="side" filterLabel="All sides" rows={rows.slice(0, settings.limit)} searchPlaceholder="Search derived round trips…" /></section>;
 }
+
+function TradingTabs({ active, onChange, tabs }: { active: string; onChange: (id: string) => void; tabs: Array<{ count: number; id: string; label: string }> }) {
+  return <div aria-label="Trading view" className="trading-view-tabs" role="tablist">{tabs.map((tab) => <button aria-selected={active === tab.id} className={active === tab.id ? "active" : undefined} key={tab.id} onClick={() => onChange(tab.id)} role="tab" type="button"><span>{tab.label}</span><strong>{tab.count}</strong></button>)}</div>;
+}
+
+function orderTableRow(row: PreviewRow): PreviewRow {
+  const filled = Number(row.filled_quantity || 0);
+  const total = Number(row.total_quantity || 0);
+  return { status: row.lifecycle_state, broker_status: row.broker_status_raw, symbol: nestedValue(row, "instrument", "symbol"), side: row.side, progress: `${filled}/${total}`, filled, total, remaining: row.remaining_quantity, type: row.order_type, limit: row.limit_price, stop: row.stop_price, tif: row.time_in_force, account: row.account_id, order_id: row.broker_order_id, client_id: row.client_order_id, updated_at: row.source_event_time };
+}
+
+function executionTableRow(row: PreviewRow): PreviewRow {
+  return { time: row.source_event_time, execution_id: row.execution_id, symbol: nestedValue(row, "instrument", "symbol"), side: row.side, quantity: row.quantity, price: row.price, exchange: row.exchange, commission: row.commission, fee_state: row.commission_status, net_amount: row.net_amount, account: row.account_id, order_id: row.broker_order_id };
+}
+
+function terminalOrderState(status: string) { return ["filled", "cancelled", "rejected", "expired", "inactive"].includes(status.toLowerCase()); }
 
 function ActivityPreview({ data, settings }: { data: CanonicalTradingPreview; settings: ContainerSettings["activity"] }) {
   const rows = data.activity.map((row) => ({ time: row.source_event_time, event: row.event_type, account: row.account_id, order_id: row.broker_order_id, client_id: row.client_order_id, execution_id: row.execution_id, provider: row.provider, correlation: row.correlation_id }));
@@ -2279,7 +2427,14 @@ function money(value: unknown) { const number = typeof value === "number" ? valu
 function formatPreviewDate(value?: string) { if (!value) return "this date"; return new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(new Date(`${value}T12:00:00Z`)); }
 function formatCell(value: unknown, column: string) { if (value === null || value === undefined || value === "") return "—"; if (column.includes("time") || column.includes("at_utc")) { const date = new Date(String(value)); return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit", timeZone: "America/New_York" }).format(date); } const numeric = typeof value === "number" ? value : /^-?\d+(?:\.\d+)?$/.test(String(value)) ? Number(value) : Number.NaN; if (Number.isFinite(numeric)) { if (isMoneyColumn(column)) return new Intl.NumberFormat("en-US", { currency: "USD", maximumFractionDigits: 4, minimumFractionDigits: column.includes("price") || column === "mark" || column === "limit" || column === "stop" ? 2 : 0, style: "currency" }).format(numeric); return new Intl.NumberFormat("en-US", { maximumFractionDigits: column.includes("pct") ? 2 : 4 }).format(numeric); } if (Array.isArray(value)) return value.join(", "); return String(value); }
 function isMoneyColumn(column: string) { return ["price", "mark", "limit", "stop", "market_value", "average_price", "unrealized_pnl", "realized_pnl", "gross_pnl", "net_pnl", "fees", "commission", "net_amount", "cash", "settled", "net_liquidation", "entry_price", "exit_price"].some((key) => column === key || column.endsWith(`_${key}`)); }
-function cellTone(value: unknown, column: string) { if (!["unrealized_pnl", "realized_pnl", "gross_pnl", "net_pnl"].includes(column)) return "neutral"; const number = Number(value); return number > 0 ? "positive" : number < 0 ? "negative" : "neutral"; }
+function cellTone(value: unknown, column: string) {
+  if (["unrealized_pnl", "realized_pnl", "gross_pnl", "net_pnl", "return_pct"].includes(column)) { const number = Number(value); return number > 0 ? "positive" : number < 0 ? "negative" : "neutral"; }
+  const normalized = String(value || "").toLowerCase();
+  if (column === "side") return ["buy", "long"].includes(normalized) ? "positive" : ["sell", "short"].includes(normalized) ? "negative" : "neutral";
+  if (column === "status") return ["filled"].includes(normalized) ? "positive" : ["rejected", "cancelled", "expired", "inactive"].includes(normalized) ? "negative" : ["working", "partially_filled", "pending_submission", "trigger_pending"].includes(normalized) ? "primary" : "neutral";
+  if (column === "fee_state" && normalized === "pending") return "warning";
+  return "neutral";
+}
 function containerTitle(id: WorkspaceContainerId) { return TRADING_WORKSPACE_CONTAINERS.find((definition) => definition.id === id)?.title ?? id; }
 function workspaceContainerKind(instanceId: string, state?: CanvasWorkspaceState | null): WorkspaceContainerId {
   const stored = state?.instances[instanceId];
