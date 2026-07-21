@@ -102,6 +102,13 @@ exchanging data. ClickHouse's 50 GiB drop guard is overridden only for table
 names matching the renderer's run-scoped staging convention; canonical and
 backup names are rejected by construction.
 
+Production recovery for run `sec_render_v8_20260716_151718` completed through
+this path on 2026-07-21. The durable state records status `complete`, equal
+target/staging statistics of 23,976,233 rows and checksum
+`547712102994194876356`, and `recovered_post_exchange=true`. Both run-scoped
+staging tables are absent; the canonical target and the prior-target backup are
+the only retained data tables from the cutover.
+
 The exact previously failing bucket was exercised against the production
 staging corpus in a temporary table: 375,581 rows copied and matched checksum
 `14158962764992567782` in 568 seconds. Observed query memory remained below
