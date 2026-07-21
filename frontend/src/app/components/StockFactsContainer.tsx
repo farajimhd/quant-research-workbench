@@ -121,6 +121,7 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
   const health = payload?.synthesis?.health;
   const fundamentalAnalysis = payload?.fundamental_analysis;
   const primaryFundamentals = (payload?.fundamentals ?? []).slice(0, 8);
+  const primaryDerivedFundamentals = selectPrimaryDerivedFundamentals(fundamentalAnalysis?.metrics ?? []);
   const companyName = text(identity.branding_name, identity.issuer_name, identity.legal_name, identity.security_name) || presentations[symbol]?.issuer_name || symbol;
   const companyCountry = countryName(identity.company_country_code);
   const sharesOutstanding = number(float.shares_outstanding, market.share_class_shares_outstanding, market.weighted_shares_outstanding);
@@ -174,6 +175,8 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
               </FactSection>
               <FactSection className="facts-fundamentals-section" icon={Landmark} onGuide={() => setSectionGuide("fundamentals")} subtitle="SEC-reported evidence and aligned strength measures" title="Fundamentals">
                 {fundamentalAnalysis ? <FundamentalStrength analysis={fundamentalAnalysis} /> : null}
+                {primaryDerivedFundamentals.length ? <section className="fundamental-decision-strip"><header><span><Sparkles size={12} /><strong>Decision metrics</strong></span><small>Derived from aligned SEC observations</small></header><div>{primaryDerivedFundamentals.map((metric) => <DerivedFundamentalCard compact key={metric.id} metric={metric} />)}</div></section> : null}
+                {primaryFundamentals.length ? <div className="fundamental-reported-heading"><strong>Reported anchors</strong><small>Latest standardized XBRL observations</small></div> : null}
                 {primaryFundamentals.length ? <div className="fundamental-list">{primaryFundamentals.map((fact) => {
                   const metric = `fundamental:${text(fact.tag).toLowerCase()}`;
                   const label = text(fact.label);
@@ -390,6 +393,38 @@ const HEALTH_COMPONENT_EXPLANATIONS: Record<string, string> = {
 
 function HealthComponentGuide({ components }: { components: HealthComponent[] }) { return <div className="facts-guide-evidence">{components.map((component) => <article key={component.label}><span><strong>{component.label}</strong><small>{component.weight}% of final score</small></span><b>{component.score == null ? "Unavailable" : `${Math.round(component.score)}/100`}</b><p>{HEALTH_COMPONENT_EXPLANATIONS[component.label] || "Missing evidence lowers coverage and is not silently treated as a neutral score."}</p></article>)}</div>; }
 
+const PRIMARY_DERIVED_FUNDAMENTAL_IDS = ["free_cash_flow", "operating_margin", "revenue_growth", "current_ratio", "interest_coverage", "debt_to_equity", "net_margin", "return_on_equity"];
+
+function selectPrimaryDerivedFundamentals(metrics: DerivedFundamental[]) {
+  const byId = new Map(metrics.map((metric) => [metric.id, metric]));
+  return PRIMARY_DERIVED_FUNDAMENTAL_IDS.map((id) => byId.get(id)).filter((metric): metric is DerivedFundamental => Boolean(metric)).slice(0, 4);
+}
+
+function derivedFundamentalSignal(metric: DerivedFundamental): { label: string; tone: "negative" | "neutral" | "positive" | "warning" } {
+  const value = metric.value;
+  if (["free_cash_flow", "operating_margin", "net_margin", "gross_margin", "return_on_assets", "return_on_equity", "revenue_growth", "earnings_growth", "working_capital"].includes(metric.id)) {
+    return value > 0 ? { label: "Supportive", tone: "positive" } : value < 0 ? { label: "Pressure", tone: "negative" } : { label: "Neutral", tone: "neutral" };
+  }
+  if (["share_count_growth", "diluted_share_growth"].includes(metric.id)) {
+    return value > 0 ? { label: "Dilutive", tone: "negative" } : value < 0 ? { label: "Accretive", tone: "positive" } : { label: "Stable", tone: "neutral" };
+  }
+  if (metric.id === "current_ratio") return value >= 1.5 ? { label: "Liquid", tone: "positive" } : value >= 1 ? { label: "Adequate", tone: "neutral" } : { label: "Caution", tone: "warning" };
+  if (metric.id === "debt_to_equity") return value <= 1 ? { label: "Contained", tone: "positive" } : value <= 2 ? { label: "Elevated", tone: "warning" } : { label: "High leverage", tone: "negative" };
+  if (metric.id === "interest_coverage") return value >= 3 ? { label: "Covered", tone: "positive" } : value >= 1 ? { label: "Thin cover", tone: "warning" } : { label: "Uncovered", tone: "negative" };
+  if (metric.id === "cash_conversion") return value >= 1 ? { label: "Strong conversion", tone: "positive" } : value >= 0 ? { label: "Partial conversion", tone: "neutral" } : { label: "Cash pressure", tone: "negative" };
+  return { label: "Context", tone: "neutral" };
+}
+
+function DerivedFundamentalCard({ compact = false, metric }: { compact?: boolean; metric: DerivedFundamental }) {
+  const signal = derivedFundamentalSignal(metric);
+  return <article className="derived-fundamental-card" data-compact={compact ? "true" : "false"} data-tone={signal.tone}>
+    <header><span>{metric.label}</span><em>{signal.label}</em></header>
+    <strong>{formatDerivedFundamental(metric)}</strong>
+    <small>{metric.formula}</small>
+    {!compact ? <footer>{dateLabel(metric.period_end_date, "period")}</footer> : null}
+  </article>;
+}
+
 function FundamentalStrength({ analysis }: { analysis: FundamentalAnalysis }) {
   return <section className="fundamental-strength" data-tone={analysis.tone}>
     <header><span><Sparkles size={14} /><small>Financial strength</small><strong>{analysis.label}</strong></span><b>{analysis.score == null ? "—" : `${Math.round(analysis.score)}/100`}</b><em>{Math.round(analysis.coverage_percent)}% evidence</em></header>
@@ -400,9 +435,9 @@ function FundamentalStrength({ analysis }: { analysis: FundamentalAnalysis }) {
 function FundamentalsModal({ analysis, facts, metricChanges, onClose, onHistory }: { analysis?: FundamentalAnalysis; facts: FundamentalFact[]; metricChanges: Record<string, MetricChange>; onClose: () => void; onHistory: (descriptor: MetricDescriptor) => void }) {
   return <Modal className="facts-guide-modal facts-fundamentals-modal" onClose={onClose} title="Complete SEC fundamentals">
     <div className="facts-guide-content">
-      {analysis ? <><div className="facts-guide-intro"><strong>{analysis.label}{analysis.score == null ? "" : ` · ${Math.round(analysis.score)}/100`}</strong><p>The strength label combines aligned profitability, growth, cash quality, balance-sheet, and capital-discipline evidence. It is an operating-quality summary, not a price forecast. Missing inputs reduce coverage instead of being treated as neutral.</p></div><FundamentalStrength analysis={analysis} /></> : null}
-      {analysis?.metrics.length ? <section className="fundamental-modal-section"><header><span><Sparkles size={14} /><strong>Derived decision metrics</strong></span><small>Exact formulas over aligned SEC observations</small></header><div className="derived-fundamental-grid">{analysis.metrics.map((metric) => <article key={metric.id}><span>{metric.label}</span><strong>{formatDerivedFundamental(metric)}</strong><small>{metric.formula}</small><em>{dateLabel(metric.period_end_date, "period")}</em></article>)}</div></section> : null}
-      <section className="fundamental-modal-section"><header><span><Landmark size={14} /><strong>Reported SEC observations</strong></span><small>{facts.length} selected standardized concepts</small></header><div className="fundamental-modal-list">{facts.map((fact) => {
+      {analysis ? <><section className="fundamental-modal-hero" data-tone={analysis.tone}><div><small>SEC-derived operating profile</small><span><strong>{analysis.label}</strong><b>{analysis.score == null ? "—" : `${Math.round(analysis.score)}/100`}</b></span><p>The strength label combines aligned profitability, growth, cash quality, balance-sheet, and capital-discipline evidence. It is operating context, not a price forecast.</p></div><em>{Math.round(analysis.coverage_percent)}% evidence coverage</em></section><FundamentalStrength analysis={analysis} /></> : null}
+      {analysis?.metrics.length ? <section className="fundamental-modal-section derived-decision-section"><header><span><Sparkles size={16} /><strong>Derived decision metrics</strong></span><small>Primary interpretation layer · exact formulas over aligned SEC observations</small></header><div className="derived-fundamental-grid">{analysis.metrics.map((metric) => <DerivedFundamentalCard key={metric.id} metric={metric} />)}</div></section> : null}
+      <section className="fundamental-modal-section reported-fundamental-section"><header><span><Landmark size={14} /><strong>Reported SEC observations</strong></span><small>{facts.length} supporting standardized concepts</small></header><div className="fundamental-modal-list">{facts.map((fact) => {
         const label = text(fact.label); const metric = `fundamental:${text(fact.tag).toLowerCase()}`;
         return <article key={`${label}-${text(fact.tag)}`}><MetricLabel freshness={fact.freshness ?? undefined} label={label} onHistory={() => onHistory({ label, metric })} /><MetricValue change={metricChanges[metric]} label={label} value={formatFundamental(fact)} /><p>{text(fact.description)}</p><small>{fundamentalMeta(fact)} · {text(fact.taxonomy)}:{text(fact.tag)}</small></article>;
       })}</div></section>
