@@ -4,6 +4,14 @@ This document tracks the reviewed public flow for the reference gateway. It is
 kept self-contained so each step can be reviewed without reading the Python
 source first.
 
+> **Current architecture note (2026-07-21):** The Stage 6 database alert stream
+> and Stage 7 generic fact-table design described below were superseded before
+> production adoption. The active gateway records canonical mapping problems in
+> `id_mapping_issue_v1`, writes audit/runtime artifacts, and keeps provider
+> cadence in `market_reference_source_schedule_v1`. It does not create, fill,
+> audit, or consume `market_reference_alert_*` or generic `security_*_fact_v1`
+> tables. Those sections remain only as historical design context.
+
 ## Review Comment Ledger
 
 | ID | Stage | Comment | Status |
@@ -23,10 +31,10 @@ source first.
 | C13 | Flow Stage 4 | Audit and current-state read reviewed and accepted. Audit warnings/errors must be visible as grouped terminal aggregates plus recent/high-priority messages. | Accepted |
 | C14 | Flow Stage 5 | Source sync is the core service function. It must run on predefined provider/data-domain frequencies and sync active-ticker data from Massive, IBKR, SEC, FINRA, and future providers without using low-level operator flags. | Added |
 | C15 | Flow Stage 5 | Provider contracts must list exactly what is received from each provider, how it is used, and what creates non-tradable issues. | Added |
-| C16 | Flow Stage 6 | Add a universal alert table design. The reference gateway monitors normalized news, SEC, Massive, FINRA, IBKR, and internal reference events, emits configured alerts, and gives consumers enough labels/groups to build detailed strategies. | Added |
-| C17 | Flow Stage 6 | Consumer services are external to the reference gateway. The reference gateway may also read its own emitted alerts for internal repair, maintenance, and publication decisions, but consumer execution belongs in downstream services. | Added |
-| C18 | Flow Stage 7 | Add canonical security fact tables aligned with alert families/groups. Avoid redundant storage: source tables keep provider detail, fact tables keep compact normalized history, and trading publications keep latest pre-joined rows. | Added |
-| C19 | Flow Stage 7 | Add the fact-layer flow position and initial-fill design. Separate deterministic DB-only fillers from workstation/LLM batching so cheap SQL fills are not blocked by expensive text/model extraction. | Added |
+| C16 | Flow Stage 6 | Add a universal alert table design. The reference gateway monitors normalized news, SEC, Massive, FINRA, IBKR, and internal reference events, emits configured alerts, and gives consumers enough labels/groups to build detailed strategies. | Superseded |
+| C17 | Flow Stage 6 | Consumer services are external to the reference gateway. The reference gateway may also read its own emitted alerts for internal repair, maintenance, and publication decisions, but consumer execution belongs in downstream services. | Superseded |
+| C18 | Flow Stage 7 | Add canonical security fact tables aligned with alert families/groups. Avoid redundant storage: source tables keep provider detail, fact tables keep compact normalized history, and trading publications keep latest pre-joined rows. | Superseded |
+| C19 | Flow Stage 7 | Add the fact-layer flow position and initial-fill design. Separate deterministic DB-only fillers from workstation/LLM batching so cheap SQL fills are not blocked by expensive text/model extraction. | Superseded |
 
 ## Reviewed Flow Stages
 

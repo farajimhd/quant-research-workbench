@@ -3,11 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime
 
-from services.reference_gateway.active_tickers import ActiveTickerPlan, MissingTickerCandidate
-from services.reference_gateway.alerts import alert_row, build_active_ticker_alerts, build_audit_alerts
-from services.reference_gateway.audit import AuditCheck, ReferenceAuditReport
+from services.reference_gateway.active_tickers import MissingTickerCandidate
 from services.reference_gateway.canonical_graph_writer import ExistingGraph, build_candidate_rows
-from services.reference_gateway.facts import FACT_TABLE_SPECS, FACT_TABLES, fact_schema_ddl
 from services.reference_gateway.table_groups import table_group_by_id
 
 
@@ -49,43 +46,16 @@ def main() -> None:
     bad_candidate = replace(candidate, ticker="BADT", cik="", share_class_figi="", composite_figi="", overview={}, ibkr_candidates=[])
     _, bad_issues = build_candidate_rows(bad_candidate, graph, "smoke", datetime.now(UTC))
     assert {issue.issue_type for issue in bad_issues} >= {"missing_durable_issuer_identifier", "missing_figi_security_identifier", "missing_unique_ibkr_conid"}
-    plan = ActiveTickerPlan(
-        checked_at_utc=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-        provider_rows=1,
-        provider_pages=1,
-        provider_saturated=False,
-        known_active_symbols=0,
-        missing_tickers=1,
-        overview_fetched=0,
-        ibkr_searched=0,
-        candidate_limit=1,
-        candidates=[replace(bad_candidate, proposed_action="open_mapping_issue_missing_unique_ibkr_conid")],
-        wall_seconds=0.01,
-    )
-    mapping_alerts = build_active_ticker_alerts(plan)
-    assert len(mapping_alerts) == 1
-    mapping_row = alert_row(mapping_alerts[0])
-    assert mapping_row["alert_family"] == "tradability_guardrail"
-    assert mapping_row["affects_tradability"] == 1
-    audit_report = ReferenceAuditReport(
-        status="failed",
-        checked_at_utc=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-        database="q_live",
-        read_database="q_live",
-        write_database="q_live",
-        wall_seconds=0.01,
-        checks=[AuditCheck("required_tables", "error", "failed", 1, "Missing required reference tables.")],
-    )
-    audit_alerts = build_audit_alerts(audit_report, report_path="smoke.json")
-    assert len(audit_alerts) == 1
-    assert alert_row(audit_alerts[0])["alert_group"] == "reference_audit"
-    fact_group = table_group_by_id("canonical_security_facts")
-    assert fact_group is not None
-    assert set(FACT_TABLES) == set(fact_group.tables)
-    assert len(FACT_TABLE_SPECS) == len(FACT_TABLES)
-    fact_ddl = "\n".join(fact_schema_ddl("q_live", "index_granularity = 8192"))
-    for table_name in FACT_TABLES:
-        assert table_name in fact_ddl
+    mapping_group = table_group_by_id("source_mapping_and_issues")
+    assert mapping_group is not None
+    assert "id_sec_market_bridge_v3" in mapping_group.tables
+    assert "id_issuer_relationship_v1" in mapping_group.tables
+    assert "id_sec_market_bridge_v1" not in mapping_group.tables
+    schedule_group = table_group_by_id("source_schedule")
+    assert schedule_group is not None
+    assert schedule_group.tables == ("market_reference_source_schedule_v1",)
+    assert table_group_by_id("reference_alerts") is None
+    assert table_group_by_id("canonical_security_facts") is None
     print("reference_gateway_smoke_test=passed")
 
 

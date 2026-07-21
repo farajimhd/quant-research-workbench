@@ -12,24 +12,12 @@ from datetime import UTC, datetime
 from research.mlops.clickhouse import discover_clickhouse_env_files
 from research.mlops.env import load_env_files, secret_status
 from services.reference_gateway.active_tickers import ActiveTickerPlan, run_active_ticker_plan, write_active_ticker_plan
-from services.reference_gateway.alerts import (
-    ReferenceAlert,
-    build_audit_alerts,
-    build_graph_issue_alerts,
-    build_publication_maintenance_alert,
-    build_source_sync_alerts,
-    build_tradability_block_alert,
-    ensure_alert_schema,
-    write_alerts,
-)
 from services.reference_gateway.audit import run_reference_audit, write_report
 from services.reference_gateway.canonical_graph_writer import write_canonical_graph_candidates
 from services.reference_gateway.config import ReferenceGatewayConfig, ReferenceGatewayConfigOverrides
 from services.reference_gateway.country_assertions import write_country_assertions
 from services.reference_gateway.current_ticker_detail_sync import CurrentTickerDetailSyncResult, run_current_ticker_detail_sync
 from services.reference_gateway.daemon import run_reference_daemon
-from services.reference_gateway.fact_fillers import fill_reference_tradability_and_routing_facts
-from services.reference_gateway.facts import ensure_fact_schema
 from services.reference_gateway.issue_resolution import resolve_stale_active_ticker_issues
 from services.reference_gateway.issue_writer import write_active_ticker_mapping_issues, write_graph_mapping_issues
 from services.reference_gateway.ibkr_borrow_sync import IbkrBorrowSyncResult, run_startup_ibkr_borrow_sync
@@ -156,17 +144,6 @@ def main() -> None:
             return
         add_operation(name, status, detail, rows=rows, seconds=seconds)
 
-    def write_alert_batch(alerts: list[ReferenceAlert], reason: str) -> None:
-        if not config.execute:
-            return
-        started = time.perf_counter()
-        result = write_alerts(config, alerts, reason=reason)
-        if result.attempted == 0:
-            return
-        add_operation("Write reference alerts", "completed", result.reason, rows=result.written, seconds=time.perf_counter() - started)
-        logger.event("alerts_written", reason=reason, attempted=result.attempted, written=result.written, table=result.table)
-        emit("reference_alert_write=" + json.dumps(asdict(result), sort_keys=True))
-
     def refresh_reference_state(reason: str) -> None:
         try:
             from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password
@@ -186,32 +163,6 @@ def main() -> None:
         except Exception as exc:  # noqa: BLE001
             logger.event("reference_state_failed", reason=reason, error=repr(exc))
         refresh_terminal()
-
-    def fill_reference_facts(reason: str) -> None:
-        started = time.perf_counter()
-        result = fill_reference_tradability_and_routing_facts(config, reason=reason)
-        status = result.status if result.status != "completed" or result.total_rows > 0 else "completed"
-        add_operation(
-            "Fill reference facts",
-            status,
-            (
-                f"{result.reason}; tradability={result.tradability_rows:,} routing={result.routing_rows:,} "
-                f"source={result.source_database} issues={result.issue_database} target={result.target_database}"
-            ),
-            rows=result.total_rows,
-            seconds=time.perf_counter() - started,
-        )
-        logger.event(
-            "reference_fact_fill_completed",
-            status=result.status,
-            reason=result.reason,
-            tradability_rows=result.tradability_rows,
-            routing_rows=result.routing_rows,
-            source_database=result.source_database,
-            issue_database=result.issue_database,
-            target_database=result.target_database,
-            source_run_id=result.source_run_id,
-        )
 
     def refresh_terminal() -> None:
         if terminal is not None:
@@ -297,27 +248,13 @@ def main() -> None:
         from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password
 
         started = time.perf_counter()
-        ensure_alert_schema(
-            ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password()),
-            database=config.clickhouse_write_database,
-            storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
-        )
-        add_operation("Reference alert schema", "completed", f"write={config.clickhouse_write_database}", seconds=time.perf_counter() - started)
-        started = time.perf_counter()
-        ensure_fact_schema(
-            ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password()),
-            database=config.clickhouse_write_database,
-            storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
-        )
-        add_operation("Reference fact schema", "completed", f"write={config.clickhouse_write_database}", seconds=time.perf_counter() - started)
-        started = time.perf_counter()
         ensure_source_schedule_schema(
             ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password()),
             database=config.clickhouse_write_database,
             storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
         )
         add_operation("Source schedule schema", "completed", f"write={config.clickhouse_write_database}", seconds=time.perf_counter() - started)
-        refresh_reference_state("after_fact_schema")
+        refresh_reference_state("after_source_schedule_schema")
     if config.execute and config.market_publication_gap_fill_enabled:
         from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password
 
@@ -357,7 +294,6 @@ def main() -> None:
     report_path = write_report(report, config.report_root_win)
     record.report_path = str(report_path or "")
     logger.event("audit_completed", **audit_log_summary(report, report_path=record.report_path))
-    write_alert_batch(build_audit_alerts(report, report_path=record.report_path), "reference_audit")
     refresh_terminal()
     for check in report.checks:
         emit(
@@ -439,7 +375,6 @@ def main() -> None:
                         seconds=time.perf_counter() - started,
                     )
                     emit("immediate_tradability_block=" + json.dumps(asdict(block_result), sort_keys=True))
-                    write_alert_batch(build_tradability_block_alert(block_result, reason="source_sync_issue_write"), "tradability_block")
             else:
                 add_operation("Write source-sync issues", "skipped", "REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
                 emit("source_sync_issue_write=skipped reason=REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
@@ -453,7 +388,6 @@ def main() -> None:
                     graph_issue_write = write_graph_mapping_issues(config, graph_write.issues)
                     add_operation("Write graph issues", "completed", graph_issue_write.reason, rows=graph_issue_write.written, seconds=time.perf_counter() - started)
                     emit("canonical_graph_issue_write=" + json.dumps(asdict(graph_issue_write), sort_keys=True))
-                    write_alert_batch(build_graph_issue_alerts(graph_write.issues), "canonical_graph_issues")
                     if config.immediate_tradability_block_enabled:
                         started = time.perf_counter()
                         block_result = block_latest_universe_for_open_issues(config, reason="canonical_graph_issue_write")
@@ -465,7 +399,6 @@ def main() -> None:
                             seconds=time.perf_counter() - started,
                         )
                         emit("immediate_tradability_block=" + json.dumps(asdict(block_result), sort_keys=True))
-                        write_alert_batch(build_tradability_block_alert(block_result, reason="canonical_graph_issue_write"), "tradability_block")
                 elif graph_write.issues:
                     add_operation("Write graph issues", "skipped", "REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
                     emit("canonical_graph_issue_write=skipped reason=REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
@@ -708,8 +641,6 @@ def main() -> None:
             details=borrow_sync.details,
         )
         source_sync_status = "completed" if borrow_status == "completed" and current_details_status == "completed" and bridge_status == "completed" else "warning"
-        write_alert_batch(build_source_sync_alerts(plan), "source_sync")
-        fill_reference_facts("after_source_sync")
         add_operation(
             "Source sync",
             source_sync_status,
@@ -758,8 +689,6 @@ def main() -> None:
             report_path = write_report(report, config.report_root_win)
             record.report_path = str(report_path or record.report_path)
             logger.event("audit_completed", **audit_log_summary(report, report_path=record.report_path, post_write=True))
-            write_alert_batch(build_audit_alerts(report, report_path=record.report_path, post_write=True), "post_maintenance_reference_audit")
-            fill_reference_facts("after_tradable_publication_rebuild")
             refresh_terminal()
             if report_path:
                 emit(f"post_maintenance_report={report_path}")
@@ -852,14 +781,6 @@ def main() -> None:
             )
             emit("market_publication_gap_fill=" + json.dumps(asdict(maintenance), sort_keys=True))
             refresh_reference_state("after_market_publication_gap_fill")
-            write_alert_batch(
-                build_publication_maintenance_alert(
-                    maintenance_status,
-                    maintenance.reason,
-                    asdict(maintenance),
-                ),
-                "market_publication_gap_fill",
-            )
     elif config.execute and config.market_publication_gap_fill_enabled:
         reason = "temp_mode_requires_maintenance_force" if config.test_write_mode and config.maintenance_mode != "force" else maintenance_skip_reason
         add_operation("Market publication gap fill", "skipped", reason)

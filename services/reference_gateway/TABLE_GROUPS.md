@@ -28,11 +28,10 @@ sync and correction writes belong here.
 | `issuer_identity` | `id_issuer_v1`, `id_issuer_identifier_v1` | Resolve by durable identifiers first. Fill missing fields only when unambiguous. |
 | `security_identity` | `id_security_v1`, `id_security_identifier_v1` | Resolve issuer first, then match security by FIGI/ISIN/CUSIP/conid evidence. |
 | `listing_symbol_identity` | `id_listing_v1`, `id_symbol_v1` | Resolve issuer and security first. Fill missing conid only on one exact compatible IBKR contract. |
-| `source_mapping_and_issues` | `id_source_mapping_v1`, `id_mapping_issue_v1`, `id_sec_market_bridge_v1` | Compact accepted evidence goes to mappings. Conflicts and ambiguity go to issues and block tradability. |
+| `source_mapping_and_issues` | `id_source_mapping_v1`, `id_mapping_issue_v1`, `id_issuer_relationship_v1`, `id_sec_market_bridge_v3` | Compact accepted evidence goes to mappings. Conflicts and ambiguity go to issues and block tradability. Validity-dated issuer relationships support evidence-backed listed-parent resolution; v3 is the only active SEC bridge. |
 | `tradable_scanner_publications` | `feature_tradable_universe_v1`, `feature_scanner_static_v1` | Rebuild from canonical graph and enrichment tables. These are outputs, not source truth. |
 | `market_reference_publications` | `market_security_market_snapshot_v1`, `market_security_float_v1`, `market_short_interest_v1`, `market_short_volume_v1`, `market_stock_split_v1`, `market_cash_dividend_v1`, `market_ipo_v1`, `market_presentation_asset_v1`, `market_fails_to_deliver_v1`, `market_reg_sho_threshold_v1`, `market_security_borrow_v1`, `market_security_country_v1`, `market_reference_publication_coverage_v1` | Fill from source publications. FINRA owns short volume, Massive owns short interest, SEC owns fails-to-deliver and country evidence, Massive owns corporate actions, overview snapshots, float/share-supply rows, and presentation assets, and IBKR owns broker-specific borrow availability. Coverage rows define historical/gap-fill completeness. |
-| `reference_alerts` | `market_reference_alert_v1`, `market_reference_alert_consumer_state_v1`, `market_reference_source_schedule_v1` | Emit compact alerts from normalized provider data and reference checks. Downstream consumers keep their own processing state. Source schedule rows keep provider cadence state across daemon restarts. |
-| `canonical_security_facts` | `security_tradability_fact_v1`, `security_routing_fact_v1`, `security_share_supply_fact_v1`, `security_news_catalyst_fact_v1`, `security_sec_filing_event_fact_v1`, `security_sec_text_signal_fact_v1`, `issuer_fundamental_metric_fact_v1`, `security_valuation_fact_v1` | Store compact normalized history aligned with alert families. Source tables keep provider detail; fact fillers update affected entities; latest trading publications consume facts. QMD macro bars and live market status remain outside reference gateway fact ownership. |
+| `source_schedule` | `market_reference_source_schedule_v1` | Persist provider cadence and completion state so daemon restarts do not repeat expensive refreshes. |
 
 ## Write Semantics
 
@@ -48,6 +47,11 @@ Canonical tables use append/replacement semantics. A writer should:
 Do not store full SEC, Massive, or IBKR payloads in canonical tables. Use raw
 artifact storage when a full payload must be retained, and store only compact
 evidence in mapping/issue rows.
+
+The former generic fact and reference-alert tables are stale and are not part
+of the active gateway contract. Existing database tables are left untouched for
+non-destructive retirement, but the gateway does not create, fill, audit, or
+consume them.
 
 ## Market Publication Coverage
 

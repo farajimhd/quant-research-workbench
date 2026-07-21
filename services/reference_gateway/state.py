@@ -197,9 +197,7 @@ def table_group_status(*, group_id: str, tables_present: int, tables_total: int,
     if tables_present < tables_total:
         return "missing"
     if rows == 0:
-        return "empty" if group_id == "canonical_security_facts" else "warning"
-    if group_id == "canonical_security_facts":
-        return "partial"
+        return "warning"
     return "ok"
 
 
@@ -268,7 +266,5 @@ def short_table_name(table_name: str) -> str:
         "market_reference_publication_coverage": "coverage",
         "feature_tradable_universe": "tradable",
         "feature_scanner_static": "scanner",
-        "market_reference_alert_consumer_state": "consumer_state",
-        "issuer_fundamental_metric_fact": "fundamental",
     }
     return replacements.get(table_name, table_name)

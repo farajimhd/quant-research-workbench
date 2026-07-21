@@ -277,7 +277,6 @@ def overview_panel(record: ReferenceRunRecord) -> Panel:
     source = latest_operation(record.operations, "Source sync")
     issue_write = latest_operation(record.operations, "Write source-sync issues")
     block = latest_operation(record.operations, "Immediate tradability block")
-    alert_write = latest_operation(record.operations, "Write reference alerts")
     preflight = dependency_operations(record.operations)
     preflight_op = preflight[-1] if preflight else None
     table = Table(box=box.SIMPLE, expand=True, show_edge=False)
@@ -295,10 +294,9 @@ def overview_panel(record: ReferenceRunRecord) -> Panel:
     table.add_row("Audit", style_status(audit.status if audit else "not_started"), fmt(len(errors) + len(warnings)), audit.checked_at_utc if audit else "Audit has not run yet.")
     table.add_row("Source sync", style_status(source.status if source else "waiting"), fmt(source.rows if source else None), truncate(source.detail if source else "not reported", 180))
     table.add_row("Issue writes", style_status(issue_write.status if issue_write else "waiting"), fmt(issue_write.rows if issue_write else None), truncate(issue_write.detail if issue_write else "not reported", 180))
-    table.add_row("Alert writes", style_status(alert_write.status if alert_write else "waiting"), fmt(alert_write.rows if alert_write else None), truncate(alert_write.detail if alert_write else "not reported", 180))
     table.add_row("Tradability blocks", style_status(block.status if block else "waiting"), fmt(block.rows if block else None), truncate(block.detail if block else "not reported", 180))
     table.add_row("Write policy", style_status("allowed" if record.write_policy.writes_allowed else "blocked"), "-", truncate(write_policy_text(record.write_policy), 180))
-    ops = [preflight_op, source, issue_write, block, alert_write]
+    ops = [preflight_op, source, issue_write, block]
     return Panel(table, title="Runtime Overview", box=box.ROUNDED, border_style=panel_status_color(ops), padding=(0, 1))
 
 

@@ -607,6 +607,6 @@ def latest_runtime_events(path: str, *, limit: int) -> list[dict[str, Any]]:
             payload = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if payload.get("event") in {"operation", "operation_progress", "daemon_cycle_completed", "audit_completed", "alerts_written"}:
+        if payload.get("event") in {"operation", "operation_progress", "daemon_cycle_completed", "audit_completed"}:
             rows.append(payload)
     return rows[-limit:]

@@ -26,11 +26,11 @@ filing_issuer_to_listed_parent`. The gateway validates and publishes the curated
 relationship rows before every scheduled SEC bridge rebuild and removes stale
 relationship-derived bridge rows synchronously.
 
-The broader fact-table schemas are present for compact downstream publications,
-but share supply, news, SEC, short pressure, borrow, country, and similar
-dimensions are query-first unless a dedicated materialized publication is
-explicitly enabled. The trading app should use the security-dimension query
-layer for those dimensions.
+The gateway does not create or fill generic security fact tables and does not
+publish a second database alert stream. Canonical mapping problems remain in
+`id_mapping_issue_v1`; audits and runtime failures remain in JSON reports and
+JSONL logs. `market_reference_source_schedule_v1` is retained independently as
+the durable cadence and restart authority for provider jobs.
 
 For the detailed operating model, read:
 

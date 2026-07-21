@@ -62,11 +62,12 @@ REFERENCE_TABLE_GROUPS: tuple[ReferenceTableGroup, ...] = (
     ReferenceTableGroup(
         group_id="source_mapping_and_issues",
         owner="reference_gateway",
-        purpose="Accepted source-to-canonical mappings, unresolved mapping issues, and SEC-to-market bridge.",
-        tables=("id_source_mapping_v1", "id_mapping_issue_v1", "id_sec_market_bridge_v1"),
+        purpose="Accepted mappings, unresolved mapping issues, issuer relationships, and the active SEC-to-market bridge.",
+        tables=("id_source_mapping_v1", "id_mapping_issue_v1", "id_issuer_relationship_v1", "id_sec_market_bridge_v3"),
         update_policy=(
             "Accepted mappings store compact evidence only. Ambiguity, conflict, missing parents, or failed "
-            "resolver steps are recorded as issues and block tradability."
+            "resolver steps are recorded as issues and block tradability. Validity-dated issuer relationships "
+            "may resolve non-listed filing issuers to evidence-backed listed parents; the v3 bridge is the only active SEC bridge."
         ),
     ),
     ReferenceTableGroup(
@@ -106,34 +107,13 @@ REFERENCE_TABLE_GROUPS: tuple[ReferenceTableGroup, ...] = (
         ),
     ),
     ReferenceTableGroup(
-        group_id="reference_alerts",
+        group_id="source_schedule",
         owner="reference_gateway",
-        purpose="Universal reference alerts and per-consumer processing state.",
-        tables=("market_reference_alert_v1", "market_reference_alert_consumer_state_v1", "market_reference_source_schedule_v1"),
+        purpose="Durable provider refresh cadence and restart state.",
+        tables=("market_reference_source_schedule_v1",),
         update_policy=(
-            "Emit compact alerts from normalized provider data and internal reference checks. "
-            "Consumers track their own processing state without mutating the alert row. Source schedule rows "
-            "record provider sync cadence and prevent expensive provider refreshes from running every daemon cycle."
-        ),
-    ),
-    ReferenceTableGroup(
-        group_id="canonical_security_facts",
-        owner="reference_gateway",
-        purpose="Compact historical fact tables aligned with reference alerts and trading publications.",
-        tables=(
-            "security_tradability_fact_v1",
-            "security_routing_fact_v1",
-            "security_share_supply_fact_v1",
-            "security_news_catalyst_fact_v1",
-            "security_sec_filing_event_fact_v1",
-            "security_sec_text_signal_fact_v1",
-            "issuer_fundamental_metric_fact_v1",
-            "security_valuation_fact_v1",
-        ),
-        update_policy=(
-            "Store compact normalized history only. Source tables keep provider detail, fact fillers update "
-            "affected entities from alerts, and latest trading publications consume these facts instead of "
-            "joining raw provider rows during trading."
+            "Record source start, completion, status, and next-due evidence so expensive provider refreshes "
+            "do not repeat after daemon restarts."
         ),
     ),
 )

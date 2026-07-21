@@ -150,7 +150,8 @@ Allowed during market hours:
 - IBKR borrow/shortability snapshot writes to `market_security_borrow_v1`
 - country assertion writes to `market_security_country_v1` from canonical
   listing/exchange evidence
-- SEC CIK-to-market bridge sync to `id_sec_market_bridge_v1`
+- issuer-relationship sync to `id_issuer_relationship_v1`
+- SEC CIK-to-market bridge sync to `id_sec_market_bridge_v3`
 - writing new mapping issues
 - immediate latest-universe replacement rows with `is_tradable = 0`
 
