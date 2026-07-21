@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any, Callable
 
 from research.mlops.clickhouse import (
@@ -22,16 +23,29 @@ TICKER_PATTERN = re.compile(r"^[A-Z][A-Z0-9.\-]{0,15}$")
 DATABASE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 FUNDAMENTAL_TAGS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Revenue", ("RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet")),
+    ("Gross profit", ("GrossProfit",)),
     ("Net income", ("NetIncomeLoss", "ProfitLoss")),
     ("Diluted EPS", ("EarningsPerShareDiluted",)),
     ("Operating income", ("OperatingIncomeLoss",)),
+    ("Operating cash flow", ("NetCashProvidedByUsedInOperatingActivities",)),
+    ("Capital expenditure", ("PaymentsToAcquirePropertyPlantAndEquipment",)),
     ("Cash", ("CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents")),
     ("Assets", ("Assets",)),
     ("Liabilities", ("Liabilities", "LiabilitiesCurrent")),
     ("Stockholders' equity", ("StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest")),
+    ("Long-term debt", ("LongTermDebtNoncurrent",)),
+    ("Current debt", ("LongTermDebtCurrent",)),
+    ("Common shares outstanding", ("EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding")),
+    ("Weighted average basic shares", ("WeightedAverageNumberOfSharesOutstandingBasic",)),
+    ("Weighted average diluted shares", ("WeightedAverageNumberOfDilutedSharesOutstanding",)),
+    ("SEC public float value", ("EntityPublicFloat",)),
+    ("Dividends per share", ("CommonStockDividendsPerShareDeclared",)),
+    ("Share repurchases", ("PaymentsForRepurchaseOfCommonStock",)),
+    ("Repurchased shares", ("StockRepurchasedAndRetiredDuringPeriodShares",)),
 )
 LOGGER = logging.getLogger(__name__)
 HISTORY_LIMIT = 10_000
+MAIN_HISTORY_DAYS = 520
 US_INCORPORATION_CODES = frozenset({
     "AK", "AL", "AR", "AS", "AZ", "CA", "CO", "CT", "DC", "DE", "FL", "GA", "GU", "HI", "IA", "ID", "IL", "IN", "KS", "KY", "LA", "MA", "MD", "ME", "MI", "MN", "MO", "MP", "MS", "MT", "NC", "ND", "NE", "NH", "NJ", "NM", "NV", "NY", "OH", "OK", "OR", "PA", "PR", "RI", "SC", "SD", "TN", "TX", "UT", "VA", "VI", "VT", "WA", "WI", "WV", "WY",
 })
@@ -72,11 +86,14 @@ def ticker_facts_payload(symbol: str, *, as_of: str | None = None, database: str
         "borrow": borrow_sql(ticker, cutoff, database),
         "classifications": classifications_sql(context["security_id"], cutoff, database),
         "corporate": corporate_events_sql(context["symbol_id"], cutoff, database),
+        "fails_to_deliver": fails_to_deliver_sql(ticker, cutoff, database),
         "float": float_sql(context["symbol_id"], cutoff, database),
         "identifiers": identifiers_sql(context["issuer_id"], context["security_id"], cutoff, database),
         "market": market_snapshot_sql(context["symbol_id"], cutoff, database),
+        "reg_sho": reg_sho_sql(ticker, cutoff, database),
         "short_interest": short_interest_sql(context["symbol_id"], cutoff, database),
         "short_volume": short_volume_sql(context["symbol_id"], cutoff, database),
+        "splits": splits_sql(context["symbol_id"], cutoff, database),
         "volume": volume_sql(ticker, cutoff, historical_database()),
     }
     if context["cik"]:
@@ -98,6 +115,7 @@ def ticker_facts_payload(symbol: str, *, as_of: str | None = None, database: str
     market = first(market_rows)
     float_rows = results.get("float", [])
     float_row = first(float_rows)
+    reported_float_row = first_with_number(float_rows, "free_float")
     short_rows = results.get("short_interest", [])
     short_interest = short_rows[0] if short_rows else {}
     previous_short_interest = short_rows[1] if len(short_rows) > 1 else {}
@@ -107,13 +125,28 @@ def ticker_facts_payload(symbol: str, *, as_of: str | None = None, database: str
     borrow = first(borrow_rows)
     volume_rows = results.get("volume", [])
     volume = aggregate_daily_volume(volume_rows)
-    shares_outstanding = first_number(float_row, "shares_outstanding") or first_number(market, "share_class_shares_outstanding", "weighted_shares_outstanding")
-    free_float = first_number(float_row, "free_float")
+    shares_outstanding = best_shares_outstanding(float_rows, market_rows, results.get("fundamentals", []))
+    free_float = first_number(reported_float_row, "free_float")
     short_shares = first_number(short_interest, "short_interest")
     fundamentals = select_fundamentals(results.get("fundamentals", []))
+    synthesis = synthesize_stock_facts(
+        as_of=cutoff,
+        borrow=borrow,
+        fails_to_deliver=first(results.get("fails_to_deliver")),
+        float_rows=float_rows,
+        fundamental_rows=results.get("fundamentals", []),
+        market_rows=market_rows,
+        reg_sho=first(results.get("reg_sho")),
+        short_interest=short_interest,
+        short_volume=short_volume,
+        split_rows=results.get("splits", []),
+        volume_rows=volume_rows,
+    )
     warnings: list[str] = []
-    if not free_float:
-        warnings.append("Free float is unavailable for this security; short interest as a percent of float is not inferred.")
+    if not free_float and synthesis.get("cards", [{}])[0].get("method") == "estimated":
+        warnings.append("Reported free float is unavailable; tradable supply uses a clearly labeled SEC-derived estimate and uncertainty range.")
+    elif not free_float:
+        warnings.append("Free float is unavailable; shares outstanding is shown only as an upper bound and is not presented as tradable supply.")
     if borrow and not any(borrow.get(field) is not None for field in ("shortable_shares", "indicative_borrow_rate", "fee_rate")):
         warnings.append("IBKR returned a borrow snapshot but did not publish availability or rate fields.")
     if not fundamentals:
@@ -125,7 +158,8 @@ def ticker_facts_payload(symbol: str, *, as_of: str | None = None, database: str
             "borrow": borrow,
             "classifications": results.get("classifications", []),
             "corporate": first(results.get("corporate")),
-            "float": float_row,
+            "fails_to_deliver": first(results.get("fails_to_deliver")),
+            "float": reported_float_row or float_row,
             "identity": {
                 **anchor,
                 "cik": context["cik"] or None,
@@ -133,6 +167,7 @@ def ticker_facts_payload(symbol: str, *, as_of: str | None = None, database: str
                 "company_country_source": "issuer domicile" if anchor.get("domicile_country_code") else "incorporation jurisdiction" if company_country_code(anchor) else None,
             },
             "market": market,
+            "reg_sho": first(results.get("reg_sho")),
             "short_interest": {
                 **short_interest,
                 "change_from_previous": difference(short_interest, previous_short_interest, "short_interest"),
@@ -154,6 +189,7 @@ def ticker_facts_payload(symbol: str, *, as_of: str | None = None, database: str
             volume_rows=volume_rows,
             fundamental_rows=results.get("fundamentals", []),
         ),
+        "synthesis": synthesis,
         "sources": source_inventory(results),
         "status": "partial" if errors else "ready",
         "symbol": ticker,
@@ -174,6 +210,15 @@ def ticker_fact_history_payload(symbol: str, metric: str, *, as_of: str | None =
     symbol_id = str(anchor.get("symbol_id") or "")
     cik = issuer_cik(str(anchor.get("issuer_id") or ""))
     normalized_metric = str(metric or "").strip().lower()
+    if normalized_metric == "health_score":
+        return ticker_health_history_payload(
+            client=client,
+            ticker=ticker,
+            symbol_id=symbol_id,
+            cik=cik,
+            cutoff=cutoff,
+            database=database,
+        )
     rows: list[dict[str, Any]]
     label: str
     unit: str
@@ -232,6 +277,48 @@ def ticker_fact_history_payload(symbol: str, metric: str, *, as_of: str | None =
         "symbol": ticker,
         "truncated": len(rows) >= HISTORY_LIMIT,
         "unit": unit,
+    }
+
+
+def ticker_health_history_payload(
+    *,
+    client: ClickHouseHttpClient,
+    ticker: str,
+    symbol_id: str,
+    cik: str,
+    cutoff: datetime,
+    database: str,
+) -> dict[str, Any]:
+    queries = {
+        "borrow": latest_rows_sql(database, "market_security_borrow_v1", "provider_ticker", ticker, "observed_at_utc", cutoff, limit=HISTORY_LIMIT),
+        "fails": fails_to_deliver_sql(ticker, cutoff, database, limit=HISTORY_LIMIT),
+        "float": latest_rows_sql(database, "market_security_float_v1", "symbol_id", symbol_id, "effective_date", cutoff, date_column=True, limit=HISTORY_LIMIT),
+        "market": latest_rows_sql(database, "market_security_market_snapshot_v1", "symbol_id", symbol_id, "observed_at_utc", cutoff, limit=HISTORY_LIMIT),
+        "reg_sho": reg_sho_sql(ticker, cutoff, database, limit=HISTORY_LIMIT),
+        "short_interest": short_interest_sql(symbol_id, cutoff, database, limit=HISTORY_LIMIT),
+        "short_volume": short_volume_history_sql(symbol_id, cutoff, database, limit=HISTORY_LIMIT),
+        "splits": splits_sql(symbol_id, cutoff, database, limit=HISTORY_LIMIT),
+        "volume": daily_volume_history_sql(ticker, cutoff, historical_database(), limit=HISTORY_LIMIT),
+    }
+    if cik:
+        queries["fundamentals"] = fundamentals_history_sql(cik, cutoff, database)
+    results: dict[str, list[dict[str, Any]]] = {}
+    with ThreadPoolExecutor(max_workers=min(6, len(queries))) as pool:
+        futures = {pool.submit(clickhouse_rows, client, query): name for name, query in queries.items()}
+        for future in as_completed(futures):
+            results[futures[future]] = future.result()
+    points = build_health_timeline(results, cutoff)
+    return {
+        "as_of": cutoff.isoformat(),
+        "comparisons": health_comparisons(points),
+        "label": "Evidence-weighted stock health",
+        "metric": "health_score",
+        "points": points,
+        "row_count": len(points),
+        "status": "ready" if points else "not_found",
+        "symbol": ticker,
+        "truncated": any(len(rows) >= HISTORY_LIMIT for rows in results.values()),
+        "unit": "score",
     }
 
 
@@ -300,18 +387,20 @@ def identity_anchor_sql(ticker: str, cutoff: datetime, database: str) -> str:
 
 
 def market_snapshot_sql(symbol_id: str, cutoff: datetime, database: str) -> str:
-    return latest_rows_sql(database, "market_security_market_snapshot_v1", "symbol_id", symbol_id, "observed_at_utc", cutoff, limit=2)
+    return latest_rows_sql(database, "market_security_market_snapshot_v1", "symbol_id", symbol_id, "observed_at_utc", cutoff, limit=20)
 
 
 def float_sql(symbol_id: str, cutoff: datetime, database: str) -> str:
-    return latest_rows_sql(database, "market_security_float_v1", "symbol_id", symbol_id, "effective_date", cutoff, date_column=True, limit=2)
+    # A newer provider row can contain shares outstanding while omitting float.
+    # Keep enough dated observations to select each field from its newest actual publication.
+    return latest_rows_sql(database, "market_security_float_v1", "symbol_id", symbol_id, "effective_date", cutoff, date_column=True, limit=40)
 
 
 def borrow_sql(ticker: str, cutoff: datetime, database: str) -> str:
-    return latest_rows_sql(database, "market_security_borrow_v1", "provider_ticker", ticker, "observed_at_utc", cutoff, limit=2)
+    return latest_rows_sql(database, "market_security_borrow_v1", "provider_ticker", ticker, "observed_at_utc", cutoff, limit=20)
 
 
-def short_interest_sql(symbol_id: str, cutoff: datetime, database: str, *, limit: int = 2) -> str:
+def short_interest_sql(symbol_id: str, cutoff: datetime, database: str, *, limit: int = 30) -> str:
     db = quote_ident(database)
     return f"""
         SELECT settlement_date, publication_date, published_at_utc, short_interest, avg_daily_volume,
@@ -358,7 +447,7 @@ def short_volume_history_sql(symbol_id: str, cutoff: datetime, database: str, *,
 
 
 def volume_sql(ticker: str, cutoff: datetime, database: str) -> str:
-    return daily_volume_history_sql(ticker, cutoff, database, limit=21)
+    return daily_volume_history_sql(ticker, cutoff, database, limit=MAIN_HISTORY_DAYS)
 
 
 def daily_volume_history_sql(ticker: str, cutoff: datetime, database: str, *, limit: int = HISTORY_LIMIT) -> str:
@@ -393,7 +482,7 @@ def fundamentals_sql(cik: str, cutoff: datetime, database: str) -> str:
           AND filed_at_utc <= parseDateTime64BestEffort({sql_string(clickhouse_timestamp(cutoff))})
           AND recorded_at_utc <= parseDateTime64BestEffort({sql_string(clickhouse_timestamp(cutoff))})
         ORDER BY tag ASC, period_end_date DESC, filed_at_utc DESC, recorded_at_utc DESC
-        LIMIT 2 BY tag
+        LIMIT 16 BY tag
         FORMAT JSONEachRow
     """
 
@@ -410,6 +499,22 @@ def fundamental_history_sql(cik: str, tag: str, cutoff: datetime, database: str,
         ORDER BY period_end_date DESC, filed_at_utc DESC, recorded_at_utc DESC
         LIMIT 1 BY period_end_date, fiscal_period, unit_code
         LIMIT {max(1, min(HISTORY_LIMIT, limit))}
+        FORMAT JSONEachRow
+    """
+
+
+def fundamentals_history_sql(cik: str, cutoff: datetime, database: str) -> str:
+    db = quote_ident(database)
+    tags = sorted({tag for _, alternatives in FUNDAMENTAL_TAGS for tag in alternatives})
+    return f"""
+        SELECT tag, taxonomy, unit_code, value, fiscal_year, fiscal_period, period_end_date,
+               filed_at_utc, form_type, accession_number, recorded_at_utc, inserted_at
+        FROM {db}.sec_xbrl_company_fact_v3 FINAL
+        WHERE cik = {sql_string(cik)} AND tag IN ({", ".join(sql_string(tag) for tag in tags)})
+          AND filed_at_utc <= parseDateTime64BestEffort({sql_string(clickhouse_timestamp(cutoff))})
+          AND recorded_at_utc <= parseDateTime64BestEffort({sql_string(clickhouse_timestamp(cutoff))})
+        ORDER BY filed_at_utc DESC, period_end_date DESC, recorded_at_utc DESC
+        LIMIT 64 BY tag
         FORMAT JSONEachRow
     """
 
@@ -466,6 +571,45 @@ def corporate_events_sql(symbol_id: str, cutoff: datetime, database: str) -> str
              WHERE symbol_id = {sql_string(symbol_id)} AND ex_dividend_date <= toDate({day}) AND inserted_at <= parseDateTime64BestEffort({instant})) AS dividend_currency
         FORMAT JSONEachRow
     """
+
+
+def fails_to_deliver_sql(ticker: str, cutoff: datetime, database: str, *, limit: int = 30) -> str:
+    return latest_rows_sql(
+        database,
+        "market_fails_to_deliver_v1",
+        "provider_ticker",
+        ticker,
+        "settlement_date",
+        cutoff,
+        date_column=True,
+        limit=limit,
+    )
+
+
+def reg_sho_sql(ticker: str, cutoff: datetime, database: str, *, limit: int = 30) -> str:
+    return latest_rows_sql(
+        database,
+        "market_reg_sho_threshold_v1",
+        "provider_ticker",
+        ticker,
+        "threshold_date",
+        cutoff,
+        date_column=True,
+        limit=limit,
+    )
+
+
+def splits_sql(symbol_id: str, cutoff: datetime, database: str, *, limit: int = 100) -> str:
+    return latest_rows_sql(
+        database,
+        "market_stock_split_v1",
+        "symbol_id",
+        symbol_id,
+        "execution_date",
+        cutoff,
+        date_column=True,
+        limit=limit,
+    )
 
 
 def latest_sql(database: str, table: str, key: str, value: str, order: str, cutoff: datetime, *, date_column: bool = False) -> str:
@@ -555,6 +699,551 @@ def aggregate_short_volume(rows: list[dict[str, Any]], offset: int = 0) -> dict[
         "source_venue": latest.get("source_venue"),
         "total_volume_20d": volume_total,
     }
+
+
+def synthesize_stock_facts(
+    *,
+    as_of: datetime,
+    borrow: dict[str, Any],
+    fails_to_deliver: dict[str, Any],
+    float_rows: list[dict[str, Any]],
+    fundamental_rows: list[dict[str, Any]],
+    market_rows: list[dict[str, Any]],
+    reg_sho: dict[str, Any],
+    short_interest: dict[str, Any],
+    short_volume: dict[str, Any],
+    split_rows: list[dict[str, Any]],
+    volume_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Create one auditable point-in-time stock profile for UI and strategy consumers."""
+    shares = best_shares_outstanding(float_rows, market_rows, fundamental_rows)
+    latest_price = first_number(first(volume_rows), "close")
+    reported_float_row = first_with_number(float_rows, "free_float")
+    reported_float = first_number(reported_float_row, "free_float")
+    float_estimate = estimate_tradable_shares(fundamental_rows, volume_rows, split_rows)
+    estimated_float = numeric_value(float_estimate.get("value"))
+    tradable_shares = reported_float or estimated_float
+    float_comparison = ratio_percent(abs(reported_float - estimated_float), reported_float) if reported_float and estimated_float else None
+    reconciliation = (
+        "aligned" if float_comparison is not None and float_comparison <= 10
+        else "review" if float_comparison is not None and float_comparison <= 25
+        else "divergent" if float_comparison is not None
+        else "single_source"
+    )
+    supply_evidence = [
+        evidence("Reported free float", reported_float, "shares", reported_float_row.get("effective_date"), "reported", "Provider-published tradable share count."),
+        evidence("SEC-implied float", estimated_float, "shares", float_estimate.get("period_end_date"), "estimated", "SEC public-float value divided by the price on its measurement date, then split-adjusted."),
+        evidence("Shares outstanding", shares, "shares", latest_observation_date(float_rows, market_rows, fundamental_rows), "reported", "Upper bound for tradable shares, not a float estimate."),
+        evidence("Market-cap-implied shares", market_cap_implied_shares(market_rows, volume_rows), "shares", first(market_rows).get("observed_at_utc"), "derived", "Market capitalization divided by an aligned daily close; used only as a shares-outstanding cross-check."),
+    ]
+    supply_method = "reported" if reported_float else "estimated" if estimated_float else "upper_bound"
+    supply_card = metric_card(
+        "tradable_supply",
+        "Tradable supply",
+        reported_float or estimated_float or shares,
+        "shares",
+        "Reported float" if reported_float else "Estimated range" if estimated_float else "Not established",
+        "positive" if reconciliation == "aligned" else "warning" if reconciliation in {"review", "single_source"} else "negative",
+        "high" if reported_float and reconciliation != "divergent" else "medium" if reported_float else "low" if estimated_float else "insufficient",
+        supply_method,
+        supply_evidence,
+        {
+            "comparison_gap_percent": float_comparison,
+            "float_percent": ratio_percent(tradable_shares, shares),
+            "lower_bound": float_estimate.get("lower_bound") if not reported_float else None,
+            "reconciliation": reconciliation,
+            "reported_value": reported_float,
+            "estimated_value": estimated_float,
+            "shares_outstanding": shares,
+            "upper_bound": float_estimate.get("upper_bound") if not reported_float else shares,
+        },
+    )
+
+    short_card, short_health = short_crowding_card(
+        borrow=borrow,
+        fails_to_deliver=fails_to_deliver,
+        reg_sho=reg_sho,
+        short_interest=short_interest,
+        short_volume=short_volume,
+        tradable_shares=tradable_shares,
+        shares_outstanding=shares,
+    )
+    liquidity_card, liquidity_health = liquidity_card_and_score(volume_rows, tradable_shares or shares)
+    share_card, share_health = share_base_card(fundamental_rows, float_rows, market_rows)
+    financial_card, financial_scores = financial_card_and_scores(fundamental_rows)
+    valuation_card = valuation_card_from_facts(fundamental_rows, latest_price, first_number(first(market_rows), "market_cap"))
+    health = stock_health(
+        as_of=as_of,
+        financial_scores=financial_scores,
+        liquidity_score=liquidity_health,
+        share_score=share_health,
+        short_score=short_health,
+    )
+    return {
+        "cards": [supply_card, short_card, liquidity_card, share_card, financial_card, valuation_card],
+        "health": health,
+        "profile_summary": profile_summary(liquidity_card, short_card, share_card, financial_card, valuation_card),
+        "version": "ticker_fact_synthesis_v1",
+    }
+
+
+def short_crowding_card(
+    *,
+    borrow: dict[str, Any],
+    fails_to_deliver: dict[str, Any],
+    reg_sho: dict[str, Any],
+    short_interest: dict[str, Any],
+    short_volume: dict[str, Any],
+    tradable_shares: float | None,
+    shares_outstanding: float | None,
+) -> tuple[dict[str, Any], float | None]:
+    short_shares = first_number(short_interest, "short_interest")
+    denominator = tradable_shares or shares_outstanding
+    short_percent = ratio_percent(short_shares, denominator)
+    days_to_cover = numeric_value(short_interest.get("days_to_cover"))
+    borrow_rate = first_number(borrow, "fee_rate", "indicative_borrow_rate")
+    ftd = first_number(fails_to_deliver, "fails_quantity")
+    ftd_percent = ratio_percent(ftd, denominator)
+    threshold_active = str(reg_sho.get("threshold_status") or "").lower() in {"1", "active", "true", "threshold"}
+    borrow_status = str(borrow.get("borrow_status") or "").lower()
+    score_inputs: list[tuple[str, float | None, float]] = [
+        ("Short interest / tradable supply", scaled(short_percent, 2, 20), 40),
+        ("Days to cover", scaled(days_to_cover, 1, 10), 20),
+        ("Borrow cost", scaled(borrow_rate, 1, 25), 15),
+        ("Borrow availability", 90.0 if any(token in borrow_status for token in ("hard", "unavailable")) else 10.0 if any(token in borrow_status for token in ("available", "easy", "shortable")) else None, 5),
+        ("Fails to deliver / supply", scaled(ftd_percent, 0.01, 0.25), 10),
+        ("Reg SHO threshold", 100.0 if threshold_active else 0.0 if reg_sho else None, 10),
+    ]
+    risk, coverage = weighted_available(score_inputs)
+    label = "Unavailable" if risk is None else "Low" if risk < 20 else "Normal" if risk < 40 else "Elevated" if risk < 60 else "High" if risk < 80 else "Extreme"
+    tone = "muted" if risk is None else "positive" if risk < 20 else "neutral" if risk < 40 else "warning" if risk < 60 else "negative"
+    evidence_rows = [
+        evidence("Short interest", short_shares, "shares", short_interest.get("settlement_date"), "reported", "Open short positions at the exchange settlement date."),
+        evidence("Short interest / supply", short_percent, "percent", short_interest.get("settlement_date"), "derived", "Short interest divided by reported or estimated tradable supply; shares outstanding is the fallback denominator."),
+        evidence("Days to cover", days_to_cover, "days", short_interest.get("settlement_date"), "reported", "Reported short interest divided by average daily volume."),
+        evidence("Borrow fee", borrow_rate, "percent", borrow.get("observed_at_utc"), "reported", "Latest persisted IBKR borrow cost."),
+        evidence("Fails to deliver", ftd, "shares", fails_to_deliver.get("settlement_date"), "reported", "Settlement failures are stress evidence, not automatically short positions."),
+        evidence("FINRA short-sale flow", ratio_to_percent(numeric_value(short_volume.get("ratio_20d"))), "percent", short_volume.get("latest_trade_date"), "reported", "Twenty-session short-sale volume flow; displayed separately and not added to short interest."),
+    ]
+    card = metric_card(
+        "short_crowding", "Short crowding", short_percent, "percent", label, tone,
+        confidence_from_coverage(coverage), "derived", evidence_rows,
+        {
+            "coverage_percent": coverage,
+            "days_to_cover": days_to_cover,
+            "denominator": denominator,
+            "denominator_kind": "tradable_supply" if tradable_shares else "shares_outstanding" if shares_outstanding else "unavailable",
+            "decision_inputs": [{"label": name, "score": value, "weight": weight} for name, value, weight in score_inputs],
+            "risk_score": risk,
+            "short_shares": short_shares,
+        },
+    )
+    return card, None if risk is None else 100.0 - risk
+
+
+def liquidity_card_and_score(volume_rows: list[dict[str, Any]], supply: float | None) -> tuple[dict[str, Any], float | None]:
+    summary = aggregate_daily_volume(volume_rows)
+    average = numeric_value(summary.get("average_volume_20d"))
+    close = numeric_value(summary.get("latest_close"))
+    turnover = ratio_percent(average, supply)
+    dollar_volume = average * close if average is not None and close is not None else None
+    dollar_score = None if not dollar_volume or dollar_volume <= 0 else clamp((math.log10(dollar_volume) - 5.0) / 4.0 * 100.0)
+    turnover_score = scaled(turnover, 0.05, 2.0)
+    score, coverage = weighted_available([("Dollar volume", dollar_score, 60), ("Share turnover", turnover_score, 40)])
+    label = "Unavailable" if score is None else "Deep" if score >= 75 else "Good" if score >= 55 else "Workable" if score >= 35 else "Thin"
+    tone = "muted" if score is None else "positive" if score >= 55 else "warning" if score >= 35 else "negative"
+    return metric_card(
+        "trading_liquidity", "Trading liquidity", turnover, "percent", label, tone,
+        confidence_from_coverage(coverage), "derived",
+        [
+            evidence("20-session average volume", average, "shares/day", summary.get("session_date"), "derived", "Mean completed daily share volume over the latest 20 sessions."),
+            evidence("Average dollar volume", dollar_volume, "USD/day", summary.get("session_date"), "derived", "Average share volume multiplied by the latest completed close."),
+            evidence("Latest relative volume", numeric_value(summary.get("relative_volume_20d")), "multiple", summary.get("session_date"), "derived", "Latest completed volume divided by the 20-session average."),
+        ],
+        {"coverage_percent": coverage, "dollar_volume": dollar_volume, "relative_volume": summary.get("relative_volume_20d"), "score": score, "supply": supply},
+    ), score
+
+
+def share_base_card(
+    fundamental_rows: list[dict[str, Any]],
+    float_rows: list[dict[str, Any]],
+    market_rows: list[dict[str, Any]],
+) -> tuple[dict[str, Any], float | None]:
+    observations = fact_observations(fundamental_rows, ("EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding"))
+    if len(observations) < 2:
+        fallback = [
+            {"value": first_number(row, "shares_outstanding", "share_class_shares_outstanding"), "period_end_date": row.get("effective_date") or row.get("observed_at_utc")}
+            for row in [*float_rows, *market_rows]
+        ]
+        observations = [row for row in fallback if row.get("value")]
+    current = numeric_value(observations[0].get("value")) if observations else None
+    prior = observation_at_least_days_earlier(observations, 300)
+    change = ratio_percent(current - numeric_value(prior.get("value")), numeric_value(prior.get("value"))) if current is not None and prior and numeric_value(prior.get("value")) else None
+    label = "Unavailable" if change is None else "Rapid expansion" if change > 5 else "Expanding" if change > 1 else "Stable" if change >= -1 else "Contracting"
+    tone = "muted" if change is None else "negative" if change > 5 else "warning" if change > 1 else "neutral" if change >= -1 else "positive"
+    score = None if change is None else clamp(65.0 - change * 7.0)
+    return metric_card(
+        "share_base", "Share-base pressure", change, "percent", label, tone,
+        "high" if len(observations) >= 2 else "insufficient", "derived",
+        [
+            evidence("Current shares", current, "shares", observations[0].get("period_end_date") if observations else None, "reported", "Latest available SEC or provider shares outstanding."),
+            evidence("Comparison shares", numeric_value(prior.get("value")) if prior else None, "shares", prior.get("period_end_date") if prior else None, "reported", "Nearest observation at least 300 days earlier."),
+        ],
+        {"change_percent": change, "current_shares": current, "prior_shares": numeric_value(prior.get("value")) if prior else None, "score": score},
+    ), score
+
+
+def financial_card_and_scores(fundamental_rows: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, float | None]]:
+    revenue = comparable_facts(fundamental_rows, ("RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet"))
+    net_income = comparable_facts(fundamental_rows, ("NetIncomeLoss", "ProfitLoss"))
+    operating_income = comparable_facts(fundamental_rows, ("OperatingIncomeLoss",))
+    operating_cash = comparable_facts(fundamental_rows, ("NetCashProvidedByUsedInOperatingActivities",))
+    capex = comparable_facts(fundamental_rows, ("PaymentsToAcquirePropertyPlantAndEquipment",))
+    cash = latest_fact_value(fundamental_rows, ("CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"))
+    liabilities = latest_fact_value(fundamental_rows, ("Liabilities",))
+    debt = sum(value or 0.0 for value in (latest_fact_value(fundamental_rows, ("LongTermDebtCurrent",)), latest_fact_value(fundamental_rows, ("LongTermDebtNoncurrent",)))) or None
+    revenue_growth = comparable_growth(revenue)
+    income_growth = comparable_growth(net_income)
+    latest_income = row_value(first(net_income))
+    latest_operating = row_value(first(operating_income))
+    latest_ocf = row_value(first(operating_cash))
+    latest_capex = row_value(first(capex))
+    free_cash_flow = latest_ocf - abs(latest_capex) if latest_ocf is not None and latest_capex is not None else None
+    profitability, profitability_coverage = weighted_available([
+        ("Positive net income", 100.0 if latest_income is not None and latest_income > 0 else 0.0 if latest_income is not None else None, 45),
+        ("Positive operating income", 100.0 if latest_operating is not None and latest_operating > 0 else 0.0 if latest_operating is not None else None, 25),
+        ("Revenue growth", clamp(50.0 + revenue_growth * 2.5) if revenue_growth is not None else None, 15),
+        ("Income growth", clamp(50.0 + income_growth * 1.5) if income_growth is not None else None, 15),
+    ])
+    cash_generation, cash_coverage = weighted_available([
+        ("Operating cash flow", 100.0 if latest_ocf is not None and latest_ocf > 0 else 0.0 if latest_ocf is not None else None, 50),
+        ("Free cash flow", 100.0 if free_cash_flow is not None and free_cash_flow > 0 else 0.0 if free_cash_flow is not None else None, 50),
+    ])
+    balance, balance_coverage = weighted_available([
+        ("Cash / debt", scaled(cash / debt if cash is not None and debt else None, 0.25, 2.0), 60),
+        ("Cash / liabilities", scaled(cash / liabilities if cash is not None and liabilities else None, 0.05, 0.5), 40),
+    ])
+    overall, coverage = weighted_available([
+        ("Profitability", profitability, 45),
+        ("Cash generation", cash_generation, 30),
+        ("Balance sheet", balance, 25),
+    ])
+    label = "Unavailable" if overall is None else "Strong" if overall >= 80 else "Improving" if overall >= 65 and (revenue_growth or 0) > 0 else "Stable" if overall >= 50 else "Weak" if overall >= 30 else "Deteriorating"
+    tone = "muted" if overall is None else "positive" if overall >= 65 else "neutral" if overall >= 50 else "warning" if overall >= 30 else "negative"
+    card = metric_card(
+        "financial_trajectory", "Financial trajectory", overall, "score", label, tone,
+        confidence_from_coverage(coverage), "derived",
+        [
+            evidence("Revenue growth", revenue_growth, "percent", first(revenue).get("period_end_date"), "derived", "Change between the latest two comparable annual or fiscal-period observations."),
+            evidence("Net-income growth", income_growth, "percent", first(net_income).get("period_end_date"), "derived", "Change between comparable reported periods; negative-base changes require caution."),
+            evidence("Operating cash flow", latest_ocf, "USD", first(operating_cash).get("period_end_date"), "reported", "Latest comparable SEC-reported operating cash flow."),
+            evidence("Free cash flow", free_cash_flow, "USD", first(operating_cash).get("period_end_date"), "derived", "Operating cash flow minus capital expenditure."),
+            evidence("Cash", cash, "USD", None, "reported", "Latest SEC-reported cash and equivalents."),
+            evidence("Debt", debt, "USD", None, "derived", "Current plus noncurrent long-term debt when available."),
+        ],
+        {"coverage_percent": coverage, "revenue_growth_percent": revenue_growth, "income_growth_percent": income_growth, "score": overall},
+    )
+    return card, {
+        "profitability": profitability if profitability_coverage else None,
+        "cash_generation": cash_generation if cash_coverage else None,
+        "balance_sheet": balance if balance_coverage else None,
+    }
+
+
+def valuation_card_from_facts(fundamental_rows: list[dict[str, Any]], latest_price: float | None, market_cap: float | None) -> dict[str, Any]:
+    eps_rows = comparable_facts(fundamental_rows, ("EarningsPerShareDiluted",))
+    net_rows = comparable_facts(fundamental_rows, ("NetIncomeLoss", "ProfitLoss"))
+    eps = row_value(first(eps_rows))
+    net_income = row_value(first(net_rows))
+    pe = latest_price / eps if latest_price is not None and eps is not None and eps > 0 else market_cap / net_income if market_cap is not None and net_income is not None and net_income > 0 else None
+    label = "Not meaningful" if (eps is not None and eps <= 0) or (net_income is not None and net_income <= 0) else "Unavailable" if pe is None else "Discount" if pe < 12 else "Moderate" if pe < 22 else "Premium" if pe < 40 else "Very premium"
+    tone = "muted" if pe is None else "positive" if pe < 12 else "neutral" if pe < 22 else "warning" if pe < 40 else "negative"
+    return metric_card(
+        "valuation", "Valuation regime", pe, "multiple", label, tone,
+        "medium" if pe is not None else "insufficient", "derived",
+        [
+            evidence("Latest completed price", latest_price, "USD/share", None, "reported", "Latest completed daily close available at the selected clock."),
+            evidence("Comparable diluted EPS", eps, "USD/share", first(eps_rows).get("period_end_date"), "reported", "Latest comparable annual SEC diluted EPS; this is not an analyst forward estimate."),
+            evidence("Market capitalization", market_cap, "USD", None, "reported", "Provider market snapshot used only when an EPS-derived ratio is unavailable."),
+        ],
+        {"basis": "latest_price / latest_comparable_annual_eps" if latest_price is not None and eps and eps > 0 else "market_cap / latest_comparable_annual_net_income" if pe is not None else "unavailable", "pe": pe},
+    )
+
+
+def stock_health(
+    *,
+    as_of: datetime,
+    financial_scores: dict[str, float | None],
+    liquidity_score: float | None,
+    share_score: float | None,
+    short_score: float | None,
+) -> dict[str, Any]:
+    components = [
+        ("Profitability", financial_scores.get("profitability"), 25),
+        ("Cash generation", financial_scores.get("cash_generation"), 20),
+        ("Balance-sheet resilience", financial_scores.get("balance_sheet"), 20),
+        ("Share-base discipline", share_score, 15),
+        ("Trading liquidity", liquidity_score, 10),
+        ("Short / settlement resilience", short_score, 10),
+    ]
+    score, coverage = weighted_available(components)
+    label = health_label(score, coverage)
+    tone = health_tone(label)
+    return {
+        "as_of": as_of.isoformat(),
+        "components": [{"label": label_name, "score": value, "weight": weight} for label_name, value, weight in components],
+        "confidence": confidence_from_coverage(coverage),
+        "coverage_percent": coverage,
+        "label": label,
+        "score": score if coverage >= 70 else None,
+        "tone": tone,
+    }
+
+
+def health_label(score: float | None, coverage: float) -> str:
+    if score is None or coverage < 70:
+        return "Insufficient evidence"
+    return "Robust" if score >= 80 else "Healthy" if score >= 65 else "Mixed" if score >= 45 else "Fragile" if score >= 25 else "Stressed"
+
+
+def health_tone(label: str) -> str:
+    return "positive" if label in {"Robust", "Healthy"} else "neutral" if label == "Mixed" else "warning" if label == "Fragile" else "negative" if label == "Stressed" else "muted"
+
+
+def estimate_tradable_shares(fundamental_rows: list[dict[str, Any]], price_rows: list[dict[str, Any]], split_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    observations = fact_observations(fundamental_rows, ("EntityPublicFloat",))
+    for row in observations:
+        public_float_value = row_value(row)
+        period = parse_date(row.get("period_end_date"))
+        price = price_at_or_before(price_rows, period)
+        if public_float_value is None or not period or not price:
+            continue
+        split_factor = split_factor_since(split_rows, period)
+        estimate = public_float_value / price * split_factor
+        return {
+            "method": "sec_public_float_value_divided_by_period_price_split_adjusted",
+            "period_end_date": period.isoformat(),
+            "price": price,
+            "public_float_value": public_float_value,
+            "split_factor": split_factor,
+            "value": estimate,
+            "lower_bound": estimate * 0.65,
+            "upper_bound": estimate * 1.35,
+        }
+    return {}
+
+
+def market_cap_implied_shares(market_rows: list[dict[str, Any]], price_rows: list[dict[str, Any]]) -> float | None:
+    row = first_with_number(market_rows, "market_cap")
+    market_cap = first_number(row, "market_cap")
+    price = price_at_or_before(price_rows, parse_date(row.get("as_of_date") or row.get("observed_at_utc")))
+    return market_cap / price if market_cap and price else None
+
+
+def best_shares_outstanding(float_rows: list[dict[str, Any]], market_rows: list[dict[str, Any]], fundamental_rows: list[dict[str, Any]]) -> float | None:
+    provider = first_number(first_with_number(float_rows, "shares_outstanding"), "shares_outstanding") or first_number(first_with_number(market_rows, "share_class_shares_outstanding", "weighted_shares_outstanding"), "share_class_shares_outstanding", "weighted_shares_outstanding")
+    sec = latest_fact_value(fundamental_rows, ("EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding"))
+    return provider or sec
+
+
+def latest_observation_date(float_rows: list[dict[str, Any]], market_rows: list[dict[str, Any]], fundamental_rows: list[dict[str, Any]]) -> Any:
+    row = first_with_number(float_rows, "shares_outstanding")
+    if row:
+        return row.get("effective_date")
+    row = first_with_number(market_rows, "share_class_shares_outstanding", "weighted_shares_outstanding")
+    if row:
+        return row.get("observed_at_utc")
+    rows = fact_observations(fundamental_rows, ("EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding"))
+    return first(rows).get("period_end_date")
+
+
+def metric_card(card_id: str, title: str, value: float | None, unit: str, label: str, tone: str, confidence: str, method: str, evidence_rows: list[dict[str, Any]], extra: dict[str, Any]) -> dict[str, Any]:
+    return {"id": card_id, "title": title, "value": value, "unit": unit, "label": label, "tone": tone, "confidence": confidence, "method": method, "evidence": [row for row in evidence_rows if row.get("value") is not None], **extra}
+
+
+def evidence(label: str, value: Any, unit: str, observed_at: Any, evidence_type: str, explanation: str) -> dict[str, Any]:
+    return {"label": label, "value": value, "unit": unit, "observed_at": observed_at, "type": evidence_type, "explanation": explanation}
+
+
+def profile_summary(*cards: dict[str, Any]) -> str:
+    return " · ".join(f"{card.get('label')} {card.get('title', '').lower()}" for card in cards if card.get("label") and card.get("label") != "Unavailable")
+
+
+def weighted_available(items: list[tuple[str, float | None, float]]) -> tuple[float | None, float]:
+    available = [(clamp(value), weight) for _, value, weight in items if value is not None]
+    available_weight = sum(weight for _, weight in available)
+    total_weight = sum(weight for _, _, weight in items)
+    if not available_weight or not total_weight:
+        return None, 0.0
+    return sum(value * weight for value, weight in available) / available_weight, available_weight / total_weight * 100.0
+
+
+def scaled(value: float | None, low: float, high: float) -> float | None:
+    if value is None:
+        return None
+    return clamp((value - low) / (high - low) * 100.0)
+
+
+def clamp(value: float, low: float = 0.0, high: float = 100.0) -> float:
+    return max(low, min(high, value))
+
+
+def confidence_from_coverage(coverage: float) -> str:
+    return "high" if coverage >= 85 else "medium" if coverage >= 60 else "low" if coverage > 0 else "insufficient"
+
+
+def ratio_to_percent(value: float | None) -> float | None:
+    return value * 100.0 if value is not None else None
+
+
+def fact_observations(rows: list[dict[str, Any]], tags: tuple[str, ...]) -> list[dict[str, Any]]:
+    priorities = {tag: index for index, tag in enumerate(tags)}
+    matching = [row for row in rows if str(row.get("tag") or "") in priorities and row_value(row) is not None]
+    matching.sort(key=lambda row: (str(row.get("period_end_date") or ""), str(row.get("filed_at_utc") or ""), -priorities[str(row.get("tag") or "")]), reverse=True)
+    by_period: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in matching:
+        key = (str(row.get("period_end_date") or ""), str(row.get("fiscal_period") or ""))
+        by_period.setdefault(key, row)
+    return list(by_period.values())
+
+
+def comparable_facts(rows: list[dict[str, Any]], tags: tuple[str, ...]) -> list[dict[str, Any]]:
+    observations = fact_observations(rows, tags)
+    annual = [row for row in observations if str(row.get("fiscal_period") or "").upper() == "FY" or str(row.get("form_type") or "").upper() in {"10-K", "20-F", "40-F"}]
+    return annual if annual else observations
+
+
+def comparable_growth(rows: list[dict[str, Any]]) -> float | None:
+    if len(rows) < 2:
+        return None
+    current, previous = row_value(rows[0]), row_value(rows[1])
+    return ratio_percent(current - previous, abs(previous)) if current is not None and previous not in {None, 0} else None
+
+
+def latest_fact_value(rows: list[dict[str, Any]], tags: tuple[str, ...]) -> float | None:
+    return row_value(first(fact_observations(rows, tags)))
+
+
+def row_value(row: dict[str, Any]) -> float | None:
+    return numeric_value(row.get("value"))
+
+
+def observation_at_least_days_earlier(rows: list[dict[str, Any]], days: int) -> dict[str, Any]:
+    if not rows:
+        return {}
+    current_date = parse_date(rows[0].get("period_end_date"))
+    if not current_date:
+        return rows[1] if len(rows) > 1 else {}
+    return next((row for row in rows[1:] if (other := parse_date(row.get("period_end_date"))) and (current_date - other).days >= days), rows[1] if len(rows) > 1 else {})
+
+
+def price_at_or_before(rows: list[dict[str, Any]], target: date | None) -> float | None:
+    if not target:
+        return None
+    candidates = []
+    for row in rows:
+        observed = parse_date(row.get("session_date") or row.get("bar_end"))
+        price = numeric_value(row.get("close"))
+        if observed and observed <= target and price and price > 0:
+            candidates.append((observed, price))
+    return max(candidates, default=(None, None), key=lambda item: item[0])[1]
+
+
+def split_factor_since(rows: list[dict[str, Any]], target: date) -> float:
+    factor = 1.0
+    for row in rows:
+        execution = parse_date(row.get("execution_date"))
+        split_from = numeric_value(row.get("split_from"))
+        split_to = numeric_value(row.get("split_to"))
+        if execution and execution > target and split_from and split_to:
+            factor *= split_to / split_from
+    return factor
+
+
+def parse_date(value: Any) -> date | None:
+    text = str(value or "").strip()[:10]
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def build_health_timeline(results: dict[str, list[dict[str, Any]]], cutoff: datetime) -> list[dict[str, Any]]:
+    volume_rows = results.get("volume", [])
+    session_dates = sorted({observed for row in volume_rows if (observed := parse_date(row.get("session_date") or row.get("bar_end"))) and observed <= cutoff.date()})
+    monthly: dict[tuple[int, int], date] = {}
+    for observed in session_dates:
+        monthly[(observed.year, observed.month)] = observed
+    anchors = sorted(set(monthly.values()) | ({session_dates[-1]} if session_dates else set()))
+    points: list[dict[str, Any]] = []
+    for anchor in anchors:
+        available = {name: rows_available_by(rows, anchor, name) for name, rows in results.items()}
+        synthesis = synthesize_stock_facts(
+            as_of=datetime(anchor.year, anchor.month, anchor.day, 23, 59, 59, tzinfo=UTC),
+            borrow=first(available.get("borrow")),
+            fails_to_deliver=first(available.get("fails")),
+            float_rows=available.get("float", []),
+            fundamental_rows=available.get("fundamentals", []),
+            market_rows=available.get("market", []),
+            reg_sho=first(available.get("reg_sho")),
+            short_interest=first(available.get("short_interest")),
+            short_volume=aggregate_short_volume(available.get("short_volume", [])),
+            split_rows=available.get("splits", []),
+            volume_rows=available.get("volume", [])[:MAIN_HISTORY_DAYS],
+        )
+        health = synthesis["health"]
+        if health.get("score") is None:
+            continue
+        points.append({
+            "at": anchor.isoformat(),
+            "coverage": health.get("coverage_percent"),
+            "label": health.get("label"),
+            "tone": health.get("tone"),
+            "value": health.get("score"),
+        })
+    return points
+
+
+def rows_available_by(rows: list[dict[str, Any]], anchor: date, kind: str) -> list[dict[str, Any]]:
+    # Use the first date on which the observation was knowable, not the date on
+    # which a historical backfill happened to be inserted into ClickHouse. This
+    # keeps the monthly health series causal and prevents later loads from
+    # erasing otherwise valid historical evidence.
+    fields = {
+        "borrow": ("observed_at_utc",),
+        # The FTD table does not expose a publication timestamp. inserted_at is
+        # therefore the only safe availability boundary; settlement_date alone
+        # would introduce look-ahead during a historical replay.
+        "fails": ("inserted_at",),
+        "float": ("effective_date",),
+        "fundamentals": ("filed_at_utc", "recorded_at_utc"),
+        "market": ("observed_at_utc",),
+        "reg_sho": ("threshold_date",),
+        "short_interest": ("published_at_utc", "publication_date", "inserted_at"),
+        "short_volume": ("trade_date",),
+        "splits": ("execution_date",),
+        "volume": ("bar_end", "session_date"),
+    }.get(kind, ("inserted_at",))
+    kept: list[tuple[date, dict[str, Any]]] = []
+    for row in rows:
+        observed = next((parsed for field in fields if (parsed := parse_date(row.get(field)))), None)
+        if observed and observed <= anchor:
+            kept.append((observed, row))
+    return [row for _, row in sorted(kept, key=lambda item: item[0], reverse=True)]
+
+
+def health_comparisons(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not points:
+        return []
+    latest_date = parse_date(points[-1].get("at"))
+    if not latest_date:
+        return []
+    comparisons = []
+    for label, days in (("1 month", 30), ("3 months", 90), ("1 year", 365)):
+        target_ordinal = latest_date.toordinal() - days
+        point = min(points, key=lambda item: abs((parse_date(item.get("at")) or latest_date).toordinal() - target_ordinal))
+        comparisons.append({"period": label, "at": point.get("at"), "score": point.get("value"), "label": point.get("label"), "tone": point.get("tone")})
+    return comparisons
 
 
 def metric_changes(
@@ -691,10 +1380,12 @@ def source_inventory(results: dict[str, list[dict[str, Any]]]) -> list[dict[str,
         "borrow": ("IBKR borrow", "q_live.market_security_borrow_v1"),
         "classifications": ("Reference classification", "q_live.market_security_classification_v1"),
         "corporate": ("Corporate actions", "q_live.market_stock_split_v1 / market_cash_dividend_v1"),
+        "fails_to_deliver": ("SEC fails to deliver", "q_live.market_fails_to_deliver_v1"),
         "float": ("Massive float", "q_live.market_security_float_v1"),
         "fundamentals": ("SEC XBRL", "q_live.sec_xbrl_company_fact_v3"),
         "identifiers": ("Canonical identifiers", "q_live.id_*_identifier_v1"),
         "market": ("Massive market snapshot", "q_live.market_security_market_snapshot_v1"),
+        "reg_sho": ("Reg SHO threshold", "q_live.market_reg_sho_threshold_v1"),
         "short_interest": ("Massive short interest", "q_live.market_short_interest_v1"),
         "short_volume": ("FINRA short volume", "q_live.market_short_volume_v1"),
         "volume": ("QMD daily bars", f"{historical_database()}.macro_bars_by_time_symbol"),
@@ -716,6 +1407,10 @@ def clickhouse_timestamp(value: datetime) -> str:
 
 def first(rows: list[dict[str, Any]] | None) -> dict[str, Any]:
     return rows[0] if rows else {}
+
+
+def first_with_number(rows: list[dict[str, Any]], *keys: str) -> dict[str, Any]:
+    return next((row for row in rows if first_number(row, *keys) is not None), {})
 
 
 def first_number(row: dict[str, Any], *keys: str) -> float | None:

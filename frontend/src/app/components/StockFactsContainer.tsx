@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowDown, ArrowRight, ArrowUp, BookOpen, Building2, CalendarDays, ChartNoAxesColumnIncreasing, Database, Landmark, Scale, ShieldCheck } from "lucide-react";
+import { Activity, AlertTriangle, ArrowDown, ArrowRight, ArrowUp, BookOpen, Building2, CalendarDays, ChartNoAxesColumnIncreasing, CircleDollarSign, Database, Droplets, Gauge, HelpCircle, Landmark, Layers3, Scale, ShieldCheck, TrendingDown, TrendingUp } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { api, query } from "../../api/client";
@@ -10,8 +10,13 @@ type FundamentalFact = FactRecord & { label?: string };
 type SourceFact = { available: boolean; label: string; table: string };
 type MetricChange = { current?: number; current_at?: string; delta?: number; direction: "down" | "flat" | "unavailable" | "up"; previous?: number; previous_at?: string };
 type MetricHistoryPoint = { at: string; value: number; [key: string]: unknown };
-type MetricHistoryPayload = { as_of: string; label: string; metric: string; points: MetricHistoryPoint[]; row_count: number; status: "not_found" | "ready"; symbol: string; truncated: boolean; unit: string };
+type HealthComparison = { at?: string; label?: string; period: string; score?: number; tone?: string };
+type MetricHistoryPayload = { as_of: string; comparisons?: HealthComparison[]; label: string; metric: string; points: MetricHistoryPoint[]; row_count: number; status: "not_found" | "ready"; symbol: string; truncated: boolean; unit: string };
 type MetricDescriptor = { label: string; metric: string };
+type SynthesisEvidence = { explanation: string; label: string; observed_at?: string; type: "derived" | "estimated" | "reported" | string; unit: string; value: number };
+type SynthesisCard = { confidence: string; decision_inputs?: { label: string; score?: number; weight: number }[]; evidence: SynthesisEvidence[]; id: string; label: string; method: string; risk_score?: number; title: string; tone: string; unit: string; value?: number; [key: string]: unknown };
+type HealthComponent = { label: string; score?: number; weight: number };
+type HealthSummary = { as_of: string; components: HealthComponent[]; confidence: string; coverage_percent: number; label: string; score?: number; tone: string };
 type TickerFactsPayload = {
   as_of: string;
   errors: Record<string, string>;
@@ -29,6 +34,7 @@ type TickerFactsPayload = {
   fundamentals: FundamentalFact[];
   identifiers: FactRecord[];
   metric_changes: Record<string, MetricChange>;
+  synthesis?: { cards: SynthesisCard[]; health: HealthSummary; profile_summary: string; version: string };
   sources: SourceFact[];
   status: "not_found" | "partial" | "ready";
   symbol: string;
@@ -47,6 +53,8 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
   const [loading, setLoading] = useState(true);
   const [guideOpen, setGuideOpen] = useState(false);
   const [historyMetric, setHistoryMetric] = useState<MetricDescriptor | null>(null);
+  const [metricGuide, setMetricGuide] = useState<SynthesisCard | "health" | null>(null);
+  const [healthHistory, setHealthHistory] = useState<MetricHistoryPayload | null>(null);
   const presentations = useTickerPresentations([symbol]);
   useEffect(() => {
     const controller = new AbortController();
@@ -61,6 +69,16 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
     return () => controller.abort();
   }, [asOf, symbol]);
 
+  useEffect(() => {
+    if (!payload?.synthesis?.health) return;
+    const controller = new AbortController();
+    setHealthHistory(null);
+    api<MetricHistoryPayload>(`/api/trading/ticker-facts/${encodeURIComponent(symbol)}/history/health_score${query({ as_of: asOf })}`, { signal: controller.signal, timeoutMs: 60000 })
+      .then((next) => { if (!controller.signal.aborted) setHealthHistory(next); })
+      .catch(() => { if (!controller.signal.aborted) setHealthHistory(null); });
+    return () => controller.abort();
+  }, [asOf, payload?.synthesis?.health, symbol]);
+
   const facts = payload?.facts ?? {};
   const identity = facts.identity ?? {};
   const market = facts.market ?? {};
@@ -71,6 +89,8 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
   const borrow = facts.borrow ?? {};
   const metricChanges = payload?.metric_changes ?? {};
   const classifications = facts.classifications ?? [];
+  const synthesisCards = payload?.synthesis?.cards ?? [];
+  const health = payload?.synthesis?.health;
   const companyName = text(identity.branding_name, identity.issuer_name, identity.legal_name, identity.security_name) || presentations[symbol]?.issuer_name || symbol;
   const companyCountry = countryName(identity.company_country_code);
   const sharesOutstanding = number(float.shares_outstanding, market.share_class_shares_outstanding, market.weighted_shares_outstanding);
@@ -101,9 +121,12 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
       : error ? <FactsState error label={error} />
         : payload?.status === "not_found" ? <FactsState error label={payload.warnings[0] || `No facts found for ${symbol}.`} />
           : <div className="facts-scroll">
-            <section aria-label="Primary stock facts" className="facts-primary-grid">
+            {health ? <HealthOverview health={health} history={healthHistory} onGuide={() => setMetricGuide("health")} onHistory={() => setHistoryMetric({ label: "Stock health", metric: "health_score" })} profile={payload?.synthesis?.profile_summary ?? ""} /> : null}
+            {synthesisCards.length ? <section aria-label="Synthesized stock profile" className="facts-synthesis-grid">
+              {synthesisCards.map((card) => <SynthesisMetricCard card={card} key={card.id} onGuide={() => setMetricGuide(card)} />)}
+            </section> : <section aria-label="Primary stock facts" className="facts-primary-grid">
               {compactFacts.map((fact) => <FactMetric {...fact} change={metricChanges[fact.metric]} key={fact.label} onHistory={() => setHistoryMetric({ label: fact.label, metric: fact.metric })} />)}
-            </section>
+            </section>}
             {(payload?.warnings.length || Object.keys(payload?.errors ?? {}).length) ? <FactsNotice errors={payload?.errors ?? {}} warnings={payload?.warnings ?? []} /> : null}
             <div className="facts-evidence-grid">
               <FactSection icon={Scale} subtitle="Positioning, locate evidence, and dated short activity" title="Short & borrow">
@@ -154,9 +177,119 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
             </div>
           </div>}
     {guideOpen ? <FactsGuide onClose={() => setGuideOpen(false)} /> : null}
+    {metricGuide ? <SynthesisGuide card={metricGuide === "health" ? null : metricGuide} health={metricGuide === "health" ? health : undefined} onClose={() => setMetricGuide(null)} /> : null}
     {historyMetric ? <FactHistoryModal asOf={asOf} descriptor={historyMetric} onClose={() => setHistoryMetric(null)} symbol={symbol} /> : null}
   </section>;
 }
+
+const SYNTHESIS_ICONS = {
+  financial_trajectory: Activity,
+  share_base: Layers3,
+  short_crowding: Gauge,
+  tradable_supply: Droplets,
+  trading_liquidity: Scale,
+  valuation: CircleDollarSign,
+} as const;
+
+const SYNTHESIS_GUIDES: Record<string, { read: string; calculation: string; caution: string }> = {
+  tradable_supply: {
+    read: "The best point-in-time estimate of shares that can realistically trade. Reported float remains the headline when available; the independent SEC-derived estimate is still shown so disagreement is visible.",
+    calculation: "Priority: reported provider float; otherwise SEC public-float market value divided by the close on the SEC measurement date and adjusted for later splits. Shares outstanding is only an upper bound. The market-cap-implied count is a cross-check for outstanding shares, not float.",
+    caution: "SEC public float is a market value measured on a filing-specific date. The share estimate can be distorted by price choice, dual classes, restricted ownership, stale filings, corporate actions, or provider definitions. Estimated values therefore include a range and never replace a reported value silently.",
+  },
+  short_crowding: {
+    read: "Crowding estimates how difficult and potentially unstable the outstanding short position is. The colored badge is the final risk label: low, normal, elevated, high, or extreme.",
+    calculation: "The risk score combines short interest as a percentage of tradable supply (40%), days to cover (20%), borrow cost (15%), borrow availability (5%), fails to deliver relative to supply (10%), and Reg SHO threshold status (10%). Missing inputs are excluded and reduce coverage. FINRA short-sale volume remains separate flow evidence and is not added to short interest.",
+    caution: "High crowding is not automatically bearish. It can represent persistent negative positioning and also create squeeze risk. Settlement dates, borrow snapshots, and daily flow arrive on different schedules, so always inspect freshness and coverage.",
+  },
+  trading_liquidity: {
+    read: "Trading liquidity describes how readily shares normally change hands. The headline is 20-session average share turnover relative to the tradable-share estimate.",
+    calculation: "The liquidity score combines log-scaled 20-session average dollar volume (60%) and average daily shares divided by tradable supply (40%). If float is unavailable, shares outstanding is the clearly disclosed denominator fallback.",
+    caution: "High historical liquidity does not guarantee low impact during a halt, gap, news shock, or outside regular hours. This is completed-session context, not a replacement for live spread and depth.",
+  },
+  share_base: {
+    read: "Share-base pressure shows whether ownership is being diluted or concentrated through issuance, compensation, conversions, and repurchases.",
+    calculation: "The latest SEC or provider shares-outstanding observation is compared with the nearest comparable observation at least 300 days earlier. More than +5% is rapid expansion; +1% to +5% expanding; within ±1% stable; below −1% contracting.",
+    caution: "Splits change the nominal share count without economic dilution. The evidence card therefore retains dates and source values; future versions should also reconcile every historical point to a split-adjusted basis where required.",
+  },
+  financial_trajectory: {
+    read: "Financial trajectory summarizes reported operating quality rather than displaying unrelated filing values with equal weight.",
+    calculation: "The score combines profitability (45%), cash generation (30%), and balance-sheet resilience (25%). Those components use comparable revenue and income growth, positive operating and net income, operating cash flow, free cash flow, cash, debt, and liabilities. Only available evidence is scored; missing evidence lowers coverage.",
+    caution: "SEC facts may be annual, quarterly, or year-to-date. The service prioritizes comparable annual observations for growth, keeps filing dates, and does not use information published after the selected clock.",
+  },
+  valuation: {
+    read: "Valuation regime puts the current completed price in relation to the latest comparable reported earnings.",
+    calculation: "The preferred proxy is latest completed close divided by latest comparable annual diluted EPS. Market capitalization divided by comparable annual net income is the fallback. The result is explicitly historical/FY based, not forward P/E.",
+    caution: "A low multiple can reflect risk and a high multiple can reflect expected growth. Negative earnings make P/E economically meaningless. Relative sector and own-history percentiles require reliable peer history and are not invented when unavailable.",
+  },
+};
+
+function HealthOverview({ health, history, onGuide, onHistory, profile }: { health: HealthSummary; history: MetricHistoryPayload | null; onGuide: () => void; onHistory: () => void; profile: string }) {
+  return <section className="facts-health" data-tone={health.tone}>
+    <div className="facts-health-summary">
+      <span className="facts-eyebrow">Evidence-weighted stock health</span>
+      <div className="facts-health-value"><strong>{health.score == null ? "—" : Math.round(health.score)}</strong>{health.score != null ? <small>/100</small> : null}<HealthIcon tone={health.tone} /></div>
+      <div className="facts-health-badges"><ToneBadge label={health.label} tone={health.tone} /><ConfidenceBadge confidence={health.confidence} /><span>{Math.round(health.coverage_percent)}% coverage</span></div>
+      <p>{profile || "The summary will appear when sufficient point-in-time evidence is available."}</p>
+      <div className="facts-health-actions"><button onClick={onGuide} type="button"><HelpCircle size={13} /> How calculated</button><button onClick={onHistory} type="button"><ChartNoAxesColumnIncreasing size={13} /> Full history</button></div>
+    </div>
+    <HealthSparkline history={history} />
+    <div className="facts-health-components">
+      {health.components.map((component) => <article key={component.label}><span>{component.label}<small>{component.weight}%</small></span><strong>{component.score == null ? "—" : Math.round(component.score)}</strong><i><b style={{ width: `${Math.max(0, Math.min(100, component.score ?? 0))}%` }} /></i></article>)}
+    </div>
+  </section>;
+}
+
+function HealthSparkline({ history }: { history: MetricHistoryPayload | null }) {
+  const points = (history?.points ?? []).filter((point) => Number.isFinite(Number(point.value)));
+  const width = 360; const height = 92; const pad = 8;
+  const line = points.map((point, index) => {
+    const x = pad + (points.length <= 1 ? (width - pad * 2) / 2 : index / (points.length - 1) * (width - pad * 2));
+    const y = height - pad - Number(point.value) / 100 * (height - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  return <div className="facts-health-history">
+    <header><span>Health through available history</span><small>{points.length ? `${formatHistoryDate(points[0].at)} → ${formatHistoryDate(points[points.length - 1].at)}` : "Loading history…"}</small></header>
+    <div className="facts-health-sparkline">{points.length ? <svg aria-label="Stock health history" preserveAspectRatio="none" role="img" viewBox={`0 0 ${width} ${height}`}><line x1="0" x2={width} y1={height / 2} y2={height / 2} /><polyline fill="none" points={line} /></svg> : <span>Historical score is loaded separately so the current facts are not blocked.</span>}</div>
+    <div className="facts-health-comparisons">{(history?.comparisons ?? []).map((item) => <article data-tone={item.tone ?? "muted"} key={item.period}><small>{item.period}</small><strong>{item.score == null ? "—" : Math.round(item.score)}</strong><ToneBadge label={item.label || "Unavailable"} tone={item.tone || "muted"} /></article>)}</div>
+  </div>;
+}
+
+function SynthesisMetricCard({ card, onGuide }: { card: SynthesisCard; onGuide: () => void }) {
+  const Icon = SYNTHESIS_ICONS[card.id as keyof typeof SYNTHESIS_ICONS] ?? Activity;
+  const decisionInputs = card.decision_inputs ?? [];
+  return <article className="facts-synthesis-card" data-card={card.id} data-tone={card.tone}>
+    <header><span><Icon size={15} />{card.title}</span><button aria-label={`Guide for ${card.title}`} onClick={onGuide} type="button"><HelpCircle size={14} /></button></header>
+    <div className="facts-synthesis-value"><strong>{formatSynthesisValue(card.value, card.unit)}</strong><Icon aria-hidden="true" size={20} /></div>
+    <div className="facts-synthesis-badges"><ToneBadge label={card.label} tone={card.tone} /><ConfidenceBadge confidence={card.confidence} /><span>{friendlyMethod(card.method)}</span></div>
+    <p>{cardSubtitle(card)}</p>
+    <details className="facts-card-evidence"><summary>How this decision was reached</summary>
+      {decisionInputs.length ? <div className="facts-decision-list">{decisionInputs.map((input) => <article key={input.label}><span>{input.label}<small>{input.weight}% weight</small></span><strong>{input.score == null ? "Missing" : Math.round(input.score)}</strong><i><b style={{ width: `${Math.max(0, Math.min(100, input.score ?? 0))}%` }} /></i></article>)}</div> : null}
+      <div className="facts-evidence-list">{card.evidence.slice(0, 5).map((item) => <article key={`${card.id}-${item.label}`}><span>{item.label}<small>{item.type} · {dateLabel(item.observed_at)}</small></span><strong>{formatEvidence(item.value, item.unit)}</strong></article>)}</div>
+    </details>
+  </article>;
+}
+
+function ToneBadge({ label, tone }: { label: string; tone: string }) { return <em className="facts-tone-badge" data-tone={tone}>{label}</em>; }
+function ConfidenceBadge({ confidence }: { confidence: string }) { return <em className="facts-confidence-badge" data-confidence={confidence}>{confidence} confidence</em>; }
+function HealthIcon({ tone }: { tone: string }) { return tone === "positive" ? <TrendingUp size={20} /> : tone === "negative" ? <TrendingDown size={20} /> : <Activity size={20} />; }
+
+function SynthesisGuide({ card, health, onClose }: { card: SynthesisCard | null; health?: HealthSummary; onClose: () => void }) {
+  if (!card && health) return <Modal className="facts-guide-modal facts-metric-guide" onClose={onClose} title="How to read: Stock health"><div className="facts-guide-content">
+    <div className="facts-guide-intro"><strong>{health.label}{health.score == null ? "" : ` · ${Math.round(health.score)}/100`}</strong><p>Stock health is an evidence-weighted context score, not a buy/sell signal. It asks whether the company and its trading conditions appear robust using only information available at each historical clock.</p></div>
+    <div className="facts-guide-grid"><GuideItem title="Calculation" text="Profitability contributes 25%, cash generation 20%, balance-sheet resilience 20%, share-base discipline 15%, trading liquidity 10%, and short/settlement resilience 10%. Missing components are excluded from the numeric average and reduce evidence coverage." /><GuideItem title="Labels" text="Robust is 80–100, Healthy 65–79, Mixed 45–64, Fragile 25–44, and Stressed below 25. A label is withheld when coverage is below 70%." /><GuideItem title="Historical chart" text="Every monthly point is recalculated using only facts that had been published or observed by that date. Later filings do not repaint earlier health. The one-month, three-month, and one-year labels use the nearest available historical point." /><GuideItem title="Do not overread" text="Health measures operating, balance-sheet, capital-structure, liquidity, and crowding resilience. It does not predict the next price move and intentionally excludes valuation from the health score." /></div>
+    <HealthComponentGuide components={health.components} />
+  </div></Modal>;
+  if (!card) return null;
+  const guide = SYNTHESIS_GUIDES[card.id];
+  return <Modal className="facts-guide-modal facts-metric-guide" onClose={onClose} title={`How to read: ${card.title}`}><div className="facts-guide-content">
+    <div className="facts-guide-intro"><strong><ToneBadge label={card.label} tone={card.tone} /> {formatSynthesisValue(card.value, card.unit)}</strong><p>{guide?.read}</p></div>
+    <div className="facts-guide-grid"><GuideItem title="Calculation" text={guide?.calculation || "The value is deterministically derived from the evidence shown below."} /><GuideItem title="Interpretation limits" text={guide?.caution || "Retain the source date and confidence when using this metric."} /><GuideItem title="Evidence type" text="Reported means provider-published. Derived means an exact formula over aligned reported inputs. Estimated means a proxy with uncertainty. Upper bounds are never displayed as exact estimates." /><GuideItem title="Confidence" text="Confidence reflects evidence coverage, reconciliation, and whether the headline is reported or estimated. It is separate from whether the metric is favorable or risky." /></div>
+    <div className="facts-guide-evidence">{card.evidence.map((item) => <article key={item.label}><span><strong>{item.label}</strong><small>{item.type} · {dateLabel(item.observed_at)}</small></span><b>{formatEvidence(item.value, item.unit)}</b><p>{item.explanation}</p></article>)}</div>
+  </div></Modal>;
+}
+
+function HealthComponentGuide({ components }: { components: HealthComponent[] }) { return <div className="facts-guide-evidence">{components.map((component) => <article key={component.label}><span><strong>{component.label}</strong><small>{component.weight}% of final score</small></span><b>{component.score == null ? "Unavailable" : `${Math.round(component.score)}/100`}</b><p>Missing evidence lowers coverage and is not silently treated as a neutral score.</p></article>)}</div>; }
 
 function FactMetric({ change, detail, label, onHistory, tone = "neutral", value }: { change?: MetricChange; detail: string; label: string; onHistory: () => void; tone?: string; value: string }) {
   return <article className="facts-primary-metric" data-tone={tone}><MetricLabel label={label} onHistory={onHistory} /><MetricValue change={change} label={label} value={value} /><small>{detail}</small></article>;
@@ -211,9 +344,13 @@ function FactHistoryModal({ asOf, descriptor, onClose, symbol }: { asOf: string;
 function FactHistoryChart({ history }: { history: MetricHistoryPayload }) {
   const points = history.points.filter((point) => Number.isFinite(Number(point.value)));
   const values = points.map((point) => Number(point.value));
-  const minValue = Math.min(...values);
-  const maxValue = Math.max(...values);
-  const range = Math.max(Math.abs(maxValue - minValue), Math.max(Math.abs(maxValue), 1) * 0.02);
+  const isScore = history.unit.toLowerCase() === "score";
+  const rawMin = Math.min(...values);
+  const rawMax = Math.max(...values);
+  const rawRange = Math.max(Math.abs(rawMax - rawMin), Math.max(Math.abs(rawMax), 1) * 0.02);
+  const minValue = isScore ? 0 : rawMin - rawRange * 0.08;
+  const maxValue = isScore ? 100 : rawMax + rawRange * 0.08;
+  const range = maxValue - minValue;
   const width = 900;
   const height = 310;
   const left = 72;
@@ -223,7 +360,7 @@ function FactHistoryChart({ history }: { history: MetricHistoryPayload }) {
   const chartWidth = width - left - right;
   const chartHeight = height - top - bottom;
   const x = (index: number) => left + (points.length === 1 ? chartWidth / 2 : index / (points.length - 1) * chartWidth);
-  const y = (value: number) => top + (maxValue + range * 0.08 - value) / (range * 1.16) * chartHeight;
+  const y = (value: number) => top + (maxValue - value) / range * chartHeight;
   const linePoints = points.map((point, index) => `${x(index).toFixed(2)},${y(Number(point.value)).toFixed(2)}`).join(" ");
   const first = points[0];
   const latest = points[points.length - 1];
@@ -241,7 +378,7 @@ function FactHistoryChart({ history }: { history: MetricHistoryPayload }) {
       <svg preserveAspectRatio="none" viewBox={`0 0 ${width} ${height}`}>
         {[0, 0.5, 1].map((ratio) => {
           const lineY = top + ratio * chartHeight;
-          const value = maxValue + range * 0.08 - ratio * range * 1.16;
+          const value = maxValue - ratio * range;
           return <g key={ratio}><line className="facts-history-grid" x1={left} x2={width - right} y1={lineY} y2={lineY} /><text className="facts-history-y-label" x={left - 9} y={lineY + 4}>{formatHistoryValue(value, history.unit)}</text></g>;
         })}
         <polyline className="facts-history-line" fill="none" points={linePoints} />
@@ -249,7 +386,8 @@ function FactHistoryChart({ history }: { history: MetricHistoryPayload }) {
         {tickIndexes.map((index) => <text className="facts-history-x-label" key={index} textAnchor={index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"} x={x(index)} y={height - 14}>{formatHistoryDate(points[index].at)}</text>)}
       </svg>
     </div>
-    <p className="facts-history-note">Time is on the x-axis. Values use the source’s report, settlement, observation, or completed-session date. Arrows describe change from the immediately prior reported value; they are not trade signals.</p>
+    {history.comparisons?.length ? <div className="facts-history-comparisons">{history.comparisons.map((item) => <article key={item.period}><small>{item.period}</small><strong>{item.score == null ? "—" : `${Math.round(item.score)}/100`}</strong><ToneBadge label={item.label || "Unavailable"} tone={item.tone || "muted"} /></article>)}</div> : null}
+    <p className="facts-history-note">Time is on the x-axis. Values use the source’s report, settlement, observation, or completed-session date. Health history uses a fixed 0–100 scale and recalculates each monthly point only from evidence available at that date; it does not repaint the past.</p>
   </>;
 }
 
@@ -260,14 +398,16 @@ function FactLink({ label, value }: { label: string; value: string }) {
 
 function FactsNotice({ errors, warnings }: { errors: Record<string, string>; warnings: string[] }) {
   const issueCount = warnings.length + Object.keys(errors).length;
-  return <details className="facts-notice"><summary><AlertTriangle size={12} /><strong>{issueCount} data note{issueCount === 1 ? "" : "s"}</strong><span>Missing values are not estimated</span></summary><div>{warnings.map((warning) => <p key={warning}>{warning}</p>)}{Object.entries(errors).map(([source, message]) => <p key={source}><b>{source}:</b> {message}</p>)}</div></details>;
+  return <details className="facts-notice"><summary><AlertTriangle size={12} /><strong>{issueCount} data note{issueCount === 1 ? "" : "s"}</strong><span>Estimates and bounds are explicitly labeled</span></summary><div>{warnings.map((warning) => <p key={warning}>{warning}</p>)}{Object.entries(errors).map(([source, message]) => <p key={source}><b>{source}:</b> {message}</p>)}</div></details>;
 }
 
 function FactsGuide({ onClose }: { onClose: () => void }) {
   return <Modal className="facts-guide-modal" onClose={onClose} title="How to read Stock Facts"><div className="facts-guide-content">
-    <div className="facts-guide-intro"><strong>Use facts as context, not a directional signal.</strong><p>Every value keeps its source date. Compare market activity, share supply, short positioning, and reported company results without treating differently dated publications as if they arrived together.</p></div>
+    <div className="facts-guide-intro"><strong>Start with the synthesized profile, then inspect its evidence.</strong><p>Each large metric answers one trading-context question and keeps its source dates, calculation, confidence, and missing inputs. The page never presents an estimate as a reported fact or treats differently dated publications as simultaneous.</p></div>
     <div className="facts-guide-grid">
-      <GuideItem title="Market cap and shares" text="Massive's dated market snapshot. Market cap measures company scale; shares outstanding is issued equity. Free float is the subset generally available to public trading and remains blank when the float table has no row." />
+      <GuideItem title="Stock health" text="A direction-neutral resilience score built from profitability, cash generation, balance sheet, share-base discipline, trading liquidity, and short/settlement resilience. It is withheld below 70% evidence coverage and is not a buy/sell forecast." />
+      <GuideItem title="Tradable supply reconciliation" text="Reported float remains authoritative when present, while the independent SEC-derived estimate remains visible as a comparison. If reported float is absent, the estimate is labeled and ranged. Market cap divided by price checks shares outstanding only; it does not calculate float." />
+      <GuideItem title="Colored decision badges" text="Green, neutral, amber, and red badges communicate the interpretation defined for that metric. Confidence has a separate outlined badge so favorable color is never confused with evidence quality. Select the help icon on any card for its exact formula and limitations." />
       <GuideItem title="Arrows, value color, and history charts" text="The arrow and value color compare a metric with its immediately prior reported observation: green means numerically higher, red lower, and neutral means unchanged or no prior value. This is not a bullish/bearish rating because a numeric increase can have different implications for different metrics. Select the chart icon to plot every available point-in-time observation with report time on the x-axis." />
       <GuideItem title="Volume and relative volume" text="Latest completed QMD daily trade volume compared with the mean of the latest 20 completed daily sessions. Above 1× means activity is elevated; it says nothing about direction without price and flow." />
       <GuideItem title="Short interest" text="A settlement-date stock of shares sold short. Days to cover divides short interest by the publication's average daily volume. A high value can create covering pressure, but can also reflect persistent bearish positioning." />
@@ -306,7 +446,7 @@ function borrowValue(row: FactRecord) { const status = text(row.borrow_status); 
 function formatBorrowRates(row: FactRecord) { const indicative = number(row.indicative_borrow_rate); const fee = number(row.fee_rate); return indicative == null && fee == null ? "—" : [indicative == null ? "" : `${formatPercent(indicative)} indicative`, fee == null ? "" : `${formatPercent(fee)} fee`].filter(Boolean).join(" · "); }
 function formatTrendValue(value: number) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 3, notation: Math.abs(value) >= 10_000 ? "compact" : "standard" }).format(value); }
 function formatHistoryDate(value: string) { const date = new Date(value.length === 10 ? `${value}T00:00:00Z` : value); return Number.isNaN(date.getTime()) ? value.slice(0, 10) : new Intl.DateTimeFormat("en-US", { day: "2-digit", month: "short", year: "2-digit", timeZone: "UTC" }).format(date); }
-function formatHistoryValue(value: number, unit: string) { if (!Number.isFinite(value)) return "—"; const normalized = unit.toLowerCase(); if (normalized === "usd") return formatMoney(value); if (normalized === "shares") return formatCount(value); if (normalized === "percent") return `${value.toFixed(Math.abs(value) < 10 ? 2 : 1)}%`; if (normalized === "multiple") return `${value.toFixed(2)}×`; if (normalized === "days") return `${value.toFixed(2)} d`; if (normalized.includes("share")) return `$${formatNumber(value, 3)}`; return formatCount(value); }
+function formatHistoryValue(value: number, unit: string) { if (!Number.isFinite(value)) return "—"; const normalized = unit.toLowerCase(); if (normalized === "usd") return formatMoney(value); if (normalized === "shares") return formatCount(value); if (normalized === "percent") return `${value.toFixed(Math.abs(value) < 10 ? 2 : 1)}%`; if (normalized === "multiple") return `${value.toFixed(2)}×`; if (normalized === "days") return `${value.toFixed(2)} d`; if (normalized === "score") return `${Math.round(value)}/100`; if (normalized.includes("share")) return `$${formatNumber(value, 3)}`; return formatCount(value); }
 function countryName(value: unknown) { const code = text(value).toUpperCase(); if (!code) return ""; try { return new Intl.DisplayNames(["en"], { type: "region" }).of(code) || code; } catch { return code; } }
 function countryLabel(value: unknown) { const code = text(value).toUpperCase(); if (!code) return "—"; const display = countryName(code); return display && display !== code ? `${display} · ${code}` : code; }
 function identityDescription(row: FactRecord) { return [text(row.exchange_code), text(row.security_type, row.instrument_type), text(row.currency_code)].filter(Boolean).join(" · ") || "Canonical security identity"; }
@@ -318,3 +458,7 @@ function displayHost(value: string) { try { return new URL(value).hostname.repla
 function friendlyIdentifier(value: unknown) { const label = text(value).replaceAll("_", " "); return label ? label.toUpperCase() : "Identifier"; }
 function fundamentalMeta(row: FactRecord) { return [text(row.fiscal_period), text(row.form_type), dateLabel(row.period_end_date, "period")].filter(Boolean).join(" · "); }
 function formatFundamental(row: FactRecord) { const value = number(row.value); const unit = text(row.unit_code); if (value == null) return "—"; if (unit === "USD") return formatMoney(value); if (unit.toLowerCase().includes("share")) return `$${formatNumber(value, 3)}`; return `${formatCount(value)}${unit ? ` ${unit}` : ""}`; }
+function formatSynthesisValue(value: unknown, unit: string) { const parsed = number(value); if (parsed == null) return "—"; if (unit === "shares") return formatCount(parsed); if (unit === "percent") return formatPercent(parsed); if (unit === "multiple") return `${formatNumber(parsed, 1)}×`; if (unit === "score") return `${Math.round(parsed)}/100`; if (unit === "USD") return formatMoney(parsed); return formatNumber(parsed, 2); }
+function formatEvidence(value: unknown, unit: string) { const parsed = number(value); if (parsed == null) return "—"; const normalized = unit.toLowerCase(); if (normalized === "shares" || normalized === "shares/day") return formatCount(parsed); if (normalized === "percent") return formatPercent(parsed); if (normalized === "multiple") return `${formatNumber(parsed, 2)}×`; if (normalized === "days") return `${formatNumber(parsed, 2)} d`; if (normalized === "usd" || normalized === "usd/day") return formatMoney(parsed); if (normalized === "usd/share") return `$${formatNumber(parsed, 3)}`; return formatNumber(parsed, 2); }
+function friendlyMethod(value: string) { return ({ derived: "Derived", estimated: "Estimated", reported: "Reported", upper_bound: "Upper bound" } as Record<string, string>)[value] || value.replaceAll("_", " "); }
+function cardSubtitle(card: SynthesisCard) { if (card.id === "tradable_supply") { const reported = number(card.reported_value); const estimated = number(card.estimated_value); if (reported != null && estimated != null) return `${formatCount(reported)} reported vs ${formatCount(estimated)} independently estimated.`; if (estimated != null) return `${formatCount(number(card.lower_bound))}–${formatCount(number(card.upper_bound))} uncertainty range.`; return "Shares outstanding is retained only as an upper bound."; } if (card.id === "short_crowding") return `${formatCount(number(card.short_shares))} short shares · ${formatNumber(number(card.risk_score), 0)}/100 crowding risk.`; if (card.id === "trading_liquidity") return `${formatMoney(number(card.dollar_volume))} average dollar volume.`; if (card.id === "share_base") return "Change versus the nearest comparable observation at least 300 days earlier."; if (card.id === "financial_trajectory") return `${formatNumber(number(card.coverage_percent), 0)}% of financial evidence available.`; if (card.id === "valuation") return "Historical/FY earnings basis; not an analyst forward estimate."; return "Open the evidence to inspect the decision."; }
