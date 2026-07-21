@@ -28,9 +28,6 @@ from pipelines.market_sip.events.clickhouse_build_text_tokens import (
     sec_rendered_source_ctes_sql,
     tokenize_and_insert_source_batch,
 )
-from pipelines.sec.edgar.sec_pipeline.text_renderer import (
-    STRUCTURED_XML_EXCLUDED_QUALITY_FLAG,
-)
 from research.mlops.clickhouse import ClickHouseHttpClient, parse_size_bytes, quote_ident, sql_string
 from services.gateway_core.market_calendar import MarketHoursSnapshot, MassiveMarketHoursClient
 from services.news_gateway.run_logger import AsyncRunLogger
@@ -1284,7 +1281,6 @@ LEFT JOIN {target}.{token_table} AS tok
 WHERE tok.source_id = ''
   AND src.accepted_at_utc >= {dt64_sql(bounds[0])}
   AND src.accepted_at_utc < {dt64_sql(bounds[1])}
-  AND positionCaseInsensitive(ifNull(src.quality_flags, ''), {sql_string(STRUCTURED_XML_EXCLUDED_QUALITY_FLAG)}) = 0
 ORDER BY src.accepted_at_utc DESC, src.ticker, src.accession_number, src.text_rank, src.document_id
 LIMIT {max(1, int(limit))}
 {query_settings(config)}
@@ -1311,7 +1307,6 @@ LEFT JOIN {target}.{token_table} AS tok
 WHERE tok.source_id = ''
   AND src.accepted_at_utc >= {dt64_sql(bounds[0])}
   AND src.accepted_at_utc < {dt64_sql(bounds[1])}
-  AND positionCaseInsensitive(ifNull(src.quality_flags, ''), {sql_string(STRUCTURED_XML_EXCLUDED_QUALITY_FLAG)}) = 0
 {query_settings(config)}
 FORMAT JSONEachRow
 """

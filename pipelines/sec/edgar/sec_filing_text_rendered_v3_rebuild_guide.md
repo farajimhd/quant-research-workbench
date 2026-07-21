@@ -6,7 +6,7 @@ archives or rebuild filing, document, entity, XBRL, bridge, token, or embedding
 tables.
 
 The active historical and live producers both call
-`sec_packed_text_renderer_v8`. A repository search found no executable v1-v7
+`sec_packed_text_renderer_v9`. A repository search found no executable v1-v7
 renderer or extractor-local v1 normalizer path. The older
 `sec_filing_text_repair_rebuild.py` remains intentionally because it repairs
 selected source rows from archives; it is not a full-corpus rendered-table
@@ -157,10 +157,9 @@ the insert committed but before its checkpoint was written. A failed bundle
 atomically writes `STOP_REQUESTED.json`; other workers stop at their next bundle
 boundary instead of draining an entire multi-hour month. Each run owns a
 separate staging table. The worker resolves each source `filing_id` through the
-run's compact form map so structured XML classification receives the
-authoritative parent form type. Only explicitly classified structured fund XML
-is omitted from the rendered text table; an empty result for any other source
-row fails loudly.
+run's compact form map so the renderer receives the authoritative parent form
+type. All supported XML source documents are rendered. An empty result for a
+nonempty supported source row fails loudly.
 
 The first production attempt failed because every monthly worker joined the
 entire `sec_filing_v3 FINAL` relation while exporting large source text. Each
@@ -238,11 +237,11 @@ producing an empty fatal result.
 
 ## Resume
 
-Use the `run_id` printed by the interrupted run:
+Use the v9 `run_id` printed by the interrupted run:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_filing_text_rendered_v3_rebuild.py `
-  --run-id sec_render_v8_20260716_151718 `
+  --run-id sec_render_v9_YYYYMMDD_HHMMSS `
   --workers 4 `
   --max-concurrent-inserts 2 `
   --execute `
@@ -250,6 +249,6 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
   --confirm-sec-gateway-stopped
 ```
 
-The cutover is forbidden for limited test runs. A successful cutover retains
-the prior table as `sec_filing_text_rendered_pre_v8_<timestamp>_v3`; remove it
-only after the v8 corpus and downstream token audit have been accepted.
+The cutover is forbidden for limited test runs. A successful v9 cutover retains
+the prior table as `sec_filing_text_rendered_pre_v9_<timestamp>_v3`; remove it
+only after the v9 corpus and downstream token audit have been accepted.

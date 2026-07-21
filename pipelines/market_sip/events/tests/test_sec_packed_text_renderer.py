@@ -5,7 +5,6 @@ import unittest
 from pipelines.sec.edgar.sec_pipeline.text_renderer import (
     DUPLICATE_BLOCK_MIN_CHARS,
     SEC_PACKED_TEXT_RENDERER_VERSION,
-    STRUCTURED_XML_EXCLUDED_QUALITY_FLAG,
     render_sec_packed_text,
 )
 
@@ -146,14 +145,15 @@ First Trust Beta Fund                    March 4, 2014
         self.assertIn("Revenue: 100", result.packed_text)
         self.assertNotIn("document_presence_only", result.quality_flags)
 
-    def test_structured_fund_xml_stays_in_source_but_is_excluded_from_model_text(self) -> None:
+    def test_structured_fund_xml_is_rendered_with_tag_context(self) -> None:
         result = render_sec_packed_text(
             "<root><holding><name>Issuer</name></holding></root>",
             "xml",
             form_type="N-MFP3",
         )
-        self.assertEqual(result.packed_text, "")
-        self.assertIn(STRUCTURED_XML_EXCLUDED_QUALITY_FLAG, result.quality_flags)
+        self.assertIn("<root/holding>", result.packed_text)
+        self.assertIn("<holding/name>: Issuer", result.packed_text)
+        self.assertNotIn("document_presence_only", result.quality_flags)
 
     def test_layout_lines_and_html_page_footer_are_removed(self) -> None:
         plain = render_sec_packed_text("Title\n----------------\nImportant\n<PAGE>\nMore", "plain_text")

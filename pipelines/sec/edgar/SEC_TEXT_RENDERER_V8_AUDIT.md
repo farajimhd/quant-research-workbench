@@ -1,9 +1,14 @@
 # SEC Text Renderer v8 Audit
 
+> Historical baseline: v9 supersedes v8 by rendering structured fund XML in
+> the canonical derivative. Embedding eligibility is now applied downstream;
+> it no longer causes source documents to be absent from the rendered table.
+
 ## Verdict
 
-`sec_packed_text_renderer_v8` is the canonical renderer for both historical and
-live SEC ingestion. The audit found and fixed three material defects:
+`sec_packed_text_renderer_v8` was the canonical renderer for both historical
+and live SEC ingestion when this audit was performed. The audit found and fixed
+three material defects:
 
 1. The active producer used `sec_text_normalizer_v1` instead of the packed
    renderer, and skipped every XML source document.
@@ -227,7 +232,8 @@ because the agreed 200-character threshold intentionally protects them.
 - `pipelines/sec/edgar/sec_pipeline/live_pipeline.py`, used by SEC gateway live
   ingestion.
 
-That shared row builder now invokes v8 for HTML, plain text, and eligible XML.
+At the time of this audit, that shared row builder invoked v8 for HTML, plain
+text, and eligible XML.
 The obsolete extractor-local HTML/plain normalizer was deleted. Production calls
 disable the audit-only intermediate string to avoid duplicating large rendered
 documents in memory.

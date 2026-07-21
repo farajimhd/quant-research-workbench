@@ -231,11 +231,16 @@ Before accepting the live service after a rebuild, verify:
 
 The live gateway and historical archive path both call the shared
 `sec_filing_text_extract_parts.build_rows` producer. That producer uses
-`sec_packed_text_renderer_v8` for HTML, plain text, and eligible XML; there is no
-separate live normalizer. Complete submitted source remains unchanged in
-`sec_filing_text_v3`.
+`sec_packed_text_renderer_v9` for HTML, plain text, and all supported XML; there
+is no separate live normalizer. Complete submitted source remains unchanged in
+`sec_filing_text_v3`. Embedding eligibility is a downstream taxonomy decision
+and never suppresses a canonical rendered row.
 
-The pre-v8 historical rows already present in `sec_filing_text_rendered_v3` do
+The live completion manifest records the renderer version. After a renderer
+upgrade, current-feed filings completed by an older renderer are replayed once
+and become complete only after the current rendered rows are durable.
+
+Older historical rows already present in `sec_filing_text_rendered_v3` do
 not change when the gateway code is updated. Rebuild that derivative from the
 v3 source table and audit it before generating SEC tokens or embeddings. See
 `SEC_TEXT_RENDERER_V8_AUDIT.md` in the historical pipeline directory.

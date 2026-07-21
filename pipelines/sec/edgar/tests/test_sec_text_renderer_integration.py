@@ -95,6 +95,58 @@ class SecTextRendererIntegrationTests(unittest.TestCase):
         self.assertEqual(rendered_row["extraction_method"], SEC_PACKED_TEXT_RENDERER_VERSION)
         self.assertIn("<proxyTable> issuerName=Issuer 0; sharesVoted=1", rendered_row["text"])
 
+    def test_live_and_historical_shared_row_builder_renders_primary_nport_xml(self) -> None:
+        xml = """<?xml version="1.0" encoding="UTF-8"?>
+<edgarSubmission>
+  <headerData><submissionType>NPORT-P</submissionType></headerData>
+  <formData>
+    <genInfo><regName>Example Registered Fund</regName></genInfo>
+    <fundInfo><totAssets>123456789</totAssets><totLiabs>1234567</totLiabs></fundInfo>
+  </formData>
+</edgarSubmission>"""
+        parent = FilingParent(
+            filing_id="filing-id",
+            accession_number="0002000324-26-002949",
+            accession_number_compact="000200032426002949",
+            cik="0001722388",
+            form_type="NPORT-P",
+            accepted_at_utc="2026-07-21 15:32:00.000",
+            primary_document="primary_doc.xml",
+            primary_document_url="",
+            filing_detail_url="",
+        )
+        document = {
+            "document_type": "NPORT-P",
+            "document_name": "primary_doc.xml",
+            "payload": xml,
+            "payload_bytes": len(xml.encode("utf-8")),
+            "payload_char_count": len(xml),
+            "sequence_number": 1,
+            "description": "Monthly portfolio report",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            document_row, source_row, rendered_row, skip_row, _sample = build_rows(
+                {"source_run_id": "test-run", "sample_text_chars": 500},
+                Path(tmp) / "20260721.nc.tar.gz",
+                "2026-07-21",
+                "filing.nc",
+                parent,
+                document,
+                "2026-07-21 15:33:00.000",
+            )
+
+        self.assertIsNotNone(source_row)
+        self.assertIsNotNone(rendered_row)
+        self.assertIsNone(skip_row)
+        assert source_row is not None and rendered_row is not None
+        self.assertEqual(source_row["source_text"], xml)
+        self.assertEqual(document_row["extraction_status"], "text_extracted")
+        self.assertEqual(rendered_row["normalizer_version"], SEC_PACKED_TEXT_RENDERER_VERSION)
+        self.assertIn("<edgarSubmission/headerData>", rendered_row["text"])
+        self.assertIn("<headerData/submissionType>: NPORT-P", rendered_row["text"])
+        self.assertIn("<genInfo/regName>: Example Registered Fund", rendered_row["text"])
+        self.assertIn("<fundInfo/totAssets>: 123456789", rendered_row["text"])
+
     def test_live_and_historical_shared_row_builder_keeps_image_only_html_visible(self) -> None:
         source = """<html><head><title>Legal opinion</title></head><body>
         <img src="opinion-1.jpg" title="page1" width="791" height="1024">

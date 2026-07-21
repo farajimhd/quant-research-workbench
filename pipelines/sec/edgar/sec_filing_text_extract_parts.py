@@ -49,7 +49,6 @@ from pipelines.sec.edgar.sec_pipeline.revision import (  # noqa: E402
 )
 from pipelines.sec.edgar.sec_pipeline.text_renderer import (  # noqa: E402
     SEC_PACKED_TEXT_RENDERER_VERSION,
-    STRUCTURED_XML_EXCLUDED_QUALITY_FLAG,
     render_sec_packed_text,
 )
 
@@ -1068,8 +1067,6 @@ def skip_reason_for_document(document_role: str, content_format: str, text: str,
         return "archive_or_json"
     if content_format == "pdf":
         return "pdf_text_pending"
-    if STRUCTURED_XML_EXCLUDED_QUALITY_FLAG in quality_flags:
-        return "structured_xml_model_excluded"
     if content_format == "xbrl":
         return "structured_xml_or_xbrl"
     if content_format in {"image", "binary_like", "unknown"}:

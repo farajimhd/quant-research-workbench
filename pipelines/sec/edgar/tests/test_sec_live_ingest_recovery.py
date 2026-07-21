@@ -189,7 +189,26 @@ class SecLiveIngestRecoveryTests(unittest.TestCase):
         rows = manifest.completed_revisions([ACCESSION_NEW])
 
         self.assertIn("status = 'complete'", client.sql)
+        self.assertIn("renderer_version = 'sec_packed_text_renderer_v9'", client.sql)
         self.assertEqual(rows[ACCESSION_NEW], datetime(2026, 7, 21, 15, 1, 2, tzinfo=UTC))
+
+    def test_manifest_schema_migration_adds_renderer_version(self) -> None:
+        class FakeClient:
+            def __init__(self) -> None:
+                self.sql: list[str] = []
+
+            def execute(self, sql: str) -> str:
+                self.sql.append(sql)
+                return ""
+
+        client = FakeClient()
+        manifest = SecLiveIngestManifest(client, LiveIngestManifestConfig())
+
+        manifest.ensure_table()
+
+        self.assertEqual(len(client.sql), 2)
+        self.assertIn("renderer_version LowCardinality(String)", client.sql[0])
+        self.assertIn("ADD COLUMN IF NOT EXISTS renderer_version", client.sql[1])
 
     def test_pending_source_retry_window_is_durable(self) -> None:
         class FakeClient:

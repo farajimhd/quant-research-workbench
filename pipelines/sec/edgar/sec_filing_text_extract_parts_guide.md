@@ -9,7 +9,7 @@ Output datasets:
 - `sec_filing_document_v3_parts`: real archive `<DOCUMENT>` metadata.
 - `sec_filing_text_v3_parts`: submitted text-source documents.
 - `sec_filing_text_rendered_v3_parts`: packed renderer/normalizer output for useful text documents.
-- `sec_filing_document_skip_v3_parts`: explicit skip records for structured XML/XBRL, images, PDFs without extraction, and low-signal documents.
+- `sec_filing_document_skip_v3_parts`: explicit skip records for XBRL-only payloads, images, PDFs without extraction, archives, and unsupported binary documents.
 
 The extractor uses `q_live.sec_filing_v3` as the filing parent table. It stores
 submitted source text and deterministic renderer output; training jobs should add

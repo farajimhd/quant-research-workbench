@@ -25,7 +25,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from pipelines.sec.edgar.sec_pipeline.text_renderer import (  # noqa: E402
     SEC_PACKED_TEXT_RENDERER_VERSION,
-    STRUCTURED_XML_EXCLUDED_QUALITY_FLAG,
     render_sec_packed_text,
 )
 from pipelines.sec.edgar.sec_source_text_revision_engine import (  # noqa: E402
@@ -249,7 +248,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     loaded_env = load_env_files(discover_env_files(REPO_ROOT), verbose=True)
     args = parse_args()
-    run_id = args.run_id.strip() or f"sec_render_v8_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
+    run_id = args.run_id.strip() or f"sec_render_v9_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
     if not args.staging_table:
         args.staging_table = staging_table_for_run(run_id)
     validate_args(args)
@@ -1726,12 +1725,9 @@ def process_row_group_bundle(
                         include_intermediate=False,
                     )
                     text = rendered.packed_text
-                    if STRUCTURED_XML_EXCLUDED_QUALITY_FLAG in rendered.quality_flags:
-                        excluded_rows += 1
-                        continue
                     if not text:
                         raise RuntimeError(
-                            "renderer produced an unexpectedly empty non-structured document "
+                            "renderer produced an unexpectedly empty supported document "
                             f"document_id={source.get('document_id')} accession={source.get('accession_number')} "
                             f"content_format={source.get('content_format')} source_chars={len(source_text)} "
                             f"quality_flags={rendered.quality_flags}"
@@ -2187,7 +2183,7 @@ SETTINGS do_not_merge_across_partitions_select_final=0,
 
 def cutover_backup_table_name(run_id: str) -> str:
     suffix = re.sub(r"[^0-9]", "", run_id)[-14:] or datetime.now(UTC).strftime("%Y%m%d%H%M%S")
-    return f"sec_filing_text_rendered_pre_v8_{suffix}_v3"
+    return f"sec_filing_text_rendered_pre_v9_{suffix}_v3"
 
 
 def cutover_state_path(run_root: Path) -> Path:

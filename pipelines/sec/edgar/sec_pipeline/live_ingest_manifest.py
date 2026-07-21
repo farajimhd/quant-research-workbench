@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from pipelines.sec.edgar.sec_pipeline.text_renderer import SEC_PACKED_TEXT_RENDERER_VERSION
 from research.mlops.clickhouse import ClickHouseHttpClient, mergetree_settings_sql, quote_ident, sql_string
 
 
@@ -20,6 +21,7 @@ class LiveIngestManifestConfig:
     database: str = "q_live"
     table: str = DEFAULT_LIVE_INGEST_MANIFEST_TABLE
     storage_policy: str = ""
+    renderer_version: str = SEC_PACKED_TEXT_RENDERER_VERSION
 
 
 class SecLiveIngestManifest:
@@ -29,6 +31,10 @@ class SecLiveIngestManifest:
 
     def ensure_table(self) -> None:
         self.client.execute(create_live_ingest_manifest_table_sql(self.config))
+        self.client.execute(
+            f"ALTER TABLE {quote_ident(self.config.database)}.{quote_ident(self.config.table)} "
+            "ADD COLUMN IF NOT EXISTS renderer_version LowCardinality(String) DEFAULT '' AFTER source_revision_rank"
+        )
 
     def completed_revisions(self, accession_numbers: list[str]) -> dict[str, datetime]:
         values = sorted({str(value) for value in accession_numbers if str(value)})
@@ -41,6 +47,7 @@ SELECT accession_number, toString(source_revision_at)
 FROM {quote_ident(self.config.database)}.{quote_ident(self.config.table)} FINAL
 WHERE accession_number IN ({values_sql})
   AND status = {sql_string(COMPLETE_STATUS)}
+  AND renderer_version = {sql_string(self.config.renderer_version)}
 FORMAT TSV
 """
         )
@@ -90,6 +97,7 @@ FORMAT TSV
             "source_version_key": str(row.get("source_version_key") or ""),
             "source_revision_at": row["source_revision_at"],
             "source_revision_rank": int(row.get("source_revision_rank") or 0),
+            "renderer_version": str(row.get("renderer_version") or self.config.renderer_version),
             "expected_document_rows": int(row.get("expected_document_rows") or 0),
             "expected_text_source_rows": int(row.get("expected_text_source_rows") or 0),
             "expected_rendered_text_rows": int(row.get("expected_rendered_text_rows") or 0),
@@ -120,6 +128,7 @@ CREATE TABLE IF NOT EXISTS {quote_ident(config.database)}.{quote_ident(config.ta
     source_version_key String,
     source_revision_at DateTime64(3, 'UTC'),
     source_revision_rank UInt64,
+    renderer_version LowCardinality(String),
     expected_document_rows UInt64,
     expected_text_source_rows UInt64,
     expected_rendered_text_rows UInt64,

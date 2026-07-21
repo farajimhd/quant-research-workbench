@@ -225,8 +225,9 @@ carry heading meaning are preserved.
 Repeated blocks are compacted only when their normalized length is at least 200
 characters; duplicate occurrences are replaced with `DUPLICATE of [first 15
 chars]`. Structured fund-report XML such as NPORT/N-CEN/N-MFP is preserved in the
-upstream source table but marked `structured_xml_excluded` in context so it is
-not tokenized as readable filing text. The renderer
+upstream source table and rendered with compact tag context. Canonical rendering
+does not decide embedding eligibility; that policy belongs to the downstream
+filing taxonomy and chunk planner. The renderer
 does not summarize, remove SEC/legal boilerplate, remove risk factors, remove
 signatures, or rewrite substantive contract/table text. `q_live.sec_filing_text_rendered_v3`
 stores the renderer/normalizer output for audit. The context table records

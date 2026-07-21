@@ -108,10 +108,12 @@ for documents that now have extracted text. It does not repair filing-parent
 timestamps; run the acceptance timestamp repair scripts separately for
 `sec_filing_v3.accepted_at_utc`.
 
-The canonical source-to-model renderer is `sec_packed_text_renderer_v8`, shared
-by historical extraction and SEC gateway live ingestion. Its database
+The canonical source-to-model renderer is `sec_packed_text_renderer_v9`, shared
+by historical extraction and SEC gateway live ingestion. Version 9 renders all
+supported XML source documents, including structured fund forms; canonical
+rendering no longer enforces downstream embedding eligibility. The v8 database
 distribution, large-document iterations, table/XML corrections, and rejected
-lossy rules are documented in [SEC_TEXT_RENDERER_V8_AUDIT.md](SEC_TEXT_RENDERER_V8_AUDIT.md).
+lossy rules remain documented in [SEC_TEXT_RENDERER_V8_AUDIT.md](SEC_TEXT_RENDERER_V8_AUDIT.md).
 Updating the code does not rewrite existing rendered rows; rebuild the rendered
 derivative from `sec_filing_text_v3` before SEC token or embedding generation.
 The renderer preserves substantive XML comments, including `ABS-EE` `EX-103`

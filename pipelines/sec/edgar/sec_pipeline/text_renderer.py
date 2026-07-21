@@ -10,8 +10,7 @@ from html.parser import HTMLParser
 from typing import Any
 
 
-SEC_PACKED_TEXT_RENDERER_VERSION = "sec_packed_text_renderer_v8"
-STRUCTURED_XML_EXCLUDED_QUALITY_FLAG = "structured_xml_excluded"
+SEC_PACKED_TEXT_RENDERER_VERSION = "sec_packed_text_renderer_v9"
 DUPLICATE_BLOCK_MIN_CHARS = 200
 DUPLICATE_PLACEHOLDER_PREFIX_CHARS = 15
 
@@ -45,7 +44,6 @@ _BLOCK_TAGS = {
 }
 _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
 _TABLE_TAGS = {"table", "thead", "tbody", "tfoot", "tr", "td", "th", "caption", "colgroup", "col"}
-_STRUCTURED_FUND_XML_FORM_PREFIXES = ("NPORT", "N-PORT", "N-CEN", "N-MFP")
 _SEPARATOR_ONLY_RE = re.compile(r"^[\s|+\-_=*~`.]{3,}$")
 _PAGE_MARKER_RE = re.compile(r"^<\s*page(?:\s+\d+)?\s*>$", re.I)
 _NUMERICISH_RE = re.compile(r"^\s*(?:\$|usd)?\s*\(?-?[0-9][0-9,]*(?:\.[0-9]+)?%?\)?\s*$", re.I)
@@ -412,15 +410,7 @@ def render_sec_packed_text(
     parser_visible_chars = 0
     parser_nonvisible_chars = 0
 
-    if fmt == "xml" and _is_structured_fund_xml(form_type=form_type, document_type=document_type, document_name=document_name):
-        flags.extend(
-            [
-                STRUCTURED_XML_EXCLUDED_QUALITY_FLAG,
-                f"structured_xml_form_{_flag_token(form_type or document_type or document_name)}",
-            ]
-        )
-        blocks = []
-    elif fmt == "html":
+    if fmt == "html":
         parser = _SecHTMLPackedTextParser()
         try:
             parser.feed(source)
@@ -465,7 +455,7 @@ def render_sec_packed_text(
     else:
         blocks = _plain_text_blocks(source)
 
-    if not blocks and STRUCTURED_XML_EXCLUDED_QUALITY_FLAG not in flags:
+    if not blocks:
         can_emit_presence = fmt != "html" or parser_visible_chars == 0
         if can_emit_presence:
             if fmt == "html" and parser_nonvisible_chars:
@@ -889,15 +879,6 @@ def _xml_like_blocks_with_tags(source: str) -> list[RenderedBlock]:
         if tag and text and not _is_low_signal_text(text):
             blocks.append(RenderedBlock("xml_leaf", f"{tag}: {text}"))
     return blocks or _plain_text_blocks(_strip_markup(source))
-
-
-def _is_structured_fund_xml(*, form_type: str, document_type: str, document_name: str) -> bool:
-    candidates = [form_type, document_type, document_name]
-    for value in candidates:
-        token = re.sub(r"[^A-Z0-9]+", "-", str(value or "").upper()).strip("-")
-        if any(token.startswith(prefix) for prefix in _STRUCTURED_FUND_XML_FORM_PREFIXES):
-            return True
-    return False
 
 
 def _walk_xml(node: ET.Element, path: list[str], blocks: list[RenderedBlock]) -> None:

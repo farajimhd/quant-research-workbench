@@ -92,13 +92,13 @@ class SecRenderedV3RebuildTest(unittest.TestCase):
 
         watermark = SourceWatermark(10, 100, 5, "2026-07-20 00:00:00", 99)
         filing_watermark = FilingWatermark(8, 8, "2026-07-20 00:00:00", 88)
-        run_id = "sec_render_v8_20260716_151718"
+        run_id = "sec_render_v9_20260721_180000"
         args = SimpleNamespace(
             database="q_live",
             target_table="target_v3",
             staging_table="sec_filing_text_rendered_stage_test_v3",
         )
-        backup_table = "sec_filing_text_rendered_pre_v8_20260716151718_v3"
+        backup_table = "sec_filing_text_rendered_pre_v9_20260721180000_v3"
         existing = {
             backup_table,
             "sec_filing_text_rendered_stage_test_v3",
@@ -640,11 +640,11 @@ class SecRenderedV3RebuildTest(unittest.TestCase):
 
     def test_staging_table_is_isolated_by_run(self) -> None:
         self.assertEqual(
-            staging_table_for_run("sec-render/v8 20260716"),
-            "sec_filing_text_rendered_stage_sec_render_v8_20260716_v3",
+            staging_table_for_run("sec-render/v9 20260721"),
+            "sec_filing_text_rendered_stage_sec_render_v9_20260721_v3",
         )
 
-    def test_rendered_row_preserves_source_lineage_and_uses_v8(self) -> None:
+    def test_rendered_row_preserves_source_lineage_and_uses_current_renderer(self) -> None:
         now = datetime(2026, 7, 16, tzinfo=UTC)
         source = {
             "document_id": "doc",
