@@ -240,12 +240,19 @@ The finalizer writes:
 
 - `holdout_evaluation.json`, including confusion matrix, accuracy, balanced
   accuracy, macro F1, and horizon/session breakdowns;
-- `human_review_sample.csv`, a deterministic stratified and blinded sample with
-  blank reviewer fields;
-- `human_review_sample_answer_key.csv`, kept separate so human language judgment
-  is not contaminated by future price reaction; and
+- `human_review_sample.csv`, a deterministic stratified sample with exactly one
+  row per canonical news/ticker pair, blank reviewer fields, and no phrase IDs,
+  model scores, predictions, horizons, or future price reactions;
+- `human_review_sample_answer_key.csv`, containing the hidden phrase/model and
+  reaction evidence for every available horizon under the same stable review ID;
+  keep it closed until all human labels are locked; and
 - `human_review_instructions.json`, the review label contract.
 
 Certification is refused while any stale source slice, key-count mismatch,
 duplicate, noncausal timestamp, target-after-boundary row, or invalid high/low
 relationship remains.
+
+Feature certification counts canonical source articles and extracted
+article/phrase keys in independent monthly aggregates before joining them. This
+prevents an unmatched source article from contributing ClickHouse's default
+empty tuple to a month's certified output count.

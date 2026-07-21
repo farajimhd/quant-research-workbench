@@ -1184,82 +1184,162 @@ def write_review_sample(
     if args.review_sample_size == 0:
         path.write_text("", encoding="utf-8")
         return 0
-    rows = query_json_rows(client, f"""
-WITH
-{prediction_ctes(args, watermarks)},
-ranked AS
-(
-    SELECT
-        p.*,
-        n.title,
-        n.teaser,
-        leftUTF8(n.normalized_full_text, 2000) AS body_excerpt,
-        n.provider_tags,
-        n.channels,
-        row_number() OVER (
-            PARTITION BY p.horizon_code, p.publication_session, p.predicted_class, p.actual_class
-            ORDER BY cityHash64(p.canonical_news_id, p.ticker, p.horizon_code)
-        ) AS stratum_rank
-    FROM predictions AS p
-    INNER JOIN (SELECT * FROM {table(args.news_database, args.normalized_table)} FINAL) AS n
-      ON n.canonical_news_id = p.canonical_news_id
-)
-SELECT
-    hex(sipHash128(canonical_news_id, ticker, horizon_code)) AS review_id,
-    canonical_news_id,
-    ticker,
-    toString(published_at_utc) AS published_at_utc,
-    horizon_code,
-    publication_session,
-    phrase_ids,
-    sentiment_score,
-    predicted_class,
-    actual_class,
-    abnormal_target_return,
-    title,
-    teaser,
-    body_excerpt,
-    provider_tags,
-    channels,
-    '' AS reviewer_sentiment,
-    '' AS reviewer_relevance,
-    '' AS reviewer_notes
-FROM ranked
-WHERE stratum_rank <= greatest(1, intDiv({int(args.review_sample_size)} + 44, 45))
-ORDER BY cityHash64(review_id)
-LIMIT {int(args.review_sample_size)}
-FORMAT JSONEachRow
-""")
+    rows = query_json_rows(client, review_sample_sql(args, watermarks))
+    review_ids = {row["review_id"] for row in rows}
+    article_keys = {(row["canonical_news_id"], row["ticker"]) for row in rows}
+    if len(review_ids) != len(rows) or len(article_keys) != len(rows):
+        raise RuntimeError("human review sample contains duplicate review or news/ticker identities")
+    if any(not row.get("hidden_answers") for row in rows):
+        raise RuntimeError("human review sample contains an article without hidden horizon answers")
     fieldnames = [
-        "review_id", "canonical_news_id", "ticker", "published_at_utc", "horizon_code",
-        "publication_session", "phrase_ids", "sentiment_score", "predicted_class",
+        "review_id", "canonical_news_id", "ticker", "published_at_utc",
         "title", "teaser", "body_excerpt", "provider_tags", "channels",
         "reviewer_sentiment", "reviewer_relevance", "reviewer_notes",
     ]
-    answer_fields = ["review_id", "actual_class", "abnormal_target_return"]
+    answer_fields = [
+        "review_id", "canonical_news_id", "ticker", "published_at_utc",
+        "horizon_code", "publication_session", "phrase_ids", "sentiment_score",
+        "predicted_class", "actual_class", "abnormal_target_return",
+    ]
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
-            writer.writerow({key: json.dumps(row.get(key), ensure_ascii=False) if isinstance(row.get(key), list) else row.get(key, "") for key in fieldnames})
+            writer.writerow({
+                key: json.dumps(row.get(key), ensure_ascii=False)
+                if isinstance(row.get(key), list)
+                else row.get(key, "")
+                for key in fieldnames
+            })
     answer_path = path.with_name(path.stem + "_answer_key.csv")
+    answer_keys: set[tuple[str, str]] = set()
     with answer_path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=answer_fields)
         writer.writeheader()
         for row in rows:
-            writer.writerow({key: row.get(key, "") for key in answer_fields})
+            common = {
+                "review_id": row["review_id"],
+                "canonical_news_id": row["canonical_news_id"],
+                "ticker": row["ticker"],
+                "published_at_utc": row["published_at_utc"],
+            }
+            for hidden in row.get("hidden_answers", []):
+                answer_key = (row["review_id"], str(hidden[0]))
+                if answer_key in answer_keys:
+                    raise RuntimeError(f"duplicate hidden review/horizon answer: {answer_key}")
+                answer_keys.add(answer_key)
+                answer = {
+                    **common,
+                    "horizon_code": hidden[0],
+                    "publication_session": hidden[1],
+                    "phrase_ids": json.dumps(hidden[2], ensure_ascii=False),
+                    "sentiment_score": hidden[3],
+                    "predicted_class": hidden[4],
+                    "actual_class": hidden[5],
+                    "abnormal_target_return": hidden[6],
+                }
+                writer.writerow(answer)
     return len(rows)
+
+
+def review_sample_sql(args: argparse.Namespace, watermarks: SourceWatermarks) -> str:
+    """Select one deterministic, fully blinded review row per news/ticker pair."""
+    horizon_priority = (
+        "indexOf(['1m', '5m', '10m', '30m', '1h', '2h', '3h', "
+        "'premarket_close', 'regular_close', 'extended_close'], horizon_code)"
+    )
+    return f"""
+WITH
+{prediction_ctes(args, watermarks)},
+article_candidates AS
+(
+    SELECT
+        canonical_news_id,
+        ticker,
+        any(published_at_utc) AS published_at_utc,
+        any(publication_session) AS publication_session,
+        argMin(
+            predicted_class,
+            {horizon_priority}
+        ) AS stratification_predicted_class,
+        argMin(
+            actual_class,
+            {horizon_priority}
+        ) AS stratification_actual_class
+    FROM predictions
+    GROUP BY canonical_news_id, ticker
+),
+ranked_articles AS
+(
+    SELECT
+        *,
+        row_number() OVER (
+            PARTITION BY publication_session, stratification_predicted_class, stratification_actual_class
+            ORDER BY cityHash64(canonical_news_id, ticker)
+        ) AS stratum_rank
+    FROM article_candidates
+),
+selected_articles AS
+(
+    SELECT *
+    FROM ranked_articles
+    ORDER BY stratum_rank, cityHash64(canonical_news_id, ticker)
+    LIMIT {int(args.review_sample_size)}
+)
+SELECT
+    hex(sipHash128(s.canonical_news_id, s.ticker)) AS review_id,
+    s.canonical_news_id AS canonical_news_id,
+    s.ticker AS ticker,
+    toString(s.published_at_utc) AS published_at_utc,
+    n.title AS title,
+    n.teaser AS teaser,
+    leftUTF8(n.normalized_full_text, 2000) AS body_excerpt,
+    n.provider_tags AS provider_tags,
+    n.channels AS channels,
+    arraySort(groupArray(tuple(
+        p.horizon_code,
+        p.publication_session,
+        p.phrase_ids,
+        p.sentiment_score,
+        p.predicted_class,
+        p.actual_class,
+        p.abnormal_target_return
+    ))) AS hidden_answers,
+    '' AS reviewer_sentiment,
+    '' AS reviewer_relevance,
+    '' AS reviewer_notes
+FROM selected_articles AS s
+INNER JOIN (SELECT * FROM {table(args.news_database, args.normalized_table)} FINAL) AS n
+  ON n.canonical_news_id = s.canonical_news_id
+INNER JOIN predictions AS p
+  ON p.canonical_news_id = s.canonical_news_id AND p.ticker = s.ticker
+GROUP BY
+    s.canonical_news_id,
+    s.ticker,
+    s.published_at_utc,
+    n.title,
+    n.teaser,
+    n.normalized_full_text,
+    n.provider_tags,
+    n.channels
+ORDER BY cityHash64(review_id)
+FORMAT JSONEachRow
+"""
 
 
 def review_instructions(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "purpose": "Human review of a deterministic, phrase-probability news sentiment classifier.",
-        "do_not_use_actual_class_while_reviewing": True,
+        "sample_unit": "one unique canonical news/ticker pair",
+        "model_outputs_hidden": True,
+        "future_price_reaction_hidden": True,
+        "answer_key_policy": "Do not open the answer key until all reviewer labels are locked.",
         "reviewer_sentiment_values": ["negative", "neutral", "positive", "mixed", "unclear"],
         "reviewer_relevance_values": ["company_specific", "ticker_related", "not_relevant"],
         "guidance": [
             "Judge language available at publication time, not the later price reaction.",
+            "Do not inspect phrase rules, model scores, predictions, or the answer key while labeling.",
             "Use mixed when independent positive and negative components are both material.",
             "Use unclear when the excerpt is insufficient; do not infer missing article text.",
         ],
@@ -1386,6 +1466,7 @@ def certify_chunks(client: ClickHouseHttpClient, args: argparse.Namespace, water
     }
     feature_rows = query_json_rows(client, feature_certification_sql(args, watermarks))
     reaction_rows = query_json_rows(client, reaction_certification_sql(args, watermarks))
+    validate_certification_rows(feature_rows, reaction_rows, audit)
     rows = [
         {
             "finalizer_version": FINALIZER_VERSION,
@@ -1408,21 +1489,72 @@ def certify_chunks(client: ClickHouseHttpClient, args: argparse.Namespace, water
     insert_json_rows(client, target, rows)
 
 
+def validate_certification_rows(
+    feature_rows: Sequence[dict[str, Any]],
+    reaction_rows: Sequence[dict[str, Any]],
+    audit: dict[str, Any],
+) -> None:
+    """Refuse certification when per-chunk metadata disagrees with the final audit."""
+    checks = (
+        (
+            "features",
+            len(feature_rows),
+            sum(int(row["output_rows"]) for row in feature_rows),
+            int(audit["feature_chunks"]),
+            int(audit["feature_rows"]),
+        ),
+        (
+            "reactions",
+            len(reaction_rows),
+            sum(int(row["output_rows"]) for row in reaction_rows),
+            int(audit["reaction_chunks"]),
+            int(audit["unique_label_rows"]),
+        ),
+    )
+    for stage, actual_chunks, actual_rows, expected_chunks, expected_rows in checks:
+        if actual_chunks != expected_chunks or actual_rows != expected_rows:
+            raise RuntimeError(
+                f"{stage} certification metadata disagrees with final audit: "
+                f"chunks={actual_chunks}/{expected_chunks} rows={actual_rows}/{expected_rows}"
+            )
+
+
 def feature_certification_sql(args: argparse.Namespace, watermarks: SourceWatermarks) -> str:
     return f"""
+WITH source AS
+(
+    SELECT
+        toStartOfMonth(toDate(published_at_utc)) AS chunk_start,
+        least(addMonths(chunk_start, 1), toDate({sql_string(watermarks.stable_end_exclusive)})) AS chunk_end_exclusive,
+        uniqExact(canonical_news_id) AS source_rows,
+        toString(max(updated_at_utc)) AS source_max_updated,
+        toString(groupBitXor(cityHash64(canonical_news_id, text_hash, toString(updated_at_utc)))) AS source_signature
+    FROM {table(args.news_database, args.normalized_table)} FINAL
+    WHERE published_at_utc >= {dt_sql(args.start_date)}
+      AND published_at_utc < {dt_sql(watermarks.stable_end_exclusive)}
+    GROUP BY chunk_start, chunk_end_exclusive
+),
+outputs AS
+(
+    SELECT
+        toStartOfMonth(toDate(published_at_utc)) AS chunk_start,
+        uniqExact(tuple(canonical_news_id, phrase_id)) AS output_rows
+    FROM {table(args.news_database, args.features_table)} FINAL
+    WHERE extraction_version = {sql_string(PHRASE_DICTIONARY_VERSION)}
+      AND published_at_utc >= {dt_sql(args.start_date)}
+      AND published_at_utc < {dt_sql(watermarks.stable_end_exclusive)}
+    GROUP BY chunk_start
+)
 SELECT
-    toStartOfMonth(toDate(n.published_at_utc)) AS chunk_start,
-    least(addMonths(chunk_start, 1), toDate({sql_string(watermarks.stable_end_exclusive)})) AS chunk_end_exclusive,
-    countDistinct(n.canonical_news_id) AS source_rows,
-    countDistinct(tuple(f.canonical_news_id, f.phrase_id)) AS output_rows,
-    toString(max(n.updated_at_utc)) AS source_max_updated,
-    toString(groupBitXor(cityHash64(n.canonical_news_id, n.text_hash, toString(n.updated_at_utc)))) AS source_signature
-FROM (SELECT * FROM {table(args.news_database, args.normalized_table)} FINAL) AS n
-LEFT JOIN (SELECT * FROM {table(args.news_database, args.features_table)} FINAL) AS f
-  ON f.canonical_news_id = n.canonical_news_id AND f.extraction_version = {sql_string(PHRASE_DICTIONARY_VERSION)}
-WHERE n.published_at_utc >= {dt_sql(args.start_date)} AND n.published_at_utc < {dt_sql(watermarks.stable_end_exclusive)}
-GROUP BY chunk_start, chunk_end_exclusive
-ORDER BY chunk_start
+    source.chunk_start AS chunk_start,
+    source.chunk_end_exclusive AS chunk_end_exclusive,
+    source.source_rows AS source_rows,
+    ifNull(outputs.output_rows, toUInt64(0)) AS output_rows,
+    source.source_max_updated AS source_max_updated,
+    source.source_signature AS source_signature
+FROM source
+LEFT JOIN outputs USING (chunk_start)
+ORDER BY source.chunk_start
 FORMAT JSONEachRow
 """
 

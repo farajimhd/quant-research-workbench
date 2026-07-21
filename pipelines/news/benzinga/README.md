@@ -86,6 +86,13 @@ python pipelines\news\benzinga\run_news_reaction_finalize.py
 python pipelines\news\benzinga\run_news_reaction_finalize.py --execute
 ```
 
+The human-review sample contains one unique news/ticker article per row and is
+fully blind to phrase IDs, model scores, predictions, horizons, and realized
+returns. Those fields remain in the separate multi-horizon answer key, which
+must stay closed until reviewer sentiment and relevance labels are locked.
+Monthly feature certification derives source and output counts independently;
+it never counts default rows introduced by an outer join.
+
 The finalizer never treats the requested year-end as proof of source coverage.
 It clamps certification to settled news whose longest session-boundary target
 is covered by canonical compact events. Its default 62-stage-day repair limit
