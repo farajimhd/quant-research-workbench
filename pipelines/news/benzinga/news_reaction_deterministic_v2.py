@@ -221,7 +221,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--password", default="")
     parser.add_argument("--database", default="q_live")
     parser.add_argument("--normalized-table", default="benzinga_news_normalized_v1")
-    parser.add_argument("--text-table", default="benzinga_news_text_v1")
     parser.add_argument("--ticker-table", default="benzinga_news_ticker_v1")
     parser.add_argument("--reaction-table", default="news_reaction_labels_v2")
     parser.add_argument("--identity-alias-table", default="news_ticker_identity_alias_v2")
@@ -379,8 +378,10 @@ ORDER BY (pipeline_version, stage, chunk_start, chunk_end_exclusive) {p}""",
 
 def required_sources(args: argparse.Namespace) -> dict[str, set[str]]:
     return {
-        args.normalized_table: {"canonical_news_id", "published_at_utc", "title", "teaser", "tickers", "channels", "provider_tags", "text_hash"},
-        args.text_table: {"canonical_news_id", "published_at_utc", "text_kind", "text", "text_hash"},
+        args.normalized_table: {
+            "canonical_news_id", "published_at_utc", "title", "teaser", "body_text", "external_text",
+            "pdf_text", "tickers", "channels", "provider_tags", "text_hash",
+        },
         args.ticker_table: {"canonical_news_id", "published_at_utc", "ticker"},
         args.reaction_table: {"canonical_news_id", "ticker", "published_at_utc", "horizon_code", "publication_session", "abnormal_target_return", "abnormal_high_return", "abnormal_low_return", "quality_status"},
         "id_symbol_v1": {"listing_id", "ticker_normalized", "source_system"},
@@ -452,17 +453,8 @@ WHERE sym.ticker_normalized != '' AND issuer.issuer_id != ''
     return int(client.execute(f"SELECT count() FROM {target} FINAL WHERE identity_version = {sql_string(RELEVANCE_VERSION)}").strip() or 0)
 
 
-def text_source_cte(args: argparse.Namespace, start: dt.date, end: dt.date) -> str:
+def identity_alias_cte(args: argparse.Namespace) -> str:
     return f"""
-texts AS
-(
- SELECT canonical_news_id,
-  arrayStringConcat(groupArrayIf(text, text_kind = 'body'), ' ') AS body_text,
-  arrayStringConcat(groupArrayIf(text, text_kind IN ('external', 'pdf')), ' ') AS external_text
- FROM {table(args.database, args.text_table)} FINAL
- WHERE published_at_utc >= {dt_sql(start.isoformat())} AND published_at_utc < {dt_sql(end.isoformat())}
- GROUP BY canonical_news_id
-),
 aliases AS
 (
  SELECT ticker, argMax(issuer_id, updated_at) AS issuer_id, argMax(issuer_name, updated_at) AS issuer_name,
@@ -478,20 +470,19 @@ def relevance_insert_sql(args: argparse.Namespace, start: dt.date, end: dt.date)
     return f"""
 INSERT INTO {table(args.database, args.relevance_table)}
 WITH
-{text_source_cte(args, start, end)},
+{identity_alias_cte(args)},
 base AS
 (
  SELECT t.canonical_news_id AS canonical_news_id, upperUTF8(t.ticker) AS ticker, t.published_at_utc AS published_at_utc,
   a.issuer_id AS issuer_id, a.issuer_name AS issuer_name, a.issuer_alias AS issuer_alias,
   lowerUTF8(concat(n.title, ' ', n.teaser)) AS head_text,
-  lowerUTF8(concat(n.title, ' ', n.teaser, ' ', coalesce(x.body_text, ''), ' ', coalesce(x.external_text, ''), ' ', arrayStringConcat(n.provider_tags, ' '), ' ', arrayStringConcat(n.channels, ' '))) AS all_text,
+  lowerUTF8(concat(n.title, ' ', n.teaser, ' ', n.body_text, ' ', n.external_text, ' ', n.pdf_text, ' ', arrayStringConcat(n.provider_tags, ' '), ' ', arrayStringConcat(n.channels, ' '))) AS all_text,
   lowerUTF8(concat(arrayStringConcat(n.provider_tags, ' '), ' ', arrayStringConcat(n.channels, ' '))) AS metadata_text,
   length(n.tickers) > 1 AS multi_ticker,
   n.text_hash AS source_text_hash
  FROM {table(args.database, args.ticker_table)} AS t FINAL
  INNER JOIN {table(args.database, args.normalized_table)} AS n FINAL
   ON n.canonical_news_id = t.canonical_news_id AND n.published_at_utc = t.published_at_utc
- LEFT JOIN texts AS x ON x.canonical_news_id = t.canonical_news_id
  LEFT JOIN aliases AS a ON a.ticker = upperUTF8(t.ticker)
  WHERE t.published_at_utc >= {dt_sql(start.isoformat())} AND t.published_at_utc < {dt_sql(end.isoformat())}
   AND (a.list_date IS NULL OR toDate(t.published_at_utc, 'America/New_York') >= a.list_date)
@@ -531,19 +522,17 @@ def event_insert_sql(args: argparse.Namespace, start: dt.date, end: dt.date) -> 
     return f"""
 INSERT INTO {table(args.database, args.event_feature_table)}
 WITH
-{text_source_cte(args, start, end)},
 source AS
 (
  SELECT r.canonical_news_id AS canonical_news_id, r.ticker AS ticker, r.published_at_utc AS published_at_utc,
   r.relevance_class AS relevance_class, r.issuer_alias AS issuer_alias,
   lowerUTF8(n.title) AS title_text, lowerUTF8(n.teaser) AS teaser_text,
-  lowerUTF8(coalesce(x.body_text, '')) AS full_body,
-  lowerUTF8(coalesce(x.external_text, '')) AS external_text,
+  lowerUTF8(n.body_text) AS full_body,
+  lowerUTF8(concat(n.external_text, ' ', n.pdf_text)) AS external_text,
   lowerUTF8(concat(arrayStringConcat(n.provider_tags, ' '), ' ', arrayStringConcat(n.channels, ' '))) AS metadata_text,
   n.text_hash AS source_text_hash
  FROM {table(args.database, args.relevance_table)} AS r FINAL
  INNER JOIN {table(args.database, args.normalized_table)} AS n FINAL ON n.canonical_news_id = r.canonical_news_id
- LEFT JOIN texts AS x ON x.canonical_news_id = r.canonical_news_id
  WHERE r.relevance_version = {sql_string(RELEVANCE_VERSION)} AND r.relevance_class != 'not_relevant'
   AND r.published_at_utc >= {dt_sql(start.isoformat())} AND r.published_at_utc < {dt_sql(end.isoformat())}
 ),

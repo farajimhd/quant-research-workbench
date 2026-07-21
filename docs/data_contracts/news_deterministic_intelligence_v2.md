@@ -22,8 +22,10 @@ label, never a synonym for sentiment.
 
 ## Sources and temporal split
 
-- Normalized metadata: `q_live.benzinga_news_normalized_v1`.
-- Full normalized text: `q_live.benzinga_news_text_v1`.
+- Normalized metadata and full historical text:
+  `q_live.benzinga_news_normalized_v1`, including `body_text`, `external_text`,
+  and `pdf_text`. The future split `benzinga_news_text_v1` contract is not the
+  currently loaded historical corpus and is not a v2 prerequisite.
 - Provider ticker links: `q_live.benzinga_news_ticker_v1`.
 - Issuer identity: `id_symbol_v1 -> id_listing_v1 -> id_security_v1 ->
   id_issuer_v1`, constrained by listing dates where those dates exist.

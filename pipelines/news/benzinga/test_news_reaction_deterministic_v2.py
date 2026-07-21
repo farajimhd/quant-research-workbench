@@ -14,6 +14,7 @@ from pipelines.news.benzinga.news_reaction_deterministic_v2 import (
     empirical_bayes_effect,
     parse_args,
     shrunken_robust_scale,
+    required_sources,
     validate_args,
 )
 from pipelines.news.benzinga.news_reaction_event_dictionary_v2 import EVENT_RULES
@@ -76,6 +77,12 @@ class DeterministicNewsV2Tests(unittest.TestCase):
         self.assertFalse(args.execute)
         self.assertEqual(args.workers, 2)
         self.assertEqual(stages, ("extract", "scale", "train", "predict", "evaluate"))
+
+    def test_loaded_legacy_news_table_is_the_text_authority(self) -> None:
+        args = parse_args([])
+        sources = required_sources(args)
+        self.assertNotIn("benzinga_news_text_v1", sources)
+        self.assertTrue({"body_text", "external_text", "pdf_text"} <= sources[args.normalized_table])
 
     def test_ddl_only_creates_v2_targets(self) -> None:
         args = parse_args([])
