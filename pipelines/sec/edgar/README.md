@@ -44,9 +44,22 @@ UTC acceptance metadata, and refreshes unresolved filing CIKs from the real-time
 submissions API and its referenced history fragments. The CIK comes from the parsed SGML
 relationship and is never inferred from the accession prefix or another entity sharing the
 accession. A parallel source audit verifies residual archive identities directly against SGML.
-The pipeline then runs API fallback for missing recent XBRL, repairs XBRL relationships, rebuilds
+The pipeline then runs API fallback for missing recent XBRL, repairs XBRL relationships,
+publishes the curated `id_issuer_relationship_v1` authority, rebuilds
 `id_sec_market_bridge_v3`, builds SEC context tables in `market_sip_compact`,
 audits the result, and writes coverage rows.
+
+Targeted issuer-parent repair does not require a historical filing rebuild:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_issuer_relationship_repair.py --execute
+```
+
+This validates official SEC evidence, resolves both CIKs through the reference
+identity graph, rebuilds only the bridge, removes stale relationship-derived
+XBRL context, retries pending accessions, writes the complete residual unmapped
+CIK audit, and prints a CIK-bounded token/embedding command. Candidate
+relationships in that audit are never auto-promoted from name similarity.
 
 Archive inventory and targeted finalization can be run without rebuilding the
 historical text corpus:

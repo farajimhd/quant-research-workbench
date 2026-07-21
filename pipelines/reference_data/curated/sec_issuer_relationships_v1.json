@@ -1,0 +1,62 @@
+[
+  {
+    "child_cik": "0000083246",
+    "child_name": "HSBC USA Inc.",
+    "parent_cik": "0001089113",
+    "parent_name": "HSBC Holdings plc",
+    "relationship_type": "listed_ultimate_parent",
+    "valid_from_date": "2019-01-01",
+    "valid_to_date_exclusive": null,
+    "confidence_score": 0.9,
+    "evidence_source": "sec_filing",
+    "evidence_url": "https://www.sec.gov/Archives/edgar/data/83246/000008324625000007/hsbcusa-20241231.htm",
+    "evidence_accession_number": "0000083246-25-000007",
+    "evidence_summary": "HSBC USA is wholly owned by HSBC North America Holdings, which is indirectly wholly owned by HSBC Holdings plc.",
+    "scope_note": "Relationship verified for the SEC v3 historical scope; 2019-01-01 is the pipeline scope boundary, not the corporate relationship inception date."
+  },
+  {
+    "child_cik": "0000312070",
+    "child_name": "Barclays Bank PLC",
+    "parent_cik": "0000312069",
+    "parent_name": "Barclays PLC",
+    "relationship_type": "listed_ultimate_parent",
+    "valid_from_date": "2019-01-01",
+    "valid_to_date_exclusive": null,
+    "confidence_score": 0.95,
+    "evidence_source": "sec_filing",
+    "evidence_url": "https://www.sec.gov/Archives/edgar/data/312070/000031207025000007/bbplc-20241231.htm",
+    "evidence_accession_number": "0000312070-25-000007",
+    "evidence_summary": "Barclays Bank PLC identifies itself as a wholly owned subsidiary of Barclays PLC.",
+    "scope_note": "Relationship verified for the SEC v3 historical scope; 2019-01-01 is the pipeline scope boundary, not the corporate relationship inception date."
+  },
+  {
+    "child_cik": "0001114446",
+    "child_name": "UBS AG",
+    "parent_cik": "0001610520",
+    "parent_name": "UBS Group AG",
+    "relationship_type": "listed_ultimate_parent",
+    "valid_from_date": "2019-01-01",
+    "valid_to_date_exclusive": null,
+    "confidence_score": 0.95,
+    "evidence_source": "sec_filing",
+    "evidence_url": "https://www.sec.gov/Archives/edgar/data/1114446/000161052025000027/ubs-20241231.htm",
+    "evidence_accession_number": "0001610520-25-000027",
+    "evidence_summary": "UBS AG identifies itself as a wholly owned subsidiary of UBS Group AG.",
+    "scope_note": "Relationship verified for the SEC v3 historical scope; 2019-01-01 is the pipeline scope boundary, not the corporate relationship inception date."
+  },
+  {
+    "child_cik": "0001383951",
+    "child_name": "Nomura America Finance, LLC",
+    "parent_cik": "0001163653",
+    "parent_name": "Nomura Holdings, Inc.",
+    "relationship_type": "listed_ultimate_parent",
+    "valid_from_date": "2019-01-01",
+    "valid_to_date_exclusive": null,
+    "confidence_score": 0.95,
+    "evidence_source": "sec_filing",
+    "evidence_url": "https://www.sec.gov/Archives/edgar/data/1383951/000119312511216439/dfwp1.pdf",
+    "evidence_accession_number": "0001193125-11-216439",
+    "evidence_summary": "Nomura America Finance LLC identifies itself as a wholly owned subsidiary of Nomura Holdings, Inc.",
+    "scope_note": "Relationship verified for the SEC v3 historical scope; 2019-01-01 is the pipeline scope boundary, not the corporate relationship inception date."
+  }
+]

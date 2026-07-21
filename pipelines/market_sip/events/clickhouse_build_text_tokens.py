@@ -242,6 +242,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sec-document-table", default=DEFAULT_SEC_DOCUMENT_TABLE)
     parser.add_argument("--sec-rendered-text-table", default=DEFAULT_SEC_RENDERED_TEXT_TABLE)
     parser.add_argument("--sec-bridge-table", default=DEFAULT_SEC_BRIDGE_TABLE)
+    parser.add_argument(
+        "--sec-ciks",
+        default="",
+        help="Optional comma-separated zero-padded CIK allowlist for targeted SEC token and embedding repair.",
+    )
     parser.add_argument("--start-date", default="2019-01-01")
     parser.add_argument("--end-date", default=datetime.now(UTC).date().isoformat())
     parser.add_argument("--sources", default="news,sec", help="Comma-separated subset of news,sec.")
@@ -1019,6 +1024,7 @@ WITH {sec_rendered_source_ctes_sql(
         bridge_table=args.sec_bridge_table,
         start_sql=date_time64_sql(chunk_start),
         end_sql=date_time64_sql(chunk_end),
+        ciks=parse_sec_ciks(args.sec_ciks),
     )}
 SELECT
     ticker,
@@ -1054,8 +1060,13 @@ def sec_rendered_source_ctes_sql(
     bridge_table: str,
     start_sql: str,
     end_sql: str,
+    ciks: tuple[str, ...] = (),
 ) -> str:
     db = quote_ident(source_database)
+    cik_filter = ""
+    if ciks:
+        values = ", ".join(sql_string(cik) for cik in ciks)
+        cik_filter = f"\n      AND f.cik IN ({values})"
     return f"""
 bridge AS
 (
@@ -1102,6 +1113,7 @@ mapped_filings AS
       AND f.accepted_at_source NOT IN ('archive_filing_date_midnight', 'archive_date_midnight', 'filing_date_midnight_fallback')
       AND f.accepted_at_utc >= {start_sql}
       AND f.accepted_at_utc < {end_sql}
+      {cik_filter}
 ),
 sec_rendered_source AS
 (
@@ -1142,6 +1154,18 @@ sec_rendered_source AS
     WHERE notEmpty(r.text)
 )
 """
+
+
+def parse_sec_ciks(value: str) -> tuple[str, ...]:
+    output = []
+    for item in str(value or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if not item.isdigit() or len(item) > 10:
+            raise ValueError(f"invalid SEC CIK: {item!r}")
+        output.append(item.zfill(10))
+    return tuple(sorted(set(output)))
 
 
 def tokenize_and_insert_source_batch(

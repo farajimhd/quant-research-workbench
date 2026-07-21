@@ -976,7 +976,10 @@ class SecGateway:
             raise
 
     def _reconcile_xbrl_context(self) -> None:
-        results = self._xbrl_context.reconcile_pending(limit=max(0, self.config.xbrl_context_reconcile_limit))
+        limit = max(0, self.config.xbrl_context_reconcile_limit)
+        results = self._xbrl_context.reconcile_stale_mappings(limit=limit)
+        remaining_limit = max(0, limit - len(results))
+        results.extend(self._xbrl_context.reconcile_pending(limit=remaining_limit))
         if not results:
             return
         self.metrics.xbrl_context_reconciled_accessions += sum(1 for item in results if item.status == "ok")

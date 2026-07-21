@@ -184,44 +184,17 @@ def build_specs(target_db: str, run_id: str, inserted_at: str, feature_date: dat
             target_table=sec_bridge_table,
             critical_columns=("bridge_id", "cik", "issuer_id", "mapping_method", "mapping_status"),
             expected_sql=f"""
-SELECT uniqExact(tuple(iii.identifier_value_normalized, sec.security_id, l.listing_id, sym.symbol_id))
-FROM {db}.id_issuer_identifier_v1 AS iii
-INNER JOIN {db}.id_security_v1 AS sec ON sec.issuer_id = iii.issuer_id
-INNER JOIN {db}.id_listing_v1 AS l ON l.security_id = sec.security_id
-LEFT JOIN {db}.id_symbol_v1 AS sym ON sym.listing_id = l.listing_id AND sym.primary_symbol_flag = 1
-WHERE iii.identifier_kind = 'cik'
-  AND sec.status = 'active'
-  AND l.listing_status = 'active'
+WITH {sec_market_bridge_source_ctes_sql(db)}
+SELECT uniqExact(bridge_id)
+FROM bridge_source
 """,
             target_count_sql=f"SELECT count() FROM {db}.{sec_bridge} FINAL",
             insert_sql=f"""
 INSERT INTO {db}.{sec_bridge}
 (bridge_id, cik, issuer_id, security_id, listing_id, symbol_id, ticker, accession_number, valid_from_date, valid_to_date_exclusive, mapping_method, mapping_status, confidence_score, ambiguity_status, evidence_json, first_seen_at_utc, last_seen_at_utc, source_run_id, source_content_sha256, inserted_at)
-WITH bridge_source AS
-(
-    SELECT
-        iii.identifier_value_normalized AS cik,
-        iii.issuer_id AS issuer_id,
-        sec.security_id AS security_id,
-        l.listing_id AS listing_id,
-        sym.symbol_id AS symbol_id,
-        sym.ticker AS ticker,
-        iii.valid_from_date AS valid_from_date,
-        iii.valid_to_date_exclusive AS valid_to_date_exclusive,
-        iii.confidence_score AS identifier_confidence_score,
-        count() OVER (PARTITION BY iii.identifier_value_normalized) AS mappings_per_cik,
-        iii.evidence_json AS identifier_evidence_json,
-        iii.source_content_sha256 AS source_content_sha256
-    FROM {db}.id_issuer_identifier_v1 AS iii
-    INNER JOIN {db}.id_security_v1 AS sec ON sec.issuer_id = iii.issuer_id
-    INNER JOIN {db}.id_listing_v1 AS l ON l.security_id = sec.security_id
-    LEFT JOIN {db}.id_symbol_v1 AS sym ON sym.listing_id = l.listing_id AND sym.primary_symbol_flag = 1
-    WHERE iii.identifier_kind = 'cik'
-      AND sec.status = 'active'
-      AND l.listing_status = 'active'
-)
+WITH {sec_market_bridge_source_ctes_sql(db)}
 SELECT
-    concat('sec-market-bridge:', lower(hex(MD5(concat(cik, ':', issuer_id, ':', ifNull(security_id, ''), ':', ifNull(listing_id, ''), ':', ifNull(symbol_id, '')))))) AS bridge_id,
+    bridge_id,
     cik,
     issuer_id,
     security_id,
@@ -231,15 +204,15 @@ SELECT
     CAST(NULL, 'Nullable(String)') AS accession_number,
     valid_from_date,
     valid_to_date_exclusive,
-    'issuer_cik_to_active_market_listing' AS mapping_method,
+    mapping_method,
     'active' AS mapping_status,
-    least(0.95, greatest(0.50, identifier_confidence_score)) AS confidence_score,
+    confidence_score,
     if(mappings_per_cik = 1, 'unique', 'ambiguous_multi_listing') AS ambiguity_status,
-    toJSONString(map('source', 'id_issuer_identifier_v1', 'identifier_evidence_json', identifier_evidence_json, 'mappings_per_cik', toString(mappings_per_cik))) AS evidence_json,
+    evidence_json,
     {inserted_expr} AS first_seen_at_utc,
     {inserted_expr} AS last_seen_at_utc,
     {literal_run_id} AS source_run_id,
-    lower(hex(MD5(concat(cik, ':', issuer_id, ':', ifNull(security_id, ''), ':', ifNull(listing_id, ''), ':', ifNull(symbol_id, ''), ':', source_content_sha256)))) AS source_content_sha256,
+    source_content_sha256,
     {inserted_expr} AS inserted_at
 FROM bridge_source
 """,
@@ -461,6 +434,102 @@ WHERE u.universe_date = toDate({literal_feature_date})
     ]
 
 
+def sec_market_bridge_source_ctes_sql(db: str) -> str:
+    return f"""
+direct_bridge_rows AS
+(
+    SELECT
+        concat('sec-market-bridge:', lower(hex(MD5(concat(iii.identifier_value_normalized, ':', iii.issuer_id, ':', sec.security_id, ':', l.listing_id, ':', ifNull(sym.symbol_id, '')))))) AS bridge_id,
+        iii.identifier_value_normalized AS cik,
+        iii.issuer_id AS issuer_id,
+        sec.security_id AS security_id,
+        l.listing_id AS listing_id,
+        sym.symbol_id AS symbol_id,
+        sym.ticker AS ticker,
+        multiIf(iii.valid_from_date IS NULL, l.list_date, l.list_date IS NULL, iii.valid_from_date, greatest(iii.valid_from_date, l.list_date)) AS valid_from_date,
+        multiIf(iii.valid_to_date_exclusive IS NULL, l.delisted_date, l.delisted_date IS NULL, iii.valid_to_date_exclusive, least(iii.valid_to_date_exclusive, l.delisted_date)) AS valid_to_date_exclusive,
+        'issuer_cik_to_active_market_listing' AS mapping_method,
+        least(0.95, greatest(0.50, iii.confidence_score)) AS confidence_score,
+        toJSONString(map(
+            'source', 'id_issuer_identifier_v1',
+            'identifier_evidence_json', iii.evidence_json,
+            'market_issuer_id', iii.issuer_id
+        )) AS base_evidence_json,
+        lower(hex(MD5(concat(iii.identifier_value_normalized, ':', iii.issuer_id, ':', sec.security_id, ':', l.listing_id, ':', ifNull(sym.symbol_id, ''), ':', iii.source_content_sha256)))) AS source_content_sha256
+    FROM {db}.id_issuer_identifier_v1 AS iii FINAL
+    INNER JOIN {db}.id_security_v1 AS sec FINAL ON sec.issuer_id = iii.issuer_id
+    INNER JOIN {db}.id_listing_v1 AS l FINAL ON l.security_id = sec.security_id
+    LEFT JOIN {db}.id_symbol_v1 AS sym FINAL ON sym.listing_id = l.listing_id AND sym.primary_symbol_flag = 1
+    WHERE iii.identifier_kind = 'cik'
+      AND sec.status = 'active'
+      AND l.listing_status = 'active'
+),
+direct_ciks AS
+(
+    SELECT DISTINCT cik
+    FROM direct_bridge_rows
+),
+relationship_bridge_rows AS
+(
+    SELECT
+        concat('sec-market-bridge-parent:', lower(hex(MD5(concat(rel.relationship_id, ':', sec.security_id, ':', l.listing_id, ':', ifNull(sym.symbol_id, '')))))) AS bridge_id,
+        rel.child_cik AS cik,
+        rel.parent_issuer_id AS issuer_id,
+        sec.security_id AS security_id,
+        l.listing_id AS listing_id,
+        sym.symbol_id AS symbol_id,
+        sym.ticker AS ticker,
+        multiIf(rel.valid_from_date IS NULL, l.list_date, l.list_date IS NULL, rel.valid_from_date, greatest(rel.valid_from_date, l.list_date)) AS valid_from_date,
+        multiIf(rel.valid_to_date_exclusive IS NULL, l.delisted_date, l.delisted_date IS NULL, rel.valid_to_date_exclusive, least(rel.valid_to_date_exclusive, l.delisted_date)) AS valid_to_date_exclusive,
+        'filing_issuer_to_listed_parent' AS mapping_method,
+        least(0.90, greatest(0.50, rel.confidence_score)) AS confidence_score,
+        toJSONString(map(
+            'source', 'id_issuer_relationship_v1',
+            'relationship_id', rel.relationship_id,
+            'relationship_type', rel.relationship_type,
+            'filing_issuer_id', rel.child_issuer_id,
+            'market_issuer_id', rel.parent_issuer_id,
+            'parent_cik', rel.parent_cik,
+            'relationship_evidence_json', rel.evidence_json
+        )) AS base_evidence_json,
+        lower(hex(MD5(concat(rel.relationship_id, ':', sec.security_id, ':', l.listing_id, ':', ifNull(sym.symbol_id, ''), ':', rel.source_content_sha256)))) AS source_content_sha256
+    FROM {db}.id_issuer_relationship_v1 AS rel FINAL
+    LEFT JOIN direct_ciks AS direct ON direct.cik = rel.child_cik
+    INNER JOIN {db}.id_security_v1 AS sec FINAL ON sec.issuer_id = rel.parent_issuer_id
+    INNER JOIN {db}.id_listing_v1 AS l FINAL ON l.security_id = sec.security_id
+    LEFT JOIN {db}.id_symbol_v1 AS sym FINAL ON sym.listing_id = l.listing_id AND sym.primary_symbol_flag = 1
+    INNER JOIN {db}.ref_exchange_v1 AS ex FINAL ON ex.exchange_code = l.exchange_code
+    WHERE rel.relationship_status = 'active'
+      AND rel.relationship_type = 'listed_ultimate_parent'
+      AND direct.cik = ''
+      AND sec.status = 'active'
+      AND l.listing_status = 'active'
+      AND l.currency_code = 'USD'
+      AND ex.iso_country_code = 'US'
+      AND sec.product_type = 'STK'
+      AND sym.asset_type = 'stock'
+      AND sym.instrument_type IN ('ADRC', 'CS')
+),
+all_bridge_rows AS
+(
+    SELECT * FROM direct_bridge_rows
+    UNION ALL
+    SELECT * FROM relationship_bridge_rows
+),
+bridge_source AS
+(
+    SELECT
+        *,
+        count() OVER (PARTITION BY cik) AS mappings_per_cik,
+        toJSONString(map(
+            'mapping', base_evidence_json,
+            'mappings_per_cik', toString(count() OVER (PARTITION BY cik))
+        )) AS evidence_json
+    FROM all_bridge_rows
+)
+""".strip()
+
+
 def select_specs(specs: list[BuildSpec], spec_text: str) -> list[BuildSpec]:
     text = (spec_text or "all").strip()
     if not text or text.lower() == "all":
@@ -478,7 +547,10 @@ def select_specs(specs: list[BuildSpec], spec_text: str) -> list[BuildSpec]:
 
 def run_preflight(client: ClickHouseHttpClient, args: argparse.Namespace, specs: list[BuildSpec]) -> list[dict[str, Any]]:
     ensure_sec_bridge_table(client, args.target_database, specs)
-    required_tables = sorted({spec.target_table for spec in specs} | {"source_run_v1", "sync_validation_v1", "id_issuer_identifier_v1", "id_security_v1", "id_listing_v1", "id_symbol_v1", "sec_filing_v3"})
+    required_tables = {spec.target_table for spec in specs} | {"source_run_v1", "sync_validation_v1", "id_issuer_identifier_v1", "id_security_v1", "id_listing_v1", "id_symbol_v1", "ref_exchange_v1", "sec_filing_v3"}
+    if any(spec.name == "sec_market_bridge" for spec in specs):
+        required_tables.add("id_issuer_relationship_v1")
+    required_tables = sorted(required_tables)
     missing = missing_tables(client, args.target_database, required_tables)
     if missing:
         raise SystemExit("Missing required target tables: " + json.dumps(missing, indent=2))
@@ -499,9 +571,16 @@ def execute_specs(client: ClickHouseHttpClient, args: argparse.Namespace, specs:
         before_rows = scalar_int(client, f"SELECT count() FROM {quote_ident(args.target_database)}.{quote_ident(spec.target_table)}")
         row: dict[str, Any] = {"index": index, "name": spec.name, "target_table": spec.target_table, "target_rows_before": before_rows, "started_at_utc": datetime.now(UTC).isoformat()}
         try:
+            stale_rows_deleted = 0
+            if spec.name == "sec_market_bridge":
+                stale_rows_deleted = delete_stale_relationship_bridge_rows(
+                    client,
+                    database=args.target_database,
+                    target_table=spec.target_table,
+                )
             client.execute(spec.insert_sql)
             after_rows = scalar_int(client, f"SELECT count() FROM {quote_ident(args.target_database)}.{quote_ident(spec.target_table)}")
-            row.update({"status": "ok", "target_rows_after": after_rows, "inserted_delta": max(0, after_rows - before_rows), "wall_seconds": round(time.perf_counter() - started, 3), "finished_at_utc": datetime.now(UTC).isoformat()})
+            row.update({"status": "ok", "target_rows_after": after_rows, "inserted_delta": max(0, after_rows - before_rows), "stale_relationship_rows_deleted": stale_rows_deleted, "wall_seconds": round(time.perf_counter() - started, 3), "finished_at_utc": datetime.now(UTC).isoformat()})
         except Exception as exc:
             row.update({"status": "failed", "target_rows_after": before_rows, "inserted_delta": 0, "error_type": type(exc).__name__, "error": str(exc), "wall_seconds": round(time.perf_counter() - started, 3), "finished_at_utc": datetime.now(UTC).isoformat()})
             write_jsonl_append(log_path, row)
@@ -510,6 +589,40 @@ def execute_specs(client: ClickHouseHttpClient, args: argparse.Namespace, specs:
         write_jsonl_append(log_path, row)
         print(f"executed {index}/{len(specs)} {spec.name}: inserted_delta={row['inserted_delta']:,} seconds={row['wall_seconds']}", flush=True)
     return rows
+
+
+def delete_stale_relationship_bridge_rows(
+    client: ClickHouseHttpClient,
+    *,
+    database: str,
+    target_table: str,
+) -> int:
+    db = quote_ident(database)
+    rows = query_json_each_row(
+        client,
+        f"""
+WITH {sec_market_bridge_source_ctes_sql(db)}
+SELECT bridge_id
+FROM {db}.{quote_ident(target_table)} FINAL
+WHERE mapping_method = 'filing_issuer_to_listed_parent'
+  AND bridge_id NOT IN (SELECT bridge_id FROM bridge_source)
+""",
+    )
+    bridge_ids = sorted({str(row["bridge_id"]) for row in rows if str(row.get("bridge_id") or "")})
+    if not bridge_ids:
+        return 0
+    values = ", ".join(sql_string(value) for value in bridge_ids)
+    client.execute(
+        f"ALTER TABLE {db}.{quote_ident(target_table)} DELETE WHERE bridge_id IN ({values}) "
+        "SETTINGS mutations_sync = 2"
+    )
+    remaining = scalar_int(
+        client,
+        f"SELECT count() FROM {db}.{quote_ident(target_table)} FINAL WHERE bridge_id IN ({values})",
+    )
+    if remaining:
+        raise RuntimeError(f"failed to delete {remaining} stale relationship bridge row(s)")
+    return len(bridge_ids)
 
 
 def validate_specs(client: ClickHouseHttpClient, args: argparse.Namespace, specs: list[BuildSpec]) -> list[dict[str, Any]]:

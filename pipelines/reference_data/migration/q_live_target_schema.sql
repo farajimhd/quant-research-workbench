@@ -403,6 +403,33 @@ ENGINE = ReplacingMergeTree(last_seen_at_utc)
 ORDER BY (cik, ifNull(ticker, ''), ifNull(listing_id, ''), ifNull(accession_number, ''))
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
 
+CREATE TABLE IF NOT EXISTS q_live.id_issuer_relationship_v1
+(
+    relationship_id String,
+    child_issuer_id String,
+    parent_issuer_id String,
+    child_cik String,
+    parent_cik String,
+    relationship_type LowCardinality(String),
+    relationship_status LowCardinality(String),
+    valid_from_date Nullable(Date),
+    valid_to_date_exclusive Nullable(Date),
+    confidence_score Float64,
+    evidence_source LowCardinality(String),
+    evidence_url String,
+    evidence_accession_number Nullable(String),
+    evidence_summary String,
+    evidence_json String,
+    first_seen_at_utc DateTime64(3, 'UTC'),
+    last_seen_at_utc DateTime64(3, 'UTC'),
+    source_run_id String,
+    source_content_sha256 String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(last_seen_at_utc)
+ORDER BY (child_cik, relationship_type, parent_cik, relationship_id)
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
 CREATE TABLE IF NOT EXISTS q_live.market_security_float_v1
 (
     security_float_id String,

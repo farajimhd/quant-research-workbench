@@ -11,10 +11,20 @@ Benzinga articles, and SEC streams filings/XBRL. The reference gateway keeps the
 identity graph, broker conids, market publication data, and tradability outputs
 current enough for scanner setup, live trading, and training joins.
 
-It also owns the ongoing SEC-to-market bridge `q_live.id_sec_market_bridge_v1`.
+It also owns the ongoing SEC-to-market bridge `q_live.id_sec_market_bridge_v3`.
 SEC ingestion writes raw filing/text/XBRL rows only; downstream services such as
 `text_embed_gateway` read this bridge to convert SEC CIK/accession events into
 the same ticker-aligned context schema used by historical training data.
+
+The bridge has two explicit authorities. Direct mappings join a filing CIK to
+that issuer's active market listings. Curated rows in
+`q_live.id_issuer_relationship_v1` may map a non-listed filing issuer to an
+evidence-backed listed ultimate parent, but only when the filing issuer has no
+direct active listing. Relationship mappings are limited to the parent's U.S.
+USD common-stock or ADR symbol and carry `mapping_method =
+filing_issuer_to_listed_parent`. The gateway validates and publishes the curated
+relationship rows before every scheduled SEC bridge rebuild and removes stale
+relationship-derived bridge rows synchronously.
 
 The broader fact-table schemas are present for compact downstream publications,
 but share supply, news, SEC, short pressure, borrow, country, and similar

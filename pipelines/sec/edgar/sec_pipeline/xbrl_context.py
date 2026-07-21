@@ -242,6 +242,27 @@ class SecXbrlContextSync:
                 )
         return results
 
+    def reconcile_stale_mappings(self, *, limit: int) -> list[XbrlContextSyncResult]:
+        if int(limit) <= 0:
+            return []
+        rows = json_each_row(self.client.execute(stale_context_mapping_rows_sql(self.config, limit=max(1, int(limit)))))
+        if not rows:
+            return []
+        stale_bridge_ids = sorted({str(row.get("bridge_id") or "") for row in rows if str(row.get("bridge_id") or "")})
+        if stale_bridge_ids:
+            values = ", ".join(sql_string(value) for value in stale_bridge_ids)
+            target = f"{quote_ident(self.config.context_database)}.{quote_ident(self.config.context_table)}"
+            self.client.execute(
+                f"ALTER TABLE {target} DELETE WHERE bridge_id IN ({values}) SETTINGS mutations_sync = 2"
+            )
+            remaining = self.client.execute(
+                f"SELECT count() FROM {target} FINAL WHERE bridge_id IN ({values}) FORMAT TSV"
+            ).strip()
+            if int(remaining or 0):
+                raise RuntimeError(f"failed to remove {remaining} stale SEC XBRL context row(s)")
+        accessions = sorted({(str(row["cik"]), str(row["accession_number"])) for row in rows})
+        return [self.sync_accession(cik=cik, accession_number=accession_number) for cik, accession_number in accessions]
+
     def pending_source_accessions(self, accession_numbers: list[str]) -> set[str]:
         values = sorted({str(value) for value in accession_numbers if str(value)})
         if not values:
@@ -468,6 +489,26 @@ WHERE f.cik = {sql_string(cik)}
   AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
   AND (b.valid_to_date_exclusive IS NULL OR b.valid_to_date_exclusive > toDate(f.accepted_at_utc))
 {query_settings_sql(config)}
+FORMAT JSONEachRow
+"""
+
+
+def stale_context_mapping_rows_sql(config: XbrlContextSyncConfig, *, limit: int) -> str:
+    context = quote_ident(config.context_database)
+    bridge = quote_ident(config.bridge_database)
+    return f"""
+SELECT DISTINCT c.cik, c.accession_number, c.bridge_id
+FROM {context}.{quote_ident(config.context_table)} AS c FINAL
+LEFT JOIN
+(
+    SELECT bridge_id
+    FROM {bridge}.{quote_ident(config.bridge_table)} FINAL
+    WHERE mapping_status IN ('active', 'mapped', 'accepted', '')
+) AS b ON b.bridge_id = c.bridge_id
+WHERE c.bridge_id != ''
+  AND b.bridge_id = ''
+ORDER BY c.cik, c.accession_number, c.bridge_id
+LIMIT {max(1, int(limit))}
 FORMAT JSONEachRow
 """
 

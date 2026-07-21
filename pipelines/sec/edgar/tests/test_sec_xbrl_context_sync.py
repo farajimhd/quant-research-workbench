@@ -13,6 +13,7 @@ from pipelines.sec.edgar.sec_pipeline.xbrl_context import (
     XbrlContextSyncResult,
     context_identities_sql,
     mapped_filing_rows_sql,
+    stale_context_mapping_rows_sql,
     source_company_fact_rows_sql,
     source_frame_observation_rows_sql,
 )
@@ -23,6 +24,14 @@ from services.sec_gateway.gateway import SecGateway
 
 
 class SecXbrlContextSyncTests(unittest.TestCase):
+    def test_stale_context_audit_uses_clickhouse_empty_key_antijoin(self) -> None:
+        sql = stale_context_mapping_rows_sql(XbrlContextSyncConfig(), limit=25)
+
+        self.assertIn("b.bridge_id = ''", sql)
+        self.assertNotIn("b.bridge_id IS NULL", sql)
+        self.assertIn("mapping_status IN ('active', 'mapped', 'accepted', '')", sql)
+        self.assertIn("LIMIT 25", sql)
+
     def test_mapped_filing_uses_event_valid_bridge_from_reference_database(self) -> None:
         config = XbrlContextSyncConfig(source_database="q_sec_tmp", bridge_database="q_live")
 

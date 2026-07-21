@@ -71,6 +71,7 @@ is deliberate:
 | `xbrl-companyfacts-catchup` | Fill recent or missing XBRL from companyfacts | Canonical XBRL rows |
 | `xbrl-integrity-repair` | Repair v3 XBRL parent keys and relationships | Consistent XBRL graph without routine legacy-table mutation |
 | `sec-bridge-rebuild` | Rebuild historical SEC-to-market associations | `id_sec_market_bridge_v3` |
+| `sec-issuer-relationship-sync` | Publish manually reviewed filing-issuer to listed-parent evidence | `id_issuer_relationship_v1` |
 | `sec-context-build` | Refresh derived XBRL context; text copy is skipped | `sec_xbrl_context_v3` |
 | `integrity-audit` | Enforce final source, relationship, timestamp, text, and orphan checks | Run report and coverage |
 
@@ -165,6 +166,16 @@ Routine bridge maintenance belongs to `reference_gateway`. The historical SEC
 fill rebuilds the bridge at the end of a rebuild so its downstream audit has a
 coherent point-in-time mapping. The live SEC gateway consumes, but does not own,
 the bridge.
+
+Non-listed filing subsidiaries are not matched to stocks by accession prefix or
+name similarity. The manually reviewed `id_issuer_relationship_v1` authority
+records child CIK, parent CIK, resolved issuer identities, validity, confidence,
+and official SEC evidence. Bridge generation uses it only when no direct active
+listing exists and publishes only the listed parent's U.S. USD common-stock or
+ADR symbol. Reference Gateway publishes the authority before routine bridge
+maintenance; historical fill runs the same stage before its bridge build; SEC
+Gateway removes stale XBRL contexts and reconciles affected accessions through
+the resulting bridge IDs.
 
 Text embeddings do not depend on copied `sec_filing_context_v3` or
 `sec_filing_text_context_v3` tables. The combined token/embedding builder joins

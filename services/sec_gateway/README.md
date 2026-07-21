@@ -56,6 +56,12 @@ uses that point-in-time mapping after each XBRL source write to maintain
 `market_sip_compact.sec_xbrl_context_v3`; it does not create or alter bridge
 rows. SEC text token and embedding writes continue to join v3 source tables to
 the bridge directly rather than depending on a copied text-context table.
+Relationship-derived bridge rows are consumed through the same interface as
+direct rows. Each reconciliation pass first removes context rows whose bridge
+identity is no longer active, rebuilds those affected accessions against the
+current bridge, and then retries ordinary pending work. This prevents a changed
+manual issuer-parent decision from leaving foreign, stale, or duplicate ticker
+contexts behind.
 
 ## Run
 

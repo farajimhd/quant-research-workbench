@@ -37,6 +37,7 @@ DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_historical_gap_fill"
 DEFAULT_PARTS_ROOT_WIN = Path("D:/market-data")
 DEFAULT_PARTS_ROOT_CH = "/mnt/d/market-data"
 DEFAULT_SEC_BRIDGE_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/q_live_migration/step_06_bridge_features")
+DEFAULT_SEC_ISSUER_RELATIONSHIP_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/reference_gateway/sec_issuer_relationships")
 DEFAULT_SEC_CONTEXT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_context")
 DEFAULT_START_DATE = "2019-01-01"
 FINALIZE_ONLY_STAGES = {
@@ -48,6 +49,7 @@ FINALIZE_ONLY_STAGES = {
     "acceptance-archive-repair",
     "archive-identity-repair",
     "archive-identity-audit",
+    "sec-issuer-relationship-sync",
     "sec-bridge-rebuild",
     "sec-context-build",
     "integrity-audit",
@@ -322,6 +324,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--missing-document-repair-output-root-win", default=env_string("SEC_MISSING_DOCUMENT_REPAIR_OUTPUT_ROOT_WIN", "D:/market-data/prepared/sec_missing_document_repair"))
     parser.add_argument("--acceptance-archive-repair-output-root-win", default=env_string("SEC_ACCEPTANCE_ARCHIVE_REPAIR_OUTPUT_ROOT_WIN", "D:/market-data/prepared/sec_acceptance_archive_repair"))
     parser.add_argument("--sec-bridge-output-root-win", default=env_string("SEC_BRIDGE_OUTPUT_ROOT_WIN", str(DEFAULT_SEC_BRIDGE_OUTPUT_ROOT_WIN)))
+    parser.add_argument(
+        "--sec-issuer-relationship-output-root-win",
+        default=env_string("SEC_ISSUER_RELATIONSHIP_OUTPUT_ROOT_WIN", str(DEFAULT_SEC_ISSUER_RELATIONSHIP_OUTPUT_ROOT_WIN)),
+    )
     parser.add_argument("--sec-bridge-table", default=env_string("SEC_BRIDGE_TABLE", "id_sec_market_bridge_v3"))
     parser.add_argument("--context-database", default=env_string("SEC_CONTEXT_DATABASE", "market_sip_compact"))
     parser.add_argument("--context-filing-table", default=env_string("SEC_CONTEXT_FILING_TABLE", "sec_filing_context_v3"))
@@ -973,6 +979,23 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
             logs_root / "xbrl-integrity-repair.log",
             True,
             (stage_coverage_kind("xbrl-integrity-repair"),),
+        ),
+        StageCommand(
+            "sec-issuer-relationship-sync",
+            add_required_execute_flag(
+                [
+                    args.python_executable,
+                    script("pipelines/reference_data/sync_sec_issuer_relationships.py"),
+                    "--database",
+                    args.write_database,
+                    "--output-root-win",
+                    args.sec_issuer_relationship_output_root_win,
+                ],
+                args,
+            ),
+            logs_root / "sec-issuer-relationship-sync.log",
+            True,
+            (stage_coverage_kind("sec-issuer-relationship-sync"),),
         ),
         StageCommand(
             "sec-bridge-rebuild",
