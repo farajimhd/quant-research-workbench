@@ -48,22 +48,32 @@ class SecSubmissionsClient:
         self._cache_lock = threading.RLock()
 
     def fetch_recent_filing(self, *, cik: str, accession_number: str) -> SecSubmissionFiling | None:
+        payload_was_cached = self._payload_is_cached(cik)
         try:
             payload, source_sha = self.fetch_payload(cik=cik)
         except SecHttpError as exc:
             if exc.status == 404:
                 return None
             raise
+        filing = find_recent_filing(payload, source_sha=source_sha, accession_number=accession_number)
+        if filing is not None or not payload_was_cached:
+            return filing
+        try:
+            payload, source_sha = self.fetch_payload(cik=cik, force_refresh=True)
+        except SecHttpError as exc:
+            if exc.status == 404:
+                return None
+            raise
         return find_recent_filing(payload, source_sha=source_sha, accession_number=accession_number)
 
-    def fetch_payload(self, *, cik: str) -> tuple[dict[str, Any], str]:
+    def fetch_payload(self, *, cik: str, force_refresh: bool = False) -> tuple[dict[str, Any], str]:
         import hashlib
 
         cik_text = str(cik).zfill(10)
         now = time.monotonic()
         with self._cache_lock:
             self._prune_expired_locked(now)
-            cached = self._payload_cache.get(cik_text)
+            cached = None if force_refresh else self._payload_cache.get(cik_text)
             if cached is not None:
                 self._payload_cache.move_to_end(cik_text)
         if cached is not None:
@@ -79,6 +89,12 @@ class SecSubmissionsClient:
                 while len(self._payload_cache) > self.max_cache_entries:
                     self._payload_cache.popitem(last=False)
         return payload, source_sha
+
+    def _payload_is_cached(self, cik: str) -> bool:
+        cik_text = str(cik).zfill(10)
+        with self._cache_lock:
+            self._prune_expired_locked(time.monotonic())
+            return cik_text in self._payload_cache
 
     def cache_stats(self) -> dict[str, int]:
         with self._cache_lock:

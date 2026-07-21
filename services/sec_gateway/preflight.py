@@ -10,6 +10,7 @@ from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import SecClickHouseWrit
 from pipelines.sec.edgar.sec_pipeline.coverage import SecCoverageConfig, ensure_coverage_table
 from pipelines.sec.edgar.sec_pipeline.feed import SecCurrentFeedClient
 from pipelines.sec.edgar.sec_pipeline.http import SecHttpClient
+from pipelines.sec.edgar.sec_pipeline.live_ingest_manifest import LiveIngestManifestConfig, SecLiveIngestManifest
 from pipelines.sec.edgar.sec_pipeline.rate_limit import SecRateLimiter
 from pipelines.sec.edgar.sec_pipeline.xbrl_context import SecXbrlContextSync
 from research.mlops.clickhouse import ClickHouseHttpClient
@@ -98,6 +99,13 @@ def check_clickhouse(config: SecGatewayConfig) -> str:
     client = ClickHouseHttpClient(ch.url, ch.user, ch.password)
     client.execute("SELECT 1")
     tables = ensure_sec_write_database(client, read_database=ch.read_database, write_database=ch.write_database)
+    SecLiveIngestManifest(
+        client,
+        LiveIngestManifestConfig(
+            database=ch.write_database,
+            storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
+        ),
+    ).ensure_table()
     ensure_coverage_table(
         client,
         SecCoverageConfig(database=ch.write_database, coverage_table=ch.coverage_table, storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or ""),
@@ -110,6 +118,7 @@ def check_clickhouse(config: SecGatewayConfig) -> str:
     return (
         f"read={ch.read_database} write={ch.write_database} "
         f"tables={len(tables)} coverage={ch.coverage_table} "
+        "live_ingest_manifest=sec_filing_live_ingest_manifest_v3 "
         f"audit={'ok' if audit.ok else 'warn'} filings={audit.filing_rows} docs={audit.document_rows} "
         f"text_sources={audit.text_source_rows} texts={audit.text_rows} xbrl_facts={audit.xbrl_company_fact_rows} xbrl_frames={audit.xbrl_frame_rows} "
         f"xbrl_context_sync={'enabled' if config.xbrl_context_sync_enabled else 'disabled'}"

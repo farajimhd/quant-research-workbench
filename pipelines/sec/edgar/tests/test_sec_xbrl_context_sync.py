@@ -181,11 +181,23 @@ class SecXbrlContextSyncTests(unittest.TestCase):
                     inserted_rows=8,
                 )
 
+        class FakeManifest:
+            def mark_pending(self, **_kwargs) -> None:
+                calls.append("ingest_pending")
+
+            def mark_complete(self, **_kwargs) -> None:
+                calls.append("ingest_complete")
+
+            def mark_failed(self, **_kwargs) -> None:
+                calls.append("ingest_failed")
+
         class FakeWriter:
             def write_accession(self, **kwargs) -> SecWriteResult:
                 calls.append("source")
                 if kwargs["skip_existing"]:
                     raise AssertionError("live repair writes must not skip an existing partial accession")
+                if kwargs["skip_same_revision"]:
+                    raise AssertionError("live repair writes must replay an incomplete same-revision accession")
                 return SecWriteResult(filing_rows=1, xbrl_company_fact_rows=5, xbrl_frame_observation_rows=3)
 
         gateway = SecGateway.__new__(SecGateway)
@@ -203,10 +215,18 @@ class SecXbrlContextSyncTests(unittest.TestCase):
                     company_fact_rows=[{}] * 5,
                     frame_rows=[],
                     frame_observation_rows=[{}] * 3,
+                    companyfacts_status="available",
                 ),
+                source_cik="0000000123",
+                source_version_key="revision-key",
+                source_revision_at="2026-07-10 17:13:07.000",
+                source_revision_rank=123,
+                metadata_status="submissions_recent",
+                xbrl_expected=True,
             )
         )
         gateway._writer = FakeWriter()
+        gateway._live_manifest = FakeManifest()
         gateway._xbrl_context = FakeContext()
         gateway._log = lambda *_args, **_kwargs: None
         item = SecFeedItem(
@@ -222,7 +242,7 @@ class SecXbrlContextSyncTests(unittest.TestCase):
 
         result = gateway._process_item(item, set())
 
-        self.assertEqual(calls, ["pending", "source", "context"])
+        self.assertEqual(calls, ["ingest_pending", "pending", "source", "context", "ingest_complete"])
         self.assertEqual(result.xbrl_context_rows, 8)
 
     def test_packed_model_defaults_to_v3_xbrl_context(self) -> None:

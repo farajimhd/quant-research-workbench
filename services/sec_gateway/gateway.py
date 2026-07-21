@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import DOCUMENT_TABLE, FILING_TABLE, SecClickHouseWriter, SecWriteResult, qi, sql_string
+from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import SecClickHouseWriter, SecWriteResult
 from pipelines.sec.edgar.sec_pipeline.coverage import (
     KIND_LIVE_FEED,
     SecCoverageConfig,
@@ -29,6 +29,7 @@ from pipelines.sec.edgar.sec_pipeline.historical_fill import (
 )
 from pipelines.sec.edgar.sec_pipeline.http import SecHttpClient
 from pipelines.sec.edgar.sec_pipeline.live_pipeline import SecLiveFilingPipeline
+from pipelines.sec.edgar.sec_pipeline.live_ingest_manifest import LiveIngestManifestConfig, SecLiveIngestManifest
 from pipelines.sec.edgar.sec_pipeline.rate_limit import SecRateLimiter
 from pipelines.sec.edgar.sec_pipeline.xbrl_context import SecXbrlContextSync
 from pipelines.sec.edgar.sec_bulk_sources import DEFAULT_BULK_SOURCES
@@ -97,6 +98,8 @@ class SecGatewayMetrics:
     live_active_workers: int = 0
     live_queued_filings: int = 0
     live_completed_filings: int = 0
+    live_pending_filings: int = 0
+    live_deferred_filings: int = 0
     live_worker_failures: int = 0
     live_worker_accessions: dict[str, str] = field(default_factory=dict)
     last_worker_message: str = ""
@@ -110,6 +113,7 @@ class SecGatewayMetrics:
     xbrl_payload_cache_max_age_seconds: int = 0
     xbrl_missing_cik_cache_entries: int = 0
     xbrl_missing_cik_cache_limit: int = 0
+    xbrl_missing_cik_cache_max_age_seconds: int = 0
     recent_metadata_rows: int = 0
     recent_metadata_retention_hours: float = 0.0
 
@@ -177,6 +181,13 @@ class SecGateway:
             storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
         )
         self._writer = SecClickHouseWriter(self._client, database=config.pipeline.clickhouse.write_database)
+        self._live_manifest = SecLiveIngestManifest(
+            self._client,
+            LiveIngestManifestConfig(
+                database=config.pipeline.clickhouse.write_database,
+                storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
+            ),
+        )
         self._xbrl_context = SecXbrlContextSync(self._client, xbrl_context_sync_config(config))
         self._limiter = SecRateLimiter(config.pipeline.request_min_interval_seconds)
         self._http = SecHttpClient(
@@ -195,6 +206,7 @@ class SecGateway:
             xbrl_payload_cache_entries=config.xbrl_payload_cache_entries,
             xbrl_payload_cache_max_age_seconds=config.xbrl_payload_cache_max_age_seconds,
             xbrl_missing_cik_cache_entries=config.xbrl_missing_cik_cache_entries,
+            xbrl_missing_cik_cache_max_age_seconds=config.xbrl_missing_cik_cache_max_age_seconds,
         )
         self._refresh_cache_metrics()
         self._market_status: MarketHoursSnapshot | None = None
@@ -389,17 +401,23 @@ class SecGateway:
             self.metrics.xbrl_frame_observation_rows += result.xbrl_frame_observation_rows
             self.metrics.xbrl_context_rows += result.xbrl_context_rows
             self.metrics.xbrl_context_pending_rows += result.xbrl_context_pending_rows
-        self.metrics.live_completed_filings += 1
+        if result.ingest_status == "complete":
+            self.metrics.live_completed_filings += 1
+        else:
+            self.metrics.live_pending_filings += 1
         self.metrics.last_accession = outcome.item.accession_number
         self.metrics.last_form_type = outcome.item.form_type
-        self.metrics.last_success_at_utc = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+        completed_at = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+        if result.ingest_status == "complete":
+            self.metrics.last_success_at_utc = completed_at
         if not result.skipped_existing and result.filing_rows:
-            self.metrics.last_write_at_utc = self.metrics.last_success_at_utc
+            self.metrics.last_write_at_utc = completed_at
         self.metrics.last_worker_message = (
             f"Worker {worker_index} completed {outcome.item.accession_number}: "
-            f"{'skipped existing' if result.skipped_existing else 'written'}."
+            f"{'skipped existing' if result.skipped_existing else result.ingest_status}."
         )
-        self._resolve_last_error(reason="live_job_completed")
+        if result.ingest_status == "complete":
+            self._resolve_last_error(reason="live_job_completed")
         self._remember(outcome.item, result)
         self._log("live_job_completed", worker_index=worker_index, poll_id=outcome.poll_id, accession_number=outcome.item.accession_number, result=asdict(result))
         if not result.skipped_existing:
@@ -633,16 +651,28 @@ class SecGateway:
         self._set_phase("poll_fetch", "Fetching SEC current feed.")
         items = await asyncio.to_thread(self._feed.fetch)
         existing = await asyncio.to_thread(self._existing_accessions, items)
+        deferred = await asyncio.to_thread(self._deferred_accessions, items)
         self.metrics.feed_items += len(items)
         skipped = 0
         failed = 0
         queued = 0
         duplicate_active = 0
+        deferred_retry = 0
         self._set_phase("poll_queue", f"Queueing {len(items):,} SEC feed item(s) for live processing.")
         for item in items:
             if item.accession_number in existing:
                 skipped += 1
                 self._remember(item, SecWriteResult(skipped_existing=True))
+                continue
+            if item.accession_number in deferred:
+                deferred_retry += 1
+                self._remember(
+                    item,
+                    SecWriteResult(
+                        ingest_status="pending_source",
+                        pending_reason="waiting for durable source retry window",
+                    ),
+                )
                 continue
             if await self._register_inflight(item.accession_number):
                 await self._live_queue.put(SecLiveJob(item=item, poll_id=poll_id))
@@ -653,6 +683,7 @@ class SecGateway:
             duplicate_active += 1
         self.metrics.processed_filings += len(items)
         self.metrics.skipped_existing += skipped
+        self.metrics.live_deferred_filings += deferred_retry
         poll_end = datetime.now(UTC)
         if queued:
             self._pending_poll_coverage[poll_id] = SecPollCoverageState(
@@ -662,7 +693,12 @@ class SecGateway:
                 feed_items=len(items),
                 skipped_existing=skipped,
                 pending_jobs=queued,
-                metadata={"poll_id": poll_id, "queued": queued, "duplicate_active": duplicate_active},
+                metadata={
+                    "poll_id": poll_id,
+                    "queued": queued,
+                    "duplicate_active": duplicate_active,
+                    "deferred_retry": deferred_retry,
+                },
             )
         elif duplicate_active == 0:
             await asyncio.to_thread(
@@ -672,15 +708,30 @@ class SecGateway:
                 len(items),
                 skipped,
                 failed,
-                {"poll_id": poll_id, "queued": queued, "duplicate_active": duplicate_active},
+                {
+                    "poll_id": poll_id,
+                    "queued": queued,
+                    "duplicate_active": duplicate_active,
+                    "deferred_retry": deferred_retry,
+                },
             )
         self.metrics.last_worker_message = (
-            f"Poll queued={queued:,}, skipped_existing={skipped:,}, active_duplicates={duplicate_active:,}."
+            f"Poll queued={queued:,}, skipped_existing={skipped:,}, deferred_retry={deferred_retry:,}, "
+            f"active_duplicates={duplicate_active:,}."
         )
         self._set_phase("polling", self.metrics.last_worker_message)
         if queued == 0:
             self._resolve_last_error(reason="poll_complete")
-        self._log("poll_complete", poll_id=poll_id, feed_items=len(items), queued=queued, skipped_existing=skipped, duplicate_active=duplicate_active, failed=failed)
+        self._log(
+            "poll_complete",
+            poll_id=poll_id,
+            feed_items=len(items),
+            queued=queued,
+            skipped_existing=skipped,
+            deferred_retry=deferred_retry,
+            duplicate_active=duplicate_active,
+            failed=failed,
+        )
 
     def _finalize_live_coverage(self) -> None:
         if not self.config.execute or self._live_coverage_start_utc is None:
@@ -708,31 +759,24 @@ class SecGateway:
         accessions = sorted({item.accession_number for item in items if item.accession_number})
         if not accessions:
             return set()
-        values = ",".join(sql_string(item) for item in accessions)
-        out = self._client.execute(
-            f"""
-            SELECT accession_number, toString(max(source_revision_at))
-            FROM {qi(self.config.pipeline.clickhouse.write_database)}.{qi(DOCUMENT_TABLE)}
-            WHERE accession_number IN ({values})
-            GROUP BY accession_number
-            FORMAT TSV
-            """
-        )
-        current_revision: dict[str, datetime] = {}
-        for line in out.splitlines():
-            fields = line.split("\t", 1)
-            if len(fields) != 2 or not fields[0] or not fields[1]:
-                continue
-            current_revision[fields[0]] = datetime.fromisoformat(fields[1].replace("Z", "+00:00")).replace(tzinfo=UTC)
+        current_revision = self._live_manifest.completed_revisions(accessions)
         existing = {
             item.accession_number
             for item in items
             if item.accession_number in current_revision
-            and (item.updated_at_utc is None or current_revision[item.accession_number] >= item.updated_at_utc)
+            and (
+                item.updated_at_utc is None
+                or current_revision[item.accession_number]
+                >= item.updated_at_utc.replace(microsecond=(item.updated_at_utc.microsecond // 1000) * 1000)
+            )
         }
         if self.config.xbrl_context_sync_enabled and existing:
             existing -= self._xbrl_context.pending_source_accessions(sorted(existing))
         return existing
+
+    def _deferred_accessions(self, items: list[SecFeedItem]) -> set[str]:
+        accessions = sorted({item.accession_number for item in items if item.accession_number})
+        return self._live_manifest.deferred_accessions(accessions)
 
     async def _register_inflight(self, accession_number: str) -> bool:
         async with self._inflight_lock:
@@ -852,6 +896,24 @@ class SecGateway:
         rows = self._live_pipeline.process_feed_item(item, source_run_id=self._run_id)
         expected_facts = len(rows.xbrl_rows.company_fact_rows)
         expected_frames = len(rows.xbrl_rows.frame_observation_rows)
+        manifest_row = {
+            "accession_number": str(rows.filing_row["accession_number"]),
+            "source_cik": rows.source_cik,
+            "primary_cik": str(rows.filing_row["cik"]),
+            "source_version_key": rows.source_version_key,
+            "source_revision_at": rows.source_revision_at,
+            "source_revision_rank": rows.source_revision_rank,
+            "expected_document_rows": len(rows.document_rows),
+            "expected_text_source_rows": len(rows.text_source_rows),
+            "expected_rendered_text_rows": len(rows.text_rows),
+            "expected_skip_rows": len(rows.skip_rows),
+            "expected_xbrl_company_fact_rows": expected_facts,
+            "expected_xbrl_frame_observation_rows": expected_frames,
+            "metadata_status": rows.metadata_status,
+            "xbrl_status": rows.xbrl_rows.companyfacts_status,
+            "source_run_id": self._run_id,
+        }
+        self._live_manifest.mark_pending(**manifest_row)
         if self.config.xbrl_context_sync_enabled and expected_facts + expected_frames:
             self._xbrl_context.mark_pending(
                 cik=str(rows.filing_row["cik"]),
@@ -859,35 +921,59 @@ class SecGateway:
                 expected_company_fact_rows=expected_facts,
                 expected_frame_observation_rows=expected_frames,
             )
-        result = self._writer.write_accession(
-            filing_row=rows.filing_row,
-            entity_rows=getattr(rows, "entity_rows", []),
-            archive_accession_rows=getattr(rows, "archive_accession_rows", []),
-            document_rows=rows.document_rows,
-            text_source_rows=rows.text_source_rows,
-            text_rows=rows.text_rows,
-            skip_rows=rows.skip_rows,
-            pac_rows=getattr(rows, "pac_rows", []),
-            xbrl_concept_rows=rows.xbrl_rows.concept_rows,
-            xbrl_company_fact_rows=rows.xbrl_rows.company_fact_rows,
-            xbrl_frame_rows=rows.xbrl_rows.frame_rows,
-            xbrl_frame_observation_rows=rows.xbrl_rows.frame_observation_rows,
-            skip_existing=False,
-        )
-        if self.config.xbrl_context_sync_enabled and expected_facts + expected_frames:
-            sync = self._xbrl_context.sync_rows(
-                cik=str(rows.filing_row["cik"]),
-                accession_number=str(rows.filing_row["accession_number"]),
-                company_fact_rows=rows.xbrl_rows.company_fact_rows,
-                frame_observation_rows=rows.xbrl_rows.frame_observation_rows,
+        try:
+            result = self._writer.write_accession(
+                filing_row=rows.filing_row,
+                entity_rows=getattr(rows, "entity_rows", []),
+                archive_accession_rows=getattr(rows, "archive_accession_rows", []),
+                document_rows=rows.document_rows,
+                text_source_rows=rows.text_source_rows,
+                text_rows=rows.text_rows,
+                skip_rows=rows.skip_rows,
+                pac_rows=getattr(rows, "pac_rows", []),
+                xbrl_concept_rows=rows.xbrl_rows.concept_rows,
+                xbrl_company_fact_rows=rows.xbrl_rows.company_fact_rows,
+                xbrl_frame_rows=rows.xbrl_rows.frame_rows,
+                xbrl_frame_observation_rows=rows.xbrl_rows.frame_observation_rows,
+                skip_existing=False,
+                skip_same_revision=False,
             )
-            result = replace(
-                result,
-                xbrl_context_rows=sync.inserted_rows,
-                xbrl_context_pending_rows=sync.missing_rows,
-            )
-            self._log("xbrl_context_synced", result=asdict(sync))
-        return result
+            pending_reasons = live_pending_source_reasons(rows, expected_facts=expected_facts)
+            if pending_reasons:
+                reason = "; ".join(pending_reasons)
+                retry_after = datetime.now(UTC) + timedelta(seconds=max(1.0, self.config.source_retry_seconds))
+                self._live_manifest.mark_pending_source(
+                    error=reason,
+                    retry_after_utc=retry_after.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                    **manifest_row,
+                )
+                return replace(result, ingest_status="pending_source", pending_reason=reason)
+            if self.config.xbrl_context_sync_enabled and expected_facts + expected_frames:
+                sync = self._xbrl_context.sync_rows(
+                    cik=str(rows.filing_row["cik"]),
+                    accession_number=str(rows.filing_row["accession_number"]),
+                    company_fact_rows=rows.xbrl_rows.company_fact_rows,
+                    frame_observation_rows=rows.xbrl_rows.frame_observation_rows,
+                )
+                result = replace(
+                    result,
+                    xbrl_context_rows=sync.inserted_rows,
+                    xbrl_context_pending_rows=sync.missing_rows,
+                )
+                self._log("xbrl_context_synced", result=asdict(sync))
+            self._live_manifest.mark_complete(**manifest_row)
+            return result
+        except Exception as exc:
+            try:
+                self._live_manifest.mark_failed(error=repr(exc), **manifest_row)
+            except Exception as manifest_exc:  # noqa: BLE001
+                self._log(
+                    "live_ingest_manifest_failed",
+                    accession_number=item.accession_number,
+                    original_error=repr(exc),
+                    manifest_error=repr(manifest_exc),
+                )
+            raise
 
     def _reconcile_xbrl_context(self) -> None:
         results = self._xbrl_context.reconcile_pending(limit=max(0, self.config.xbrl_context_reconcile_limit))
@@ -907,7 +993,7 @@ class SecGateway:
             "form_type": item.form_type,
             "title": item.title,
             "updated_at_utc": item.updated_at_utc.isoformat().replace("+00:00", "Z") if item.updated_at_utc else "",
-            "status": "skipped_existing" if result.skipped_existing else "written",
+            "status": "skipped_existing" if result.skipped_existing else result.ingest_status,
             "documents": result.document_rows,
             "text_sources": result.text_source_rows,
             "texts": result.text_rows,
@@ -929,6 +1015,9 @@ class SecGateway:
         self.metrics.xbrl_payload_cache_max_age_seconds = int(stats.get("xbrl_payload_cache_max_age_seconds") or 0)
         self.metrics.xbrl_missing_cik_cache_entries = int(stats.get("xbrl_missing_cik_cache_entries") or 0)
         self.metrics.xbrl_missing_cik_cache_limit = int(stats.get("xbrl_missing_cik_cache_limit") or 0)
+        self.metrics.xbrl_missing_cik_cache_max_age_seconds = int(
+            stats.get("xbrl_missing_cik_cache_max_age_seconds") or 0
+        )
 
     def _prune_recent_metadata(self) -> None:
         retention = timedelta(hours=max(0.0, self.config.recent_metadata_retention_hours))
@@ -968,6 +1057,20 @@ def workstation_script_data_root(config: SecGatewayConfig) -> Path:
     if config.is_workstation:
         return config.pipeline.data_root_win
     return Path("D:/market-data")
+
+
+def live_pending_source_reasons(rows: Any, *, expected_facts: int) -> list[str]:
+    reasons: list[str] = []
+    if rows.xbrl_expected and expected_facts == 0:
+        reasons.append(
+            "SEC Company Facts does not yet contain the accession "
+            f"(status={rows.xbrl_rows.companyfacts_status})"
+        )
+    if rows.metadata_status == "submissions_not_found" and str(
+        rows.filing_row.get("accepted_at_source") or ""
+    ) in {"archive_filing_date_midnight", "archive_date_midnight"}:
+        reasons.append("SEC submissions metadata does not yet provide an exact acceptance timestamp")
+    return reasons
 
 
 def workstation_script_write_root(config: SecGatewayConfig) -> Path:

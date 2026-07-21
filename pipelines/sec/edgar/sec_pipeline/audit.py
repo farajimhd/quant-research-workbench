@@ -22,7 +22,7 @@ def run_sec_audit(client: ClickHouseHttpClient, *, database: str, output_path: P
     table_meta = integrity.query_table_metadata(client, database)
     column_map = integrity.query_column_map(client, database)
     checks: list[dict[str, object]] = []
-    checks.extend(integrity.check_required_tables(table_meta, require_v2_tables=True))
+    checks.extend(integrity.check_required_tables(table_meta, require_v3_tables=True))
     scope_start = date(2019, 1, 1)
     if "sec_filing_v3" in table_meta:
         checks.extend(integrity.check_filing_parent(client, database, scope_start))

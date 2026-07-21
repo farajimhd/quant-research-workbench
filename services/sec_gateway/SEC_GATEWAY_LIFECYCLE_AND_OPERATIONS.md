@@ -23,7 +23,8 @@ The service performs these checks before live polling:
 1. Load configured environment files without logging secret values.
 2. Verify SEC user-agent, ClickHouse connectivity, source/read database, and
    configured write database.
-3. Create or validate v3 write schemas and coverage manifests.
+3. Create or validate v3 write schemas, the live accession-ingest manifest, and
+   coverage manifests. Active startup never clones a stale v1 or v2 schema.
 4. Bootstrap coverage from canonical tables only when the manifest is empty.
 5. Audit duplicate and orphan state.
 6. Detect historical filing, text, and XBRL gaps.
@@ -40,7 +41,7 @@ coverage.
 
 ```text
 SEC current Atom feed
-  -> canonical accession discovery and deduplication
+  -> completed-revision lookup in sec_filing_live_ingest_manifest_v3
   -> bounded filing queue and worker assignment
   -> optional per-CIK submissions enrichment
   -> accession .txt artifact download
@@ -51,13 +52,16 @@ SEC current Atom feed
   -> canonical XBRL write
   -> point-in-time bridge lookup
   -> sec_xbrl_context_v3 write or durable pending manifest
+  -> complete live-ingest manifest transition
   -> targeted write audit and coverage update
 ```
 
-The queue is bounded. A worker does not report completion until its canonical
-write succeeds or the filing has a durable, classified skip outcome. Empty or
-all-duplicate feed polls update live-run health without pretending that a new
-filing was written.
+The queue is bounded. A worker does not report completion until every applicable
+canonical insert and context transition has returned successfully and
+`sec_filing_live_ingest_manifest_v3` records the exact source revision as
+`complete`. `pending`, `pending_source`, and `failed` revisions remain replayable.
+A durable `retry_after_utc` prevents a lagging SEC source from causing repeated
+downloads and ClickHouse writes on every feed poll.
 
 ## Source and Parsing Rules
 
@@ -75,24 +79,32 @@ enrichment is absent or lagging. The parser:
 - writes deterministic source hashes and revision lineage.
 
 Submissions JSON is enrichment and relationship authority when it contains the
-accession, but a 404 or lagging per-CIK response does not invalidate a complete
-SGML filing artifact. Such metadata remains eligible for later reconciliation.
+accession. If a cached payload does not contain a newly discovered accession,
+the gateway bypasses the cache and fetches it once more. A 404 or still-lagging
+response does not invalidate a complete SGML filing artifact. When SGML has no
+exact acceptance timestamp, the live manifest remains `pending_source` so the
+metadata can be retried instead of declaring a date-only fallback complete.
 
 ## Canonical Write Order and Recovery
 
-The live writer preserves referential order and idempotency:
+The live writer and accession manifest preserve recoverability and idempotency:
 
-1. Filing parent and source revision metadata.
-2. Filing-to-entity relationships and archive/accession inventory evidence.
-3. Submitted document metadata.
-4. Complete source text and readable derivative, or an explicit skip row.
-5. XBRL concept/fact/frame rows when source data is available.
-6. Pending or completed XBRL context synchronization state.
-7. Coverage and audit status only after durable writes.
+1. Record the accession and exact source revision as `pending`.
+2. Write complete source text first, preserving the recovery authority.
+3. Write filing, entity, archive/accession inventory, and document rows.
+4. Write the readable derivative or explicit skip outcome for every applicable
+   document.
+5. Write XBRL concept/fact/frame rows when the source has published them.
+6. Complete or durably defer XBRL context synchronization.
+7. Transition the exact accession revision to `complete` only after the required
+   writes return successfully.
+8. Advance coverage and audit status only after that completion boundary.
 
 Current-row selection is based on deterministic source revision rank, not worker
-completion time. Duplicate accessions and replayed polls are idempotent. A failed
-write remains an active error and does not advance semantic coverage.
+completion time. A same-revision replay is allowed while the live manifest is
+not complete; deterministic keys and revision-aware ReplacingMergeTree tables
+make that replay idempotent. This repairs crashes after document insertion but
+before rendered text, skip, XBRL, or context insertion.
 
 ## XBRL Context
 
@@ -119,8 +131,8 @@ Response handling is source-specific:
 - `5xx` and network failures: enter a transient cooldown and retry within bounds.
 - submissions `404`: record missing enrichment, continue from valid SGML when
   possible, and leave relationship/timestamp reconciliation pending.
-- companyfacts `404`: record an explicit missing-XBRL outcome rather than failing
-  a non-XBRL filing.
+- companyfacts `404`: cache the negative result for five minutes, then retry; an
+  XBRL-bearing filing remains `pending_source` until the exact accession appears.
 - accession artifact `404`: fail the filing job because the canonical source is
   not available.
 
@@ -170,6 +182,9 @@ the complete required chain succeeds.
 | Live and historical identity could diverge | Different CIK selected for the same accession | Use shared SGML entity parsing and `sec_filing_entity_v3`; never parse issuer CIK from accession prefix |
 | Live timestamps repeated the historical timezone bug | Explicit UTC values shifted by New York offset | Share source-aware acceptance parsing and preserve `Z` as UTC |
 | XBRL source writes could succeed before context writes | Missing packed context after a crash or absent bridge | Persist pending context work and reconcile it idempotently after restart |
+| A document row could suppress recovery of a partial accession | Rendered text, skip rows, or XBRL remained absent after a mid-write crash | Use `sec_filing_live_ingest_manifest_v3` as the only completion authority and replay the same revision until its final transition |
+| Cached submissions or companyfacts predated a new accession | Missing exact acceptance metadata or zero XBRL facts became permanent | Bypass a positive cache once on accession miss, expire negative 404 entries, and durably defer incomplete source propagation |
+| Fresh write databases could inherit stale schemas | A v3 table was cloned from a v1/v2 layout | Remove legacy schema fallback; require an explicit v3 schema authority |
 | Gateway and reference service could both mutate the bridge | Conflicting identity ownership | SEC reads point-in-time bridge rows; routine bridge maintenance remains in `reference_gateway` |
 | Generated historical jobs could silently dry-run new stages | Finalizer exited quickly without mutation | Propagate `--execute` through explicit stage metadata and test every write-gated child |
 
@@ -180,10 +195,10 @@ bounded workers according to the configured timeout, closes HTTP/websocket and
 terminal tasks, and leaves durable pending context work for restart. Coverage is
 not advanced for interrupted filings.
 
-After a ClickHouse interruption, restart is normally safe because canonical
-writes are idempotent and context work is manifested. Operators must still audit
-the exact run log for active failures and verify `/health` and pending-context
-counts after recovery.
+After a ClickHouse interruption, restart is safe because incomplete accession
+revisions remain non-complete, same-revision canonical writes are replayable,
+and context work is separately manifested. Operators must still audit the exact
+run log and verify `/health`, pending-ingest, and pending-context counts.
 
 ## Operator Commands
 

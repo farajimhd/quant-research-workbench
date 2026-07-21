@@ -40,6 +40,8 @@ class SecGatewayConfig:
     xbrl_payload_cache_entries: int
     xbrl_payload_cache_max_age_seconds: float
     xbrl_missing_cik_cache_entries: int
+    xbrl_missing_cik_cache_max_age_seconds: float
+    source_retry_seconds: float
     xbrl_context_sync_enabled: bool
     xbrl_context_database: str
     xbrl_context_table: str
@@ -86,6 +88,11 @@ class SecGatewayConfig:
             xbrl_payload_cache_entries=env_int("SEC_GATEWAY_XBRL_PAYLOAD_CACHE_ENTRIES", 32),
             xbrl_payload_cache_max_age_seconds=env_float("SEC_GATEWAY_XBRL_PAYLOAD_CACHE_MAX_AGE_SECONDS", 3600.0),
             xbrl_missing_cik_cache_entries=env_int("SEC_GATEWAY_XBRL_MISSING_CIK_CACHE_ENTRIES", 5_000),
+            xbrl_missing_cik_cache_max_age_seconds=env_float(
+                "SEC_GATEWAY_XBRL_MISSING_CIK_CACHE_MAX_AGE_SECONDS",
+                300.0,
+            ),
+            source_retry_seconds=env_float("SEC_GATEWAY_SOURCE_RETRY_SECONDS", 300.0),
             xbrl_context_sync_enabled=env_bool("SEC_GATEWAY_XBRL_CONTEXT_SYNC_ENABLED", True),
             xbrl_context_database=env_string("SEC_GATEWAY_XBRL_CONTEXT_DATABASE", "market_sip_compact"),
             xbrl_context_table=env_string("SEC_GATEWAY_XBRL_CONTEXT_TABLE", "sec_xbrl_context_v3"),

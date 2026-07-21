@@ -36,27 +36,37 @@ class SecLiveXbrlExtractor:
         max_payload_cache_entries: int = 32,
         max_payload_cache_age_seconds: float = 3600.0,
         max_missing_cik_cache_entries: int = 5_000,
+        max_missing_cik_cache_age_seconds: float = 300.0,
     ) -> None:
         self.http = http
         self.max_payload_cache_entries = max(0, int(max_payload_cache_entries))
         self.max_payload_cache_age_seconds = max(0.0, float(max_payload_cache_age_seconds))
         self.max_missing_cik_cache_entries = max(0, int(max_missing_cik_cache_entries))
+        self.max_missing_cik_cache_age_seconds = max(0.0, float(max_missing_cik_cache_age_seconds))
         self._payload_cache: OrderedDict[str, tuple[dict[str, Any], str, float]] = OrderedDict()
-        self._missing_ciks: OrderedDict[str, None] = OrderedDict()
+        self._missing_ciks: OrderedDict[str, float] = OrderedDict()
         self._cache_lock = threading.RLock()
 
     def extract_for_accession(self, *, cik: str, accession_number: str, source_run_id: str, inserted_at: str) -> LiveXbrlRows:
         return self.extract_for_accessions(cik=cik, accession_numbers={accession_number}, source_run_id=source_run_id, inserted_at=inserted_at)
 
-    def extract_for_accessions(self, *, cik: str, accession_numbers: set[str], source_run_id: str, inserted_at: str) -> LiveXbrlRows:
+    def extract_for_accessions(
+        self,
+        *,
+        cik: str,
+        accession_numbers: set[str],
+        source_run_id: str,
+        inserted_at: str,
+        _force_refresh: bool = False,
+    ) -> LiveXbrlRows:
         cik_text = str(cik).zfill(10)
         now = time.monotonic()
         with self._cache_lock:
-            self._prune_expired_payloads_locked(now)
-            if cik_text in self._missing_ciks:
+            self._prune_expired_locked(now)
+            if not _force_refresh and cik_text in self._missing_ciks:
                 self._missing_ciks.move_to_end(cik_text)
                 return LiveXbrlRows(fetched=True, companyfacts_status="missing_404")
-            cached = self._payload_cache.get(cik_text)
+            cached = None if _force_refresh else self._payload_cache.get(cik_text)
             if cached is not None:
                 self._payload_cache.move_to_end(cik_text)
         if cached is None:
@@ -77,7 +87,7 @@ class SecLiveXbrlExtractor:
             self._remember_payload(cik_text, payload, source_sha)
         else:
             payload, source_sha, _cached_at = cached
-        return extract_companyfacts_payload(
+        rows = extract_companyfacts_payload(
             payload,
             cik=cik,
             accession_numbers=accession_numbers,
@@ -85,28 +95,41 @@ class SecLiveXbrlExtractor:
             inserted_at=inserted_at,
             source_content_sha256=source_sha,
         )
+        if rows.matched_facts == 0 and cached is not None:
+            return self.extract_for_accessions(
+                cik=cik,
+                accession_numbers=accession_numbers,
+                source_run_id=source_run_id,
+                inserted_at=inserted_at,
+                _force_refresh=True,
+            )
+        if rows.matched_facts == 0:
+            rows.companyfacts_status = "pending_accession"
+        return rows
 
     def _remember_payload(self, cik_text: str, payload: dict[str, Any], source_sha: str) -> None:
         if self.max_payload_cache_entries <= 0:
             return
         with self._cache_lock:
             self._payload_cache[cik_text] = (payload, source_sha, time.monotonic())
+            self._missing_ciks.pop(cik_text, None)
             self._payload_cache.move_to_end(cik_text)
             while len(self._payload_cache) > self.max_payload_cache_entries:
                 self._payload_cache.popitem(last=False)
 
     def _remember_missing_cik(self, cik_text: str) -> None:
-        if self.max_missing_cik_cache_entries <= 0:
+        if self.max_missing_cik_cache_entries <= 0 or self.max_missing_cik_cache_age_seconds <= 0:
             return
         with self._cache_lock:
-            self._missing_ciks[cik_text] = None
+            self._payload_cache.pop(cik_text, None)
+            self._missing_ciks[cik_text] = time.monotonic()
             self._missing_ciks.move_to_end(cik_text)
             while len(self._missing_ciks) > self.max_missing_cik_cache_entries:
                 self._missing_ciks.popitem(last=False)
 
     def cache_stats(self) -> dict[str, int]:
         with self._cache_lock:
-            self._prune_expired_payloads_locked(time.monotonic())
+            self._prune_expired_locked(time.monotonic())
             payload_entries = len(self._payload_cache)
             missing_entries = len(self._missing_ciks)
         return {
@@ -115,18 +138,24 @@ class SecLiveXbrlExtractor:
             "xbrl_payload_cache_max_age_seconds": int(self.max_payload_cache_age_seconds),
             "xbrl_missing_cik_cache_entries": missing_entries,
             "xbrl_missing_cik_cache_limit": self.max_missing_cik_cache_entries,
+            "xbrl_missing_cik_cache_max_age_seconds": int(self.max_missing_cik_cache_age_seconds),
         }
 
-    def _prune_expired_payloads_locked(self, now: float) -> None:
-        if self.max_payload_cache_age_seconds <= 0:
-            return
-        expired = [
-            cik
-            for cik, (_payload, _source_sha, cached_at) in self._payload_cache.items()
-            if now - cached_at > self.max_payload_cache_age_seconds
-        ]
-        for cik in expired:
-            self._payload_cache.pop(cik, None)
+    def _prune_expired_locked(self, now: float) -> None:
+        if self.max_payload_cache_age_seconds > 0:
+            expired_payloads = [
+                cik
+                for cik, (_payload, _source_sha, cached_at) in self._payload_cache.items()
+                if now - cached_at > self.max_payload_cache_age_seconds
+            ]
+            for cik in expired_payloads:
+                self._payload_cache.pop(cik, None)
+        if self.max_missing_cik_cache_age_seconds > 0:
+            expired_missing = [
+                cik for cik, cached_at in self._missing_ciks.items() if now - cached_at > self.max_missing_cik_cache_age_seconds
+            ]
+            for cik in expired_missing:
+                self._missing_ciks.pop(cik, None)
 
 
 def extract_companyfacts_payload(

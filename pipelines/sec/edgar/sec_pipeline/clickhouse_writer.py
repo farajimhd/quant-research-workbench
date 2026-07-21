@@ -23,17 +23,6 @@ XBRL_CONCEPT_TABLE = "sec_xbrl_concept_v3"
 XBRL_COMPANY_FACT_TABLE = "sec_xbrl_company_fact_v3"
 XBRL_FRAME_TABLE = "sec_xbrl_frame_v3"
 XBRL_FRAME_OBSERVATION_TABLE = "sec_xbrl_frame_observation_v3"
-LEGACY_SCHEMA_SOURCE_TABLES = {
-    FILING_TABLE: "sec_filing_v2",
-    DOCUMENT_TABLE: "sec_filing_document_v2",
-    TEXT_SOURCE_TABLE: "sec_filing_text_v1",
-    TEXT_TABLE: "sec_filing_text_v2",
-    SKIP_TABLE: "sec_filing_document_skip_v1",
-    XBRL_CONCEPT_TABLE: "sec_xbrl_concept_v1",
-    XBRL_COMPANY_FACT_TABLE: "sec_xbrl_company_fact_v1",
-    XBRL_FRAME_TABLE: "sec_xbrl_frame_v1",
-    XBRL_FRAME_OBSERVATION_TABLE: "sec_xbrl_frame_observation_v1",
-}
 WRITE_TABLES = [
     FILING_TABLE,
     ENTITY_TABLE,
@@ -65,6 +54,8 @@ class SecWriteResult:
     xbrl_frame_observation_rows: int = 0
     xbrl_context_rows: int = 0
     xbrl_context_pending_rows: int = 0
+    ingest_status: str = "complete"
+    pending_reason: str = ""
     skipped_existing: bool = False
 
 
@@ -277,10 +268,15 @@ class SecClickHouseWriter:
         xbrl_frame_rows: list[dict[str, Any]] | None = None,
         xbrl_frame_observation_rows: list[dict[str, Any]] | None = None,
         skip_existing: bool = True,
+        skip_same_revision: bool = True,
     ) -> SecWriteResult:
         validate_source_lineage(document_rows, text_source_rows, text_rows)
         incoming_rank = max((int(row.get("source_revision_rank") or 0) for row in document_rows), default=0)
-        if incoming_rank and self.latest_document_revision_rank(str(filing_row["cik"]), str(filing_row["accession_number"])) >= incoming_rank:
+        if (
+            skip_same_revision
+            and incoming_rank
+            and self.latest_document_revision_rank(str(filing_row["cik"]), str(filing_row["accession_number"])) >= incoming_rank
+        ):
             return SecWriteResult(skipped_existing=True)
         if skip_existing and self.filing_exists(str(filing_row["cik"]), str(filing_row["accession_number"])):
             return SecWriteResult(skipped_existing=True)
@@ -365,10 +361,7 @@ def ensure_sec_write_database(
         if not table_exists(client, write_database, table):
             source_table = table
             if not table_exists(client, read_database, source_table):
-                legacy_source_table = LEGACY_SCHEMA_SOURCE_TABLES.get(table, table)
-                if table_exists(client, read_database, legacy_source_table):
-                    source_table = legacy_source_table
-                elif table == TEXT_SOURCE_TABLE:
+                if table == TEXT_SOURCE_TABLE:
                     create_text_source_table_schema(client, target_database=write_database, reference_database=read_database)
                     created_or_present.append(f"{write_database}.{table}")
                     continue
@@ -385,7 +378,10 @@ def ensure_sec_write_database(
                     created_or_present.append(f"{write_database}.{table}")
                     continue
                 else:
-                    raise RuntimeError(f"source SEC table is missing: {read_database}.{table} or {read_database}.{legacy_source_table}")
+                    raise RuntimeError(
+                        f"v3 SEC schema authority is missing: {read_database}.{table}; "
+                        "run the v3 SEC schema/bootstrap path before starting the gateway"
+                    )
             clone_table_schema(client, source_database=read_database, target_database=write_database, source_table=source_table, target_table=table)
         created_or_present.append(f"{write_database}.{table}")
     create_entity_current_view(client, target_database=write_database)
@@ -432,9 +428,7 @@ def create_text_source_table_schema(client: ClickHouseHttpClient, *, target_data
         reference_database,
         [
             TEXT_TABLE,
-            LEGACY_SCHEMA_SOURCE_TABLES.get(TEXT_TABLE, TEXT_TABLE),
             DOCUMENT_TABLE,
-            LEGACY_SCHEMA_SOURCE_TABLES.get(DOCUMENT_TABLE, DOCUMENT_TABLE),
         ],
     )
     settings = "index_granularity = 8192"

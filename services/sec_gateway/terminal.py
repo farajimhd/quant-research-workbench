@@ -73,9 +73,9 @@ def sec_pipeline_panel(gateway: "SecGateway", metrics: dict[str, Any], *, compac
     )
     table.add_row(
         "Durable outcome",
-        style_status("warning" if metrics.get("live_worker_failures") else "ok"),
-        f"done {fmt(metrics.get('live_completed_filings'))}; written {fmt(metrics.get('written_filings'))}",
-        f"skipped {fmt(metrics.get('skipped_existing'))}; failed {fmt(metrics.get('live_worker_failures'))}; last write {compact_datetime(metrics.get('last_write_at_utc'))}",
+        style_status("warning" if metrics.get("live_worker_failures") or metrics.get("live_pending_filings") else "ok"),
+        f"done {fmt(metrics.get('live_completed_filings'))}; pending {fmt(metrics.get('live_pending_filings'))}",
+        f"written {fmt(metrics.get('written_filings'))}; deferred {fmt(metrics.get('live_deferred_filings'))}; failed {fmt(metrics.get('live_worker_failures'))}; last write {compact_datetime(metrics.get('last_write_at_utc'))}",
     )
     table.add_row(
         "Latest filing",
@@ -192,11 +192,15 @@ def runtime_panel(gateway: "SecGateway", metrics: dict[str, Any]) -> Panel:
     table.add_row("Processed", fmt(metrics.get("processed_filings")), "")
     table.add_row("Written", fmt(metrics.get("written_filings")), "")
     table.add_row("Skipped existing", fmt(metrics.get("skipped_existing")), "")
-    table.add_row("Queued / completed", fmt(metrics.get("live_queued_filings")), f"completed {fmt(metrics.get('live_completed_filings'))}, worker failures {fmt(metrics.get('live_worker_failures'))}")
+    table.add_row(
+        "Queue outcomes",
+        fmt(metrics.get("live_queued_filings")),
+        f"completed {fmt(metrics.get('live_completed_filings'))}, pending {fmt(metrics.get('live_pending_filings'))}, deferred {fmt(metrics.get('live_deferred_filings'))}, worker failures {fmt(metrics.get('live_worker_failures'))}",
+    )
     table.add_row(
         "SEC caches",
         f"sub {fmt(metrics.get('submissions_cache_entries'))}/{fmt(metrics.get('submissions_cache_limit'))}",
-        f"sub_ttl={ttl_text(metrics.get('submissions_cache_max_age_seconds'))}; xbrl {fmt(metrics.get('xbrl_payload_cache_entries'))}/{fmt(metrics.get('xbrl_payload_cache_limit'))} ttl={ttl_text(metrics.get('xbrl_payload_cache_max_age_seconds'))}; missing {fmt(metrics.get('xbrl_missing_cik_cache_entries'))}/{fmt(metrics.get('xbrl_missing_cik_cache_limit'))}",
+        f"sub_ttl={ttl_text(metrics.get('submissions_cache_max_age_seconds'))}; xbrl {fmt(metrics.get('xbrl_payload_cache_entries'))}/{fmt(metrics.get('xbrl_payload_cache_limit'))} ttl={ttl_text(metrics.get('xbrl_payload_cache_max_age_seconds'))}; missing {fmt(metrics.get('xbrl_missing_cik_cache_entries'))}/{fmt(metrics.get('xbrl_missing_cik_cache_limit'))} ttl={ttl_text(metrics.get('xbrl_missing_cik_cache_max_age_seconds'))}",
     )
     table.add_row("Recent metadata", fmt(metrics.get("recent_metadata_rows")), f"ttl={float(metrics.get('recent_metadata_retention_hours') or 0.0):.1f}h")
     table.add_row("XBRL facts", fmt(metrics.get("xbrl_company_fact_rows")), f"concepts {fmt(metrics.get('xbrl_concept_rows'))}, frames {fmt(metrics.get('xbrl_frame_rows'))}, observations {fmt(metrics.get('xbrl_frame_observation_rows'))}")

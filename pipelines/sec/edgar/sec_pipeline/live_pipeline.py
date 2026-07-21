@@ -35,6 +35,12 @@ class LiveFilingRows:
     pac_rows: list[dict[str, Any]]
     xbrl_rows: LiveXbrlRows
     raw_path: Path
+    source_cik: str
+    source_version_key: str
+    source_revision_at: str
+    source_revision_rank: int
+    metadata_status: str
+    xbrl_expected: bool
 
 
 class SecLiveFilingPipeline:
@@ -48,6 +54,7 @@ class SecLiveFilingPipeline:
         xbrl_payload_cache_entries: int = 32,
         xbrl_payload_cache_max_age_seconds: float = 3600.0,
         xbrl_missing_cik_cache_entries: int = 5_000,
+        xbrl_missing_cik_cache_max_age_seconds: float = 300.0,
     ) -> None:
         self.http = http
         self.raw_root_win = raw_root_win
@@ -61,6 +68,7 @@ class SecLiveFilingPipeline:
             max_payload_cache_entries=xbrl_payload_cache_entries,
             max_payload_cache_age_seconds=xbrl_payload_cache_max_age_seconds,
             max_missing_cik_cache_entries=xbrl_missing_cik_cache_entries,
+            max_missing_cik_cache_age_seconds=xbrl_missing_cik_cache_max_age_seconds,
         )
 
     def process_feed_item(self, item: SecFeedItem, *, source_run_id: str) -> LiveFilingRows:
@@ -104,8 +112,12 @@ class SecLiveFilingPipeline:
         if item.filing_detail_url:
             filing_row["filing_detail_url"] = item.filing_detail_url
         submission = self.submissions.fetch_recent_filing(cik=parent.cik, accession_number=parent.accession_number)
+        metadata_status = "submissions_not_found"
         if submission is not None:
             filing_row, parent = apply_submission_metadata(filing_row, parent, submission)
+            metadata_status = "submissions_recent"
+        elif filing_row.get("accepted_at_source") == "archive_acceptance_datetime":
+            metadata_status = "sgml_header"
         document_rows: list[dict[str, Any]] = []
         text_source_rows: list[dict[str, Any]] = []
         text_rows: list[dict[str, Any]] = []
@@ -150,6 +162,8 @@ class SecLiveFilingPipeline:
             document_rows.append(doc_row)
             if doc_row.get("document_role") == "xbrl_sidecar" or doc_row.get("content_format") == "xbrl":
                 has_xbrl_payload = True
+            if "<ix:" in str(document.get("payload") or "").lower():
+                has_xbrl_payload = True
             if text_source_row:
                 text_source_rows.append(text_source_row)
             if text_row:
@@ -175,6 +189,12 @@ class SecLiveFilingPipeline:
             pac_rows=pac_rows,
             xbrl_rows=xbrl_rows,
             raw_path=raw_path,
+            source_cik=item.cik,
+            source_version_key=revision.source_version_key,
+            source_revision_at=revision.source_revision_at,
+            source_revision_rank=revision.source_revision_rank,
+            metadata_status=metadata_status,
+            xbrl_expected=has_xbrl_payload or (submission is not None and submission.has_xbrl),
         )
 
     def write_raw(self, item: SecFeedItem, raw: bytes) -> Path:

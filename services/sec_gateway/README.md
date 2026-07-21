@@ -16,13 +16,15 @@ start service
 -> run dependency preflight
 -> validate q_live as the SEC source-of-truth read database
 -> create/validate the configured SEC write database
--> clone SEC write-table schemas from q_live when the write database is empty
+-> clone only matching v3 SEC schemas from q_live when a separate write database is empty
+-> create/validate sec_filing_live_ingest_manifest_v3
 -> create/validate the write database sec_coverage_manifest_v3
 -> bootstrap write-database coverage from existing q_live SEC tables when the manifest is empty
 -> detect filing/text/XBRL coverage gaps from the manifest, falling back to q_live recency only when needed
 -> write workstation historical-fill command for old gaps, including repair and audit steps
 -> poll SEC current Atom feed
 -> enqueue new accessions into a bounded live worker pool
+-> mark the exact accession source revision pending before canonical writes
 -> fetch SEC submissions JSON for each discovered CIK/accession
 -> canonicalize parent filing metadata from submissions.recent
 -> download new accession .txt filings
@@ -33,6 +35,7 @@ start service
 -> resolve event-valid ticker mappings from q_live.id_sec_market_bridge_v3
 -> insert the filing's company facts and frame observations into market_sip_compact.sec_xbrl_context_v3
 -> retain pending context work in sec_xbrl_context_sync_manifest_v3 for restart-safe reconciliation
+-> mark the accession revision complete only after all applicable writes succeed
 -> audit the write database for duplicate and orphan SEC rows
 -> keep one live-run coverage row current, including empty/all-duplicate polls
 -> show Rich terminal status and expose HTTP/websocket snapshots
@@ -96,6 +99,8 @@ SEC_GATEWAY_SUBMISSIONS_CACHE_MAX_AGE_SECONDS=3600
 SEC_GATEWAY_XBRL_PAYLOAD_CACHE_ENTRIES=32
 SEC_GATEWAY_XBRL_PAYLOAD_CACHE_MAX_AGE_SECONDS=3600
 SEC_GATEWAY_XBRL_MISSING_CIK_CACHE_ENTRIES=5000
+SEC_GATEWAY_XBRL_MISSING_CIK_CACHE_MAX_AGE_SECONDS=300
+SEC_GATEWAY_SOURCE_RETRY_SECONDS=300
 SEC_GATEWAY_XBRL_CONTEXT_SYNC_ENABLED=true
 SEC_GATEWAY_XBRL_CONTEXT_DATABASE=market_sip_compact
 SEC_GATEWAY_XBRL_CONTEXT_TABLE=sec_xbrl_context_v3
@@ -149,6 +154,8 @@ SEC_GATEWAY_SUBMISSIONS_CACHE_MAX_AGE_SECONDS=3600
 SEC_GATEWAY_XBRL_PAYLOAD_CACHE_ENTRIES=32
 SEC_GATEWAY_XBRL_PAYLOAD_CACHE_MAX_AGE_SECONDS=3600
 SEC_GATEWAY_XBRL_MISSING_CIK_CACHE_ENTRIES=5000
+SEC_GATEWAY_XBRL_MISSING_CIK_CACHE_MAX_AGE_SECONDS=300
+SEC_GATEWAY_SOURCE_RETRY_SECONDS=300
 SEC_GATEWAY_RECENT_METADATA_RETENTION_HOURS=24
 ```
 
@@ -291,14 +298,18 @@ read database, and validates them before polling starts:
 
 ```text
 sec_filing_v3
+sec_filing_entity_v3
+sec_filing_archive_accession_v3
 sec_filing_document_v3
 sec_filing_text_v3
 sec_filing_text_rendered_v3
 sec_filing_document_skip_v3
+sec_filing_pac_event_v3
 sec_xbrl_concept_v3
 sec_xbrl_company_fact_v3
 sec_xbrl_frame_v3
 sec_xbrl_frame_observation_v3
+sec_filing_live_ingest_manifest_v3
 ```
 
 The gateway write audit checks:
@@ -331,9 +342,11 @@ Shutdown is graceful: the service stops polling, waits for queued workers to
 finish up to `SEC_GATEWAY_GRACEFUL_SHUTDOWN_SECONDS`, writes final coverage, and
 then exits. If the timeout is exceeded, the event is logged in the run JSONL log.
 
-The submissions and companyfacts SEC API responses are cached per gateway run by
-CIK. This reduces duplicate SEC requests when a feed poll contains multiple
-filings for the same company.
+The submissions and companyfacts SEC API responses are cached by CIK. If a
+cached payload does not contain the newly discovered accession, the gateway
+bypasses it once and requests a fresh payload. Companyfacts 404 entries expire
+after `SEC_GATEWAY_XBRL_MISSING_CIK_CACHE_MAX_AGE_SECONDS`; they are not retained
+for the process lifetime.
 
 All SEC network calls share one process-local limiter. Normal requests are
 spaced by `SEC_REQUEST_MIN_INTERVAL_SECONDS`; transient provider failures add a
@@ -391,7 +404,9 @@ It finds the accession in `filings.recent` and uses that row to canonicalize:
 If SEC returns `404` for the submissions JSON while the accession text is
 available, the gateway treats submissions metadata as temporarily missing and
 continues with metadata parsed from the accession text. The live filing job is
-not failed solely because the submissions JSON is unavailable.
+not failed solely because the submissions JSON is unavailable. If neither source
+provides an exact acceptance timestamp, the accession remains `pending_source`
+and is retried after `SEC_GATEWAY_SOURCE_RETRY_SECONDS`.
 
 For filings that submissions or the accession document set identifies as
 XBRL-bearing, the gateway then fetches:
@@ -426,6 +441,8 @@ documents and skip rows, but they do not create companyfacts XBRL rows unless SE
 companyfacts exposes matching financial facts for that accession.
 
 SEC does not expose `companyfacts` JSON for every CIK. A companyfacts `404` is
-treated as `missing_404`, cached for that CIK during the gateway run, and does
-not fail live filing ingestion. The filing, document, text and skip rows are
-still written when the accession itself can be downloaded and parsed.
+treated as `missing_404` and cached for a bounded five-minute default. A known
+XBRL-bearing accession remains `pending_source`, with its retry time persisted in
+`q_live.sec_filing_live_ingest_manifest_v3`; non-XBRL filings are unaffected.
+The filing, document, text, and skip rows remain recoverable while source
+propagation is pending.
