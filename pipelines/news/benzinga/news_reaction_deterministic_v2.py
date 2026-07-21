@@ -9,6 +9,7 @@ import math
 import os
 import sys
 import time
+import traceback
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -399,10 +400,20 @@ def ensure_sources(client: ClickHouseHttpClient, args: argparse.Namespace) -> No
             raise SystemExit(f"source table {args.database}.{table_name} is missing columns {missing}")
 
 
-def ensure_targets(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
-    client.execute(f"CREATE DATABASE IF NOT EXISTS {quote_ident(args.database)}")
-    for sql in ddl_statements(args):
-        client.execute(sql)
+def ensure_targets(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    reporter: NewsReactionProgress,
+) -> None:
+    monitored_execute(
+        client,
+        f"CREATE DATABASE IF NOT EXISTS {quote_ident(args.database)}",
+        reporter,
+        "ensure target database",
+    )
+    for index, sql in enumerate(ddl_statements(args), start=1):
+        first_line = " ".join(sql.lstrip().splitlines()[0].split())
+        monitored_execute(client, sql, reporter, f"create target {index}: {first_line}")
 
 
 def replace_dictionary(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
@@ -1087,6 +1098,39 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True, default=str), encoding="utf-8")
 
 
+def failure_summary(
+    *,
+    run_id: str,
+    args: argparse.Namespace,
+    reporter: NewsReactionProgress,
+    exc: BaseException,
+    started: float,
+) -> dict[str, Any]:
+    """Return a durable, secret-free failure record for unattended runs."""
+    return {
+        "run_id": run_id,
+        "pipeline_version": PIPELINE_VERSION,
+        "failed_at_utc": dt.datetime.now(UTC).isoformat(),
+        "elapsed_seconds": time.perf_counter() - started,
+        "stage": reporter.current_stage,
+        "unit": reporter.current_unit,
+        "query": reporter.current_query,
+        "query_id": reporter.current_query_id,
+        "exception_type": type(exc).__name__,
+        "error": str(exc),
+        "traceback": traceback.format_exc(),
+        "publication_range": {"start": args.start_date, "end_exclusive": args.end_date},
+        "stages": list(validate_args(args)),
+        "database": args.database,
+        "storage_policy_configured": bool(args.storage_policy),
+        "workers": args.workers,
+        "max_threads_per_query": args.max_threads_per_query,
+        "secret_status": secret_status(
+            ["CLICKHOUSE_PASSWORD", "TD__DATABASE__CLICKHOUSE__PASSWORD", "CLICKHOUSE_WORKSTATION_PASSWORD"]
+        ),
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     load_env_files(discover_env_files(REPO_ROOT))
     args = parse_args(argv)
@@ -1124,8 +1168,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 reporter.finish("plan_validated")
                 print(json.dumps(plan, indent=2, sort_keys=True, default=str))
                 return 0
-            ensure_targets(client, args)
+            reporter.chunk_start("preflight", "target schemas")
+            ensure_targets(client, args, reporter)
             reporter.unit_done("preflight", "v2 schemas", status="complete")
+            reporter.chunk_start("preflight", "dictionary and identities")
             replace_dictionary(client, args)
             alias_rows = replace_identity_aliases(client, args, reporter)
             reporter.unit_done("preflight", "dictionary and identities", status="complete", rows=alias_rows)
@@ -1196,6 +1242,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     except KeyboardInterrupt:
         reporter.interrupted()
         return 130
+    except BaseException as exc:
+        reporter.fail(f"{type(exc).__name__}: {exc}")
+        failure_path = run_root / "failure.json"
+        try:
+            write_json(
+                failure_path,
+                failure_summary(run_id=run_id, args=args, reporter=reporter, exc=exc, started=started),
+            )
+            print(f"Durable failure report: {failure_path}", file=sys.stderr, flush=True)
+        except BaseException as log_exc:
+            print(f"Unable to write durable failure report {failure_path}: {log_exc}", file=sys.stderr, flush=True)
+        raise
 
 
 if __name__ == "__main__":
