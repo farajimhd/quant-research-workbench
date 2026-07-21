@@ -67,7 +67,12 @@ from src.backend.market_data_service import (
 )
 from src.backend.news_service import ensure_benzinga_news_cache, news_at_payload
 from src.backend.news_classification import classify_news, classify_news_kind, news_classification_sql
-from src.backend.sec_canvas_service import sec_filing_detail_payload, sec_filings_payload
+from src.backend.sec_canvas_service import (
+    sec_document_text_payload,
+    sec_filing_detail_payload,
+    sec_filing_facts_payload,
+    sec_filings_payload,
+)
 from src.backend.progress_model import build_progress_model
 from src.backend.qmd_gateway_client import (
     ENRICHED_QMD_TIMEFRAMES,
@@ -3423,6 +3428,42 @@ def trading_sec_filing_detail(cik: str, accession_number: str, as_of: str | None
     if payload.get("status") == "not_found":
         raise HTTPException(status_code=404, detail="SEC filing was not available at this point in time.")
     return payload
+
+
+@app.get("/api/trading/sec/detail/{cik}/{accession_number}/text/{document_id}")
+def trading_sec_document_text(
+    cik: str,
+    accession_number: str,
+    document_id: str,
+    as_of: str | None = None,
+    limit: int = Query(default=32_000, ge=1_000, le=100_000),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    try:
+        payload = sec_document_text_payload(cik, accession_number, document_id, as_of=as_of, limit=limit, offset=offset)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="SEC document text is temporarily unavailable.") from error
+    if payload.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="SEC document text was not available at this point in time.")
+    return payload
+
+
+@app.get("/api/trading/sec/detail/{cik}/{accession_number}/facts")
+def trading_sec_filing_facts(
+    cik: str,
+    accession_number: str,
+    as_of: str | None = None,
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    try:
+        return sec_filing_facts_payload(cik, accession_number, as_of=as_of, limit=limit, offset=offset)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="SEC filing facts are temporarily unavailable.") from error
 
 
 @app.get("/api/services/sec/today")

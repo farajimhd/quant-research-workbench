@@ -20,18 +20,19 @@ CIK_PATTERN = re.compile(r"^\d{1,10}$")
 ACCESSION_PATTERN = re.compile(r"^[0-9A-Za-z-]{8,32}$")
 TICKER_PATTERN = re.compile(r"^[A-Z][A-Z0-9.\-]{0,15}$")
 DATABASE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+LABEL_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+DATE_ONLY_ACCEPTANCE_SOURCES = {
+    "archive_date_midnight",
+    "archive_filing_date_midnight",
+    "filing_date_midnight_fallback",
+    "xbrl_companyfacts_filed_at",
+}
+DEFAULT_TEXT_PAGE_CHARS = 32_000
+MAX_TEXT_PAGE_CHARS = 100_000
+DEFAULT_FACT_PAGE_ROWS = 100
+MAX_FACT_PAGE_ROWS = 200
 SEC_LABELS = {
-    "results": "Results & reports",
-    "material_event": "Material event",
-    "insider_ownership": "Insider ownership",
-    "holder_ownership": "Large-holder ownership",
-    "offering_capital": "Offering & capital",
-    "governance_proxy": "Governance & proxy",
-    "merger_tender": "M&A & tender",
-    "registration": "Registration",
-    "compliance_notice": "Compliance notice",
-    "fund_disclosure": "Fund disclosure",
-    "other": "Other filing",
+    "other_disclosure": "Other disclosure",
 }
 
 
@@ -53,8 +54,8 @@ def sec_filings_payload(
     safe_limit = max(1, min(int(limit), 200))
     safe_hours = max(1, min(int(lookback_hours), 24 * 366))
     safe_label = label.strip().lower()
-    if safe_label and safe_label not in SEC_LABELS:
-        raise ValueError("Unknown SEC filing label.")
+    if safe_label and not LABEL_PATTERN.fullmatch(safe_label):
+        raise ValueError("SEC filing label is invalid.")
     safe_content = content.strip().lower()
     if safe_content not in {"all", "readable", "xbrl"}:
         raise ValueError("SEC content must be all, readable, or xbrl.")
@@ -80,11 +81,15 @@ def sec_filings_payload(
     rows = rows[:safe_limit]
     if rows:
         enrich_filing_rows(client, rows, cutoff=cutoff, database=safe_database)
+    try:
+        labels = clickhouse_rows(client, taxonomy_labels_sql(safe_database))
+    except Exception:
+        labels = [{"id": key, "label": value} for key, value in SEC_LABELS.items()]
     last = rows[-1] if rows else {}
     return {
         "as_of": cutoff.isoformat(),
         "has_more": has_more,
-        "labels": [{"id": key, "label": value} for key, value in SEC_LABELS.items()],
+        "labels": labels,
         "next_before": str(last.get("accepted_at_utc") or ""),
         "next_before_accession": str(last.get("accession_number") or ""),
         "rows": rows,
@@ -104,13 +109,14 @@ def sec_filing_detail_payload(cik: str, accession_number: str, *, as_of: str | N
     filing = filing_rows[0]
     queries = {
         "documents": detail_documents_sql(normalized_cik, accession, cutoff, safe_database),
-        "facts": detail_facts_sql(normalized_cik, accession, cutoff, safe_database),
-        "identity": identity_sql([normalized_cik], cutoff, safe_database),
-        "texts": detail_texts_sql(normalized_cik, accession, cutoff, safe_database),
+        "entities": filing_entities_sql([(normalized_cik, accession)], cutoff, safe_database),
+        "facts": detail_facts_sql(normalized_cik, accession, cutoff, safe_database, limit=DEFAULT_FACT_PAGE_ROWS + 1, offset=0),
+        "fact_count": detail_fact_count_sql(normalized_cik, accession, cutoff, safe_database),
+        "texts": detail_text_metadata_sql(normalized_cik, accession, cutoff, safe_database),
     }
     results: dict[str, list[dict[str, Any]]] = {}
     errors: dict[str, str] = {}
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=5) as pool:
         futures = {pool.submit(clickhouse_rows, client, sql): name for name, sql in queries.items()}
         for future in as_completed(futures):
             name = futures[future]
@@ -119,16 +125,35 @@ def sec_filing_detail_payload(cik: str, accession_number: str, *, as_of: str | N
             except Exception:
                 results[name] = []
                 errors[name] = f"{name.title()} are temporarily unavailable."
-    identity_rows = results.get("identity", [])
     normalize_sec_filing_row(filing)
-    filing["tickers"] = sorted({str(row.get("ticker") or "") for row in identity_rows if row.get("ticker")})
+    related_ciks = {normalized_cik} | {
+        str(row.get("entity_cik") or "") for row in results.get("entities", []) if row.get("entity_cik")
+    }
+    try:
+        identity_rows = clickhouse_rows(client, identity_sql(sorted(related_ciks), cutoff, safe_database))
+    except Exception:
+        identity_rows = []
+        errors["identity"] = "Identity is temporarily unavailable."
+    accepted_date = str(filing.get("accepted_at_utc") or "")[:10]
+    filing["tickers"] = sorted({
+        str(row.get("ticker") or "")
+        for row in identity_rows
+        if row.get("ticker") and bridge_valid_on(row, accepted_date)
+    })
+    facts = results.get("facts", [])
+    fact_total = int((results.get("fact_count") or [{}])[0].get("row_count") or len(facts))
+    facts = facts[:DEFAULT_FACT_PAGE_ROWS]
     return {
         "accession_number": accession,
         "as_of": cutoff.isoformat(),
         "cik": normalized_cik,
         "documents": results.get("documents", []),
+        "entities": results.get("entities", []),
         "errors": errors,
-        "facts": results.get("facts", []),
+        "facts": facts,
+        "facts_has_more": fact_total > len(facts),
+        "facts_next_offset": len(facts),
+        "facts_total": fact_total,
         "filing": filing,
         "identity": summarize_identity(identity_rows),
         "status": "partial" if errors else "ready",
@@ -136,51 +161,126 @@ def sec_filing_detail_payload(cik: str, accession_number: str, *, as_of: str | N
     }
 
 
+def sec_document_text_payload(
+    cik: str,
+    accession_number: str,
+    document_id: str,
+    *,
+    as_of: str | None = None,
+    database: str = "q_live",
+    limit: int = DEFAULT_TEXT_PAGE_CHARS,
+    offset: int = 0,
+) -> dict[str, Any]:
+    cutoff = parse_as_of(as_of)
+    safe_database = validate_database(database)
+    normalized_cik = normalize_cik(cik)
+    accession = normalize_accession(accession_number)
+    safe_document_id = document_id.strip()
+    if not safe_document_id or len(safe_document_id) > 256:
+        raise ValueError("SEC document identifier is invalid.")
+    safe_limit = max(1_000, min(int(limit), MAX_TEXT_PAGE_CHARS))
+    safe_offset = max(0, int(offset))
+    rows = clickhouse_rows(
+        clickhouse_client(),
+        detail_text_page_sql(normalized_cik, accession, safe_document_id, cutoff, safe_database, limit=safe_limit, offset=safe_offset),
+    )
+    if not rows:
+        return {"status": "not_found", "cik": normalized_cik, "accession_number": accession, "document_id": safe_document_id}
+    row = rows[0]
+    total = int(row.get("text_char_count") or 0)
+    returned = len(str(row.get("text") or ""))
+    next_offset = safe_offset + returned
+    return {
+        **row,
+        "accession_number": accession,
+        "as_of": cutoff.isoformat(),
+        "cik": normalized_cik,
+        "has_more": next_offset < total,
+        "limit": safe_limit,
+        "next_offset": next_offset,
+        "offset": safe_offset,
+        "status": "ready",
+    }
+
+
+def sec_filing_facts_payload(
+    cik: str,
+    accession_number: str,
+    *,
+    as_of: str | None = None,
+    database: str = "q_live",
+    limit: int = DEFAULT_FACT_PAGE_ROWS,
+    offset: int = 0,
+) -> dict[str, Any]:
+    cutoff = parse_as_of(as_of)
+    safe_database = validate_database(database)
+    normalized_cik = normalize_cik(cik)
+    accession = normalize_accession(accession_number)
+    safe_limit = max(1, min(int(limit), MAX_FACT_PAGE_ROWS))
+    safe_offset = max(0, int(offset))
+    client = clickhouse_client()
+    rows = clickhouse_rows(client, detail_facts_sql(normalized_cik, accession, cutoff, safe_database, limit=safe_limit + 1, offset=safe_offset))
+    count_rows = clickhouse_rows(client, detail_fact_count_sql(normalized_cik, accession, cutoff, safe_database))
+    total = int((count_rows or [{}])[0].get("row_count") or 0)
+    page = rows[:safe_limit]
+    next_offset = safe_offset + len(page)
+    return {
+        "accession_number": accession,
+        "as_of": cutoff.isoformat(),
+        "cik": normalized_cik,
+        "has_more": next_offset < total,
+        "limit": safe_limit,
+        "next_offset": next_offset,
+        "offset": safe_offset,
+        "rows": page,
+        "row_count": total,
+    }
+
+
 def classify_sec_filing(form_type: str, items: Any = None) -> dict[str, Any]:
     form = form_type.strip().upper()
-    if form in {"10-K", "10-K/A", "10-Q", "10-Q/A", "20-F", "20-F/A", "40-F", "40-F/A"}:
-        key = "results"
-    elif form in {"8-K", "8-K/A", "6-K", "6-K/A"}:
-        key = "material_event"
-    elif form in {"3", "3/A", "4", "4/A", "5", "5/A"}:
-        key = "insider_ownership"
-    elif form.startswith(("SC 13D", "SC 13G")) or form in {"13F-HR", "13F-HR/A", "13F-NT", "13F-NT/A"}:
-        key = "holder_ownership"
-    elif form.startswith(("424B", "FWP")) or form in {"S-1", "S-1/A", "S-3", "S-3/A", "F-1", "F-1/A", "F-3", "F-3/A", "EFFECT", "RW"}:
-        key = "offering_capital"
-    elif form.startswith(("SC TO", "SC 14D9")) or form in {"S-4", "S-4/A", "F-4", "F-4/A", "DEFM14A", "13E-3", "13E-3/A"}:
-        key = "merger_tender"
-    elif "14A" in form or form.startswith("PX14A"):
-        key = "governance_proxy"
-    elif form in {"10", "10/A", "8-A12B", "8-A12G", "S-8", "S-8 POS", "POS AM", "CERT"}:
-        key = "registration"
-    elif form.startswith("NT ") or form in {"CORRESP", "UPLOAD", "IRANNOTICE", "NSE", "25", "25-NSE"}:
-        key = "compliance_notice"
-    elif form.startswith("N-") or form.startswith("NPORT") or form.startswith("NCSR"):
-        key = "fund_disclosure"
-    else:
-        key = "other"
+    key = "other_disclosure"
     item_values = normalize_string_list(items)
-    evidence = [f"Form {form or 'unknown'}"]
+    evidence = [f"Form {form or 'unknown'} has no approved exact-form taxonomy match"]
     if item_values:
         evidence.append(f"Items {', '.join(item_values[:4])}")
-    return {"filing_label": key, "filing_label_text": SEC_LABELS[key], "label_evidence": evidence, "label_version": "sec_form_rules_v1"}
+    return {"filing_label": key, "filing_label_text": SEC_LABELS[key], "label_evidence": evidence, "label_version": "sec_disclosure_taxonomy_v3_fallback"}
 
 
 def filing_label_sql(column: str = "form_type") -> str:
-    form = f"upper({column})"
-    return f"""multiIf(
-        {form} IN ('10-K','10-K/A','10-Q','10-Q/A','20-F','20-F/A','40-F','40-F/A'), 'results',
-        {form} IN ('8-K','8-K/A','6-K','6-K/A'), 'material_event',
-        {form} IN ('3','3/A','4','4/A','5','5/A'), 'insider_ownership',
-        startsWith({form}, 'SC 13D') OR startsWith({form}, 'SC 13G') OR {form} IN ('13F-HR','13F-HR/A','13F-NT','13F-NT/A'), 'holder_ownership',
-        startsWith({form}, '424B') OR startsWith({form}, 'FWP') OR {form} IN ('S-1','S-1/A','S-3','S-3/A','F-1','F-1/A','F-3','F-3/A','EFFECT','RW'), 'offering_capital',
-        startsWith({form}, 'SC TO') OR startsWith({form}, 'SC 14D9') OR {form} IN ('S-4','S-4/A','F-4','F-4/A','DEFM14A','13E-3','13E-3/A'), 'merger_tender',
-        position({form}, '14A') > 0 OR startsWith({form}, 'PX14A'), 'governance_proxy',
-        {form} IN ('10','10/A','8-A12B','8-A12G','S-8','S-8 POS','POS AM','CERT'), 'registration',
-        startsWith({form}, 'NT ') OR {form} IN ('CORRESP','UPLOAD','IRANNOTICE','NSE','25','25-NSE'), 'compliance_notice',
-        startsWith({form}, 'N-') OR startsWith({form}, 'NPORT') OR startsWith({form}, 'NCSR'), 'fund_disclosure',
-        'other')"""
+    _ = column
+    return "'other_disclosure'"
+
+
+def taxonomy_cte_sql(database: str) -> str:
+    db = quote_ident(database)
+    return f"""approved_form_taxonomy AS
+        (
+            SELECT upper(submitted_type) AS form_key,
+                   argMax(category, updated_at_utc) AS category,
+                   argMax(canonical_title, updated_at_utc) AS canonical_title,
+                   argMax(impact_label, updated_at_utc) AS impact_label,
+                   argMax(impact_score, updated_at_utc) AS impact_score,
+                   argMax(affected_security_scope, updated_at_utc) AS affected_security_scope,
+                   argMax(impact_rationale, updated_at_utc) AS impact_rationale,
+                   argMax(taxonomy_version, updated_at_utc) AS taxonomy_version
+            FROM {db}.sec_disclosure_taxonomy_v3
+            WHERE taxonomy_scope = 'form' AND match_kind = 'exact' AND classification_status = 'approved'
+            GROUP BY form_key
+        )"""
+
+
+def taxonomy_labels_sql(database: str) -> str:
+    db = quote_ident(database)
+    return f"""
+        SELECT category AS id,
+               concat(upper(substringUTF8(replaceAll(category, '_', ' '), 1, 1)), substringUTF8(replaceAll(category, '_', ' '), 2)) AS label
+        FROM {db}.sec_disclosure_taxonomy_v3
+        WHERE taxonomy_scope = 'form' AND match_kind = 'exact' AND classification_status = 'approved'
+        GROUP BY category
+        ORDER BY max(impact_score) DESC, label
+        FORMAT JSONEachRow
+    """
 
 
 def filing_list_sql(*, cutoff: datetime, database: str, label: str, limit: int, lookback_hours: int, search: str, ticker: str, before: datetime | None, before_accession: str, content: str = "all") -> str:
@@ -188,33 +288,61 @@ def filing_list_sql(*, cutoff: datetime, database: str, label: str, limit: int, 
     instant = sql_string(clickhouse_timestamp(cutoff))
     start = sql_string(clickhouse_timestamp(cutoff - timedelta(hours=lookback_hours)))
     conditions = [
-        f"accepted_at_utc >= parseDateTime64BestEffort({start})",
-        f"accepted_at_utc <= parseDateTime64BestEffort({instant})",
-        f"inserted_at <= parseDateTime64BestEffort({instant})",
+        f"f.accepted_at_utc >= parseDateTime64BestEffort({start})",
+        f"f.accepted_at_utc <= parseDateTime64BestEffort({instant})",
     ]
     if search.strip():
         value = sql_string(search.strip())
-        conditions.append(f"(positionCaseInsensitiveUTF8(company_name, {value}) > 0 OR positionCaseInsensitiveUTF8(form_type, {value}) > 0 OR positionCaseInsensitiveUTF8(accession_number, {value}) > 0 OR positionCaseInsensitiveUTF8(arrayStringConcat(items, ' '), {value}) > 0)")
+        conditions.append(f"(positionCaseInsensitiveUTF8(ifNull(f.company_name, ''), {value}) > 0 OR positionCaseInsensitiveUTF8(f.form_type, {value}) > 0 OR positionCaseInsensitiveUTF8(f.accession_number, {value}) > 0 OR positionCaseInsensitiveUTF8(ifNull(f.items, ''), {value}) > 0)")
     if ticker:
-        conditions.append(f"cik IN (SELECT cik FROM {db}.id_sec_market_bridge_v3 FINAL WHERE upper(ticker) = {sql_string(ticker)} AND inserted_at <= parseDateTime64BestEffort({instant}))")
+        ticker_sql = sql_string(ticker)
+        bridge_validity = "(b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f2.accepted_at_utc)) AND (b.valid_to_date_exclusive IS NULL OR toDate(f2.accepted_at_utc) < b.valid_to_date_exclusive)"
+        conditions.append(f"""f.accession_number IN
+            (
+                SELECT DISTINCT f2.accession_number
+                FROM {db}.sec_filing_v3 AS f2 FINAL
+                LEFT JOIN
+                (
+                    SELECT accession_number, entity_cik, entity_role
+                    FROM
+                    (
+                        SELECT accession_number, relationship_id,
+                               argMax(entity_cik, tuple(source_revision_rank, inserted_at)) AS entity_cik,
+                               argMax(entity_role, tuple(source_revision_rank, inserted_at)) AS entity_role
+                        FROM {db}.sec_filing_entity_v3
+                        WHERE source_revision_at <= parseDateTime64BestEffort({instant})
+                        GROUP BY accession_number, relationship_id
+                    )
+                    WHERE entity_role IN ('issuer', 'subject_company')
+                ) AS e ON e.accession_number = f2.accession_number
+                INNER JOIN {db}.id_sec_market_bridge_v3 AS b FINAL
+                    ON b.cik = if(empty(e.entity_cik), f2.cik, e.entity_cik)
+                WHERE f2.accepted_at_utc >= parseDateTime64BestEffort({start})
+                  AND f2.accepted_at_utc <= parseDateTime64BestEffort({instant})
+                  AND upper(ifNull(b.ticker, '')) = {ticker_sql} AND {bridge_validity}
+            )""")
     if content == "readable":
-        conditions.append(f"(toString(cik), accession_number) IN (SELECT toString(cik), accession_number FROM {db}.sec_filing_text_rendered_v3 FINAL WHERE inserted_at <= parseDateTime64BestEffort({instant}))")
+        conditions.append(f"f.accession_number IN (SELECT accession_number FROM {db}.sec_filing_text_rendered_v3 WHERE source_archive_date BETWEEN toDate({start}) AND toDate({instant}) AND source_revision_at <= parseDateTime64BestEffort({instant}) GROUP BY accession_number HAVING count() > 0)")
     elif content == "xbrl":
-        conditions.append(f"(toString(cik), accession_number) IN (SELECT toString(cik), accession_number FROM {db}.sec_xbrl_company_fact_v3 FINAL WHERE recorded_at_utc <= parseDateTime64BestEffort({instant}))")
+        conditions.append(f"f.accession_number IN (SELECT accession_number FROM {db}.sec_xbrl_company_fact_v3 FINAL WHERE filed_at_utc BETWEEN parseDateTime64BestEffort({start}) AND parseDateTime64BestEffort({instant}) GROUP BY accession_number HAVING count() > 0)")
     if before:
         before_sql = sql_string(clickhouse_timestamp(before))
         accession_sql = sql_string(before_accession)
-        conditions.append(f"(accepted_at_utc < parseDateTime64BestEffort({before_sql}) OR (accepted_at_utc = parseDateTime64BestEffort({before_sql}) AND accession_number < {accession_sql}))")
+        conditions.append(f"(f.accepted_at_utc < parseDateTime64BestEffort({before_sql}) OR (f.accepted_at_utc = parseDateTime64BestEffort({before_sql}) AND f.accession_number < {accession_sql}))")
     outer = f"WHERE filing_label = {sql_string(label)}" if label else ""
     return f"""
+        WITH {taxonomy_cte_sql(database)}
         SELECT *
         FROM
         (
-            SELECT filing_id, accession_number, accession_number_compact, toString(cik) AS cik, company_name,
-                   form_type, filing_date, report_date, accepted_at_utc, primary_document,
-                   primary_document_url, filing_detail_url, filing_size, items, text_status,
-                   {filing_label_sql()} AS filing_label
-            FROM {db}.sec_filing_v3 FINAL
+            SELECT f.filing_id, f.accession_number, f.accession_number_compact, toString(f.cik) AS cik, f.company_name,
+                   f.form_type, f.filing_date, f.report_date, f.accepted_at_utc, f.accepted_at_source, f.primary_document,
+                   f.primary_document_url, f.filing_detail_url, f.filing_size, f.items, f.text_status,
+                   if(empty(t.category), {filing_label_sql('f.form_type')}, t.category) AS filing_label,
+                   t.canonical_title AS disclosure_title, t.impact_label, t.impact_score,
+                   t.affected_security_scope, t.impact_rationale, t.taxonomy_version
+            FROM {db}.sec_filing_v3 AS f FINAL
+            LEFT JOIN approved_form_taxonomy AS t ON t.form_key = upper(f.form_type)
             WHERE {' AND '.join(conditions)}
         )
         {outer}
@@ -226,10 +354,9 @@ def filing_list_sql(*, cutoff: datetime, database: str, label: str, limit: int, 
 
 def enrich_filing_rows(client: ClickHouseHttpClient, rows: list[dict[str, Any]], *, cutoff: datetime, database: str) -> None:
     keys = [(str(row.get("cik") or ""), str(row.get("accession_number") or "")) for row in rows]
-    ciks = sorted({cik for cik, _ in keys if cik})
     queries = {
         "coverage": coverage_sql(keys, cutoff, database),
-        "identity": identity_sql(ciks, cutoff, database),
+        "entities": filing_entities_sql(keys, cutoff, database),
     }
     results: dict[str, list[dict[str, Any]]] = {}
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -240,24 +367,70 @@ def enrich_filing_rows(client: ClickHouseHttpClient, rows: list[dict[str, Any]],
             except Exception:
                 results[futures[future]] = []
     coverage = {(str(row.get("cik") or ""), str(row.get("accession_number") or "")): row for row in results.get("coverage", [])}
-    tickers: dict[str, list[str]] = {}
-    for identity in results.get("identity", []):
-        cik = str(identity.get("cik") or "")
-        ticker = str(identity.get("ticker") or "")
-        if ticker and ticker not in tickers.setdefault(cik, []):
-            tickers[cik].append(ticker)
+    entity_ciks: dict[str, set[str]] = {}
+    for entity in results.get("entities", []):
+        entity_ciks.setdefault(str(entity.get("accession_number") or ""), set()).add(str(entity.get("entity_cik") or ""))
+    all_ciks = sorted({cik for cik, _ in keys if cik} | {cik for values in entity_ciks.values() for cik in values if cik})
+    try:
+        identities = clickhouse_rows(client, identity_sql(all_ciks, cutoff, database))
+    except Exception:
+        identities = []
+    identity_by_cik: dict[str, list[dict[str, Any]]] = {}
+    for identity in identities:
+        identity_by_cik.setdefault(str(identity.get("cik") or ""), []).append(identity)
     for row in rows:
         normalize_sec_filing_row(row)
         row.update(coverage.get((str(row.get("cik") or ""), str(row.get("accession_number") or "")), {}))
-        row["tickers"] = tickers.get(str(row.get("cik") or ""), [])[:8]
+        accepted_date = str(row.get("accepted_at_utc") or "")[:10]
+        related_ciks = {str(row.get("cik") or "")} | entity_ciks.get(str(row.get("accession_number") or ""), set())
+        tickers: list[str] = []
+        for cik in related_ciks:
+            for identity in identity_by_cik.get(cik, []):
+                if bridge_valid_on(identity, accepted_date):
+                    ticker = str(identity.get("ticker") or "")
+                    if ticker and ticker not in tickers:
+                        tickers.append(ticker)
+        row["tickers"] = tickers[:8]
 
 
 def normalize_sec_filing_row(row: dict[str, Any]) -> dict[str, Any]:
     """Apply the public SEC filing schema at the service boundary."""
+    row["accepted_at_utc"] = normalize_clickhouse_utc(row.get("accepted_at_utc"))
     items = normalize_string_list(row.get("items"))
     row["items"] = items
-    row.update(classify_sec_filing(str(row.get("form_type") or ""), items))
+    if row.get("filing_label"):
+        row["filing_label_text"] = humanize_label(str(row["filing_label"]))
+        evidence = [f"Approved SEC taxonomy: {row.get('disclosure_title') or row.get('form_type') or 'unknown form'}"]
+        if row.get("impact_label"):
+            evidence.append(f"Impact {row['impact_score']}/5 · {row['impact_label']}")
+        if items:
+            evidence.append(f"Items {', '.join(items[:4])}")
+        row["label_evidence"] = evidence
+        row["label_version"] = row.get("taxonomy_version") or "sec-disclosure-taxonomy-v1"
+    else:
+        row.update(classify_sec_filing(str(row.get("form_type") or ""), items))
+    source = str(row.get("accepted_at_source") or "")
+    row["event_time_quality"] = "date_only" if any(token in source for token in DATE_ONLY_ACCEPTANCE_SOURCES) else "exact"
     return row
+
+
+def bridge_valid_on(row: dict[str, Any], event_date: str) -> bool:
+    valid_from = str(row.get("valid_from_date") or "")
+    valid_to = str(row.get("valid_to_date_exclusive") or "")
+    return (not valid_from or valid_from <= event_date) and (not valid_to or event_date < valid_to)
+
+
+def humanize_label(value: str) -> str:
+    return value.replace("_", " ").strip().capitalize()
+
+
+def normalize_clickhouse_utc(value: Any) -> str:
+    raw = str(value or "").strip()
+    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.(\d+))?(?:Z|[+-]\d{2}:?\d{2})?", raw)
+    if not match:
+        return raw
+    fraction = (match.group(3) or "")[:3].ljust(3, "0")
+    return f"{match.group(1)}T{match.group(2)}.{fraction}Z"
 
 
 def coverage_sql(keys: list[tuple[str, str]], cutoff: datetime, database: str) -> str:
@@ -271,22 +444,54 @@ def coverage_sql(keys: list[tuple[str, str]], cutoff: datetime, database: str) -
                max(text_chars) AS text_chars, max(xbrl_rows) AS xbrl_rows
         FROM
         (
-            SELECT toString(cik) AS cik, accession_number, count() AS document_rows, 0 AS text_rows, 0 AS text_chars, 0 AS xbrl_rows
-            FROM {db}.sec_filing_document_v3 FINAL
-            WHERE (toString(cik), accession_number) IN ({key_clause}) AND inserted_at <= parseDateTime64BestEffort({instant})
+            SELECT cik, accession_number, count() AS document_rows, 0 AS text_rows, 0 AS text_chars, 0 AS xbrl_rows
+            FROM
+            (
+                SELECT toString(argMax(cik, tuple(source_revision_rank, inserted_at))) AS cik, accession_number, document_id
+                FROM {db}.sec_filing_document_v3
+                WHERE (toString(cik), accession_number) IN ({key_clause})
+                  AND source_revision_at <= parseDateTime64BestEffort({instant})
+                GROUP BY accession_number, document_id
+            )
             GROUP BY cik, accession_number
             UNION ALL
-            SELECT toString(cik), accession_number, 0, count(), sum(text_char_count), 0
-            FROM {db}.sec_filing_text_rendered_v3 FINAL
-            WHERE (toString(cik), accession_number) IN ({key_clause}) AND inserted_at <= parseDateTime64BestEffort({instant})
+            SELECT cik, accession_number, 0, count(), sum(text_char_count), 0
+            FROM
+            (
+                SELECT toString(argMax(cik, tuple(source_revision_rank, inserted_at))) AS cik, accession_number, document_id,
+                       argMax(text_char_count, tuple(source_revision_rank, inserted_at)) AS text_char_count
+                FROM {db}.sec_filing_text_rendered_v3
+                WHERE (toString(cik), accession_number) IN ({key_clause})
+                  AND source_revision_at <= parseDateTime64BestEffort({instant})
+                GROUP BY accession_number, document_id
+            )
             GROUP BY cik, accession_number
             UNION ALL
             SELECT toString(cik), accession_number, 0, 0, 0, count()
             FROM {db}.sec_xbrl_company_fact_v3 FINAL
-            WHERE (toString(cik), accession_number) IN ({key_clause}) AND recorded_at_utc <= parseDateTime64BestEffort({instant})
+            WHERE (toString(cik), accession_number) IN ({key_clause}) AND filed_at_utc <= parseDateTime64BestEffort({instant})
             GROUP BY cik, accession_number
         )
         GROUP BY cik, accession_number
+        FORMAT JSONEachRow
+    """
+
+
+def filing_entities_sql(keys: list[tuple[str, str]], cutoff: datetime, database: str) -> str:
+    if not keys:
+        return "SELECT 1 WHERE 0 FORMAT JSONEachRow"
+    db = quote_ident(database)
+    accessions = ", ".join(sql_string(accession) for _, accession in keys)
+    instant = sql_string(clickhouse_timestamp(cutoff))
+    return f"""
+        SELECT accession_number,
+               argMax(entity_cik, tuple(source_revision_rank, inserted_at)) AS entity_cik,
+               argMax(entity_role, tuple(source_revision_rank, inserted_at)) AS entity_role
+        FROM {db}.sec_filing_entity_v3
+        WHERE accession_number IN ({accessions})
+          AND source_revision_at <= parseDateTime64BestEffort({instant})
+        GROUP BY accession_number, relationship_id
+        HAVING entity_role IN ('issuer', 'subject_company')
         FORMAT JSONEachRow
     """
 
@@ -298,7 +503,8 @@ def identity_sql(ciks: list[str], cutoff: datetime, database: str) -> str:
     values = ", ".join(sql_string(cik) for cik in ciks)
     instant = sql_string(clickhouse_timestamp(cutoff))
     return f"""
-        SELECT b.cik, b.ticker, b.mapping_status, b.confidence_score,
+        SELECT b.cik AS cik, b.ticker AS ticker, b.mapping_status AS mapping_status, b.confidence_score AS confidence_score,
+               b.valid_from_date AS valid_from_date, b.valid_to_date_exclusive AS valid_to_date_exclusive,
                issuer.issuer_name, issuer.legal_name, issuer.sic_description,
                listing.exchange_code, listing.currency_code, listing.ibkr_conid,
                sym.primary_symbol_flag
@@ -306,7 +512,7 @@ def identity_sql(ciks: list[str], cutoff: datetime, database: str) -> str:
         LEFT JOIN {db}.id_issuer_v1 AS issuer FINAL ON issuer.issuer_id = b.issuer_id
         LEFT JOIN {db}.id_listing_v1 AS listing FINAL ON listing.listing_id = ifNull(b.listing_id, '')
         LEFT JOIN {db}.id_symbol_v1 AS sym FINAL ON sym.symbol_id = ifNull(b.symbol_id, '')
-        WHERE b.cik IN ({values}) AND b.inserted_at <= parseDateTime64BestEffort({instant})
+        WHERE b.cik IN ({values})
         ORDER BY b.cik, sym.primary_symbol_flag DESC, b.confidence_score DESC, b.ticker
         FORMAT JSONEachRow
     """
@@ -316,45 +522,91 @@ def filing_detail_sql(cik: str, accession: str, cutoff: datetime, database: str)
     db = quote_ident(database)
     instant = sql_string(clickhouse_timestamp(cutoff))
     return f"""
-        SELECT filing_id, accession_number, accession_number_compact, toString(cik) AS cik, company_name,
-               form_type, filing_date, report_date, accepted_at_utc, acceptance_datetime_raw,
-               accepted_at_source, primary_document, primary_document_url, filing_detail_url,
-               filing_size, items, text_status
-        FROM {db}.sec_filing_v3 FINAL
-        WHERE toString(cik) = {sql_string(cik)} AND accession_number = {sql_string(accession)}
-          AND accepted_at_utc <= parseDateTime64BestEffort({instant}) AND inserted_at <= parseDateTime64BestEffort({instant})
-        ORDER BY inserted_at DESC LIMIT 1 FORMAT JSONEachRow
+        WITH {taxonomy_cte_sql(database)}
+        SELECT f.filing_id, f.accession_number, f.accession_number_compact, toString(f.cik) AS cik, f.company_name,
+               f.form_type, f.filing_date, f.report_date, f.accepted_at_utc, f.acceptance_datetime_raw,
+               f.accepted_at_source, f.primary_document, f.primary_document_url, f.filing_detail_url,
+               f.filing_size, f.items, f.text_status,
+               if(empty(t.category), {filing_label_sql('f.form_type')}, t.category) AS filing_label,
+               t.canonical_title AS disclosure_title, t.impact_label, t.impact_score,
+               t.affected_security_scope, t.impact_rationale, t.taxonomy_version
+        FROM {db}.sec_filing_v3 AS f FINAL
+        LEFT JOIN approved_form_taxonomy AS t ON t.form_key = upper(f.form_type)
+        WHERE toString(f.cik) = {sql_string(cik)} AND f.accession_number = {sql_string(accession)}
+          AND f.accepted_at_utc <= parseDateTime64BestEffort({instant})
+        LIMIT 1 FORMAT JSONEachRow
     """
 
 
 def detail_documents_sql(cik: str, accession: str, cutoff: datetime, database: str) -> str:
     db = quote_ident(database); instant = sql_string(clickhouse_timestamp(cutoff))
-    return f"""SELECT document_id, sequence_number, document_name, document_type, document_role, description,
-        document_url, file_extension, content_format, mime_type, byte_size, payload_char_count,
-        has_normalized_text, extraction_status
-        FROM {db}.sec_filing_document_v3 FINAL
+    return f"""SELECT document_id,
+        argMax(sequence_number, tuple(source_revision_rank, inserted_at)) AS sequence_number,
+        argMax(document_name, tuple(source_revision_rank, inserted_at)) AS document_name,
+        argMax(document_type, tuple(source_revision_rank, inserted_at)) AS document_type,
+        argMax(document_role, tuple(source_revision_rank, inserted_at)) AS document_role,
+        argMax(description, tuple(source_revision_rank, inserted_at)) AS description,
+        argMax(document_url, tuple(source_revision_rank, inserted_at)) AS document_url,
+        argMax(file_extension, tuple(source_revision_rank, inserted_at)) AS file_extension,
+        argMax(content_format, tuple(source_revision_rank, inserted_at)) AS content_format,
+        argMax(mime_type, tuple(source_revision_rank, inserted_at)) AS mime_type,
+        argMax(byte_size, tuple(source_revision_rank, inserted_at)) AS byte_size,
+        argMax(payload_char_count, tuple(source_revision_rank, inserted_at)) AS payload_char_count,
+        argMax(has_normalized_text, tuple(source_revision_rank, inserted_at)) AS has_normalized_text,
+        argMax(extraction_status, tuple(source_revision_rank, inserted_at)) AS extraction_status
+        FROM {db}.sec_filing_document_v3
         WHERE toString(cik) = {sql_string(cik)} AND accession_number = {sql_string(accession)}
-          AND inserted_at <= parseDateTime64BestEffort({instant})
+          AND source_revision_at <= parseDateTime64BestEffort({instant})
+        GROUP BY document_id
         ORDER BY sequence_number, document_name FORMAT JSONEachRow"""
 
 
-def detail_texts_sql(cik: str, accession: str, cutoff: datetime, database: str) -> str:
+def detail_text_metadata_sql(cik: str, accession: str, cutoff: datetime, database: str) -> str:
     db = quote_ident(database); instant = sql_string(clickhouse_timestamp(cutoff))
-    return f"""SELECT document_id, text_kind, text, text_char_count, extraction_method, quality_flags, extracted_at_utc
-        FROM {db}.sec_filing_text_rendered_v3 FINAL
+    return f"""SELECT document_id,
+        argMax(text_kind, tuple(source_revision_rank, inserted_at)) AS text_kind,
+        argMax(text_char_count, tuple(source_revision_rank, inserted_at)) AS text_char_count,
+        argMax(extraction_method, tuple(source_revision_rank, inserted_at)) AS extraction_method,
+        argMax(quality_flags, tuple(source_revision_rank, inserted_at)) AS quality_flags,
+        argMax(extracted_at_utc, tuple(source_revision_rank, inserted_at)) AS extracted_at_utc
+        FROM {db}.sec_filing_text_rendered_v3
         WHERE toString(cik) = {sql_string(cik)} AND accession_number = {sql_string(accession)}
-          AND inserted_at <= parseDateTime64BestEffort({instant})
+          AND source_revision_at <= parseDateTime64BestEffort({instant})
+        GROUP BY document_id
         ORDER BY text_kind, document_id FORMAT JSONEachRow"""
 
 
-def detail_facts_sql(cik: str, accession: str, cutoff: datetime, database: str) -> str:
+def detail_text_page_sql(cik: str, accession: str, document_id: str, cutoff: datetime, database: str, *, limit: int, offset: int) -> str:
+    db = quote_ident(database); instant = sql_string(clickhouse_timestamp(cutoff))
+    return f"""SELECT document_id,
+        argMax(text_kind, tuple(source_revision_rank, inserted_at)) AS text_kind,
+        argMax(text_char_count, tuple(source_revision_rank, inserted_at)) AS text_char_count,
+        substringUTF8(argMax(text, tuple(source_revision_rank, inserted_at)), {int(offset) + 1}, {int(limit)}) AS text
+        FROM {db}.sec_filing_text_rendered_v3
+        WHERE toString(cik) = {sql_string(cik)} AND accession_number = {sql_string(accession)}
+          AND document_id = {sql_string(document_id)}
+          AND source_revision_at <= parseDateTime64BestEffort({instant})
+        GROUP BY document_id
+        FORMAT JSONEachRow"""
+
+
+def detail_facts_sql(cik: str, accession: str, cutoff: datetime, database: str, *, limit: int, offset: int) -> str:
     db = quote_ident(database); instant = sql_string(clickhouse_timestamp(cutoff))
     return f"""SELECT taxonomy, tag, unit_code, value, fiscal_year, fiscal_period,
-        period_start_date, period_end_date, form_type, filed_at_utc
+        period_end_date, form_type, filed_at_utc
         FROM {db}.sec_xbrl_company_fact_v3 FINAL
         WHERE toString(cik) = {sql_string(cik)} AND accession_number = {sql_string(accession)}
-          AND filed_at_utc <= parseDateTime64BestEffort({instant}) AND recorded_at_utc <= parseDateTime64BestEffort({instant})
-        ORDER BY tag, period_end_date DESC, unit_code LIMIT 240 FORMAT JSONEachRow"""
+          AND filed_at_utc <= parseDateTime64BestEffort({instant})
+        ORDER BY tag, period_end_date DESC, unit_code LIMIT {int(limit)} OFFSET {int(offset)} FORMAT JSONEachRow"""
+
+
+def detail_fact_count_sql(cik: str, accession: str, cutoff: datetime, database: str) -> str:
+    db = quote_ident(database); instant = sql_string(clickhouse_timestamp(cutoff))
+    return f"""SELECT count() AS row_count
+        FROM {db}.sec_xbrl_company_fact_v3 FINAL
+        WHERE toString(cik) = {sql_string(cik)} AND accession_number = {sql_string(accession)}
+          AND filed_at_utc <= parseDateTime64BestEffort({instant})
+        FORMAT JSONEachRow"""
 
 
 def summarize_identity(rows: list[dict[str, Any]]) -> dict[str, Any]:

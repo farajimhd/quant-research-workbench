@@ -47,7 +47,7 @@ def canvas_preview_payload(
         "coverage": lambda: historical_day_coverage(session_date),
         "news": lambda: _query_news(cutoff),
         "sec": lambda: _query_sec(cutoff),
-        "xbrl": lambda: _query_xbrl(cutoff),
+        "xbrl": lambda: _query_xbrl(cutoff, symbol),
     }
     for scanner_symbol in SCANNER_SYMBOLS:
         jobs[f"scanner:{scanner_symbol}"] = lambda ticker=scanner_symbol: historical_bar_chunk(
@@ -162,8 +162,11 @@ def _query_sec(cutoff: datetime) -> list[dict[str, Any]]:
     )
 
 
-def _query_xbrl(cutoff: datetime) -> list[dict[str, Any]]:
-    start = cutoff - timedelta(days=45)
+def _query_xbrl(cutoff: datetime, symbol: str) -> list[dict[str, Any]]:
+    # A symbol's latest periodic filing can be several months old; keep one annual
+    # cycle while still bounding the point-in-time preview query.
+    start = cutoff - timedelta(days=400)
+    ticker = sql_string(symbol)
     return _clickhouse_rows(
         f"""
         SELECT cik, taxonomy, tag, unit_code, fiscal_year, fiscal_period, value, form_type, accession_number,
@@ -172,9 +175,17 @@ def _query_xbrl(cutoff: datetime) -> list[dict[str, Any]]:
         (
             SELECT cik, taxonomy, tag, unit_code, fiscal_year, fiscal_period, value, form_type, accession_number,
                 filed_at_utc AS filed_at_raw
-            FROM q_live.sec_xbrl_company_fact_v3
+            FROM q_live.sec_xbrl_company_fact_v3 FINAL
             WHERE filed_at_utc BETWEEN toDateTime64({_utc_sql(start)}, 3, 'UTC')
                 AND toDateTime64({_utc_sql(cutoff)}, 3, 'UTC')
+                AND cik IN
+                (
+                    SELECT DISTINCT cik
+                    FROM q_live.id_sec_market_bridge_v3 FINAL
+                    WHERE upper(ticker) = {ticker}
+                      AND (valid_from_date IS NULL OR valid_from_date <= toDate({_utc_sql(cutoff)}))
+                      AND (valid_to_date_exclusive IS NULL OR toDate({_utc_sql(cutoff)}) < valid_to_date_exclusive)
+                )
             ORDER BY filed_at_utc DESC
             LIMIT 30
         )

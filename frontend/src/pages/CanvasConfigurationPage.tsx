@@ -35,7 +35,7 @@ import { MarketTime } from "../app/components/MarketTime";
 import { MarketStatusBadge, historicalMarketStatus } from "../app/components/MarketStatusBadge";
 import { QuotesTapeContainer } from "../app/components/MarketMicrostructureContainers";
 import { StockFactsContainer } from "../app/components/StockFactsContainer";
-import { TickerIdentity, useTickerPresentations } from "../app/components/TickerIdentity";
+import { TickerIdentity, TickerIdentityWithChange, useTickerPresentations } from "../app/components/TickerIdentity";
 import { TRADING_WORKSPACE_LAYOUT_VERSION, TradingWorkspace, createFocusLayouts } from "../app/components/TradingWorkspace";
 import type { WorkspaceWindowLayout, WorkspaceWindowMeta, WorkspaceWindowStatus } from "../app/components/WorkspaceCanvas";
 import { TRADING_WORKSPACE_CONTAINERS, containerSupportsSymbolLink, type WorkspaceContainerDefinition, type WorkspaceContainerId } from "../app/tradingWorkspace";
@@ -1319,6 +1319,8 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
         ? <TickerSecContainer asOf={new Date(chartCutoffMs).toISOString()} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} settings={settings.ticker_sec} symbol={linkContext.symbol} />
       : definition.id === "sec_detail"
         ? <SecDetailContainer asOf={new Date(chartCutoffMs).toISOString()} canvasId={canvasId} requestedAccession={requestedSecAccession} requestedCik={requestedSecCik} />
+      : definition.id === "xbrl"
+        ? <XbrlPreview asOf={new Date(chartCutoffMs).toISOString()} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} rows={preview?.xbrl ?? []} settings={settings.xbrl} symbol={linkContext.symbol} />
       : loading && !preview
         ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div>
         : renderPreview(definition.id, preview, settings, linkGroup, onLinkContextChange)}</div>
@@ -1355,8 +1357,15 @@ function renderPreview(id: WorkspaceContainerId, preview: CanvasPreview | null, 
   if (id === "orders") return <PreviewTable columns={settings.orders.showOrderIds ? ["orderId", "ticker", "side", "orderType", "quantity", "status"] : ["ticker", "side", "orderType", "quantity", "status"]} rows={preview.orders.slice(0, settings.orders.limit)} />;
   if (id === "fills") return <PreviewTable columns={settings.fills.showCommission ? ["time", "ticker", "side", "shares", "price", "commission"] : ["time", "ticker", "side", "shares", "price"]} rows={preview.fills.slice(0, settings.fills.limit)} />;
   if (id === "strategy") return <StrategyPreview data={preview.strategy} showSignals={settings.strategy.showSignals} />;
-  if (id === "xbrl") return <PreviewTable columns={settings.xbrl.showPeriod ? ["filed_at_utc", "tag", "value", "unit_code", "fiscal_period"] : ["filed_at_utc", "tag", "value", "unit_code"]} rows={preview.xbrl.slice(0, settings.xbrl.limit)} />;
   return <PreviewTable columns={["time", "category", "event", "detail"]} rows={preview.journal.slice(0, settings.journal.limit)} />;
+}
+
+function XbrlPreview({ asOf, onSymbolChange, rows, settings, symbol }: { asOf: string; onSymbolChange?: (symbol: string) => void; rows: PreviewRow[]; settings: ContainerSettings["xbrl"]; symbol: string }) {
+  const presentations = useTickerPresentations([symbol]);
+  return <section className="xbrl-preview" aria-label={`${symbol} XBRL facts`}>
+    <header><TickerIdentityWithChange asOf={asOf} inputAriaLabel="XBRL symbol" logoUrl={presentations[symbol]?.logo_url} onTickerChange={onSymbolChange} ticker={symbol} /><span>{rows.length ? `${rows.length} filing facts at this clock` : "No company facts in this window"}</span></header>
+    {rows.length ? <PreviewTable columns={settings.showPeriod ? ["filed_at_utc", "tag", "value", "unit_code", "fiscal_period"] : ["filed_at_utc", "tag", "value", "unit_code"]} rows={rows.slice(0, settings.limit)} /> : <EmptyState label={`No filing-linked XBRL facts for ${symbol} in this window`} />}
+  </section>;
 }
 
 type ChartContainerPreviewProps = {

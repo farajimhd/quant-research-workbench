@@ -79,15 +79,6 @@ const newsHistory: WorkspaceSourceLayer = {
   updateModel: "request",
 };
 
-const secLive: WorkspaceSourceLayer = {
-  authority: "services/sec_gateway",
-  description: "New filing and filing-processing state from the SEC gateway.",
-  id: "sec-live",
-  label: "SEC Gateway",
-  timeBasis: "exchange-clock",
-  updateModel: "poll",
-};
-
 const secHistory: WorkspaceSourceLayer = {
   authority: "q_live.sec_filing_v3",
   description: "Persisted filings filtered by accepted time and point-in-time security identity.",
@@ -99,7 +90,7 @@ const secHistory: WorkspaceSourceLayer = {
 
 const xbrlHistory: WorkspaceSourceLayer = {
   authority: "q_live.sec_xbrl_company_fact_v3",
-  description: "Persisted company facts and frames constrained to information available at the workspace clock.",
+  description: "Persisted company facts constrained by filing date and the active symbol at the workspace clock.",
   id: "xbrl-history",
   label: "XBRL History",
   timeBasis: "point-in-time",
@@ -281,13 +272,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
     description: "Searchable point-in-time filing inventory with form labels, content coverage, and filing selection.",
     modes: allModes,
     defaultOpen: {},
-    sourceByMode: {
-      live: hybridBinding("Latest SEC processing plus persisted filing history", [secLive, secHistory]),
-      paper: hybridBinding("Latest SEC processing plus persisted filing history", [secLive, secHistory]),
-      replay: historicalBinding("Persisted filings accepted by the replay clock", [secHistory]),
-      backtest: historicalBinding("Persisted filings accepted by each backtest event time", [secHistory]),
-      backtest_debug: historicalBinding("Persisted filings accepted by the debug cursor", [secHistory]),
-    },
+    sourceByMode: Object.fromEntries(allModes.map((mode) => [mode, historicalBinding("Persisted filings accepted by the workspace clock", [secHistory])])),
   },
   {
     id: "ticker_sec",
@@ -296,13 +281,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
     linkScope: "single-symbol",
     modes: allModes,
     defaultOpen: {},
-    sourceByMode: {
-      live: hybridBinding("Linked-symbol SEC filings from current processing and persisted history", [secLive, secHistory]),
-      paper: hybridBinding("Linked-symbol SEC filings from current processing and persisted history", [secLive, secHistory]),
-      replay: historicalBinding("Linked-symbol filings accepted by the replay clock", [secHistory]),
-      backtest: historicalBinding("Linked-symbol filings accepted by each backtest event time", [secHistory]),
-      backtest_debug: historicalBinding("Linked-symbol filings accepted by the debug cursor", [secHistory]),
-    },
+    sourceByMode: Object.fromEntries(allModes.map((mode) => [mode, historicalBinding("Persisted linked-symbol filings accepted by the workspace clock", [secHistory])])),
   },
   {
     id: "sec_detail",
@@ -315,7 +294,8 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   {
     id: "xbrl",
     title: "XBRL Facts",
-    description: "Company facts, frames, periods, units, and filing provenance constrained point in time.",
+    description: "Company facts, periods, units, and filing provenance for the linked symbol at the workspace clock.",
+    linkScope: "single-symbol",
     modes: allModes,
     defaultOpen: {},
     sourceByMode: Object.fromEntries(allModes.map((mode) => [mode, historicalBinding("Point-in-time persisted XBRL facts", [xbrlHistory])])),
