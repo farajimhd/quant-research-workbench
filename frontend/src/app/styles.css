@@ -20570,7 +20570,7 @@ button {
 
 .performance-journal-header {
   align-items: center;
-  background: linear-gradient(115deg, color-mix(in oklab, var(--primary) 10%, var(--surface)), var(--surface) 62%);
+  background: var(--surface-alt);
   border-bottom: 1px solid var(--border);
   display: flex;
   gap: 14px;
