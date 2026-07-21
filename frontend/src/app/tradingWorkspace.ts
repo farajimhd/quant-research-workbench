@@ -286,10 +286,10 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   {
     id: "sec_detail",
     title: "SEC Detail",
-    description: "Readable filing documents, XBRL facts, identity, and label evidence for the selected filing.",
+    description: "Rendered and original filing documents, XBRL facts, entity relationships, provenance, and label evidence for the selected filing.",
     modes: allModes,
     defaultOpen: {},
-    sourceByMode: Object.fromEntries(allModes.map((mode) => [mode, historicalBinding("Canonical persisted filing and document inventory", [secHistory, xbrlHistory])])),
+    sourceByMode: Object.fromEntries(allModes.map((mode) => [mode, historicalBinding("Canonical persisted filing, rendered and original document text, and fact inventory", [secHistory, xbrlHistory])])),
   },
   {
     id: "xbrl",

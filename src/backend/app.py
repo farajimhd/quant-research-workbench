@@ -3438,9 +3438,10 @@ def trading_sec_document_text(
     as_of: str | None = None,
     limit: int = Query(default=32_000, ge=1_000, le=100_000),
     offset: int = Query(default=0, ge=0),
+    view: str = Query(default="rendered"),
 ) -> dict[str, Any]:
     try:
-        payload = sec_document_text_payload(cik, accession_number, document_id, as_of=as_of, limit=limit, offset=offset)
+        payload = sec_document_text_payload(cik, accession_number, document_id, as_of=as_of, limit=limit, offset=offset, view=view)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:

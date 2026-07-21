@@ -109,14 +109,15 @@ def sec_filing_detail_payload(cik: str, accession_number: str, *, as_of: str | N
     filing = filing_rows[0]
     queries = {
         "documents": detail_documents_sql(normalized_cik, accession, cutoff, safe_database),
-        "entities": filing_entities_sql([(normalized_cik, accession)], cutoff, safe_database),
+        "entities": detail_filing_entities_sql(normalized_cik, accession, cutoff, safe_database),
         "facts": detail_facts_sql(normalized_cik, accession, cutoff, safe_database, limit=DEFAULT_FACT_PAGE_ROWS + 1, offset=0),
         "fact_count": detail_fact_count_sql(normalized_cik, accession, cutoff, safe_database),
         "texts": detail_text_metadata_sql(normalized_cik, accession, cutoff, safe_database),
+        "originals": detail_source_text_metadata_sql(normalized_cik, accession, cutoff, safe_database),
     }
     results: dict[str, list[dict[str, Any]]] = {}
     errors: dict[str, str] = {}
-    with ThreadPoolExecutor(max_workers=5) as pool:
+    with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {pool.submit(clickhouse_rows, client, sql): name for name, sql in queries.items()}
         for future in as_completed(futures):
             name = futures[future]
@@ -156,6 +157,7 @@ def sec_filing_detail_payload(cik: str, accession_number: str, *, as_of: str | N
         "facts_total": fact_total,
         "filing": filing,
         "identity": summarize_identity(identity_rows),
+        "originals": results.get("originals", []),
         "status": "partial" if errors else "ready",
         "texts": results.get("texts", []),
     }
@@ -170,6 +172,7 @@ def sec_document_text_payload(
     database: str = "q_live",
     limit: int = DEFAULT_TEXT_PAGE_CHARS,
     offset: int = 0,
+    view: str = "rendered",
 ) -> dict[str, Any]:
     cutoff = parse_as_of(as_of)
     safe_database = validate_database(database)
@@ -180,9 +183,13 @@ def sec_document_text_payload(
         raise ValueError("SEC document identifier is invalid.")
     safe_limit = max(1_000, min(int(limit), MAX_TEXT_PAGE_CHARS))
     safe_offset = max(0, int(offset))
+    safe_view = view.strip().lower()
+    if safe_view not in {"rendered", "original"}:
+        raise ValueError("SEC document view must be rendered or original.")
+    page_sql = detail_text_page_sql if safe_view == "rendered" else detail_source_text_page_sql
     rows = clickhouse_rows(
         clickhouse_client(),
-        detail_text_page_sql(normalized_cik, accession, safe_document_id, cutoff, safe_database, limit=safe_limit, offset=safe_offset),
+        page_sql(normalized_cik, accession, safe_document_id, cutoff, safe_database, limit=safe_limit, offset=safe_offset),
     )
     if not rows:
         return {"status": "not_found", "cik": normalized_cik, "accession_number": accession, "document_id": safe_document_id}
@@ -200,6 +207,7 @@ def sec_document_text_payload(
         "next_offset": next_offset,
         "offset": safe_offset,
         "status": "ready",
+        "view": safe_view,
     }
 
 
@@ -496,6 +504,23 @@ def filing_entities_sql(keys: list[tuple[str, str]], cutoff: datetime, database:
     """
 
 
+def detail_filing_entities_sql(cik: str, accession: str, cutoff: datetime, database: str) -> str:
+    db = quote_ident(database)
+    instant = sql_string(clickhouse_timestamp(cutoff))
+    return f"""SELECT relationship_id,
+        argMax(primary_cik, tuple(source_revision_rank, inserted_at)) AS filing_cik,
+        argMax(entity_cik, tuple(source_revision_rank, inserted_at)) AS entity_cik,
+        argMax(entity_role, tuple(source_revision_rank, inserted_at)) AS entity_role,
+        argMax(entity_name, tuple(source_revision_rank, inserted_at)) AS entity_name,
+        argMax(source_revision_kind, tuple(source_revision_rank, inserted_at)) AS source_revision_kind,
+        argMax(source_revision_at, tuple(source_revision_rank, inserted_at)) AS latest_source_revision_at
+        FROM {db}.sec_filing_entity_v3
+        WHERE primary_cik = {sql_string(cik)} AND accession_number = {sql_string(accession)}
+          AND source_revision_at <= parseDateTime64BestEffort({instant})
+        GROUP BY relationship_id
+        ORDER BY entity_role, entity_name, entity_cik FORMAT JSONEachRow"""
+
+
 def identity_sql(ciks: list[str], cutoff: datetime, database: str) -> str:
     if not ciks:
         return "SELECT 1 WHERE 0 FORMAT JSONEachRow"
@@ -552,8 +577,14 @@ def detail_documents_sql(cik: str, accession: str, cutoff: datetime, database: s
         argMax(mime_type, tuple(source_revision_rank, inserted_at)) AS mime_type,
         argMax(byte_size, tuple(source_revision_rank, inserted_at)) AS byte_size,
         argMax(payload_char_count, tuple(source_revision_rank, inserted_at)) AS payload_char_count,
+        argMax(content_sha256, tuple(source_revision_rank, inserted_at)) AS content_sha256,
         argMax(has_normalized_text, tuple(source_revision_rank, inserted_at)) AS has_normalized_text,
-        argMax(extraction_status, tuple(source_revision_rank, inserted_at)) AS extraction_status
+        argMax(extraction_status, tuple(source_revision_rank, inserted_at)) AS extraction_status,
+        argMax(extraction_error, tuple(source_revision_rank, inserted_at)) AS extraction_error,
+        argMax(normalizer_version, tuple(source_revision_rank, inserted_at)) AS normalizer_version,
+        argMax(source_archive_member, tuple(source_revision_rank, inserted_at)) AS source_archive_member,
+        argMax(source_revision_kind, tuple(source_revision_rank, inserted_at)) AS source_revision_kind,
+        argMax(source_revision_at, tuple(source_revision_rank, inserted_at)) AS latest_source_revision_at
         FROM {db}.sec_filing_document_v3
         WHERE toString(cik) = {sql_string(cik)} AND accession_number = {sql_string(accession)}
           AND source_revision_at <= parseDateTime64BestEffort({instant})
@@ -567,9 +598,35 @@ def detail_text_metadata_sql(cik: str, accession: str, cutoff: datetime, databas
         argMax(text_kind, tuple(source_revision_rank, inserted_at)) AS text_kind,
         argMax(text_char_count, tuple(source_revision_rank, inserted_at)) AS text_char_count,
         argMax(extraction_method, tuple(source_revision_rank, inserted_at)) AS extraction_method,
+        argMax(normalizer_version, tuple(source_revision_rank, inserted_at)) AS normalizer_version,
         argMax(quality_flags, tuple(source_revision_rank, inserted_at)) AS quality_flags,
+        argMax(text_sha256, tuple(source_revision_rank, inserted_at)) AS text_sha256,
+        argMax(source_archive_member, tuple(source_revision_rank, inserted_at)) AS source_archive_member,
+        argMax(source_revision_kind, tuple(source_revision_rank, inserted_at)) AS source_revision_kind,
+        argMax(source_revision_at, tuple(source_revision_rank, inserted_at)) AS latest_source_revision_at,
         argMax(extracted_at_utc, tuple(source_revision_rank, inserted_at)) AS extracted_at_utc
         FROM {db}.sec_filing_text_rendered_v3
+        WHERE toString(cik) = {sql_string(cik)} AND accession_number = {sql_string(accession)}
+          AND source_revision_at <= parseDateTime64BestEffort({instant})
+        GROUP BY document_id
+        ORDER BY text_kind, document_id FORMAT JSONEachRow"""
+
+
+def detail_source_text_metadata_sql(cik: str, accession: str, cutoff: datetime, database: str) -> str:
+    db = quote_ident(database); instant = sql_string(clickhouse_timestamp(cutoff))
+    return f"""SELECT document_id,
+        argMax(text_kind, tuple(source_revision_rank, inserted_at)) AS text_kind,
+        argMax(source_text_char_count, tuple(source_revision_rank, inserted_at)) AS text_char_count,
+        argMax(source_text_byte_count, tuple(source_revision_rank, inserted_at)) AS text_byte_count,
+        argMax(file_extension, tuple(source_revision_rank, inserted_at)) AS file_extension,
+        argMax(content_format, tuple(source_revision_rank, inserted_at)) AS content_format,
+        argMax(mime_type, tuple(source_revision_rank, inserted_at)) AS mime_type,
+        argMax(content_sha256, tuple(source_revision_rank, inserted_at)) AS content_sha256,
+        argMax(normalizer_version, tuple(source_revision_rank, inserted_at)) AS normalizer_version,
+        argMax(source_archive_member, tuple(source_revision_rank, inserted_at)) AS source_archive_member,
+        argMax(source_revision_kind, tuple(source_revision_rank, inserted_at)) AS source_revision_kind,
+        argMax(source_revision_at, tuple(source_revision_rank, inserted_at)) AS latest_source_revision_at
+        FROM {db}.sec_filing_text_v3
         WHERE toString(cik) = {sql_string(cik)} AND accession_number = {sql_string(accession)}
           AND source_revision_at <= parseDateTime64BestEffort({instant})
         GROUP BY document_id
@@ -583,6 +640,22 @@ def detail_text_page_sql(cik: str, accession: str, document_id: str, cutoff: dat
         argMax(text_char_count, tuple(source_revision_rank, inserted_at)) AS text_char_count,
         substringUTF8(argMax(text, tuple(source_revision_rank, inserted_at)), {int(offset) + 1}, {int(limit)}) AS text
         FROM {db}.sec_filing_text_rendered_v3
+        WHERE toString(cik) = {sql_string(cik)} AND accession_number = {sql_string(accession)}
+          AND document_id = {sql_string(document_id)}
+          AND source_revision_at <= parseDateTime64BestEffort({instant})
+        GROUP BY document_id
+        FORMAT JSONEachRow"""
+
+
+def detail_source_text_page_sql(cik: str, accession: str, document_id: str, cutoff: datetime, database: str, *, limit: int, offset: int) -> str:
+    db = quote_ident(database); instant = sql_string(clickhouse_timestamp(cutoff))
+    return f"""SELECT document_id,
+        argMax(text_kind, tuple(source_revision_rank, inserted_at)) AS text_kind,
+        argMax(source_text_char_count, tuple(source_revision_rank, inserted_at)) AS text_char_count,
+        argMax(content_format, tuple(source_revision_rank, inserted_at)) AS content_format,
+        argMax(mime_type, tuple(source_revision_rank, inserted_at)) AS mime_type,
+        substringUTF8(argMax(source_text, tuple(source_revision_rank, inserted_at)), {int(offset) + 1}, {int(limit)}) AS text
+        FROM {db}.sec_filing_text_v3
         WHERE toString(cik) = {sql_string(cik)} AND accession_number = {sql_string(accession)}
           AND document_id = {sql_string(document_id)}
           AND source_revision_at <= parseDateTime64BestEffort({instant})

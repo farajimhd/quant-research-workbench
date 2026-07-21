@@ -6,6 +6,9 @@ from datetime import UTC, datetime
 from src.backend.sec_canvas_service import (
     classify_sec_filing,
     detail_facts_sql,
+    detail_filing_entities_sql,
+    detail_source_text_metadata_sql,
+    detail_source_text_page_sql,
     detail_text_metadata_sql,
     detail_text_page_sql,
     filing_list_sql,
@@ -14,6 +17,7 @@ from src.backend.sec_canvas_service import (
     normalize_clickhouse_utc,
     normalize_sec_filing_row,
     parse_as_of,
+    sec_document_text_payload,
 )
 
 
@@ -47,6 +51,25 @@ class SecCanvasServiceTests(unittest.TestCase):
         self.assertIn("substringUTF8(argMax(text", page)
         self.assertIn(", 64001, 32000)", page)
         self.assertIn("source_revision_at <=", page)
+
+        original_metadata = detail_source_text_metadata_sql("0000320193", "0000320193-25-000079", cutoff, "q_live")
+        original_page = detail_source_text_page_sql("0000320193", "0000320193-25-000079", "doc-1", cutoff, "q_live", limit=16000, offset=32000)
+        self.assertNotIn("argMax(source_text,", original_metadata)
+        self.assertIn("argMax(source_text_char_count", original_metadata)
+        self.assertIn("substringUTF8(argMax(source_text", original_page)
+        self.assertIn(", 32001, 16000)", original_page)
+
+    def test_detail_entities_include_all_filing_roles(self) -> None:
+        cutoff = datetime(2026, 7, 18, 14, 0, tzinfo=UTC)
+        sql = detail_filing_entities_sql("0000320193", "0000320193-25-000079", cutoff, "q_live")
+        self.assertIn("entity_name", sql)
+        self.assertIn("entity_role", sql)
+        self.assertNotIn("entity_role IN", sql)
+        self.assertIn("source_revision_at <=", sql)
+
+    def test_document_view_rejects_unknown_source(self) -> None:
+        with self.assertRaisesRegex(ValueError, "rendered or original"):
+            sec_document_text_payload("0000320193", "0000320193-25-000079", "doc-1", view="raw")
 
     def test_xbrl_availability_uses_filing_date_and_pages(self) -> None:
         cutoff = datetime(2026, 7, 18, 14, 0, tzinfo=UTC)
