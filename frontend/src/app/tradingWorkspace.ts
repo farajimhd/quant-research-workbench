@@ -36,6 +36,7 @@ export type WorkspaceSourceBinding = {
 export type WorkspaceContainerDefinition = {
   defaultOpen: Partial<Record<TradingWorkspaceMode, boolean>>;
   description: string;
+  groupedTitle?: string;
   id: WorkspaceContainerId;
   linkScope?: "single-symbol";
   modes: TradingWorkspaceMode[];
@@ -159,6 +160,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   {
     id: "chart",
     title: "Chart",
+    groupedTitle: "Price chart",
     description: "Event-derived price, quote, volume, indicator, and execution context for the active symbol.",
     linkScope: "single-symbol",
     modes: allModes,
@@ -168,6 +170,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   {
     id: "facts",
     title: "Stock Facts",
+    groupedTitle: "Stock facts",
     description: "Auditable issuer, security, listing, capitalization, share supply, volume, short positioning, IBKR borrow, identifiers, corporate actions, and SEC-reported fundamentals for the linked symbol.",
     linkScope: "single-symbol",
     modes: allModes,
@@ -177,6 +180,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   {
     id: "microstructure",
     title: "Quotes & Tape",
+    groupedTitle: "Quotes & tape",
     description: "One synchronized market-microstructure surface for consolidated NBBO liquidity, interpreted quote changes, time-and-sales prints, trade conditions, comparative charts, and the canonical QMD decision architecture.",
     linkScope: "single-symbol",
     modes: allModes,
@@ -186,6 +190,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   {
     id: "scanner",
     title: "Scanner",
+    groupedTitle: "Market scanner",
     description: "Stable ranked universe and strategy candidates evaluated at the active workspace clock.",
     modes: allModes,
     defaultOpen: { live: true, paper: true, replay: true, backtest_debug: true },
@@ -200,6 +205,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   {
     id: "strategy",
     title: "Strategy",
+    groupedTitle: "Strategy decisions",
     description: "Selected immutable revision, decisions, risk checks, state, and control availability.",
     modes: allModes,
     defaultOpen: { backtest: true, backtest_debug: true },
@@ -208,6 +214,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   {
     id: "portfolio",
     title: "Portfolio",
+    groupedTitle: "Portfolio",
     description: "Account summaries, cash, equity, P&L, positions, and exposure using IBKR-shaped resources.",
     modes: allModes,
     defaultOpen: { live: true, paper: true, replay: true, backtest: true, backtest_debug: true },
@@ -216,6 +223,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   {
     id: "orders",
     title: "Orders",
+    groupedTitle: "Orders",
     description: "Order lifecycle, modifications, cancellations, parent/child relationships, and broker responses.",
     modes: allModes,
     defaultOpen: { replay: true, backtest: true, backtest_debug: true },
@@ -224,6 +232,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   {
     id: "fills",
     title: "Executions & Fills",
+    groupedTitle: "Executions & fills",
     description: "Partial and complete executions, commissions, liquidity evidence, and account attribution.",
     modes: allModes,
     defaultOpen: { backtest: true, backtest_debug: true },
@@ -232,6 +241,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   {
     id: "news",
     title: "All News",
+    groupedTitle: "Market news",
     description: "Searchable point-in-time news inventory with database-backed filters and article selection.",
     modes: allModes,
     defaultOpen: { live: true, paper: true, replay: true, backtest_debug: true },
@@ -246,6 +256,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   {
     id: "ticker_news",
     title: "Ticker News",
+    groupedTitle: "Ticker news",
     description: "Recent, hot, and developing news for the linked symbol at the workspace clock.",
     linkScope: "single-symbol",
     modes: allModes,
@@ -261,6 +272,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   {
     id: "news_detail",
     title: "News Detail",
+    groupedTitle: "News article",
     description: "Readable article text, metadata, security links, and source provenance for the selected story.",
     modes: allModes,
     defaultOpen: {},
@@ -269,6 +281,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   {
     id: "sec",
     title: "All SEC",
+    groupedTitle: "SEC filings",
     description: "Searchable point-in-time filing inventory with form labels, content coverage, and filing selection.",
     modes: allModes,
     defaultOpen: {},
@@ -277,6 +290,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   {
     id: "ticker_sec",
     title: "Ticker SEC",
+    groupedTitle: "SEC filings",
     description: "Recent hot, cold, and older SEC disclosures for the linked symbol at the workspace clock.",
     linkScope: "single-symbol",
     modes: allModes,
@@ -286,6 +300,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   {
     id: "sec_detail",
     title: "SEC Detail",
+    groupedTitle: "SEC filing",
     description: "Rendered and original filing documents, XBRL facts, entity relationships, provenance, and label evidence for the selected filing.",
     modes: allModes,
     defaultOpen: {},
@@ -294,6 +309,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   {
     id: "xbrl",
     title: "XBRL Facts",
+    groupedTitle: "XBRL facts",
     description: "Company facts, periods, units, and filing provenance for the linked symbol at the workspace clock.",
     linkScope: "single-symbol",
     modes: allModes,
@@ -303,6 +319,7 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   {
     id: "journal",
     title: "Run Journal",
+    groupedTitle: "Run journal",
     description: "Ordered lifecycle, command, signal, broker, execution, snapshot, and checkpoint evidence.",
     modes: allModes,
     defaultOpen: { backtest: true, backtest_debug: true },

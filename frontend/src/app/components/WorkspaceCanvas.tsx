@@ -452,18 +452,24 @@ export function WorkspaceGroupWindow({
 export function WorkspaceGroupedMember({
   bounds,
   children,
+  dataTitle,
   groupBounds,
+  icon,
   id,
   kind,
   onFocus,
+  primary,
   title,
 }: {
   bounds: Pick<WorkspaceWindowLayout, "h" | "w" | "x" | "y">;
   children: ReactNode;
+  dataTitle: string;
   groupBounds: Pick<WorkspaceWindowLayout, "h" | "w" | "x" | "y">;
+  icon: ReactNode;
   id: string;
   kind: string;
   onFocus: () => void;
+  primary: boolean;
   title: string;
 }) {
   const left = (bounds.x - groupBounds.x) / groupBounds.w * 100;
@@ -476,7 +482,10 @@ export function WorkspaceGroupedMember({
     top: `${top}%`,
     width: `${width}%`,
   } as CSSProperties;
-  return <section aria-label={title} className="workspace-group-member" data-window-id={id} data-window-kind={kind} onPointerDown={(event) => { event.stopPropagation(); onFocus(); }} style={style}><div className="workspace-window-body live-window-body">{children}</div></section>;
+  return <section aria-label={title} className="workspace-group-member" data-group-primary={primary ? "true" : "false"} data-window-id={id} data-window-kind={kind} onPointerDown={(event) => { event.stopPropagation(); onFocus(); }} style={style}>
+    {!primary ? <header className="workspace-group-member-heading">{icon}<strong>{dataTitle}</strong></header> : null}
+    <div className="workspace-window-body live-window-body">{children}</div>
+  </section>;
 }
 
 export function WorkspaceWindowManager({

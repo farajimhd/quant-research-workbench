@@ -485,6 +485,7 @@ export function TradingWorkspace({
     return {
       content: renderContainer ? renderContainer(definition, id) : <ContainerStandby definition={definition} meta={meta} mode={mode} />,
       definition,
+      groupedTitle: definition.groupedTitle ?? title,
       icon: containerIcon(kind),
       kind,
       linkColor: linkColorForContainer?.(definition, id),
@@ -499,15 +500,19 @@ export function TradingWorkspace({
     const group = groups[groupId];
     if (group?.title) return group.title;
     const descendants = workspaceDescendantContainerIds(groupId, groups);
-    const leaderId = [...descendants].sort((a, b) => {
+    const leaderId = groupLeaderId(groupId);
+    const leaderTitle = leaderId ? containerView(leaderId)?.title : undefined;
+    return `${leaderTitle ?? "Container group"}${descendants.length > 1 ? ` + ${descendants.length - 1}` : ""}`;
+  }
+
+  function groupLeaderId(groupId: string) {
+    return [...workspaceDescendantContainerIds(groupId, groups)].sort((a, b) => {
       const left = layouts[a];
       const right = layouts[b];
       if (!left || !right) return 0;
       if (Math.abs(left.y - right.y) >= 1) return left.y - right.y;
       return right.w * right.h - left.w * left.h;
     })[0];
-    const leaderTitle = leaderId ? containerView(leaderId)?.title : undefined;
-    return `${leaderTitle ?? "Container group"}${descendants.length > 1 ? ` + ${descendants.length - 1}` : ""}`;
   }
 
   const managedGroups = Object.values(groups).map((group) => {
@@ -532,6 +537,7 @@ export function TradingWorkspace({
       const layout: WorkspaceWindowLayout = { ...bounds, fullscreen: group.fullscreen, minimized: group.minimized, z: group.z };
       const minWidth = minimumGroupDimension(descendants, layouts, bounds, "w");
       const minHeight = minimumGroupDimension(descendants, layouts, bounds, "h");
+      const leaderId = groupLeaderId(id);
       const menuItems = group.childIds.map((childId) => {
         const view = groups[childId] ? null : containerView(childId);
         return {
@@ -571,7 +577,7 @@ export function TradingWorkspace({
           const view = containerView(memberId);
           const memberBounds = layouts[memberId];
           if (!view || !memberBounds) return null;
-          return <WorkspaceGroupedMember bounds={memberBounds} groupBounds={bounds} id={memberId} key={memberId} kind={view.kind} onFocus={() => focusContainer(id)} title={view.title}><WorkspaceContentSlot host={contentHost(memberId)} /></WorkspaceGroupedMember>;
+          return <WorkspaceGroupedMember bounds={memberBounds} dataTitle={view.groupedTitle} groupBounds={bounds} icon={view.icon} id={memberId} key={memberId} kind={view.kind} onFocus={() => focusContainer(id)} primary={memberId === leaderId} title={view.title}><WorkspaceContentSlot host={contentHost(memberId)} /></WorkspaceGroupedMember>;
         })}
       </WorkspaceGroupWindow>;
     }

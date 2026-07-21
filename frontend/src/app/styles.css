@@ -21363,6 +21363,8 @@ button {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
   min-height: 0;
   min-width: 0;
   overflow: hidden;
@@ -21370,11 +21372,45 @@ button {
 }
 
 .workspace-group-member > .workspace-window-body.live-window-body {
+  flex: 1 1 auto;
   display: flex;
-  height: 100%;
+  height: auto;
   min-height: 0;
   overflow: hidden;
   padding: 0;
+}
+
+.workspace-group-member-heading {
+  align-items: center;
+  background: var(--surface-alt);
+  border-bottom: 1px solid var(--border);
+  color: var(--foreground);
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  min-height: 28px;
+  padding: 5px 10px;
+}
+
+.workspace-group-member-heading > svg {
+  color: var(--primary);
+  flex: 0 0 auto;
+  height: 13px;
+  width: 13px;
+}
+
+.workspace-group-member-heading > strong {
+  font-size: 10px;
+  font-weight: 730;
+  letter-spacing: .015em;
+}
+
+.workspace-group-member[data-group-primary="false"] .workspace-persistent-content-host > :is(section, article, div) > header:first-child {
+  display: none;
+}
+
+.workspace-group-member[data-group-primary="false"] .canvas-container-content > :is(section, article, div) > header:first-child {
+  display: none;
 }
 
 .workspace-group-members {
