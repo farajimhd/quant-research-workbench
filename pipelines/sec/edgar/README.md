@@ -116,6 +116,33 @@ distribution, large-document iterations, table/XML corrections, and rejected
 lossy rules remain documented in [SEC_TEXT_RENDERER_V8_AUDIT.md](SEC_TEXT_RENDERER_V8_AUDIT.md).
 Updating the code does not rewrite existing rendered rows; rebuild the rendered
 derivative from `sec_filing_text_v3` before SEC token or embedding generation.
+
+To discover source documents that have no canonical rendered derivative, run
+the sparse repair in its default read-only mode:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_missing_render_repair.py
+```
+
+The audit compares authoritative keys and lineage metadata only; it does not
+read the wide `source_text` column. To repair the discovered rows, stop the SEC
+gateway and run:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_missing_render_repair.py --execute --confirm-sec-gateway-stopped
+```
+
+The execute path snapshots exact candidates, exports only those source rows in
+bounded month/CIK-hash units, renders with the shared current renderer, inserts
+validated Parquet shards with deterministic deduplication tokens, and resumes
+from completed unit manifests. It then mutates the matching document status by
+exact source revision, removes only the obsolete
+`structured_xml_model_excluded` skip rows, and adjusts matching live manifests.
+Source-text rows are never rewritten. A stable source watermark is required
+through final verification, which is why execution requires the explicit
+gateway-stop confirmation. Reuse `--run-id` only to resume the same stopped,
+unchanged source snapshot; use a new run ID after new SEC source rows arrive.
+
 The renderer preserves substantive XML comments, including `ABS-EE` `EX-103`
 asset-related narratives, and treats `<body>` as the end of malformed HTML head
 state. Full-corpus rebuild retries validate and reuse completed monthly source
