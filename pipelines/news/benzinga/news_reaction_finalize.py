@@ -145,7 +145,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--calendar-table", default="news_reaction_calendar_v1")
     parser.add_argument("--features-table", default="news_language_features_v1")
     parser.add_argument("--reactions-table", default="news_reaction_labels_v2")
-    parser.add_argument("--legacy-stats-table", default="news_phrase_reaction_stats_v2")
     parser.add_argument("--status-table", default="news_reaction_build_status_v1")
     parser.add_argument("--split-table", default="market_stock_split_v1")
     parser.add_argument("--quality-table", default="news_reaction_quality_overlay_v1")
