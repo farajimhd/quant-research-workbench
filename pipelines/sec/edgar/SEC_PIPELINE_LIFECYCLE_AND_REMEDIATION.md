@@ -69,7 +69,7 @@ is deliberate:
 | `archive-identity-repair` | Rekey existing document/text rows stored under a non-primary entity CIK | Verified subject-company document lineage |
 | `archive-identity-audit` | Compare canonical identity with embedded archive identity | Explicit identity findings |
 | `xbrl-companyfacts-catchup` | Fill recent or missing XBRL from companyfacts | Canonical XBRL rows |
-| `xbrl-integrity-repair` | Repair XBRL keys and relationships | Consistent XBRL graph |
+| `xbrl-integrity-repair` | Repair v3 XBRL parent keys and relationships | Consistent XBRL graph without routine legacy-table mutation |
 | `sec-bridge-rebuild` | Rebuild historical SEC-to-market associations | `id_sec_market_bridge_v3` |
 | `sec-context-build` | Refresh derived XBRL context; text copy is skipped | `sec_xbrl_context_v3` |
 | `integrity-audit` | Enforce final source, relationship, timestamp, text, and orphan checks | Run report and coverage |

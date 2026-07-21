@@ -88,6 +88,8 @@ class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
         self.assertIn("--execute", commands["archive-identity-repair"])
         stage_index = commands["bulk-canonicalize"].index("--stages") + 1
         self.assertEqual(commands["bulk-canonicalize"][stage_index], "xbrl")
+        xbrl_repair_stage_index = commands["xbrl-integrity-repair"].index("--stages") + 1
+        self.assertEqual(commands["xbrl-integrity-repair"][xbrl_repair_stage_index], "filing-parents,frame-parents")
         repair = commands["acceptance-raw-metadata-repair"]
         self.assertIn("--enriched-table", repair)
         self.assertIn("sec_submissions_filing_overlay_v3", repair)

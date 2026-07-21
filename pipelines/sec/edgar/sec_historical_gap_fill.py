@@ -964,7 +964,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                     "--scope-start-date",
                     "2019-01-01",
                     "--stages",
-                    "drop-legacy,filing-parents,frame-parents",
+                    "filing-parents,frame-parents",
                     "--output-root-win",
                     args.xbrl_repair_output_root_win,
                 ],

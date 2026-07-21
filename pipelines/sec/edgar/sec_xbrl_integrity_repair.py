@@ -63,7 +63,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Repair SEC XBRL integrity issues after historical SEC loads. "
-            "The script can drop legacy v1 document/text tables, insert missing "
+            "The script can explicitly drop legacy v1 document/text tables, insert missing "
             "SEC filing parents for XBRL facts, and insert missing frame parents "
             "for frame observations."
         )
@@ -76,7 +76,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scope-start-date", default=os.environ.get("SEC_XBRL_REPAIR_SCOPE_START_DATE", "2019-01-01"))
     parser.add_argument(
         "--stages",
-        default=os.environ.get("SEC_XBRL_REPAIR_STAGES", "drop-legacy,filing-parents,frame-parents"),
+        default=os.environ.get("SEC_XBRL_REPAIR_STAGES", "filing-parents,frame-parents"),
         help="Comma-separated stages: drop-legacy, filing-parents, frame-parents.",
     )
     parser.add_argument("--execute", action="store_true", help="Apply changes. Without this, only counts and SQL plans are written.")
