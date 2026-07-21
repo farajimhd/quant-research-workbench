@@ -90,6 +90,21 @@ class NewsReactionModelV1Tests(unittest.TestCase):
             places=5,
         )
 
+    def test_masked_chunk_pooling_supports_bfloat16_autocast(self) -> None:
+        loader = LoaderConfig(embedding_dim=8, max_chunks=2)
+        rows = [{
+            "source_id": "news-bf16", "ticker": "AAPL", "published_at_utc": "2026-07-14 13:41:00",
+            "chunks": [[0, [0.1] * 8]], "publication_session": "regular",
+            "horizon_codes": ["1m"], "class_targets": [1],
+            "return_targets": [[0.0, 0.01, -0.01]],
+        }]
+        batch = rows_to_batch(rows, loader)
+        model = NewsReactionModelV1(ModelConfig(embedding_dim=8, d_model=16, hidden_dim=16, layers=1))
+        with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+            output = model(batch.x)
+        self.assertTrue(torch.isfinite(output.class_logits).all())
+        self.assertTrue(torch.isfinite(output.return_forecasts).all())
+
 
 if __name__ == "__main__":
     unittest.main()

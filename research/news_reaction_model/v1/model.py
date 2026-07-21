@@ -55,7 +55,10 @@ class NewsReactionModelV1(nn.Module):
         hidden = self.chunk_projection(chunks)
         positions = torch.arange(hidden.shape[1], device=hidden.device)
         hidden = hidden + self.chunk_position(positions).unsqueeze(0)
-        scores = self.chunk_gate(hidden).squeeze(-1).masked_fill(~mask, torch.finfo(hidden.dtype).min)
+        # Negative infinity is representable by every floating-point dtype used
+        # by AMP. torch.finfo(bfloat16).min can overflow while PyTorch converts
+        # its Python scalar back into a bfloat16 masked-fill value.
+        scores = self.chunk_gate(hidden).squeeze(-1).masked_fill(~mask, float("-inf"))
         weights = torch.softmax(scores, dim=1)
         article = torch.sum(hidden * weights.unsqueeze(-1), dim=1)
         horizon_ids = torch.arange(len(self.config.horizons), device=hidden.device)

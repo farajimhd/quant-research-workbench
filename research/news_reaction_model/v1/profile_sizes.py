@@ -73,7 +73,11 @@ def main(argv: Iterable[str] | None = None) -> int:
                         flush=True,
                     )
                 else:
-                    print(f"PROFILE d={d_model} layers={layers} batch={batch_size} OOM | {row.get('error', '')}", flush=True)
+                    print(
+                        f"PROFILE d={d_model} layers={layers} batch={batch_size} {str(row['status']).upper()} | "
+                        f"{row.get('error', '')}",
+                        flush=True,
+                    )
     viable = [row for row in rows if row["status"] == "ok"]
     best = max(viable, key=lambda row: row["samples_per_second"]) if viable else None
     summary = {"event": "summary", "device": str(device), "configurations": len(rows), "successful": len(viable), "fastest": best}
@@ -129,6 +133,14 @@ def profile_configuration(source: NewsReactionBatch, batch_size: int, d_model: i
     except torch.cuda.OutOfMemoryError as exc:
         if device.type == "cuda": torch.cuda.empty_cache()
         return {"status": "oom", "d_model": d_model, "layers": layers, "batch_size": batch_size, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 - retain a structured per-configuration failure
+        return {
+            "status": "error",
+            "d_model": d_model,
+            "layers": layers,
+            "batch_size": batch_size,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
 
 
 def append_jsonl(path: Path, row: dict[str, object]) -> None:
