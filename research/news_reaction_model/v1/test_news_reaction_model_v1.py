@@ -66,6 +66,7 @@ class NewsReactionModelV1Tests(unittest.TestCase):
             "return_targets": [[0.02, 0.03, -0.01], [-0.01, 0.01, -0.02]],
         }]
         batch = rows_to_batch(rows, loader)
+        self.assertEqual(set(batch.x), {"embeddings", "chunk_mask"})
         self.assertEqual(batch.identity["canonical_news_id"], ["news-1"])
         self.assertEqual(batch.class_targets[0, HORIZONS.index("1m")].item(), 0)
         self.assertEqual(batch.class_targets[0, HORIZONS.index("5m")].item(), 2)

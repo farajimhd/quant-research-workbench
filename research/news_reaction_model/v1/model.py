@@ -42,8 +42,7 @@ class NewsReactionModelV1(nn.Module):
         self.chunk_position = nn.Embedding(config.max_chunks, d)
         self.chunk_gate = nn.Linear(d, 1)
         self.horizon_embedding = nn.Embedding(len(config.horizons), config.horizon_dim)
-        self.session_embedding = nn.Embedding(config.session_count, config.session_dim)
-        joint = d + config.horizon_dim + config.session_dim
+        joint = d + config.horizon_dim
         self.input_fusion = nn.Sequential(nn.LayerNorm(joint), nn.Linear(joint, d), nn.GELU())
         self.blocks = nn.ModuleList(ResidualMLP(d, config.hidden_dim, config.dropout) for _ in range(config.layers))
         self.output_norm = nn.LayerNorm(d)
@@ -61,9 +60,8 @@ class NewsReactionModelV1(nn.Module):
         article = torch.sum(hidden * weights.unsqueeze(-1), dim=1)
         horizon_ids = torch.arange(len(self.config.horizons), device=hidden.device)
         horizons = self.horizon_embedding(horizon_ids).unsqueeze(0).expand(article.shape[0], -1, -1)
-        sessions = self.session_embedding(x["session_id"].long()).unsqueeze(1).expand(-1, len(self.config.horizons), -1)
         article_by_horizon = article.unsqueeze(1).expand(-1, len(self.config.horizons), -1)
-        fused = self.input_fusion(torch.cat((article_by_horizon, horizons, sessions), dim=-1))
+        fused = self.input_fusion(torch.cat((article_by_horizon, horizons), dim=-1))
         for block in self.blocks:
             fused = block(fused)
         fused = self.output_norm(fused)
@@ -89,7 +87,6 @@ def build_model_mermaid() -> str:
         '  chunks["Qwen chunks [B,2,1024]"] --> projection["LayerNorm + projection"]',
         '  projection --> pooling["Masked gated chunk pooling"]',
         '  horizons["Horizon embedding"] --> fusion["Publication-time fusion"]',
-        '  sessions["Session embedding"] --> fusion',
         '  pooling --> fusion',
         '  fusion --> mlp["Residual MLP encoder"]',
         '  mlp --> classes["10 x 3 reaction logits"]',

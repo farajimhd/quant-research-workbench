@@ -311,15 +311,12 @@ def rows_to_batch(rows: list[dict[str, Any]], config: LoaderConfig) -> NewsReact
     classes = np.full((b, h), -100, dtype=np.int64)
     returns = np.zeros((b, h, 3), dtype=np.float32)
     label_mask = np.zeros((b, h), dtype=np.bool_)
-    session_ids = np.zeros(b, dtype=np.int64)
     horizon_index = {value: index for index, value in enumerate(config.horizons)}
-    session_index = {value: index for index, value in enumerate(SESSIONS)}
     ids, tickers, timestamps = [], [], []
     for row_index, row in enumerate(rows):
         ids.append(str(row["source_id"]))
         tickers.append(str(row["ticker"]))
         timestamps.append(str(row["published_at_utc"]))
-        session_ids[row_index] = session_index.get(str(row.get("publication_session") or "closed"), session_index["closed"])
         for chunk_index, vector in row["chunks"]:
             ci = int(chunk_index)
             if 0 <= ci < c and len(vector) == d:
@@ -334,7 +331,7 @@ def rows_to_batch(rows: list[dict[str, Any]], config: LoaderConfig) -> NewsReact
                 returns[row_index, hi] = np.asarray(target_returns, dtype=np.float32)
                 label_mask[row_index, hi] = np.isfinite(returns[row_index, hi]).all()
     return NewsReactionBatch(
-        x={"embeddings": torch.from_numpy(embeddings), "chunk_mask": torch.from_numpy(chunk_mask), "session_id": torch.from_numpy(session_ids)},
+        x={"embeddings": torch.from_numpy(embeddings), "chunk_mask": torch.from_numpy(chunk_mask)},
         class_targets=torch.from_numpy(classes), return_targets=torch.from_numpy(returns), label_mask=torch.from_numpy(label_mask),
         identity={"canonical_news_id": ids, "ticker": tickers, "published_at_utc": timestamps}, sample_count=b,
     )

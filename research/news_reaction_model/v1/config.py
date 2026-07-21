@@ -49,9 +49,7 @@ class ModelConfig:
     layers: int = 2
     dropout: float = 0.10
     horizon_dim: int = 32
-    session_dim: int = 16
     horizons: tuple[str, ...] = HORIZONS
-    session_count: int = 4
 
 
 @dataclass(slots=True)

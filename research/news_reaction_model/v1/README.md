@@ -54,7 +54,6 @@ flowchart LR
   chunks["Qwen chunks [B,2,1024]"] --> projection["LayerNorm + projection"]
   projection --> pooling["Masked gated chunk pooling"]
   horizon["Horizon embedding"] --> fusion["Publication-time fusion"]
-  session["Session embedding"] --> fusion
   pooling --> fusion
   fusion --> encoder["Residual MLP"]
   encoder --> classes["10 x 3 class logits"]

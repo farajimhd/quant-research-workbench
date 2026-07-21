@@ -146,7 +146,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                        wandb_info={"project": config.train.wandb_project, "run_id": getattr(wandb_run, "id", "")})
     write_model_artifacts(
         model=raw_model, artifact_dir=paths.artifacts_dir, model_config=config.model,
-        input_contract={"embeddings": ["B", 2, 1024], "chunk_mask": ["B", 2], "session_id": ["B"]},
+        input_contract={"embeddings": ["B", 2, 1024], "chunk_mask": ["B", 2]},
         output_contract={"class_logits": ["B", 10, 3], "return_forecasts": ["B", 10, 3]},
         architecture_mermaid=build_model_mermaid(),
         summary_notes="Frozen Qwen article embeddings; every input is available at publication time.",
