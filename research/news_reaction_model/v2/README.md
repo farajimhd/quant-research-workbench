@@ -112,6 +112,33 @@ For each news identity and horizon it returns only:
 It exposes no class probabilities and consumes no post-publication market data
 at inference time.
 
+## Direction and P&L evaluation
+
+After training, rerun the best checkpoint over the complete 2026 validation
+split:
+
+```powershell
+python -m research.news_reaction_model.v2.run_evaluate
+```
+
+The evaluator converts the predicted abnormal terminal return into long, flat,
+or short positions. The flat band is configurable and uses the training-only
+robust ticker/horizon/session scale; the default launcher reports 0.25, 0.5,
+and 1.0 scale-width scenarios. It joins the exact raw target/high/low reaction
+returns only for evaluation, never as model inputs.
+
+For every flat-band scenario and horizon it reports three-class and balanced
+accuracy, macro F1, active directional accuracy, coverage, long/flat/short
+counts, raw and abnormal P&L, favorable/adverse excursion, profit factor, and
+net results at 0, 2, 5, and 10 basis-point round-trip costs. Flat positions
+contribute zero P&L and remain part of the three-class accuracy denominator.
+
+The evaluation directory contains `evaluation_summary.json` and a compressed
+per-label `evaluation_predictions.jsonl.gz` audit. P&L is an event-level,
+fixed-notional proxy. It is not a portfolio backtest because overlapping news
+positions, capital constraints, fill sequencing, and market impact are not
+reconciled.
+
 ## Inspection
 
 - `plot_model_diagram.ipynb` regenerates architecture artifacts.
