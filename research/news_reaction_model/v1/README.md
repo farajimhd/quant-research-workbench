@@ -81,6 +81,12 @@ and uses eager PyTorch with unchanged model, loss, optimizer, AMP, and
 checkpoint semantics. This matches the established temporal-v3 workstation
 behavior and prevents a lazy first-batch `torch.compile` failure.
 
+Checkpoint resume uses PyTorch's restricted weights-only loader. It explicitly
+allowlists the `WindowsPath` metadata type used by early v1 checkpoints, while
+new checkpoints serialize configuration paths as strings. Resume therefore
+preserves model, optimizer, AMP scaler, epoch, and sample-clock scheduler state
+without enabling unrestricted pickle loading.
+
 Two inspection notebooks follow the causal-v1 artifact workflow:
 
 - `plot_model_diagram.ipynb` regenerates the parameter inventory and architecture artifacts.

@@ -297,13 +297,20 @@ class SampleCosineScheduler:
 
 
 def checkpoint_payload(model: torch.nn.Module, optimizer: torch.optim.Optimizer, scheduler: Any, scaler: Any, config: ExperimentConfig, samples: int, epoch: int) -> dict[str, Any]:
+    serializable_config = json.loads(json.dumps(to_dict(config), default=str))
     return {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict() if scheduler else None,
-            "scaler": scaler.state_dict(), "config": to_dict(config), "samples_seen": samples, "epoch": epoch}
+            "scaler": scaler.state_dict(), "config": serializable_config, "samples_seen": samples, "epoch": epoch}
 
 
 def restore(path: str, model: torch.nn.Module, optimizer: torch.optim.Optimizer, scheduler: Any, scaler: Any, device: torch.device) -> tuple[int, int]:
     if not path: return 0, 0
-    state = torch.load(path, map_location=device); model.load_state_dict(state["model"]); optimizer.load_state_dict(state["optimizer"])
+    # PyTorch 2.6+ defaults to restricted weights-only loading. Older v1
+    # checkpoints contain only one non-default safe type: the local output-root
+    # WindowsPath stored in config metadata. Allowlist that exact type while
+    # keeping restricted loading enabled; new checkpoints stringify paths.
+    with torch.serialization.safe_globals([type(Path())]):
+        state = torch.load(path, map_location=device, weights_only=True)
+    model.load_state_dict(state["model"]); optimizer.load_state_dict(state["optimizer"])
     if scheduler and state.get("scheduler"): scheduler.load_state_dict(state["scheduler"])
     if state.get("scaler"): scaler.load_state_dict(state["scaler"])
     return int(state.get("samples_seen", 0)), int(state.get("epoch", 0))

@@ -3,18 +3,19 @@ from __future__ import annotations
 import datetime as dt
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import torch
 
 from research.news_reaction_model.v1 import HORIZONS
-from research.news_reaction_model.v1.config import LoaderConfig, ModelConfig
+from research.news_reaction_model.v1.config import ExperimentConfig, LoaderConfig, ModelConfig, TrainConfig
 from research.news_reaction_model.v1.data import make_dummy_batch, prepared_batch_sql, rows_to_batch, source_batch_sql
 from research.news_reaction_model.v1.losses import compute_loss
 from research.news_reaction_model.v1.inference import forecast_rows
 from research.news_reaction_model.v1.model import NewsReactionModelV1
 from research.news_reaction_model.v1.profile_sizes import load_real_sample, main as profile_main
-from research.news_reaction_model.v1.train import maybe_compile
+from research.news_reaction_model.v1.train import checkpoint_payload, maybe_compile, restore
 from research.news_reaction_model.v1.prepare_data import (
     completed_range_sql,
     create_manifest_sql,
@@ -141,6 +142,23 @@ class NewsReactionModelV1Tests(unittest.TestCase):
                     selected = maybe_compile(model, True)
         self.assertIs(selected, model)
         compile_model.assert_not_called()
+
+    def test_checkpoint_resume_accepts_legacy_windows_path_and_writes_safe_config(self) -> None:
+        model = NewsReactionModelV1(ModelConfig(embedding_dim=8, d_model=16, hidden_dim=16, layers=1))
+        optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+        scaler = torch.amp.GradScaler("cpu", enabled=False)
+        config = ExperimentConfig(
+            loader=LoaderConfig(embedding_dim=8),
+            model=ModelConfig(embedding_dim=8, d_model=16, hidden_dim=16, layers=1),
+            train=TrainConfig(output_root=Path("runtime/test")),
+        )
+        safe_payload = checkpoint_payload(model, optimizer, None, scaler, config, 10, 2)
+        self.assertIsInstance(safe_payload["config"]["train"]["output_root"], str)
+        legacy_payload = {**safe_payload, "config": {"train": {"output_root": Path("runtime/test")}}}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / "legacy.pt"
+            torch.save(legacy_payload, checkpoint)
+            self.assertEqual(restore(str(checkpoint), model, optimizer, None, scaler, torch.device("cpu")), (10, 2))
 
 
 if __name__ == "__main__":
