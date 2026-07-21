@@ -10,7 +10,24 @@ from datetime import datetime, timezone
 from typing import Any
 
 from src.market_engine.events import MarketEvent
+from src.trading_runtime.domain import AccountValue as CanonicalAccountValue
+from src.trading_runtime.domain import BrokerAccount as CanonicalBrokerAccount
+from src.trading_runtime.domain import Execution as CanonicalExecution
+from src.trading_runtime.domain import LedgerBalance as CanonicalLedgerBalance
+from src.trading_runtime.domain import OrderState as CanonicalOrderState
+from src.trading_runtime.domain import PositionState as CanonicalPositionState
+from src.trading_runtime.domain import SnapshotManifest
+from src.trading_runtime.domain import BrokerEventEnvelope, BrokerEventType, BrokerProvider, OrderIntent, TradingMode
+from src.trading_runtime.canonical_commands import intent_to_ibkr_request, lifecycle_event, response_events
 from src.trading_runtime.ibkr_schema import AccountLedger, AccountSummary, Execution, LiveOrder, OrderRequest, OrderStatus, PortfolioPosition
+from src.trading_runtime.ibkr_normalizer import (
+    normalize_account_values,
+    normalize_accounts,
+    normalize_execution,
+    normalize_ledger,
+    normalize_order,
+    normalize_position_snapshot,
+)
 
 
 class IbkrClientPortalAdapter:
@@ -29,20 +46,25 @@ class IbkrClientPortalAdapter:
         timeout: float = 10.0,
         verify_tls: bool = False,
         auto_confirm_warnings: bool = False,
+        mode: TradingMode = TradingMode.PAPER,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.verify_tls = verify_tls
         self.auto_confirm_warnings = auto_confirm_warnings
+        self.mode = mode
         self._order_lane = asyncio.Lock()
         self._account_ids: list[str] = []
+        self._portfolio_accounts_payload: Any = []
+        self._trading_accounts_payload: Any = []
 
     async def initialize(self) -> None:
         status = await self._request("GET", "/iserver/auth/status")
         if not isinstance(status, dict) or not status.get("authenticated"):
             raise RuntimeError("IBKR Client Portal brokerage session is not authenticated")
-        await self._request("GET", "/portfolio/accounts")
-        self._account_ids = _account_ids(await self._request("GET", "/iserver/accounts"))
+        self._portfolio_accounts_payload = await self._request("GET", "/portfolio/accounts")
+        self._trading_accounts_payload = await self._request("GET", "/iserver/accounts")
+        self._account_ids = _account_ids(self._trading_accounts_payload)
         if not self._account_ids:
             raise RuntimeError("IBKR /iserver/accounts returned no tradeable accounts")
 
@@ -50,6 +72,14 @@ class IbkrClientPortalAdapter:
         if not self._account_ids:
             self._account_ids = _account_ids(await self._request("GET", "/iserver/accounts"))
         return list(self._account_ids)
+
+    async def canonical_accounts(self) -> list[CanonicalBrokerAccount]:
+        """Return view and trading permissions without conflating the two IBKR account lists."""
+        if not self._portfolio_accounts_payload:
+            self._portfolio_accounts_payload = await self._request("GET", "/portfolio/accounts")
+        if not self._trading_accounts_payload:
+            self._trading_accounts_payload = await self._request("GET", "/iserver/accounts")
+        return normalize_accounts(self._portfolio_accounts_payload, self._trading_accounts_payload)
 
     async def preview_orders(self, account_id: str, orders: list[OrderRequest]) -> list[dict[str, Any]]:
         self._require_account_orders(account_id, orders)
@@ -74,6 +104,20 @@ class IbkrClientPortalAdapter:
             if self.auto_confirm_warnings:
                 response = await self._confirm_warning_chain_locked(response)
             return _rows(response)
+
+    async def submit_intents(self, account_id: str, intents: list[OrderIntent]) -> list[BrokerEventEnvelope]:
+        if not intents:
+            raise ValueError("intents cannot be empty")
+        if any(intent.account_id != account_id for intent in intents):
+            raise ValueError("Every canonical intent must match the path account")
+        rows = await self.place_orders(account_id, [intent_to_ibkr_request(intent) for intent in intents])
+        if len(intents) == 1:
+            return response_events(intents[0], rows, BrokerProvider.IBKR_CPAPI, self.mode)
+        events: list[BrokerEventEnvelope] = []
+        for index, intent in enumerate(intents):
+            matched = [rows[index]] if index < len(rows) else []
+            events.extend(response_events(intent, matched, BrokerProvider.IBKR_CPAPI, self.mode))
+        return events
 
     async def reply(self, reply_id: str, confirmed: bool) -> list[dict[str, Any]]:
         async with self._order_lane:
@@ -100,10 +144,27 @@ class IbkrClientPortalAdapter:
             rows = _rows(response)
             return rows[-1] if rows else {}
 
+    async def cancel(self, account_id: str, broker_order_id: str) -> list[BrokerEventEnvelope]:
+        payload = await self.cancel_order(account_id, broker_order_id)
+        return [lifecycle_event(event_type=BrokerEventType.ORDER_STATUS_CHANGED, account_id=account_id, broker_order_id=broker_order_id, payload=payload, provider=BrokerProvider.IBKR_CPAPI, mode=self.mode)]
+
+    async def replace(self, account_id: str, broker_order_id: str, intent: OrderIntent) -> list[BrokerEventEnvelope]:
+        rows = await self.modify_order(account_id, broker_order_id, intent_to_ibkr_request(intent))
+        return response_events(intent, rows, BrokerProvider.IBKR_CPAPI, self.mode)
+
     async def live_orders(self) -> list[LiveOrder]:
         payload = await self._request("GET", "/iserver/account/orders")
         raw_orders = payload.get("orders", []) if isinstance(payload, dict) else _rows(payload)
         return [_live_order(row) for row in raw_orders if isinstance(row, dict)]
+
+    async def canonical_orders(self, account_id: str = "") -> list[CanonicalOrderState]:
+        if account_id:
+            self._require_known_account(account_id)
+            await self._request("POST", "/iserver/account", {"acctId": account_id})
+        payload = await self._request("GET", "/iserver/account/orders")
+        raw_orders = payload.get("orders", []) if isinstance(payload, dict) else _rows(payload)
+        rows = [normalize_order(row, account_id) for row in raw_orders if isinstance(row, dict)]
+        return [row for row in rows if not account_id or row.account_id == account_id]
 
     async def trades(self, days: int = 7) -> list[Execution]:
         if not 1 <= days <= 7:
@@ -111,20 +172,45 @@ class IbkrClientPortalAdapter:
         payload = await self._request("GET", f"/iserver/account/trades?days={days}")
         return [_execution(row) for row in _rows(payload)]
 
+    async def canonical_executions(self, account_id: str = "", days: int = 7) -> list[CanonicalExecution]:
+        if not 1 <= days <= 7:
+            raise ValueError("IBKR trade history supports 1 through 7 days")
+        if account_id:
+            self._require_known_account(account_id)
+            await self._request("POST", "/iserver/account", {"acctId": account_id})
+        payload = await self._request("GET", f"/iserver/account/trades?days={days}")
+        rows = [normalize_execution(row, account_id) for row in _rows(payload)]
+        return [row for row in rows if not account_id or row.account_id == account_id]
+
     async def positions(self, account_id: str) -> list[PortfolioPosition]:
         self._require_known_account(account_id)
-        payload = await self._request("GET", f"/portfolio/{_quote(account_id)}/positions/0")
+        payload = await self._request("GET", f"/portfolio2/{_quote(account_id)}/positions")
         return [_position(row, account_id) for row in _rows(payload)]
+
+    async def canonical_position_snapshot(self, account_id: str) -> tuple[SnapshotManifest, list[CanonicalPositionState]]:
+        self._require_known_account(account_id)
+        payload = await self._request("GET", f"/portfolio2/{_quote(account_id)}/positions")
+        return normalize_position_snapshot(payload, account_id)
 
     async def account_summary(self, account_id: str) -> AccountSummary:
         self._require_known_account(account_id)
         payload = await self._request("GET", f"/portfolio/{_quote(account_id)}/summary")
         return _summary(payload, account_id)
 
+    async def canonical_account_values(self, account_id: str) -> list[CanonicalAccountValue]:
+        self._require_known_account(account_id)
+        payload = await self._request("GET", f"/portfolio/{_quote(account_id)}/summary")
+        return normalize_account_values(payload, account_id)
+
     async def account_ledger(self, account_id: str) -> AccountLedger:
         self._require_known_account(account_id)
         payload = await self._request("GET", f"/portfolio/{_quote(account_id)}/ledger")
         return _ledger(payload, account_id)
+
+    async def canonical_ledger(self, account_id: str) -> list[CanonicalLedgerBalance]:
+        self._require_known_account(account_id)
+        payload = await self._request("GET", f"/portfolio/{_quote(account_id)}/ledger")
+        return normalize_ledger(payload, account_id)
 
     async def on_market_event(self, event: MarketEvent) -> list[Execution]:
         return []
@@ -210,7 +296,7 @@ def _status(value: Any) -> OrderStatus:
     for status in OrderStatus:
         if status.value.lower() == compact:
             return status
-    return OrderStatus.INACTIVE
+    return OrderStatus.UNKNOWN
 
 
 def _live_order(row: dict[str, Any]) -> LiveOrder:

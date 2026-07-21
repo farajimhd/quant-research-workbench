@@ -61,6 +61,31 @@ type HistoricalIndicator = {
   qmd_structure_active_levels?: QmdStructureLevelCandidate[];
 } & Record<string, number | string | QmdStructureLevelCandidate[] | undefined>;
 type PreviewRow = Record<string, unknown>;
+type CanonicalTradingPreview = {
+  schema_version: number;
+  mode: string;
+  provider: string;
+  as_of: string;
+  complete: boolean;
+  stale: boolean;
+  stale_reason: string;
+  accounts: PreviewRow[];
+  account_values: PreviewRow[];
+  ledger: PreviewRow[];
+  positions: PreviewRow[];
+  orders: PreviewRow[];
+  executions: PreviewRow[];
+  closed_trades: PreviewRow[];
+  activity: PreviewRow[];
+  closed_trades_note: string;
+  portfolio: {
+    metrics: Record<string, string | number>;
+    exposure: { long_value?: string | number; short_value?: string | number; net_value?: string | number; gross_value?: string | number; by_currency?: Record<string, string | number>; by_asset_class?: Record<string, string | number> };
+    position_count: number;
+    working_order_count: number;
+    pending_commission_count: number;
+  };
+};
 type CanvasPreview = {
   as_of: string;
   chart: { bars: HistoricalBar[]; indicators: HistoricalIndicator[]; symbol: string; timeframe: string };
@@ -74,6 +99,7 @@ type CanvasPreview = {
   scanner: PreviewRow[];
   sec: PreviewRow[];
   strategy: { automatic: boolean; revision: number; signals: PreviewRow[]; state: string; strategy_id: string };
+  trading: CanonicalTradingPreview;
   xbrl: PreviewRow[];
 };
 type CanvasContext = { coverage: { event_count: number; session_date: string | null; ticker_count: number }; preview_time: string; session_date: string | null };
@@ -123,16 +149,19 @@ type CanvasLiveChartState = {
 };
 
 type ContainerSettings = {
-  version: 9;
+  version: 10;
   chart: { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
   microstructure: { limit: number };
   fills: { limit: number; showCommission: boolean };
+  positions: { limit: number; showPnl: boolean };
+  closed_trades: { limit: number; showFees: boolean };
+  activity: { limit: number };
   journal: { limit: number };
   news: { content: string; kind: string; lookbackHours: number; ticker: string };
   ticker_news: { lookbackHours: number; showTeaser: boolean };
   news_detail: Record<string, never>;
   orders: { limit: number; showOrderIds: boolean };
-  portfolio: { showPositions: boolean; showPnl: boolean };
+  portfolio: { showExposure: boolean; showPnl: boolean };
   scanner: { limit: number; showActivity: boolean };
   sec: { content: string; label: string; lookbackHours: number; ticker: string };
   ticker_sec: { lookbackHours: number };
@@ -146,16 +175,19 @@ type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; tit
 
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 9,
+  version: 10,
   chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.microstructure_outlook"] },
   microstructure: { limit: 1024 },
   fills: { limit: 5, showCommission: true },
+  positions: { limit: 20, showPnl: true },
+  closed_trades: { limit: 20, showFees: true },
+  activity: { limit: 30 },
   journal: { limit: 6 },
   news: { content: "all", kind: "all", lookbackHours: 6, ticker: "" },
   ticker_news: { lookbackHours: 72, showTeaser: true },
   news_detail: {},
   orders: { limit: 6, showOrderIds: true },
-  portfolio: { showPositions: true, showPnl: true },
+  portfolio: { showExposure: true, showPnl: true },
   scanner: { limit: 6, showActivity: true },
   sec: { content: "all", label: "", lookbackHours: 168, ticker: "" },
   ticker_sec: { lookbackHours: 720 },
@@ -1353,9 +1385,12 @@ function LinkColorPicker({ containerTitle, onChange, value }: { containerTitle: 
 function renderPreview(id: WorkspaceContainerId, preview: CanvasPreview | null, settings: ContainerSettings, linkGroup: CanvasLinkGroupId, onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void) {
   if (!preview) return <EmptyState label="No preview data" />;
   if (id === "scanner") return <PreviewTable columns={settings.scanner.showActivity ? ["symbol", "last", "change_pct", "volume", "trade_count"] : ["symbol", "last", "change_pct"]} onSymbolSelect={linkGroup === "none" ? undefined : (symbol) => onLinkContextChange({ symbol })} rows={preview.scanner.slice(0, settings.scanner.limit)} />;
-  if (id === "portfolio") return <PortfolioPreview data={preview.portfolio} settings={settings.portfolio} />;
-  if (id === "orders") return <PreviewTable columns={settings.orders.showOrderIds ? ["orderId", "ticker", "side", "orderType", "quantity", "status"] : ["ticker", "side", "orderType", "quantity", "status"]} rows={preview.orders.slice(0, settings.orders.limit)} />;
-  if (id === "fills") return <PreviewTable columns={settings.fills.showCommission ? ["time", "ticker", "side", "shares", "price", "commission"] : ["time", "ticker", "side", "shares", "price"]} rows={preview.fills.slice(0, settings.fills.limit)} />;
+  if (id === "portfolio") return <PortfolioPreview data={preview.trading} settings={settings.portfolio} />;
+  if (id === "positions") return <PositionsPreview data={preview.trading} settings={settings.positions} />;
+  if (id === "orders") return <OrdersPreview data={preview.trading} settings={settings.orders} />;
+  if (id === "fills") return <ExecutionsPreview data={preview.trading} settings={settings.fills} />;
+  if (id === "closed_trades") return <ClosedTradesPreview data={preview.trading} settings={settings.closed_trades} />;
+  if (id === "activity") return <ActivityPreview data={preview.trading} settings={settings.activity} />;
   if (id === "strategy") return <StrategyPreview data={preview.strategy} showSignals={settings.strategy.showSignals} />;
   return <PreviewTable columns={["time", "category", "event", "detail"]} rows={preview.journal.slice(0, settings.journal.limit)} />;
 }
@@ -2036,7 +2071,7 @@ function PreviewTable({ columns, onSymbolSelect, rows }: { columns: string[]; on
   const tickerColumns = columns.filter(isPreviewTickerColumn);
   const presentations = useTickerPresentations(rows.flatMap((row) => tickerColumns.map((column) => String(row[column] || ""))));
   if (!rows.length) return <EmptyState label="No point-in-time rows" />;
-  return <div className="canvas-preview-table-wrap"><table className="canvas-preview-table"><thead><tr>{columns.map((column) => <th key={column}>{labelFor(column)}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={previewRowKey(row, columns, index)}>{columns.map((column) => <td key={column}><PreviewCell column={column} onSymbolSelect={onSymbolSelect} presentations={presentations} row={row} /></td>)}</tr>)}</tbody></table></div>;
+  return <div className="canvas-preview-table-wrap"><table className="canvas-preview-table"><thead><tr>{columns.map((column) => <th key={column}>{labelFor(column)}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={previewRowKey(row, columns, index)}>{columns.map((column) => <td className={`preview-cell-${column.replace(/[^a-z0-9_-]/gi, "-")}`} data-tone={cellTone(row[column], column)} key={column}><PreviewCell column={column} onSymbolSelect={onSymbolSelect} presentations={presentations} row={row} /></td>)}</tr>)}</tbody></table></div>;
 }
 
 function PreviewCell({ column, onSymbolSelect, presentations, row }: { column: string; onSymbolSelect?: (symbol: string) => void; presentations: ReturnType<typeof useTickerPresentations>; row: PreviewRow }) {
@@ -2052,9 +2087,73 @@ function PreviewCell({ column, onSymbolSelect, presentations, row }: { column: s
 function isPreviewTickerColumn(column: string) { return ["symbol", "ticker", "candidate_massive_ticker"].includes(column.toLowerCase()); }
 function isPreviewTimeColumn(column: string) { const normalized = column.toLowerCase(); return normalized === "time" || normalized.endsWith("_time") || normalized.endsWith("_at") || normalized.endsWith("_at_utc"); }
 
-function PortfolioPreview({ data, settings }: { data: CanvasPreview["portfolio"]; settings: ContainerSettings["portfolio"] }) {
-  return <div className="canvas-portfolio-preview"><div className="canvas-metric-row"><Metric label="Net liquidation" value={money(data.summary.netLiquidation)} /><Metric label="Available" value={money(data.summary.availableFunds)} />{settings.showPnl ? <Metric label="Unrealized P&L" value={money(data.summary.unrealizedPnl)} /> : null}</div>{settings.showPositions ? <PreviewTable columns={["ticker", "position", "mktPrice", "avgCost", "unrealizedPnl"]} rows={data.positions} /> : null}</div>;
+function PortfolioPreview({ data, settings }: { data: CanonicalTradingPreview; settings: ContainerSettings["portfolio"] }) {
+  const metrics = data.portfolio.metrics;
+  const exposure = data.portfolio.exposure;
+  const ledgerRows = data.ledger.map((row) => ({ account: row.account_id, currency: row.currency, cash: nestedValue(row, "values", "cashbalance", "cashBalance"), settled: nestedValue(row, "values", "settledcash", "settledCash"), net_liquidation: nestedValue(row, "values", "netliquidationvalue", "netLiquidationValue") }));
+  return <section className="trading-preview trading-portfolio-preview">
+    <TradingFreshness data={data} />
+    <div className="trading-primary-metrics">
+      <TradingMetric label="Net liquidation" value={money(metrics.net_liquidation)} tone="primary" />
+      <TradingMetric label="Available funds" value={money(metrics.available_funds)} tone="positive" />
+      <TradingMetric label="Excess liquidity" value={money(metrics.excess_liquidity)} tone="positive" />
+      <TradingMetric label="Buying power" value={money(metrics.buying_power)} />
+      {settings.showPnl ? <TradingMetric label="Unrealized P&L" value={signedMoney(metrics.unrealized_pnl)} tone={numberTone(metrics.unrealized_pnl)} /> : null}
+      {settings.showPnl ? <TradingMetric label="Realized P&L" value={signedMoney(metrics.realized_pnl)} tone={numberTone(metrics.realized_pnl)} /> : null}
+    </div>
+    {settings.showExposure ? <div className="trading-exposure-grid"><TradingMetric label="Long exposure" value={money(exposure.long_value)} tone="positive" /><TradingMetric label="Short exposure" value={money(exposure.short_value)} tone="negative" /><TradingMetric label="Net exposure" value={signedMoney(exposure.net_value)} tone={numberTone(exposure.net_value)} /><TradingMetric label="Gross exposure" value={money(exposure.gross_value)} /></div> : null}
+    <div className="trading-secondary-heading"><strong>Cash ledger</strong><span>Every broker currency; BASE is not substituted for local balances</span></div>
+    <PreviewTable columns={["account", "currency", "cash", "settled", "net_liquidation"]} rows={ledgerRows} />
+  </section>;
 }
+
+function PositionsPreview({ data, settings }: { data: CanonicalTradingPreview; settings: ContainerSettings["positions"] }) {
+  const rows = data.positions.map((row) => ({ account: row.account_id, symbol: nestedValue(row, "instrument", "symbol"), conid: nestedValue(row, "instrument", "conid"), asset: nestedValue(row, "instrument", "security_type"), currency: nestedValue(row, "instrument", "currency"), model: row.model, quantity: row.quantity, mark: row.market_price, market_value: row.market_value, average_price: row.average_price, unrealized_pnl: row.unrealized_pnl, realized_pnl: row.realized_pnl, updated_at: row.source_event_time }));
+  const columns = settings.showPnl ? ["account", "symbol", "conid", "asset", "currency", "model", "quantity", "mark", "market_value", "average_price", "unrealized_pnl", "realized_pnl", "updated_at"] : ["account", "symbol", "conid", "asset", "currency", "model", "quantity", "mark", "market_value", "average_price", "updated_at"];
+  return <section className="trading-preview"><TradingFreshness data={data} /><PreviewTable columns={columns} rows={rows.slice(0, settings.limit)} /></section>;
+}
+
+function OrdersPreview({ data, settings }: { data: CanonicalTradingPreview; settings: ContainerSettings["orders"] }) {
+  const rows = data.orders.map((row) => ({ status: row.lifecycle_state, broker_status: row.broker_status_raw, symbol: nestedValue(row, "instrument", "symbol"), side: row.side, filled: row.filled_quantity, total: row.total_quantity, remaining: row.remaining_quantity, type: row.order_type, limit: row.limit_price, stop: row.stop_price, tif: row.time_in_force, account: row.account_id, order_id: row.broker_order_id, client_id: row.client_order_id, updated_at: row.source_event_time }));
+  const columns = settings.showOrderIds ? ["status", "broker_status", "symbol", "side", "filled", "total", "remaining", "type", "limit", "stop", "tif", "account", "order_id", "client_id", "updated_at"] : ["status", "broker_status", "symbol", "side", "filled", "total", "remaining", "type", "limit", "stop", "tif", "account", "updated_at"];
+  return <section className="trading-preview"><TradingFreshness data={data} /><PreviewTable columns={columns} rows={rows.slice(0, settings.limit)} /></section>;
+}
+
+function ExecutionsPreview({ data, settings }: { data: CanonicalTradingPreview; settings: ContainerSettings["fills"] }) {
+  const rows = data.executions.map((row) => ({ time: row.source_event_time, execution_id: row.execution_id, symbol: nestedValue(row, "instrument", "symbol"), side: row.side, quantity: row.quantity, price: row.price, exchange: row.exchange, commission: row.commission, fee_state: row.commission_status, net_amount: row.net_amount, account: row.account_id, order_id: row.broker_order_id }));
+  const columns = settings.showCommission ? ["time", "symbol", "side", "quantity", "price", "exchange", "commission", "fee_state", "net_amount", "account", "order_id", "execution_id"] : ["time", "symbol", "side", "quantity", "price", "exchange", "account", "order_id", "execution_id"];
+  return <section className="trading-preview"><TradingFreshness data={data} /><PreviewTable columns={columns} rows={rows.slice(0, settings.limit)} /></section>;
+}
+
+function ClosedTradesPreview({ data, settings }: { data: CanonicalTradingPreview; settings: ContainerSettings["closed_trades"] }) {
+  const rows = data.closed_trades.map((row) => ({ closed_at: row.closed_at, symbol: nestedValue(row, "instrument", "symbol"), side: row.side, quantity: row.quantity, entry_price: row.entry_price, exit_price: row.exit_price, gross_pnl: row.gross_pnl, fees: row.fees, net_pnl: row.net_pnl, account: row.account_id }));
+  const columns = settings.showFees ? ["closed_at", "symbol", "side", "quantity", "entry_price", "exit_price", "gross_pnl", "fees", "net_pnl", "account"] : ["closed_at", "symbol", "side", "quantity", "entry_price", "exit_price", "gross_pnl", "net_pnl", "account"];
+  return <section className="trading-preview"><div className="trading-disclosure">{data.closed_trades_note}</div><PreviewTable columns={columns} rows={rows.slice(0, settings.limit)} /></section>;
+}
+
+function ActivityPreview({ data, settings }: { data: CanonicalTradingPreview; settings: ContainerSettings["activity"] }) {
+  const rows = data.activity.map((row) => ({ time: row.source_event_time, event: row.event_type, account: row.account_id, order_id: row.broker_order_id, client_id: row.client_order_id, execution_id: row.execution_id, provider: row.provider, correlation: row.correlation_id }));
+  return <section className="trading-preview"><TradingFreshness data={data} /><PreviewTable columns={["time", "event", "account", "order_id", "client_id", "execution_id", "provider", "correlation"]} rows={rows.slice(0, settings.limit)} /></section>;
+}
+
+function TradingFreshness({ data }: { data: CanonicalTradingPreview }) {
+  return <div className={`trading-freshness ${data.stale ? "is-stale" : "is-current"}`}><strong>{data.complete && !data.stale ? "Complete broker state" : data.stale ? "Stale or partial state" : "Snapshot assembling"}</strong><span>{data.provider.replaceAll("_", " ")} · {data.mode} · <MarketTime value={data.as_of} /></span>{data.stale_reason ? <em>{data.stale_reason}</em> : null}</div>;
+}
+
+function TradingMetric({ label, tone = "neutral", value }: { label: string; tone?: "neutral" | "negative" | "positive" | "primary"; value: string }) {
+  return <div className={`trading-metric tone-${tone}`}><span>{label}</span><strong>{value}</strong></div>;
+}
+
+function nestedValue(row: PreviewRow, container: string, ...keys: string[]) {
+  const nested = row[container];
+  if (!nested || typeof nested !== "object") return "";
+  const record = nested as PreviewRow;
+  for (const key of keys) if (record[key] !== undefined && record[key] !== null) return record[key];
+  return "";
+}
+
+function signedMoney(value: unknown) { const number = Number(value || 0); return `${number > 0 ? "+" : ""}${money(number)}`; }
+function numberTone(value: unknown): "negative" | "positive" | "neutral" { const number = Number(value || 0); return number > 0 ? "positive" : number < 0 ? "negative" : "neutral"; }
 
 function StrategyPreview({ data, showSignals }: { data: CanvasPreview["strategy"]; showSignals: boolean }) {
   return <div className="canvas-strategy-preview"><div><span>Strategy</span><strong>{data.strategy_id}</strong></div><div><span>Revision</span><strong>v{data.revision}</strong></div><div><span>State</span><strong>{data.state}</strong></div>{showSignals ? <PreviewTable columns={["time", "symbol", "signal", "value"]} rows={data.signals} /> : null}</div>;
@@ -2067,11 +2166,14 @@ function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, 
   const current = settings[settingsId] as Record<string, unknown>;
   function patch(value: Record<string, unknown>) { updateSettings((state) => ({ ...state, [id]: { ...(state[settingsId] as Record<string, unknown>), ...value } })); }
   if (id === "chart") return <><TextField label="Symbol" onChange={(value) => { patch({ symbol: value.toUpperCase() }); onLinkContextChange({ symbol: value.toUpperCase() }); }} value={linkContext.symbol} /><SelectField label="Bar interval" onChange={(value) => patch({ timeframe: value as CanvasChartTimeframe })} optionLabel={formatChartTimeframe} options={HISTORICAL_TIMEFRAMES} value={settings.chart.timeframe} /><CheckField checked={Boolean(current.showVolume)} label="Show volume" onChange={(value) => patch({ showVolume: value })} /></>;
-  if (id === "portfolio") return <><CheckField checked={Boolean(current.showPositions)} label="Show positions" onChange={(value) => patch({ showPositions: value })} /><CheckField checked={Boolean(current.showPnl)} label="Show P&L" onChange={(value) => patch({ showPnl: value })} /></>;
+  if (id === "portfolio") return <><CheckField checked={Boolean(current.showExposure)} label="Show exposure" onChange={(value) => patch({ showExposure: value })} /><CheckField checked={Boolean(current.showPnl)} label="Show P&L" onChange={(value) => patch({ showPnl: value })} /></>;
   if (id === "strategy") return <CheckField checked={Boolean(current.showSignals)} label="Show recent signals" onChange={(value) => patch({ showSignals: value })} />;
   if (id === "scanner") return <><NumberField label="Rows" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showActivity)} label="Show market activity" onChange={(value) => patch({ showActivity: value })} /></>;
   if (id === "orders") return <><NumberField label="Rows" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showOrderIds)} label="Show order IDs" onChange={(value) => patch({ showOrderIds: value })} /></>;
   if (id === "fills") return <><NumberField label="Rows" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showCommission)} label="Show commission" onChange={(value) => patch({ showCommission: value })} /></>;
+  if (id === "positions") return <><NumberField label="Rows" max={100} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showPnl)} label="Show P&L" onChange={(value) => patch({ showPnl: value })} /></>;
+  if (id === "closed_trades") return <><NumberField label="Rows" max={100} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showFees)} label="Show fees" onChange={(value) => patch({ showFees: value })} /></>;
+  if (id === "activity") return <NumberField label="Rows" max={100} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} />;
   if (id === "news") return <><SelectField label="Lookback hours" onChange={(value) => patch({ lookbackHours: Number(value) })} options={["1", "6", "24", "168", "720"]} value={String(current.lookbackHours)} /><SelectField label="News type" onChange={(value) => patch({ kind: value })} options={["all", "company", "insights", "analyst", "multi", "ai", "market"]} value={String(current.kind)} /><SelectField label="Text coverage" onChange={(value) => patch({ content: value })} options={["all", "full", "title"]} value={String(current.content)} /></>;
   if (id === "ticker_news") return <><SelectField label="Lookback hours" onChange={(value) => patch({ lookbackHours: Number(value) })} options={["24", "72", "168", "720"]} value={String(current.lookbackHours)} /><CheckField checked={Boolean(current.showTeaser)} label="Show teaser" onChange={(value) => patch({ showTeaser: value })} /><div className="canvas-settings-note">Ticker comes from the selected link color. Hot, cold, and old states use the shared clock.</div></>;
   if (id === "news_detail") return <div className="canvas-settings-note">This reader follows the most recently selected news article in this canvas.</div>;
@@ -2111,6 +2213,9 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
     chart: { ...DEFAULT_SETTINGS.chart, ...(stored.chart ?? {}), timeframe, visibleIndicators: [...visibleIndicators] },
     microstructure: { limit: 1024 },
     fills: { ...DEFAULT_SETTINGS.fills, ...(stored.fills ?? {}) },
+    positions: { ...DEFAULT_SETTINGS.positions, ...(stored.positions ?? {}) },
+    closed_trades: { ...DEFAULT_SETTINGS.closed_trades, ...(stored.closed_trades ?? {}) },
+    activity: { ...DEFAULT_SETTINGS.activity, ...(stored.activity ?? {}) },
     journal: { ...DEFAULT_SETTINGS.journal, ...(stored.journal ?? {}) },
     news: { ...DEFAULT_SETTINGS.news, ...(stored.news ?? {}) },
     ticker_news: { ...DEFAULT_SETTINGS.ticker_news, ...(stored.ticker_news ?? {}) },
@@ -2170,9 +2275,11 @@ function formatChartTimeframe(value: string) {
 }
 function statusLabel(value: WorkspaceWindowStatus) { return value.charAt(0).toUpperCase() + value.slice(1); }
 function previewRowKey(row: PreviewRow, columns: string[], index: number) { return `${columns.map((column) => String(row[column] ?? "")).join("|")}|${index}`; }
-function money(value: unknown) { return typeof value === "number" ? new Intl.NumberFormat("en-US", { currency: "USD", style: "currency" }).format(value) : "—"; }
+function money(value: unknown) { const number = typeof value === "number" ? value : Number(value); return Number.isFinite(number) ? new Intl.NumberFormat("en-US", { currency: "USD", maximumFractionDigits: 2, style: "currency" }).format(number) : "—"; }
 function formatPreviewDate(value?: string) { if (!value) return "this date"; return new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(new Date(`${value}T12:00:00Z`)); }
-function formatCell(value: unknown, column: string) { if (value === null || value === undefined || value === "") return "—"; if (column.includes("time") || column.includes("at_utc")) { const date = new Date(String(value)); return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" }).format(date); } if (typeof value === "number") return new Intl.NumberFormat("en-US", { maximumFractionDigits: column.includes("pct") ? 2 : 4 }).format(value); if (Array.isArray(value)) return value.join(", "); return String(value); }
+function formatCell(value: unknown, column: string) { if (value === null || value === undefined || value === "") return "—"; if (column.includes("time") || column.includes("at_utc")) { const date = new Date(String(value)); return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit", timeZone: "America/New_York" }).format(date); } const numeric = typeof value === "number" ? value : /^-?\d+(?:\.\d+)?$/.test(String(value)) ? Number(value) : Number.NaN; if (Number.isFinite(numeric)) { if (isMoneyColumn(column)) return new Intl.NumberFormat("en-US", { currency: "USD", maximumFractionDigits: 4, minimumFractionDigits: column.includes("price") || column === "mark" || column === "limit" || column === "stop" ? 2 : 0, style: "currency" }).format(numeric); return new Intl.NumberFormat("en-US", { maximumFractionDigits: column.includes("pct") ? 2 : 4 }).format(numeric); } if (Array.isArray(value)) return value.join(", "); return String(value); }
+function isMoneyColumn(column: string) { return ["price", "mark", "limit", "stop", "market_value", "average_price", "unrealized_pnl", "realized_pnl", "gross_pnl", "net_pnl", "fees", "commission", "net_amount", "cash", "settled", "net_liquidation", "entry_price", "exit_price"].some((key) => column === key || column.endsWith(`_${key}`)); }
+function cellTone(value: unknown, column: string) { if (!["unrealized_pnl", "realized_pnl", "gross_pnl", "net_pnl"].includes(column)) return "neutral"; const number = Number(value); return number > 0 ? "positive" : number < 0 ? "negative" : "neutral"; }
 function containerTitle(id: WorkspaceContainerId) { return TRADING_WORKSPACE_CONTAINERS.find((definition) => definition.id === id)?.title ?? id; }
 function workspaceContainerKind(instanceId: string, state?: CanvasWorkspaceState | null): WorkspaceContainerId {
   const stored = state?.instances[instanceId];

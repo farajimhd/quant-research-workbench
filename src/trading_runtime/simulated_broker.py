@@ -7,6 +7,21 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from src.market_engine.events import MarketEvent, QuoteEvent, TradeEvent
+from src.trading_runtime.domain import BrokerAccount as CanonicalBrokerAccount
+from src.trading_runtime.domain import BrokerProvider
+from src.trading_runtime.domain import Execution as CanonicalExecution
+from src.trading_runtime.domain import OrderState as CanonicalOrderState
+from src.trading_runtime.domain import PositionState as CanonicalPositionState
+from src.trading_runtime.domain import SnapshotManifest
+from src.trading_runtime.domain import BrokerEventEnvelope, BrokerEventType, OrderIntent, TradingMode
+from src.trading_runtime.canonical_commands import intent_to_ibkr_request, lifecycle_event, response_events
+from src.trading_runtime.ibkr_normalizer import (
+    normalize_account_values,
+    normalize_execution,
+    normalize_ledger,
+    normalize_order,
+    normalize_position_snapshot,
+)
 from src.trading_runtime.ibkr_schema import (
     OPEN_ORDER_STATUSES,
     AccountLedger,
@@ -102,12 +117,13 @@ class SimulatedBrokerAdapter:
     integration tests, while market and order semantics belong here.
     """
 
-    def __init__(self, account_ids: list[str], config: SimulationConfig | None = None) -> None:
+    def __init__(self, account_ids: list[str], config: SimulationConfig | None = None, *, mode: TradingMode = TradingMode.REPLAY) -> None:
         if not account_ids or any(not item.strip() for item in account_ids):
             raise ValueError("At least one non-empty simulated account id is required")
         if len(set(account_ids)) != len(account_ids):
             raise ValueError("Simulated account ids must be unique")
         self.config = config or SimulationConfig()
+        self.mode = mode
         self._account_ids = list(account_ids)
         self._cash = {account_id: self.config.initial_cash for account_id in account_ids}
         self._realized_pnl = {account_id: 0.0 for account_id in account_ids}
@@ -129,6 +145,22 @@ class SimulatedBrokerAdapter:
     async def accounts(self) -> list[str]:
         self._require_initialized()
         return list(self._account_ids)
+
+    async def canonical_accounts(self) -> list[CanonicalBrokerAccount]:
+        self._require_initialized()
+        return [
+            CanonicalBrokerAccount(
+                provider=BrokerProvider.SIMULATED,
+                account_id=account_id,
+                base_currency=self.config.base_currency,
+                account_type="SIMULATED",
+                alias=account_id,
+                title="Deterministic simulated account",
+                can_view=True,
+                can_trade=True,
+            )
+            for account_id in self._account_ids
+        ]
 
     async def preview_orders(self, account_id: str, orders: list[OrderRequest]) -> list[dict[str, Any]]:
         self._require_account(account_id)
@@ -178,6 +210,18 @@ class SimulatedBrokerAdapter:
                 results.append({"order_id": order_id, "order_status": status.value, "local_order_id": resolved.cOID})
             return results
 
+    async def submit_intents(self, account_id: str, intents: list[OrderIntent]) -> list[BrokerEventEnvelope]:
+        if not intents:
+            raise ValueError("intents cannot be empty")
+        if any(intent.account_id != account_id for intent in intents):
+            raise ValueError("Every canonical intent must match the path account")
+        rows = await self.place_orders(account_id, [intent_to_ibkr_request(intent) for intent in intents])
+        events: list[BrokerEventEnvelope] = []
+        for index, intent in enumerate(intents):
+            matched = [rows[index]] if index < len(rows) else []
+            events.extend(response_events(intent, matched, BrokerProvider.SIMULATED, self.mode))
+        return events
+
     async def reply(self, reply_id: str, confirmed: bool) -> list[dict[str, Any]]:
         raise ValueError(f"Simulated orders do not generate IBKR precautionary reply {reply_id}")
 
@@ -210,9 +254,21 @@ class SimulatedBrokerAdapter:
             self._cancel_children(state.request.cOID, "Parent order was cancelled")
             return {"msg": "Request was submitted", "order_id": int(order_id), "conid": state.request.conid, "account": account_id}
 
+    async def cancel(self, account_id: str, broker_order_id: str) -> list[BrokerEventEnvelope]:
+        payload = await self.cancel_order(account_id, broker_order_id)
+        return [lifecycle_event(event_type=BrokerEventType.ORDER_STATUS_CHANGED, account_id=account_id, broker_order_id=broker_order_id, payload=payload, provider=BrokerProvider.SIMULATED, mode=self.mode)]
+
+    async def replace(self, account_id: str, broker_order_id: str, intent: OrderIntent) -> list[BrokerEventEnvelope]:
+        rows = await self.modify_order(account_id, broker_order_id, intent_to_ibkr_request(intent))
+        return response_events(intent, rows, BrokerProvider.SIMULATED, self.mode)
+
     async def live_orders(self) -> list[LiveOrder]:
         self._require_initialized()
         return [state.snapshot() for state in self._sorted_orders()]
+
+    async def canonical_orders(self, account_id: str = "") -> list[CanonicalOrderState]:
+        rows = [normalize_order(order.to_cpapi(), account_id) for order in await self.live_orders()]
+        return [row for row in rows if not account_id or row.account_id == account_id]
 
     async def trades(self, days: int = 7) -> list[Execution]:
         if not 1 <= days <= 7:
@@ -222,6 +278,10 @@ class SimulatedBrokerAdapter:
         end = max(execution.trade_time for execution in self._executions)
         start = end - timedelta(days=days)
         return [execution for execution in self._executions if execution.trade_time >= start]
+
+    async def canonical_executions(self, account_id: str = "", days: int = 7) -> list[CanonicalExecution]:
+        rows = [normalize_execution(execution.to_cpapi(), account_id) for execution in await self.trades(days)]
+        return [row for row in rows if not account_id or row.account_id == account_id]
 
     async def positions(self, account_id: str) -> list[PortfolioPosition]:
         self._require_account(account_id)
@@ -248,6 +308,10 @@ class SimulatedBrokerAdapter:
             )
         return rows
 
+    async def canonical_position_snapshot(self, account_id: str) -> tuple[SnapshotManifest, list[CanonicalPositionState]]:
+        rows = [position.to_cpapi() for position in await self.positions(account_id)]
+        return normalize_position_snapshot(rows, account_id)
+
     async def account_summary(self, account_id: str) -> AccountSummary:
         self._require_account(account_id)
         positions = await self.positions(account_id)
@@ -265,6 +329,9 @@ class SimulatedBrokerAdapter:
             timestamp=self._latest_event_time(),
         )
 
+    async def canonical_account_values(self, account_id: str):
+        return normalize_account_values((await self.account_summary(account_id)).to_cpapi(), account_id)
+
     async def account_ledger(self, account_id: str) -> AccountLedger:
         summary = await self.account_summary(account_id)
         positions = await self.positions(account_id)
@@ -279,6 +346,9 @@ class SimulatedBrokerAdapter:
             currency=self.config.base_currency,
             timestamp=summary.timestamp,
         )
+
+    async def canonical_ledger(self, account_id: str):
+        return normalize_ledger((await self.account_ledger(account_id)).to_cpapi(), account_id)
 
     async def on_market_event(self, event: MarketEvent) -> list[Execution]:
         self._require_initialized()

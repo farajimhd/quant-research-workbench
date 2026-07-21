@@ -4,10 +4,12 @@ import json
 import ssl
 import urllib.parse
 import urllib.request
+from uuid import uuid4
 from dataclasses import dataclass
 from typing import Any
 
 from src.trading_runtime.journal import JournalRecord, TradingJournal
+from src.trading_runtime.domain import BrokerEventEnvelope, OrderIntent, TradingStateSnapshot, json_safe
 
 
 TRADING_TABLE_DDL = (
@@ -64,6 +66,121 @@ TRADING_TABLE_DDL = (
         reconcile_id UUID, run_id UUID, account_id String, status LowCardinality(String),
         event_time DateTime64(9, 'UTC'), differences_json String
     ) ENGINE = MergeTree PARTITION BY toYYYYMM(event_time) ORDER BY (run_id, account_id, event_time, reconcile_id)""",
+    """CREATE TABLE IF NOT EXISTS q_live.tr_broker_account_v2 (
+        provider LowCardinality(String), account_id String, base_currency LowCardinality(String), account_type String,
+        alias String, title String, parent_account_id String, can_view UInt8, can_trade UInt8,
+        valid_at DateTime64(6, 'UTC'), recorded_at DateTime64(6, 'UTC'), raw_json String
+    ) ENGINE = ReplacingMergeTree(recorded_at) ORDER BY (provider, account_id, valid_at)""",
+    """CREATE TABLE IF NOT EXISTS q_live.tr_broker_event_v2 (
+        event_id UUID, schema_version UInt16, event_type LowCardinality(String), provider LowCardinality(String),
+        mode LowCardinality(String), account_id String, run_id String, broker_session_id String, broker_event_id String,
+        command_id String, correlation_id String, causation_id String, broker_order_id String, client_order_id String,
+        execution_id String, source_event_time DateTime64(9, 'UTC'), received_at DateTime64(6, 'UTC'),
+        recorded_at DateTime64(6, 'UTC'), source_sequence UInt64, payload_hash FixedString(64), payload_json String
+    ) ENGINE = MergeTree PARTITION BY toYYYYMM(source_event_time)
+      ORDER BY (provider, account_id, source_event_time, event_id)""",
+    """CREATE TABLE IF NOT EXISTS q_live.tr_order_command_v2 (
+        command_id UUID, run_id String, account_id String, client_order_id String, conid UInt64, symbol LowCardinality(String),
+        side LowCardinality(String), order_type LowCardinality(String), time_in_force LowCardinality(String),
+        quantity Nullable(Decimal(38, 10)), cash_quantity Nullable(Decimal(38, 10)),
+        limit_price Nullable(Decimal(38, 10)), stop_price Nullable(Decimal(38, 10)), outside_rth UInt8,
+        parent_command_id String, oca_group String, strategy_id String, strategy_revision UInt32,
+        created_at DateTime64(9, 'UTC'), metadata_json String
+    ) ENGINE = MergeTree PARTITION BY toYYYYMM(created_at) ORDER BY (run_id, account_id, created_at, command_id)""",
+    """CREATE TABLE IF NOT EXISTS q_live.tr_order_event_v2 (
+        event_id UUID, account_id String, broker_order_id String, client_order_id String, command_id String,
+        conid UInt64, symbol LowCardinality(String), lifecycle_state LowCardinality(String), broker_status_raw String,
+        total_quantity Decimal(38, 10), filled_quantity Decimal(38, 10), remaining_quantity Decimal(38, 10),
+        average_fill_price Decimal(38, 10), can_modify UInt8, can_cancel UInt8, terminal UInt8,
+        rejection_code String, rejection_reason String, source_event_time DateTime64(9, 'UTC'), received_at DateTime64(6, 'UTC'), raw_json String
+    ) ENGINE = MergeTree PARTITION BY toYYYYMM(source_event_time)
+      ORDER BY (account_id, broker_order_id, source_event_time, event_id)""",
+    """CREATE TABLE IF NOT EXISTS q_live.tr_execution_event_v2 (
+        event_id UUID, execution_id String, account_id String, broker_order_id String, client_order_id String,
+        conid UInt64, symbol LowCardinality(String), side LowCardinality(String), quantity Decimal(38, 10),
+        price Decimal(38, 10), exchange LowCardinality(String), commission Nullable(Decimal(38, 10)),
+        commission_currency LowCardinality(String), commission_status LowCardinality(String),
+        net_amount Nullable(Decimal(38, 10)), liquidity String, source_event_time DateTime64(9, 'UTC'),
+        received_at DateTime64(6, 'UTC'), raw_json String
+    ) ENGINE = MergeTree PARTITION BY toYYYYMM(source_event_time)
+      ORDER BY (account_id, execution_id, source_event_time, event_id)""",
+    """CREATE TABLE IF NOT EXISTS q_live.tr_commission_event_v2 (
+        event_id UUID, execution_id String, account_id String, commission Decimal(38, 10), currency LowCardinality(String),
+        realized_pnl Nullable(Decimal(38, 10)), source_event_time DateTime64(9, 'UTC'), received_at DateTime64(6, 'UTC'), raw_json String
+    ) ENGINE = MergeTree PARTITION BY toYYYYMM(source_event_time)
+      ORDER BY (account_id, execution_id, source_event_time, event_id)""",
+    """CREATE TABLE IF NOT EXISTS q_live.tr_account_value_event_v2 (
+        event_id UUID, account_id String, key LowCardinality(String), segment LowCardinality(String), value String,
+        monetary_value Nullable(Decimal(38, 10)), currency LowCardinality(String), is_null UInt8, severity Int16,
+        source_event_time DateTime64(9, 'UTC'), received_at DateTime64(6, 'UTC'), raw_json String
+    ) ENGINE = MergeTree PARTITION BY toYYYYMM(source_event_time)
+      ORDER BY (account_id, key, segment, currency, source_event_time, event_id)""",
+    """CREATE TABLE IF NOT EXISTS q_live.tr_ledger_event_v2 (
+        event_id UUID, account_id String, currency LowCardinality(String), is_base UInt8, values_json String,
+        source_event_time DateTime64(9, 'UTC'), received_at DateTime64(6, 'UTC'), raw_json String
+    ) ENGINE = MergeTree PARTITION BY toYYYYMM(source_event_time)
+      ORDER BY (account_id, currency, source_event_time, event_id)""",
+    """CREATE TABLE IF NOT EXISTS q_live.tr_snapshot_manifest_v2 (
+        snapshot_id UUID, entity_kind LowCardinality(String), account_id String, provider LowCardinality(String),
+        started_at DateTime64(6, 'UTC'), completed_at Nullable(DateTime64(6, 'UTC')), complete UInt8,
+        expected_pages Nullable(UInt32), received_pages UInt32, item_count UInt32, source_watermark String, error String
+    ) ENGINE = MergeTree PARTITION BY toYYYYMM(started_at) ORDER BY (account_id, entity_kind, started_at, snapshot_id)""",
+    """CREATE TABLE IF NOT EXISTS q_live.tr_position_snapshot_item_v2 (
+        snapshot_id UUID, account_id String, conid UInt64, model String, symbol LowCardinality(String),
+        security_type LowCardinality(String), currency LowCardinality(String), quantity Decimal(38, 10),
+        market_price Decimal(38, 10), market_value Decimal(38, 10), average_cost Decimal(38, 10),
+        average_price Decimal(38, 10), realized_pnl Decimal(38, 10), unrealized_pnl Decimal(38, 10),
+        source_event_time DateTime64(9, 'UTC'), received_at DateTime64(6, 'UTC'), raw_json String
+    ) ENGINE = MergeTree PARTITION BY toYYYYMM(source_event_time)
+      ORDER BY (account_id, snapshot_id, conid, model)""",
+    """CREATE TABLE IF NOT EXISTS q_live.tr_reconciliation_event_v2 (
+        reconcile_id UUID, account_id String, provider LowCardinality(String), status LowCardinality(String),
+        source_event_time DateTime64(9, 'UTC'), differences_json String
+    ) ENGINE = MergeTree PARTITION BY toYYYYMM(source_event_time)
+      ORDER BY (account_id, source_event_time, reconcile_id)""",
+    """CREATE TABLE IF NOT EXISTS q_live.tr_round_trip_trade_v2 (
+        trade_id UUID, account_id String, conid UInt64, symbol LowCardinality(String), side LowCardinality(String),
+        opened_at DateTime64(9, 'UTC'), closed_at DateTime64(9, 'UTC'), quantity Decimal(38, 10),
+        entry_price Decimal(38, 10), exit_price Decimal(38, 10), gross_pnl Decimal(38, 10),
+        fees Decimal(38, 10), net_pnl Decimal(38, 10), strategy_id String, exit_reason String, execution_ids Array(String)
+    ) ENGINE = MergeTree PARTITION BY toYYYYMM(closed_at) ORDER BY (account_id, closed_at, trade_id)""",
+    """CREATE VIEW IF NOT EXISTS q_live.tr_order_current_v2 AS
+        SELECT account_id, broker_order_id,
+               argMax(client_order_id, source_event_time) AS client_order_id,
+               argMax(conid, source_event_time) AS conid,
+               argMax(symbol, source_event_time) AS symbol,
+               argMax(lifecycle_state, source_event_time) AS lifecycle_state,
+               argMax(broker_status_raw, source_event_time) AS broker_status_raw,
+               argMax(total_quantity, source_event_time) AS total_quantity,
+               argMax(filled_quantity, source_event_time) AS filled_quantity,
+               argMax(remaining_quantity, source_event_time) AS remaining_quantity,
+               argMax(average_fill_price, source_event_time) AS average_fill_price,
+               argMax(can_modify, source_event_time) AS can_modify,
+               argMax(can_cancel, source_event_time) AS can_cancel,
+               argMax(terminal, source_event_time) AS terminal,
+               max(source_event_time) AS source_event_time
+        FROM q_live.tr_order_event_v2 GROUP BY account_id, broker_order_id""",
+    """CREATE VIEW IF NOT EXISTS q_live.tr_account_value_current_v2 AS
+        SELECT account_id, key, segment, currency,
+               argMax(value, source_event_time) AS value,
+               argMax(monetary_value, source_event_time) AS monetary_value,
+               argMax(is_null, source_event_time) AS is_null,
+               max(source_event_time) AS source_event_time
+        FROM q_live.tr_account_value_event_v2 GROUP BY account_id, key, segment, currency""",
+    """CREATE VIEW IF NOT EXISTS q_live.tr_ledger_current_v2 AS
+        SELECT account_id, currency,
+               argMax(is_base, source_event_time) AS is_base,
+               argMax(values_json, source_event_time) AS values_json,
+               max(source_event_time) AS source_event_time
+        FROM q_live.tr_ledger_event_v2 GROUP BY account_id, currency""",
+    """CREATE VIEW IF NOT EXISTS q_live.tr_position_current_v2 AS
+        SELECT item.* FROM q_live.tr_position_snapshot_item_v2 AS item
+        INNER JOIN (
+            SELECT account_id, argMax(snapshot_id, completed_at) AS snapshot_id
+            FROM q_live.tr_snapshot_manifest_v2
+            WHERE entity_kind = 'position' AND complete = 1 AND completed_at IS NOT NULL
+            GROUP BY account_id
+        ) AS latest USING (account_id, snapshot_id)""",
 )
 
 
@@ -108,6 +225,205 @@ class ClickHouseTradingSink:
             "created_at": str(strategy["created_at"]),
         }
         self._execute("INSERT INTO q_live.tr_strategy_v1 FORMAT JSONEachRow", json.dumps(row, separators=(",", ":")))
+
+    def persist_canonical_events(self, events: list[BrokerEventEnvelope]) -> int:
+        rows = []
+        for event in events:
+            rows.append(
+                {
+                    "event_id": event.event_id,
+                    "schema_version": event.schema_version,
+                    "event_type": event.event_type.value,
+                    "provider": event.provider.value,
+                    "mode": event.mode.value,
+                    "account_id": event.account_id,
+                    "run_id": event.run_id,
+                    "broker_session_id": event.broker_session_id,
+                    "broker_event_id": event.broker_event_id,
+                    "command_id": event.command_id,
+                    "correlation_id": event.correlation_id,
+                    "causation_id": event.causation_id,
+                    "broker_order_id": event.broker_order_id,
+                    "client_order_id": event.client_order_id,
+                    "execution_id": event.execution_id,
+                    "source_event_time": event.source_event_time.isoformat(),
+                    "received_at": event.received_at.isoformat(),
+                    "recorded_at": event.recorded_at.isoformat(),
+                    "source_sequence": event.source_sequence,
+                    "payload_hash": event.payload_hash,
+                    "payload_json": json.dumps(json_safe(event.payload), separators=(",", ":"), sort_keys=True),
+                }
+            )
+        self._insert_rows("tr_broker_event_v2", rows)
+        return len(rows)
+
+    def persist_order_intents(self, intents: list[OrderIntent]) -> int:
+        self._insert_rows(
+            "tr_order_command_v2",
+            [
+                {
+                    "command_id": row.command_id, "run_id": row.run_id, "account_id": row.account_id,
+                    "client_order_id": row.client_order_id, "conid": row.instrument.conid,
+                    "symbol": row.instrument.symbol, "side": row.side, "order_type": row.order_type,
+                    "time_in_force": row.time_in_force, "quantity": row.quantity, "cash_quantity": row.cash_quantity,
+                    "limit_price": row.limit_price, "stop_price": row.stop_price, "outside_rth": int(row.outside_rth),
+                    "parent_command_id": row.parent_command_id, "oca_group": row.oca_group,
+                    "strategy_id": row.strategy_id, "strategy_revision": row.strategy_revision,
+                    "created_at": row.created_at.isoformat(),
+                    "metadata_json": json.dumps(json_safe(row.metadata), separators=(",", ":"), sort_keys=True),
+                }
+                for row in intents
+            ],
+        )
+        return len(intents)
+
+    def persist_canonical_snapshot(self, snapshot: TradingStateSnapshot) -> None:
+        recorded_at = snapshot.as_of.isoformat()
+        self._insert_rows(
+            "tr_broker_account_v2",
+            [
+                {
+                    "provider": row.provider.value,
+                    "account_id": row.account_id,
+                    "base_currency": row.base_currency,
+                    "account_type": row.account_type,
+                    "alias": row.alias,
+                    "title": row.title,
+                    "parent_account_id": row.parent_account_id,
+                    "can_view": int(row.can_view),
+                    "can_trade": int(row.can_trade),
+                    "valid_at": row.valid_at.isoformat(),
+                    "recorded_at": recorded_at,
+                    "raw_json": json.dumps(json_safe(row.raw), separators=(",", ":"), sort_keys=True),
+                }
+                for row in snapshot.accounts
+            ],
+        )
+        self._insert_rows(
+            "tr_account_value_event_v2",
+            [
+                {
+                    "event_id": str(uuid4()), "account_id": row.account_id, "key": row.key, "segment": row.segment,
+                    "value": row.value, "monetary_value": row.monetary_value, "currency": row.currency,
+                    "is_null": int(row.is_null), "severity": row.severity,
+                    "source_event_time": row.source_event_time.isoformat(), "received_at": row.received_at.isoformat(),
+                    "raw_json": json.dumps(json_safe(row.raw), separators=(",", ":"), sort_keys=True),
+                }
+                for row in snapshot.account_values
+            ],
+        )
+        self._insert_rows(
+            "tr_ledger_event_v2",
+            [
+                {
+                    "event_id": str(uuid4()), "account_id": row.account_id, "currency": row.currency,
+                    "is_base": int(row.is_base),
+                    "values_json": json.dumps(json_safe(row.values), separators=(",", ":"), sort_keys=True),
+                    "source_event_time": row.source_event_time.isoformat(), "received_at": row.received_at.isoformat(),
+                    "raw_json": json.dumps(json_safe(row.raw), separators=(",", ":"), sort_keys=True),
+                }
+                for row in snapshot.ledger
+            ],
+        )
+        self._insert_rows(
+            "tr_order_event_v2",
+            [
+                {
+                    "event_id": str(uuid4()), "account_id": row.account_id, "broker_order_id": row.broker_order_id,
+                    "client_order_id": row.client_order_id, "command_id": row.command_id,
+                    "conid": row.instrument.conid, "symbol": row.instrument.symbol,
+                    "lifecycle_state": row.lifecycle_state.value, "broker_status_raw": row.broker_status_raw,
+                    "total_quantity": row.total_quantity, "filled_quantity": row.filled_quantity,
+                    "remaining_quantity": row.remaining_quantity, "average_fill_price": row.average_fill_price,
+                    "can_modify": int(row.can_modify), "can_cancel": int(row.can_cancel), "terminal": int(row.terminal),
+                    "rejection_code": row.rejection_code, "rejection_reason": row.rejection_reason,
+                    "source_event_time": row.source_event_time.isoformat(), "received_at": row.received_at.isoformat(),
+                    "raw_json": json.dumps(json_safe(row.raw), separators=(",", ":"), sort_keys=True),
+                }
+                for row in snapshot.orders
+            ],
+        )
+        self._insert_rows(
+            "tr_execution_event_v2",
+            [
+                {
+                    "event_id": str(uuid4()), "execution_id": row.execution_id, "account_id": row.account_id,
+                    "broker_order_id": row.broker_order_id, "client_order_id": row.client_order_id,
+                    "conid": row.instrument.conid, "symbol": row.instrument.symbol, "side": row.side,
+                    "quantity": row.quantity, "price": row.price, "exchange": row.exchange,
+                    "commission": row.commission, "commission_currency": row.commission_currency,
+                    "commission_status": row.commission_status, "net_amount": row.net_amount, "liquidity": row.liquidity,
+                    "source_event_time": row.source_event_time.isoformat(), "received_at": row.received_at.isoformat(),
+                    "raw_json": json.dumps(json_safe(row.raw), separators=(",", ":"), sort_keys=True),
+                }
+                for row in snapshot.executions
+            ],
+        )
+        positions_by_snapshot: dict[tuple[str, str], list[Any]] = {}
+        for row in snapshot.positions:
+            positions_by_snapshot.setdefault((row.account_id, row.snapshot_id), []).append(row)
+        for account_id in snapshot.account_ids:
+            if not any(key[0] == account_id for key in positions_by_snapshot):
+                positions_by_snapshot[(account_id, str(uuid4()))] = []
+        self._insert_rows(
+            "tr_snapshot_manifest_v2",
+            [
+                {
+                    "snapshot_id": snapshot_id, "entity_kind": "position", "account_id": account_id,
+                    "provider": snapshot.provider.value,
+                    "started_at": (min(row.received_at for row in rows) if rows else snapshot.as_of).isoformat(),
+                    "completed_at": (max(row.received_at for row in rows) if rows else snapshot.as_of).isoformat(), "complete": 1,
+                    "expected_pages": 1, "received_pages": 1, "item_count": len(rows),
+                    "source_watermark": (max(row.source_event_time for row in rows) if rows else snapshot.as_of).isoformat(), "error": "",
+                }
+                for (account_id, snapshot_id), rows in positions_by_snapshot.items()
+            ],
+        )
+        self._insert_rows(
+            "tr_position_snapshot_item_v2",
+            [
+                {
+                    "snapshot_id": row.snapshot_id, "account_id": row.account_id, "conid": row.instrument.conid,
+                    "model": row.model, "symbol": row.instrument.symbol, "security_type": row.instrument.security_type,
+                    "currency": row.instrument.currency, "quantity": row.quantity, "market_price": row.market_price,
+                    "market_value": row.market_value, "average_cost": row.average_cost, "average_price": row.average_price,
+                    "realized_pnl": row.realized_pnl, "unrealized_pnl": row.unrealized_pnl,
+                    "source_event_time": row.source_event_time.isoformat(), "received_at": row.received_at.isoformat(),
+                    "raw_json": json.dumps(json_safe(row.raw), separators=(",", ":"), sort_keys=True),
+                }
+                for row in snapshot.positions
+            ],
+        )
+        self._insert_rows(
+            "tr_round_trip_trade_v2",
+            [
+                {
+                    "trade_id": row.trade_id,
+                    "account_id": row.account_id,
+                    "conid": row.instrument.conid,
+                    "symbol": row.instrument.symbol,
+                    "side": row.side,
+                    "opened_at": row.opened_at.isoformat(),
+                    "closed_at": row.closed_at.isoformat(),
+                    "quantity": row.quantity,
+                    "entry_price": row.entry_price,
+                    "exit_price": row.exit_price,
+                    "gross_pnl": row.gross_pnl,
+                    "fees": row.fees,
+                    "net_pnl": row.net_pnl,
+                    "strategy_id": row.strategy_id,
+                    "exit_reason": row.exit_reason,
+                    "execution_ids": list(row.execution_ids),
+                }
+                for row in snapshot.closed_trades
+            ],
+        )
+
+    def _insert_rows(self, table: str, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
+        body = "\n".join(json.dumps(json_safe(row), separators=(",", ":"), default=str) for row in rows)
+        self._execute(f"INSERT INTO q_live.{table} FORMAT JSONEachRow", body)
 
     def _execute(self, query: str, body: str = "") -> str:
         url = f"{self.endpoint_url.rstrip('/')}?{urllib.parse.urlencode({'query': query})}"

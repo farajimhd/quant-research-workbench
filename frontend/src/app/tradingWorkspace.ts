@@ -7,8 +7,11 @@ export type WorkspaceContainerId =
   | "scanner"
   | "strategy"
   | "portfolio"
+  | "positions"
   | "orders"
   | "fills"
+  | "closed_trades"
+  | "activity"
   | "news"
   | "ticker_news"
   | "news_detail"
@@ -99,8 +102,8 @@ const xbrlHistory: WorkspaceSourceLayer = {
 };
 
 const liveBroker: WorkspaceSourceLayer = {
-  authority: "IBKR Client Portal API",
-  description: "Broker-authoritative accounts, orders, executions, positions, ledger, and portfolio state.",
+  authority: "Canonical trading domain v2 / IBKR Client Portal adapter",
+  description: "Lossless IBKR evidence normalized into broker-neutral account, order, execution, position, ledger, and portfolio contracts.",
   id: "ibkr-live",
   label: "IBKR",
   timeBasis: "exchange-clock",
@@ -117,8 +120,8 @@ const referenceFacts: WorkspaceSourceLayer = {
 };
 
 const simulatedBroker: WorkspaceSourceLayer = {
-  authority: "src/trading_runtime/simulated_broker.py",
-  description: "Deterministic IBKR-shaped account, order, execution, position, and portfolio simulation.",
+  authority: "src/trading_runtime/domain.py / simulated_broker.py",
+  description: "Deterministic broker events projected through the same canonical contracts used by live IBKR.",
   id: "simulated-broker",
   label: "Simulated IBKR",
   timeBasis: "run-clock",
@@ -215,9 +218,18 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
     id: "portfolio",
     title: "Portfolio",
     groupedTitle: "Portfolio",
-    description: "Account summaries, cash, equity, P&L, positions, and exposure using IBKR-shaped resources.",
+    description: "Account capital, liquidity, margin capacity, P&L, exposure, ledger currencies, freshness, and reconciliation state.",
     modes: allModes,
     defaultOpen: { live: true, paper: true, replay: true, backtest: true, backtest_debug: true },
+    sourceByMode: brokerSourceByMode,
+  },
+  {
+    id: "positions",
+    title: "Positions",
+    groupedTitle: "Positions",
+    description: "Broker-authoritative current positions with contract identity, quantity, mark, cost, value, P&L, model, and snapshot freshness.",
+    modes: allModes,
+    defaultOpen: { live: true, paper: true, replay: true, backtest_debug: true },
     sourceByMode: brokerSourceByMode,
   },
   {
@@ -231,12 +243,30 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   },
   {
     id: "fills",
-    title: "Executions & Fills",
-    groupedTitle: "Executions & fills",
-    description: "Partial and complete executions, commissions, liquidity evidence, and account attribution.",
+    title: "Executions",
+    groupedTitle: "Executions",
+    description: "Immutable partial and complete execution reports, venue, commission state, order correlation, and account attribution.",
     modes: allModes,
     defaultOpen: { backtest: true, backtest_debug: true },
     sourceByMode: brokerSourceByMode,
+  },
+  {
+    id: "closed_trades",
+    title: "Closed Trades",
+    groupedTitle: "Closed trades",
+    description: "Derived FIFO entry-to-exit strategy round trips, explicitly separate from IBKR execution reports and tax lots.",
+    modes: allModes,
+    defaultOpen: { backtest: true, backtest_debug: true },
+    sourceByMode: brokerSourceByMode,
+  },
+  {
+    id: "activity",
+    title: "Trading Activity",
+    groupedTitle: "Trading activity",
+    description: "Correlated order-command, warning, status, execution, commission, position, account, and reconciliation evidence.",
+    modes: allModes,
+    defaultOpen: { backtest_debug: true },
+    sourceByMode: Object.fromEntries(allModes.map((mode) => [mode, runtimeBinding("Canonical immutable broker and runtime evidence", [mode === "live" || mode === "paper" ? liveBroker : simulatedBroker, tradingJournal])])),
   },
   {
     id: "news",

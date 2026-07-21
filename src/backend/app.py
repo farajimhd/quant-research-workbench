@@ -38,6 +38,7 @@ from src.backtest.metrics import portfolio_pnl_breakdown
 from src.backtest.results import list_runs, read_run_metadata
 from src.backend.json_utils import json_safe, parse_csv_list
 from src.backend.canvas_preview_service import canvas_preview_payload
+from src.backend.canonical_trading_service import canonical_trading_state
 from src.backend.market_data_service import (
     apply_chart_volume_convergence_columns,
     artifact_records,
@@ -4579,6 +4580,81 @@ def real_live_trading_orders(payload: RealLiveOrderSubmit) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+def _canonical_trading_state(
+    account_type: str,
+    account_keys: str,
+    refresh: bool = False,
+    *,
+    mode: str = "paper",
+    run_id: str = "",
+    output_root: str = str(DEFAULT_OUTPUT_ROOT),
+) -> dict[str, Any]:
+    try:
+        run_dir = ""
+        if mode in {"backtest", "backtest_debug"}:
+            root = Path(output_root).resolve()
+            candidate = (root / run_id).resolve()
+            if not run_id:
+                raise ValueError("run_id is required for backtest canonical state")
+            if root != candidate and root not in candidate.parents:
+                raise ValueError("Invalid run path")
+            if not candidate.exists():
+                raise ValueError("Backtest run not found")
+            run_dir = str(candidate)
+        return canonical_trading_state(mode=mode, account_type=account_type, account_keys=account_keys, run_dir=run_dir, refresh=refresh)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/trading/state")
+def trading_state(account_type: str = "paper", account_keys: str = "", refresh: bool = False, mode: str = "paper", run_id: str = "", output_root: str = str(DEFAULT_OUTPUT_ROOT)) -> dict[str, Any]:
+    return _canonical_trading_state(account_type, account_keys, refresh, mode=mode, run_id=run_id, output_root=output_root)
+
+
+@app.get("/api/trading/accounts")
+def trading_accounts(account_type: str = "paper", account_keys: str = "", refresh: bool = False, mode: str = "paper", run_id: str = "", output_root: str = str(DEFAULT_OUTPUT_ROOT)) -> dict[str, Any]:
+    state = _canonical_trading_state(account_type, account_keys, refresh, mode=mode, run_id=run_id, output_root=output_root)
+    return {"schema_version": 2, "as_of": state["as_of"], "complete": state["complete"], "stale": state["stale"], "rows": state["accounts"]}
+
+
+@app.get("/api/trading/portfolio")
+def trading_portfolio(account_type: str = "paper", account_keys: str = "", refresh: bool = False, mode: str = "paper", run_id: str = "", output_root: str = str(DEFAULT_OUTPUT_ROOT)) -> dict[str, Any]:
+    state = _canonical_trading_state(account_type, account_keys, refresh, mode=mode, run_id=run_id, output_root=output_root)
+    return {key: state[key] for key in ("schema_version", "mode", "provider", "as_of", "complete", "stale", "stale_reason", "portfolio", "account_values", "ledger")}
+
+
+@app.get("/api/trading/positions")
+def trading_positions(account_type: str = "paper", account_keys: str = "", refresh: bool = False, mode: str = "paper", run_id: str = "", output_root: str = str(DEFAULT_OUTPUT_ROOT)) -> dict[str, Any]:
+    state = _canonical_trading_state(account_type, account_keys, refresh, mode=mode, run_id=run_id, output_root=output_root)
+    return {"schema_version": 2, "as_of": state["as_of"], "complete": state["complete"], "stale": state["stale"], "rows": state["positions"]}
+
+
+@app.get("/api/trading/orders")
+def trading_order_states(account_type: str = "paper", account_keys: str = "", refresh: bool = False, mode: str = "paper", run_id: str = "", output_root: str = str(DEFAULT_OUTPUT_ROOT)) -> dict[str, Any]:
+    state = _canonical_trading_state(account_type, account_keys, refresh, mode=mode, run_id=run_id, output_root=output_root)
+    return {"schema_version": 2, "as_of": state["as_of"], "complete": state["complete"], "stale": state["stale"], "rows": state["orders"]}
+
+
+@app.get("/api/trading/executions")
+def trading_executions(account_type: str = "paper", account_keys: str = "", refresh: bool = False, mode: str = "paper", run_id: str = "", output_root: str = str(DEFAULT_OUTPUT_ROOT)) -> dict[str, Any]:
+    state = _canonical_trading_state(account_type, account_keys, refresh, mode=mode, run_id=run_id, output_root=output_root)
+    return {"schema_version": 2, "as_of": state["as_of"], "complete": state["complete"], "stale": state["stale"], "rows": state["executions"]}
+
+
+@app.get("/api/trading/closed-trades")
+def trading_closed_trades(account_type: str = "paper", account_keys: str = "", refresh: bool = False, mode: str = "paper", run_id: str = "", output_root: str = str(DEFAULT_OUTPUT_ROOT)) -> dict[str, Any]:
+    state = _canonical_trading_state(account_type, account_keys, refresh, mode=mode, run_id=run_id, output_root=output_root)
+    return {"schema_version": 2, "as_of": state["as_of"], "complete": state["complete"], "stale": state["stale"], "note": state["closed_trades_note"], "rows": state["closed_trades"]}
+
+
+@app.get("/api/trading/activity")
+def trading_activity(account_type: str = "paper", account_keys: str = "", refresh: bool = False, mode: str = "paper", run_id: str = "", output_root: str = str(DEFAULT_OUTPUT_ROOT)) -> dict[str, Any]:
+    state = _canonical_trading_state(account_type, account_keys, refresh, mode=mode, run_id=run_id, output_root=output_root)
+    return {"schema_version": 2, "as_of": state["as_of"], "complete": state["complete"], "stale": state["stale"], "rows": state["activity"]}
 
 
 @app.get("/api/trading/strategies")

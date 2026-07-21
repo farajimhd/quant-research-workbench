@@ -19,6 +19,11 @@ from src.backend.trading_runtime_service import (
     historical_bar_chunk,
     historical_day_coverage,
 )
+from src.backend.canonical_trading_service import trading_state_payload
+from src.trading_runtime.domain import BrokerAccount, BrokerEventEnvelope, BrokerEventType, BrokerProvider, TradingMode
+from src.trading_runtime.ibkr_normalizer import normalize_account_values, normalize_execution, normalize_ledger, normalize_order, normalize_position_snapshot
+from src.trading_runtime.projector import TradingStateProjector
+from src.trading_runtime.round_trips import derive_round_trip_trades
 
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -75,6 +80,9 @@ def canvas_preview_payload(
     ]
     reference_price = float(scanner[0].get("last", 100.0)) if scanner else 100.0
 
+    portfolio_fixture = _portfolio_fixture(reference_price)
+    order_fixture = _order_fixture(reference_price)
+    fill_fixture = _fill_fixture(as_of, reference_price)
     return {
         "as_of": as_of.isoformat(),
         "coverage": results.get("coverage", {}),
@@ -85,17 +93,67 @@ def canvas_preview_payload(
             "timeframe": chart_timeframe,
         },
         "errors": errors,
-        "fills": _fill_fixture(as_of, reference_price),
+        "fills": fill_fixture,
         "journal": _journal_fixture(as_of),
         "news": results.get("news", []),
-        "orders": _order_fixture(reference_price),
-        "portfolio": _portfolio_fixture(reference_price),
+        "orders": order_fixture,
+        "portfolio": portfolio_fixture,
         "preview_kind": "point_in_time_configuration",
         "scanner": scanner,
         "sec": results.get("sec", []),
         "strategy": _strategy_fixture(as_of, symbol, reference_price),
+        "trading": _canonical_trading_fixture(as_of, portfolio_fixture, order_fixture, fill_fixture),
         "xbrl": results.get("xbrl", []),
     }
+
+
+def _canonical_trading_fixture(
+    as_of: datetime,
+    portfolio: dict[str, Any],
+    orders: list[dict[str, Any]],
+    executions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    account_id = str(portfolio["account"]["acctId"])
+    projector = TradingStateProjector(TradingMode.REPLAY, BrokerProvider.SIMULATED)
+    projector.set_accounts(
+        [
+            BrokerAccount(
+                provider=BrokerProvider.SIMULATED,
+                account_id=account_id,
+                base_currency="USD",
+                account_type="DEMO",
+                alias="Replay preview",
+                title="Deterministic broker preview",
+                can_view=True,
+                can_trade=True,
+                valid_at=as_of.astimezone(UTC),
+            )
+        ]
+    )
+    summary = {
+        "netliquidation": {"amount": portfolio["summary"]["netLiquidation"], "currency": "USD", "timestamp": int(as_of.timestamp() * 1000)},
+        "availablefunds": {"amount": portfolio["summary"]["availableFunds"], "currency": "USD", "timestamp": int(as_of.timestamp() * 1000)},
+        "excessliquidity": {"amount": portfolio["summary"]["availableFunds"], "currency": "USD", "timestamp": int(as_of.timestamp() * 1000)},
+        "buyingpower": {"amount": portfolio["summary"]["availableFunds"] * 2, "currency": "USD", "timestamp": int(as_of.timestamp() * 1000)},
+        "totalcashvalue": {"amount": 76_120.10, "currency": "USD", "timestamp": int(as_of.timestamp() * 1000)},
+        "grosspositionvalue": {"amount": 26_318.32, "currency": "USD", "timestamp": int(as_of.timestamp() * 1000)},
+    }
+    projector.set_account_values(normalize_account_values(summary, account_id))
+    projector.merge_ledger(normalize_ledger({"BASE": {"cashbalance": 76_120.10, "settledcash": 76_120.10, "stockmarketvalue": 26_318.32, "netliquidationvalue": portfolio["summary"]["netLiquidation"], "currency": "USD", "timestamp": int(as_of.timestamp() * 1000)}}, account_id))
+    manifest, position_rows = normalize_position_snapshot(portfolio["positions"], account_id)
+    projector.apply_position_snapshot(account_id, manifest.snapshot_id, True, position_rows)
+    projector.set_orders([normalize_order(row, account_id) for row in orders])
+    execution_rows = [normalize_execution(row, account_id) for row in executions]
+    projector.set_executions(execution_rows)
+    for row in projector.orders.values():
+        projector.record_activity(BrokerEventEnvelope.create(event_type=BrokerEventType.ORDER_STATUS_CHANGED, provider=BrokerProvider.SIMULATED, mode=TradingMode.REPLAY, account_id=account_id, payload=row.raw, source_event_time=row.source_event_time, broker_order_id=row.broker_order_id, client_order_id=row.client_order_id))
+    for row in execution_rows:
+        projector.record_activity(BrokerEventEnvelope.create(event_type=BrokerEventType.EXECUTION_REPORTED, provider=BrokerProvider.SIMULATED, mode=TradingMode.REPLAY, account_id=account_id, payload=row.raw, source_event_time=row.source_event_time, broker_order_id=row.broker_order_id, execution_id=row.execution_id))
+    projector.closed_trades = {row.trade_id: row for row in derive_round_trip_trades(execution_rows)}
+    projector.complete = True
+    projector.stale = False
+    projector.stale_reason = ""
+    return trading_state_payload(projector.snapshot())
 
 
 def _as_of(session_date: date, preview_time: str) -> datetime:

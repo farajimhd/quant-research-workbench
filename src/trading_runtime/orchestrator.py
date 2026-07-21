@@ -9,6 +9,7 @@ from src.market_engine.historical_source import QmdHistoricalEventSource
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.runtime import AutomaticStrategy, RunConfig, RunMode, TradingRuntime
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, SimulationConfig
+from src.trading_runtime.domain import TradingMode
 
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -68,7 +69,7 @@ class HistoricalTradingRunner:
         simulation: SimulationConfig | None = None,
     ) -> TradingRuntime:
         window = historical_run_window(config.mode, config.anchor_date, session_count=session_count, replay_end_date=replay_end_date)
-        broker = SimulatedBrokerAdapter(list(config.account_ids), simulation)
+        broker = SimulatedBrokerAdapter(list(config.account_ids), simulation, mode=TradingMode(config.mode.value))
         runtime = TradingRuntime(config, broker, strategy, self.journal)
         await runtime.initialize()
         source = QmdHistoricalEventSource(

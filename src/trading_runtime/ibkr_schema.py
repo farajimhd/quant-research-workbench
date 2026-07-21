@@ -18,6 +18,7 @@ class OrderStatus(StrEnum):
     PRE_CANCELLED = "PreCancelled"
     CANCELLED = "Cancelled"
     WARN_STATE = "WarnState"
+    UNKNOWN = "Unknown"
 
 
 OPEN_ORDER_STATUSES = {
