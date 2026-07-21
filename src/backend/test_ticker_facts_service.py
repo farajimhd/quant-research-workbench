@@ -21,6 +21,7 @@ from src.backend.ticker_facts_service import (
     short_volume_sql,
     synthesize_stock_facts,
     ticker_facts_payload,
+    valuation_card_from_facts,
 )
 
 
@@ -142,6 +143,15 @@ class TickerFactsServiceTest(unittest.TestCase):
         self.assertEqual(crowding["tone"], "negative")
         self.assertEqual(len(crowding["decision_inputs"]), 6)
         self.assertAlmostEqual(crowding["value"], 13.3333333333)
+
+    def test_valuation_regime_is_direction_neutral_even_when_very_premium(self) -> None:
+        card = valuation_card_from_facts(
+            [{"tag": "EarningsPerShareDiluted", "value": 1.0, "period_end_date": "2025-12-31", "fiscal_period": "FY"}],
+            75.0,
+            None,
+        )
+        self.assertEqual(card["label"], "Very premium")
+        self.assertEqual(card["tone"], "neutral")
 
     def test_health_history_uses_source_availability_dates_without_backpainting(self) -> None:
         late_backfill = {"effective_date": "2025-01-15", "inserted_at": "2026-07-01", "free_float": 90_000_000}

@@ -957,7 +957,9 @@ def valuation_card_from_facts(fundamental_rows: list[dict[str, Any]], latest_pri
     net_income = row_value(first(net_rows))
     pe = latest_price / eps if latest_price is not None and eps is not None and eps > 0 else market_cap / net_income if market_cap is not None and net_income is not None and net_income > 0 else None
     label = "Not meaningful" if (eps is not None and eps <= 0) or (net_income is not None and net_income <= 0) else "Unavailable" if pe is None else "Discount" if pe < 12 else "Moderate" if pe < 22 else "Premium" if pe < 40 else "Very premium"
-    tone = "muted" if pe is None else "positive" if pe < 12 else "neutral" if pe < 22 else "warning" if pe < 40 else "negative"
+    # A historical earnings multiple is descriptive, not intrinsically good or bad.
+    # Keep every valid valuation regime direction-neutral; the label conveys the regime.
+    tone = "muted" if pe is None else "neutral"
     return metric_card(
         "valuation", "Valuation regime", pe, "multiple", label, tone,
         "medium" if pe is not None else "insufficient", "derived",

@@ -13,6 +13,7 @@ type MetricHistoryPoint = { at: string; value: number; [key: string]: unknown };
 type HealthComparison = { at?: string; label?: string; period: string; score?: number; tone?: string };
 type MetricHistoryPayload = { as_of: string; comparisons?: HealthComparison[]; label: string; metric: string; points: MetricHistoryPoint[]; row_count: number; status: "not_found" | "ready"; symbol: string; truncated: boolean; unit: string };
 type MetricDescriptor = { label: string; metric: string };
+type FactSectionGuideId = "company" | "fundamentals" | "identifiers" | "provenance" | "short_borrow";
 type SynthesisEvidence = { explanation: string; label: string; observed_at?: string; type: "derived" | "estimated" | "reported" | string; unit: string; value: number };
 type SynthesisCard = { confidence: string; decision_inputs?: { label: string; score?: number; weight: number }[]; evidence: SynthesisEvidence[]; id: string; label: string; method: string; risk_score?: number; title: string; tone: string; unit: string; value?: number; [key: string]: unknown };
 type HealthComponent = { label: string; score?: number; weight: number };
@@ -54,6 +55,7 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
   const [guideOpen, setGuideOpen] = useState(false);
   const [historyMetric, setHistoryMetric] = useState<MetricDescriptor | null>(null);
   const [metricGuide, setMetricGuide] = useState<SynthesisCard | "health" | null>(null);
+  const [sectionGuide, setSectionGuide] = useState<FactSectionGuideId | null>(null);
   const [healthHistory, setHealthHistory] = useState<MetricHistoryPayload | null>(null);
   const presentations = useTickerPresentations([symbol]);
   useEffect(() => {
@@ -129,7 +131,7 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
             </section>}
             {(payload?.warnings.length || Object.keys(payload?.errors ?? {}).length) ? <FactsNotice errors={payload?.errors ?? {}} warnings={payload?.warnings ?? []} /> : null}
             <div className="facts-evidence-grid">
-              <FactSection icon={Scale} subtitle="Positioning, locate evidence, and dated short activity" title="Short & borrow">
+              <FactSection icon={Scale} onGuide={() => setSectionGuide("short_borrow")} subtitle="Positioning, locate evidence, and dated short activity" title="Short & borrow">
                 <div className="facts-detail-grid">
                   <FactDatum change={metricChanges.short_interest} label="Short shares" meta={dateLabel(shortInterest.settlement_date, "settled")} onHistory={() => setHistoryMetric({ label: "Short interest", metric: "short_interest" })} value={formatCount(number(shortInterest.short_interest))} />
                   <FactDatum label="Change" meta={previousLabel(shortInterest.previous_settlement_date)} tone={toneSigned(number(shortInterest.change_from_previous), true)} value={formatSignedCount(number(shortInterest.change_from_previous))} />
@@ -142,14 +144,14 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
                   <FactDatum change={metricChanges.fee_rate} label="Fee rate" meta="Latest IBKR snapshot" onHistory={() => setHistoryMetric({ label: "IBKR fee rate", metric: "fee_rate" })} value={formatPercent(number(borrow.fee_rate))} />
                 </div>
               </FactSection>
-              <FactSection icon={Landmark} subtitle="Latest SEC-reported observations available at this clock" title="Fundamentals">
+              <FactSection icon={Landmark} onGuide={() => setSectionGuide("fundamentals")} subtitle="Latest SEC-reported observations available at this clock" title="Fundamentals">
                 {payload?.fundamentals.length ? <div className="fundamental-list">{payload.fundamentals.map((fact) => {
                   const metric = `fundamental:${text(fact.tag).toLowerCase()}`;
                   const label = text(fact.label);
                   return <article key={String(fact.label)}><MetricLabel label={label} onHistory={() => setHistoryMetric({ label, metric })} /><MetricValue change={metricChanges[metric]} label={label} value={formatFundamental(fact)} /><small>{fundamentalMeta(fact)}</small></article>;
                 })}</div> : <FactsInlineEmpty label="No selected SEC-reported facts available." />}
               </FactSection>
-              <FactSection icon={Building2} subtitle="Issuer, security, listing, and corporate-action context" title="Company & listing">
+              <FactSection icon={Building2} onGuide={() => setSectionGuide("company")} subtitle="Issuer, security, listing, and corporate-action context" title="Company & listing">
                 <div className="facts-detail-grid company-fact-grid">
                   <FactDatum label="Issuer" value={text(identity.legal_name, identity.issuer_name)} />
                   <FactDatum label="Security" value={text(identity.security_name, identity.security_type)} />
@@ -168,16 +170,17 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
                   <FactDatum label="Last dividend" meta={dateLabel(facts.corporate?.last_ex_dividend_date, "ex-date")} value={dividendValue(facts.corporate ?? {})} />
                 </div>
               </FactSection>
-              <FactSection icon={ShieldCheck} subtitle="Canonical cross-provider keys for reconciliation" title="Identifiers">
+              <FactSection icon={ShieldCheck} onGuide={() => setSectionGuide("identifiers")} subtitle="Canonical cross-provider keys for reconciliation" title="Identifiers">
                 {payload?.identifiers.length ? <div className="identifier-list">{payload.identifiers.map((item, index) => <article key={`${text(item.entity)}-${text(item.identifier_kind)}-${index}`}><span>{friendlyIdentifier(item.identifier_kind)}</span><strong>{text(item.identifier_value)}</strong><small>{text(item.source_system)}</small></article>)}</div> : <FactsInlineEmpty label="No canonical identifiers available." />}
               </FactSection>
-              <FactSection className="facts-source-section" icon={Database} subtitle="Availability reflects this ticker and selected clock" title="Data provenance">
+              <FactSection className="facts-source-section" icon={Database} onGuide={() => setSectionGuide("provenance")} subtitle="Availability reflects this ticker and selected clock" title="Data provenance">
                 <div className="facts-source-list">{payload?.sources.map((source) => <article data-available={source.available ? "true" : "false"} key={source.label}><i aria-hidden="true" /><span><strong>{source.label}</strong><small>{source.table}</small></span><em>{source.available ? "Available" : "No row"}</em></article>)}</div>
               </FactSection>
             </div>
           </div>}
     {guideOpen ? <FactsGuide onClose={() => setGuideOpen(false)} /> : null}
     {metricGuide ? <SynthesisGuide card={metricGuide === "health" ? null : metricGuide} health={metricGuide === "health" ? health : undefined} onClose={() => setMetricGuide(null)} /> : null}
+    {sectionGuide ? <FactSectionGuide fundamentals={payload?.fundamentals ?? []} onClose={() => setSectionGuide(null)} section={sectionGuide} /> : null}
     {historyMetric ? <FactHistoryModal asOf={asOf} descriptor={historyMetric} onClose={() => setHistoryMetric(null)} symbol={symbol} /> : null}
   </section>;
 }
@@ -224,6 +227,55 @@ const SYNTHESIS_GUIDES: Record<string, { read: string; calculation: string; caut
   },
 };
 
+type DetailGuideItem = { label: string; text: string };
+
+const SHORT_BORROW_GUIDE: DetailGuideItem[] = [
+  { label: "Short shares", text: "Exchange-reported open short positions on the settlement date. This is a stock of outstanding positions, not daily short-sale activity." },
+  { label: "Change", text: "Short shares minus the previous settlement's short shares. Positive means the reported short position grew; it is numeric movement, not a price forecast." },
+  { label: "Days to cover", text: "Short shares divided by the publication's average daily volume. Higher values imply more normal trading days would be needed to cover, assuming volume and behavior stay comparable." },
+  { label: "FINRA short volume", text: "The latest session's short-sale-marked FINRA volume divided by total FINRA volume. It measures transaction flow and must not be added to open short interest." },
+  { label: "20D short-volume ratio", text: "Short-sale-marked FINRA volume divided by total FINRA volume across up to 20 completed sessions. Aggregating volumes before dividing prevents a low-volume day from receiving equal weight." },
+  { label: "IBKR borrow", text: "The latest broker-specific locate or borrow status. It can change intraday and does not represent every lender or prime broker." },
+  { label: "Shortable shares", text: "Shares IBKR reported as available to short at the latest snapshot. This is volatile broker inventory, not total market-wide lendable supply." },
+  { label: "Indicative borrow", text: "IBKR's indicative annualized borrow rate at the latest snapshot. It is an estimate, not a guaranteed execution rate." },
+  { label: "Fee rate", text: "The latest annualized borrow fee field returned by IBKR. The actual client rate can differ by account, inventory, timing, and broker terms." },
+];
+
+const FUNDAMENTAL_GUIDE: DetailGuideItem[] = [
+  { label: "Revenue", text: "Top-line sales recognized for the reported fiscal period. Compare only equivalent quarterly, year-to-date, or annual durations." },
+  { label: "Gross profit", text: "Revenue less direct cost of goods or services. It helps assess product economics, but reporting definitions vary by industry." },
+  { label: "Net income", text: "Profit attributable after operating costs, interest, taxes, and other reported items for the fiscal period." },
+  { label: "Diluted EPS", text: "Net earnings per diluted weighted-average share. Dilution from options and convertibles is included when economically applicable." },
+  { label: "Operating income", text: "Income from core operations before financing and most non-operating items. It is not the same as cash generated." },
+  { label: "Operating cash flow", text: "Cash generated or consumed by operating activities. Compare with net income to assess cash conversion." },
+  { label: "Capital expenditure", text: "Cash paid for property, plant, and equipment. It is an investment outflow; subtracting it from operating cash flow approximates free cash flow." },
+  { label: "Cash", text: "Reported cash and cash equivalents at the balance-sheet date. Restricted cash may be included only when the selected SEC tag says so." },
+  { label: "Assets", text: "Total reported resources on the balance sheet. Scale alone is not quality; composition and returns matter." },
+  { label: "Liabilities", text: "Reported obligations at the balance-sheet date. When only current liabilities are available, the exact SEC tag remains visible to avoid implying total liabilities." },
+  { label: "Stockholders' equity", text: "Assets minus liabilities attributable to shareholders, subject to the selected SEC taxonomy tag and noncontrolling-interest treatment." },
+  { label: "Long-term debt", text: "Noncurrent interest-bearing debt due beyond the current reporting horizon." },
+  { label: "Current debt", text: "Long-term borrowings due within the current reporting horizon; it helps identify near-term refinancing needs." },
+  { label: "Common shares outstanding", text: "Common shares legally outstanding at the reported instant. It is not free float and differs from period-average share counts." },
+  { label: "Weighted average basic shares", text: "Time-weighted basic shares used in basic EPS for a reporting period." },
+  { label: "Weighted average diluted shares", text: "Time-weighted shares used in diluted EPS after including dilutive instruments when applicable." },
+  { label: "SEC public float value", text: "Market value of voting and non-voting common equity held by non-affiliates on the issuer's disclosed measurement date. It is dollars, not shares." },
+  { label: "Dividends per share", text: "Cash dividends declared per common share for the reported period. Confirm period duration before annualizing." },
+  { label: "Share repurchases", text: "Cash spent repurchasing common stock during the reported period. It does not directly state the number of shares retired." },
+  { label: "Repurchased shares", text: "Shares repurchased and retired during the reported period under the selected SEC tag." },
+];
+
+const SECTION_GUIDES: Record<Exclude<FactSectionGuideId, "fundamentals" | "short_borrow">, { intro: string; items: DetailGuideItem[]; title: string }> = {
+  company: { title: "Company & listing metrics", intro: "Issuer identity, listing, classification, and corporate-action fields describe what is being traded and where it belongs. Missing means not published by the current source, not a negative value.", items: [
+    { label: "Issuer", text: "Canonical legal or provider issuer name." }, { label: "Security", text: "Security name and instrument type for the ticker." }, { label: "Classification", text: "Industry or sector description, prioritizing the canonical issuer classification." }, { label: "SIC", text: "SEC Standard Industrial Classification code." }, { label: "Entity / incorporation", text: "Legal entity type and jurisdiction of incorporation." }, { label: "Country", text: "Canonical issuer domicile when published; it is distinct from exchange country." }, { label: "Product taxonomy", text: "Provider product or thematic classifications; multiple values may apply." }, { label: "Exchange / currency", text: "Primary listing venue code and quoted currency." }, { label: "Listed", text: "Known listing start date for this security." }, { label: "IBKR conid", text: "Interactive Brokers contract identifier used for broker reconciliation." }, { label: "Tradability", text: "Whether the canonical reference currently permits trading, with an exclusion reason when blocked." }, { label: "Company website", text: "Provider-supplied issuer website." }, { label: "Investor relations", text: "Provider-supplied investor-relations website." }, { label: "Last split", text: "Most recent known split ratio and effective date available at the selected clock." }, { label: "Last dividend", text: "Most recent known cash-dividend amount and ex-date available at the selected clock." },
+  ] },
+  identifiers: { title: "Identifier metrics", intro: "Identifiers reconcile the same issuer and security across SEC, market-data, and broker sources. They are keys, not trading signals.", items: [
+    { label: "CIK", text: "SEC Central Index Key for the filing entity." }, { label: "FIGI", text: "Financial Instrument Global Identifier for an instrument or share class." }, { label: "CUSIP", text: "North American security identifier; licensing and point-in-time coverage may vary." }, { label: "ISIN", text: "International Securities Identification Number." }, { label: "Canonical entity/security keys", text: "Internal stable keys used to preserve identity across ticker changes and providers." }, { label: "Source system", text: "System that supplied or asserted the identifier, retained for audit and conflict resolution." },
+  ] },
+  provenance: { title: "Data provenance metrics", intro: "This section is an availability audit for the selected ticker and point-in-time clock. It separates a missing source row from a reported numeric zero.", items: [
+    { label: "Available", text: "At least one usable source row was resolved for this ticker by the selected clock." }, { label: "No row", text: "No usable row was resolved. It does not mean the underlying economic value is zero." }, { label: "Table name", text: "The authoritative database relation queried for that source domain." }, { label: "Selected clock", text: "Point-in-time boundary that prevents later reports or observations from leaking into the displayed snapshot." },
+  ] },
+};
+
 function HealthOverview({ health, history, onGuide, onHistory, profile }: { health: HealthSummary; history: MetricHistoryPayload | null; onGuide: () => void; onHistory: () => void; profile: string }) {
   return <section className="facts-health" data-tone={health.tone}>
     <div className="facts-health-summary">
@@ -235,7 +287,13 @@ function HealthOverview({ health, history, onGuide, onHistory, profile }: { heal
     </div>
     <HealthSparkline history={history} />
     <div className="facts-health-components">
-      {health.components.map((component) => <article key={component.label}><span>{component.label}<small>{component.weight}%</small></span><strong>{component.score == null ? "—" : Math.round(component.score)}</strong><i><b style={{ width: `${Math.max(0, Math.min(100, component.score ?? 0))}%` }} /></i></article>)}
+      <header><span>Health score composition</span><small>Six weighted inputs · score /100</small></header>
+      <div>{health.components.map((component) => {
+        const tone = componentScoreTone(component.score);
+        return <article aria-label={`${component.label}: ${component.score == null ? "unavailable" : `${Math.round(component.score)} out of 100`}; ${component.weight}% weight`} data-tone={tone} key={component.label}>
+          <span>{component.label}<small>{component.weight}% weight</small></span><strong>{component.score == null ? "—" : `${Math.round(component.score)}/100`}</strong><i aria-hidden="true"><b style={{ width: `${Math.max(0, Math.min(100, component.score ?? 0))}%` }} /></i>
+        </article>;
+      })}</div>
     </div>
   </section>;
 }
@@ -248,9 +306,10 @@ function HealthSparkline({ history }: { history: MetricHistoryPayload | null }) 
     const y = height - pad - Number(point.value) / 100 * (height - pad * 2);
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(" ");
+  const area = line ? `${pad},${height - pad} ${line} ${width - pad},${height - pad}` : "";
   return <div className="facts-health-history">
-    <header><span>Health through available history</span><small>{points.length ? `${formatHistoryDate(points[0].at)} → ${formatHistoryDate(points[points.length - 1].at)}` : "Loading history…"}</small></header>
-    <div className="facts-health-sparkline">{points.length ? <svg aria-label="Stock health history" preserveAspectRatio="none" role="img" viewBox={`0 0 ${width} ${height}`}><line x1="0" x2={width} y1={height / 2} y2={height / 2} /><polyline fill="none" points={line} /></svg> : <span>Historical score is loaded separately so the current facts are not blocked.</span>}</div>
+    <header><span>Historical health trajectory</span><small>{points.length ? `${formatHistoryDate(points[0].at)} → ${formatHistoryDate(points[points.length - 1].at)}` : "Loading history…"}</small></header>
+    <div className="facts-health-sparkline">{points.length ? <svg aria-label="Historical stock health trajectory" preserveAspectRatio="none" role="img" viewBox={`0 0 ${width} ${height}`}><line x1="0" x2={width} y1={height / 2} y2={height / 2} /><polygon className="facts-health-area" points={area} /><polyline fill="none" points={line} /></svg> : <span>Historical score is loaded separately so the current facts are not blocked.</span>}</div>
     <div className="facts-health-comparisons">{(history?.comparisons ?? []).map((item) => <article data-tone={item.tone ?? "muted"} key={item.period}><small>{item.period}</small><strong>{item.score == null ? "—" : Math.round(item.score)}</strong><ToneBadge label={item.label || "Unavailable"} tone={item.tone || "muted"} /></article>)}</div>
   </div>;
 }
@@ -289,14 +348,37 @@ function SynthesisGuide({ card, health, onClose }: { card: SynthesisCard | null;
   </div></Modal>;
 }
 
-function HealthComponentGuide({ components }: { components: HealthComponent[] }) { return <div className="facts-guide-evidence">{components.map((component) => <article key={component.label}><span><strong>{component.label}</strong><small>{component.weight}% of final score</small></span><b>{component.score == null ? "Unavailable" : `${Math.round(component.score)}/100`}</b><p>Missing evidence lowers coverage and is not silently treated as a neutral score.</p></article>)}</div>; }
+const HEALTH_COMPONENT_EXPLANATIONS: Record<string, string> = {
+  "Balance-sheet resilience": "Scores cash relative to debt and liabilities, plus positive equity when available. Higher means more balance-sheet capacity; missing line items reduce coverage.",
+  "Cash generation": "Scores positive operating cash flow and free cash flow, where free cash flow is operating cash flow minus capital expenditure.",
+  Profitability: "Scores positive net and operating income plus comparable revenue and income growth. It measures reported operating quality, not valuation.",
+  "Share-base discipline": "Scores long-horizon change in comparable shares outstanding. Expansion lowers the score, stability is neutral-to-strong, and contraction raises it after split effects are considered.",
+  "Short / settlement resilience": "Inverts deterministic short-crowding risk. Lower crowding, borrow pressure, fails-to-deliver pressure, and Reg SHO risk produce a higher resilience score.",
+  "Trading liquidity": "Combines 20-session average dollar volume and daily turnover relative to tradable supply. Higher means the stock has historically absorbed more trading activity.",
+};
+
+function HealthComponentGuide({ components }: { components: HealthComponent[] }) { return <div className="facts-guide-evidence">{components.map((component) => <article key={component.label}><span><strong>{component.label}</strong><small>{component.weight}% of final score</small></span><b>{component.score == null ? "Unavailable" : `${Math.round(component.score)}/100`}</b><p>{HEALTH_COMPONENT_EXPLANATIONS[component.label] || "Missing evidence lowers coverage and is not silently treated as a neutral score."}</p></article>)}</div>; }
+
+function FactSectionGuide({ fundamentals, onClose, section }: { fundamentals: FundamentalFact[]; onClose: () => void; section: FactSectionGuideId }) {
+  const visibleFundamentals = new Set(fundamentals.map((fact) => text(fact.label)));
+  const definition = section === "short_borrow"
+    ? { intro: "Short-position stock, short-sale flow, and broker inventory are different measurements with different clocks. Read their dates and never add them together.", items: SHORT_BORROW_GUIDE, title: "Short & borrow metrics" }
+    : section === "fundamentals"
+      ? { intro: "Each value is the latest selected SEC XBRL observation known at the chosen clock. The fiscal period, form, period end, unit, and exact tag determine whether two values are comparable.", items: FUNDAMENTAL_GUIDE, title: "Fundamental metrics" }
+      : SECTION_GUIDES[section];
+  return <Modal className="facts-guide-modal facts-section-guide" onClose={onClose} title={`How to read: ${definition.title}`}><div className="facts-guide-content">
+    <div className="facts-guide-intro"><strong>Metric-by-metric reference</strong><p>{definition.intro}</p></div>
+    <div className="facts-guide-evidence facts-detail-guide-list">{definition.items.map((item) => <article data-visible={section !== "fundamentals" || visibleFundamentals.has(item.label) ? "true" : "false"} key={item.label}><span><strong>{item.label}</strong>{section === "fundamentals" ? <small>{visibleFundamentals.has(item.label) ? "Visible at this clock" : "Supported when reported"}</small> : null}</span><p>{item.text}</p></article>)}</div>
+    {section === "fundamentals" ? <p className="facts-history-note">Duration facts may be quarterly, year-to-date, or annual; instant facts are balance-sheet snapshots. The card metadata is part of the metric and should remain attached when comparing history.</p> : null}
+  </div></Modal>;
+}
 
 function FactMetric({ change, detail, label, onHistory, tone = "neutral", value }: { change?: MetricChange; detail: string; label: string; onHistory: () => void; tone?: string; value: string }) {
   return <article className="facts-primary-metric" data-tone={tone}><MetricLabel label={label} onHistory={onHistory} /><MetricValue change={change} label={label} value={value} /><small>{detail}</small></article>;
 }
 
-function FactSection({ children, className = "", icon: Icon, subtitle, title }: { children: ReactNode; className?: string; icon: typeof Building2; subtitle: string; title: string }) {
-  return <section className={`facts-section${className ? ` ${className}` : ""}`}><header><Icon size={14} /><span><strong>{title}</strong><small>{subtitle}</small></span></header>{children}</section>;
+function FactSection({ children, className = "", icon: Icon, onGuide, subtitle, title }: { children: ReactNode; className?: string; icon: typeof Building2; onGuide?: () => void; subtitle: string; title: string }) {
+  return <section className={`facts-section${className ? ` ${className}` : ""}`}><header><Icon size={14} /><span><strong>{title}</strong><small>{subtitle}</small></span>{onGuide ? <button aria-label={`Guide for ${title}`} onClick={onGuide} title={`Explain every ${title} metric`} type="button"><HelpCircle size={14} /> Guide</button> : null}</header>{children}</section>;
 }
 
 function FactDatum({ change, label, meta, onHistory, tone = "neutral", value }: { change?: MetricChange; label: string; meta?: string; onHistory?: () => void; tone?: string; value: string }) {
@@ -366,7 +448,7 @@ function FactHistoryChart({ history }: { history: MetricHistoryPayload }) {
   const latest = points[points.length - 1];
   const previous = points.length > 1 ? points[points.length - 2] : null;
   const delta = previous ? Number(latest.value) - Number(previous.value) : null;
-  const tickIndexes = [...new Set([0, Math.floor((points.length - 1) / 2), points.length - 1])];
+  const tickIndexes = [...new Set([0, Math.round((points.length - 1) * .25), Math.round((points.length - 1) * .5), Math.round((points.length - 1) * .75), points.length - 1])];
   return <>
     <header className="facts-history-summary">
       <span><small>Latest</small><strong>{formatHistoryValue(Number(latest.value), history.unit)}</strong><em>{formatHistoryDate(latest.at)}</em></span>
@@ -376,11 +458,12 @@ function FactHistoryChart({ history }: { history: MetricHistoryPayload }) {
     </header>
     <div className="facts-history-chart" role="img" aria-label={`${history.label} history from ${formatHistoryDate(first.at)} to ${formatHistoryDate(latest.at)}`}>
       <svg preserveAspectRatio="none" viewBox={`0 0 ${width} ${height}`}>
-        {[0, 0.5, 1].map((ratio) => {
+        {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
           const lineY = top + ratio * chartHeight;
           const value = maxValue - ratio * range;
           return <g key={ratio}><line className="facts-history-grid" x1={left} x2={width - right} y1={lineY} y2={lineY} /><text className="facts-history-y-label" x={left - 9} y={lineY + 4}>{formatHistoryValue(value, history.unit)}</text></g>;
         })}
+        {tickIndexes.map((index) => <line className="facts-history-grid facts-history-grid-vertical" key={`grid-${index}`} x1={x(index)} x2={x(index)} y1={top} y2={top + chartHeight} />)}
         <polyline className="facts-history-line" fill="none" points={linePoints} />
         {points.length <= 120 ? points.map((point, index) => <circle className="facts-history-point" cx={x(index)} cy={y(Number(point.value))} key={`${point.at}-${index}`} r="2.5"><title>{`${formatHistoryDate(point.at)} · ${formatHistoryValue(Number(point.value), history.unit)}`}</title></circle>) : null}
         {tickIndexes.map((index) => <text className="facts-history-x-label" key={index} textAnchor={index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"} x={x(index)} y={height - 14}>{formatHistoryDate(points[index].at)}</text>)}
@@ -441,6 +524,7 @@ function formatAsOf(value: string) { const date = new Date(value); return Number
 function toneActivity(value: number | null) { return value == null ? "neutral" : value >= 1.5 ? "positive" : value <= .65 ? "muted" : "neutral"; }
 function toneShort(value: number | null) { return value == null ? "neutral" : value >= 10 ? "warning" : "neutral"; }
 function toneSigned(value: number | null, inverse = false) { if (value == null || value === 0) return "neutral"; const positive = inverse ? value < 0 : value > 0; return positive ? "positive" : "negative"; }
+function componentScoreTone(value: number | undefined) { return value == null ? "muted" : value >= 65 ? "positive" : value >= 45 ? "neutral" : value >= 25 ? "warning" : "negative"; }
 function borrowTone(status: string) { const normalized = status.toLowerCase(); return normalized.includes("available") || normalized.includes("easy") ? "positive" : normalized.includes("hard") || normalized.includes("unavailable") ? "negative" : "neutral"; }
 function borrowValue(row: FactRecord) { const status = text(row.borrow_status); return status ? status.replaceAll("_", " ") : "No snapshot"; }
 function formatBorrowRates(row: FactRecord) { const indicative = number(row.indicative_borrow_rate); const fee = number(row.fee_rate); return indicative == null && fee == null ? "—" : [indicative == null ? "" : `${formatPercent(indicative)} indicative`, fee == null ? "" : `${formatPercent(fee)} fee`].filter(Boolean).join(" · "); }
