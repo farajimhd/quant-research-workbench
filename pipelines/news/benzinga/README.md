@@ -75,6 +75,23 @@ python pipelines\news\benzinga\run_news_reaction_extract.py
 python pipelines\news\benzinga\run_news_reaction_extract.py --execute
 ```
 
+Finalize source-complete ranges, repair only stale slices, exclude split
+contamination, build robust 2019-2025 statistics, and evaluate 2026:
+
+```powershell
+# Read-only repair and watermark plan.
+python pipelines\news\benzinga\run_news_reaction_finalize.py
+
+# Apply the reviewed plan and produce audits/evaluation/review artifacts.
+python pipelines\news\benzinga\run_news_reaction_finalize.py --execute
+```
+
+The finalizer never treats the requested year-end as proof of source coverage.
+It clamps certification to settled news whose longest session-boundary target
+is covered by canonical compact events. Its default 62-stage-day repair limit
+prevents an accidental global rebuild; use `--allow-large-repair` only after
+inspecting the generated `repair_plan.json`.
+
 The reaction build reads canonical compact events directly. The anchor is the
 last eligible trade strictly before publication; terminal/high/low values use
 all exact events in each news-relative interval, including partial seconds at

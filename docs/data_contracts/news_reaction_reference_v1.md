@@ -51,6 +51,9 @@ position-array alias expansion.
 | `q_live.news_reaction_labels_v2` | news + ticker + horizon | Exact event-relative anchor, terminal observation, high/low, market-adjusted returns, applicability, overlap, and quality evidence. |
 | `q_live.news_phrase_reaction_stats_v2` | phrase + horizon + publication session | Smoothed probabilities and reaction distributions from clean 2019-2025 samples. |
 | `q_live.news_reaction_build_status_v1` | stage + semantic version + date chunk | Restart-safe completed-chunk state and timing. |
+| `q_live.news_reaction_quality_overlay_v1` | news + ticker + horizon | Split overlap, extreme-return evidence, and the final statistical-eligibility decision without rewriting source reaction labels. |
+| `q_live.news_phrase_reaction_stats_v3` | phrase + horizon + publication session | Split-aware probabilities plus raw, median, and 1%-trimmed reaction summaries from 2019-2025. |
+| `q_live.news_reaction_finalization_state_v1` | finalized feature month or reaction day | Source signature, source/event watermarks, certified row counts, and the audit that authorized finalization. |
 
 ## Exact causal labeling
 
@@ -171,3 +174,78 @@ Run manifests are written below
 `D:\market-data\prepared\news_reaction_labels`. They contain configuration,
 source tables, coverage, counts, timings, and secret-presence status, but no
 secret values.
+
+## Finalization, repair, and holdout evaluation
+
+The extractor checkpoint records durable work, but a completed write is not by
+itself proof that mutable news and event sources were complete. Run the
+finalizer after an extraction has caught up:
+
+```powershell
+# Read-only. Computes source watermarks and writes the exact repair plan.
+python pipelines\news\benzinga\run_news_reaction_finalize.py
+
+# Executes the reviewed plan, rebuilds derived tables, audits, and certifies.
+python pipelines\news\benzinga\run_news_reaction_finalize.py --execute
+```
+
+The stable exclusive publication bound is the minimum of:
+
+- the requested end date;
+- the news settlement cutoff (48 hours by default); and
+- the last publication date for which the compact-event watermark reaches the
+  applicable current or next XNYS extended-session close.
+
+Rows at or beyond that bound are provisional. The default execution removes
+their feature/reaction rows and completed checkpoints so a later run can build
+them from complete sources. `--keep-provisional-tail` is available only when a
+caller explicitly needs those incomplete rows; provisional rows are never
+certified or used for statistics or holdout evaluation.
+
+Within the stable range, the repair planner compares current normalized-news
+and ticker-link update timestamps, expected news/ticker/horizon key counts,
+feature text hashes, output keys, and legacy checkpoint timestamps. The
+certification record stores a deterministic source signature for independent
+comparison and audit. Only stale months or publication days are passed to the
+bounded exact-event extractor with `--replace-existing`. The default safety
+limit stops a plan above 62 summed stage-days; inspect `repair_plan.json` before
+using `--allow-large-repair`.
+
+### Corporate actions and robust statistics
+
+The raw reaction table remains immutable evidence. Statistical eligibility is
+owned by the quality overlay. A label is ineligible when its base quality is
+not clean, a known stock split execution date overlaps the anchor-to-target
+date interval, or an abnormal target/high/low return exceeds the configured
+extreme-return bound. Split data has execution-date rather than execution-time
+precision, so same-day overlap is intentionally conservative.
+
+Statistics use one phrase presence per article. Counts and smoothed
+negative/neutral/positive probabilities are calculated from eligible rows.
+Raw means remain available for audit, while medians and means trimmed to the
+1st-99th percentile bounds provide robust summaries. The active finalized
+statistics version is `news_phrase_event_reaction_stats_v4`; its training end
+is checked against the 2026 holdout boundary before certification.
+
+### Interpretable 2026 classifier
+
+For each held-out news/ticker/horizon, the classifier joins the unique article
+phrases to their matching horizon/session probabilities. Each phrase contributes
+`positive_probability - negative_probability`, weighted by the square root of
+its capped eligible support. The normalized evidence score is classified with
+a symmetric configurable threshold. This is an interpretable phrase-probability
+classifier, not an embedding model and not an LLM.
+
+The finalizer writes:
+
+- `holdout_evaluation.json`, including confusion matrix, accuracy, balanced
+  accuracy, macro F1, and horizon/session breakdowns;
+- `human_review_sample.csv`, a deterministic stratified and blinded sample with
+  blank reviewer fields;
+- `human_review_sample_answer_key.csv`, kept separate so human language judgment
+  is not contaminated by future price reaction; and
+- `human_review_instructions.json`, the review label contract.
+
+Certification is refused while any stale source slice, key-count mismatch,
+duplicate, noncausal timestamp, target-after-boundary row, or invalid high/low
+relationship remains.
