@@ -101,6 +101,12 @@ Profile the same configurations with one real 2026 batch:
 python -m research.news_reaction_model.v1.run_profile_sizes --real-data
 ```
 
+The launcher profiles batches from 512 through 32,768 by default, using the
+prepared 2019-2026 range so every requested batch has enough distinct articles.
+This is intended for the 96 GB workstation GPU. Override `--batch-sizes` or the
+data range when needed; the profiler fails explicitly instead of silently
+truncating an oversized request to the available source rows.
+
 `profile.jsonl` records parameters, step time, samples/second, peak CUDA memory,
 and OOM outcomes for every model-size/layer/batch-size combination. The summary
 identifies the fastest successful configuration; accuracy must still be compared

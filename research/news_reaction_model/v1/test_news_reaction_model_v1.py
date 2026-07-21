@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import datetime as dt
+import tempfile
 import unittest
+from unittest.mock import patch
 
 import torch
 
 from research.news_reaction_model.v1 import HORIZONS
 from research.news_reaction_model.v1.config import LoaderConfig, ModelConfig
-from research.news_reaction_model.v1.data import prepared_batch_sql, rows_to_batch, source_batch_sql
+from research.news_reaction_model.v1.data import make_dummy_batch, prepared_batch_sql, rows_to_batch, source_batch_sql
 from research.news_reaction_model.v1.losses import compute_loss
 from research.news_reaction_model.v1.inference import forecast_rows
 from research.news_reaction_model.v1.model import NewsReactionModelV1
+from research.news_reaction_model.v1.profile_sizes import main as profile_main
 from research.news_reaction_model.v1.prepare_data import (
     completed_range_sql,
     create_manifest_sql,
@@ -104,6 +107,18 @@ class NewsReactionModelV1Tests(unittest.TestCase):
             output = model(batch.x)
         self.assertTrue(torch.isfinite(output.class_logits).all())
         self.assertTrue(torch.isfinite(output.return_forecasts).all())
+
+    def test_profiler_rejects_silently_truncated_batch(self) -> None:
+        loader = LoaderConfig(embedding_dim=8, max_chunks=2)
+        source = make_dummy_batch(4, loader)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch("research.news_reaction_model.v1.profile_sizes.make_dummy_batch", return_value=source):
+                with self.assertRaisesRegex(RuntimeError, "will not silently report a truncated batch"):
+                    profile_main([
+                        "--model-sizes", "16", "--batch-sizes", "8", "--layers", "1",
+                        "--warmup-steps", "0", "--profile-steps", "1",
+                        "--output-root", temp_dir,
+                    ])
 
 
 if __name__ == "__main__":

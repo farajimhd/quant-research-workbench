@@ -27,13 +27,13 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     loader = LoaderConfig()
     parser = argparse.ArgumentParser(description="Profile news reaction model sizes and batch sizes.")
     parser.add_argument("--model-sizes", default="128,192,256,384")
-    parser.add_argument("--batch-sizes", default="128,256,512,1024")
+    parser.add_argument("--batch-sizes", default="512,1024,2048,4096,8192,16384,32768")
     parser.add_argument("--layers", default="1,2,4")
     parser.add_argument("--warmup-steps", type=int, default=2)
     parser.add_argument("--profile-steps", type=int, default=5)
     parser.add_argument("--real-data", action="store_true")
-    parser.add_argument("--data-start", default="2026-01-01")
-    parser.add_argument("--data-end-exclusive", default="2026-02-01")
+    parser.add_argument("--data-start", default="2019-01-01")
+    parser.add_argument("--data-end-exclusive", default="2027-01-01")
     parser.add_argument("--dataset-database", default=loader.dataset_database)
     parser.add_argument("--dataset-table", default=loader.dataset_table)
     parser.add_argument("--dataset-version", default=loader.dataset_version)
@@ -59,6 +59,12 @@ def main(argv: Iterable[str] | None = None) -> int:
         audit = audit_prepared_dataset(loader, args.data_start, args.data_end_exclusive)
         print(f"DATASET ready | articles={audit['rows']:,} | version={loader.dataset_version}", flush=True)
     source = load_one_real_batch(loader, args.data_start, args.data_end_exclusive) if args.real_data else make_dummy_batch(max_batch, loader)
+    if source.sample_count < max_batch:
+        raise RuntimeError(
+            f"Profile source contains {source.sample_count:,} articles but the largest requested batch is "
+            f"{max_batch:,}. Expand --data-start/--data-end-exclusive or request smaller batches; "
+            "the profiler will not silently report a truncated batch as the requested size."
+        )
     rows = []
     for d_model in csv_ints(args.model_sizes):
         for layers in csv_ints(args.layers):

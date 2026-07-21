@@ -5,7 +5,13 @@ import sys
 
 from research.news_reaction_model.v1.profile_sizes import main
 
-DEFAULT_ARGS = ["--model-sizes", "128,192,256,384", "--batch-sizes", "128,256,512,1024", "--layers", "1,2,4"]
+DEFAULT_ARGS = [
+    "--model-sizes", "128,192,256,384",
+    "--batch-sizes", "512,1024,2048,4096,8192,16384,32768",
+    "--layers", "1,2,4",
+    "--data-start", "2019-01-01",
+    "--data-end-exclusive", "2027-01-01",
+]
 
 if __name__ == "__main__":
     args = DEFAULT_ARGS + sys.argv[1:]
