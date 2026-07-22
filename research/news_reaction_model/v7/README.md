@@ -72,6 +72,13 @@ The training default remains `d_model=384`, four residual layers, batch 2048,
 15 epochs, cosine scheduling with three restarts, and W&B project
 `news-reaction-model-v3`, allowing a direct V6/V7 comparison.
 
+Preparation defaults to 16 bounded month workers. Completed month manifests are
+the resume authority, so rerunning the same command skips verified months.
+Partially inserted months are safely rebuilt into the `ReplacingMergeTree` and
+verified before their completion manifest advances. Ctrl+C assigns and cancels
+every active ClickHouse query, cancels queued months, records an `interrupted`
+status event, and returns exit code 130 without deleting completed work.
+
 ## Live use
 
 `LiveFeatureEncoder` reuses the V6 encoder. The serving data authority must

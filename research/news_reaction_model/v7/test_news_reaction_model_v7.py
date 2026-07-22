@@ -24,7 +24,10 @@ from research.news_reaction_model.v6.numeric_features import (
     extract_numeric_features,
     numeric_contract_sha256,
 )
-from research.news_reaction_model.v7.prepare_data import create_table_sql, source_rows_sql
+from research.news_reaction_model.v7.prepare_data import (
+    QueryCancellationController, TrackedClickHouseClient, build_v7_manifest,
+    create_table_sql, load_or_create_v7_manifest, source_rows_sql,
+)
 from research.news_reaction_model.v7.profile_sizes import load_real_sample, main as profile_main
 from research.news_reaction_model.v7.ranges import RANGE_SPECS, TARGET_NAMES, range_targets
 from research.news_reaction_model.v7.train import SampleCosineRestartScheduler, checkpoint_payload, maybe_compile, restore, validate_config
@@ -42,6 +45,40 @@ class NewsReactionModelV7Tests(unittest.TestCase):
         self.assertEqual((loader.validation_start, loader.validation_end_exclusive), ("2026-01-01", "2027-01-01"))
         self.assertEqual((train.epochs, train.scheduler_restarts), (15, 3))
         self.assertEqual(train.wandb_project, "news-reaction-model-v3")
+        self.assertEqual(loader.workers, 16)
+
+    def test_manifest_round_trip_does_not_report_false_tuple_list_drift(self) -> None:
+        config = LoaderConfig()
+        expected = build_v7_manifest(config, "a" * 64)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "manifest.json"
+            first = load_or_create_v7_manifest(path, expected)
+            second = load_or_create_v7_manifest(path, build_v7_manifest(config, "a" * 64))
+        self.assertEqual(first, second)
+        self.assertIsInstance(second["stock_state_contract"]["sec_concept_tags"]["revenue"], list)
+
+    def test_tracked_clickhouse_queries_are_registered_and_released(self) -> None:
+        controller = QueryCancellationController()
+        with patch("research.news_reaction_model.v7.prepare_data.ClickHouseHttpClient") as client_type:
+            client_type.return_value.execute.return_value = "ok"
+            tracked = TrackedClickHouseClient(controller)
+            self.assertEqual(tracked.execute("SELECT 1"), "ok")
+            self.assertEqual(controller.active(), [])
+            query_id = client_type.return_value.execute.call_args.kwargs["query_id"]
+            self.assertTrue(query_id.startswith(controller.run_id))
+
+    def test_cancellation_kills_every_active_query_and_stops_new_work(self) -> None:
+        controller = QueryCancellationController()
+        controller.register("query-a")
+        controller.register("query-b")
+        with patch("research.news_reaction_model.v7.prepare_data.ClickHouseHttpClient") as client_type:
+            active, error = controller.cancel()
+        self.assertEqual((active, error), (2, ""))
+        kill_sql = client_type.return_value.execute.call_args.args[0]
+        self.assertIn("KILL QUERY", kill_sql)
+        self.assertIn("query-a", kill_sql)
+        with self.assertRaises(InterruptedError):
+            controller.raise_if_cancelled()
 
     def test_source_query_reuses_v6_population_and_anchor_without_recomputation(self) -> None:
         config = LoaderConfig()

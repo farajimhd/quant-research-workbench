@@ -8,7 +8,7 @@ from research.news_reaction_model.v7.prepare_data import main
 DEFAULT_ARGS = [
     "--start", "2019-01-01",
     "--end-exclusive", "2027-01-01",
-    "--workers", "2",
+    "--workers", "16",
     "--max-threads-per-query", "4",
     "--max-memory-usage", "16G",
 ]

@@ -6,7 +6,10 @@ import concurrent.futures
 import datetime as dt
 import hashlib
 import json
+import signal
+import threading
 import time
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterable, Iterator
@@ -29,6 +32,108 @@ from research.news_reaction_model.v7.stock_state import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def canonical_json_value(value: Any) -> Any:
+    """Return exactly the JSON data model persisted to disk.
+
+    This normalizes tuples to arrays before both hashing and equality checks, so
+    a manifest written on the first run compares identically after JSON reload.
+    """
+    return json.loads(json.dumps(value, sort_keys=True, separators=(",", ":"), default=list))
+
+
+def build_v7_manifest(config: LoaderConfig, source_representation_sha256: str) -> dict[str, Any]:
+    manifest = canonical_json_value({
+        "representation_name": config.representation_name,
+        "source_v6_representation_sha256": source_representation_sha256,
+        "stock_state_contract": contract_payload(),
+        "stock_state_contract_sha256": contract_sha256(),
+    })
+    manifest["representation_sha256"] = hashlib.sha256(json.dumps(
+        manifest, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    return manifest
+
+
+def load_or_create_v7_manifest(path: Path, expected: dict[str, Any]) -> dict[str, Any]:
+    expected = canonical_json_value(expected)
+    if path.exists():
+        persisted = canonical_json_value(json.loads(path.read_text(encoding="utf-8")))
+        if persisted != expected:
+            changed = sorted(key for key in set(persisted) | set(expected) if persisted.get(key) != expected.get(key))
+            raise RuntimeError(
+                f"V7 representation manifest genuinely differs from the code contract at {path}; "
+                f"changed top-level fields={changed}. Use a new dataset version for a real contract change."
+            )
+        return persisted
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(expected, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return expected
+
+
+class QueryCancellationController:
+    """Track every active ClickHouse query and cancel them as one bounded run."""
+
+    def __init__(self) -> None:
+        self.run_id = "news_v7_prepare_" + uuid.uuid4().hex
+        self.stop = threading.Event()
+        self._lock = threading.Lock()
+        self._active: set[str] = set()
+        self._cancelled: set[str] = set()
+        self._cancellation_error = ""
+
+    def query_id(self) -> str:
+        return f"{self.run_id}_{uuid.uuid4().hex}"
+
+    def register(self, query_id: str) -> None:
+        with self._lock:
+            self._active.add(query_id)
+
+    def unregister(self, query_id: str) -> None:
+        with self._lock:
+            self._active.discard(query_id)
+
+    def active(self) -> list[str]:
+        with self._lock:
+            return sorted(self._active)
+
+    def raise_if_cancelled(self) -> None:
+        if self.stop.is_set():
+            raise InterruptedError("V7 preparation was cancelled")
+
+    def cancel(self) -> tuple[int, str]:
+        self.stop.set()
+        query_ids = self.active()
+        if not query_ids:
+            with self._lock:
+                return len(self._cancelled), self._cancellation_error
+        with self._lock:
+            self._cancelled.update(query_ids)
+        client = ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password())
+        try:
+            client.execute(f"KILL QUERY WHERE query_id IN ({_in(query_ids)}) ASYNC")
+            with self._lock:
+                return len(self._cancelled), self._cancellation_error
+        except Exception as exc:  # noqa: BLE001 - interruption must retain the cancellation failure
+            with self._lock:
+                self._cancellation_error = f"{type(exc).__name__}: {exc}"
+                return len(self._cancelled), self._cancellation_error
+
+
+class TrackedClickHouseClient:
+    def __init__(self, controller: QueryCancellationController) -> None:
+        self.controller = controller
+        self.client = ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password())
+
+    def execute(self, sql: str, *, query_id: str | None = None) -> str:
+        self.controller.raise_if_cancelled()
+        active_id = query_id or self.controller.query_id()
+        self.controller.register(active_id)
+        try:
+            return self.client.execute(sql, query_id=active_id)
+        finally:
+            self.controller.unregister(active_id)
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
@@ -467,24 +572,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     v6_manifest = load_v6_manifest(v6_loader)
     source_representation_sha256 = str(v6_manifest["representation_sha256"])
-    expected_manifest = {
-        "representation_name": config.representation_name,
-        "source_v6_representation_sha256": source_representation_sha256,
-        "stock_state_contract": contract_payload(),
-        "stock_state_contract_sha256": contract_sha256(),
-    }
-    expected_manifest["representation_sha256"] = hashlib.sha256(json.dumps(
-        expected_manifest, sort_keys=True, separators=(",", ":"), default=list,
-    ).encode("utf-8")).hexdigest()
+    expected_manifest = build_v7_manifest(config, source_representation_sha256)
     manifest_path = config.representation_artifact_root / "manifest.json"
-    if manifest_path.exists():
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest != expected_manifest:
-            raise RuntimeError(f"V7 representation manifest drifted from code contract: {manifest_path}")
-    else:
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_text(json.dumps(expected_manifest, indent=2, sort_keys=True, default=list) + "\n", encoding="utf-8")
-        manifest = expected_manifest
+    manifest = load_or_create_v7_manifest(manifest_path, expected_manifest)
     representation_sha256 = str(manifest["representation_sha256"])
 
     source_audit = audit_v6_dataset(v6_loader, args.start, args.end_exclusive)
@@ -499,13 +589,28 @@ def main(argv: Iterable[str] | None = None) -> int:
         "event": "start", "stage": "stock_state_materialization", "loader": asdict(config),
         "months": len(months), "representation_sha256": representation_sha256,
     })
-    client = ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password())
+    controller = QueryCancellationController()
+    client = TrackedClickHouseClient(controller)
     client.execute(create_table_sql(config))
     client.execute(create_manifest_sql(config))
 
+    def interrupt_handler(signum: int, _frame: Any) -> None:
+        active, error = controller.cancel()
+        message = f"INTERRUPT signal={signum}; cancellation requested for {active} active ClickHouse queries"
+        if error:
+            message += f"; cancellation_error={error}"
+        print(message, flush=True)
+        raise KeyboardInterrupt
+
+    previous_sigint = signal.signal(signal.SIGINT, interrupt_handler)
+    previous_sigbreak = None
+    if hasattr(signal, "SIGBREAK"):
+        previous_sigbreak = signal.signal(signal.SIGBREAK, interrupt_handler)
+
     def build_month(item: tuple[dt.date, dt.date]) -> dict[str, Any]:
         start, end = item
-        local = ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password())
+        controller.raise_if_cancelled()
+        local = TrackedClickHouseClient(controller)
         completed = local.execute(completed_range_sql(config, start, end, representation_sha256)).strip().split("\t")
         if completed and completed[0] == "completed" and not args.rebuild:
             return {"month": start.strftime("%Y-%m"), "status": "skipped", "rows": int(completed[1])}
@@ -514,8 +619,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         rows_written = 0
         started = time.perf_counter()
         source_rows = [row for batch in iter_source_rows(local, config, start, end, args.query_batch_articles) for row in batch]
+        controller.raise_if_cancelled()
         state_rows = build_month_state(local, config, source_rows, start, end) if source_rows else []
         for offset in range(0, len(source_rows), args.query_batch_articles):
+            controller.raise_if_cancelled()
             batch_rows = source_rows[offset:offset + args.query_batch_articles]
             batch_state = state_rows[offset:offset + args.query_batch_articles]
             insert_rows(
@@ -537,7 +644,9 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     workers = max(1, min(args.workers, len(months)))
     completed_rows = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="news-v7-prepare")
+    futures: dict[concurrent.futures.Future[dict[str, Any]], tuple[dt.date, dt.date]] = {}
+    try:
         futures = {executor.submit(build_month, month): month for month in months}
         for index, future in enumerate(concurrent.futures.as_completed(futures), start=1):
             result = future.result()
@@ -547,6 +656,33 @@ def main(argv: Iterable[str] | None = None) -> int:
                 f"[{index}/{len(months)}] {result['month']} {str(result['status']).upper()} "
                 f"rows={int(result['rows']):,} total={completed_rows:,}", flush=True,
             )
+    except (KeyboardInterrupt, InterruptedError):
+        active, cancellation_error = controller.cancel()
+        cancelled_futures = sum(future.cancel() for future in futures)
+        append_jsonl(status_path, {
+            "event": "interrupted", "completed_rows": completed_rows,
+            "cancelled_futures": cancelled_futures, "active_queries_cancelled": active,
+            "cancellation_error": cancellation_error,
+        })
+        print(
+            f"INTERRUPTED | completed_rows={completed_rows:,} pending_cancelled={cancelled_futures} "
+            f"active_queries_cancelled={active}. Completed months are retained; rerun the same command to resume.",
+            flush=True,
+        )
+        executor.shutdown(wait=False, cancel_futures=True)
+        return 130
+    except BaseException:
+        controller.cancel()
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    else:
+        executor.shutdown(wait=True)
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint)
+        if previous_sigbreak is not None:
+            signal.signal(signal.SIGBREAK, previous_sigbreak)
 
     audit = audit_prepared_dataset(config, args.start, args.end_exclusive)
     if audit["representation_sha256"] != representation_sha256:

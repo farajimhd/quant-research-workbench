@@ -61,7 +61,7 @@ class LoaderConfig:
     validation_end_exclusive: str = "2027-01-01"
     batch_size: int = 2048
     query_batch_articles: int = 2048
-    workers: int = 2
+    workers: int = 16
     prefetch_batches: int = 4
     max_threads_per_query: int = 4
     max_memory_usage: str = "16G"
