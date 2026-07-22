@@ -1460,7 +1460,13 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
 }
 
 function CanvasManager({ onCreate, onOpen, onRemove, registry }: { onCreate: () => void; onOpen: (id: string) => void; onRemove: (id: string) => void; registry: CanvasRegistry }) {
-  return <section aria-label="Canvas manager" className="canvas-manager-strip"><strong>Canvases</strong><div className="canvas-manager-items">{registry.canvases.map((canvas) => <article key={canvas.id} data-main={canvas.id === MAIN_CANVAS_ID ? "true" : "false"}>{canvas.id === MAIN_CANVAS_ID ? <><span>{canvas.label}</span><small>default authority</small></> : <><button aria-label={`Open ${canvas.label}`} className="canvas-manager-open" onClick={() => onOpen(canvas.id)} title="Open canvas in a new page" type="button"><span>{canvas.label}</span><ExternalLink size={11} /></button><button aria-label={`Remove ${canvas.label}`} className="toolbar-button compact" onClick={() => onRemove(canvas.id)} title="Remove canvas" type="button"><Trash2 size={12} /></button></>}</article>)}</div><button className="button secondary compact" onClick={onCreate} type="button"><Plus size={13} /> New canvas</button></section>;
+  return <section aria-label="Canvas manager" className="canvas-manager-strip">
+    <header><div><strong>Canvases</strong><small>Separate saved workspaces</small></div><button aria-label="New canvas" className="button secondary compact" onClick={onCreate} type="button"><Plus size={13} /> New</button></header>
+    <div className="canvas-manager-items">{registry.canvases.map((canvas) => <article key={canvas.id} data-main={canvas.id === MAIN_CANVAS_ID ? "true" : "false"}>
+      <button aria-label={canvas.id === MAIN_CANVAS_ID ? `${canvas.label} is the default canvas` : `Open ${canvas.label}`} className="canvas-manager-open" disabled={canvas.id === MAIN_CANVAS_ID} onClick={() => onOpen(canvas.id)} title={canvas.id === MAIN_CANVAS_ID ? "Default Canvas" : "Open Canvas in a new page"} type="button"><span>{canvas.label}</span><small>{canvas.id === MAIN_CANVAS_ID ? "Default" : "Open"}</small>{canvas.id === MAIN_CANVAS_ID ? null : <ExternalLink size={11} />}</button>
+      {canvas.id === MAIN_CANVAS_ID ? null : <button aria-label={`Remove ${canvas.label}`} className="toolbar-button compact" onClick={() => onRemove(canvas.id)} title="Remove canvas" type="button"><Trash2 size={12} /></button>}
+    </article>)}</div>
+  </section>;
 }
 
 type SettingsUpdater = (update: ContainerSettings | ((current: ContainerSettings) => ContainerSettings)) => void;

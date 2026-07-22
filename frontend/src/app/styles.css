@@ -21790,7 +21790,7 @@ button {
 }
 
 .canvas-config-page .trading-workspace-shell[data-management-open="true"] .workspace-management-scrim {
-  right: min(360px, 92%);
+  right: min(392px, 94%);
 }
 
 .canvas-config-page .trading-workspace-shell[data-management-open="true"] .workspace-management-sidebar {
@@ -21813,14 +21813,13 @@ button {
   border-left: 1px solid var(--border);
   box-shadow: -12px 0 28px color-mix(in oklab, var(--foreground) 14%, transparent);
   display: grid;
-  gap: 4px;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   max-height: min(680px, calc(100vh - 72px));
-  overflow-y: auto;
-  padding: 4px;
+  overflow: hidden;
   position: absolute;
   right: 0;
   top: 0;
-  width: min(360px, 92%);
+  width: min(392px, 94%);
   z-index: 45;
 }
 
@@ -21829,27 +21828,79 @@ button {
   border-bottom: 1px solid var(--border);
   display: flex;
   justify-content: space-between;
-  min-height: 26px;
+  min-height: 42px;
+  padding: 6px 8px;
 }
 
-.workspace-management-sidebar > header strong { font-size: 10px; }
+.workspace-management-sidebar > header > div { display: grid; gap: 1px; min-width: 0; }
+.workspace-management-sidebar > header strong { font-size: 11px; }
+.workspace-management-sidebar > header small { color: var(--muted-foreground); font-size: 8px; }
+
+.workspace-management-body {
+  align-items: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.workspace-management-body > section { flex: 0 0 auto; position: relative; }
+
+.workspace-management-sidebar > footer {
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding: 7px 8px;
+}
 
 .workspace-management-sidebar .canvas-manager-strip {
   align-items: stretch;
+  background: var(--surface);
+  border-radius: 6px;
   display: grid;
-  overflow: visible;
-  padding: 3px;
+  gap: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
 }
 
+.workspace-management-sidebar .canvas-manager-strip > header {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface-alt) 64%, var(--surface));
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  min-height: 36px;
+  padding: 5px 7px;
+}
+
+.workspace-management-sidebar .canvas-manager-strip > header > div { display: grid; gap: 1px; }
+.workspace-management-sidebar .canvas-manager-strip > header strong { font-size: 9px; text-transform: uppercase; }
+.workspace-management-sidebar .canvas-manager-strip > header small { color: var(--muted-foreground); font-size: 8px; }
+
 .workspace-management-sidebar .canvas-manager-items {
-  align-items: stretch;
   display: grid;
+  min-width: 0;
 }
 
 .workspace-management-sidebar .canvas-manager-items article {
+  background: var(--surface);
+  border: 0;
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   justify-content: space-between;
+  min-height: 34px;
+  padding: 3px 5px 3px 7px;
   width: 100%;
 }
+
+.workspace-management-sidebar .canvas-manager-items article:last-child { border-bottom: 0; }
+.workspace-management-sidebar .canvas-manager-open { justify-content: flex-start; min-width: 0; width: 100%; }
+.workspace-management-sidebar .canvas-manager-open:disabled { color: var(--foreground); cursor: default; opacity: 1; }
+.workspace-management-sidebar .canvas-manager-open span { font-size: 9px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
+.workspace-management-sidebar .canvas-manager-open small { margin-left: auto; }
 
 .workspace-management-sidebar .workspace-container-library {
   box-shadow: none;
@@ -21861,18 +21912,23 @@ button {
 
 .workspace-group-manager {
   border: 1px solid var(--border);
+  border-radius: 6px;
   display: grid;
   min-width: 0;
+  overflow: hidden;
 }
 
 .workspace-group-manager > header {
   align-items: center;
+  background: color-mix(in oklab, var(--surface-alt) 64%, var(--surface));
   border-bottom: 1px solid var(--border);
   display: flex;
   justify-content: space-between;
-  min-height: 26px;
-  padding: 2px 5px;
+  min-height: 36px;
+  padding: 5px 7px;
 }
+
+.workspace-group-manager > header > div { display: grid; gap: 1px; min-width: 0; }
 
 .workspace-group-manager > header strong {
   font-size: 9px;
@@ -21883,6 +21939,19 @@ button {
 .workspace-group-manager > p {
   color: var(--muted-foreground);
   font-size: 8px;
+}
+
+.workspace-group-manager > header > span {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 8px;
+  font-weight: 750;
+  height: 20px;
+  justify-content: center;
+  min-width: 20px;
 }
 
 .workspace-group-manager > p {
@@ -21898,20 +21967,33 @@ button {
 .workspace-group-manager-row {
   border-top: 1px solid var(--border);
   display: grid;
-  gap: 3px;
+  gap: 5px;
   min-width: 0;
-  padding: 4px;
+  padding: 6px 7px;
 }
 
 .workspace-group-manager-row:first-child {
   border-top: 0;
 }
 
-.workspace-group-manager-row form,
-.workspace-group-manager-meta {
-  align-items: end;
+.workspace-group-manager-summary {
+  align-items: center;
   display: flex;
-  gap: 3px;
+  gap: 6px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.workspace-group-manager-summary > div:first-child { display: grid; gap: 1px; min-width: 0; }
+.workspace-group-manager-summary strong { font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-group-manager-summary small { color: var(--muted-foreground); font-size: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-group-manager-actions { align-items: center; display: flex; flex: 0 0 auto; gap: 3px; }
+
+.workspace-group-manager-row form {
+  align-items: end;
+  display: grid;
+  gap: 4px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   min-width: 0;
 }
 
@@ -21939,23 +22021,6 @@ button {
   min-width: 0;
   padding: 1px 4px;
   width: 100%;
-}
-
-.workspace-group-manager-meta {
-  align-items: center;
-}
-
-.workspace-group-manager-meta span,
-.workspace-group-manager-meta small {
-  font-size: 8px;
-}
-
-.workspace-group-manager-meta small {
-  color: var(--muted-foreground);
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .workspace-management-reset { justify-content: center; width: 100%; }

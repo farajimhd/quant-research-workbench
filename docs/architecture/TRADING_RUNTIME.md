@@ -117,9 +117,10 @@ The configuration page uses a fixed New York point-in-time preview that defaults
 to 09:45 and derives synchronized ET, browser-local, and UTC timestamps through
 seconds. The clock is global canvas context and deliberately contains no ticker
 or editing controls. The header otherwise contains only Set default and a
-right-aligned management toggle. Canvas registry, compact container library,
-and layout reset controls live in its collapsible right sidebar, so opening
-management never changes canvas geometry. The canvas forms an isolated stacking
+right-aligned management toggle. The collapsible right sidebar separates saved
+Canvases, compound Groups, and the Container library into distinct sections;
+only its content body scrolls, while the title and reset action remain fixed.
+Opening management never changes canvas geometry. The canvas forms an isolated stacking
 context so arbitrary container layer values cannot render above management.
 Document-level horizontal overflow is
 clipped while the canvas owns horizontal scrolling. Chart and scanner content is calculated by QMD History from

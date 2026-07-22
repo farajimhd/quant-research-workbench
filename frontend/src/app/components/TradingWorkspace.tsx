@@ -12,6 +12,7 @@ import {
   LayoutGrid,
   Newspaper,
   PanelTopOpen,
+  Pencil,
   RefreshCcw,
   ScanSearch,
   Star,
@@ -209,7 +210,12 @@ export function TradingWorkspace({
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const canvasRef = useRef<HTMLElement | null>(null);
+  const managementBodyRef = useRef<HTMLDivElement | null>(null);
   const handledOpenRequestRef = useRef<TradingWorkspaceProps["openContainerRequest"]>(null);
+
+  useLayoutEffect(() => {
+    if (managementOpen && managementBodyRef.current) managementBodyRef.current.scrollTop = 0;
+  }, [managementOpen]);
 
   useEffect(() => {
     const state = { groups, instances, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts, openIds };
@@ -265,7 +271,16 @@ export function TradingWorkspace({
     const highest = highestLayer();
     const currentZ = isWorkspaceGroupId(rootId) ? groups[rootId]?.z : layouts[rootId]?.z;
     const hidden = isWorkspaceGroupId(rootId) ? Boolean(groups[rootId]?.closed || groups[rootId]?.minimized) : Boolean(layouts[rootId]?.minimized);
-    if (!hidden && currentZ != null && currentZ >= highest) return;
+    const targetFullscreen = isWorkspaceGroupId(rootId) ? Boolean(groups[rootId]?.fullscreen) : Boolean(layouts[rootId]?.fullscreen);
+    const conflictingFullscreen = !targetFullscreen && (
+      Object.values(layouts).some((layout) => layout.fullscreen)
+      || Object.values(groups).some((group) => group.fullscreen)
+    );
+    if (conflictingFullscreen) {
+      setLayouts((current) => clearFullscreenLayouts(current));
+      setGroups((current) => clearFullscreenGroups(current));
+    }
+    if (!hidden && !conflictingFullscreen && currentZ != null && currentZ >= highest) return;
     const z = highest + 1;
     if (isWorkspaceGroupId(rootId) && groups[rootId]) {
       setGroups((current) => ({ ...current, [rootId]: { ...current[rootId], closed: false, minimized: false, z } }));
@@ -393,6 +408,8 @@ export function TradingWorkspace({
       ? targetInstanceId
       : allowMultipleInstances ? nextContainerInstanceId(id, Object.keys(instances)) : id;
     const nextIds = [...openIds, instanceId];
+    setLayouts((current) => clearFullscreenLayouts(current));
+    setGroups((current) => clearFullscreenGroups(current));
     setOpenIds(nextIds);
     setInstances((current) => ({ ...current, [instanceId]: id }));
     setLayouts((current) => layoutPreset === "focus"
@@ -575,7 +592,7 @@ export function TradingWorkspace({
         canPopOut={canPopOut && Boolean(onPopOutGroup)}
         canvasTargets={canvasTargets}
         compact={compact}
-        fullscreenRightInset={managementOpen ? "min(360px, 92%)" : 0}
+        fullscreenRightInset={managementOpen ? "min(392px, 94%)" : 0}
         id={id}
         key={id}
         layout={layout}
@@ -621,7 +638,7 @@ export function TradingWorkspace({
       titleBarActions={view.titleBarActions}
       linkLabel={view.linkLabel}
       meta={view.meta}
-      fullscreenRightInset={managementOpen ? "min(360px, 92%)" : 0}
+      fullscreenRightInset={managementOpen ? "min(392px, 94%)" : 0}
       onClose={closeContainer}
       onFocus={focusContainer}
       onLayoutChange={updateLayout}
@@ -678,11 +695,13 @@ export function TradingWorkspace({
       {managementOpen ? <>
         <button aria-label="Close canvas management" className="workspace-management-scrim" onClick={onManagementClose} type="button" />
         <aside aria-label="Canvas management" className="workspace-management-sidebar">
-          <header><strong>Canvas management</strong><button aria-label="Close canvas management" className="toolbar-button compact" onClick={onManagementClose} type="button"><X size={13} /></button></header>
-          {managementContent}
-          <WorkspaceGroupManager groups={managedGroups} onClose={closeGroup} onRename={renameGroup} onShow={showGroup} />
-          <WorkspaceContainerLibrary allowMultipleInstances={allowMultipleInstances} definitions={definitions} instances={instances} mode={mode} openIds={openIds} onAdd={addContainer} />
-          <button className="button secondary compact workspace-management-reset" onClick={resetLayout} type="button"><RefreshCcw size={13} /> Reset layout</button>
+          <header><div><strong>Canvas management</strong><small>Organize workspaces, groups, and containers</small></div><button aria-label="Close canvas management" className="toolbar-button compact" onClick={onManagementClose} type="button"><X size={13} /></button></header>
+          <div className="workspace-management-body" ref={managementBodyRef}>
+            {managementContent}
+            <WorkspaceGroupManager groups={managedGroups} onClose={closeGroup} onRename={renameGroup} onShow={showGroup} />
+            <WorkspaceContainerLibrary allowMultipleInstances={allowMultipleInstances} definitions={definitions} instances={instances} mode={mode} openIds={openIds} onAdd={addContainer} />
+          </div>
+          <footer><button className="button secondary compact workspace-management-reset" onClick={resetLayout} type="button"><RefreshCcw size={13} /> Reset current layout</button></footer>
         </aside>
       </> : null}
 
@@ -749,7 +768,7 @@ function WorkspaceGroupManager({
   onShow: (id: string) => void;
 }) {
   return <section aria-label="Workspace groups" className="workspace-group-manager">
-    <header><strong>Groups</strong><small>{groups.length} saved</small></header>
+    <header><div><strong>Groups</strong><small>Move related containers as one surface</small></div><span>{groups.length}</span></header>
     {groups.length ? <div className="workspace-group-manager-list">{groups.map((group) => (
       <WorkspaceGroupManagerRow group={group} key={group.id} onClose={onClose} onRename={onRename} onShow={onShow} />
     ))}</div> : <p>No saved groups. Select containers on the Canvas to create one.</p>}
@@ -768,21 +787,35 @@ function WorkspaceGroupManagerRow({
   onShow: (id: string) => void;
 }) {
   const [draft, setDraft] = useState(group.title);
+  const [editing, setEditing] = useState(false);
   useEffect(() => setDraft(group.title), [group.title]);
   const canSave = Boolean(draft.trim()) && draft.trim() !== group.title;
   return <article className="workspace-group-manager-row" data-closed={group.closed ? "true" : "false"} data-root={group.isRoot ? "true" : "false"}>
-    <form onSubmit={(event) => { event.preventDefault(); if (canSave) onRename(group.id, draft); }}>
-      <label><span>Group name</span><input aria-label={`Rename ${group.title}`} maxLength={64} onChange={(event) => setDraft(event.target.value)} value={draft} /></label>
-      <button className="button secondary compact" disabled={!canSave} type="submit">Save</button>
-    </form>
-    <div className="workspace-group-manager-meta">
-      <span>{group.memberCount} container{group.memberCount === 1 ? "" : "s"}</span>
-      <small>{group.isRoot ? (group.closed ? "Closed" : "Open on Canvas") : `Nested in ${group.parentTitle ?? "group"}`}</small>
+    <div className="workspace-group-manager-summary">
+      <div><strong>{group.title}</strong><small>{group.memberCount} container{group.memberCount === 1 ? "" : "s"} · {group.isRoot ? (group.closed ? "Closed" : "Open on Canvas") : `Nested in ${group.parentTitle ?? "group"}`}</small></div>
+      <div className="workspace-group-manager-actions">
+        <button aria-label={`Rename ${group.title}`} className="toolbar-button compact" onClick={() => setEditing((value) => !value)} title="Rename group" type="button"><Pencil size={12} /></button>
       {group.isRoot && !group.closed
         ? <button aria-label={`Close ${group.title} from Manage`} className="toolbar-button compact" onClick={() => onClose(group.id)} title="Close group" type="button"><X size={12} /></button>
         : <button aria-label={`Show ${group.title} on Canvas`} className="button secondary compact" onClick={() => onShow(group.id)} type="button">Show</button>}
+      </div>
     </div>
+    {editing ? <form onSubmit={(event) => { event.preventDefault(); if (canSave) { onRename(group.id, draft.trim()); setEditing(false); } }}>
+      <label><span>Group name</span><input aria-label={`Rename ${group.title}`} autoFocus maxLength={64} onChange={(event) => setDraft(event.target.value)} value={draft} /></label>
+      <button className="button secondary compact" onClick={() => { setDraft(group.title); setEditing(false); }} type="button">Cancel</button>
+      <button className="button primary compact" disabled={!canSave} type="submit">Save</button>
+    </form> : null}
   </article>;
+}
+
+function clearFullscreenLayouts(layouts: Record<string, WorkspaceWindowLayout>) {
+  if (!Object.values(layouts).some((layout) => layout.fullscreen)) return layouts;
+  return Object.fromEntries(Object.entries(layouts).map(([id, layout]) => [id, layout.fullscreen ? { ...layout, fullscreen: false } : layout]));
+}
+
+function clearFullscreenGroups(groups: Record<string, WorkspaceGroup>) {
+  if (!Object.values(groups).some((group) => group.fullscreen)) return groups;
+  return Object.fromEntries(Object.entries(groups).map(([id, group]) => [id, group.fullscreen ? { ...group, fullscreen: false } : group]));
 }
 
 function WorkspaceContainerLibrary({
