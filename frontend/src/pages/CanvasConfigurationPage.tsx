@@ -101,7 +101,7 @@ type CanonicalTradingPreview = {
   closed_trades: PreviewRow[];
   activity: PreviewRow[];
   closed_trades_note: string;
-  performance_snapshot: PerformanceSnapshot;
+  performance_snapshot?: PerformanceSnapshot;
   performance_journal: PerformanceJournalReport;
   portfolio: {
     metrics: Record<string, string | number>;
@@ -120,8 +120,16 @@ type PerformanceSnapshot = {
   realized_pnl_today: string | number;
   available_cash: string | number;
   available_cash_basis: "available_funds" | "total_cash" | string;
+  source?: "performance_snapshot" | "canonical_state_v2";
 };
 type LivePerformanceState = { data: PerformanceSnapshot | null; status: "loading" | "ready" | "stale" | "error" };
+type PerformanceSnapshotResponse = {
+  as_of: string;
+  complete: boolean;
+  stale: boolean;
+  stale_reason: string;
+  performance_snapshot: PerformanceSnapshot;
+};
 type CanvasPreview = {
   as_of: string;
   chart: { bars: HistoricalBar[]; indicators: HistoricalIndicator[]; symbol: string; timeframe: string };
@@ -921,6 +929,34 @@ function readLiveAccountKeys(): string[] {
   return ["paper"];
 }
 
+function normalizePerformanceSnapshot(payload: CanonicalTradingPreview): PerformanceSnapshot | null {
+  if (payload.performance_snapshot) return { ...payload.performance_snapshot, source: "performance_snapshot" };
+  const metrics = payload.portfolio?.metrics;
+  if (!metrics || !payload.as_of) return null;
+  const sessionDate = marketSessionDate(payload.as_of);
+  const realizedToday = (payload.performance_journal?.episodes || []).reduce((total, row) => {
+    const closedAt = String(row.closed_at || "");
+    return marketSessionDate(closedAt) === sessionDate ? total + finiteNumber(row.net_pnl) : total;
+  }, 0);
+  const unrealized = finiteNumber(metrics.unrealized_pnl);
+  const hasAvailableFunds = payload.account_values.some((row) => String(row.key || "").toLowerCase() === "availablefunds" && String(row.segment || "base").toLowerCase() === "base")
+    || payload.ledger.some((row) => {
+      if (!row.is_base || !row.values || typeof row.values !== "object") return false;
+      return Object.keys(row.values as Record<string, unknown>).some((key) => key.toLowerCase() === "availablefunds");
+    });
+  return {
+    as_of: payload.as_of,
+    session_date: sessionDate,
+    net_pnl_today: realizedToday + unrealized,
+    open_position_count: payload.positions.filter((row) => finiteNumber(row.quantity) !== 0).length,
+    unrealized_pnl: unrealized,
+    realized_pnl_today: realizedToday,
+    available_cash: hasAvailableFunds ? finiteNumber(metrics.available_funds) : finiteNumber(metrics.total_cash),
+    available_cash_basis: hasAvailableFunds ? "available_funds" : "total_cash",
+    source: "canonical_state_v2",
+  };
+}
+
 function useLivePerformanceState(): LivePerformanceState {
   const [accountKeys, setAccountKeys] = useState(readLiveAccountKeys);
   const [state, setState] = useState<LivePerformanceState>({ data: null, status: "loading" });
@@ -936,28 +972,54 @@ function useLivePerformanceState(): LivePerformanceState {
   useEffect(() => {
     let cancelled = false;
     let controller: AbortController | null = null;
-    const load = () => {
-      if (document.visibilityState === "hidden") return;
-      controller?.abort();
-      controller = new AbortController();
-      api<CanonicalTradingPreview>(`/api/trading/state${query({ account_keys: accountKeys.join(","), account_type: accountKeys[0] || "paper", mode: "paper" })}`, {
-        signal: controller.signal,
-        timeoutMs: 20000,
-      }).then((payload) => {
-        if (!payload.performance_snapshot) throw new Error("Canonical performance snapshot is unavailable");
-        if (!cancelled) setState({ data: payload.performance_snapshot, status: payload.stale ? "stale" : "ready" });
-      }).catch(() => {
-        if (!cancelled && !controller?.signal.aborted) setState((current) => ({ data: current.data, status: "error" }));
-      });
+    let timer: number | null = null;
+    const schedule = () => {
+      if (!cancelled) timer = window.setTimeout(load, 15_000);
+    };
+    const load = async () => {
+      if (cancelled || controller) return;
+      if (document.visibilityState === "hidden") {
+        schedule();
+        return;
+      }
+      const request = new AbortController();
+      controller = request;
+      const parameters = { account_keys: accountKeys.join(","), account_type: accountKeys[0] || "paper", mode: "paper" };
+      try {
+        let performance: PerformanceSnapshot;
+        let stale = false;
+        try {
+          const compact = await api<PerformanceSnapshotResponse>(`/api/trading/performance-snapshot${query(parameters)}`, { signal: request.signal, timeoutMs: 45_000 });
+          performance = { ...compact.performance_snapshot, source: "performance_snapshot" };
+          stale = compact.stale;
+        } catch (reason) {
+          if ((reason as { status?: number })?.status !== 404) throw reason;
+          const payload = await api<CanonicalTradingPreview>(`/api/trading/state${query(parameters)}`, { signal: request.signal, timeoutMs: 45_000 });
+          const normalized = normalizePerformanceSnapshot(payload);
+          if (!normalized) throw new Error("Canonical performance evidence is unavailable");
+          performance = normalized;
+          stale = payload.stale;
+        }
+        if (!cancelled) setState({ data: performance, status: stale ? "stale" : "ready" });
+      } catch {
+        if (!cancelled && !request.signal.aborted) setState((current) => ({ data: current.data, status: "error" }));
+      } finally {
+        if (controller === request) controller = null;
+        schedule();
+      }
     };
     load();
-    const timer = window.setInterval(load, 15_000);
-    const refreshVisible = () => { if (document.visibilityState === "visible") load(); };
+    const refreshVisible = () => {
+      if (document.visibilityState !== "visible" || controller) return;
+      if (timer !== null) window.clearTimeout(timer);
+      timer = null;
+      void load();
+    };
     document.addEventListener("visibilitychange", refreshVisible);
     return () => {
       cancelled = true;
       controller?.abort();
-      window.clearInterval(timer);
+      if (timer !== null) window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", refreshVisible);
     };
   }, [accountKeys.join(",")]);
@@ -975,7 +1037,8 @@ function CanvasPerformanceStrip({ state }: { state: LivePerformanceState }) {
     { icon: Landmark, label: "Available cash", tone: "neutral", value: performanceMoney(snapshot?.available_cash, false), detail: !snapshot ? "Waiting for the canonical trading snapshot." : snapshot.available_cash_basis === "available_funds" ? "Broker available funds across the selected accounts." : "Total cash fallback; broker available funds were not published." },
   ];
   const freshness = snapshot?.as_of ? new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit", timeZone: "America/New_York" }).format(new Date(snapshot.as_of)) : "";
-  return <section aria-label="Live trading performance" className="canvas-performance-strip" data-status={state.status} title={freshness ? `Canonical trading snapshot as of ${freshness} ET` : "Canonical trading snapshot is loading"}>
+  const sourceDetail = snapshot?.source === "canonical_state_v2" ? " · normalized from canonical state v2" : "";
+  return <section aria-label="Live trading performance" className="canvas-performance-strip" data-status={state.status} title={freshness ? `Canonical trading snapshot as of ${freshness} ET${sourceDetail}` : "Canonical trading snapshot is loading"}>
     <div className="canvas-performance-title"><Activity aria-hidden="true" size={13} /><span>Performance</span><i aria-hidden="true" /></div>
     {rows.map(({ detail, icon: Icon, label, tone, value }) => <div className="canvas-performance-metric" data-tone={tone} key={label} title={detail}>
       <span><Icon aria-hidden="true" size={11} />{label}</span>

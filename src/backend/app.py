@@ -4636,6 +4636,21 @@ def trading_portfolio(account_type: str = "paper", account_keys: str = "", refre
     return {key: state[key] for key in ("schema_version", "mode", "provider", "as_of", "complete", "stale", "stale_reason", "portfolio", "account_values", "ledger")}
 
 
+@app.get("/api/trading/performance-snapshot")
+def trading_performance_snapshot(account_type: str = "paper", account_keys: str = "", refresh: bool = False, mode: str = "paper", run_id: str = "", output_root: str = str(DEFAULT_OUTPUT_ROOT)) -> dict[str, Any]:
+    state = _canonical_trading_state(account_type, account_keys, refresh, mode=mode, run_id=run_id, output_root=output_root)
+    return {
+        "schema_version": 1,
+        "mode": state["mode"],
+        "provider": state["provider"],
+        "as_of": state["as_of"],
+        "complete": state["complete"],
+        "stale": state["stale"],
+        "stale_reason": state["stale_reason"],
+        "performance_snapshot": state["performance_snapshot"],
+    }
+
+
 @app.get("/api/trading/positions")
 def trading_positions(account_type: str = "paper", account_keys: str = "", refresh: bool = False, mode: str = "paper", run_id: str = "", output_root: str = str(DEFAULT_OUTPUT_ROOT)) -> dict[str, Any]:
     state = _canonical_trading_state(account_type, account_keys, refresh, mode=mode, run_id=run_id, output_root=output_root)
