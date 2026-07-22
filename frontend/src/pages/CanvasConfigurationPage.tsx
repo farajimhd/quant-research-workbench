@@ -918,6 +918,7 @@ function marketSessionDate(timestamp: string) {
 }
 
 const LIVE_ACCOUNT_KEYS_STORAGE_KEY = "quant-research-workbench.real-live-trading.account-keys";
+const LIVE_PERFORMANCE_STORAGE_KEY = "quant-research-workbench.canvas.live-performance-v1";
 
 function readLiveAccountKeys(): string[] {
   try {
@@ -927,6 +928,28 @@ function readLiveAccountKeys(): string[] {
     // A malformed preference must not prevent the Canvas from loading.
   }
   return ["paper"];
+}
+
+function liveAccountSignature(accountKeys: string[]) {
+  return [...accountKeys].map((item) => String(item)).filter(Boolean).sort().join(",");
+}
+
+function readCachedLivePerformance(accountKeys: string[]): PerformanceSnapshot | null {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(LIVE_PERFORMANCE_STORAGE_KEY) || "null") as { account_signature?: string; data?: PerformanceSnapshot } | null;
+    if (parsed?.account_signature === liveAccountSignature(accountKeys) && parsed.data?.as_of) return parsed.data;
+  } catch {
+    // Cached presentation state is optional; canonical broker state remains authoritative.
+  }
+  return null;
+}
+
+function writeCachedLivePerformance(accountKeys: string[], data: PerformanceSnapshot) {
+  try {
+    window.localStorage.setItem(LIVE_PERFORMANCE_STORAGE_KEY, JSON.stringify({ account_signature: liveAccountSignature(accountKeys), data }));
+  } catch {
+    // Storage restrictions must not interrupt live refreshes.
+  }
 }
 
 function normalizePerformanceSnapshot(payload: CanonicalTradingPreview): PerformanceSnapshot | null {
@@ -959,7 +982,10 @@ function normalizePerformanceSnapshot(payload: CanonicalTradingPreview): Perform
 
 function useLivePerformanceState(): LivePerformanceState {
   const [accountKeys, setAccountKeys] = useState(readLiveAccountKeys);
-  const [state, setState] = useState<LivePerformanceState>({ data: null, status: "loading" });
+  const [state, setState] = useState<LivePerformanceState>(() => {
+    const cached = readCachedLivePerformance(accountKeys);
+    return { data: cached, status: cached ? "stale" : "loading" };
+  });
 
   useEffect(() => {
     const syncAccounts = (event: StorageEvent) => {
@@ -973,6 +999,8 @@ function useLivePerformanceState(): LivePerformanceState {
     let cancelled = false;
     let controller: AbortController | null = null;
     let timer: number | null = null;
+    const cached = readCachedLivePerformance(accountKeys);
+    setState({ data: cached, status: cached ? "stale" : "loading" });
     const schedule = () => {
       if (!cancelled) timer = window.setTimeout(load, 15_000);
     };
@@ -1000,7 +1028,10 @@ function useLivePerformanceState(): LivePerformanceState {
           performance = normalized;
           stale = payload.stale;
         }
-        if (!cancelled) setState({ data: performance, status: stale ? "stale" : "ready" });
+        if (!cancelled) {
+          writeCachedLivePerformance(accountKeys, performance);
+          setState({ data: performance, status: stale ? "stale" : "ready" });
+        }
       } catch {
         if (!cancelled && !request.signal.aborted) setState((current) => ({ data: current.data, status: "error" }));
       } finally {

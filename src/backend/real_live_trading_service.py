@@ -9,6 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -210,11 +211,27 @@ def real_live_portfolio(account_type: str, account_keys: str | list[str] | None 
     selected_by_id = {account.account_id: account for account in selected_accounts if account.account_id}
     selected_by_key = {account.account_key: account for account in selected_accounts}
     errors: list[dict[str, Any]] = []
-    portfolio_accounts, portfolio_accounts_error = ibkr_get_optional("/portfolio/accounts", timeout=8)
-    iserver_accounts, iserver_accounts_error = ibkr_get_optional("/iserver/accounts", timeout=8)
-    raw_orders, orders_error = ibkr_get_optional("/iserver/account/orders", timeout=8)
-    raw_trades, trades_error = ibkr_get_optional("/iserver/account/trades?days=7", timeout=8)
-    raw_pnl, pnl_error = ibkr_get_optional("/iserver/account/pnl/partitioned", timeout=8)
+    global_requests = {
+        "portfolio_accounts": "/portfolio/accounts",
+        "iserver_accounts": "/iserver/accounts",
+        "orders": "/iserver/account/orders",
+        "trades": "/iserver/account/trades?days=7",
+        "pnl": "/iserver/account/pnl/partitioned",
+    }
+    # These broker reads are independent snapshots. Running them serially made
+    # every canonical consumer wait for the sum of eight network round trips.
+    # Keep a bounded pool and preserve the single shared snapshot timestamp.
+    with ThreadPoolExecutor(max_workers=min(12, len(global_requests) + len(selected_accounts))) as executor:
+        global_futures = {name: executor.submit(ibkr_get_optional, path, timeout=8) for name, path in global_requests.items()}
+        portfolio_futures = {account.account_key: executor.submit(real_live_portfolio_for_account, account, now=now) for account in selected_accounts}
+        global_results = {name: future.result() for name, future in global_futures.items()}
+        portfolios_by_key = {key: future.result() for key, future in portfolio_futures.items()}
+
+    portfolio_accounts, portfolio_accounts_error = global_results["portfolio_accounts"]
+    iserver_accounts, iserver_accounts_error = global_results["iserver_accounts"]
+    raw_orders, orders_error = global_results["orders"]
+    raw_trades, trades_error = global_results["trades"]
+    raw_pnl, pnl_error = global_results["pnl"]
 
     for scope, error in (
         ("portfolio_accounts", portfolio_accounts_error),
@@ -226,7 +243,9 @@ def real_live_portfolio(account_type: str, account_keys: str | list[str] | None 
         if error:
             errors.append({"account_key": "", "scope": scope, "message": error})
 
-    portfolios = [real_live_portfolio_for_account(account, now=now, errors=errors) for account in selected_accounts]
+    portfolios = [portfolios_by_key[account.account_key] for account in selected_accounts]
+    for portfolio in portfolios:
+        errors.extend(portfolio.get("errors") or [])
     orders = normalize_ibkr_orders(raw_orders, selected_by_id=selected_by_id, fallback_account=selected_accounts[0] if len(selected_accounts) == 1 else None)
     orders = [order for order in orders if account_row_matches_selection(order, selected_by_key, selected_account_ids)]
     executions = normalize_ibkr_trades(raw_trades, selected_by_id=selected_by_id, fallback_account=selected_accounts[0] if len(selected_accounts) == 1 else None)
@@ -265,11 +284,17 @@ def real_live_portfolio_for_account(account: RealLiveAccount, *, now: str | None
     account_path = urllib.parse.quote(account.account_id, safe="")
     snapshot_time = now or datetime.now(NEW_YORK).isoformat()
     account_errors: list[dict[str, Any]] = []
-    raw_positions, positions_error = ibkr_get_optional(f"/portfolio2/{account_path}/positions", timeout=8)
-    if positions_error:
-        raw_positions, positions_error = ibkr_get_optional(f"/portfolio/{account_path}/positions/0", timeout=8)
-    raw_summary, summary_error = ibkr_get_optional(f"/portfolio/{account_path}/summary", timeout=8)
-    raw_ledger, ledger_error = ibkr_get_optional(f"/portfolio/{account_path}/ledger", timeout=8)
+    def positions_snapshot() -> tuple[Any, str]:
+        payload, error = ibkr_get_optional(f"/portfolio2/{account_path}/positions", timeout=8)
+        return ibkr_get_optional(f"/portfolio/{account_path}/positions/0", timeout=8) if error else (payload, error)
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        positions_future = executor.submit(positions_snapshot)
+        summary_future = executor.submit(ibkr_get_optional, f"/portfolio/{account_path}/summary", timeout=8)
+        ledger_future = executor.submit(ibkr_get_optional, f"/portfolio/{account_path}/ledger", timeout=8)
+        raw_positions, positions_error = positions_future.result()
+        raw_summary, summary_error = summary_future.result()
+        raw_ledger, ledger_error = ledger_future.result()
     for scope, error in (("positions", positions_error), ("summary", summary_error), ("ledger", ledger_error)):
         if error:
             item = {"account_key": account.account_key, "account_id": mask_account_id(account.account_id), "scope": scope, "message": error}

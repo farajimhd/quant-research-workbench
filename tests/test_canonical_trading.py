@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
+import time
 import unittest
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 import polars as pl
 
 from src.backend.canonical_backtest_service import canonical_backtest_state
 from src.backend.canonical_trading_service import performance_snapshot
+from src.backend.real_live_trading_service import RealLiveAccount, real_live_portfolio
 from src.trading_runtime.canonical_commands import intent_to_ibkr_request
 from src.trading_runtime.canonical_session import CanonicalBrokerSession
 from src.trading_runtime.domain import (
@@ -38,6 +42,33 @@ def instrument(symbol: str = "AAPL", conid: int = 265598) -> InstrumentContract:
 
 
 class CanonicalNormalizationTests(unittest.TestCase):
+    def test_live_portfolio_fetches_independent_broker_snapshots_concurrently(self) -> None:
+        account = RealLiveAccount("paper", "paper", "DU1", "Paper", "paper")
+        lock = threading.Lock()
+        active = 0
+        peak = 0
+
+        def broker_response(path: str, *, timeout: int):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.02)
+            with lock:
+                active -= 1
+            if path.endswith("/positions"):
+                return [], ""
+            return {}, ""
+
+        with patch("src.backend.real_live_trading_service.resolve_real_live_accounts", return_value=[account]), patch(
+            "src.backend.real_live_trading_service.ibkr_get_optional", side_effect=broker_response
+        ):
+            payload = real_live_portfolio("paper", account_keys="paper")
+
+        self.assertGreaterEqual(peak, 3)
+        self.assertEqual(payload["selected_account_keys"], ["paper"])
+        self.assertEqual(payload["errors"], [])
+
     def test_account_discovery_preserves_view_and_trade_permissions_for_string_account_lists(self) -> None:
         accounts = normalize_accounts(
             [{"accountId": "DU_VIEW", "currency": "CAD"}, {"accountId": "DU_BOTH", "currency": "USD"}],
