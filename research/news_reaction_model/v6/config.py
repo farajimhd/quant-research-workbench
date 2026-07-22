@@ -76,6 +76,7 @@ class ModelConfig:
     char_vocab_size: int = 65_536
     numeric_vocab_size: int = 32_768
     numeric_dense_dim: int = 24
+    numeric_embedding_dim: int = 64
     d_model: int = 384
     hidden_dim: int = 384
     layers: int = 4

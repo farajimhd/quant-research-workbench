@@ -45,7 +45,12 @@ class NewsReactionModelV6(nn.Module):
             config.char_vocab_size, d, mode="sum", include_last_offset=True,
         )
         self.numeric_embedding = nn.EmbeddingBag(
-            config.numeric_vocab_size, d, mode="sum", include_last_offset=True,
+            config.numeric_vocab_size, config.numeric_embedding_dim, mode="sum", include_last_offset=True,
+        )
+        self.numeric_sparse_projection = nn.Sequential(
+            nn.LayerNorm(config.numeric_embedding_dim),
+            nn.Linear(config.numeric_embedding_dim, d),
+            nn.GELU(),
         )
         self.numeric_dense_projection = nn.Sequential(
             nn.LayerNorm(config.numeric_dense_dim), nn.Linear(config.numeric_dense_dim, d), nn.GELU(),
@@ -72,9 +77,9 @@ class NewsReactionModelV6(nn.Module):
         char = self.char_embedding(
             x["char_indices"], x["char_offsets"], per_sample_weights=x["char_weights"]
         )
-        numeric = self.numeric_embedding(
+        numeric = self.numeric_sparse_projection(self.numeric_embedding(
             x["numeric_indices"], x["numeric_offsets"], per_sample_weights=x["numeric_weights"]
-        )
+        ))
         numeric = numeric + self.numeric_dense_projection(x["numeric_dense"])
         mask = x["channel_mask"].bool()
         if (~mask.any(dim=1)).any():

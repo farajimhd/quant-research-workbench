@@ -60,6 +60,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--v5-feature-artifact-root", default=str(loader.v5_feature_artifact_root))
     parser.add_argument("--numeric-vocab-size", type=int, default=loader.numeric_vocab_size)
     parser.add_argument("--numeric-dense-dim", type=int, default=loader.numeric_dense_dim)
+    parser.add_argument("--numeric-embedding-dim", type=int, default=model.numeric_embedding_dim)
     parser.add_argument("--numeric-max-text-chars", type=int, default=loader.numeric_max_text_chars)
     parser.add_argument("--numeric-context-words", type=int, default=loader.numeric_context_words)
     parser.add_argument("--numeric-max-mentions", type=int, default=loader.numeric_max_mentions)
@@ -115,6 +116,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
     model = ModelConfig(
         word_vocab_size=loader.word_vocab_size, char_vocab_size=loader.char_vocab_size,
         numeric_vocab_size=loader.numeric_vocab_size, numeric_dense_dim=loader.numeric_dense_dim,
+        numeric_embedding_dim=max(1, args.numeric_embedding_dim),
         d_model=args.d_model, hidden_dim=args.hidden_dim, layers=args.layers, dropout=args.dropout,
     )
     train = TrainConfig(

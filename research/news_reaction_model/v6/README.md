@@ -15,7 +15,8 @@ For each single-ticker article, V6 consumes:
 
 - V5 word TF-IDF IDs and weights, unchanged;
 - V5 character TF-IDF IDs and weights, unchanged;
-- typed, hashed financial-number tokens in a 32,768-entry vocabulary;
+- typed, hashed financial-number tokens in a 32,768-entry vocabulary, learned
+  through a compact 64-dimensional adapter and projected into the V5 width;
 - 24 bounded numeric statistics.
 
 The numeric parser recognizes currencies, percentages, basis points,
@@ -85,8 +86,9 @@ python -m research.news_reaction_model.v6.run_evaluate
 Compare V5 and V6 on held-out 2026 `val/log_loss`, exact range accuracy,
 within-one-bin accuracy, per-horizon metrics, and the unchanged one-share
 target-touch evaluation. Parameter count and throughput must be reported beside
-predictive results because V6 intentionally adds capacity for the numeric
-channel.
+predictive results. The numeric adapter is deliberately narrower than the V5
+encoder so added capacity stays small while retaining a low-collision numeric
+vocabulary.
 
 ## Live use
 
