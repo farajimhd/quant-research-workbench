@@ -136,6 +136,8 @@ class NewsReactionModelV2Tests(unittest.TestCase):
         self.assertIn("r.target_return", sql)
         self.assertIn("r.high_return", sql)
         self.assertIn("r.low_return", sql)
+        self.assertIn("r.anchor_price", sql)
+        self.assertIn("r.target_price", sql)
         self.assertIn("scale_version", sql)
         self.assertIn("p.dataset_version", sql)
         self.assertIn("p.canonical_news_id", sql)
@@ -151,12 +153,17 @@ class NewsReactionModelV2Tests(unittest.TestCase):
             "chunks": [[0, [0.1] * 8]], "publication_session": "regular",
             "horizon_codes": ["5m", "1m"],
             "return_targets": [[0.02, 0.03, -0.01], [-0.01, 0.01, -0.02]],
-            "pnl_targets": [["1m", -0.008, 0.012, -0.014, 0.01], ["5m", 0.025, 0.04, -0.02, 0.02]],
+            "pnl_targets": [
+                ["1m", -0.008, 0.012, -0.014, 0.01, 100.0, 99.2],
+                ["5m", 0.025, 0.04, -0.02, 0.02, 100.0, 102.5],
+            ],
         }]
         batch = rows_to_evaluation_batch(rows, loader)
         self.assertAlmostEqual(batch.raw_returns[0, HORIZONS.index("1m"), 0], -0.008)
         self.assertAlmostEqual(batch.raw_returns[0, HORIZONS.index("5m"), 1], 0.04)
         self.assertAlmostEqual(batch.robust_scales[0, HORIZONS.index("5m")], 0.02)
+        self.assertAlmostEqual(batch.trade_prices[0, HORIZONS.index("1m"), 0], 100.0)
+        self.assertAlmostEqual(batch.trade_prices[0, HORIZONS.index("5m"), 1], 102.5)
 
     def test_position_accuracy_flat_band_and_costed_pnl(self) -> None:
         accumulator = PositionPnlAccumulator()
@@ -167,6 +174,8 @@ class NewsReactionModelV2Tests(unittest.TestCase):
             raw_high=np.array([0.02, 0.005, 0.004, 0.003]),
             raw_low=np.array([-0.004, -0.015, -0.002, -0.012]),
             robust_scale=np.array([0.01, 0.01, 0.01, 0.01]),
+            anchor_price=np.array([100.0, 100.0, 100.0, 100.0]),
+            target_price=np.array([101.2, 99.2, 100.2, 99.1]),
         )
         metrics = accumulator.compute(flat_z=0.5, cost_bps=(0, 10), notional=10_000)
         self.assertEqual(metrics["samples"], 4)
@@ -175,6 +184,7 @@ class NewsReactionModelV2Tests(unittest.TestCase):
         self.assertAlmostEqual(metrics["classification"]["active_directional_accuracy"], 2 / 3)
         self.assertAlmostEqual(metrics["gross"]["raw_total_return"], 0.011)
         self.assertAlmostEqual(metrics["gross"]["fixed_notional_raw_pnl"], 110.0)
+        self.assertAlmostEqual(metrics["gross"]["one_share_total_pnl"], 1.1)
         self.assertAlmostEqual(metrics["cost_scenarios"]["10_bps"]["total_return"], 0.008)
 
     def test_scheduler_performs_two_restarts_across_three_segments(self) -> None:

@@ -35,6 +35,7 @@ class EvaluationBatch:
     model_batch: NewsReactionBatch
     raw_returns: np.ndarray
     robust_scales: np.ndarray
+    trade_prices: np.ndarray
 
 
 def evaluation_batch_sql(
@@ -65,7 +66,8 @@ raw_labels AS
   r.published_at_utc AS label_published_at_utc,
   groupArray(tuple(
    toString(r.horizon_code), r.target_return, r.high_return, r.low_return,
-   if(ts.robust_scale > 0, ts.robust_scale, gs.robust_scale)
+   if(ts.robust_scale > 0, ts.robust_scale, gs.robust_scale),
+   r.anchor_price, r.target_price
   )) AS pnl_targets
  FROM {reactions} AS r FINAL
  LEFT JOIN scale_rows AS ts
@@ -75,6 +77,8 @@ raw_labels AS
  WHERE r.label_version = {q(config.label_version)} AND r.applicable = 1
   AND r.horizon_code IN ({horizon_values})
   AND r.target_return IS NOT NULL
+  AND r.anchor_price IS NOT NULL AND r.anchor_price > 0
+  AND r.target_price IS NOT NULL
   AND (ts.robust_scale > 0 OR gs.robust_scale > 0)
   AND r.published_at_utc >= toDateTime64({q(start.isoformat())}, 9, 'UTC')
   AND r.published_at_utc < toDateTime64({q(end.isoformat())}, 9, 'UTC')
@@ -103,10 +107,11 @@ def rows_to_evaluation_batch(rows: list[dict[str, Any]], config: LoaderConfig) -
     b, h = len(rows), len(config.horizons)
     raw_returns = np.full((b, h, 3), np.nan, dtype=np.float64)
     robust_scales = np.full((b, h), np.nan, dtype=np.float64)
+    trade_prices = np.full((b, h, 2), np.nan, dtype=np.float64)
     horizon_index = {value: index for index, value in enumerate(config.horizons)}
     for row_index, row in enumerate(rows):
         for target in row.get("pnl_targets", ()):
-            if len(target) != 5:
+            if len(target) != 7:
                 continue
             horizon = horizon_index.get(str(target[0]))
             if horizon is None:
@@ -117,7 +122,16 @@ def rows_to_evaluation_batch(rows: list[dict[str, Any]], config: LoaderConfig) -
                 float(target[3]) if target[3] is not None else np.nan,
             ]
             robust_scales[row_index, horizon] = float(target[4]) if target[4] is not None else np.nan
-    return EvaluationBatch(model_batch=model_batch, raw_returns=raw_returns, robust_scales=robust_scales)
+            trade_prices[row_index, horizon] = [
+                float(target[5]) if target[5] is not None else np.nan,
+                float(target[6]) if target[6] is not None else np.nan,
+            ]
+    return EvaluationBatch(
+        model_batch=model_batch,
+        raw_returns=raw_returns,
+        robust_scales=robust_scales,
+        trade_prices=trade_prices,
+    )
 
 
 class ClickHouseEvaluationDataset:
@@ -264,6 +278,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                     evaluation_batch.raw_returns[valid, horizon_index, 1],
                     evaluation_batch.raw_returns[valid, horizon_index, 2],
                     evaluation_batch.robust_scales[valid, horizon_index],
+                    evaluation_batch.trade_prices[valid, horizon_index, 0],
+                    evaluation_batch.trade_prices[valid, horizon_index, 1],
                 )
                 accumulators[horizon].add(*values)
                 overall.add(*values)
@@ -272,6 +288,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                     _write_predictions(
                         prediction_file, cpu_batch, valid, horizon, horizon_index,
                         predicted, actual, evaluation_batch.raw_returns, evaluation_batch.robust_scales,
+                        evaluation_batch.trade_prices,
                         flat_values[0],
                     )
             articles += cpu_batch.sample_count
@@ -301,6 +318,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "flat_band": "flat_z * training_only_robust_scale(ticker,horizon,publication_session)",
             "gross_raw_pnl": "position * raw_target_return",
             "gross_abnormal_pnl": "position * abnormal_target_return",
+            "gross_one_share_pnl": "position * (target_price - anchor_price)",
             "limitation": "event-level fixed-notional proxy; overlapping positions and execution sequencing are not reconciled",
         },
         "regression": regression.compute("validation"),
@@ -333,6 +351,7 @@ def _write_predictions(
     actual: np.ndarray,
     raw_returns: np.ndarray,
     robust_scales: np.ndarray,
+    trade_prices: np.ndarray,
     flat_z: float,
 ) -> None:
     for row_index in np.flatnonzero(valid):
@@ -340,6 +359,8 @@ def _write_predictions(
         prediction = float(predicted[row_index, horizon_index, 0])
         actual_abnormal = float(actual[row_index, horizon_index, 0])
         raw_target = float(raw_returns[row_index, horizon_index, 0])
+        anchor_price = float(trade_prices[row_index, horizon_index, 0])
+        target_price = float(trade_prices[row_index, horizon_index, 1])
         threshold = flat_z * scale
         predicted_side = 1 if prediction > threshold else -1 if prediction < -threshold else 0
         actual_side = 1 if actual_abnormal > threshold else -1 if actual_abnormal < -threshold else 0
@@ -351,12 +372,15 @@ def _write_predictions(
             "predicted_abnormal_target_return": prediction,
             "actual_abnormal_target_return": actual_abnormal,
             "actual_raw_target_return": raw_target,
+            "anchor_price": anchor_price,
+            "target_price": target_price,
             "robust_scale": scale,
             "flat_band": threshold,
             "predicted_side": predicted_side,
             "actual_side": actual_side,
             "gross_raw_pnl_return": predicted_side * raw_target,
             "gross_abnormal_pnl_return": predicted_side * actual_abnormal,
+            "gross_one_share_pnl": predicted_side * (target_price - anchor_price),
         }
         handle.write(json.dumps(record, separators=(",", ":"), allow_nan=False) + "\n")
 

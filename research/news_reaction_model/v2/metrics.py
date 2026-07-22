@@ -86,6 +86,8 @@ class PositionPnlAccumulator:
     raw_high: list[np.ndarray] = field(default_factory=list)
     raw_low: list[np.ndarray] = field(default_factory=list)
     robust_scale: list[np.ndarray] = field(default_factory=list)
+    anchor_price: list[np.ndarray] = field(default_factory=list)
+    target_price: list[np.ndarray] = field(default_factory=list)
 
     def add(
         self,
@@ -95,9 +97,12 @@ class PositionPnlAccumulator:
         raw_high: np.ndarray,
         raw_low: np.ndarray,
         robust_scale: np.ndarray,
+        anchor_price: np.ndarray,
+        target_price: np.ndarray,
     ) -> None:
         values = [np.asarray(value, dtype=np.float64).reshape(-1) for value in (
             predicted, actual_abnormal, actual_raw, raw_high, raw_low, robust_scale,
+            anchor_price, target_price,
         )]
         lengths = {len(value) for value in values}
         if len(lengths) != 1:
@@ -105,12 +110,14 @@ class PositionPnlAccumulator:
         valid = (
             np.isfinite(values[0]) & np.isfinite(values[1]) & np.isfinite(values[2])
             & np.isfinite(values[5]) & (values[5] > 0)
+            & np.isfinite(values[6]) & (values[6] > 0) & np.isfinite(values[7])
         )
         if not valid.any():
             return
         targets = (
             self.predicted, self.actual_abnormal, self.actual_raw,
             self.raw_high, self.raw_low, self.robust_scale,
+            self.anchor_price, self.target_price,
         )
         for target, value in zip(targets, values):
             target.append(value[valid])
@@ -134,6 +141,8 @@ class PositionPnlAccumulator:
         raw_high = _concat(self.raw_high)
         raw_low = _concat(self.raw_low)
         scale = _concat(self.robust_scale)
+        anchor_price = _concat(self.anchor_price)
+        target_price = _concat(self.target_price)
         if not len(predicted):
             return {"samples": 0}
 
@@ -169,6 +178,7 @@ class PositionPnlAccumulator:
 
         gross_raw = predicted_side * actual_raw
         gross_abnormal = predicted_side * actual_abnormal
+        gross_one_share = predicted_side * (target_price - anchor_price)
         active_count = int(active.sum())
         favorable = np.maximum(predicted_side * raw_high, predicted_side * raw_low)
         adverse = np.minimum(predicted_side * raw_high, predicted_side * raw_low)
@@ -205,6 +215,9 @@ class PositionPnlAccumulator:
                 "fixed_notional_raw_pnl": float(gross_raw.sum() * notional),
                 "notional_per_event": float(notional),
                 "break_even_round_trip_cost_bps": float(gross_raw[active].mean() * 10_000.0) if active_count else 0.0,
+                "one_share_total_pnl": float(gross_one_share.sum()),
+                "one_share_mean_pnl_per_active": float(gross_one_share[active].mean()) if active_count else 0.0,
+                "one_share_median_pnl_per_active": float(np.median(gross_one_share[active])) if active_count else 0.0,
             },
             "excursion": {
                 "samples": int(excursion_valid.sum()),
@@ -218,6 +231,7 @@ class PositionPnlAccumulator:
         for raw_cost in cost_bps:
             cost = float(raw_cost)
             net = gross_raw - active.astype(np.float64) * cost / 10_000.0
+            one_share_net = gross_one_share - active.astype(np.float64) * anchor_price * cost / 10_000.0
             scenarios[f"{cost:g}_bps"] = {
                 "total_return": float(net.sum()),
                 "mean_per_event": float(net.mean()),
@@ -226,6 +240,7 @@ class PositionPnlAccumulator:
                 "win_rate": float((net[active] > 0).mean()) if active_count else 0.0,
                 "profit_factor": _profit_factor(net[active]),
                 "fixed_notional_pnl": float(net.sum() * notional),
+                "one_share_total_pnl": float(one_share_net.sum()),
             }
         return output
 
