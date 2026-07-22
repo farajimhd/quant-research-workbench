@@ -10,6 +10,7 @@ from pathlib import Path
 import polars as pl
 
 from src.backend.canonical_backtest_service import canonical_backtest_state
+from src.backend.canonical_trading_service import performance_snapshot
 from src.trading_runtime.canonical_commands import intent_to_ibkr_request
 from src.trading_runtime.canonical_session import CanonicalBrokerSession
 from src.trading_runtime.domain import (
@@ -165,6 +166,27 @@ class CanonicalProjectionTests(unittest.TestCase):
         self.assertEqual(candles[1]["close"], "15")
         self.assertEqual(set(report["pnl_candles"]), {"30m", "1h", "1d", "1M"})
 
+    def test_performance_snapshot_keeps_realized_pnl_on_the_current_market_date(self) -> None:
+        executions = [
+            Execution("prior-open", "DU1", instrument(), "BUY", Decimal("10"), Decimal("100"), NOW - timedelta(days=1, minutes=2)),
+            Execution("prior-close", "DU1", instrument(), "SELL", Decimal("10"), Decimal("101"), NOW - timedelta(days=1, minutes=1)),
+            Execution("today-open", "DU1", instrument(), "BUY", Decimal("10"), Decimal("100"), NOW - timedelta(minutes=2)),
+            Execution("today-close", "DU1", instrument(), "SELL", Decimal("10"), Decimal("102"), NOW - timedelta(minutes=1)),
+        ]
+        projector = TradingStateProjector(TradingMode.PAPER, BrokerProvider.IBKR_CPAPI)
+        projector.set_executions(executions)
+
+        snapshot = performance_snapshot(
+            projector.snapshot(),
+            {"available_funds": "0", "total_cash": "25000", "unrealized_pnl": "5"},
+            derive_trade_episodes(executions),
+        )
+
+        self.assertEqual(snapshot["realized_pnl_today"], "20")
+        self.assertEqual(snapshot["net_pnl_today"], "25")
+        self.assertEqual(snapshot["available_cash"], "25000")
+        self.assertEqual(snapshot["available_cash_basis"], "total_cash")
+
 
 class CanonicalAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def test_simulated_adapter_accepts_canonical_intent_and_returns_audit_events(self) -> None:
@@ -215,6 +237,12 @@ class CanonicalBacktestTests(unittest.TestCase):
             self.assertEqual(len(state["positions"]), 1)
             self.assertEqual(len(state["executions"]), 1)
             self.assertEqual(state["portfolio"]["metrics"]["net_liquidation"], "100000.0")
+            self.assertEqual(state["performance_snapshot"]["open_position_count"], 1)
+            self.assertEqual(state["performance_snapshot"]["unrealized_pnl"], "10.0")
+            self.assertEqual(state["performance_snapshot"]["realized_pnl_today"], "0")
+            self.assertEqual(state["performance_snapshot"]["net_pnl_today"], "10.0")
+            self.assertEqual(state["performance_snapshot"]["available_cash"], "90000.0")
+            self.assertEqual(state["performance_snapshot"]["available_cash_basis"], "total_cash")
 
 
 if __name__ == "__main__":

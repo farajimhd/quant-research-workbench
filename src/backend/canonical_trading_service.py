@@ -4,6 +4,7 @@ import threading
 import time
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from src.backend.real_live_trading_service import real_live_portfolio
 from src.trading_runtime.domain import (
@@ -30,6 +31,7 @@ from src.trading_runtime.performance import build_performance_report, derive_tra
 _CACHE_LOCK = threading.Lock()
 _CACHE: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 _CACHE_SECONDS = 2.0
+_NEW_YORK = ZoneInfo("America/New_York")
 
 
 def canonical_trading_state(
@@ -146,8 +148,49 @@ def trading_state_payload(snapshot: TradingStateSnapshot) -> dict[str, Any]:
         if snapshot.mode in {TradingMode.BACKTEST, TradingMode.BACKTEST_DEBUG} and snapshot.closed_trades
         else derive_trade_episodes(snapshot.executions)
     )
+    payload["performance_snapshot"] = performance_snapshot(snapshot, metrics, episodes)
     payload["performance_journal"] = build_performance_report(episodes, snapshot.executions, snapshot.orders)
     return payload
+
+
+def performance_snapshot(snapshot: TradingStateSnapshot, metrics: dict[str, Any], episodes: list[Any]) -> dict[str, Any]:
+    """Build the compact, point-in-time performance contract used across UIs.
+
+    Daily realized P&L is derived from completed flat-to-flat episodes whose
+    close falls on the snapshot's New York market date. Current unrealized P&L
+    comes from the position snapshot. This keeps live, replay, and backtest
+    consumers on the same causal definition instead of mixing account-lifetime
+    realized values with a daily headline.
+    """
+
+    session_date = snapshot.as_of.astimezone(_NEW_YORK).date()
+    realized_today = sum(
+        (row.net_pnl for row in episodes if row.closed_at.astimezone(_NEW_YORK).date() == session_date),
+        Decimal("0"),
+    )
+    unrealized = Decimal(str(metrics.get("unrealized_pnl") or 0))
+    has_available_funds = _has_metric(snapshot, "availablefunds")
+    available_cash = metrics.get("available_funds") if has_available_funds else metrics.get("total_cash")
+    open_positions = sum(1 for row in snapshot.positions if row.quantity != 0)
+    return json_safe(
+        {
+            "as_of": snapshot.as_of,
+            "session_date": session_date.isoformat(),
+            "net_pnl_today": realized_today + unrealized,
+            "open_position_count": open_positions,
+            "unrealized_pnl": unrealized,
+            "realized_pnl_today": realized_today,
+            "available_cash": Decimal(str(available_cash or 0)),
+            "available_cash_basis": "available_funds" if has_available_funds else "total_cash",
+        }
+    )
+
+
+def _has_metric(snapshot: TradingStateSnapshot, key: str) -> bool:
+    wanted = key.lower()
+    if any(row.key.lower() == wanted and row.segment == "base" for row in snapshot.account_values):
+        return True
+    return any(any(source_key.lower() == wanted for source_key in row.values) for row in snapshot.ledger if row.is_base)
 
 
 def portfolio_metrics(account_values: list[dict[str, Any]], ledger: list[dict[str, Any]], positions: list[dict[str, Any]]) -> dict[str, Any]:

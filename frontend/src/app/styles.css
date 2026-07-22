@@ -21391,7 +21391,102 @@ button {
 }
 
 .canvas-mode-context-slot {
+  align-items: stretch;
+  display: flex;
   min-width: 28px;
+  overflow: hidden;
+}
+
+.canvas-performance-strip {
+  background: var(--surface);
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(82px, .8fr) repeat(5, minmax(76px, 1fr));
+  min-width: 480px;
+  overflow: hidden;
+}
+
+.canvas-performance-title,
+.canvas-performance-metric {
+  align-content: center;
+  border-left: 1px solid var(--border);
+  display: grid;
+  min-width: 0;
+  padding: 4px 8px;
+}
+
+.canvas-performance-title {
+  align-items: center;
+  color: var(--muted-foreground);
+  gap: 5px;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+}
+
+.canvas-performance-title span {
+  font-size: 8px;
+  font-weight: 850;
+  letter-spacing: .06em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.canvas-performance-title i {
+  background: var(--success);
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--success) 12%, transparent);
+  height: 5px;
+  width: 5px;
+}
+
+.canvas-performance-strip[data-status="loading"] .canvas-performance-title i,
+.canvas-performance-strip[data-status="stale"] .canvas-performance-title i {
+  background: var(--warning);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--warning) 12%, transparent);
+}
+
+.canvas-performance-strip[data-status="error"] .canvas-performance-title i {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--danger) 12%, transparent);
+}
+
+.canvas-performance-metric {
+  gap: 1px;
+}
+
+.canvas-performance-metric > span {
+  align-items: center;
+  color: var(--muted-foreground);
+  display: flex;
+  font-size: 8px;
+  font-weight: 700;
+  gap: 3px;
+  line-height: 1.05;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.canvas-performance-metric > strong {
+  color: var(--foreground);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 820;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.canvas-performance-metric[data-tone="positive"] > strong { color: var(--success); }
+.canvas-performance-metric[data-tone="negative"] > strong { color: var(--danger); }
+.canvas-performance-metric[data-tone="info"] > strong { color: var(--info); }
+
+.canvas-performance-strip[data-status="loading"] .canvas-performance-metric,
+.canvas-performance-strip[data-status="error"] .canvas-performance-metric {
+  opacity: .62;
 }
 
 .canvas-toolbar-actions .canvas-set-default { margin-left: 0; }
@@ -21399,6 +21494,10 @@ button {
 @media (max-width: 980px) {
   .canvas-config-toolbar { grid-template-columns: max-content max-content minmax(12px, 1fr) auto; }
   .canvas-clock-zones > span { padding-inline: 7px; }
+  .canvas-performance-strip { grid-template-columns: 32px repeat(5, minmax(68px, 1fr)); min-width: 385px; }
+  .canvas-performance-title { justify-items: center; padding-inline: 5px; }
+  .canvas-performance-title span { display: none; }
+  .canvas-performance-metric { padding-inline: 5px; }
 }
 
 /* Compact linked canvas system */

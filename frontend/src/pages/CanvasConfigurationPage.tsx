@@ -1,4 +1,4 @@
-import { Activity, ArrowDown, ArrowUp, ArrowUpDown, BarChart3, BookOpen, Check, ChevronDown, ChevronRight, Clock3, ExternalLink, Filter, Gauge, HelpCircle, Link2, MapPin, PanelRightOpen, Plus, Search, Save, Settings2, ShieldCheck, Target, Trash2, Unlink, X } from "lucide-react";
+import { Activity, ArrowDown, ArrowUp, ArrowUpDown, BadgeDollarSign, BarChart3, BookOpen, BriefcaseBusiness, Check, ChevronDown, ChevronRight, CircleDollarSign, Clock3, ExternalLink, Filter, Gauge, HelpCircle, Landmark, Link2, MapPin, PanelRightOpen, Plus, Search, Save, Settings2, ShieldCheck, Target, Trash2, Unlink, WalletCards, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 
 import { api, query } from "../api/client";
@@ -101,6 +101,7 @@ type CanonicalTradingPreview = {
   closed_trades: PreviewRow[];
   activity: PreviewRow[];
   closed_trades_note: string;
+  performance_snapshot: PerformanceSnapshot;
   performance_journal: PerformanceJournalReport;
   portfolio: {
     metrics: Record<string, string | number>;
@@ -110,6 +111,17 @@ type CanonicalTradingPreview = {
     pending_commission_count: number;
   };
 };
+type PerformanceSnapshot = {
+  as_of: string;
+  session_date: string;
+  net_pnl_today: string | number;
+  open_position_count: number;
+  unrealized_pnl: string | number;
+  realized_pnl_today: string | number;
+  available_cash: string | number;
+  available_cash_basis: "available_funds" | "total_cash" | string;
+};
+type LivePerformanceState = { data: PerformanceSnapshot | null; status: "loading" | "ready" | "stale" | "error" };
 type CanvasPreview = {
   as_of: string;
   chart: { bars: HistoricalBar[]; indicators: HistoricalIndicator[]; symbol: string; timeframe: string };
@@ -897,6 +909,101 @@ function marketSessionDate(timestamp: string) {
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
+const LIVE_ACCOUNT_KEYS_STORAGE_KEY = "quant-research-workbench.real-live-trading.account-keys";
+
+function readLiveAccountKeys(): string[] {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(LIVE_ACCOUNT_KEYS_STORAGE_KEY) || "null");
+    if (Array.isArray(parsed)) return parsed.map((item) => String(item)).filter(Boolean);
+  } catch {
+    // A malformed preference must not prevent the Canvas from loading.
+  }
+  return ["paper"];
+}
+
+function useLivePerformanceState(): LivePerformanceState {
+  const [accountKeys, setAccountKeys] = useState(readLiveAccountKeys);
+  const [state, setState] = useState<LivePerformanceState>({ data: null, status: "loading" });
+
+  useEffect(() => {
+    const syncAccounts = (event: StorageEvent) => {
+      if (event.key === LIVE_ACCOUNT_KEYS_STORAGE_KEY) setAccountKeys(readLiveAccountKeys());
+    };
+    window.addEventListener("storage", syncAccounts);
+    return () => window.removeEventListener("storage", syncAccounts);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let controller: AbortController | null = null;
+    const load = () => {
+      if (document.visibilityState === "hidden") return;
+      controller?.abort();
+      controller = new AbortController();
+      api<CanonicalTradingPreview>(`/api/trading/state${query({ account_keys: accountKeys.join(","), account_type: accountKeys[0] || "paper", mode: "paper" })}`, {
+        signal: controller.signal,
+        timeoutMs: 20000,
+      }).then((payload) => {
+        if (!payload.performance_snapshot) throw new Error("Canonical performance snapshot is unavailable");
+        if (!cancelled) setState({ data: payload.performance_snapshot, status: payload.stale ? "stale" : "ready" });
+      }).catch(() => {
+        if (!cancelled && !controller?.signal.aborted) setState((current) => ({ data: current.data, status: "error" }));
+      });
+    };
+    load();
+    const timer = window.setInterval(load, 15_000);
+    const refreshVisible = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", refreshVisible);
+    return () => {
+      cancelled = true;
+      controller?.abort();
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshVisible);
+    };
+  }, [accountKeys.join(",")]);
+
+  return state;
+}
+
+function CanvasPerformanceStrip({ state }: { state: LivePerformanceState }) {
+  const snapshot = state.data;
+  const rows = [
+    { icon: BadgeDollarSign, label: "Net P&L", tone: performanceTone(snapshot?.net_pnl_today), value: performanceMoney(snapshot?.net_pnl_today, true), detail: "Today's realized net P&L plus current unrealized P&L." },
+    { icon: BriefcaseBusiness, label: "Open", tone: Number(snapshot?.open_position_count || 0) > 0 ? "info" : "neutral", value: snapshot ? String(snapshot.open_position_count) : "—", detail: "Current non-zero positions across the selected broker accounts." },
+    { icon: CircleDollarSign, label: "Unrealized", tone: performanceTone(snapshot?.unrealized_pnl), value: performanceMoney(snapshot?.unrealized_pnl, true), detail: "Mark-to-market P&L on currently open positions." },
+    { icon: WalletCards, label: "Realized today", tone: performanceTone(snapshot?.realized_pnl_today), value: performanceMoney(snapshot?.realized_pnl_today, true), detail: "Net P&L from flat-to-flat trade episodes closed today in New York market time." },
+    { icon: Landmark, label: "Available cash", tone: "neutral", value: performanceMoney(snapshot?.available_cash, false), detail: !snapshot ? "Waiting for the canonical trading snapshot." : snapshot.available_cash_basis === "available_funds" ? "Broker available funds across the selected accounts." : "Total cash fallback; broker available funds were not published." },
+  ];
+  const freshness = snapshot?.as_of ? new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit", timeZone: "America/New_York" }).format(new Date(snapshot.as_of)) : "";
+  return <section aria-label="Live trading performance" className="canvas-performance-strip" data-status={state.status} title={freshness ? `Canonical trading snapshot as of ${freshness} ET` : "Canonical trading snapshot is loading"}>
+    <div className="canvas-performance-title"><Activity aria-hidden="true" size={13} /><span>Performance</span><i aria-hidden="true" /></div>
+    {rows.map(({ detail, icon: Icon, label, tone, value }) => <div className="canvas-performance-metric" data-tone={tone} key={label} title={detail}>
+      <span><Icon aria-hidden="true" size={11} />{label}</span>
+      <strong>{value}</strong>
+    </div>)}
+  </section>;
+}
+
+function performanceTone(value: unknown) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric === 0) return "neutral";
+  return numeric > 0 ? "positive" : "negative";
+}
+
+function performanceMoney(value: unknown, signed: boolean) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "—";
+  const compact = Math.abs(numeric) >= 100_000;
+  const formatted = new Intl.NumberFormat("en-US", {
+    currency: "USD",
+    maximumFractionDigits: compact ? 1 : 0,
+    notation: compact ? "compact" : "standard",
+    signDisplay: signed ? "exceptZero" : "auto",
+    style: "currency",
+  }).format(numeric);
+  return formatted.replace("-$", "−$");
+}
+
 function canvasLiveStreamUrl(kind: "bars" | "indicators", symbol: string, timeframe: string) {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${window.location.host}/api/trading/canvas-live-chart/stream/${kind}/${encodeURIComponent(symbol)}${query({ limit: 500, timeframe })}`;
@@ -942,6 +1049,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
   const previewClocks = useMemo(() => previewClockReadings(previewContext), [previewContext]);
   const clockIcons = [Clock3, MapPin];
   const marketStatus = useMemo(() => historicalMarketStatus(previewContext.sessionDate, previewContext.previewTime), [previewContext]);
+  const livePerformance = useLivePerformanceState();
 
   useEffect(() => {
     if (canvasId !== NEWS_READER_CANVAS_ID && canvasId !== SEC_READER_CANVAS_ID) return;
@@ -1216,7 +1324,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
           </div>
         </div>
         <MarketStatusBadge value={marketStatus} />
-        <div aria-label="Replay and Backtest Debug controls" className="canvas-mode-context-slot" />
+        <div className="canvas-mode-context-slot"><CanvasPerformanceStrip state={livePerformance} /></div>
         {manager ? <div className="canvas-toolbar-actions"><button className="button secondary compact canvas-set-default" disabled={!workspaceState} onClick={saveDefaultLayout} type="button"><Save size={13} /> {defaultSaved ? "Default saved" : "Set default"}</button><button aria-expanded={managementOpen} aria-label="Canvas management" className="button secondary compact canvas-management-toggle" onClick={() => setManagementOpen((open) => !open)} type="button"><PanelRightOpen size={13} /> Manage</button></div> : null}
       </header>
 
