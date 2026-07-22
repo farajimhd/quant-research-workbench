@@ -2,7 +2,14 @@ from datetime import UTC, datetime
 import unittest
 from unittest.mock import patch
 
-from src.backend.canvas_preview_service import _enrich_scanner_intelligence, _query_news, scanner_snapshot_payload
+from src.backend.canvas_preview_service import (
+    _enrich_scanner_intelligence,
+    _merge_scanner_intelligence,
+    _query_news,
+    _query_scanner_news_intelligence,
+    _query_scanner_sec_intelligence,
+    scanner_snapshot_payload,
+)
 
 
 class CanvasScannerPayloadTest(unittest.TestCase):
@@ -24,9 +31,8 @@ class CanvasScannerPayloadTest(unittest.TestCase):
         with (
             patch("src.backend.canvas_preview_service.historical_scanner_snapshot", return_value=snapshot),
             patch("src.backend.canvas_preview_service.historical_scanner_reference_projection", return_value=projection),
-            patch("src.backend.canvas_preview_service._query_news", return_value=[]),
-            patch("src.backend.canvas_preview_service._query_sec", return_value=[]),
-            patch("src.backend.canvas_preview_service._attach_sec_tickers"),
+            patch("src.backend.canvas_preview_service._query_scanner_news_intelligence", return_value=[]),
+            patch("src.backend.canvas_preview_service._query_scanner_sec_intelligence", return_value=[]),
         ):
             payload = scanner_snapshot_payload(as_of=as_of)
 
@@ -80,6 +86,35 @@ class CanvasScannerPayloadTest(unittest.TestCase):
         self.assertIn("AS is_company_news", sql)
         self.assertIn("AS news_topics", sql)
         self.assertIn("provider_tags", sql)
+
+    def test_scanner_intelligence_queries_aggregate_by_ticker_without_preview_limits(self) -> None:
+        as_of = datetime(2026, 7, 17, 13, 45, tzinfo=UTC)
+        with patch("src.backend.canvas_preview_service._clickhouse_rows", return_value=[]) as clickhouse:
+            _query_scanner_news_intelligence(as_of)
+            news_sql = clickhouse.call_args.args[0]
+            _query_scanner_sec_intelligence(as_of)
+            sec_sql = clickhouse.call_args.args[0]
+
+        self.assertIn("GROUP BY ticker", news_sql)
+        self.assertIn("WHERE is_company_news", news_sql)
+        self.assertNotIn("LIMIT 30", news_sql)
+        self.assertIn("GROUP BY ticker", sec_sql)
+        self.assertIn("valid_to_date_exclusive", sec_sql)
+        self.assertNotIn("LIMIT 30", sec_sql)
+
+    def test_aggregated_scanner_intelligence_populates_labels_and_recency(self) -> None:
+        as_of = datetime(2026, 7, 17, 13, 45, tzinfo=UTC)
+        rows = [{"symbol": "AAPL"}, {"symbol": "MSFT"}]
+        news = [{"ticker": "AAPL", "live_news_count": 2, "latest_news_at": "2026-07-17T13:15:00Z", "news_labels": ["guidance", "earnings"]}]
+        sec = [{"ticker": "AAPL", "sec_count": 1, "latest_sec_at": "2026-07-16T20:00:00Z", "sec_labels": ["8-K"]}]
+
+        _merge_scanner_intelligence(rows, news, sec, as_of)
+
+        self.assertEqual(rows[0]["news_labels"], "earnings, guidance")
+        self.assertEqual(rows[0]["live_news_recency"], "hot")
+        self.assertEqual(rows[0]["sec_labels"], "8-K")
+        self.assertEqual(rows[0]["sec_recency"], "cold")
+        self.assertEqual(rows[1]["live_news_recency"], "none")
 
 
 if __name__ == "__main__":

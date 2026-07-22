@@ -92,7 +92,7 @@ type TradingWorkspaceProps = {
   managementContent?: ReactNode;
   managementOpen?: boolean;
   onManagementClose?: () => void;
-  openContainerRequest?: { kind: WorkspaceContainerId; requestId: number } | null;
+  openContainerRequest?: { kind: WorkspaceContainerId; requestId: number; targetInstanceId?: string } | null;
 };
 
 class WorkspaceContainerErrorBoundary extends Component<
@@ -382,14 +382,16 @@ export function TradingWorkspace({
     if (Object.keys(statePatch).length) setGroups((current) => ({ ...current, [id]: { ...current[id], ...statePatch } }));
   }
 
-  function addContainer(id: WorkspaceContainerId) {
+  function addContainer(id: WorkspaceContainerId, targetInstanceId?: string) {
     if (!allowMultipleInstances && openIds.includes(id)) {
       focusContainer(id);
       setLibraryOpen(false);
       onManagementClose?.();
       return;
     }
-    const instanceId = allowMultipleInstances ? nextContainerInstanceId(id, Object.keys(instances)) : id;
+    const instanceId = targetInstanceId && (targetInstanceId === id || targetInstanceId.startsWith(`${id}-`))
+      ? targetInstanceId
+      : allowMultipleInstances ? nextContainerInstanceId(id, Object.keys(instances)) : id;
     const nextIds = [...openIds, instanceId];
     setOpenIds(nextIds);
     setInstances((current) => ({ ...current, [instanceId]: id }));
@@ -404,9 +406,13 @@ export function TradingWorkspace({
   useEffect(() => {
     if (!openContainerRequest || handledOpenRequestRef.current === openContainerRequest) return;
     handledOpenRequestRef.current = openContainerRequest;
-    const existingId = openIds.find((instanceId) => instances[instanceId] === openContainerRequest.kind || instanceId === openContainerRequest.kind || instanceId.startsWith(`${openContainerRequest.kind}-`));
+    const existingId = openContainerRequest.targetInstanceId && openIds.includes(openContainerRequest.targetInstanceId)
+      ? openContainerRequest.targetInstanceId
+      : openContainerRequest.targetInstanceId
+        ? undefined
+        : openIds.find((instanceId) => instances[instanceId] === openContainerRequest.kind || instanceId === openContainerRequest.kind || instanceId.startsWith(`${openContainerRequest.kind}-`));
     if (existingId) focusContainer(existingId);
-    else addContainer(openContainerRequest.kind);
+    else addContainer(openContainerRequest.kind, openContainerRequest.targetInstanceId);
   }, [openContainerRequest]);
 
   function updateLayout(id: string, patch: Partial<WorkspaceWindowLayout>) {

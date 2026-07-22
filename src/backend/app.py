@@ -4902,7 +4902,8 @@ def trading_ticker_change(symbol: str, as_of: str) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-@app.get("/api/trading/canvas-live-chart/history")
+@app.get("/api/trading/canvas-chart/history")
+@app.get("/api/trading/canvas-live-chart/history", include_in_schema=False)
 def trading_canvas_live_chart_history(
     symbol: str,
     timeframe: str = "1m",

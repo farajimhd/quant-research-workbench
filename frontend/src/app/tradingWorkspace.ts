@@ -401,6 +401,10 @@ export function containerSupportsSymbolLink(containerId: WorkspaceContainerId): 
   return TRADING_WORKSPACE_CONTAINERS.some((definition) => definition.id === containerId && definition.linkScope === "single-symbol");
 }
 
+export function containerSupportsCanvasLink(containerId: WorkspaceContainerId): boolean {
+  return containerSupportsSymbolLink(containerId) || containerId === "scanner" || containerId === "signal_stream" || containerId === "watchlist";
+}
+
 function sourceMap(live: WorkspaceSourceBinding, historical: WorkspaceSourceBinding): Partial<Record<TradingWorkspaceMode, WorkspaceSourceBinding>> {
   return {
     live,

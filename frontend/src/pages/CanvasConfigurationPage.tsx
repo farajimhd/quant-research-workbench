@@ -40,7 +40,7 @@ import { XbrlAnalysisContainer, type XbrlAnalysisSettings } from "../app/compone
 import { TickerIdentity, TickerIdentityWithChange, useTickerPresentations } from "../app/components/TickerIdentity";
 import { TRADING_WORKSPACE_LAYOUT_VERSION, TradingWorkspace, createFocusLayouts } from "../app/components/TradingWorkspace";
 import type { WorkspaceWindowLayout, WorkspaceWindowMeta, WorkspaceWindowStatus } from "../app/components/WorkspaceCanvas";
-import { TRADING_WORKSPACE_CONTAINERS, containerSupportsSymbolLink, type WorkspaceContainerDefinition, type WorkspaceContainerId } from "../app/tradingWorkspace";
+import { TRADING_WORKSPACE_CONTAINERS, containerSupportsCanvasLink, containerSupportsSymbolLink, type WorkspaceContainerDefinition, type WorkspaceContainerId } from "../app/tradingWorkspace";
 
 type HistoricalBar = { bar_end?: string; bar_start: string; close: number; high: number; is_closed?: boolean; low: number; open: number; volume: number };
 type QmdStructureLevelCandidate = {
@@ -158,7 +158,6 @@ type CanvasScannerSnapshot = {
 };
 type CanvasContext = { coverage: { event_count: number; session_date: string | null; ticker_count: number }; preview_time: string; session_date: string | null };
 type QmdLiveBar = HistoricalBar & { session_date?: string };
-type QmdSnapshot<T> = { current?: T | null; history?: T[]; error?: string };
 type QmdBarHistory = {
   as_of: string;
   earliest_session_date: string;
@@ -177,14 +176,6 @@ type ChartHistoryCursor = {
   nextBefore: string;
   previousSessionBefore: string;
   sessionDate: string;
-};
-type CanvasLiveChartResponse = {
-  bars: QmdSnapshot<QmdLiveBar>;
-  errors: Record<string, string>;
-  historical_bars?: QmdBarHistory;
-  indicators: QmdSnapshot<HistoricalIndicator>;
-  source: string;
-  stream_interval_ms: number;
 };
 type CanvasLiveChartState = {
   bars: QmdLiveBar[];
@@ -501,8 +492,8 @@ function qmdIndicatorKnowledge(shortDescription: string, detailedDescription: st
   };
 }
 
-function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cutoffMs: number, sessionDate: string, visibleIndicatorIds: string[]): CanvasLiveChartState {
-  const pointInTime = cutoffMs < Date.now() - 5_000;
+function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimeframe, cutoffMs: number, sessionDate: string, visibleIndicatorIds: string[]): CanvasLiveChartState {
+  const pointInTime = true;
   const indicatorColumns = useMemo(() => requestedIndicatorColumns(visibleIndicatorIds), [visibleIndicatorIds]);
   const rowBudget = useMemo(() => chartRowBudget(indicatorColumns), [indicatorColumns]);
   const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier">>({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime });
@@ -524,7 +515,7 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
     const params = cursor.nextBefore
       ? { as_of: cursor.asOf, before_bar: cursor.nextBefore, indicator_columns: indicatorColumns, row_limit: chartPageSize(timeframe), session_date: cursor.sessionDate, symbol: ticker, timeframe }
       : { before: cursor.previousSessionBefore, indicator_columns: indicatorColumns, row_limit: chartPageSize(timeframe), symbol: ticker, timeframe };
-    api<QmdBarHistory>(`/api/trading/canvas-live-chart/history${query(params)}`, { signal: controller.signal, timeoutMs: 120000 })
+    api<QmdBarHistory>(`/api/trading/canvas-chart/history${query(params)}`, { signal: controller.signal, timeoutMs: 120000 })
       .then((payload) => {
         if (requestKeyRef.current !== requestKey) return;
         updateHistoryCursor(historyCursorRef, payload);
@@ -560,15 +551,9 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
 
   useEffect(() => {
     let active = true;
-    const sockets: Partial<Record<"bars" | "indicators", WebSocket>> = {};
-    const reconnectTimers: number[] = [];
-    const attempts = { bars: 0, indicators: 0 };
-    const requestController = new AbortController();
     const historyController = new AbortController();
     const ticker = symbol.trim().toUpperCase();
     const requestKey = `${ticker}:${timeframe}:${indicatorColumns}`;
-    const pendingLiveSnapshots: Partial<Record<"bars" | "indicators", QmdSnapshot<QmdLiveBar> | QmdSnapshot<HistoricalIndicator>>> = {};
-    let liveSnapshotFrame: number | null = null;
     historyAbortRef.current?.abort();
     historyAbortRef.current = historyController;
     requestKeyRef.current = requestKey;
@@ -576,80 +561,9 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
     historyRequestRef.current = false;
     setState({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime });
 
-    const applySnapshot = (kind: "bars" | "indicators", payload: QmdSnapshot<QmdLiveBar> | QmdSnapshot<HistoricalIndicator>, live: boolean) => {
-      if (!active) return;
-      if (payload.error) {
-        if (kind === "bars") setState((current) => ({ ...current, connected: false, error: payload.error || "QMD live bars are unavailable.", loading: false }));
-        return;
-      }
-      const rows = kind === "bars"
-        ? closedQmdSnapshotRows(payload as QmdSnapshot<QmdLiveBar>, timeframe, cutoffMs)
-        : closedQmdSnapshotRows(payload as QmdSnapshot<HistoricalIndicator>, timeframe, cutoffMs);
-      setState((current) => {
-        const bars = kind === "bars" ? limitLiveRowsWithHysteresis(mergeRowsByTime(current.bars, rows as QmdLiveBar[]), rowBudget) : current.bars;
-        const earliestBarTime = bars.length ? barStartTime(bars[0]) : Number.NEGATIVE_INFINITY;
-        const indicators = (kind === "indicators"
-          ? limitLiveRowsWithHysteresis(mergeRowsByTime(current.indicators, rows as HistoricalIndicator[]), rowBudget)
-          : current.indicators
-        ).filter((row) => barStartTime(row) >= earliestBarTime);
-        return {
-          ...current,
-          bars,
-          canLoadEarlier: kind === "bars" && bars.length >= rowBudget ? false : current.canLoadEarlier,
-          connected: kind === "bars" && live ? true : current.connected,
-          error: kind === "bars" ? "" : current.error,
-          indicators,
-          historyNotice: bars.length >= rowBudget ? chartHistoryLimitNotice(rowBudget) : current.historyNotice,
-          lastUpdateAt: kind === "bars" && live ? new Date().toISOString() : current.lastUpdateAt,
-          loading: kind === "bars" ? false : current.loading,
-        };
-      });
-    };
-
-    const enqueueLiveSnapshot = (kind: "bars" | "indicators", payload: QmdSnapshot<QmdLiveBar> | QmdSnapshot<HistoricalIndicator>) => {
-      pendingLiveSnapshots[kind] = payload;
-      if (liveSnapshotFrame !== null) return;
-      liveSnapshotFrame = window.requestAnimationFrame(() => {
-        liveSnapshotFrame = null;
-        const bars = pendingLiveSnapshots.bars;
-        const indicators = pendingLiveSnapshots.indicators;
-        delete pendingLiveSnapshots.bars;
-        delete pendingLiveSnapshots.indicators;
-        if (bars) applySnapshot("bars", bars, true);
-        if (indicators) applySnapshot("indicators", indicators, true);
-      });
-    };
-
-    if (!pointInTime) {
-      api<CanvasLiveChartResponse>(`/api/trading/canvas-live-chart${query({ row_limit: 500, symbol: ticker, timeframe })}`, { signal: requestController.signal, timeoutMs: 5000 })
-        .then((payload) => {
-          if (!active) return;
-          const historicalRows = payload.historical_bars?.history ?? [];
-          if (payload.historical_bars) updateHistoryCursor(historyCursorRef, payload.historical_bars);
-          setState((current) => {
-            const bars = limitRowsToLatest(mergeRowsByTime(closedRowsAtCutoff(historicalRows, timeframe, cutoffMs), [...closedQmdSnapshotRows(payload.bars, timeframe, cutoffMs), ...current.bars]), rowBudget);
-            const atCapacity = bars.length >= rowBudget;
-            return {
-              ...current,
-              bars,
-              canLoadEarlier: historicalRows.length > 0 && Boolean(payload.historical_bars?.has_more) && !atCapacity,
-              error: payload.bars.error ?? "",
-              historyError: payload.errors.history ?? "",
-              historyNotice: atCapacity ? chartHistoryLimitNotice(rowBudget) : "",
-              loading: false,
-            };
-          });
-          applySnapshot("indicators", payload.indicators, false);
-        })
-        .catch((reason) => {
-          if (!active || requestController.signal.aborted) return;
-          setState((current) => ({ ...current, error: `QMD live chart unavailable: ${reason instanceof Error ? reason.message : String(reason)}`, loading: false }));
-        });
-    }
-
     const fetchHistoricalPage = () => {
       historyRequestRef.current = true;
-      api<QmdBarHistory>(`/api/trading/canvas-live-chart/history${query({ as_of: new Date(cutoffMs).toISOString(), indicator_columns: indicatorColumns, row_limit: chartPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe })}`, { signal: historyController.signal, timeoutMs: 120000 })
+      api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ as_of: new Date(cutoffMs).toISOString(), indicator_columns: indicatorColumns, row_limit: chartPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe })}`, { signal: historyController.signal, timeoutMs: 120000 })
         .then((payload) => {
           if (!active || requestKeyRef.current !== requestKey) return;
           updateHistoryCursor(historyCursorRef, payload);
@@ -685,42 +599,10 @@ function useCanvasLiveChart(symbol: string, timeframe: CanvasChartTimeframe, cut
 
     fetchHistoricalPage();
 
-    const connect = (kind: "bars" | "indicators") => {
-      if (!active) return;
-      const socket = new WebSocket(canvasLiveStreamUrl(kind, ticker, timeframe));
-      sockets[kind] = socket;
-      socket.onopen = () => {
-        attempts[kind] = 0;
-      };
-      socket.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(String(event.data)) as QmdSnapshot<QmdLiveBar> | QmdSnapshot<HistoricalIndicator>;
-          enqueueLiveSnapshot(kind, payload);
-        } catch {
-          if (kind === "bars") setState((current) => ({ ...current, connected: false, error: "QMD live bars returned invalid data.", loading: false }));
-        }
-      };
-      socket.onclose = () => {
-        if (!active) return;
-        if (kind === "bars") setState((current) => ({ ...current, connected: false, error: current.error || "QMD live bar stream disconnected; reconnecting.", loading: false }));
-        const delay = Math.min(5000, 500 * (2 ** attempts[kind]));
-        attempts[kind] += 1;
-        reconnectTimers.push(window.setTimeout(() => connect(kind), delay));
-      };
-    };
-
-    if (!pointInTime) {
-      connect("bars");
-      if (ENRICHED_QMD_TIMEFRAMES.has(timeframe)) connect("indicators");
-    }
     return () => {
       active = false;
       if (requestKeyRef.current === requestKey) requestKeyRef.current = "";
-      requestController.abort();
       historyController.abort();
-      if (liveSnapshotFrame !== null) window.cancelAnimationFrame(liveSnapshotFrame);
-      reconnectTimers.forEach((timer) => window.clearTimeout(timer));
-      Object.values(sockets).forEach((socket) => socket?.close());
     };
   }, [cutoffMs, indicatorColumns, pointInTime, rowBudget, sessionDate, symbol, timeframe]);
 
@@ -772,14 +654,6 @@ function updateHistoryCursor(ref: MutableRefObject<ChartHistoryCursor | null>, p
     previousSessionBefore: payload.previous_session_before,
     sessionDate: payload.earliest_session_date,
   };
-}
-
-function closedQmdSnapshotRows<T extends { bar_start: string }>(payload: QmdSnapshot<T>, timeframe: string, cutoffMs = Date.now()): T[] {
-  const closed = closedRowsAtCutoff(payload.history ?? [], timeframe, cutoffMs);
-  const current = payload.current;
-  if (!current) return closed;
-  const currentStart = Date.parse(current.bar_start);
-  return Number.isFinite(currentStart) && currentStart <= cutoffMs ? mergeRowsByTime(closed, [current]) : closed;
 }
 
 function closedRowsAtCutoff<T extends { bar_start: string }>(rows: T[], timeframe: string, cutoffMs = Date.now()): T[] {
@@ -1110,11 +984,6 @@ function performanceMoney(value: unknown, signed: boolean) {
   return formatted.replace("-$", "−$");
 }
 
-function canvasLiveStreamUrl(kind: "bars" | "indicators", symbol: string, timeframe: string) {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${window.location.host}/api/trading/canvas-live-chart/stream/${kind}/${encodeURIComponent(symbol)}${query({ limit: 500, timeframe })}`;
-}
-
 export function CanvasConfigurationPage() {
   return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager />;
 }
@@ -1144,7 +1013,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
   const [managementOpen, setManagementOpen] = useState(false);
   const [linkPopoverContainerId, setLinkPopoverContainerId] = useState<string | null>(null);
   const [settingsContainerId, setSettingsContainerId] = useState<string | null>(null);
-  const [chartOpenRequest, setChartOpenRequest] = useState<{ kind: "chart"; requestId: number } | null>(null);
+  const [chartOpenRequest, setChartOpenRequest] = useState<{ kind: "chart"; requestId: number; targetInstanceId: string } | null>(null);
 
   const currentCanvas = registry.canvases.find((canvas) => canvas.id === canvasId) ?? { id: canvasId, label: canvasId === MAIN_CANVAS_ID ? "Main" : "Focus canvas" };
   const primaryChartId = (workspaceState?.openIds ?? []).find((id) => workspaceContainerKind(id, workspaceState) === "chart") ?? "chart";
@@ -1325,7 +1194,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
   }
 
   function setContainerLink(instanceId: string, containerId: WorkspaceContainerId, group: CanvasLinkGroupId) {
-    if (!containerSupportsSymbolLink(containerId)) return;
+    if (!containerSupportsCanvasLink(containerId)) return;
     updateRegistry((current) => {
       const previousGroup = current.linkAssignments[instanceId] ?? "none";
       const linkAssignments = { ...current.linkAssignments, [instanceId]: group };
@@ -1346,14 +1215,31 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
       : { ...current, instanceSettings: { ...current.instanceSettings, [instanceId]: cloneDefaultSettings() } });
   }
 
-  function openChartForTicker(tickerValue: string) {
+  function openChartForTicker(sourceInstanceId: string, tickerValue: string) {
     const symbol = tickerValue.trim().toUpperCase();
     if (!/^[A-Z][A-Z0-9.\-]{0,15}$/.test(symbol)) return;
-    const chartId = (workspaceState?.openIds ?? []).find((id) => workspaceContainerKind(id, workspaceState) === "chart") ?? "chart";
-    const group = registry.linkAssignments[chartId] ?? "none";
-    if (group === "none") updateInstanceSettings(chartId, (current) => ({ ...current, chart: { ...current.chart, symbol } }));
-    else updateLinkContext(group, { symbol });
-    setChartOpenRequest((current) => ({ kind: "chart", requestId: (current?.requestId ?? 0) + 1 }));
+    const assignedGroup = registry.linkAssignments[sourceInstanceId] ?? "none";
+    const group = assignedGroup !== "none"
+      ? assignedGroup
+      : CANVAS_LINK_GROUPS.find((candidate) => !Object.values(registry.linkAssignments).includes(candidate.id))?.id;
+    if (!group) return;
+    const linkedChartId = Object.entries(registry.linkAssignments).find(([instanceId, candidateGroup]) => candidateGroup === group && workspaceContainerKind(instanceId, workspaceState) === "chart")?.[0];
+    const chartId = linkedChartId ?? nextAvailableContainerInstanceId("chart", [
+      ...Object.keys(registry.instanceSettings),
+      ...Object.keys(registry.linkAssignments),
+      ...(workspaceState?.openIds ?? []),
+    ]);
+    updateRegistry((current) => ({
+      ...current,
+      instanceSettings: {
+        ...current.instanceSettings,
+        [chartId]: normalizeSettings({ ...instanceSettings(current, chartId), chart: { ...instanceSettings(current, chartId).chart, symbol } }),
+      },
+      linkAssignments: { ...current.linkAssignments, [sourceInstanceId]: group, [chartId]: group },
+      linkContexts: { ...current.linkContexts, [group]: { ...current.linkContexts[group], symbol } },
+      linkOwners: { ...current.linkOwners, [group]: current.linkOwners[group] ?? sourceInstanceId },
+    }));
+    setChartOpenRequest((current) => ({ kind: "chart", requestId: (current?.requestId ?? 0) + 1, targetInstanceId: chartId }));
   }
 
   function openNewCanvas(instanceId?: string, sourceLayout?: WorkspaceWindowLayout) {
@@ -1491,14 +1377,14 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
         onStateChange={setWorkspaceState}
         renderContainer={(definition, instanceId) => {
           const settings = instanceSettings(registry, instanceId);
-          const linkable = definition.linkScope === "single-symbol";
+          const linkable = containerSupportsCanvasLink(definition.id);
           const group = linkable ? registry.linkAssignments[instanceId] ?? "none" : "none";
           const linkContext = group === "none" ? { symbol: settings.chart.symbol } : registry.linkContexts[group];
-          const symbolEditable = linkable && (group === "none" || registry.linkOwners[group] === instanceId);
+          const symbolEditable = containerSupportsSymbolLink(definition.id) && (group === "none" || registry.linkOwners[group] === instanceId);
           const linkedContainers: LinkedContainerState[] = group === "none" ? [] : (workspaceState?.openIds ?? [])
             .filter((candidateId) => {
               const candidateKind = workspaceContainerKind(candidateId, workspaceState);
-              return containerSupportsSymbolLink(candidateKind) && registry.linkAssignments[candidateId] === group;
+              return containerSupportsCanvasLink(candidateKind) && registry.linkAssignments[candidateId] === group;
             })
             .map((candidateId) => {
               const candidateKind = workspaceContainerKind(candidateId, workspaceState);
@@ -1522,7 +1408,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
             }}
             preview={preview}
             scannerSnapshot={scannerSnapshot}
-            onTickerChartOpen={openChartForTicker}
+            onTickerChartOpen={(ticker) => openChartForTicker(instanceId, ticker)}
             previewContext={previewContext}
             requestedNewsId={requestedNewsId}
             requestedSecAccession={requestedSecAccession}
@@ -1537,9 +1423,9 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
         runStatus={preview ? "running" : "idle"}
         showHealth={false}
         storageKeyOverride={canvasWorkspaceStorageKey(canvasId)}
-        linkColorForContainer={(definition, instanceId) => definition.linkScope === "single-symbol" ? canvasLinkGroupDefinition(registry.linkAssignments[instanceId] ?? "none")?.color : undefined}
+        linkColorForContainer={(definition, instanceId) => containerSupportsCanvasLink(definition.id) ? canvasLinkGroupDefinition(registry.linkAssignments[instanceId] ?? "none")?.color : undefined}
         titleBarActionsForContainer={(definition, instanceId) => {
-          const linkable = definition.linkScope === "single-symbol";
+          const linkable = containerSupportsCanvasLink(definition.id);
           const group = linkable ? registry.linkAssignments[instanceId] ?? "none" : "none";
           const groupDefinition = canvasLinkGroupDefinition(group);
           const linkOpen = linkPopoverContainerId === instanceId;
@@ -1689,7 +1575,7 @@ type ChartContainerPreviewProps = {
 };
 
 const ChartContainerPreview = memo(function ChartContainerPreview({ cutoffMs, instanceId, linkContext, onLinkContextChange, previewContext, settings, symbolEditable, trading, updateSettings }: ChartContainerPreviewProps) {
-  const liveChart = useCanvasLiveChart(linkContext.symbol, settings.chart.timeframe, cutoffMs, previewContext.sessionDate, settings.chart.visibleIndicators);
+  const liveChart = useCanvasHistoricalChart(linkContext.symbol, settings.chart.timeframe, cutoffMs, previewContext.sessionDate, settings.chart.visibleIndicators);
   const presentations = useTickerPresentations([linkContext.symbol]);
   return <ChartPreview changeAsOf={new Date(cutoffMs).toISOString()} instanceId={instanceId} linkContext={linkContext} liveChart={liveChart} logoUrl={presentations[linkContext.symbol]?.logo_url} onLinkContextChange={onLinkContextChange} settings={settings} symbolEditable={symbolEditable} trading={trading} updateSettings={updateSettings} />;
 }, chartContainerPreviewPropsEqual);
@@ -1749,9 +1635,7 @@ function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl,
     price: averagePrice,
     quantity,
   } satisfies LiveEntryLine : null;
-  const emptyMessage = liveChart.connected
-    ? `Waiting for the first live ${linkContext.symbol} ${timeframe} bar.`
-    : "Start QMD Gateway to stream canonical live bars.";
+  const emptyMessage = `No closed ${linkContext.symbol} ${timeframe} bars are available from QMD History at this Canvas clock.`;
   return <ChartPanel canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={liveChart.indicatorsAvailable ? CHART_INDICATORS : []} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} indicatorOptions={[]} initialFitMode="recent" infoMessage={liveChart.historyNotice} liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => updateSettings((current) => ({ ...current, chart: { ...current.chart, visibleIndicators: nextVisibleIndicators } }))} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={HISTORICAL_TIMEFRAMES} visibleColumns={visibleIndicators} />;
 }
 
@@ -2918,6 +2802,14 @@ function workspaceContainerKind(instanceId: string, state?: CanvasWorkspaceState
   const stored = state?.instances[instanceId];
   if (stored) return stored;
   return TRADING_WORKSPACE_CONTAINERS.find((definition) => instanceId === definition.id || instanceId.startsWith(`${definition.id}-`))?.id ?? "chart";
+}
+
+function nextAvailableContainerInstanceId(kind: WorkspaceContainerId, existingIds: string[]): string {
+  const used = new Set(existingIds);
+  if (!used.has(kind)) return kind;
+  let counter = 2;
+  while (used.has(`${kind}-${counter}`)) counter += 1;
+  return `${kind}-${counter}`;
 }
 function containerInstanceTitle(kind: WorkspaceContainerId, instanceId: string, state: CanvasWorkspaceState | null, registry: CanvasRegistry) {
   const matchingIds = (state?.openIds ?? [instanceId]).filter((candidateId) => workspaceContainerKind(candidateId, state) === kind);

@@ -115,9 +115,9 @@ def scanner_snapshot_payload(*, as_of: datetime, lookback_minutes: int = 15) -> 
     sec: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {
-            "news": executor.submit(_query_news, cutoff),
+            "news": executor.submit(_query_scanner_news_intelligence, cutoff),
             "reference": executor.submit(historical_scanner_reference_projection, as_of),
-            "sec": executor.submit(_query_sec, cutoff),
+            "sec": executor.submit(_query_scanner_sec_intelligence, cutoff),
         }
         for name, future in futures.items():
             try:
@@ -131,11 +131,7 @@ def scanner_snapshot_payload(*, as_of: datetime, lookback_minutes: int = 15) -> 
                     sec = future.result()
             except Exception as exc:
                 errors[name] = str(exc)
-    try:
-        _attach_sec_tickers(sec)
-    except Exception as exc:
-        errors["sec_identity"] = str(exc)
-    _enrich_scanner_intelligence(rows, news, sec, as_of)
+    _merge_scanner_intelligence(rows, news, sec, as_of)
     rows.sort(key=lambda row: (-abs(float(row.get("change_5m_pct") or 0)), str(row.get("symbol") or "")))
     for rank, row in enumerate(rows, start=1):
         row["rank"] = rank
@@ -275,6 +271,59 @@ def _query_sec(cutoff: datetime) -> list[dict[str, Any]]:
     )
 
 
+def _query_scanner_news_intelligence(cutoff: datetime) -> list[dict[str, Any]]:
+    """Return one causal company-news summary per ticker for scanner enrichment."""
+    start = cutoff - timedelta(days=3)
+    ticker_links_sql = "arraySort(arrayDistinct(arrayFilter(value -> notEmpty(value), arrayMap(value -> upperUTF8(trimBoth(value)), n.tickers))))"
+    classification = news_classification_sql(ticker_links_sql)
+    return _clickhouse_rows(
+        f"""
+        SELECT
+            ticker,
+            uniqExact(canonical_news_id) AS live_news_count,
+            formatDateTime(max(published_at_utc), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS latest_news_at,
+            arraySort(arrayDistinct(arrayFlatten(groupArray(news_topics)))) AS news_labels
+        FROM
+        (
+            SELECT
+                n.canonical_news_id,
+                n.published_at_utc,
+                arrayJoin({ticker_links_sql}) AS ticker,
+                {classification["company"]} AS is_company_news,
+                {classification["topics"]} AS news_topics
+            FROM q_live.benzinga_news_normalized_v1 AS n FINAL
+            WHERE n.published_at_utc BETWEEN toDateTime64({_utc_sql(start)}, 3, 'UTC')
+                AND toDateTime64({_utc_sql(cutoff)}, 3, 'UTC')
+        )
+        WHERE is_company_news AND notEmpty(ticker)
+        GROUP BY ticker
+        """
+    )
+
+
+def _query_scanner_sec_intelligence(cutoff: datetime) -> list[dict[str, Any]]:
+    """Return one point-in-time filing summary per ticker using the SEC identity bridge."""
+    start = cutoff - timedelta(days=45)
+    return _clickhouse_rows(
+        f"""
+        SELECT
+            upperUTF8(trimBoth(b.ticker)) AS ticker,
+            uniqExact(f.accession_number) AS sec_count,
+            formatDateTime(max(f.accepted_at_utc), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS latest_sec_at,
+            arraySort(groupUniqArray(f.form_type)) AS sec_labels
+        FROM q_live.sec_filing_v3 AS f FINAL
+        INNER JOIN q_live.id_sec_market_bridge_v3 AS b FINAL
+            ON toString(b.cik) = toString(f.cik)
+            AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
+            AND (b.valid_to_date_exclusive IS NULL OR toDate(f.accepted_at_utc) < b.valid_to_date_exclusive)
+        WHERE f.accepted_at_utc BETWEEN toDateTime64({_utc_sql(start)}, 3, 'UTC')
+            AND toDateTime64({_utc_sql(cutoff)}, 3, 'UTC')
+            AND notEmpty(b.ticker)
+        GROUP BY ticker
+        """
+    )
+
+
 def _attach_sec_tickers(rows: Any) -> None:
     if not isinstance(rows, list):
         return
@@ -323,6 +372,32 @@ def _enrich_scanner_intelligence(scanner: list[dict[str, Any]], news: Any, sec: 
         row["sec_count"] = len(ticker_sec)
         row["sec_recency"] = _latest_recency(ticker_sec, "accepted_at_utc", as_of)
         row["sec_labels"] = ", ".join(sorted({str(item.get("form_type") or "") for item in ticker_sec if item.get("form_type")}))
+
+
+def _merge_scanner_intelligence(scanner: list[dict[str, Any]], news: Any, sec: Any, as_of: datetime) -> None:
+    """Merge already-aggregated intelligence without making scanner cost scale with documents."""
+    news_by_ticker = {
+        str(item.get("ticker") or "").strip().upper(): item
+        for item in news if isinstance(news, list) and isinstance(item, dict) and item.get("ticker")
+    }
+    sec_by_ticker = {
+        str(item.get("ticker") or "").strip().upper(): item
+        for item in sec if isinstance(sec, list) and isinstance(item, dict) and item.get("ticker")
+    }
+    for row in scanner:
+        ticker = str(row.get("symbol") or row.get("ticker") or "").strip().upper()
+        news_item = news_by_ticker.get(ticker, {})
+        sec_item = sec_by_ticker.get(ticker, {})
+        row["live_news_count"] = int(news_item.get("live_news_count") or 0)
+        row["live_news_recency"] = _latest_recency(
+            [{"published_at_utc": news_item.get("latest_news_at")}], "published_at_utc", as_of
+        )
+        row["news_labels"] = ", ".join(sorted(set(_string_values(news_item.get("news_labels")))))
+        row["sec_count"] = int(sec_item.get("sec_count") or 0)
+        row["sec_recency"] = _latest_recency(
+            [{"accepted_at_utc": sec_item.get("latest_sec_at")}], "accepted_at_utc", as_of
+        )
+        row["sec_labels"] = ", ".join(sorted(set(_string_values(sec_item.get("sec_labels")))))
 
 
 def _latest_recency(items: list[dict[str, Any]], key: str, as_of: datetime) -> str:

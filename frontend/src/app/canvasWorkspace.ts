@@ -1,4 +1,4 @@
-import { containerSupportsSymbolLink, type WorkspaceContainerId } from "./tradingWorkspace";
+import { containerSupportsCanvasLink, type WorkspaceContainerId } from "./tradingWorkspace";
 import type { WorkspaceWindowLayout } from "./components/WorkspaceCanvas";
 import { normalizeWorkspaceGroups, type WorkspaceGroup } from "./workspaceGroups";
 
@@ -209,7 +209,7 @@ function normalizeLinkAssignments(value: CanvasRegistry["linkAssignments"] | und
   for (const [rawContainerId, rawGroup] of Object.entries(candidates)) {
     const containerId = microstructureInstanceId(rawContainerId);
     const containerKind = containerId.replace(/-\d+$/, "") as WorkspaceContainerId;
-    if (containerSupportsSymbolLink(containerKind) && isCanvasLinkGroupId(rawGroup) && assignments[containerId] == null) assignments[containerId] = rawGroup;
+    if (containerSupportsCanvasLink(containerKind) && isCanvasLinkGroupId(rawGroup) && assignments[containerId] == null) assignments[containerId] = rawGroup;
   }
   return assignments;
 }
