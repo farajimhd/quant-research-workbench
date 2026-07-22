@@ -21393,6 +21393,7 @@ button {
 .canvas-mode-context-slot {
   align-items: stretch;
   display: flex;
+  justify-content: flex-start;
   min-width: 28px;
   overflow: hidden;
 }
@@ -21400,11 +21401,12 @@ button {
 .canvas-performance-strip {
   background: var(--surface);
   display: grid;
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   gap: 0;
-  grid-template-columns: repeat(6, minmax(76px, 1fr));
-  min-width: 480px;
+  grid-template-columns: max-content repeat(5, 5.5rem);
+  min-width: 0;
   overflow: hidden;
+  width: max-content;
 }
 
 .canvas-performance-title,
@@ -21413,7 +21415,7 @@ button {
   border-left: 1px solid var(--border);
   display: grid;
   min-width: 0;
-  padding: 4px 8px;
+  padding: 4px 7px;
 }
 
 .canvas-performance-title {
@@ -21495,7 +21497,6 @@ button {
 @media (max-width: 980px) {
   .canvas-config-toolbar { grid-template-columns: max-content max-content minmax(12px, 1fr) auto; }
   .canvas-clock-zones > span { padding-inline: 7px; }
-  .canvas-performance-strip { grid-template-columns: repeat(6, minmax(64px, 1fr)); min-width: 384px; }
   .canvas-performance-title { justify-items: center; padding-inline: 5px; }
   .canvas-performance-title span { display: none; }
   .canvas-performance-metric { padding-inline: 5px; }
