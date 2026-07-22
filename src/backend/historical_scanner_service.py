@@ -13,6 +13,7 @@ from research.mlops.clickhouse import (
     default_clickhouse_user,
     sql_string,
 )
+from src.backend.real_live_market_data.startup import logo_asset_url
 
 
 SCANNER_SCHEMA_VERSION = "canvas_historical_scanner_v1"
@@ -90,7 +91,11 @@ def historical_scanner_reference_projection(as_of: datetime) -> dict[str, dict[s
                     SELECT max(universe_date)
                     FROM q_live.feature_tradable_universe_v1 FINAL
                     WHERE universe_date <= cutoff_date AND inserted_at <= cutoff
-                ) AS latest_universe_date
+                ) AS latest_universe_date,
+                (
+                    SELECT max(feature_date)
+                    FROM q_live.feature_scanner_static_v1 FINAL
+                ) AS latest_scanner_date
             SELECT
                 u.ticker AS ticker,
                 u.exchange_code AS exchange,
@@ -103,7 +108,8 @@ def historical_scanner_reference_projection(as_of: datetime) -> dict[str, dict[s
                 si.short_interest AS short_interest,
                 if(f.free_float > 0 AND si.short_interest IS NOT NULL,
                    toFloat64(si.short_interest) / toFloat64(f.free_float) * 100, NULL) AS short_crowding_pct,
-                si.days_to_cover AS days_to_cover
+                si.days_to_cover AS days_to_cover,
+                ifNull(a.relative_path, '') AS logo_relative_path
             FROM
             (
                 SELECT
@@ -111,6 +117,7 @@ def historical_scanner_reference_projection(as_of: datetime) -> dict[str, dict[s
                     argMax(symbol_id, inserted_at) AS symbol_id,
                     argMax(security_id, inserted_at) AS security_id,
                     argMax(issuer_id, inserted_at) AS issuer_id,
+                    argMax(listing_id, inserted_at) AS listing_id,
                     argMax(exchange_code, inserted_at) AS exchange_code
                 FROM q_live.feature_tradable_universe_v1 FINAL
                 WHERE universe_date = latest_universe_date AND inserted_at <= cutoff AND is_tradable = 1
@@ -132,11 +139,32 @@ def historical_scanner_reference_projection(as_of: datetime) -> dict[str, dict[s
                     argMax(domicile_country_code, inserted_at) AS domicile_country_code,
                     argMax(sector, inserted_at) AS sector,
                     argMax(industry, inserted_at) AS industry,
-                    argMax(sic_description, inserted_at) AS sic_description
+                    argMax(sic_description, inserted_at) AS sic_description,
+                    argMax(logo_asset_id, inserted_at) AS logo_asset_id
                 FROM q_live.id_issuer_v1 FINAL
                 WHERE inserted_at <= cutoff
                 GROUP BY issuer_id
             ) AS i ON i.issuer_id = u.issuer_id
+            LEFT JOIN
+            (
+                SELECT symbol_id, listing_id, argMax(logo_asset_id, inserted_at) AS logo_asset_id
+                FROM q_live.feature_scanner_static_v1 FINAL
+                WHERE feature_date = latest_scanner_date
+                GROUP BY symbol_id, listing_id
+            ) AS scanner ON scanner.symbol_id = u.symbol_id AND scanner.listing_id = u.listing_id
+            LEFT JOIN
+            (
+                SELECT issuer_id, argMax(logo_asset_id, inserted_at) AS logo_asset_id
+                FROM q_live.id_issuer_v1 FINAL
+                GROUP BY issuer_id
+            ) AS current_branding ON current_branding.issuer_id = u.issuer_id
+            LEFT JOIN
+            (
+                SELECT asset_id, argMax(relative_path, inserted_at) AS relative_path
+                FROM q_live.market_presentation_asset_v1 FINAL
+                WHERE asset_kind = 'logo' AND status = 'active'
+                GROUP BY asset_id
+            ) AS a ON a.asset_id = coalesce(scanner.logo_asset_id, current_branding.logo_asset_id, i.logo_asset_id)
             LEFT JOIN
             (
                 SELECT symbol_id,
@@ -177,15 +205,21 @@ def historical_scanner_reference_projection(as_of: datetime) -> dict[str, dict[s
             """
         )
     )
-    return {
-        str(row.get("ticker") or "").upper(): {
+    projection: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        ticker = str(row.get("ticker") or "").upper()
+        if not ticker:
+            continue
+        values = {
             field: row.get(field)
             for field in SCANNER_REFERENCE_FIELDS
             if row.get(field) not in (None, "")
         }
-        for row in rows
-        if row.get("ticker")
-    }
+        logo_url = logo_asset_url(str(row.get("logo_relative_path") or ""))
+        if logo_url:
+            values["logo_url"] = logo_url
+        projection[ticker] = values
+    return projection
 
 
 def _ensure_snapshot_table(client: ClickHouseHttpClient) -> None:

@@ -44,19 +44,21 @@ class HistoricalScannerServiceTest(unittest.TestCase):
 
             def execute(self, sql: str, **_kwargs) -> str:
                 self.calls.append(sql)
-                return '{"ticker":"AAPL","company_name":"APPLE INC","country":"US","market_cap":4374000000000,"float_shares":14400000000,"short_interest":144248000,"short_crowding_pct":1.0017,"days_to_cover":2.76}\n'
+                return '{"ticker":"AAPL","company_name":"APPLE INC","country":"US","market_cap":4374000000000,"float_shares":14400000000,"short_interest":144248000,"short_crowding_pct":1.0017,"days_to_cover":2.76,"logo_relative_path":"branding/logo/aapl.svg"}\n'
 
         with patch("src.backend.historical_scanner_service.ClickHouseHttpClient", ReferenceClient):
             rows = historical_scanner_reference_projection(datetime(2026, 7, 17, 13, 45, tzinfo=UTC))
 
         self.assertEqual(rows["AAPL"]["company_name"], "APPLE INC")
         self.assertEqual(rows["AAPL"]["country"], "US")
+        self.assertEqual(rows["AAPL"]["logo_url"], "/api/real-live-trading/logo?path=branding%2Flogo%2Faapl.svg")
         self.assertAlmostEqual(rows["AAPL"]["short_crowding_pct"], 1.0017)
         self.assertEqual(len(ReferenceClient.calls), 1)
         query = ReferenceClient.calls[0]
         self.assertIn("is_tradable = 1", query)
         self.assertIn("inserted_at <= cutoff", query)
         self.assertIn("published_at_utc", query)
+        self.assertIn("coalesce(scanner.logo_asset_id, current_branding.logo_asset_id, i.logo_asset_id)", query)
         self.assertNotIn("ticker IN", query)
 
 

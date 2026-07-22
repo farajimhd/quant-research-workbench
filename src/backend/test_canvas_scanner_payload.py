@@ -20,6 +20,7 @@ class CanvasScannerPayloadTest(unittest.TestCase):
             "AAPL": {
                 "company_name": "APPLE INC",
                 "country": "US",
+                "logo_url": "/api/real-live-trading/logo?path=branding%2Flogo%2Faapl.svg",
                 "market_cap": 4_374_000_000_000,
                 "shares_outstanding": 14_687_000_000,
                 "float_shares": 14_400_000_000,
@@ -39,6 +40,7 @@ class CanvasScannerPayloadTest(unittest.TestCase):
         row = payload["rows"][0]
         self.assertEqual(row["company_name"], "APPLE INC")
         self.assertEqual(row["float_shares"], 14_400_000_000)
+        self.assertEqual(row["logo_url"], "/api/real-live-trading/logo?path=branding%2Flogo%2Faapl.svg")
         self.assertEqual(row["live_news_recency"], "none")
         self.assertEqual(row["sec_recency"], "none")
         self.assertEqual(payload["meta"]["field_coverage"]["company_name"], 100.0)
