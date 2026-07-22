@@ -72,12 +72,31 @@ The training default remains `d_model=384`, four residual layers, batch 2048,
 15 epochs, cosine scheduling with three restarts, and W&B project
 `news-reaction-model-v3`, allowing a direct V6/V7 comparison.
 
+For the controlled V6/V7 comparison, profiling is optional: V7 can use V6's
+validated batch 2048 directly because the encoder shape is unchanged and V7
+only adds the bounded 85-value dense state adapter. Run the profiler only when
+seeking maximum throughput or after changing the model, precision, compile,
+or hardware configuration.
+
 Preparation defaults to 16 bounded month workers. Completed month manifests are
 the resume authority, so rerunning the same command skips verified months.
 Partially inserted months are safely rebuilt into the `ReplacingMergeTree` and
 verified before their completion manifest advances. Ctrl+C assigns and cancels
 every active ClickHouse query, cancels queued months, records an `interrupted`
 status event, and returns exit code 130 without deleting completed work.
+
+After training, run:
+
+```powershell
+python -m research.news_reaction_model.v7.run_evaluate
+```
+
+Evaluation preserves the V6 strategy contract and also writes
+`evaluation_anchor_price_pnl.csv`. It reports every horizon and the combined
+independent-horizon ledger across `<$1`, `$1-<$20`, `$20-<$100`, and `$100+`
+pre-news anchor-price bands, including total, long-only, and short-only
+one-share P&L, counts, mean P&L, and win rates. These are price bands, not
+company market-cap classes.
 
 ## Live use
 

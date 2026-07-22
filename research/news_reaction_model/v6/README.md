@@ -83,6 +83,13 @@ After training:
 python -m research.news_reaction_model.v6.run_evaluate
 ```
 
+Evaluation writes the original per-horizon position summary plus
+`evaluation_anchor_price_pnl.csv`. The added file reports each horizon and the
+combined independent-horizon ledger across four mutually exclusive pre-news
+anchor-price bands: `<$1`, `$1-<$20`, `$20-<$100`, and `$100+`. Every band
+contains total, long-only, and short-only one-share P&L, position counts, mean
+P&L, and win rates. These are price bands, not company market-cap classes.
+
 Compare V5 and V6 on held-out 2026 `val/log_loss`, exact range accuracy,
 within-one-bin accuracy, per-horizon metrics, and the unchanged one-share
 target-touch evaluation. Parameter count and throughput must be reported beside

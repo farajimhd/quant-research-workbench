@@ -22,6 +22,7 @@ from research.news_reaction_model.v7.config import LoaderConfig, ModelConfig
 from research.news_reaction_model.v7.data import NewsReactionBatch, audit_prepared_dataset, month_ranges, q, qi, rows_to_batch
 from research.news_reaction_model.v7.inference import trade_plans
 from research.news_reaction_model.v7.model import NewsReactionModelV7
+from research.news_reaction_model.price_bucket_pnl import AnchorPricePnlBreakdown, write_anchor_price_pnl_csv
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -222,6 +223,8 @@ def evaluate_checkpoint(checkpoint: Path, *, output_dir: Path | None = None, sta
     destination.mkdir(parents=True, exist_ok=True)
     prediction_file = gzip.open(destination / "evaluation_predictions.jsonl.gz", "wt", encoding="utf-8") if export_predictions else None
     ledgers = {horizon: PositionLedger() for horizon in HORIZONS}; overall = PositionLedger()
+    price_breakdowns = {horizon: AnchorPricePnlBreakdown() for horizon in HORIZONS}
+    overall_price_breakdown = AnchorPricePnlBreakdown()
     dataset = ClickHouseEvaluationDataset(loader_config, start=start, end_exclusive=end_exclusive)
     articles = labels = 0; started = time.perf_counter()
     try:
@@ -238,7 +241,9 @@ def evaluate_checkpoint(checkpoint: Path, *, output_dir: Path | None = None, sta
                 actual = returns[valid, horizon_index].astype(np.float64)
                 anchors = evaluation.anchors[valid, horizon_index]
                 touched, _exit_return, pnl = simulate_exits(side, target_pct, actual, anchors)
-                ledgers[horizon].add(side, pnl, touched); overall.add(side, pnl, touched); labels += int(valid.sum())
+                ledgers[horizon].add(side, pnl, touched); overall.add(side, pnl, touched)
+                price_breakdowns[horizon].add(side, pnl, anchors); overall_price_breakdown.add(side, pnl, anchors)
+                labels += int(valid.sum())
                 if prediction_file is not None:
                     for local, row_index in enumerate(np.flatnonzero(valid)):
                         prediction_file.write(json.dumps({
@@ -258,14 +263,19 @@ def evaluate_checkpoint(checkpoint: Path, *, output_dir: Path | None = None, sta
     finally:
         dataset.stop()
         if prediction_file is not None: prediction_file.close()
-    horizons = {horizon: ledger.summary() for horizon, ledger in ledgers.items()}
+    horizons = {
+        horizon: {**ledger.summary(), "anchor_price_pnl": price_breakdowns[horizon].summary()}
+        for horizon, ledger in ledgers.items()
+    }
     summary = {
         "model_version": MODEL_VERSION, "checkpoint": str(checkpoint), "validation_range": [start, end_exclusive],
         "articles": articles, "labels": labels, "elapsed_seconds": time.perf_counter() - started,
         "position_contract": "dominant conservative predicted high/low excursion; ties and sub-threshold spans abstain",
         "exit_contract": "exit at predicted conservative target when actual horizon high/low touches it; otherwise exit at actual ending price",
         "limitations": "independent one-share horizon ledgers before costs; no ordering, stop, risk management, capital, or overlap reconciliation",
-        "overall_across_independent_horizons": overall.summary(), "horizons": horizons,
+        "overall_across_independent_horizons": {
+            **overall.summary(), "anchor_price_pnl": overall_price_breakdown.summary()
+        }, "horizons": horizons,
     }
     (destination / "evaluation_summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False), encoding="utf-8")
     fields = ["horizon", "long", "long_one_share_pnl", "short", "short_one_share_pnl", "flat", "target_touches", "ending_fallbacks", "target_touch_rate", "one_share_pnl", "active", "one_share_mean_pnl_per_active", "labels"]
@@ -273,6 +283,11 @@ def evaluate_checkpoint(checkpoint: Path, *, output_dir: Path | None = None, sta
         writer = csv.DictWriter(handle, fieldnames=fields); writer.writeheader()
         for horizon in HORIZONS: writer.writerow({"horizon": horizon, **{key: horizons[horizon][key] for key in fields[1:]}})
         writer.writerow({"horizon": "ALL_INDEPENDENT_HORIZONS", **{key: overall.summary()[key] for key in fields[1:]}})
+    write_anchor_price_pnl_csv(
+        destination / "evaluation_anchor_price_pnl.csv",
+        [(horizon, price_breakdowns[horizon]) for horizon in HORIZONS]
+        + [("ALL_INDEPENDENT_HORIZONS", overall_price_breakdown)],
+    )
     print(f"COMPLETED articles={articles:,} labels={labels:,} summary={destination / 'evaluation_summary.json'}", flush=True)
     return summary
 
