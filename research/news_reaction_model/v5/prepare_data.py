@@ -18,7 +18,7 @@ from research.mlops.clickhouse import (
 from research.mlops.env import discover_env_files, load_env_files
 from research.news_reaction_model.v5.config import FeatureConfig, LoaderConfig
 from research.news_reaction_model.v5.data import audit_prepared_dataset, month_ranges, q, qi
-from research.news_reaction_model.v5.text_features import TfidfLsaBundle, load_bundle, save_bundle
+from research.news_reaction_model.v5.text_features import SparseTfidfBundle, load_bundle, save_bundle
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -26,7 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     loader, features = LoaderConfig(), FeatureConfig()
     parser = argparse.ArgumentParser(
-        description="Fit train-only word/character TF-IDF features and materialize V5 with the exact V4 labels."
+        description="Fit bounded train-only sparse TF-IDF vocabularies and materialize V5 with exact V4 labels."
     )
     parser.add_argument("--start", default=loader.train_start)
     parser.add_argument("--end-exclusive", default=loader.validation_end_exclusive)
@@ -39,17 +39,15 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--query-batch-articles", type=int, default=features.fit_query_batch_articles)
     parser.add_argument("--insert-batch-articles", type=int, default=128)
-    parser.add_argument("--word-max-features", type=int, default=features.word_max_features)
-    parser.add_argument("--char-max-features", type=int, default=features.char_max_features)
-    parser.add_argument("--output-dim", type=int, default=features.output_dim)
+    parser.add_argument("--word-vocab-size", type=int, default=features.word_vocab_size)
+    parser.add_argument("--char-vocab-size", type=int, default=features.char_vocab_size)
+    parser.add_argument("--hash-buckets", type=int, default=features.hash_buckets)
     parser.add_argument("--max-text-chars", type=int, default=features.max_text_chars)
     parser.add_argument("--char-text-chars", type=int, default=features.char_text_chars)
-    parser.add_argument("--svd-iterations", type=int, default=features.svd_iterations)
-    parser.add_argument("--seed", type=int, default=features.random_seed)
     parser.add_argument("--max-threads-per-query", type=int, default=loader.max_threads_per_query)
     parser.add_argument("--max-memory-usage", default=loader.max_memory_usage)
     parser.add_argument("--rebuild", action="store_true", help="Replace completed V5 feature months.")
-    parser.add_argument("--refit-features", action="store_true", help="Refit train-only TF-IDF/LSA artifacts; requires --rebuild.")
+    parser.add_argument("--refit-features", action="store_true", help="Refit train-only sparse vocabularies and IDF; requires --rebuild.")
     parser.add_argument("--execute", action="store_true", help="Without this flag, print the non-mutating plan.")
     parser.add_argument("--status-path", default="")
     return parser.parse_args(list(argv) if argv is not None else None)
@@ -63,6 +61,8 @@ def loader_from_args(args: argparse.Namespace) -> LoaderConfig:
         source_dataset_table=args.source_dataset_table,
         source_dataset_version=args.source_dataset_version,
         feature_artifact_root=Path(args.feature_artifact_root),
+        word_vocab_size=max(2, args.word_vocab_size),
+        char_vocab_size=max(2, args.char_vocab_size),
         max_threads_per_query=max(1, args.max_threads_per_query),
         max_memory_usage=args.max_memory_usage,
     )
@@ -70,13 +70,11 @@ def loader_from_args(args: argparse.Namespace) -> LoaderConfig:
 
 def feature_config_from_args(args: argparse.Namespace) -> FeatureConfig:
     return FeatureConfig(
-        word_max_features=max(2, args.word_max_features),
-        char_max_features=max(2, args.char_max_features),
-        output_dim=max(1, args.output_dim),
+        word_vocab_size=max(2, args.word_vocab_size),
+        char_vocab_size=max(2, args.char_vocab_size),
+        hash_buckets=max(2, args.hash_buckets),
         max_text_chars=max(1, args.max_text_chars),
         char_text_chars=max(1, args.char_text_chars),
-        svd_iterations=max(1, args.svd_iterations),
-        random_seed=args.seed,
         fit_query_batch_articles=max(1, args.query_batch_articles),
     )
 
@@ -94,7 +92,10 @@ CREATE TABLE IF NOT EXISTS {table}
  publication_session LowCardinality(String),
  representation_name LowCardinality(String),
  representation_sha256 FixedString(64),
- chunks Array(Tuple(UInt8, Array(Float32))) CODEC(ZSTD(3)),
+ word_ids Array(UInt32) CODEC(ZSTD(3)),
+ word_weights Array(Float32) CODEC(ZSTD(3)),
+ char_ids Array(UInt32) CODEC(ZSTD(3)),
+ char_weights Array(Float32) CODEC(ZSTD(3)),
  horizon_codes Array(String) CODEC(ZSTD(3)),
  return_targets Array(Array(Float32)) CODEC(ZSTD(3)),
  built_at DateTime64(3, 'UTC') DEFAULT now64(3)
@@ -188,27 +189,14 @@ def iter_source_rows(
             break
 
 
-def collect_training_rows(client: ClickHouseHttpClient, config: LoaderConfig, batch_articles: int) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    started = time.perf_counter()
+def iter_training_rows(
+    client: ClickHouseHttpClient,
+    config: LoaderConfig,
+    batch_articles: int,
+) -> Iterator[list[dict[str, Any]]]:
     for month_start, month_end in month_ranges(config.train_start, config.train_end_exclusive):
         for batch in iter_source_rows(client, config, month_start, month_end, batch_articles):
-            rows.extend({
-                key: row.get(key)
-                for key in (
-                    "ticker", "published_at_utc", "provider", "title", "teaser", "body_text",
-                    "external_text", "pdf_text", "channels", "provider_tags",
-                )
-            } for row in batch)
-        print(
-            f"FIT SOURCE {month_start:%Y-%m} articles={len(rows):,} elapsed={time.perf_counter()-started:.1f}s",
-            flush=True,
-        )
-    if not rows:
-        raise RuntimeError(
-            f"Source V4 dataset {config.dataset_database}.{config.source_dataset_table} contains no training rows."
-        )
-    return rows
+            yield batch
 
 
 def insert_rows(
@@ -222,13 +210,13 @@ def insert_rows(
     table = f"{qi(config.dataset_database)}.{qi(config.dataset_table)}"
     columns = (
         "dataset_version, split, canonical_news_id, ticker, published_at_utc, publication_session, "
-        "representation_name, representation_sha256, chunks, horizon_codes, return_targets"
+        "representation_name, representation_sha256, word_ids, word_weights, char_ids, char_weights, "
+        "horizon_codes, return_targets"
     )
     for offset in range(0, len(source_rows), insert_batch_articles):
         rows = source_rows[offset : offset + insert_batch_articles]
-        block = features[offset : offset + insert_batch_articles]
         payload = []
-        for row, vectors in zip(rows, block, strict=True):
+        for local_index, row in enumerate(rows, start=offset):
             payload.append(json.dumps({
                 "dataset_version": config.dataset_version,
                 "split": "train" if str(row["published_at_utc"]) < config.train_end_exclusive else "validation",
@@ -238,7 +226,10 @@ def insert_rows(
                 "publication_session": row["publication_session"],
                 "representation_name": config.representation_name,
                 "representation_sha256": representation_sha256,
-                "chunks": [[0, vectors[0].tolist()], [1, vectors[1].tolist()]],
+                "word_ids": features.word_ids[local_index],
+                "word_weights": features.word_weights[local_index],
+                "char_ids": features.char_ids[local_index],
+                "char_weights": features.char_weights[local_index],
                 "horizon_codes": row["horizon_codes"],
                 "return_targets": row["return_targets"],
             }, separators=(",", ":"), allow_nan=False))
@@ -321,8 +312,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
     config = loader_from_args(args)
     feature_config = feature_config_from_args(args)
-    if feature_config.output_dim != config.embedding_dim:
-        raise ValueError(f"--output-dim must remain {config.embedding_dim} to preserve V4's exact input and head architecture.")
+    if feature_config.hash_buckets < max(feature_config.word_vocab_size, feature_config.char_vocab_size):
+        raise ValueError("--hash-buckets must be at least as large as both sparse vocabularies.")
     if args.refit_features and not args.rebuild:
         raise ValueError("--refit-features requires --rebuild so one dataset version cannot mix representations.")
     if args.refit_features and (
@@ -345,20 +336,28 @@ def main(argv: Iterable[str] | None = None) -> int:
     status_path = Path(args.status_path) if args.status_path else Path("runtime/news-reaction-model/v5/prepare/status.jsonl")
     client = ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password())
     artifacts_exist = (config.feature_artifact_root / "manifest.json").exists()
+    append_jsonl(status_path, {
+        "event": "start", "stage": "feature_fit" if args.refit_features or not artifacts_exist else "materialize",
+        "loader": asdict(config), "features": asdict(feature_config), "months": len(months),
+    })
     if args.refit_features or not artifacts_exist:
-        fit_rows = collect_training_rows(client, config, args.query_batch_articles)
-        print(f"FIT WORD/CHAR TF-IDF articles={len(fit_rows):,}", flush=True)
-        bundle = TfidfLsaBundle.fit(fit_rows, feature_config)
+        print("FIT sparse word/character TF-IDF from bounded 2019-2025 batches", flush=True)
+        bundle = SparseTfidfBundle.fit(
+            iter_training_rows(client, config, args.query_batch_articles), feature_config
+        )
         manifest = save_bundle(bundle, config)
-        del fit_rows
+        append_jsonl(status_path, {
+            "event": "feature_fit_completed", "articles": bundle.training_documents,
+            "representation_sha256": manifest["bundle_sha256"],
+        })
     else:
         bundle, manifest = load_bundle(config)
     representation_sha256 = str(manifest["bundle_sha256"])
     client.execute(create_table_sql(config))
     client.execute(create_manifest_sql(config))
     append_jsonl(status_path, {
-        "event": "start", "loader": asdict(config), "features": asdict(feature_config),
-        "representation_sha256": representation_sha256, "months": len(months),
+        "event": "materialization_started", "representation_sha256": representation_sha256,
+        "months": len(months),
     })
 
     def build_month(item: tuple[dt.date, dt.date]) -> dict[str, Any]:

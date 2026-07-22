@@ -7,9 +7,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 import torch
 
 from research.news_reaction_model.v5 import HORIZONS, MODEL_VERSION
+from research.news_reaction_model.v4.config import ModelConfig as V4ModelConfig
 from research.news_reaction_model.v4.model import NewsReactionModelV4
 from research.news_reaction_model.v5.config import ExperimentConfig, FeatureConfig, LoaderConfig, ModelConfig, TrainConfig
 from research.news_reaction_model.v5.data import make_dummy_batch, prepared_batch_sql, rows_to_batch
@@ -21,7 +23,7 @@ from research.news_reaction_model.v5.prepare_data import create_table_sql, sourc
 from research.news_reaction_model.v5.profile_sizes import load_real_sample, main as profile_main
 from research.news_reaction_model.v5.ranges import RANGE_SPECS, TARGET_NAMES, range_targets
 from research.news_reaction_model.v5.train import SampleCosineRestartScheduler, checkpoint_payload, maybe_compile, restore, validate_config
-from research.news_reaction_model.v5.text_features import TfidfLsaBundle, _l2_normalize_and_pad, article_model_text
+from research.news_reaction_model.v5.text_features import SparseTfidfBundle, article_model_text
 
 
 class NewsReactionModelV5Tests(unittest.TestCase):
@@ -49,20 +51,23 @@ class NewsReactionModelV5Tests(unittest.TestCase):
         ddl = create_table_sql(config)
         self.assertIn("return_targets Array(Array(Float32))", ddl)
         self.assertIn("representation_sha256 FixedString(64)", ddl)
+        self.assertIn("word_ids Array(UInt32)", ddl)
+        self.assertIn("char_weights Array(Float32)", ddl)
         self.assertNotIn("class_targets", ddl)
         sql = prepared_batch_sql(config, dt.date(2026, 1, 1), dt.date(2026, 2, 1), "2026-01-01", "AAPL", "id", 256)
         self.assertIn("dataset_version = 'test-version'", sql)
         self.assertIn("(published_at_utc, ticker, canonical_news_id) >", sql)
 
-    def test_v5_keeps_v4_architecture_and_head_shapes_exactly(self) -> None:
-        config = ModelConfig(embedding_dim=8, d_model=16, hidden_dim=16, layers=1)
-        v4 = NewsReactionModelV4(config)
+    def test_v5_keeps_v4_prediction_head_shapes_exactly(self) -> None:
+        config = ModelConfig(word_vocab_size=16, char_vocab_size=16, d_model=16, hidden_dim=16, layers=1)
+        v4 = NewsReactionModelV4(V4ModelConfig(embedding_dim=8, d_model=16, hidden_dim=16, layers=1))
         v5 = NewsReactionModelV5(config)
-        self.assertEqual(
-            {name: tuple(value.shape) for name, value in v4.state_dict().items()},
-            {name: tuple(value.shape) for name, value in v5.state_dict().items()},
-        )
-        self.assertEqual(sum(p.numel() for p in v4.parameters()), sum(p.numel() for p in v5.parameters()))
+        for horizon in HORIZONS:
+            for target in TARGET_NAMES:
+                self.assertEqual(
+                    tuple(v4.range_heads[horizon][target].weight.shape),
+                    tuple(v5.range_heads[horizon][target].weight.shape),
+                )
 
     def test_text_contract_is_publication_time_only_and_normalization_is_bounded(self) -> None:
         text = article_model_text({
@@ -71,12 +76,9 @@ class NewsReactionModelV5Tests(unittest.TestCase):
         }, max_chars=80)
         self.assertIn("Raises guidance", text)
         self.assertNotIn("future_price", text)
-        values = _l2_normalize_and_pad(torch.tensor([[3.0, 4.0]]).numpy(), 4)
-        self.assertEqual(tuple(values.shape), (1, 4))
-        self.assertAlmostEqual(float((values[0] ** 2).sum()), 1.0, places=6)
 
     @unittest.skipUnless(importlib.util.find_spec("sklearn"), "scikit-learn is not installed in this environment")
-    def test_tfidf_bundle_produces_two_v4_compatible_channels(self) -> None:
+    def test_tfidf_bundle_streams_two_sparse_channels_without_svd(self) -> None:
         rows = [
             {"ticker": "AAPL", "title": "Apple raises guidance", "body_text": "Revenue beats estimates"},
             {"ticker": "MSFT", "title": "Microsoft cuts outlook", "body_text": "Margins decline"},
@@ -84,13 +86,15 @@ class NewsReactionModelV5Tests(unittest.TestCase):
             {"ticker": "TSLA", "title": "Tesla recalls cars", "body_text": "Software defect found"},
         ]
         features = FeatureConfig(
-            word_max_features=64, char_max_features=64, output_dim=8, min_df=1,
-            max_df=1.0, svd_iterations=1,
+            word_vocab_size=8, char_vocab_size=8, hash_buckets=64, min_df=1,
         )
-        bundle = TfidfLsaBundle.fit(rows, features)
+        bundle = SparseTfidfBundle.fit([rows], features)
         transformed = bundle.transform(rows[:2])
-        self.assertEqual(tuple(transformed.shape), (2, 2, 8))
-        self.assertTrue(torch.isfinite(torch.from_numpy(transformed)).all())
+        self.assertEqual(len(transformed.word_ids), 2)
+        self.assertEqual(len(transformed.char_ids), 2)
+        self.assertTrue(all(len(ids) == len(weights) for ids, weights in zip(transformed.word_ids, transformed.word_weights)))
+        self.assertTrue(all(max(ids, default=0) < 8 for ids in transformed.word_ids + transformed.char_ids))
+        self.assertTrue(all(np.isfinite(weight) for weights in transformed.word_weights + transformed.char_weights for weight in weights))
 
     def test_range_boundaries_include_requested_tails_and_vary_by_horizon(self) -> None:
         one_minute = RANGE_SPECS["1m"]
@@ -101,10 +105,11 @@ class NewsReactionModelV5Tests(unittest.TestCase):
         self.assertEqual(one_minute.class_for_return(-1.01), -1)
 
     def test_batch_model_range_loss_and_forecast(self) -> None:
-        loader = LoaderConfig(embedding_dim=8, max_chunks=2)
+        loader = LoaderConfig(word_vocab_size=16, char_vocab_size=16)
         rows = [{
             "source_id": "news-1", "ticker": "AAPL", "published_at_utc": "2026-07-14 13:41:00",
-            "chunks": [[0, [0.1] * 8], [1, [0.2] * 8]], "publication_session": "regular",
+            "word_ids": [1, 2], "word_weights": [0.8, 0.6],
+            "char_ids": [3, 4], "char_weights": [0.7, 0.7], "publication_session": "regular",
             "horizon_codes": ["5m", "1m"],
             "return_targets": [[0.02, 0.03, -0.01], [-0.01, 0.01, -0.02]],
         }]
@@ -112,7 +117,7 @@ class NewsReactionModelV5Tests(unittest.TestCase):
         self.assertEqual(int(batch.label_mask.sum()), 2)
         targets = range_targets(batch.return_targets, batch.label_mask)
         self.assertEqual(tuple(targets["1m"].shape), (1, 3))
-        model = NewsReactionModelV5(ModelConfig(embedding_dim=8, d_model=16, hidden_dim=16, layers=1))
+        model = NewsReactionModelV5(ModelConfig(word_vocab_size=16, char_vocab_size=16, d_model=16, hidden_dim=16, layers=1))
         output = model(batch.x)
         for horizon in HORIZONS:
             for target in TARGET_NAMES:
@@ -125,8 +130,8 @@ class NewsReactionModelV5Tests(unittest.TestCase):
         self.assertEqual(set(forecast["ranges"]), set(TARGET_NAMES))
 
     def test_dominant_excursion_uses_conservative_target_ties_abstain(self) -> None:
-        model = NewsReactionModelV5(ModelConfig(embedding_dim=8, d_model=16, hidden_dim=16, layers=1))
-        batch = make_dummy_batch(3, LoaderConfig(embedding_dim=8))
+        model = NewsReactionModelV5(ModelConfig(word_vocab_size=16, char_vocab_size=16, d_model=16, hidden_dim=16, layers=1))
+        batch = make_dummy_batch(3, LoaderConfig(word_vocab_size=16, char_vocab_size=16))
         output = model(batch.x)
         spec = RANGE_SPECS["1m"]
         for target in TARGET_NAMES:
@@ -170,13 +175,14 @@ class NewsReactionModelV5Tests(unittest.TestCase):
         self.assertAlmostEqual(pnl[2], -3.0, places=5)
 
     def test_evaluation_query_loads_anchor_without_future_order_labels(self) -> None:
-        loader = LoaderConfig(embedding_dim=8)
+        loader = LoaderConfig(word_vocab_size=16, char_vocab_size=16)
         sql = evaluation_batch_sql(loader, dt.date(2026, 1, 1), dt.date(2026, 2, 1), "1970-01-01", "", "", 128)
         self.assertIn("anchor_price", sql)
         self.assertNotIn("first_touch", sql)
         rows = [{
             "source_id": "news-eval", "ticker": "AAPL", "published_at_utc": "2026-07-14 13:41:00",
-            "chunks": [[0, [0.1] * 8], [1, [0.2] * 8]], "publication_session": "regular", "horizon_codes": ["1m"],
+            "word_ids": [1], "word_weights": [1.0], "char_ids": [2], "char_weights": [1.0],
+            "publication_session": "regular", "horizon_codes": ["1m"],
             "return_targets": [[0.01, 0.02, -0.01]], "anchor_values": [["1m", 100.0]],
         }]
         evaluation = rows_to_evaluation_batch(rows, loader)
@@ -192,7 +198,7 @@ class NewsReactionModelV5Tests(unittest.TestCase):
         validate_config(ExperimentConfig(train=config))
 
     def test_profiler_collects_exact_sample_and_rejects_truncation(self) -> None:
-        loader = LoaderConfig(embedding_dim=8)
+        loader = LoaderConfig(word_vocab_size=16, char_vocab_size=16)
         first, second = make_dummy_batch(4, loader), make_dummy_batch(5, loader)
         with patch("research.news_reaction_model.v5.profile_sizes.ClickHouseNewsReactionDataset") as dataset_type:
             dataset_type.return_value.iter_batches.return_value = (batch for batch in (first, second))
@@ -203,9 +209,9 @@ class NewsReactionModelV5Tests(unittest.TestCase):
                 profile_main(["--model-sizes", "16", "--batch-sizes", "8", "--layers", "1", "--warmup-steps", "0", "--profile-steps", "1", "--output-root", temp_dir])
 
     def test_checkpoint_and_compile_fallback(self) -> None:
-        model = NewsReactionModelV5(ModelConfig(embedding_dim=8, d_model=16, hidden_dim=16, layers=1))
+        model = NewsReactionModelV5(ModelConfig(word_vocab_size=16, char_vocab_size=16, d_model=16, hidden_dim=16, layers=1))
         optimizer = torch.optim.AdamW(model.parameters()); scaler = torch.amp.GradScaler("cpu", enabled=False)
-        config = ExperimentConfig(loader=LoaderConfig(embedding_dim=8), model=model.config, train=TrainConfig(output_root=Path("runtime/test")))
+        config = ExperimentConfig(loader=LoaderConfig(word_vocab_size=16, char_vocab_size=16), model=model.config, train=TrainConfig(output_root=Path("runtime/test")))
         payload = checkpoint_payload(model, optimizer, None, scaler, config, 10, 2)
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "checkpoint.pt"; torch.save(payload, path)

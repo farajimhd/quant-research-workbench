@@ -117,7 +117,8 @@ WITH anchors AS
   AND published_at_utc < toDateTime64({q(end.isoformat())}, 9, 'UTC')
  GROUP BY canonical_news_id, ticker, published_at_utc
 )
-SELECT p.canonical_news_id AS source_id, p.ticker, p.published_at_utc, p.chunks,
+SELECT p.canonical_news_id AS source_id, p.ticker, p.published_at_utc,
+ p.word_ids, p.word_weights, p.char_ids, p.char_weights,
  p.publication_session, p.horizon_codes, p.return_targets, a.anchor_values
 FROM {prepared} AS p FINAL
 INNER JOIN anchors AS a USING (canonical_news_id, ticker, published_at_utc)

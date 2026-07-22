@@ -55,7 +55,8 @@ def month_ranges(start: str, end_exclusive: str) -> list[tuple[dt.date, dt.date]
 def prepared_batch_sql(config: LoaderConfig, start: dt.date, end: dt.date, cursor_timestamp: str, cursor_ticker: str, cursor_id: str, limit: int) -> str:
     table = f"{qi(config.dataset_database)}.{qi(config.dataset_table)}"
     return f"""
-SELECT canonical_news_id AS source_id, ticker, published_at_utc, chunks, publication_session,
+SELECT canonical_news_id AS source_id, ticker, published_at_utc,
+ word_ids, word_weights, char_ids, char_weights, publication_session,
  horizon_codes, return_targets
 FROM {table} FINAL
 WHERE dataset_version = {q(config.dataset_version)}
@@ -74,8 +75,11 @@ def prepared_dataset_audit_sql(config: LoaderConfig, start: str, end_exclusive: 
     table = f"{qi(config.dataset_database)}.{qi(config.dataset_table)}"
     return f"""
 SELECT count(), uniqExact(canonical_news_id), min(published_at_utc), max(published_at_utc),
- countIf(length(chunks) != {config.max_chunks}),
- countIf(arrayExists(x -> length(tupleElement(x, 2)) != {config.embedding_dim}, chunks)),
+ countIf(length(word_ids) != length(word_weights) OR length(char_ids) != length(char_weights)),
+ countIf(arrayExists(x -> x >= {config.word_vocab_size}, word_ids)
+      OR arrayExists(x -> x >= {config.char_vocab_size}, char_ids)),
+ countIf(arrayExists(x -> NOT isFinite(x), word_weights)
+      OR arrayExists(x -> NOT isFinite(x), char_weights)),
  countIf(length(horizon_codes) != length(return_targets)),
  uniqExact(representation_sha256), any(representation_name), any(representation_sha256)
 FROM {table} FINAL
@@ -101,12 +105,13 @@ def audit_prepared_dataset(config: LoaderConfig, start: str, end_exclusive: str)
         "articles": int(fields[1]) if len(fields) > 1 and fields[1] else 0,
         "min_published_at_utc": fields[2] if len(fields) > 2 else "",
         "max_published_at_utc": fields[3] if len(fields) > 3 else "",
-        "invalid_chunks": int(fields[4]) if len(fields) > 4 and fields[4] else 0,
-        "invalid_dimensions": int(fields[5]) if len(fields) > 5 and fields[5] else 0,
-        "invalid_targets": int(fields[6]) if len(fields) > 6 and fields[6] else 0,
-        "representation_versions": int(fields[7]) if len(fields) > 7 and fields[7] else 0,
-        "representation_name": fields[8] if len(fields) > 8 else "",
-        "representation_sha256": fields[9] if len(fields) > 9 else "",
+        "invalid_sparse_pairs": int(fields[4]) if len(fields) > 4 and fields[4] else 0,
+        "invalid_feature_ids": int(fields[5]) if len(fields) > 5 and fields[5] else 0,
+        "invalid_feature_weights": int(fields[6]) if len(fields) > 6 and fields[6] else 0,
+        "invalid_targets": int(fields[7]) if len(fields) > 7 and fields[7] else 0,
+        "representation_versions": int(fields[8]) if len(fields) > 8 and fields[8] else 0,
+        "representation_name": fields[9] if len(fields) > 9 else "",
+        "representation_sha256": fields[10] if len(fields) > 10 else "",
     }
     if rows == 0:
         raise RuntimeError(
@@ -115,8 +120,9 @@ def audit_prepared_dataset(config: LoaderConfig, start: str, end_exclusive: str)
         )
     if (
         result["articles"] != rows
-        or result["invalid_chunks"]
-        or result["invalid_dimensions"]
+        or result["invalid_sparse_pairs"]
+        or result["invalid_feature_ids"]
+        or result["invalid_feature_weights"]
         or result["invalid_targets"]
         or result["representation_versions"] != 1
         or result["representation_name"] != config.representation_name
@@ -205,9 +211,7 @@ class ClickHouseNewsReactionDataset:
 
 
 def rows_to_batch(rows: list[dict[str, Any]], config: LoaderConfig) -> NewsReactionBatch:
-    b, c, d, h = len(rows), config.max_chunks, config.embedding_dim, len(config.horizons)
-    embeddings = np.zeros((b, c, d), dtype=np.float32)
-    chunk_mask = np.zeros((b, c), dtype=np.bool_)
+    b, h = len(rows), len(config.horizons)
     returns = np.zeros((b, h, 3), dtype=np.float32)
     label_mask = np.zeros((b, h), dtype=np.bool_)
     horizon_index = {value: index for index, value in enumerate(config.horizons)}
@@ -216,20 +220,46 @@ def rows_to_batch(rows: list[dict[str, Any]], config: LoaderConfig) -> NewsReact
         ids.append(str(row["source_id"]))
         tickers.append(str(row["ticker"]))
         timestamps.append(str(row["published_at_utc"]))
-        for chunk_index, vector in row["chunks"]:
-            ci = int(chunk_index)
-            if 0 <= ci < c and len(vector) == d:
-                embeddings[row_index, ci] = np.asarray(vector, dtype=np.float32)
-                chunk_mask[row_index, ci] = True
         for code, target_returns in zip(row.get("horizon_codes", ()), row.get("return_targets", ())):
             hi = horizon_index.get(str(code))
             if hi is not None:
                 returns[row_index, hi] = np.asarray(target_returns, dtype=np.float32)
                 label_mask[row_index, hi] = np.isfinite(returns[row_index, hi]).all() and bool((returns[row_index, hi] >= -1).all())
+    word_indices, word_offsets, word_weights, word_present = _pack_sparse_rows(rows, "word")
+    char_indices, char_offsets, char_weights, char_present = _pack_sparse_rows(rows, "char")
     return NewsReactionBatch(
-        x={"embeddings": torch.from_numpy(embeddings), "chunk_mask": torch.from_numpy(chunk_mask)},
+        x={
+            "word_indices": word_indices, "word_offsets": word_offsets, "word_weights": word_weights,
+            "char_indices": char_indices, "char_offsets": char_offsets, "char_weights": char_weights,
+            "channel_mask": torch.stack((word_present, char_present), dim=1),
+        },
         return_targets=torch.from_numpy(returns), label_mask=torch.from_numpy(label_mask),
         identity={"canonical_news_id": ids, "ticker": tickers, "published_at_utc": timestamps}, sample_count=b,
+    )
+
+
+def _pack_sparse_rows(
+    rows: list[dict[str, Any]],
+    prefix: str,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    flat_ids: list[int] = []
+    flat_weights: list[float] = []
+    offsets = [0]
+    present = []
+    for row in rows:
+        ids = [int(value) for value in row.get(f"{prefix}_ids", ())]
+        weights = [float(value) for value in row.get(f"{prefix}_weights", ())]
+        if len(ids) != len(weights):
+            raise ValueError(f"Mismatched {prefix} sparse feature IDs and weights.")
+        flat_ids.extend(ids)
+        flat_weights.extend(weights)
+        offsets.append(len(flat_ids))
+        present.append(bool(ids))
+    return (
+        torch.tensor(flat_ids, dtype=torch.int64),
+        torch.tensor(offsets, dtype=torch.int64),
+        torch.tensor(flat_weights, dtype=torch.float32),
+        torch.tensor(present, dtype=torch.bool),
     )
 
 
@@ -238,7 +268,10 @@ def make_dummy_batch(batch_size: int, config: LoaderConfig, *, device: torch.dev
     for index in range(batch_size):
         rows.append({
             "source_id": f"dummy-{index}", "ticker": "DUMMY", "published_at_utc": "2025-01-01 12:00:00",
-            "chunks": [[0, np.random.default_rng(index).normal(size=config.embedding_dim).astype(np.float32).tolist()]],
+            "word_ids": [index % config.word_vocab_size, (index + 1) % config.word_vocab_size],
+            "word_weights": [0.8, 0.6],
+            "char_ids": [index % config.char_vocab_size, (index + 3) % config.char_vocab_size],
+            "char_weights": [0.7, 0.7],
             "publication_session": SESSIONS[index % len(SESSIONS)], "horizon_codes": list(config.horizons),
             "return_targets": [[0.001, 0.002 + index * 0.00001, -0.001] for _ in config.horizons],
         })

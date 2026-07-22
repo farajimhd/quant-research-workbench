@@ -126,8 +126,20 @@ def load_real_sample(loader: LoaderConfig, start: str, end_exclusive: str, requi
 def concatenate_batches(batches: list[NewsReactionBatch]) -> NewsReactionBatch:
     if not batches:
         raise ValueError("At least one batch is required.")
+    x = {"channel_mask": torch.cat([batch.x["channel_mask"] for batch in batches], dim=0)}
+    for prefix in ("word", "char"):
+        indices = torch.cat([batch.x[f"{prefix}_indices"] for batch in batches], dim=0)
+        weights = torch.cat([batch.x[f"{prefix}_weights"] for batch in batches], dim=0)
+        offsets = [torch.tensor([0], dtype=torch.int64)]
+        base = 0
+        for batch in batches:
+            offsets.append(batch.x[f"{prefix}_offsets"][1:] + base)
+            base += int(batch.x[f"{prefix}_offsets"][-1])
+        x[f"{prefix}_indices"] = indices
+        x[f"{prefix}_weights"] = weights
+        x[f"{prefix}_offsets"] = torch.cat(offsets)
     return NewsReactionBatch(
-        x={key: torch.cat([batch.x[key] for batch in batches], dim=0) for key in batches[0].x},
+        x=x,
         return_targets=torch.cat([batch.return_targets for batch in batches], dim=0),
         label_mask=torch.cat([batch.label_mask for batch in batches], dim=0),
         identity={
@@ -139,10 +151,18 @@ def concatenate_batches(batches: list[NewsReactionBatch]) -> NewsReactionBatch:
 
 
 def slice_batch(batch: NewsReactionBatch, size: int, device: torch.device) -> NewsReactionBatch:
+    size = min(size, batch.sample_count)
+    x = {"channel_mask": batch.x["channel_mask"][:size].to(device)}
+    for prefix in ("word", "char"):
+        offsets = batch.x[f"{prefix}_offsets"][: size + 1]
+        end = int(offsets[-1])
+        x[f"{prefix}_indices"] = batch.x[f"{prefix}_indices"][:end].to(device)
+        x[f"{prefix}_weights"] = batch.x[f"{prefix}_weights"][:end].to(device)
+        x[f"{prefix}_offsets"] = offsets.to(device)
     return NewsReactionBatch(
-        x={key: value[:size].to(device) for key, value in batch.x.items()},
+        x=x,
         return_targets=batch.return_targets[:size].to(device), label_mask=batch.label_mask[:size].to(device),
-        identity={key: value[:size] for key, value in batch.identity.items()}, sample_count=min(size, batch.sample_count),
+        identity={key: value[:size] for key, value in batch.identity.items()}, sample_count=size,
     )
 
 

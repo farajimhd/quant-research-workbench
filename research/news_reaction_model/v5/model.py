@@ -32,16 +32,20 @@ class ResidualMLP(nn.Module):
 
 
 class NewsReactionModelV5(nn.Module):
-    """V4 architecture driven by frozen word/character TF-IDF-LSA channels."""
+    """V4 prediction stack driven by supervised sparse lexical input adapters."""
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.config = config
         d = int(config.d_model)
-        self.chunk_projection = nn.Sequential(
-            nn.LayerNorm(config.embedding_dim), nn.Linear(config.embedding_dim, d), nn.GELU(),
+        self.word_embedding = nn.EmbeddingBag(
+            config.word_vocab_size, d, mode="sum", include_last_offset=True,
         )
-        self.chunk_position = nn.Embedding(config.max_chunks, d)
+        self.char_embedding = nn.EmbeddingBag(
+            config.char_vocab_size, d, mode="sum", include_last_offset=True,
+        )
+        self.chunk_projection = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, d), nn.GELU())
+        self.chunk_position = nn.Embedding(2, d)
         self.chunk_gate = nn.Linear(d, 1)
         self.horizon_embedding = nn.Embedding(len(config.horizons), config.horizon_dim)
         joint = d + config.horizon_dim
@@ -56,9 +60,17 @@ class NewsReactionModelV5(nn.Module):
         })
 
     def forward(self, x: dict[str, Any]) -> NewsReactionRangeOutput:
-        chunks = x["embeddings"]
-        mask = x["chunk_mask"].bool()
-        hidden = self.chunk_projection(chunks)
+        word = self.word_embedding(
+            x["word_indices"], x["word_offsets"], per_sample_weights=x["word_weights"]
+        )
+        char = self.char_embedding(
+            x["char_indices"], x["char_offsets"], per_sample_weights=x["char_weights"]
+        )
+        mask = x["channel_mask"].bool()
+        if (~mask.any(dim=1)).any():
+            mask = mask.clone()
+            mask[~mask.any(dim=1), 0] = True
+        hidden = self.chunk_projection(torch.stack((word, char), dim=1))
         positions = torch.arange(hidden.shape[1], device=hidden.device)
         hidden = hidden + self.chunk_position(positions).unsqueeze(0)
         scores = self.chunk_gate(hidden).squeeze(-1).masked_fill(~mask, float("-inf"))
@@ -87,8 +99,11 @@ class NewsReactionModelV5(nn.Module):
 def build_model_mermaid() -> str:
     return "\n".join([
         "flowchart LR",
-        '  chunks["word + character TF-IDF/LSA [B,2,1024]"] --> projection["V4 LayerNorm + projection"]',
-        '  projection --> pooling["V4 masked gated channel pooling"]',
+        '  words["sparse word IDs + TF-IDF weights"] --> wordbag["weighted word EmbeddingBag"]',
+        '  chars["sparse character IDs + TF-IDF weights"] --> charbag["weighted character EmbeddingBag"]',
+        '  wordbag --> projection["V4-like channel projection"]',
+        '  charbag --> projection',
+        '  projection --> pooling["V4 gated channel pooling"]',
         '  horizons["Horizon embedding"] --> fusion["Publication-time fusion"]',
         '  pooling --> fusion',
         '  fusion --> mlp["Residual MLP encoder"]',

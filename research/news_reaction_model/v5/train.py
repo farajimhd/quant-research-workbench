@@ -42,7 +42,7 @@ def handle_interrupt(_signum: int, _frame: Any) -> None:
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     loader, model, train = LoaderConfig(), ModelConfig(), TrainConfig()
-    parser = argparse.ArgumentParser(description="Train V5's unchanged V4 percentage-range model from frozen TF-IDF/LSA features.")
+    parser = argparse.ArgumentParser(description="Train V5's V4-like percentage-range model from sparse lexical features.")
     parser.add_argument("--train-start", default=loader.train_start)
     parser.add_argument("--train-end-exclusive", default=loader.train_end_exclusive)
     parser.add_argument("--validation-start", default=loader.validation_start)
@@ -99,7 +99,10 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         prefetch_batches=args.prefetch_batches, max_threads_per_query=args.max_threads_per_query,
         max_memory_usage=args.max_memory_usage,
     )
-    model = ModelConfig(d_model=args.d_model, hidden_dim=args.hidden_dim, layers=args.layers, dropout=args.dropout)
+    model = ModelConfig(
+        word_vocab_size=loader.word_vocab_size, char_vocab_size=loader.char_vocab_size,
+        d_model=args.d_model, hidden_dim=args.hidden_dim, layers=args.layers, dropout=args.dropout,
+    )
     train = TrainConfig(
         output_root=Path(args.output_root), run_name=args.run_name, epochs=args.epochs, max_samples=args.max_samples,
         learning_rate=args.learning_rate, weight_decay=args.weight_decay, grad_clip_norm=args.grad_clip_norm,
@@ -173,12 +176,16 @@ def main(argv: Iterable[str] | None = None) -> int:
                        wandb_info={"project": config.train.wandb_project, "run_id": getattr(wandb_run, "id", "")})
     write_model_artifacts(
         model=raw_model, artifact_dir=paths.artifacts_dir, model_config=config.model,
-        input_contract={"embeddings": ["B", 2, 1024], "chunk_mask": ["B", 2]},
+        input_contract={
+            "word_indices": ["NNZ_word"], "word_offsets": ["B+1"], "word_weights": ["NNZ_word"],
+            "char_indices": ["NNZ_char"], "char_offsets": ["B+1"], "char_weights": ["NNZ_char"],
+            "channel_mask": ["B", 2],
+        },
         output_contract={"range_logits": describe_ranges()},
         architecture_mermaid=build_model_mermaid(),
         summary_notes=(
-            "Frozen train-only word/character TF-IDF plus LSA article features with V4's unchanged "
-            "ending/high/low percentage-range architecture; every input is available at publication time."
+            "Sparse train-only word/character TF-IDF features with supervised weighted EmbeddingBag adapters "
+            "and V4's unchanged ending/high/low heads; every input is available at publication time."
         ),
         dummy_input_factory=lambda: ((make_dummy_batch(2, config.loader, device=device).x,), {}), wandb_run=wandb_run,
     )

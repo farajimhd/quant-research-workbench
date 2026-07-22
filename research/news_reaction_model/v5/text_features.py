@@ -12,7 +12,7 @@ from research.news_reaction_model.v5.config import FeatureConfig, LoaderConfig
 
 
 def article_model_text(row: dict[str, Any], *, max_chars: int) -> str:
-    """Match the existing news embedding field order without exposing post-publication data."""
+    """Build the publication-time text used by the lexical model."""
     parts = [
         "NEWS",
         f"provider: {row.get('provider', '') or ''}",
@@ -27,12 +27,11 @@ def article_model_text(row: dict[str, Any], *, max_chars: int) -> str:
         value = str(row.get(key, "") or "")
         if value:
             parts.extend((label, value))
-    text = "\n".join(part for part in parts if str(part).strip())
-    return text[: max(1, int(max_chars))]
+    return "\n".join(part for part in parts if str(part).strip())[: max(1, int(max_chars))]
 
 
 def compact_char_text(row: dict[str, Any], *, max_chars: int) -> str:
-    """Prioritize wording-rich publication-time fields for the costlier character channel."""
+    """Prioritize wording-rich fields for the more numerous character n-grams."""
     text = "\n".join(
         str(value or "")
         for value in (
@@ -45,95 +44,178 @@ def compact_char_text(row: dict[str, Any], *, max_chars: int) -> str:
 
 
 @dataclass(slots=True)
-class TfidfLsaBundle:
+class SparseFeatureRows:
+    word_ids: list[list[int]]
+    word_weights: list[list[float]]
+    char_ids: list[list[int]]
+    char_weights: list[list[float]]
+
+
+@dataclass(slots=True)
+class SparseTfidfBundle:
+    """Frozen train-only IDF authority over bounded hashed n-gram vocabularies."""
+
     feature_config: FeatureConfig
-    word_vectorizer: Any
-    char_vectorizer: Any
-    word_svd: Any
-    char_svd: Any
-    word_effective_dim: int
-    char_effective_dim: int
+    training_documents: int
+    word_hash_buckets: np.ndarray
+    word_mapping: np.ndarray
+    word_idf: np.ndarray
+    char_hash_buckets: np.ndarray
+    char_mapping: np.ndarray
+    char_idf: np.ndarray
 
     @classmethod
-    def fit(cls, rows: list[dict[str, Any]], config: FeatureConfig) -> "TfidfLsaBundle":
-        try:
-            from sklearn.decomposition import TruncatedSVD
-            from sklearn.feature_extraction.text import TfidfVectorizer
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError("V5 TF-IDF preparation requires scikit-learn and scipy in the active environment.") from exc
-        if len(rows) < 3:
+    def fit(
+        cls,
+        batches: Iterable[list[dict[str, Any]]],
+        config: FeatureConfig,
+    ) -> "SparseTfidfBundle":
+        word_vectorizer, char_vectorizer = _vectorizers(config, binary=True)
+        word_df = np.zeros(config.hash_buckets, dtype=np.uint32)
+        char_df = np.zeros(config.hash_buckets, dtype=np.uint32)
+        documents = 0
+        for batch_index, rows in enumerate(batches, start=1):
+            word = word_vectorizer.transform(
+                [article_model_text(row, max_chars=config.max_text_chars) for row in rows]
+            )
+            char = char_vectorizer.transform(
+                [compact_char_text(row, max_chars=config.char_text_chars) for row in rows]
+            )
+            word_df += np.bincount(word.indices, minlength=config.hash_buckets).astype(np.uint32, copy=False)
+            char_df += np.bincount(char.indices, minlength=config.hash_buckets).astype(np.uint32, copy=False)
+            documents += len(rows)
+            if batch_index == 1 or batch_index % 25 == 0:
+                print(
+                    f"TF-IDF FIT batches={batch_index:,} articles={documents:,} "
+                    f"word_buckets={(word_df > 0).sum():,} char_buckets={(char_df > 0).sum():,}",
+                    flush=True,
+                )
+        if documents < 3:
             raise ValueError("At least three training articles are required to fit V5 TF-IDF features.")
-        common = {
-            "lowercase": True,
-            "strip_accents": "unicode",
-            "min_df": config.min_df,
-            "max_df": config.max_df,
-            "sublinear_tf": True,
-            "norm": "l2",
-            "dtype": np.float32,
-        }
-        word = TfidfVectorizer(
-            analyzer="word",
-            token_pattern=r"(?u)\b[\w][\w.$%+\-:/]*\b",
-            ngram_range=(config.word_ngram_min, config.word_ngram_max),
-            max_features=config.word_max_features,
-            **common,
+        word_buckets, word_idf = _select_vocabulary(word_df, documents, config.word_vocab_size, config.min_df)
+        char_buckets, char_idf = _select_vocabulary(char_df, documents, config.char_vocab_size, config.min_df)
+        print(
+            f"TF-IDF FIT COMPLETE articles={documents:,} word_vocab={len(word_buckets):,} "
+            f"char_vocab={len(char_buckets):,}",
+            flush=True,
         )
-        char = TfidfVectorizer(
-            analyzer="char_wb",
-            ngram_range=(config.char_ngram_min, config.char_ngram_max),
-            max_features=config.char_max_features,
-            **common,
+        return cls(
+            config, documents,
+            word_buckets, _bucket_mapping(word_buckets, config.hash_buckets), word_idf,
+            char_buckets, _bucket_mapping(char_buckets, config.hash_buckets), char_idf,
         )
-        word_texts = [article_model_text(row, max_chars=config.max_text_chars) for row in rows]
-        print(f"TF-IDF WORD vectorize articles={len(word_texts):,} max_features={config.word_max_features:,}", flush=True)
-        word_matrix = word.fit_transform(word_texts)
-        word_dim = min(config.output_dim, max(1, min(word_matrix.shape) - 1))
-        print(f"TF-IDF WORD reduce shape={word_matrix.shape} output_dim={word_dim}", flush=True)
-        word_svd = TruncatedSVD(
-            n_components=word_dim, n_iter=config.svd_iterations, random_state=config.random_seed,
-        ).fit(word_matrix)
-        del word_matrix, word_texts
-        char_texts = [compact_char_text(row, max_chars=config.char_text_chars) for row in rows]
-        print(f"TF-IDF CHAR vectorize articles={len(char_texts):,} max_features={config.char_max_features:,}", flush=True)
-        char_matrix = char.fit_transform(char_texts)
-        char_dim = min(config.output_dim, max(1, min(char_matrix.shape) - 1))
-        print(f"TF-IDF CHAR reduce shape={char_matrix.shape} output_dim={char_dim}", flush=True)
-        char_svd = TruncatedSVD(
-            n_components=char_dim, n_iter=config.svd_iterations, random_state=config.random_seed,
-        ).fit(char_matrix)
-        return cls(config, word, char, word_svd, char_svd, word_dim, char_dim)
 
-    def transform(self, rows: list[dict[str, Any]]) -> np.ndarray:
+    def transform(self, rows: list[dict[str, Any]]) -> SparseFeatureRows:
         if not rows:
-            return np.empty((0, 2, self.feature_config.output_dim), dtype=np.float32)
-        word_texts = [article_model_text(row, max_chars=self.feature_config.max_text_chars) for row in rows]
-        char_texts = [compact_char_text(row, max_chars=self.feature_config.char_text_chars) for row in rows]
-        word = self.word_svd.transform(self.word_vectorizer.transform(word_texts)).astype(np.float32, copy=False)
-        char = self.char_svd.transform(self.char_vectorizer.transform(char_texts)).astype(np.float32, copy=False)
-        word = _l2_normalize_and_pad(word, self.feature_config.output_dim)
-        char = _l2_normalize_and_pad(char, self.feature_config.output_dim)
-        return np.stack((word, char), axis=1)
+            return SparseFeatureRows([], [], [], [])
+        word_vectorizer, char_vectorizer = _vectorizers(self.feature_config, binary=False)
+        word = word_vectorizer.transform(
+            [article_model_text(row, max_chars=self.feature_config.max_text_chars) for row in rows]
+        )
+        char = char_vectorizer.transform(
+            [compact_char_text(row, max_chars=self.feature_config.char_text_chars) for row in rows]
+        )
+        word_ids, word_weights = _project_selected_tfidf(
+            word, self.word_mapping, self.word_idf, len(self.word_hash_buckets)
+        )
+        char_ids, char_weights = _project_selected_tfidf(
+            char, self.char_mapping, self.char_idf, len(self.char_hash_buckets)
+        )
+        return SparseFeatureRows(word_ids, word_weights, char_ids, char_weights)
 
 
-def _l2_normalize_and_pad(values: np.ndarray, output_dim: int) -> np.ndarray:
-    norms = np.linalg.norm(values, axis=1, keepdims=True)
-    values = values / np.maximum(norms, np.float32(1e-12))
-    if values.shape[1] == output_dim:
-        return values.astype(np.float32, copy=False)
-    result = np.zeros((values.shape[0], output_dim), dtype=np.float32)
-    result[:, : values.shape[1]] = values
-    return result
+def _vectorizers(config: FeatureConfig, *, binary: bool) -> tuple[Any, Any]:
+    try:
+        from sklearn.feature_extraction.text import HashingVectorizer
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError("V5 sparse TF-IDF preparation requires scikit-learn and scipy.") from exc
+    common = {
+        "n_features": config.hash_buckets,
+        "alternate_sign": False,
+        "binary": binary,
+        "norm": None,
+        "lowercase": True,
+        "strip_accents": "unicode",
+        "dtype": np.float32,
+    }
+    word = HashingVectorizer(
+        analyzer="word",
+        token_pattern=r"(?u)\b[\w][\w.$%+\-:/]*\b",
+        ngram_range=(config.word_ngram_min, config.word_ngram_max),
+        **common,
+    )
+    char = HashingVectorizer(
+        analyzer="char_wb",
+        ngram_range=(config.char_ngram_min, config.char_ngram_max),
+        **common,
+    )
+    return word, char
 
 
-def save_bundle(bundle: TfidfLsaBundle, loader: LoaderConfig) -> dict[str, Any]:
+def _select_vocabulary(
+    document_frequency: np.ndarray,
+    documents: int,
+    requested_size: int,
+    min_df: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    eligible = np.flatnonzero(document_frequency >= min_df)
+    if len(eligible) < requested_size:
+        raise RuntimeError(
+            f"Only {len(eligible):,} hashed n-gram buckets satisfy min_df={min_df}; "
+            f"the configured model requires {requested_size:,}."
+        )
+    frequencies = document_frequency[eligible]
+    chosen = eligible[np.argpartition(frequencies, -requested_size)[-requested_size:]]
+    order = np.lexsort((chosen, -document_frequency[chosen].astype(np.int64)))
+    chosen = chosen[order].astype(np.uint32, copy=False)
+    idf = (np.log((1.0 + documents) / (1.0 + document_frequency[chosen])) + 1.0).astype(np.float32)
+    return chosen, idf
+
+
+def _project_selected_tfidf(
+    matrix: Any,
+    mapping: np.ndarray,
+    idf: np.ndarray,
+    vocabulary_size: int,
+) -> tuple[list[list[int]], list[list[float]]]:
+    from scipy.sparse import coo_matrix
+    from sklearn.preprocessing import normalize
+
+    source = matrix.tocoo(copy=False)
+    local_ids = mapping[source.col]
+    keep = local_ids >= 0
+    rows = source.row[keep]
+    columns = local_ids[keep]
+    values = (1.0 + np.log(np.maximum(source.data[keep], np.float32(1.0)))) * idf[columns]
+    selected = coo_matrix(
+        (values.astype(np.float32, copy=False), (rows, columns)),
+        shape=(matrix.shape[0], vocabulary_size),
+        dtype=np.float32,
+    ).tocsr()
+    normalize(selected, norm="l2", axis=1, copy=False)
+    ids: list[list[int]] = []
+    weights: list[list[float]] = []
+    for row in range(selected.shape[0]):
+        start, end = selected.indptr[row], selected.indptr[row + 1]
+        ids.append(selected.indices[start:end].astype(np.uint32, copy=False).tolist())
+        weights.append(selected.data[start:end].astype(np.float32, copy=False).tolist())
+    return ids, weights
+
+
+def _bucket_mapping(selected_hash_buckets: np.ndarray, hash_buckets: int) -> np.ndarray:
+    mapping = np.full(hash_buckets, -1, dtype=np.int32)
+    mapping[selected_hash_buckets] = np.arange(len(selected_hash_buckets), dtype=np.int32)
+    return mapping
+
+
+def save_bundle(bundle: SparseTfidfBundle, loader: LoaderConfig) -> dict[str, Any]:
     try:
         import joblib
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError("V5 TF-IDF preparation requires joblib.") from exc
+        raise RuntimeError("V5 sparse TF-IDF preparation requires joblib.") from exc
     root = Path(loader.feature_artifact_root)
     root.mkdir(parents=True, exist_ok=True)
-    bundle_path = root / "tfidf_lsa_bundle.joblib"
+    bundle_path = root / "sparse_tfidf_bundle.joblib"
     temporary = bundle_path.with_suffix(".joblib.tmp")
     joblib.dump(bundle, temporary, compress=3)
     temporary.replace(bundle_path)
@@ -146,55 +228,46 @@ def save_bundle(bundle: TfidfLsaBundle, loader: LoaderConfig) -> dict[str, Any]:
         "fit_range": [loader.train_start, loader.train_end_exclusive],
         "validation_range": [loader.validation_start, loader.validation_end_exclusive],
         "feature_config": asdict(bundle.feature_config),
-        "word_vocabulary": len(bundle.word_vectorizer.vocabulary_),
-        "char_vocabulary": len(bundle.char_vectorizer.vocabulary_),
-        "word_effective_dim": bundle.word_effective_dim,
-        "char_effective_dim": bundle.char_effective_dim,
+        "training_documents": bundle.training_documents,
+        "word_vocab_size": len(bundle.word_hash_buckets),
+        "char_vocab_size": len(bundle.char_hash_buckets),
         "bundle_sha256": digest,
         "bundle_file": bundle_path.name,
-        "leakage_contract": "fit uses train range only; train and validation use one frozen bundle",
+        "leakage_contract": "IDF and selected hashed vocabularies use 2019-2025 only; 2026 is transform-only",
     }
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
 
 
 def load_feature_manifest(loader: LoaderConfig) -> dict[str, Any]:
-    """Validate the frozen representation identity without deserializing the estimators."""
     root = Path(loader.feature_artifact_root)
     manifest_path = root / "manifest.json"
-    bundle_path = root / "tfidf_lsa_bundle.joblib"
+    bundle_path = root / "sparse_tfidf_bundle.joblib"
     if not manifest_path.exists() or not bundle_path.exists():
-        raise RuntimeError(f"V5 TF-IDF artifacts are missing under {root}. Run the V5 preparation command first.")
+        raise RuntimeError(f"V5 sparse TF-IDF artifacts are missing under {root}. Run preparation first.")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("representation_name") != loader.representation_name:
-        raise RuntimeError("V5 TF-IDF artifact representation does not match the configured representation.")
-    if manifest.get("dataset_version") != loader.dataset_version:
-        raise RuntimeError("V5 TF-IDF artifact dataset version does not match the configured dataset version.")
-    if manifest.get("source_dataset_version") != loader.source_dataset_version:
-        raise RuntimeError("V5 TF-IDF artifact source dataset version does not match the configured V4 source.")
-    if manifest.get("fit_range") != [loader.train_start, loader.train_end_exclusive]:
-        raise RuntimeError("V5 TF-IDF artifact training range does not match the configured chronological split.")
+    expected = {
+        "representation_name": loader.representation_name,
+        "dataset_version": loader.dataset_version,
+        "source_dataset_version": loader.source_dataset_version,
+        "fit_range": [loader.train_start, loader.train_end_exclusive],
+        "word_vocab_size": loader.word_vocab_size,
+        "char_vocab_size": loader.char_vocab_size,
+    }
+    for key, value in expected.items():
+        if manifest.get(key) != value:
+            raise RuntimeError(f"V5 feature manifest mismatch for {key}: {manifest.get(key)!r} != {value!r}.")
     digest = hashlib.sha256(bundle_path.read_bytes()).hexdigest()
     if digest != manifest.get("bundle_sha256"):
-        raise RuntimeError("V5 TF-IDF bundle checksum does not match its manifest.")
+        raise RuntimeError("V5 sparse TF-IDF bundle checksum does not match its manifest.")
     return manifest
 
 
-def load_bundle(loader: LoaderConfig) -> tuple[TfidfLsaBundle, dict[str, Any]]:
+def load_bundle(loader: LoaderConfig) -> tuple[SparseTfidfBundle, dict[str, Any]]:
     try:
         import joblib
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError("Loading V5 TF-IDF features requires joblib.") from exc
-    root = Path(loader.feature_artifact_root)
-    bundle_path = root / "tfidf_lsa_bundle.joblib"
+        raise RuntimeError("Loading V5 sparse TF-IDF features requires joblib.") from exc
     manifest = load_feature_manifest(loader)
-    bundle = joblib.load(bundle_path)
-    if int(bundle.feature_config.output_dim) != int(loader.embedding_dim):
-        raise RuntimeError("V5 TF-IDF output dimension does not match the V4-compatible model input dimension.")
+    bundle = joblib.load(Path(loader.feature_artifact_root) / "sparse_tfidf_bundle.joblib")
     return bundle, manifest
-
-
-def batched(values: list[Any], size: int) -> Iterable[list[Any]]:
-    size = max(1, int(size))
-    for start in range(0, len(values), size):
-        yield values[start : start + size]

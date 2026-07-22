@@ -77,8 +77,8 @@ def forecast_rows(
     device: str | torch.device | None = None,
 ) -> list[dict[str, Any]]:
     config = loader_config or LoaderConfig(
-        embedding_dim=model.config.embedding_dim,
-        max_chunks=model.config.max_chunks,
+        word_vocab_size=model.config.word_vocab_size,
+        char_vocab_size=model.config.char_vocab_size,
         horizons=model.config.horizons,
     )
     target_device = torch.device(device) if device is not None else next(model.parameters()).device

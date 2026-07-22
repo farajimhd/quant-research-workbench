@@ -1,111 +1,121 @@
-# News Reaction Model V5: lexical representation ablation
+# News Reaction Model V5: sparse lexical ablation
 
-V5 tests whether the frozen Qwen 0.6B embeddings are the limiting factor in the
-news-reaction models. It replaces only the input representation with frozen
-word and character TF-IDF features. The V4 model, heads, targets, range bins,
-losses, inference policy, chronological split, evaluation, scheduler, and W&B
-project remain unchanged.
+V5 tests whether exact lexical evidence is more predictive than the frozen Qwen
+0.6B embeddings used by V4. It keeps V4's horizon-specific ending/high/low
+range heads, labels, ordinal classification loss, chronological split,
+inference policy, evaluation, scheduler, and W&B project. Only the article
+input adapter changes.
 
-This is a controlled representation ablation, not a new trading policy.
+## Final design
 
-## Research decision
+Each article has two sparse channels:
 
-The earlier model may discard wording that matters to market reactions because
-the source text is compressed through a small frozen language model, two
-1,024-token chunks, last-token pooling, and then a learned 384-wide encoder.
-The following practical baselines were considered:
+- word unigrams and bigrams;
+- character-within-word 3-5 grams.
 
-1. Word and character TF-IDF n-grams. This is the selected baseline because it
-   preserves exact phrases, spelling variants, numbers, and short financial
-   constructions without another pretrained semantic model.
-2. A larger Qwen embedding model. This tests model capacity but is slower and
-   less diagnostic because it keeps the same embedding family.
-3. Finance-tuned retrieval embeddings such as FinE5. These add financial-domain
-   semantics but may optimize retrieval rather than reaction forecasting.
-4. Modern general embedding models such as Jina Embeddings v3, BGE-M3, and
-   ModernBERT-derived encoders. They are useful later comparisons, but they add
-   more pretrained-model assumptions than a lexical baseline.
+Preparation streams the 2019-2025 training population in bounded batches. A
+stateless hashing analyzer maps n-grams into 1,048,576 candidate buckets. The
+65,536 buckets with the greatest training document frequency are retained for
+each channel, and their smoothed IDF weights are frozen. Hashing keeps the
+vocabulary build bounded; the large candidate space keeps collisions low.
 
-Raw sparse TF-IDF cannot enter V4's fixed `[B, 2, 1024]` interface. V5 therefore
-uses train-only truncated SVD as an unsupervised representation adapter:
+Every materialized article stores only selected nonzero feature IDs and TF-IDF
+weights:
 
-- channel 0: word unigrams/bigrams -> TF-IDF -> 1,024-value LSA vector;
-- channel 1: character-within-word 3-5 grams -> TF-IDF -> 1,024-value LSA vector.
+```text
+word_ids       [81, 417, 9201, ...]
+word_weights   [0.13, 0.42, 0.08, ...]
+char_ids       [12, 991, 4410, ...]
+char_weights   [0.17, 0.11, 0.31, ...]
+```
 
-Both channels are L2-normalized. The vectorizers and SVD transforms are fitted
-only on 2019-2025 articles, frozen, checksummed, and then applied unchanged to
-both training and 2026 validation. No reaction label or post-publication price
-is available to the feature fit.
+The model consumes each channel with a supervised weighted `EmbeddingBag`:
 
-## Fair-comparison contract
+```text
+sparse word TF-IDF -> weighted word EmbeddingBag ----┐
+                                                     ├-> V4 gated pooling
+sparse char TF-IDF -> weighted char EmbeddingBag ----┘
+                                                          |
+                                             V4 residual encoder
+                                                          |
+                                      unchanged ending/high/low heads
+```
+
+The embedding tables learn directly which lexical features correlate with
+future reactions. There is no SVD, dense 65K histogram, or unsupervised semantic
+compression.
+
+## Why the original SVD implementation was removed
+
+The first V5 implementation built two corpus-wide sparse matrices of roughly
+486K articles by 65,536 features and requested 1,024 randomized-SVD components.
+That was mathematically valid as latent semantic analysis but operationally
+wrong for this baseline: it was CPU-bound, created multi-gigabyte intermediate
+matrices, repeated the work for character n-grams, provided no progress inside
+SVD, and introduced another learned semantic compression layer.
+
+The replacement has memory proportional to one source batch plus two bounded
+document-frequency arrays. Feature fitting reports batch, article, and active
+bucket progress continuously.
+
+## Comparison contract
 
 | Concern | V4 | V5 |
 |---|---|---|
-| Article/ticker population | `news_reaction_percentage_dataset_v4` | exactly the same rows |
+| Article/ticker population | `news_reaction_percentage_dataset_v4` | exact same rows |
 | Train / validation | 2019-2025 / 2026 | unchanged |
-| Input tensor | `[B, 2, 1024]` | unchanged |
-| Encoder and all heads | V4 range classifier | byte-for-byte shape equivalent |
-| Ending/high/low range labels | V4 bins | unchanged |
-| Loss and weights | V4 ordinal classification | unchanged |
+| Ending/high/low heads | percentage-range classifiers | unchanged |
+| Labels, bins, and loss | V4 contract | unchanged |
 | Position and exit evaluation | V4 dominant-excursion policy | unchanged |
-| Scheduler | cosine, 3 restarts, 15 epochs | unchanged |
+| Scheduler | 15 epochs, cosine, 3 restarts | unchanged |
 | W&B project | `news-reaction-model-v3` | unchanged |
-| Representation | frozen Qwen embeddings | frozen word/char TF-IDF + LSA |
+| Input | frozen Qwen vectors | sparse lexical TF-IDF + supervised adapters |
 
-V5's preparation refuses partial feature refits, mixed representation
-checksums, invalid vector dimensions, missing labels, duplicate article IDs, or
-a population that differs from V4.
+V5 is V4-like rather than parameter-count identical: two 65,536-by-384 lexical
+embedding tables add supervised input capacity. Results must therefore be
+interpreted as an end-to-end lexical-model comparison, not a frozen-feature
+linear probe.
 
 ## Data products
 
-- ClickHouse table: `market_sip_compact.news_reaction_tfidf_dataset_v5`
-- Feature bundle: `D:\market-data\prepared\news_reaction_model\v5\tfidf_word_char_lsa_v1`
-- Default training run: `news-v5-tfidf-d384-l4-b2048`
+- Table: `market_sip_compact.news_reaction_sparse_tfidf_dataset_v5`
+- Feature bundle: `D:\market-data\prepared\news_reaction_model\v5\sparse_tfidf_v2`
+- Training run: `news-v5-tfidf-d384-l4-b2048`
 - W&B project: `news-reaction-model-v3`
 
-The feature bundle contains the fitted vectorizers/SVD transforms plus a
-manifest recording the training range, source version, configuration, and
-SHA-256 checksum. It is a required reproducibility artifact.
+The feature bundle records selected hash buckets, frozen IDF values, corpus
+size, source version, train/validation ranges, and a SHA-256 checksum.
+Preparation rejects partial refits, mixed representation checksums, invalid
+sparse IDs/weights, duplicate identities, and population differences from V4.
 
 ## Workstation commands
 
-Run from the V5 workstation runtime:
+Stop any preparation process started from the removed SVD implementation, then
+run the updated preparation from the workstation runtime:
 
 ```powershell
 cd D:\TradingML\codes\news-reaction-model\v5
-
-# One-time resumable preparation. Fits the feature bundle if it is absent,
-# materializes the V5 table, and audits exact parity with V4.
 python -m research.news_reaction_model.v5.run_prepare_data --execute
+```
 
-# Optional: profile model and batch sizes against prepared V5 data.
-python -m research.news_reaction_model.v5.run_profile_sizes --real-data
+After preparation passes its final audit:
 
-# Fair V4-vs-V5 training run.
+```powershell
 python -m research.news_reaction_model.v5.run_train
+```
 
-# Evaluate the best validation checkpoint with the same position/P&L policy.
+Optional commands:
+
+```powershell
+python -m research.news_reaction_model.v5.run_profile_sizes --real-data
 python -m research.news_reaction_model.v5.run_evaluate
 ```
 
-An intentional feature refit is a full-dataset operation:
+An intentional vocabulary/IDF refit is a full-range rebuild:
 
 ```powershell
 python -m research.news_reaction_model.v5.run_prepare_data --execute --refit-features --rebuild
 ```
 
-Do not use `--refit-features` for a partial date range. Preparation requires
-`scikit-learn`, `scipy`, and `joblib`; training uses the same PyTorch/W&B stack
-as V4.
-
-## Package map
-
-- `text_features.py`: publication-time text contract, TF-IDF/LSA fit, transform,
-  checksum, and frozen artifact loading.
-- `prepare_data.py`: resumable bounded-concurrency materialization and audits.
-- `data.py`: V5 table loader with exact two-channel integrity checks.
-- `model.py`, `losses.py`, `ranges.py`, `inference.py`: V4-compatible model and
-  decision contract.
-- `train.py`, `evaluate.py`: reproducible artifacts, W&B logging, checkpoints,
-  and held-out 2026 evaluation.
-- `run_*.py`: workstation launchers with visible safe defaults.
+Preparation requires scikit-learn, SciPy, and joblib. No `.env` file belongs in
+the runtime or artifacts; normal environment discovery supplies credentials.

@@ -13,7 +13,7 @@ def default_feature_artifact_root() -> Path:
     return Path(
         os.environ.get(
             "NEWS_REACTION_V5_FEATURE_ROOT",
-            r"D:\market-data\prepared\news_reaction_model\v5\tfidf_word_char_lsa_v1",
+            r"D:\market-data\prepared\news_reaction_model\v5\sparse_tfidf_v2",
         )
     )
 
@@ -21,15 +21,15 @@ def default_feature_artifact_root() -> Path:
 @dataclass(slots=True)
 class LoaderConfig:
     dataset_database: str = "market_sip_compact"
-    dataset_table: str = "news_reaction_tfidf_dataset_v5"
-    dataset_version: str = "news_reaction_tfidf_dataset_v5"
+    dataset_table: str = "news_reaction_sparse_tfidf_dataset_v5"
+    dataset_version: str = "news_reaction_sparse_tfidf_dataset_v5"
     source_dataset_table: str = "news_reaction_percentage_dataset_v4"
     source_dataset_version: str = "news_reaction_percentage_dataset_v4"
     news_database: str = "q_live"
     normalized_news_table: str = "benzinga_news_normalized_v1"
     reaction_table: str = "news_reaction_labels_v2"
     label_version: str = "news_reaction_event_labels_v3"
-    representation_name: str = "word_char_tfidf_lsa_v1"
+    representation_name: str = "word_char_sparse_tfidf_v2"
     feature_artifact_root: Path = field(default_factory=default_feature_artifact_root)
     train_start: str = "2019-01-01"
     train_end_exclusive: str = "2026-01-01"
@@ -41,35 +41,30 @@ class LoaderConfig:
     prefetch_batches: int = 4
     max_threads_per_query: int = 4
     max_memory_usage: str = "16G"
-    max_chunks: int = 2
-    embedding_dim: int = 1024
+    word_vocab_size: int = 65_536
+    char_vocab_size: int = 65_536
     horizons: tuple[str, ...] = HORIZONS
 
 
 @dataclass(slots=True)
 class FeatureConfig:
-    word_max_features: int = 65_536
-    char_max_features: int = 65_536
-    output_dim: int = 1024
+    word_vocab_size: int = 65_536
+    char_vocab_size: int = 65_536
+    hash_buckets: int = 1_048_576
     word_ngram_min: int = 1
     word_ngram_max: int = 2
     char_ngram_min: int = 3
     char_ngram_max: int = 5
     min_df: int = 3
-    max_df: float = 0.995
     max_text_chars: int = 12_000
     char_text_chars: int = 3_000
-    svd_iterations: int = 3
-    random_seed: int = 17
-    fit_query_batch_articles: int = 4096
+    fit_query_batch_articles: int = 512
 
 
 @dataclass(slots=True)
 class ModelConfig:
-    # Kept identical to V4. Each lexical channel is reduced to one 1,024-value
-    # vector, preserving the exact [B, 2, 1024] V4 input/head contract.
-    embedding_dim: int = 1024
-    max_chunks: int = 2
+    word_vocab_size: int = 65_536
+    char_vocab_size: int = 65_536
     d_model: int = 384
     hidden_dim: int = 384
     layers: int = 4
