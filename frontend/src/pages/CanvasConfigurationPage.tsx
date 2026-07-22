@@ -34,8 +34,9 @@ import { AllSecContainer, SecDetailContainer, TickerSecContainer } from "../app/
 import { MarketTime } from "../app/components/MarketTime";
 import { MarketStatusBadge, historicalMarketStatus } from "../app/components/MarketStatusBadge";
 import { QuotesTapeContainer } from "../app/components/MarketMicrostructureContainers";
-import { MarketScannerContainer, SignalStreamContainer, WatchlistContainer, type MarketScannerSettings, type SignalStreamSettings, type WatchlistSettings } from "../app/components/MarketScreenerContainers";
+import { MarketScannerContainer, SignalStreamContainer, WatchlistContainer, type MarketScannerSettings, type ScannerSnapshotMeta, type SignalStreamSettings, type WatchlistSettings } from "../app/components/MarketScreenerContainers";
 import { StockFactsContainer } from "../app/components/StockFactsContainer";
+import { XbrlAnalysisContainer, type XbrlAnalysisSettings } from "../app/components/XbrlAnalysisContainer";
 import { TickerIdentity, TickerIdentityWithChange, useTickerPresentations } from "../app/components/TickerIdentity";
 import { TRADING_WORKSPACE_LAYOUT_VERSION, TradingWorkspace, createFocusLayouts } from "../app/components/TradingWorkspace";
 import type { WorkspaceWindowLayout, WorkspaceWindowMeta, WorkspaceWindowStatus } from "../app/components/WorkspaceCanvas";
@@ -142,10 +143,18 @@ type CanvasPreview = {
   orders: PreviewRow[];
   portfolio: { account: PreviewRow; positions: PreviewRow[]; summary: PreviewRow };
   scanner: PreviewRow[];
+  scanner_meta?: ScannerSnapshotMeta;
   sec: PreviewRow[];
   strategy: { automatic: boolean; revision: number; signals: PreviewRow[]; state: string; strategy_id: string };
   trading: CanonicalTradingPreview;
   xbrl: PreviewRow[];
+};
+
+type CanvasScannerSnapshot = {
+  as_of: string;
+  errors: Record<string, string>;
+  meta: ScannerSnapshotMeta;
+  rows: Record<string, unknown>[];
 };
 type CanvasContext = { coverage: { event_count: number; session_date: string | null; ticker_count: number }; preview_time: string; session_date: string | null };
 type QmdLiveBar = HistoricalBar & { session_date?: string };
@@ -194,14 +203,13 @@ type CanvasLiveChartState = {
 };
 
 type ContainerSettings = {
-  version: 12;
+  version: 13;
   chart: { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
   microstructure: { limit: number };
   fills: { limit: number; showCommission: boolean };
   positions: { limit: number; showPnl: boolean };
   closed_trades: { limit: number; showFees: boolean };
   activity: { limit: number };
-  journal: { limit: number };
   performance_journal: { limit: number; showRiskMultiple: boolean };
   news: { content: string; kind: string; lookbackHours: number; ticker: string };
   ticker_news: { lookbackHours: number; showTeaser: boolean };
@@ -215,7 +223,7 @@ type ContainerSettings = {
   ticker_sec: { lookbackHours: number };
   sec_detail: Record<string, never>;
   strategy: { showSignals: boolean };
-  xbrl: { limit: number; showPeriod: boolean };
+  xbrl: XbrlAnalysisSettings;
 };
 
 type CanvasPreviewContext = { previewTime: string; sessionDate: string };
@@ -224,14 +232,13 @@ type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; tit
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const MANAGER_DEFAULT_CONTAINER_IDS: WorkspaceContainerId[] = ["scanner", "chart", "portfolio", "positions", "orders"];
 const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 12,
+  version: 13,
   chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.microstructure_outlook"] },
   microstructure: { limit: 1024 },
   fills: { limit: 5, showCommission: true },
   positions: { limit: 20, showPnl: true },
   closed_trades: { limit: 20, showFees: true },
   activity: { limit: 30 },
-  journal: { limit: 6 },
   performance_journal: { limit: 100, showRiskMultiple: true },
   news: { content: "all", kind: "all", lookbackHours: 6, ticker: "" },
   ticker_news: { lookbackHours: 72, showTeaser: true },
@@ -245,7 +252,7 @@ const DEFAULT_SETTINGS: ContainerSettings = {
   ticker_sec: { lookbackHours: 720 },
   sec_detail: {},
   strategy: { showSignals: true },
-  xbrl: { limit: 6, showPeriod: true },
+  xbrl: { metricLimit: 8, showRawTags: true },
 };
 
 const HISTORICAL_TIMEFRAMES: CanvasChartTimeframe[] = ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h", "1d", "1mo"];
@@ -1127,6 +1134,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
   const [registry, setRegistry] = useState<CanvasRegistry>(readCanvasRegistry);
   const [previewContext, setPreviewContext] = useState<CanvasPreviewContext>(readPreviewContext);
   const [preview, setPreview] = useState<CanvasPreview | null>(null);
+  const [scannerSnapshot, setScannerSnapshot] = useState<CanvasScannerSnapshot | null>(null);
   const [contextReady, setContextReady] = useState(false);
   const [contextError, setContextError] = useState("");
   const [workspaceState, setWorkspaceState] = useState<CanvasWorkspaceState | null>(initialCanvasState);
@@ -1140,8 +1148,9 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
   const currentCanvas = registry.canvases.find((canvas) => canvas.id === canvasId) ?? { id: canvasId, label: canvasId === MAIN_CANVAS_ID ? "Main" : "Focus canvas" };
   const primaryChartId = (workspaceState?.openIds ?? []).find((id) => workspaceContainerKind(id, workspaceState) === "chart") ?? "chart";
   const primarySettings = instanceSettings(registry, primaryChartId);
-  const dedicatedContainers = new Set<WorkspaceContainerId>(["chart", "facts", "microstructure", "news", "ticker_news", "news_detail", "sec", "ticker_sec", "sec_detail"]);
+  const dedicatedContainers = new Set<WorkspaceContainerId>(["chart", "facts", "microstructure", "news", "ticker_news", "news_detail", "sec", "ticker_sec", "sec_detail", "xbrl", "scanner", "watchlist"]);
   const previewContainerKey = (workspaceState?.openIds ?? []).filter((id) => !dedicatedContainers.has(workspaceContainerKind(id, workspaceState))).sort().join(",");
+  const scannerContainerKey = (workspaceState?.openIds ?? []).filter((id) => ["scanner", "signal_stream", "watchlist"].includes(workspaceContainerKind(id, workspaceState))).sort().join(",");
   const activeLinkGroup = registry.linkAssignments[primaryChartId] ?? "none";
   const activeSymbol = activeLinkGroup === "none" ? primarySettings.chart.symbol : registry.linkContexts[activeLinkGroup].symbol;
   const chartCutoffMs = useMemo(() => dateInTimeZone(previewContext.sessionDate, previewContext.previewTime, "America/New_York").getTime(), [previewContext]);
@@ -1236,6 +1245,21 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [activeSymbol, contextError, contextReady, previewContainerKey, previewContext.previewTime, previewContext.sessionDate]);
+
+  useEffect(() => {
+    if (!contextReady || !scannerContainerKey) {
+      setScannerSnapshot(null);
+      return;
+    }
+    const controller = new AbortController();
+    const asOf = new Date(chartCutoffMs).toISOString();
+    api<CanvasScannerSnapshot>(`/api/trading/canvas-scanner${query({ as_of: asOf, lookback_minutes: 15 })}`, {
+      signal: controller.signal,
+      timeoutMs: 90000,
+    }).then((payload) => { if (!controller.signal.aborted) setScannerSnapshot(payload); })
+      .catch(() => { if (!controller.signal.aborted) setScannerSnapshot(null); });
+    return () => controller.abort();
+  }, [chartCutoffMs, contextReady, scannerContainerKey]);
 
   const metaForContainer = useMemo(() => (definition: WorkspaceContainerDefinition): WorkspaceWindowMeta => {
     if (definition.id === "chart") {
@@ -1485,6 +1509,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
               else if (patch.symbol) updateInstanceSettings(instanceId, (current) => ({ ...current, chart: { ...current.chart, symbol: patch.symbol!.trim().toUpperCase() } }));
             }}
             preview={preview}
+            scannerSnapshot={scannerSnapshot}
             previewContext={previewContext}
             requestedNewsId={requestedNewsId}
             requestedSecAccession={requestedSecAccession}
@@ -1541,7 +1566,7 @@ function CanvasManager({ onCreate, onOpen, onRemove, registry }: { onCreate: () 
 
 type SettingsUpdater = (update: ContainerSettings | ((current: ContainerSettings) => ContainerSettings)) => void;
 
-function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, linkContext, linkGroup, linkedContainers, linkOpen, loading, onLinkChange, onLinkContextChange, preview, previewContext, requestedNewsId, requestedSecAccession, requestedSecCik, settings, settingsOpen, symbolEditable, updateSettings }: {
+function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, linkContext, linkGroup, linkedContainers, linkOpen, loading, onLinkChange, onLinkContextChange, preview, previewContext, requestedNewsId, requestedSecAccession, requestedSecCik, scannerSnapshot, settings, settingsOpen, symbolEditable, updateSettings }: {
   canvasId: string;
   chartCutoffMs: number;
   definition: WorkspaceContainerDefinition;
@@ -1554,6 +1579,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
   onLinkChange: (group: CanvasLinkGroupId) => void;
   onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void;
   preview: CanvasPreview | null;
+  scannerSnapshot: CanvasScannerSnapshot | null;
   previewContext: CanvasPreviewContext;
   requestedNewsId?: string;
   requestedSecAccession?: string;
@@ -1586,13 +1612,13 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
       : definition.id === "sec_detail"
         ? <SecDetailContainer asOf={new Date(chartCutoffMs).toISOString()} canvasId={canvasId} requestedAccession={requestedSecAccession} requestedCik={requestedSecCik} />
       : definition.id === "xbrl"
-        ? <XbrlPreview asOf={new Date(chartCutoffMs).toISOString()} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} rows={preview?.xbrl ?? []} settings={settings.xbrl} symbol={linkContext.symbol} />
+        ? <XbrlAnalysisContainer asOf={new Date(chartCutoffMs).toISOString()} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} settings={settings.xbrl} symbol={linkContext.symbol} />
       : definition.id === "scanner"
-        ? <MarketScannerContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, scanner: { ...state.scanner, ...patch } }))} rows={preview?.scanner ?? []} settings={settings.scanner} />
+        ? <MarketScannerContainer asOf={new Date(chartCutoffMs).toISOString()} meta={scannerSnapshot?.meta ?? preview?.scanner_meta} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, scanner: { ...state.scanner, ...patch } }))} rows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.scanner} />
       : definition.id === "signal_stream"
-        ? <SignalStreamContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, signal_stream: { ...state.signal_stream, ...patch } }))} scannerRows={preview?.scanner ?? []} settings={settings.signal_stream} strategySignals={preview?.strategy.signals ?? []} />
+        ? <SignalStreamContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, signal_stream: { ...state.signal_stream, ...patch } }))} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.signal_stream} strategySignals={preview?.strategy.signals ?? []} />
       : definition.id === "watchlist"
-        ? <WatchlistContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...patch } }))} scannerRows={preview?.scanner ?? []} settings={settings.watchlist} />
+        ? <WatchlistContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...patch } }))} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
       : loading && !preview
         ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div>
         : renderPreview(definition.id, preview, settings, linkGroup, onLinkContextChange)}</div>
@@ -1632,15 +1658,7 @@ function renderPreview(id: WorkspaceContainerId, preview: CanvasPreview | null, 
   if (id === "activity") return <ActivityPreview data={preview.trading} settings={settings.activity} />;
   if (id === "performance_journal") return <TradingJournalPreview data={preview.trading} settings={settings.performance_journal} />;
   if (id === "strategy") return <StrategyPreview data={preview.strategy} showSignals={settings.strategy.showSignals} />;
-  return <PreviewTable columns={["time", "category", "event", "detail"]} rows={preview.journal.slice(0, settings.journal.limit)} />;
-}
-
-function XbrlPreview({ asOf, onSymbolChange, rows, settings, symbol }: { asOf: string; onSymbolChange?: (symbol: string) => void; rows: PreviewRow[]; settings: ContainerSettings["xbrl"]; symbol: string }) {
-  const presentations = useTickerPresentations([symbol]);
-  return <section className="xbrl-preview" aria-label={`${symbol} XBRL facts`}>
-    <header><TickerIdentityWithChange asOf={asOf} inputAriaLabel="XBRL symbol" logoUrl={presentations[symbol]?.logo_url} onTickerChange={onSymbolChange} ticker={symbol} /><span>{rows.length ? `${rows.length} filing facts at this clock` : "No company facts in this window"}</span></header>
-    {rows.length ? <PreviewTable columns={settings.showPeriod ? ["filed_at_utc", "tag", "value", "unit_code", "fiscal_period"] : ["filed_at_utc", "tag", "value", "unit_code"]} rows={rows.slice(0, settings.limit)} /> : <EmptyState label={`No filing-linked XBRL facts for ${symbol} in this window`} />}
-  </section>;
+  return <EmptyState label="This diagnostic surface has no preview renderer." />;
 }
 
 type ChartContainerPreviewProps = {
@@ -2735,7 +2753,7 @@ function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, 
   if (id === "sec") return <><SelectField label="Lookback hours" onChange={(value) => patch({ lookbackHours: Number(value) })} options={["24", "72", "168", "720", "8760"]} value={String(current.lookbackHours)} /><SelectField label="Content" onChange={(value) => patch({ content: value })} options={["all", "readable", "xbrl"]} value={String(current.content)} /><div className="canvas-settings-note">Search, ticker, and filing labels are available in the container query bar. Results are constrained to the shared point-in-time clock.</div></>;
   if (id === "ticker_sec") return <><SelectField label="Lookback hours" onChange={(value) => patch({ lookbackHours: Number(value) })} options={["24", "72", "168", "720", "8760"]} value={String(current.lookbackHours)} /><div className="canvas-settings-note">Ticker follows the selected link color. Hot means accepted within four hours, cold within 24 hours, and old is older.</div></>;
   if (id === "sec_detail") return <div className="canvas-settings-note">This reader follows the most recently selected filing in this canvas.</div>;
-  if (id === "xbrl") return <><NumberField label="Last N facts" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showPeriod)} label="Show fiscal period" onChange={(value) => patch({ showPeriod: value })} /></>;
+  if (id === "xbrl") return <><NumberField label="Decision metrics" onChange={(value) => patch({ metricLimit: Math.max(3, Math.min(18, value)) })} value={Number(current.metricLimit)} /><CheckField checked={Boolean(current.showRawTags)} label="Show taxonomy tags" onChange={(value) => patch({ showRawTags: value })} /><div className="canvas-settings-note">The causal score, trajectory, and five financial facets always remain visible. This setting controls supporting decision metrics and audit detail.</div></>;
   return <NumberField label="Last N events" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} />;
 }
 
@@ -2772,7 +2790,6 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
     positions: { ...DEFAULT_SETTINGS.positions, ...(stored.positions ?? {}) },
     closed_trades: { ...DEFAULT_SETTINGS.closed_trades, ...(stored.closed_trades ?? {}) },
     activity: { ...DEFAULT_SETTINGS.activity, ...(stored.activity ?? {}) },
-    journal: { ...DEFAULT_SETTINGS.journal, ...(stored.journal ?? {}) },
     performance_journal: {
       ...DEFAULT_SETTINGS.performance_journal,
       ...(storedPerformance ?? {}),
@@ -2795,7 +2812,10 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
     ticker_sec: { ...DEFAULT_SETTINGS.ticker_sec, ...(stored.ticker_sec ?? {}) },
     sec_detail: {},
     strategy: { ...DEFAULT_SETTINGS.strategy, ...(stored.strategy ?? {}) },
-    xbrl: { ...DEFAULT_SETTINGS.xbrl, ...(stored.xbrl ?? {}) },
+    xbrl: {
+      metricLimit: Number((stored.xbrl as { metricLimit?: number; limit?: number } | undefined)?.metricLimit ?? (stored.xbrl as { limit?: number } | undefined)?.limit ?? DEFAULT_SETTINGS.xbrl.metricLimit),
+      showRawTags: Boolean((stored.xbrl as { showRawTags?: boolean; showPeriod?: boolean } | undefined)?.showRawTags ?? (stored.xbrl as { showPeriod?: boolean } | undefined)?.showPeriod ?? DEFAULT_SETTINGS.xbrl.showRawTags),
+    },
   };
 }
 

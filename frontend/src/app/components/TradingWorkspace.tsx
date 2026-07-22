@@ -16,7 +16,6 @@ import {
   ScanSearch,
   Star,
   Rows3,
-  ScrollText,
   Settings2,
   ShoppingCart,
   X,
@@ -940,8 +939,7 @@ function createGlobalLayouts(ids: string[], instances: Record<string, WorkspaceC
     sec: { h: 290, w: columnWidth, x: margin + columnWidth + gap, y: 1388 },
     ticker_sec: { h: 620, w: columnWidth, x: margin + columnWidth + gap, y: 1680 },
     sec_detail: { h: 700, w: columnWidth, x: margin + columnWidth + gap, y: 3024 },
-    xbrl: { h: 290, w: columnWidth, x: margin, y: 1360 },
-    journal: { h: 290, w: columnWidth, x: margin, y: 3024 },
+    xbrl: { h: 620, w: columnWidth, x: margin, y: 1360 },
   };
   return Object.fromEntries(ids.map((id, index) => {
     const kind = instanceKind(id, instances);
@@ -980,7 +978,7 @@ function createHistoricalLayouts(mode: TradingWorkspaceMode, ids: string[], inst
         portfolio: { h: 260, w: leftWidth, x: margin, y: 364 },
         orders: { h: 270, w: rightWidth, x: rightX, y: 84 },
         fills: { h: 260, w: rightWidth, x: rightX, y: 364 },
-        journal: { h: 290, w: width - margin * 2, x: margin, y: 634 },
+        performance_journal: { h: 560, w: width - margin * 2, x: margin, y: 634 },
       }
     : {
         scanner: { h: 330, w: leftWidth, x: margin, y: 84 },
@@ -1098,7 +1096,6 @@ function containerIcon(id: WorkspaceContainerId) {
     closed_trades: ListChecks,
     activity: Activity,
     performance_journal: BookOpenCheck,
-    journal: ScrollText,
     news: Newspaper,
     ticker_news: Newspaper,
     news_detail: FileSearch,

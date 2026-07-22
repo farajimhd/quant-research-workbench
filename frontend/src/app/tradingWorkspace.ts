@@ -21,8 +21,7 @@ export type WorkspaceContainerId =
   | "sec"
   | "ticker_sec"
   | "sec_detail"
-  | "xbrl"
-  | "journal";
+  | "xbrl";
 
 export type WorkspaceSourceLayer = {
   authority: string;
@@ -374,22 +373,13 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
   },
   {
     id: "xbrl",
-    title: "XBRL Facts",
-    groupedTitle: "XBRL facts",
-    description: "Company facts, periods, units, and filing provenance for the linked symbol at the workspace clock.",
+    title: "XBRL Financial Evidence",
+    groupedTitle: "XBRL evidence",
+    description: "Causal filing-by-filing financial scores, statement classes, derived signals, exact taxonomy facts, and accession provenance for the linked symbol.",
     linkScope: "single-symbol",
     modes: allModes,
     defaultOpen: {},
     sourceByMode: Object.fromEntries(allModes.map((mode) => [mode, historicalBinding("Point-in-time persisted XBRL facts", [xbrlHistory])])),
-  },
-  {
-    id: "journal",
-    title: "Run Journal",
-    groupedTitle: "Run journal",
-    description: "Ordered lifecycle, command, signal, broker, execution, snapshot, and checkpoint evidence.",
-    modes: allModes,
-    defaultOpen: { backtest_debug: true },
-    sourceByMode: Object.fromEntries(allModes.map((mode) => [mode, runtimeBinding("Durable run audit trail", [tradingJournal])])),
   },
 ];
 

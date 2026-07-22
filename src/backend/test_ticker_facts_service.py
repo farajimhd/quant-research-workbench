@@ -8,6 +8,7 @@ from src.backend.ticker_facts_service import (
     aggregate_daily_volume,
     aggregate_short_volume,
     analyze_fundamentals,
+    build_xbrl_analysis,
     build_health_timeline,
     company_country_code,
     daily_volume_history_points,
@@ -130,6 +131,22 @@ class TickerFactsServiceTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["free_cash_flow"], 120.0)
         self.assertAlmostEqual(metrics["current_ratio"], 2.0)
         self.assertGreater(analysis["coverage_percent"], 40.0)
+
+    def test_xbrl_analysis_is_causal_and_preserves_filing_classes(self) -> None:
+        earlier = self._fundamental_rows()
+        for row in earlier:
+            row["filed_at_utc"] = "2025-03-01T12:00:00Z"
+            row["accession_number"] = "early"
+        later = [
+            {**row, "value": float(row["value"]) * 1.2, "period_end_date": "2025-12-31", "filed_at_utc": "2026-03-01T12:00:00Z", "accession_number": "later"}
+            for row in earlier
+        ]
+        payload = build_xbrl_analysis(earlier + later, datetime(2026, 7, 1, tzinfo=UTC))
+        self.assertGreaterEqual(len(payload["timeline"]), 2)
+        self.assertEqual(payload["timeline"][0]["accession_numbers"], ["early"])
+        self.assertIn("later", payload["timeline"][-1]["accession_numbers"])
+        self.assertIn("Income statement", {item["label"] for item in payload["classes"]})
+        self.assertIn(payload["decision"]["tone"], {"positive", "negative", "neutral", "muted"})
 
     def test_total_debt_preserves_current_and_noncurrent_components(self) -> None:
         rows = [

@@ -60,6 +60,13 @@ Watchlists have a stable name and an owner kind of `user` or `strategy`. Canvas 
 
 ## Source and scale behavior
 
-QMD live scanner state is the live cross-sectional authority. Historical and replay screens require a causally materialized scanner snapshot for the selected market clock. The Canvas preview service may return a bounded representative set when no historical cross-sectional artifact exists; the UI labels the actual row count and does not imply missing rows are zero-valued securities. Production replay should materialize the same scanner schema once per bar clock rather than querying every ticker independently.
+QMD live scanner state is the live cross-sectional authority. Historical and replay screens use a causally materialized full-universe snapshot from `q_live.canvas_historical_scanner_v1`:
+
+1. The first request for a market clock performs one set-based aggregation over the compact SIP event partitions. It does not fan out into per-ticker requests.
+2. The result is stored by snapshot clock, lookback, schema version, and source revision.
+3. Later requests reuse the stored rows while the compact-event continuity revision is unchanged.
+4. A changed upstream revision causes a new snapshot revision to be written; older rows remain auditable.
+
+The dedicated `GET /api/trading/canvas-scanner` route makes the Scanner, Watchlist, and market-derived Signal Stream independent of the broad Canvas preview request. An unrelated QMD History coverage failure therefore cannot replace a valid persisted scanner snapshot with a six-symbol sample or an empty universe. News and SEC enrichments are attached in batch at the same clock and report their failures separately from market-state availability.
 
 News and SEC enrichment is batch-linked to ticker identity. Facts and scoring fields are catalogued once and should be batch-projected by their service authorities; the table must not issue per-row fact requests.

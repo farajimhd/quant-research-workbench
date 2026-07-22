@@ -16,10 +16,10 @@ from research.mlops.clickhouse import (
 )
 from src.backend.trading_runtime_service import (
     SUPPORTED_HISTORICAL_TIMEFRAMES,
-    historical_bar_chunk,
     historical_day_coverage,
 )
 from src.backend.canonical_trading_service import trading_state_payload
+from src.backend.historical_scanner_service import historical_scanner_snapshot
 from src.trading_runtime.domain import BrokerAccount, BrokerEventEnvelope, BrokerEventType, BrokerProvider, TradingMode
 from src.trading_runtime.ibkr_normalizer import normalize_account_values, normalize_execution, normalize_ledger, normalize_order, normalize_position_snapshot
 from src.trading_runtime.projector import TradingStateProjector
@@ -27,9 +27,6 @@ from src.trading_runtime.round_trips import derive_round_trip_trades
 
 
 NEW_YORK = ZoneInfo("America/New_York")
-SCANNER_SYMBOLS = ("AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META")
-
-
 def canvas_preview_payload(
     *,
     session_date: date,
@@ -44,24 +41,14 @@ def canvas_preview_payload(
     if chart_timeframe not in SUPPORTED_HISTORICAL_TIMEFRAMES:
         raise ValueError(f"chart_timeframe must be one of {', '.join(sorted(SUPPORTED_HISTORICAL_TIMEFRAMES))}")
 
-    offset_at_clock = max(0, int((as_of - as_of.replace(hour=4, minute=0)).total_seconds() // 60))
-    scanner_start = max(0, offset_at_clock - 15)
     cutoff = as_of.astimezone(UTC)
 
     jobs: dict[str, Callable[[], Any]] = {
         "coverage": lambda: historical_day_coverage(session_date),
         "news": lambda: _query_news(cutoff),
+        "scanner": lambda: historical_scanner_snapshot(as_of, lookback_minutes=15),
         "sec": lambda: _query_sec(cutoff),
-        "xbrl": lambda: _query_xbrl(cutoff, symbol),
     }
-    for scanner_symbol in SCANNER_SYMBOLS:
-        jobs[f"scanner:{scanner_symbol}"] = lambda ticker=scanner_symbol: historical_bar_chunk(
-            anchor_date=session_date,
-            ticker=ticker,
-            timeframe="1m",
-            offset_minutes=scanner_start,
-            window_minutes=min(15, max(1, offset_at_clock - scanner_start)),
-        )
 
     results: dict[str, Any] = {}
     errors: dict[str, str] = {}
@@ -77,11 +64,13 @@ def canvas_preview_payload(
     except Exception as exc:
         errors["sec_identity"] = str(exc)
 
-    scanner = [
-        row
-        for scanner_symbol in SCANNER_SYMBOLS
-        if (row := _scanner_row(scanner_symbol, results.get(f"scanner:{scanner_symbol}"))) is not None
-    ]
+    scanner_result = results.get("scanner")
+    scanner = scanner_result[0] if isinstance(scanner_result, tuple) else []
+    scanner_meta = scanner_result[1] if isinstance(scanner_result, tuple) else {
+        "complete_universe": False,
+        "row_count": 0,
+        "status": "unavailable",
+    }
     _enrich_scanner_intelligence(scanner, results.get("news", []), results.get("sec", []), as_of)
     scanner.sort(key=lambda row: (-abs(float(row.get("change_5m_pct") or 0)), str(row.get("symbol") or "")))
     for rank, row in enumerate(scanner, start=1):
@@ -108,10 +97,47 @@ def canvas_preview_payload(
         "portfolio": portfolio_fixture,
         "preview_kind": "point_in_time_configuration",
         "scanner": scanner,
+        "scanner_meta": scanner_meta,
         "sec": results.get("sec", []),
         "strategy": _strategy_fixture(as_of, symbol, reference_price),
         "trading": _canonical_trading_fixture(as_of, portfolio_fixture, order_fixture, fill_fixture),
-        "xbrl": results.get("xbrl", []),
+        "xbrl": [],
+    }
+
+
+def scanner_snapshot_payload(*, as_of: datetime, lookback_minutes: int = 15) -> dict[str, Any]:
+    """Return the causal cross-sectional scanner independently of other Canvas sources."""
+    cutoff = as_of.astimezone(UTC)
+    rows, meta = historical_scanner_snapshot(as_of, lookback_minutes=lookback_minutes)
+    errors: dict[str, str] = {}
+    news: list[dict[str, Any]] = []
+    sec: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {
+            "news": executor.submit(_query_news, cutoff),
+            "sec": executor.submit(_query_sec, cutoff),
+        }
+        for name, future in futures.items():
+            try:
+                if name == "news":
+                    news = future.result()
+                else:
+                    sec = future.result()
+            except Exception as exc:
+                errors[name] = str(exc)
+    try:
+        _attach_sec_tickers(sec)
+    except Exception as exc:
+        errors["sec_identity"] = str(exc)
+    _enrich_scanner_intelligence(rows, news, sec, as_of)
+    rows.sort(key=lambda row: (-abs(float(row.get("change_5m_pct") or 0)), str(row.get("symbol") or "")))
+    for rank, row in enumerate(rows, start=1):
+        row["rank"] = rank
+    return {
+        "as_of": as_of.isoformat(),
+        "errors": errors,
+        "meta": meta,
+        "rows": rows,
     }
 
 
@@ -252,58 +278,6 @@ def _attach_sec_tickers(rows: Any) -> None:
     for row in rows:
         if isinstance(row, dict):
             row["ticker"] = ticker_by_cik.get(str(row.get("cik") or ""), "")
-
-
-def _query_xbrl(cutoff: datetime, symbol: str) -> list[dict[str, Any]]:
-    # A symbol's latest periodic filing can be several months old; keep one annual
-    # cycle while still bounding the point-in-time preview query.
-    start = cutoff - timedelta(days=400)
-    ticker = sql_string(symbol)
-    return _clickhouse_rows(
-        f"""
-        SELECT cik, taxonomy, tag, unit_code, fiscal_year, fiscal_period, value, form_type, accession_number,
-            formatDateTime(filed_at_raw, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS filed_at_utc
-        FROM
-        (
-            SELECT cik, taxonomy, tag, unit_code, fiscal_year, fiscal_period, value, form_type, accession_number,
-                filed_at_utc AS filed_at_raw
-            FROM q_live.sec_xbrl_company_fact_v3 FINAL
-            WHERE filed_at_utc BETWEEN toDateTime64({_utc_sql(start)}, 3, 'UTC')
-                AND toDateTime64({_utc_sql(cutoff)}, 3, 'UTC')
-                AND cik IN
-                (
-                    SELECT DISTINCT cik
-                    FROM q_live.id_sec_market_bridge_v3 FINAL
-                    WHERE upper(ticker) = {ticker}
-                      AND (valid_from_date IS NULL OR valid_from_date <= toDate({_utc_sql(cutoff)}))
-                      AND (valid_to_date_exclusive IS NULL OR toDate({_utc_sql(cutoff)}) < valid_to_date_exclusive)
-                )
-            ORDER BY filed_at_utc DESC
-            LIMIT 30
-        )
-        ORDER BY filed_at_raw DESC
-        LIMIT 30
-        """
-    )
-
-
-def _scanner_row(symbol: str, payload: Any) -> dict[str, Any] | None:
-    if not isinstance(payload, dict) or not payload.get("bars"):
-        return None
-    bars = payload["bars"]
-    first, last = bars[0], bars[-1]
-    five_minute_start = bars[max(0, len(bars) - 5)]
-    first_open = float(first.get("open") or 0)
-    last_close = float(last.get("close") or 0)
-    return {
-        "symbol": symbol,
-        "last": last_close,
-        "change_pct": ((last_close / first_open) - 1) * 100 if first_open else 0,
-        "change_5m_pct": ((last_close / float(five_minute_start.get("open") or 0)) - 1) * 100 if float(five_minute_start.get("open") or 0) else 0,
-        "volume": sum(int(bar.get("volume") or 0) for bar in bars),
-        "trade_count": sum(int(bar.get("trade_count") or 0) for bar in bars),
-        "quote_count": sum(int(bar.get("quote_count") or 0) for bar in bars),
-    }
 
 
 def _enrich_scanner_intelligence(scanner: list[dict[str, Any]], news: Any, sec: Any, as_of: datetime) -> None:

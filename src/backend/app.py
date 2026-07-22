@@ -37,7 +37,7 @@ from src.backtest.jobs import cancel_backtest_job, get_backtest_status, list_bac
 from src.backtest.metrics import portfolio_pnl_breakdown
 from src.backtest.results import list_runs, read_run_metadata
 from src.backend.json_utils import json_safe, parse_csv_list
-from src.backend.canvas_preview_service import canvas_preview_payload
+from src.backend.canvas_preview_service import canvas_preview_payload, scanner_snapshot_payload
 from src.backend.canonical_trading_service import canonical_trading_state
 from src.backend.market_data_service import (
     apply_chart_volume_convergence_columns,
@@ -4767,6 +4767,19 @@ def trading_canvas_preview(payload: CanvasPreviewRequest) -> dict[str, Any]:
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/trading/canvas-scanner")
+def trading_canvas_scanner(
+    as_of: datetime,
+    lookback_minutes: int = Query(default=15, ge=1, le=120),
+) -> dict[str, Any]:
+    try:
+        return scanner_snapshot_payload(as_of=as_of, lookback_minutes=lookback_minutes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/api/trading/canvas-live-chart")

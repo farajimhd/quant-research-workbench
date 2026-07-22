@@ -99,6 +99,23 @@ FUNDAMENTAL_DESCRIPTIONS: dict[str, str] = {
     "Share repurchases": "Cash spent repurchasing common stock during the period.",
     "Repurchased shares": "Shares repurchased and retired during the period.",
 }
+FUNDAMENTAL_CLASS_BY_LABEL: dict[str, str] = {
+    "Revenue": "Income statement", "Gross profit": "Income statement", "Operating income": "Income statement",
+    "Net income": "Income statement", "Diluted EPS": "Income statement",
+    "Operating cash flow": "Cash flow", "Capital expenditure": "Cash flow", "Debt issued": "Cash flow",
+    "Debt repaid": "Cash flow", "Common-stock issuance": "Cash flow", "Share repurchases": "Cash flow",
+    "Cash": "Balance sheet", "Current assets": "Balance sheet", "Current liabilities": "Balance sheet",
+    "Accounts receivable": "Balance sheet", "Accounts payable": "Balance sheet", "Inventory": "Balance sheet",
+    "Assets": "Balance sheet", "Liabilities": "Balance sheet", "Stockholders' equity": "Balance sheet",
+    "Long-term debt": "Balance sheet", "Current debt": "Balance sheet", "Goodwill": "Balance sheet",
+    "Intangible assets": "Balance sheet", "Deferred revenue": "Balance sheet",
+    "Research & development": "Operating investment", "SG&A expense": "Operating investment",
+    "Stock-based compensation": "Capital & dilution", "Common shares outstanding": "Capital & dilution",
+    "Weighted average basic shares": "Capital & dilution", "Weighted average diluted shares": "Capital & dilution",
+    "SEC public float value": "Capital & dilution", "Dividends per share": "Capital & dilution",
+    "Repurchased shares": "Capital & dilution", "Interest expense": "Tax & financing",
+    "Income tax expense": "Tax & financing", "Effective tax rate": "Tax & financing",
+}
 SEC_INCORPORATION_COUNTRY_CODES = {
     # SEC EDGAR jurisdiction code used by foreign private issuers. Keep this
     # separate from ISO country codes and from the exchange/listing country.
@@ -191,6 +208,7 @@ def ticker_facts_payload(symbol: str, *, as_of: str | None = None, database: str
     short_shares = first_number(short_interest, "short_interest")
     fundamentals = select_fundamentals(results.get("fundamentals", []), cutoff)
     fundamental_analysis = analyze_fundamentals(results.get("fundamentals", []))
+    xbrl_analysis = build_xbrl_analysis(results.get("fundamentals", []), cutoff)
     identifiers = [
         {**row, "freshness": freshness_status(cutoff, row.get("last_seen_at_utc"))}
         for row in results.get("identifiers", [])
@@ -246,6 +264,7 @@ def ticker_facts_payload(symbol: str, *, as_of: str | None = None, database: str
         },
         "fundamentals": fundamentals,
         "fundamental_analysis": fundamental_analysis,
+        "xbrl_analysis": xbrl_analysis,
         "freshness": fact_freshness(
             cutoff=cutoff,
             borrow=borrow,
@@ -843,6 +862,81 @@ def analyze_fundamentals(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "tone": tone,
         "version": "sec_fundamental_strength_v1",
     }
+
+
+def build_xbrl_analysis(rows: list[dict[str, Any]], as_of: datetime) -> dict[str, Any]:
+    """Create a causal filing-by-filing financial evidence record for deep XBRL analysis."""
+    available = [row for row in rows if _fact_available_at(row) is not None and _fact_available_at(row) <= as_of]
+    current = analyze_fundamentals(available)
+    selected = select_fundamentals(available, as_of)
+    classes: dict[str, list[dict[str, Any]]] = {}
+    for row in selected:
+        class_name = FUNDAMENTAL_CLASS_BY_LABEL.get(str(row.get("label") or ""), "Other reported facts")
+        classes.setdefault(class_name, []).append(row)
+
+    filing_clocks = sorted({_fact_available_at(row) for row in available if _fact_available_at(row) is not None})
+    timeline: list[dict[str, Any]] = []
+    previous_signature: tuple[Any, ...] | None = None
+    for clock in filing_clocks:
+        prefix = [row for row in available if (_fact_available_at(row) or as_of) <= clock]
+        analysis = analyze_fundamentals(prefix)
+        signature = (
+            analysis.get("score"),
+            analysis.get("coverage_percent"),
+            tuple((facet.get("id"), facet.get("score")) for facet in analysis.get("facets", [])),
+        )
+        if signature == previous_signature:
+            continue
+        accessions = sorted({str(row.get("accession_number") or "") for row in prefix if _fact_available_at(row) == clock and row.get("accession_number")})
+        timeline.append({
+            "available_at": clock.isoformat(),
+            "accession_numbers": accessions,
+            "coverage_percent": analysis.get("coverage_percent"),
+            "facets": analysis.get("facets", []),
+            "label": analysis.get("label"),
+            "score": analysis.get("score"),
+            "tone": analysis.get("tone"),
+        })
+        previous_signature = signature
+    timeline = timeline[-32:]
+    scored = [point for point in timeline if point.get("score") is not None]
+    current_score = current.get("score")
+    previous_score = scored[-2].get("score") if len(scored) > 1 else None
+    delta = current_score - previous_score if current_score is not None and previous_score is not None else None
+    if current_score is None:
+        decision_label, decision_tone = "Insufficient filing evidence", "muted"
+    elif delta is not None and delta >= 5:
+        decision_label, decision_tone = "Financial evidence strengthening", "positive"
+    elif delta is not None and delta <= -5:
+        decision_label, decision_tone = "Financial evidence weakening", "negative"
+    else:
+        decision_label, decision_tone = "Financial evidence stable", "neutral"
+    return {
+        "classes": [{"id": name.lower().replace(" & ", "_").replace(" ", "_"), "label": name, "facts": facts} for name, facts in classes.items()],
+        "current": current,
+        "decision": {
+            "delta_from_previous": delta,
+            "label": decision_label,
+            "tone": decision_tone,
+            "scope": "Slow-moving SEC filing evidence; not a short-term price forecast.",
+        },
+        "latest_filing_at": max(filing_clocks).isoformat() if filing_clocks else None,
+        "timeline": timeline,
+        "version": "sec_xbrl_decision_evidence_v1",
+    }
+
+
+def _fact_available_at(row: dict[str, Any]) -> datetime | None:
+    raw = row.get("filed_at_utc") or row.get("recorded_at_utc")
+    if not raw:
+        return None
+    try:
+        value = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def fundamental_facet(facet_id: str, label: str, score: float | None, coverage: float) -> dict[str, Any]:

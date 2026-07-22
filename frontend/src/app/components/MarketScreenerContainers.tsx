@@ -5,6 +5,7 @@ import { MarketTime } from "./MarketTime";
 import { TickerIdentity, useTickerPresentations } from "./TickerIdentity";
 
 export type ScreenerRow = Record<string, unknown>;
+export type ScannerSnapshotMeta = { complete_universe?: boolean; lookback_minutes?: number; materialized?: boolean; row_count?: number; snapshot_at_utc?: string };
 export type MarketScannerSettings = { columns: string[]; limit: number; preset: string };
 export type SignalStreamSettings = { columns: string[]; limit: number; preset: string };
 export type WatchlistSettings = { columns: string[]; limit: number; ownerKind: "strategy" | "user"; ownerName: string; symbols: string[] };
@@ -72,7 +73,7 @@ const SIGNAL_PRESETS: Record<string, string[]> = {
 };
 const WATCHLIST_DEFAULT_COLUMNS = ["ticker", "last", "change_pct", "change_5m_pct", "volume", "live_news_recency", "sec_recency"];
 
-export function MarketScannerContainer({ asOf, onSettingsChange, rows, settings }: { asOf: string; onSettingsChange: (patch: Partial<MarketScannerSettings>) => void; rows: ScreenerRow[]; settings: MarketScannerSettings }) {
+export function MarketScannerContainer({ asOf, meta, onSettingsChange, rows, settings }: { asOf: string; meta?: ScannerSnapshotMeta; onSettingsChange: (patch: Partial<MarketScannerSettings>) => void; rows: ScreenerRow[]; settings: MarketScannerSettings }) {
   const normalizedRows = useMemo(() => normalizeScannerRows(rows), [rows]);
   return <MarketListSurface
     asOf={asOf}
@@ -85,7 +86,7 @@ export function MarketScannerContainer({ asOf, onSettingsChange, rows, settings 
     presets={Object.keys(SCANNER_PRESETS)}
     preset={settings.preset}
     rows={normalizedRows}
-    subtitle="Latest causal state across available scanner rows"
+    subtitle={meta?.complete_universe ? `Full historical universe · ${meta.lookback_minutes ?? 15}-minute causal window · persisted snapshot` : "Scanner universe unavailable or incomplete"}
     title="Scanner"
   />;
 }
