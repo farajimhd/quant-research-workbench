@@ -1,60 +1,83 @@
-# Canvas XBRL financial evidence
+# Canvas XBRL financial quality
 
 ## Objective
 
-The standalone XBRL container is a filing-evidence analysis surface, not a second raw-facts table and not a short-term price forecast. It answers three questions at the active point-in-time clock:
+The standalone XBRL container converts standardized facts from public SEC filings into an auditable, slow-moving view of operating quality. It answers:
 
-1. What did the issuer most recently report?
-2. Which financial dimensions are strong, mixed, or weak?
-3. Did the evidence improve or deteriorate when the latest filing became public?
+1. How strong is the currently reported financial evidence?
+2. Which categories explain that result?
+3. Which exact facts and periods entered each category?
+4. Is the evidence improving or deteriorating as new filings become public?
 
-Every result retains its taxonomy tag, period, filing availability time, and accession so a trader can audit the derived conclusion.
+It is not a valuation model, an earnings forecast, or a short-term trade-entry signal. Every state is point-in-time and retains the source taxonomy tag, reporting period, filing availability time, and accession.
 
-## Evidence classes
+## Closed-form score
 
-Canonical facts are grouped into decision-oriented classes:
+Every component is transformed to a bounded 0–100 score:
 
-| Class | Representative evidence | Decision use |
-| --- | --- | --- |
-| Income statement | Revenue, gross profit, operating income, net income, diluted EPS | Profitability and growth |
-| Cash flow | Operating cash flow, capital expenditure, free cash flow | Cash conversion and self-funding capacity |
-| Balance sheet | Cash, current assets and liabilities, debt, equity | Liquidity and balance-sheet resilience |
-| Operating investment | R&D and SG&A | Investment intensity and operating discipline |
-| Capital and dilution | Shares outstanding, basic and diluted weighted shares, stock compensation, issuance | Share-base pressure and capital discipline |
-| Tax and financing | Interest expense, taxes, debt issuance and repayment | Financing burden and tax context |
+```text
+higher-is-stronger = clamp((value - lower_bound) / (upper_bound - lower_bound) * 100)
+lower-is-stronger  = 100 - clamp((value - lower_bound) / (upper_bound - lower_bound) * 100)
+```
 
-## Derived analysis
+The category score is the weighted mean of available component scores. Missing evidence is not assigned a zero:
 
-The backend reuses the Stock Facts fundamental authority for aligned ratios and changes, then projects a deeper XBRL-specific analysis:
+```text
+category = sum(component_score * component_weight) / sum(available component weights)
+category_coverage = available component weight / configured component weight
+```
 
-- **Filing evidence score**: evidence-weighted composite on a 0–100 scale.
-- **Profitability**: margins and earnings evidence.
-- **Growth**: comparable revenue, earnings, and share-count changes.
-- **Cash quality**: operating cash generation, free cash flow, and cash conversion.
-- **Balance sheet**: working capital, current-ratio, leverage, cash, and debt evidence.
-- **Capital discipline**: dilution, issuance, weighted-share changes, and stock compensation.
+The overall score weights each category by both its configured importance and its evidence coverage:
 
-Coverage is explicit. Missing facts reduce evidence coverage; they are never converted to zero. The actionable metric cards show aligned ratios such as margins, return on assets/equity, working capital, and free cash flow rather than asking the user to compare raw dimensional values manually.
+```text
+overall = sum(category_score * category_weight * category_coverage)
+          / sum(category_weight * category_coverage)
+```
 
-## Causality and change through time
+A category score is withheld below 40% evidence coverage. The overall score is withheld below 50% coverage.
 
-The trajectory is rebuilt at each filing-availability timestamp. A historical state may use only facts public at that timestamp. A later filing can change the newest score, but it cannot repaint an earlier score. The latest decision label compares the newest causal state with the preceding scored filing:
+## Category definitions
 
-- strengthening: score increased materially;
-- weakening: score decreased materially;
-- stable: change stayed inside the materiality band;
-- insufficient: evidence coverage is too low for a responsible comparison.
+| Category | Composite weight | Components and normalization ranges |
+| --- | ---: | --- |
+| Profitability | 30% | Gross margin 20% (10–60%); operating margin 30% (-5–25%); net margin 30% (-5–20%); return on positive equity 20% (-10–30%) |
+| Growth | 20% | Comparable revenue growth 55% (-10–25%); comparable earnings growth 45% (-25–40%) |
+| Cash quality | 20% | Free-cash-flow margin 60% (-5–20%); operating-cash conversion 40% (0.5–1.5x) |
+| Balance sheet | 20% | Current ratio 40% (0.5–2x); inverse debt-to-positive-equity 35% (0–2x); interest coverage 25% (1–8x) |
+| Capital discipline | 10% | Inverse basic-share growth 60% (-2–8%); inverse diluted-share spread 40% (0–10%) |
 
-This design makes the result suitable for replay and strategy feature extraction. Strategies should persist the score, facet values, coverage, filing availability time, and analysis version used at the decision clock.
+The service returns each raw input, unit, bounds, direction, normalized score, component weight, weighted points, category weight, effective weight, contribution points, coverage, and formula. Strategies can consume this contract without reimplementing the formulas.
 
-## UI contract
+## Evidence classes and history
 
-- The headline score and filing-to-filing decision are the most salient elements.
-- A causal area chart shows the score only after each filing became public.
-- Facet cards expose score, label, and evidence coverage.
-- Derived metric cards explain calculation and period.
-- Class tabs keep the full reported evidence inspectable without flattening unrelated facts into one table.
-- Raw taxonomy tags and accession identifiers remain available for reconciliation.
-- The Guide explains interpretation, provenance, causality, and limitations in the same container.
+Canonical facts are grouped into income statement, cash flow, balance sheet, operating investment, capital and dilution, and tax and financing. Each reported-evidence card contains:
 
-The container uses `GET /api/trading/ticker-facts/{symbol}?as_of=...`; it does not depend on the broad Canvas preview request.
+- the latest comparable value and fiscal period;
+- the change from the previous comparable period;
+- up to 12 comparable causal observations for the gradient history chart;
+- a semantic change tone only when higher or lower has a defensible interpretation;
+- the filing date, taxonomy namespace and tag, accession, and directional rule.
+
+Context-dependent fields such as capital expenditure, inventory, receivables, goodwill, intangibles, R&D, and deferred revenue remain direction-neutral. Their increase is not inherently good or bad.
+
+## Causality
+
+The quality trajectory is rebuilt at every filing-availability timestamp. A historical state uses only facts that were public at that time. Later filings can alter the newest state but never repaint earlier category or overall scores. Users can select the overall series or any category in the same gradient area chart.
+
+The latest decision compares the newest causal composite with the preceding scored filing:
+
+- strengthening: at least +5 score points;
+- weakening: at most -5 score points;
+- stable: inside that materiality band;
+- insufficient: coverage does not support a score.
+
+## UI hierarchy
+
+- The header leads with overall quality, latest filing decision, and evidence clock.
+- Large category cards expose score, composite weight, coverage, and contribution.
+- Selecting a category reveals its closed-form inputs and normalization ranges.
+- Derived financial signals show aligned ratios and formulas.
+- Reported evidence uses readable metric cards with semantic change, gradient history, and expandable audit details.
+- The in-product Guide documents the objective, every formula and category, coverage rules, history, colors, audit fields, and limitations.
+
+The container reads `GET /api/trading/ticker-facts/{symbol}?as_of=...` and returns analysis contract `sec_xbrl_decision_evidence_v2` backed by `sec_fundamental_strength_v2`.

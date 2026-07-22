@@ -116,6 +116,18 @@ FUNDAMENTAL_CLASS_BY_LABEL: dict[str, str] = {
     "Repurchased shares": "Capital & dilution", "Interest expense": "Tax & financing",
     "Income tax expense": "Tax & financing", "Effective tax rate": "Tax & financing",
 }
+FUNDAMENTAL_CHANGE_DIRECTION: dict[str, str] = {
+    "Revenue": "higher_is_stronger", "Gross profit": "higher_is_stronger", "Operating income": "higher_is_stronger",
+    "Net income": "higher_is_stronger", "Diluted EPS": "higher_is_stronger", "Operating cash flow": "higher_is_stronger",
+    "Cash": "higher_is_stronger", "Current assets": "higher_is_stronger", "Stockholders' equity": "higher_is_stronger",
+    "Accounts receivable": "contextual", "Inventory": "contextual", "Assets": "contextual", "Deferred revenue": "contextual",
+    "Capital expenditure": "contextual", "Research & development": "contextual", "Goodwill": "contextual",
+    "Intangible assets": "contextual", "Effective tax rate": "contextual", "Dividends per share": "contextual",
+    "Current liabilities": "lower_is_stronger", "Liabilities": "lower_is_stronger", "Long-term debt": "lower_is_stronger",
+    "Current debt": "lower_is_stronger", "Interest expense": "lower_is_stronger", "SG&A expense": "lower_is_stronger",
+    "Stock-based compensation": "lower_is_stronger", "Common-stock issuance": "lower_is_stronger",
+    "Weighted average basic shares": "lower_is_stronger", "Weighted average diluted shares": "lower_is_stronger",
+}
 SEC_INCORPORATION_COUNTRY_CODES = {
     # SEC EDGAR jurisdiction code used by foreign private issuers. Keep this
     # separate from ISO country codes and from the exchange/listing country.
@@ -758,6 +770,50 @@ def select_fundamentals(rows: list[dict[str, Any]], as_of: datetime | None = Non
     return selected
 
 
+def select_fundamental_histories(rows: list[dict[str, Any]], as_of: datetime) -> list[dict[str, Any]]:
+    """Select one canonical XBRL metric per label while retaining comparable causal history."""
+    selected: list[dict[str, Any]] = []
+    for label, alternatives in FUNDAMENTAL_TAGS:
+        observations = comparable_facts(rows, alternatives)
+        if not observations:
+            continue
+        observations = sorted(observations, key=lambda row: (str(row.get("period_end_date") or ""), str(row.get("filed_at_utc") or row.get("recorded_at_utc") or "")))
+        history = [
+            {
+                "accession_number": row.get("accession_number"),
+                "filed_at_utc": row.get("filed_at_utc") or row.get("recorded_at_utc"),
+                "fiscal_period": row.get("fiscal_period"),
+                "period_end_date": row.get("period_end_date"),
+                "tag": row.get("tag"),
+                "taxonomy": row.get("taxonomy"),
+                "unit_code": row.get("unit_code"),
+                "value": row_value(row),
+            }
+            for row in observations[-12:]
+        ]
+        latest = observations[-1]
+        latest_value = row_value(latest)
+        previous_value = row_value(observations[-2]) if len(observations) > 1 else None
+        change_percent = ((latest_value - previous_value) / abs(previous_value) * 100.0) if latest_value is not None and previous_value not in (None, 0) else None
+        direction = FUNDAMENTAL_CHANGE_DIRECTION.get(label, "contextual")
+        if change_percent is None or direction == "contextual" or abs(change_percent) < 0.05:
+            change_tone = "neutral"
+        else:
+            favorable = change_percent > 0 if direction == "higher_is_stronger" else change_percent < 0
+            change_tone = "positive" if favorable else "negative"
+        selected.append({
+            "change_percent": change_percent,
+            "change_tone": change_tone,
+            "description": FUNDAMENTAL_DESCRIPTIONS.get(label, "SEC-reported XBRL observation; inspect the exact tag and period before comparison."),
+            "direction": direction,
+            "freshness": freshness_status(as_of, latest.get("filed_at_utc") or latest.get("recorded_at_utc")),
+            "history": history,
+            "label": label,
+            **latest,
+        })
+    return selected
+
+
 def analyze_fundamentals(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Build auditable financial-strength facets from aligned SEC observations."""
     revenue = comparable_facts(rows, FUNDAMENTAL_TAGS[0][1])
@@ -815,43 +871,50 @@ def analyze_fundamentals(rows: list[dict[str, Any]]) -> dict[str, Any]:
     ]
     metrics = [metric for metric in metrics if metric["value"] is not None]
 
-    profitability, profitability_coverage = weighted_available([
-        ("Gross margin", scaled(percent_ratio(gross_value, gross_revenue), 10, 60), 20),
-        ("Operating margin", scaled(percent_ratio(operating_value, operating_revenue), -5, 25), 30),
-        ("Net margin", scaled(percent_ratio(income_value, income_revenue), -5, 20), 30),
-        ("Return on equity", scaled(positive_denominator_percent(income_value, equity_value), -10, 30), 20),
-    ])
-    growth, growth_coverage = weighted_available([
-        ("Revenue growth", scaled(comparable_growth(revenue), -10, 25), 55),
-        ("Earnings growth", scaled(comparable_growth(net_income), -25, 40), 45),
-    ])
-    cash_quality, cash_coverage = weighted_available([
-        ("Free-cash-flow margin", scaled(percent_ratio(free_cash_flow, ocf_revenue), -5, 20), 60),
-        ("Cash conversion", scaled(safe_ratio(ocf_value, income_value), 0.5, 1.5), 40),
-    ])
-    balance, balance_coverage = weighted_available([
-        ("Current ratio", scaled(safe_ratio(current_assets_value, current_liabilities_value), 0.5, 2.0), 40),
-        ("Debt / equity", inverse_scaled(positive_denominator_ratio(debt_value, equity_value), 0.0, 2.0), 35),
-        ("Interest coverage", scaled(safe_ratio(operating_value, abs(interest_value) if interest_value is not None else None), 1.0, 8.0), 25),
-    ])
-    capital_discipline, capital_coverage = weighted_available([
-        ("Share growth", inverse_scaled(comparable_growth(basic_shares), -2.0, 8.0), 60),
-        ("Dilution spread", inverse_scaled(percent_ratio(diluted_value - basic_value if diluted_value is not None and basic_value is not None else None, basic_value), 0.0, 10.0), 40),
-    ])
+    profitability_components = [
+        score_component("gross_margin", "Gross margin", percent_ratio(gross_value, gross_revenue), "percent", 20, 10, 60),
+        score_component("operating_margin", "Operating margin", percent_ratio(operating_value, operating_revenue), "percent", 30, -5, 25),
+        score_component("net_margin", "Net margin", percent_ratio(income_value, income_revenue), "percent", 30, -5, 20),
+        score_component("return_on_equity", "Return on equity", positive_denominator_percent(income_value, equity_value), "percent", 20, -10, 30),
+    ]
+    growth_components = [
+        score_component("revenue_growth", "Revenue growth", comparable_growth(revenue), "percent", 55, -10, 25),
+        score_component("earnings_growth", "Earnings growth", comparable_growth(net_income), "percent", 45, -25, 40),
+    ]
+    cash_components = [
+        score_component("free_cash_flow_margin", "Free-cash-flow margin", percent_ratio(free_cash_flow, ocf_revenue), "percent", 60, -5, 20),
+        score_component("cash_conversion", "Cash conversion", safe_ratio(ocf_value, income_value), "multiple", 40, 0.5, 1.5),
+    ]
+    balance_components = [
+        score_component("current_ratio", "Current ratio", safe_ratio(current_assets_value, current_liabilities_value), "multiple", 40, 0.5, 2.0),
+        score_component("debt_to_equity", "Debt / equity", positive_denominator_ratio(debt_value, equity_value), "multiple", 35, 0.0, 2.0, inverse=True),
+        score_component("interest_coverage", "Interest coverage", safe_ratio(operating_value, abs(interest_value) if interest_value is not None else None), "multiple", 25, 1.0, 8.0),
+    ]
+    capital_components = [
+        score_component("share_growth", "Share growth", comparable_growth(basic_shares), "percent", 60, -2.0, 8.0, inverse=True),
+        score_component("dilution", "Dilution spread", percent_ratio(diluted_value - basic_value if diluted_value is not None and basic_value is not None else None, basic_value), "percent", 40, 0.0, 10.0, inverse=True),
+    ]
+    profitability, profitability_coverage = score_components(profitability_components)
+    growth, growth_coverage = score_components(growth_components)
+    cash_quality, cash_coverage = score_components(cash_components)
+    balance, balance_coverage = score_components(balance_components)
+    capital_discipline, capital_coverage = score_components(capital_components)
     facets = [
-        fundamental_facet("profitability", "Profitability", profitability, profitability_coverage),
-        fundamental_facet("growth", "Growth", growth, growth_coverage),
-        fundamental_facet("cash_quality", "Cash quality", cash_quality, cash_coverage),
-        fundamental_facet("balance_sheet", "Balance sheet", balance, balance_coverage),
-        fundamental_facet("capital_discipline", "Capital discipline", capital_discipline, capital_coverage),
+        fundamental_facet("profitability", "Profitability", profitability, profitability_coverage, 30, profitability_components),
+        fundamental_facet("growth", "Growth", growth, growth_coverage, 20, growth_components),
+        fundamental_facet("cash_quality", "Cash quality", cash_quality, cash_coverage, 20, cash_components),
+        fundamental_facet("balance_sheet", "Balance sheet", balance, balance_coverage, 20, balance_components),
+        fundamental_facet("capital_discipline", "Capital discipline", capital_discipline, capital_coverage, 10, capital_components),
     ]
     overall, coverage = weighted_facets([
-        ("Profitability", profitability, profitability_coverage, 30),
-        ("Growth", growth, growth_coverage, 20),
-        ("Cash quality", cash_quality, cash_coverage, 20),
-        ("Balance sheet", balance, balance_coverage, 20),
-        ("Capital discipline", capital_discipline, capital_coverage, 10),
+        (facet["label"], facet.get("score"), facet["coverage_percent"], facet["overall_weight"])
+        for facet in facets
     ])
+    effective_total = sum(facet["overall_weight"] * facet["coverage_percent"] / 100.0 for facet in facets if facet.get("score") is not None)
+    for facet in facets:
+        effective_weight = facet["overall_weight"] * facet["coverage_percent"] / 100.0 if facet.get("score") is not None else 0.0
+        facet["effective_weight"] = effective_weight
+        facet["contribution_points"] = (facet["score"] * effective_weight / effective_total) if effective_total and facet.get("score") is not None else None
     label, tone = strength_label(overall, coverage)
     return {
         "coverage_percent": coverage,
@@ -860,7 +923,8 @@ def analyze_fundamentals(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "metrics": metrics,
         "score": overall if coverage >= 50 else None,
         "tone": tone,
-        "version": "sec_fundamental_strength_v1",
+        "formula": "sum(category_score * category_weight * category_coverage) / sum(category_weight * category_coverage)",
+        "version": "sec_fundamental_strength_v2",
     }
 
 
@@ -868,7 +932,7 @@ def build_xbrl_analysis(rows: list[dict[str, Any]], as_of: datetime) -> dict[str
     """Create a causal filing-by-filing financial evidence record for deep XBRL analysis."""
     available = [row for row in rows if _fact_available_at(row) is not None and _fact_available_at(row) <= as_of]
     current = analyze_fundamentals(available)
-    selected = select_fundamentals(available, as_of)
+    selected = select_fundamental_histories(available, as_of)
     classes: dict[str, list[dict[str, Any]]] = {}
     for row in selected:
         class_name = FUNDAMENTAL_CLASS_BY_LABEL.get(str(row.get("label") or ""), "Other reported facts")
@@ -922,7 +986,8 @@ def build_xbrl_analysis(rows: list[dict[str, Any]], as_of: datetime) -> dict[str
         },
         "latest_filing_at": max(filing_clocks).isoformat() if filing_clocks else None,
         "timeline": timeline,
-        "version": "sec_xbrl_decision_evidence_v1",
+        "formula": current.get("formula"),
+        "version": "sec_xbrl_decision_evidence_v2",
     }
 
 
@@ -939,9 +1004,64 @@ def _fact_available_at(row: dict[str, Any]) -> datetime | None:
     return value.astimezone(UTC)
 
 
-def fundamental_facet(facet_id: str, label: str, score: float | None, coverage: float) -> dict[str, Any]:
+def score_component(
+    component_id: str,
+    label: str,
+    value: float | None,
+    unit: str,
+    weight: float,
+    lower_bound: float,
+    upper_bound: float,
+    *,
+    inverse: bool = False,
+) -> dict[str, Any]:
+    normalized = inverse_scaled(value, lower_bound, upper_bound) if inverse else scaled(value, lower_bound, upper_bound)
+    direction = "lower_is_stronger" if inverse else "higher_is_stronger"
+    operator = "100 - clamp" if inverse else "clamp"
+    return {
+        "direction": direction,
+        "formula": f"{operator}((value - {lower_bound:g}) / ({upper_bound:g} - {lower_bound:g}) * 100)",
+        "id": component_id,
+        "label": label,
+        "lower_bound": lower_bound,
+        "normalized_score": normalized,
+        "unit": unit,
+        "upper_bound": upper_bound,
+        "value": value,
+        "weight": weight,
+        "weighted_points": normalized * weight / 100.0 if normalized is not None else None,
+    }
+
+
+def score_components(components: list[dict[str, Any]]) -> tuple[float | None, float]:
+    return weighted_available([
+        (str(component["label"]), component.get("normalized_score"), float(component["weight"]))
+        for component in components
+    ])
+
+
+def fundamental_facet(
+    facet_id: str,
+    label: str,
+    score: float | None,
+    coverage: float,
+    overall_weight: float,
+    components: list[dict[str, Any]],
+) -> dict[str, Any]:
     strength, tone = strength_label(score, coverage)
-    return {"id": facet_id, "label": label, "score": score if coverage >= 40 else None, "coverage_percent": coverage, "strength": strength, "tone": tone}
+    available_weight = sum(float(component["weight"]) for component in components if component.get("normalized_score") is not None)
+    return {
+        "available_component_weight": available_weight,
+        "components": components,
+        "coverage_percent": coverage,
+        "formula": "sum(component_score * component_weight) / sum(available component weights)",
+        "id": facet_id,
+        "label": label,
+        "overall_weight": overall_weight,
+        "score": score if coverage >= 40 else None,
+        "strength": strength,
+        "tone": tone,
+    }
 
 
 def strength_label(score: float | None, coverage: float) -> tuple[str, str]:

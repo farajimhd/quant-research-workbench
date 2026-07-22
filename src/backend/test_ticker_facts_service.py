@@ -147,6 +147,25 @@ class TickerFactsServiceTest(unittest.TestCase):
         self.assertIn("later", payload["timeline"][-1]["accession_numbers"])
         self.assertIn("Income statement", {item["label"] for item in payload["classes"]})
         self.assertIn(payload["decision"]["tone"], {"positive", "negative", "neutral", "muted"})
+        self.assertEqual(payload["version"], "sec_xbrl_decision_evidence_v2")
+        profitability = next(facet for facet in payload["current"]["facets"] if facet["id"] == "profitability")
+        self.assertEqual(profitability["overall_weight"], 30)
+        self.assertEqual({component["id"] for component in profitability["components"]}, {"gross_margin", "operating_margin", "net_margin", "return_on_equity"})
+        self.assertTrue(all("formula" in component and "weight" in component for component in profitability["components"]))
+        revenue = next(fact for item in payload["classes"] for fact in item["facts"] if fact["label"] == "Revenue")
+        self.assertGreaterEqual(len(revenue["history"]), 2)
+        self.assertEqual([point["period_end_date"] for point in revenue["history"]], sorted(point["period_end_date"] for point in revenue["history"]))
+
+    def test_xbrl_reported_evidence_retains_comparable_history_and_change_tone(self) -> None:
+        rows = [
+            {"tag": "Revenues", "value": 100.0, "period_end_date": "2024-12-31", "fiscal_period": "FY", "form_type": "10-K", "filed_at_utc": "2025-02-01T12:00:00Z"},
+            {"tag": "Revenues", "value": 120.0, "period_end_date": "2025-12-31", "fiscal_period": "FY", "form_type": "10-K", "filed_at_utc": "2026-02-01T12:00:00Z"},
+        ]
+        payload = build_xbrl_analysis(rows, datetime(2026, 3, 1, tzinfo=UTC))
+        revenue = payload["classes"][0]["facts"][0]
+        self.assertEqual([point["period_end_date"] for point in revenue["history"]], ["2024-12-31", "2025-12-31"])
+        self.assertAlmostEqual(revenue["change_percent"], 20.0)
+        self.assertEqual(revenue["change_tone"], "positive")
 
     def test_total_debt_preserves_current_and_noncurrent_components(self) -> None:
         rows = [
