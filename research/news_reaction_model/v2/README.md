@@ -139,6 +139,24 @@ fixed-notional proxy. It is not a portfolio backtest because overlapping news
 positions, capital constraints, fill sequencing, and market impact are not
 reconciled.
 
+To compare deterministic v2.1, embedding classifier v1, and regression v2 on
+the exact same validation rows, run:
+
+```powershell
+python -m research.news_reaction_model.v2.run_compare_evaluation
+```
+
+The comparison identity is news ID, ticker, publication timestamp, and horizon.
+It uses one share per non-flat model decision and reports long count/P&L, short
+count/P&L, flat count, and total gross P&L by horizon and across all independent
+horizons. V1 uses its negative/neutral/positive class-head argmax. V2 uses the
+configured training-scale flat band. Deterministic predictions use their
+persisted class; an unavailable deterministic prediction is explicitly counted
+as flat and its missing count is retained in the JSON. The launcher writes both
+`model_comparison_one_share.json` and a companion CSV table. These figures are
+descriptive signal ledgers, not an executable portfolio simulation or evidence
+that simultaneous horizon positions can all be traded independently.
+
 ## Inspection
 
 - `plot_model_diagram.ipynb` regenerates architecture artifacts.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import tempfile
 import unittest
+from argparse import Namespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,6 +18,14 @@ from research.news_reaction_model.v2.inference import forecast_rows
 from research.news_reaction_model.v2.metrics import PositionPnlAccumulator, RegressionAccumulator
 from research.news_reaction_model.v2.model import NewsReactionModelV2
 from research.news_reaction_model.v2.evaluate import evaluation_batch_sql, rows_to_evaluation_batch
+from research.news_reaction_model.v2.compare_evaluation import (
+    add as add_comparison,
+    deterministic_sql,
+    empty_metrics,
+    key as comparison_key,
+    total_metrics,
+    write_comparison_csv,
+)
 from research.news_reaction_model.v2.profile_sizes import load_real_sample, main as profile_main
 from research.news_reaction_model.v2.train import SampleCosineRestartScheduler, checkpoint_payload, maybe_compile, restore
 from research.news_reaction_model.v2.prepare_data import (
@@ -30,6 +39,44 @@ from research.news_reaction_model.v2.prepare_data import (
 
 
 class NewsReactionModelV2Tests(unittest.TestCase):
+    def test_comparison_uses_exact_one_share_pnl_and_bounded_deterministic_query(self) -> None:
+        metrics = empty_metrics()
+        add_comparison(metrics, 1, 100.0, 102.5)
+        add_comparison(metrics, -1, 50.0, 47.0)
+        add_comparison(metrics, 0, 10.0, 20.0)
+        self.assertEqual(metrics, {
+            "long": 1, "short": 1, "flat": 1,
+            "long_one_share_pnl": 2.5, "short_one_share_pnl": 3.0, "one_share_pnl": 5.5,
+        })
+        totals = total_metrics({"1m": metrics, "5m": metrics})
+        self.assertEqual(totals["long_one_share_pnl"], 5.0)
+        self.assertEqual(totals["short_one_share_pnl"], 6.0)
+        self.assertEqual(totals["one_share_pnl"], 11.0)
+        sql = deterministic_sql(Namespace(
+            deterministic_database="q_live", deterministic_table="news_reaction_predictions_v2",
+            deterministic_version="news_reaction_probability_v2_1",
+            start="2026-01-01", end_exclusive="2027-01-01",
+        ))
+        self.assertIn("toString(published_at_utc) AS published_at_utc_text", sql)
+        self.assertIn("prediction_version = 'news_reaction_probability_v2_1'", sql)
+        self.assertIn("published_at_utc >= toDateTime64('2026-01-01'", sql)
+        self.assertIn("published_at_utc < toDateTime64('2027-01-01'", sql)
+        self.assertEqual(
+            comparison_key("news-1", "AAPL", "2026-07-14T13:41:00.000000000Z", "1m"),
+            comparison_key("news-1", "AAPL", "2026-07-14 13:41:00", "1m"),
+        )
+        by_model = {
+            model: {horizon: metrics for horizon in HORIZONS}
+            for model in ("deterministic", "v1", "v2")
+        }
+        by_model_total = {model: total_metrics(values) for model, values in by_model.items()}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            table_path = Path(temp_dir) / "comparison.csv"
+            write_comparison_csv(table_path, by_model, by_model_total)
+            table = table_path.read_text(encoding="utf-8")
+        self.assertIn("long_one_share_pnl", table)
+        self.assertIn("deterministic,ALL_INDEPENDENT_HORIZONS", table)
+
     def test_chronological_split_defaults_are_locked(self) -> None:
         config = LoaderConfig()
         self.assertEqual((config.train_start, config.train_end_exclusive), ("2019-01-01", "2026-01-01"))
