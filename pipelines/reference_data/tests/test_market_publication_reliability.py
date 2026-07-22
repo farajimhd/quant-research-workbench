@@ -12,6 +12,7 @@ from pipelines.reference_data.market_publications_historical_gap_fill import (
     parse_sec_ftd_links,
 )
 from services.reference_gateway.publication_maintenance import run_recent_publication_gap_fill
+from services.reference_gateway.source_schedule import record_source_schedule
 from services.reference_gateway.state import coverage_status, latest_publication_coverage
 
 
@@ -88,6 +89,34 @@ class MarketPublicationReliabilityTests(unittest.TestCase):
         command = popen.call_args.args[0]
         self.assertTrue(result.attempted)
         self.assertEqual(command[command.index("--sec-ftd-link-mode") + 1], "html")
+
+    def test_source_schedule_checkpoint_retries_same_idempotent_insert(self) -> None:
+        class ResetOnceClient:
+            def __init__(self) -> None:
+                self.sql: list[str] = []
+
+            def execute(self, sql: str) -> str:
+                self.sql.append(sql)
+                if len(self.sql) == 1:
+                    raise ConnectionResetError(10054, "connection reset")
+                return ""
+
+        client = ResetOnceClient()
+        config = SimpleNamespace(clickhouse_write_database="q_live")
+        with patch("services.reference_gateway.source_schedule.time.sleep") as sleep:
+            record_source_schedule(
+                client,
+                config,
+                source_name="market_publication_gap_fill",
+                status="completed",
+                rows_written=186_755,
+                details={"windows": 36},
+                source_run_id="reference_publications_test",
+            )
+
+        self.assertEqual(len(client.sql), 2)
+        self.assertEqual(client.sql[0], client.sql[1])
+        sleep.assert_called_once_with(0.5)
 
 
 if __name__ == "__main__":

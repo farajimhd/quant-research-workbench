@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_string
 from services.reference_gateway.config import ReferenceGatewayConfig
-from services.reference_gateway.market_publications import mergetree_settings, table_exists
+from services.reference_gateway.market_publications import mergetree_settings
 
 
 SCHEDULE_TABLE = "market_reference_source_schedule_v1"
+SCHEDULE_QUERY_MAX_ATTEMPTS = 4
+SCHEDULE_QUERY_RETRY_BASE_SECONDS = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,9 +27,10 @@ class SourceScheduleDecision:
 
 
 def ensure_source_schedule_schema(client: ClickHouseHttpClient, *, database: str, storage_policy: str = "") -> None:
-    client.execute(f"CREATE DATABASE IF NOT EXISTS {quote_ident(database)}")
+    execute_schedule_query(client, f"CREATE DATABASE IF NOT EXISTS {quote_ident(database)}")
     settings = mergetree_settings(storage_policy)
-    client.execute(
+    execute_schedule_query(
+        client,
         f"""
 CREATE TABLE IF NOT EXISTS {table(database, SCHEDULE_TABLE)}
 (
@@ -61,7 +65,7 @@ def schedule_decision(
         return SourceScheduleDecision(source_name, True, "forced", "", "", max(0, int(frequency_seconds)))
     if frequency_seconds <= 0:
         return SourceScheduleDecision(source_name, True, "frequency_disabled", "", "", 0)
-    if not table_exists(client, config.clickhouse_write_database, SCHEDULE_TABLE):
+    if not schedule_table_exists(client, config.clickhouse_write_database):
         return SourceScheduleDecision(source_name, True, "schedule_table_missing", "", "", int(frequency_seconds))
     rows = query_json_each_row(
         client,
@@ -119,12 +123,36 @@ def record_source_schedule(
         "inserted_at": dt64(now),
     }
     body = json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str)
-    client.execute(f"INSERT INTO {table(config.clickhouse_write_database, SCHEDULE_TABLE)} FORMAT JSONEachRow\n{body}")
+    execute_schedule_query(
+        client,
+        f"INSERT INTO {table(config.clickhouse_write_database, SCHEDULE_TABLE)} FORMAT JSONEachRow\n{body}",
+    )
 
 
 def query_json_each_row(client: ClickHouseHttpClient, sql: str) -> list[dict[str, Any]]:
-    text = client.execute(sql.rstrip(";") + " FORMAT JSONEachRow").strip()
+    text = execute_schedule_query(client, sql.rstrip(";") + " FORMAT JSONEachRow").strip()
     return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def execute_schedule_query(client: ClickHouseHttpClient, sql: str) -> str:
+    """Retry schedule control-plane queries that are idempotent by contract."""
+    for attempt in range(1, SCHEDULE_QUERY_MAX_ATTEMPTS + 1):
+        try:
+            return client.execute(sql)
+        except (ConnectionError, TimeoutError, OSError):
+            if attempt >= SCHEDULE_QUERY_MAX_ATTEMPTS:
+                raise
+            time.sleep(SCHEDULE_QUERY_RETRY_BASE_SECONDS * (2 ** (attempt - 1)))
+    raise AssertionError("unreachable")
+
+
+def schedule_table_exists(client: ClickHouseHttpClient, database: str) -> bool:
+    value = execute_schedule_query(
+        client,
+        "SELECT count() FROM system.tables "
+        f"WHERE database = {sql_string(database)} AND name = {sql_string(SCHEDULE_TABLE)} FORMAT TSV",
+    ).strip()
+    return int(value or "0") > 0
 
 
 def parse_clickhouse_datetime(value: str) -> datetime | None:
