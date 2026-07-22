@@ -5,6 +5,8 @@ export type WorkspaceContainerId =
   | "facts"
   | "microstructure"
   | "scanner"
+  | "signal_stream"
+  | "watchlist"
   | "strategy"
   | "portfolio"
   | "positions"
@@ -205,6 +207,30 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
       backtest: runtimeBinding("Scanner decisions persisted by the backtest runtime", [qmdHistory, strategyRuntime]),
       backtest_debug: runtimeBinding("Scanner state at the debug event cursor", [qmdHistory, strategyRuntime]),
     },
+  },
+  {
+    id: "signal_stream",
+    title: "Signal Stream",
+    groupedTitle: "Signal stream",
+    description: "Newest-first reproducible market events and durable strategy-emitted signals with shared scanner context.",
+    modes: allModes,
+    defaultOpen: {},
+    sourceByMode: {
+      live: liveBinding("Live market rules plus durable strategy signals", [qmdLive, strategyRuntime]),
+      paper: liveBinding("Live market rules plus paper-strategy signals", [qmdLive, strategyRuntime]),
+      replay: runtimeBinding("Causal market events reconstructed at the replay clock plus persisted strategy signals", [qmdHistory, strategyRuntime]),
+      backtest: runtimeBinding("Market-derived and persisted strategy events at each backtest clock", [qmdHistory, strategyRuntime]),
+      backtest_debug: runtimeBinding("Market-derived and persisted strategy events at the debug cursor", [qmdHistory, strategyRuntime]),
+    },
+  },
+  {
+    id: "watchlist",
+    title: "Watchlist",
+    groupedTitle: "Watchlist",
+    description: "Owner-managed small symbol collection projected through the same current-state column catalog as Scanner.",
+    modes: allModes,
+    defaultOpen: {},
+    sourceByMode: Object.fromEntries(allModes.map((mode) => [mode, runtimeBinding("Persisted membership from its user or strategy owner; values projected from the active market clock", [mode === "live" || mode === "paper" ? qmdLive : qmdHistory, strategyRuntime])])),
   },
   {
     id: "strategy",

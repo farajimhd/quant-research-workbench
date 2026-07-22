@@ -4,7 +4,7 @@ import unittest
 from datetime import date
 from unittest.mock import patch
 
-from src.backend.canvas_preview_service import canvas_preview_payload
+from src.backend.canvas_preview_service import _attach_sec_tickers, canvas_preview_payload
 
 
 class CanvasPreviewServiceTests(unittest.TestCase):
@@ -27,13 +27,16 @@ class CanvasPreviewServiceTests(unittest.TestCase):
 
         self.assertEqual(payload["as_of"], "2026-07-10T09:45:00-04:00")
         self.assertEqual(payload["chart"]["symbol"], "AAPL")
-        self.assertEqual(payload["chart"]["bars"][-1]["bar_start"], "2026-07-10T13:44:00Z")
+        self.assertEqual(payload["chart"]["bars"], [])
         self.assertEqual(payload["coverage"]["event_count"], 1000)
         self.assertEqual(len(payload["scanner"]), 6)
+        self.assertAlmostEqual(payload["scanner"][0]["change_5m_pct"], 1.0)
+        self.assertEqual(payload["scanner"][0]["live_news_recency"], "none")
         self.assertTrue(payload["portfolio"]["fixture"])
         self.assertEqual(payload["orders"][0]["acctId"], "DU0000000")
-        chart_call = next(call for call in bars_mock.call_args_list if call.kwargs["ticker"] == "AAPL" and call.kwargs["window_minutes"] == 30)
-        self.assertEqual(chart_call.kwargs["offset_minutes"], 315)
+        scanner_call = next(call for call in bars_mock.call_args_list if call.kwargs["ticker"] == "AAPL")
+        self.assertEqual(scanner_call.kwargs["window_minutes"], 15)
+        self.assertEqual(scanner_call.kwargs["offset_minutes"], 330)
 
     def test_preview_rejects_invalid_clock(self) -> None:
         with self.assertRaisesRegex(ValueError, "preview_time"):
@@ -43,6 +46,17 @@ class CanvasPreviewServiceTests(unittest.TestCase):
                 chart_symbol="AAPL",
                 chart_timeframe="1m",
             )
+
+    @patch("src.backend.canvas_preview_service._clickhouse_rows", return_value=[{"cik": "0000320193", "mapped_ticker": "AAPL"}])
+    def test_sec_identity_batch_query_does_not_reuse_ticker_alias_in_where(self, clickhouse_mock) -> None:
+        rows = [{"cik": "0000320193", "form_type": "10-Q"}]
+
+        _attach_sec_tickers(rows)
+
+        self.assertEqual(rows[0]["ticker"], "AAPL")
+        query = clickhouse_mock.call_args.args[0]
+        self.assertIn("AS mapped_ticker", query)
+        self.assertIn("notEmpty(ticker)", query)
 
 
 if __name__ == "__main__":

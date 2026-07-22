@@ -34,6 +34,7 @@ import { AllSecContainer, SecDetailContainer, TickerSecContainer } from "../app/
 import { MarketTime } from "../app/components/MarketTime";
 import { MarketStatusBadge, historicalMarketStatus } from "../app/components/MarketStatusBadge";
 import { QuotesTapeContainer } from "../app/components/MarketMicrostructureContainers";
+import { MarketScannerContainer, SignalStreamContainer, WatchlistContainer, type MarketScannerSettings, type SignalStreamSettings, type WatchlistSettings } from "../app/components/MarketScreenerContainers";
 import { StockFactsContainer } from "../app/components/StockFactsContainer";
 import { TickerIdentity, TickerIdentityWithChange, useTickerPresentations } from "../app/components/TickerIdentity";
 import { TRADING_WORKSPACE_LAYOUT_VERSION, TradingWorkspace, createFocusLayouts } from "../app/components/TradingWorkspace";
@@ -193,7 +194,7 @@ type CanvasLiveChartState = {
 };
 
 type ContainerSettings = {
-  version: 11;
+  version: 12;
   chart: { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
   microstructure: { limit: number };
   fills: { limit: number; showCommission: boolean };
@@ -207,7 +208,9 @@ type ContainerSettings = {
   news_detail: Record<string, never>;
   orders: { limit: number; showOrderIds: boolean };
   portfolio: { showExposure: boolean; showPnl: boolean };
-  scanner: { limit: number; showActivity: boolean };
+  scanner: MarketScannerSettings;
+  signal_stream: SignalStreamSettings;
+  watchlist: WatchlistSettings;
   sec: { content: string; label: string; lookbackHours: number; ticker: string };
   ticker_sec: { lookbackHours: number };
   sec_detail: Record<string, never>;
@@ -221,7 +224,7 @@ type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; tit
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const MANAGER_DEFAULT_CONTAINER_IDS: WorkspaceContainerId[] = ["scanner", "chart", "portfolio", "positions", "orders"];
 const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 11,
+  version: 12,
   chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.microstructure_outlook"] },
   microstructure: { limit: 1024 },
   fills: { limit: 5, showCommission: true },
@@ -235,7 +238,9 @@ const DEFAULT_SETTINGS: ContainerSettings = {
   news_detail: {},
   orders: { limit: 6, showOrderIds: true },
   portfolio: { showExposure: true, showPnl: true },
-  scanner: { limit: 6, showActivity: true },
+  scanner: { columns: [], limit: 250, preset: "Overview" },
+  signal_stream: { columns: [], limit: 250, preset: "All" },
+  watchlist: { columns: [], limit: 50, ownerKind: "user", ownerName: "My watchlist", symbols: ["AAPL", "MSFT", "NVDA"] },
   sec: { content: "all", label: "", lookbackHours: 168, ticker: "" },
   ticker_sec: { lookbackHours: 720 },
   sec_detail: {},
@@ -1582,6 +1587,12 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
         ? <SecDetailContainer asOf={new Date(chartCutoffMs).toISOString()} canvasId={canvasId} requestedAccession={requestedSecAccession} requestedCik={requestedSecCik} />
       : definition.id === "xbrl"
         ? <XbrlPreview asOf={new Date(chartCutoffMs).toISOString()} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} rows={preview?.xbrl ?? []} settings={settings.xbrl} symbol={linkContext.symbol} />
+      : definition.id === "scanner"
+        ? <MarketScannerContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, scanner: { ...state.scanner, ...patch } }))} rows={preview?.scanner ?? []} settings={settings.scanner} />
+      : definition.id === "signal_stream"
+        ? <SignalStreamContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, signal_stream: { ...state.signal_stream, ...patch } }))} scannerRows={preview?.scanner ?? []} settings={settings.signal_stream} strategySignals={preview?.strategy.signals ?? []} />
+      : definition.id === "watchlist"
+        ? <WatchlistContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...patch } }))} scannerRows={preview?.scanner ?? []} settings={settings.watchlist} />
       : loading && !preview
         ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div>
         : renderPreview(definition.id, preview, settings, linkGroup, onLinkContextChange)}</div>
@@ -1613,7 +1624,6 @@ function LinkColorPicker({ containerTitle, onChange, value }: { containerTitle: 
 
 function renderPreview(id: WorkspaceContainerId, preview: CanvasPreview | null, settings: ContainerSettings, linkGroup: CanvasLinkGroupId, onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void) {
   if (!preview) return <EmptyState label="No preview data" />;
-  if (id === "scanner") return <PreviewTable columns={settings.scanner.showActivity ? ["symbol", "last", "change_pct", "volume", "trade_count"] : ["symbol", "last", "change_pct"]} onSymbolSelect={linkGroup === "none" ? undefined : (symbol) => onLinkContextChange({ symbol })} rows={preview.scanner.slice(0, settings.scanner.limit)} />;
   if (id === "portfolio") return <PortfolioPreview data={preview.trading} settings={settings.portfolio} />;
   if (id === "positions") return <PositionsPreview data={preview.trading} onSymbolSelect={linkGroup === "none" ? undefined : (symbol) => onLinkContextChange({ symbol })} settings={settings.positions} />;
   if (id === "orders") return <OrdersPreview data={preview.trading} onSymbolSelect={linkGroup === "none" ? undefined : (symbol) => onLinkContextChange({ symbol })} settings={settings.orders} />;
@@ -2710,7 +2720,9 @@ function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, 
   if (id === "chart") return <><TextField label="Symbol" onChange={(value) => { patch({ symbol: value.toUpperCase() }); onLinkContextChange({ symbol: value.toUpperCase() }); }} value={linkContext.symbol} /><SelectField label="Bar interval" onChange={(value) => patch({ timeframe: value as CanvasChartTimeframe })} optionLabel={formatChartTimeframe} options={HISTORICAL_TIMEFRAMES} value={settings.chart.timeframe} /><CheckField checked={Boolean(current.showVolume)} label="Show volume" onChange={(value) => patch({ showVolume: value })} /></>;
   if (id === "portfolio") return <><CheckField checked={Boolean(current.showExposure)} label="Show exposure" onChange={(value) => patch({ showExposure: value })} /><CheckField checked={Boolean(current.showPnl)} label="Show P&L" onChange={(value) => patch({ showPnl: value })} /></>;
   if (id === "strategy") return <CheckField checked={Boolean(current.showSignals)} label="Show recent signals" onChange={(value) => patch({ showSignals: value })} />;
-  if (id === "scanner") return <><NumberField label="Rows" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showActivity)} label="Show market activity" onChange={(value) => patch({ showActivity: value })} /></>;
+  if (id === "scanner") return <><NumberField label="Maximum rows" max={5000} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><div className="canvas-settings-note">Columns, sorting, and filters are managed inside Scanner and persist with this container instance.</div></>;
+  if (id === "signal_stream") return <><NumberField label="Maximum events" max={5000} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><div className="canvas-settings-note">Market rules are reconstructed from canonical data. Strategy events remain durable records owned by the strategy runtime.</div></>;
+  if (id === "watchlist") return <><TextField label="List name" onChange={(value) => patch({ ownerName: value })} value={String(current.ownerName)} /><SelectField label="Owner" onChange={(value) => patch({ ownerKind: value })} options={["user", "strategy"]} value={String(current.ownerKind)} /><NumberField label="Maximum rows" max={500} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><div className="canvas-settings-note">Membership follows its named owner. Market values remain a projection at the shared clock, not copied watchlist state.</div></>;
   if (id === "orders") return <><NumberField label="Rows" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showOrderIds)} label="Show order IDs" onChange={(value) => patch({ showOrderIds: value })} /></>;
   if (id === "fills") return <><NumberField label="Rows" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showCommission)} label="Show commission" onChange={(value) => patch({ showCommission: value })} /></>;
   if (id === "positions") return <><NumberField label="Rows" max={100} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showPnl)} label="Show P&L" onChange={(value) => patch({ showPnl: value })} /></>;
@@ -2771,7 +2783,14 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
     news_detail: {},
     orders: { ...DEFAULT_SETTINGS.orders, ...(stored.orders ?? {}) },
     portfolio: { ...DEFAULT_SETTINGS.portfolio, ...(stored.portfolio ?? {}) },
-    scanner: { ...DEFAULT_SETTINGS.scanner, ...(stored.scanner ?? {}) },
+    scanner: { ...DEFAULT_SETTINGS.scanner, ...(stored.scanner ?? {}), columns: Array.isArray(stored.scanner?.columns) ? stored.scanner.columns : [] },
+    signal_stream: { ...DEFAULT_SETTINGS.signal_stream, ...(stored.signal_stream ?? {}), columns: Array.isArray(stored.signal_stream?.columns) ? stored.signal_stream.columns : [] },
+    watchlist: {
+      ...DEFAULT_SETTINGS.watchlist,
+      ...(stored.watchlist ?? {}),
+      columns: Array.isArray(stored.watchlist?.columns) ? stored.watchlist.columns : [],
+      symbols: Array.isArray(stored.watchlist?.symbols) ? stored.watchlist.symbols.map((symbol) => String(symbol).trim().toUpperCase()).filter(Boolean) : [...DEFAULT_SETTINGS.watchlist.symbols],
+    },
     sec: { ...DEFAULT_SETTINGS.sec, ...(stored.sec ?? {}) },
     ticker_sec: { ...DEFAULT_SETTINGS.ticker_sec, ...(stored.ticker_sec ?? {}) },
     sec_detail: {},

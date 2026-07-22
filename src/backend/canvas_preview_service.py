@@ -72,12 +72,20 @@ def canvas_preview_payload(
                 results[name] = future.result()
             except Exception as exc:  # A failed context source must not blank unrelated containers.
                 errors[name] = str(exc)
+    try:
+        _attach_sec_tickers(results.get("sec", []))
+    except Exception as exc:
+        errors["sec_identity"] = str(exc)
 
     scanner = [
         row
         for scanner_symbol in SCANNER_SYMBOLS
         if (row := _scanner_row(scanner_symbol, results.get(f"scanner:{scanner_symbol}"))) is not None
     ]
+    _enrich_scanner_intelligence(scanner, results.get("news", []), results.get("sec", []), as_of)
+    scanner.sort(key=lambda row: (-abs(float(row.get("change_5m_pct") or 0)), str(row.get("symbol") or "")))
+    for rank, row in enumerate(scanner, start=1):
+        row["rank"] = rank
     reference_price = float(scanner[0].get("last", 100.0)) if scanner else 100.0
 
     portfolio_fixture = _portfolio_fixture(reference_price)
@@ -225,6 +233,27 @@ def _query_sec(cutoff: datetime) -> list[dict[str, Any]]:
     )
 
 
+def _attach_sec_tickers(rows: Any) -> None:
+    if not isinstance(rows, list):
+        return
+    ciks = sorted({str(row.get("cik") or "").strip() for row in rows if isinstance(row, dict) and row.get("cik")})
+    if not ciks:
+        return
+    values = ", ".join(sql_string(cik) for cik in ciks)
+    identities = _clickhouse_rows(
+        f"""
+        SELECT toString(cik) AS cik, argMax(upper(ticker), confidence_score) AS mapped_ticker
+        FROM q_live.id_sec_market_bridge_v3 FINAL
+        WHERE toString(cik) IN ({values}) AND notEmpty(ticker)
+        GROUP BY cik
+        """
+    )
+    ticker_by_cik = {str(row.get("cik") or ""): str(row.get("mapped_ticker") or "").upper() for row in identities}
+    for row in rows:
+        if isinstance(row, dict):
+            row["ticker"] = ticker_by_cik.get(str(row.get("cik") or ""), "")
+
+
 def _query_xbrl(cutoff: datetime, symbol: str) -> list[dict[str, Any]]:
     # A symbol's latest periodic filing can be several months old; keep one annual
     # cycle while still bounding the point-in-time preview query.
@@ -263,16 +292,69 @@ def _scanner_row(symbol: str, payload: Any) -> dict[str, Any] | None:
         return None
     bars = payload["bars"]
     first, last = bars[0], bars[-1]
+    five_minute_start = bars[max(0, len(bars) - 5)]
     first_open = float(first.get("open") or 0)
     last_close = float(last.get("close") or 0)
     return {
         "symbol": symbol,
         "last": last_close,
         "change_pct": ((last_close / first_open) - 1) * 100 if first_open else 0,
+        "change_5m_pct": ((last_close / float(five_minute_start.get("open") or 0)) - 1) * 100 if float(five_minute_start.get("open") or 0) else 0,
         "volume": sum(int(bar.get("volume") or 0) for bar in bars),
         "trade_count": sum(int(bar.get("trade_count") or 0) for bar in bars),
         "quote_count": sum(int(bar.get("quote_count") or 0) for bar in bars),
     }
+
+
+def _enrich_scanner_intelligence(scanner: list[dict[str, Any]], news: Any, sec: Any, as_of: datetime) -> None:
+    news_by_ticker: dict[str, list[dict[str, Any]]] = {}
+    for item in news if isinstance(news, list) else []:
+        if not isinstance(item, dict):
+            continue
+        tickers = item.get("tickers")
+        if isinstance(tickers, str):
+            tickers = [value.strip() for value in tickers.strip("[]").replace("'", "").split(",") if value.strip()]
+        for ticker in tickers if isinstance(tickers, list) else []:
+            news_by_ticker.setdefault(str(ticker).upper(), []).append(item)
+    sec_by_ticker: dict[str, list[dict[str, Any]]] = {}
+    for item in sec if isinstance(sec, list) else []:
+        if not isinstance(item, dict):
+            continue
+        ticker = str(item.get("ticker") or "").strip().upper()
+        if ticker:
+            sec_by_ticker.setdefault(ticker, []).append(item)
+    for row in scanner:
+        ticker = str(row.get("symbol") or "").upper()
+        ticker_news = news_by_ticker.get(ticker, [])
+        ticker_sec = sec_by_ticker.get(ticker, [])
+        row["live_news_count"] = len(ticker_news)
+        row["live_news_recency"] = _latest_recency(ticker_news, "published_at_utc", as_of)
+        row["news_labels"] = ", ".join(sorted({label for item in ticker_news for label in _string_values(item.get("channels"))}))
+        row["sec_count"] = len(ticker_sec)
+        row["sec_recency"] = _latest_recency(ticker_sec, "accepted_at_utc", as_of)
+        row["sec_labels"] = ", ".join(sorted({str(item.get("form_type") or "") for item in ticker_sec if item.get("form_type")}))
+
+
+def _latest_recency(items: list[dict[str, Any]], key: str, as_of: datetime) -> str:
+    ages: list[float] = []
+    for item in items:
+        try:
+            value = datetime.fromisoformat(str(item.get(key) or "").replace("Z", "+00:00"))
+            ages.append(max(0.0, (as_of.astimezone(UTC) - value.astimezone(UTC)).total_seconds()))
+        except (TypeError, ValueError):
+            continue
+    if not ages:
+        return "none"
+    age = min(ages)
+    return "hot" if age <= 4 * 3600 else "cold" if age <= 24 * 3600 else "old"
+
+
+def _string_values(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        return [item.strip() for item in value.strip("[]").replace("'", "").split(",") if item.strip()]
+    return []
 
 
 def _portfolio_fixture(price: float) -> dict[str, Any]:
