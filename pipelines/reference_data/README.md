@@ -89,12 +89,20 @@ country assertions. IBKR borrow and Massive ticker details are current-state
 sources; for historical windows the script records `source_not_historical`
 instead of fabricating old snapshots.
 
+SEC fails-to-deliver discovery reads the exact archive links published on the
+SEC landing page because historical filenames and directories are not uniform.
+The optional `--sec-ftd-link-mode direct` is diagnostic only. The gateway always
+uses `html`; failure to discover a historical link remains an explicit failed
+window and never becomes an inferred empty publication.
+
 The reference gateway can run a recent coverage-aware publication fill after its
 execute-mode audit. Large/manual historical fills should still use the script
 directly with explicit date ranges.
 
 Dry-run mode does not create or alter tables. If the target write database has
 not been initialized, the script reports `schema_missing` and exits after
-writing the run summary. Weekend FINRA windows and SEC windows with no published
-file are persisted as `covered_empty` only during `--execute`, so maintenance
-does not repeatedly rediscover non-publication days.
+writing the run summary. Weekend, regular holiday, and explicitly catalogued
+special-closure FINRA windows are persisted as `covered_empty` only during
+`--execute`, so maintenance does not repeatedly rediscover non-publication days.
+Gateway source health first collapses retries to the latest result for each
+logical source window; only currently unresolved windows contribute warnings.

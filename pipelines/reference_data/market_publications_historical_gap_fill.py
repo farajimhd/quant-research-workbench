@@ -52,6 +52,9 @@ FINRA_SHORT_VOLUME_SOURCES = {
 NASDAQ_REG_SHO_THRESHOLD_URL = "https://www.nasdaqtrader.com/dynamic/symdir/regsho/nasdaqth{yyyymmdd}.txt"
 SEC_FTD_PAGE = "https://www.sec.gov/data-research/sec-markets-data/fails-deliver-data"
 SEC_FTD_FILE_URL = "https://www.sec.gov/files/data/fails-deliver-data/cnsfails{yyyymm}{half}.zip"
+US_EQUITY_SPECIAL_CLOSURES = {
+    date(2025, 1, 9): "national_day_of_mourning_jimmy_carter",
+}
 DEFAULT_USER_AGENT = "quant-reference-gateway/1.0 contact: local-research"
 RETRY_HTTP_CODES = {408, 425, 429, 500, 502, 503, 504}
 SEC_RATE_LIMIT_TEXT = "Request Rate Threshold Exceeded"
@@ -176,11 +179,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--sec-ftd-link-mode",
-        choices=["direct", "html", "auto"],
-        default="direct",
+        choices=["direct", "html"],
+        default="html",
         help=(
-            "direct generates SEC FTD zip URLs from the requested dates. "
-            "html scrapes the SEC landing page. auto tries html and falls back to direct."
+            "html uses the exact links published on the SEC landing page and is the authoritative default. "
+            "direct generates conventional URLs only when explicitly requested for diagnostics."
         ),
     )
     parser.add_argument(
@@ -781,14 +784,15 @@ def run_sec_ftd(
             started = datetime.now(UTC)
             finished = datetime.now(UTC)
             published_window = latest_published_end is not None and gap_end <= latest_published_end
-            status = "covered_empty" if published_window else "source_not_yet_available"
+            status = "failed" if published_window else "source_not_yet_available"
+            failed = 1 if published_window else 0
             details = {
-                "reason": "no_sec_file_for_window" if published_window else "sec_file_not_published_yet",
+                "reason": "sec_page_link_missing_for_historical_window" if published_window else "sec_file_not_published_yet",
                 "latest_published_end": latest_published_end.isoformat() if latest_published_end else "",
             }
-            results.append(SourceResult("sec_fails_to_deliver", "sec_fails_to_deliver", gap_start, gap_end, 0, 0, 0, status, details))
+            results.append(SourceResult("sec_fails_to_deliver", "sec_fails_to_deliver", gap_start, gap_end, 0, 0, failed, status, details))
             print(f"sec_fails_to_deliver {gap_start.isoformat()}->{gap_end.isoformat()} status={status} rows=0 written=0", flush=True)
-            if args.execute and status == "covered_empty":
+            if args.execute and status == "failed":
                 insert_publication_coverage(
                     client,
                     database=args.write_database,
@@ -801,7 +805,7 @@ def run_sec_ftd(
                     status=status,
                     rows_read=0,
                     rows_written=0,
-                    rows_failed=0,
+                    rows_failed=failed,
                     started_at_utc=started,
                     finished_at_utc=finished,
                     details=details,
@@ -873,21 +877,18 @@ def run_sec_ftd(
 def fetch_sec_ftd_links(args: argparse.Namespace, start_date: date, end_date: date) -> list[dict[str, Any]]:
     if args.sec_ftd_link_mode == "direct":
         return generate_sec_ftd_links(start_date, end_date)
-    if args.sec_ftd_link_mode == "auto":
-        try:
-            return fetch_sec_ftd_links_from_page(args)
-        except Exception as exc:  # noqa: BLE001
-            print(
-                "sec_fails_to_deliver link_discovery=html_failed "
-                f"fallback=direct error={repr(exc)}",
-                flush=True,
-            )
-            return generate_sec_ftd_links(start_date, end_date)
     return fetch_sec_ftd_links_from_page(args)
 
 
 def fetch_sec_ftd_links_from_page(args: argparse.Namespace) -> list[dict[str, Any]]:
     html = fetch_bytes(args, SEC_FTD_PAGE).decode("utf-8", errors="replace")
+    links = parse_sec_ftd_links(html)
+    if not links:
+        raise RuntimeError("SEC fails-to-deliver page contained no recognized archive links")
+    return links
+
+
+def parse_sec_ftd_links(html: str) -> list[dict[str, Any]]:
     links: list[dict[str, Any]] = []
     for href in re.findall(r"href=[\"']([^\"']+\.zip)[\"']", html, flags=re.IGNORECASE):
         url = parse.urljoin(SEC_FTD_PAGE, href)
@@ -902,8 +903,8 @@ def fetch_sec_ftd_links_from_page(args: argparse.Namespace) -> list[dict[str, An
             end = date(year, month, 16)
         else:
             end = date(year + (1 if month == 12 else 0), 1 if month == 12 else month + 1, 1)
-        links.append({"url": url, "start_date": start, "end_date": end})
-    return links
+        links.append({"url": url, "start_date": start, "end_date": end, "link_mode": "html"})
+    return sorted(links, key=lambda item: (item["start_date"], item["url"]))
 
 
 def generate_sec_ftd_links(start_date: date, end_date: date) -> list[dict[str, Any]]:
@@ -1987,7 +1988,7 @@ def is_us_equity_market_holiday(day: date) -> bool:
     This is used only to avoid marking known non-publication days as failed
     when FINRA has no daily short-volume file.
     """
-    return day in us_equity_market_holidays(day.year)
+    return day in US_EQUITY_SPECIAL_CLOSURES or day in us_equity_market_holidays(day.year)
 
 
 def us_equity_market_holidays(year: int) -> set[date]:

@@ -70,13 +70,13 @@ def collect_source_states(client: ClickHouseHttpClient, *, database: str) -> lis
             continue
         coverage_end = parse_date(row.get("max_end"))
         rows_written = int(row.get("rows_written") or 0)
-        rows_failed = int(row.get("rows_failed") or 0)
+        unresolved_windows = int(row.get("unresolved_windows") or 0)
         latest_status = str(row.get("latest_status") or "")
-        status = coverage_status(latest_status, coverage_end, today, rows_failed)
+        status = coverage_status(latest_status, coverage_end, today, unresolved_windows)
         coverage = coverage_text(row.get("min_start"), row.get("max_end"), row.get("windows"))
         detail = f"latest={latest_status or '-'}"
-        if rows_failed:
-            detail += f"; historical_failed_attempts={rows_failed:,}"
+        if unresolved_windows:
+            detail += f"; unresolved_windows={unresolved_windows:,}"
         states.append(ReferenceSourceState(label, status, coverage, rows_written, targets, f"{note}; {detail}"))
 
     for planned_table in sorted(PLANNED_PUBLICATION_TABLES):
@@ -121,17 +121,36 @@ def latest_publication_coverage(client: ClickHouseHttpClient, *, database: str) 
         return {}
     kinds = ", ".join(sql_string(kind) for kind in IMPLEMENTED_PUBLICATION_COVERAGE_KINDS)
     sql = f"""
+    WITH latest_window_results AS
+    (
+        SELECT
+            coverage_kind,
+            source_system,
+            source_object,
+            coverage_start_date,
+            coverage_end_date,
+            argMax(status, tuple(inserted_at, coverage_id)) AS status,
+            argMax(rows_written, tuple(inserted_at, coverage_id)) AS rows_written,
+            max(inserted_at) AS window_latest_update
+        FROM {table(database, 'market_reference_publication_coverage_v1')} FINAL
+        WHERE coverage_kind IN ({kinds})
+        GROUP BY
+            coverage_kind,
+            source_system,
+            source_object,
+            coverage_start_date,
+            coverage_end_date
+    )
     SELECT
         coverage_kind,
         min(coverage_start_date) AS min_start,
         max(coverage_end_date) AS max_end,
-        uniqExact(coverage_id) AS windows,
+        count() AS windows,
         sum(rows_written) AS rows_written,
-        sum(rows_failed) AS rows_failed,
-        argMax(status, inserted_at) AS latest_status,
-        max(inserted_at) AS latest_update
-    FROM {table(database, 'market_reference_publication_coverage_v1')} FINAL
-    WHERE coverage_kind IN ({kinds})
+        countIf(status IN ('failed', 'error')) AS unresolved_windows,
+        argMax(status, tuple(coverage_end_date, coverage_start_date, window_latest_update)) AS latest_status,
+        max(window_latest_update) AS latest_update
+    FROM latest_window_results
     GROUP BY coverage_kind
     FORMAT JSONEachRow
     """
@@ -178,16 +197,16 @@ def table_exists(client: ClickHouseHttpClient, database: str, table_name: str) -
     return int(value or "0") > 0
 
 
-def coverage_status(latest_status: str, coverage_end: date | None, today: date, rows_failed: int) -> str:
+def coverage_status(latest_status: str, coverage_end: date | None, today: date, unresolved_windows: int) -> str:
     lowered = latest_status.lower()
     if lowered in {"failed", "error"}:
         return "failed"
-    if lowered in {"source_not_historical", "source_not_yet_available"}:
-        return "planned"
     if coverage_end is None:
         return "missing"
-    if rows_failed:
+    if unresolved_windows:
         return "warning"
+    if lowered in {"source_not_historical", "source_not_yet_available"}:
+        return "planned"
     if coverage_end < today:
         return "stale"
     return "ok"

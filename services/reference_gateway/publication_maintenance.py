@@ -59,6 +59,8 @@ def run_recent_publication_gap_fill(
         ),
         "--finra-venues",
         "CNMS",
+        "--sec-ftd-link-mode",
+        "html",
         "--output-root-win",
         str(config.prepared_root_win / "reference_market_publications"),
         "--resume-from-coverage",
