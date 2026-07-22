@@ -296,7 +296,7 @@ function TickerEventIcon({ source, value }: { source: "News" | "SEC"; value: str
   if (state !== "hot" && state !== "cold") return null;
   const Icon = source === "News" ? Flame : FileCheck2;
   const label = `${state} ${source.toLowerCase()}`;
-  return <span aria-label={label} className="market-list-ticker-event" data-source={source.toLowerCase()} data-state={state} title={label}><Icon aria-hidden="true" fill={source === "News" ? "currentColor" : "none"} size={12} /></span>;
+  return <span aria-label={label} className="market-list-ticker-event" data-source={source.toLowerCase()} data-state={state} title={label}><Icon aria-hidden="true" fill={source === "News" ? "currentColor" : "none"} size={15} /></span>;
 }
 
 function toneClass(value: unknown, column: string) {
