@@ -26,7 +26,7 @@ from services.reference_gateway.memory import memory_snapshot, start_memory_trac
 from services.reference_gateway.policy import evaluate_write_policy
 from services.reference_gateway.preflight import run_preflight
 from services.reference_gateway.publication_bootstrap import bootstrap_existing_publication_coverage
-from services.reference_gateway.publication_maintenance import run_recent_publication_gap_fill
+from services.reference_gateway.publication_maintenance import PublicationMaintenanceResult, run_recent_publication_gap_fill
 from services.reference_gateway.publication_rebuild import rebuild_sec_market_bridge, rebuild_tradable_publications
 from services.reference_gateway.runtime_log import RuntimeLogger
 from services.reference_gateway.source_schedule import ensure_source_schedule_schema, record_source_schedule, schedule_decision
@@ -770,7 +770,7 @@ def main() -> None:
                 source_name="market_publication_gap_fill",
                 status=maintenance_status,
                 rows_written=publication_written_rows(maintenance.stdout_tail),
-                details=asdict(maintenance),
+                details=publication_schedule_details(maintenance),
                 frequency_seconds=config.market_publication_gap_fill_frequency_seconds,
             )
             update_latest_operation(
@@ -909,6 +909,16 @@ def publication_written_rows(output_tail: str) -> int:
         if rows is not None and "written=" in line:
             total += rows
     return total
+
+
+def publication_schedule_details(result: PublicationMaintenanceResult) -> dict[str, object]:
+    return {
+        "attempted": result.attempted,
+        "returncode": result.returncode,
+        "start_date": result.start_date,
+        "end_date": result.end_date,
+        "reason": result.reason,
+    }
 
 
 if __name__ == "__main__":

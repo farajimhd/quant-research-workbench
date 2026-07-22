@@ -12,8 +12,8 @@ from services.reference_gateway.market_publications import mergetree_settings
 
 
 SCHEDULE_TABLE = "market_reference_source_schedule_v1"
-SCHEDULE_QUERY_MAX_ATTEMPTS = 4
-SCHEDULE_QUERY_RETRY_BASE_SECONDS = 0.5
+SCHEDULE_QUERY_MAX_ATTEMPTS = 6
+SCHEDULE_QUERY_RETRY_BASE_SECONDS = 1.0
 
 
 @dataclass(frozen=True, slots=True)

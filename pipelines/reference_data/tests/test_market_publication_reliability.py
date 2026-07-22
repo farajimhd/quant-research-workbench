@@ -11,7 +11,8 @@ from pipelines.reference_data.market_publications_historical_gap_fill import (
     is_us_equity_market_holiday,
     parse_sec_ftd_links,
 )
-from services.reference_gateway.publication_maintenance import run_recent_publication_gap_fill
+from services.reference_gateway.main import publication_schedule_details
+from services.reference_gateway.publication_maintenance import PublicationMaintenanceResult, run_recent_publication_gap_fill
 from services.reference_gateway.source_schedule import record_source_schedule
 from services.reference_gateway.state import coverage_status, latest_publication_coverage
 
@@ -116,7 +117,26 @@ class MarketPublicationReliabilityTests(unittest.TestCase):
 
         self.assertEqual(len(client.sql), 2)
         self.assertEqual(client.sql[0], client.sql[1])
-        sleep.assert_called_once_with(0.5)
+        sleep.assert_called_once_with(1.0)
+
+    def test_publication_schedule_details_exclude_runtime_output(self) -> None:
+        result = PublicationMaintenanceResult(
+            attempted=True,
+            returncode=0,
+            start_date="2026-07-08",
+            end_date="2026-07-22",
+            reason="deep_reference_publication_gap_fill",
+            command=["python", "gap_fill.py"],
+            stdout_tail="large runtime output",
+            stderr_tail="diagnostic traceback",
+        )
+
+        details = publication_schedule_details(result)
+
+        self.assertEqual(details["returncode"], 0)
+        self.assertNotIn("command", details)
+        self.assertNotIn("stdout_tail", details)
+        self.assertNotIn("stderr_tail", details)
 
 
 if __name__ == "__main__":
