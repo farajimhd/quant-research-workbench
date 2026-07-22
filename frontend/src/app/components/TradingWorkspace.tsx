@@ -92,6 +92,7 @@ type TradingWorkspaceProps = {
   managementContent?: ReactNode;
   managementOpen?: boolean;
   onManagementClose?: () => void;
+  openContainerRequest?: { kind: WorkspaceContainerId; requestId: number } | null;
 };
 
 class WorkspaceContainerErrorBoundary extends Component<
@@ -180,6 +181,7 @@ export function TradingWorkspace({
   managementContent,
   managementOpen = false,
   onManagementClose,
+  openContainerRequest,
 }: TradingWorkspaceProps) {
   const contentHostsRef = useRef(new Map<string, HTMLDivElement>());
 
@@ -207,6 +209,7 @@ export function TradingWorkspace({
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const canvasRef = useRef<HTMLElement | null>(null);
+  const handledOpenRequestRef = useRef<TradingWorkspaceProps["openContainerRequest"]>(null);
 
   useEffect(() => {
     const state = { groups, instances, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts, openIds };
@@ -261,7 +264,8 @@ export function TradingWorkspace({
     const rootId = rootForNode(id);
     const highest = highestLayer();
     const currentZ = isWorkspaceGroupId(rootId) ? groups[rootId]?.z : layouts[rootId]?.z;
-    if (currentZ != null && currentZ >= highest) return;
+    const hidden = isWorkspaceGroupId(rootId) ? Boolean(groups[rootId]?.closed || groups[rootId]?.minimized) : Boolean(layouts[rootId]?.minimized);
+    if (!hidden && currentZ != null && currentZ >= highest) return;
     const z = highest + 1;
     if (isWorkspaceGroupId(rootId) && groups[rootId]) {
       setGroups((current) => ({ ...current, [rootId]: { ...current[rootId], closed: false, minimized: false, z } }));
@@ -396,6 +400,14 @@ export function TradingWorkspace({
     setLibraryOpen(false);
     onManagementClose?.();
   }
+
+  useEffect(() => {
+    if (!openContainerRequest || handledOpenRequestRef.current === openContainerRequest) return;
+    handledOpenRequestRef.current = openContainerRequest;
+    const existingId = openIds.find((instanceId) => instances[instanceId] === openContainerRequest.kind || instanceId === openContainerRequest.kind || instanceId.startsWith(`${openContainerRequest.kind}-`));
+    if (existingId) focusContainer(existingId);
+    else addContainer(openContainerRequest.kind);
+  }, [openContainerRequest]);
 
   function updateLayout(id: string, patch: Partial<WorkspaceWindowLayout>) {
     setLayouts((current) => ({ ...current, [id]: { ...current[id], ...patch } }));

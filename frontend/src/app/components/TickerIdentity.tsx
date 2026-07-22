@@ -11,10 +11,12 @@ export type TickerPresentation = {
 
 type TickerPresentationPayload = {
   presentations: Record<string, TickerPresentation>;
+  status?: "ready" | "unavailable";
 };
 
 const presentationCache = new Map<string, TickerPresentation | null>();
 const pendingRequests = new Map<string, Promise<void>>();
+const PRESENTATION_REQUEST_BATCH_SIZE = 100;
 type TickerChange = { absolute_change: number | null; as_of: string; current_price: number | null; percent_change: number | null; previous_close: number | null; previous_session_date: string; ticker: string };
 const changeCache = new Map<string, TickerChange | null>();
 const pendingChangeRequests = new Map<string, Promise<void>>();
@@ -27,20 +29,14 @@ export function useTickerPresentations(tickers: string[]) {
     const normalized = tickerKey ? tickerKey.split(",") : [];
     const missing = normalized.filter((ticker) => !presentationCache.has(ticker));
     if (!missing.length) return;
-    const requestKey = missing.join(",");
-    let request = pendingRequests.get(requestKey);
-    if (!request) {
-      request = api<TickerPresentationPayload>(`/api/trading/ticker-presentations${query({ tickers: requestKey })}`, { timeoutMs: 15000 })
-        .then((payload) => {
-          missing.forEach((ticker) => presentationCache.set(ticker, payload.presentations[ticker] ?? null));
-        })
-        .finally(() => pendingRequests.delete(requestKey));
-      pendingRequests.set(requestKey, request);
-    }
+    const request = Promise.all(chunkTickers(missing, PRESENTATION_REQUEST_BATCH_SIZE).map(requestTickerPresentationBatch));
     let active = true;
-    request.then(() => { if (active) setRevision((value) => value + 1); }).catch(() => undefined);
-    return () => { active = false; };
-  }, [tickerKey]);
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    request
+      .then(() => { if (active) setRevision((value) => value + 1); })
+      .catch(() => { if (active) retryTimer = setTimeout(() => setRevision((value) => value + 1), 5000); });
+    return () => { active = false; if (retryTimer) clearTimeout(retryTimer); };
+  }, [revision, tickerKey]);
 
   return useMemo(() => Object.fromEntries(
     (tickerKey ? tickerKey.split(",") : []).flatMap((ticker) => {
@@ -50,10 +46,30 @@ export function useTickerPresentations(tickers: string[]) {
   ) as Record<string, TickerPresentation>, [revision, tickerKey]);
 }
 
+function requestTickerPresentationBatch(tickers: string[]) {
+  const requestKey = tickers.join(",");
+  let request = pendingRequests.get(requestKey);
+  if (request) return request;
+  request = api<TickerPresentationPayload>(`/api/trading/ticker-presentations${query({ tickers: requestKey })}`, { timeoutMs: 15000 })
+    .then((payload) => {
+      if (payload.status === "unavailable") throw new Error("Ticker presentations are temporarily unavailable.");
+      tickers.forEach((ticker) => presentationCache.set(ticker, payload.presentations[ticker] ?? null));
+    })
+    .finally(() => pendingRequests.delete(requestKey));
+  pendingRequests.set(requestKey, request);
+  return request;
+}
+
+function chunkTickers(tickers: string[], size: number) {
+  const chunks: string[][] = [];
+  for (let index = 0; index < tickers.length; index += size) chunks.push(tickers.slice(index, index + size));
+  return chunks;
+}
+
 export function TickerIdentity({ className = "", logoUrl = "", ticker }: { className?: string; logoUrl?: string; ticker: string }) {
   const normalized = ticker.trim().toUpperCase();
   return <span className={`ticker-identity${className ? ` ${className}` : ""}`}>
-    {logoUrl ? <img alt="" loading="lazy" onError={(event) => { event.currentTarget.hidden = true; }} src={logoUrl} /> : null}
+    <TickerLogoImage logoUrl={logoUrl} />
     <span>{normalized || "—"}</span>
   </span>;
 }
@@ -96,7 +112,13 @@ export function TickerChangeBadge({ asOf, ticker }: { asOf: string; ticker: stri
 }
 
 export function TickerLogo({ logoUrl, ticker }: { logoUrl?: string; ticker: string }) {
-  return logoUrl ? <img alt="" className="ticker-logo" loading="lazy" onError={(event) => { event.currentTarget.hidden = true; }} src={logoUrl} title={ticker} /> : null;
+  return <TickerLogoImage className="ticker-logo" logoUrl={logoUrl} title={ticker} />;
+}
+
+function TickerLogoImage({ className, logoUrl, title }: { className?: string; logoUrl?: string; title?: string }) {
+  const [failedUrl, setFailedUrl] = useState("");
+  if (!logoUrl || failedUrl === logoUrl) return null;
+  return <img alt="" aria-hidden="true" className={className} loading="lazy" onError={() => setFailedUrl(logoUrl)} src={logoUrl} title={title} />;
 }
 
 function normalizeTickers(tickers: string[]) {

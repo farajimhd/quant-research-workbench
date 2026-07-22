@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.error
 from typing import Any, Iterable
 
 from research.mlops.clickhouse import (
@@ -25,7 +26,7 @@ def ticker_presentation_payload(tickers: Iterable[str], *, database: str = "q_li
         return {"presentations": {}, "source": f"{database}.market_presentation_asset_v1", "status": "ready"}
     try:
         rows = _clickhouse_rows(ticker_presentation_sql(normalized, database=database))
-    except RuntimeError:
+    except (RuntimeError, TimeoutError, urllib.error.URLError):
         # Branding is optional presentation data. Database pressure must not make
         # the ticker identity or its containing Canvas surface unavailable.
         return {"presentations": {}, "source": f"{database}.market_presentation_asset_v1", "status": "unavailable"}

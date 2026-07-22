@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronLeft, Clock3, Columns3, FileText, Filter, Flame, ListFilter, Newspaper, Plus, Search, Snowflake, Star, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronLeft, Columns3, FileText, Filter, ListFilter, Newspaper, Plus, Search, Star, Trash2, X } from "lucide-react";
 import { useDeferredValue, useMemo, useState, type ReactNode } from "react";
 
 import { MarketTime } from "./MarketTime";
@@ -39,12 +39,12 @@ const FIELD_CATALOG: FieldDefinition[] = [
   field("short_crowding_pct", "Short crowding", "Share supply", "derived", "percent", "Reported short interest divided by the best available tradable-share base."),
   field("days_to_cover", "Days to cover", "Share supply", "derived", "number", "Latest reported short interest divided by its aligned average daily volume."),
   field("market_cap", "Market cap", "Fundamentals", "derived", "money", "Latest price multiplied by aligned shares outstanding."),
-  field("live_news_recency", "News", "News & SEC", "derived", "text", "Hot, cold, old, or none at the workspace clock."),
-  field("live_news_count", "News", "News & SEC", "derived", "integer", "Recent ticker-linked article count."),
-  field("news_labels", "News labels", "News & SEC", "derived", "text", "Explainable normalized news classifications."),
-  field("sec_recency", "SEC", "News & SEC", "derived", "text", "Hot, cold, old, or none from filing acceptance time."),
+  field("live_news_recency", "News recency", "News & SEC", "derived", "text", "Hot, cold, old, or none for company-specific news at the workspace clock."),
+  field("live_news_count", "News count", "News & SEC", "derived", "integer", "Recent company-specific article count."),
+  field("news_labels", "News", "News & SEC", "derived", "text", "Explainable company-news classifications."),
+  field("sec_recency", "SEC recency", "News & SEC", "derived", "text", "Hot, cold, old, or none from filing acceptance time."),
   field("sec_count", "SEC filings", "News & SEC", "derived", "integer", "Recent ticker-linked SEC filing count."),
-  field("sec_labels", "SEC labels", "News & SEC", "derived", "text", "Explainable SEC disclosure categories."),
+  field("sec_labels", "SEC", "News & SEC", "derived", "text", "Explainable SEC disclosure categories."),
   field("event_time", "Detected", "Signal event", "raw", "date", "First causal detection time for this event."),
   field("signal_type", "Signal", "Signal event", "derived", "text", "Stable event class or strategy-defined signal name."),
   field("direction", "Direction", "Signal event", "derived", "text", "Bullish, bearish, or neutral direction assigned by the rule owner."),
@@ -54,33 +54,34 @@ const FIELD_CATALOG: FieldDefinition[] = [
 ];
 
 const SCANNER_PRESETS: Record<string, string[]> = {
-  Overview: ["ticker", "last", "change_pct", "change_5m_pct", "volume", "trade_count", "live_news_recency", "sec_recency"],
+  Overview: ["ticker", "news_labels", "sec_labels", "last", "change_pct", "change_5m_pct", "volume", "trade_count"],
   Momentum: ["ticker", "last", "change_5m_pct", "change_pct", "dollar_volume", "trade_count", "quote_count"],
-  Intelligence: ["ticker", "last", "change_pct", "live_news_recency", "live_news_count", "news_labels", "sec_recency", "sec_count", "sec_labels"],
+  Intelligence: ["ticker", "news_labels", "sec_labels", "last", "change_pct", "live_news_count", "sec_count"],
   Fundamentals: ["ticker", "company_name", "exchange", "country", "sector", "market_cap", "shares_outstanding", "float_shares", "short_interest", "short_crowding_pct", "days_to_cover"],
 };
-const LOCKED_SCANNER_COLUMNS = ["ticker", "live_news_recency", "sec_recency"];
+const LOCKED_MARKET_LIST_COLUMNS = ["ticker", "news_labels", "sec_labels"];
 const SIGNAL_PRESETS: Record<string, string[]> = {
-  All: ["event_time", "ticker", "signal_type", "direction", "magnitude", "last", "source", "evidence"],
-  "Price moves": ["event_time", "ticker", "signal_type", "magnitude", "last", "change_5m_pct", "source"],
-  Activity: ["event_time", "ticker", "signal_type", "direction", "trade_count", "quote_count", "source", "evidence"],
-  Intelligence: ["event_time", "ticker", "signal_type", "direction", "live_news_recency", "sec_recency", "source", "evidence"],
-  Strategy: ["event_time", "ticker", "signal_type", "direction", "last", "source", "evidence"],
+  All: ["ticker", "news_labels", "sec_labels", "event_time", "signal_type", "direction", "magnitude", "last", "source", "evidence"],
+  "Price moves": ["ticker", "news_labels", "sec_labels", "event_time", "signal_type", "magnitude", "last", "change_5m_pct", "source"],
+  Activity: ["ticker", "news_labels", "sec_labels", "event_time", "signal_type", "direction", "trade_count", "quote_count", "source", "evidence"],
+  Intelligence: ["ticker", "news_labels", "sec_labels", "event_time", "signal_type", "direction", "source", "evidence"],
+  Strategy: ["ticker", "news_labels", "sec_labels", "event_time", "signal_type", "direction", "last", "source", "evidence"],
 };
-const WATCHLIST_DEFAULT_COLUMNS = ["ticker", "last", "change_pct", "change_5m_pct", "volume", "live_news_recency", "sec_recency"];
+const WATCHLIST_DEFAULT_COLUMNS = ["ticker", "news_labels", "sec_labels", "last", "change_pct", "change_5m_pct", "volume"];
 
-export function MarketScannerContainer({ asOf, meta, onSettingsChange, rows, settings }: { asOf: string; meta?: ScannerSnapshotMeta; onSettingsChange: (patch: Partial<MarketScannerSettings>) => void; rows: ScreenerRow[]; settings: MarketScannerSettings }) {
+export function MarketScannerContainer({ asOf, meta, onSettingsChange, onTickerSelect, rows, settings }: { asOf: string; meta?: ScannerSnapshotMeta; onSettingsChange: (patch: Partial<MarketScannerSettings>) => void; onTickerSelect: (ticker: string) => void; rows: ScreenerRow[]; settings: MarketScannerSettings }) {
   const normalizedRows = useMemo(() => normalizeScannerRows(rows), [rows]);
   return <MarketListSurface
     asOf={asOf}
-    columns={withLockedColumns(settings.columns.length ? settings.columns : SCANNER_PRESETS[settings.preset] ?? SCANNER_PRESETS.Overview, LOCKED_SCANNER_COLUMNS)}
+    columns={withLockedColumns(settings.columns.length ? settings.columns : SCANNER_PRESETS[settings.preset] ?? SCANNER_PRESETS.Overview, LOCKED_MARKET_LIST_COLUMNS)}
     empty="No securities are available at this market clock."
     eyebrow="Market snapshot"
     fieldCoverage={meta?.field_coverage}
     limit={settings.limit}
-    lockedColumns={LOCKED_SCANNER_COLUMNS}
+    lockedColumns={LOCKED_MARKET_LIST_COLUMNS}
     onColumnsChange={(columns) => onSettingsChange({ columns })}
     onPresetChange={(preset) => onSettingsChange({ columns: SCANNER_PRESETS[preset] ?? settings.columns, preset })}
+    onTickerSelect={onTickerSelect}
     presets={Object.keys(SCANNER_PRESETS)}
     preset={settings.preset}
     rows={normalizedRows}
@@ -89,17 +90,19 @@ export function MarketScannerContainer({ asOf, meta, onSettingsChange, rows, set
   />;
 }
 
-export function SignalStreamContainer({ asOf, onSettingsChange, scannerRows, settings, strategySignals }: { asOf: string; onSettingsChange: (patch: Partial<SignalStreamSettings>) => void; scannerRows: ScreenerRow[]; settings: SignalStreamSettings; strategySignals: ScreenerRow[] }) {
+export function SignalStreamContainer({ asOf, onSettingsChange, onTickerSelect, scannerRows, settings, strategySignals }: { asOf: string; onSettingsChange: (patch: Partial<SignalStreamSettings>) => void; onTickerSelect: (ticker: string) => void; scannerRows: ScreenerRow[]; settings: SignalStreamSettings; strategySignals: ScreenerRow[] }) {
   const events = useMemo(() => buildSignalEvents(normalizeScannerRows(scannerRows), strategySignals, asOf), [asOf, scannerRows, strategySignals]);
   const filtered = useMemo(() => filterSignalPreset(events, settings.preset), [events, settings.preset]);
   return <MarketListSurface
     asOf={asOf}
-    columns={settings.columns.length ? settings.columns : SIGNAL_PRESETS[settings.preset] ?? SIGNAL_PRESETS.All}
+    columns={withLockedColumns(settings.columns.length ? settings.columns : SIGNAL_PRESETS[settings.preset] ?? SIGNAL_PRESETS.All, LOCKED_MARKET_LIST_COLUMNS)}
     empty="No market or strategy events match this stream."
     eyebrow="Newest first"
     limit={settings.limit}
+    lockedColumns={LOCKED_MARKET_LIST_COLUMNS}
     onColumnsChange={(columns) => onSettingsChange({ columns })}
     onPresetChange={(preset) => onSettingsChange({ columns: SIGNAL_PRESETS[preset] ?? settings.columns, preset })}
+    onTickerSelect={onTickerSelect}
     presets={Object.keys(SIGNAL_PRESETS)}
     preset={settings.preset}
     rows={filtered}
@@ -108,7 +111,7 @@ export function SignalStreamContainer({ asOf, onSettingsChange, scannerRows, set
   />;
 }
 
-export function WatchlistContainer({ asOf, onSettingsChange, scannerRows, settings }: { asOf: string; onSettingsChange: (patch: Partial<WatchlistSettings>) => void; scannerRows: ScreenerRow[]; settings: WatchlistSettings }) {
+export function WatchlistContainer({ asOf, onSettingsChange, onTickerSelect, scannerRows, settings }: { asOf: string; onSettingsChange: (patch: Partial<WatchlistSettings>) => void; onTickerSelect: (ticker: string) => void; scannerRows: ScreenerRow[]; settings: WatchlistSettings }) {
   const [draft, setDraft] = useState("");
   const sourceRows = useMemo(() => normalizeScannerRows(scannerRows), [scannerRows]);
   const rowByTicker = useMemo(() => new Map(sourceRows.map((row) => [String(row.ticker), row])), [sourceRows]);
@@ -130,10 +133,12 @@ export function WatchlistContainer({ asOf, onSettingsChange, scannerRows, settin
       <button onClick={addTicker} type="button"><Plus size={14} /> Add</button>
     </div>
     <MarketListTable
-      columns={settings.columns.length ? settings.columns : WATCHLIST_DEFAULT_COLUMNS}
+      columns={withLockedColumns(settings.columns.length ? settings.columns : WATCHLIST_DEFAULT_COLUMNS, LOCKED_MARKET_LIST_COLUMNS)}
       empty="This watchlist has no symbols yet."
       limit={settings.limit}
+      lockedColumns={LOCKED_MARKET_LIST_COLUMNS}
       onColumnsChange={(columns) => onSettingsChange({ columns })}
+      onTickerSelect={onTickerSelect}
       rowAction={(row) => <button aria-label={`Remove ${row.ticker}`} onClick={() => onSettingsChange({ symbols: settings.symbols.filter((ticker) => ticker !== row.ticker) })} title="Remove from watchlist" type="button"><Trash2 size={13} /></button>}
       rows={rows}
       title={`${owner} watchlist`}
@@ -141,25 +146,23 @@ export function WatchlistContainer({ asOf, onSettingsChange, scannerRows, settin
   </section>;
 }
 
-function MarketListSurface({ asOf, columns, empty, eyebrow, fieldCoverage, limit, lockedColumns = [], onColumnsChange, onPresetChange, preset, presets, rows, subtitle, title }: { asOf: string; columns: string[]; empty: string; eyebrow: string; fieldCoverage?: Record<string, number>; limit: number; lockedColumns?: string[]; onColumnsChange: (columns: string[]) => void; onPresetChange: (preset: string) => void; preset: string; presets: string[]; rows: ScreenerRow[]; subtitle: string; title: string }) {
+function MarketListSurface({ asOf, columns, empty, eyebrow, fieldCoverage, limit, lockedColumns = [], onColumnsChange, onPresetChange, onTickerSelect, preset, presets, rows, subtitle, title }: { asOf: string; columns: string[]; empty: string; eyebrow: string; fieldCoverage?: Record<string, number>; limit: number; lockedColumns?: string[]; onColumnsChange: (columns: string[]) => void; onPresetChange: (preset: string) => void; onTickerSelect: (ticker: string) => void; preset: string; presets: string[]; rows: ScreenerRow[]; subtitle: string; title: string }) {
   return <section className="market-list-surface" aria-label={title}>
     <header className="market-list-heading">
       <div><span className="market-list-eyebrow"><ListFilter size={12} /> {eyebrow}</span><h3>{title}</h3><p>{subtitle} · <MarketTime value={asOf} /></p></div>
       <strong>{formatCompact(rows.length)} rows</strong>
     </header>
     <nav className="market-list-presets" aria-label={`${title} views`}>{presets.map((item) => <button aria-pressed={preset === item} className={preset === item ? "active" : undefined} key={item} onClick={() => onPresetChange(item)} type="button">{item}</button>)}</nav>
-    <MarketListTable columns={columns} empty={empty} fieldCoverage={fieldCoverage} limit={limit} lockedColumns={lockedColumns} onColumnsChange={onColumnsChange} rows={rows} title={title} />
+    <MarketListTable columns={columns} empty={empty} fieldCoverage={fieldCoverage} limit={limit} lockedColumns={lockedColumns} onColumnsChange={onColumnsChange} onTickerSelect={onTickerSelect} rows={rows} title={title} />
   </section>;
 }
 
-function MarketListTable({ columns, empty, fieldCoverage, limit, lockedColumns = [], onColumnsChange, rowAction, rows, title }: { columns: string[]; empty: string; fieldCoverage?: Record<string, number>; limit: number; lockedColumns?: string[]; onColumnsChange: (columns: string[]) => void; rowAction?: (row: ScreenerRow) => ReactNode; rows: ScreenerRow[]; title: string }) {
+function MarketListTable({ columns, empty, fieldCoverage, limit, lockedColumns = [], onColumnsChange, onTickerSelect, rowAction, rows, title }: { columns: string[]; empty: string; fieldCoverage?: Record<string, number>; limit: number; lockedColumns?: string[]; onColumnsChange: (columns: string[]) => void; onTickerSelect?: (ticker: string) => void; rowAction?: (row: ScreenerRow) => ReactNode; rows: ScreenerRow[]; title: string }) {
   const [columnPickerOpen, setColumnPickerOpen] = useState(false);
   const [filterMode, setFilterMode] = useState("all");
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<{ column: string; direction: "asc" | "desc" }>({ column: title === "Signal stream" ? "event_time" : "change_pct", direction: "desc" });
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
-  const tickers = rows.map((row) => String(row.ticker ?? row.symbol ?? "")).filter(Boolean);
-  const presentations = useTickerPresentations(tickers);
   const visibleRows = useMemo(() => rows.filter((row) => {
     if (deferredQuery && !Object.values(row).some((value) => String(value ?? "").toLowerCase().includes(deferredQuery))) return false;
     const change = numberValue(row.change_pct);
@@ -171,6 +174,8 @@ function MarketListTable({ columns, empty, fieldCoverage, limit, lockedColumns =
     if (filterMode === "sec_cold" && String(row.sec_recency ?? "").toLowerCase() !== "cold") return false;
     return true;
   }).sort((left, right) => compareValues(left[sort.column], right[sort.column]) * (sort.direction === "asc" ? 1 : -1)).slice(0, limit), [deferredQuery, filterMode, limit, rows, sort]);
+  const tickers = visibleRows.map((row) => String(row.ticker ?? row.symbol ?? "")).filter(Boolean);
+  const presentations = useTickerPresentations(tickers);
   function changeSort(column: string) {
     setSort((current) => current.column === column ? { column, direction: current.direction === "asc" ? "desc" : "asc" } : { column, direction: "desc" });
   }
@@ -181,7 +186,7 @@ function MarketListTable({ columns, empty, fieldCoverage, limit, lockedColumns =
       <span>{visibleRows.length} of {rows.length}</span>
       <button aria-expanded={columnPickerOpen} className="market-list-columns-button" onClick={() => setColumnPickerOpen((open) => !open)} type="button"><Columns3 size={14} /> Columns <b>{columns.length}</b></button>
     </div>
-    <div className="market-list-table-scroll"><table className="market-list-table"><thead><tr>{columns.map((column) => { const definition = catalogField(column); const sorted = sort.column === column; return <th aria-sort={sorted ? (sort.direction === "asc" ? "ascending" : "descending") : "none"} key={column}><button onClick={() => changeSort(column)} title={definition.description} type="button"><span>{definition.label}<small data-kind={definition.kind}>{definition.kind}</small></span>{sorted ? sort.direction === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} /> : <ArrowUpDown size={12} />}</button></th>; })}{rowAction ? <th aria-label="Row actions" /> : null}</tr></thead><tbody>{visibleRows.length ? visibleRows.map((row, index) => <tr key={`${row.ticker ?? "row"}:${row.event_time ?? index}:${index}`}>{columns.map((column) => <td className={toneClass(row[column], column)} key={column}>{renderMarketCell(row, column, presentations)}</td>)}{rowAction ? <td className="market-list-row-action">{rowAction(row)}</td> : null}</tr>) : <tr><td className="market-list-empty" colSpan={columns.length + (rowAction ? 1 : 0)}>{empty}</td></tr>}</tbody></table></div>
+    <div className="market-list-table-scroll"><table className="market-list-table"><thead><tr>{columns.map((column) => { const definition = catalogField(column); const sorted = sort.column === column; return <th aria-sort={sorted ? (sort.direction === "asc" ? "ascending" : "descending") : "none"} key={column}><button onClick={() => changeSort(column)} title={definition.description} type="button"><span>{definition.label}<small data-kind={definition.kind}>{definition.kind}</small></span>{sorted ? sort.direction === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} /> : <ArrowUpDown size={12} />}</button></th>; })}{rowAction ? <th aria-label="Row actions" /> : null}</tr></thead><tbody>{visibleRows.length ? visibleRows.map((row, index) => { const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase(); const selectable = Boolean(ticker && onTickerSelect); const select = () => { if (selectable) onTickerSelect?.(ticker); }; return <tr aria-label={selectable ? `Open ${ticker} chart` : undefined} data-selectable={selectable ? "true" : undefined} key={`${ticker || "row"}:${row.event_time ?? index}:${index}`} onClick={(event) => { if (!(event.target as HTMLElement).closest("button, input, select, a")) select(); }} onKeyDown={(event) => { if (selectable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); select(); } }} tabIndex={selectable ? 0 : undefined}>{columns.map((column) => <td className={toneClass(row[column], column)} key={column}>{renderMarketCell(row, column, presentations)}</td>)}{rowAction ? <td className="market-list-row-action">{rowAction(row)}</td> : null}</tr>; }) : <tr><td className="market-list-empty" colSpan={columns.length + (rowAction ? 1 : 0)}>{empty}</td></tr>}</tbody></table></div>
     {columnPickerOpen ? <ColumnPicker columns={columns} fieldCoverage={fieldCoverage} lockedColumns={lockedColumns} onChange={onColumnsChange} onClose={() => setColumnPickerOpen(false)} /> : null}
   </div>;
 }
@@ -256,12 +261,15 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
   if (column === "ticker") {
     const ticker = String(value ?? "");
     const logoUrl = presentations[ticker]?.logo_url;
-    return logoUrl
-      ? <TickerIdentity logoUrl={logoUrl} ticker={ticker} />
-      : <span className="market-list-symbol"><span aria-hidden="true" className="market-list-logo-fallback">{ticker.slice(0, 1) || "?"}</span><span>{ticker}</span></span>;
+    return <span className="market-list-ticker-cell">
+      <TickerIdentity logoUrl={logoUrl} ticker={ticker} />
+      <span className="market-list-ticker-events">
+        <TickerEventIcon source="News" value={String(row.live_news_recency ?? "none")} />
+        <TickerEventIcon source="SEC" value={String(row.sec_recency ?? "none")} />
+      </span>
+    </span>;
   }
   if (column === "event_time") return value ? <MarketTime value={String(value)} /> : "—";
-  if (column === "live_news_recency" || column === "sec_recency") return <RecencyStatusIcon source={column === "live_news_recency" ? "News" : "SEC"} value={String(value ?? "none")} />;
   if (["direction", "source"].includes(column)) return value ? <span className={`market-list-badge ${String(value).toLowerCase().replace(/[^a-z]+/g, "-")}`}>{String(value).replaceAll("_", " ")}</span> : "—";
   const definition = catalogField(column);
   if (value === null || value === undefined || value === "") return <span className="market-list-unavailable" title={`${definition.label} is not available from the active source at this clock.`}>—</span>;
@@ -272,11 +280,12 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
   return String(value);
 }
 
-function RecencyStatusIcon({ source, value }: { source: "News" | "SEC"; value: string }) {
+function TickerEventIcon({ source, value }: { source: "News" | "SEC"; value: string }) {
   const state = value.toLowerCase();
-  const Icon = state === "hot" ? Flame : state === "cold" ? Snowflake : state === "old" ? Clock3 : source === "News" ? Newspaper : FileText;
-  const label = state === "none" ? `No ${source} event in the active window` : `${source} ${state}`;
-  return <span aria-label={label} className="market-list-recency-icon" data-source={source.toLowerCase()} data-state={state} title={label}><Icon aria-hidden="true" size={13} /></span>;
+  if (state !== "hot" && state !== "cold") return null;
+  const Icon = source === "News" ? Newspaper : FileText;
+  const label = `${state} ${source.toLowerCase()}`;
+  return <span aria-label={label} className="market-list-ticker-event" data-source={source.toLowerCase()} data-state={state} title={label}><Icon aria-hidden="true" size={12} /></span>;
 }
 
 function toneClass(value: unknown, column: string) {

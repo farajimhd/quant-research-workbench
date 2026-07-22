@@ -20,6 +20,7 @@ from src.backend.trading_runtime_service import (
 )
 from src.backend.canonical_trading_service import trading_state_payload
 from src.backend.historical_scanner_service import historical_scanner_reference_projection, historical_scanner_snapshot
+from src.backend.news_classification import news_classification_sql
 from src.trading_runtime.domain import BrokerAccount, BrokerEventEnvelope, BrokerEventType, BrokerProvider, TradingMode
 from src.trading_runtime.ibkr_normalizer import normalize_account_values, normalize_execution, normalize_ledger, normalize_order, normalize_position_snapshot
 from src.trading_runtime.projector import TradingStateProjector
@@ -234,22 +235,20 @@ def _utc_sql(value: datetime) -> str:
 
 def _query_news(cutoff: datetime) -> list[dict[str, Any]]:
     start = cutoff - timedelta(days=3)
+    ticker_links_sql = "arraySort(arrayDistinct(arrayFilter(value -> notEmpty(value), arrayMap(value -> upperUTF8(trimBoth(value)), n.tickers))))"
+    classification = news_classification_sql(ticker_links_sql)
     return _clickhouse_rows(
         f"""
         SELECT
-            canonical_news_id,
-            formatDateTime(published_at_raw, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
-            title, teaser, tickers, channels
-        FROM
-        (
-            SELECT canonical_news_id, published_at_utc AS published_at_raw, title, teaser, tickers, channels
-            FROM q_live.benzinga_news_normalized_v1 FINAL
-            WHERE published_at_utc BETWEEN toDateTime64({_utc_sql(start)}, 3, 'UTC')
-                AND toDateTime64({_utc_sql(cutoff)}, 3, 'UTC')
-            ORDER BY published_at_utc DESC
-            LIMIT 30
-        )
-        ORDER BY published_at_raw DESC
+            n.canonical_news_id,
+            formatDateTime(n.published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
+            n.title, n.teaser, {ticker_links_sql} AS tickers, n.channels,
+            {classification["company"]} AS is_company_news,
+            {classification["topics"]} AS news_topics
+        FROM q_live.benzinga_news_normalized_v1 AS n FINAL
+        WHERE n.published_at_utc BETWEEN toDateTime64({_utc_sql(start)}, 3, 'UTC')
+            AND toDateTime64({_utc_sql(cutoff)}, 3, 'UTC')
+        ORDER BY n.published_at_utc DESC
         LIMIT 30
         """
     )
@@ -316,11 +315,11 @@ def _enrich_scanner_intelligence(scanner: list[dict[str, Any]], news: Any, sec: 
             sec_by_ticker.setdefault(ticker, []).append(item)
     for row in scanner:
         ticker = str(row.get("symbol") or "").upper()
-        ticker_news = news_by_ticker.get(ticker, [])
+        ticker_news = [item for item in news_by_ticker.get(ticker, []) if _is_truthy(item.get("is_company_news"))]
         ticker_sec = sec_by_ticker.get(ticker, [])
         row["live_news_count"] = len(ticker_news)
         row["live_news_recency"] = _latest_recency(ticker_news, "published_at_utc", as_of)
-        row["news_labels"] = ", ".join(sorted({label for item in ticker_news for label in _string_values(item.get("channels"))}))
+        row["news_labels"] = ", ".join(sorted({label for item in ticker_news for label in _string_values(item.get("news_topics"))}))
         row["sec_count"] = len(ticker_sec)
         row["sec_recency"] = _latest_recency(ticker_sec, "accepted_at_utc", as_of)
         row["sec_labels"] = ", ".join(sorted({str(item.get("form_type") or "") for item in ticker_sec if item.get("form_type")}))
@@ -346,6 +345,14 @@ def _string_values(value: Any) -> list[str]:
     if isinstance(value, str):
         return [item.strip() for item in value.strip("[]").replace("'", "").split(",") if item.strip()]
     return []
+
+
+def _is_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "yes"}
 
 
 def _portfolio_fixture(price: float) -> dict[str, Any]:

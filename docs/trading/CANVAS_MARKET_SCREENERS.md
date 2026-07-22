@@ -55,8 +55,10 @@ Watchlists have a stable name and an owner kind of `user` or `strategy`. Canvas 
 - Unselected sort controls are revealed on header hover or keyboard focus.
 - Search, quick filters, views, sorting, and selected columns remain local to the container instance.
 - The grouped column picker searches the full catalog and explains every field before selection.
-- Scanner identity is fixed at the left edge of the selected schema: ticker logo and symbol first, then compact News and SEC recency icons. These three columns cannot be removed or reordered. A themed monogram preserves the identity slot when no provider logo is published.
-- News and SEC icons expose hot, cold, old, and no-event states through semantic color, iconography, accessible labels, and independent hot/cold filters.
+- Scanner identity is fixed at the left edge of the selected schema. The ticker cell shows the provider logo when one exists, the symbol, and then compact company-news and SEC recency icons. Missing logos and missing recent events leave no placeholder ornament.
+- Event icons have no badge background or border: hot events use the danger color and cold events use the information color. Old and absent events render no ticker-cell icon. The News icon is restricted to classified company news, so broad market or editorial coverage cannot mark a ticker.
+- The adjacent News and SEC columns contain their explainable classifications (for example, news topics and SEC form classes), not duplicate recency icons. Ticker, News, and SEC remain present across Scanner, Signal Stream, and Watchlist schemas and retain independent hot/cold filters.
+- Selecting a row with pointer or keyboard opens or focuses a Chart container and applies the selected symbol. When the existing chart participates in a color link, the linked symbol authority is updated; otherwise only that chart instance is updated.
 - The column picker exposes source coverage for batch-projected reference fields. It does not advertise fields whose canonical materialized authority is empty or unavailable.
 - Positive and negative market values use semantic theme colors; neutral and unavailable states stay visually distinct.
 
@@ -72,3 +74,5 @@ QMD live scanner state is the live cross-sectional authority. Historical and rep
 The dedicated `GET /api/trading/canvas-scanner` route makes the Scanner, Watchlist, and market-derived Signal Stream independent of the broad Canvas preview request. An unrelated QMD History coverage failure therefore cannot replace a valid persisted scanner snapshot with a six-symbol sample or an empty universe. News and SEC enrichments are attached in batch at the same clock and report their failures separately from market-state availability.
 
 News and SEC enrichment is batch-linked to ticker identity. Identity, issuer, country, market-cap, share-supply, float, and short-interest fields are also resolved by one causal ClickHouse projection for the entire tradable universe. Every source is bounded by the Canvas clock, including filing publication availability and reference-table insertion time. The table never issues per-row fact requests. Field coverage is returned with the snapshot so users can distinguish a partially published source from a broken column.
+
+Ticker presentations are requested only for visible table rows and split into bounded batches below the service's 200-symbol contract. An unavailable presentation database is returned as retryable service state; it is not cached as proof that the ticker has no logo. This prevents a large scanner universe or temporary ClickHouse outage from poisoning the shared logo cache.

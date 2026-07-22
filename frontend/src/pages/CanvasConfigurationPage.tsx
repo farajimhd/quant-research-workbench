@@ -1144,6 +1144,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
   const [managementOpen, setManagementOpen] = useState(false);
   const [linkPopoverContainerId, setLinkPopoverContainerId] = useState<string | null>(null);
   const [settingsContainerId, setSettingsContainerId] = useState<string | null>(null);
+  const [chartOpenRequest, setChartOpenRequest] = useState<{ kind: "chart"; requestId: number } | null>(null);
 
   const currentCanvas = registry.canvases.find((canvas) => canvas.id === canvasId) ?? { id: canvasId, label: canvasId === MAIN_CANVAS_ID ? "Main" : "Focus canvas" };
   const primaryChartId = (workspaceState?.openIds ?? []).find((id) => workspaceContainerKind(id, workspaceState) === "chart") ?? "chart";
@@ -1345,6 +1346,16 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
       : { ...current, instanceSettings: { ...current.instanceSettings, [instanceId]: cloneDefaultSettings() } });
   }
 
+  function openChartForTicker(tickerValue: string) {
+    const symbol = tickerValue.trim().toUpperCase();
+    if (!/^[A-Z][A-Z0-9.\-]{0,15}$/.test(symbol)) return;
+    const chartId = (workspaceState?.openIds ?? []).find((id) => workspaceContainerKind(id, workspaceState) === "chart") ?? "chart";
+    const group = registry.linkAssignments[chartId] ?? "none";
+    if (group === "none") updateInstanceSettings(chartId, (current) => ({ ...current, chart: { ...current.chart, symbol } }));
+    else updateLinkContext(group, { symbol });
+    setChartOpenRequest((current) => ({ kind: "chart", requestId: (current?.requestId ?? 0) + 1 }));
+  }
+
   function openNewCanvas(instanceId?: string, sourceLayout?: WorkspaceWindowLayout) {
     const containerId = instanceId ? workspaceContainerKind(instanceId, workspaceState) : undefined;
     const created = createCanvasRecord(registry, containerId ? `${containerInstanceTitle(containerId, instanceId!, workspaceState, registry)} focus` : undefined);
@@ -1474,6 +1485,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
         onMoveContainerToCanvas={moveContainer}
         onMoveGroupToCanvas={moveGroup}
         onManagementClose={() => setManagementOpen(false)}
+        openContainerRequest={chartOpenRequest}
         onPopOutContainer={openNewCanvas}
         onPopOutGroup={openGroupCanvas}
         onStateChange={setWorkspaceState}
@@ -1510,6 +1522,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
             }}
             preview={preview}
             scannerSnapshot={scannerSnapshot}
+            onTickerChartOpen={openChartForTicker}
             previewContext={previewContext}
             requestedNewsId={requestedNewsId}
             requestedSecAccession={requestedSecAccession}
@@ -1566,7 +1579,7 @@ function CanvasManager({ onCreate, onOpen, onRemove, registry }: { onCreate: () 
 
 type SettingsUpdater = (update: ContainerSettings | ((current: ContainerSettings) => ContainerSettings)) => void;
 
-function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, linkContext, linkGroup, linkedContainers, linkOpen, loading, onLinkChange, onLinkContextChange, preview, previewContext, requestedNewsId, requestedSecAccession, requestedSecCik, scannerSnapshot, settings, settingsOpen, symbolEditable, updateSettings }: {
+function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, linkContext, linkGroup, linkedContainers, linkOpen, loading, onLinkChange, onLinkContextChange, onTickerChartOpen, preview, previewContext, requestedNewsId, requestedSecAccession, requestedSecCik, scannerSnapshot, settings, settingsOpen, symbolEditable, updateSettings }: {
   canvasId: string;
   chartCutoffMs: number;
   definition: WorkspaceContainerDefinition;
@@ -1578,6 +1591,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
   loading: boolean;
   onLinkChange: (group: CanvasLinkGroupId) => void;
   onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void;
+  onTickerChartOpen: (ticker: string) => void;
   preview: CanvasPreview | null;
   scannerSnapshot: CanvasScannerSnapshot | null;
   previewContext: CanvasPreviewContext;
@@ -1614,11 +1628,11 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
       : definition.id === "xbrl"
         ? <XbrlAnalysisContainer asOf={new Date(chartCutoffMs).toISOString()} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} settings={settings.xbrl} symbol={linkContext.symbol} />
       : definition.id === "scanner"
-        ? <MarketScannerContainer asOf={new Date(chartCutoffMs).toISOString()} meta={scannerSnapshot?.meta ?? preview?.scanner_meta} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, scanner: { ...state.scanner, ...patch } }))} rows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.scanner} />
+        ? <MarketScannerContainer asOf={new Date(chartCutoffMs).toISOString()} meta={scannerSnapshot?.meta ?? preview?.scanner_meta} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, scanner: { ...state.scanner, ...patch } }))} onTickerSelect={onTickerChartOpen} rows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.scanner} />
       : definition.id === "signal_stream"
-        ? <SignalStreamContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, signal_stream: { ...state.signal_stream, ...patch } }))} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.signal_stream} strategySignals={preview?.strategy.signals ?? []} />
+        ? <SignalStreamContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, signal_stream: { ...state.signal_stream, ...patch } }))} onTickerSelect={onTickerChartOpen} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.signal_stream} strategySignals={preview?.strategy.signals ?? []} />
       : definition.id === "watchlist"
-        ? <WatchlistContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...patch } }))} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
+        ? <WatchlistContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...patch } }))} onTickerSelect={onTickerChartOpen} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
       : loading && !preview
         ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div>
         : renderPreview(definition.id, preview, settings, linkGroup, onLinkContextChange)}</div>

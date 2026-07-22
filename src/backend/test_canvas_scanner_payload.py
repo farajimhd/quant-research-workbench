@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 import unittest
 from unittest.mock import patch
 
-from src.backend.canvas_preview_service import scanner_snapshot_payload
+from src.backend.canvas_preview_service import _enrich_scanner_intelligence, _query_news, scanner_snapshot_payload
 
 
 class CanvasScannerPayloadTest(unittest.TestCase):
@@ -38,6 +38,48 @@ class CanvasScannerPayloadTest(unittest.TestCase):
         self.assertEqual(payload["meta"]["field_coverage"]["company_name"], 100.0)
         self.assertEqual(payload["meta"]["field_coverage"]["exchange"], 0.0)
         self.assertEqual(payload["errors"], {})
+
+    def test_company_news_and_sec_labels_are_enriched_separately(self) -> None:
+        as_of = datetime(2026, 7, 17, 13, 45, tzinfo=UTC)
+        rows = [{"symbol": "AAPL"}]
+        news = [
+            {
+                "is_company_news": True,
+                "news_topics": ["earnings", "guidance"],
+                "published_at_utc": "2026-07-17T12:30:00Z",
+                "tickers": ["AAPL"],
+            },
+            {
+                "is_company_news": False,
+                "news_topics": ["market"],
+                "published_at_utc": "2026-07-17T13:30:00Z",
+                "tickers": ["AAPL"],
+            },
+            {
+                "is_company_news": "0",
+                "news_topics": ["analyst"],
+                "published_at_utc": "2026-07-17T13:40:00Z",
+                "tickers": ["AAPL"],
+            },
+        ]
+        sec = [{"accepted_at_utc": "2026-07-17T11:00:00Z", "form_type": "8-K", "ticker": "AAPL"}]
+
+        _enrich_scanner_intelligence(rows, news, sec, as_of)
+
+        self.assertEqual(rows[0]["live_news_count"], 1)
+        self.assertEqual(rows[0]["live_news_recency"], "hot")
+        self.assertEqual(rows[0]["news_labels"], "earnings, guidance")
+        self.assertEqual(rows[0]["sec_recency"], "hot")
+        self.assertEqual(rows[0]["sec_labels"], "8-K")
+
+    def test_news_query_requests_company_classification_and_topics(self) -> None:
+        with patch("src.backend.canvas_preview_service._clickhouse_rows", return_value=[]) as clickhouse:
+            _query_news(datetime(2026, 7, 17, 13, 45, tzinfo=UTC))
+
+        sql = clickhouse.call_args.args[0]
+        self.assertIn("AS is_company_news", sql)
+        self.assertIn("AS news_topics", sql)
+        self.assertIn("provider_tags", sql)
 
 
 if __name__ == "__main__":
