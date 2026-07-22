@@ -5,13 +5,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
+from services.gateway_core.storage import (
+    WORKSTATION_DATA_ROOT_WIN,
+    WORKSTATION_SHARE_DATA_ROOT_WIN,
+    is_workstation_host,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CLICKHOUSE_URL = "http://localhost:8123"
 DEFAULT_WRITE_DATABASE = "q_live"
 DEFAULT_MASSIVE_WS_URL = "wss://socket.massive.com/stocks"
-DEFAULT_LOGO_ARTIFACT_ROOT = r"\\DESKTOP-SAAI85T\Workstation-G\market-data\trading-dashboard\artifacts"
+PRESENTATION_ASSET_SUBDIR = Path("reference_gateway") / "artifacts" / "presentation_assets"
 
 
 def load_real_live_market_env() -> None:
@@ -81,7 +86,12 @@ def market_gateway_config() -> MarketGatewayConfig:
     )
     return MarketGatewayConfig(
         enable_clickhouse_writes=bool_env("REAL_LIVE_CLICKHOUSE_WRITES", True),
-        logo_artifact_root=env_first("REAL_LIVE_LOGO_ARTIFACT_ROOT", "TRADING_DASHBOARD_ARTIFACT_ROOT", default=DEFAULT_LOGO_ARTIFACT_ROOT),
+        logo_artifact_root=env_first(
+            "REAL_LIVE_LOGO_ARTIFACT_ROOT",
+            "REFERENCE_GATEWAY_PRESENTATION_ASSET_ROOT_WIN",
+            "TRADING_DASHBOARD_ARTIFACT_ROOT",
+            default=str(default_logo_artifact_root()),
+        ),
         massive=massive,
         max_universe_symbols=positive_int_env("REAL_LIVE_MAX_UNIVERSE_SYMBOLS", 6000),
         min_avg_daily_volume=float_env("REAL_LIVE_MIN_AVG_DAILY_VOLUME", 100_000),
@@ -103,6 +113,11 @@ def env_first(*names: str, default: str) -> str:
         if value:
             return value
     return default
+
+
+def default_logo_artifact_root() -> Path:
+    data_root = WORKSTATION_DATA_ROOT_WIN if is_workstation_host() else WORKSTATION_SHARE_DATA_ROOT_WIN
+    return data_root / PRESENTATION_ASSET_SUBDIR
 
 
 def bool_env(name: str, default: bool) -> bool:

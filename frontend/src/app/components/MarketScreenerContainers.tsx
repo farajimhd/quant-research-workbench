@@ -296,7 +296,7 @@ function TickerEventIcon({ source, value }: { source: "News" | "SEC"; value: str
   if (state !== "hot" && state !== "cold") return null;
   const Icon = source === "News" ? Flame : FileCheck2;
   const label = `${state} ${source.toLowerCase()}`;
-  return <span aria-label={label} className="market-list-ticker-event" data-source={source.toLowerCase()} data-state={state} title={label}><Icon aria-hidden="true" size={12} /></span>;
+  return <span aria-label={label} className="market-list-ticker-event" data-source={source.toLowerCase()} data-state={state} title={label}><Icon aria-hidden="true" fill={source === "News" ? "currentColor" : "none"} size={12} /></span>;
 }
 
 function toneClass(value: unknown, column: string) {
@@ -314,7 +314,7 @@ function withLockedColumns(columns: string[], lockedColumns: string[]) {
   const trailing = lockedColumns.filter((column) => !leading.includes(column));
   return [...leading, ...columns.filter((column) => !lockedColumns.includes(column)), ...trailing];
 }
-function columnClass(column: string) { return column === "logo" ? "market-list-logo-column" : column === "news_labels" || column === "sec_labels" ? "market-list-label-column" : ""; }
+function columnClass(column: string) { return column === "logo" ? "market-list-logo-column" : column === "ticker" ? "market-list-symbol-column" : column === "news_labels" || column === "sec_labels" ? "market-list-label-column" : ""; }
 function rowLabels(value: unknown) { return [...new Set(String(value ?? "").split(",").map((item) => item.trim()).filter(Boolean))]; }
 function collectLabels(rows: ScreenerRow[], column: "news_labels" | "sec_labels") { return [...new Set(rows.flatMap((row) => rowLabels(row[column])))].sort((left, right) => left.localeCompare(right)); }
 function normalizeLabel(value: string) { return value.trim().toLowerCase(); }
