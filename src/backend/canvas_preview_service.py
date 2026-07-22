@@ -19,7 +19,7 @@ from src.backend.trading_runtime_service import (
     historical_day_coverage,
 )
 from src.backend.canonical_trading_service import trading_state_payload
-from src.backend.historical_scanner_service import historical_scanner_snapshot
+from src.backend.historical_scanner_service import historical_scanner_reference_projection, historical_scanner_snapshot
 from src.trading_runtime.domain import BrokerAccount, BrokerEventEnvelope, BrokerEventType, BrokerProvider, TradingMode
 from src.trading_runtime.ibkr_normalizer import normalize_account_values, normalize_execution, normalize_ledger, normalize_order, normalize_position_snapshot
 from src.trading_runtime.projector import TradingStateProjector
@@ -112,15 +112,20 @@ def scanner_snapshot_payload(*, as_of: datetime, lookback_minutes: int = 15) -> 
     errors: dict[str, str] = {}
     news: list[dict[str, Any]] = []
     sec: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {
             "news": executor.submit(_query_news, cutoff),
+            "reference": executor.submit(historical_scanner_reference_projection, as_of),
             "sec": executor.submit(_query_sec, cutoff),
         }
         for name, future in futures.items():
             try:
                 if name == "news":
                     news = future.result()
+                elif name == "reference":
+                    projection = future.result()
+                    for row in rows:
+                        row.update(projection.get(str(row.get("symbol") or "").upper(), {}))
                 else:
                     sec = future.result()
             except Exception as exc:
@@ -133,6 +138,18 @@ def scanner_snapshot_payload(*, as_of: datetime, lookback_minutes: int = 15) -> 
     rows.sort(key=lambda row: (-abs(float(row.get("change_5m_pct") or 0)), str(row.get("symbol") or "")))
     for rank, row in enumerate(rows, start=1):
         row["rank"] = rank
+    projected_fields = (
+        "company_name", "exchange", "country", "sector", "market_cap", "shares_outstanding",
+        "float_shares", "short_interest", "short_crowding_pct", "days_to_cover",
+    )
+    total = max(1, len(rows))
+    meta = {
+        **meta,
+        "field_coverage": {
+            field: round(sum(row.get(field) not in (None, "") for row in rows) / total * 100, 1)
+            for field in projected_fields
+        },
+    }
     return {
         "as_of": as_of.isoformat(),
         "errors": errors,

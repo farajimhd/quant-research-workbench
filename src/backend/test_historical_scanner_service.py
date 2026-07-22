@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 import unittest
 from unittest.mock import patch
 
-from src.backend.historical_scanner_service import historical_scanner_snapshot
+from src.backend.historical_scanner_service import historical_scanner_reference_projection, historical_scanner_snapshot
 
 
 class FakeClient:
@@ -34,6 +34,30 @@ class HistoricalScannerServiceTest(unittest.TestCase):
         self.assertIn("FROM market_sip_compact.events_2026", insert)
         self.assertIn("GROUP BY ticker", insert)
         self.assertNotIn("ticker IN", insert)
+
+    def test_reference_projection_is_one_causal_tradable_universe_query(self) -> None:
+        class ReferenceClient:
+            calls: list[str] = []
+
+            def __init__(self, *_args) -> None:
+                pass
+
+            def execute(self, sql: str, **_kwargs) -> str:
+                self.calls.append(sql)
+                return '{"ticker":"AAPL","company_name":"APPLE INC","country":"US","market_cap":4374000000000,"float_shares":14400000000,"short_interest":144248000,"short_crowding_pct":1.0017,"days_to_cover":2.76}\n'
+
+        with patch("src.backend.historical_scanner_service.ClickHouseHttpClient", ReferenceClient):
+            rows = historical_scanner_reference_projection(datetime(2026, 7, 17, 13, 45, tzinfo=UTC))
+
+        self.assertEqual(rows["AAPL"]["company_name"], "APPLE INC")
+        self.assertEqual(rows["AAPL"]["country"], "US")
+        self.assertAlmostEqual(rows["AAPL"]["short_crowding_pct"], 1.0017)
+        self.assertEqual(len(ReferenceClient.calls), 1)
+        query = ReferenceClient.calls[0]
+        self.assertIn("is_tradable = 1", query)
+        self.assertIn("inserted_at <= cutoff", query)
+        self.assertIn("published_at_utc", query)
+        self.assertNotIn("ticker IN", query)
 
 
 if __name__ == "__main__":
