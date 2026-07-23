@@ -329,15 +329,15 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
       ],
     },
   ),
-  displayIndicator("indicator.qmd_decision_chart", "QMD Decision · Chart regimes", "microstructure", ["qmd_decision_signal", "qmd_decision_confidence", "qmd_decision_action"], "price", {
-    shortDescription: "The same canonical QMD Decision shown as sparse regime shading and one change marker.",
-    detailedDescription: "A light green or red background begins when the gateway action changes to Buy or Sell and ends when the action changes again. Wait has no background. A single arrow marks the start, so repeated bars do not clutter price.",
+  displayIndicator("indicator.qmd_decision_chart", "QMD Decision · Chart signals", "microstructure", ["qmd_decision_signal", "qmd_decision_confidence", "qmd_decision_action"], "price", {
+    shortDescription: "The same canonical QMD Decision shown as one causal marker when a new Buy or Sell becomes actionable.",
+    detailedDescription: "The decision is calculated only after a candle closes. Its marker therefore appears on the next candle—the first candle on which the result could be acted upon. A green up arrow means Buy, a red down arrow means Sell, and the text contains only confidence. Wait has no marker.",
     calculation: "This presentation does not calculate another signal. It renders qmd_decision_action and qmd_decision_confidence from the gateway.",
-    readingGuide: "Treat the shaded span as the lifetime of one unchanged decision. Darker confidence is intentionally not encoded in the background; inspect the oscillator for exact confidence.",
-    bullishEvidence: "Light green with an up marker means the canonical decision changed to Buy.",
-    bearishEvidence: "Light red with a down marker means the canonical decision changed to Sell.",
+    readingGuide: "Read the marker at the next candle open. Its percentage is evidence confidence, not expected return or win probability. Use the oscillator when you need the full decision history.",
+    bullishEvidence: "A green up arrow means the preceding closed candle produced a Buy decision.",
+    bearishEvidence: "A red down arrow means the preceding closed candle produced a Sell decision.",
     timeframeBehavior: "The decision is calculated once from sufficient statistics aggregated for the selected chart timeframe.",
-    caveats: ["Wait is intentionally blank.", "The marker denotes a state change, not an execution or guaranteed entry."],
+    caveats: ["Wait is intentionally blank.", "No background shading is used.", "The marker denotes a newly actionable state, not an execution or guaranteed entry."],
   }),
   displayIndicator("indicator.qmd_transaction_imbalance", "QMD Transaction Imbalance", "microstructure", ["microstructure_transaction_imbalance", "microstructure_buy_trade_count", "microstructure_sell_trade_count"], "qmd_transaction", qmdIndicatorKnowledge("Buy-versus-sell trade-count imbalance", "Counts eligible prints classified at the ask as buys and at the bid as sells, then computes (buys - sells) / classified trades.", "Persistent positive readings mean buyer-initiated prints are arriving more often; negative readings mean seller-initiated prints dominate.", "It ignores trade size, so compare it with Signed-volume Imbalance.")),
   displayIndicator("indicator.qmd_signed_volume", "QMD Signed-volume Imbalance", "microstructure", ["microstructure_signed_volume_imbalance", "microstructure_buy_volume", "microstructure_sell_volume"], "qmd_signed_volume", qmdIndicatorKnowledge("Buy-versus-sell executed-volume imbalance", "Sums eligible volume at the ask and bid inside the selected bar, then computes (buy volume - sell volume) / classified volume.", "Positive values show aggressive buy volume; negative values show aggressive sell volume. Agreement with transaction imbalance is stronger evidence than either alone.", "A few large prints can dominate the value; inspect trade conditions and resiliency.")),
@@ -796,55 +796,41 @@ function shallowRowEqual<T extends object>(left: T, right: T): boolean {
   return leftKeys.every((key) => leftRecord[key] === rightRecord[key]);
 }
 
-function qmdDecisionChartVisuals(
+function qmdDecisionChartMarkers(
   rows: HistoricalIndicator[],
   bars: HistoricalBar[],
   visibleIndicators: string[],
-): Pick<ChartPayload, "markers" | "regions"> {
+): ChartPayload["markers"] {
   if (!visibleIndicators.includes("indicator.qmd_decision_chart") || !rows.length || !bars.length) {
-    return { markers: [], regions: [] };
+    return [];
   }
   const markers: ChartPayload["markers"] = [];
-  const regions: ChartPayload["regions"] = [];
-  let activeAction = "";
-  let activeStart = Number.NaN;
-  let activeConfidence = 0;
-  const closeActiveRegion = (end: number) => {
-    if (!["buy", "sell"].includes(activeAction) || !Number.isFinite(activeStart) || !(end > activeStart)) return;
-    regions.push({
-      color: activeAction === "buy"
-        ? "color-mix(in srgb, var(--success) 8%, transparent)"
-        : "color-mix(in srgb, var(--danger) 8%, transparent)",
-      end,
-      label: `QMD ${activeAction} · ${Math.round(activeConfidence * 100)}% confidence`,
-      start: activeStart,
-    });
-  };
-  rows.forEach((row) => {
+  const barIndexByStart = new Map(bars.map((bar, index) => [bar.bar_start, index]));
+  // The first visible row has no in-window predecessor, so treating it as a
+  // transition would invent a signal at the viewport boundary.
+  let activeAction = String(rows[0]?.qmd_decision_action || "wait").toLowerCase();
+  rows.slice(1).forEach((row) => {
     const action = String(row.qmd_decision_action || "wait").toLowerCase();
-    const time = rowTimestamp(row);
-    if (!Number.isFinite(time) || action === activeAction) {
-      activeConfidence = Math.max(activeConfidence, boundedUnit(row.qmd_decision_confidence));
-      return;
-    }
-    closeActiveRegion(time);
+    if (action === activeAction) return;
     activeAction = action;
-    activeStart = time;
-    activeConfidence = boundedUnit(row.qmd_decision_confidence);
     if (!["buy", "sell"].includes(action)) return;
+    const sourceBarIndex = barIndexByStart.get(row.bar_start);
+    const actionableBar = sourceBarIndex === undefined ? undefined : bars[sourceBarIndex + 1];
+    if (!actionableBar) return;
+    const actionableTime = Date.parse(actionableBar.bar_start) / 1000;
+    if (!Number.isFinite(actionableTime)) return;
+    const confidence = boundedUnit(row.qmd_decision_confidence);
     markers.push({
       color: action === "buy" ? "var(--success)" : "var(--danger)",
       displayItemId: "indicator.qmd_decision_chart",
       position: action === "buy" ? "belowBar" : "aboveBar",
       shape: action === "buy" ? "arrowUp" : "arrowDown",
       size: 1,
-      text: `QMD ${action.toUpperCase()} · ${Math.round(activeConfidence * 100)}%`,
-      time: time as UTCTimestamp,
+      text: `${Math.round(confidence * 100)}%`,
+      time: actionableTime as UTCTimestamp,
     });
   });
-  const lastBar = bars[bars.length - 1];
-  closeActiveRegion(Date.parse(lastBar.bar_end || lastBar.bar_start) / 1000 + 1);
-  return { markers, regions };
+  return markers;
 }
 
 function extendedSessionRegions(bars: QmdLiveBar[]) {
@@ -1706,14 +1692,14 @@ function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl,
   const visibleIndicators = liveChart.indicatorsAvailable ? settings.chart.visibleIndicators : [];
   const timeframe = settings.chart.timeframe;
   const payload = useMemo<ChartPayload>(() => {
-    const decisionVisuals = qmdDecisionChartVisuals(indicators, liveChart.bars, visibleIndicators);
+    const decisionMarkers = qmdDecisionChartMarkers(indicators, liveChart.bars, visibleIndicators);
     return {
       candles: liveChart.bars.map((bar) => ({ close: bar.close, high: bar.high, low: bar.low, open: bar.open, time: Date.parse(bar.bar_start) / 1000 })),
-      markers: decisionVisuals.markers,
+      markers: decisionMarkers,
       oscillator_series: historicalIndicatorSeries(indicators, "oscillator", visibleIndicators),
       overlay_series: historicalIndicatorSeries(indicators, "price", visibleIndicators),
       price_zones: historicalMarketLevelZones(indicators, liveChart.bars, liveChart.structureEvents, visibleIndicators),
-      regions: [...(MACRO_TIMEFRAMES.has(timeframe) ? [] : extendedSessionRegions(liveChart.bars)), ...decisionVisuals.regions],
+      regions: MACRO_TIMEFRAMES.has(timeframe) ? [] : extendedSessionRegions(liveChart.bars),
       volume: settings.chart.showVolume ? liveChart.bars.map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
     };
   }, [indicators, liveChart.bars, liveChart.structureEvents, settings.chart.showVolume, timeframe, visibleIndicators]);

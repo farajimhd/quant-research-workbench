@@ -3247,7 +3247,7 @@ function markersForSelection(markers: ChartMarker[], selected: Set<string>): Ser
   return markers
     .filter((marker) => !marker.displayItemId || selected.has(marker.displayItemId.toLowerCase()))
     .map((marker, index) => ({
-      color: typeof marker.color === "string" ? marker.color : "#1E3A5F",
+      color: resolveChartColor(typeof marker.color === "string" ? marker.color : "#1E3A5F"),
       id: marker.id ?? `${marker.displayItemId ?? "marker"}:${marker.time}:${index}`,
       position: markerPosition(marker.position),
       shape: markerShape(marker.shape),

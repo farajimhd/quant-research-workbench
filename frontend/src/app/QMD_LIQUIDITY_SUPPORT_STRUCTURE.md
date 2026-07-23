@@ -32,7 +32,7 @@ These package ids are available in the Indicators menu and chart legend:
 | `indicator.qmd_arrival_intensity` | QMD Arrival-intensity Imbalance | imbalance and arrival rate | Signed oscillator; rate is supporting evidence. |
 | `indicator.qmd_resiliency` | QMD Liquidity Resiliency | `microstructure_resiliency` | Signed oscillator histogram. |
 | `indicator.qmd_decision` | QMD Decision · Oscillator | canonical decision, confidence, action, reason | One signed Buy/Sell/Wait oscillator with confidence. |
-| `indicator.qmd_decision_chart` | QMD Decision · Chart regimes | the same canonical decision | Sparse change marker plus light Buy/Sell shading; Wait is blank. |
+| `indicator.qmd_decision_chart` | QMD Decision · Chart signals | the same canonical decision | Green Buy or red Sell marker on the next actionable candle; Wait is blank. |
 | `indicator.qmd_generic_structure` | QMD Generic Structure | active zones, complete causal event stream, three-scale swings | Price overlay with independently configurable micro, tactical, and context layers. |
 | `indicator.qmd_reference_levels` | QMD Reference Levels | session, premarket, opening range, POC, LULD, and completed higher-timeframe references | Independent price lines, not structural evidence. |
 
@@ -101,10 +101,13 @@ opposition is a veto: the result becomes Wait instead of averaging contradictory
 evidence into a weak direction. A directional action requires at least 35%
 microstructure confidence and an absolute trigger of 0.15.
 
-The oscillator shows signed decision and 0-1 confidence. The chart presentation
-shows one arrow when Buy or Sell begins and lightly shades the unchanged regime
-until the next action. Wait draws no marker or shading. Both presentations read
-the same `qmd_decision_*` fields; neither calculates a second signal.
+The oscillator shows signed decision and 0-1 confidence. Because the gateway
+finalizes a decision only when its source candle closes, the chart presentation
+places a state-change marker on the next candle: green up for Buy and red down
+for Sell. Marker text contains only the evidence-confidence percentage. It is
+not a return target or empirical win probability. Wait draws nothing, and no
+Buy/Sell background shading is used. Both presentations read the same
+`qmd_decision_*` fields; neither calculates a second signal.
 
 ## Anchored OFI + Trade Delta Pane
 
