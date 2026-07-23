@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
 
-pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v22";
+pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v23";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProfile {
@@ -711,9 +711,10 @@ impl HistoricalDerivedCache {
                             }
                             last_base_indicator = Some(indicator.clone());
                             aggregate.push(&indicator);
-                            for event in
-                                episode_engine.update(&indicator.sym, qmd_episode_input(&indicator))
-                            {
+                            for event in episode_engine.update(
+                                &indicator.sym,
+                                qmd_episode_input(&indicator, bar.high, bar.low),
+                            ) {
                                 worker_entry.push_episode_event(event).await?;
                             }
                             if indicator.qmd_decision_action != last_decision_action {

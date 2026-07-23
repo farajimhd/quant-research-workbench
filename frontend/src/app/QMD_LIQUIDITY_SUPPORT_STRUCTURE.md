@@ -101,13 +101,24 @@ opposition is a veto: the result becomes Wait instead of averaging contradictory
 evidence into a weak direction. A directional action requires at least 35%
 microstructure confidence and an absolute trigger of 0.15.
 
-The oscillator shows signed decision and 0-1 confidence. Because the gateway
-finalizes a decision only when its source candle closes, the chart presentation
-places a state-change marker on the next candle: green up for Buy and red down
-for Sell. Marker text contains only the evidence-confidence percentage. It is
-not a return target or empirical win probability. Wait draws nothing, and no
-Buy/Sell background shading is used. Both presentations read the same
-`qmd_decision_*` fields; neither calculates a second signal.
+The oscillator shows signed decision and 0-1 confidence. The 100 ms chart keeps
+each canonical transition. On a larger chart, the selected Micro, Tactical, or
+Context preset converts the same 100 ms stream into a causal trade episode:
+
+1. a qualifying QMD decision arms the setup;
+2. the engine freezes the last confirmed traded-price swing in that direction;
+3. entry begins only when a later 100 ms close crosses that frozen level;
+4. the episode trails newly confirmed favorable opposite swings; and
+5. it ends when price breaks that trailing swing after QMD support has gone
+   stale, or sooner on invalidation, persistent opposition, evidence
+   exhaustion, or the preset safety duration.
+
+The breakout level is the episode rail. Green means Buy, red means Sell, and
+Wait draws nothing. Confidence text is evidence confidence, not a return target
+or calibrated win probability. Start and end timestamps are independent of the
+displayed candle interval; larger candles only consolidate the same episode
+geometry. Historical range fill is continuous between adjacent candle slots
+and never uses future confidence to restyle an earlier segment.
 
 ## Anchored OFI + Trade Delta Pane
 
@@ -133,8 +144,10 @@ not normalized against each other.
 
 ## Generic Structure Price Overlay
 
-Generic Structure comes from ordered NBBO midpoint and eligible trades, not
-from the selected candle OHLC. Changing timeframe changes sampling density and
+Generic Structure derives pivots, direction, BoS, and CHoCH from ordered
+eligible trade prices, not from the selected candle OHLC. NBBO updates maintain
+displayed-liquidity evidence and zone context, but an unexecuted quote move
+cannot create price structure. Changing timeframe changes sampling density and
 chart history, but it does not redefine the underlying pivots or zones.
 
 ### Current support and resistance zones
@@ -181,7 +194,10 @@ opening range, trade-volume POC, estimated LULD, completed
 not all support/resistance evidence of equal quality.
 
 Micro, tactical, and context are event-response scales, not chart timeframes.
-They use increasingly large adaptive price thresholds and longer evidence
+The base threshold has a two-tick or 0.5-basis-point floor, adapts to recent
+spread and eligible-trade movement, and is capped at the larger of 25 basis
+points or four ticks so one transient quote cannot inflate the Micro scale.
+The three scales use 1×, 3×, and 8× that base plus increasingly long evidence
 half-lives.
 
 ## Structural context inside QMD Decision

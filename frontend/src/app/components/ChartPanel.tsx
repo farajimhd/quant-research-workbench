@@ -4414,16 +4414,18 @@ function drawSignalEpisodePrimitive(
   context.save();
   context.lineCap = "butt";
   steps.forEach((step, index) => {
-    const coordinates = priceZoneCoordinates(
+    const coordinates = signalEpisodeStepCoordinates(
       chart,
-      { ...zone, end: step.end, start: step.start },
       candles,
+      step.start,
+      step.end,
       barWidth,
       candleDuration,
+      width,
     );
     if (!coordinates) return;
-    const left = Math.max(0, Math.min(coordinates.start, coordinates.end));
-    const right = Math.min(width, Math.max(coordinates.start, coordinates.end));
+    const left = coordinates.start;
+    const right = coordinates.end;
     if (right < 0 || left > width || right <= left) return;
     const confidence = clampNumber(step.confidence, 0, 1, 0);
     if (zone.annotationKind === "signal-episode-range") {
@@ -4437,9 +4439,7 @@ function drawSignalEpisodePrimitive(
         * (0.45 + 0.55 * confidence)
         * settings.opacity;
       context.fillStyle = rgbaFromHex(fillColor, opacity);
-      // A sub-pixel overlap prevents seams between adjacent causal steps
-      // without extending the episode beyond its actual timestamps.
-      context.fillRect(left, top, Math.min(width - left, right - left + 0.75), bottom - top);
+      context.fillRect(left, top, right - left, bottom - top);
       return;
     }
     const railCoordinate = priceSeries.priceToCoordinate(step.lower);
@@ -4457,6 +4457,39 @@ function drawSignalEpisodePrimitive(
     context.stroke();
   });
   context.restore();
+}
+
+function signalEpisodeStepCoordinates(
+  chart: IChartApi,
+  candles: Candle[],
+  start: number,
+  end: number,
+  barWidth: number,
+  candleDuration: number,
+  width: number,
+) {
+  let firstIndex = lowerBoundCandleTime(candles, start - candleDuration);
+  while (
+    firstIndex < candles.length
+    && !(candles[firstIndex].time < end && candles[firstIndex].time + candleDuration > start)
+  ) firstIndex += 1;
+  const lastIndex = lowerBoundCandleTime(candles, end) - 1;
+  if (firstIndex >= candles.length || lastIndex < firstIndex) return null;
+  const first = chart.timeScale().timeToCoordinate(candles[firstIndex].time as Time);
+  const last = chart.timeScale().timeToCoordinate(candles[lastIndex].time as Time);
+  if (first === null || last === null) return null;
+  const previous = firstIndex > 0
+    ? chart.timeScale().timeToCoordinate(candles[firstIndex - 1].time as Time)
+    : null;
+  const next = lastIndex + 1 < candles.length
+    ? chart.timeScale().timeToCoordinate(candles[lastIndex + 1].time as Time)
+    : null;
+  const leftHalfStep = previous === null ? barWidth / 2 : Math.abs(first - previous) / 2;
+  const rightHalfStep = next === null ? barWidth / 2 : Math.abs(next - last) / 2;
+  return {
+    start: Math.max(0, first - leftHalfStep),
+    end: Math.min(width, last + rightHalfStep),
+  };
 }
 
 function drawPriceZones(

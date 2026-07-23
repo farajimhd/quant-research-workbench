@@ -5,7 +5,7 @@ use chrono_tz::America::New_York;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 3;
+pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 4;
 const SESSION_ANCHOR_SECONDS: u32 = 4 * 60 * 60;
 const REGULAR_OPEN_SECONDS: u32 = 9 * 60 * 60 + 30 * 60;
 const OPENING_RANGE_END_SECONDS: u32 = 9 * 60 * 60 + 35 * 60;
@@ -308,6 +308,7 @@ pub struct GenericStructureEngine {
     sym: String,
     last_ts: Option<DateTime<Utc>>,
     last_reference_price: f64,
+    last_structure_price: f64,
     bid: f64,
     ask: f64,
     spread_ewma: TimedEwma,
@@ -331,6 +332,8 @@ pub struct GenericStructureCheckpoint {
     pub sym: String,
     pub updated_at: Option<DateTime<Utc>>,
     last_reference_price: f64,
+    #[serde(default)]
+    last_structure_price: f64,
     bid: f64,
     ask: f64,
     spread_ewma: TimedEwma,
@@ -354,6 +357,7 @@ impl GenericStructureEngine {
             sym: sym.into().to_ascii_uppercase(),
             last_ts: None,
             last_reference_price: 0.0,
+            last_structure_price: 0.0,
             bid: 0.0,
             ask: 0.0,
             spread_ewma: TimedEwma::default(),
@@ -420,12 +424,15 @@ impl GenericStructureEngine {
             self.last_ts = Some(ts);
             return (self.snapshot(ts), Vec::new());
         }
-        if self.last_reference_price > 0.0 {
+        if eligible_trade_price > 0.0 && self.last_structure_price > 0.0 {
             self.move_ewma.update(
                 ts,
-                (reference - self.last_reference_price).abs(),
+                (eligible_trade_price - self.last_structure_price).abs(),
                 MOVE_HALF_LIFE_SECONDS,
             );
+        }
+        if eligible_trade_price > 0.0 {
+            self.last_structure_price = eligible_trade_price;
         }
         self.last_reference_price = reference;
         self.last_ts = Some(ts);
@@ -445,26 +452,32 @@ impl GenericStructureEngine {
                 &mut emitted,
                 &self.sym,
             );
-            update_directional_change(
-                state,
-                config,
-                reference,
-                threshold,
-                ts,
-                &mut emitted,
-                &self.sym,
-            );
-            update_structure_break(
-                state,
-                config,
-                reference,
-                eligible_trade_price,
-                eligible_trade_size,
-                threshold,
-                ts,
-                &mut emitted,
-                &self.sym,
-            );
+            // Price structure must match the traded-price candles on which it
+            // is audited. Quotes continue to update liquidity zones and the
+            // NBBO reference, but cannot manufacture a swing or structure
+            // break that never traded.
+            if eligible_trade_price > 0.0 {
+                update_directional_change(
+                    state,
+                    config,
+                    eligible_trade_price,
+                    threshold,
+                    ts,
+                    &mut emitted,
+                    &self.sym,
+                );
+                update_structure_break(
+                    state,
+                    config,
+                    eligible_trade_price,
+                    eligible_trade_price,
+                    eligible_trade_size,
+                    threshold,
+                    ts,
+                    &mut emitted,
+                    &self.sym,
+                );
+            }
         }
         if let Some(last) = emitted.last().cloned() {
             self.last_event = Some(last);
@@ -508,6 +521,7 @@ impl GenericStructureEngine {
             sym: self.sym.clone(),
             updated_at: self.last_ts,
             last_reference_price: self.last_reference_price,
+            last_structure_price: self.last_structure_price,
             bid: self.bid,
             ask: self.ask,
             spread_ewma: self.spread_ewma.clone(),
@@ -540,6 +554,7 @@ impl GenericStructureEngine {
         }
         self.last_ts = checkpoint.updated_at;
         self.last_reference_price = checkpoint.last_reference_price;
+        self.last_structure_price = checkpoint.last_structure_price;
         self.bid = checkpoint.bid;
         self.ask = checkpoint.ask;
         self.spread_ewma = checkpoint.spread_ewma.clone();
@@ -562,6 +577,7 @@ impl GenericStructureEngine {
             return;
         }
         self.last_reference_price = snapshot.reference_price;
+        self.last_structure_price = snapshot.reference_price;
         self.session_high = snapshot.session_high;
         self.session_low = snapshot.session_low;
         self.premarket_high = snapshot.premarket_high;
@@ -649,10 +665,14 @@ impl GenericStructureEngine {
 
     fn base_threshold(&self, reference: f64) -> f64 {
         let tick = price_tick(reference);
-        (2.0 * tick)
-            .max(self.spread_ewma.value * 1.25)
-            .max(self.move_ewma.value * 1.5)
-            .max(reference * 0.00005)
+        let floor = (2.0 * tick).max(reference * 0.00005);
+        let adaptive = (self.spread_ewma.value * 1.25).max(self.move_ewma.value * 1.5);
+        // Sparse prints, locked/crossed transitions, and transient wide quotes
+        // must not inflate a micro reversal into a multi-percent move. The cap
+        // remains price-relative, and Tactical/Context retain their 3x/8x
+        // separation from the same robust base.
+        let robust_cap = (reference * 0.0025).max(4.0 * tick);
+        floor.max(adaptive.min(robust_cap))
     }
 
     pub fn snapshot(&self, now: DateTime<Utc>) -> GenericStructureSnapshot {
@@ -2377,22 +2397,65 @@ mod tests {
             .with_ymd_and_hms(2026, 7, 20, 13, 30, 0)
             .unwrap()
             .timestamp_millis();
-        for (index, mid) in [100.00, 100.02, 100.04, 100.06].into_iter().enumerate() {
-            let event = quote(
-                start + index as i64 * 100,
-                mid - 0.005,
-                mid + 0.005,
-                index as u64,
+        engine.apply_event(
+            &quote(start, 99.995, 100.005, 0),
+            TradeUpdateRule::regular(),
+        );
+        for (index, price) in [100.00, 100.02, 100.04, 100.06].into_iter().enumerate() {
+            let event = trade(
+                start + index as i64 * 100 + 10,
+                price,
+                100.0,
+                index as u64 + 1,
             );
             let (_, emitted) = engine.apply_event(&event, TradeUpdateRule::regular());
             assert!(emitted.iter().all(|item| item.event_kind != "pivot_high"));
         }
-        let event = quote(start + 500, 99.985, 99.995, 10);
+        let event = trade(start + 500, 99.98, 100.0, 10);
         let (_, emitted) = engine.apply_event(&event, TradeUpdateRule::regular());
         assert!(emitted.iter().any(|item| item.event_kind == "pivot_high"));
         assert!(emitted
             .iter()
             .all(|item| item.confirmed_at >= item.pivot_at));
+    }
+
+    #[test]
+    fn quote_only_moves_cannot_create_price_swings() {
+        let mut engine = GenericStructureEngine::new("TEST");
+        let start = Utc
+            .with_ymd_and_hms(2026, 7, 20, 13, 30, 0)
+            .unwrap()
+            .timestamp_millis();
+        for (index, mid) in [100.0, 101.0, 99.0, 102.0].into_iter().enumerate() {
+            let (_, emitted) = engine.apply_event(
+                &quote(
+                    start + index as i64 * 100,
+                    mid - 0.01,
+                    mid + 0.01,
+                    index as u64,
+                ),
+                TradeUpdateRule::regular(),
+            );
+            assert!(emitted
+                .iter()
+                .all(|event| !event.event_kind.starts_with("pivot_")));
+        }
+        assert_eq!(
+            engine
+                .snapshot(Utc.timestamp_millis_opt(start + 500).unwrap())
+                .micro
+                .swing_high,
+            0.0
+        );
+    }
+
+    #[test]
+    fn adaptive_micro_threshold_is_robust_to_transient_wide_quotes() {
+        let mut engine = GenericStructureEngine::new("TEST");
+        engine.spread_ewma.value = 5.0;
+        engine.move_ewma.value = 5.0;
+        let threshold = engine.base_threshold(44.0);
+        assert!((threshold - 0.11).abs() < 1e-9);
     }
 
     #[test]

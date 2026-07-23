@@ -36,6 +36,9 @@ impl QmdEpisodePreset {
                 opposing_structure_confidence: 0.65,
                 reentry_cooldown_ms: 2_000,
                 update_interval_ms: 1_000,
+                setup_max_duration_ms: 30_000,
+                minimum_favorable_thresholds: 2.0,
+                supportive_signal_grace_ms: 2_000,
             },
             Self::Tactical => QmdEpisodeConfig {
                 start_confidence: 0.45,
@@ -50,6 +53,9 @@ impl QmdEpisodePreset {
                 opposing_structure_confidence: 0.65,
                 reentry_cooldown_ms: 10_000,
                 update_interval_ms: 5_000,
+                setup_max_duration_ms: 180_000,
+                minimum_favorable_thresholds: 1.75,
+                supportive_signal_grace_ms: 5_000,
             },
             Self::Context => QmdEpisodeConfig {
                 start_confidence: 0.55,
@@ -64,6 +70,9 @@ impl QmdEpisodePreset {
                 opposing_structure_confidence: 0.65,
                 reentry_cooldown_ms: 30_000,
                 update_interval_ms: 15_000,
+                setup_max_duration_ms: 900_000,
+                minimum_favorable_thresholds: 1.5,
+                supportive_signal_grace_ms: 15_000,
             },
         }
     }
@@ -83,12 +92,16 @@ struct QmdEpisodeConfig {
     opposing_structure_confidence: f64,
     reentry_cooldown_ms: i64,
     update_interval_ms: i64,
+    setup_max_duration_ms: i64,
+    minimum_favorable_thresholds: f64,
+    supportive_signal_grace_ms: i64,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct QmdEpisodeScaleInput {
     pub direction: i8,
     pub confidence: f64,
+    pub threshold: f64,
     pub swing_high: f64,
     pub swing_low: f64,
 }
@@ -97,6 +110,8 @@ pub struct QmdEpisodeScaleInput {
 pub struct QmdEpisodeInput {
     pub occurred_at: DateTime<Utc>,
     pub close: f64,
+    pub high: f64,
+    pub low: f64,
     pub decision_direction: i8,
     pub decision_confidence: f64,
     pub micro: QmdEpisodeScaleInput,
@@ -127,6 +142,10 @@ pub struct QmdEpisodeState {
     pub invalidation_price: f64,
     pub best_price: f64,
     pub last_progress_at: DateTime<Utc>,
+    #[serde(skip_serializing)]
+    trailing_swing_price: f64,
+    #[serde(skip_serializing)]
+    last_supportive_signal_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -150,6 +169,7 @@ pub struct QmdEpisodeEvent {
 #[derive(Clone, Debug, Default)]
 struct PresetState {
     active: Option<QmdEpisodeState>,
+    setup: Option<QmdEpisodeSetup>,
     low_confidence_since: Option<DateTime<Utc>>,
     last_emitted_bucket: i16,
     last_emitted_at: Option<DateTime<Utc>>,
@@ -158,6 +178,17 @@ struct PresetState {
     opposing_structure_since: Option<DateTime<Utc>>,
     rearm_direction: i8,
     rearm_neutral_since: Option<DateTime<Utc>>,
+    last_close: Option<f64>,
+}
+
+#[derive(Clone, Debug)]
+struct QmdEpisodeSetup {
+    armed_at: DateTime<Utc>,
+    direction: i8,
+    breakout_price: f64,
+    invalidation_price: f64,
+    breakout_was_unbroken: bool,
+    confidence: f64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -195,7 +226,23 @@ impl QmdEpisodeEngine {
     ) {
         let config = preset.config();
         let scale = input.scale(preset);
+        let observed_high = if input.high.is_finite() && input.high > 0.0 {
+            input.high.max(input.close)
+        } else {
+            input.close
+        };
+        let observed_low = if input.low.is_finite() && input.low > 0.0 {
+            input.low.min(input.close)
+        } else {
+            input.close
+        };
+        let threshold = if scale.threshold.is_finite() && scale.threshold > 0.0 {
+            scale.threshold
+        } else {
+            (input.close.abs() * config.invalidation_buffer_fraction).max(0.0001)
+        };
         let state = self.presets.entry(preset).or_default();
+        let prior_close = state.last_close;
         let mut ending = None;
         let mut ended_direction = 0;
         let qualified_direction = if input.decision_direction != 0
@@ -229,6 +276,64 @@ impl QmdEpisodeEngine {
                 && scale.confidence >= config.opposing_structure_confidence;
             let invalidated = (active.direction > 0 && input.close <= active.invalidation_price)
                 || (active.direction < 0 && input.close >= active.invalidation_price);
+            let favorable_price = if active.direction > 0 {
+                observed_high
+            } else {
+                observed_low
+            };
+            let favorable_progress = if active.direction > 0 {
+                favorable_price > active.best_price
+            } else {
+                favorable_price < active.best_price
+            };
+            if favorable_progress {
+                active.best_price = favorable_price;
+                active.last_progress_at = input.occurred_at;
+            }
+            if qualified_direction == active.direction {
+                active.last_supportive_signal_at = input.occurred_at;
+            }
+            let minimum_favorable_move = threshold * config.minimum_favorable_thresholds;
+            let has_meaningful_progress = if active.direction > 0 {
+                active.best_price >= active.rail_price + minimum_favorable_move
+            } else {
+                active.best_price <= active.rail_price - minimum_favorable_move
+            };
+            if active.direction > 0 {
+                let candidate = scale.swing_low;
+                if has_meaningful_progress
+                    && candidate.is_finite()
+                    && candidate > active.rail_price
+                    && candidate < active.best_price - threshold * 0.5
+                    && candidate > active.trailing_swing_price
+                {
+                    active.trailing_swing_price = candidate;
+                }
+            } else {
+                let candidate = scale.swing_high;
+                if has_meaningful_progress
+                    && candidate.is_finite()
+                    && candidate > active.best_price + threshold * 0.5
+                    && candidate < active.rail_price
+                    && (active.trailing_swing_price <= 0.0
+                        || candidate < active.trailing_swing_price)
+                {
+                    active.trailing_swing_price = candidate;
+                }
+            }
+            let exhaustion_buffer = threshold * 0.15;
+            let supportive_signal_is_stale = input.occurred_at - active.last_supportive_signal_at
+                >= Duration::milliseconds(config.supportive_signal_grace_ms);
+            let exhausted_after_failed_extension = has_meaningful_progress
+                && supportive_signal_is_stale
+                && if active.direction > 0 {
+                    active.trailing_swing_price > active.rail_price
+                        && input.close < active.trailing_swing_price - exhaustion_buffer
+                } else {
+                    active.trailing_swing_price > 0.0
+                        && active.trailing_swing_price < active.rail_price
+                        && input.close > active.trailing_swing_price + exhaustion_buffer
+                };
             if opposite_decision {
                 let since = state.opposite_since.get_or_insert(input.occurred_at);
                 if input.occurred_at - *since >= Duration::milliseconds(config.opposite_dwell_ms) {
@@ -236,19 +341,12 @@ impl QmdEpisodeEngine {
                 }
             } else if invalidated {
                 ending = Some("invalidation");
+            } else if exhausted_after_failed_extension {
+                ending = Some("swing_exhaustion");
             } else if elapsed_ms >= config.max_duration_ms {
                 ending = Some("maximum_duration");
             } else {
                 state.opposite_since = None;
-                let favorable_progress = if active.direction > 0 {
-                    input.close > active.best_price
-                } else {
-                    input.close < active.best_price
-                };
-                if favorable_progress {
-                    active.best_price = input.close;
-                    active.last_progress_at = input.occurred_at;
-                }
                 active.confidence = if input.decision_direction == active.direction {
                     (config.confidence_alpha * input.decision_confidence
                         + (1.0 - config.confidence_alpha) * active.confidence)
@@ -302,6 +400,7 @@ impl QmdEpisodeEngine {
                 ended_direction = active.direction;
                 events.push(event_from_state(sym, &active, "end", resolution));
             }
+            state.setup = None;
             state.low_confidence_since = None;
             state.opposite_since = None;
             state.opposing_structure_since = None;
@@ -316,51 +415,120 @@ impl QmdEpisodeEngine {
         let cooled_down = state
             .cooldown_until
             .is_none_or(|until| input.occurred_at >= until);
-        let immediate_flip = ended_direction != 0 && input.decision_direction == -ended_direction;
-        let may_start = state.active.is_none()
-            && (cooled_down || immediate_flip)
+        if state.active.is_none() {
+            let setup_expired = state.setup.as_ref().is_some_and(|setup| {
+                input.occurred_at - setup.armed_at
+                    >= Duration::milliseconds(config.setup_max_duration_ms)
+            });
+            let setup_opposed = state.setup.as_ref().is_some_and(|setup| {
+                qualified_direction != 0 && qualified_direction == -setup.direction
+            });
+            if setup_expired || setup_opposed {
+                state.setup = None;
+            }
+
+            if let Some(setup) = state.setup.as_mut() {
+                if qualified_direction == setup.direction {
+                    setup.confidence = setup.confidence.max(input.decision_confidence);
+                    if setup.direction > 0 && input.close <= setup.breakout_price {
+                        setup.breakout_was_unbroken = true;
+                    } else if setup.direction < 0 && input.close >= setup.breakout_price {
+                        setup.breakout_was_unbroken = true;
+                    }
+                }
+            }
+
+            let breakout = state.setup.as_ref().is_some_and(|setup| {
+                let buffer = (threshold * 0.10).max(input.close.abs() * 0.00002);
+                setup.breakout_was_unbroken
+                    && if setup.direction > 0 {
+                        input.close > setup.breakout_price + buffer
+                    } else {
+                        input.close < setup.breakout_price - buffer
+                    }
+            });
+            if breakout {
+                let setup = state
+                    .setup
+                    .take()
+                    .expect("breakout requires an armed setup");
+                self.next_episode_id = self.next_episode_id.saturating_add(1);
+                let fallback = if setup.direction > 0 {
+                    input.close * (1.0 - config.invalidation_buffer_fraction)
+                } else {
+                    input.close * (1.0 + config.invalidation_buffer_fraction)
+                };
+                let structural_is_valid = setup.invalidation_price.is_finite()
+                    && setup.invalidation_price > 0.0
+                    && ((setup.direction > 0 && setup.invalidation_price < input.close)
+                        || (setup.direction < 0 && setup.invalidation_price > input.close));
+                let active = QmdEpisodeState {
+                    preset,
+                    episode_id: self.next_episode_id,
+                    started_at: input.occurred_at,
+                    last_updated_at: input.occurred_at,
+                    direction: setup.direction,
+                    confidence: setup.confidence.clamp(0.0, 1.0),
+                    entry_price: input.close,
+                    rail_price: setup.breakout_price,
+                    invalidation_price: if structural_is_valid {
+                        setup.invalidation_price
+                    } else {
+                        fallback
+                    },
+                    best_price: if setup.direction > 0 {
+                        observed_high
+                    } else {
+                        observed_low
+                    },
+                    last_progress_at: input.occurred_at,
+                    trailing_swing_price: 0.0,
+                    last_supportive_signal_at: input.occurred_at,
+                };
+                state.last_emitted_bucket = confidence_bucket(active.confidence);
+                state.last_emitted_at = Some(input.occurred_at);
+                events.push(event_from_state(sym, &active, "start", "swing_breakout"));
+                state.active = Some(active);
+            }
+        }
+
+        let may_arm = state.active.is_none()
+            && state.setup.is_none()
+            && cooled_down
             && qualified_direction != 0
             && qualified_direction != state.rearm_direction
             && input.close.is_finite()
             && input.close > 0.0;
-        if may_start {
-            self.next_episode_id = self.next_episode_id.saturating_add(1);
-            let direction = input.decision_direction.signum();
-            let structural_invalidation = if direction > 0 {
+        if may_arm {
+            let breakout_price = if qualified_direction > 0 {
+                scale.swing_high
+            } else {
+                scale.swing_low
+            };
+            let invalidation_price = if qualified_direction > 0 {
                 scale.swing_low
             } else {
                 scale.swing_high
             };
-            let structural_is_valid = structural_invalidation.is_finite()
-                && structural_invalidation > 0.0
-                && ((direction > 0 && structural_invalidation < input.close)
-                    || (direction < 0 && structural_invalidation > input.close));
-            let fallback = if direction > 0 {
-                input.close * (1.0 - config.invalidation_buffer_fraction)
-            } else {
-                input.close * (1.0 + config.invalidation_buffer_fraction)
-            };
-            let active = QmdEpisodeState {
-                preset,
-                episode_id: self.next_episode_id,
-                started_at: input.occurred_at,
-                last_updated_at: input.occurred_at,
-                direction,
-                confidence: input.decision_confidence.clamp(0.0, 1.0),
-                entry_price: input.close,
-                rail_price: input.close,
-                invalidation_price: if structural_is_valid {
-                    structural_invalidation
-                } else {
-                    fallback
-                },
-                best_price: input.close,
-                last_progress_at: input.occurred_at,
-            };
-            state.last_emitted_bucket = confidence_bucket(active.confidence);
-            state.last_emitted_at = Some(input.occurred_at);
-            events.push(event_from_state(sym, &active, "start", ""));
-            state.active = Some(active);
+            if breakout_price.is_finite() && breakout_price > 0.0 {
+                state.setup = Some(QmdEpisodeSetup {
+                    armed_at: input.occurred_at,
+                    direction: qualified_direction,
+                    breakout_price,
+                    invalidation_price,
+                    breakout_was_unbroken: if qualified_direction > 0 {
+                        prior_close.is_some_and(|price| price <= breakout_price)
+                            || input.close <= breakout_price
+                    } else {
+                        prior_close.is_some_and(|price| price >= breakout_price)
+                            || input.close >= breakout_price
+                    },
+                    confidence: input.decision_confidence.clamp(0.0, 1.0),
+                });
+            }
+        }
+        if input.close.is_finite() && input.close > 0.0 {
+            state.last_close = Some(input.close);
         }
     }
 }
@@ -407,12 +575,15 @@ mod tests {
         let scale = QmdEpisodeScaleInput {
             direction: 0,
             confidence: 0.0,
+            threshold: 0.5,
             swing_high: 102.0,
             swing_low: 98.0,
         };
         QmdEpisodeInput {
             occurred_at: Utc.timestamp_millis_opt(ms).unwrap(),
             close: 100.0,
+            high: 100.0,
+            low: 100.0,
             decision_direction: direction,
             decision_confidence: confidence,
             micro: scale,
@@ -421,23 +592,36 @@ mod tests {
         }
     }
 
+    fn breakout(ms: i64, direction: i8, confidence: f64) -> QmdEpisodeInput {
+        let mut value = input(ms, direction, confidence);
+        value.close = if direction > 0 { 103.0 } else { 97.0 };
+        value.high = value.close;
+        value.low = value.close;
+        value
+    }
+
     #[test]
-    fn presets_start_independently_at_the_same_canonical_timestamp() {
+    fn presets_arm_on_decision_and_start_together_only_at_the_swing_break() {
         let mut engine = QmdEpisodeEngine::default();
-        let events = engine.update("TEST", input(1_000, 1, 0.50));
+        assert!(engine.update("TEST", input(1_000, 1, 0.50)).is_empty());
+        let events = engine.update("TEST", breakout(1_100, 1, 0.50));
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].preset, QmdEpisodePreset::Micro);
         assert_eq!(events[1].preset, QmdEpisodePreset::Tactical);
         assert!(engine
             .states()
             .iter()
-            .all(|state| state.started_at.timestamp_millis() == 1_000));
+            .all(|state| state.started_at.timestamp_millis() == 1_100));
+        assert!(events
+            .iter()
+            .all(|event| event.resolution == "swing_breakout"));
     }
 
     #[test]
     fn micro_exhaustion_requires_causal_dwell() {
         let mut engine = QmdEpisodeEngine::default();
         engine.update("TEST", input(1_000, 1, 0.40));
+        engine.update("TEST", breakout(1_100, 1, 0.40));
         assert!(engine
             .update("TEST", input(1_500, 0, 0.0))
             .iter()
@@ -457,9 +641,10 @@ mod tests {
     }
 
     #[test]
-    fn opposite_signal_ends_and_flips_without_waiting_for_a_chart_bar() {
+    fn opposite_signal_ends_then_requires_its_own_swing_break() {
         let mut engine = QmdEpisodeEngine::default();
         engine.update("TEST", input(1_000, 1, 0.60));
+        engine.update("TEST", breakout(1_050, 1, 0.60));
         assert!(engine
             .update("TEST", input(1_100, -1, 0.70))
             .iter()
@@ -470,19 +655,28 @@ mod tests {
                 && event.event_type == "end"
                 && event.resolution == "opposite_signal"
         }));
-        assert!(events.iter().any(|event| {
-            event.preset == QmdEpisodePreset::Micro
+        assert!(events.iter().all(|event| event.event_type != "start"));
+        assert!(engine
+            .update("TEST", input(3_700, -1, 0.70))
+            .iter()
+            .all(|event| event.event_type != "start"));
+        assert!(engine
+            .update("TEST", breakout(3_800, -1, 0.70))
+            .iter()
+            .any(|event| event.preset == QmdEpisodePreset::Micro
                 && event.event_type == "start"
-                && event.direction == -1
-        }));
+                && event.direction == -1));
     }
 
     #[test]
     fn an_ended_episode_does_not_restart_from_the_same_persistent_signal() {
         let mut engine = QmdEpisodeEngine::default();
         engine.update("TEST", input(1_000, 1, 0.60));
+        engine.update("TEST", breakout(1_050, 1, 0.60));
         let mut invalidated = input(1_100, 1, 0.60);
         invalidated.close = 97.0;
+        invalidated.high = 97.0;
+        invalidated.low = 97.0;
         assert!(engine
             .update("TEST", invalidated)
             .iter()
@@ -495,18 +689,18 @@ mod tests {
         }
         engine.update("TEST", input(6_000, 0, 0.0));
         engine.update("TEST", input(8_100, 0, 0.0));
+        assert!(engine.update("TEST", input(8_200, 1, 0.60)).is_empty());
         assert!(engine
-            .update("TEST", input(8_200, 1, 0.60))
+            .update("TEST", breakout(8_300, 1, 0.60))
             .iter()
-            .any(|event| {
-                event.preset == QmdEpisodePreset::Micro && event.event_type == "start"
-            }));
+            .any(|event| event.preset == QmdEpisodePreset::Micro && event.event_type == "start"));
     }
 
     #[test]
     fn opposing_structure_requires_persistence_and_stalled_price() {
         let mut engine = QmdEpisodeEngine::default();
         engine.update("TEST", input(1_000, 1, 0.60));
+        engine.update("TEST", breakout(1_050, 1, 0.60));
         let mut opposed = input(1_100, 1, 0.60);
         opposed.micro.direction = -1;
         opposed.micro.confidence = 0.90;
@@ -525,5 +719,52 @@ mod tests {
                 && event.event_type == "end"
                 && event.resolution == "opposing_structure"
         }));
+    }
+
+    #[test]
+    fn a_meaningful_new_confirmed_swing_ends_the_micro_episode() {
+        let mut engine = QmdEpisodeEngine::default();
+        engine.update("TEST", input(1_000, 1, 0.60));
+        engine.update("TEST", breakout(1_100, 1, 0.60));
+        let mut new_high = input(2_000, 1, 0.60);
+        new_high.close = 105.0;
+        new_high.high = 105.0;
+        new_high.low = 104.8;
+        engine.update("TEST", new_high);
+        let mut higher_low = input(2_050, 0, 0.0);
+        higher_low.close = 104.0;
+        higher_low.high = 104.1;
+        higher_low.low = 104.0;
+        higher_low.micro.swing_low = 103.0;
+        engine.update("TEST", higher_low);
+        let mut exhausted = input(4_200, 0, 0.0);
+        exhausted.close = 102.8;
+        exhausted.high = 102.9;
+        exhausted.low = 102.8;
+        exhausted.micro.swing_high = 105.0;
+        exhausted.micro.swing_low = 103.0;
+        assert!(engine.update("TEST", exhausted).iter().any(|event| {
+            event.preset == QmdEpisodePreset::Micro
+                && event.event_type == "end"
+                && event.resolution == "swing_exhaustion"
+        }));
+    }
+
+    #[test]
+    fn quote_only_zero_range_cannot_create_a_phantom_short_gain() {
+        let mut engine = QmdEpisodeEngine::default();
+        engine.update("TEST", input(1_000, -1, 0.60));
+        engine.update("TEST", breakout(1_100, -1, 0.60));
+        let mut quote_only = input(1_200, -1, 0.60);
+        quote_only.close = 97.5;
+        quote_only.high = 0.0;
+        quote_only.low = 0.0;
+        engine.update("TEST", quote_only);
+        let state = engine
+            .states()
+            .into_iter()
+            .find(|state| state.preset == QmdEpisodePreset::Micro)
+            .expect("micro episode should remain active");
+        assert_eq!(state.best_price, 97.0);
     }
 }
