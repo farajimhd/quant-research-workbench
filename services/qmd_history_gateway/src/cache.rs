@@ -6,7 +6,7 @@ use qmd_core::compact_event::LiveCompactEvent;
 use qmd_core::event::MarketEvent;
 use qmd_core::generic_structure::GenericStructureEvent;
 use qmd_core::indicators::{
-    BarIndicatorCalculator, IndicatorRow, MarketStructureReferenceLevels,
+    qmd_episode_input, BarIndicatorCalculator, IndicatorRow, MarketStructureReferenceLevels,
     MicrostructureSampleAggregate, QmdDecisionEvent, INDICATOR_SCHEMA_VERSION,
 };
 use qmd_core::market_products::{
@@ -15,6 +15,7 @@ use qmd_core::market_products::{
     MARKET_PRODUCT_SCHEMA_VERSION,
 };
 use qmd_core::microstructure_interval::MicrostructureIntervalWindow;
+use qmd_core::qmd_episode::{QmdEpisodeEngine, QmdEpisodeEvent};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::mem::size_of;
@@ -22,7 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
 
-pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v17";
+pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v18";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProfile {
@@ -113,6 +114,7 @@ pub struct ChartSnapshot {
     pub bars: Vec<ChartBarRow>,
     pub cache: CacheEvidence,
     pub decision_events: Vec<QmdDecisionEvent>,
+    pub episode_events: Vec<QmdEpisodeEvent>,
     pub has_more: bool,
     pub indicators: Vec<IndicatorRow>,
     pub indicators_available: bool,
@@ -166,6 +168,7 @@ struct EntryState {
     events_processed: u64,
     bars: Vec<BarUpdate>,
     decision_events: Vec<QmdDecisionEvent>,
+    episode_events: Vec<QmdEpisodeEvent>,
     frames: Vec<DerivedUpdate>,
     products: Option<MarketProductEngine>,
 }
@@ -414,11 +417,18 @@ impl HistoricalDerivedCache {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            let episode_events = state
+                .episode_events
+                .iter()
+                .filter(|event| event.occurred_at <= as_of)
+                .cloned()
+                .collect::<Vec<_>>();
             return Ok(ChartSnapshot {
                 as_of,
                 bars,
                 cache,
                 decision_events,
+                episode_events,
                 has_more,
                 indicators,
                 indicators_available: true,
@@ -461,6 +471,7 @@ impl HistoricalDerivedCache {
             bars,
             cache,
             decision_events: Vec::new(),
+            episode_events: Vec::new(),
             has_more,
             indicators: Vec::new(),
             indicators_available: false,
@@ -653,6 +664,7 @@ impl HistoricalDerivedCache {
                 let mut microstructure = MicrostructureIntervalWindow::default();
                 let mut aggregate = MicrostructureSampleAggregate::default();
                 let mut last_decision_action = "wait".to_string();
+                let mut episode_engine = QmdEpisodeEngine::default();
                 let mut last_base_indicator: Option<IndicatorRow> = None;
                 while let Some(work) = receiver.recv().await {
                     let bars = match work {
@@ -693,6 +705,11 @@ impl HistoricalDerivedCache {
                             }
                             last_base_indicator = Some(indicator.clone());
                             aggregate.push(&indicator);
+                            for event in
+                                episode_engine.update(&indicator.sym, qmd_episode_input(&indicator))
+                            {
+                                worker_entry.push_episode_event(event).await?;
+                            }
                             if indicator.qmd_decision_action != last_decision_action {
                                 last_decision_action = indicator.qmd_decision_action.clone();
                                 worker_entry
@@ -982,7 +999,11 @@ impl CacheEntry {
             bar.bar_start,
         )?;
         let update_count = state.bars.len().saturating_add(1);
-        let frame_bytes = estimated_frame_bytes(update_count, state.decision_events.len());
+        let frame_bytes = estimated_frame_bytes(
+            update_count,
+            state.decision_events.len(),
+            state.episode_events.len(),
+        );
         if state.bars.len() >= self.max_updates || frame_bytes > self.max_update_bytes {
             return Err(format!(
                 "historical derived entry exceeded cache limit: updates={} max_updates={} estimated_bytes={} max_update_bytes={}",
@@ -1046,7 +1067,11 @@ impl CacheEntry {
             ));
         }
         state.decision_events.push(event);
-        let frame_bytes = estimated_frame_bytes(state.bars.len(), state.decision_events.len());
+        let frame_bytes = estimated_frame_bytes(
+            state.bars.len(),
+            state.decision_events.len(),
+            state.episode_events.len(),
+        );
         if frame_bytes > self.max_update_bytes {
             state.decision_events.pop();
             return Err(format!(
@@ -1058,6 +1083,46 @@ impl CacheEntry {
             .set_estimated_bytes(frame_bytes as u64 + self.product_bytes.load(Ordering::Acquire))
         {
             state.decision_events.pop();
+            return Err(error);
+        }
+        self.frame_bytes
+            .store(frame_bytes as u64, Ordering::Release);
+        Ok(())
+    }
+
+    async fn push_episode_event(&self, event: QmdEpisodeEvent) -> Result<(), String> {
+        let mut state = self.state.lock().await;
+        if let Some(previous) = state.episode_events.last() {
+            if event.occurred_at < previous.occurred_at {
+                return Err(format!(
+                    "historical QMD episode events must be chronological: previous={} next={}",
+                    previous.occurred_at, event.occurred_at,
+                ));
+            }
+        }
+        if state.episode_events.len() >= self.max_updates {
+            return Err(format!(
+                "historical QMD episode event cache exceeded max_updates={}",
+                self.max_updates,
+            ));
+        }
+        state.episode_events.push(event);
+        let frame_bytes = estimated_frame_bytes(
+            state.bars.len(),
+            state.decision_events.len(),
+            state.episode_events.len(),
+        );
+        if frame_bytes > self.max_update_bytes {
+            state.episode_events.pop();
+            return Err(format!(
+                "historical QMD episode event cache exceeded max_update_bytes={}",
+                self.max_update_bytes,
+            ));
+        }
+        if let Err(error) = self
+            .set_estimated_bytes(frame_bytes as u64 + self.product_bytes.load(Ordering::Acquire))
+        {
+            state.episode_events.pop();
             return Err(error);
         }
         self.frame_bytes
@@ -1133,9 +1198,14 @@ impl CacheEntry {
     }
 }
 
-fn estimated_frame_bytes(bar_count: usize, decision_event_count: usize) -> usize {
+fn estimated_frame_bytes(
+    bar_count: usize,
+    decision_event_count: usize,
+    episode_event_count: usize,
+) -> usize {
     bar_count.saturating_mul(size_of::<BarUpdate>() + size_of::<DerivedUpdate>() + 768)
         + decision_event_count.saturating_mul(size_of::<QmdDecisionEvent>() + 160)
+        + episode_event_count.saturating_mul(size_of::<QmdEpisodeEvent>() + 192)
 }
 
 fn ensure_monotonic_bar_start(

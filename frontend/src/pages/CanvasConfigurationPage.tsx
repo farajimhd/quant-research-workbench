@@ -163,6 +163,7 @@ type QmdLiveBar = HistoricalBar & { session_date?: string };
 type QmdBarHistory = {
   as_of: string;
   decision_events: QmdDecisionEvent[];
+  episode_events: QmdEpisodeEvent[];
   earliest_session_date: string;
   has_more: boolean;
   has_more_in_session: boolean;
@@ -174,6 +175,21 @@ type QmdBarHistory = {
   previous_session_before: string;
   ticker: string;
   timeframe: string;
+};
+type QmdEpisodePreset = "micro" | "tactical" | "context";
+type QmdEpisodeEvent = {
+  sym: string;
+  preset: QmdEpisodePreset;
+  episode_id: number;
+  event_type: "start" | "update" | "end";
+  occurred_at: string;
+  started_at: string;
+  direction: number;
+  confidence: number;
+  entry_price: number;
+  rail_price: number;
+  invalidation_price: number;
+  resolution: string;
 };
 type QmdDecisionEvent = {
   action: string;
@@ -211,6 +227,7 @@ type CanvasLiveChartState = {
   canLoadEarlier: boolean;
   connected: boolean;
   decisionEvents: QmdDecisionEvent[];
+  episodeEvents: QmdEpisodeEvent[];
   error: string;
   historyError: string;
   historyNotice: string;
@@ -341,16 +358,23 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
       ],
     },
   ),
-  displayIndicator("indicator.qmd_decision_chart", "QMD Decision · Chart signals", "microstructure", ["qmd_decision_signal", "qmd_decision_confidence", "qmd_decision_action"], "price", {
-    shortDescription: "The same canonical QMD Decision shown as one causal marker when a new Buy or Sell becomes actionable.",
-    detailedDescription: "The marker comes from the canonical 100 ms decision stream, regardless of the chart timeframe. A green up arrow means Buy, a red down arrow means Sell, and the text contains only confidence. Wait has no marker.",
-    calculation: "This presentation does not calculate another signal. It renders a timestamped 100 ms QMD decision transition supplied by the gateway.",
-    readingGuide: "Read the marker as soon as its 100 ms evidence bucket closes. Its percentage is evidence confidence, not expected return or win probability. Use the oscillator to inspect the confidence-weighted consensus inside each displayed chart bar.",
+  {
+    ...displayIndicator("indicator.qmd_decision_chart", "QMD Decision · Chart episodes", "microstructure", ["qmd_decision_signal", "qmd_decision_confidence", "qmd_decision_action"], "price", {
+    shortDescription: "Canonical 100 ms decisions consolidated into causal Micro, Tactical, or Context episodes.",
+    detailedDescription: "On a 100 ms chart every raw Buy or Sell transition remains visible. On larger charts, the selected preset starts at the exact canonical signal time and continues while directional evidence remains alive. Green is Buy, red is Sell, and Wait is blank.",
+    calculation: "All presets consume the same ordered 100 ms decisions. Micro starts at 35% confidence and requires 3 seconds of both weak evidence and no favorable progress, with a 60 second cap. Tactical uses 45%, 15 seconds, and 5 minutes. Context uses 55%, 60 seconds, and 30 minutes. A strong opposite signal, opposing structure, invalidation, sustained evidence exhaustion, or maximum duration ends an episode.",
+    readingGuide: "The arrow is the causal start. The horizontal rail is the episode's entry reference and thickens with confidence. The shaded rectangle begins at the first overlapping candle and expands only with highs reached during a Buy episode or lows reached during a Sell episode. It never repaints earlier confidence or range.",
     bullishEvidence: "A green up arrow means the canonical 100 ms stream changed to Buy at that time.",
     bearishEvidence: "A red down arrow means the canonical 100 ms stream changed to Sell at that time.",
-    timeframeBehavior: "Changing the chart timeframe changes only presentation. On larger candles the first actionable transition inside each candle is shown, preventing stacked labels without delaying the underlying signal.",
-    caveats: ["Wait is intentionally blank.", "No background shading is used.", "If several transitions occur inside one large display candle, only the first is drawn; all transitions remain available in the canonical stream.", "The marker denotes a signal state, not an execution or guaranteed entry."],
+    timeframeBehavior: "Chart timeframe changes only the candle geometry used to draw the episode. Episode start, update, and end timestamps are identical across chart timeframes and are available to strategies through the gateway.",
+    caveats: ["A preset is a causal holding-horizon policy, not a forecast guarantee.", "Confidence is evidence quality, not win probability.", "Maximum duration prevents an unresolved episode from continuing indefinitely.", "The running rectangle is favorable excursion, not a profit target."],
   }),
+    presetOptions: [
+      { value: "micro", label: "Micro", description: "Fastest response; 60 second safety cap." },
+      { value: "tactical", label: "Tactical", description: "Intermediate confirmation; 5 minute safety cap." },
+      { value: "context", label: "Context", description: "Most selective structural horizon; 30 minute safety cap." },
+    ],
+  },
   displayIndicator("indicator.qmd_transaction_imbalance", "QMD Transaction Imbalance", "microstructure", ["microstructure_transaction_imbalance", "microstructure_buy_trade_count", "microstructure_sell_trade_count"], "qmd_transaction", qmdIndicatorKnowledge("Buy-versus-sell trade-count imbalance", "Counts eligible prints classified at the ask as buys and at the bid as sells, then computes (buys - sells) / classified trades.", "Persistent positive readings mean buyer-initiated prints are arriving more often; negative readings mean seller-initiated prints dominate.", "It ignores trade size, so compare it with Signed-volume Imbalance.")),
   displayIndicator("indicator.qmd_signed_volume", "QMD Signed-volume Imbalance", "microstructure", ["microstructure_signed_volume_imbalance", "microstructure_buy_volume", "microstructure_sell_volume"], "qmd_signed_volume", qmdIndicatorKnowledge("Buy-versus-sell executed-volume imbalance", "Sums eligible volume at the ask and bid inside the selected bar, then computes (buy volume - sell volume) / classified volume.", "Positive values show aggressive buy volume; negative values show aggressive sell volume. Agreement with transaction imbalance is stronger evidence than either alone.", "A few large prints can dominate the value; inspect trade conditions and resiliency.")),
   displayIndicator("indicator.qmd_level1_ofi", "QMD Level-1 OFI", "microstructure", ["microstructure_level1_ofi"], "qmd_level1_ofi", qmdIndicatorKnowledge("Best-quote order-flow imbalance", "Measures price-improving and size-changing flow at the NBBO, normalized by exposed best-level depth and aggregated from raw quote transitions.", "Positive OFI indicates bid support or ask withdrawal; negative OFI indicates bid withdrawal or ask supply.", "Displayed orders can be cancelled and do not reveal deeper or hidden liquidity.")),
@@ -514,7 +538,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
   const pointInTime = true;
   const indicatorColumns = useMemo(() => requestedIndicatorColumns(visibleIndicatorIds), [visibleIndicatorIds]);
   const rowBudget = useMemo(() => chartRowBudget(indicatorColumns), [indicatorColumns]);
-  const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier">>({ bars: [], canLoadEarlier: false, connected: false, decisionEvents: [], error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime, structureEvents: [] });
+  const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier">>({ bars: [], canLoadEarlier: false, connected: false, decisionEvents: [], episodeEvents: [], error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime, structureEvents: [] });
   const historyCursorRef = useRef<ChartHistoryCursor | null>(null);
   const historyRequestRef = useRef(false);
   const historyAbortRef = useRef<AbortController | null>(null);
@@ -549,6 +573,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
             bars: merged.bars,
             canLoadEarlier: payload.has_more && !merged.atCapacity,
             decisionEvents: mergeDecisionEvents(current.decisionEvents, payload.decision_events),
+            episodeEvents: mergeEpisodeEvents(current.episodeEvents, payload.episode_events),
             historyError: "",
             historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : "",
             indicators: merged.indicators,
@@ -579,7 +604,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
     requestKeyRef.current = requestKey;
     historyCursorRef.current = null;
     historyRequestRef.current = false;
-    setState({ bars: [], canLoadEarlier: false, connected: false, decisionEvents: [], error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime, structureEvents: [] });
+    setState({ bars: [], canLoadEarlier: false, connected: false, decisionEvents: [], episodeEvents: [], error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime, structureEvents: [] });
 
     const fetchHistoricalPage = () => {
       historyRequestRef.current = true;
@@ -599,6 +624,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
               bars: merged.bars,
               canLoadEarlier: payload.has_more && !merged.atCapacity,
               decisionEvents: mergeDecisionEvents(current.decisionEvents, payload.decision_events),
+              episodeEvents: mergeEpisodeEvents(current.episodeEvents, payload.episode_events),
               historyError: "",
               historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : "",
               indicators: merged.indicators,
@@ -649,6 +675,18 @@ function mergeDecisionEvents(current: QmdDecisionEvent[], incoming: QmdDecisionE
   return [...byTimestamp.values()]
     .sort((left, right) => Date.parse(left.signal_at) - Date.parse(right.signal_at))
     .slice(-10_000);
+}
+
+function mergeEpisodeEvents(current: QmdEpisodeEvent[], incoming: QmdEpisodeEvent[] | undefined) {
+  const merged = new Map<string, QmdEpisodeEvent>();
+  [...current, ...(incoming ?? [])].forEach((event) => {
+    const key = `${event.preset}:${event.episode_id}:${event.event_type}:${event.occurred_at}`;
+    merged.set(key, event);
+  });
+  return [...merged.values()].sort((left, right) => {
+    const timeDifference = Date.parse(left.occurred_at) - Date.parse(right.occurred_at);
+    return timeDifference || left.preset.localeCompare(right.preset) || left.episode_id - right.episode_id;
+  });
 }
 
 function chartPageSize(timeframe: string) {
@@ -861,6 +899,102 @@ function qmdDecisionChartMarkers(
     });
   });
   return markers;
+}
+
+function qmdEpisodePresentation(
+  events: QmdEpisodeEvent[],
+  bars: HistoricalBar[],
+  visibleIndicators: string[],
+): { markers: ChartPayload["markers"]; zones: NonNullable<ChartPayload["price_zones"]> } {
+  if (!visibleIndicators.includes("indicator.qmd_decision_chart") || !events.length || !bars.length) {
+    return { markers: [], zones: [] };
+  }
+  const sortedBars = bars.map((bar) => ({
+    ...bar,
+    endMs: Date.parse(bar.bar_end || "") || Date.parse(bar.bar_start) + 1,
+    startMs: Date.parse(bar.bar_start),
+  }));
+  const latestEnd = sortedBars[sortedBars.length - 1].endMs;
+  const grouped = new Map<string, QmdEpisodeEvent[]>();
+  events.forEach((event) => {
+    const key = `${event.preset}:${event.episode_id}`;
+    grouped.set(key, [...(grouped.get(key) ?? []), event]);
+  });
+  const markers: ChartPayload["markers"] = [];
+  const zones: NonNullable<ChartPayload["price_zones"]> = [];
+  grouped.forEach((episodeEvents) => {
+    episodeEvents.sort((left, right) => Date.parse(left.occurred_at) - Date.parse(right.occurred_at));
+    const start = episodeEvents.find((event) => event.event_type === "start");
+    if (!start || !start.direction) return;
+    const startMs = Date.parse(start.occurred_at);
+    const endEvent = [...episodeEvents].reverse().find((event) => event.event_type === "end");
+    const endMs = Math.min(endEvent ? Date.parse(endEvent.occurred_at) : latestEnd, latestEnd);
+    const firstIndex = sortedBars.findIndex((bar) => startMs < bar.endMs && endMs >= bar.startMs);
+    if (firstIndex < 0) return;
+    const firstBar = sortedBars[firstIndex];
+    const rail = start.direction > 0 ? firstBar.low : firstBar.high;
+    let runningExtreme = start.direction > 0 ? firstBar.high : firstBar.low;
+    markers.push({
+      color: start.direction > 0 ? "var(--success)" : "var(--danger)",
+      displayItemId: "indicator.qmd_decision_chart",
+      position: start.direction > 0 ? "belowBar" : "aboveBar",
+      preset: start.preset,
+      settingsId: "qmd-decision-episodes",
+      shape: start.direction > 0 ? "arrowUp" : "arrowDown",
+      size: 1,
+      text: `${Math.round(boundedUnit(start.confidence) * 100)}%`,
+      time: (firstBar.startMs / 1000) as UTCTimestamp,
+    });
+    for (let index = firstIndex; index < sortedBars.length; index += 1) {
+      const bar = sortedBars[index];
+      if (bar.startMs > endMs) break;
+      runningExtreme = start.direction > 0
+        ? Math.max(runningExtreme, bar.high)
+        : Math.min(runningExtreme, bar.low);
+      const known = episodeEvents
+        .filter((event) => event.event_type !== "end" && Date.parse(event.occurred_at) <= bar.endMs)
+        .at(-1) ?? start;
+      const segmentStart = Math.max(startMs, bar.startMs) / 1000;
+      const segmentEnd = Math.min(endMs, bar.endMs) / 1000;
+      const confidence = boundedUnit(known.confidence);
+      const shared = {
+        confidence,
+        defaultVisible: true,
+        displayItemId: "indicator.qmd_decision_chart",
+        end: segmentEnd,
+        episodeId: start.episode_id,
+        latest: !endEvent && index === sortedBars.length - 1,
+        preset: start.preset,
+        settingsId: "qmd-decision-episodes",
+        start: segmentStart,
+      };
+      zones.push({
+        ...shared,
+        annotationKind: "signal-episode-range",
+        borderOpacity: 0,
+        color: start.direction > 0 ? "var(--success)" : "var(--danger)",
+        fillColor: start.direction > 0 ? "var(--success)" : "var(--danger)",
+        fillOpacity: 0.14,
+        label: `${start.preset} ${start.direction > 0 ? "buy" : "sell"} episode`,
+        legendLabel: "QMD decision episodes",
+        lower: start.direction > 0 ? rail : runningExtreme,
+        renderMode: "zone",
+        upper: start.direction > 0 ? runningExtreme : rail,
+      });
+      zones.push({
+        ...shared,
+        annotationKind: "signal-episode-rail",
+        borderOpacity: 0,
+        color: start.direction > 0 ? "var(--success)" : "var(--danger)",
+        label: `${start.preset} confidence rail`,
+        legendLabel: "QMD decision episodes",
+        lower: rail,
+        renderMode: "line",
+        upper: rail,
+      });
+    }
+  });
+  return { markers, zones };
 }
 
 function extendedSessionRegions(bars: QmdLiveBar[]) {
@@ -1722,17 +1856,26 @@ function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl,
   const visibleIndicators = liveChart.indicatorsAvailable ? settings.chart.visibleIndicators : [];
   const timeframe = settings.chart.timeframe;
   const payload = useMemo<ChartPayload>(() => {
-    const decisionMarkers = qmdDecisionChartMarkers(liveChart.decisionEvents, liveChart.bars, visibleIndicators);
+    const microBars = timeframe === "100ms";
+    const episodePresentation = microBars
+      ? { markers: [] as ChartPayload["markers"], zones: [] as NonNullable<ChartPayload["price_zones"]> }
+      : qmdEpisodePresentation(liveChart.episodeEvents, liveChart.bars, visibleIndicators);
+    const decisionMarkers = microBars
+      ? qmdDecisionChartMarkers(liveChart.decisionEvents, liveChart.bars, visibleIndicators)
+      : episodePresentation.markers;
     return {
       candles: liveChart.bars.map((bar) => ({ close: bar.close, high: bar.high, low: bar.low, open: bar.open, time: Date.parse(bar.bar_start) / 1000 })),
       markers: decisionMarkers,
       oscillator_series: historicalIndicatorSeries(indicators, "oscillator", visibleIndicators),
       overlay_series: historicalIndicatorSeries(indicators, "price", visibleIndicators),
-      price_zones: historicalMarketLevelZones(indicators, liveChart.bars, liveChart.structureEvents, visibleIndicators),
+      price_zones: [
+        ...historicalMarketLevelZones(indicators, liveChart.bars, liveChart.structureEvents, visibleIndicators),
+        ...episodePresentation.zones,
+      ],
       regions: MACRO_TIMEFRAMES.has(timeframe) ? [] : extendedSessionRegions(liveChart.bars),
       volume: settings.chart.showVolume ? liveChart.bars.map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
     };
-  }, [indicators, liveChart.bars, liveChart.decisionEvents, liveChart.structureEvents, settings.chart.showVolume, timeframe, visibleIndicators]);
+  }, [indicators, liveChart.bars, liveChart.decisionEvents, liveChart.episodeEvents, liveChart.structureEvents, settings.chart.showVolume, timeframe, visibleIndicators]);
   function updateChart(symbol: string, nextTimeframe: CanvasChartTimeframe) {
     updateSettings((current) => ({ ...current, chart: { ...current.chart, symbol, timeframe: nextTimeframe } }));
     onLinkContextChange({ symbol });

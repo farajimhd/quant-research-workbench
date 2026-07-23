@@ -12882,6 +12882,15 @@ button {
   font-size: 11px;
 }
 
+.chart-legend-editor label > small {
+  color: var(--muted-foreground);
+  font-size: 0.78rem;
+  font-weight: 500;
+  grid-column: 1 / -1;
+  line-height: 1.35;
+  max-width: 17rem;
+}
+
 .legend-semantic-colors {
   align-items: center;
   color: var(--muted-foreground);

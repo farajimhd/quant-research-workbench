@@ -26,6 +26,7 @@ pub mod market_products;
 pub mod massive;
 pub mod metrics;
 pub mod microstructure_interval;
+pub mod qmd_episode;
 pub mod scanner;
 pub mod session;
 pub mod signal_catalog;

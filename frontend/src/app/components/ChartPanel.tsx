@@ -103,7 +103,7 @@ type TradeAnnotation = {
   triggerPrice?: number;
 };
 type PriceZone = {
-  annotationKind?: "band" | "bos" | "choch" | "level" | "liquidity-resistance" | "liquidity-support" | "swing-high" | "swing-low";
+  annotationKind?: "band" | "bos" | "choch" | "level" | "liquidity-resistance" | "liquidity-support" | "signal-episode-rail" | "signal-episode-range" | "swing-high" | "swing-low";
   axisLabelDefault?: boolean;
   borderColor?: string;
   borderOpacity?: number;
@@ -118,6 +118,7 @@ type PriceZone = {
   defaultVisible?: boolean;
   displayItemId?: string;
   end: number;
+  episodeId?: number;
   extendToRightEdge?: boolean;
   eventTime?: number;
   fillColor?: string;
@@ -130,6 +131,7 @@ type PriceZone = {
   lower: number;
   maxPixelHeight?: number;
   minPixelHeight?: number;
+  preset?: "micro" | "tactical" | "context";
   renderMode?: "line" | "zone";
   settingsId?: string;
   start: number;
@@ -187,6 +189,7 @@ export type ChartDisplayItem = ChartCatalogItem & {
   artifactGroups?: string[];
   featureGroups?: string[];
   sourceColumns?: string[];
+  presetOptions?: Array<{ description?: string; label: string; value: "micro" | "tactical" | "context" }>;
 };
 export type ChartLabelOption = {
   group: string;
@@ -198,7 +201,11 @@ export type ChartLabelOption = {
 };
 type AnySeriesApi = ISeriesApi<SeriesType>;
 type CandleSeriesDatum = Candle | { time: number };
-type ChartMarker = SeriesMarker<Time> & { displayItemId?: string };
+type ChartMarker = SeriesMarker<Time> & {
+  displayItemId?: string;
+  preset?: "micro" | "tactical" | "context";
+  settingsId?: string;
+};
 type LegendPane = "price" | "oscillator";
 type NumericBounds = { max: number; min: number } | null;
 type OscillatorPaneRuntime = {
@@ -233,6 +240,7 @@ type LegendSeriesSettings = {
   lineWidth?: number;
   maxHistoricalTags?: number;
   opacity?: number;
+  preset?: "micro" | "tactical" | "context";
   showConnectors?: boolean;
   showAxisLabel?: boolean;
   showHistoricalLabels?: boolean;
@@ -811,6 +819,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       applySeriesSettings(renderer, source, settings, key.startsWith("oscillator:"), chartSettingsRef.current);
     });
     drawCurrentRegions();
+    updateCandleMarkers();
   }, [legendSettings]);
 
   useEffect(() => {
@@ -974,7 +983,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       markerPlugin.setMarkers([]);
       return;
     }
-    markerPlugin.setMarkers(markersForSelection(currentPayload.markers, visibleSelectionRef.current));
+    markerPlugin.setMarkers(markersForSelection(currentPayload.markers, visibleSelectionRef.current, legendSettingsRef.current));
   }
 
   function updatePriceOverlaySeries(seriesList: ChartSeries[]) {
@@ -1698,6 +1707,8 @@ type LegendItem = {
   lineWidth: number;
   maxHistoricalTags?: number;
   opacity: number;
+  preset?: "micro" | "tactical" | "context";
+  presetOptions?: Array<{ description?: string; label: string; value: "micro" | "tactical" | "context" }>;
   seriesStyle: "candlestick" | "histogram" | "line";
   semanticColor: boolean;
   semanticColors: { down: string; neutral: string; up: string };
@@ -1712,6 +1723,7 @@ type LegendItem = {
   supportsHistoricalLabels?: boolean;
   supportsHistoryWindow?: boolean;
   supportsStroke?: boolean;
+  supportsPreset?: boolean;
   value: string;
   visible: boolean;
 };
@@ -1917,6 +1929,20 @@ function LegendEditor({
           </span>
         ) : <input type="color" value={item.color} onChange={(event) => onUpdate({ color: event.target.value })} />}
       </label>
+      {item.supportsPreset && item.presetOptions?.length ? (
+        <label>
+          Episode horizon
+          <select
+            value={item.preset ?? "micro"}
+            onChange={(event) => onUpdate({ preset: event.target.value as "micro" | "tactical" | "context" })}
+          >
+            {item.presetOptions.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+          <small>{item.presetOptions.find((option) => option.value === (item.preset ?? "micro"))?.description}</small>
+        </label>
+      ) : null}
       {item.seriesStyle === "line" && item.supportsStroke !== false ? (
         <>
           <label>
@@ -2879,6 +2905,8 @@ function buildPriceZoneLegendItems(
       : sourceColumn ? chartColumnHelp(sourceColumn, guideTitle) : undefined;
     const key = priceZoneLegendKey(id);
     const settings = resolvePriceZoneLegendSettings(settingsMap, key, itemZones[0]);
+    const selectedZones = itemZones.filter((zone) => !zone.preset || zone.preset === settings.preset);
+    const episodeIds = new Set(selectedZones.filter((zone) => zone.episodeId !== undefined).map((zone) => `${zone.preset}:${zone.episodeId}`));
     return {
       color: readNeutralChartColor(),
       configurable: true,
@@ -2894,6 +2922,8 @@ function buildPriceZoneLegendItems(
       lineWidth: settings.lineWidth,
       maxHistoricalTags: settings.maxHistoricalTags,
       opacity: settings.opacity,
+      preset: settings.preset,
+      presetOptions: displayItem?.presetOptions,
       seriesStyle: "line" as const,
       semanticColor: true,
       semanticColors: { down: appearance.downColor, neutral: readNeutralChartColor(), up: appearance.upColor },
@@ -2907,7 +2937,10 @@ function buildPriceZoneLegendItems(
       supportsHistoricalLabels: itemZones.some((zone) => (zone.renderMode === "line" && Boolean(zone.compactLabel)) || isStructureBreakZone(zone)),
       supportsHistoryWindow: itemZones.some((zone) => !zone.latest),
       supportsStroke: !itemZones.some((zone) => Boolean(zone.currentLevelSide)),
-      value: `${itemZones.length} level${itemZones.length === 1 ? "" : "s"}`,
+      supportsPreset: Boolean(displayItem?.presetOptions?.length),
+      value: itemZones.some((zone) => zone.annotationKind === "signal-episode-range")
+        ? `${episodeIds.size} episode${episodeIds.size === 1 ? "" : "s"}`
+        : `${selectedZones.length} level${selectedZones.length === 1 ? "" : "s"}`,
       visible: settings.visible,
     };
   });
@@ -3243,9 +3276,19 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
   return Math.max(min, Math.min(max, value));
 }
 
-function markersForSelection(markers: ChartMarker[], selected: Set<string>): SeriesMarker<Time>[] {
+function markersForSelection(
+  markers: ChartMarker[],
+  selected: Set<string>,
+  settingsMap: LegendSettingsMap,
+): SeriesMarker<Time>[] {
   return markers
-    .filter((marker) => !marker.displayItemId || selected.has(marker.displayItemId.toLowerCase()))
+    .filter((marker) => {
+      if (marker.displayItemId && !selected.has(marker.displayItemId.toLowerCase())) return false;
+      if (!marker.preset) return true;
+      const settings = settingsMap[priceZoneLegendKey(marker.settingsId || marker.displayItemId || "")];
+      const preset = settings?.preset === "tactical" || settings?.preset === "context" ? settings.preset : "micro";
+      return marker.preset === preset;
+    })
     .map((marker, index) => ({
       color: resolveChartColor(typeof marker.color === "string" ? marker.color : "#1E3A5F"),
       id: marker.id ?? `${marker.displayItemId ?? "marker"}:${marker.time}:${index}`,
@@ -3315,6 +3358,7 @@ function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettin
     lineWidth: Math.max(1, Math.min(4, Math.round(series.lineWidth || 1))),
     maxHistoricalTags: 10,
     opacity: 1,
+    preset: "micro",
     showConnectors: true,
     showAxisLabel: false,
     showHistoricalLabels: true,
@@ -3336,6 +3380,7 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
     lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? defaults.lineWidth))),
     maxHistoricalTags: Math.max(0, Math.min(30, Math.round(stored.maxHistoricalTags ?? defaults.maxHistoricalTags))),
     opacity: clampNumber(stored.opacity ?? defaults.opacity, 0, 1, 1),
+    preset: stored.preset === "tactical" || stored.preset === "context" ? stored.preset : defaults.preset,
     showConnectors: stored.showConnectors ?? defaults.showConnectors,
     showAxisLabel: stored.showAxisLabel ?? defaults.showAxisLabel,
     showHistoricalLabels: stored.showHistoricalLabels ?? defaults.showHistoricalLabels,
@@ -3353,6 +3398,7 @@ type ResolvedPriceZoneLegendSettings = {
   lineWidth: number;
   maxHistoricalTags: number;
   opacity: number;
+  preset: "micro" | "tactical" | "context";
   showConnectors: boolean;
   showAxisLabel: boolean;
   showHistoricalLabels: boolean;
@@ -3369,6 +3415,7 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? zone?.borderWidth ?? 1))),
     maxHistoricalTags: Math.max(0, Math.min(30, Math.round(stored.maxHistoricalTags ?? zone?.historicalTagLimitDefault ?? 10))),
     opacity: clampNumber(stored.opacity ?? 1, 0, 1, 1),
+    preset: stored.preset === "tactical" || stored.preset === "context" ? stored.preset : "micro",
     showConnectors: stored.showConnectors !== false,
     showAxisLabel: stored.showAxisLabel ?? zone?.axisLabelDefault ?? false,
     showHistoricalLabels: stored.showHistoricalLabels ?? zone?.historicalLabelsDefault ?? false,
@@ -4237,6 +4284,7 @@ function drawPriceZonePrimitiveGeometry(
     if (!settings.visible) return;
     const historyStart = candles[Math.max(0, candles.length - settings.historyBars)]?.time ?? Number.NEGATIVE_INFINITY;
     itemZones.forEach((zone) => {
+      if (zone.preset && zone.preset !== settings.preset) return;
       if (!(zone.latest || zone.end > historyStart)) return;
       if (
         zone.currentLevelSide
@@ -4278,12 +4326,16 @@ function drawPriceZonePrimitiveGeometry(
       const lineOnly = zone.renderMode === "line" || zone.annotationKind === "bos" || zone.annotationKind === "choch";
       const baseFillOpacity = clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08);
       const fillOpacity = lineOnly ? 0 : baseFillOpacity * (confidence === null ? 1 : 0.45 + 0.55 * confidence) * settings.opacity;
-      const borderOpacity = lineOnly
+      const borderOpacity = zone.annotationKind === "signal-episode-range"
+        ? 0
+        : lineOnly
         ? settings.opacity
         : zone.currentLevelSide ? 0 : confidence === null
         ? clampNumber(zone.borderOpacity, 0, 0.35, Math.max(baseFillOpacity * 1.8, 0.12)) * settings.opacity
         : (0.24 + 0.7 * confidence) * settings.opacity;
-      const lineWidth = lineOnly || confidence === null
+      const lineWidth = zone.annotationKind === "signal-episode-rail" && confidence !== null
+        ? Math.max(1, Math.min(6, settings.lineWidth * (0.75 + 1.75 * confidence)))
+        : lineOnly || confidence === null
         ? settings.lineWidth
         : Math.max(1, Math.min(6, settings.lineWidth * (0.75 + 1.25 * confidence)));
       context.save();
@@ -4363,6 +4415,7 @@ function drawPriceZones(
     if (!settings.visible) return;
     const historyStart = candles[Math.max(0, candles.length - settings.historyBars)]?.time ?? Number.NEGATIVE_INFINITY;
     const eligibleZones = itemZones.filter((zone) => {
+      if (zone.preset && zone.preset !== settings.preset) return false;
       if (!(zone.latest || zone.end > historyStart)) return false;
       if (!zone.currentLevelSide) return true;
       return Boolean(zone.currentLevelStrongest)

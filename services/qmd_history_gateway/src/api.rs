@@ -337,6 +337,7 @@ fn project_chart_snapshot(
         "bars": snapshot.bars,
         "cache": snapshot.cache,
         "decision_events": snapshot.decision_events,
+        "episode_events": snapshot.episode_events,
         "has_more": snapshot.has_more,
         "indicators": indicators,
         "indicators_available": snapshot.indicators_available,
