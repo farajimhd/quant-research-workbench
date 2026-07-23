@@ -8,7 +8,16 @@ export type ScreenerRow = Record<string, unknown>;
 export type ScannerSnapshotMeta = { complete_universe?: boolean; field_coverage?: Record<string, number>; lookback_minutes?: number; materialized?: boolean; row_count?: number; snapshot_at_utc?: string };
 export type ScannerTimeframe = "100ms" | "1s" | "5s" | "10s" | "30s" | "1m" | "5m" | "15m" | "30m" | "1h" | "1d";
 export type TechnicalMetric = "change_pct" | "dollar_volume" | "high" | "low" | "quote_count" | "range_pct" | "relative_volume" | "trade_count" | "volume" | "vwap" | "vwap_distance_pct";
-export type ScannerCustomColumn = { key: string; metric: TechnicalMetric; timeframe: ScannerTimeframe };
+export type ScannerSessionAnchor = "extended_session" | "regular_session";
+export type ScannerVwapSource = "hlc3" | "trade_price";
+export type ScannerCustomColumn = {
+  anchor?: ScannerSessionAnchor;
+  key: string;
+  lookbackSessions?: number;
+  metric: TechnicalMetric;
+  source?: ScannerVwapSource;
+  timeframe?: ScannerTimeframe;
+};
 type TechnicalListSettings = { columns: string[]; customColumns: ScannerCustomColumn[] };
 export type MarketScannerSettings = TechnicalListSettings & { limit: number; preset: string };
 export type SignalStreamSettings = TechnicalListSettings & { limit: number; preset: string };
@@ -23,6 +32,10 @@ type FieldDefinition = {
   kind: FieldKind;
   label: string;
   metric?: TechnicalMetric;
+  anchor?: ScannerSessionAnchor;
+  lookbackSessions?: number;
+  scope?: "interval" | "relative-volume" | "session";
+  source?: ScannerVwapSource;
   timeframe?: ScannerTimeframe;
   timeframes?: ScannerTimeframe[];
 };
@@ -30,17 +43,17 @@ type FieldDefinition = {
 export const SCANNER_TIMEFRAMES: ScannerTimeframe[] = ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "1d"];
 const DEFAULT_SCANNER_TECHNICAL_TIMEFRAME: ScannerTimeframe = "15m";
 const TECHNICAL_METRICS: Array<Omit<FieldDefinition, "key" | "timeframe"> & { metric: TechnicalMetric }> = [
-  technicalMetric("change_pct", "Price change", "percent", "Open-to-last return inside the selected exchange-session interval."),
-  technicalMetric("volume", "Volume", "integer", "Eligible executed share volume inside the selected interval."),
-  technicalMetric("dollar_volume", "Dollar volume", "money", "Exact sum of eligible trade price multiplied by trade size inside the selected interval."),
-  technicalMetric("trade_count", "Trades", "integer", "Eligible trade-print count inside the selected interval."),
-  technicalMetric("quote_count", "Quotes", "integer", "Consolidated quote-event count inside the selected interval."),
-  technicalMetric("vwap", "VWAP", "money", "Trade-price volume-weighted average inside the selected interval."),
-  technicalMetric("vwap_distance_pct", "Price vs VWAP", "percent", "Latest eligible trade relative to the selected interval VWAP."),
-  technicalMetric("relative_volume", "Relative volume", "multiple", "Interval volume pace divided by the prior 20 completed extended-session average pace.", ["1m", "5m", "15m", "30m", "1h", "1d"]),
-  technicalMetric("range_pct", "Range", "percentPlain", "High-to-low price range inside the selected interval."),
-  technicalMetric("high", "High", "money", "Highest eligible trade inside the selected interval."),
-  technicalMetric("low", "Low", "money", "Lowest eligible trade inside the selected interval."),
+  intervalTechnicalMetric("change_pct", "Price change", "percent", "Open-to-last return inside the selected exchange-session interval."),
+  intervalTechnicalMetric("volume", "Volume", "integer", "Eligible executed share volume inside the selected interval."),
+  intervalTechnicalMetric("dollar_volume", "Dollar volume", "money", "Exact sum of eligible trade price multiplied by trade size inside the selected interval."),
+  intervalTechnicalMetric("trade_count", "Trades", "integer", "Eligible trade-print count inside the selected interval."),
+  intervalTechnicalMetric("quote_count", "Quotes", "integer", "Consolidated quote-event count inside the selected interval."),
+  technicalMetric("vwap", "VWAP", "money", "Anchored cumulative source value weighted by eligible share volume. HLC3 is the standard default; exact trade price is also available.", "session"),
+  technicalMetric("vwap_distance_pct", "Price vs VWAP", "percent", "Latest eligible trade relative to the same anchored, source-configured VWAP.", "session"),
+  technicalMetric("relative_volume", "Relative volume", "multiple", "Cumulative extended-session volume pace divided by the prior 20 completed extended-session average pace.", "relative-volume"),
+  intervalTechnicalMetric("range_pct", "Range", "percentPlain", "High-to-low price range inside the selected interval."),
+  intervalTechnicalMetric("high", "High", "money", "Highest eligible trade inside the selected interval."),
+  intervalTechnicalMetric("low", "Low", "money", "Lowest eligible trade inside the selected interval."),
 ];
 
 const FIELD_CATALOG: FieldDefinition[] = [
@@ -344,10 +357,10 @@ function MarketListTable({
     if (isTechnicalKey(column)) onCustomColumnsChange(customColumns.filter((item) => item.key !== column));
     setHeaderMenuColumn(null);
   }
-  function addTechnicalColumn(metric: TechnicalMetric, selectedTimeframe = DEFAULT_SCANNER_TECHNICAL_TIMEFRAME) {
-    selectedTimeframe = metricTimeframe(metric, selectedTimeframe);
-    const key = technicalColumnKey(metric, selectedTimeframe);
-    if (!customColumns.some((item) => item.key === key)) onCustomColumnsChange([...customColumns, { key, metric, timeframe: selectedTimeframe }]);
+  function addTechnicalColumn(metric: TechnicalMetric) {
+    const column = defaultTechnicalColumn(metric);
+    const key = column.key;
+    if (!customColumns.some((item) => item.key === key)) onCustomColumnsChange([...customColumns, column]);
     if (!columns.includes(key)) onColumnsChange(withLockedColumns([...columns.filter((item) => !lockedColumns.includes(item)), key], lockedColumns));
   }
   function changeTechnicalTimeframe(column: string, nextTimeframe: ScannerTimeframe) {
@@ -360,6 +373,28 @@ function MarketListTable({
     onColumnsChange(nextColumns);
     setHeaderMenuColumn(key);
   }
+  function changeTechnicalAnchor(column: string, nextAnchor: ScannerSessionAnchor) {
+    const existing = customColumns.find((item) => item.key === column);
+    if (!existing || !["vwap", "vwap_distance_pct"].includes(existing.metric)) return;
+    const source = existing.source ?? "hlc3";
+    const key = technicalColumnKey(existing.metric, nextAnchor, source);
+    const nextColumns = columns.map((item) => item === column ? key : item).filter((item, index, values) => values.indexOf(item) === index);
+    const nextCustom = customColumns.filter((item) => item.key !== column && item.key !== key);
+    onCustomColumnsChange([...nextCustom, { anchor: nextAnchor, key, metric: existing.metric, source }]);
+    onColumnsChange(nextColumns);
+    setHeaderMenuColumn(key);
+  }
+  function changeTechnicalSource(column: string, nextSource: ScannerVwapSource) {
+    const existing = customColumns.find((item) => item.key === column);
+    if (!existing || !["vwap", "vwap_distance_pct"].includes(existing.metric)) return;
+    const anchor = existing.anchor ?? "extended_session";
+    const key = technicalColumnKey(existing.metric, anchor, nextSource);
+    const nextColumns = columns.map((item) => item === column ? key : item).filter((item, index, values) => values.indexOf(item) === index);
+    const nextCustom = customColumns.filter((item) => item.key !== column && item.key !== key);
+    onCustomColumnsChange([...nextCustom, { anchor, key, metric: existing.metric, source: nextSource }]);
+    onColumnsChange(nextColumns);
+    setHeaderMenuColumn(key);
+  }
   return <div className="market-list-table-shell">
     <div className="market-list-toolbar">
       <label className="market-list-search"><Search size={14} /><input aria-label={`Search ${title}`} onChange={(event) => setQuery(event.target.value)} placeholder="Search symbols and values" value={query} /></label>
@@ -367,7 +402,7 @@ function MarketListTable({
       <span>{visibleRows.length} of {rows.length}</span>
       <button aria-expanded={columnPickerOpen} className="market-list-columns-button" onClick={() => setColumnPickerOpen((open) => !open)} type="button"><Columns3 size={14} /> Columns <b>{columns.length}</b></button>
     </div>
-    <div className="market-list-table-scroll"><table className="market-list-table"><thead><tr>{columns.map((column) => { const definition = catalogField(column, customColumns); const sorted = sort.column === column; const className = columnClass(column); const menuOpen = headerMenuColumn === column; return column === "logo" ? <th aria-label="Ticker logo" className={className} key={column} /> : <th aria-sort={sorted ? (sort.direction === "asc" ? "ascending" : "descending") : "none"} className={className} data-menu-open={menuOpen ? "true" : undefined} key={column}><button aria-expanded={menuOpen} onClick={() => setHeaderMenuColumn((current) => current === column ? null : column)} title={`Configure ${definition.label}`} type="button"><span>{definition.label}<small data-kind={definition.kind}>{definition.timeframe ? timeframeLabel(definition.timeframe) : definition.kind}</small></span>{sorted ? sort.direction === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} /> : <ChevronDown size={12} />}</button>{menuOpen ? <ColumnHeaderMenu column={column} definition={definition} locked={lockedColumns.includes(column)} onMove={(target) => moveColumn(column, target)} onRemove={() => removeColumn(column)} onSort={(direction) => changeSort(column, direction)} onTimeframeChange={(value) => changeTechnicalTimeframe(column, value)} ref={headerMenuRef} /> : null}</th>; })}{rowAction ? <th aria-label="Row actions" /> : null}</tr></thead><tbody>{visibleRows.length ? visibleRows.map((row, index) => { const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase(); const selectable = Boolean(ticker && onTickerSelect); const select = () => { if (selectable) onTickerSelect?.(ticker); }; return <tr aria-label={selectable ? `Open ${ticker} chart` : undefined} data-selectable={selectable ? "true" : undefined} key={`${ticker || "row"}:${row.event_time ?? index}:${index}`} onClick={(event) => { if (!(event.target as HTMLElement).closest("button, input, select, a")) select(); }} onKeyDown={(event) => { if (selectable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); select(); } }} tabIndex={selectable ? 0 : undefined}>{columns.map((column) => <td className={`${toneClass(row[column], column, customColumns)} ${columnClass(column)}`.trim()} key={column}>{renderMarketCell(row, column, presentations, customColumns)}</td>)}{rowAction ? <td className="market-list-row-action">{rowAction(row)}</td> : null}</tr>; }) : <tr><td className="market-list-empty" colSpan={columns.length + (rowAction ? 1 : 0)}>{empty}</td></tr>}</tbody></table></div>
+    <div className="market-list-table-scroll"><table className="market-list-table"><thead><tr>{columns.map((column) => { const definition = catalogField(column, customColumns); const sorted = sort.column === column; const className = columnClass(column); const menuOpen = headerMenuColumn === column; return column === "logo" ? <th aria-label="Ticker logo" className={className} key={column} /> : <th aria-sort={sorted ? (sort.direction === "asc" ? "ascending" : "descending") : "none"} className={className} data-menu-open={menuOpen ? "true" : undefined} key={column}><button aria-expanded={menuOpen} onClick={() => setHeaderMenuColumn((current) => current === column ? null : column)} title={`Configure ${definition.label}`} type="button"><span>{definition.label}<small data-kind={definition.kind}>{technicalScopeLabel(definition) ?? definition.kind}</small></span>{sorted ? sort.direction === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} /> : <ChevronDown size={12} />}</button>{menuOpen ? <ColumnHeaderMenu column={column} definition={definition} locked={lockedColumns.includes(column)} onAnchorChange={(value) => changeTechnicalAnchor(column, value)} onMove={(target) => moveColumn(column, target)} onRemove={() => removeColumn(column)} onSort={(direction) => changeSort(column, direction)} onSourceChange={(value) => changeTechnicalSource(column, value)} onTimeframeChange={(value) => changeTechnicalTimeframe(column, value)} ref={headerMenuRef} /> : null}</th>; })}{rowAction ? <th aria-label="Row actions" /> : null}</tr></thead><tbody>{visibleRows.length ? visibleRows.map((row, index) => { const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase(); const selectable = Boolean(ticker && onTickerSelect); const select = () => { if (selectable) onTickerSelect?.(ticker); }; return <tr aria-label={selectable ? `Open ${ticker} chart` : undefined} data-selectable={selectable ? "true" : undefined} key={`${ticker || "row"}:${row.event_time ?? index}:${index}`} onClick={(event) => { if (!(event.target as HTMLElement).closest("button, input, select, a")) select(); }} onKeyDown={(event) => { if (selectable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); select(); } }} tabIndex={selectable ? 0 : undefined}>{columns.map((column) => <td className={`${toneClass(row[column], column, customColumns)} ${columnClass(column)}`.trim()} key={column}>{renderMarketCell(row, column, presentations, customColumns)}</td>)}{rowAction ? <td className="market-list-row-action">{rowAction(row)}</td> : null}</tr>; }) : <tr><td className="market-list-empty" colSpan={columns.length + (rowAction ? 1 : 0)}>{empty}</td></tr>}</tbody></table></div>
     {columnPickerOpen ? <ColumnPicker columns={columns} customColumns={customColumns} fieldCoverage={fieldCoverage} lockedColumns={lockedColumns} onAddTechnical={addTechnicalColumn} onChange={onColumnsChange} onClose={() => setColumnPickerOpen(false)} /> : null}
   </div>;
 }
@@ -376,13 +411,21 @@ const ColumnHeaderMenu = forwardRef<HTMLDivElement, {
   column: string;
   definition: FieldDefinition;
   locked: boolean;
+  onAnchorChange: (anchor: ScannerSessionAnchor) => void;
   onMove: (target: "left" | "right" | "start" | "end") => void;
   onRemove: () => void;
   onSort: (direction: "asc" | "desc") => void;
+  onSourceChange: (source: ScannerVwapSource) => void;
   onTimeframeChange: (timeframe: ScannerTimeframe) => void;
-}>(function ColumnHeaderMenu({ column, definition, locked, onMove, onRemove, onSort, onTimeframeChange }, ref) {
+}>(function ColumnHeaderMenu({ column, definition, locked, onAnchorChange, onMove, onRemove, onSort, onSourceChange, onTimeframeChange }, ref) {
   return <div aria-label={`${definition.label} column tools`} className="market-column-header-menu" ref={ref}>
-    <header><div><strong>{definition.label}</strong><span>{definition.description}</span></div>{definition.timeframe ? <label><span>Interval</span><select aria-label={`${definition.label} interval`} onChange={(event) => onTimeframeChange(event.target.value as ScannerTimeframe)} value={definition.timeframe}>{(definition.timeframes ?? SCANNER_TIMEFRAMES).map((value) => <option key={value} value={value}>{timeframeLabel(value)}</option>)}</select></label> : null}</header>
+    <header>
+      <div><strong>{definition.label}</strong><span>{definition.description}</span></div>
+      {definition.scope === "interval" && definition.timeframe ? <label><span>Interval</span><select aria-label={`${definition.label} interval`} onChange={(event) => onTimeframeChange(event.target.value as ScannerTimeframe)} value={definition.timeframe}>{(definition.timeframes ?? SCANNER_TIMEFRAMES).map((value) => <option key={value} value={value}>{timeframeLabel(value)}</option>)}</select></label> : null}
+      {definition.scope === "session" && definition.anchor ? <label><span>Anchor</span><select aria-label={`${definition.label} anchor`} onChange={(event) => onAnchorChange(event.target.value as ScannerSessionAnchor)} value={definition.anchor}><option value="extended_session">Extended session</option><option value="regular_session">Regular session</option></select></label> : null}
+      {definition.scope === "session" && definition.source ? <label><span>Source</span><select aria-label={`${definition.label} source`} onChange={(event) => onSourceChange(event.target.value as ScannerVwapSource)} value={definition.source}><option value="hlc3">HLC3 · 1m source bars</option><option value="trade_price">Exact trade prices</option></select></label> : null}
+      {definition.scope === "relative-volume" ? <div className="market-column-formula-note"><span>Anchor</span><strong>Extended session</strong><span>Baseline</span><strong>{definition.lookbackSessions ?? 20} completed sessions</strong></div> : null}
+    </header>
     <section><button onClick={() => onSort("asc")} type="button"><ArrowUp size={14} /> Sort ascending</button><button onClick={() => onSort("desc")} type="button"><ArrowDown size={14} /> Sort descending</button></section>
     {!locked ? <><section><button onClick={() => onMove("left")} type="button"><ArrowLeft size={14} /> Move left</button><button onClick={() => onMove("right")} type="button"><ArrowRight size={14} /> Move right</button><button onClick={() => onMove("start")} type="button"><ChevronLeft size={14} /> Move to start</button><button onClick={() => onMove("end")} type="button"><ChevronLeft size={14} className="flip-horizontal" /> Move to end</button></section><section><button className="danger" onClick={onRemove} type="button"><Trash2 size={14} /> Remove column</button></section></> : null}
     <small data-column={column}>Computed causally at the workspace clock.</small>
@@ -402,7 +445,7 @@ function ColumnPicker({
   customColumns: ScannerCustomColumn[];
   fieldCoverage?: Record<string, number>;
   lockedColumns?: string[];
-  onAddTechnical: (metric: TechnicalMetric, timeframe?: ScannerTimeframe) => void;
+  onAddTechnical: (metric: TechnicalMetric) => void;
   onChange: (columns: string[]) => void;
   onClose: () => void;
 }) {
@@ -411,7 +454,7 @@ function ColumnPicker({
   const [group, setGroup] = useState(groups[0]);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
-  const availableDefinitions = [...FIELD_CATALOG, ...TECHNICAL_METRICS.map((item) => ({ ...item, group: "Technicals", key: `template:${item.metric}`, timeframe: metricTimeframe(item.metric, DEFAULT_SCANNER_TECHNICAL_TIMEFRAME) } as FieldDefinition)), ...customDefinitions];
+  const availableDefinitions = [...FIELD_CATALOG, ...TECHNICAL_METRICS.map((item) => ({ ...item, group: "Technicals", key: `template:${item.metric}` } as FieldDefinition)), ...customDefinitions];
   const matches = availableDefinitions.filter((item) => (!deferredQuery || `${item.label} ${item.key} ${item.description}`.toLowerCase().includes(deferredQuery)) && (deferredQuery || item.group === group));
   function toggle(key: string) { if (lockedColumns.includes(key)) return; onChange(columns.includes(key) ? columns.filter((column) => column !== key) : [...columns, key]); }
   return <aside aria-label="Add scanner columns" className="market-column-picker">
@@ -419,7 +462,7 @@ function ColumnPicker({
     <label><Search size={14} /><input autoFocus onChange={(event) => setQuery(event.target.value)} placeholder="Search every available field" value={query} /></label>
     <div className="market-column-picker-body">
       {!deferredQuery ? <nav>{groups.map((item) => <button className={group === item ? "active" : undefined} key={item} onClick={() => setGroup(item)} type="button"><span>{item}</span><b>{availableDefinitions.filter((fieldItem) => fieldItem.group === item).length}</b></button>)}</nav> : null}
-      <section className={deferredQuery ? "search-results" : undefined}><button className="market-column-back" onClick={() => { setQuery(""); setGroup(groups[0]); }} type="button"><ChevronLeft size={14} /> {deferredQuery ? "All groups" : group}</button>{matches.map((item) => { const template = item.key.startsWith("template:"); const templateTimeframe = item.timeframe ?? DEFAULT_SCANNER_TECHNICAL_TIMEFRAME; const selectedKey = template && item.metric ? technicalColumnKey(item.metric, templateTimeframe) : item.key; const locked = lockedColumns.includes(selectedKey); const coverage = fieldCoverage?.[selectedKey]; const selected = columns.includes(selectedKey); return <button aria-disabled={locked} className={`${selected ? "selected" : ""}${locked ? " locked" : ""}`.trim()} key={item.key} onClick={() => template && item.metric ? selected ? toggle(selectedKey) : onAddTechnical(item.metric, templateTimeframe) : toggle(item.key)} type="button"><i>{selected ? <Check size={12} /> : null}</i><span><strong>{item.label}{item.timeframe ? <small className="market-column-inline-timeframe">{timeframeLabel(item.timeframe)}</small> : null}</strong><small>{item.description}</small></span><em data-kind={item.kind}>{locked ? "pinned" : coverage !== undefined ? `${coverage}%` : item.kind}</em></button>; })}</section>
+      <section className={deferredQuery ? "search-results" : undefined}><button className="market-column-back" onClick={() => { setQuery(""); setGroup(groups[0]); }} type="button"><ChevronLeft size={14} /> {deferredQuery ? "All groups" : group}</button>{matches.map((item) => { const template = item.key.startsWith("template:"); const templateColumn = template && item.metric ? defaultTechnicalColumn(item.metric) : null; const selectedKey = templateColumn?.key ?? item.key; const locked = lockedColumns.includes(selectedKey); const coverage = fieldCoverage?.[selectedKey]; const selected = columns.includes(selectedKey); return <button aria-disabled={locked} className={`${selected ? "selected" : ""}${locked ? " locked" : ""}`.trim()} key={item.key} onClick={() => template && item.metric ? selected ? toggle(selectedKey) : onAddTechnical(item.metric) : toggle(item.key)} type="button"><i>{selected ? <Check size={12} /> : null}</i><span><strong>{item.label}{!template && technicalScopeLabel(item) ? <small className="market-column-inline-timeframe">{technicalScopeLabel(item)}</small> : null}</strong><small>{item.description}</small></span><em data-kind={item.kind}>{locked ? "pinned" : coverage !== undefined ? `${coverage}%` : item.kind}</em></button>; })}</section>
     </div>
   </aside>;
 }
@@ -547,10 +590,13 @@ function rowLabels(value: unknown) { return [...new Set(String(value ?? "").spli
 function collectLabels(rows: ScreenerRow[], column: "news_labels" | "sec_labels") { return [...new Set(rows.flatMap((row) => rowLabels(row[column])))].sort((left, right) => left.localeCompare(right)); }
 function normalizeLabel(value: string) { return value.trim().toLowerCase(); }
 function field(key: string, labelValue: string, group: string, kind: FieldKind, format: FieldDefinition["format"], description: string): FieldDefinition { return { description, format, group, key, kind, label: labelValue }; }
-function technicalMetric(metric: TechnicalMetric, labelValue: string, format: FieldDefinition["format"], description: string, timeframes = SCANNER_TIMEFRAMES) {
-  return { description, format, group: "Technicals", kind: "derived" as const, label: labelValue, metric, timeframes };
+function technicalMetric(metric: TechnicalMetric, labelValue: string, format: FieldDefinition["format"], description: string, scope: FieldDefinition["scope"]) {
+  return { description, format, group: "Technicals", kind: "derived" as const, label: labelValue, metric, scope };
 }
-function technicalColumnKey(metric: TechnicalMetric, timeframe: ScannerTimeframe) { return `technical__${metric}__${timeframe}`; }
+function intervalTechnicalMetric(metric: TechnicalMetric, labelValue: string, format: FieldDefinition["format"], description: string, timeframes = SCANNER_TIMEFRAMES) {
+  return { ...technicalMetric(metric, labelValue, format, description, "interval"), timeframes };
+}
+function technicalColumnKey(metric: TechnicalMetric, parameter: ScannerSessionAnchor | ScannerTimeframe, source?: ScannerVwapSource) { return `technical__${metric}__${parameter}${source ? `__${source}` : ""}`; }
 function isTechnicalKey(key: string) { return key.startsWith("technical__"); }
 function customField(column: ScannerCustomColumn): FieldDefinition {
   const definition = TECHNICAL_METRICS.find((item) => item.metric === column.metric);
@@ -562,6 +608,10 @@ function customField(column: ScannerCustomColumn): FieldDefinition {
     kind: "derived",
     label: definition?.label ?? label(column.metric),
     metric: column.metric,
+    anchor: column.anchor,
+    lookbackSessions: column.lookbackSessions,
+    scope: definition?.scope,
+    source: column.source,
     timeframe: column.timeframe,
     timeframes: definition?.timeframes,
   };
@@ -569,6 +619,25 @@ function customField(column: ScannerCustomColumn): FieldDefinition {
 function metricTimeframe(metric: TechnicalMetric, requested: ScannerTimeframe) {
   const supported = TECHNICAL_METRICS.find((item) => item.metric === metric)?.timeframes ?? SCANNER_TIMEFRAMES;
   return supported.includes(requested) ? requested : supported[0];
+}
+function defaultTechnicalColumn(metric: TechnicalMetric): ScannerCustomColumn {
+  const definition = TECHNICAL_METRICS.find((item) => item.metric === metric);
+  if (definition?.scope === "session") {
+    const anchor: ScannerSessionAnchor = "extended_session";
+    const source: ScannerVwapSource = "hlc3";
+    return { anchor, key: technicalColumnKey(metric, anchor, source), metric, source };
+  }
+  if (definition?.scope === "relative-volume") {
+    return { anchor: "extended_session", key: technicalColumnKey(metric, "extended_session"), lookbackSessions: 20, metric };
+  }
+  const timeframe = metricTimeframe(metric, DEFAULT_SCANNER_TECHNICAL_TIMEFRAME);
+  return { key: technicalColumnKey(metric, timeframe), metric, timeframe };
+}
+function technicalScopeLabel(definition: FieldDefinition) {
+  if (definition.scope === "interval" && definition.timeframe) return timeframeLabel(definition.timeframe);
+  if (definition.scope === "session" && definition.anchor) return `${definition.anchor === "regular_session" ? "RTH" : "XH"} · ${definition.source === "trade_price" ? "trades" : "HLC3"}`;
+  if (definition.scope === "relative-volume") return `${definition.lookbackSessions ?? 20}D session`;
+  return null;
 }
 function timeframeLabel(value: ScannerTimeframe) {
   return value === "1d" ? "1 day" : value === "1h" ? "1 hour" : value.endsWith("m") ? `${value.slice(0, -1)} min` : value;

@@ -60,17 +60,21 @@ Watchlists have a stable name and an owner kind of `user` or `strategy`. Canvas 
 - Unselected sort controls are revealed on header hover or keyboard focus.
 - Search, quick filters, views, sorting, and selected columns remain local to the container instance.
 - The grouped column picker searches the full catalog and explains every field before selection.
-- There is no table-wide technical interval. Each technical column owns its
-  interval and exposes it only in that column's heading popover, so one scanner
-  may compare, for example, 5-minute VWAP with 1-hour relative volume. A newly
-  added technical column starts at 15 minutes and can then be changed from its
-  own popover.
-- Selecting a technical field creates a stable
-  `technical__<metric>__<timeframe>` definition. The definition persists with
-  the container and appears under **Custom**, where it can be hidden and
-  restored without losing its interval.
+- There is no table-wide technical interval and the **Technicals** catalog
+  contains formula definitions, not one copy per timeframe. Only equations
+  that require a measurement interval expose **Interval** in their column
+  heading popover. That customized interval is persisted with the column.
+- Anchored metrics expose their real formula parameters instead. VWAP and Price
+  vs VWAP expose **Anchor** (extended or regular session) and **Source** (HLC3
+  or exact trades), not a bar timeframe.
+  Relative volume shows its extended-session anchor and 20-session baseline.
+  Non-windowed fields show no irrelevant interval control.
+- Interval definitions use `technical__<metric>__<interval>` keys. Anchored
+  definitions use `technical__<metric>__<anchor>`. The customized definition
+  appears under **Custom**, where it can be hidden and restored without losing
+  its valid parameters.
 - Selecting a column heading opens the column tools. Configurable technical
-  columns expose their interval; all non-pinned columns expose explicit
+  columns expose only formula-relevant parameters; all non-pinned columns expose explicit
   ascending/descending sort, move left/right/start/end, and remove actions.
   Logo and Symbol remain pinned identity columns.
 - Scanner identity is fixed at the left edge of the selected schema. A narrow, unlabeled first column contains only the provider logo when one exists; a missing logo leaves that cell blank. The adjacent Symbol cell contains the ticker followed by compact company-news and SEC recency icons. Missing recent events leave no placeholder ornament.
@@ -92,40 +96,53 @@ QMD live scanner state is the live cross-sectional authority. Historical and rep
 
 The dedicated `GET /api/trading/canvas-scanner` route makes the Scanner, Watchlist, and market-derived Signal Stream independent of the broad Canvas preview request. An unrelated QMD History coverage failure therefore cannot replace a valid persisted scanner snapshot with a six-symbol sample or an empty universe. News and SEC enrichments are attached in batch at the same clock and report their failures separately from market-state availability.
 
-### Interval technical projection
+### Technical calculation projection
 
 The scanner's technical fields use a second causal, cross-sectional cache in
-`q_live.canvas_scanner_technical_v1`. This belongs to the historical scanner
+`q_live.canvas_scanner_technical_v3`. This belongs to the historical scanner
 authority rather than a per-symbol chart request:
 
-1. The frontend sends only the distinct intervals required by visible custom
-   columns.
-2. The service aligns each interval to the 04:00-20:00 New York extended
-   session and never reads beyond the Canvas clock. At an exact interval
-   boundary it returns the just-completed interval; between boundaries it
-   returns the current causal partial interval.
-3. One set-based compact-event query computes the requested interval for the
-   whole market. No ticker fan-out is allowed.
-4. Rows are cached by interval end, interval, schema version, and compact-event
-   source revision. Repeated scanner, watchlist, and signal-stream requests
-   reuse the same projection.
-5. An upstream continuity revision creates a new cache revision rather than
+1. The frontend sends only the distinct calculation windows required by visible
+   custom columns. A calculation window may be an interval bucket or a session
+   anchor; those concepts are not conflated.
+2. Interval metrics align to the 04:00-20:00 New York extended-session grid and
+   never read beyond the Canvas clock. At an exact interval boundary they
+   return the just-completed interval; between boundaries they return the
+   current causal partial interval.
+3. Session VWAP begins at the selected anchor: 04:00 ET for extended session or
+   09:30 ET for regular session. The standard default uses canonical one-minute
+   HLC3 source bars:
+
+   `VWAP = cumulative(HLC3 × bar volume) / cumulative(bar volume)`
+
+   The popover can instead select exact eligible trade prices:
+
+   `VWAP = sum(trade price × trade size) / sum(trade size)`
+
+   The one-minute HLC3 source resolution is part of the canonical scanner
+   calculation, not a user-facing chart timeframe. Price vs VWAP compares the
+   latest eligible trade with the same anchored and sourced value.
+4. One set-based compact-event query computes each requested calculation window
+   for the whole market. No ticker fan-out is allowed.
+5. Rows are cached by calculation end, calculation window, schema version, and
+   compact-event source revision. Repeated scanner, watchlist, and signal-stream
+   requests reuse the same projection.
+6. An upstream continuity revision creates a new cache revision rather than
    mutating the prior auditable result.
 
 Available technical metrics are interval price change, volume, dollar volume,
-trade count, quote count, VWAP, price relative to VWAP, high, low, range, and
-relative volume. Prices and VWAP use eligible compact trade events; quote count
-uses consolidated quote events.
+trade count, quote count, high, low, and range; anchored VWAP and price relative
+to VWAP; and session-relative volume. Prices and VWAP use eligible compact trade
+events; quote count uses consolidated quote events.
 
 Relative volume is explicitly a pace estimate, not a same-clock empirical
 average. It is:
 
-`current interval volume / (prior 20 completed extended-session average volume × elapsed interval / 16 hours)`
+`cumulative session volume / (prior 20 completed extended-session average volume × elapsed session / 16 hours)`
 
-It is offered from one minute through one day. Sub-minute relative-volume
-values are intentionally unavailable because a daily pace denominator is not a
-stable or decision-useful baseline at that granularity. Missing history remains
-unavailable rather than becoming zero.
+It therefore exposes its 20-session baseline and session anchor rather than an
+arbitrary bar timeframe. Missing history remains unavailable rather than
+becoming zero.
 
 News and SEC enrichment is batch-linked to ticker identity. The scanner uses ticker-aggregated queries over the complete causal news and filing windows rather than reusing the 30-item All News/All SEC preview queries. Company-news classification happens before ticker aggregation; SEC aggregation uses the event-valid CIK-to-market bridge. Identity, issuer, country, market-cap, share-supply, float, and short-interest are resolved causally for the entire tradable universe. The same set-based projection attaches the current canonical logo asset as non-market presentation metadata. Every market and filing source is bounded by the Canvas clock, including filing publication availability and reference-table insertion time. The table never issues per-row fact requests. Field coverage is returned with the snapshot so users can distinguish a partially published source from a broken column.
 

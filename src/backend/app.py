@@ -4773,18 +4773,19 @@ def trading_canvas_preview(payload: CanvasPreviewRequest) -> dict[str, Any]:
 def trading_canvas_scanner(
     as_of: datetime,
     lookback_minutes: int = Query(default=15, ge=1, le=120),
-    technical_timeframes: str = Query(default=""),
+    technical_windows: str = Query(default=""),
+    technical_timeframes: str = Query(default="", deprecated=True),
 ) -> dict[str, Any]:
     try:
-        requested_timeframes = [
+        requested_windows = [
             value.strip()
-            for value in technical_timeframes.split(",")
+            for value in (technical_windows or technical_timeframes).split(",")
             if value.strip()
         ]
         return scanner_snapshot_payload(
             as_of=as_of,
             lookback_minutes=lookback_minutes,
-            technical_timeframes=requested_timeframes,
+            technical_windows=requested_windows,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -116,7 +116,7 @@ def scanner_snapshot_payload(
     *,
     as_of: datetime,
     lookback_minutes: int = 15,
-    technical_timeframes: list[str] | tuple[str, ...] = (),
+    technical_windows: list[str] | tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Return the causal cross-sectional scanner independently of other Canvas sources."""
     cutoff = as_of.astimezone(UTC)
@@ -129,10 +129,10 @@ def scanner_snapshot_payload(
         for row in rows
         if row.get("symbol") or row.get("ticker")
     }
-    if technical_timeframes:
+    if technical_windows:
         technical_projection, technical_meta = historical_scanner_technical_projection(
             as_of,
-            timeframes=technical_timeframes,
+            calculation_windows=technical_windows,
         )
         for row in rows:
             row.update(technical_projection.get(str(row.get("symbol") or "").upper(), {}))

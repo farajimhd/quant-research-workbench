@@ -29,14 +29,14 @@ from src.backend.ticker_facts_service import (
 
 SCANNER_SCHEMA_VERSION = "canvas_historical_scanner_v1"
 SCANNER_TABLE = "q_live.canvas_historical_scanner_v1"
-SCANNER_TECHNICAL_SCHEMA_VERSION = "canvas_scanner_technical_v1"
-SCANNER_TECHNICAL_TABLE = "q_live.canvas_scanner_technical_v1"
+SCANNER_TECHNICAL_SCHEMA_VERSION = "canvas_scanner_technical_v3"
+SCANNER_TECHNICAL_TABLE = "q_live.canvas_scanner_technical_v3"
 IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 NEW_YORK = ZoneInfo("America/New_York")
 EXTENDED_SESSION_START_MINUTE = 4 * 60
 EXTENDED_SESSION_END_MINUTE = 20 * 60
 EXTENDED_SESSION_DURATION_US = 16 * 60 * 60 * 1_000_000
-SCANNER_TECHNICAL_TIMEFRAMES: dict[str, int | None] = {
+SCANNER_TECHNICAL_WINDOWS: dict[str, int | None] = {
     "100ms": 100_000,
     "1s": 1_000_000,
     "5s": 5_000_000,
@@ -48,6 +48,8 @@ SCANNER_TECHNICAL_TIMEFRAMES: dict[str, int | None] = {
     "30m": 30 * 60_000_000,
     "1h": 60 * 60_000_000,
     "1d": None,
+    "extended_session": None,
+    "regular_session": None,
 }
 SCANNER_TECHNICAL_METRICS = (
     "open",
@@ -60,6 +62,8 @@ SCANNER_TECHNICAL_METRICS = (
     "quote_count",
     "vwap",
     "vwap_distance_pct",
+    "vwap_trade",
+    "vwap_trade_distance_pct",
     "relative_volume",
     "range_pct",
 )
@@ -185,26 +189,26 @@ def historical_scanner_snapshot(as_of: datetime, *, lookback_minutes: int = 15) 
 def historical_scanner_technical_projection(
     as_of: datetime,
     *,
-    timeframes: list[str] | tuple[str, ...],
+    calculation_windows: list[str] | tuple[str, ...],
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
-    """Project cached cross-sectional technical fields for each requested interval.
+    """Project cached cross-sectional technical fields for each requested window.
 
-    Each interval is computed once for the full market and stored by source revision.
-    This deliberately avoids per-symbol QMD calls on the interactive scanner path.
-    Relative volume is a pace-adjusted comparison with the prior 20 completed
-    extended-session daily bars.
+    Interval metrics use exchange-session buckets. Anchored metrics use explicit
+    session windows and do not acquire a synthetic bar timeframe. Each distinct
+    calculation window is computed once for the full market and stored by source
+    revision, avoiding per-symbol QMD calls on the interactive scanner path.
     """
     if as_of.tzinfo is None:
         raise ValueError("Historical scanner clock must be timezone-aware.")
-    requested = list(dict.fromkeys(str(value).strip() for value in timeframes if str(value).strip()))
-    invalid = [value for value in requested if value not in SCANNER_TECHNICAL_TIMEFRAMES]
+    requested = list(dict.fromkeys(str(value).strip() for value in calculation_windows if str(value).strip()))
+    invalid = [value for value in requested if value not in SCANNER_TECHNICAL_WINDOWS]
     if invalid:
         raise ValueError(
-            "Unsupported scanner technical timeframe(s): "
-            f"{', '.join(invalid)}. Expected one of {', '.join(SCANNER_TECHNICAL_TIMEFRAMES)}."
+            "Unsupported scanner technical calculation window(s): "
+            f"{', '.join(invalid)}. Expected one of {', '.join(SCANNER_TECHNICAL_WINDOWS)}."
         )
     if not requested:
-        return {}, {"technical_timeframes": [], "technical_materialized": []}
+        return {}, {"technical_calculation_windows": [], "technical_materialized": []}
     cutoff = as_of.astimezone(UTC)
     client = ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password())
     source_database = os.environ.get("QMD_HISTORY_CLICKHOUSE_DATABASE", "market_sip_compact")
@@ -216,13 +220,13 @@ def historical_scanner_technical_projection(
     projection: dict[str, dict[str, Any]] = defaultdict(dict)
     materialized: list[str] = []
     windows: dict[str, dict[str, str]] = {}
-    for timeframe in requested:
-        window_start, window_end = scanner_technical_window(cutoff, timeframe)
-        windows[timeframe] = {
+    for calculation_window in requested:
+        window_start, window_end = scanner_technical_window(cutoff, calculation_window)
+        windows[calculation_window] = {
             "window_start_utc": window_start.isoformat(),
             "window_end_utc": window_end.isoformat(),
         }
-        rows = _cached_technical_rows(client, window_end, timeframe, source_revision)
+        rows = _cached_technical_rows(client, window_end, calculation_window, source_revision)
         if not rows:
             _materialize_technical_snapshot(
                 client,
@@ -230,53 +234,71 @@ def historical_scanner_technical_projection(
                 table_prefix=table_prefix,
                 snapshot_at=window_end,
                 window_start=window_start,
-                timeframe=timeframe,
+                calculation_window=calculation_window,
                 source_revision=source_revision,
             )
-            rows = _cached_technical_rows(client, window_end, timeframe, source_revision)
-            materialized.append(timeframe)
+            rows = _cached_technical_rows(client, window_end, calculation_window, source_revision)
+            materialized.append(calculation_window)
         for row in rows:
             ticker = str(row.pop("symbol", "")).upper()
             if not ticker:
                 continue
             for metric in SCANNER_TECHNICAL_METRICS:
                 value = row.get(metric)
-                if value not in (None, ""):
-                    projection[ticker][_technical_field_key(metric, timeframe)] = value
+                if value in (None, ""):
+                    continue
+                if metric == "vwap":
+                    projection[ticker][_technical_field_key("vwap", calculation_window, "hlc3")] = value
+                elif metric == "vwap_distance_pct":
+                    projection[ticker][_technical_field_key("vwap_distance_pct", calculation_window, "hlc3")] = value
+                elif metric == "vwap_trade":
+                    projection[ticker][_technical_field_key("vwap", calculation_window, "trade_price")] = value
+                elif metric == "vwap_trade_distance_pct":
+                    projection[ticker][_technical_field_key("vwap_distance_pct", calculation_window, "trade_price")] = value
+                else:
+                    projection[ticker][_technical_field_key(metric, calculation_window)] = value
     return dict(projection), {
         "technical_materialized": materialized,
         "technical_schema_version": SCANNER_TECHNICAL_SCHEMA_VERSION,
-        "technical_timeframes": requested,
+        "technical_calculation_windows": requested,
         "technical_windows": windows,
     }
 
 
-def scanner_technical_window(as_of: datetime, timeframe: str) -> tuple[datetime, datetime]:
-    """Return the latest causal exchange-session bucket ending no later than as_of."""
-    if timeframe not in SCANNER_TECHNICAL_TIMEFRAMES:
-        raise ValueError(f"Unsupported scanner technical timeframe: {timeframe}")
+def scanner_technical_window(as_of: datetime, calculation_window: str) -> tuple[datetime, datetime]:
+    """Return the causal calculation window ending no later than ``as_of``.
+
+    Interval calculations use the latest bucket on the 04:00-20:00 New York
+    grid. Anchored calculations use either the complete extended session or
+    regular trading session to date; an anchor is not a bar timeframe.
+    """
+    if calculation_window not in SCANNER_TECHNICAL_WINDOWS:
+        raise ValueError(f"Unsupported scanner technical calculation window: {calculation_window}")
     if as_of.tzinfo is None:
         raise ValueError("Historical scanner clock must be timezone-aware.")
     local = as_of.astimezone(NEW_YORK)
+    anchored = calculation_window in {"1d", "extended_session", "regular_session"}
+    session_start_minute = 9 * 60 + 30 if calculation_window == "regular_session" else EXTENDED_SESSION_START_MINUTE
+    session_end_minute = 16 * 60 if calculation_window == "regular_session" else EXTENDED_SESSION_END_MINUTE
     minute_of_day = local.hour * 60 + local.minute
-    if minute_of_day < EXTENDED_SESSION_START_MINUTE:
+    if minute_of_day < session_start_minute:
         session_date = _previous_weekday(local.date())
         local_end = datetime.combine(
             session_date,
             datetime.min.time(),
             NEW_YORK,
-        ) + timedelta(minutes=EXTENDED_SESSION_END_MINUTE)
+        ) + timedelta(minutes=session_end_minute)
     else:
         session_date = local.date()
-        session_close = local.replace(hour=20, minute=0, second=0, microsecond=0)
+        session_close = datetime.combine(session_date, datetime.min.time(), NEW_YORK) + timedelta(
+            minutes=session_end_minute
+        )
         local_end = min(local, session_close)
-    session_open = datetime.combine(session_date, datetime.min.time(), NEW_YORK) + timedelta(
-        minutes=EXTENDED_SESSION_START_MINUTE
-    )
-    if timeframe == "1d":
+    session_open = datetime.combine(session_date, datetime.min.time(), NEW_YORK) + timedelta(minutes=session_start_minute)
+    if anchored:
         local_start = session_open
     else:
-        resolution_us = int(SCANNER_TECHNICAL_TIMEFRAMES[timeframe] or 0)
+        resolution_us = int(SCANNER_TECHNICAL_WINDOWS[calculation_window] or 0)
         elapsed_us = max(1, int((local_end - session_open).total_seconds() * 1_000_000))
         bucket_index = max(0, (elapsed_us - 1) // resolution_us)
         local_start = session_open + timedelta(microseconds=bucket_index * resolution_us)
@@ -584,7 +606,7 @@ def _ensure_technical_snapshot_table(client: ClickHouseHttpClient) -> None:
         CREATE TABLE IF NOT EXISTS {SCANNER_TECHNICAL_TABLE}
         (
             snapshot_at_utc DateTime64(6, 'UTC'),
-            timeframe LowCardinality(String),
+            calculation_window LowCardinality(String),
             schema_version LowCardinality(String),
             source_revision String,
             symbol LowCardinality(String),
@@ -598,6 +620,8 @@ def _ensure_technical_snapshot_table(client: ClickHouseHttpClient) -> None:
             quote_count UInt64,
             vwap Float64,
             vwap_distance_pct Float64,
+            vwap_trade Float64,
+            vwap_trade_distance_pct Float64,
             relative_volume Nullable(Float64),
             range_pct Float64,
             average_daily_volume Nullable(Float64),
@@ -605,7 +629,7 @@ def _ensure_technical_snapshot_table(client: ClickHouseHttpClient) -> None:
         )
         ENGINE = ReplacingMergeTree(materialized_at_utc)
         PARTITION BY toYYYYMM(snapshot_at_utc)
-        ORDER BY (snapshot_at_utc, timeframe, source_revision, symbol)
+        ORDER BY (snapshot_at_utc, calculation_window, source_revision, symbol)
         """
     )
 
@@ -613,7 +637,7 @@ def _ensure_technical_snapshot_table(client: ClickHouseHttpClient) -> None:
 def _cached_technical_rows(
     client: ClickHouseHttpClient,
     snapshot_at: datetime,
-    timeframe: str,
+    calculation_window: str,
     source_revision: str,
 ) -> list[dict[str, Any]]:
     return _json_rows(
@@ -621,10 +645,11 @@ def _cached_technical_rows(
             f"""
             SELECT
                 symbol, open, high, low, change_pct, volume, dollar_volume,
-                trade_count, quote_count, vwap, vwap_distance_pct, relative_volume, range_pct
+                trade_count, quote_count, vwap, vwap_distance_pct,
+                vwap_trade, vwap_trade_distance_pct, relative_volume, range_pct
             FROM {SCANNER_TECHNICAL_TABLE} FINAL
             WHERE snapshot_at_utc = parseDateTime64BestEffort({sql_string(_clock(snapshot_at))})
-              AND timeframe = {sql_string(timeframe)}
+              AND calculation_window = {sql_string(calculation_window)}
               AND schema_version = {sql_string(SCANNER_TECHNICAL_SCHEMA_VERSION)}
               AND source_revision = {sql_string(source_revision)}
             ORDER BY abs(change_pct) DESC, symbol ASC
@@ -642,7 +667,7 @@ def _materialize_technical_snapshot(
     table_prefix: str,
     snapshot_at: datetime,
     window_start: datetime,
-    timeframe: str,
+    calculation_window: str,
     source_revision: str,
 ) -> None:
     start_us = int(window_start.timestamp() * 1_000_000)
@@ -667,16 +692,17 @@ def _materialize_technical_snapshot(
         f"""
         INSERT INTO {SCANNER_TECHNICAL_TABLE}
         (
-            snapshot_at_utc, timeframe, schema_version, source_revision, symbol,
+            snapshot_at_utc, calculation_window, schema_version, source_revision, symbol,
             open, high, low, change_pct, volume, dollar_volume, trade_count, quote_count,
-            vwap, vwap_distance_pct, relative_volume, range_pct, average_daily_volume
+            vwap, vwap_distance_pct, vwap_trade, vwap_trade_distance_pct,
+            relative_volume, range_pct, average_daily_volume
         )
         WITH
             {elapsed_us} AS elapsed_us,
             {EXTENDED_SESSION_DURATION_US} AS session_us
         SELECT
             parseDateTime64BestEffort({sql_string(_clock(snapshot_at))}),
-            {sql_string(timeframe)},
+            {sql_string(calculation_window)},
             {sql_string(SCANNER_TECHNICAL_SCHEMA_VERSION)},
             {sql_string(source_revision)},
             current.symbol,
@@ -690,6 +716,8 @@ def _materialize_technical_snapshot(
             current.quote_count,
             current.vwap,
             if(current.vwap = 0, 0, (current.last / current.vwap - 1) * 100),
+            current.vwap_trade,
+            if(current.vwap_trade = 0, 0, (current.last / current.vwap_trade - 1) * 100),
             if(prior.average_daily_volume > 0,
                current.volume / (prior.average_daily_volume * elapsed_us / session_us),
                NULL),
@@ -699,26 +727,42 @@ def _materialize_technical_snapshot(
         (
             SELECT
                 ticker AS symbol,
-                argMinIf(price, tuple(sip_timestamp_us, ordinal), is_trade) AS open,
-                maxIf(price, is_trade) AS high,
-                minIf(price, is_trade) AS low,
-                argMaxIf(price, tuple(sip_timestamp_us, ordinal), is_trade) AS last,
-                sumIf(toFloat64(size_primary), is_trade) AS volume,
-                sumIf(price * toFloat64(size_primary), is_trade) AS dollar_volume,
-                countIf(is_trade) AS trade_count,
-                countIf(is_quote) AS quote_count,
-                if(volume = 0, 0, dollar_volume / volume) AS vwap
+                argMinIf(bar_open, minute_index, bar_trade_count > 0) AS open,
+                maxIf(bar_high, bar_trade_count > 0) AS high,
+                minIf(bar_low, bar_trade_count > 0) AS low,
+                argMaxIf(bar_close, minute_index, bar_trade_count > 0) AS last,
+                sum(bar_volume) AS volume,
+                sum(bar_dollar_volume) AS dollar_volume,
+                sum(bar_trade_count) AS trade_count,
+                sum(bar_quote_count) AS quote_count,
+                if(volume = 0, 0, sum(((bar_high + bar_low + bar_close) / 3) * bar_volume) / volume) AS vwap,
+                if(volume = 0, 0, dollar_volume / volume) AS vwap_trade
             FROM
             (
                 SELECT
                     ticker,
-                    ordinal,
-                    sip_timestamp_us,
-                    bitAnd(event_meta, 1) = 1 AND price_primary_int > 0 AND size_primary > 0 AS is_trade,
-                    bitAnd(event_meta, 1) = 0 AS is_quote,
-                    toFloat64(price_primary_int) / if(bitAnd(event_meta, 2) != 0, 10000., 100.) AS price,
-                    size_primary
-                FROM ({source})
+                    intDiv(sip_timestamp_us - {start_us}, 60000000) AS minute_index,
+                    argMinIf(price, tuple(sip_timestamp_us, ordinal), is_trade) AS bar_open,
+                    maxIf(price, is_trade) AS bar_high,
+                    minIf(price, is_trade) AS bar_low,
+                    argMaxIf(price, tuple(sip_timestamp_us, ordinal), is_trade) AS bar_close,
+                    sumIf(toFloat64(size_primary), is_trade) AS bar_volume,
+                    sumIf(price * toFloat64(size_primary), is_trade) AS bar_dollar_volume,
+                    countIf(is_trade) AS bar_trade_count,
+                    countIf(is_quote) AS bar_quote_count
+                FROM
+                (
+                    SELECT
+                        ticker,
+                        ordinal,
+                        sip_timestamp_us,
+                        bitAnd(event_meta, 1) = 1 AND price_primary_int > 0 AND size_primary > 0 AS is_trade,
+                        bitAnd(event_meta, 1) = 0 AS is_quote,
+                        toFloat64(price_primary_int) / if(bitAnd(event_meta, 2) != 0, 10000., 100.) AS price,
+                        size_primary
+                    FROM ({source})
+                )
+                GROUP BY ticker, minute_index
             )
             GROUP BY ticker
             HAVING trade_count > 0
@@ -863,8 +907,13 @@ def _clock(value: datetime) -> str:
     return value.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
 
 
-def _technical_field_key(metric: str, timeframe: str) -> str:
-    return f"technical__{metric}__{timeframe}"
+def _technical_field_key(
+    metric: str,
+    calculation_window: str,
+    source: str | None = None,
+) -> str:
+    source_suffix = f"__{source}" if source else ""
+    return f"technical__{metric}__{calculation_window}{source_suffix}"
 
 
 def _previous_weekday(value: date) -> date:

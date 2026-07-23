@@ -195,7 +195,7 @@ type CanvasLiveChartState = {
 };
 
 type ContainerSettings = {
-  version: 15;
+  version: 16;
   chart: { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
   microstructure: { limit: number };
   fills: { limit: number; showCommission: boolean };
@@ -224,7 +224,7 @@ type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; tit
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const MANAGER_DEFAULT_CONTAINER_IDS: WorkspaceContainerId[] = ["scanner", "chart", "portfolio", "positions", "orders"];
 const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 15,
+  version: 16,
   chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.microstructure_outlook"] },
   microstructure: { limit: 1024 },
   fills: { limit: 5, showCommission: true },
@@ -1023,18 +1023,20 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
   const dedicatedContainers = new Set<WorkspaceContainerId>(["chart", "facts", "microstructure", "news", "ticker_news", "news_detail", "sec", "ticker_sec", "sec_detail", "xbrl", "scanner", "watchlist"]);
   const previewContainerKey = (workspaceState?.openIds ?? []).filter((id) => !dedicatedContainers.has(workspaceContainerKind(id, workspaceState))).sort().join(",");
   const scannerContainerKey = (workspaceState?.openIds ?? []).filter((id) => ["scanner", "signal_stream", "watchlist"].includes(workspaceContainerKind(id, workspaceState))).sort().join(",");
-  const scannerTechnicalTimeframes = useMemo(() => {
-    const values = new Set<ScannerTimeframe>();
+  const scannerTechnicalWindows = useMemo(() => {
+    const values = new Set<string>();
     for (const instanceId of (workspaceState?.openIds ?? [])) {
       const kind = workspaceContainerKind(instanceId, workspaceState);
       if (!["scanner", "signal_stream", "watchlist"].includes(kind)) continue;
       const settings = instanceSettings(registry, instanceId);
       const list = kind === "scanner" ? settings.scanner : kind === "signal_stream" ? settings.signal_stream : settings.watchlist;
       for (const column of list.customColumns) {
-        if (list.columns.includes(column.key)) values.add(column.timeframe);
+        if (!list.columns.includes(column.key)) continue;
+        if (column.timeframe) values.add(column.timeframe);
+        else if (column.anchor) values.add(column.anchor);
       }
     }
-    return SCANNER_TIMEFRAMES.filter((value) => values.has(value)).join(",");
+    return [...SCANNER_TIMEFRAMES.filter((value) => values.has(value)), ...["extended_session", "regular_session"].filter((value) => values.has(value))].join(",");
   }, [registry, scannerContainerKey, workspaceState]);
   const activeLinkGroup = registry.linkAssignments[primaryChartId] ?? "none";
   const activeSymbol = activeLinkGroup === "none" ? primarySettings.chart.symbol : registry.linkContexts[activeLinkGroup].symbol;
@@ -1138,13 +1140,13 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
     }
     const controller = new AbortController();
     const asOf = new Date(chartCutoffMs).toISOString();
-    api<CanvasScannerSnapshot>(`/api/trading/canvas-scanner${query({ as_of: asOf, lookback_minutes: 15, technical_timeframes: scannerTechnicalTimeframes })}`, {
+    api<CanvasScannerSnapshot>(`/api/trading/canvas-scanner${query({ as_of: asOf, lookback_minutes: 15, technical_windows: scannerTechnicalWindows })}`, {
       signal: controller.signal,
       timeoutMs: 90000,
     }).then((payload) => { if (!controller.signal.aborted) setScannerSnapshot(payload); })
       .catch(() => { if (!controller.signal.aborted) setScannerSnapshot(null); });
     return () => controller.abort();
-  }, [chartCutoffMs, contextReady, scannerContainerKey, scannerTechnicalTimeframes]);
+  }, [chartCutoffMs, contextReady, scannerContainerKey, scannerTechnicalWindows]);
 
   const metaForContainer = useMemo(() => (definition: WorkspaceContainerDefinition): WorkspaceWindowMeta => {
     if (definition.id === "chart") {
@@ -2728,7 +2730,7 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
     watchlist: {
       ...DEFAULT_SETTINGS.watchlist,
       ...(stored.watchlist ?? {}),
-      columns: Array.isArray(stored.watchlist?.columns) ? stored.watchlist.columns : [],
+      columns: normalizeScannerColumnKeys(stored.watchlist?.columns, stored.watchlist?.customColumns),
       customColumns: normalizeScannerCustomColumns(stored.watchlist?.customColumns),
       symbols: Array.isArray(stored.watchlist?.symbols) ? stored.watchlist.symbols.map((symbol) => String(symbol).trim().toUpperCase()).filter(Boolean) : [...DEFAULT_SETTINGS.watchlist.symbols],
     },
@@ -2750,7 +2752,7 @@ function normalizeTechnicalListSettings<T extends MarketScannerSettings | Signal
   return {
     ...defaults,
     ...(stored ?? {}),
-    columns: Array.isArray(stored?.columns) ? stored.columns.map(String) : [],
+    columns: normalizeScannerColumnKeys(stored?.columns, stored?.customColumns),
     customColumns: normalizeScannerCustomColumns(stored?.customColumns),
   };
 }
@@ -2763,15 +2765,47 @@ function normalizeScannerCustomColumns(value: unknown): ScannerCustomColumn[] {
     if (!item || typeof item !== "object") continue;
     const record = item as Record<string, unknown>;
     const metric = String(record.metric ?? "");
+    if (!allowedMetrics.has(metric)) continue;
+    if (["vwap", "vwap_distance_pct"].includes(metric)) {
+      const anchor = record.anchor === "regular_session" ? "regular_session" : "extended_session";
+      const source = record.source === "trade_price" ? "trade_price" : "hlc3";
+      const key = `technical__${metric}__${anchor}__${source}`;
+      unique.set(key, { anchor, key, metric: metric as ScannerCustomColumn["metric"], source });
+      continue;
+    }
+    if (metric === "relative_volume") {
+      const key = "technical__relative_volume__extended_session";
+      unique.set(key, { anchor: "extended_session", key, lookbackSessions: 20, metric: "relative_volume" });
+      continue;
+    }
     const timeframe = String(record.timeframe ?? "");
-    const key = String(record.key ?? "");
-    if (!allowedMetrics.has(metric) || !SCANNER_TIMEFRAMES.includes(timeframe as ScannerTimeframe)) continue;
-    if (metric === "relative_volume" && !["1m", "5m", "15m", "30m", "1h", "1d"].includes(timeframe)) continue;
-    const canonicalKey = `technical__${metric}__${timeframe}`;
-    if (key !== canonicalKey) continue;
+    if (!SCANNER_TIMEFRAMES.includes(timeframe as ScannerTimeframe)) continue;
+    const key = `technical__${metric}__${timeframe}`;
     unique.set(key, { key, metric: metric as ScannerCustomColumn["metric"], timeframe: timeframe as ScannerTimeframe });
   }
   return [...unique.values()];
+}
+
+function normalizeScannerColumnKeys(columns: unknown, customColumns: unknown): string[] {
+  if (!Array.isArray(columns)) return [];
+  const migrated = new Map<string, string>();
+  if (Array.isArray(customColumns)) {
+    for (const item of customColumns) {
+      if (!item || typeof item !== "object") continue;
+      const record = item as Record<string, unknown>;
+      const oldKey = String(record.key ?? "");
+      const metric = String(record.metric ?? "");
+      if (!oldKey || !metric) continue;
+      if (["vwap", "vwap_distance_pct"].includes(metric)) {
+        const anchor = record.anchor === "regular_session" ? "regular_session" : "extended_session";
+        const source = record.source === "trade_price" ? "trade_price" : "hlc3";
+        migrated.set(oldKey, `technical__${metric}__${anchor}__${source}`);
+      } else if (metric === "relative_volume") {
+        migrated.set(oldKey, "technical__relative_volume__extended_session");
+      }
+    }
+  }
+  return columns.map(String).map((key) => migrated.get(key) ?? key).filter((key, index, values) => values.indexOf(key) === index);
 }
 
 function cloneDefaultSettings() { return normalizeSettings(DEFAULT_SETTINGS); }
