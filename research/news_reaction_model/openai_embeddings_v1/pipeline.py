@@ -436,9 +436,16 @@ def write_item_states(client: ClickHouseHttpClient, config: PipelineConfig, rows
 def planned_source_rows(client: ClickHouseHttpClient, config: PipelineConfig, limit: int = 12_000) -> list[dict[str, Any]]:
     return json_rows(client, f"""
 SELECT
- i.canonical_news_id, i.ticker, toString(i.published_at_utc) AS published_at_utc,
- i.text_sha256, i.input_tokens, i.truncated, i.attempts,
- n.provider, n.title, n.teaser,
+ i.canonical_news_id AS canonical_news_id,
+ i.ticker AS ticker,
+ toString(i.published_at_utc) AS published_at_utc,
+ i.text_sha256 AS text_sha256,
+ i.input_tokens AS input_tokens,
+ i.truncated AS truncated,
+ i.attempts AS attempts,
+ n.provider AS provider,
+ n.title AS title,
+ n.teaser AS teaser,
  substring(n.body_text, 1, {config.max_text_chars}) AS body_text,
  substring(n.external_text, 1, {config.max_text_chars}) AS external_text,
  substring(n.pdf_text, 1, {config.max_text_chars}) AS pdf_text,

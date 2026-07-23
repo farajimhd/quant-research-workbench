@@ -14,12 +14,27 @@ from research.news_reaction_model.openai_embeddings_v1.pipeline import (
     existing_month_items,
     money_for_tokens,
     month_ranges,
+    planned_source_rows,
     prepare_text,
 )
 from research.news_reaction_model.openai_embeddings_v1.run_build import parse_args
 
 
 class OpenAIEmbeddingPipelineTests(unittest.TestCase):
+    def test_planned_source_projection_has_stable_unqualified_json_keys(self) -> None:
+        class Client:
+            sql = ""
+
+            def execute(self, sql: str) -> str:
+                self.sql = sql
+                return ""
+
+        client = Client()
+        self.assertEqual(planned_source_rows(client, PipelineConfig(), limit=1), [])
+        self.assertIn("i.canonical_news_id AS canonical_news_id", client.sql)
+        self.assertIn("i.ticker AS ticker", client.sql)
+        self.assertIn("i.text_sha256 AS text_sha256", client.sql)
+
     def test_clickhouse_timestamp_uses_native_datetime64_text(self) -> None:
         value = clickhouse_utc_now()
         self.assertRegex(value, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}$")
