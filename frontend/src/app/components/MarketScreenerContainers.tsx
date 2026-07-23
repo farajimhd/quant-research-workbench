@@ -328,7 +328,7 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
   if (definition.format === "money") return formatMoney(numberValue(value));
   if (definition.format === "integer") return formatCompact(numberValue(value));
   if (definition.format === "number") return numberValue(value).toFixed(2);
-  if (definition.format === "score") return `${numberValue(value).toFixed(0)}/100`;
+  if (definition.format === "score") return numberValue(value).toFixed(0);
   return String(value);
 }
 
