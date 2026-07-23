@@ -51,7 +51,9 @@ python -m research.news_reaction_model.openai_embeddings_v1.run_build --execute 
 
 `OPENAI_API_KEY` is discovered through the shared MLOps `.env` loader. The key
 is never copied into manifests, logs, Batch metadata, database rows, or the
-workstation runtime.
+workstation runtime. On the workstation, provision the key separately in
+`D:\TradingML\secrets\.env`; syncing this runtime intentionally does not copy
+the laptop repository's `.env` file.
 
 ## Durable tables
 

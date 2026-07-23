@@ -243,11 +243,13 @@ WHERE dataset_version = {q(config.source_version)}
 
 def prepare_text(row: dict[str, Any], config: PipelineConfig, encoding: Any) -> PreparedText:
     source_text = article_model_text(row, max_chars=config.max_text_chars)
-    token_ids = encoding.encode(source_text)
+    # News is untrusted source text. Tokenizer control-token spellings are
+    # literal article content here; they must not be interpreted or rejected.
+    token_ids = encoding.encode(source_text, disallowed_special=())
     truncated = int(len(token_ids) > config.max_input_tokens)
     if truncated:
         source_text = encoding.decode(token_ids[: config.max_input_tokens])
-        token_ids = encoding.encode(source_text)
+        token_ids = encoding.encode(source_text, disallowed_special=())
         if len(token_ids) > config.max_input_tokens:
             raise RuntimeError("Token-safe truncation did not satisfy the configured input ceiling")
     digest = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
@@ -264,10 +266,16 @@ def existing_month_items(
 SELECT canonical_news_id, ticker, toString(published_at_utc) AS published_at_utc,
  text_sha256, input_tokens, truncated, status, batch_key, request_custom_id,
  request_index, attempts, error_code, error_message
-FROM {qi(config.database)}.{qi(config.item_table)} FINAL
-WHERE embedding_version = {q(config.embedding_version)}
- AND published_at_utc >= toDateTime64({q(start.isoformat())}, 9, 'UTC')
- AND published_at_utc < toDateTime64({q(end.isoformat())}, 9, 'UTC')
+FROM
+(
+ SELECT canonical_news_id, ticker, published_at_utc, text_sha256, input_tokens,
+  truncated, status, batch_key, request_custom_id, request_index, attempts,
+  error_code, error_message
+ FROM {qi(config.database)}.{qi(config.item_table)} FINAL
+ WHERE embedding_version = {q(config.embedding_version)}
+  AND published_at_utc >= toDateTime64({q(start.isoformat())}, 9, 'UTC')
+  AND published_at_utc < toDateTime64({q(end.isoformat())}, 9, 'UTC')
+)
 FORMAT JSONEachRow
 """)
     rows = [json.loads(line) for line in text.splitlines() if line.strip()]
@@ -1008,6 +1016,13 @@ def run_pipeline(config: PipelineConfig, *, execute: bool, retry_failed: bool = 
             flush=True,
         )
         return 0
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is missing after .env discovery; no database or API write was made")
+    api = OpenAIHTTPClient(api_key, project_id=os.environ.get("OPENAI_PROJECT_ID", ""))
+    # Authentication is free to verify and must fail before the expensive
+    # corpus scan or any durable database mutation.
+    api.verify_auth()
     create_schema(client, config)
     plan_totals = plan_corpus(config, execute=True)
     source_rows = source_count(client, config)
@@ -1031,11 +1046,6 @@ def run_pipeline(config: PipelineConfig, *, execute: bool, retry_failed: bool = 
     if retry_failed:
         retried = retry_failed_items(client, config)
         print(f"Retry reset: {retried:,} bounded failed items", flush=True)
-    api_key = os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is missing after .env discovery; no API call was made")
-    api = OpenAIHTTPClient(api_key, project_id=os.environ.get("OPENAI_PROJECT_ID", ""))
-    api.verify_auth()
     print(
         f"AUTHORIZED | exact_tokens={plan_totals['tokens']:,} expected_batch=${exact_expected:.4f} "
         f"protected=${exact_protected:.4f}",
