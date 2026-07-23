@@ -54,7 +54,7 @@ Canonical facts are grouped into income statement, cash flow, balance sheet, ope
 
 - the latest comparable value and fiscal period;
 - the change from the previous comparable period;
-- up to 12 comparable causal observations for the gradient history chart;
+- every comparable causal observation filed from January 1, 2019 through the selected point-in-time clock;
 - a semantic change tone only when higher or lower has a defensible interpretation;
 - the filing date, taxonomy namespace and tag, accession, and directional rule.
 
@@ -62,7 +62,7 @@ Context-dependent fields such as capital expenditure, inventory, receivables, go
 
 ## Causality
 
-The quality trajectory is rebuilt at every filing-availability timestamp. A historical state uses only facts that were public at that time. Later filings can alter the newest state but never repaint earlier category or overall scores. Users can select the overall series or any category in the same gradient area chart.
+The quality trajectory is rebuilt at every filing-availability timestamp from January 1, 2019 through the selected clock. A historical state uses only facts that were public at that time. Later filings can alter the newest state but never repaint earlier category or overall scores. The time-proportional axis preserves gaps between filings instead of spacing every filing equally. Users can select the overall series or any category in the same gradient area chart.
 
 The latest decision compares the newest causal composite with the preceding scored filing:
 
@@ -78,6 +78,8 @@ The latest decision compares the newest causal composite with the preceding scor
 - Selecting a category reveals its closed-form inputs and normalization ranges.
 - Derived financial signals show aligned ratios and formulas.
 - Reported evidence uses readable metric cards with semantic change, gradient history, and expandable audit details.
+- Main-chart Y labels occupy a dedicated gutter outside the plot; seven date ticks span the complete 2019-to-clock domain.
+- Purple identifies analytical context whose direction is not inherently favorable or unfavorable. Green is reserved for favorable evidence and red for unfavorable evidence; purple does not mean bullish or bearish.
 - The in-product Guide documents the objective, every formula and category, coverage rules, history, colors, audit fields, and limitations.
 
 The container reads `GET /api/trading/ticker-facts/{symbol}?as_of=...` and returns analysis contract `sec_xbrl_decision_evidence_v2` backed by `sec_fundamental_strength_v2`.

@@ -12,7 +12,7 @@ type Facet = { components: Component[]; contribution_points?: number; coverage_p
 type Metric = { available_at?: string; formula: string; id: string; label: string; period_end_date?: string; unit: string; value: number };
 type Analysis = { coverage_percent: number; facets: Facet[]; formula: string; label: string; metrics: Metric[]; score?: number; tone: string };
 type TimelinePoint = { accession_numbers: string[]; available_at: string; coverage_percent: number; facets: Facet[]; label: string; score?: number; tone: string };
-type XbrlAnalysis = { classes: Array<{ facts: Fact[]; id: string; label: string }>; current: Analysis; decision: { delta_from_previous?: number; label: string; scope: string; tone: string }; latest_filing_at?: string; timeline: TimelinePoint[]; version: string };
+type XbrlAnalysis = { classes: Array<{ facts: Fact[]; id: string; label: string }>; current: Analysis; decision: { delta_from_previous?: number; label: string; scope: string; tone: string }; history_start: string; latest_filing_at?: string; timeline: TimelinePoint[]; version: string };
 type Payload = { status: string; symbol: string; warnings: string[]; xbrl_analysis?: XbrlAnalysis };
 
 export type XbrlAnalysisSettings = { metricLimit: number; showRawTags: boolean };
@@ -55,7 +55,7 @@ export function XbrlAnalysisContainer({ asOf, onSymbolChange, settings, symbol }
       <section className="xbrl-trajectory">
         <header><span><strong>Financial quality through filings</strong><small>Select the composite or a category; history never uses future filings.</small></span><b>{analysis.timeline.length} causal states</b></header>
         <nav aria-label="Trajectory series"><button aria-pressed={activeFacet === "overall"} onClick={() => setActiveFacet("overall")} type="button">Overall</button>{analysis.current.facets.map((facet) => <button aria-pressed={activeFacet === facet.id} key={facet.id} onClick={() => setActiveFacet(facet.id)} type="button">{facet.label}</button>)}</nav>
-        <ScoreAreaChart facetId={activeFacet} points={analysis.timeline} />
+        <ScoreAreaChart facetId={activeFacet} historyEnd={asOf} historyStart={analysis.history_start} points={analysis.timeline} />
       </section>
 
       <section className="xbrl-facets" aria-label="XBRL category scores">
@@ -75,32 +75,53 @@ export function XbrlAnalysisContainer({ asOf, onSymbolChange, settings, symbol }
       <section className="xbrl-evidence">
         <header><span><Database size={16} /><strong>Reported evidence and history</strong></span><small>Latest comparable value, change, history, and source filing</small></header>
         <nav>{analysis.classes.map((item) => <button aria-pressed={item.id === currentClass?.id} key={item.id} onClick={() => setActiveClass(item.id)} type="button">{item.label}<b>{item.facts.length}</b></button>)}</nav>
-        {currentClass ? <div className="xbrl-evidence-grid">{currentClass.facts.map((fact) => { const key = `${fact.tag}-${fact.period_end_date}`; const expanded = expandedFact === key; return <article data-tone={fact.change_tone || "neutral"} key={key}><header><span>{fact.label}<small>{fact.description}</small></span>{fact.freshness ? <em data-recency={fact.freshness.status}>{fact.freshness.status === "new" ? "New" : "Recent"}</em> : null}</header><div className="xbrl-fact-value"><strong>{formatFact(fact)}</strong><span data-tone={fact.change_tone}>{changeLabel(fact.change_percent)}</span></div><MiniHistory points={fact.history ?? []} tone={fact.change_tone || "neutral"} /><footer><span>{fact.fiscal_period || "Reported"} · {dateLabel(fact.period_end_date)}</span><button aria-expanded={expanded} onClick={() => setExpandedFact(expanded ? "" : key)} type="button">Audit <ChevronDown size={13} /></button></footer>{expanded ? <dl><div><dt>Filed</dt><dd>{dateLabel(fact.filed_at_utc)}</dd></div><div><dt>Direction</dt><dd>{directionLabel(fact.direction)}</dd></div>{settings.showRawTags ? <div><dt>Taxonomy tag</dt><dd><code>{fact.taxonomy ? `${fact.taxonomy}:` : ""}{fact.tag}</code></dd></div> : null}<div><dt>Accession</dt><dd>{fact.accession_number || "—"}</dd></div></dl> : null}</article>; })}</div> : null}
+        {currentClass ? <div className="xbrl-evidence-grid">{currentClass.facts.map((fact) => { const key = `${fact.tag}-${fact.period_end_date}`; const expanded = expandedFact === key; return <article data-tone={fact.change_tone || "neutral"} key={key}><header><span>{fact.label}<small>{fact.description}</small></span>{fact.freshness ? <em data-recency={fact.freshness.status}>{fact.freshness.status === "new" ? "New" : "Recent"}</em> : null}</header><div className="xbrl-fact-value"><strong>{formatFact(fact)}</strong><span data-tone={fact.change_tone}>{changeLabel(fact.change_percent)}</span></div><MiniHistory historyEnd={asOf} historyStart={analysis.history_start} points={fact.history ?? []} tone={fact.change_tone || "neutral"} /><footer><span>{fact.fiscal_period || "Reported"} · {dateLabel(fact.period_end_date)}</span><button aria-expanded={expanded} onClick={() => setExpandedFact(expanded ? "" : key)} type="button">Audit <ChevronDown size={13} /></button></footer>{expanded ? <dl><div><dt>Filed</dt><dd>{dateLabel(fact.filed_at_utc)}</dd></div><div><dt>Direction</dt><dd>{directionLabel(fact.direction)}</dd></div>{settings.showRawTags ? <div><dt>Taxonomy tag</dt><dd><code>{fact.taxonomy ? `${fact.taxonomy}:` : ""}{fact.tag}</code></dd></div> : null}<div><dt>Accession</dt><dd>{fact.accession_number || "—"}</dd></div></dl> : null}</article>; })}</div> : null}
       </section>
     </div>}
     {guideOpen ? <GuideModal onClose={() => setGuideOpen(false)} /> : null}
   </section>;
 }
 
-function ScoreAreaChart({ facetId, points }: { facetId: string; points: TimelinePoint[] }) {
+function ScoreAreaChart({ facetId, historyEnd, historyStart, points }: { facetId: string; historyEnd: string; historyStart: string; points: TimelinePoint[] }) {
   const id = useId().replace(/:/g, "");
   const scored = points.map((point) => ({ ...point, plotted: facetId === "overall" ? point.score : point.facets.find((facet) => facet.id === facetId)?.score })).filter((point) => point.plotted != null);
   if (scored.length < 2) return <div className="xbrl-chart-empty">At least two scored filings are required for this trajectory.</div>;
-  const width = 720, height = 150, left = 34, right = 10, top = 10, bottom = 24;
-  const x = (index: number) => left + index * ((width - left - right) / Math.max(1, scored.length - 1));
+  const width = 720, height = 150, top = 10, bottom = 24;
+  const domain = timeDomain(historyStart, historyEnd);
+  const x = (value: string) => timeX(value, domain, width);
   const y = (value: number) => top + (100 - value) * ((height - top - bottom) / 100);
-  const line = scored.map((point, index) => `${x(index)},${y(point.plotted ?? 0)}`).join(" ");
-  const area = `${left},${height - bottom} ${line} ${x(scored.length - 1)},${height - bottom}`;
-  return <svg aria-label="Financial quality through filing time" preserveAspectRatio="none" role="img" viewBox={`0 0 ${width} ${height}`}><defs><linearGradient id={id} x1="0" x2="0" y1="0" y2="1"><stop className="xbrl-gradient-start" offset="0%" /><stop className="xbrl-gradient-end" offset="100%" /></linearGradient></defs>{[0, 25, 50, 75, 100].map((value) => <g key={value}><line className="xbrl-chart-grid" x1={left} x2={width - right} y1={y(value)} y2={y(value)} /><text x={left - 6} y={y(value) + 3}>{value}</text></g>)}<polygon fill={`url(#${id})`} points={area} /><polyline className="xbrl-chart-line" fill="none" points={line} />{scored.map((point, index) => <circle className="xbrl-chart-point" cx={x(index)} cy={y(point.plotted ?? 0)} key={point.available_at} r="3"><title>{`${dateLabel(point.available_at)} · ${score(point.plotted)}/100`}</title></circle>)}<text className="xbrl-chart-date" x={left} y={height - 4}>{dateLabel(scored[0].available_at)}</text><text className="xbrl-chart-date" textAnchor="end" x={width - right} y={height - 4}>{dateLabel(scored[scored.length - 1].available_at)}</text></svg>;
+  const line = scored.map((point) => `${x(point.available_at)},${y(point.plotted ?? 0)}`).join(" ");
+  const area = `${x(scored[0].available_at)},${height - bottom} ${line} ${x(scored[scored.length - 1].available_at)},${height - bottom}`;
+  const ticks = timeTicks(domain, 7);
+  return <div className="xbrl-chart-frame"><div aria-hidden="true" className="xbrl-y-axis">{[100, 75, 50, 25, 0].map((value) => <span key={value}>{value}</span>)}</div><svg aria-label={`Financial quality from ${dateLabel(historyStart)} through ${dateLabel(historyEnd)}`} preserveAspectRatio="none" role="img" viewBox={`0 0 ${width} ${height}`}><defs><linearGradient id={id} x1="0" x2="0" y1="0" y2="1"><stop className="xbrl-gradient-start" offset="0%" /><stop className="xbrl-gradient-end" offset="100%" /></linearGradient></defs>{[0, 25, 50, 75, 100].map((value) => <line className="xbrl-chart-grid" key={value} x1="0" x2={width} y1={y(value)} y2={y(value)} />)}{ticks.map((tick) => <g key={tick.iso}><line className="xbrl-chart-grid xbrl-chart-grid-vertical" x1={tick.x * width} x2={tick.x * width} y1={top} y2={height - bottom} /><text className="xbrl-chart-date" textAnchor={tick.x === 0 ? "start" : tick.x === 1 ? "end" : "middle"} x={tick.x * width} y={height - 4}>{tick.label}</text></g>)}<polygon fill={`url(#${id})`} points={area} /><polyline className="xbrl-chart-line" fill="none" points={line} />{scored.map((point) => <circle className="xbrl-chart-point" cx={x(point.available_at)} cy={y(point.plotted ?? 0)} key={point.available_at} r="3"><title>{`${dateLabel(point.available_at)} · ${score(point.plotted)}/100`}</title></circle>)}</svg></div>;
 }
 
-function MiniHistory({ points, tone }: { points: Point[]; tone: string }) {
+function MiniHistory({ historyEnd, historyStart, points, tone }: { historyEnd: string; historyStart: string; points: Point[]; tone: string }) {
   const id = useId().replace(/:/g, "");
   const valid = points.filter((point) => Number.isFinite(point.value));
   if (valid.length < 2) return <div className="xbrl-mini-empty">History appears after two comparable reports.</div>;
   const values = valid.map((point) => Number(point.value)); const min = Math.min(...values); const max = Math.max(...values); const span = max - min || Math.max(Math.abs(max), 1);
-  const coords = values.map((value, index) => `${index * (100 / Math.max(1, values.length - 1))},${34 - ((value - min) / span) * 28}`).join(" ");
-  return <svg className="xbrl-mini-chart" data-tone={tone} preserveAspectRatio="none" viewBox="0 0 100 38"><defs><linearGradient id={id} x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="currentColor" stopOpacity=".34" /><stop offset="100%" stopColor="currentColor" stopOpacity=".03" /></linearGradient></defs><polygon fill={`url(#${id})`} points={`0,36 ${coords} 100,36`} /><polyline fill="none" points={coords} /><title>{`${valid.length} comparable reported observations`}</title></svg>;
+  const domain = timeDomain(historyStart, historyEnd); const ticks = timeTicks(domain, 3);
+  const coords = valid.map((point) => `${timeX(point.filed_at_utc || point.period_end_date || historyStart, domain, 100)},${32 - ((Number(point.value) - min) / span) * 26}`).join(" ");
+  const firstX = timeX(valid[0].filed_at_utc || valid[0].period_end_date || historyStart, domain, 100); const lastX = timeX(valid[valid.length - 1].filed_at_utc || valid[valid.length - 1].period_end_date || historyEnd, domain, 100);
+  return <svg className="xbrl-mini-chart" data-tone={tone} preserveAspectRatio="none" viewBox="0 0 100 48"><defs><linearGradient id={id} x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="currentColor" stopOpacity=".34" /><stop offset="100%" stopColor="currentColor" stopOpacity=".03" /></linearGradient></defs>{ticks.map((tick) => <line className="xbrl-mini-grid" key={tick.iso} x1={tick.x * 100} x2={tick.x * 100} y1="4" y2="34" />)}<polygon fill={`url(#${id})`} points={`${firstX},34 ${coords} ${lastX},34`} /><polyline fill="none" points={coords} />{ticks.map((tick) => <text className="xbrl-mini-date" key={`label-${tick.iso}`} textAnchor={tick.x === 0 ? "start" : tick.x === 1 ? "end" : "middle"} x={tick.x * 100} y="46">{tick.label}</text>)}<title>{`${valid.length} comparable reported observations since 2019`}</title></svg>;
+}
+
+function timeDomain(start: string, end: string): [number, number] {
+  const startMs = Date.parse(start); const endMs = Date.parse(end);
+  const safeStart = Number.isFinite(startMs) ? startMs : Date.UTC(2019, 0, 1);
+  const safeEnd = Number.isFinite(endMs) && endMs > safeStart ? endMs : Date.now();
+  return [safeStart, safeEnd];
+}
+function timeX(value: string, [start, end]: [number, number], width: number) {
+  const parsed = Date.parse(value); const bounded = Math.max(start, Math.min(end, Number.isFinite(parsed) ? parsed : start));
+  return ((bounded - start) / Math.max(1, end - start)) * width;
+}
+function timeTicks([start, end]: [number, number], count: number) {
+  return Array.from({ length: count }, (_, index) => {
+    const ratio = index / Math.max(1, count - 1); const value = start + (end - start) * ratio; const date = new Date(value);
+    return { iso: date.toISOString(), label: date.toLocaleDateString(undefined, { month: count > 3 ? "short" : undefined, year: "2-digit", timeZone: "UTC" }), x: ratio };
+  });
 }
 
 function GuideModal({ onClose }: { onClose: () => void }) { return <Modal className="xbrl-guide-modal" onClose={onClose} title="How to read XBRL financial quality"><div className="xbrl-guide-content"><p className="xbrl-guide-intro"><strong>Objective:</strong> turn standardized SEC facts into an auditable, slow-moving view of operating quality. It answers whether reported profitability, growth, cash conversion, balance-sheet resilience, and capital discipline are strong and improving. It is not valuation, an earnings forecast, or a short-term trade signal.</p><div className="xbrl-guide-grid">
@@ -111,10 +132,10 @@ function GuideModal({ onClose }: { onClose: () => void }) { return <Modal classN
   <Guide title="Cash quality · 20%" text="Free-cash-flow margin (60%, −5–20%) and operating-cash-flow conversion of net income (40%, 0.5–1.5×). It tests whether reported earnings are supported by cash." />
   <Guide title="Balance sheet · 20%" text="Current ratio (40%, 0.5–2×), inverse debt-to-positive-equity (35%, 0–2×), and interest coverage (25%, 1–8×). Debt-to-equity is withheld when equity is nonpositive." />
   <Guide title="Capital discipline · 10%" text="Inverse basic-share growth (60%, −2–8%) and inverse diluted-versus-basic share spread (40%, 0–10%). Greater issuance or dilution lowers the category score." />
-  <Guide title="Trajectory" text="Every point is recomputed using only filings public at that time. Select Overall or a category to identify persistent improvement, deterioration, or a one-filing discontinuity. Later evidence never repaints an earlier score." />
+  <Guide title="Trajectory" text="Every point is recomputed using only filings public at that time. The time-proportional axis begins in 2019, so gaps remain visible instead of being compressed. Select Overall or a category to identify persistent improvement, deterioration, or a one-filing discontinuity. Later evidence never repaints an earlier score." />
   <Guide title="Derived financial signals" text="Ratios align numerator and denominator to comparable periods. Semantic color indicates the current numeric implication, while the exact formula and source period remain visible." />
-  <Guide title="Reported evidence history" text="Cards group canonical concepts by financial statement. The large value is the latest comparable report, the colored change is versus the previous comparable period, and the gradient area shows up to 12 causal observations." />
-  <Guide title="Change colors" text="Green means the change is favorable for concepts with a defensible direction; red means unfavorable. Context-dependent fields such as capex, inventory, receivables, goodwill, and R&D remain neutral because higher or lower is not inherently better." />
+  <Guide title="Reported evidence history" text="Cards group canonical concepts by financial statement. The large value is the latest comparable report, the colored change is versus the previous comparable period, and the gradient area shows all comparable causal observations available from 2019 onward." />
+  <Guide title="Chart colors" text="Purple is analytical context: the composite score, category trajectories, or a reported value whose increase is not inherently good or bad. Green is reserved for favorable directional evidence and red for unfavorable evidence. Purple never means bullish or bearish." />
   <Guide title="Audit details" text="Open Audit to see the filing date, directional rule, taxonomy namespace and tag, and accession. These fields explain exactly which SEC disclosure supports the displayed value." />
   <Guide title="Limitations" text="Issuer extensions, segment dimensions, restatements, fiscal-calendar changes, and accounting-policy differences can reduce comparability. Scores summarize available standardized evidence; they do not replace filing review." />
 </div></div></Modal>; }
@@ -123,7 +144,7 @@ function Guide({ text, title }: { text: string; title: string }) { return <artic
 function clamp(value: number) { return Math.max(0, Math.min(100, value)); }
 function score(value?: number) { return value == null ? "—" : Math.round(value).toString(); }
 function signed(value?: number) { return value == null ? "No prior" : `${value > 0 ? "+" : ""}${value.toFixed(1)}`; }
-function dateLabel(value?: string) { if (!value) return "—"; const parsed = new Date(value); return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "2-digit" }); }
+function dateLabel(value?: string) { if (!value) return "—"; const parsed = new Date(value); return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "2-digit", timeZone: "UTC" }); }
 function formatMetric(value: number, unit: string) { if (unit === "percent") return `${value.toFixed(1)}%`; if (unit === "multiple") return `${value.toFixed(2)}×`; if (unit === "USD") return Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1, style: "currency", currency: "USD" }).format(value); return Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 2 }).format(value); }
 function formatFact(fact: Fact) { const value = Number(fact.value); if (!Number.isFinite(value)) return "—"; const formatted = Intl.NumberFormat(undefined, { notation: Math.abs(value) >= 100_000 ? "compact" : "standard", maximumFractionDigits: 2 }).format(value); return `${formatted}${fact.unit_code ? ` ${fact.unit_code}` : ""}`; }
 function changeLabel(value?: number) { return value == null ? "No comparison" : `${value > 0 ? "+" : ""}${value.toFixed(1)}% vs prior`; }

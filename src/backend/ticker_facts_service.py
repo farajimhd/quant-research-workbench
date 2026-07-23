@@ -136,6 +136,7 @@ SEC_INCORPORATION_COUNTRY_CODES = {
 LOGGER = logging.getLogger(__name__)
 HISTORY_LIMIT = 10_000
 MAIN_HISTORY_DAYS = 520
+XBRL_HISTORY_START = datetime(2019, 1, 1, tzinfo=UTC)
 US_INCORPORATION_CODES = frozenset({
     "AK", "AL", "AR", "AS", "AZ", "CA", "CO", "CT", "DC", "DE", "FL", "GA", "GU", "HI", "IA", "ID", "IL", "IN", "KS", "KY", "LA", "MA", "MD", "ME", "MI", "MN", "MO", "MP", "MS", "MT", "NC", "ND", "NE", "NH", "NJ", "NM", "NV", "NY", "OH", "OK", "OR", "PA", "PR", "RI", "SC", "SD", "TN", "TX", "UT", "VA", "VI", "VT", "WA", "WI", "WV", "WY",
 })
@@ -587,10 +588,11 @@ def fundamentals_sql(cik: str, cutoff: datetime, database: str) -> str:
                filed_at_utc, form_type, accession_number, recorded_at_utc
         FROM {db}.sec_xbrl_company_fact_v3 FINAL
         WHERE cik = {sql_string(cik)} AND tag IN ({tag_clause})
+          AND filed_at_utc >= parseDateTime64BestEffort({sql_string(clickhouse_timestamp(XBRL_HISTORY_START))})
           AND filed_at_utc <= parseDateTime64BestEffort({sql_string(clickhouse_timestamp(cutoff))})
           AND recorded_at_utc <= parseDateTime64BestEffort({sql_string(clickhouse_timestamp(cutoff))})
         ORDER BY tag ASC, period_end_date DESC, filed_at_utc DESC, recorded_at_utc DESC
-        LIMIT 16 BY tag
+        LIMIT 1 BY tag, period_end_date, fiscal_period, unit_code
         FORMAT JSONEachRow
     """
 
@@ -789,7 +791,7 @@ def select_fundamental_histories(rows: list[dict[str, Any]], as_of: datetime) ->
                 "unit_code": row.get("unit_code"),
                 "value": row_value(row),
             }
-            for row in observations[-12:]
+            for row in observations
         ]
         latest = observations[-1]
         latest_value = row_value(latest)
@@ -930,7 +932,7 @@ def analyze_fundamentals(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def build_xbrl_analysis(rows: list[dict[str, Any]], as_of: datetime) -> dict[str, Any]:
     """Create a causal filing-by-filing financial evidence record for deep XBRL analysis."""
-    available = [row for row in rows if _fact_available_at(row) is not None and _fact_available_at(row) <= as_of]
+    available = [row for row in rows if _fact_available_at(row) is not None and XBRL_HISTORY_START <= _fact_available_at(row) <= as_of]
     current = analyze_fundamentals(available)
     selected = select_fundamental_histories(available, as_of)
     classes: dict[str, list[dict[str, Any]]] = {}
@@ -938,12 +940,18 @@ def build_xbrl_analysis(rows: list[dict[str, Any]], as_of: datetime) -> dict[str
         class_name = FUNDAMENTAL_CLASS_BY_LABEL.get(str(row.get("label") or ""), "Other reported facts")
         classes.setdefault(class_name, []).append(row)
 
-    filing_clocks = sorted({_fact_available_at(row) for row in available if _fact_available_at(row) is not None})
+    rows_by_clock: dict[datetime, list[dict[str, Any]]] = {}
+    for row in available:
+        clock = _fact_available_at(row)
+        if clock is not None:
+            rows_by_clock.setdefault(clock, []).append(row)
+    filing_clocks = sorted(rows_by_clock)
     timeline: list[dict[str, Any]] = []
+    causal_rows: list[dict[str, Any]] = []
     previous_signature: tuple[Any, ...] | None = None
     for clock in filing_clocks:
-        prefix = [row for row in available if (_fact_available_at(row) or as_of) <= clock]
-        analysis = analyze_fundamentals(prefix)
+        causal_rows.extend(rows_by_clock[clock])
+        analysis = analyze_fundamentals(causal_rows)
         signature = (
             analysis.get("score"),
             analysis.get("coverage_percent"),
@@ -951,7 +959,7 @@ def build_xbrl_analysis(rows: list[dict[str, Any]], as_of: datetime) -> dict[str
         )
         if signature == previous_signature:
             continue
-        accessions = sorted({str(row.get("accession_number") or "") for row in prefix if _fact_available_at(row) == clock and row.get("accession_number")})
+        accessions = sorted({str(row.get("accession_number") or "") for row in rows_by_clock[clock] if row.get("accession_number")})
         timeline.append({
             "available_at": clock.isoformat(),
             "accession_numbers": accessions,
@@ -962,7 +970,6 @@ def build_xbrl_analysis(rows: list[dict[str, Any]], as_of: datetime) -> dict[str
             "tone": analysis.get("tone"),
         })
         previous_signature = signature
-    timeline = timeline[-32:]
     scored = [point for point in timeline if point.get("score") is not None]
     current_score = current.get("score")
     previous_score = scored[-2].get("score") if len(scored) > 1 else None
@@ -984,6 +991,7 @@ def build_xbrl_analysis(rows: list[dict[str, Any]], as_of: datetime) -> dict[str
             "tone": decision_tone,
             "scope": "Slow-moving SEC filing evidence; not a short-term price forecast.",
         },
+        "history_start": XBRL_HISTORY_START.isoformat(),
         "latest_filing_at": max(filing_clocks).isoformat() if filing_clocks else None,
         "timeline": timeline,
         "formula": current.get("formula"),

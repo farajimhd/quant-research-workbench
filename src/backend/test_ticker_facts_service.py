@@ -13,6 +13,7 @@ from src.backend.ticker_facts_service import (
     company_country_code,
     daily_volume_history_points,
     freshness_status,
+    fundamentals_sql,
     identity_anchor_sql,
     latest_total_debt,
     metric_changes,
@@ -48,6 +49,9 @@ class TickerFactsServiceTest(unittest.TestCase):
         self.assertIn("LIMIT 1 BY settlement_date", short_interest)
         self.assertIn("settlement_date <= toDate", short_interest)
         self.assertIn("LIMIT 1 BY trade_date", short_volume_sql("symbol:aapl", cutoff, "q_live"))
+        fundamentals = fundamentals_sql("0000320193", cutoff, "q_live")
+        self.assertIn("filed_at_utc >= parseDateTime64BestEffort('2019-01-01T00:00:00.000+00:00')", fundamentals)
+        self.assertIn("LIMIT 1 BY tag, period_end_date, fiscal_period, unit_code", fundamentals)
 
     def test_reference_store_failure_has_a_stable_service_error(self) -> None:
         with patch("src.backend.ticker_facts_service.ClickHouseHttpClient.execute", side_effect=OSError("offline")):
@@ -148,6 +152,7 @@ class TickerFactsServiceTest(unittest.TestCase):
         self.assertIn("Income statement", {item["label"] for item in payload["classes"]})
         self.assertIn(payload["decision"]["tone"], {"positive", "negative", "neutral", "muted"})
         self.assertEqual(payload["version"], "sec_xbrl_decision_evidence_v2")
+        self.assertEqual(payload["history_start"], "2019-01-01T00:00:00+00:00")
         profitability = next(facet for facet in payload["current"]["facets"] if facet["id"] == "profitability")
         self.assertEqual(profitability["overall_weight"], 30)
         self.assertEqual({component["id"] for component in profitability["components"]}, {"gross_margin", "operating_margin", "net_margin", "return_on_equity"})
