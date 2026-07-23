@@ -362,17 +362,17 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     ...displayIndicator("indicator.qmd_decision_chart", "QMD Decision · Chart episodes", "microstructure", ["qmd_decision_signal", "qmd_decision_confidence", "qmd_decision_action"], "price", {
     shortDescription: "Canonical 100 ms decisions consolidated into causal Micro, Tactical, or Context episodes.",
     detailedDescription: "On a 100 ms chart every raw Buy or Sell transition remains visible. On larger charts, the selected preset starts at the exact canonical signal time and continues while directional evidence remains alive. Green is Buy, red is Sell, and Wait is blank.",
-    calculation: "All presets consume the same ordered 100 ms decisions. Micro starts at 35% confidence and requires 3 seconds of both weak evidence and no favorable progress, with a 60 second cap. Tactical uses 45%, 15 seconds, and 5 minutes. Context uses 55%, 60 seconds, and 30 minutes. A strong opposite signal, opposing structure, invalidation, sustained evidence exhaustion, or maximum duration ends an episode.",
-    readingGuide: "The arrow is the causal start. The horizontal rail is the episode's entry reference and thickens with confidence. The shaded rectangle begins at the first overlapping candle and expands only with highs reached during a Buy episode or lows reached during a Sell episode. It never repaints earlier confidence or range.",
+    calculation: "All presets consume the same ordered 100 ms decisions. Micro starts at 35% confidence and requires 15 seconds of both weak evidence and no favorable progress, with a 2 minute cap. Tactical uses 45%, 60 seconds, and 15 minutes. Context uses 55%, 5 minutes, and 60 minutes. An invalidation ends immediately; opposite decisions and opposing structure must persist, while evidence exhaustion also requires stalled favorable progress. After an episode ends, the same lingering signal cannot restart it until evidence has remained neutral for the preset cooldown or genuinely flips direction.",
+    readingGuide: "The arrow is the causal start. The horizontal rail is the episode's entry reference and thickens with confidence. One continuous shaded path begins at the first overlapping candle and expands only with highs reached during a Buy episode or lows reached during a Sell episode. Its historical steps preserve what was known at each candle and do not repaint.",
     bullishEvidence: "A green up arrow means the canonical 100 ms stream changed to Buy at that time.",
     bearishEvidence: "A red down arrow means the canonical 100 ms stream changed to Sell at that time.",
-    timeframeBehavior: "Chart timeframe changes only the candle geometry used to draw the episode. Episode start, update, and end timestamps are identical across chart timeframes and are available to strategies through the gateway.",
+    timeframeBehavior: "Chart timeframe changes only the candle geometry used to draw the episode. Episode start and end timestamps are identical across chart timeframes and are available to strategies through the gateway. Historical confidence updates are rate-limited per preset for an efficient causal display; the live gateway retains the exact active state.",
     caveats: ["A preset is a causal holding-horizon policy, not a forecast guarantee.", "Confidence is evidence quality, not win probability.", "Maximum duration prevents an unresolved episode from continuing indefinitely.", "The running rectangle is favorable excursion, not a profit target."],
   }),
     presetOptions: [
-      { value: "micro", label: "Micro", description: "Fastest response; 60 second safety cap." },
-      { value: "tactical", label: "Tactical", description: "Intermediate confirmation; 5 minute safety cap." },
-      { value: "context", label: "Context", description: "Most selective structural horizon; 30 minute safety cap." },
+      { value: "micro", label: "Micro", description: "Fastest response; 2 minute safety cap." },
+      { value: "tactical", label: "Tactical", description: "Intermediate confirmation; 15 minute safety cap." },
+      { value: "context", label: "Context", description: "Most selective structural horizon; 60 minute safety cap." },
     ],
   },
   displayIndicator("indicator.qmd_transaction_imbalance", "QMD Transaction Imbalance", "microstructure", ["microstructure_transaction_imbalance", "microstructure_buy_trade_count", "microstructure_sell_trade_count"], "qmd_transaction", qmdIndicatorKnowledge("Buy-versus-sell trade-count imbalance", "Counts eligible prints classified at the ask as buys and at the bid as sells, then computes (buys - sells) / classified trades.", "Persistent positive readings mean buyer-initiated prints are arriving more often; negative readings mean seller-initiated prints dominate.", "It ignores trade size, so compare it with Signed-volume Imbalance.")),
@@ -917,7 +917,10 @@ function qmdEpisodePresentation(
   const latestEnd = sortedBars[sortedBars.length - 1].endMs;
   const grouped = new Map<string, QmdEpisodeEvent[]>();
   events.forEach((event) => {
-    const key = `${event.preset}:${event.episode_id}`;
+    // Episode ids restart for each historical cache/session. The causal start
+    // timestamp is therefore part of the identity when multiple sessions are
+    // merged into one chart.
+    const key = `${event.preset}:${event.episode_id}:${event.started_at}`;
     grouped.set(key, [...(grouped.get(key) ?? []), event]);
   });
   const markers: ChartPayload["markers"] = [];
@@ -934,6 +937,9 @@ function qmdEpisodePresentation(
     const firstBar = sortedBars[firstIndex];
     const rail = start.direction > 0 ? firstBar.low : firstBar.high;
     let runningExtreme = start.direction > 0 ? firstBar.high : firstBar.low;
+    const steps: NonNullable<NonNullable<ChartPayload["price_zones"]>[number]["episodeSteps"]> = [];
+    let eventIndex = 0;
+    let known = start;
     markers.push({
       color: start.direction > 0 ? "var(--success)" : "var(--danger)",
       displayItemId: "indicator.qmd_decision_chart",
@@ -951,48 +957,61 @@ function qmdEpisodePresentation(
       runningExtreme = start.direction > 0
         ? Math.max(runningExtreme, bar.high)
         : Math.min(runningExtreme, bar.low);
-      const known = episodeEvents
-        .filter((event) => event.event_type !== "end" && Date.parse(event.occurred_at) <= bar.endMs)
-        .at(-1) ?? start;
+      while (
+        eventIndex < episodeEvents.length
+        && Date.parse(episodeEvents[eventIndex].occurred_at) <= bar.endMs
+      ) {
+        if (episodeEvents[eventIndex].event_type !== "end") known = episodeEvents[eventIndex];
+        eventIndex += 1;
+      }
       const segmentStart = Math.max(startMs, bar.startMs) / 1000;
       const segmentEnd = Math.min(endMs, bar.endMs) / 1000;
       const confidence = boundedUnit(known.confidence);
-      const shared = {
+      steps.push({
         confidence,
-        defaultVisible: true,
-        displayItemId: "indicator.qmd_decision_chart",
         end: segmentEnd,
-        episodeId: start.episode_id,
-        latest: !endEvent && index === sortedBars.length - 1,
-        preset: start.preset,
-        settingsId: "qmd-decision-episodes",
-        start: segmentStart,
-      };
-      zones.push({
-        ...shared,
-        annotationKind: "signal-episode-range",
-        borderOpacity: 0,
-        color: start.direction > 0 ? "var(--success)" : "var(--danger)",
-        fillColor: start.direction > 0 ? "var(--success)" : "var(--danger)",
-        fillOpacity: 0.14,
-        label: `${start.preset} ${start.direction > 0 ? "buy" : "sell"} episode`,
-        legendLabel: "QMD decision episodes",
         lower: start.direction > 0 ? rail : runningExtreme,
-        renderMode: "zone",
+        start: segmentStart,
         upper: start.direction > 0 ? runningExtreme : rail,
       });
-      zones.push({
-        ...shared,
-        annotationKind: "signal-episode-rail",
-        borderOpacity: 0,
-        color: start.direction > 0 ? "var(--success)" : "var(--danger)",
-        label: `${start.preset} confidence rail`,
-        legendLabel: "QMD decision episodes",
-        lower: rail,
-        renderMode: "line",
-        upper: rail,
-      });
     }
+    if (!steps.length) return;
+    const shared = {
+      confidence: steps[steps.length - 1].confidence,
+      defaultVisible: true,
+      displayItemId: "indicator.qmd_decision_chart",
+      end: steps[steps.length - 1].end,
+      episodeId: start.episode_id,
+      episodeSteps: steps,
+      latest: !endEvent,
+      preset: start.preset,
+      settingsId: "qmd-decision-episodes",
+      start: steps[0].start,
+    };
+    zones.push({
+      ...shared,
+      annotationKind: "signal-episode-range",
+      borderOpacity: 0,
+      color: start.direction > 0 ? "var(--success)" : "var(--danger)",
+      fillColor: start.direction > 0 ? "var(--success)" : "var(--danger)",
+      fillOpacity: 0.14,
+      label: `${start.preset} ${start.direction > 0 ? "buy" : "sell"} episode`,
+      legendLabel: "QMD decision episodes",
+      lower: Math.min(...steps.map((step) => step.lower)),
+      renderMode: "zone",
+      upper: Math.max(...steps.map((step) => step.upper)),
+    });
+    zones.push({
+      ...shared,
+      annotationKind: "signal-episode-rail",
+      borderOpacity: 0,
+      color: start.direction > 0 ? "var(--success)" : "var(--danger)",
+      label: `${start.preset} confidence rail`,
+      legendLabel: "QMD decision episodes",
+      lower: rail,
+      renderMode: "line",
+      upper: rail,
+    });
   });
   return { markers, zones };
 }

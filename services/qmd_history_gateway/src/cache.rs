@@ -15,7 +15,7 @@ use qmd_core::market_products::{
     MARKET_PRODUCT_SCHEMA_VERSION,
 };
 use qmd_core::microstructure_interval::MicrostructureIntervalWindow;
-use qmd_core::qmd_episode::{QmdEpisodeEngine, QmdEpisodeEvent};
+use qmd_core::qmd_episode::{QmdEpisodeEngine, QmdEpisodeEvent, QmdEpisodePreset};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::mem::size_of;
@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
 
-pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v18";
+pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v22";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProfile {
@@ -417,12 +417,18 @@ impl HistoricalDerivedCache {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            let episode_events = state
-                .episode_events
-                .iter()
-                .filter(|event| event.occurred_at <= as_of)
-                .cloned()
-                .collect::<Vec<_>>();
+            let episode_events = bars
+                .first()
+                .zip(bars.last())
+                .map(|(first, last)| {
+                    episode_events_overlapping(
+                        &state.episode_events,
+                        first.bar_start,
+                        last.bar_end,
+                        as_of,
+                    )
+                })
+                .unwrap_or_default();
             return Ok(ChartSnapshot {
                 as_of,
                 bars,
@@ -961,6 +967,35 @@ impl HistoricalDerivedCache {
             }
         }
     }
+}
+
+fn episode_events_overlapping(
+    events: &[QmdEpisodeEvent],
+    first_bar_start: DateTime<Utc>,
+    last_bar_end: DateTime<Utc>,
+    as_of: DateTime<Utc>,
+) -> Vec<QmdEpisodeEvent> {
+    let mut ended_at = HashMap::<(QmdEpisodePreset, u64, DateTime<Utc>), DateTime<Utc>>::new();
+    for event in events {
+        if event.event_type == "end" && event.occurred_at <= as_of {
+            ended_at.insert(
+                (event.preset, event.episode_id, event.started_at),
+                event.occurred_at,
+            );
+        }
+    }
+    events
+        .iter()
+        .filter(|event| {
+            if event.occurred_at > last_bar_end || event.occurred_at > as_of {
+                return false;
+            }
+            let key = (event.preset, event.episode_id, event.started_at);
+            let episode_end = ended_at.get(&key).copied().unwrap_or(as_of);
+            event.started_at <= last_bar_end && episode_end >= first_bar_start
+        })
+        .cloned()
+        .collect()
 }
 
 impl CacheEntry {

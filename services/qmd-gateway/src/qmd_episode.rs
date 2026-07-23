@@ -28,39 +28,42 @@ impl QmdEpisodePreset {
                 opposite_confidence: 0.40,
                 opposite_dwell_ms: 500,
                 exhaustion_confidence: 0.18,
-                exhaustion_dwell_ms: 3_000,
-                max_duration_ms: 60_000,
+                exhaustion_dwell_ms: 15_000,
+                max_duration_ms: 120_000,
                 invalidation_buffer_fraction: 0.0015,
                 confidence_alpha: 0.55,
                 confidence_decay_alpha: 0.06,
                 opposing_structure_confidence: 0.65,
-                reentry_cooldown_ms: 1_000,
+                reentry_cooldown_ms: 2_000,
+                update_interval_ms: 1_000,
             },
             Self::Tactical => QmdEpisodeConfig {
                 start_confidence: 0.45,
                 opposite_confidence: 0.50,
                 opposite_dwell_ms: 1_500,
                 exhaustion_confidence: 0.22,
-                exhaustion_dwell_ms: 15_000,
-                max_duration_ms: 300_000,
+                exhaustion_dwell_ms: 60_000,
+                max_duration_ms: 900_000,
                 invalidation_buffer_fraction: 0.0035,
                 confidence_alpha: 0.25,
                 confidence_decay_alpha: 0.02,
                 opposing_structure_confidence: 0.65,
-                reentry_cooldown_ms: 5_000,
+                reentry_cooldown_ms: 10_000,
+                update_interval_ms: 5_000,
             },
             Self::Context => QmdEpisodeConfig {
                 start_confidence: 0.55,
                 opposite_confidence: 0.60,
                 opposite_dwell_ms: 5_000,
                 exhaustion_confidence: 0.28,
-                exhaustion_dwell_ms: 60_000,
-                max_duration_ms: 1_800_000,
+                exhaustion_dwell_ms: 300_000,
+                max_duration_ms: 3_600_000,
                 invalidation_buffer_fraction: 0.0075,
                 confidence_alpha: 0.10,
                 confidence_decay_alpha: 0.005,
                 opposing_structure_confidence: 0.65,
-                reentry_cooldown_ms: 15_000,
+                reentry_cooldown_ms: 30_000,
+                update_interval_ms: 15_000,
             },
         }
     }
@@ -79,6 +82,7 @@ struct QmdEpisodeConfig {
     confidence_decay_alpha: f64,
     opposing_structure_confidence: f64,
     reentry_cooldown_ms: i64,
+    update_interval_ms: i64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -148,8 +152,12 @@ struct PresetState {
     active: Option<QmdEpisodeState>,
     low_confidence_since: Option<DateTime<Utc>>,
     last_emitted_bucket: i16,
+    last_emitted_at: Option<DateTime<Utc>>,
     cooldown_until: Option<DateTime<Utc>>,
     opposite_since: Option<DateTime<Utc>>,
+    opposing_structure_since: Option<DateTime<Utc>>,
+    rearm_direction: i8,
+    rearm_neutral_since: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -190,6 +198,28 @@ impl QmdEpisodeEngine {
         let state = self.presets.entry(preset).or_default();
         let mut ending = None;
         let mut ended_direction = 0;
+        let qualified_direction = if input.decision_direction != 0
+            && input.decision_confidence >= config.start_confidence
+        {
+            input.decision_direction.signum()
+        } else {
+            0
+        };
+        if state.rearm_direction != 0 {
+            if qualified_direction == -state.rearm_direction {
+                state.rearm_direction = 0;
+                state.rearm_neutral_since = None;
+            } else if qualified_direction == 0 {
+                let since = state.rearm_neutral_since.get_or_insert(input.occurred_at);
+                if input.occurred_at - *since >= Duration::milliseconds(config.reentry_cooldown_ms)
+                {
+                    state.rearm_direction = 0;
+                    state.rearm_neutral_since = None;
+                }
+            } else {
+                state.rearm_neutral_since = None;
+            }
+        }
 
         if let Some(active) = state.active.as_mut() {
             let elapsed_ms = (input.occurred_at - active.started_at).num_milliseconds();
@@ -204,8 +234,6 @@ impl QmdEpisodeEngine {
                 if input.occurred_at - *since >= Duration::milliseconds(config.opposite_dwell_ms) {
                     ending = Some("opposite_signal");
                 }
-            } else if opposing_structure {
-                ending = Some("opposing_structure");
             } else if invalidated {
                 ending = Some("invalidation");
             } else if elapsed_ms >= config.max_duration_ms {
@@ -231,19 +259,38 @@ impl QmdEpisodeEngine {
                 active.last_updated_at = input.occurred_at;
                 let progress_stale = input.occurred_at - active.last_progress_at
                     >= Duration::milliseconds(config.exhaustion_dwell_ms);
-                if active.confidence <= config.exhaustion_confidence && progress_stale {
-                    let since = state.low_confidence_since.get_or_insert(input.occurred_at);
-                    if input.occurred_at - *since
-                        >= Duration::milliseconds(config.exhaustion_dwell_ms)
-                    {
-                        ending = Some("evidence_exhausted");
-                    }
+                if active.confidence <= config.exhaustion_confidence {
+                    state.low_confidence_since.get_or_insert(input.occurred_at);
                 } else {
                     state.low_confidence_since = None;
                 }
+                if opposing_structure {
+                    state
+                        .opposing_structure_since
+                        .get_or_insert(input.occurred_at);
+                } else {
+                    state.opposing_structure_since = None;
+                }
+                let weak_for_dwell = state.low_confidence_since.is_some_and(|since| {
+                    input.occurred_at - since >= Duration::milliseconds(config.exhaustion_dwell_ms)
+                });
+                let structure_opposed_for_dwell =
+                    state.opposing_structure_since.is_some_and(|since| {
+                        input.occurred_at - since
+                            >= Duration::milliseconds(config.exhaustion_dwell_ms)
+                    });
+                if progress_stale && structure_opposed_for_dwell {
+                    ending = Some("opposing_structure");
+                } else if progress_stale && weak_for_dwell {
+                    ending = Some("evidence_exhausted");
+                }
                 let bucket = confidence_bucket(active.confidence);
-                if ending.is_none() && bucket != state.last_emitted_bucket {
+                let update_due = state.last_emitted_at.is_none_or(|last| {
+                    input.occurred_at - last >= Duration::milliseconds(config.update_interval_ms)
+                });
+                if ending.is_none() && bucket != state.last_emitted_bucket && update_due {
                     state.last_emitted_bucket = bucket;
+                    state.last_emitted_at = Some(input.occurred_at);
                     events.push(event_from_state(sym, active, "update", ""));
                 }
             }
@@ -257,7 +304,11 @@ impl QmdEpisodeEngine {
             }
             state.low_confidence_since = None;
             state.opposite_since = None;
+            state.opposing_structure_since = None;
             state.last_emitted_bucket = -1;
+            state.last_emitted_at = None;
+            state.rearm_direction = ended_direction;
+            state.rearm_neutral_since = None;
             state.cooldown_until =
                 Some(input.occurred_at + Duration::milliseconds(config.reentry_cooldown_ms));
         }
@@ -268,8 +319,8 @@ impl QmdEpisodeEngine {
         let immediate_flip = ended_direction != 0 && input.decision_direction == -ended_direction;
         let may_start = state.active.is_none()
             && (cooled_down || immediate_flip)
-            && input.decision_direction != 0
-            && input.decision_confidence >= config.start_confidence
+            && qualified_direction != 0
+            && qualified_direction != state.rearm_direction
             && input.close.is_finite()
             && input.close > 0.0;
         if may_start {
@@ -307,6 +358,7 @@ impl QmdEpisodeEngine {
                 last_progress_at: input.occurred_at,
             };
             state.last_emitted_bucket = confidence_bucket(active.confidence);
+            state.last_emitted_at = Some(input.occurred_at);
             events.push(event_from_state(sym, &active, "start", ""));
             state.active = Some(active);
         }
@@ -391,7 +443,7 @@ mod tests {
             .iter()
             .all(|event| event.event_type != "end"));
         let mut ended = false;
-        for timestamp in (2_000..15_000).step_by(500) {
+        for timestamp in (2_000..40_000).step_by(500) {
             ended |= engine
                 .update("TEST", input(timestamp, 0, 0.0))
                 .iter()
@@ -422,6 +474,56 @@ mod tests {
             event.preset == QmdEpisodePreset::Micro
                 && event.event_type == "start"
                 && event.direction == -1
+        }));
+    }
+
+    #[test]
+    fn an_ended_episode_does_not_restart_from_the_same_persistent_signal() {
+        let mut engine = QmdEpisodeEngine::default();
+        engine.update("TEST", input(1_000, 1, 0.60));
+        let mut invalidated = input(1_100, 1, 0.60);
+        invalidated.close = 97.0;
+        assert!(engine
+            .update("TEST", invalidated)
+            .iter()
+            .any(|event| event.event_type == "end"));
+        for timestamp in (2_500..6_000).step_by(500) {
+            assert!(engine
+                .update("TEST", input(timestamp, 1, 0.60))
+                .iter()
+                .all(|event| event.event_type != "start"));
+        }
+        engine.update("TEST", input(6_000, 0, 0.0));
+        engine.update("TEST", input(8_100, 0, 0.0));
+        assert!(engine
+            .update("TEST", input(8_200, 1, 0.60))
+            .iter()
+            .any(|event| {
+                event.preset == QmdEpisodePreset::Micro && event.event_type == "start"
+            }));
+    }
+
+    #[test]
+    fn opposing_structure_requires_persistence_and_stalled_price() {
+        let mut engine = QmdEpisodeEngine::default();
+        engine.update("TEST", input(1_000, 1, 0.60));
+        let mut opposed = input(1_100, 1, 0.60);
+        opposed.micro.direction = -1;
+        opposed.micro.confidence = 0.90;
+        assert!(engine
+            .update("TEST", opposed)
+            .iter()
+            .all(|event| event.event_type != "end"));
+        opposed.occurred_at = Utc.timestamp_millis_opt(15_900).unwrap();
+        assert!(engine
+            .update("TEST", opposed)
+            .iter()
+            .all(|event| event.event_type != "end"));
+        opposed.occurred_at = Utc.timestamp_millis_opt(16_200).unwrap();
+        assert!(engine.update("TEST", opposed).iter().any(|event| {
+            event.preset == QmdEpisodePreset::Micro
+                && event.event_type == "end"
+                && event.resolution == "opposing_structure"
         }));
     }
 }

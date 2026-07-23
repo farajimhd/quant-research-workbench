@@ -119,6 +119,13 @@ type PriceZone = {
   displayItemId?: string;
   end: number;
   episodeId?: number;
+  episodeSteps?: Array<{
+    confidence: number;
+    end: number;
+    lower: number;
+    start: number;
+    upper: number;
+  }>;
   extendToRightEdge?: boolean;
   eventTime?: number;
   fillColor?: string;
@@ -4291,6 +4298,26 @@ function drawPriceZonePrimitiveGeometry(
         && !zone.currentLevelStrongest
         && (zone.currentLevelDistanceRank ?? Number.POSITIVE_INFINITY) > settings.currentLevelCount
       ) return;
+      if (
+        (zone.annotationKind === "signal-episode-range"
+          || zone.annotationKind === "signal-episode-rail")
+        && zone.episodeSteps?.length
+      ) {
+        drawSignalEpisodePrimitive(
+          chart,
+          priceSeries,
+          context,
+          width,
+          height,
+          zone,
+          settings,
+          chartBackground,
+          candles,
+          barWidth,
+          candleDuration,
+        );
+        return;
+      }
       const coordinates = priceZoneCoordinates(chart, zone, candles, barWidth, candleDuration);
       if (!coordinates) return;
       const upper = priceSeries.priceToCoordinate(zone.upper);
@@ -4366,6 +4393,70 @@ function drawPriceZonePrimitiveGeometry(
       context.restore();
     });
   });
+}
+
+function drawSignalEpisodePrimitive(
+  chart: IChartApi,
+  priceSeries: ISeriesApi<"Candlestick">,
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  zone: PriceZone,
+  settings: ReturnType<typeof resolvePriceZoneLegendSettings>,
+  chartBackground: string,
+  candles: Candle[],
+  barWidth: number,
+  candleDuration: number,
+) {
+  const steps = zone.episodeSteps ?? [];
+  if (!steps.length) return;
+  const { borderColor, fillColor } = priceZonePresentationColors(zone, chartBackground);
+  context.save();
+  context.lineCap = "butt";
+  steps.forEach((step, index) => {
+    const coordinates = priceZoneCoordinates(
+      chart,
+      { ...zone, end: step.end, start: step.start },
+      candles,
+      barWidth,
+      candleDuration,
+    );
+    if (!coordinates) return;
+    const left = Math.max(0, Math.min(coordinates.start, coordinates.end));
+    const right = Math.min(width, Math.max(coordinates.start, coordinates.end));
+    if (right < 0 || left > width || right <= left) return;
+    const confidence = clampNumber(step.confidence, 0, 1, 0);
+    if (zone.annotationKind === "signal-episode-range") {
+      const upper = priceSeries.priceToCoordinate(step.upper);
+      const lower = priceSeries.priceToCoordinate(step.lower);
+      if (upper === null || lower === null) return;
+      const top = Math.max(0, Math.min(upper, lower));
+      const bottom = Math.min(height, Math.max(upper, lower));
+      if (bottom <= top) return;
+      const opacity = clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08)
+        * (0.45 + 0.55 * confidence)
+        * settings.opacity;
+      context.fillStyle = rgbaFromHex(fillColor, opacity);
+      // A sub-pixel overlap prevents seams between adjacent causal steps
+      // without extending the episode beyond its actual timestamps.
+      context.fillRect(left, top, Math.min(width - left, right - left + 0.75), bottom - top);
+      return;
+    }
+    const railCoordinate = priceSeries.priceToCoordinate(step.lower);
+    if (railCoordinate === null || railCoordinate < 0 || railCoordinate > height) return;
+    const lineWidth = Math.max(1, Math.min(6, settings.lineWidth * (0.75 + 1.75 * confidence)));
+    context.strokeStyle = rgbaFromHex(borderColor, settings.opacity);
+    context.lineWidth = lineWidth;
+    context.setLineDash(canvasLineDash(settings.lineStyle, lineWidth));
+    context.beginPath();
+    context.moveTo(left, railCoordinate);
+    context.lineTo(
+      Math.min(width, right + (index + 1 < steps.length ? 0.75 : 0)),
+      railCoordinate,
+    );
+    context.stroke();
+  });
+  context.restore();
 }
 
 function drawPriceZones(
