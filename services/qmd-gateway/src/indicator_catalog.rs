@@ -631,7 +631,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
         typical_timeframes: ENRICHED_QMD_TFS,
         storage_target:
             "qmd_structure_events_v1,qmd_structure_state_v1,live_market_indicators",
-        rationale: "One causal event-native authority extracts micro, tactical, and context structure independently of chart candles, persists confirmed history and a full versioned restart checkpoint, and samples the same strategy-readable levels onto every enriched timeframe.",
+        rationale: "One causal authority extracts micro, tactical, and context structure from the canonical 100 ms eligible-trade path independently of displayed chart candles, persists confirmed history and a full versioned restart checkpoint, and samples the same strategy-readable levels onto every enriched timeframe.",
     },
     IndicatorCatalogEntry {
         key: "shock_features",

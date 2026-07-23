@@ -144,11 +144,14 @@ not normalized against each other.
 
 ## Generic Structure Price Overlay
 
-Generic Structure derives pivots, direction, BoS, and CHoCH from ordered
-eligible trade prices, not from the selected candle OHLC. NBBO updates maintain
-displayed-liquidity evidence and zone context, but an unexecuted quote move
-cannot create price structure. Changing timeframe changes sampling density and
-chart history, but it does not redefine the underlying pivots or zones.
+Generic Structure derives pivots, direction, BoS, and CHoCH from the close of
+each canonical 100 ms bucket of ordered eligible trades, not from the selected
+candle OHLC. That single trade-derived structure clock prevents multiple venue
+prints inside one 100 ms interval from manufacturing contradictory swings.
+NBBO updates maintain displayed-liquidity evidence and zone context, but an
+unexecuted quote move cannot create price structure. Changing the displayed
+timeframe changes sampling density and chart history, but it does not redefine
+the underlying pivots or zones.
 
 ### Current support and resistance zones
 
@@ -193,7 +196,8 @@ opening range, trade-volume POC, estimated LULD, completed
 52-week high/low, and prior-month high/low/close. They are context references,
 not all support/resistance evidence of equal quality.
 
-Micro, tactical, and context are event-response scales, not chart timeframes.
+Micro, tactical, and context are response scales on the canonical 100 ms trade
+path, not chart timeframes.
 The base threshold has a two-tick or 0.5-basis-point floor, adapts to recent
 spread and eligible-trade movement, and is capped at the larger of 25 basis
 points or four ticks so one transient quote cannot inflate the Micro scale.

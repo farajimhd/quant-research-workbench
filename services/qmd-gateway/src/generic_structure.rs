@@ -5,7 +5,8 @@ use chrono_tz::America::New_York;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 4;
+pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 5;
+const STRUCTURE_SAMPLE_MILLIS: i64 = 100;
 const SESSION_ANCHOR_SECONDS: u32 = 4 * 60 * 60;
 const REGULAR_OPEN_SECONDS: u32 = 9 * 60 * 60 + 30 * 60;
 const OPENING_RANGE_END_SECONDS: u32 = 9 * 60 * 60 + 35 * 60;
@@ -303,12 +304,21 @@ impl TimedEwma {
     }
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct StructureTradeSample {
+    bucket_start_ms: i64,
+    close: f64,
+    close_at: Option<DateTime<Utc>>,
+    volume: f64,
+}
+
 #[derive(Clone, Debug)]
 pub struct GenericStructureEngine {
     sym: String,
     last_ts: Option<DateTime<Utc>>,
     last_reference_price: f64,
     last_structure_price: f64,
+    structure_trade_sample: StructureTradeSample,
     bid: f64,
     ask: f64,
     spread_ewma: TimedEwma,
@@ -334,6 +344,8 @@ pub struct GenericStructureCheckpoint {
     last_reference_price: f64,
     #[serde(default)]
     last_structure_price: f64,
+    #[serde(default)]
+    structure_trade_sample: StructureTradeSample,
     bid: f64,
     ask: f64,
     spread_ewma: TimedEwma,
@@ -358,6 +370,7 @@ impl GenericStructureEngine {
             last_ts: None,
             last_reference_price: 0.0,
             last_structure_price: 0.0,
+            structure_trade_sample: StructureTradeSample::default(),
             bid: 0.0,
             ask: 0.0,
             spread_ewma: TimedEwma::default(),
@@ -388,6 +401,8 @@ impl GenericStructureEngine {
         self.reset_session_if_needed(ts);
         let mut eligible_trade_price = 0.0;
         let mut eligible_trade_size = 0.0;
+        let mut finalized_structure_sample = None;
+        let mut emitted = Vec::new();
         let reference = match event {
             MarketEvent::Quote(quote)
                 if quote.bid_price > 0.0
@@ -412,6 +427,8 @@ impl GenericStructureEngine {
                     0.0
                 };
                 self.observe_trade(ts, trade.price, eligible_trade_size);
+                finalized_structure_sample =
+                    self.observe_structure_trade(ts, trade.price, eligible_trade_size);
                 if self.bid > 0.0 && self.ask > self.bid {
                     (self.bid + self.ask) / 2.0
                 } else {
@@ -424,20 +441,19 @@ impl GenericStructureEngine {
             self.last_ts = Some(ts);
             return (self.snapshot(ts), Vec::new());
         }
-        if eligible_trade_price > 0.0 && self.last_structure_price > 0.0 {
-            self.move_ewma.update(
-                ts,
-                (eligible_trade_price - self.last_structure_price).abs(),
-                MOVE_HALF_LIFE_SECONDS,
-            );
-        }
-        if eligible_trade_price > 0.0 {
-            self.last_structure_price = eligible_trade_price;
+        if let Some((sample_price, _, _)) = finalized_structure_sample {
+            if self.last_structure_price > 0.0 {
+                self.move_ewma.update(
+                    ts,
+                    (sample_price - self.last_structure_price).abs(),
+                    MOVE_HALF_LIFE_SECONDS,
+                );
+            }
+            self.last_structure_price = sample_price;
         }
         self.last_reference_price = reference;
         self.last_ts = Some(ts);
         let base_threshold = self.base_threshold(reference);
-        let mut emitted = Vec::new();
         for (index, config) in SCALE_CONFIGS.iter().copied().enumerate() {
             let threshold = base_threshold * config.threshold_multiplier;
             let state = &mut self.scales[index];
@@ -452,16 +468,17 @@ impl GenericStructureEngine {
                 &mut emitted,
                 &self.sym,
             );
-            // Price structure must match the traded-price candles on which it
-            // is audited. Quotes continue to update liquidity zones and the
-            // NBBO reference, but cannot manufacture a swing or structure
-            // break that never traded.
-            if eligible_trade_price > 0.0 {
+        }
+        if let Some((sample_price, sample_at, sample_volume)) = finalized_structure_sample {
+            for (index, config) in SCALE_CONFIGS.iter().copied().enumerate() {
+                let threshold = base_threshold * config.threshold_multiplier;
+                let state = &mut self.scales[index];
                 update_directional_change(
                     state,
                     config,
-                    eligible_trade_price,
+                    sample_price,
                     threshold,
+                    sample_at,
                     ts,
                     &mut emitted,
                     &self.sym,
@@ -469,9 +486,9 @@ impl GenericStructureEngine {
                 update_structure_break(
                     state,
                     config,
-                    eligible_trade_price,
-                    eligible_trade_price,
-                    eligible_trade_size,
+                    sample_price,
+                    sample_price,
+                    sample_volume,
                     threshold,
                     ts,
                     &mut emitted,
@@ -522,6 +539,7 @@ impl GenericStructureEngine {
             updated_at: self.last_ts,
             last_reference_price: self.last_reference_price,
             last_structure_price: self.last_structure_price,
+            structure_trade_sample: self.structure_trade_sample.clone(),
             bid: self.bid,
             ask: self.ask,
             spread_ewma: self.spread_ewma.clone(),
@@ -555,6 +573,7 @@ impl GenericStructureEngine {
         self.last_ts = checkpoint.updated_at;
         self.last_reference_price = checkpoint.last_reference_price;
         self.last_structure_price = checkpoint.last_structure_price;
+        self.structure_trade_sample = checkpoint.structure_trade_sample.clone();
         self.bid = checkpoint.bid;
         self.ask = checkpoint.ask;
         self.spread_ewma = checkpoint.spread_ewma.clone();
@@ -578,6 +597,7 @@ impl GenericStructureEngine {
         }
         self.last_reference_price = snapshot.reference_price;
         self.last_structure_price = snapshot.reference_price;
+        self.structure_trade_sample = StructureTradeSample::default();
         self.session_high = snapshot.session_high;
         self.session_low = snapshot.session_low;
         self.premarket_high = snapshot.premarket_high;
@@ -633,6 +653,7 @@ impl GenericStructureEngine {
         self.opening_range_low = 0.0;
         self.session_volume_by_price.clear();
         self.trade_volume_poc = 0.0;
+        self.structure_trade_sample = StructureTradeSample::default();
     }
 
     fn observe_trade(&mut self, ts: DateTime<Utc>, price: f64, size: f64) {
@@ -661,6 +682,43 @@ impl GenericStructureEngine {
                 .map(|(key, _)| price_from_key(*key))
                 .unwrap_or_default();
         }
+    }
+
+    fn observe_structure_trade(
+        &mut self,
+        ts: DateTime<Utc>,
+        price: f64,
+        size: f64,
+    ) -> Option<(f64, DateTime<Utc>, f64)> {
+        let bucket_start_ms =
+            ts.timestamp_millis().div_euclid(STRUCTURE_SAMPLE_MILLIS) * STRUCTURE_SAMPLE_MILLIS;
+        if self.structure_trade_sample.close <= 0.0 {
+            self.structure_trade_sample = StructureTradeSample {
+                bucket_start_ms,
+                close: price,
+                close_at: Some(ts),
+                volume: size.max(0.0),
+            };
+            return None;
+        }
+        if bucket_start_ms == self.structure_trade_sample.bucket_start_ms {
+            self.structure_trade_sample.close = price;
+            self.structure_trade_sample.close_at = Some(ts);
+            self.structure_trade_sample.volume += size.max(0.0);
+            return None;
+        }
+        let finalized = (
+            self.structure_trade_sample.close,
+            self.structure_trade_sample.close_at.unwrap_or(ts),
+            self.structure_trade_sample.volume,
+        );
+        self.structure_trade_sample = StructureTradeSample {
+            bucket_start_ms,
+            close: price,
+            close_at: Some(ts),
+            volume: size.max(0.0),
+        };
+        Some(finalized)
     }
 
     fn base_threshold(&self, reference: f64) -> f64 {
@@ -1199,42 +1257,43 @@ fn update_directional_change(
     config: ScaleConfig,
     price: f64,
     threshold: f64,
-    ts: DateTime<Utc>,
+    observed_at: DateTime<Utc>,
+    confirmed_at: DateTime<Utc>,
     emitted: &mut Vec<GenericStructureEvent>,
     sym: &str,
 ) {
     if state.candidate_high <= 0.0 {
         state.candidate_high = price;
         state.candidate_low = price;
-        state.candidate_high_at = Some(ts);
-        state.candidate_low_at = Some(ts);
+        state.candidate_high_at = Some(observed_at);
+        state.candidate_low_at = Some(observed_at);
         return;
     }
     if price > state.candidate_high {
         state.candidate_high = price;
-        state.candidate_high_at = Some(ts);
+        state.candidate_high_at = Some(observed_at);
     }
     if price < state.candidate_low {
         state.candidate_low = price;
-        state.candidate_low_at = Some(ts);
+        state.candidate_low_at = Some(observed_at);
     }
     if state.leg_direction == 0 {
         if price >= state.candidate_low + threshold {
             state.leg_direction = 1;
             state.candidate_high = price;
-            state.candidate_high_at = Some(ts);
+            state.candidate_high_at = Some(observed_at);
         } else if price <= state.candidate_high - threshold {
             state.leg_direction = -1;
             state.candidate_low = price;
-            state.candidate_low_at = Some(ts);
+            state.candidate_low_at = Some(observed_at);
         }
         return;
     }
     if state.leg_direction > 0 && price <= state.candidate_high - threshold {
         let pivot = Pivot {
             price: state.candidate_high,
-            pivot_at: state.candidate_high_at.unwrap_or(ts),
-            confirmed_at: ts,
+            pivot_at: state.candidate_high_at.unwrap_or(observed_at),
+            confirmed_at,
         };
         state.previous_high = state.swing_high.replace(pivot.clone());
         update_trend(state);
@@ -1249,14 +1308,14 @@ fn update_directional_change(
         ));
         state.leg_direction = -1;
         state.candidate_low = price;
-        state.candidate_low_at = Some(ts);
+        state.candidate_low_at = Some(observed_at);
         state.candidate_high = price;
-        state.candidate_high_at = Some(ts);
+        state.candidate_high_at = Some(observed_at);
     } else if state.leg_direction < 0 && price >= state.candidate_low + threshold {
         let pivot = Pivot {
             price: state.candidate_low,
-            pivot_at: state.candidate_low_at.unwrap_or(ts),
-            confirmed_at: ts,
+            pivot_at: state.candidate_low_at.unwrap_or(observed_at),
+            confirmed_at,
         };
         state.previous_low = state.swing_low.replace(pivot.clone());
         update_trend(state);
@@ -1271,9 +1330,9 @@ fn update_directional_change(
         ));
         state.leg_direction = 1;
         state.candidate_high = price;
-        state.candidate_high_at = Some(ts);
+        state.candidate_high_at = Some(observed_at);
         state.candidate_low = price;
-        state.candidate_low_at = Some(ts);
+        state.candidate_low_at = Some(observed_at);
     }
 }
 
@@ -2412,7 +2471,11 @@ mod tests {
             assert!(emitted.iter().all(|item| item.event_kind != "pivot_high"));
         }
         let event = trade(start + 500, 99.98, 100.0, 10);
-        let (_, emitted) = engine.apply_event(&event, TradeUpdateRule::regular());
+        engine.apply_event(&event, TradeUpdateRule::regular());
+        // The canonical structure clock closes each 100 ms trade bucket when
+        // the next eligible bucket arrives.
+        let next = trade(start + 600, 99.98, 100.0, 11);
+        let (_, emitted) = engine.apply_event(&next, TradeUpdateRule::regular());
         assert!(emitted.iter().any(|item| item.event_kind == "pivot_high"));
         assert!(emitted
             .iter()

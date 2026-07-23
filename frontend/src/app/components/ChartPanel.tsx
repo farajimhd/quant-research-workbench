@@ -4413,7 +4413,7 @@ function drawSignalEpisodePrimitive(
   const { borderColor, fillColor } = priceZonePresentationColors(zone, chartBackground);
   context.save();
   context.lineCap = "butt";
-  steps.forEach((step, index) => {
+  const renderedSteps = steps.flatMap((step) => {
     const coordinates = signalEpisodeStepCoordinates(
       chart,
       candles,
@@ -4423,39 +4423,51 @@ function drawSignalEpisodePrimitive(
       candleDuration,
       width,
     );
-    if (!coordinates) return;
+    if (!coordinates) return [];
     const left = coordinates.start;
     const right = coordinates.end;
-    if (right < 0 || left > width || right <= left) return;
-    const confidence = clampNumber(step.confidence, 0, 1, 0);
-    if (zone.annotationKind === "signal-episode-range") {
+    if (right < 0 || left > width || right <= left) return [];
+    return [{ ...step, left, right }];
+  });
+  if (!renderedSteps.length) {
+    context.restore();
+    return;
+  }
+  if (zone.annotationKind === "signal-episode-range") {
+    renderedSteps.forEach((step) => {
       const upper = priceSeries.priceToCoordinate(step.upper);
       const lower = priceSeries.priceToCoordinate(step.lower);
       if (upper === null || lower === null) return;
       const top = Math.max(0, Math.min(upper, lower));
       const bottom = Math.min(height, Math.max(upper, lower));
       if (bottom <= top) return;
+      const confidence = clampNumber(step.confidence, 0, 1, 0);
       const opacity = clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08)
         * (0.45 + 0.55 * confidence)
         * settings.opacity;
       context.fillStyle = rgbaFromHex(fillColor, opacity);
-      context.fillRect(left, top, right - left, bottom - top);
-      return;
-    }
-    const railCoordinate = priceSeries.priceToCoordinate(step.lower);
-    if (railCoordinate === null || railCoordinate < 0 || railCoordinate > height) return;
+      // Adjacent full-slot rectangles intentionally overlap by one device
+      // pixel. Canvas sub-pixel rounding otherwise exposes white seams while
+      // panning or scaling an episode rendered across multiple chart bars.
+      context.fillRect(step.left, top, step.right - step.left + 1, bottom - top);
+    });
+    context.restore();
+    return;
+  }
+  const railCoordinate = priceSeries.priceToCoordinate(zone.lower);
+  if (railCoordinate !== null && railCoordinate >= 0 && railCoordinate <= height) {
+    const confidence = Math.max(
+      ...renderedSteps.map((step) => clampNumber(step.confidence, 0, 1, 0)),
+    );
     const lineWidth = Math.max(1, Math.min(6, settings.lineWidth * (0.75 + 1.75 * confidence)));
     context.strokeStyle = rgbaFromHex(borderColor, settings.opacity);
     context.lineWidth = lineWidth;
     context.setLineDash(canvasLineDash(settings.lineStyle, lineWidth));
     context.beginPath();
-    context.moveTo(left, railCoordinate);
-    context.lineTo(
-      Math.min(width, right + (index + 1 < steps.length ? 0.75 : 0)),
-      railCoordinate,
-    );
+    context.moveTo(renderedSteps[0].left, railCoordinate);
+    context.lineTo(renderedSteps[renderedSteps.length - 1].right, railCoordinate);
     context.stroke();
-  });
+  }
   context.restore();
 }
 
