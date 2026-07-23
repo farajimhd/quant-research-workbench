@@ -29,9 +29,18 @@ class CanvasScannerPayloadTest(unittest.TestCase):
                 "days_to_cover": 2.76,
             }
         }
+        fundamentals = {
+            "AAPL": {
+                "xbrl_quality_score": 78.0,
+                "xbrl_profitability_score": 95.0,
+                "fundamental_operating_margin_pct": 32.0,
+                "fundamental_revenue": 416_160_000_000,
+            }
+        }
         with (
             patch("src.backend.canvas_preview_service.historical_scanner_snapshot", return_value=snapshot),
             patch("src.backend.canvas_preview_service.historical_scanner_reference_projection", return_value=projection),
+            patch("src.backend.canvas_preview_service.historical_scanner_fundamental_projection", return_value=fundamentals),
             patch("src.backend.canvas_preview_service._query_scanner_news_intelligence", return_value=[]),
             patch("src.backend.canvas_preview_service._query_scanner_sec_intelligence", return_value=[]),
         ):
@@ -41,10 +50,13 @@ class CanvasScannerPayloadTest(unittest.TestCase):
         self.assertEqual(row["company_name"], "APPLE INC")
         self.assertEqual(row["float_shares"], 14_400_000_000)
         self.assertEqual(row["logo_url"], "/api/real-live-trading/logo?path=branding%2Flogo%2Faapl.svg")
+        self.assertEqual(row["xbrl_quality_score"], 78.0)
+        self.assertEqual(row["fundamental_operating_margin_pct"], 32.0)
         self.assertEqual(row["live_news_recency"], "none")
         self.assertEqual(row["sec_recency"], "none")
         self.assertEqual(payload["meta"]["field_coverage"]["company_name"], 100.0)
         self.assertEqual(payload["meta"]["field_coverage"]["exchange"], 0.0)
+        self.assertEqual(payload["meta"]["field_coverage"]["xbrl_quality_score"], 100.0)
         self.assertEqual(payload["errors"], {})
 
     def test_company_news_and_sec_labels_are_enriched_separately(self) -> None:

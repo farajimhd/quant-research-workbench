@@ -21,6 +21,9 @@ Columns are described by a stable key, label, group, format, provenance, and exp
 - Liquidity
 - Share supply
 - Fundamentals
+- Financial scores
+- Financial ratios and growth
+- Reported fundamentals
 - News and SEC
 - Signals
 - Signal event
@@ -75,6 +78,16 @@ QMD live scanner state is the live cross-sectional authority. Historical and rep
 The dedicated `GET /api/trading/canvas-scanner` route makes the Scanner, Watchlist, and market-derived Signal Stream independent of the broad Canvas preview request. An unrelated QMD History coverage failure therefore cannot replace a valid persisted scanner snapshot with a six-symbol sample or an empty universe. News and SEC enrichments are attached in batch at the same clock and report their failures separately from market-state availability.
 
 News and SEC enrichment is batch-linked to ticker identity. The scanner uses ticker-aggregated queries over the complete causal news and filing windows rather than reusing the 30-item All News/All SEC preview queries. Company-news classification happens before ticker aggregation; SEC aggregation uses the event-valid CIK-to-market bridge. Identity, issuer, country, market-cap, share-supply, float, and short-interest are resolved causally for the entire tradable universe. The same set-based projection attaches the current canonical logo asset as non-market presentation metadata. Every market and filing source is bounded by the Canvas clock, including filing publication availability and reference-table insertion time. The table never issues per-row fact requests. Field coverage is returned with the snapshot so users can distinguish a partially published source from a broken column.
+
+Financial enrichment follows the same batch contract. One set-based read joins the event-valid SEC bridge to `q_live.sec_xbrl_company_fact_v3`, deduplicates reported facts by ticker, tag, fiscal period, unit, and availability clock, and retains bounded comparable history. The service then reuses the exact Stock Facts and XBRL functions rather than maintaining scanner-only formulas. The projection exposes:
+
+- XBRL overall quality, evidence coverage, and the profitability, growth, cash-quality, balance-sheet, and capital-discipline facets.
+- Stock Facts financial trajectory and its profitability, cash-generation, and balance-sheet subscores.
+- Share-base pressure and discipline plus the descriptive historical P/E regime.
+- Nineteen aligned derived measures including margins, returns, liquidity, leverage, growth, dilution, and expense intensity.
+- Thirty-seven latest reported SEC facts with stable field keys and raw provenance.
+
+The default Fundamentals view contains the most decision-relevant scores and measures. The complete evidence set remains optional in the grouped column picker, which reports actual per-field coverage. Missing XBRL evidence remains unavailable rather than becoming zero, and every filing and recorded timestamp is bounded by the Canvas clock so a historical scanner cannot see a later restatement.
 
 Canvas charts always read the QMD History contract through `GET /api/trading/canvas-chart/history`, including when the selected Canvas clock is close to wall time. The live QMD REST/websocket contract is owned only by the Live Trading workspace. This prevents a historical scanner selection from silently changing data authority based on clock proximity.
 

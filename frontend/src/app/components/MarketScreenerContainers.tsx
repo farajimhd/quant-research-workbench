@@ -13,7 +13,7 @@ export type WatchlistSettings = { columns: string[]; limit: number; ownerKind: "
 type FieldKind = "derived" | "estimated" | "raw";
 type FieldDefinition = {
   description: string;
-  format: "date" | "integer" | "money" | "number" | "percent" | "text";
+  format: "date" | "integer" | "money" | "number" | "percent" | "percentPlain" | "score" | "text";
   group: string;
   key: string;
   kind: FieldKind;
@@ -40,6 +40,44 @@ const FIELD_CATALOG: FieldDefinition[] = [
   field("short_crowding_pct", "Short crowding", "Share supply", "derived", "percent", "Reported short interest divided by the best available tradable-share base."),
   field("days_to_cover", "Days to cover", "Share supply", "derived", "number", "Latest reported short interest divided by its aligned average daily volume."),
   field("market_cap", "Market cap", "Fundamentals", "derived", "money", "Latest price multiplied by aligned shares outstanding."),
+  field("xbrl_quality_score", "Financial quality", "Financial scores", "derived", "score", "Evidence-weighted operating quality calculated from causal SEC XBRL facts."),
+  field("xbrl_quality_label", "Quality regime", "Financial scores", "derived", "text", "Semantic financial-quality label associated with the composite score."),
+  field("xbrl_quality_coverage_pct", "Financial evidence", "Financial scores", "derived", "percentPlain", "Share of the XBRL score model supported by comparable reported evidence."),
+  field("xbrl_profitability_score", "Profitability", "Financial scores", "derived", "score", "Profitability score from margins and return measures."),
+  field("xbrl_growth_score", "Growth", "Financial scores", "derived", "score", "Growth score from comparable revenue and earnings observations."),
+  field("xbrl_cash_quality_score", "Cash quality", "Financial scores", "derived", "score", "Cash-quality score from free cash flow and cash conversion."),
+  field("xbrl_balance_sheet_score", "Balance sheet", "Financial scores", "derived", "score", "Balance-sheet score from liquidity and leverage measures."),
+  field("xbrl_capital_discipline_score", "Capital discipline", "Financial scores", "derived", "score", "Capital-discipline score from dilution, issuance, repurchases, and share-count change."),
+  field("financial_trajectory_score", "Financial trajectory", "Financial scores", "derived", "score", "Stock Facts financial-trajectory score using profitability, cash generation, and balance-sheet evidence."),
+  field("financial_trajectory_label", "Trajectory regime", "Financial scores", "derived", "text", "Semantic label for the Stock Facts financial trajectory."),
+  field("financial_profitability_score", "Trajectory profitability", "Financial scores", "derived", "score", "Profitability subscore used by the Stock Facts trajectory."),
+  field("financial_cash_generation_score", "Trajectory cash", "Financial scores", "derived", "score", "Cash-generation subscore used by the Stock Facts trajectory."),
+  field("financial_balance_sheet_score", "Trajectory balance sheet", "Financial scores", "derived", "score", "Balance-sheet subscore used by the Stock Facts trajectory."),
+  field("share_base_pressure_pct", "Share-base pressure", "Financial scores", "derived", "percent", "Change in shares versus the nearest comparable observation at least 300 days earlier."),
+  field("share_base_discipline_score", "Share discipline", "Financial scores", "derived", "score", "Score that rewards stable or contracting share supply and penalizes dilution."),
+  field("valuation_pe", "Historical P/E", "Financial scores", "derived", "number", "Current price divided by historical or fiscal diluted earnings per share; not an analyst forward estimate."),
+  field("valuation_label", "Valuation regime", "Financial scores", "derived", "text", "Semantic valuation regime based on the historical P/E observation."),
+  field("fundamental_latest_filing_at", "Latest financial filing", "Financial scores", "raw", "date", "Latest SEC filing timestamp contributing financial evidence at the scanner clock."),
+  field("fundamental_free_cash_flow", "Free cash flow", "Financial ratios & growth", "derived", "money", "Operating cash flow minus capital expenditure."),
+  field("fundamental_gross_margin_pct", "Gross margin", "Financial ratios & growth", "derived", "percent", "Gross profit divided by aligned revenue."),
+  field("fundamental_operating_margin_pct", "Operating margin", "Financial ratios & growth", "derived", "percent", "Operating income divided by aligned revenue."),
+  field("fundamental_net_margin_pct", "Net margin", "Financial ratios & growth", "derived", "percent", "Net income divided by aligned revenue."),
+  field("fundamental_free_cash_flow_margin_pct", "FCF margin", "Financial ratios & growth", "derived", "percent", "Free cash flow divided by aligned revenue."),
+  field("fundamental_return_on_assets_pct", "Return on assets", "Financial ratios & growth", "derived", "percent", "Comparable net income divided by latest assets."),
+  field("fundamental_return_on_equity_pct", "Return on equity", "Financial ratios & growth", "derived", "percent", "Comparable net income divided by latest stockholders' equity."),
+  field("fundamental_working_capital", "Working capital", "Financial ratios & growth", "derived", "money", "Current assets minus current liabilities."),
+  field("fundamental_current_ratio", "Current ratio", "Financial ratios & growth", "derived", "number", "Current assets divided by current liabilities."),
+  field("fundamental_debt_to_equity", "Debt to equity", "Financial ratios & growth", "derived", "number", "Aligned debt divided by stockholders' equity."),
+  field("fundamental_net_debt", "Net debt", "Financial ratios & growth", "derived", "money", "Aligned debt minus cash and equivalents."),
+  field("fundamental_interest_coverage", "Interest coverage", "Financial ratios & growth", "derived", "number", "Operating income divided by interest expense."),
+  field("fundamental_revenue_growth_pct", "Revenue growth", "Financial ratios & growth", "derived", "percent", "Change between latest comparable revenue periods."),
+  field("fundamental_earnings_growth_pct", "Earnings growth", "Financial ratios & growth", "derived", "percent", "Change between latest comparable net-income periods."),
+  field("fundamental_share_growth_pct", "Share growth", "Financial ratios & growth", "derived", "percent", "Change between latest comparable weighted-average share counts."),
+  field("fundamental_dilution_pct", "Dilution", "Financial ratios & growth", "derived", "percent", "Difference between diluted and basic weighted-average shares relative to basic shares."),
+  field("fundamental_cash_conversion", "Cash conversion", "Financial ratios & growth", "derived", "number", "Operating cash flow divided by aligned net income."),
+  field("fundamental_research_intensity_pct", "R&D intensity", "Financial ratios & growth", "derived", "percent", "Research and development expense divided by aligned revenue."),
+  field("fundamental_sga_intensity_pct", "SG&A intensity", "Financial ratios & growth", "derived", "percent", "Selling, general, and administrative expense divided by aligned revenue."),
+  ...reportedFundamentalFields(),
   field("live_news_recency", "News recency", "News & SEC", "derived", "text", "Hot, cold, old, or none for company-specific news at the workspace clock."),
   field("live_news_count", "News count", "News & SEC", "derived", "integer", "Recent company-specific article count."),
   field("news_labels", "News", "News & SEC", "derived", "text", "Explainable company-news classifications."),
@@ -58,7 +96,7 @@ const SCANNER_PRESETS: Record<string, string[]> = {
   Overview: ["ticker", "last", "change_pct", "change_5m_pct", "volume", "trade_count", "news_labels", "sec_labels"],
   Momentum: ["ticker", "last", "change_5m_pct", "change_pct", "dollar_volume", "trade_count", "quote_count"],
   Intelligence: ["ticker", "last", "change_pct", "live_news_count", "sec_count", "news_labels", "sec_labels"],
-  Fundamentals: ["ticker", "company_name", "exchange", "country", "sector", "market_cap", "shares_outstanding", "float_shares", "short_interest", "short_crowding_pct", "days_to_cover"],
+  Fundamentals: ["ticker", "xbrl_quality_score", "financial_trajectory_score", "xbrl_profitability_score", "xbrl_growth_score", "xbrl_cash_quality_score", "xbrl_balance_sheet_score", "xbrl_capital_discipline_score", "fundamental_revenue_growth_pct", "fundamental_operating_margin_pct", "valuation_pe"],
 };
 const LOCKED_MARKET_LIST_COLUMNS = ["logo", "ticker", "news_labels", "sec_labels"];
 const SIGNAL_PRESETS: Record<string, string[]> = {
@@ -284,10 +322,13 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
   }
   const definition = catalogField(column);
   if (value === null || value === undefined || value === "") return <span className="market-list-unavailable" title={`${definition.label} is not available from the active source at this clock.`}>—</span>;
+  if (definition.format === "date") return <MarketTime value={String(value)} />;
   if (definition.format === "percent") return `${numberValue(value) > 0 ? "+" : ""}${numberValue(value).toFixed(Math.abs(numberValue(value)) < 1 ? 2 : 1)}%`;
+  if (definition.format === "percentPlain") return `${numberValue(value).toFixed(Math.abs(numberValue(value)) < 1 ? 2 : 1)}%`;
   if (definition.format === "money") return formatMoney(numberValue(value));
   if (definition.format === "integer") return formatCompact(numberValue(value));
   if (definition.format === "number") return numberValue(value).toFixed(2);
+  if (definition.format === "score") return `${numberValue(value).toFixed(0)}/100`;
   return String(value);
 }
 
@@ -302,7 +343,15 @@ function TickerEventIcon({ source, value }: { source: "News" | "SEC"; value: str
 function toneClass(value: unknown, column: string) {
   const numeric = numberValue(value);
   if (["change_pct", "change_5m_pct", "gap_pct", "magnitude", "qmd_signal"].includes(column)) return numeric > 0 ? "positive" : numeric < 0 ? "negative" : "neutral";
+  if (catalogField(column).format === "score") return numeric >= 65 ? "positive" : numeric < 45 ? "negative" : "neutral";
+  if (["fundamental_free_cash_flow", "fundamental_gross_margin_pct", "fundamental_operating_margin_pct", "fundamental_net_margin_pct", "fundamental_free_cash_flow_margin_pct", "fundamental_return_on_assets_pct", "fundamental_return_on_equity_pct", "fundamental_working_capital", "fundamental_interest_coverage", "fundamental_revenue_growth_pct", "fundamental_earnings_growth_pct", "fundamental_cash_conversion"].includes(column)) return numeric > 0 ? "positive" : numeric < 0 ? "negative" : "neutral";
+  if (["fundamental_share_growth_pct", "fundamental_dilution_pct", "share_base_pressure_pct", "fundamental_net_debt"].includes(column)) return numeric < 0 ? "positive" : numeric > 0 ? "negative" : "neutral";
   const text = String(value ?? "").toLowerCase();
+  if (["xbrl_quality_label", "financial_trajectory_label"].includes(column)) {
+    if (["strong", "robust", "improving"].includes(text)) return "positive";
+    if (["weak", "deteriorating", "fragile"].includes(text)) return "negative";
+    return "neutral";
+  }
   if (text === "bullish") return "positive";
   if (text === "bearish") return "negative";
   return "";
@@ -319,6 +368,48 @@ function rowLabels(value: unknown) { return [...new Set(String(value ?? "").spli
 function collectLabels(rows: ScreenerRow[], column: "news_labels" | "sec_labels") { return [...new Set(rows.flatMap((row) => rowLabels(row[column])))].sort((left, right) => left.localeCompare(right)); }
 function normalizeLabel(value: string) { return value.trim().toLowerCase(); }
 function field(key: string, labelValue: string, group: string, kind: FieldKind, format: FieldDefinition["format"], description: string): FieldDefinition { return { description, format, group, key, kind, label: labelValue }; }
+function reportedFundamentalFields(): FieldDefinition[] {
+  const definitions: Array<[string, string, FieldDefinition["format"], string]> = [
+    ["fundamental_revenue", "Revenue", "money", "Latest comparable SEC-reported revenue."],
+    ["fundamental_gross_profit", "Gross profit", "money", "Latest comparable SEC-reported gross profit."],
+    ["fundamental_operating_income", "Operating income", "money", "Latest comparable SEC-reported operating income."],
+    ["fundamental_net_income", "Net income", "money", "Latest comparable SEC-reported net income."],
+    ["fundamental_diluted_eps", "Diluted EPS", "number", "Latest comparable SEC-reported diluted earnings per share."],
+    ["fundamental_operating_cash_flow", "Operating cash flow", "money", "Latest comparable SEC-reported cash flow from operations."],
+    ["fundamental_capital_expenditure", "Capital expenditure", "money", "Latest comparable SEC-reported capital expenditure."],
+    ["fundamental_cash", "Cash", "money", "Latest SEC-reported cash and cash equivalents."],
+    ["fundamental_current_assets", "Current assets", "money", "Latest SEC-reported current assets."],
+    ["fundamental_current_liabilities", "Current liabilities", "money", "Latest SEC-reported current liabilities."],
+    ["fundamental_accounts_receivable", "Accounts receivable", "money", "Latest SEC-reported accounts receivable."],
+    ["fundamental_accounts_payable", "Accounts payable", "money", "Latest SEC-reported accounts payable."],
+    ["fundamental_inventory", "Inventory", "money", "Latest SEC-reported inventory."],
+    ["fundamental_assets", "Total assets", "money", "Latest SEC-reported total assets."],
+    ["fundamental_liabilities", "Total liabilities", "money", "Latest SEC-reported total liabilities."],
+    ["fundamental_stockholders_equity", "Stockholders' equity", "money", "Latest SEC-reported stockholders' equity."],
+    ["fundamental_long_term_debt", "Long-term debt", "money", "Latest SEC-reported long-term debt."],
+    ["fundamental_current_debt", "Current debt", "money", "Latest SEC-reported current debt."],
+    ["fundamental_research_development", "R&D expense", "money", "Latest comparable SEC-reported research and development expense."],
+    ["fundamental_sga_expense", "SG&A expense", "money", "Latest comparable SEC-reported selling, general, and administrative expense."],
+    ["fundamental_stock_based_compensation", "Stock compensation", "money", "Latest comparable SEC-reported stock-based compensation."],
+    ["fundamental_interest_expense", "Interest expense", "money", "Latest comparable SEC-reported interest expense."],
+    ["fundamental_income_tax_expense", "Income tax expense", "money", "Latest comparable SEC-reported income tax expense."],
+    ["fundamental_effective_tax_rate_pct", "Effective tax rate", "number", "Latest SEC-reported effective tax-rate value; inspect the filing unit before cross-issuer comparison."],
+    ["fundamental_goodwill", "Goodwill", "money", "Latest SEC-reported goodwill."],
+    ["fundamental_intangible_assets", "Intangible assets", "money", "Latest SEC-reported intangible assets."],
+    ["fundamental_deferred_revenue", "Deferred revenue", "money", "Latest SEC-reported deferred revenue."],
+    ["fundamental_debt_issued", "Debt issued", "money", "Latest comparable SEC-reported debt issuance."],
+    ["fundamental_debt_repaid", "Debt repaid", "money", "Latest comparable SEC-reported debt repayment."],
+    ["fundamental_common_stock_issuance", "Common stock issued", "money", "Latest comparable SEC-reported proceeds from common-stock issuance."],
+    ["fundamental_common_shares_outstanding", "Common shares", "integer", "Latest SEC-reported common shares outstanding."],
+    ["fundamental_weighted_average_basic_shares", "Basic weighted shares", "integer", "Latest comparable SEC-reported weighted-average basic shares."],
+    ["fundamental_weighted_average_diluted_shares", "Diluted weighted shares", "integer", "Latest comparable SEC-reported weighted-average diluted shares."],
+    ["fundamental_sec_public_float_value", "SEC public float", "money", "Latest SEC-reported public-float value; this is a dollar value, not a share count."],
+    ["fundamental_dividends_per_share", "Dividends per share", "number", "Latest comparable SEC-reported dividends per share."],
+    ["fundamental_share_repurchases", "Share repurchases", "money", "Latest comparable SEC-reported share-repurchase value."],
+    ["fundamental_repurchased_shares", "Repurchased shares", "integer", "Latest comparable SEC-reported number of repurchased shares."],
+  ];
+  return definitions.map(([key, labelValue, format, description]) => field(key, labelValue, "Reported fundamentals", "raw", format, description));
+}
 function label(value: string) { return value.replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase()); }
 function numberValue(value: unknown) { const numeric = Number(value); return Number.isFinite(numeric) ? numeric : 0; }
 function compareValues(left: unknown, right: unknown) { const leftNumber = Number(left); const rightNumber = Number(right); if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) return leftNumber - rightNumber; return String(left ?? "").localeCompare(String(right ?? ""), undefined, { numeric: true }); }

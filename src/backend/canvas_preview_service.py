@@ -19,7 +19,12 @@ from src.backend.trading_runtime_service import (
     historical_day_coverage,
 )
 from src.backend.canonical_trading_service import trading_state_payload
-from src.backend.historical_scanner_service import historical_scanner_reference_projection, historical_scanner_snapshot
+from src.backend.historical_scanner_service import (
+    SCANNER_FUNDAMENTAL_FIELDS,
+    historical_scanner_fundamental_projection,
+    historical_scanner_reference_projection,
+    historical_scanner_snapshot,
+)
 from src.backend.news_classification import news_classification_sql
 from src.trading_runtime.domain import BrokerAccount, BrokerEventEnvelope, BrokerEventType, BrokerProvider, TradingMode
 from src.trading_runtime.ibkr_normalizer import normalize_account_values, normalize_execution, normalize_ledger, normalize_order, normalize_position_snapshot
@@ -113,15 +118,29 @@ def scanner_snapshot_payload(*, as_of: datetime, lookback_minutes: int = 15) -> 
     errors: dict[str, str] = {}
     news: list[dict[str, Any]] = []
     sec: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    prices_by_ticker = {
+        str(row.get("symbol") or row.get("ticker") or "").strip().upper(): float(row.get("last") or 0)
+        for row in rows
+        if row.get("symbol") or row.get("ticker")
+    }
+    with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {
+            "fundamentals": executor.submit(
+                historical_scanner_fundamental_projection,
+                as_of,
+                prices_by_ticker=prices_by_ticker,
+            ),
             "news": executor.submit(_query_scanner_news_intelligence, cutoff),
             "reference": executor.submit(historical_scanner_reference_projection, as_of),
             "sec": executor.submit(_query_scanner_sec_intelligence, cutoff),
         }
         for name, future in futures.items():
             try:
-                if name == "news":
+                if name == "fundamentals":
+                    projection = future.result()
+                    for row in rows:
+                        row.update(projection.get(str(row.get("symbol") or "").upper(), {}))
+                elif name == "news":
                     news = future.result()
                 elif name == "reference":
                     projection = future.result()
@@ -138,6 +157,7 @@ def scanner_snapshot_payload(*, as_of: datetime, lookback_minutes: int = 15) -> 
     projected_fields = (
         "company_name", "exchange", "country", "sector", "market_cap", "shares_outstanding",
         "float_shares", "short_interest", "short_crowding_pct", "days_to_cover",
+        *SCANNER_FUNDAMENTAL_FIELDS,
     )
     total = max(1, len(rows))
     meta = {

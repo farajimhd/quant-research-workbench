@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -14,6 +15,15 @@ from research.mlops.clickhouse import (
     sql_string,
 )
 from src.backend.real_live_market_data.startup import logo_asset_url
+from src.backend.ticker_facts_service import (
+    FUNDAMENTAL_TAGS,
+    XBRL_HISTORY_START,
+    analyze_fundamentals,
+    financial_card_and_scores,
+    select_fundamentals,
+    share_base_card,
+    valuation_card_from_facts,
+)
 
 
 SCANNER_SCHEMA_VERSION = "canvas_historical_scanner_v1"
@@ -31,6 +41,71 @@ SCANNER_REFERENCE_FIELDS = (
     "short_crowding_pct",
     "days_to_cover",
 )
+SCANNER_FUNDAMENTAL_FIELDS = (
+    "xbrl_quality_score", "xbrl_quality_label", "xbrl_quality_coverage_pct",
+    "xbrl_profitability_score", "xbrl_growth_score", "xbrl_cash_quality_score",
+    "xbrl_balance_sheet_score", "xbrl_capital_discipline_score",
+    "financial_trajectory_score", "financial_trajectory_label",
+    "financial_profitability_score", "financial_cash_generation_score", "financial_balance_sheet_score",
+    "share_base_pressure_pct", "share_base_discipline_score", "valuation_pe", "valuation_label",
+    "fundamental_free_cash_flow", "fundamental_gross_margin_pct", "fundamental_operating_margin_pct",
+    "fundamental_net_margin_pct", "fundamental_free_cash_flow_margin_pct", "fundamental_return_on_assets_pct",
+    "fundamental_return_on_equity_pct", "fundamental_working_capital", "fundamental_current_ratio",
+    "fundamental_debt_to_equity", "fundamental_net_debt", "fundamental_interest_coverage",
+    "fundamental_revenue_growth_pct", "fundamental_earnings_growth_pct", "fundamental_share_growth_pct",
+    "fundamental_dilution_pct", "fundamental_cash_conversion", "fundamental_research_intensity_pct",
+    "fundamental_sga_intensity_pct", "fundamental_latest_filing_at",
+    "fundamental_revenue", "fundamental_gross_profit", "fundamental_operating_income",
+    "fundamental_net_income", "fundamental_diluted_eps", "fundamental_operating_cash_flow",
+    "fundamental_capital_expenditure", "fundamental_cash", "fundamental_current_assets",
+    "fundamental_current_liabilities", "fundamental_accounts_receivable", "fundamental_accounts_payable",
+    "fundamental_inventory", "fundamental_assets", "fundamental_liabilities", "fundamental_stockholders_equity",
+    "fundamental_long_term_debt", "fundamental_current_debt", "fundamental_research_development",
+    "fundamental_sga_expense", "fundamental_stock_based_compensation", "fundamental_interest_expense",
+    "fundamental_income_tax_expense", "fundamental_effective_tax_rate_pct", "fundamental_goodwill",
+    "fundamental_intangible_assets", "fundamental_deferred_revenue", "fundamental_debt_issued",
+    "fundamental_debt_repaid", "fundamental_common_stock_issuance", "fundamental_common_shares_outstanding",
+    "fundamental_weighted_average_basic_shares", "fundamental_weighted_average_diluted_shares",
+    "fundamental_sec_public_float_value", "fundamental_dividends_per_share", "fundamental_share_repurchases",
+    "fundamental_repurchased_shares",
+)
+
+_REPORTED_FUNDAMENTAL_KEYS = {
+    "Revenue": "fundamental_revenue", "Gross profit": "fundamental_gross_profit",
+    "Operating income": "fundamental_operating_income", "Net income": "fundamental_net_income",
+    "Diluted EPS": "fundamental_diluted_eps", "Operating cash flow": "fundamental_operating_cash_flow",
+    "Capital expenditure": "fundamental_capital_expenditure", "Cash": "fundamental_cash",
+    "Current assets": "fundamental_current_assets", "Current liabilities": "fundamental_current_liabilities",
+    "Accounts receivable": "fundamental_accounts_receivable", "Accounts payable": "fundamental_accounts_payable",
+    "Inventory": "fundamental_inventory", "Assets": "fundamental_assets", "Liabilities": "fundamental_liabilities",
+    "Stockholders' equity": "fundamental_stockholders_equity", "Long-term debt": "fundamental_long_term_debt",
+    "Current debt": "fundamental_current_debt", "Research & development": "fundamental_research_development",
+    "SG&A expense": "fundamental_sga_expense", "Stock-based compensation": "fundamental_stock_based_compensation",
+    "Interest expense": "fundamental_interest_expense", "Income tax expense": "fundamental_income_tax_expense",
+    "Effective tax rate": "fundamental_effective_tax_rate_pct", "Goodwill": "fundamental_goodwill",
+    "Intangible assets": "fundamental_intangible_assets", "Deferred revenue": "fundamental_deferred_revenue",
+    "Debt issued": "fundamental_debt_issued", "Debt repaid": "fundamental_debt_repaid",
+    "Common-stock issuance": "fundamental_common_stock_issuance",
+    "Common shares outstanding": "fundamental_common_shares_outstanding",
+    "Weighted average basic shares": "fundamental_weighted_average_basic_shares",
+    "Weighted average diluted shares": "fundamental_weighted_average_diluted_shares",
+    "SEC public float value": "fundamental_sec_public_float_value",
+    "Dividends per share": "fundamental_dividends_per_share", "Share repurchases": "fundamental_share_repurchases",
+    "Repurchased shares": "fundamental_repurchased_shares",
+}
+
+_DERIVED_FUNDAMENTAL_KEYS = {
+    "free_cash_flow": "fundamental_free_cash_flow", "gross_margin": "fundamental_gross_margin_pct",
+    "operating_margin": "fundamental_operating_margin_pct", "net_margin": "fundamental_net_margin_pct",
+    "free_cash_flow_margin": "fundamental_free_cash_flow_margin_pct",
+    "return_on_assets": "fundamental_return_on_assets_pct", "return_on_equity": "fundamental_return_on_equity_pct",
+    "working_capital": "fundamental_working_capital", "current_ratio": "fundamental_current_ratio",
+    "debt_to_equity": "fundamental_debt_to_equity", "net_debt": "fundamental_net_debt",
+    "interest_coverage": "fundamental_interest_coverage", "revenue_growth": "fundamental_revenue_growth_pct",
+    "earnings_growth": "fundamental_earnings_growth_pct", "share_growth": "fundamental_share_growth_pct",
+    "dilution": "fundamental_dilution_pct", "cash_conversion": "fundamental_cash_conversion",
+    "research_intensity": "fundamental_research_intensity_pct", "sga_intensity": "fundamental_sga_intensity_pct",
+}
 
 
 def historical_scanner_snapshot(as_of: datetime, *, lookback_minutes: int = 15) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -222,6 +297,119 @@ def historical_scanner_reference_projection(as_of: datetime) -> dict[str, dict[s
     return projection
 
 
+def historical_scanner_fundamental_projection(
+    as_of: datetime,
+    *,
+    prices_by_ticker: dict[str, float] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Calculate the Stock Facts and XBRL financial fields in one causal, set-based read."""
+    if as_of.tzinfo is None:
+        raise ValueError("Historical scanner clock must be timezone-aware.")
+    cutoff = as_of.astimezone(UTC)
+    cutoff_sql = sql_string(_clock(cutoff))
+    cutoff_date_sql = sql_string(cutoff.date().isoformat())
+    tags = sorted({tag for _, alternatives in FUNDAMENTAL_TAGS for tag in alternatives})
+    tag_clause = ", ".join(sql_string(tag) for tag in tags)
+    client = ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password())
+    rows = _json_rows(
+        client.execute(
+            f"""
+            WITH
+                parseDateTime64BestEffort({cutoff_sql}) AS cutoff,
+                toDate({cutoff_date_sql}) AS cutoff_date,
+                bridge AS
+                (
+                    SELECT
+                        toString(cik) AS cik,
+                        argMax(upper(ticker), tuple(confidence_score, inserted_at)) AS ticker
+                    FROM q_live.id_sec_market_bridge_v3 FINAL
+                    WHERE inserted_at <= cutoff
+                      AND mapping_status = 'active'
+                      AND notEmpty(ticker)
+                      AND (valid_from_date IS NULL OR valid_from_date <= cutoff_date)
+                      AND (valid_to_date_exclusive IS NULL OR cutoff_date < valid_to_date_exclusive)
+                    GROUP BY cik
+                )
+            SELECT *
+            FROM
+            (
+                SELECT
+                    bridge.ticker AS ticker,
+                    f.tag AS tag,
+                    f.taxonomy AS taxonomy,
+                    f.unit_code AS unit_code,
+                    f.value AS value,
+                    f.fiscal_year AS fiscal_year,
+                    f.fiscal_period AS fiscal_period,
+                    f.period_end_date AS period_end_date,
+                    f.filed_at_utc AS filed_at_utc,
+                    f.form_type AS form_type,
+                    f.accession_number AS accession_number,
+                    f.recorded_at_utc AS recorded_at_utc
+                FROM q_live.sec_xbrl_company_fact_v3 AS f FINAL
+                INNER JOIN bridge ON bridge.cik = toString(f.cik)
+                WHERE f.tag IN ({tag_clause})
+                  AND f.filed_at_utc >= parseDateTime64BestEffort({sql_string(_clock(XBRL_HISTORY_START))})
+                  AND f.filed_at_utc <= cutoff
+                  AND f.recorded_at_utc <= cutoff
+                ORDER BY ticker, tag, period_end_date DESC, filed_at_utc DESC, recorded_at_utc DESC
+                LIMIT 1 BY ticker, tag, period_end_date, fiscal_period, unit_code
+            )
+            ORDER BY ticker, tag, period_end_date DESC, filed_at_utc DESC, recorded_at_utc DESC
+            LIMIT 8 BY ticker, tag
+            FORMAT JSONEachRow
+            """
+        )
+    )
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        ticker = str(row.get("ticker") or "").strip().upper()
+        if ticker:
+            grouped[ticker].append(row)
+
+    prices = prices_by_ticker or {}
+    projection: dict[str, dict[str, Any]] = {}
+    for ticker, fundamental_rows in grouped.items():
+        analysis = analyze_fundamentals(fundamental_rows)
+        financial_card, financial_scores = financial_card_and_scores(fundamental_rows)
+        share_card, share_score = share_base_card(fundamental_rows, [], [])
+        valuation_card = valuation_card_from_facts(fundamental_rows, prices.get(ticker), None)
+        facets = {str(facet.get("id") or ""): facet for facet in analysis.get("facets", [])}
+        values: dict[str, Any] = {
+            "xbrl_quality_score": analysis.get("score"),
+            "xbrl_quality_label": analysis.get("label"),
+            "xbrl_quality_coverage_pct": analysis.get("coverage_percent"),
+            "financial_trajectory_score": financial_card.get("value"),
+            "financial_trajectory_label": financial_card.get("label"),
+            "financial_profitability_score": financial_scores.get("profitability"),
+            "financial_cash_generation_score": financial_scores.get("cash_generation"),
+            "financial_balance_sheet_score": financial_scores.get("balance_sheet"),
+            "share_base_pressure_pct": share_card.get("value"),
+            "share_base_discipline_score": share_score,
+            "valuation_pe": valuation_card.get("value"),
+            "valuation_label": valuation_card.get("label"),
+            "fundamental_latest_filing_at": _utc_iso(max(
+                (str(row.get("filed_at_utc") or "") for row in fundamental_rows), default="",
+            )),
+        }
+        for facet_id, field in {
+            "profitability": "xbrl_profitability_score", "growth": "xbrl_growth_score",
+            "cash_quality": "xbrl_cash_quality_score", "balance_sheet": "xbrl_balance_sheet_score",
+            "capital_discipline": "xbrl_capital_discipline_score",
+        }.items():
+            values[field] = facets.get(facet_id, {}).get("score")
+        for metric in analysis.get("metrics", []):
+            field = _DERIVED_FUNDAMENTAL_KEYS.get(str(metric.get("id") or ""))
+            if field:
+                values[field] = metric.get("value")
+        for fact in select_fundamentals(fundamental_rows, cutoff):
+            field = _REPORTED_FUNDAMENTAL_KEYS.get(str(fact.get("label") or ""))
+            if field:
+                values[field] = fact.get("value")
+        projection[ticker] = {key: value for key, value in values.items() if value not in (None, "")}
+    return projection
+
+
 def _ensure_snapshot_table(client: ClickHouseHttpClient) -> None:
     client.execute(
         f"""
@@ -366,6 +554,18 @@ def _materialize_snapshot(
 
 def _clock(value: datetime) -> str:
     return value.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
+def _utc_iso(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).isoformat()
 
 
 def _json_rows(payload: str) -> list[dict[str, Any]]:
