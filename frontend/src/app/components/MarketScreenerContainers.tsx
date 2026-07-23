@@ -1,24 +1,46 @@
-import { ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronLeft, Columns3, FileCheck2, Filter, Flame, ListFilter, Plus, Search, Star, Trash2, X } from "lucide-react";
-import { useDeferredValue, useMemo, useState, type ReactNode } from "react";
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronLeft, Columns3, FileCheck2, Filter, Flame, ListFilter, Plus, Search, Star, Trash2, X } from "lucide-react";
+import { forwardRef, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { MarketTime } from "./MarketTime";
 import { TickerLogo, useTickerPresentations } from "./TickerIdentity";
 
 export type ScreenerRow = Record<string, unknown>;
 export type ScannerSnapshotMeta = { complete_universe?: boolean; field_coverage?: Record<string, number>; lookback_minutes?: number; materialized?: boolean; row_count?: number; snapshot_at_utc?: string };
-export type MarketScannerSettings = { columns: string[]; limit: number; preset: string };
-export type SignalStreamSettings = { columns: string[]; limit: number; preset: string };
-export type WatchlistSettings = { columns: string[]; limit: number; ownerKind: "strategy" | "user"; ownerName: string; symbols: string[] };
+export type ScannerTimeframe = "100ms" | "1s" | "5s" | "10s" | "30s" | "1m" | "5m" | "15m" | "30m" | "1h" | "1d";
+export type TechnicalMetric = "change_pct" | "dollar_volume" | "high" | "low" | "quote_count" | "range_pct" | "relative_volume" | "trade_count" | "volume" | "vwap" | "vwap_distance_pct";
+export type ScannerCustomColumn = { key: string; metric: TechnicalMetric; timeframe: ScannerTimeframe };
+type TechnicalListSettings = { columns: string[]; customColumns: ScannerCustomColumn[]; timeframe: ScannerTimeframe };
+export type MarketScannerSettings = TechnicalListSettings & { limit: number; preset: string };
+export type SignalStreamSettings = TechnicalListSettings & { limit: number; preset: string };
+export type WatchlistSettings = TechnicalListSettings & { limit: number; ownerKind: "strategy" | "user"; ownerName: string; symbols: string[] };
 
 type FieldKind = "derived" | "estimated" | "raw";
 type FieldDefinition = {
   description: string;
-  format: "date" | "integer" | "money" | "number" | "percent" | "percentPlain" | "score" | "text";
+  format: "date" | "integer" | "money" | "multiple" | "number" | "percent" | "percentPlain" | "score" | "text";
   group: string;
   key: string;
   kind: FieldKind;
   label: string;
+  metric?: TechnicalMetric;
+  timeframe?: ScannerTimeframe;
+  timeframes?: ScannerTimeframe[];
 };
+
+export const SCANNER_TIMEFRAMES: ScannerTimeframe[] = ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "1d"];
+const TECHNICAL_METRICS: Array<Omit<FieldDefinition, "key" | "timeframe"> & { metric: TechnicalMetric }> = [
+  technicalMetric("change_pct", "Price change", "percent", "Open-to-last return inside the selected exchange-session interval."),
+  technicalMetric("volume", "Volume", "integer", "Eligible executed share volume inside the selected interval."),
+  technicalMetric("dollar_volume", "Dollar volume", "money", "Exact sum of eligible trade price multiplied by trade size inside the selected interval."),
+  technicalMetric("trade_count", "Trades", "integer", "Eligible trade-print count inside the selected interval."),
+  technicalMetric("quote_count", "Quotes", "integer", "Consolidated quote-event count inside the selected interval."),
+  technicalMetric("vwap", "VWAP", "money", "Trade-price volume-weighted average inside the selected interval."),
+  technicalMetric("vwap_distance_pct", "Price vs VWAP", "percent", "Latest eligible trade relative to the selected interval VWAP."),
+  technicalMetric("relative_volume", "Relative volume", "multiple", "Interval volume pace divided by the prior 20 completed extended-session average pace.", ["1m", "5m", "15m", "30m", "1h", "1d"]),
+  technicalMetric("range_pct", "Range", "percentPlain", "High-to-low price range inside the selected interval."),
+  technicalMetric("high", "High", "money", "Highest eligible trade inside the selected interval."),
+  technicalMetric("low", "Low", "money", "Lowest eligible trade inside the selected interval."),
+];
 
 const FIELD_CATALOG: FieldDefinition[] = [
   field("logo", "", "Security", "raw", "text", "Ticker presentation logo when a provider asset is available."),
@@ -113,18 +135,22 @@ export function MarketScannerContainer({ asOf, meta, onSettingsChange, onTickerS
   return <MarketListSurface
     asOf={asOf}
     columns={withLockedColumns(settings.columns.length ? settings.columns : SCANNER_PRESETS[settings.preset] ?? SCANNER_PRESETS.Overview, LOCKED_MARKET_LIST_COLUMNS)}
+    customColumns={settings.customColumns}
     empty="No securities are available at this market clock."
     eyebrow="Market snapshot"
     fieldCoverage={meta?.field_coverage}
     limit={settings.limit}
     lockedColumns={LOCKED_MARKET_LIST_COLUMNS}
     onColumnsChange={(columns) => onSettingsChange({ columns })}
+    onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })}
     onPresetChange={(preset) => onSettingsChange({ columns: SCANNER_PRESETS[preset] ?? settings.columns, preset })}
     onTickerSelect={onTickerSelect}
+    onTimeframeChange={(timeframe) => onSettingsChange({ timeframe })}
     presets={Object.keys(SCANNER_PRESETS)}
     preset={settings.preset}
     rows={normalizedRows}
-    subtitle={meta?.complete_universe ? `Full historical universe · ${meta.lookback_minutes ?? 15}-minute causal window · persisted snapshot` : "Scanner universe unavailable or incomplete"}
+    subtitle={meta?.complete_universe ? `Full historical universe · ${meta.lookback_minutes ?? 15}-minute discovery window · cached interval analytics` : "Scanner universe unavailable or incomplete"}
+    timeframe={settings.timeframe}
     title="Scanner"
   />;
 }
@@ -135,17 +161,21 @@ export function SignalStreamContainer({ asOf, onSettingsChange, onTickerSelect, 
   return <MarketListSurface
     asOf={asOf}
     columns={withLockedColumns(settings.columns.length ? settings.columns : SIGNAL_PRESETS[settings.preset] ?? SIGNAL_PRESETS.All, LOCKED_MARKET_LIST_COLUMNS)}
+    customColumns={settings.customColumns}
     empty="No market or strategy events match this stream."
     eyebrow="Newest first"
     limit={settings.limit}
     lockedColumns={LOCKED_MARKET_LIST_COLUMNS}
     onColumnsChange={(columns) => onSettingsChange({ columns })}
+    onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })}
     onPresetChange={(preset) => onSettingsChange({ columns: SIGNAL_PRESETS[preset] ?? settings.columns, preset })}
     onTickerSelect={onTickerSelect}
+    onTimeframeChange={(timeframe) => onSettingsChange({ timeframe })}
     presets={Object.keys(SIGNAL_PRESETS)}
     preset={settings.preset}
     rows={filtered}
     subtitle="Reproducible market events and durable strategy signals"
+    timeframe={settings.timeframe}
     title="Signal stream"
   />;
 }
@@ -173,34 +203,110 @@ export function WatchlistContainer({ asOf, onSettingsChange, onTickerSelect, sca
     </div>
     <MarketListTable
       columns={withLockedColumns(settings.columns.length ? settings.columns : WATCHLIST_DEFAULT_COLUMNS, LOCKED_MARKET_LIST_COLUMNS)}
+      customColumns={settings.customColumns}
       empty="This watchlist has no symbols yet."
       limit={settings.limit}
       lockedColumns={LOCKED_MARKET_LIST_COLUMNS}
       onColumnsChange={(columns) => onSettingsChange({ columns })}
+      onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })}
       onTickerSelect={onTickerSelect}
+      onTimeframeChange={(timeframe) => onSettingsChange({ timeframe })}
       rowAction={(row) => <button aria-label={`Remove ${row.ticker}`} onClick={() => onSettingsChange({ symbols: settings.symbols.filter((ticker) => ticker !== row.ticker) })} title="Remove from watchlist" type="button"><Trash2 size={13} /></button>}
       rows={rows}
+      timeframe={settings.timeframe}
       title={`${owner} watchlist`}
     />
   </section>;
 }
 
-function MarketListSurface({ asOf, columns, empty, eyebrow, fieldCoverage, limit, lockedColumns = [], onColumnsChange, onPresetChange, onTickerSelect, preset, presets, rows, subtitle, title }: { asOf: string; columns: string[]; empty: string; eyebrow: string; fieldCoverage?: Record<string, number>; limit: number; lockedColumns?: string[]; onColumnsChange: (columns: string[]) => void; onPresetChange: (preset: string) => void; onTickerSelect: (ticker: string) => void; preset: string; presets: string[]; rows: ScreenerRow[]; subtitle: string; title: string }) {
+function MarketListSurface({
+  asOf,
+  columns,
+  customColumns,
+  empty,
+  eyebrow,
+  fieldCoverage,
+  limit,
+  lockedColumns = [],
+  onColumnsChange,
+  onCustomColumnsChange,
+  onPresetChange,
+  onTickerSelect,
+  onTimeframeChange,
+  preset,
+  presets,
+  rows,
+  subtitle,
+  timeframe,
+  title,
+}: {
+  asOf: string;
+  columns: string[];
+  customColumns: ScannerCustomColumn[];
+  empty: string;
+  eyebrow: string;
+  fieldCoverage?: Record<string, number>;
+  limit: number;
+  lockedColumns?: string[];
+  onColumnsChange: (columns: string[]) => void;
+  onCustomColumnsChange: (columns: ScannerCustomColumn[]) => void;
+  onPresetChange: (preset: string) => void;
+  onTickerSelect: (ticker: string) => void;
+  onTimeframeChange: (timeframe: ScannerTimeframe) => void;
+  preset: string;
+  presets: string[];
+  rows: ScreenerRow[];
+  subtitle: string;
+  timeframe: ScannerTimeframe;
+  title: string;
+}) {
   return <section className="market-list-surface" aria-label={title}>
     <header className="market-list-heading">
       <div><span className="market-list-eyebrow"><ListFilter size={12} /> {eyebrow}</span><h3>{title}</h3><p>{subtitle} · <MarketTime value={asOf} /></p></div>
       <strong>{formatCompact(rows.length)} rows</strong>
     </header>
     <nav className="market-list-presets" aria-label={`${title} views`}>{presets.map((item) => <button aria-pressed={preset === item} className={preset === item ? "active" : undefined} key={item} onClick={() => onPresetChange(item)} type="button">{item}</button>)}</nav>
-    <MarketListTable columns={columns} empty={empty} fieldCoverage={fieldCoverage} limit={limit} lockedColumns={lockedColumns} onColumnsChange={onColumnsChange} onTickerSelect={onTickerSelect} rows={rows} title={title} />
+    <MarketListTable columns={columns} customColumns={customColumns} empty={empty} fieldCoverage={fieldCoverage} limit={limit} lockedColumns={lockedColumns} onColumnsChange={onColumnsChange} onCustomColumnsChange={onCustomColumnsChange} onTickerSelect={onTickerSelect} onTimeframeChange={onTimeframeChange} rows={rows} timeframe={timeframe} title={title} />
   </section>;
 }
 
-function MarketListTable({ columns, empty, fieldCoverage, limit, lockedColumns = [], onColumnsChange, onTickerSelect, rowAction, rows, title }: { columns: string[]; empty: string; fieldCoverage?: Record<string, number>; limit: number; lockedColumns?: string[]; onColumnsChange: (columns: string[]) => void; onTickerSelect?: (ticker: string) => void; rowAction?: (row: ScreenerRow) => ReactNode; rows: ScreenerRow[]; title: string }) {
+function MarketListTable({
+  columns,
+  customColumns,
+  empty,
+  fieldCoverage,
+  limit,
+  lockedColumns = [],
+  onColumnsChange,
+  onCustomColumnsChange,
+  onTickerSelect,
+  onTimeframeChange,
+  rowAction,
+  rows,
+  timeframe,
+  title,
+}: {
+  columns: string[];
+  customColumns: ScannerCustomColumn[];
+  empty: string;
+  fieldCoverage?: Record<string, number>;
+  limit: number;
+  lockedColumns?: string[];
+  onColumnsChange: (columns: string[]) => void;
+  onCustomColumnsChange: (columns: ScannerCustomColumn[]) => void;
+  onTickerSelect?: (ticker: string) => void;
+  onTimeframeChange: (timeframe: ScannerTimeframe) => void;
+  rowAction?: (row: ScreenerRow) => ReactNode;
+  rows: ScreenerRow[];
+  timeframe: ScannerTimeframe;
+  title: string;
+}) {
   const [columnPickerOpen, setColumnPickerOpen] = useState(false);
   const [filterMode, setFilterMode] = useState("all");
+  const [headerMenuColumn, setHeaderMenuColumn] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<{ column: string; direction: "asc" | "desc" }>({ column: title === "Signal stream" ? "event_time" : "change_pct", direction: "desc" });
+  const headerMenuRef = useRef<HTMLDivElement | null>(null);
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
   const labelFilters = useMemo(() => ({
     news: collectLabels(rows, "news_labels"),
@@ -221,34 +327,115 @@ function MarketListTable({ columns, empty, fieldCoverage, limit, lockedColumns =
   }).sort((left, right) => compareValues(left[sort.column], right[sort.column]) * (sort.direction === "asc" ? 1 : -1)).slice(0, limit), [deferredQuery, filterMode, limit, rows, sort]);
   const tickers = visibleRows.filter((row) => !String(row.logo_url ?? "").trim()).map((row) => String(row.ticker ?? row.symbol ?? "")).filter(Boolean);
   const presentations = useTickerPresentations(tickers);
-  function changeSort(column: string) {
-    setSort((current) => current.column === column ? { column, direction: current.direction === "asc" ? "desc" : "asc" } : { column, direction: "desc" });
+  useEffect(() => {
+    if (!headerMenuColumn) return;
+    const dismiss = (event: PointerEvent) => {
+      if (headerMenuRef.current?.contains(event.target as Node)) return;
+      setHeaderMenuColumn(null);
+    };
+    document.addEventListener("pointerdown", dismiss, true);
+    return () => document.removeEventListener("pointerdown", dismiss, true);
+  }, [headerMenuColumn]);
+  function changeSort(column: string, direction?: "asc" | "desc") {
+    setSort((current) => ({ column, direction: direction ?? (current.column === column && current.direction === "desc" ? "asc" : "desc") }));
+    setHeaderMenuColumn(null);
+  }
+  function moveColumn(column: string, target: "left" | "right" | "start" | "end") {
+    const currentIndex = columns.indexOf(column);
+    if (currentIndex < 0 || lockedColumns.includes(column)) return;
+    const unlocked = columns.filter((item) => !lockedColumns.includes(item));
+    const unlockedIndex = unlocked.indexOf(column);
+    const nextIndex = target === "start" ? 0 : target === "end" ? unlocked.length - 1 : Math.max(0, Math.min(unlocked.length - 1, unlockedIndex + (target === "left" ? -1 : 1)));
+    unlocked.splice(unlockedIndex, 1);
+    unlocked.splice(nextIndex, 0, column);
+    onColumnsChange(withLockedColumns(unlocked, lockedColumns));
+    setHeaderMenuColumn(null);
+  }
+  function removeColumn(column: string) {
+    if (lockedColumns.includes(column)) return;
+    onColumnsChange(columns.filter((item) => item !== column));
+    if (isTechnicalKey(column)) onCustomColumnsChange(customColumns.filter((item) => item.key !== column));
+    setHeaderMenuColumn(null);
+  }
+  function addTechnicalColumn(metric: TechnicalMetric, selectedTimeframe = timeframe) {
+    selectedTimeframe = metricTimeframe(metric, selectedTimeframe);
+    const key = technicalColumnKey(metric, selectedTimeframe);
+    if (!customColumns.some((item) => item.key === key)) onCustomColumnsChange([...customColumns, { key, metric, timeframe: selectedTimeframe }]);
+    if (!columns.includes(key)) onColumnsChange(withLockedColumns([...columns.filter((item) => !lockedColumns.includes(item)), key], lockedColumns));
+  }
+  function changeTechnicalTimeframe(column: string, nextTimeframe: ScannerTimeframe) {
+    const existing = customColumns.find((item) => item.key === column);
+    if (!existing) return;
+    const key = technicalColumnKey(existing.metric, nextTimeframe);
+    const nextColumns = columns.map((item) => item === column ? key : item).filter((item, index, values) => values.indexOf(item) === index);
+    const nextCustom = customColumns.filter((item) => item.key !== column && item.key !== key);
+    onCustomColumnsChange([...nextCustom, { key, metric: existing.metric, timeframe: nextTimeframe }]);
+    onColumnsChange(nextColumns);
+    setHeaderMenuColumn(key);
   }
   return <div className="market-list-table-shell">
     <div className="market-list-toolbar">
       <label className="market-list-search"><Search size={14} /><input aria-label={`Search ${title}`} onChange={(event) => setQuery(event.target.value)} placeholder="Search symbols and values" value={query} /></label>
       <label className="market-list-filter"><Filter size={13} /><select aria-label={`Filter ${title}`} onChange={(event) => setFilterMode(event.target.value)} value={filterMode}><option value="all">All rows</option><option value="advancing">Advancing</option><option value="declining">Declining</option><option value="news_hot">Hot news</option><option value="news_cold">Cold news</option><option value="sec_hot">Hot SEC</option><option value="sec_cold">Cold SEC</option>{labelFilters.news.length ? <optgroup label="News labels">{labelFilters.news.map((labelValue) => <option key={`news:${labelValue}`} value={`news_label:${normalizeLabel(labelValue)}`}>{labelValue}</option>)}</optgroup> : null}{labelFilters.sec.length ? <optgroup label="SEC labels">{labelFilters.sec.map((labelValue) => <option key={`sec:${labelValue}`} value={`sec_label:${normalizeLabel(labelValue)}`}>{labelValue}</option>)}</optgroup> : null}</select></label>
+      <label className="market-list-timeframe"><span>Interval</span><select aria-label={`${title} default technical interval`} onChange={(event) => onTimeframeChange(event.target.value as ScannerTimeframe)} value={timeframe}>{SCANNER_TIMEFRAMES.map((value) => <option key={value} value={value}>{timeframeLabel(value)}</option>)}</select></label>
       <span>{visibleRows.length} of {rows.length}</span>
       <button aria-expanded={columnPickerOpen} className="market-list-columns-button" onClick={() => setColumnPickerOpen((open) => !open)} type="button"><Columns3 size={14} /> Columns <b>{columns.length}</b></button>
     </div>
-    <div className="market-list-table-scroll"><table className="market-list-table"><thead><tr>{columns.map((column) => { const definition = catalogField(column); const sorted = sort.column === column; const className = columnClass(column); return column === "logo" ? <th aria-label="Ticker logo" className={className} key={column} /> : <th aria-sort={sorted ? (sort.direction === "asc" ? "ascending" : "descending") : "none"} className={className} key={column}><button onClick={() => changeSort(column)} title={definition.description} type="button"><span>{definition.label}<small data-kind={definition.kind}>{definition.kind}</small></span>{sorted ? sort.direction === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} /> : <ArrowUpDown size={12} />}</button></th>; })}{rowAction ? <th aria-label="Row actions" /> : null}</tr></thead><tbody>{visibleRows.length ? visibleRows.map((row, index) => { const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase(); const selectable = Boolean(ticker && onTickerSelect); const select = () => { if (selectable) onTickerSelect?.(ticker); }; return <tr aria-label={selectable ? `Open ${ticker} chart` : undefined} data-selectable={selectable ? "true" : undefined} key={`${ticker || "row"}:${row.event_time ?? index}:${index}`} onClick={(event) => { if (!(event.target as HTMLElement).closest("button, input, select, a")) select(); }} onKeyDown={(event) => { if (selectable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); select(); } }} tabIndex={selectable ? 0 : undefined}>{columns.map((column) => <td className={`${toneClass(row[column], column)} ${columnClass(column)}`.trim()} key={column}>{renderMarketCell(row, column, presentations)}</td>)}{rowAction ? <td className="market-list-row-action">{rowAction(row)}</td> : null}</tr>; }) : <tr><td className="market-list-empty" colSpan={columns.length + (rowAction ? 1 : 0)}>{empty}</td></tr>}</tbody></table></div>
-    {columnPickerOpen ? <ColumnPicker columns={columns} fieldCoverage={fieldCoverage} lockedColumns={lockedColumns} onChange={onColumnsChange} onClose={() => setColumnPickerOpen(false)} /> : null}
+    <div className="market-list-table-scroll"><table className="market-list-table"><thead><tr>{columns.map((column) => { const definition = catalogField(column, customColumns); const sorted = sort.column === column; const className = columnClass(column); const menuOpen = headerMenuColumn === column; return column === "logo" ? <th aria-label="Ticker logo" className={className} key={column} /> : <th aria-sort={sorted ? (sort.direction === "asc" ? "ascending" : "descending") : "none"} className={className} data-menu-open={menuOpen ? "true" : undefined} key={column}><button aria-expanded={menuOpen} onClick={() => setHeaderMenuColumn((current) => current === column ? null : column)} title={`Configure ${definition.label}`} type="button"><span>{definition.label}<small data-kind={definition.kind}>{definition.timeframe ? timeframeLabel(definition.timeframe) : definition.kind}</small></span>{sorted ? sort.direction === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} /> : <ChevronDown size={12} />}</button>{menuOpen ? <ColumnHeaderMenu column={column} definition={definition} locked={lockedColumns.includes(column)} onMove={(target) => moveColumn(column, target)} onRemove={() => removeColumn(column)} onSort={(direction) => changeSort(column, direction)} onTimeframeChange={(value) => changeTechnicalTimeframe(column, value)} ref={headerMenuRef} /> : null}</th>; })}{rowAction ? <th aria-label="Row actions" /> : null}</tr></thead><tbody>{visibleRows.length ? visibleRows.map((row, index) => { const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase(); const selectable = Boolean(ticker && onTickerSelect); const select = () => { if (selectable) onTickerSelect?.(ticker); }; return <tr aria-label={selectable ? `Open ${ticker} chart` : undefined} data-selectable={selectable ? "true" : undefined} key={`${ticker || "row"}:${row.event_time ?? index}:${index}`} onClick={(event) => { if (!(event.target as HTMLElement).closest("button, input, select, a")) select(); }} onKeyDown={(event) => { if (selectable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); select(); } }} tabIndex={selectable ? 0 : undefined}>{columns.map((column) => <td className={`${toneClass(row[column], column, customColumns)} ${columnClass(column)}`.trim()} key={column}>{renderMarketCell(row, column, presentations, customColumns)}</td>)}{rowAction ? <td className="market-list-row-action">{rowAction(row)}</td> : null}</tr>; }) : <tr><td className="market-list-empty" colSpan={columns.length + (rowAction ? 1 : 0)}>{empty}</td></tr>}</tbody></table></div>
+    {columnPickerOpen ? <ColumnPicker columns={columns} customColumns={customColumns} fieldCoverage={fieldCoverage} lockedColumns={lockedColumns} onAddTechnical={addTechnicalColumn} onChange={onColumnsChange} onClose={() => setColumnPickerOpen(false)} timeframe={timeframe} /> : null}
   </div>;
 }
 
-function ColumnPicker({ columns, fieldCoverage, lockedColumns = [], onChange, onClose }: { columns: string[]; fieldCoverage?: Record<string, number>; lockedColumns?: string[]; onChange: (columns: string[]) => void; onClose: () => void }) {
-  const groups = [...new Set(FIELD_CATALOG.map((item) => item.group))];
+const ColumnHeaderMenu = forwardRef<HTMLDivElement, {
+  column: string;
+  definition: FieldDefinition;
+  locked: boolean;
+  onMove: (target: "left" | "right" | "start" | "end") => void;
+  onRemove: () => void;
+  onSort: (direction: "asc" | "desc") => void;
+  onTimeframeChange: (timeframe: ScannerTimeframe) => void;
+}>(function ColumnHeaderMenu({ column, definition, locked, onMove, onRemove, onSort, onTimeframeChange }, ref) {
+  return <div aria-label={`${definition.label} column tools`} className="market-column-header-menu" ref={ref}>
+    <header><div><strong>{definition.label}</strong><span>{definition.description}</span></div>{definition.timeframe ? <label><span>Interval</span><select aria-label={`${definition.label} interval`} onChange={(event) => onTimeframeChange(event.target.value as ScannerTimeframe)} value={definition.timeframe}>{(definition.timeframes ?? SCANNER_TIMEFRAMES).map((value) => <option key={value} value={value}>{timeframeLabel(value)}</option>)}</select></label> : null}</header>
+    <section><button onClick={() => onSort("asc")} type="button"><ArrowUp size={14} /> Sort ascending</button><button onClick={() => onSort("desc")} type="button"><ArrowDown size={14} /> Sort descending</button></section>
+    {!locked ? <><section><button onClick={() => onMove("left")} type="button"><ArrowLeft size={14} /> Move left</button><button onClick={() => onMove("right")} type="button"><ArrowRight size={14} /> Move right</button><button onClick={() => onMove("start")} type="button"><ChevronLeft size={14} /> Move to start</button><button onClick={() => onMove("end")} type="button"><ChevronLeft size={14} className="flip-horizontal" /> Move to end</button></section><section><button className="danger" onClick={onRemove} type="button"><Trash2 size={14} /> Remove column</button></section></> : null}
+    <small data-column={column}>Computed causally at the workspace clock.</small>
+  </div>;
+});
+
+function ColumnPicker({
+  columns,
+  customColumns,
+  fieldCoverage,
+  lockedColumns = [],
+  onAddTechnical,
+  onChange,
+  onClose,
+  timeframe,
+}: {
+  columns: string[];
+  customColumns: ScannerCustomColumn[];
+  fieldCoverage?: Record<string, number>;
+  lockedColumns?: string[];
+  onAddTechnical: (metric: TechnicalMetric, timeframe?: ScannerTimeframe) => void;
+  onChange: (columns: string[]) => void;
+  onClose: () => void;
+  timeframe: ScannerTimeframe;
+}) {
+  const customDefinitions = customColumns.map(customField);
+  const groups = [...new Set([...FIELD_CATALOG.map((item) => item.group), "Technicals", ...(customDefinitions.length ? ["Custom"] : [])])];
   const [group, setGroup] = useState(groups[0]);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
-  const matches = FIELD_CATALOG.filter((item) => (!deferredQuery || `${item.label} ${item.key} ${item.description}`.toLowerCase().includes(deferredQuery)) && (deferredQuery || item.group === group));
+  const availableDefinitions = [...FIELD_CATALOG, ...TECHNICAL_METRICS.map((item) => ({ ...item, group: "Technicals", key: `template:${item.metric}`, timeframe: metricTimeframe(item.metric, timeframe) } as FieldDefinition)), ...customDefinitions];
+  const matches = availableDefinitions.filter((item) => (!deferredQuery || `${item.label} ${item.key} ${item.description}`.toLowerCase().includes(deferredQuery)) && (deferredQuery || item.group === group));
   function toggle(key: string) { if (lockedColumns.includes(key)) return; onChange(columns.includes(key) ? columns.filter((column) => column !== key) : [...columns, key]); }
   return <aside aria-label="Add scanner columns" className="market-column-picker">
     <header><div><strong>Columns</strong><span>{columns.length} selected</span></div><button aria-label="Close columns" onClick={onClose} type="button"><X size={15} /></button></header>
     <label><Search size={14} /><input autoFocus onChange={(event) => setQuery(event.target.value)} placeholder="Search every available field" value={query} /></label>
     <div className="market-column-picker-body">
-      {!deferredQuery ? <nav>{groups.map((item) => <button className={group === item ? "active" : undefined} key={item} onClick={() => setGroup(item)} type="button"><span>{item}</span><b>{FIELD_CATALOG.filter((fieldItem) => fieldItem.group === item).length}</b></button>)}</nav> : null}
-      <section className={deferredQuery ? "search-results" : undefined}><button className="market-column-back" onClick={() => { setQuery(""); setGroup(groups[0]); }} type="button"><ChevronLeft size={14} /> {deferredQuery ? "All groups" : group}</button>{matches.map((item) => { const locked = lockedColumns.includes(item.key); const coverage = fieldCoverage?.[item.key]; return <button aria-disabled={locked} className={`${columns.includes(item.key) ? "selected" : ""}${locked ? " locked" : ""}`.trim()} key={item.key} onClick={() => toggle(item.key)} type="button"><i>{columns.includes(item.key) ? <Check size={12} /> : null}</i><span><strong>{item.label}</strong><small>{item.description}</small></span><em data-kind={item.kind}>{locked ? "pinned" : coverage !== undefined ? `${coverage}%` : item.kind}</em></button>; })}</section>
+      {!deferredQuery ? <nav>{groups.map((item) => <button className={group === item ? "active" : undefined} key={item} onClick={() => setGroup(item)} type="button"><span>{item}</span><b>{availableDefinitions.filter((fieldItem) => fieldItem.group === item).length}</b></button>)}</nav> : null}
+      <section className={deferredQuery ? "search-results" : undefined}><button className="market-column-back" onClick={() => { setQuery(""); setGroup(groups[0]); }} type="button"><ChevronLeft size={14} /> {deferredQuery ? "All groups" : group}</button>{matches.map((item) => { const template = item.key.startsWith("template:"); const selectedKey = template && item.metric ? technicalColumnKey(item.metric, timeframe) : item.key; const locked = lockedColumns.includes(selectedKey); const coverage = fieldCoverage?.[selectedKey]; const selected = columns.includes(selectedKey); return <button aria-disabled={locked} className={`${selected ? "selected" : ""}${locked ? " locked" : ""}`.trim()} key={item.key} onClick={() => template && item.metric ? selected ? toggle(selectedKey) : onAddTechnical(item.metric, timeframe) : toggle(item.key)} type="button"><i>{selected ? <Check size={12} /> : null}</i><span><strong>{item.label}{item.timeframe ? <small className="market-column-inline-timeframe">{timeframeLabel(item.timeframe)}</small> : null}</strong><small>{item.description}</small></span><em data-kind={item.kind}>{locked ? "pinned" : coverage !== undefined ? `${coverage}%` : item.kind}</em></button>; })}</section>
     </div>
   </aside>;
 }
@@ -301,7 +488,7 @@ function normalizeScannerRows(rows: ScreenerRow[]) {
   });
 }
 
-function renderMarketCell(row: ScreenerRow, column: string, presentations: ReturnType<typeof useTickerPresentations>) {
+function renderMarketCell(row: ScreenerRow, column: string, presentations: ReturnType<typeof useTickerPresentations>, customColumns: ScannerCustomColumn[]) {
   const value = row[column];
   const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase();
   if (column === "logo") return <TickerLogo logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} ticker={ticker} />;
@@ -320,13 +507,14 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
     const labels = rowLabels(value);
     return labels.length ? <span className="market-list-label-badges" data-source={column === "news_labels" ? "news" : "sec"} title={labels.join(", ")}>{labels.slice(0, 1).map((labelValue) => <span key={labelValue}>{labelValue}</span>)}{labels.length > 1 ? <span className="market-list-label-overflow">+{labels.length - 1}</span> : null}</span> : <span className="market-list-unavailable">—</span>;
   }
-  const definition = catalogField(column);
+  const definition = catalogField(column, customColumns);
   if (value === null || value === undefined || value === "") return <span className="market-list-unavailable" title={`${definition.label} is not available from the active source at this clock.`}>—</span>;
   if (definition.format === "date") return <MarketTime value={String(value)} />;
   if (definition.format === "percent") return `${numberValue(value) > 0 ? "+" : ""}${numberValue(value).toFixed(Math.abs(numberValue(value)) < 1 ? 2 : 1)}%`;
   if (definition.format === "percentPlain") return `${numberValue(value).toFixed(Math.abs(numberValue(value)) < 1 ? 2 : 1)}%`;
   if (definition.format === "money") return formatMoney(numberValue(value));
   if (definition.format === "integer") return formatCompact(numberValue(value));
+  if (definition.format === "multiple") return `${numberValue(value).toFixed(numberValue(value) < 10 ? 2 : 1)}\u00d7`;
   if (definition.format === "number") return numberValue(value).toFixed(2);
   if (definition.format === "score") return numberValue(value).toFixed(0);
   return String(value);
@@ -340,10 +528,12 @@ function TickerEventIcon({ source, value }: { source: "News" | "SEC"; value: str
   return <span aria-label={label} className="market-list-ticker-event" data-source={source.toLowerCase()} data-state={state} title={label}><Icon aria-hidden="true" fill={source === "News" ? "currentColor" : "none"} size={15} /></span>;
 }
 
-function toneClass(value: unknown, column: string) {
+function toneClass(value: unknown, column: string, customColumns: ScannerCustomColumn[] = []) {
   const numeric = numberValue(value);
-  if (["change_pct", "change_5m_pct", "gap_pct", "magnitude", "qmd_signal"].includes(column)) return numeric > 0 ? "positive" : numeric < 0 ? "negative" : "neutral";
-  if (catalogField(column).format === "score") return numeric >= 65 ? "positive" : numeric < 45 ? "negative" : "neutral";
+  const definition = catalogField(column, customColumns);
+  if (["change_pct", "change_5m_pct", "gap_pct", "magnitude", "qmd_signal"].includes(column) || ["change_pct", "vwap_distance_pct"].includes(definition.metric ?? "")) return numeric > 0 ? "positive" : numeric < 0 ? "negative" : "neutral";
+  if (definition.metric === "relative_volume") return numeric >= 1.5 ? "positive" : numeric < 0.75 ? "muted" : "neutral";
+  if (definition.format === "score") return numeric >= 65 ? "positive" : numeric < 45 ? "negative" : "neutral";
   if (["fundamental_free_cash_flow", "fundamental_gross_margin_pct", "fundamental_operating_margin_pct", "fundamental_net_margin_pct", "fundamental_free_cash_flow_margin_pct", "fundamental_return_on_assets_pct", "fundamental_return_on_equity_pct", "fundamental_working_capital", "fundamental_interest_coverage", "fundamental_revenue_growth_pct", "fundamental_earnings_growth_pct", "fundamental_cash_conversion"].includes(column)) return numeric > 0 ? "positive" : numeric < 0 ? "negative" : "neutral";
   if (["fundamental_share_growth_pct", "fundamental_dilution_pct", "share_base_pressure_pct", "fundamental_net_debt"].includes(column)) return numeric < 0 ? "positive" : numeric > 0 ? "negative" : "neutral";
   const text = String(value ?? "").toLowerCase();
@@ -357,7 +547,12 @@ function toneClass(value: unknown, column: string) {
   return "";
 }
 
-function catalogField(key: string) { return FIELD_CATALOG.find((item) => item.key === key) ?? field(key, label(key), "Other", "raw", "text", "Available source field."); }
+function catalogField(key: string, customColumns: ScannerCustomColumn[] = []) {
+  const catalog = FIELD_CATALOG.find((item) => item.key === key);
+  if (catalog) return catalog;
+  const custom = customColumns.find((item) => item.key === key);
+  return custom ? customField(custom) : field(key, label(key), "Other", "raw", "text", "Available source field.");
+}
 function withLockedColumns(columns: string[], lockedColumns: string[]) {
   const leading: string[] = lockedColumns.filter((column) => column === "logo" || column === "ticker");
   const trailing = lockedColumns.filter((column) => !leading.includes(column));
@@ -368,6 +563,32 @@ function rowLabels(value: unknown) { return [...new Set(String(value ?? "").spli
 function collectLabels(rows: ScreenerRow[], column: "news_labels" | "sec_labels") { return [...new Set(rows.flatMap((row) => rowLabels(row[column])))].sort((left, right) => left.localeCompare(right)); }
 function normalizeLabel(value: string) { return value.trim().toLowerCase(); }
 function field(key: string, labelValue: string, group: string, kind: FieldKind, format: FieldDefinition["format"], description: string): FieldDefinition { return { description, format, group, key, kind, label: labelValue }; }
+function technicalMetric(metric: TechnicalMetric, labelValue: string, format: FieldDefinition["format"], description: string, timeframes = SCANNER_TIMEFRAMES) {
+  return { description, format, group: "Technicals", kind: "derived" as const, label: labelValue, metric, timeframes };
+}
+function technicalColumnKey(metric: TechnicalMetric, timeframe: ScannerTimeframe) { return `technical__${metric}__${timeframe}`; }
+function isTechnicalKey(key: string) { return key.startsWith("technical__"); }
+function customField(column: ScannerCustomColumn): FieldDefinition {
+  const definition = TECHNICAL_METRICS.find((item) => item.metric === column.metric);
+  return {
+    description: definition?.description ?? "Causal technical scanner field.",
+    format: definition?.format ?? "number",
+    group: "Custom",
+    key: column.key,
+    kind: "derived",
+    label: definition?.label ?? label(column.metric),
+    metric: column.metric,
+    timeframe: column.timeframe,
+    timeframes: definition?.timeframes,
+  };
+}
+function metricTimeframe(metric: TechnicalMetric, requested: ScannerTimeframe) {
+  const supported = TECHNICAL_METRICS.find((item) => item.metric === metric)?.timeframes ?? SCANNER_TIMEFRAMES;
+  return supported.includes(requested) ? requested : supported[0];
+}
+function timeframeLabel(value: ScannerTimeframe) {
+  return value === "1d" ? "1 day" : value === "1h" ? "1 hour" : value.endsWith("m") ? `${value.slice(0, -1)} min` : value;
+}
 function reportedFundamentalFields(): FieldDefinition[] {
   const definitions: Array<[string, string, FieldDefinition["format"], string]> = [
     ["fundamental_revenue", "Revenue", "money", "Latest comparable SEC-reported revenue."],

@@ -35,7 +35,7 @@ import { AllSecContainer, SecDetailContainer, TickerSecContainer } from "../app/
 import { MarketTime } from "../app/components/MarketTime";
 import { MarketStatusBadge, historicalMarketStatus } from "../app/components/MarketStatusBadge";
 import { QuotesTapeContainer } from "../app/components/MarketMicrostructureContainers";
-import { MarketScannerContainer, SignalStreamContainer, WatchlistContainer, type MarketScannerSettings, type ScannerSnapshotMeta, type SignalStreamSettings, type WatchlistSettings } from "../app/components/MarketScreenerContainers";
+import { MarketScannerContainer, SCANNER_TIMEFRAMES, SignalStreamContainer, WatchlistContainer, type MarketScannerSettings, type ScannerCustomColumn, type ScannerSnapshotMeta, type ScannerTimeframe, type SignalStreamSettings, type WatchlistSettings } from "../app/components/MarketScreenerContainers";
 import { StockFactsContainer } from "../app/components/StockFactsContainer";
 import { XbrlAnalysisContainer, type XbrlAnalysisSettings } from "../app/components/XbrlAnalysisContainer";
 import { TickerIdentity, TickerIdentityWithChange, useTickerPresentations } from "../app/components/TickerIdentity";
@@ -195,7 +195,7 @@ type CanvasLiveChartState = {
 };
 
 type ContainerSettings = {
-  version: 13;
+  version: 14;
   chart: { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
   microstructure: { limit: number };
   fills: { limit: number; showCommission: boolean };
@@ -224,7 +224,7 @@ type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; tit
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const MANAGER_DEFAULT_CONTAINER_IDS: WorkspaceContainerId[] = ["scanner", "chart", "portfolio", "positions", "orders"];
 const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 13,
+  version: 14,
   chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.microstructure_outlook"] },
   microstructure: { limit: 1024 },
   fills: { limit: 5, showCommission: true },
@@ -237,9 +237,9 @@ const DEFAULT_SETTINGS: ContainerSettings = {
   news_detail: {},
   orders: { limit: 6, showOrderIds: true },
   portfolio: { showExposure: true, showPnl: true },
-  scanner: { columns: [], limit: 250, preset: "Overview" },
-  signal_stream: { columns: [], limit: 250, preset: "All" },
-  watchlist: { columns: [], limit: 50, ownerKind: "user", ownerName: "My watchlist", symbols: ["AAPL", "MSFT", "NVDA"] },
+  scanner: { columns: [], customColumns: [], limit: 250, preset: "Overview", timeframe: "15m" },
+  signal_stream: { columns: [], customColumns: [], limit: 250, preset: "All", timeframe: "15m" },
+  watchlist: { columns: [], customColumns: [], limit: 50, ownerKind: "user", ownerName: "My watchlist", symbols: ["AAPL", "MSFT", "NVDA"], timeframe: "15m" },
   sec: { content: "all", label: "", lookbackHours: 168, ticker: "" },
   ticker_sec: { lookbackHours: 720 },
   sec_detail: {},
@@ -1023,6 +1023,19 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
   const dedicatedContainers = new Set<WorkspaceContainerId>(["chart", "facts", "microstructure", "news", "ticker_news", "news_detail", "sec", "ticker_sec", "sec_detail", "xbrl", "scanner", "watchlist"]);
   const previewContainerKey = (workspaceState?.openIds ?? []).filter((id) => !dedicatedContainers.has(workspaceContainerKind(id, workspaceState))).sort().join(",");
   const scannerContainerKey = (workspaceState?.openIds ?? []).filter((id) => ["scanner", "signal_stream", "watchlist"].includes(workspaceContainerKind(id, workspaceState))).sort().join(",");
+  const scannerTechnicalTimeframes = useMemo(() => {
+    const values = new Set<ScannerTimeframe>();
+    for (const instanceId of (workspaceState?.openIds ?? [])) {
+      const kind = workspaceContainerKind(instanceId, workspaceState);
+      if (!["scanner", "signal_stream", "watchlist"].includes(kind)) continue;
+      const settings = instanceSettings(registry, instanceId);
+      const list = kind === "scanner" ? settings.scanner : kind === "signal_stream" ? settings.signal_stream : settings.watchlist;
+      for (const column of list.customColumns) {
+        if (list.columns.includes(column.key)) values.add(column.timeframe);
+      }
+    }
+    return SCANNER_TIMEFRAMES.filter((value) => values.has(value)).join(",");
+  }, [registry, scannerContainerKey, workspaceState]);
   const activeLinkGroup = registry.linkAssignments[primaryChartId] ?? "none";
   const activeSymbol = activeLinkGroup === "none" ? primarySettings.chart.symbol : registry.linkContexts[activeLinkGroup].symbol;
   const chartCutoffMs = useMemo(() => dateInTimeZone(previewContext.sessionDate, previewContext.previewTime, "America/New_York").getTime(), [previewContext]);
@@ -1125,13 +1138,13 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
     }
     const controller = new AbortController();
     const asOf = new Date(chartCutoffMs).toISOString();
-    api<CanvasScannerSnapshot>(`/api/trading/canvas-scanner${query({ as_of: asOf, lookback_minutes: 15 })}`, {
+    api<CanvasScannerSnapshot>(`/api/trading/canvas-scanner${query({ as_of: asOf, lookback_minutes: 15, technical_timeframes: scannerTechnicalTimeframes })}`, {
       signal: controller.signal,
       timeoutMs: 90000,
     }).then((payload) => { if (!controller.signal.aborted) setScannerSnapshot(payload); })
       .catch(() => { if (!controller.signal.aborted) setScannerSnapshot(null); });
     return () => controller.abort();
-  }, [chartCutoffMs, contextReady, scannerContainerKey]);
+  }, [chartCutoffMs, contextReady, scannerContainerKey, scannerTechnicalTimeframes]);
 
   const metaForContainer = useMemo(() => (definition: WorkspaceContainerDefinition): WorkspaceWindowMeta => {
     if (definition.id === "chart") {
@@ -2710,13 +2723,15 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
     news_detail: {},
     orders: { ...DEFAULT_SETTINGS.orders, ...(stored.orders ?? {}) },
     portfolio: { ...DEFAULT_SETTINGS.portfolio, ...(stored.portfolio ?? {}) },
-    scanner: { ...DEFAULT_SETTINGS.scanner, ...(stored.scanner ?? {}), columns: Array.isArray(stored.scanner?.columns) ? stored.scanner.columns : [] },
-    signal_stream: { ...DEFAULT_SETTINGS.signal_stream, ...(stored.signal_stream ?? {}), columns: Array.isArray(stored.signal_stream?.columns) ? stored.signal_stream.columns : [] },
+    scanner: normalizeTechnicalListSettings(DEFAULT_SETTINGS.scanner, stored.scanner),
+    signal_stream: normalizeTechnicalListSettings(DEFAULT_SETTINGS.signal_stream, stored.signal_stream),
     watchlist: {
       ...DEFAULT_SETTINGS.watchlist,
       ...(stored.watchlist ?? {}),
       columns: Array.isArray(stored.watchlist?.columns) ? stored.watchlist.columns : [],
+      customColumns: normalizeScannerCustomColumns(stored.watchlist?.customColumns),
       symbols: Array.isArray(stored.watchlist?.symbols) ? stored.watchlist.symbols.map((symbol) => String(symbol).trim().toUpperCase()).filter(Boolean) : [...DEFAULT_SETTINGS.watchlist.symbols],
+      timeframe: normalizeScannerTimeframe(stored.watchlist?.timeframe),
     },
     sec: { ...DEFAULT_SETTINGS.sec, ...(stored.sec ?? {}) },
     ticker_sec: { ...DEFAULT_SETTINGS.ticker_sec, ...(stored.ticker_sec ?? {}) },
@@ -2727,6 +2742,42 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
       showRawTags: Boolean((stored.xbrl as { showRawTags?: boolean; showPeriod?: boolean } | undefined)?.showRawTags ?? (stored.xbrl as { showPeriod?: boolean } | undefined)?.showPeriod ?? DEFAULT_SETTINGS.xbrl.showRawTags),
     },
   };
+}
+
+function normalizeTechnicalListSettings<T extends MarketScannerSettings | SignalStreamSettings>(
+  defaults: T,
+  stored: Partial<T> | undefined,
+): T {
+  return {
+    ...defaults,
+    ...(stored ?? {}),
+    columns: Array.isArray(stored?.columns) ? stored.columns.map(String) : [],
+    customColumns: normalizeScannerCustomColumns(stored?.customColumns),
+    timeframe: normalizeScannerTimeframe(stored?.timeframe),
+  };
+}
+
+function normalizeScannerCustomColumns(value: unknown): ScannerCustomColumn[] {
+  if (!Array.isArray(value)) return [];
+  const allowedMetrics = new Set(["change_pct", "dollar_volume", "high", "low", "quote_count", "range_pct", "relative_volume", "trade_count", "volume", "vwap", "vwap_distance_pct"]);
+  const unique = new Map<string, ScannerCustomColumn>();
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const metric = String(record.metric ?? "");
+    const timeframe = String(record.timeframe ?? "");
+    const key = String(record.key ?? "");
+    if (!allowedMetrics.has(metric) || !SCANNER_TIMEFRAMES.includes(timeframe as ScannerTimeframe)) continue;
+    if (metric === "relative_volume" && !["1m", "5m", "15m", "30m", "1h", "1d"].includes(timeframe)) continue;
+    const canonicalKey = `technical__${metric}__${timeframe}`;
+    if (key !== canonicalKey) continue;
+    unique.set(key, { key, metric: metric as ScannerCustomColumn["metric"], timeframe: timeframe as ScannerTimeframe });
+  }
+  return [...unique.values()];
+}
+
+function normalizeScannerTimeframe(value: unknown): ScannerTimeframe {
+  return SCANNER_TIMEFRAMES.includes(value as ScannerTimeframe) ? value as ScannerTimeframe : "15m";
 }
 
 function cloneDefaultSettings() { return normalizeSettings(DEFAULT_SETTINGS); }

@@ -4,8 +4,9 @@ import json
 import os
 import re
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from research.mlops.clickhouse import (
     ClickHouseHttpClient,
@@ -28,7 +29,40 @@ from src.backend.ticker_facts_service import (
 
 SCANNER_SCHEMA_VERSION = "canvas_historical_scanner_v1"
 SCANNER_TABLE = "q_live.canvas_historical_scanner_v1"
+SCANNER_TECHNICAL_SCHEMA_VERSION = "canvas_scanner_technical_v1"
+SCANNER_TECHNICAL_TABLE = "q_live.canvas_scanner_technical_v1"
 IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+NEW_YORK = ZoneInfo("America/New_York")
+EXTENDED_SESSION_START_MINUTE = 4 * 60
+EXTENDED_SESSION_END_MINUTE = 20 * 60
+EXTENDED_SESSION_DURATION_US = 16 * 60 * 60 * 1_000_000
+SCANNER_TECHNICAL_TIMEFRAMES: dict[str, int | None] = {
+    "100ms": 100_000,
+    "1s": 1_000_000,
+    "5s": 5_000_000,
+    "10s": 10_000_000,
+    "30s": 30_000_000,
+    "1m": 60_000_000,
+    "5m": 5 * 60_000_000,
+    "15m": 15 * 60_000_000,
+    "30m": 30 * 60_000_000,
+    "1h": 60 * 60_000_000,
+    "1d": None,
+}
+SCANNER_TECHNICAL_METRICS = (
+    "open",
+    "high",
+    "low",
+    "change_pct",
+    "volume",
+    "dollar_volume",
+    "trade_count",
+    "quote_count",
+    "vwap",
+    "vwap_distance_pct",
+    "relative_volume",
+    "range_pct",
+)
 SCANNER_REFERENCE_FIELDS = (
     "company_name",
     "exchange",
@@ -146,6 +180,107 @@ def historical_scanner_snapshot(as_of: datetime, *, lookback_minutes: int = 15) 
         "source_revision": source_revision,
         "window_start_utc": window_start.isoformat(),
     }
+
+
+def historical_scanner_technical_projection(
+    as_of: datetime,
+    *,
+    timeframes: list[str] | tuple[str, ...],
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    """Project cached cross-sectional technical fields for each requested interval.
+
+    Each interval is computed once for the full market and stored by source revision.
+    This deliberately avoids per-symbol QMD calls on the interactive scanner path.
+    Relative volume is a pace-adjusted comparison with the prior 20 completed
+    extended-session daily bars.
+    """
+    if as_of.tzinfo is None:
+        raise ValueError("Historical scanner clock must be timezone-aware.")
+    requested = list(dict.fromkeys(str(value).strip() for value in timeframes if str(value).strip()))
+    invalid = [value for value in requested if value not in SCANNER_TECHNICAL_TIMEFRAMES]
+    if invalid:
+        raise ValueError(
+            "Unsupported scanner technical timeframe(s): "
+            f"{', '.join(invalid)}. Expected one of {', '.join(SCANNER_TECHNICAL_TIMEFRAMES)}."
+        )
+    if not requested:
+        return {}, {"technical_timeframes": [], "technical_materialized": []}
+    cutoff = as_of.astimezone(UTC)
+    client = ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password())
+    source_database = os.environ.get("QMD_HISTORY_CLICKHOUSE_DATABASE", "market_sip_compact")
+    table_prefix = os.environ.get("QMD_HISTORY_TABLE_PREFIX", "events_")
+    if not IDENTIFIER.fullmatch(source_database) or not IDENTIFIER.fullmatch(table_prefix):
+        raise ValueError("Historical scanner source identifiers are invalid.")
+    source_revision = _source_revision(client, source_database, cutoff)
+    _ensure_technical_snapshot_table(client)
+    projection: dict[str, dict[str, Any]] = defaultdict(dict)
+    materialized: list[str] = []
+    windows: dict[str, dict[str, str]] = {}
+    for timeframe in requested:
+        window_start, window_end = scanner_technical_window(cutoff, timeframe)
+        windows[timeframe] = {
+            "window_start_utc": window_start.isoformat(),
+            "window_end_utc": window_end.isoformat(),
+        }
+        rows = _cached_technical_rows(client, window_end, timeframe, source_revision)
+        if not rows:
+            _materialize_technical_snapshot(
+                client,
+                source_database=source_database,
+                table_prefix=table_prefix,
+                snapshot_at=window_end,
+                window_start=window_start,
+                timeframe=timeframe,
+                source_revision=source_revision,
+            )
+            rows = _cached_technical_rows(client, window_end, timeframe, source_revision)
+            materialized.append(timeframe)
+        for row in rows:
+            ticker = str(row.pop("symbol", "")).upper()
+            if not ticker:
+                continue
+            for metric in SCANNER_TECHNICAL_METRICS:
+                value = row.get(metric)
+                if value not in (None, ""):
+                    projection[ticker][_technical_field_key(metric, timeframe)] = value
+    return dict(projection), {
+        "technical_materialized": materialized,
+        "technical_schema_version": SCANNER_TECHNICAL_SCHEMA_VERSION,
+        "technical_timeframes": requested,
+        "technical_windows": windows,
+    }
+
+
+def scanner_technical_window(as_of: datetime, timeframe: str) -> tuple[datetime, datetime]:
+    """Return the latest causal exchange-session bucket ending no later than as_of."""
+    if timeframe not in SCANNER_TECHNICAL_TIMEFRAMES:
+        raise ValueError(f"Unsupported scanner technical timeframe: {timeframe}")
+    if as_of.tzinfo is None:
+        raise ValueError("Historical scanner clock must be timezone-aware.")
+    local = as_of.astimezone(NEW_YORK)
+    minute_of_day = local.hour * 60 + local.minute
+    if minute_of_day < EXTENDED_SESSION_START_MINUTE:
+        session_date = _previous_weekday(local.date())
+        local_end = datetime.combine(
+            session_date,
+            datetime.min.time(),
+            NEW_YORK,
+        ) + timedelta(minutes=EXTENDED_SESSION_END_MINUTE)
+    else:
+        session_date = local.date()
+        session_close = local.replace(hour=20, minute=0, second=0, microsecond=0)
+        local_end = min(local, session_close)
+    session_open = datetime.combine(session_date, datetime.min.time(), NEW_YORK) + timedelta(
+        minutes=EXTENDED_SESSION_START_MINUTE
+    )
+    if timeframe == "1d":
+        local_start = session_open
+    else:
+        resolution_us = int(SCANNER_TECHNICAL_TIMEFRAMES[timeframe] or 0)
+        elapsed_us = max(1, int((local_end - session_open).total_seconds() * 1_000_000))
+        bucket_index = max(0, (elapsed_us - 1) // resolution_us)
+        local_start = session_open + timedelta(microseconds=bucket_index * resolution_us)
+    return local_start.astimezone(UTC), local_end.astimezone(UTC)
 
 
 def historical_scanner_reference_projection(as_of: datetime) -> dict[str, dict[str, Any]]:
@@ -443,6 +578,171 @@ def _ensure_snapshot_table(client: ClickHouseHttpClient) -> None:
     client.execute(f"ALTER TABLE {SCANNER_TABLE} ADD COLUMN IF NOT EXISTS schema_version LowCardinality(String) DEFAULT '' AFTER lookback_minutes")
 
 
+def _ensure_technical_snapshot_table(client: ClickHouseHttpClient) -> None:
+    client.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCANNER_TECHNICAL_TABLE}
+        (
+            snapshot_at_utc DateTime64(6, 'UTC'),
+            timeframe LowCardinality(String),
+            schema_version LowCardinality(String),
+            source_revision String,
+            symbol LowCardinality(String),
+            open Float64,
+            high Float64,
+            low Float64,
+            change_pct Float64,
+            volume Float64,
+            dollar_volume Float64,
+            trade_count UInt64,
+            quote_count UInt64,
+            vwap Float64,
+            vwap_distance_pct Float64,
+            relative_volume Nullable(Float64),
+            range_pct Float64,
+            average_daily_volume Nullable(Float64),
+            materialized_at_utc DateTime64(6, 'UTC') DEFAULT now64(6)
+        )
+        ENGINE = ReplacingMergeTree(materialized_at_utc)
+        PARTITION BY toYYYYMM(snapshot_at_utc)
+        ORDER BY (snapshot_at_utc, timeframe, source_revision, symbol)
+        """
+    )
+
+
+def _cached_technical_rows(
+    client: ClickHouseHttpClient,
+    snapshot_at: datetime,
+    timeframe: str,
+    source_revision: str,
+) -> list[dict[str, Any]]:
+    return _json_rows(
+        client.execute(
+            f"""
+            SELECT
+                symbol, open, high, low, change_pct, volume, dollar_volume,
+                trade_count, quote_count, vwap, vwap_distance_pct, relative_volume, range_pct
+            FROM {SCANNER_TECHNICAL_TABLE} FINAL
+            WHERE snapshot_at_utc = parseDateTime64BestEffort({sql_string(_clock(snapshot_at))})
+              AND timeframe = {sql_string(timeframe)}
+              AND schema_version = {sql_string(SCANNER_TECHNICAL_SCHEMA_VERSION)}
+              AND source_revision = {sql_string(source_revision)}
+            ORDER BY abs(change_pct) DESC, symbol ASC
+            LIMIT 20000
+            FORMAT JSONEachRow
+            """
+        )
+    )
+
+
+def _materialize_technical_snapshot(
+    client: ClickHouseHttpClient,
+    *,
+    source_database: str,
+    table_prefix: str,
+    snapshot_at: datetime,
+    window_start: datetime,
+    timeframe: str,
+    source_revision: str,
+) -> None:
+    start_us = int(window_start.timestamp() * 1_000_000)
+    end_us = int(snapshot_at.timestamp() * 1_000_000)
+    elapsed_us = max(1, end_us - start_us)
+    start_date = window_start.date().isoformat()
+    end_date = snapshot_at.date().isoformat()
+    selects = []
+    for year in range(window_start.year, snapshot_at.year + 1):
+        selects.append(
+            f"""
+            SELECT ticker, ordinal, event_meta, sip_timestamp_us, price_primary_int, size_primary
+            FROM {source_database}.{table_prefix}{year}
+            PREWHERE event_date >= toDate({sql_string(start_date)})
+              AND event_date <= toDate({sql_string(end_date)})
+            WHERE sip_timestamp_us >= {start_us} AND sip_timestamp_us < {end_us}
+            """
+        )
+    source = " UNION ALL ".join(selects)
+    session_date = snapshot_at.astimezone(NEW_YORK).date().isoformat()
+    client.execute(
+        f"""
+        INSERT INTO {SCANNER_TECHNICAL_TABLE}
+        (
+            snapshot_at_utc, timeframe, schema_version, source_revision, symbol,
+            open, high, low, change_pct, volume, dollar_volume, trade_count, quote_count,
+            vwap, vwap_distance_pct, relative_volume, range_pct, average_daily_volume
+        )
+        WITH
+            {elapsed_us} AS elapsed_us,
+            {EXTENDED_SESSION_DURATION_US} AS session_us
+        SELECT
+            parseDateTime64BestEffort({sql_string(_clock(snapshot_at))}),
+            {sql_string(timeframe)},
+            {sql_string(SCANNER_TECHNICAL_SCHEMA_VERSION)},
+            {sql_string(source_revision)},
+            current.symbol,
+            current.open,
+            current.high,
+            current.low,
+            if(current.open = 0, 0, (current.last / current.open - 1) * 100),
+            current.volume,
+            current.dollar_volume,
+            current.trade_count,
+            current.quote_count,
+            current.vwap,
+            if(current.vwap = 0, 0, (current.last / current.vwap - 1) * 100),
+            if(prior.average_daily_volume > 0,
+               current.volume / (prior.average_daily_volume * elapsed_us / session_us),
+               NULL),
+            if(current.low = 0, 0, (current.high / current.low - 1) * 100),
+            prior.average_daily_volume
+        FROM
+        (
+            SELECT
+                ticker AS symbol,
+                argMinIf(price, tuple(sip_timestamp_us, ordinal), is_trade) AS open,
+                maxIf(price, is_trade) AS high,
+                minIf(price, is_trade) AS low,
+                argMaxIf(price, tuple(sip_timestamp_us, ordinal), is_trade) AS last,
+                sumIf(toFloat64(size_primary), is_trade) AS volume,
+                sumIf(price * toFloat64(size_primary), is_trade) AS dollar_volume,
+                countIf(is_trade) AS trade_count,
+                countIf(is_quote) AS quote_count,
+                if(volume = 0, 0, dollar_volume / volume) AS vwap
+            FROM
+            (
+                SELECT
+                    ticker,
+                    ordinal,
+                    sip_timestamp_us,
+                    bitAnd(event_meta, 1) = 1 AND price_primary_int > 0 AND size_primary > 0 AS is_trade,
+                    bitAnd(event_meta, 1) = 0 AS is_quote,
+                    toFloat64(price_primary_int) / if(bitAnd(event_meta, 2) != 0, 10000., 100.) AS price,
+                    size_primary
+                FROM ({source})
+            )
+            GROUP BY ticker
+            HAVING trade_count > 0
+        ) AS current
+        LEFT JOIN
+        (
+            SELECT sym, avg(size_sum) AS average_daily_volume
+            FROM
+            (
+                SELECT sym, session_date, size_sum
+                FROM {source_database}.macro_bars_by_time_symbol FINAL
+                WHERE timeframe = '1d'
+                  AND bar_family = 'trade'
+                  AND session_date < toDate({sql_string(session_date)})
+                  AND session_date >= toDate({sql_string(session_date)}) - INTERVAL 35 DAY
+                ORDER BY session_date DESC
+                LIMIT 20 BY sym
+            )
+            GROUP BY sym
+        ) AS prior ON prior.sym = current.symbol
+        """
+    )
+
+
 def _source_revision(client: ClickHouseHttpClient, database: str, snapshot_at: datetime) -> str:
     source_date = snapshot_at.date().isoformat()
     rows = _json_rows(
@@ -561,6 +861,17 @@ def _materialize_snapshot(
 
 def _clock(value: datetime) -> str:
     return value.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
+def _technical_field_key(metric: str, timeframe: str) -> str:
+    return f"technical__{metric}__{timeframe}"
+
+
+def _previous_weekday(value: date) -> date:
+    candidate = value - timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate -= timedelta(days=1)
+    return candidate
 
 
 def _utc_iso(value: str) -> str:

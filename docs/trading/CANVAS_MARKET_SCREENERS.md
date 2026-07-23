@@ -27,6 +27,8 @@ Columns are described by a stable key, label, group, format, provenance, and exp
 - News and SEC
 - Signals
 - Signal event
+- Technicals
+- Custom
 
 Provenance is visible in the column picker and table heading:
 
@@ -58,6 +60,17 @@ Watchlists have a stable name and an owner kind of `user` or `strategy`. Canvas 
 - Unselected sort controls are revealed on header hover or keyboard focus.
 - Search, quick filters, views, sorting, and selected columns remain local to the container instance.
 - The grouped column picker searches the full catalog and explains every field before selection.
+- The toolbar interval is the default for newly added technical columns. Existing
+  columns retain their own interval, so a single scanner may compare, for
+  example, 5-minute VWAP with 1-hour relative volume.
+- Selecting a technical field creates a stable
+  `technical__<metric>__<timeframe>` definition. The definition persists with
+  the container and appears under **Custom**, where it can be hidden and
+  restored without losing its interval.
+- Selecting a column heading opens the column tools. Configurable technical
+  columns expose their interval; all non-pinned columns expose explicit
+  ascending/descending sort, move left/right/start/end, and remove actions.
+  Logo and Symbol remain pinned identity columns.
 - Scanner identity is fixed at the left edge of the selected schema. A narrow, unlabeled first column contains only the provider logo when one exists; a missing logo leaves that cell blank. The adjacent Symbol cell contains the ticker followed by compact company-news and SEC recency icons. Missing recent events leave no placeholder ornament.
 - Scanner, Signal Stream, and Watchlist body rows use one fixed 42 px logical height before global UI scaling. Logos render at 28 px inside a 38 px identity cell with a 6 px leading inset, while News and SEC recency glyphs render at 15 px; rows without either asset retain the same height and alignment.
 - Event icons have no badge background or border: company News uses a filled flame, SEC uses the filing-check mark, hot events use the danger color, and cold events use the information color. Old and absent events render no ticker-cell icon. The News icon is restricted to classified company news, so broad market or editorial coverage cannot mark a ticker.
@@ -76,6 +89,41 @@ QMD live scanner state is the live cross-sectional authority. Historical and rep
 4. A changed upstream revision causes a new snapshot revision to be written; older rows remain auditable.
 
 The dedicated `GET /api/trading/canvas-scanner` route makes the Scanner, Watchlist, and market-derived Signal Stream independent of the broad Canvas preview request. An unrelated QMD History coverage failure therefore cannot replace a valid persisted scanner snapshot with a six-symbol sample or an empty universe. News and SEC enrichments are attached in batch at the same clock and report their failures separately from market-state availability.
+
+### Interval technical projection
+
+The scanner's technical fields use a second causal, cross-sectional cache in
+`q_live.canvas_scanner_technical_v1`. This belongs to the historical scanner
+authority rather than a per-symbol chart request:
+
+1. The frontend sends only the distinct intervals required by visible custom
+   columns.
+2. The service aligns each interval to the 04:00-20:00 New York extended
+   session and never reads beyond the Canvas clock. At an exact interval
+   boundary it returns the just-completed interval; between boundaries it
+   returns the current causal partial interval.
+3. One set-based compact-event query computes the requested interval for the
+   whole market. No ticker fan-out is allowed.
+4. Rows are cached by interval end, interval, schema version, and compact-event
+   source revision. Repeated scanner, watchlist, and signal-stream requests
+   reuse the same projection.
+5. An upstream continuity revision creates a new cache revision rather than
+   mutating the prior auditable result.
+
+Available technical metrics are interval price change, volume, dollar volume,
+trade count, quote count, VWAP, price relative to VWAP, high, low, range, and
+relative volume. Prices and VWAP use eligible compact trade events; quote count
+uses consolidated quote events.
+
+Relative volume is explicitly a pace estimate, not a same-clock empirical
+average. It is:
+
+`current interval volume / (prior 20 completed extended-session average volume × elapsed interval / 16 hours)`
+
+It is offered from one minute through one day. Sub-minute relative-volume
+values are intentionally unavailable because a daily pace denominator is not a
+stable or decision-useful baseline at that granularity. Missing history remains
+unavailable rather than becoming zero.
 
 News and SEC enrichment is batch-linked to ticker identity. The scanner uses ticker-aggregated queries over the complete causal news and filing windows rather than reusing the 30-item All News/All SEC preview queries. Company-news classification happens before ticker aggregation; SEC aggregation uses the event-valid CIK-to-market bridge. Identity, issuer, country, market-cap, share-supply, float, and short-interest are resolved causally for the entire tradable universe. The same set-based projection attaches the current canonical logo asset as non-market presentation metadata. Every market and filing source is bounded by the Canvas clock, including filing publication availability and reference-table insertion time. The table never issues per-row fact requests. Field coverage is returned with the snapshot so users can distinguish a partially published source from a broken column.
 

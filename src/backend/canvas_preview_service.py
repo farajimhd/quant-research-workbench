@@ -24,6 +24,7 @@ from src.backend.historical_scanner_service import (
     historical_scanner_fundamental_projection,
     historical_scanner_reference_projection,
     historical_scanner_snapshot,
+    historical_scanner_technical_projection,
 )
 from src.backend.news_classification import news_classification_sql
 from src.trading_runtime.domain import BrokerAccount, BrokerEventEnvelope, BrokerEventType, BrokerProvider, TradingMode
@@ -111,7 +112,12 @@ def canvas_preview_payload(
     }
 
 
-def scanner_snapshot_payload(*, as_of: datetime, lookback_minutes: int = 15) -> dict[str, Any]:
+def scanner_snapshot_payload(
+    *,
+    as_of: datetime,
+    lookback_minutes: int = 15,
+    technical_timeframes: list[str] | tuple[str, ...] = (),
+) -> dict[str, Any]:
     """Return the causal cross-sectional scanner independently of other Canvas sources."""
     cutoff = as_of.astimezone(UTC)
     rows, meta = historical_scanner_snapshot(as_of, lookback_minutes=lookback_minutes)
@@ -123,6 +129,14 @@ def scanner_snapshot_payload(*, as_of: datetime, lookback_minutes: int = 15) -> 
         for row in rows
         if row.get("symbol") or row.get("ticker")
     }
+    if technical_timeframes:
+        technical_projection, technical_meta = historical_scanner_technical_projection(
+            as_of,
+            timeframes=technical_timeframes,
+        )
+        for row in rows:
+            row.update(technical_projection.get(str(row.get("symbol") or "").upper(), {}))
+        meta = {**meta, **technical_meta}
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {
             "fundamentals": executor.submit(
@@ -158,6 +172,14 @@ def scanner_snapshot_payload(*, as_of: datetime, lookback_minutes: int = 15) -> 
         "company_name", "exchange", "country", "sector", "market_cap", "shares_outstanding",
         "float_shares", "short_interest", "short_crowding_pct", "days_to_cover",
         *SCANNER_FUNDAMENTAL_FIELDS,
+        *sorted(
+            {
+                field
+                for row in rows
+                for field in row
+                if field.startswith("technical__")
+            }
+        ),
     )
     total = max(1, len(rows))
     meta = {
