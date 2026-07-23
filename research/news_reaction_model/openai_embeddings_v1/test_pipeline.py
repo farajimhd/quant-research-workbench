@@ -10,6 +10,7 @@ from research.news_reaction_model.openai_embeddings_v1.config import PipelineCon
 from research.news_reaction_model.openai_embeddings_v1.openai_api import OpenAIAPIError
 from research.news_reaction_model.openai_embeddings_v1.pipeline import (
     decode_embedding,
+    clickhouse_utc_now,
     existing_month_items,
     money_for_tokens,
     month_ranges,
@@ -19,6 +20,12 @@ from research.news_reaction_model.openai_embeddings_v1.run_build import parse_ar
 
 
 class OpenAIEmbeddingPipelineTests(unittest.TestCase):
+    def test_clickhouse_timestamp_uses_native_datetime64_text(self) -> None:
+        value = clickhouse_utc_now()
+        self.assertRegex(value, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}$")
+        self.assertNotIn("T", value)
+        self.assertFalse(value.endswith("Z"))
+
     def test_reserved_token_spelling_is_encoded_as_article_content(self) -> None:
         import tiktoken
 

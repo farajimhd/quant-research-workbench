@@ -102,13 +102,18 @@ class UsageSummary:
         return self.actual_cost_usd + self.reserved_cost_usd
 
 
-def utc_now() -> str:
+def iso_utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def clickhouse_utc_now() -> str:
+    """Return the unambiguous native DateTime64 text accepted by JSONEachRow."""
+    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
 
 def append_status(config: PipelineConfig, event: str, **fields: Any) -> None:
     config.runtime_root.mkdir(parents=True, exist_ok=True)
-    payload = {"at_utc": utc_now(), "event": event, **fields}
+    payload = {"at_utc": iso_utc_now(), "event": event, **fields}
     with config.status_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str) + "\n")
 
@@ -321,7 +326,7 @@ def plan_month(config: PipelineConfig, start: dt.date, end: dt.date, *, execute:
             "attempts": 0,
             "error_code": "",
             "error_message": "",
-            "updated_at_utc": utc_now(),
+            "updated_at_utc": clickhouse_utc_now(),
         })
     if execute:
         columns = list(inserts[0].keys()) if inserts else []
@@ -383,7 +388,7 @@ FORMAT JSONEachRow
 
 
 def batch_row(config: PipelineConfig, files: BatchFiles, **overrides: Any) -> dict[str, Any]:
-    now = utc_now()
+    now = clickhouse_utc_now()
     base = {
         "embedding_version": config.embedding_version,
         "batch_key": files.batch_key,
@@ -564,7 +569,7 @@ def build_batch_files(client: ClickHouseHttpClient, config: PipelineConfig) -> B
                 "attempts": item.attempts + 1,
                 "error_code": "",
                 "error_message": "",
-                "updated_at_utc": utc_now(),
+                "updated_at_utc": clickhouse_utc_now(),
             })
         request_index += 1
     atomic_write_lines(input_path, request_lines)
@@ -590,7 +595,7 @@ def files_from_batch(row: dict[str, Any]) -> BatchFiles:
 def update_batch(client: ClickHouseHttpClient, config: PipelineConfig, prior: dict[str, Any], **changes: Any) -> dict[str, Any]:
     row = dict(prior)
     row.update(changes)
-    row["updated_at_utc"] = utc_now()
+    row["updated_at_utc"] = clickhouse_utc_now()
     write_batch_record(client, config, row)
     return row
 
@@ -611,7 +616,7 @@ FROM {qi(config.database)}.{qi(config.item_table)} FINAL
 WHERE embedding_version = {q(config.embedding_version)} AND batch_key = {q(batch_key)}
 FORMAT JSONEachRow
 """)
-    now = utc_now()
+    now = clickhouse_utc_now()
     for row in rows:
         row["status"] = status
         row["updated_at_utc"] = now
@@ -632,7 +637,7 @@ FROM {qi(config.database)}.{qi(config.item_table)} FINAL
 WHERE embedding_version = {q(config.embedding_version)} AND batch_key = {q(str(batch['batch_key']))}
 FORMAT JSONEachRow
 """)
-    now = utc_now()
+    now = clickhouse_utc_now()
     for row in rows:
         row.update({
             "status": "failed",
@@ -781,7 +786,7 @@ def process_output_file(
                     "embedding": embedding,
                     "openai_request_id": request_id,
                     "batch_id": batch["batch_id"],
-                    "embedded_at_utc": utc_now(),
+                    "embedded_at_utc": clickhouse_utc_now(),
                 })
                 completed_states.append(item_state_from_manifest(config, item, "", "", status="completed"))
             if len(embedding_rows) >= config.insert_rows:
@@ -823,7 +828,7 @@ def item_state_from_manifest(
         "attempts": attempts,
         "error_code": error_code,
         "error_message": error_message[:2_000],
-        "updated_at_utc": utc_now(),
+        "updated_at_utc": clickhouse_utc_now(),
     }
 
 
@@ -993,7 +998,7 @@ FORMAT JSONEachRow
             "request_index": 0,
             "error_code": "",
             "error_message": "",
-            "updated_at_utc": utc_now(),
+            "updated_at_utc": clickhouse_utc_now(),
         })
     write_item_states(client, config, rows)
     return len(rows)
