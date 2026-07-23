@@ -317,24 +317,31 @@ def historical_scanner_fundamental_projection(
             WITH
                 parseDateTime64BestEffort({cutoff_sql}) AS cutoff,
                 toDate({cutoff_date_sql}) AS cutoff_date,
-                bridge AS
+                (
+                    SELECT max(universe_date)
+                    FROM q_live.feature_tradable_universe_v1 FINAL
+                    WHERE universe_date <= cutoff_date AND inserted_at <= cutoff
+                ) AS latest_universe_date,
+                universe AS
                 (
                     SELECT
-                        toString(cik) AS cik,
-                        argMax(upper(ticker), tuple(confidence_score, inserted_at)) AS ticker
-                    FROM q_live.id_sec_market_bridge_v3 FINAL
-                    WHERE inserted_at <= cutoff
-                      AND mapping_status = 'active'
-                      AND notEmpty(ticker)
-                      AND (valid_from_date IS NULL OR valid_from_date <= cutoff_date)
-                      AND (valid_to_date_exclusive IS NULL OR cutoff_date < valid_to_date_exclusive)
-                    GROUP BY cik
+                        upper(u.ticker) AS ticker,
+                        argMax(
+                            replaceOne(u.issuer_id, 'issuer:cik:', ''),
+                            tuple(u.is_tradable, u.currency_code = 'USD', u.product_type = 'STK', u.inserted_at)
+                        ) AS cik
+                    FROM q_live.feature_tradable_universe_v1 AS u FINAL
+                    WHERE u.universe_date = latest_universe_date
+                      AND u.inserted_at <= cutoff
+                      AND notEmpty(u.ticker)
+                      AND startsWith(u.issuer_id, 'issuer:cik:')
+                    GROUP BY upper(u.ticker)
                 )
             SELECT *
             FROM
             (
                 SELECT
-                    bridge.ticker AS ticker,
+                    universe.ticker AS ticker,
                     f.tag AS tag,
                     f.taxonomy AS taxonomy,
                     f.unit_code AS unit_code,
@@ -347,7 +354,7 @@ def historical_scanner_fundamental_projection(
                     f.accession_number AS accession_number,
                     f.recorded_at_utc AS recorded_at_utc
                 FROM q_live.sec_xbrl_company_fact_v3 AS f FINAL
-                INNER JOIN bridge ON bridge.cik = toString(f.cik)
+                INNER JOIN universe ON universe.cik = toString(f.cik)
                 WHERE f.tag IN ({tag_clause})
                   AND f.filed_at_utc >= parseDateTime64BestEffort({sql_string(_clock(XBRL_HISTORY_START))})
                   AND f.filed_at_utc <= cutoff

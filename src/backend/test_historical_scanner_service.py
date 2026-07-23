@@ -115,7 +115,11 @@ class HistoricalScannerServiceTest(unittest.TestCase):
         self.assertEqual(rows["AAPL"]["fundamental_latest_filing_at"], "2025-10-31T12:00:00+00:00")
         self.assertEqual(len(FundamentalClient.calls), 1)
         query = FundamentalClient.calls[0]
-        self.assertIn("INNER JOIN bridge", query)
+        self.assertIn("INNER JOIN universe", query)
+        self.assertIn("feature_tradable_universe_v1 AS u", query)
+        self.assertIn("startsWith(u.issuer_id, 'issuer:cik:')", query)
+        self.assertIn("replaceOne(u.issuer_id, 'issuer:cik:', '')", query)
+        self.assertNotIn("id_sec_market_bridge_v3", query)
         self.assertIn("LIMIT 1 BY ticker, tag, period_end_date, fiscal_period, unit_code", query)
         self.assertIn("LIMIT 8 BY ticker, tag", query)
         self.assertIn("f.filed_at_utc <= cutoff", query)
