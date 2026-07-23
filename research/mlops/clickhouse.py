@@ -259,6 +259,28 @@ class ClickHouseHttpClient:
             return self.execute(query)
         return self.execute(query + "\nFORMAT TSV")
 
+
+def insert_json_each_row(
+    client: ClickHouseHttpClient,
+    database: str,
+    table: str,
+    columns: list[str],
+    rows: list[dict[str, Any]],
+) -> None:
+    """Insert bounded dictionaries without introducing a pipeline-specific dependency."""
+    if not rows:
+        return
+    def quote_ident(value: str) -> str:
+        return "`" + str(value).replace("`", "``") + "`"
+    body = "\n".join(
+        json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str)
+        for row in rows
+    )
+    column_sql = ", ".join(quote_ident(column) for column in columns)
+    target = f"{quote_ident(database)}.{quote_ident(table)}"
+    client.execute(f"INSERT INTO {target} ({column_sql}) FORMAT JSONEachRow\n{body}")
+
+
 def parse_kinds(text: str) -> list[str]:
     kinds = [item.strip() for item in text.split(",") if item.strip()]
     invalid = [kind for kind in kinds if kind not in KIND_ROOTS]
