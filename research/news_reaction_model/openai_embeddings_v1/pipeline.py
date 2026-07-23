@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable
+from urllib import error as url_error
 
 import tiktoken
 
@@ -120,6 +121,56 @@ def append_status(config: PipelineConfig, event: str, **fields: Any) -> None:
 
 def money_for_tokens(tokens: int, price_per_million: Decimal) -> Decimal:
     return (Decimal(max(0, int(tokens))) * price_per_million / Decimal(1_000_000)).quantize(Decimal("0.000001"))
+
+
+def is_transient_clickhouse_transport_error(exc: BaseException) -> bool:
+    """Identify connection failures that are safe to retry for read-only SQL."""
+    pending: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, (url_error.URLError, TimeoutError, ConnectionError)):
+            return True
+        if isinstance(current, OSError) and getattr(current, "winerror", None) in {10054, 10060, 10061}:
+            return True
+        reason = getattr(current, "reason", None)
+        cause = getattr(current, "__cause__", None)
+        context = getattr(current, "__context__", None)
+        for nested in (reason, cause, context):
+            if isinstance(nested, BaseException):
+                pending.append(nested)
+    return False
+
+
+def execute_read(
+    client: ClickHouseHttpClient,
+    config: PipelineConfig,
+    sql: str,
+    *,
+    operation: str,
+) -> str:
+    """Run retry-safe ClickHouse reads through bounded reconnect attempts."""
+    attempts = max(1, int(config.clickhouse_read_attempts))
+    for attempt in range(1, attempts + 1):
+        try:
+            return client.execute(sql)
+        except Exception as exc:
+            if not is_transient_clickhouse_transport_error(exc) or attempt >= attempts:
+                raise
+            delay = min(
+                float(config.clickhouse_retry_delay_seconds) * (2 ** (attempt - 1)),
+                float(config.clickhouse_retry_max_delay_seconds),
+            )
+            print(
+                f"CLICKHOUSE RETRY | operation={operation} attempt={attempt}/{attempts} "
+                f"wait={delay:.1f}s error={type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            time.sleep(max(0.0, delay))
+    raise AssertionError("unreachable")
 
 
 def month_ranges(start: str, end_exclusive: str) -> list[tuple[dt.date, dt.date]]:
@@ -237,13 +288,13 @@ FORMAT JSONEachRow
 
 
 def source_count(client: ClickHouseHttpClient, config: PipelineConfig) -> int:
-    return int(client.execute(f"""
+    return int(execute_read(client, config, f"""
 SELECT count()
 FROM {qi(config.database)}.{qi(config.source_table)} FINAL
 WHERE dataset_version = {q(config.source_version)}
  AND published_at_utc >= toDateTime64({q(config.start_date)}, 9, 'UTC')
  AND published_at_utc < toDateTime64({q(config.end_date_exclusive)}, 9, 'UTC')
-""").strip() or "0")
+""", operation="source_count").strip() or "0")
 
 
 def prepare_text(row: dict[str, Any], config: PipelineConfig, encoding: Any) -> PreparedText:
@@ -267,7 +318,7 @@ def existing_month_items(
     start: dt.date,
     end: dt.date,
 ) -> dict[tuple[str, str, str], dict[str, Any]]:
-    text = client.execute(f"""
+    text = execute_read(client, config, f"""
 SELECT canonical_news_id, ticker, toString(published_at_utc) AS published_at_utc,
  text_sha256, input_tokens, truncated, status, batch_key, request_custom_id,
  request_index, attempts, error_code, error_message
@@ -282,7 +333,7 @@ FROM
   AND published_at_utc < toDateTime64({q(end.isoformat())}, 9, 'UTC')
 )
 FORMAT JSONEachRow
-""")
+""", operation=f"existing_items_{start:%Y_%m}")
     rows = [json.loads(line) for line in text.splitlines() if line.strip()]
     return {
         (str(row["canonical_news_id"]), str(row["ticker"]), str(row["published_at_utc"])): row
@@ -293,7 +344,16 @@ FORMAT JSONEachRow
 def plan_month(config: PipelineConfig, start: dt.date, end: dt.date, *, execute: bool) -> dict[str, Any]:
     client = ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password())
     encoding = tiktoken.encoding_for_model(config.model)
-    source = [json.loads(line) for line in client.execute(source_rows_sql(config, start, end)).splitlines() if line.strip()]
+    source = [
+        json.loads(line)
+        for line in execute_read(
+            client,
+            config,
+            source_rows_sql(config, start, end),
+            operation=f"source_rows_{start:%Y_%m}",
+        ).splitlines()
+        if line.strip()
+    ]
     existing = existing_month_items(client, config, start, end) if execute else {}
     inserts: list[dict[str, Any]] = []
     total_tokens = 0
@@ -372,19 +432,29 @@ def plan_corpus(config: PipelineConfig, *, execute: bool) -> dict[str, int]:
     return totals
 
 
-def json_rows(client: ClickHouseHttpClient, sql: str) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in client.execute(sql).splitlines() if line.strip()]
+def json_rows(
+    client: ClickHouseHttpClient,
+    config: PipelineConfig,
+    sql: str,
+    *,
+    operation: str,
+) -> list[dict[str, Any]]:
+    return [
+        json.loads(line)
+        for line in execute_read(client, config, sql, operation=operation).splitlines()
+        if line.strip()
+    ]
 
 
 def latest_batches(client: ClickHouseHttpClient, config: PipelineConfig) -> list[dict[str, Any]]:
-    return json_rows(client, f"""
+    return json_rows(client, config, f"""
 SELECT * EXCEPT(created_at_utc, updated_at_utc), toString(created_at_utc) AS created_at_utc,
  toString(updated_at_utc) AS updated_at_utc
 FROM {qi(config.database)}.{qi(config.batch_table)} FINAL
 WHERE embedding_version = {q(config.embedding_version)}
 ORDER BY created_at_utc
 FORMAT JSONEachRow
-""")
+""", operation="latest_batches")
 
 
 def batch_row(config: PipelineConfig, files: BatchFiles, **overrides: Any) -> dict[str, Any]:
@@ -434,7 +504,7 @@ def write_item_states(client: ClickHouseHttpClient, config: PipelineConfig, rows
 
 
 def planned_source_rows(client: ClickHouseHttpClient, config: PipelineConfig, limit: int = 12_000) -> list[dict[str, Any]]:
-    return json_rows(client, f"""
+    return json_rows(client, config, f"""
 SELECT
  i.canonical_news_id AS canonical_news_id,
  i.ticker AS ticker,
@@ -468,7 +538,7 @@ ANY INNER JOIN {qi(config.news_database)}.{qi(config.news_table)} AS n FINAL
 ORDER BY i.published_at_utc, i.ticker, i.canonical_news_id
 SETTINGS max_threads={config.clickhouse_threads}, max_memory_usage={q(config.clickhouse_memory)}
 FORMAT JSONEachRow
-""")
+""", operation="planned_source_rows")
 
 
 def atomic_write_lines(path: Path, lines: Iterable[str]) -> None:
@@ -615,14 +685,14 @@ def latest_batch(client: ClickHouseHttpClient, config: PipelineConfig, batch_key
 
 
 def mark_batch_items(client: ClickHouseHttpClient, config: PipelineConfig, batch_key: str, status: str) -> None:
-    rows = json_rows(client, f"""
+    rows = json_rows(client, config, f"""
 SELECT embedding_version, canonical_news_id, ticker, toString(published_at_utc) AS published_at_utc,
  text_sha256, input_tokens, truncated, batch_key, request_custom_id, request_index,
  attempts, error_code, error_message
 FROM {qi(config.database)}.{qi(config.item_table)} FINAL
 WHERE embedding_version = {q(config.embedding_version)} AND batch_key = {q(batch_key)}
 FORMAT JSONEachRow
-""")
+""", operation="mark_batch_items")
     now = clickhouse_utc_now()
     for row in rows:
         row["status"] = status
@@ -636,14 +706,14 @@ def block_batch_for_budget(
     batch: dict[str, Any],
     message: str,
 ) -> None:
-    rows = json_rows(client, f"""
+    rows = json_rows(client, config, f"""
 SELECT embedding_version, canonical_news_id, ticker, toString(published_at_utc) AS published_at_utc,
  text_sha256, input_tokens, truncated, batch_key, request_custom_id, request_index,
  attempts, error_code, error_message
 FROM {qi(config.database)}.{qi(config.item_table)} FINAL
 WHERE embedding_version = {q(config.embedding_version)} AND batch_key = {q(str(batch['batch_key']))}
 FORMAT JSONEachRow
-""")
+""", operation="budget_batch_items")
     now = clickhouse_utc_now()
     for row in rows:
         row.update({
@@ -930,7 +1000,7 @@ def reconcile_remote_batch(
 
 def usage_summary(client: ClickHouseHttpClient, config: PipelineConfig) -> UsageSummary:
     source_rows = source_count(client, config)
-    item_rows = json_rows(client, f"""
+    item_rows = json_rows(client, config, f"""
 SELECT
  count() AS item_rows,
  countIf(status = 'planned') AS planned_rows,
@@ -939,13 +1009,13 @@ SELECT
 FROM {qi(config.database)}.{qi(config.item_table)} FINAL
 WHERE embedding_version = {q(config.embedding_version)}
 FORMAT JSONEachRow
-""")
+""", operation="usage_items")
     item = item_rows[0] if item_rows else {}
-    embedded_rows = int(client.execute(f"""
+    embedded_rows = int(execute_read(client, config, f"""
 SELECT count()
 FROM {qi(config.database)}.{qi(config.embedding_table)} FINAL
 WHERE embedding_version = {q(config.embedding_version)}
-""").strip() or "0")
+""", operation="usage_embeddings").strip() or "0")
     batches = latest_batches(client, config)
     actual_tokens = sum(int(row.get("actual_tokens") or 0) for row in batches)
     reserved_tokens = sum(int(row.get("estimated_tokens") or 0) for row in batches if str(row.get("status")) in ACTIVE_BATCH_STATUSES)
@@ -990,13 +1060,13 @@ def discover_remote_batches(api: OpenAIHTTPClient, config: PipelineConfig) -> di
 
 
 def retry_failed_items(client: ClickHouseHttpClient, config: PipelineConfig) -> int:
-    rows = json_rows(client, f"""
+    rows = json_rows(client, config, f"""
 SELECT embedding_version, canonical_news_id, ticker, toString(published_at_utc) AS published_at_utc,
  text_sha256, input_tokens, truncated, attempts, error_code, error_message
 FROM {qi(config.database)}.{qi(config.item_table)} FINAL
 WHERE embedding_version = {q(config.embedding_version)} AND status = 'failed' AND attempts < {MAX_ITEM_ATTEMPTS}
 FORMAT JSONEachRow
-""")
+""", operation="retryable_failed_items")
     for row in rows:
         row.update({
             "status": "planned",
@@ -1136,7 +1206,7 @@ def audit_pipeline(config: PipelineConfig) -> dict[str, Any]:
     client = ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password())
     create_schema(client, config)
     summary = usage_summary(client, config)
-    duplicates = int(client.execute(f"""
+    duplicates = int(execute_read(client, config, f"""
 SELECT count() FROM
 (
  SELECT canonical_news_id, ticker, published_at_utc, count() AS rows
@@ -1144,12 +1214,12 @@ SELECT count() FROM
  WHERE embedding_version = {q(config.embedding_version)}
  GROUP BY canonical_news_id, ticker, published_at_utc HAVING rows > 1
 )
-""").strip() or "0")
-    invalid_dimensions = int(client.execute(f"""
+""", operation="audit_duplicates").strip() or "0")
+    invalid_dimensions = int(execute_read(client, config, f"""
 SELECT count()
 FROM {qi(config.database)}.{qi(config.embedding_table)} FINAL
 WHERE embedding_version = {q(config.embedding_version)} AND length(embedding) != {config.dimensions}
-""").strip() or "0")
+""", operation="audit_dimensions").strip() or "0")
     result = {**asdict(summary), "duplicates": duplicates, "invalid_dimensions": invalid_dimensions}
     print(json.dumps(result, indent=2, default=str), flush=True)
     return result

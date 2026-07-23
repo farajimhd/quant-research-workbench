@@ -4,6 +4,7 @@ import base64
 import struct
 import unittest
 from decimal import Decimal
+from urllib import error as url_error
 
 from research.mlops.clickhouse import insert_json_each_row
 from research.news_reaction_model.openai_embeddings_v1.config import PipelineConfig
@@ -11,7 +12,9 @@ from research.news_reaction_model.openai_embeddings_v1.openai_api import OpenAIA
 from research.news_reaction_model.openai_embeddings_v1.pipeline import (
     decode_embedding,
     clickhouse_utc_now,
+    execute_read,
     existing_month_items,
+    is_transient_clickhouse_transport_error,
     money_for_tokens,
     month_ranges,
     planned_source_rows,
@@ -111,6 +114,46 @@ class OpenAIEmbeddingPipelineTests(unittest.TestCase):
         self.assertIsInstance(error, RuntimeError)
         self.assertTrue(error.is_quota_error)
         self.assertIn("insufficient_quota", str(error))
+
+    def test_clickhouse_read_retries_transient_connect_timeout(self) -> None:
+        class Client:
+            calls = 0
+
+            def execute(self, sql: str) -> str:
+                self.calls += 1
+                if self.calls < 3:
+                    raise url_error.URLError(TimeoutError(10060, "connect timed out"))
+                return "7"
+
+        client = Client()
+        config = PipelineConfig(
+            clickhouse_read_attempts=3,
+            clickhouse_retry_delay_seconds=0.0,
+            clickhouse_retry_max_delay_seconds=0.0,
+        )
+        self.assertEqual(execute_read(client, config, "SELECT 7", operation="test"), "7")
+        self.assertEqual(client.calls, 3)
+
+    def test_clickhouse_read_does_not_retry_query_errors(self) -> None:
+        class Client:
+            calls = 0
+
+            def execute(self, sql: str) -> str:
+                self.calls += 1
+                raise RuntimeError("ClickHouse query contract is invalid")
+
+        client = Client()
+        with self.assertRaisesRegex(RuntimeError, "query contract"):
+            execute_read(client, PipelineConfig(), "SELECT broken", operation="test")
+        self.assertEqual(client.calls, 1)
+
+    def test_clickhouse_transport_classifier_follows_nested_url_reason(self) -> None:
+        self.assertTrue(
+            is_transient_clickhouse_transport_error(
+                url_error.URLError(TimeoutError(10060, "connect timed out"))
+            )
+        )
+        self.assertFalse(is_transient_clickhouse_transport_error(RuntimeError("query failed")))
 
 
 if __name__ == "__main__":

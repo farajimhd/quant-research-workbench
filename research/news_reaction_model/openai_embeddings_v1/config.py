@@ -54,6 +54,12 @@ class PipelineConfig:
     tokenizer_threads: int = 4
     clickhouse_threads: int = 4
     clickhouse_memory: str = "16G"
+    # Long Batch runs must survive brief ClickHouse transport outages. Retries
+    # apply only to read queries; durable writes remain single-attempt so an
+    # ambiguous response can be reconciled from ReplacingMergeTree state.
+    clickhouse_read_attempts: int = 8
+    clickhouse_retry_delay_seconds: float = 2.0
+    clickhouse_retry_max_delay_seconds: float = 30.0
     insert_rows: int = 64
     poll_seconds: int = 30
     start_date: str = "2019-01-01"

@@ -17,6 +17,10 @@ same article content as the existing reaction-model experiments.
 - At most one 2.5M-token Batch is in flight. Items, batches, estimated tokens,
   actual API usage, actual cost, and outstanding reservations are durable in
   ClickHouse.
+- Read-only ClickHouse operations use bounded reconnect retries with
+  exponential backoff. Durable writes are not blindly replayed after ambiguous
+  transport responses; a rerun reconciles their versioned
+  `ReplacingMergeTree` state.
 - OpenAI quota/billing-limit responses stop new submissions immediately while
   retaining restartable state.
 - A normal API key does not expose the account's remaining dollar balance.
