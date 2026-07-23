@@ -834,18 +834,19 @@ function qmdDecisionChartMarkers(
     start: Date.parse(bar.bar_start),
     time: Date.parse(bar.bar_start) / 1000,
   }));
+  const firstBarStart = barIntervals[0].start;
   let barIndex = 0;
   let representedBar = -1;
   events.forEach((event) => {
     const action = String(event.action || "wait").toLowerCase();
     if (!["buy", "sell"].includes(action)) return;
     const signalAt = Date.parse(event.signal_at);
+    if (!Number.isFinite(signalAt) || signalAt < firstBarStart) return;
     while (barIndex < barIntervals.length && signalAt >= barIntervals[barIndex].end) barIndex += 1;
-    if (
-      barIndex >= barIntervals.length
-      || signalAt < barIntervals[barIndex].start
-      || representedBar === barIndex
-    ) return;
+    if (barIndex >= barIntervals.length || representedBar === barIndex) return;
+    // The canonical 100 ms signal may close in a quote-only bucket for which
+    // the price chart has no candle. Attach it to the first subsequent price
+    // candle so presentation remains causal instead of silently dropping it.
     representedBar = barIndex;
     const actionableTime = barIntervals[barIndex].time;
     const confidence = boundedUnit(event.confidence);
