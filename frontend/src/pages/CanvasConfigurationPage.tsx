@@ -195,7 +195,7 @@ type CanvasLiveChartState = {
 };
 
 type ContainerSettings = {
-  version: 14;
+  version: 15;
   chart: { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
   microstructure: { limit: number };
   fills: { limit: number; showCommission: boolean };
@@ -224,7 +224,7 @@ type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; tit
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const MANAGER_DEFAULT_CONTAINER_IDS: WorkspaceContainerId[] = ["scanner", "chart", "portfolio", "positions", "orders"];
 const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 14,
+  version: 15,
   chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.microstructure_outlook"] },
   microstructure: { limit: 1024 },
   fills: { limit: 5, showCommission: true },
@@ -237,9 +237,9 @@ const DEFAULT_SETTINGS: ContainerSettings = {
   news_detail: {},
   orders: { limit: 6, showOrderIds: true },
   portfolio: { showExposure: true, showPnl: true },
-  scanner: { columns: [], customColumns: [], limit: 250, preset: "Overview", timeframe: "15m" },
-  signal_stream: { columns: [], customColumns: [], limit: 250, preset: "All", timeframe: "15m" },
-  watchlist: { columns: [], customColumns: [], limit: 50, ownerKind: "user", ownerName: "My watchlist", symbols: ["AAPL", "MSFT", "NVDA"], timeframe: "15m" },
+  scanner: { columns: [], customColumns: [], limit: 250, preset: "Overview" },
+  signal_stream: { columns: [], customColumns: [], limit: 250, preset: "All" },
+  watchlist: { columns: [], customColumns: [], limit: 50, ownerKind: "user", ownerName: "My watchlist", symbols: ["AAPL", "MSFT", "NVDA"] },
   sec: { content: "all", label: "", lookbackHours: 168, ticker: "" },
   ticker_sec: { lookbackHours: 720 },
   sec_detail: {},
@@ -2731,7 +2731,6 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
       columns: Array.isArray(stored.watchlist?.columns) ? stored.watchlist.columns : [],
       customColumns: normalizeScannerCustomColumns(stored.watchlist?.customColumns),
       symbols: Array.isArray(stored.watchlist?.symbols) ? stored.watchlist.symbols.map((symbol) => String(symbol).trim().toUpperCase()).filter(Boolean) : [...DEFAULT_SETTINGS.watchlist.symbols],
-      timeframe: normalizeScannerTimeframe(stored.watchlist?.timeframe),
     },
     sec: { ...DEFAULT_SETTINGS.sec, ...(stored.sec ?? {}) },
     ticker_sec: { ...DEFAULT_SETTINGS.ticker_sec, ...(stored.ticker_sec ?? {}) },
@@ -2753,7 +2752,6 @@ function normalizeTechnicalListSettings<T extends MarketScannerSettings | Signal
     ...(stored ?? {}),
     columns: Array.isArray(stored?.columns) ? stored.columns.map(String) : [],
     customColumns: normalizeScannerCustomColumns(stored?.customColumns),
-    timeframe: normalizeScannerTimeframe(stored?.timeframe),
   };
 }
 
@@ -2774,10 +2772,6 @@ function normalizeScannerCustomColumns(value: unknown): ScannerCustomColumn[] {
     unique.set(key, { key, metric: metric as ScannerCustomColumn["metric"], timeframe: timeframe as ScannerTimeframe });
   }
   return [...unique.values()];
-}
-
-function normalizeScannerTimeframe(value: unknown): ScannerTimeframe {
-  return SCANNER_TIMEFRAMES.includes(value as ScannerTimeframe) ? value as ScannerTimeframe : "15m";
 }
 
 function cloneDefaultSettings() { return normalizeSettings(DEFAULT_SETTINGS); }

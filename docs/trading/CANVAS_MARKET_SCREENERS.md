@@ -60,9 +60,11 @@ Watchlists have a stable name and an owner kind of `user` or `strategy`. Canvas 
 - Unselected sort controls are revealed on header hover or keyboard focus.
 - Search, quick filters, views, sorting, and selected columns remain local to the container instance.
 - The grouped column picker searches the full catalog and explains every field before selection.
-- The toolbar interval is the default for newly added technical columns. Existing
-  columns retain their own interval, so a single scanner may compare, for
-  example, 5-minute VWAP with 1-hour relative volume.
+- There is no table-wide technical interval. Each technical column owns its
+  interval and exposes it only in that column's heading popover, so one scanner
+  may compare, for example, 5-minute VWAP with 1-hour relative volume. A newly
+  added technical column starts at 15 minutes and can then be changed from its
+  own popover.
 - Selecting a technical field creates a stable
   `technical__<metric>__<timeframe>` definition. The definition persists with
   the container and appears under **Custom**, where it can be hidden and

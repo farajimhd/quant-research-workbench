@@ -9,7 +9,7 @@ export type ScannerSnapshotMeta = { complete_universe?: boolean; field_coverage?
 export type ScannerTimeframe = "100ms" | "1s" | "5s" | "10s" | "30s" | "1m" | "5m" | "15m" | "30m" | "1h" | "1d";
 export type TechnicalMetric = "change_pct" | "dollar_volume" | "high" | "low" | "quote_count" | "range_pct" | "relative_volume" | "trade_count" | "volume" | "vwap" | "vwap_distance_pct";
 export type ScannerCustomColumn = { key: string; metric: TechnicalMetric; timeframe: ScannerTimeframe };
-type TechnicalListSettings = { columns: string[]; customColumns: ScannerCustomColumn[]; timeframe: ScannerTimeframe };
+type TechnicalListSettings = { columns: string[]; customColumns: ScannerCustomColumn[] };
 export type MarketScannerSettings = TechnicalListSettings & { limit: number; preset: string };
 export type SignalStreamSettings = TechnicalListSettings & { limit: number; preset: string };
 export type WatchlistSettings = TechnicalListSettings & { limit: number; ownerKind: "strategy" | "user"; ownerName: string; symbols: string[] };
@@ -28,6 +28,7 @@ type FieldDefinition = {
 };
 
 export const SCANNER_TIMEFRAMES: ScannerTimeframe[] = ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "1d"];
+const DEFAULT_SCANNER_TECHNICAL_TIMEFRAME: ScannerTimeframe = "15m";
 const TECHNICAL_METRICS: Array<Omit<FieldDefinition, "key" | "timeframe"> & { metric: TechnicalMetric }> = [
   technicalMetric("change_pct", "Price change", "percent", "Open-to-last return inside the selected exchange-session interval."),
   technicalMetric("volume", "Volume", "integer", "Eligible executed share volume inside the selected interval."),
@@ -145,12 +146,10 @@ export function MarketScannerContainer({ asOf, meta, onSettingsChange, onTickerS
     onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })}
     onPresetChange={(preset) => onSettingsChange({ columns: SCANNER_PRESETS[preset] ?? settings.columns, preset })}
     onTickerSelect={onTickerSelect}
-    onTimeframeChange={(timeframe) => onSettingsChange({ timeframe })}
     presets={Object.keys(SCANNER_PRESETS)}
     preset={settings.preset}
     rows={normalizedRows}
     subtitle={meta?.complete_universe ? `Full historical universe · ${meta.lookback_minutes ?? 15}-minute discovery window · cached interval analytics` : "Scanner universe unavailable or incomplete"}
-    timeframe={settings.timeframe}
     title="Scanner"
   />;
 }
@@ -170,12 +169,10 @@ export function SignalStreamContainer({ asOf, onSettingsChange, onTickerSelect, 
     onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })}
     onPresetChange={(preset) => onSettingsChange({ columns: SIGNAL_PRESETS[preset] ?? settings.columns, preset })}
     onTickerSelect={onTickerSelect}
-    onTimeframeChange={(timeframe) => onSettingsChange({ timeframe })}
     presets={Object.keys(SIGNAL_PRESETS)}
     preset={settings.preset}
     rows={filtered}
     subtitle="Reproducible market events and durable strategy signals"
-    timeframe={settings.timeframe}
     title="Signal stream"
   />;
 }
@@ -210,10 +207,8 @@ export function WatchlistContainer({ asOf, onSettingsChange, onTickerSelect, sca
       onColumnsChange={(columns) => onSettingsChange({ columns })}
       onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })}
       onTickerSelect={onTickerSelect}
-      onTimeframeChange={(timeframe) => onSettingsChange({ timeframe })}
       rowAction={(row) => <button aria-label={`Remove ${row.ticker}`} onClick={() => onSettingsChange({ symbols: settings.symbols.filter((ticker) => ticker !== row.ticker) })} title="Remove from watchlist" type="button"><Trash2 size={13} /></button>}
       rows={rows}
-      timeframe={settings.timeframe}
       title={`${owner} watchlist`}
     />
   </section>;
@@ -232,12 +227,10 @@ function MarketListSurface({
   onCustomColumnsChange,
   onPresetChange,
   onTickerSelect,
-  onTimeframeChange,
   preset,
   presets,
   rows,
   subtitle,
-  timeframe,
   title,
 }: {
   asOf: string;
@@ -252,12 +245,10 @@ function MarketListSurface({
   onCustomColumnsChange: (columns: ScannerCustomColumn[]) => void;
   onPresetChange: (preset: string) => void;
   onTickerSelect: (ticker: string) => void;
-  onTimeframeChange: (timeframe: ScannerTimeframe) => void;
   preset: string;
   presets: string[];
   rows: ScreenerRow[];
   subtitle: string;
-  timeframe: ScannerTimeframe;
   title: string;
 }) {
   return <section className="market-list-surface" aria-label={title}>
@@ -266,7 +257,7 @@ function MarketListSurface({
       <strong>{formatCompact(rows.length)} rows</strong>
     </header>
     <nav className="market-list-presets" aria-label={`${title} views`}>{presets.map((item) => <button aria-pressed={preset === item} className={preset === item ? "active" : undefined} key={item} onClick={() => onPresetChange(item)} type="button">{item}</button>)}</nav>
-    <MarketListTable columns={columns} customColumns={customColumns} empty={empty} fieldCoverage={fieldCoverage} limit={limit} lockedColumns={lockedColumns} onColumnsChange={onColumnsChange} onCustomColumnsChange={onCustomColumnsChange} onTickerSelect={onTickerSelect} onTimeframeChange={onTimeframeChange} rows={rows} timeframe={timeframe} title={title} />
+    <MarketListTable columns={columns} customColumns={customColumns} empty={empty} fieldCoverage={fieldCoverage} limit={limit} lockedColumns={lockedColumns} onColumnsChange={onColumnsChange} onCustomColumnsChange={onCustomColumnsChange} onTickerSelect={onTickerSelect} rows={rows} title={title} />
   </section>;
 }
 
@@ -280,10 +271,8 @@ function MarketListTable({
   onColumnsChange,
   onCustomColumnsChange,
   onTickerSelect,
-  onTimeframeChange,
   rowAction,
   rows,
-  timeframe,
   title,
 }: {
   columns: string[];
@@ -295,10 +284,8 @@ function MarketListTable({
   onColumnsChange: (columns: string[]) => void;
   onCustomColumnsChange: (columns: ScannerCustomColumn[]) => void;
   onTickerSelect?: (ticker: string) => void;
-  onTimeframeChange: (timeframe: ScannerTimeframe) => void;
   rowAction?: (row: ScreenerRow) => ReactNode;
   rows: ScreenerRow[];
-  timeframe: ScannerTimeframe;
   title: string;
 }) {
   const [columnPickerOpen, setColumnPickerOpen] = useState(false);
@@ -357,7 +344,7 @@ function MarketListTable({
     if (isTechnicalKey(column)) onCustomColumnsChange(customColumns.filter((item) => item.key !== column));
     setHeaderMenuColumn(null);
   }
-  function addTechnicalColumn(metric: TechnicalMetric, selectedTimeframe = timeframe) {
+  function addTechnicalColumn(metric: TechnicalMetric, selectedTimeframe = DEFAULT_SCANNER_TECHNICAL_TIMEFRAME) {
     selectedTimeframe = metricTimeframe(metric, selectedTimeframe);
     const key = technicalColumnKey(metric, selectedTimeframe);
     if (!customColumns.some((item) => item.key === key)) onCustomColumnsChange([...customColumns, { key, metric, timeframe: selectedTimeframe }]);
@@ -377,12 +364,11 @@ function MarketListTable({
     <div className="market-list-toolbar">
       <label className="market-list-search"><Search size={14} /><input aria-label={`Search ${title}`} onChange={(event) => setQuery(event.target.value)} placeholder="Search symbols and values" value={query} /></label>
       <label className="market-list-filter"><Filter size={13} /><select aria-label={`Filter ${title}`} onChange={(event) => setFilterMode(event.target.value)} value={filterMode}><option value="all">All rows</option><option value="advancing">Advancing</option><option value="declining">Declining</option><option value="news_hot">Hot news</option><option value="news_cold">Cold news</option><option value="sec_hot">Hot SEC</option><option value="sec_cold">Cold SEC</option>{labelFilters.news.length ? <optgroup label="News labels">{labelFilters.news.map((labelValue) => <option key={`news:${labelValue}`} value={`news_label:${normalizeLabel(labelValue)}`}>{labelValue}</option>)}</optgroup> : null}{labelFilters.sec.length ? <optgroup label="SEC labels">{labelFilters.sec.map((labelValue) => <option key={`sec:${labelValue}`} value={`sec_label:${normalizeLabel(labelValue)}`}>{labelValue}</option>)}</optgroup> : null}</select></label>
-      <label className="market-list-timeframe"><span>Interval</span><select aria-label={`${title} default technical interval`} onChange={(event) => onTimeframeChange(event.target.value as ScannerTimeframe)} value={timeframe}>{SCANNER_TIMEFRAMES.map((value) => <option key={value} value={value}>{timeframeLabel(value)}</option>)}</select></label>
       <span>{visibleRows.length} of {rows.length}</span>
       <button aria-expanded={columnPickerOpen} className="market-list-columns-button" onClick={() => setColumnPickerOpen((open) => !open)} type="button"><Columns3 size={14} /> Columns <b>{columns.length}</b></button>
     </div>
     <div className="market-list-table-scroll"><table className="market-list-table"><thead><tr>{columns.map((column) => { const definition = catalogField(column, customColumns); const sorted = sort.column === column; const className = columnClass(column); const menuOpen = headerMenuColumn === column; return column === "logo" ? <th aria-label="Ticker logo" className={className} key={column} /> : <th aria-sort={sorted ? (sort.direction === "asc" ? "ascending" : "descending") : "none"} className={className} data-menu-open={menuOpen ? "true" : undefined} key={column}><button aria-expanded={menuOpen} onClick={() => setHeaderMenuColumn((current) => current === column ? null : column)} title={`Configure ${definition.label}`} type="button"><span>{definition.label}<small data-kind={definition.kind}>{definition.timeframe ? timeframeLabel(definition.timeframe) : definition.kind}</small></span>{sorted ? sort.direction === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} /> : <ChevronDown size={12} />}</button>{menuOpen ? <ColumnHeaderMenu column={column} definition={definition} locked={lockedColumns.includes(column)} onMove={(target) => moveColumn(column, target)} onRemove={() => removeColumn(column)} onSort={(direction) => changeSort(column, direction)} onTimeframeChange={(value) => changeTechnicalTimeframe(column, value)} ref={headerMenuRef} /> : null}</th>; })}{rowAction ? <th aria-label="Row actions" /> : null}</tr></thead><tbody>{visibleRows.length ? visibleRows.map((row, index) => { const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase(); const selectable = Boolean(ticker && onTickerSelect); const select = () => { if (selectable) onTickerSelect?.(ticker); }; return <tr aria-label={selectable ? `Open ${ticker} chart` : undefined} data-selectable={selectable ? "true" : undefined} key={`${ticker || "row"}:${row.event_time ?? index}:${index}`} onClick={(event) => { if (!(event.target as HTMLElement).closest("button, input, select, a")) select(); }} onKeyDown={(event) => { if (selectable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); select(); } }} tabIndex={selectable ? 0 : undefined}>{columns.map((column) => <td className={`${toneClass(row[column], column, customColumns)} ${columnClass(column)}`.trim()} key={column}>{renderMarketCell(row, column, presentations, customColumns)}</td>)}{rowAction ? <td className="market-list-row-action">{rowAction(row)}</td> : null}</tr>; }) : <tr><td className="market-list-empty" colSpan={columns.length + (rowAction ? 1 : 0)}>{empty}</td></tr>}</tbody></table></div>
-    {columnPickerOpen ? <ColumnPicker columns={columns} customColumns={customColumns} fieldCoverage={fieldCoverage} lockedColumns={lockedColumns} onAddTechnical={addTechnicalColumn} onChange={onColumnsChange} onClose={() => setColumnPickerOpen(false)} timeframe={timeframe} /> : null}
+    {columnPickerOpen ? <ColumnPicker columns={columns} customColumns={customColumns} fieldCoverage={fieldCoverage} lockedColumns={lockedColumns} onAddTechnical={addTechnicalColumn} onChange={onColumnsChange} onClose={() => setColumnPickerOpen(false)} /> : null}
   </div>;
 }
 
@@ -411,7 +397,6 @@ function ColumnPicker({
   onAddTechnical,
   onChange,
   onClose,
-  timeframe,
 }: {
   columns: string[];
   customColumns: ScannerCustomColumn[];
@@ -420,14 +405,13 @@ function ColumnPicker({
   onAddTechnical: (metric: TechnicalMetric, timeframe?: ScannerTimeframe) => void;
   onChange: (columns: string[]) => void;
   onClose: () => void;
-  timeframe: ScannerTimeframe;
 }) {
   const customDefinitions = customColumns.map(customField);
   const groups = [...new Set([...FIELD_CATALOG.map((item) => item.group), "Technicals", ...(customDefinitions.length ? ["Custom"] : [])])];
   const [group, setGroup] = useState(groups[0]);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
-  const availableDefinitions = [...FIELD_CATALOG, ...TECHNICAL_METRICS.map((item) => ({ ...item, group: "Technicals", key: `template:${item.metric}`, timeframe: metricTimeframe(item.metric, timeframe) } as FieldDefinition)), ...customDefinitions];
+  const availableDefinitions = [...FIELD_CATALOG, ...TECHNICAL_METRICS.map((item) => ({ ...item, group: "Technicals", key: `template:${item.metric}`, timeframe: metricTimeframe(item.metric, DEFAULT_SCANNER_TECHNICAL_TIMEFRAME) } as FieldDefinition)), ...customDefinitions];
   const matches = availableDefinitions.filter((item) => (!deferredQuery || `${item.label} ${item.key} ${item.description}`.toLowerCase().includes(deferredQuery)) && (deferredQuery || item.group === group));
   function toggle(key: string) { if (lockedColumns.includes(key)) return; onChange(columns.includes(key) ? columns.filter((column) => column !== key) : [...columns, key]); }
   return <aside aria-label="Add scanner columns" className="market-column-picker">
@@ -435,7 +419,7 @@ function ColumnPicker({
     <label><Search size={14} /><input autoFocus onChange={(event) => setQuery(event.target.value)} placeholder="Search every available field" value={query} /></label>
     <div className="market-column-picker-body">
       {!deferredQuery ? <nav>{groups.map((item) => <button className={group === item ? "active" : undefined} key={item} onClick={() => setGroup(item)} type="button"><span>{item}</span><b>{availableDefinitions.filter((fieldItem) => fieldItem.group === item).length}</b></button>)}</nav> : null}
-      <section className={deferredQuery ? "search-results" : undefined}><button className="market-column-back" onClick={() => { setQuery(""); setGroup(groups[0]); }} type="button"><ChevronLeft size={14} /> {deferredQuery ? "All groups" : group}</button>{matches.map((item) => { const template = item.key.startsWith("template:"); const selectedKey = template && item.metric ? technicalColumnKey(item.metric, timeframe) : item.key; const locked = lockedColumns.includes(selectedKey); const coverage = fieldCoverage?.[selectedKey]; const selected = columns.includes(selectedKey); return <button aria-disabled={locked} className={`${selected ? "selected" : ""}${locked ? " locked" : ""}`.trim()} key={item.key} onClick={() => template && item.metric ? selected ? toggle(selectedKey) : onAddTechnical(item.metric, timeframe) : toggle(item.key)} type="button"><i>{selected ? <Check size={12} /> : null}</i><span><strong>{item.label}{item.timeframe ? <small className="market-column-inline-timeframe">{timeframeLabel(item.timeframe)}</small> : null}</strong><small>{item.description}</small></span><em data-kind={item.kind}>{locked ? "pinned" : coverage !== undefined ? `${coverage}%` : item.kind}</em></button>; })}</section>
+      <section className={deferredQuery ? "search-results" : undefined}><button className="market-column-back" onClick={() => { setQuery(""); setGroup(groups[0]); }} type="button"><ChevronLeft size={14} /> {deferredQuery ? "All groups" : group}</button>{matches.map((item) => { const template = item.key.startsWith("template:"); const templateTimeframe = item.timeframe ?? DEFAULT_SCANNER_TECHNICAL_TIMEFRAME; const selectedKey = template && item.metric ? technicalColumnKey(item.metric, templateTimeframe) : item.key; const locked = lockedColumns.includes(selectedKey); const coverage = fieldCoverage?.[selectedKey]; const selected = columns.includes(selectedKey); return <button aria-disabled={locked} className={`${selected ? "selected" : ""}${locked ? " locked" : ""}`.trim()} key={item.key} onClick={() => template && item.metric ? selected ? toggle(selectedKey) : onAddTechnical(item.metric, templateTimeframe) : toggle(item.key)} type="button"><i>{selected ? <Check size={12} /> : null}</i><span><strong>{item.label}{item.timeframe ? <small className="market-column-inline-timeframe">{timeframeLabel(item.timeframe)}</small> : null}</strong><small>{item.description}</small></span><em data-kind={item.kind}>{locked ? "pinned" : coverage !== undefined ? `${coverage}%` : item.kind}</em></button>; })}</section>
     </div>
   </aside>;
 }
