@@ -20,7 +20,7 @@ use std::sync::{Arc, RwLock as StdRwLock};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, sleep, Duration};
 
-pub const INDICATOR_SCHEMA_VERSION: u16 = 16;
+pub const INDICATOR_SCHEMA_VERSION: u16 = 17;
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const PREMARKET_SESSION_START_SECONDS: u32 = 4 * 60 * 60;
 
@@ -31,6 +31,18 @@ pub struct IndicatorSnapshot {
     pub timeframe: String,
     pub current: Option<IndicatorRow>,
     pub history: Vec<IndicatorRow>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct QmdDecisionEvent {
+    pub sym: String,
+    pub signal_at: DateTime<Utc>,
+    pub source_bar_start: DateTime<Utc>,
+    pub source_bar_end: DateTime<Utc>,
+    pub signal: f64,
+    pub confidence: f64,
+    pub action: String,
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -573,6 +585,7 @@ struct IndicatorStore {
     ticks: HashMap<String, TickState>,
     microstructure: HashMap<String, MicrostructureIntervalWindow>,
     microstructure_aggregates: HashMap<IndicatorKey, MicrostructureSampleAggregate>,
+    last_base_indicators: HashMap<String, IndicatorRow>,
     trade_rules: TradeAggregationRules,
     market_structure_references: Arc<StdRwLock<HashMap<String, MarketStructureReferenceLevels>>>,
 }
@@ -826,6 +839,7 @@ impl IndicatorShardStore {
                 ticks: HashMap::new(),
                 microstructure: HashMap::new(),
                 microstructure_aggregates: HashMap::new(),
+                last_base_indicators: HashMap::new(),
                 trade_rules,
                 market_structure_references,
             })),
@@ -917,9 +931,26 @@ impl IndicatorStore {
             calculator.set_market_structure_references(references);
             calculator
         });
-        let mut row = state.apply_bar(&bar);
         let ticker = bar.sym.to_ascii_uppercase();
-        if bar.timeframe.eq_ignore_ascii_case("100ms") {
+        let is_base = bar.timeframe.eq_ignore_ascii_case("100ms");
+        let valid_price = indicator_valid_price_bar(&bar);
+        let mut row = if is_base && !valid_price {
+            self.last_base_indicators
+                .get(&ticker)
+                .cloned()
+                .map(|mut carried| {
+                    carried.session_date = bar.session_date.clone();
+                    carried.bar_start = bar.bar_start;
+                    carried.bar_end = bar.bar_end;
+                    carried.volume = 0.0;
+                    carried.qmd_structure_events.clear();
+                    carried
+                })
+                .unwrap_or_else(|| state.apply_bar(&bar))
+        } else {
+            state.apply_bar(&bar)
+        };
+        if is_base {
             if let Some(window) = self.microstructure.get(&ticker) {
                 let interval = window.interval_at(bar.bar_end, &self.trade_rules);
                 self.bars
@@ -944,10 +975,15 @@ impl IndicatorStore {
             .get_mut(&key)
             .expect("indicator calculator exists")
             .apply_cumulative_microstructure(&mut row);
-        self.bars
-            .get_mut(&key)
-            .expect("indicator calculator exists")
-            .apply_market_levels(&mut row, &bar);
+        if valid_price {
+            self.bars
+                .get_mut(&key)
+                .expect("indicator calculator exists")
+                .apply_market_levels(&mut row, &bar);
+        }
+        if is_base {
+            self.last_base_indicators.insert(ticker, row.clone());
+        }
         let history_limit = self.history_limit_for(&bar.timeframe);
         let history = self.history.entry(key).or_insert_with(VecDeque::new);
         history.push_back(row.clone());
@@ -965,16 +1001,32 @@ impl IndicatorStore {
     }
 }
 
+fn indicator_valid_price_bar(bar: &BarRow) -> bool {
+    [bar.open, bar.high, bar.low, bar.close]
+        .into_iter()
+        .all(|value| value.is_finite() && value > 0.0)
+        && bar.high >= bar.open.max(bar.close)
+        && bar.low <= bar.open.min(bar.close)
+        && bar.high >= bar.low
+}
+
 /// O(1)-memory sufficient statistics for causal 100 ms evidence buckets.
 #[derive(Clone, Debug, Default)]
 pub struct MicrostructureSampleAggregate {
     sample_count: u64,
     interval: MicrostructureIntervalFeatures,
+    decision_confidence_sum: f64,
+    decision_weighted_signal_sum: f64,
+    decision_sample_count: u64,
 }
 
 impl MicrostructureSampleAggregate {
     pub fn push(&mut self, row: &IndicatorRow) {
         self.push_interval(&row.microstructure_interval);
+        let confidence = row.qmd_decision_confidence.clamp(0.0, 1.0);
+        self.decision_confidence_sum += confidence;
+        self.decision_weighted_signal_sum += row.qmd_decision_signal.clamp(-1.0, 1.0) * confidence;
+        self.decision_sample_count += 1;
     }
 
     pub fn push_interval(&mut self, interval: &MicrostructureIntervalFeatures) {
@@ -992,11 +1044,63 @@ impl MicrostructureSampleAggregate {
         };
         interval.refresh(coverage);
         target.apply_microstructure_interval(&interval);
+        self.apply_decision_summary(target);
     }
 
     pub fn reset(&mut self) {
         *self = Self::default();
     }
+
+    fn apply_decision_summary(&self, target: &mut IndicatorRow) {
+        if let Some((signal, confidence, action, reason)) = summarize_canonical_decisions(
+            self.decision_weighted_signal_sum,
+            self.decision_confidence_sum,
+            self.decision_sample_count,
+        ) {
+            target.qmd_decision_signal = signal;
+            target.qmd_decision_confidence = confidence;
+            target.qmd_decision_action = action.to_string();
+            target.qmd_decision_reason = reason.to_string();
+        }
+    }
+}
+
+fn summarize_canonical_decisions(
+    weighted_signal_sum: f64,
+    confidence_sum: f64,
+    sample_count: u64,
+) -> Option<(f64, f64, &'static str, &'static str)> {
+    if sample_count == 0 {
+        return None;
+    }
+    let mean_confidence = (confidence_sum / sample_count as f64).clamp(0.0, 1.0);
+    let consensus_signal = if confidence_sum > f64::EPSILON {
+        (weighted_signal_sum / confidence_sum).clamp(-1.0, 1.0)
+    } else {
+        0.0
+    };
+    let summary_confidence = (mean_confidence * consensus_signal.abs()).clamp(0.0, 1.0);
+    let directional = consensus_signal.abs() >= 0.15 && summary_confidence >= 0.35;
+    let action = if directional {
+        if consensus_signal > 0.0 {
+            "buy"
+        } else {
+            "sell"
+        }
+    } else {
+        "wait"
+    };
+    let reason = if directional {
+        "canonical_100ms_consensus"
+    } else {
+        "canonical_100ms_mixed_or_weak"
+    };
+    Some((
+        (consensus_signal * 10_000.0).round() / 10_000.0,
+        (summary_confidence * 100.0).round() / 100.0,
+        action,
+        reason,
+    ))
 }
 
 fn microstructure_expected_samples(timeframe: &str) -> u64 {
@@ -2376,7 +2480,7 @@ mod tests {
     use super::{
         anchored_flow_relationship, anchored_market_session_date, calculate_qmd_decision,
         market_structure_reference_sql, parse_market_structure_reference_rows,
-        MicrostructureCumulativeFlow, SessionVwapState,
+        summarize_canonical_decisions, MicrostructureCumulativeFlow, SessionVwapState,
     };
     use chrono::{TimeZone, Utc};
 
@@ -2454,6 +2558,21 @@ mod tests {
         assert_eq!(signal, 0.0);
         assert_eq!(action, "wait");
         assert_eq!(reason, "insufficient_microstructure_evidence");
+    }
+
+    #[test]
+    fn higher_timeframe_decision_is_a_summary_of_canonical_100ms_states() {
+        let bullish = summarize_canonical_decisions(1.08, 1.8, 3).unwrap();
+        assert_eq!(bullish.0, 0.6);
+        assert_eq!(bullish.1, 0.36);
+        assert_eq!(bullish.2, "buy");
+        assert_eq!(bullish.3, "canonical_100ms_consensus");
+
+        let mixed = summarize_canonical_decisions(0.0, 1.8, 3).unwrap();
+        assert_eq!(mixed.0, 0.0);
+        assert_eq!(mixed.1, 0.0);
+        assert_eq!(mixed.2, "wait");
+        assert_eq!(mixed.3, "canonical_100ms_mixed_or_weak");
     }
 
     #[test]

@@ -336,6 +336,7 @@ fn project_chart_snapshot(
         "as_of": snapshot.as_of,
         "bars": snapshot.bars,
         "cache": snapshot.cache,
+        "decision_events": snapshot.decision_events,
         "has_more": snapshot.has_more,
         "indicators": indicators,
         "indicators_available": snapshot.indicators_available,

@@ -109,8 +109,12 @@ Bars and indicators have separate ordered streams. A cold derived build emits
 each finalized bar before the bounded indicator worker calculates its evidence,
 so chart price data is never held behind indicator calculation. Builds calculate
 only the requested output timeframe plus the canonical 100 ms evidence grid.
-Each higher-timeframe microstructure row confidence-weights the 100 ms samples
-inside that bar and applies an agreement penalty to confidence.
+Each higher-timeframe microstructure row aggregates raw 100 ms evidence for its
+diagnostic fields. Its QMD Decision values confidence-weight the canonical
+100 ms decision states inside the display bar and apply an agreement penalty.
+Timestamped 100 ms decision transitions are returned separately as
+`decision_events`, so a chart can render the first actionable transition inside
+a larger candle without waiting for that candle to close.
 Session-anchored cumulative Level-1 OFI and signed trade-volume delta are then
 advanced from those interval-local values by the shared stateful indicator
 calculator. Both start from one zero baseline at 04:00 New York time and do not

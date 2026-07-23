@@ -162,6 +162,7 @@ type CanvasContext = { coverage: { event_count: number; session_date: string | n
 type QmdLiveBar = HistoricalBar & { session_date?: string };
 type QmdBarHistory = {
   as_of: string;
+  decision_events: QmdDecisionEvent[];
   earliest_session_date: string;
   has_more: boolean;
   has_more_in_session: boolean;
@@ -173,6 +174,16 @@ type QmdBarHistory = {
   previous_session_before: string;
   ticker: string;
   timeframe: string;
+};
+type QmdDecisionEvent = {
+  action: string;
+  confidence: number;
+  reason: string;
+  signal: number;
+  signal_at: string;
+  source_bar_end: string;
+  source_bar_start: string;
+  sym: string;
 };
 type QmdStructureEvent = {
   algorithm_version: number;
@@ -199,6 +210,7 @@ type CanvasLiveChartState = {
   bars: QmdLiveBar[];
   canLoadEarlier: boolean;
   connected: boolean;
+  decisionEvents: QmdDecisionEvent[];
   error: string;
   historyError: string;
   historyNotice: string;
@@ -315,15 +327,15 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     {
       bearishEvidence: "A negative signal with rising confidence, negative aggressive flow, ask-side displayed pressure, and negative price response indicates aligned short-horizon sell pressure.",
       bullishEvidence: "A positive signal with rising confidence, positive aggressive flow, bid-side displayed pressure, and positive price response indicates aligned short-horizon buy pressure.",
-      calculation: "The gateway first calculates one timeframe-native microstructure trigger from aggressive flow, displayed liquidity, and response/resiliency. Generic Structure and structural pressure then act as causal context: aligned context can reinforce the trigger, opposing material context vetoes it to WAIT. The result is 78% trigger and 22% structural context after gating; confidence combines microstructure evidence quality with structure confidence and cross-scale agreement.",
+      calculation: "Every closed 100 ms evidence bucket produces one microstructure trigger from aggressive flow, displayed liquidity, and response/resiliency. Generic Structure and structural pressure then act as causal context: aligned context can reinforce the trigger, while material opposition vetoes it to WAIT. The actionable result is 78% trigger and 22% structural context after gating. Larger display bars confidence-weight these already-causal states into a consensus view without originating another decision.",
       shortDescription: "One canonical Buy, Sell, or Wait decision combining QMD flow with causal market structure.",
       detailedDescription: "Signal runs from -1 (sell) to +1 (buy). A decision requires an absolute microstructure trigger of at least 0.15 and at least 35% flow confidence. Material opposing structure changes the action to WAIT instead of averaging contradictory evidence into a misleading direction.",
       interpretation: "Read direction first and confidence second. Green is Buy, red is Sell, and zero is Wait. A Wait state means evidence is weak or structure and flow conflict; it is an explicit risk decision, not missing data.",
       readingGuide: "Read the signed decision against zero, then confidence. Use the optional microstructure diagnostics only to explain why the decision changed; do not vote them together again.",
-      timeframeBehavior: "QMD closes causal 100 ms sufficient-statistic buckets and merges their raw counts, volume, quote transitions, and returns into exactly one calculation per selected chart bar. A 1-minute result therefore summarizes that minute rather than averaging sixty 1-second forecasts.",
+      timeframeBehavior: "The actionable decision always comes from the canonical 100 ms stream. A larger chart bar never creates a later replacement signal: its oscillator point is only a confidence-weighted consensus summary of the 100 ms states inside that display bucket.",
       caveats: [
         "This is a deterministic microstructure estimate, not a guaranteed price forecast.",
-        "A bar is causal and final only after its timeframe closes; live partial bars can still change.",
+        "Each actionable state is final after its originating 100 ms bucket closes; a larger display bar can still accumulate a different consensus summary until that display bar closes.",
         "Sparse bars receive lower confidence because classification and quote coverage are weaker.",
         "Displayed NBBO and eligible trades do not reveal all hidden liquidity or execution intent.",
       ],
@@ -331,13 +343,13 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
   ),
   displayIndicator("indicator.qmd_decision_chart", "QMD Decision · Chart signals", "microstructure", ["qmd_decision_signal", "qmd_decision_confidence", "qmd_decision_action"], "price", {
     shortDescription: "The same canonical QMD Decision shown as one causal marker when a new Buy or Sell becomes actionable.",
-    detailedDescription: "The decision is calculated only after a candle closes. Its marker therefore appears on the next candle—the first candle on which the result could be acted upon. A green up arrow means Buy, a red down arrow means Sell, and the text contains only confidence. Wait has no marker.",
-    calculation: "This presentation does not calculate another signal. It renders qmd_decision_action and qmd_decision_confidence from the gateway.",
-    readingGuide: "Read the marker at the next candle open. Its percentage is evidence confidence, not expected return or win probability. Use the oscillator when you need the full decision history.",
-    bullishEvidence: "A green up arrow means the preceding closed candle produced a Buy decision.",
-    bearishEvidence: "A red down arrow means the preceding closed candle produced a Sell decision.",
-    timeframeBehavior: "The decision is calculated once from sufficient statistics aggregated for the selected chart timeframe.",
-    caveats: ["Wait is intentionally blank.", "No background shading is used.", "The marker denotes a newly actionable state, not an execution or guaranteed entry."],
+    detailedDescription: "The marker comes from the canonical 100 ms decision stream, regardless of the chart timeframe. A green up arrow means Buy, a red down arrow means Sell, and the text contains only confidence. Wait has no marker.",
+    calculation: "This presentation does not calculate another signal. It renders a timestamped 100 ms QMD decision transition supplied by the gateway.",
+    readingGuide: "Read the marker as soon as its 100 ms evidence bucket closes. Its percentage is evidence confidence, not expected return or win probability. Use the oscillator to inspect the confidence-weighted consensus inside each displayed chart bar.",
+    bullishEvidence: "A green up arrow means the canonical 100 ms stream changed to Buy at that time.",
+    bearishEvidence: "A red down arrow means the canonical 100 ms stream changed to Sell at that time.",
+    timeframeBehavior: "Changing the chart timeframe changes only presentation. On larger candles the first actionable transition inside each candle is shown, preventing stacked labels without delaying the underlying signal.",
+    caveats: ["Wait is intentionally blank.", "No background shading is used.", "If several transitions occur inside one large display candle, only the first is drawn; all transitions remain available in the canonical stream.", "The marker denotes a signal state, not an execution or guaranteed entry."],
   }),
   displayIndicator("indicator.qmd_transaction_imbalance", "QMD Transaction Imbalance", "microstructure", ["microstructure_transaction_imbalance", "microstructure_buy_trade_count", "microstructure_sell_trade_count"], "qmd_transaction", qmdIndicatorKnowledge("Buy-versus-sell trade-count imbalance", "Counts eligible prints classified at the ask as buys and at the bid as sells, then computes (buys - sells) / classified trades.", "Persistent positive readings mean buyer-initiated prints are arriving more often; negative readings mean seller-initiated prints dominate.", "It ignores trade size, so compare it with Signed-volume Imbalance.")),
   displayIndicator("indicator.qmd_signed_volume", "QMD Signed-volume Imbalance", "microstructure", ["microstructure_signed_volume_imbalance", "microstructure_buy_volume", "microstructure_sell_volume"], "qmd_signed_volume", qmdIndicatorKnowledge("Buy-versus-sell executed-volume imbalance", "Sums eligible volume at the ask and bid inside the selected bar, then computes (buy volume - sell volume) / classified volume.", "Positive values show aggressive buy volume; negative values show aggressive sell volume. Agreement with transaction imbalance is stronger evidence than either alone.", "A few large prints can dominate the value; inspect trade conditions and resiliency.")),
@@ -502,7 +514,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
   const pointInTime = true;
   const indicatorColumns = useMemo(() => requestedIndicatorColumns(visibleIndicatorIds), [visibleIndicatorIds]);
   const rowBudget = useMemo(() => chartRowBudget(indicatorColumns), [indicatorColumns]);
-  const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier">>({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime, structureEvents: [] });
+  const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier">>({ bars: [], canLoadEarlier: false, connected: false, decisionEvents: [], error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime, structureEvents: [] });
   const historyCursorRef = useRef<ChartHistoryCursor | null>(null);
   const historyRequestRef = useRef(false);
   const historyAbortRef = useRef<AbortController | null>(null);
@@ -536,6 +548,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
             ...current,
             bars: merged.bars,
             canLoadEarlier: payload.has_more && !merged.atCapacity,
+            decisionEvents: mergeDecisionEvents(current.decisionEvents, payload.decision_events),
             historyError: "",
             historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : "",
             indicators: merged.indicators,
@@ -566,7 +579,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
     requestKeyRef.current = requestKey;
     historyCursorRef.current = null;
     historyRequestRef.current = false;
-    setState({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime, structureEvents: [] });
+    setState({ bars: [], canLoadEarlier: false, connected: false, decisionEvents: [], error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime, structureEvents: [] });
 
     const fetchHistoricalPage = () => {
       historyRequestRef.current = true;
@@ -585,6 +598,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
               ...current,
               bars: merged.bars,
               canLoadEarlier: payload.has_more && !merged.atCapacity,
+              decisionEvents: mergeDecisionEvents(current.decisionEvents, payload.decision_events),
               historyError: "",
               historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : "",
               indicators: merged.indicators,
@@ -625,6 +639,16 @@ function mergeStructureEvents(current: QmdStructureEvent[], incoming: QmdStructu
   return [...byId.values()]
     .sort((left, right) => Date.parse(left.confirmed_at) - Date.parse(right.confirmed_at) || left.event_id - right.event_id)
     .slice(-500);
+}
+
+function mergeDecisionEvents(current: QmdDecisionEvent[], incoming: QmdDecisionEvent[] | undefined) {
+  const byTimestamp = new Map<string, QmdDecisionEvent>();
+  [...current, ...(incoming ?? [])].forEach((event) => {
+    if (event.signal_at) byTimestamp.set(event.signal_at, event);
+  });
+  return [...byTimestamp.values()]
+    .sort((left, right) => Date.parse(left.signal_at) - Date.parse(right.signal_at))
+    .slice(-10_000);
 }
 
 function chartPageSize(timeframe: string) {
@@ -797,29 +821,34 @@ function shallowRowEqual<T extends object>(left: T, right: T): boolean {
 }
 
 function qmdDecisionChartMarkers(
-  rows: HistoricalIndicator[],
+  events: QmdDecisionEvent[],
   bars: HistoricalBar[],
   visibleIndicators: string[],
 ): ChartPayload["markers"] {
-  if (!visibleIndicators.includes("indicator.qmd_decision_chart") || !rows.length || !bars.length) {
+  if (!visibleIndicators.includes("indicator.qmd_decision_chart") || !events.length || !bars.length) {
     return [];
   }
   const markers: ChartPayload["markers"] = [];
-  const barIndexByStart = new Map(bars.map((bar, index) => [bar.bar_start, index]));
-  // The first visible row has no in-window predecessor, so treating it as a
-  // transition would invent a signal at the viewport boundary.
-  let activeAction = String(rows[0]?.qmd_decision_action || "wait").toLowerCase();
-  rows.slice(1).forEach((row) => {
-    const action = String(row.qmd_decision_action || "wait").toLowerCase();
-    if (action === activeAction) return;
-    activeAction = action;
+  const barIntervals = bars.map((bar) => ({
+    end: Date.parse(bar.bar_end || "") || Date.parse(bar.bar_start) + 1,
+    start: Date.parse(bar.bar_start),
+    time: Date.parse(bar.bar_start) / 1000,
+  }));
+  let barIndex = 0;
+  let representedBar = -1;
+  events.forEach((event) => {
+    const action = String(event.action || "wait").toLowerCase();
     if (!["buy", "sell"].includes(action)) return;
-    const sourceBarIndex = barIndexByStart.get(row.bar_start);
-    const actionableBar = sourceBarIndex === undefined ? undefined : bars[sourceBarIndex + 1];
-    if (!actionableBar) return;
-    const actionableTime = Date.parse(actionableBar.bar_start) / 1000;
-    if (!Number.isFinite(actionableTime)) return;
-    const confidence = boundedUnit(row.qmd_decision_confidence);
+    const signalAt = Date.parse(event.signal_at);
+    while (barIndex < barIntervals.length && signalAt >= barIntervals[barIndex].end) barIndex += 1;
+    if (
+      barIndex >= barIntervals.length
+      || signalAt < barIntervals[barIndex].start
+      || representedBar === barIndex
+    ) return;
+    representedBar = barIndex;
+    const actionableTime = barIntervals[barIndex].time;
+    const confidence = boundedUnit(event.confidence);
     markers.push({
       color: action === "buy" ? "var(--success)" : "var(--danger)",
       displayItemId: "indicator.qmd_decision_chart",
@@ -1692,7 +1721,7 @@ function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl,
   const visibleIndicators = liveChart.indicatorsAvailable ? settings.chart.visibleIndicators : [];
   const timeframe = settings.chart.timeframe;
   const payload = useMemo<ChartPayload>(() => {
-    const decisionMarkers = qmdDecisionChartMarkers(indicators, liveChart.bars, visibleIndicators);
+    const decisionMarkers = qmdDecisionChartMarkers(liveChart.decisionEvents, liveChart.bars, visibleIndicators);
     return {
       candles: liveChart.bars.map((bar) => ({ close: bar.close, high: bar.high, low: bar.low, open: bar.open, time: Date.parse(bar.bar_start) / 1000 })),
       markers: decisionMarkers,
@@ -1702,7 +1731,7 @@ function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl,
       regions: MACRO_TIMEFRAMES.has(timeframe) ? [] : extendedSessionRegions(liveChart.bars),
       volume: settings.chart.showVolume ? liveChart.bars.map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
     };
-  }, [indicators, liveChart.bars, liveChart.structureEvents, settings.chart.showVolume, timeframe, visibleIndicators]);
+  }, [indicators, liveChart.bars, liveChart.decisionEvents, liveChart.structureEvents, settings.chart.showVolume, timeframe, visibleIndicators]);
   function updateChart(symbol: string, nextTimeframe: CanvasChartTimeframe) {
     updateSettings((current) => ({ ...current, chart: { ...current.chart, symbol, timeframe: nextTimeframe } }));
     onLinkContextChange({ symbol });

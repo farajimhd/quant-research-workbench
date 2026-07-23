@@ -191,15 +191,15 @@ to `wait`. This is short-horizon evidence, not an order instruction, return
 forecast, or price target; strategies must still apply market-state, LULD,
 spread, risk, and execution gates.
 
-Chart indicator rows use that contract on a fixed causal grid. QMD samples the
-raw sufficient statistics once per closed 100 ms bar. For every higher
-timeframe, it sums counts and volume, chains log returns, accumulates raw OFI
-and liquidity depletion/replenishment, and sample-weights queue, microprice,
-persistence, and arrival evidence. QMD then calculates exactly one signal and
-confidence from the merged bar evidence. It never averages overlapping rolling
-signal scores. This makes a 1-minute indicator describe the quotes and trades
-inside that minute rather than its final event or a series of overlapping
-windows.
+QMD Decision has one timing authority: every closed 100 ms evidence bucket.
+Strategies consume those `qmd_decision_*` states directly, so changing a chart
+timeframe cannot delay or replace an actionable transition. For higher
+timeframes, QMD still sums counts and volume, chains log returns, accumulates
+raw OFI and liquidity depletion/replenishment, and sample-weights queue,
+microprice, persistence, and arrival evidence for diagnostic indicators. The
+higher-timeframe QMD Decision point is only a confidence-weighted consensus of
+the canonical 100 ms states inside that display bucket. It is a presentation
+summary, not a second strategy signal.
 
 ## After-Hours Maintenance
 

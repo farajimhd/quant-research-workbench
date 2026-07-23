@@ -396,6 +396,7 @@ def historical_bar_history_before(
             "timeframe": resolved_timeframe,
             "history": [],
             "indicators": [],
+            "decision_events": [],
             "structure_events": [],
             "earliest_session_date": "",
             "has_more": False,
@@ -429,6 +430,7 @@ def historical_bar_history_before(
     )
     bars = list(snapshot.get("bars") or []) if isinstance(snapshot, dict) else []
     indicators = list(snapshot.get("indicators") or []) if isinstance(snapshot, dict) else []
+    decision_events = list(snapshot.get("decision_events") or []) if isinstance(snapshot, dict) else []
     bars.sort(key=_bar_start_sort_key)
     indicators.sort(key=_bar_start_sort_key)
     has_more_in_session = bool(snapshot.get("has_more")) if isinstance(snapshot, dict) else False
@@ -446,6 +448,7 @@ def historical_bar_history_before(
         "timeframe": resolved_timeframe,
         "history": bars,
         "indicators": indicators,
+        "decision_events": decision_events,
         "indicators_available": bool(snapshot.get("indicators_available")) if isinstance(snapshot, dict) else False,
         "earliest_session_date": session_date_text if bars else "",
         "has_more": has_more_in_session or bool(previous_session_before),
@@ -515,6 +518,7 @@ def historical_macro_bar_history(
         "timeframe": timeframe,
         "history": rows,
         "indicators": [],
+        "decision_events": [],
         "structure_events": [],
         "indicators_available": False,
         "earliest_session_date": str(rows[0].get("session_date") or "") if rows else "",
