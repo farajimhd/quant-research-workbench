@@ -198,6 +198,18 @@ export function canvasLinkGroupDefinition(group: CanvasLinkGroupId): CanvasLinkG
   return group === "none" ? undefined : CANVAS_LINK_GROUPS.find((candidate) => candidate.id === group);
 }
 
+export function firstAvailableCanvasLinkGroup(
+  assignments: CanvasRegistry["linkAssignments"],
+  activeInstanceIds: readonly string[],
+): CanvasAssignedLinkGroupId | undefined {
+  const activeGroups = new Set(
+    activeInstanceIds
+      .map((instanceId) => assignments[instanceId])
+      .filter((group): group is CanvasAssignedLinkGroupId => group != null && group !== "none"),
+  );
+  return CANVAS_LINK_GROUPS.find((candidate) => !activeGroups.has(candidate.id))?.id;
+}
+
 function normalizeLinkContext(value: CanvasLinkContext | undefined, fallback: CanvasLinkContext): CanvasLinkContext {
   const symbol = value?.symbol?.trim().toUpperCase();
   return { symbol: symbol || fallback.symbol };

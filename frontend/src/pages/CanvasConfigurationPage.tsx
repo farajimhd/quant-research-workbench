@@ -14,6 +14,7 @@ import {
   canvasLinkGroupDefinition,
   canvasWorkspaceStorageKey,
   createCanvasRecord,
+  firstAvailableCanvasLinkGroup,
   focusCanvasUrl,
   ensureNewsReaderCanvas,
   readCanvasRegistry,
@@ -1014,6 +1015,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
   const [linkPopoverContainerId, setLinkPopoverContainerId] = useState<string | null>(null);
   const [settingsContainerId, setSettingsContainerId] = useState<string | null>(null);
   const [chartOpenRequest, setChartOpenRequest] = useState<{ kind: "chart"; requestId: number; targetInstanceId: string } | null>(null);
+  const [chartOpenError, setChartOpenError] = useState("");
 
   const currentCanvas = registry.canvases.find((canvas) => canvas.id === canvasId) ?? { id: canvasId, label: canvasId === MAIN_CANVAS_ID ? "Main" : "Focus canvas" };
   const primaryChartId = (workspaceState?.openIds ?? []).find((id) => workspaceContainerKind(id, workspaceState) === "chart") ?? "chart";
@@ -1221,8 +1223,12 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
     const assignedGroup = registry.linkAssignments[sourceInstanceId] ?? "none";
     const group = assignedGroup !== "none"
       ? assignedGroup
-      : CANVAS_LINK_GROUPS.find((candidate) => !Object.values(registry.linkAssignments).includes(candidate.id))?.id;
-    if (!group) return;
+      : firstAvailableCanvasLinkGroup(registry.linkAssignments, workspaceState?.openIds ?? [sourceInstanceId]);
+    if (!group) {
+      setChartOpenError("A chart could not be linked because every link color is in use on this canvas. Unlink one active container and try again.");
+      return;
+    }
+    setChartOpenError("");
     const linkedChartId = Object.entries(registry.linkAssignments).find(([instanceId, candidateGroup]) => candidateGroup === group && workspaceContainerKind(instanceId, workspaceState) === "chart")?.[0];
     const chartId = linkedChartId ?? nextAvailableContainerInstanceId("chart", [
       ...Object.keys(registry.instanceSettings),
@@ -1348,7 +1354,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
         {manager ? <div className="canvas-toolbar-actions"><button className="button secondary compact canvas-set-default" disabled={!workspaceState} onClick={saveDefaultLayout} type="button"><Save size={13} /> {defaultSaved ? "Default saved" : "Set default"}</button><button aria-expanded={managementOpen} aria-label="Canvas management" className="button secondary compact canvas-management-toggle" onClick={() => setManagementOpen((open) => !open)} type="button"><PanelRightOpen size={13} /> Manage</button></div> : null}
       </header>
 
-      {contextError || error ? <div className="canvas-inline-error">{contextError || error}</div> : null}
+      {contextError || error || chartOpenError ? <div className="canvas-inline-error">{contextError || error || chartOpenError}</div> : null}
 
       <TradingWorkspace
         allowMultipleInstances
