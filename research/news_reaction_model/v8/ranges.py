@@ -108,4 +108,3 @@ def describe_ranges() -> dict[str, list[dict[str, float | None]]]:
             for index, (lower, upper) in enumerate(spec.intervals_pct)
         ]
     return description
-

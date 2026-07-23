@@ -20,4 +20,3 @@ if __name__ == "__main__":
         flush=True,
     )
     raise SystemExit(main(args))
-

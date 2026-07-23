@@ -64,4 +64,3 @@ def compute_loss(
         "train/within_one_bin_accuracy": within_one_correct / max(valid_count, 1),
         "train/valid_labels": float(valid_count),
     })
-

@@ -6,4 +6,3 @@ HORIZONS = (
     "premarket_close", "regular_close", "extended_close",
 )
 SESSIONS = ("premarket", "regular", "afterhours", "closed")
-

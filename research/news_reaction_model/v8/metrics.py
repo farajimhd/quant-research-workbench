@@ -68,4 +68,3 @@ class RangeAccumulator:
         result[f"{prefix}/log_loss"] = total_log_loss / denominator
         result[f"{prefix}/mean_confidence"] = total_confidence / denominator
         return result
-

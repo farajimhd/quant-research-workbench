@@ -149,4 +149,3 @@ def forecast_rows(
             "forecasts": forecasts,
         })
     return results
-

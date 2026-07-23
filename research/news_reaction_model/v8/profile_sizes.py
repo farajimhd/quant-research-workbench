@@ -204,4 +204,3 @@ def append_jsonl(path: Path, row: dict[str, object]) -> None:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

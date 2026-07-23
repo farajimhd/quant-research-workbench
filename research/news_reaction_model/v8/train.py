@@ -432,4 +432,3 @@ def set_seed(seed: int) -> None:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
