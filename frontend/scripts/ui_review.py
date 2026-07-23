@@ -188,9 +188,9 @@ def validate_price_zone_legend(
     legend_text = price_legend.inner_text()
     for expected_level_indicator in (
         "Current support & resistance",
-        "Structure breaks",
-        "Opening range",
-        "Trade-volume POC",
+        "Micro · Structure breaks",
+        "Tactical · Structure breaks",
+        "Context · Structure breaks",
     ):
         if expected_level_indicator not in legend_text:
             issues.append(f"price legend omits {expected_level_indicator}")
@@ -251,7 +251,7 @@ def validate_price_zone_legend(
         for expected_explanation in (
             "temporarily in play",
             "confirmed break retires the original role",
-            "retests the zone from the other side",
+            "retests from the other side",
             "simple cross never flips the label",
         ):
             if expected_explanation not in guide_text:
@@ -266,20 +266,22 @@ def validate_price_zone_legend(
                 full_page=True,
             )
         guide.get_by_role("button", name="Close").click()
-    configure_breaks = price_legend.get_by_role(
-        "button", name="Configure Structure breaks"
-    )
-    if configure_breaks.count() != 1:
-        issues.append("generic structure breaks do not expose one configuration")
-    else:
+    for scale in ("Micro", "Tactical", "Context"):
+        legend_label = f"{scale} · Structure breaks"
+        configure_breaks = price_legend.get_by_role(
+            "button", name=f"Configure {legend_label}"
+        )
+        if configure_breaks.count() != 1:
+            issues.append(f"{scale.lower()} structure breaks do not expose configuration")
+            continue
         configure_breaks.click()
         breaks_editor = page.get_by_role(
-            "dialog", name="Structure breaks indicator settings"
+            "dialog", name=f"{legend_label} indicator settings"
         )
-        if breaks_editor.get_by_role("slider", name="Structure breaks label text size").count() != 1:
-            issues.append("structure-break settings omit connector label sizing")
+        if breaks_editor.get_by_role("slider", name=f"{legend_label} label text size").count() != 1:
+            issues.append(f"{scale.lower()} structure-break settings omit connector label sizing")
         if breaks_editor.get_by_text("Swing-to-break connectors", exact=True).count() != 1:
-            issues.append("structure-break settings omit connector visibility")
+            issues.append(f"{scale.lower()} structure-break settings omit connector visibility")
         breaks_editor.get_by_role("button", name="Close indicator settings").click()
     overlap_counts = page.evaluate("""() => {
         const labels = Array.from(document.querySelectorAll('.price-zone-label'));
@@ -1250,7 +1252,7 @@ def capture(args: argparse.Namespace) -> int:
                             "timeframe": args.canvas_chart_timeframe,
                             "visibleIndicators": [
                                 value.strip()
-                                for value in (args.canvas_visible_indicators or "indicator.vwap,indicator.macd,indicator.microstructure_outlook,indicator.qmd_liquidity_levels,indicator.market_structure_levels").split(",")
+                                for value in (args.canvas_visible_indicators or "indicator.vwap,indicator.macd,indicator.qmd_decision,indicator.qmd_decision_chart,indicator.qmd_generic_structure").split(",")
                                 if value.strip()
                             ],
                         },

@@ -6,8 +6,8 @@ use crate::generic_structure::{
     StructureLevelCandidate,
 };
 use crate::metrics::SharedMetrics;
-use crate::microstructure_forecast::{
-    MicrostructureForecastSnapshot, MicrostructureForecastWindow, MicrostructureIntervalFeatures,
+use crate::microstructure_interval::{
+    MicrostructureIntervalFeatures, MicrostructureIntervalWindow,
 };
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, NaiveDate, Timelike, Utc};
@@ -20,7 +20,7 @@ use std::sync::{Arc, RwLock as StdRwLock};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, sleep, Duration};
 
-pub const INDICATOR_SCHEMA_VERSION: u16 = 15;
+pub const INDICATOR_SCHEMA_VERSION: u16 = 16;
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const PREMARKET_SESSION_START_SECONDS: u32 = 4 * 60 * 60;
 
@@ -82,12 +82,6 @@ pub struct IndicatorRow {
     pub price_vs_ema20_pct: f64,
     pub price_vs_vwap_pct: f64,
     pub trend_score: f64,
-    pub microstructure_fast_signal: f64,
-    pub microstructure_fast_confidence: f64,
-    pub microstructure_confirm_signal: f64,
-    pub microstructure_confirm_confidence: f64,
-    pub microstructure_context_signal: f64,
-    pub microstructure_context_confidence: f64,
     pub microstructure_unified_signal: f64,
     pub microstructure_unified_confidence: f64,
     pub microstructure_unified_action: String,
@@ -118,6 +112,10 @@ pub struct IndicatorRow {
     pub microstructure_displayed_liquidity_score: f64,
     pub microstructure_response_resiliency_score: f64,
     pub microstructure_regime_reliability: f64,
+    pub qmd_decision_signal: f64,
+    pub qmd_decision_confidence: f64,
+    pub qmd_decision_action: String,
+    pub qmd_decision_reason: String,
     pub liquidity_support_price: f64,
     pub liquidity_support_strength: f64,
     pub liquidity_support_confidence: f64,
@@ -245,25 +243,6 @@ pub struct IndicatorRow {
 }
 
 impl IndicatorRow {
-    pub fn apply_microstructure(&mut self, forecast: &MicrostructureForecastSnapshot) {
-        let horizon = |events| {
-            forecast
-                .horizons
-                .iter()
-                .find(|item| item.horizon_events == events)
-        };
-        self.microstructure_fast_signal = horizon(25).map(|item| item.score).unwrap_or(0.0);
-        self.microstructure_fast_confidence =
-            horizon(25).map(|item| item.confidence).unwrap_or(0.0);
-        self.microstructure_confirm_signal = horizon(100).map(|item| item.score).unwrap_or(0.0);
-        self.microstructure_confirm_confidence =
-            horizon(100).map(|item| item.confidence).unwrap_or(0.0);
-        self.microstructure_context_signal = horizon(500).map(|item| item.score).unwrap_or(0.0);
-        self.microstructure_context_confidence =
-            horizon(500).map(|item| item.confidence).unwrap_or(0.0);
-        self.apply_microstructure_interval(&forecast.interval);
-    }
-
     pub fn apply_microstructure_interval(&mut self, interval: &MicrostructureIntervalFeatures) {
         self.microstructure_buy_trade_count = interval.buy_trade_count;
         self.microstructure_sell_trade_count = interval.sell_trade_count;
@@ -292,7 +271,85 @@ impl IndicatorRow {
         self.microstructure_unified_confidence = interval.unified_confidence;
         self.microstructure_unified_action = interval.unified_action.to_string();
         self.microstructure_interval = interval.clone();
+        self.refresh_qmd_decision();
     }
+
+    fn refresh_qmd_decision(&mut self) {
+        let (signal, confidence, action, reason) = calculate_qmd_decision(
+            self.microstructure_unified_signal,
+            self.microstructure_unified_confidence,
+            self.qmd_structure_score,
+            self.qmd_structure_pressure_bias,
+            self.qmd_structure_pressure_confidence,
+            self.qmd_structure_confidence,
+            self.qmd_structure_agreement,
+        );
+        self.qmd_decision_signal = signal;
+        self.qmd_decision_confidence = confidence;
+        self.qmd_decision_action = action.to_string();
+        self.qmd_decision_reason = reason.to_string();
+    }
+}
+
+fn calculate_qmd_decision(
+    flow: f64,
+    flow_confidence_percent: f64,
+    structure: f64,
+    pressure_bias: f64,
+    pressure_confidence: f64,
+    structure_confidence: f64,
+    structure_agreement: f64,
+) -> (f64, f64, &'static str, &'static str) {
+    let flow = flow.clamp(-1.0, 1.0);
+    let flow_confidence = (flow_confidence_percent / 100.0).clamp(0.0, 1.0);
+    let structure = structure.clamp(-1.0, 1.0);
+    let pressure = (pressure_bias * pressure_confidence.clamp(0.0, 1.0)).clamp(-1.0, 1.0);
+    let context = (0.75 * structure + 0.25 * pressure).clamp(-1.0, 1.0);
+    let flow_directional = flow.abs() >= 0.15 && flow_confidence >= 0.35;
+    let context_conflict =
+        flow_directional && context.abs() >= 0.12 && flow.signum() != context.signum();
+    let signal = if flow_directional && !context_conflict {
+        (0.78 * flow + 0.22 * context).clamp(-1.0, 1.0)
+    } else {
+        0.0
+    };
+    let structure_quality =
+        (0.5 * structure_confidence + 0.5 * structure_agreement).clamp(0.0, 1.0);
+    let confidence = if signal == 0.0 {
+        flow_confidence * if context_conflict { 0.45 } else { 0.65 }
+    } else {
+        flow_confidence * (0.75 + 0.25 * structure_quality)
+    }
+    .clamp(0.0, 1.0);
+    let (action, reason) = if !flow_directional {
+        ("wait", "insufficient_microstructure_evidence")
+    } else if context_conflict {
+        ("wait", "structure_flow_conflict")
+    } else if signal > 0.0 {
+        (
+            "buy",
+            if context.abs() >= 0.05 {
+                "aligned_buy_evidence"
+            } else {
+                "buy_flow_neutral_structure"
+            },
+        )
+    } else {
+        (
+            "sell",
+            if context.abs() >= 0.05 {
+                "aligned_sell_evidence"
+            } else {
+                "sell_flow_neutral_structure"
+            },
+        )
+    };
+    (
+        (signal * 10_000.0).round() / 10_000.0,
+        (confidence * 100.0).round() / 100.0,
+        action,
+        reason,
+    )
 }
 
 /// Calculate canonical indicators for an ordered batch of bars.
@@ -514,7 +571,7 @@ struct IndicatorStore {
     history_limit: usize,
     tick_window_seconds: i64,
     ticks: HashMap<String, TickState>,
-    microstructure: HashMap<String, MicrostructureForecastWindow>,
+    microstructure: HashMap<String, MicrostructureIntervalWindow>,
     microstructure_aggregates: HashMap<IndicatorKey, MicrostructureSampleAggregate>,
     trade_rules: TradeAggregationRules,
     market_structure_references: Arc<StdRwLock<HashMap<String, MarketStructureReferenceLevels>>>,
@@ -908,62 +965,15 @@ impl IndicatorStore {
     }
 }
 
-/// O(1)-memory sufficient statistics for causal 100 ms forecast samples.
+/// O(1)-memory sufficient statistics for causal 100 ms evidence buckets.
 #[derive(Clone, Debug, Default)]
 pub struct MicrostructureSampleAggregate {
     sample_count: u64,
-    fast: WeightedSignalAggregate,
-    confirm: WeightedSignalAggregate,
-    context: WeightedSignalAggregate,
     interval: MicrostructureIntervalFeatures,
-}
-
-#[derive(Clone, Debug, Default)]
-struct WeightedSignalAggregate {
-    count: u64,
-    sum_confidence: f64,
-    sum_weighted_signal: f64,
-    sum_weighted_signal_sq: f64,
-}
-
-impl WeightedSignalAggregate {
-    fn push(&mut self, signal: f64, confidence: f64) {
-        if !signal.is_finite() || !confidence.is_finite() || confidence <= 0.0 {
-            return;
-        }
-        self.count += 1;
-        self.sum_confidence += confidence;
-        self.sum_weighted_signal += signal * confidence;
-        self.sum_weighted_signal_sq += signal * signal * confidence;
-    }
-
-    fn value(&self) -> (f64, f64) {
-        if self.count == 0 || self.sum_confidence <= f64::EPSILON {
-            return (0.0, 0.0);
-        }
-        let signal = (self.sum_weighted_signal / self.sum_confidence).clamp(-1.0, 1.0);
-        let variance =
-            (self.sum_weighted_signal_sq / self.sum_confidence - signal * signal).max(0.0);
-        let agreement = 1.0 - variance.sqrt().clamp(0.0, 1.0);
-        let mean_confidence = self.sum_confidence / self.count as f64;
-        (signal, (mean_confidence * agreement).clamp(0.0, 100.0))
-    }
 }
 
 impl MicrostructureSampleAggregate {
     pub fn push(&mut self, row: &IndicatorRow) {
-        self.fast.push(
-            row.microstructure_fast_signal,
-            row.microstructure_fast_confidence,
-        );
-        self.confirm.push(
-            row.microstructure_confirm_signal,
-            row.microstructure_confirm_confidence,
-        );
-        self.context.push(
-            row.microstructure_context_signal,
-            row.microstructure_context_confidence,
-        );
         self.push_interval(&row.microstructure_interval);
     }
 
@@ -973,18 +983,6 @@ impl MicrostructureSampleAggregate {
     }
 
     pub fn apply_to(&self, target: &mut IndicatorRow) {
-        (
-            target.microstructure_fast_signal,
-            target.microstructure_fast_confidence,
-        ) = self.fast.value();
-        (
-            target.microstructure_confirm_signal,
-            target.microstructure_confirm_confidence,
-        ) = self.confirm.value();
-        (
-            target.microstructure_context_signal,
-            target.microstructure_context_confidence,
-        ) = self.context.value();
         let mut interval = self.interval.clone();
         let expected_samples = microstructure_expected_samples(&target.timeframe);
         let coverage = if expected_samples == 0 {
@@ -1284,12 +1282,6 @@ impl BarIndicatorState {
             price_vs_ema20_pct: pct_change(bar.close, ema_20),
             price_vs_vwap_pct: pct_change(bar.close, session_vwap),
             trend_score: trend_score(bar.close, ema_9, ema_20, ema_50, rsi_14, macd_histogram),
-            microstructure_fast_signal: 0.0,
-            microstructure_fast_confidence: 0.0,
-            microstructure_confirm_signal: 0.0,
-            microstructure_confirm_confidence: 0.0,
-            microstructure_context_signal: 0.0,
-            microstructure_context_confidence: 0.0,
             microstructure_unified_signal: 0.0,
             microstructure_unified_confidence: 0.0,
             microstructure_unified_action: "wait".to_string(),
@@ -1320,6 +1312,10 @@ impl BarIndicatorState {
             microstructure_displayed_liquidity_score: 0.0,
             microstructure_response_resiliency_score: 0.0,
             microstructure_regime_reliability: 0.0,
+            qmd_decision_signal: 0.0,
+            qmd_decision_confidence: 0.0,
+            qmd_decision_action: "wait".to_string(),
+            qmd_decision_reason: "insufficient_microstructure_evidence".to_string(),
             liquidity_support_price: 0.0,
             liquidity_support_strength: 0.0,
             liquidity_support_confidence: 0.0,
@@ -1742,12 +1738,6 @@ impl IndicatorClickHouseWriter {
                 price_vs_ema20_pct Float64,
                 price_vs_vwap_pct Float64,
                 trend_score Float64,
-                microstructure_fast_signal Float64,
-                microstructure_fast_confidence Float64,
-                microstructure_confirm_signal Float64,
-                microstructure_confirm_confidence Float64,
-                microstructure_context_signal Float64,
-                microstructure_context_confidence Float64,
                 microstructure_unified_signal Float64,
                 microstructure_unified_confidence Float64,
                 microstructure_unified_action LowCardinality(String),
@@ -1778,6 +1768,10 @@ impl IndicatorClickHouseWriter {
                 microstructure_displayed_liquidity_score Float64,
                 microstructure_response_resiliency_score Float64,
                 microstructure_regime_reliability Float64,
+                qmd_decision_signal Float64,
+                qmd_decision_confidence Float64,
+                qmd_decision_action LowCardinality(String),
+                qmd_decision_reason LowCardinality(String),
                 liquidity_support_price Float64,
                 liquidity_support_strength Float64,
                 liquidity_support_confidence Float64,
@@ -1824,12 +1818,6 @@ impl IndicatorClickHouseWriter {
         .await?;
         self.execute(
             r#"ALTER TABLE live_market_indicators
-                ADD COLUMN IF NOT EXISTS microstructure_fast_signal Float64,
-                ADD COLUMN IF NOT EXISTS microstructure_fast_confidence Float64,
-                ADD COLUMN IF NOT EXISTS microstructure_confirm_signal Float64,
-                ADD COLUMN IF NOT EXISTS microstructure_confirm_confidence Float64,
-                ADD COLUMN IF NOT EXISTS microstructure_context_signal Float64,
-                ADD COLUMN IF NOT EXISTS microstructure_context_confidence Float64,
                 ADD COLUMN IF NOT EXISTS microstructure_unified_signal Float64,
                 ADD COLUMN IF NOT EXISTS microstructure_unified_confidence Float64,
                 ADD COLUMN IF NOT EXISTS microstructure_unified_action LowCardinality(String),
@@ -1860,6 +1848,10 @@ impl IndicatorClickHouseWriter {
                 ADD COLUMN IF NOT EXISTS microstructure_displayed_liquidity_score Float64,
                 ADD COLUMN IF NOT EXISTS microstructure_response_resiliency_score Float64,
                 ADD COLUMN IF NOT EXISTS microstructure_regime_reliability Float64,
+                ADD COLUMN IF NOT EXISTS qmd_decision_signal Float64,
+                ADD COLUMN IF NOT EXISTS qmd_decision_confidence Float64,
+                ADD COLUMN IF NOT EXISTS qmd_decision_action LowCardinality(String),
+                ADD COLUMN IF NOT EXISTS qmd_decision_reason LowCardinality(String),
                 ADD COLUMN IF NOT EXISTS liquidity_support_price Float64,
                 ADD COLUMN IF NOT EXISTS liquidity_support_strength Float64,
                 ADD COLUMN IF NOT EXISTS liquidity_support_confidence Float64,
@@ -2382,9 +2374,9 @@ fn safe_div(numerator: f64, denominator: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        anchored_flow_relationship, anchored_market_session_date, market_structure_reference_sql,
-        parse_market_structure_reference_rows, MicrostructureCumulativeFlow, SessionVwapState,
-        WeightedSignalAggregate,
+        anchored_flow_relationship, anchored_market_session_date, calculate_qmd_decision,
+        market_structure_reference_sql, parse_market_structure_reference_rows,
+        MicrostructureCumulativeFlow, SessionVwapState,
     };
     use chrono::{TimeZone, Utc};
 
@@ -2435,28 +2427,33 @@ mod tests {
     }
 
     #[test]
-    fn streaming_microstructure_aggregate_penalizes_conflicting_samples() {
-        let mut aligned = WeightedSignalAggregate::default();
-        aligned.push(0.5, 80.0);
-        aligned.push(0.5, 80.0);
-        let (aligned_signal, aligned_confidence) = aligned.value();
-        assert!((aligned_signal - 0.5).abs() < 1e-9);
-        assert!((aligned_confidence - 80.0).abs() < 1e-9);
-
-        let mut conflicting = WeightedSignalAggregate::default();
-        conflicting.push(1.0, 80.0);
-        conflicting.push(-1.0, 80.0);
-        let (conflicting_signal, conflicting_confidence) = conflicting.value();
-        assert!(conflicting_signal.abs() < 1e-9);
-        assert!(conflicting_confidence < aligned_confidence);
-    }
-
-    #[test]
     fn cumulative_microstructure_flow_adds_raw_deltas_and_resets_by_session() {
         let mut state = MicrostructureCumulativeFlow::default();
         assert_eq!(state.update("2026-07-14", 120.0, -40.0), (120.0, -40.0));
         assert_eq!(state.update("2026-07-14", -20.0, 90.0), (100.0, 50.0));
         assert_eq!(state.update("2026-07-15", -35.0, -10.0), (-35.0, -10.0));
+    }
+
+    #[test]
+    fn qmd_decision_emits_direction_only_for_reliable_non_conflicting_flow() {
+        let (signal, confidence, action, reason) =
+            calculate_qmd_decision(0.6, 80.0, 0.45, 0.30, 0.8, 0.75, 0.9);
+        assert!(signal > 0.5);
+        assert!(confidence > 0.7);
+        assert_eq!(action, "buy");
+        assert_eq!(reason, "aligned_buy_evidence");
+
+        let (signal, _, action, reason) =
+            calculate_qmd_decision(0.6, 80.0, -0.7, -0.4, 0.9, 0.8, 0.8);
+        assert_eq!(signal, 0.0);
+        assert_eq!(action, "wait");
+        assert_eq!(reason, "structure_flow_conflict");
+
+        let (signal, _, action, reason) =
+            calculate_qmd_decision(-0.5, 20.0, -0.4, -0.3, 0.8, 0.8, 0.8);
+        assert_eq!(signal, 0.0);
+        assert_eq!(action, "wait");
+        assert_eq!(reason, "insufficient_microstructure_evidence");
     }
 
     #[test]

@@ -98,7 +98,6 @@ Supported bar timeframes are the live QMD set: `100ms`, `1s`, `5s`, `10s`,
 - `GET /snapshot/macro-bars/{ticker}?start=...&end=...&as_of=...&timeframe=1d`
 - `GET /snapshot/chart-macro-bars/{ticker}?start=...&end=...&as_of=...&timeframe=1d|1mo` (bounded chart history; monthly rows aggregate durable daily macro families)
 - `GET /snapshot/compact-events/{ticker}?start=...&end=...&limit=...`
-- `GET /snapshot/microstructure-forecast/{ticker}?start=...&end=...&limit=1024` (the shared deterministic 25-, 100-, and 500-event next-midpoint forecast contract plus confidence-gated unified `buy`/`sell`/`wait` action used by live QMD, strategies, and Canvas)
 - `GET /snapshot/bars/{ticker}?start=...&end=...&timeframe=1m&limit=...` (bars plus canonical QMD bar indicators)
 - `WS /stream/compact-events?start=...&end=...&tickers=AAPL,MSFT`
 - `WS /stream/events?start=...&end=...&tickers=AAPL,MSFT`
@@ -107,9 +106,9 @@ Supported bar timeframes are the live QMD set: `100ms`, `1s`, `5s`, `10s`,
 - `WS /stream/derived/{ticker}?start=...&end=...&timeframe=1m&emit=updates`
 
 Bars and indicators have separate ordered streams. A cold derived build emits
-each finalized bar before the bounded indicator worker calculates its forecast,
+each finalized bar before the bounded indicator worker calculates its evidence,
 so chart price data is never held behind indicator calculation. Builds calculate
-only the requested output timeframe plus the canonical 100 ms forecast grid.
+only the requested output timeframe plus the canonical 100 ms evidence grid.
 Each higher-timeframe microstructure row confidence-weights the 100 ms samples
 inside that bar and applies an agreement penalty to confidence.
 Session-anchored cumulative Level-1 OFI and signed trade-volume delta are then

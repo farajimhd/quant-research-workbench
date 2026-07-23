@@ -4,6 +4,7 @@ use chrono::{DateTime, Duration, Utc};
 use qmd_core::bars::{BarRow, BarSnapshot, SharedBarStore, BAR_SCHEMA_VERSION};
 use qmd_core::compact_event::LiveCompactEvent;
 use qmd_core::event::MarketEvent;
+use qmd_core::generic_structure::GenericStructureEvent;
 use qmd_core::indicators::{
     BarIndicatorCalculator, IndicatorRow, MarketStructureReferenceLevels,
     MicrostructureSampleAggregate, INDICATOR_SCHEMA_VERSION,
@@ -13,7 +14,7 @@ use qmd_core::market_products::{
     FamilyBarSnapshot, MacroBarSnapshot, MarketProductEngine, ProductCacheLimits, ProductState,
     MARKET_PRODUCT_SCHEMA_VERSION,
 };
-use qmd_core::microstructure_forecast::MicrostructureForecastWindow;
+use qmd_core::microstructure_interval::MicrostructureIntervalWindow;
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::mem::size_of;
@@ -21,7 +22,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
 
-pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v15";
+pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v16";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProfile {
@@ -115,6 +116,7 @@ pub struct ChartSnapshot {
     pub indicators: Vec<IndicatorRow>,
     pub indicators_available: bool,
     pub next_before: Option<DateTime<Utc>>,
+    pub structure_events: Vec<GenericStructureEvent>,
     pub ticker: String,
     pub timeframe: String,
 }
@@ -386,6 +388,13 @@ impl HistoricalDerivedCache {
                 .iter()
                 .map(|frame| frame.indicator.clone())
                 .collect::<Vec<_>>();
+            let mut structure_events = selected
+                .iter()
+                .flat_map(|frame| frame.indicator.qmd_structure_events.iter().cloned())
+                .filter(|event| event.confirmed_at <= as_of)
+                .collect::<Vec<_>>();
+            structure_events.sort_by_key(|event| (event.confirmed_at, event.event_id));
+            structure_events.dedup_by_key(|event| event.event_id);
             let next_before = has_more.then(|| bars[0].bar_start);
             return Ok(ChartSnapshot {
                 as_of,
@@ -395,6 +404,7 @@ impl HistoricalDerivedCache {
                 indicators,
                 indicators_available: true,
                 next_before,
+                structure_events,
                 ticker,
                 timeframe,
             });
@@ -435,6 +445,7 @@ impl HistoricalDerivedCache {
             indicators: Vec::new(),
             indicators_available: false,
             next_before,
+            structure_events: Vec::new(),
             ticker,
             timeframe,
         })
@@ -619,7 +630,7 @@ impl HistoricalDerivedCache {
             let worker_structure_references = structure_references;
             let handle = tokio::spawn(async move {
                 let mut calculators = HashMap::<String, BarIndicatorCalculator>::new();
-                let mut microstructure = MicrostructureForecastWindow::default();
+                let mut microstructure = MicrostructureIntervalWindow::default();
                 let mut aggregate = MicrostructureSampleAggregate::default();
                 while let Some(work) = receiver.recv().await {
                     let bars = match work {

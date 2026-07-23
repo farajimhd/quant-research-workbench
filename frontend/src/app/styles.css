@@ -12661,7 +12661,7 @@ button {
 .chart-legend {
   position: absolute;
   top: 8px;
-  left: 10px;
+  left: calc(var(--chart-price-scale-min-width, 56px) + 10px);
   z-index: 6;
   width: min(260px, calc(100% - 20px));
   overflow: hidden;
@@ -12676,17 +12676,13 @@ button {
 
 .chart-context-modal-panel .chart-legend {
   top: 12px;
-  left: 14px;
-  width: min(260px, calc(100% - 28px));
+  left: calc(var(--chart-price-scale-min-width, 56px) + 14px);
+  width: min(260px, calc(100% - var(--chart-price-scale-min-width, 56px) - 28px));
 }
 
 .chart-legend.collapsed {
   width: auto;
   min-width: 0;
-}
-
-.chart-legend.left-scale {
-  left: calc(var(--chart-price-scale-min-width, 56px) + 10px);
 }
 
 .chart-legend-header {

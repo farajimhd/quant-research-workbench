@@ -31,14 +31,15 @@ These package ids are available in the Indicators menu and chart legend:
 | `indicator.qmd_aggressor_persistence` | QMD Aggressor Persistence | `microstructure_aggressor_persistence` | Signed oscillator histogram. |
 | `indicator.qmd_arrival_intensity` | QMD Arrival-intensity Imbalance | imbalance and arrival rate | Signed oscillator; rate is supporting evidence. |
 | `indicator.qmd_resiliency` | QMD Liquidity Resiliency | `microstructure_resiliency` | Signed oscillator histogram. |
-| `indicator.qmd_architecture` | QMD Signal Architecture | combined signal, three blocks, reliability | One explanatory oscillator package. |
-| `indicator.qmd_generic_structure` | QMD Generic Structure | active zones, references, events, score/confidence/agreement | Price overlay plus structure oscillator. |
-| `indicator.qmd_structural_pressure` | QMD Structural Pressure | support/resistance fields, bias, confidence, up likelihood | Directional pressure oscillator. |
+| `indicator.qmd_decision` | QMD Decision · Oscillator | canonical decision, confidence, action, reason | One signed Buy/Sell/Wait oscillator with confidence. |
+| `indicator.qmd_decision_chart` | QMD Decision · Chart regimes | the same canonical decision | Sparse change marker plus light Buy/Sell shading; Wait is blank. |
+| `indicator.qmd_generic_structure` | QMD Generic Structure | active zones, complete causal event stream, three-scale swings | Price overlay with independently configurable micro, tactical, and context layers. |
+| `indicator.qmd_reference_levels` | QMD Reference Levels | session, premarket, opening range, POC, LULD, and completed higher-timeframe references | Independent price lines, not structural evidence. |
 
 Every package exposes its guide from both the indicator picker and configured
-chart legend. Generic Structure and Structural Pressure are separate packages:
-the first shows exact locations and causal events; the second summarizes all
-active zones into one directional view.
+chart legend. QMD Decision is the action surface. Generic Structure remains an
+audit and location surface: micro, tactical, and context swings, zones, and
+breaks can be turned on independently to verify the causal engine.
 
 ## How to Read the Liquidity Oscillators
 
@@ -79,9 +80,9 @@ Midpoint and trade returns are realized response within the selected bar. Flow
 and return in the same direction suggest continuation. Strong aggressive flow
 with little or opposite midpoint response may indicate passive absorption.
 
-## QMD Signal Architecture Pane
+## QMD Decision
 
-The pane contains:
+The gateway first calculates a timeframe-native microstructure trigger:
 
 - **Combined signal**: 45% aggressive flow, 35% displayed liquidity, and 20%
   response/resiliency;
@@ -94,9 +95,16 @@ The pane contains:
 - **Reliability**: data quality, evidence density, coverage, and block
   agreement. It is non-directional.
 
-Read Combined signal for direction, the three blocks for attribution, and
-Reliability for trustworthiness. Do not sum the displayed lines again. The
-gateway already owns the canonical combination.
+It then combines that trigger with Generic Structure and structural pressure.
+The trigger contributes 78% and structure contributes 22%, but material
+opposition is a veto: the result becomes Wait instead of averaging contradictory
+evidence into a weak direction. A directional action requires at least 35%
+microstructure confidence and an absolute trigger of 0.15.
+
+The oscillator shows signed decision and 0-1 confidence. The chart presentation
+shows one arrow when Buy or Sell begins and lightly shades the unchanged regime
+until the next action. Wait draws no marker or shading. Both presentations read
+the same `qmd_decision_*` fields; neither calculates a second signal.
 
 ## Anchored OFI + Trade Delta Pane
 
@@ -139,20 +147,16 @@ the full zone is below current reference price. Resistance is only shown when
 the full zone is above. A crossed or in-play zone is omitted until its causal
 lifecycle resolves.
 
-### Selected and scale-specific zones
+### Scale-specific audit layers
 
-**Selected structure zones** are the optional single support and resistance
-winners chosen across micro, tactical, and context using strength, confidence,
-scale weight, and distance. They were previously called Decision zones. They
-are not a separate decision signal and are disabled by default because Current
-support & resistance preserves more of the active candidate map.
-
-Micro, Tactical, and Context zones expose the winning zones within an individual
-event-response scale. They are also disabled by default and are intended for
-diagnosis. Tactical zones use three times the adaptive base threshold, require
-three events or 300 ms of break acceptance, carry a five-day evidence half-life,
-and are useful for intraday retests, invalidation, and breakout context. The
-half-life is evidence retention, not a five-day forecast horizon.
+Micro, Tactical, and Context zones, swing references, and structure breaks are
+independent configurable layers. This lets an operator enable one scale at a
+time and verify that its confirmed swing, BoS, and CHoCH sequence is correct.
+They are diagnostics rather than competing signals. Tactical structure uses
+three times the adaptive base threshold, requires three events or 300 ms of
+break acceptance, carries a five-day evidence half-life, and is useful for
+intraday retests, invalidation, and breakout context. The half-life is evidence
+retention, not a five-day forecast horizon.
 
 ### Historical structure
 
@@ -168,26 +172,19 @@ CHoCH is an accepted break against an established trend. Their connectors run
 from the confirmed swing origin to the later break confirmation. Pivot, BoS,
 CHoCH, break, and role-reversal availability begins at confirmation time.
 
-Configurable reference groups include session high/low, premarket high/low,
-opening range, trade-volume POC, nearest round price, estimated LULD, completed
+Configurable QMD Reference Levels include session high/low, premarket high/low,
+opening range, trade-volume POC, estimated LULD, completed
 52-week high/low, and prior-month high/low/close. They are context references,
 not all support/resistance evidence of equal quality.
-
-### Structure oscillator
-
-- **Structure score**: direction times strength, confidence, and scale
-  agreement, in `[-1, +1]`;
-- **Confidence**: tested and fresh evidence in `[0, 1]`; and
-- **Scale agreement**: agreement among micro, tactical, and context direction,
-  optional by default.
 
 Micro, tactical, and context are event-response scales, not chart timeframes.
 They use increasingly large adaptive price thresholds and longer evidence
 half-lives.
 
-## Structural Pressure Pane
+## Structural context inside QMD Decision
 
-This pane compresses all active, correctly sided structure zones:
+The standalone Structure and Structural Pressure oscillators are retired. Their
+canonical fields remain available to strategies and feed QMD Decision:
 
 - **Support field**: proximity-weighted support evidence, 0-1;
 - **Resistance field**: proximity-weighted resistance evidence, 0-1;
@@ -205,7 +202,7 @@ Read common states as follows:
 | high | high | near zero, low confidence | Compression between strong opposing fields. |
 | low | low | near zero, low confidence | Open area or insufficient structural evidence. |
 
-Implied up likelihood is deterministic and uncalibrated. `0.70` does not mean
+Implied up likelihood remains deterministic and uncalibrated. `0.70` does not mean
 that 70% of future bars will rise unless a separate validation study establishes
 that calibration for the symbol, horizon, and market regime.
 
@@ -217,11 +214,11 @@ Generic Structure exposes useful controls for:
 - zone/reference/event group visibility;
 - causal history length and historical tag density;
 - fill intensity and line style where a line is actually drawn;
-- structure-score, confidence, and agreement series visibility; and
-- oscillator thresholds and native pane height.
+- independent micro, tactical, and context zone/swing/break visibility; and
+- QMD Decision oscillator thresholds and native pane height.
 
 Swing references, session/premarket levels, opening range, POC, estimated LULD,
-completed higher-timeframe references, round price, and structure-break
+completed higher-timeframe references, and structure-break
 connectors render as true lines rather than translucent fixed-height bands.
 Their opacity control is the final line opacity from 0-100%; shape, width,
 history window, historical labels, label size/limit, and axis tags are exposed
@@ -282,7 +279,7 @@ the full structural field.
 - Native panes, legends, and series rendering:
   `frontend/src/app/components/ChartPanel.tsx`
 - Service formulas and lifecycle:
-  `services/qmd-gateway/src/microstructure_forecast.rs` and
+  `services/qmd-gateway/src/microstructure_interval.rs` and
   `services/qmd-gateway/src/generic_structure.rs`
 - Schema and persistence:
   `services/qmd-gateway/src/indicators.rs`

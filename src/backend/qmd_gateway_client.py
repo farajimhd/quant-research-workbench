@@ -126,21 +126,6 @@ def qmd_compact_events(symbol: str, *, row_limit: int = 250) -> list[dict[str, A
     return [row for row in payload if isinstance(row, dict)] if isinstance(payload, list) else []
 
 
-def qmd_microstructure_forecast(symbol: str, *, row_limit: int = 1_024) -> dict[str, Any]:
-    """Return QMD's canonical deterministic quote-and-trade forecast snapshot."""
-    ticker = symbol.strip().upper()
-    if not ticker:
-        raise ValueError("symbol is required for QMD microstructure forecast.")
-    payload = qmd_get_json(
-        f"/snapshot/microstructure-forecast/{urllib.parse.quote(ticker)}",
-        {"limit": row_limit},
-        timeout=3,
-    )
-    if not isinstance(payload, dict):
-        raise RuntimeError("QMD microstructure forecast response must be an object.")
-    return payload
-
-
 def qmd_chart_bars(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) -> dict[str, Any]:
     if timeframe in MACRO_QMD_TIMEFRAMES:
         return qmd_macro_bars(symbol, timeframe=timeframe, row_limit=row_limit)

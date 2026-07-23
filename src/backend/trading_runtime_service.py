@@ -337,6 +337,7 @@ def historical_bar_chunk(
     if isinstance(snapshot, dict) and snapshot.get("current"):
         bars.append(dict(snapshot["current"]))
     indicators = list(snapshot.get("indicators") or []) if isinstance(snapshot, dict) else []
+    structure_events = list(snapshot.get("structure_events") or []) if isinstance(snapshot, dict) else []
     return {
         "ticker": resolved_ticker,
         "timeframe": resolved_timeframe,
@@ -348,6 +349,7 @@ def historical_bar_chunk(
         "end": chunk_end.isoformat(),
         "bars": bars,
         "indicators": indicators,
+        "structure_events": structure_events,
         "bar_count": len(bars),
         "source": "qmd_history_gateway",
     }
@@ -393,6 +395,8 @@ def historical_bar_history_before(
             "ticker": resolved_ticker,
             "timeframe": resolved_timeframe,
             "history": [],
+            "indicators": [],
+            "structure_events": [],
             "earliest_session_date": "",
             "has_more": False,
             "source": "qmd_history_gateway",
@@ -511,6 +515,7 @@ def historical_macro_bar_history(
         "timeframe": timeframe,
         "history": rows,
         "indicators": [],
+        "structure_events": [],
         "indicators_available": False,
         "earliest_session_date": str(rows[0].get("session_date") or "") if rows else "",
         "has_more": False,
@@ -565,25 +570,6 @@ def historical_compact_events(
     if not isinstance(payload, list):
         raise RuntimeError("QMD History compact-event response must be an array")
     return [row for row in payload if isinstance(row, dict)]
-
-
-def historical_microstructure_forecast(
-    ticker: str,
-    *,
-    start: str,
-    end: str,
-    row_limit: int = 1_024,
-) -> dict[str, Any]:
-    """Return the shared QMD deterministic forecast at a historical cutoff."""
-    resolved_ticker = _historical_ticker(ticker)
-    payload = _historical_gateway_get(
-        f"/snapshot/microstructure-forecast/{urllib.parse.quote(resolved_ticker)}",
-        {"start": start, "end": end, "limit": row_limit, "tail": "true"},
-        timeout=15,
-    )
-    if not isinstance(payload, dict):
-        raise RuntimeError("QMD History microstructure forecast response must be an object")
-    return payload
 
 
 def historical_market_state(ticker: str, *, start: str, end: str) -> dict[str, Any]:

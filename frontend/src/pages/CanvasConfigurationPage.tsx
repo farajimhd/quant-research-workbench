@@ -1,5 +1,6 @@
 import { Activity, ArrowDown, ArrowUp, ArrowUpDown, BadgeDollarSign, BarChart3, BookOpen, BriefcaseBusiness, Check, ChevronDown, ChevronRight, CircleDollarSign, Clock3, ExternalLink, Filter, Gauge, HelpCircle, Landmark, Link2, MapPin, PanelRightOpen, Plus, Search, Save, Settings2, ShieldCheck, Target, Trash2, Unlink, WalletCards, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
+import type { UTCTimestamp } from "lightweight-charts";
 
 import { api, query } from "../api/client";
 import {
@@ -167,10 +168,26 @@ type QmdBarHistory = {
   history: QmdLiveBar[];
   indicators: HistoricalIndicator[];
   indicators_available: boolean;
+  structure_events: QmdStructureEvent[];
   next_before: string;
   previous_session_before: string;
   ticker: string;
   timeframe: string;
+};
+type QmdStructureEvent = {
+  algorithm_version: number;
+  event_id: number;
+  sym: string;
+  scale: "micro" | "tactical" | "context" | string;
+  event_kind: string;
+  direction: number;
+  price: number;
+  lower: number;
+  upper: number;
+  strength: number;
+  confidence: number;
+  pivot_at: string;
+  confirmed_at: string;
 };
 type ChartHistoryCursor = {
   asOf: string;
@@ -187,6 +204,7 @@ type CanvasLiveChartState = {
   historyNotice: string;
   indicators: HistoricalIndicator[];
   indicatorsAvailable: boolean;
+  structureEvents: QmdStructureEvent[];
   lastUpdateAt: string;
   loadEarlier: () => void;
   loading: boolean;
@@ -195,7 +213,7 @@ type CanvasLiveChartState = {
 };
 
 type ContainerSettings = {
-  version: 16;
+  version: 17;
   chart: { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
   microstructure: { limit: number };
   fills: { limit: number; showCommission: boolean };
@@ -224,8 +242,8 @@ type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; tit
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const MANAGER_DEFAULT_CONTAINER_IDS: WorkspaceContainerId[] = ["scanner", "chart", "portfolio", "positions", "orders"];
 const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 16,
-  chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.microstructure_outlook"] },
+  version: 17,
+  chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.qmd_decision", "indicator.qmd_decision_chart"] },
   microstructure: { limit: 1024 },
   fills: { limit: 5, showCommission: true },
   positions: { limit: 20, showPnl: true },
@@ -284,23 +302,24 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
   displayIndicator("indicator.price_vwap", "Price vs VWAP", "volume_liquidity", ["price_vs_vwap_pct"], "distance"),
   displayIndicator("indicator.trend_score", "Trend Score", "momentum", ["trend_score"], "trend"),
   displayIndicator(
-    "indicator.microstructure_outlook",
-    "QMD Microstructure Outlook",
+    "indicator.qmd_decision",
+    "QMD Decision · Oscillator",
     "microstructure",
     [
-      "microstructure_unified_signal",
-      "microstructure_unified_confidence",
-      "microstructure_unified_action",
+      "qmd_decision_signal",
+      "qmd_decision_confidence",
+      "qmd_decision_action",
+      "qmd_decision_reason",
     ],
     "microstructure",
     {
       bearishEvidence: "A negative signal with rising confidence, negative aggressive flow, ask-side displayed pressure, and negative price response indicates aligned short-horizon sell pressure.",
       bullishEvidence: "A positive signal with rising confidence, positive aggressive flow, bid-side displayed pressure, and positive price response indicates aligned short-horizon buy pressure.",
-      calculation: "The directional blocks are weighted 45% aggressive flow, 35% displayed liquidity, and 20% response and resiliency, then attenuated by evidence reliability. Action thresholds require both sufficient score magnitude and at least 35% confidence.",
-      shortDescription: "One timeframe-consistent direction signal and its confidence, derived from QMD quotes and trades.",
-      detailedDescription: "QMD first records additive quote-and-trade statistics in closed 100 ms buckets. For every larger chart bar it merges counts, volume, Level-1 order flow, queue samples, returns, arrival signs, and liquidity recovery, then calculates the signal once. This avoids averaging overlapping forecasts. Signal runs from -1 (sell pressure) to +1 (buy pressure); confidence runs from 0% to 100% on the left scale.",
-      interpretation: "Read the signal line against zero: neon green favors buying, neon red favors selling, and neutral gray means WAIT. Then check the confidence line on the left axis. WAIT means the score is weak, confidence is below 35%, or the flow, liquidity, and response blocks conflict. The three architecture blocks and all nine inputs are available as optional diagnostic panes.",
-      readingGuide: "Read the signed signal on the right axis first, then confidence on the 0-100% left axis. Direction without confidence is weak evidence; confidence without a meaningful signed score remains WAIT.",
+      calculation: "The gateway first calculates one timeframe-native microstructure trigger from aggressive flow, displayed liquidity, and response/resiliency. Generic Structure and structural pressure then act as causal context: aligned context can reinforce the trigger, opposing material context vetoes it to WAIT. The result is 78% trigger and 22% structural context after gating; confidence combines microstructure evidence quality with structure confidence and cross-scale agreement.",
+      shortDescription: "One canonical Buy, Sell, or Wait decision combining QMD flow with causal market structure.",
+      detailedDescription: "Signal runs from -1 (sell) to +1 (buy). A decision requires an absolute microstructure trigger of at least 0.15 and at least 35% flow confidence. Material opposing structure changes the action to WAIT instead of averaging contradictory evidence into a misleading direction.",
+      interpretation: "Read direction first and confidence second. Green is Buy, red is Sell, and zero is Wait. A Wait state means evidence is weak or structure and flow conflict; it is an explicit risk decision, not missing data.",
+      readingGuide: "Read the signed decision against zero, then confidence. Use the optional microstructure diagnostics only to explain why the decision changed; do not vote them together again.",
       timeframeBehavior: "QMD closes causal 100 ms sufficient-statistic buckets and merges their raw counts, volume, quote transitions, and returns into exactly one calculation per selected chart bar. A 1-minute result therefore summarizes that minute rather than averaging sixty 1-second forecasts.",
       caveats: [
         "This is a deterministic microstructure estimate, not a guaranteed price forecast.",
@@ -310,6 +329,16 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
       ],
     },
   ),
+  displayIndicator("indicator.qmd_decision_chart", "QMD Decision · Chart regimes", "microstructure", ["qmd_decision_signal", "qmd_decision_confidence", "qmd_decision_action"], "price", {
+    shortDescription: "The same canonical QMD Decision shown as sparse regime shading and one change marker.",
+    detailedDescription: "A light green or red background begins when the gateway action changes to Buy or Sell and ends when the action changes again. Wait has no background. A single arrow marks the start, so repeated bars do not clutter price.",
+    calculation: "This presentation does not calculate another signal. It renders qmd_decision_action and qmd_decision_confidence from the gateway.",
+    readingGuide: "Treat the shaded span as the lifetime of one unchanged decision. Darker confidence is intentionally not encoded in the background; inspect the oscillator for exact confidence.",
+    bullishEvidence: "Light green with an up marker means the canonical decision changed to Buy.",
+    bearishEvidence: "Light red with a down marker means the canonical decision changed to Sell.",
+    timeframeBehavior: "The decision is calculated once from sufficient statistics aggregated for the selected chart timeframe.",
+    caveats: ["Wait is intentionally blank.", "The marker denotes a state change, not an execution or guaranteed entry."],
+  }),
   displayIndicator("indicator.qmd_transaction_imbalance", "QMD Transaction Imbalance", "microstructure", ["microstructure_transaction_imbalance", "microstructure_buy_trade_count", "microstructure_sell_trade_count"], "qmd_transaction", qmdIndicatorKnowledge("Buy-versus-sell trade-count imbalance", "Counts eligible prints classified at the ask as buys and at the bid as sells, then computes (buys - sells) / classified trades.", "Persistent positive readings mean buyer-initiated prints are arriving more often; negative readings mean seller-initiated prints dominate.", "It ignores trade size, so compare it with Signed-volume Imbalance.")),
   displayIndicator("indicator.qmd_signed_volume", "QMD Signed-volume Imbalance", "microstructure", ["microstructure_signed_volume_imbalance", "microstructure_buy_volume", "microstructure_sell_volume"], "qmd_signed_volume", qmdIndicatorKnowledge("Buy-versus-sell executed-volume imbalance", "Sums eligible volume at the ask and bid inside the selected bar, then computes (buy volume - sell volume) / classified volume.", "Positive values show aggressive buy volume; negative values show aggressive sell volume. Agreement with transaction imbalance is stronger evidence than either alone.", "A few large prints can dominate the value; inspect trade conditions and resiliency.")),
   displayIndicator("indicator.qmd_level1_ofi", "QMD Level-1 OFI", "microstructure", ["microstructure_level1_ofi"], "qmd_level1_ofi", qmdIndicatorKnowledge("Best-quote order-flow imbalance", "Measures price-improving and size-changing flow at the NBBO, normalized by exposed best-level depth and aggregated from raw quote transitions.", "Positive OFI indicates bid support or ask withdrawal; negative OFI indicates bid withdrawal or ask supply.", "Displayed orders can be cancelled and do not reveal deeper or hidden liquidity.")),
@@ -336,26 +365,19 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
   displayIndicator("indicator.qmd_aggressor_persistence", "QMD Aggressor Persistence", "microstructure", ["microstructure_aggressor_persistence"], "qmd_persistence", qmdIndicatorKnowledge("Directional consistency of classified trades", "Averages the signed aggressor sequence: at-ask trades are +1 and at-bid trades are -1.", "Values near +1 or -1 indicate highly one-sided execution; values near zero indicate mixed flow.", "Persistence without price response may be absorption rather than continuation.")),
   displayIndicator("indicator.qmd_arrival_intensity", "QMD Arrival-intensity Imbalance", "microstructure", ["microstructure_arrival_intensity_imbalance", "microstructure_arrival_rate_per_second"], "qmd_arrival", qmdIndicatorKnowledge("Direction of information arrival", "Combines directional quote transitions and classified trade arrivals, while retaining total arrivals per second as an activity diagnostic.", "A directional imbalance with a rising arrival rate signals urgent pressure; low-rate readings deserve less weight.", "Bursts can be fleeting and should be confirmed by price response or OFI.")),
   displayIndicator("indicator.qmd_resiliency", "QMD Liquidity Resiliency", "microstructure", ["microstructure_resiliency"], "qmd_resiliency", qmdIndicatorKnowledge("How displayed liquidity replenishes after depletion", "Compares same-side best-level replenishment with depletion across raw quote transitions and signs the result by the side recovering more effectively.", "Positive values favor bid recovery; negative values favor ask recovery. Near zero means balanced or insufficient recovery evidence.", "NBBO-only resiliency cannot observe deeper-book replenishment.")),
-  displayIndicator("indicator.qmd_architecture", "QMD Signal Architecture", "microstructure", ["microstructure_unified_signal", "microstructure_aggressive_flow_score", "microstructure_displayed_liquidity_score", "microstructure_response_resiliency_score", "microstructure_regime_reliability"], "qmd_architecture", qmdIndicatorKnowledge("The canonical combined signal and the four properties that explain it", "Combined Signal is 45% Aggressive Flow, 35% Displayed Liquidity, and 20% Response & Resiliency, clamped to -1 through +1. Aggressive Flow combines trade counts, volume, persistence, trade return, and arrivals. Displayed Liquidity combines OFI, queue, microprice, and arrivals. Response & Resiliency combines midpoint response, replenishment, and absorption. Reliability measures evidence quality and block agreement and controls confidence rather than adding another directional vote.", "Read Combined Signal for direction, the three directional blocks for attribution, and Reliability for whether the evidence is trustworthy enough to act. Agreement among the blocks strengthens the result; low reliability warns that the direction is poorly supported.", "The combined line is the same canonical gateway signal used by strategies and the QMD Outlook pane; do not combine the four diagnostics again in the frontend.")),
-  displayIndicator("indicator.qmd_structural_pressure", "QMD Structural Pressure", "price_action", [
-    "qmd_structure_support_field", "qmd_structure_resistance_field", "qmd_structure_pressure_bias", "qmd_structure_pressure_confidence", "qmd_structure_up_probability",
-  ], "qmd_structural_pressure", {
-    shortDescription: "One causal support field, resistance field, directional bias, and implied up likelihood from all active QMD structure zones.",
-    detailedDescription: "This oscillator summarizes the complete active QMD support/resistance map without replacing the existing Generic Structure overlay. It clusters overlapping zones, discounts repeated evidence from the same scale, and weights each cluster by current strength, confidence, freshness, scale reliability, and normalized distance from the NBBO midpoint.",
-    calculation: "Each active zone contributes strength x confidence x scale reliability x exponential proximity. Overlapping zones are clustered so repeated pivots do not count as independent votes. Support and resistance fields combine their remaining independent clusters onto 0-1 scales. Bias is (support - resistance) / (support + resistance + 0.20). Directional confidence combines total structural coverage with separation between the two sides. Implied up likelihood is 50% + 50% x bias x confidence, so weak or conflicting evidence shrinks toward 50%.",
-    readingGuide: "Start with the green Support and red Resistance lines. The larger field is the stronger nearby structural side. Then read the signed Bias histogram: above zero favors upward pressure and below zero favors downward pressure. Finally read Up likelihood and Confidence together. A likelihood away from 50% is useful only when confidence is also elevated. Strong fields on both sides indicate compression or a range, not two simultaneous directional signals.",
-    bullishEvidence: "Support exceeds resistance, the bias histogram is green above zero, implied up likelihood rises above 50%, and confidence increases. Price holding above the contributing zones provides confirmation.",
-    bearishEvidence: "Resistance exceeds support, the bias histogram is red below zero, implied up likelihood falls below 50%, and confidence increases. Price rejecting below the contributing zones provides confirmation.",
-    timeframeBehavior: "The gateway calculates this from ordered quote/trade structure state and samples it at each chart-bar close. Changing candle timeframe changes sampling frequency, not the underlying zones or their causal history. Live partial bars may update until close.",
-    components: [
-      { label: "Support field", description: "Combined confidence-adjusted evidence from active zones strictly below the current NBBO midpoint. Green, 0 to 1.", tone: "buy" },
-      { label: "Resistance field", description: "Combined confidence-adjusted evidence from active zones strictly above the current NBBO midpoint. Red, 0 to 1.", tone: "sell" },
-      { label: "Pressure bias", description: "Signed balance between the two fields. Positive favors support, negative favors resistance, and zero means balanced or absent evidence.", tone: "neutral" },
-      { label: "Implied up likelihood", description: "A deterministic directional translation of bias and confidence. It is centered at 50% and deliberately shrinks toward 50% when evidence is weak or conflicted.", tone: "info" },
-      { label: "Directional confidence", description: "How much active evidence exists and how clearly one side dominates. High support and high resistance together reduce confidence because they describe compression.", tone: "warning" },
-    ],
-    caveats: ["Implied up likelihood is a deterministic, uncalibrated score; it is not an empirical win probability.", "QMD observes consolidated Level-1 NBBO and eligible prints, not hidden liquidity or full venue depth.", "Displayed liquidity can be cancelled, so use subsequent price response and execution flow as confirmation.", "The oscillator summarizes active zones; use QMD Generic Structure to inspect their exact prices, regions, events, and scale."],
-  }),
+  displayIndicator("indicator.qmd_reference_levels", "QMD Reference Levels", "price_action", [
+    "qmd_structure_session_high", "qmd_structure_session_low", "qmd_structure_premarket_high", "qmd_structure_premarket_low",
+    "qmd_structure_opening_range_high", "qmd_structure_opening_range_low", "qmd_structure_trade_volume_poc",
+    "qmd_structure_luld_upper", "qmd_structure_luld_lower", "qmd_structure_52_week_high", "qmd_structure_52_week_low",
+    "qmd_structure_prior_month_high", "qmd_structure_prior_month_low", "qmd_structure_prior_month_close",
+  ], "price", indicatorGuide(
+    "Independent auction and regulatory reference levels; they are context, not Generic Structure evidence.",
+    "Samples session/premarket extremes, opening range, eligible-trade volume POC, estimated LULD, and completed higher-timeframe levels from QMD's causal state.",
+    "Holding above an important accepted reference can support bullish context when flow confirms.",
+    "Rejecting below an important reference can support bearish context when flow confirms.",
+    "The underlying references are timestamp-driven; the selected chart timeframe changes only sampling density.",
+    ["Estimated LULD is a rule-based estimate, not an exchange status message.", "A reference level is not automatically support or resistance."],
+  )),
   displayIndicator("indicator.qmd_generic_structure", "QMD Generic Structure", "price_action", [
     "qmd_structure_score", "qmd_structure_direction", "qmd_structure_agreement", "qmd_structure_strength", "qmd_structure_confidence",
     "qmd_structure_support_price", "qmd_structure_support_lower", "qmd_structure_support_upper", "qmd_structure_support_strength", "qmd_structure_support_confidence",
@@ -371,15 +393,11 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     "qmd_structure_context_support_price", "qmd_structure_context_support_lower", "qmd_structure_context_support_upper", "qmd_structure_context_support_strength", "qmd_structure_context_support_confidence",
     "qmd_structure_context_resistance_price", "qmd_structure_context_resistance_lower", "qmd_structure_context_resistance_upper", "qmd_structure_context_resistance_strength", "qmd_structure_context_resistance_confidence",
     "qmd_structure_event_id", "qmd_structure_event_pivot_at_ms", "qmd_structure_event_at_ms", "qmd_structure_event_kind", "qmd_structure_event_scale", "qmd_structure_event_direction", "qmd_structure_event_price",
-    "qmd_structure_session_high", "qmd_structure_session_low", "qmd_structure_premarket_high", "qmd_structure_premarket_low",
-    "qmd_structure_opening_range_high", "qmd_structure_opening_range_low", "qmd_structure_trade_volume_poc", "qmd_structure_nearest_round",
-    "qmd_structure_luld_upper", "qmd_structure_luld_lower", "qmd_structure_52_week_high", "qmd_structure_52_week_low",
-    "qmd_structure_prior_month_high", "qmd_structure_prior_month_low", "qmd_structure_prior_month_close",
   ], "price", {
     shortDescription: "One causal, event-native map of market structure and support/resistance that remains the same across chart timeframes.",
     detailedDescription: "QMD follows consolidated NBBO midpoint changes directly and uses eligible trades to confirm accepted breaks. It extracts three simultaneous price-response scales—micro, tactical, and context—then clusters confirmed pivots into persistent support and resistance zones. The chart samples this same event state at each bar end; candles do not define or recalculate the structure. At the live edge, the chart selects active candidates from the gateway state instead of projecting one winning level backward.",
     calculation: "The adaptive base reversal threshold is the maximum of two price ticks, 1.25 times the recent spread, 1.5 times the recent midpoint move, and 0.5 basis point of price. Micro, tactical, and context use 1×, 3×, and 8× that threshold. A pivot is published only after price reverses by the scale threshold. A break requires the midpoint beyond the pivot plus an eligible trade beyond it and scale-specific persistence. A break with the prior structure is BoS; the first accepted break against it is CHoCH.",
-    readingGuide: "Begin with Current support & resistance. By default it shows the three nearest active zones below and above price; configure the count from 1 to 6. The strongest support and resistance by confidence-adjusted evidence are always retained when they fall outside that nearest set and carry an asterisk. S1/R1 are closest to price. Each region is borderless: darker shading and the printed percentage indicate current confidence, not a win probability. Selected structure zones are an optional single-winner view across micro, tactical, and context scales; tactical and the other scale-specific zones are optional diagnostics and are off by default to avoid duplicate shading. Swing and auction references are true configurable lines: opacity is the final rendered opacity, and shape, width, history, labels, and axis tags are available where applicable. A zone containing current price is temporarily in play and is omitted from both sides. A confirmed break retires the original role; the opposite role appears only after price retests the zone from the other side and confirms rejection with persistence plus an eligible trade. Historical regions preserve the evidence bucket known at that time and are never restyled with later confidence. BoS and CHoCH connectors begin at the causally known pivot and end at confirmation. If both endpoints land inside one selected chart candle, the connector keeps those true timestamps while its compact tag moves to the nearest collision-free lane beside that candle so the latest event remains readable.",
+    readingGuide: "Begin with Current support & resistance. By default it shows the three nearest active zones below and above price; configure the count from 1 to 6. The strongest support and resistance by confidence-adjusted evidence are retained when they fall outside that nearest set and carry an asterisk. S1/R1 are closest to price. Each current region is a short live-edge band: darker shading and the printed percentage indicate confidence, not a win probability. Micro, tactical, and context zones, swings, and BoS/CHoCH connectors are independent legend layers so each scale can be audited without enabling every layer. A zone containing current price is temporarily in play and is omitted from both sides. A confirmed break retires the original role; the opposite role appears only after price retests from the other side and confirms rejection with persistence plus an eligible trade. Historical regions preserve the evidence bucket known at that time and are never restyled with later confidence. BoS and CHoCH connectors come from the gateway's complete causal event stream, begin at the confirmed pivot, and end at break confirmation. Auction and regulatory references live in the separate QMD Reference Levels package.",
     bullishEvidence: "Support below price gains weight when it is retested and holds, tactical/context direction is positive, accepted bullish BoS events persist, and eligible buying moves the midpoint beyond resistance.",
     bearishEvidence: "Resistance above price gains weight when it is retested and holds, tactical/context direction is negative, accepted bearish BoS events persist, and eligible selling moves the midpoint below support.",
     timeframeBehavior: "Structure is independent of the selected candle timeframe. Every chart interval samples the same ordered quote/trade engine at that bar's end, so aligned timestamps carry the same state. Confirmed events are stored durably; live restarts restore one compact state per symbol, and historical requests warm from that ticker's earlier persisted events without using future data.",
@@ -421,8 +439,8 @@ const INDICATOR_SERIES = [
   { column: "price_vs_ema20_pct", color: "var(--info)", displayItemId: "indicator.price_ema", label: "Price vs EMA 20", pane: "distance" },
   { column: "price_vs_vwap_pct", color: "var(--warning)", displayItemId: "indicator.price_vwap", label: "Price vs VWAP", pane: "distance" },
   { column: "trend_score", color: "var(--primary)", displayItemId: "indicator.trend_score", label: "Trend Score", pane: "trend" },
-  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Signal", column: "microstructure_unified_signal", color: "var(--foreground)", displayItemId: "indicator.microstructure_outlook", label: "Signal WAIT", lineWidth: 3, pane: "microstructure", priceScaleId: "right" },
-  { autoscaleMax: 100, autoscaleMin: 0, axisTitle: "Confidence", column: "microstructure_unified_confidence", color: "var(--primary)", displayItemId: "indicator.microstructure_outlook", label: "Confidence", lineStyle: "dashed", lineWidth: 2, opacity: 0.78, pane: "microstructure", priceScaleId: "left" },
+  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Decision", colorMode: "confidence-sign", column: "qmd_decision_signal", color: "var(--foreground)", displayItemId: "indicator.qmd_decision", label: "Decision", lineWidth: 3, pane: "qmd_decision", priceScaleId: "right", style: "histogram" },
+  { autoscaleMax: 1, autoscaleMin: 0, axisTitle: "Confidence", column: "qmd_decision_confidence", color: "var(--primary)", displayItemId: "indicator.qmd_decision", label: "Confidence", lineStyle: "dashed", lineWidth: 2, opacity: 0.82, pane: "qmd_decision", priceScaleId: "left" },
   { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Imbalance", column: "microstructure_transaction_imbalance", color: "var(--foreground)", displayItemId: "indicator.qmd_transaction_imbalance", label: "Transaction imbalance", pane: "qmd_transaction", style: "histogram" },
   { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Imbalance", column: "microstructure_signed_volume_imbalance", color: "var(--foreground)", displayItemId: "indicator.qmd_signed_volume", label: "Signed volume", pane: "qmd_signed_volume", style: "histogram" },
   { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "OFI", column: "microstructure_level1_ofi", color: "var(--foreground)", displayItemId: "indicator.qmd_level1_ofi", label: "Level-1 OFI", pane: "qmd_level1_ofi", style: "histogram" },
@@ -436,19 +454,6 @@ const INDICATOR_SERIES = [
   { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Persistence", column: "microstructure_aggressor_persistence", color: "var(--foreground)", displayItemId: "indicator.qmd_aggressor_persistence", label: "Aggressor persistence", pane: "qmd_persistence", style: "histogram" },
   { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Imbalance", column: "microstructure_arrival_intensity_imbalance", color: "var(--foreground)", displayItemId: "indicator.qmd_arrival_intensity", label: "Arrival imbalance", pane: "qmd_arrival", style: "histogram" },
   { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Resiliency", column: "microstructure_resiliency", color: "var(--foreground)", displayItemId: "indicator.qmd_resiliency", label: "Liquidity resiliency", pane: "qmd_resiliency", style: "histogram" },
-  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Combined", colorMode: "sign", column: "microstructure_unified_signal", color: "var(--foreground)", displayItemId: "indicator.qmd_architecture", label: "Combined signal", pane: "qmd_architecture", lineWidth: 3 },
-  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Score", colorMode: "sign", column: "microstructure_aggressive_flow_score", color: "var(--success)", displayItemId: "indicator.qmd_architecture", label: "Aggressive flow", pane: "qmd_architecture", lineWidth: 2 },
-  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Score", colorMode: "sign", column: "microstructure_displayed_liquidity_score", color: "var(--info)", displayItemId: "indicator.qmd_architecture", label: "Displayed liquidity", pane: "qmd_architecture", lineWidth: 2 },
-  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Score", colorMode: "sign", column: "microstructure_response_resiliency_score", color: "var(--warning)", displayItemId: "indicator.qmd_architecture", label: "Response & resiliency", pane: "qmd_architecture", lineWidth: 2 },
-  { autoscaleMax: 1, autoscaleMin: 0, axisTitle: "Reliability", colorMode: "sign", column: "microstructure_regime_reliability", color: "var(--muted-foreground)", displayItemId: "indicator.qmd_architecture", label: "Reliability", lineStyle: "dashed", pane: "qmd_architecture", priceScaleId: "left" },
-  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Structure", colorMode: "confidence-sign", column: "qmd_structure_score", color: "var(--foreground)", displayItemId: "indicator.qmd_generic_structure", label: "Structure score", pane: "qmd_generic_structure", style: "histogram" },
-  { autoscaleMax: 1, autoscaleMin: 0, axisTitle: "Confidence", column: "qmd_structure_confidence", color: "var(--info)", displayItemId: "indicator.qmd_generic_structure", label: "Confidence", lineStyle: "solid", lineWidth: 2, pane: "qmd_generic_structure", priceScaleId: "left" },
-  { autoscaleMax: 1, autoscaleMin: 0, axisTitle: "Agreement", column: "qmd_structure_agreement", color: "var(--muted-foreground)", defaultVisible: false, displayItemId: "indicator.qmd_generic_structure", label: "Scale agreement", lastValueVisible: false, lineStyle: "dashed", lineWidth: 1, opacity: 0.65, pane: "qmd_generic_structure", priceScaleId: "left" },
-  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Bias", colorMode: "sign", column: "qmd_structure_pressure_bias", color: "var(--foreground)", displayItemId: "indicator.qmd_structural_pressure", label: "Pressure bias", pane: "qmd_structural_pressure", style: "histogram" },
-  { autoscaleMax: 1, autoscaleMin: 0, axisTitle: "Support", column: "qmd_structure_support_field", color: "var(--success)", displayItemId: "indicator.qmd_structural_pressure", label: "Support field", lineWidth: 2, pane: "qmd_structural_pressure", priceScaleId: "left" },
-  { autoscaleMax: 1, autoscaleMin: 0, axisTitle: "Resistance", column: "qmd_structure_resistance_field", color: "var(--danger)", displayItemId: "indicator.qmd_structural_pressure", label: "Resistance field", lineWidth: 2, pane: "qmd_structural_pressure", priceScaleId: "left" },
-  { autoscaleMax: 1, autoscaleMin: 0, axisTitle: "Likelihood", column: "qmd_structure_up_probability", color: "var(--info)", displayItemId: "indicator.qmd_structural_pressure", label: "Implied up likelihood", lineWidth: 3, pane: "qmd_structural_pressure", priceScaleId: "left" },
-  { autoscaleMax: 1, autoscaleMin: 0, axisTitle: "Confidence", column: "qmd_structure_pressure_confidence", color: "var(--muted-foreground)", defaultVisible: false, displayItemId: "indicator.qmd_structural_pressure", label: "Directional confidence", lineStyle: "dashed", lineWidth: 2, opacity: 0.78, pane: "qmd_structural_pressure", priceScaleId: "left" },
 ] as const;
 
 function displayIndicator(id: string, title: string, group: string, sourceColumns: string[], pane = "price", knowledge?: ChartDisplayItem["knowledge"]): ChartDisplayItem {
@@ -497,7 +502,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
   const pointInTime = true;
   const indicatorColumns = useMemo(() => requestedIndicatorColumns(visibleIndicatorIds), [visibleIndicatorIds]);
   const rowBudget = useMemo(() => chartRowBudget(indicatorColumns), [indicatorColumns]);
-  const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier">>({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime });
+  const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier">>({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime, structureEvents: [] });
   const historyCursorRef = useRef<ChartHistoryCursor | null>(null);
   const historyRequestRef = useRef(false);
   const historyAbortRef = useRef<AbortController | null>(null);
@@ -535,6 +540,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
             historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : "",
             indicators: merged.indicators,
             indicatorsAvailable: payload.indicators_available,
+            structureEvents: mergeStructureEvents(current.structureEvents, payload.structure_events),
           };
         });
       })
@@ -560,7 +566,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
     requestKeyRef.current = requestKey;
     historyCursorRef.current = null;
     historyRequestRef.current = false;
-    setState({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime });
+    setState({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime, structureEvents: [] });
 
     const fetchHistoricalPage = () => {
       historyRequestRef.current = true;
@@ -583,6 +589,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
               historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : "",
               indicators: merged.indicators,
               indicatorsAvailable: payload.indicators_available,
+              structureEvents: mergeStructureEvents(current.structureEvents, payload.structure_events),
               loading: false,
             };
           });
@@ -608,6 +615,16 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
   }, [cutoffMs, indicatorColumns, pointInTime, rowBudget, sessionDate, symbol, timeframe]);
 
   return { ...state, loadEarlier };
+}
+
+function mergeStructureEvents(current: QmdStructureEvent[], incoming: QmdStructureEvent[] | undefined) {
+  const byId = new Map<number, QmdStructureEvent>();
+  [...current, ...(incoming ?? [])].forEach((event) => {
+    if (Number.isFinite(event.event_id) && event.event_id > 0) byId.set(event.event_id, event);
+  });
+  return [...byId.values()]
+    .sort((left, right) => Date.parse(left.confirmed_at) - Date.parse(right.confirmed_at) || left.event_id - right.event_id)
+    .slice(-500);
 }
 
 function chartPageSize(timeframe: string) {
@@ -777,6 +794,57 @@ function shallowRowEqual<T extends object>(left: T, right: T): boolean {
   const leftRecord = left as Record<string, unknown>;
   const rightRecord = right as Record<string, unknown>;
   return leftKeys.every((key) => leftRecord[key] === rightRecord[key]);
+}
+
+function qmdDecisionChartVisuals(
+  rows: HistoricalIndicator[],
+  bars: HistoricalBar[],
+  visibleIndicators: string[],
+): Pick<ChartPayload, "markers" | "regions"> {
+  if (!visibleIndicators.includes("indicator.qmd_decision_chart") || !rows.length || !bars.length) {
+    return { markers: [], regions: [] };
+  }
+  const markers: ChartPayload["markers"] = [];
+  const regions: ChartPayload["regions"] = [];
+  let activeAction = "";
+  let activeStart = Number.NaN;
+  let activeConfidence = 0;
+  const closeActiveRegion = (end: number) => {
+    if (!["buy", "sell"].includes(activeAction) || !Number.isFinite(activeStart) || !(end > activeStart)) return;
+    regions.push({
+      color: activeAction === "buy"
+        ? "color-mix(in srgb, var(--success) 8%, transparent)"
+        : "color-mix(in srgb, var(--danger) 8%, transparent)",
+      end,
+      label: `QMD ${activeAction} · ${Math.round(activeConfidence * 100)}% confidence`,
+      start: activeStart,
+    });
+  };
+  rows.forEach((row) => {
+    const action = String(row.qmd_decision_action || "wait").toLowerCase();
+    const time = rowTimestamp(row);
+    if (!Number.isFinite(time) || action === activeAction) {
+      activeConfidence = Math.max(activeConfidence, boundedUnit(row.qmd_decision_confidence));
+      return;
+    }
+    closeActiveRegion(time);
+    activeAction = action;
+    activeStart = time;
+    activeConfidence = boundedUnit(row.qmd_decision_confidence);
+    if (!["buy", "sell"].includes(action)) return;
+    markers.push({
+      color: action === "buy" ? "var(--success)" : "var(--danger)",
+      displayItemId: "indicator.qmd_decision_chart",
+      position: action === "buy" ? "belowBar" : "aboveBar",
+      shape: action === "buy" ? "arrowUp" : "arrowDown",
+      size: 1,
+      text: `QMD ${action.toUpperCase()} · ${Math.round(activeConfidence * 100)}%`,
+      time: time as UTCTimestamp,
+    });
+  });
+  const lastBar = bars[bars.length - 1];
+  closeActiveRegion(Date.parse(lastBar.bar_end || lastBar.bar_start) / 1000 + 1);
+  return { markers, regions };
 }
 
 function extendedSessionRegions(bars: QmdLiveBar[]) {
@@ -1637,15 +1705,18 @@ function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl,
   const indicators = liveChart.indicators;
   const visibleIndicators = liveChart.indicatorsAvailable ? settings.chart.visibleIndicators : [];
   const timeframe = settings.chart.timeframe;
-  const payload = useMemo<ChartPayload>(() => ({
-    candles: liveChart.bars.map((bar) => ({ close: bar.close, high: bar.high, low: bar.low, open: bar.open, time: Date.parse(bar.bar_start) / 1000 })),
-    markers: [],
-    oscillator_series: historicalIndicatorSeries(indicators, "oscillator", visibleIndicators),
-    overlay_series: historicalIndicatorSeries(indicators, "price", visibleIndicators),
-    price_zones: historicalMarketLevelZones(indicators, liveChart.bars, visibleIndicators),
-    regions: MACRO_TIMEFRAMES.has(timeframe) ? [] : extendedSessionRegions(liveChart.bars),
-    volume: settings.chart.showVolume ? liveChart.bars.map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
-  }), [indicators, liveChart.bars, settings.chart.showVolume, timeframe, visibleIndicators]);
+  const payload = useMemo<ChartPayload>(() => {
+    const decisionVisuals = qmdDecisionChartVisuals(indicators, liveChart.bars, visibleIndicators);
+    return {
+      candles: liveChart.bars.map((bar) => ({ close: bar.close, high: bar.high, low: bar.low, open: bar.open, time: Date.parse(bar.bar_start) / 1000 })),
+      markers: decisionVisuals.markers,
+      oscillator_series: historicalIndicatorSeries(indicators, "oscillator", visibleIndicators),
+      overlay_series: historicalIndicatorSeries(indicators, "price", visibleIndicators),
+      price_zones: historicalMarketLevelZones(indicators, liveChart.bars, liveChart.structureEvents, visibleIndicators),
+      regions: [...(MACRO_TIMEFRAMES.has(timeframe) ? [] : extendedSessionRegions(liveChart.bars)), ...decisionVisuals.regions],
+      volume: settings.chart.showVolume ? liveChart.bars.map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
+    };
+  }, [indicators, liveChart.bars, liveChart.structureEvents, settings.chart.showVolume, timeframe, visibleIndicators]);
   function updateChart(symbol: string, nextTimeframe: CanvasChartTimeframe) {
     updateSettings((current) => ({ ...current, chart: { ...current.chart, symbol, timeframe: nextTimeframe } }));
     onLinkContextChange({ symbol });
@@ -1666,17 +1737,17 @@ function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl,
   return <ChartPanel canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={liveChart.indicatorsAvailable ? CHART_INDICATORS : []} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} indicatorOptions={[]} initialFitMode="recent" infoMessage={liveChart.historyNotice} liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => updateSettings((current) => ({ ...current, chart: { ...current.chart, visibleIndicators: nextVisibleIndicators } }))} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={HISTORICAL_TIMEFRAMES} visibleColumns={visibleIndicators} />;
 }
 
-function historicalMarketLevelZones(rows: HistoricalIndicator[], bars: HistoricalBar[], visibleIndicators: string[]): NonNullable<ChartPayload["price_zones"]> {
-  if (!rows.length || !bars.length || !visibleIndicators.includes("indicator.qmd_generic_structure")) return [];
+function historicalMarketLevelZones(
+  rows: HistoricalIndicator[],
+  bars: HistoricalBar[],
+  structureEvents: QmdStructureEvent[],
+  visibleIndicators: string[],
+): NonNullable<ChartPayload["price_zones"]> {
+  if (!rows.length || !bars.length) return [];
   const chartEnd = Date.parse(bars[bars.length - 1].bar_end || bars[bars.length - 1].bar_start) / 1000 + 1;
   const zones: NonNullable<ChartPayload["price_zones"]> = [];
-  pushCurrentStructureLevels(zones, rows, chartEnd);
-  pushStructureZoneSegments(zones, rows, chartEnd, {
-    compactLabel: "SUP", label: "Unified support", prefix: "qmd_structure_support", scope: "unified", side: "support",
-  });
-  pushStructureZoneSegments(zones, rows, chartEnd, {
-    compactLabel: "RES", label: "Unified resistance", prefix: "qmd_structure_resistance", scope: "unified", side: "resistance",
-  });
+  if (visibleIndicators.includes("indicator.qmd_generic_structure")) {
+    pushCurrentStructureLevels(zones, rows, chartEnd);
   ([
     ["micro", "μ-S", "μ-R", "Micro"],
     ["tactical", "T-S", "T-R", "Tactical"],
@@ -1689,9 +1760,16 @@ function historicalMarketLevelZones(rows: HistoricalIndicator[], bars: Historica
       compactLabel: resistanceLabel, label: `${title} resistance`, prefix: `qmd_structure_${scope}_resistance`, scope, side: "resistance",
     });
   });
-  pushStructureSwingLevels(zones, rows, chartEnd);
-  pushStructureEvents(zones, rows, chartEnd);
-  pushGenericStructureReferences(zones, rows, chartEnd);
+    pushStructureSwingLevels(zones, rows, chartEnd);
+    pushStructureEvents(
+      zones,
+      structureEvents.length ? structureEvents : structureEventsFromSampledRows(rows),
+      chartEnd,
+    );
+  }
+  if (visibleIndicators.includes("indicator.qmd_reference_levels")) {
+    pushGenericStructureReferences(zones, rows, chartEnd);
+  }
   return zones;
 }
 
@@ -1721,10 +1799,10 @@ function pushStructureSwingLevels(
         historicalLabelsDefault: false,
         historicalTagLimitDefault: 0,
         label: `${title} swing ${side}`,
-        legendLabel: "Swing references",
+        legendLabel: `${title} · Swing references`,
         minPixelHeight: 3,
         renderMode: "line",
-        settingsId: "indicator.qmd_generic_structure.swings",
+        settingsId: `indicator.qmd_generic_structure.${scope}-swings`,
       });
     });
   });
@@ -1734,7 +1812,7 @@ type StructureZoneSpec = {
   compactLabel: string;
   label: string;
   prefix: string;
-  scope: "unified" | "micro" | "tactical" | "context";
+  scope: "micro" | "tactical" | "context";
   side: "support" | "resistance";
 };
 
@@ -1794,7 +1872,6 @@ function pushStructureZoneSegments(
     context: { maxSegments: 3, minConfidence: 0.5, minDurationSeconds: 300, minStrength: 0.45 },
     micro: { maxSegments: 0, minConfidence: 1, minDurationSeconds: Number.POSITIVE_INFINITY, minStrength: 1 },
     tactical: { maxSegments: 2, minConfidence: 0.5, minDurationSeconds: 120, minStrength: 0.5 },
-    unified: { maxSegments: 3, minConfidence: 0.45, minDurationSeconds: 60, minStrength: 0.5 },
   }[spec.scope];
   const historical = segments
     .filter((segment) => {
@@ -1839,7 +1916,7 @@ function pushCurrentStructureLevels(
     ? latest.qmd_structure_active_levels.filter(isQmdStructureLevelCandidate)
     : [];
   if (!candidates.length) return;
-  const startIndex = Math.max(0, latestIndex - 11);
+  const startIndex = latestIndex;
   const start = rowTimestamp(rows[startIndex]);
   if (!Number.isFinite(start) || !(chartEnd > start)) return;
 
@@ -1922,16 +1999,15 @@ function pushStructureZoneSegment(
   const end = endIndex < rows.length ? rowTimestamp(rows[endIndex]) : chartEnd;
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
   const support = spec.side === "support";
-  const unified = spec.scope === "unified";
   const scopeOpacity = spec.scope === "micro" ? 0.55 : spec.scope === "tactical" ? 0.72 : spec.scope === "context" ? 0.62 : 1;
   const color = support ? "var(--success)" : "var(--danger)";
   zones.push({
     annotationKind: support ? "liquidity-support" : "liquidity-resistance",
-    axisLabelDefault: unified,
+    axisLabelDefault: false,
     borderColor: color,
     borderOpacity: (0.22 + 0.48 * spec.confidence) * scopeOpacity,
     borderStyle: spec.scope === "context" ? "dashed" : spec.scope === "micro" ? "dotted" : "solid",
-    borderWidth: unified ? 1.25 + 1.25 * spec.confidence : 0.75 + 0.75 * spec.confidence,
+    borderWidth: 0.75 + 0.75 * spec.confidence,
     color,
     compactLabel: spec.compactLabel,
     confidence: spec.confidence,
@@ -1939,51 +2015,75 @@ function pushStructureZoneSegment(
     displayItemId: "indicator.qmd_generic_structure",
     end,
     fillColor: color,
-    fillOpacity: (unified ? 0.035 : 0.01) + spec.strength * (unified ? 0.09 : 0.04) * scopeOpacity,
+    fillOpacity: 0.01 + spec.strength * 0.04 * scopeOpacity,
     historicalLabelsDefault: false,
-    historicalTagLimitDefault: unified ? 3 : 0,
+    historicalTagLimitDefault: 0,
     label: `${spec.label} · ${percentLabel(spec.strength)} strength · ${percentLabel(spec.confidence)} confidence`,
     latest,
-    legendLabel: unified ? "Selected structure zones" : `${spec.scope[0].toUpperCase()}${spec.scope.slice(1)} zones`,
+    legendLabel: `${spec.scope[0].toUpperCase()}${spec.scope.slice(1)} zones`,
     lower: spec.lower > 0 ? spec.lower : spec.price,
-    minPixelHeight: unified ? 8 : 4,
-    settingsId: `indicator.qmd_generic_structure.${unified ? "selected-zones" : `${spec.scope}-zones`}`,
+    minPixelHeight: 4,
+    settingsId: `indicator.qmd_generic_structure.${spec.scope}-zones`,
     start,
     strength: spec.strength,
     upper: spec.upper > 0 ? spec.upper : spec.price,
   });
 }
 
+function structureEventsFromSampledRows(rows: HistoricalIndicator[]): QmdStructureEvent[] {
+  const events: QmdStructureEvent[] = [];
+  let previousId = "";
+  rows.forEach((row) => {
+    const eventId = String(row.qmd_structure_event_id || "");
+    const eventKind = String(row.qmd_structure_event_kind || "").toLowerCase();
+    if (!eventId || eventId === "0" || eventId === previousId || !["bos", "choch"].includes(eventKind)) {
+      previousId = eventId;
+      return;
+    }
+    const confirmedAtMs = finiteNumber(row.qmd_structure_event_at_ms);
+    const pivotAtMs = finiteNumber(row.qmd_structure_event_pivot_at_ms);
+    const price = finiteNumber(row.qmd_structure_event_price);
+    if (!(confirmedAtMs > 0) || !(pivotAtMs > 0) || !(price > 0)) {
+      previousId = eventId;
+      return;
+    }
+    events.push({
+      algorithm_version: 0,
+      confidence: finiteNumber(row.qmd_structure_confidence),
+      confirmed_at: new Date(confirmedAtMs).toISOString(),
+      direction: finiteNumber(row.qmd_structure_event_direction),
+      event_id: Number(eventId),
+      event_kind: eventKind,
+      lower: price,
+      pivot_at: new Date(pivotAtMs).toISOString(),
+      price,
+      scale: String(row.qmd_structure_event_scale || "").toLowerCase(),
+      strength: finiteNumber(row.qmd_structure_strength),
+      sym: "",
+      upper: price,
+    });
+    previousId = eventId;
+  });
+  return events;
+}
+
 function pushStructureEvents(
   zones: NonNullable<ChartPayload["price_zones"]>,
-  rows: HistoricalIndicator[],
+  events: QmdStructureEvent[],
   chartEnd: number,
 ) {
-  const firstIndex = Math.max(0, rows.length - LEVEL_SOURCE_HISTORY_BARS);
-  const loadedStart = rowTimestamp(rows[firstIndex]);
-  const events: Array<{ confirmedAt: number; direction: number; end: number; kind: string; pivotAt: number; price: number; scale: string }> = [];
-  let previousId = firstIndex > 0 ? String(rows[firstIndex - 1]?.qmd_structure_event_id || "") : "";
-  for (let index = firstIndex; index < rows.length; index += 1) {
-    const eventId = String(rows[index]?.qmd_structure_event_id || "");
-    const kind = String(rows[index]?.qmd_structure_event_kind || "").toLowerCase();
-    if (!eventId || eventId === "0" || eventId === previousId || !["bos", "choch"].includes(kind)) {
-      previousId = eventId;
-      continue;
-    }
-    const price = finiteNumber(rows[index]?.qmd_structure_event_price);
-    const direction = finiteNumber(rows[index]?.qmd_structure_event_direction);
-    const pivotAt = finiteNumber(rows[index]?.qmd_structure_event_pivot_at_ms) / 1000;
-    const confirmedAt = finiteNumber(rows[index]?.qmd_structure_event_at_ms) / 1000;
-    const end = index + 1 < rows.length ? rowTimestamp(rows[index + 1]) : chartEnd;
-    if (!(price > 0) || confirmedAt < loadedStart || !Number.isFinite(pivotAt) || !Number.isFinite(confirmedAt) || !(end > pivotAt)) {
-      previousId = eventId;
-      continue;
-    }
-    const scale = String(rows[index]?.qmd_structure_event_scale || "").toLowerCase();
-    events.push({ confirmedAt, direction, end, kind, pivotAt, price, scale });
-    previousId = eventId;
-  }
-  events.slice(-8).forEach(({ confirmedAt, direction, end, kind, pivotAt, price, scale }) => {
+  events
+    .filter((event) => ["bos", "choch"].includes(String(event.event_kind || "").toLowerCase()))
+    .slice(-100)
+    .forEach((event) => {
+    const confirmedAt = Date.parse(event.confirmed_at) / 1000;
+    const direction = Number(event.direction || 0);
+    const kind = String(event.event_kind || "").toLowerCase();
+    const pivotAt = Date.parse(event.pivot_at) / 1000;
+    const price = Number(event.price || 0);
+    const scale = String(event.scale || "").toLowerCase();
+    const end = Math.min(chartEnd, confirmedAt);
+    if (!(price > 0) || !Number.isFinite(pivotAt) || !Number.isFinite(confirmedAt) || !(end > pivotAt)) return;
     const bullish = direction > 0;
     const label = kind === "choch" ? "CHoCH" : "BoS";
     zones.push({
@@ -2002,11 +2102,12 @@ function pushStructureEvents(
       historicalTagLimitDefault: 5,
       label: `${label}${bullish ? "+" : "-"} · ${scale || "structure"} · ${formatLevelPrice(price)}`,
       latest: false,
-      legendLabel: "Structure breaks",
+      defaultVisible: scale !== "micro",
+      legendLabel: `${scale ? `${scale[0].toUpperCase()}${scale.slice(1)}` : "Structure"} · Structure breaks`,
       lower: price,
       minPixelHeight: 1,
       renderMode: "line",
-      settingsId: "indicator.qmd_generic_structure.breaks",
+      settingsId: `indicator.qmd_generic_structure.${scale || "unknown"}-breaks`,
       start: pivotAt,
       upper: price,
       zoneHeightMode: "price",
@@ -2034,7 +2135,6 @@ function pushGenericStructureReferences(
     ["qmd_structure_prior_month_high", "Prior-month high", "PrevM H", "var(--primary)", "prior-month", "Prior month H/L/C", false],
     ["qmd_structure_prior_month_low", "Prior-month low", "PrevM L", "var(--primary)", "prior-month", "Prior month H/L/C", false],
     ["qmd_structure_prior_month_close", "Prior-month close", "PrevM C", "var(--muted-foreground)", "prior-month", "Prior month H/L/C", false],
-    ["qmd_structure_nearest_round", "Nearest round price", "Round", "var(--muted-foreground)", "round", "Round price", false],
   ] as const;
   specs.forEach(([column, label, compactLabel, color, settingsSuffix, legendLabel, axisLabelDefault]) => {
     const settingsGroup = ["session", "premarket"].includes(settingsSuffix)
@@ -2053,7 +2153,7 @@ function pushGenericStructureReferences(
       color,
       compactLabel,
       defaultVisible: ["opening-range", "poc"].includes(settingsGroup),
-      displayItemId: "indicator.qmd_generic_structure",
+      displayItemId: "indicator.qmd_reference_levels",
       fillOpacity: 0.025,
       historicalLabelsDefault: false,
       historicalTagLimitDefault: 0,
@@ -2061,7 +2161,7 @@ function pushGenericStructureReferences(
       legendLabel: groupedLegendLabel,
       minPixelHeight: 3,
       renderMode: "line",
-      settingsId: `indicator.qmd_generic_structure.reference.${settingsGroup}`,
+      settingsId: `indicator.qmd_reference_levels.${settingsGroup}`,
     });
   });
 }
@@ -2184,7 +2284,7 @@ function formatLevelPrice(value: number) {
 
 function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscillator" | "price", visibleIndicators: string[]): ChartPayload["overlay_series"] {
   const visible = new Set(visibleIndicators);
-  const latestMicrostructure = [...rows].reverse().find((row) => Number.isFinite(Number(row.microstructure_unified_signal)));
+  const latestDecision = [...rows].reverse().find((row) => Number.isFinite(Number(row.qmd_decision_signal)));
   const latestAnchoredFlow = [...rows].reverse().find((row) => Number.isFinite(Number(row.microstructure_cumulative_level1_ofi)) && Number.isFinite(Number(row.microstructure_cumulative_signed_volume_delta)));
   return INDICATOR_SERIES.filter((spec) => visible.has(spec.displayItemId) && (spec.pane === "price" ? "price" : "oscillator") === target).map((spec) => ({
     ...( "autoscaleMax" in spec ? { autoscaleMax: spec.autoscaleMax, autoscaleMin: spec.autoscaleMin } : {}),
@@ -2196,8 +2296,8 @@ function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscilla
     data: rows.map((row) => indicatorSeriesPoint(row, spec.column, "colorMode" in spec ? spec.colorMode : undefined)).filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value)),
     ...( "defaultVisible" in spec ? { defaultVisible: Boolean(spec.defaultVisible) } : {}),
     displayItemId: spec.displayItemId,
-    label: spec.column === "microstructure_unified_signal"
-      ? microstructureUnifiedLabel(latestMicrostructure)
+    label: spec.column === "qmd_decision_signal"
+      ? qmdDecisionLabel(latestDecision)
       : spec.column === "microstructure_anchored_flow_relationship"
         ? anchoredFlowRelationshipLabel(latestAnchoredFlow)
         : spec.label,
@@ -2218,9 +2318,9 @@ function indicatorSeriesPoint(row: HistoricalIndicator, column: string, colorMod
     return { color: relationship.color, time, value: relationship.value };
   }
   return {
-    ...(colorMode === "confidence-sign" ? { confidence: boundedUnit(row.qmd_structure_confidence) } : {}),
-    ...(column === "microstructure_unified_signal"
-      ? { tone: microstructureActionTone(String(row.microstructure_unified_action || "WAIT")) }
+    ...(colorMode === "confidence-sign" ? { confidence: boundedUnit(column === "qmd_decision_signal" ? row.qmd_decision_confidence : row.qmd_structure_confidence) } : {}),
+    ...(column === "qmd_decision_signal"
+      ? { tone: microstructureActionTone(String(row.qmd_decision_action || "WAIT")) }
       : qmdDirectionalColumn(column)
         ? { tone: microstructureValueTone(Number(row[column])) }
         : {}),
@@ -2261,10 +2361,10 @@ function microstructureValueTone(value: number): "buy" | "neutral" | "sell" {
   return "neutral";
 }
 
-function microstructureUnifiedLabel(row?: HistoricalIndicator) {
-  const action = String(row?.microstructure_unified_action || "WAIT").toUpperCase();
-  const confidence = Number(row?.microstructure_unified_confidence);
-  return `Signal ${action}${Number.isFinite(confidence) ? ` · ${Math.round(confidence)}%` : ""}`;
+function qmdDecisionLabel(row?: HistoricalIndicator) {
+  const action = String(row?.qmd_decision_action || "WAIT").toUpperCase();
+  const confidence = boundedUnit(row?.qmd_decision_confidence);
+  return `Decision ${action} · ${Math.round(confidence * 100)}%`;
 }
 
 function PreviewTable({ columns, onSymbolSelect, rows }: { columns: string[]; onSymbolSelect?: (symbol: string) => void; rows: PreviewRow[] }) {
@@ -2700,11 +2800,21 @@ function readSettings(): ContainerSettings {
 
 function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSettings {
   const storedIndicators = Array.isArray(stored.chart?.visibleIndicators) ? stored.chart.visibleIndicators : DEFAULT_SETTINGS.chart.visibleIndicators;
+  const obsoleteDecisionIndicators = ["indicator.microstructure_outlook", "indicator.qmd_architecture", "indicator.qmd_structural_pressure"];
   const replacedStructure = storedIndicators.some((id) => ["indicator.qmd_liquidity_levels", "indicator.market_structure_levels", "indicator.qmd_level_confluence"].includes(id));
-  const canonicalIndicators = storedIndicators.filter((id) => !["indicator.qmd_liquidity_levels", "indicator.market_structure_levels", "indicator.qmd_level_confluence"].includes(id));
+  const replacedDecision = storedIndicators.some((id) => obsoleteDecisionIndicators.includes(id));
+  const canonicalIndicators = storedIndicators.filter((id) => ![
+    "indicator.qmd_liquidity_levels",
+    "indicator.market_structure_levels",
+    "indicator.qmd_level_confluence",
+    ...obsoleteDecisionIndicators,
+  ].includes(id));
   if (replacedStructure && !canonicalIndicators.includes("indicator.qmd_generic_structure")) canonicalIndicators.push("indicator.qmd_generic_structure");
+  if (replacedDecision && !canonicalIndicators.includes("indicator.qmd_decision")) canonicalIndicators.push("indicator.qmd_decision");
   const migratedIndicators = stored.version === DEFAULT_SETTINGS.version || canonicalIndicators.includes("indicator.macd") ? canonicalIndicators : [...canonicalIndicators, "indicator.macd"];
-  const visibleIndicators = stored.version === DEFAULT_SETTINGS.version || migratedIndicators.includes("indicator.microstructure_outlook") ? migratedIndicators : [...migratedIndicators, "indicator.microstructure_outlook"];
+  const visibleIndicators = stored.version === DEFAULT_SETTINGS.version
+    ? migratedIndicators
+    : Array.from(new Set([...migratedIndicators, "indicator.qmd_decision", "indicator.qmd_decision_chart"]));
   const timeframe = HISTORICAL_TIMEFRAMES.includes(stored.chart?.timeframe as CanvasChartTimeframe) ? stored.chart!.timeframe! : DEFAULT_SETTINGS.chart.timeframe;
   const storedPerformance = stored.performance_journal as (Partial<ContainerSettings["performance_journal"]> & { showFees?: boolean }) | undefined;
   return {

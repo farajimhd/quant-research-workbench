@@ -557,7 +557,10 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const nativeChartHeight: CSSProperties["height"] = fullscreen
     ? `calc(100vh - 322px + ${oscillatorPaneTotalHeight}px)`
     : 620 + oscillatorPaneTotalHeight;
-  const alignLeftPriceScale = oscillatorPaneGroups.some(oscillatorGroupUsesLeftScale);
+  // Reserve one stable price-scale gutter on both sides for every pane. Dynamic
+  // left-scale visibility changed the plot width whenever an oscillator was
+  // added and left each legend at a different horizontal origin.
+  const alignLeftPriceScale = true;
   const priceLegendItems = [
     ...buildSeriesLegendItems(displayedOverlaySeries, "price", legendSettings, displayItemOptions, catalogColumns, chartSettings),
     ...buildPriceZoneLegendItems(displayedPriceZones, legendSettings, displayItemOptions, catalogColumns, chartSettings),
@@ -1197,7 +1200,15 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     syncPriceZoneAxisLines(candleRef.current, selectedZones, legendSettingsRef.current, priceZoneAxisLinesRef.current);
     drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, selectedZones, currentPayload.trade_annotations ?? [], currentPayload.candles, timeline, chartSettingsRef.current, legendSettingsRef.current, liveEntryLineRef.current);
     oscillatorPaneRuntimesRef.current.forEach((_runtime, key) => {
-      drawSessionRegions(chart, oscillatorLayerRefs.current.get(key) ?? null, currentPayload.regions, timeline, currentPayload.candles, chartSettingsRef.current, false);
+      drawSessionRegions(
+        chart,
+        oscillatorLayerRefs.current.get(key) ?? null,
+        currentPayload.regions.filter((region) => !region.label.startsWith("QMD ")),
+        timeline,
+        currentPayload.candles,
+        chartSettingsRef.current,
+        false,
+      );
     });
     drawReferenceLine(chart, referenceLayerRef.current, currentPayload.candles, showReferenceLineRef.current ? referenceRef.current : null);
   }
@@ -1518,7 +1529,6 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
                 <ChartLegend
                   indicatorCount={group.series.length}
                   items={buildSeriesLegendItems(group.series, "oscillator", legendSettings, displayItemOptions, catalogColumns, chartSettings)}
-                  leftScale={oscillatorGroupUsesLeftScale(group)}
                   onReset={resetLegendSettings}
                   onThresholdReset={() => resetOscillatorThreshold(group)}
                   onThresholdUpdate={(patch) => updateOscillatorThreshold(group, patch)}
@@ -1709,7 +1719,6 @@ type LegendItem = {
 function ChartLegend({
   indicatorCount,
   items,
-  leftScale = false,
   onReset,
   onUpdate,
   onThresholdReset,
@@ -1719,7 +1728,6 @@ function ChartLegend({
 }: {
   indicatorCount: number;
   items: LegendItem[];
-  leftScale?: boolean;
   onReset: (key: string) => void;
   onUpdate: (key: string, patch: LegendSeriesSettings) => void;
   onThresholdReset?: () => void;
@@ -1734,7 +1742,7 @@ function ChartLegend({
   if (!items.length) return null;
   const editingItem = items.find((item) => item.key === editingKey && item.configurable);
   return (
-    <div className={`${collapsed ? "chart-legend collapsed" : "chart-legend"}${leftScale ? " left-scale" : ""}`}>
+    <div className={collapsed ? "chart-legend collapsed" : "chart-legend"}>
       <button
         aria-label={collapsed ? "Expand legend" : "Collapse legend"}
         className="chart-legend-header"
@@ -2945,10 +2953,6 @@ function formatOscillatorPaneLabel(group: OscillatorPaneGroup) {
   return `${group.series.length} indicators`;
 }
 
-function oscillatorGroupUsesLeftScale(group?: OscillatorPaneGroup) {
-  return Boolean(group?.series.some((series) => series.priceScaleId === "left"));
-}
-
 function defaultOscillatorPaneHeight(group: OscillatorPaneGroup) {
   return group.key === "oscillator:microstructure" ? 200 : 190;
 }
@@ -3651,7 +3655,7 @@ function chartOptions(
   settings: ChartAppearanceSettings = defaultChartAppearanceSettings,
   timeframe = "1m",
   showTimeScale = true,
-  showLeftPriceScale = false,
+  showLeftPriceScale = true,
 ) {
   const timeframeSeconds = chartTimeframeSeconds(timeframe);
   const showSeconds = timeframeSeconds !== null && timeframeSeconds < 60;

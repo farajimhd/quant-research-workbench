@@ -168,9 +168,26 @@ Fields are `microstructure_aggressive_flow_score`,
 `microstructure_unified_confidence`, and `microstructure_unified_action`.
 Strategies should use this combined signal rather than recombining the blocks.
 
-The 25/100/500-event `microstructure_{fast,confirm,context}_*` fields remain
-available as event-horizon context. They are not the definition of the
-timeframe-consistent bar-level combined signal.
+The overlapping 25/100/500-event forecast fields and endpoint are retired.
+QMD instead derives one canonical bar decision after the Generic Structure
+snapshot is attached:
+
+```text
+structural context =
+    0.75 * qmd_structure_score
+  + 0.25 * (pressure bias * pressure confidence)
+
+QMD decision signal =
+    0.78 * microstructure unified signal
+  + 0.22 * structural context
+```
+
+The direction is eligible only when the microstructure trigger has absolute
+magnitude at least 0.15 and confidence at least 35%. Material opposing
+structural context (absolute context at least 0.12) vetoes the action to
+`wait`. Fields are `qmd_decision_signal`, `qmd_decision_confidence`,
+`qmd_decision_action`, and `qmd_decision_reason`. This is causal short-horizon
+evidence, not a calibrated return probability or an execution instruction.
 
 ## 2. Session-Anchored OFI and Trade Delta
 
@@ -364,7 +381,6 @@ Live QMD provides:
 ```text
 GET /indicator-catalog
 GET /snapshot/indicators/{ticker}?timeframe={timeframe}&limit={rows}
-GET /snapshot/microstructure-forecast/{ticker}
 GET /stream/indicators/{ticker}
 ```
 
@@ -410,7 +426,7 @@ structural pressure. New code should prefer `qmd_structure_*`.
 
 ## Implementation Authorities
 
-- `src/microstructure_forecast.rs`: interval sufficient statistics, component
+- `src/microstructure_interval.rs`: interval sufficient statistics, component
   formulas, reliability, confidence, and action.
 - `src/generic_structure.rs`: adaptive pivots, zones, lifecycle, events,
   structural pressure, and persistence state.

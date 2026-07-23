@@ -83,7 +83,6 @@ from src.backend.qmd_gateway_client import (
     qmd_catalogs,
     qmd_chart_bars,
     qmd_compact_events,
-    qmd_microstructure_forecast,
     qmd_indicators,
     qmd_live_market_state,
     qmd_service_status,
@@ -121,7 +120,6 @@ from src.backend.trading_runtime_service import (
     historical_latest_coverage,
     historical_gateway_snapshot,
     historical_market_state,
-    historical_microstructure_forecast,
     historical_ticker_change,
     historical_gateway_websocket_url,
     historical_preflight,
@@ -4871,31 +4869,6 @@ def trading_canvas_market_state(symbol: str, start: str | None = None, end: str 
         raise HTTPException(status_code=400, detail="start and end must be provided together")
     try:
         return historical_market_state(ticker, start=start, end=end) if start and end else qmd_live_market_state(ticker)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-
-@app.get("/api/trading/canvas-microstructure-forecast/{symbol}")
-def trading_canvas_microstructure_forecast(
-    symbol: str,
-    start: str | None = None,
-    end: str | None = None,
-    row_limit: int = Query(default=1_024, ge=500, le=5_000),
-) -> dict[str, Any]:
-    ticker = symbol.strip().upper()
-    if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
-        raise HTTPException(status_code=400, detail="symbol must be a valid ticker")
-    if bool(start) != bool(end):
-        raise HTTPException(status_code=400, detail="start and end must be provided together")
-    try:
-        if start and end:
-            return historical_microstructure_forecast(
-                ticker,
-                start=start,
-                end=end,
-                row_limit=row_limit,
-            )
-        return qmd_microstructure_forecast(ticker, row_limit=row_limit)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

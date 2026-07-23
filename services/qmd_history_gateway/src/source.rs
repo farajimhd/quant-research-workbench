@@ -197,10 +197,6 @@ impl HistoricalEventSource {
         self.decoder.decode(event)
     }
 
-    pub fn decoder(&self) -> CompactEventDecoder {
-        self.decoder.clone()
-    }
-
     pub fn trade_aggregation_rules(&self) -> TradeAggregationRules {
         self.trade_rules.clone()
     }

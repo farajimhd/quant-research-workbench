@@ -17,7 +17,6 @@ use crate::market_products::{
     ProductCacheMetrics, SharedMarketProductStore,
 };
 use crate::metrics::{MetricsSnapshot, OperationalSnapshot, SharedMetrics};
-use crate::microstructure_forecast::{forecast_compact_events, MicrostructureForecastSnapshot};
 use crate::scanner::{ScannerPrimitive, ScannerPrimitiveSnapshot, SharedScannerStore};
 use crate::session::session_phase;
 use crate::signal_catalog::{signal_catalog, SignalMethodEntry};
@@ -137,10 +136,6 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/snapshot/compact-events/{ticker}",
             get(compact_event_snapshot),
-        )
-        .route(
-            "/snapshot/microstructure-forecast/{ticker}",
-            get(microstructure_forecast_snapshot),
         )
         .route("/snapshot/indicators/{ticker}", get(indicator_snapshot))
         .route(
@@ -817,28 +812,6 @@ async fn compact_event_snapshot(
             )
             .await,
     )
-}
-
-async fn microstructure_forecast_snapshot(
-    State(state): State<Arc<AppState>>,
-    Path(ticker): Path<String>,
-    Query(query): Query<LimitQuery>,
-) -> Json<MicrostructureForecastSnapshot> {
-    let limit = query
-        .limit
-        .unwrap_or(5_000)
-        .min(state.config.compact_event_live_buffer_events_per_ticker)
-        .max(1);
-    let events = state
-        .compact_event_store
-        .latest_sorted(&ticker, limit)
-        .await;
-    Json(forecast_compact_events(
-        &events,
-        &state.compact_event_decoder,
-        &state.trade_aggregation_rules,
-        "qmd-gateway",
-    ))
 }
 
 async fn indicator_snapshot(
