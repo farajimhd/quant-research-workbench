@@ -186,20 +186,20 @@ def validate_price_zone_legend(
         return
     price_legend.locator(".chart-legend-header").click()
     legend_text = price_legend.inner_text()
+    active_timeframe = chart.locator(
+        ".chart-timeframe-row .timeframe-button.active"
+    ).inner_text().strip()
     for expected_level_indicator in (
-        "Current support & resistance",
-        "Micro · Structure breaks",
-        "Tactical · Structure breaks",
-        "Context · Structure breaks",
+        f"{active_timeframe} · Swing levels",
+        f"{active_timeframe} · Structure breaks",
+        "Level volume footprint",
     ):
         if expected_level_indicator not in legend_text:
             issues.append(f"price legend omits {expected_level_indicator}")
     configure_levels = price_legend.get_by_role(
         "button", name="Configure Current support & resistance"
     )
-    if configure_levels.count() != 1:
-        issues.append("generic structure levels do not expose legend configuration")
-    else:
+    if configure_levels.count() == 1:
         configure_levels.click()
         levels_editor = page.get_by_role(
             "dialog", name="Current support & resistance indicator settings"
@@ -249,14 +249,13 @@ def validate_price_zone_legend(
         )
         guide_text = guide.inner_text()
         for expected_explanation in (
-            "temporarily in play",
-            "confirmed break retires the original role",
-            "retests from the other side",
-            "simple cross never flips the label",
+            "automatically enables only the swing and break layers",
+            "sh and sl lines are bounded",
+            "volume footprint remain a separate immediate level-book view",
         ):
-            if expected_explanation not in guide_text:
+            if expected_explanation not in guide_text.lower():
                 issues.append(
-                    f"generic structure guide omits role-reversal rule: {expected_explanation}"
+                    f"generic structure guide omits current contract: {expected_explanation}"
                 )
         if interaction_screenshot:
             page.screenshot(
@@ -266,23 +265,58 @@ def validate_price_zone_legend(
                 full_page=True,
             )
         guide.get_by_role("button", name="Close").click()
-    for scale in ("Micro", "Tactical", "Context"):
-        legend_label = f"{scale} · Structure breaks"
-        configure_breaks = price_legend.get_by_role(
+    locked_visibility = price_legend.locator(
+        'button[aria-label$="follows chart timeframe"]'
+    )
+    if locked_visibility.count() < 2:
+        issues.append("timeframe structure layers do not expose locked visibility")
+    elif locked_visibility.evaluate_all(
+        "elements => elements.filter(element => !element.disabled).length"
+    ):
+        issues.append("timeframe structure visibility can be manually overridden")
+    for layer_kind in ("Swing levels", "Structure breaks"):
+        legend_label = f"{active_timeframe} · {layer_kind}"
+        configure_layer = price_legend.get_by_role(
             "button", name=f"Configure {legend_label}"
         )
-        if configure_breaks.count() != 1:
-            issues.append(f"{scale.lower()} structure breaks do not expose configuration")
+        if configure_layer.count() != 1:
+            issues.append(f"{legend_label} does not expose configuration")
             continue
-        configure_breaks.click()
-        breaks_editor = page.get_by_role(
+        configure_layer.click()
+        layer_editor = page.get_by_role(
             "dialog", name=f"{legend_label} indicator settings"
         )
-        if breaks_editor.get_by_role("slider", name=f"{legend_label} label text size").count() != 1:
-            issues.append(f"{scale.lower()} structure-break settings omit connector label sizing")
-        if breaks_editor.get_by_text("Swing-to-break connectors", exact=True).count() != 1:
-            issues.append(f"{scale.lower()} structure-break settings omit connector visibility")
-        breaks_editor.get_by_role("button", name="Close indicator settings").click()
+        history = layer_editor.get_by_role(
+            "slider", name=f"{legend_label} history bars"
+        )
+        if history.count() != 1:
+            issues.append(f"{legend_label} omits its history control")
+        elif history.input_value() != "20" or history.get_attribute("max") != "1000":
+            issues.append(
+                f"{legend_label} history is not the 20-to-1000 authority "
+                f"(value={history.input_value()}, max={history.get_attribute('max')})"
+            )
+        shape = layer_editor.get_by_label("Shape")
+        width = layer_editor.get_by_role("slider", name="Width")
+        if shape.input_value() != "dashed" or width.input_value() != "1":
+            issues.append(f"{legend_label} does not default to a dashed one-pixel line")
+        if layer_editor.get_by_text(
+            re.compile(r"(break|historical) label limit", re.IGNORECASE)
+        ).count():
+            issues.append(f"{legend_label} exposes a competing label-history limit")
+        overflow = layer_editor.evaluate(
+            "element => element.scrollWidth > element.clientWidth + 1"
+        )
+        if overflow:
+            issues.append(f"{legend_label} settings overflow horizontally")
+        connector_control = layer_editor.get_by_text(
+            "Swing-to-break connectors", exact=True
+        )
+        if layer_kind == "Structure breaks" and connector_control.count() != 1:
+            issues.append(f"{legend_label} omits connector visibility")
+        if layer_kind == "Swing levels" and connector_control.count():
+            issues.append(f"{legend_label} exposes an irrelevant connector control")
+        layer_editor.get_by_role("button", name="Close indicator settings").click()
     overlap_counts = page.evaluate("""() => {
         const labels = Array.from(document.querySelectorAll('.price-zone-label'));
         const boxes = labels.map(label => label.getBoundingClientRect());
