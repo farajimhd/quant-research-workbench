@@ -453,18 +453,18 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     "qmd_structure_developing_high", "qmd_structure_developing_low", "qmd_structure_developing_direction",
     "qmd_structure_event_id", "qmd_structure_event_pivot_at_ms", "qmd_structure_event_at_ms", "qmd_structure_event_kind", "qmd_structure_event_timeframe", "qmd_structure_event_direction", "qmd_structure_event_price",
   ], "price", {
-    shortDescription: "An immediate eligible-trade level book with causal timeframe promotion, break lifecycle, and executed-volume footprints.",
-    detailedDescription: "QMD maintains one causal book of traded-price highs and lows from every ordered eligible trade. The current developing high and low update immediately at the exact trade price; a first opposing one-tick trade freezes the developing extreme as a provisional level. Quotes may add liquidity context, but an unexecuted quote cannot create a level, swing, BoS, or CHoCH. The extraction is common to every chart interval. Timeframes only decide when the same level has survived and moved far enough to be promoted for use at 100 ms, 1 s, 5 s, 10 s, 30 s, 1 m, 5 m, or 1 h.",
-    calculation: "A crossing is emitted on the first eligible trade through an active level, without waiting for a candle close. The gateway then classifies the crossing as accepted or rejected from subsequent eligible trades; acceptance requires a confirming trade or 100 ms of persistence. Each chart timeframe maintains its own promoted direction and labels an accepted continuation break as BoS or the first accepted break against that direction as CHoCH. Broken levels remain in history, may be retested, and only reverse role after a confirmed rejection from the opposite side. Every level also owns a nine-bin footprint spanning four ticks below through four ticks above, split into buyer-, seller-, and neutral-initiated executed volume.",
-    readingGuide: "Select the chart timeframe you want to audit. The chart shows only levels promoted to that timeframe, while their origin still comes from the same event-native book. Current support and resistance shows the nearest configured levels on either side of price and also retains the strongest omitted level. Darker fill indicates stronger causal evidence, not a probability of profit. Hover a zone to inspect total, buy, sell, and neutral executed volume around the level. A developing extreme is available immediately but is not presented as established structure until the first opposing trade freezes it. Crossing, accepted break, BoS, CHoCH, retest, and role-reversal connectors retain their original event timestamps and never repaint earlier confidence with later evidence.",
+    shortDescription: "Exact eligible-trade price levels plus a separate causal local swing and break hierarchy for every supported timeframe.",
+    detailedDescription: "QMD has two related authorities. The immediate level book updates from every ordered eligible trade and retains price/volume evidence without waiting for a candle. Separately, each timeframe groups those same trades into fixed event-time buckets using the exact highest and lowest executed prices. A completed three-bucket neighborhood confirms the middle bucket only when it is a local high or low. Quotes may add liquidity context, but an unexecuted quote cannot create a swing, BoS, or CHoCH.",
+    calculation: "For a selected timeframe, the middle completed trade bucket is a swing high when its exact high is at least the prior bucket high and strictly above the following bucket high; swing lows use the inverse rule. The last bucket in a same-price plateau owns the pivot, preventing duplicates. Confirmation occurs only after the following bucket is complete, so history never repaints. Only the latest confirmed local high and low can generate that timeframe's break. The first eligible trade through it emits Crossing; a second confirming trade or 100 ms of persistence emits the accepted Break, BoS, or CHoCH.",
+    readingGuide: "Select the same timeframe as the chart to audit its local hierarchy. SH and SL lines are bounded: they start at the exact pivot trade and end when crossed or when a newer same-side local swing supersedes them. BoS continues the last accepted break direction; CHoCH is the first accepted break in the opposite direction. The pivot time shows where the extreme occurred, while the tooltip's later confirmation time is the earliest moment a strategy could have known it. Current support/resistance and its volume footprint remain a separate immediate level-book view.",
     bullishEvidence: "Bullish evidence increases when resistance is crossed and accepted, an upward BoS or CHoCH is confirmed for the selected timeframe, support survives retests, and buyer-initiated footprint volume concentrates at or above the level.",
     bearishEvidence: "Bearish evidence increases when support is crossed and accepted, a downward BoS or CHoCH is confirmed for the selected timeframe, resistance survives retests, and seller-initiated footprint volume concentrates at or below the level.",
-    timeframeBehavior: "All intervals consume the same ordered eligible-trade extraction. A timeframe changes only promotion, filtering, and its own BoS/CHoCH state; it never rebuilds swings from candle OHLC. Historical and live paths persist the same level, event, promotion, lifecycle, and footprint contracts, so a strategy can request the timeframe relevant to its holding period without introducing bar-close delay.",
+    timeframeBehavior: "All intervals consume the same ordered eligible trades, but each interval owns its local extrema and break state. The timeframe controls the event-time neighborhood used to confirm a swing; it does not resample chart candle closes or inherit another timeframe's breaks. A 1-second BoS therefore breaks the latest confirmed 1-second swing, while 5-second and 1-minute structure remain independent.",
     components: [
-      { label: "S1–S6 / R1–R6 · Promoted levels", description: "Nearest active support and resistance levels promoted to the selected chart timeframe. The configured nearest count appears on each side; an asterisk identifies the strongest additional level retained outside that set.", tone: "neutral" },
+      { label: "SH / SL · Local swings", description: "The exact highest or lowest eligible trade in a confirmed three-bucket local neighborhood for the selected timeframe. Lines stop at a break or at the next same-side swing.", tone: "neutral" },
       { label: "Developing high / low", description: "The exact highest or lowest eligible trade in the currently developing move. It has zero extraction delay but remains provisional until an opposing trade freezes it.", tone: "info" },
       { label: "Crossing", description: "The first eligible trade through a level. It is immediate and causal, but not yet evidence that price accepted the break.", tone: "warning" },
-      { label: "Accepted / rejected", description: "Accepted means a later eligible trade confirms the crossed side or the break persists for 100 ms. Rejected means price returns through the level before acceptance.", tone: "neutral" },
+      { label: "Accepted break", description: "A later eligible trade confirms the crossed side, or the cross persists for 100 ms. A return first cancels the pending crossing without changing structure.", tone: "neutral" },
       { label: "BoS", description: "Break of Structure: an accepted break in the selected timeframe's established direction.", tone: "buy" },
       { label: "CHoCH", description: "Change of Character: the first accepted break against the selected timeframe's established direction. It is reversal evidence, not a guaranteed reversal.", tone: "warning" },
       { label: "Level footprint", description: "Executed volume within four ticks of the level, split into buyer-, seller-, and neutral-initiated volume. The nine bins show where trading actually concentrated around the reference.", tone: "info" },
@@ -473,7 +473,7 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
       { label: "Confidence", description: "Evidence repeatability and freshness for the level at that event time. It controls borderless region density and is not a forecast probability.", tone: "warning" },
       { label: "Auction references", description: "Session and premarket extremes, opening range, eligible-trade volume POC, estimated LULD, completed 52-week/prior-month levels, and round prices remain a separate reference-level package.", tone: "neutral" },
     ],
-    caveats: ["QMD observes consolidated Level-1 NBBO and eligible prints, not full venue depth or hidden liquidity.", "A provisional level is intentionally sensitive; promotion supplies timeframe relevance without delaying the underlying extraction.", "Nearest means absolute distance from current price. Strongest combines causal strength and confidence; it does not necessarily mean closest or most likely to hold.", "The footprint classifies aggressor side from available trade and NBBO evidence and therefore cannot reveal hidden orders.", "BoS, CHoCH, support, and resistance are deterministic evidence states—not trade instructions or win probabilities."],
+    caveats: ["QMD observes consolidated Level-1 NBBO and eligible prints, not full venue depth or hidden liquidity.", "A local swing is unknowable at its pivot instant; it becomes causal only after the following timeframe bucket completes. Strategies must use confirmed_at, never pivot_at.", "Nearest means absolute distance from current price. Strongest combines causal strength and confidence; it does not necessarily mean closest or most likely to hold.", "The footprint classifies aggressor side from available trade and NBBO evidence and therefore cannot reveal hidden orders.", "BoS, CHoCH, support, and resistance are deterministic evidence states—not trade instructions or win probabilities."],
   }),
 ];
 
@@ -2284,7 +2284,7 @@ function pushStructureZoneSegment(
 const QMD_STRUCTURE_TIMEFRAMES = ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"] as const;
 
 function qmdStructureLayerId(timeframe: string) {
-  return `indicator.qmd_generic_structure.v6.${timeframe}`;
+  return `indicator.qmd_generic_structure.v7.${timeframe}`;
 }
 
 function qmdStructureLineWidth(timeframe: string) {
@@ -2308,10 +2308,10 @@ function pushEventStructureSwingLevels(
     levelEvents.push(event);
     lifecycleByLevel.set(levelId, levelEvents);
   });
-  ordered
+  const promoted = ordered
     .filter((event) => event.event_kind === "level_promoted" && QMD_STRUCTURE_TIMEFRAMES.includes(event.timeframe as typeof QMD_STRUCTURE_TIMEFRAMES[number]))
-    .slice(-1_600)
-    .forEach((event) => {
+    .slice(-1_600);
+  promoted.forEach((event, eventIndex) => {
       const timeframe = event.timeframe as CanvasChartTimeframe;
       const start = Date.parse(event.pivot_at) / 1000;
       const promotedAt = Date.parse(event.confirmed_at);
@@ -2319,8 +2319,14 @@ function pushEventStructureSwingLevels(
       if (!Number.isFinite(start) || !(price > 0)) return;
       const terminal = lifecycleByLevel.get(Number(event.level_id))?.find((candidate) =>
         Date.parse(candidate.confirmed_at) >= promotedAt
-        && ["level_crossed", "break_accepted", "role_reversal"].includes(candidate.event_kind));
-      const end = Math.min(chartEnd, terminal ? Date.parse(terminal.confirmed_at) / 1000 : chartEnd);
+        && ["structure_crossed", "bos", "choch", "structure_break"].includes(candidate.event_kind));
+      const nextSameSide = promoted.slice(eventIndex + 1).find((candidate) =>
+        candidate.timeframe === event.timeframe && Math.sign(Number(candidate.direction)) === Math.sign(Number(event.direction)));
+      const end = Math.min(
+        chartEnd,
+        terminal ? Date.parse(terminal.confirmed_at) / 1000 : chartEnd,
+        nextSameSide ? Date.parse(nextSameSide.pivot_at) / 1000 : chartEnd,
+      );
       if (!Number.isFinite(end) || end <= start) return;
       const swingHigh = Number(event.direction) < 0;
       const color = swingHigh ? "var(--danger)" : "var(--success)";
@@ -2340,7 +2346,7 @@ function pushEventStructureSwingLevels(
         fillOpacity: 0,
         historicalLabelsDefault: timeframe === selectedTimeframe,
         historicalTagLimitDefault: timeframe === selectedTimeframe ? 8 : 0,
-        label: `${timeframe} swing ${swingHigh ? "high" : "low"} · ${formatLevelPrice(price)} · ${percentLabel(Number(event.confidence || 0))} confidence`,
+        label: `${timeframe} local swing ${swingHigh ? "high" : "low"} · ${formatLevelPrice(price)} · causal confirmation ${event.confirmed_at} · ${percentLabel(Number(event.confidence || 0))} confidence`,
         latest: !terminal,
         legendLabel: `${timeframe} · Swings & breaks`,
         lower: price,

@@ -195,7 +195,7 @@ Default durable writes:
 | `intraday_family_bars_v2` | `intraday_bars.rs` | yes | Rolling sparse family bars from 100ms through 1h |
 | `live_symbol_market_event_v1` | `live_market_state.rs` | yes | Abnormal live market-state transition audit |
 | `live_market_indicators` | `indicators.rs` | no | Optional materialized bar-level indicator rows |
-| `qmd_structure_events_v2` | `indicators.rs` | yes | Immediate trade-level creation, timeframe promotion, crossing, acceptance, BoS/CHoCH, retest, role-reversal, and footprint history |
+| `qmd_structure_events_v2` | `indicators.rs` | yes | Immediate trade-level creation plus independent timeframe-local trade-extrema swings, crossing, acceptance, BoS/CHoCH, retest, role-reversal, and footprint history |
 | `qmd_structure_state_v2` | `indicators.rs` | yes | Full versioned per-symbol level-book, timeframe state, and session-footprint checkpoint |
 | `qmd_gap_fill_runs` | `gapfill.rs` | yes | Gap-fill audit log |
 | `qmd_market_coverage_manifest_v1` | `gapfill.rs` | yes | Coarse startup repair and historical flatfile planning manifest |

@@ -115,12 +115,13 @@ diagnostic fields. Its QMD Decision values confidence-weight the canonical
 Timestamped 100 ms decision transitions are returned separately as
 `decision_events`, so a chart can render the first actionable transition inside
 a larger candle without waiting for that candle to close.
-Generic Structure promotions and accepted breaks are likewise retained in a
-separate chronological `structure_events` stream produced by the canonical
-100 ms engine. The stream contains every promoted timeframe, independent of the
-requested display-bar resolution; requesting 1-second bars therefore cannot
-discard 100 ms or 1-second swing levels, nor collapse simultaneous timeframe
-events into the last event attached to a sampled bar.
+Generic Structure local swings and accepted breaks are likewise retained in a
+separate chronological `structure_events` stream produced from the same ordered
+eligible trades. Each supported timeframe owns its exact trade-extrema buckets,
+local swings, and break direction independently of the requested display-bar
+resolution. Requesting 1-second bars therefore cannot discard 100 ms or
+1-second swing levels, nor collapse simultaneous timeframe events into the last
+event attached to a sampled bar.
 Session-anchored cumulative Level-1 OFI and signed trade-volume delta are then
 advanced from those interval-local values by the shared stateful indicator
 calculator. Both start from one zero baseline at 04:00 New York time and do not

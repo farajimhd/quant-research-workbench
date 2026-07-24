@@ -3,9 +3,9 @@ use crate::event::MarketEvent;
 use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use chrono_tz::America::New_York;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
-pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 6;
+pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 7;
 pub const STRUCTURE_TIMEFRAMES: [(&str, i64); 8] = [
     ("100ms", 100),
     ("1s", 1_000),
@@ -258,23 +258,114 @@ impl StructureLevel {
     fn is_active(&self) -> bool {
         matches!(self.lifecycle, LevelLifecycle::Active)
     }
+}
 
-    fn has_promotion(&self, timeframe: &str) -> bool {
-        self.promotions
-            .iter()
-            .any(|promotion| promotion.timeframe == timeframe)
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct TimeframeBucket {
+    start_ms: i64,
+    high: f64,
+    high_at: Option<DateTime<Utc>>,
+    low: f64,
+    low_at: Option<DateTime<Utc>>,
+    total_volume: f64,
+    buy_volume: f64,
+    sell_volume: f64,
+    neutral_volume: f64,
+    trade_count: u64,
+}
+
+impl TimeframeBucket {
+    fn new(start_ms: i64, ts: DateTime<Utc>, price: f64, size: f64, aggressor: i8) -> Self {
+        let mut bucket = Self {
+            start_ms,
+            high: price,
+            high_at: Some(ts),
+            low: price,
+            low_at: Some(ts),
+            ..Self::default()
+        };
+        bucket.observe(ts, price, size, aggressor);
+        bucket
     }
+
+    fn observe(&mut self, ts: DateTime<Utc>, price: f64, size: f64, aggressor: i8) {
+        if price >= self.high {
+            self.high = price;
+            self.high_at = Some(ts);
+        }
+        if self.low <= 0.0 || price <= self.low {
+            self.low = price;
+            self.low_at = Some(ts);
+        }
+        if size <= 0.0 {
+            return;
+        }
+        self.total_volume += size;
+        if aggressor > 0 {
+            self.buy_volume += size;
+        } else if aggressor < 0 {
+            self.sell_volume += size;
+        } else {
+            self.neutral_volume += size;
+        }
+        self.trade_count = self.trade_count.saturating_add(1);
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct TimeframeCrossing {
+    direction: i8,
+    first_crossed_at: Option<DateTime<Utc>>,
+    beyond_trades: u32,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct TimeframeSwing {
+    level_id: u64,
+    side: i8,
+    price: f64,
+    pivot_at: Option<DateTime<Utc>>,
+    confirmed_at: Option<DateTime<Utc>>,
+    strength: f64,
+    confidence: f64,
+    total_volume: f64,
+    buy_volume: f64,
+    sell_volume: f64,
+    neutral_volume: f64,
+    trade_count: u64,
+    broken: bool,
+    crossing: Option<TimeframeCrossing>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct TimeframeState {
     timeframe: String,
+    #[serde(default)]
+    horizon_ms: i64,
+    #[serde(default)]
+    current_bucket: Option<TimeframeBucket>,
+    #[serde(default)]
+    completed_buckets: VecDeque<TimeframeBucket>,
+    #[serde(default)]
+    active_high: Option<TimeframeSwing>,
+    #[serde(default)]
+    active_low: Option<TimeframeSwing>,
     previous_high: f64,
     current_high: f64,
     previous_low: f64,
     current_low: f64,
     direction: i8,
     promoted_level_count: usize,
+}
+
+impl TimeframeState {
+    fn new(timeframe: &str, horizon_ms: i64) -> Self {
+        Self {
+            timeframe: timeframe.to_string(),
+            horizon_ms,
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -359,10 +450,7 @@ impl GenericStructureEngine {
             levels: Vec::new(),
             timeframe_states: STRUCTURE_TIMEFRAMES
                 .iter()
-                .map(|(timeframe, _)| TimeframeState {
-                    timeframe: (*timeframe).to_string(),
-                    ..TimeframeState::default()
-                })
+                .map(|(timeframe, horizon_ms)| TimeframeState::new(timeframe, *horizon_ms))
                 .collect(),
             session_anchor: None,
             session_high: 0.0,
@@ -419,9 +507,9 @@ impl GenericStructureEngine {
                 self.observe_reference(ts, trade.price);
                 self.observe_trade_volume(trade.price, size, aggressor);
                 self.update_level_footprints(trade.price, size, aggressor);
-                self.promote_levels(ts, trade.price, &mut emitted);
                 self.update_level_lifecycles(ts, trade.price, size, &mut emitted);
                 self.update_directional_leg(ts, trade.price, &mut emitted);
+                self.update_timeframe_structures(ts, trade.price, size, aggressor, &mut emitted);
                 self.last_trade_price = trade.price;
             }
             _ => {}
@@ -568,91 +656,18 @@ impl GenericStructureEngine {
         self.prune_levels();
     }
 
-    fn promote_levels(
+    fn update_timeframe_structures(
         &mut self,
         ts: DateTime<Utc>,
         price: f64,
+        size: f64,
+        aggressor: i8,
         emitted: &mut Vec<GenericStructureEvent>,
     ) {
-        let tick = price_tick(price);
-        let mut promotions = Vec::new();
-        for level in &mut self.levels {
-            if !level.is_active() {
-                continue;
-            }
-            let departure = if level.side > 0 {
-                price - level.price
-            } else {
-                level.price - price
-            };
-            if !moved_at_least_one_tick(departure, tick) {
-                continue;
-            }
-            let age_ms = (ts - level.confirmed_at).num_milliseconds().max(0);
-            for (timeframe, horizon_ms) in STRUCTURE_TIMEFRAMES {
-                if age_ms < horizon_ms || level.has_promotion(timeframe) {
-                    continue;
-                }
-                let survival = (age_ms as f64 / horizon_ms as f64).min(2.0) / 2.0;
-                let excursion_ticks = (departure / tick).max(0.0);
-                let score = (0.45 + 0.25 * survival + 0.30 * (excursion_ticks / 8.0).min(1.0))
-                    .clamp(0.0, 1.0);
-                level.promotions.push(Promotion {
-                    timeframe: timeframe.to_string(),
-                    promoted_at: ts,
-                    score,
-                });
-                promotions.push((level.level_id, timeframe.to_string(), score));
-            }
-        }
-        for (level_id, timeframe, score) in promotions {
-            if let Some(level) = self.levels.iter().find(|level| level.level_id == level_id) {
-                let mut event = level_event(
-                    &self.sym,
-                    level,
-                    &timeframe,
-                    "level_promoted",
-                    level.side,
-                    ts,
-                );
-                event.confidence = score;
-                emitted.push(event);
-            }
-            self.update_timeframe_state(level_id, &timeframe);
-        }
-    }
-
-    fn update_timeframe_state(&mut self, level_id: u64, timeframe: &str) {
-        let Some(level) = self.levels.iter().find(|level| level.level_id == level_id) else {
-            return;
-        };
-        let Some(state) = self
-            .timeframe_states
-            .iter_mut()
-            .find(|state| state.timeframe == timeframe)
-        else {
-            return;
-        };
-        if level.side < 0 {
-            state.previous_high = state.current_high;
-            state.current_high = level.price;
-        } else {
-            state.previous_low = state.current_low;
-            state.current_low = level.price;
-        }
-        state.promoted_level_count = state.promoted_level_count.saturating_add(1);
-        if state.previous_high > 0.0
-            && state.previous_low > 0.0
-            && state.current_high > state.previous_high
-            && state.current_low > state.previous_low
-        {
-            state.direction = 1;
-        } else if state.previous_high > 0.0
-            && state.previous_low > 0.0
-            && state.current_high < state.previous_high
-            && state.current_low < state.previous_low
-        {
-            state.direction = -1;
+        for state in &mut self.timeframe_states {
+            emitted.extend(observe_timeframe_structure(
+                &self.sym, state, ts, price, size, aggressor,
+            ));
         }
     }
 
@@ -693,14 +708,6 @@ impl GenericStructureEngine {
                         "level_crossed".to_string(),
                         direction,
                     ));
-                    for promotion in &level.promotions {
-                        pending.push((
-                            level.level_id,
-                            promotion.timeframe.clone(),
-                            "structure_crossed".to_string(),
-                            direction,
-                        ));
-                    }
                 }
                 LevelLifecycle::Crossed {
                     direction,
@@ -737,27 +744,6 @@ impl GenericStructureEngine {
                             "break_accepted".to_string(),
                             direction,
                         ));
-                        for promotion in &level.promotions {
-                            let prior_direction = self
-                                .timeframe_states
-                                .iter()
-                                .find(|state| state.timeframe == promotion.timeframe)
-                                .map(|state| state.direction)
-                                .unwrap_or_default();
-                            let kind = if prior_direction != 0 && direction != prior_direction {
-                                "choch"
-                            } else if prior_direction != 0 {
-                                "bos"
-                            } else {
-                                "structure_break"
-                            };
-                            pending.push((
-                                level.level_id,
-                                promotion.timeframe.clone(),
-                                kind.to_string(),
-                                direction,
-                            ));
-                        }
                     } else {
                         level.lifecycle = LevelLifecycle::Crossed {
                             direction,
@@ -834,15 +820,6 @@ impl GenericStructureEngine {
                 emitted.push(level_event(
                     &self.sym, level, &timeframe, &kind, direction, ts,
                 ));
-            }
-            if matches!(kind.as_str(), "bos" | "choch" | "structure_break") {
-                if let Some(state) = self
-                    .timeframe_states
-                    .iter_mut()
-                    .find(|state| state.timeframe == timeframe)
-                {
-                    state.direction = direction;
-                }
             }
         }
     }
@@ -1085,20 +1062,13 @@ impl GenericStructureEngine {
                     });
                 }
                 "level_promoted" => {
-                    if let Some(level) = self
-                        .levels
+                    if let Some(state) = self
+                        .timeframe_states
                         .iter_mut()
-                        .find(|level| level.level_id == event.level_id)
+                        .find(|state| state.timeframe == event.timeframe)
                     {
-                        if !level.has_promotion(&event.timeframe) {
-                            level.promotions.push(Promotion {
-                                timeframe: event.timeframe.clone(),
-                                promoted_at: event.confirmed_at,
-                                score: event.confidence,
-                            });
-                        }
+                        seed_timeframe_swing(state, event);
                     }
-                    self.update_timeframe_state(event.level_id, &event.timeframe);
                 }
                 "level_crossed" | "break_accepted" => {
                     if let Some(level) = self
@@ -1131,6 +1101,25 @@ impl GenericStructureEngine {
                         level.lifecycle = LevelLifecycle::Active;
                     }
                 }
+                "structure_break" | "bos" | "choch" => {
+                    if let Some(state) = self
+                        .timeframe_states
+                        .iter_mut()
+                        .find(|state| state.timeframe == event.timeframe)
+                    {
+                        state.direction = event.direction;
+                        let target = if event.direction > 0 {
+                            state.active_high.as_mut()
+                        } else {
+                            state.active_low.as_mut()
+                        };
+                        if let Some(swing) = target.filter(|swing| swing.level_id == event.level_id)
+                        {
+                            swing.broken = true;
+                            swing.crossing = None;
+                        }
+                    }
+                }
                 _ => {}
             }
             self.last_event = Some(event.clone());
@@ -1155,13 +1144,21 @@ impl GenericStructureEngine {
         self.timeframe_states = snapshot
             .timeframe_states
             .iter()
-            .map(|state| TimeframeState {
-                timeframe: state.timeframe.clone(),
-                current_high: state.swing_high,
-                current_low: state.swing_low,
-                direction: state.direction,
-                promoted_level_count: state.promoted_level_count,
-                ..TimeframeState::default()
+            .map(|state| {
+                let horizon_ms = STRUCTURE_TIMEFRAMES
+                    .iter()
+                    .find(|(timeframe, _)| *timeframe == state.timeframe)
+                    .map(|(_, horizon_ms)| *horizon_ms)
+                    .unwrap_or(100);
+                TimeframeState {
+                    timeframe: state.timeframe.clone(),
+                    horizon_ms,
+                    current_high: state.swing_high,
+                    current_low: state.swing_low,
+                    direction: state.direction,
+                    promoted_level_count: state.promoted_level_count,
+                    ..TimeframeState::default()
+                }
             })
             .collect();
         self.session_high = snapshot.session_high;
@@ -1229,6 +1226,312 @@ impl GenericStructureEngine {
         self.session_volume_by_price = checkpoint.session_volume_by_price.clone();
         self.trade_volume_poc = checkpoint.trade_volume_poc;
         self.last_event = checkpoint.last_event.clone();
+    }
+}
+
+fn observe_timeframe_structure(
+    sym: &str,
+    state: &mut TimeframeState,
+    ts: DateTime<Utc>,
+    price: f64,
+    size: f64,
+    aggressor: i8,
+) -> Vec<GenericStructureEvent> {
+    if state.horizon_ms <= 0 {
+        state.horizon_ms = STRUCTURE_TIMEFRAMES
+            .iter()
+            .find(|(timeframe, _)| *timeframe == state.timeframe)
+            .map(|(_, horizon_ms)| *horizon_ms)
+            .unwrap_or(100);
+    }
+    let bucket_start = ts.timestamp_millis().div_euclid(state.horizon_ms) * state.horizon_ms;
+    let mut emitted = Vec::new();
+    match state.current_bucket.as_mut() {
+        Some(bucket) if bucket.start_ms == bucket_start => {
+            bucket.observe(ts, price, size, aggressor);
+        }
+        Some(_) => {
+            let completed = state.current_bucket.take().expect("checked current bucket");
+            // A local neighborhood must be local in event time, not merely the
+            // last three buckets that happened to contain trades. Reset after
+            // a material observation gap so a pre-gap extreme cannot be
+            // confirmed minutes later by an unrelated print.
+            if bucket_start - completed.start_ms > state.horizon_ms.saturating_mul(3) {
+                state.completed_buckets.clear();
+            }
+            state.completed_buckets.push_back(completed);
+            if state.completed_buckets.len() >= 3 {
+                let left = state.completed_buckets[0].clone();
+                let center = state.completed_buckets[1].clone();
+                let right = state.completed_buckets[2].clone();
+                let tick = price_tick(center.high.max(center.low));
+                let mut swings = Vec::new();
+                // The last bar in a flat plateau owns the pivot. This avoids
+                // publishing the same traded price once per bucket.
+                if center.high >= left.high && center.high > right.high {
+                    let prominence_ticks =
+                        ((center.high - left.high.max(right.high)) / tick).max(0.0);
+                    swings.push((
+                        -1,
+                        center.high,
+                        center.high_at.unwrap_or(ts),
+                        local_swing_confidence(prominence_ticks),
+                    ));
+                }
+                if center.low <= left.low && center.low < right.low {
+                    let prominence_ticks = ((left.low.min(right.low) - center.low) / tick).max(0.0);
+                    swings.push((
+                        1,
+                        center.low,
+                        center.low_at.unwrap_or(ts),
+                        local_swing_confidence(prominence_ticks),
+                    ));
+                }
+                swings.sort_by_key(|(_, _, pivot_at, _)| *pivot_at);
+                for (side, swing_price, pivot_at, confidence) in swings {
+                    emitted.push(install_timeframe_swing(
+                        sym,
+                        state,
+                        side,
+                        swing_price,
+                        pivot_at,
+                        ts,
+                        confidence,
+                        &center,
+                    ));
+                }
+                state.completed_buckets.pop_front();
+            }
+            state.current_bucket = Some(TimeframeBucket::new(
+                bucket_start,
+                ts,
+                price,
+                size,
+                aggressor,
+            ));
+        }
+        None => {
+            state.current_bucket = Some(TimeframeBucket::new(
+                bucket_start,
+                ts,
+                price,
+                size,
+                aggressor,
+            ));
+        }
+    }
+    emitted.extend(advance_timeframe_swing_break(
+        sym,
+        &state.timeframe,
+        &mut state.direction,
+        &mut state.active_high,
+        ts,
+        price,
+    ));
+    emitted.extend(advance_timeframe_swing_break(
+        sym,
+        &state.timeframe,
+        &mut state.direction,
+        &mut state.active_low,
+        ts,
+        price,
+    ));
+    emitted
+}
+
+fn seed_timeframe_swing(state: &mut TimeframeState, event: &GenericStructureEvent) {
+    if state.horizon_ms <= 0 {
+        state.horizon_ms = STRUCTURE_TIMEFRAMES
+            .iter()
+            .find(|(timeframe, _)| *timeframe == state.timeframe)
+            .map(|(_, horizon_ms)| *horizon_ms)
+            .unwrap_or(100);
+    }
+    let swing = TimeframeSwing {
+        level_id: event.level_id,
+        side: event.direction,
+        price: event.price,
+        pivot_at: Some(event.pivot_at),
+        confirmed_at: Some(event.confirmed_at),
+        strength: event.strength,
+        confidence: event.confidence,
+        total_volume: event.total_volume,
+        buy_volume: event.buy_volume,
+        sell_volume: event.sell_volume,
+        neutral_volume: event.neutral_volume,
+        trade_count: event.trade_count,
+        broken: false,
+        crossing: None,
+    };
+    if event.direction < 0 {
+        state.previous_high = state.current_high;
+        state.current_high = event.price;
+        state.active_high = Some(swing);
+    } else {
+        state.previous_low = state.current_low;
+        state.current_low = event.price;
+        state.active_low = Some(swing);
+    }
+    state.promoted_level_count = state.promoted_level_count.saturating_add(1);
+}
+
+fn local_swing_confidence(prominence_ticks: f64) -> f64 {
+    (0.55 + 0.075 * prominence_ticks.min(6.0)).clamp(0.0, 1.0)
+}
+
+fn install_timeframe_swing(
+    sym: &str,
+    state: &mut TimeframeState,
+    side: i8,
+    price: f64,
+    pivot_at: DateTime<Utc>,
+    confirmed_at: DateTime<Utc>,
+    confidence: f64,
+    bucket: &TimeframeBucket,
+) -> GenericStructureEvent {
+    let swing = TimeframeSwing {
+        level_id: stable_timeframe_level_id(sym, &state.timeframe, side, price, pivot_at),
+        side,
+        price,
+        pivot_at: Some(pivot_at),
+        confirmed_at: Some(confirmed_at),
+        strength: confidence,
+        confidence,
+        total_volume: bucket.total_volume,
+        buy_volume: bucket.buy_volume,
+        sell_volume: bucket.sell_volume,
+        neutral_volume: bucket.neutral_volume,
+        trade_count: bucket.trade_count,
+        broken: false,
+        crossing: None,
+    };
+    if side < 0 {
+        state.previous_high = state.current_high;
+        state.current_high = price;
+        state.active_high = Some(swing.clone());
+    } else {
+        state.previous_low = state.current_low;
+        state.current_low = price;
+        state.active_low = Some(swing.clone());
+    }
+    state.promoted_level_count = state.promoted_level_count.saturating_add(1);
+    timeframe_swing_event(
+        sym,
+        &state.timeframe,
+        &swing,
+        "level_promoted",
+        side,
+        confirmed_at,
+    )
+}
+
+fn advance_timeframe_swing_break(
+    sym: &str,
+    timeframe: &str,
+    structure_direction: &mut i8,
+    swing: &mut Option<TimeframeSwing>,
+    ts: DateTime<Utc>,
+    price: f64,
+) -> Vec<GenericStructureEvent> {
+    let Some(swing) = swing.as_mut() else {
+        return Vec::new();
+    };
+    if swing.broken {
+        return Vec::new();
+    }
+    let break_direction = -swing.side;
+    let beyond = (break_direction > 0 && price > swing.price)
+        || (break_direction < 0 && price < swing.price);
+    let mut emitted = Vec::new();
+    match swing.crossing.as_mut() {
+        None if beyond => {
+            swing.crossing = Some(TimeframeCrossing {
+                direction: break_direction,
+                first_crossed_at: Some(ts),
+                beyond_trades: 1,
+            });
+            emitted.push(timeframe_swing_event(
+                sym,
+                timeframe,
+                swing,
+                "structure_crossed",
+                break_direction,
+                ts,
+            ));
+        }
+        Some(crossing) if beyond => {
+            crossing.beyond_trades = crossing.beyond_trades.saturating_add(1);
+            let persisted_ms = crossing
+                .first_crossed_at
+                .map(|value| (ts - value).num_milliseconds().max(0))
+                .unwrap_or_default();
+            if crossing.beyond_trades >= 2 || persisted_ms >= 100 {
+                let kind = if *structure_direction == 0 {
+                    "structure_break"
+                } else if *structure_direction == break_direction {
+                    "bos"
+                } else {
+                    "choch"
+                };
+                swing.broken = true;
+                swing.crossing = None;
+                *structure_direction = break_direction;
+                emitted.push(timeframe_swing_event(
+                    sym,
+                    timeframe,
+                    swing,
+                    kind,
+                    break_direction,
+                    ts,
+                ));
+            }
+        }
+        Some(_) if !beyond => {
+            swing.crossing = None;
+        }
+        _ => {}
+    }
+    emitted
+}
+
+fn timeframe_swing_event(
+    sym: &str,
+    timeframe: &str,
+    swing: &TimeframeSwing,
+    kind: &str,
+    direction: i8,
+    confirmed_at: DateTime<Utc>,
+) -> GenericStructureEvent {
+    let pivot_at = swing.pivot_at.unwrap_or(confirmed_at);
+    let tick = price_tick(swing.price);
+    GenericStructureEvent {
+        algorithm_version: GENERIC_STRUCTURE_ALGORITHM_VERSION,
+        event_id: stable_event_id(
+            sym,
+            swing.level_id,
+            timeframe,
+            kind,
+            direction,
+            confirmed_at,
+        ),
+        level_id: swing.level_id,
+        sym: sym.to_string(),
+        timeframe: timeframe.to_string(),
+        event_kind: kind.to_string(),
+        direction,
+        price: swing.price,
+        lower: swing.price - tick,
+        upper: swing.price + tick,
+        strength: swing.strength,
+        confidence: swing.confidence,
+        lifecycle: if swing.broken { "broken" } else { "active" }.to_string(),
+        total_volume: swing.total_volume,
+        buy_volume: swing.buy_volume,
+        sell_volume: swing.sell_volume,
+        neutral_volume: swing.neutral_volume,
+        trade_count: swing.trade_count,
+        pivot_at,
+        confirmed_at,
     }
 }
 
@@ -1483,31 +1786,19 @@ fn candidate_to_level(candidate: &StructureLevelCandidate) -> StructureLevel {
 
 fn timeframe_snapshot(
     state: &TimeframeState,
-    levels: &[StructureLevelCandidate],
+    _levels: &[StructureLevelCandidate],
 ) -> StructureTimeframeSnapshot {
-    let support = levels
-        .iter()
-        .filter(|level| {
-            level.side > 0
-                && level
-                    .promotions
-                    .iter()
-                    .any(|promotion| promotion.timeframe == state.timeframe)
-        })
-        .min_by(|left, right| left.distance.total_cmp(&right.distance))
-        .map(candidate_to_snapshot)
+    let support = state
+        .active_low
+        .as_ref()
+        .filter(|swing| !swing.broken)
+        .map(timeframe_swing_snapshot)
         .unwrap_or_default();
-    let resistance = levels
-        .iter()
-        .filter(|level| {
-            level.side < 0
-                && level
-                    .promotions
-                    .iter()
-                    .any(|promotion| promotion.timeframe == state.timeframe)
-        })
-        .min_by(|left, right| left.distance.total_cmp(&right.distance))
-        .map(candidate_to_snapshot)
+    let resistance = state
+        .active_high
+        .as_ref()
+        .filter(|swing| !swing.broken)
+        .map(timeframe_swing_snapshot)
         .unwrap_or_default();
     StructureTimeframeSnapshot {
         timeframe: state.timeframe.clone(),
@@ -1517,6 +1808,36 @@ fn timeframe_snapshot(
         support,
         resistance,
         promoted_level_count: state.promoted_level_count,
+    }
+}
+
+fn timeframe_swing_snapshot(swing: &TimeframeSwing) -> StructureLevelSnapshot {
+    let tick = price_tick(swing.price);
+    StructureLevelSnapshot {
+        level_id: swing.level_id,
+        price: swing.price,
+        lower: swing.price - tick,
+        upper: swing.price + tick,
+        strength: swing.strength,
+        confidence: swing.confidence,
+        touch_count: 1,
+        hold_count: 0,
+        created_at_ms: swing
+            .pivot_at
+            .map(|value| value.timestamp_millis())
+            .unwrap_or_default(),
+        last_test_at_ms: swing
+            .confirmed_at
+            .map(|value| value.timestamp_millis())
+            .unwrap_or_default(),
+        lifecycle: if swing.broken { "broken" } else { "active" }.to_string(),
+        promotions: Vec::new(),
+        footprint: Vec::new(),
+        total_volume: swing.total_volume,
+        buy_volume: swing.buy_volume,
+        sell_volume: swing.sell_volume,
+        neutral_volume: swing.neutral_volume,
+        trade_count: swing.trade_count,
     }
 }
 
@@ -1588,6 +1909,20 @@ fn level_event(
 fn stable_level_id(sym: &str, side: i8, price: f64, pivot_at: DateTime<Utc>) -> u64 {
     stable_hash(&format!(
         "{sym}|level|{side}|{}|{}",
+        price_key(price),
+        pivot_at.timestamp_micros()
+    ))
+}
+
+fn stable_timeframe_level_id(
+    sym: &str,
+    timeframe: &str,
+    side: i8,
+    price: f64,
+    pivot_at: DateTime<Utc>,
+) -> u64 {
+    stable_hash(&format!(
+        "{sym}|local-swing|{timeframe}|{side}|{}|{}",
         price_key(price),
         pivot_at.timestamp_micros()
     ))
@@ -1752,47 +2087,171 @@ mod tests {
     }
 
     #[test]
-    fn timeframe_promotion_is_causal_and_break_is_immediate() {
+    fn timeframe_local_swing_is_causal_and_break_is_immediate() {
         let mut engine = GenericStructureEngine::new("TEST");
         let start = Utc
             .with_ymd_and_hms(2026, 7, 24, 13, 30, 0)
             .unwrap()
             .timestamp_millis();
-        for (index, price) in [100.00, 100.10, 100.09].into_iter().enumerate() {
+        for (index, (offset, price)) in [
+            (0, 100.00),
+            (100, 100.10),
+            (150, 100.09),
+            (200, 100.08),
+            (250, 100.05),
+        ]
+        .into_iter()
+        .enumerate()
+        {
             engine.apply_event(
-                &trade(start + index as i64, price, 100.0, index as u64),
+                &trade(start + offset, price, 100.0, index as u64),
                 TradeUpdateRule::regular(),
             );
         }
         let (_, promoted) = engine.apply_event(
-            &trade(start + 150, 100.05, 200.0, 10),
+            &trade(start + 300, 100.07, 200.0, 10),
             TradeUpdateRule::regular(),
         );
-        assert!(promoted
+        let swing = promoted
             .iter()
-            .any(|event| event.event_kind == "level_promoted" && event.timeframe == "100ms"));
-        let crossing_at = Utc.timestamp_millis_opt(start + 151).unwrap();
+            .find(|event| {
+                event.event_kind == "level_promoted"
+                    && event.timeframe == "100ms"
+                    && event.direction < 0
+            })
+            .unwrap();
+        assert_eq!(swing.price, 100.10);
+        assert_eq!(swing.pivot_at.timestamp_millis(), start + 100);
+        assert_eq!(swing.confirmed_at.timestamp_millis(), start + 300);
+        let crossing_at = Utc.timestamp_millis_opt(start + 301).unwrap();
         let (_, crossed) = engine.apply_event(
-            &trade(start + 151, 100.11, 300.0, 11),
+            &trade(start + 301, 100.11, 300.0, 11),
             TradeUpdateRule::regular(),
         );
         assert!(crossed.iter().any(|event| {
-            event.event_kind == "level_crossed" && event.confirmed_at == crossing_at
+            event.event_kind == "structure_crossed"
+                && event.timeframe == "100ms"
+                && event.confirmed_at == crossing_at
         }));
         assert!(crossed.iter().all(|event| !matches!(
             event.event_kind.as_str(),
             "bos" | "choch" | "structure_break"
         )));
         let (_, accepted) = engine.apply_event(
-            &trade(start + 152, 100.12, 200.0, 12),
+            &trade(start + 302, 100.12, 200.0, 12),
             TradeUpdateRule::regular(),
         );
         assert!(accepted
             .iter()
-            .any(|event| event.event_kind == "break_accepted"));
-        assert!(accepted
-            .iter()
             .any(|event| { event.event_kind == "structure_break" && event.timeframe == "100ms" }));
+    }
+
+    #[test]
+    fn timeframe_swing_uses_exact_trade_extreme_inside_bucket() {
+        let mut engine = GenericStructureEngine::new("TEST");
+        let start = Utc
+            .with_ymd_and_hms(2026, 7, 24, 13, 30, 0)
+            .unwrap()
+            .timestamp_millis();
+        let mut emitted = Vec::new();
+        for (index, (offset, price)) in [
+            (0, 100.00),
+            (1_010, 100.08),
+            (1_250, 100.16),
+            (1_800, 100.11),
+            (2_010, 100.07),
+            (3_010, 100.09),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (_, events) = engine.apply_event(
+                &trade(start + offset, price, 100.0, index as u64),
+                TradeUpdateRule::regular(),
+            );
+            emitted.extend(events);
+        }
+        let swing = emitted
+            .iter()
+            .find(|event| {
+                event.event_kind == "level_promoted"
+                    && event.timeframe == "1s"
+                    && event.direction < 0
+            })
+            .expect("1s swing high");
+        assert_eq!(swing.price, 100.16);
+        assert_eq!(swing.pivot_at.timestamp_millis(), start + 1_250);
+        assert_eq!(swing.confirmed_at.timestamp_millis(), start + 3_010);
+    }
+
+    #[test]
+    fn timeframe_swing_neighborhood_resets_after_observation_gap() {
+        let mut engine = GenericStructureEngine::new("TEST");
+        let start = Utc
+            .with_ymd_and_hms(2026, 7, 24, 13, 30, 0)
+            .unwrap()
+            .timestamp_millis();
+        let mut emitted = Vec::new();
+        for (index, (offset, price)) in [
+            (0, 100.00),
+            (1_010, 101.00),
+            (10_010, 99.00),
+            (11_010, 99.20),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (_, events) = engine.apply_event(
+                &trade(start + offset, price, 100.0, index as u64),
+                TradeUpdateRule::regular(),
+            );
+            emitted.extend(events);
+        }
+        assert!(emitted.iter().all(|event| {
+            !(event.event_kind == "level_promoted"
+                && event.timeframe == "1s"
+                && event.price == 101.00)
+        }));
+    }
+
+    #[test]
+    fn each_timeframe_breaks_only_its_own_active_swing() {
+        let mut engine = GenericStructureEngine::new("TEST");
+        let start = Utc
+            .with_ymd_and_hms(2026, 7, 24, 13, 30, 0)
+            .unwrap()
+            .timestamp_millis();
+        let mut emitted = Vec::new();
+        for (index, (offset, price)) in [
+            (0, 100.00),
+            (1_010, 100.10),
+            (1_250, 100.20),
+            (2_010, 100.05),
+            (3_010, 100.08),
+            (3_020, 100.21),
+            (3_030, 100.22),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (_, events) = engine.apply_event(
+                &trade(start + offset, price, 100.0, index as u64),
+                TradeUpdateRule::regular(),
+            );
+            emitted.extend(events);
+        }
+        assert!(emitted.iter().any(|event| {
+            event.timeframe == "1s"
+                && event.event_kind == "structure_break"
+                && event.price == 100.20
+        }));
+        assert!(emitted.iter().all(|event| {
+            !(event.timeframe == "5s"
+                && matches!(
+                    event.event_kind.as_str(),
+                    "structure_break" | "bos" | "choch"
+                ))
+        }));
     }
 
     #[test]

@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
 
-pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v24";
+pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v25";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProfile {

@@ -156,17 +156,19 @@ not normalized against each other.
 
 ## Generic Structure Price Overlay
 
-Generic Structure maintains one causal high/low level book from every ordered
-eligible trade. The current developing extreme uses the highest or lowest trade
-inside each canonical 100 ms interval, not the selected candle close. The first
-opposing eligible trade freezes that extreme as a provisional level. NBBO
-updates maintain displayed-liquidity evidence and zone context, but an
-unexecuted quote move cannot create price structure.
+Generic Structure has two causal layers. The immediate level book updates from
+every ordered eligible trade and owns support/resistance and executed-volume
+evidence. The local swing hierarchy independently aggregates the exact highest
+and lowest eligible trades into 100 ms, 1 s, 5 s, 10 s, 30 s, 1 m, 5 m, and
+1 h event-time buckets. NBBO updates maintain displayed-liquidity context, but
+an unexecuted quote move cannot create price structure.
 
-The same extracted levels are promoted independently for 100 ms, 1 s, 5 s,
-10 s, 30 s, 1 m, 5 m, and 1 h use. Changing the chart interval selects the
-matching promotion layer by default; it does not rebuild levels from candle
-OHLC or delay their initial extraction.
+Each timeframe confirms its own local high or low from three completed buckets.
+The middle bucket is the pivot and the following bucket supplies causal
+confirmation. A gap longer than three timeframe buckets resets the neighborhood
+so an old sparse print cannot become a local swing minutes later. The chart
+interval selects its matching local hierarchy by default; no candle OHLC is
+used.
 
 ### Current support and resistance zones
 
@@ -185,16 +187,16 @@ lifecycle resolves.
 
 Each timeframe has one configurable **Swings & breaks** layer containing:
 
-- **SH / SL lines** from the original traded-price pivot until the level is
-  crossed, accepted, or role-reversed; and
+- **SH / SL lines** from the exact traded-price pivot until it is crossed or a
+  newer same-side local swing supersedes it; and
 - **BoS / CHoCH connectors** from the pivot to the accepted break.
 
 Only the layer matching the selected chart interval is visible by default.
 Open the indicator legend to enable other timeframe layers for comparison. This
-keeps a 1 s chart readable while still allowing the 100 ms through 1 h
-promotions to be audited. A first crossing is immediate but does not become BoS
-or CHoCH until the deterministic acceptance rule confirms price remained beyond
-the level.
+keeps a 1 s chart readable while still allowing the independent 100 ms through
+1 h hierarchies to be audited. A first crossing is immediate but does not become
+BoS or CHoCH until the deterministic acceptance rule confirms price remained
+beyond the level.
 
 ### Historical structure
 
@@ -215,8 +217,9 @@ opening range, trade-volume POC, estimated LULD, completed
 52-week high/low, and prior-month high/low/close. They are context references,
 not all support/resistance evidence of equal quality.
 
-The timeframe labels are promotion and filtering horizons over the same
-event-native level book. They are not separate candle-derived swing engines.
+The timeframe labels are separate event-native local swing and break states.
+A 1 s BoS can only break the active 1 s swing; it cannot inherit a 100 ms or
+1 h break. They are still not candle-derived swing engines.
 
 ## Structural context inside QMD Decision
 

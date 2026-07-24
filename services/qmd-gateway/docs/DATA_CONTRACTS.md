@@ -469,13 +469,15 @@ status are documented in
 
 ## Generic Structure Persistence Contract
 
-`qmd_structure_events_v2` stores the causal trade-level and timeframe-promotion
-event history keyed by a deterministic event id. `qmd_structure_state_v2` is a `ReplacingMergeTree`
-latest-state table containing the full versioned engine checkpoint: adaptive
-threshold EWMAs, pending directional state, zones, session references, eligible
-trade volume-at-price, and the last causal event. This restores the next event
-exactly without replaying an entire session. Changed symbols are coalesced once
-per bounded writer flush rather than cloned for every event or chart timeframe.
+`qmd_structure_events_v2` stores the causal immediate-level and
+timeframe-local-swing event history keyed by a deterministic event id.
+`qmd_structure_state_v2` is a `ReplacingMergeTree` latest-state table containing
+the full versioned engine checkpoint: developing extrema, immediate levels,
+independent timeframe buckets and active swings, pending crossings, session
+references, eligible trade volume-at-price, and the last causal event. This
+restores the next event exactly without replaying an entire session. Changed
+symbols are coalesced once per bounded writer flush rather than cloned for every
+event or chart timeframe.
 Both tables are written when `QMD_PERSIST_STRUCTURE_EVENTS=true`, independently
 of `QMD_PERSIST_INDICATORS`. Historical reconstruction may warm-start from
 confirmed rows before its requested window, but never from future events.

@@ -1,25 +1,34 @@
 # QMD Liquidity, Support, and Structure Guide
 
-## Generic Structure v6: immediate trade-level book
+## Generic Structure v7: immediate levels plus timeframe-local swings
 
-Generic Structure v6 has one authority: the ordered stream of eligible executed
-trades. It no longer extracts Micro, Tactical, and Context swings from adaptive
-reversal thresholds or from 100 ms bar closes.
+Generic Structure v7 has one source stream: ordered eligible executed trades.
+It maintains two deliberately separate products:
 
-The engine keeps active high and low books:
+- an immediate traded-price level book for support/resistance and volume
+  evidence; and
+- a causal local swing and structural-break hierarchy owned independently by
+  each supported timeframe.
+
+The engine processes them as follows:
 
 1. Every eligible trade updates the developing high or low immediately.
 2. The first opposing trade at least one tick away freezes the exact extreme as
    a provisional level. This is the only confirmation delay.
-3. The same level can be promoted independently to `100ms`, `1s`, `5s`, `10s`,
-   `30s`, `1m`, `5m`, and `1h`. A timeframe controls survival/promotion and
-   display filtering; it never changes the underlying extracted price.
-4. The first eligible trade beyond a level emits `level_crossed` at that trade
-   timestamp. A second beyond-level trade or 100 ms of continued acceptance
-   emits `break_accepted`; a return first emits `break_rejected`.
-5. An accepted break is BoS when it agrees with that timeframe's established
-   promoted high/low sequence and CHoCH when it opposes the sequence.
-6. A broken level changes from support to resistance, or the reverse, only
+3. For each timeframe, trades are assigned to fixed event-time buckets. Bucket
+   highs and lows are the exact highest and lowest eligible trade prices, not
+   candle closes.
+4. Once the following bucket completes, the middle bucket becomes a local swing
+   high when its high is at least the prior high and above the following high.
+   Swing lows use the inverse rule. The last bucket in a flat plateau owns the
+   pivot, preventing duplicate same-price swings.
+5. Only the latest confirmed local high and low for that timeframe can break.
+   The first eligible trade beyond one emits `structure_crossed`; a second
+   beyond-level trade or 100 ms of persistence confirms the break.
+6. An accepted break is BoS when it agrees with that timeframe's established
+   break direction and CHoCH when it opposes it. With no prior direction it is
+   `structure_break`.
+7. An immediate-book level changes from support to resistance, or the reverse, only
    after a later retest and rejection. A simple price cross does not relabel it.
 
 ### Executed-volume footprint
@@ -33,22 +42,22 @@ not a forecast probability.
 
 ### Strategy contract
 
-Strategies should select levels whose `promotions[].timeframe` matches their
-decision horizon. They may react immediately to `level_crossed`, or require the
-more conservative `break_accepted`, `bos`, or `choch` event. All events include
+Strategies should select local swing events whose `timeframe` matches their
+decision horizon. They may observe `structure_crossed`, or require the more
+conservative accepted `structure_break`, `bos`, or `choch` event. All events include
 `level_id`, `timeframe`, pivot and confirmation timestamps, lifecycle, evidence,
 and volume totals. Live checkpoints and historical warm starts use
 `qmd_structure_state_v2` and `qmd_structure_events_v2`.
 
 ### Chart reading
 
-The chart shows only levels promoted to its selected timeframe. Green zones are
-support below the latest eligible trade and red zones are resistance above it.
-Opacity is evidence confidence. The level tooltip reports strength, confidence,
-and total/buy/sell executed volume around the level. BoS and CHoCH connectors
-start at the exact frozen trade extreme and end at the causal break event.
-Changing chart timeframe filters promotions; it does not move or recompute a
-level.
+The chart shows the selected timeframe's bounded SH/SL spans. Each begins at the
+exact pivot trade and ends at its first crossing or at the next same-side local
+swing, so obsolete references do not fill the chart. BoS and CHoCH connectors
+start at that exact swing and end at the causal accepted break. The pivot is
+visible historically, but `confirmed_at` is the earliest strategy-safe time.
+Changing chart timeframe selects another independently calculated local
+hierarchy; it does not reuse lower- or higher-timeframe breaks.
 
 Do not interpret a large footprint as direction by itself. High sell-aggressor
 volume that repeatedly holds a support may indicate absorption; the same volume
@@ -58,7 +67,7 @@ response, and QMD flow together.
 This is the calculation and service-contract authority for QMD liquidity,
 support/resistance, market structure, and structural-pressure indicators. It
 documents indicator schema version 15 and generic-structure algorithm version
-3. The application rendering contract is documented in
+7. The application rendering contract is documented in
 [`frontend/src/app/QMD_LIQUIDITY_SUPPORT_STRUCTURE.md`](../../../frontend/src/app/QMD_LIQUIDITY_SUPPORT_STRUCTURE.md).
 
 ## Scope and Interpretation Boundary
@@ -314,23 +323,27 @@ between symbols.
 ## 3. Generic Structure
 
 Generic structure is independent of chart candle construction. One per-symbol
-engine consumes ordered eligible trades and maintains developing extremes,
-active high/low level books, timeframe promotions, lifecycle state, and
-executed-volume footprints. Quotes contribute displayed-liquidity context but
-cannot create price structure.
+engine consumes ordered eligible trades and maintains an immediate high/low
+level book, timeframe-local swing states, break direction, and executed-volume
+footprints. Quotes contribute displayed-liquidity context but cannot create
+price structure.
 
-The first opposing trade at least one tick away freezes the exact developing
-extreme as a provisional level. The engine then promotes that same level for
-`100ms`, `1s`, `5s`, `10s`, `30s`, `1m`, `5m`, and `1h` according to causal
-survival and movement evidence. Timeframe promotion filters one shared level
-book; it never substitutes candle highs, lows, or closes for the traded price.
+Each timeframe (`100ms`, `1s`, `5s`, `10s`, `30s`, `1m`, `5m`, and `1h`)
+aggregates the exact trade extrema in its own fixed event-time buckets. A
+three-bucket neighborhood confirms the middle high or low only after the right
+bucket is complete. This is deliberately causal: a historical pivot is drawn at
+the trade where it occurred, while `confirmed_at` records when it first became
+knowable. An observation gap longer than three timeframe buckets resets the
+neighborhood, preventing an old sparse print from being confirmed by unrelated
+later activity. The higher timeframe therefore changes local structure, not
+merely line visibility.
 
 ### Break lifecycle and role correction
 
-The first eligible trade through an active level emits `level_crossed` and a
+The first eligible trade through the latest confirmed local high or low emits a
 timeframe-specific `structure_crossed`. It is not yet BoS or CHoCH. A second
 trade beyond the level, or 100 ms of continued acceptance, emits
-`break_accepted` and the timeframe-specific classification:
+the timeframe-specific classification:
 
 - `bos` when the accepted direction continues that timeframe's established
   structure;
@@ -344,20 +357,21 @@ side. A simple cross cannot silently turn support into resistance.
 
 ### Levels, evidence, and chart layers
 
-`qmd_structure_active_levels` exposes currently active candidates, including
+`qmd_structure_active_levels` exposes immediate-book candidates, including
 price, side, bounds, lifecycle, promotions, touch/hold evidence, confidence,
 strength, and a nine-bin executed-volume footprint. The application renders one
-**Swings & breaks** layer per promoted timeframe. SH/SL lines begin at the
-original pivot trade and terminate at the first crossing, accepted break, or
-role reversal. BoS and CHoCH connectors terminate at their causal confirmation
-event. Only the chart's selected timeframe is visible by default; other
-timeframe layers remain configurable for audit.
+**Swings & breaks** layer per timeframe. SH/SL lines begin at the original pivot
+trade and terminate at the first crossing or the next same-side local swing.
+BoS and CHoCH connectors terminate at their causal confirmation event. Only the
+chart's selected timeframe is visible by default; other timeframe layers remain
+configurable for audit.
 
 ### Causal event fields
 
 `qmd_structure_event_*` exposes the latest confirmed event: deterministic id,
 pivot origin time, confirmation time, kind, timeframe, direction, and price.
-The full immutable event stream includes `level_promoted`, `level_crossed`,
+The full immutable event stream includes `level_promoted` (the compatibility
+event name for a confirmed timeframe-local swing), `level_crossed`,
 `structure_crossed`, `break_accepted`, `break_rejected`, `structure_break`,
 `bos`, `choch`, `retest`, and `role_reversal`.
 
@@ -443,8 +457,9 @@ Closed bar indicators are memory-first. They are written to
 `qmd_structure_events_v2` and `qmd_structure_state_v2` persist the immutable
 level lifecycle and versioned engine checkpoints when
 `QMD_PERSIST_STRUCTURE_EVENTS=true` (default). The state restores developing
-extrema, active and broken level books, timeframe promotions, pending crossings,
-footprints, references, and event lineage without replaying the full session.
+extrema, active and broken immediate level books, timeframe-local buckets and
+active swings, pending crossings, footprints, references, and event lineage
+without replaying the full session.
 
 ## Active, Compatibility, and Retired Fields
 
@@ -462,8 +477,9 @@ structural pressure. New code should prefer `qmd_structure_*`.
 ## Strategy Use Checklist
 
 1. Confirm `schema_version >= 15` and a current `bar_end`.
-2. Use the row for the intended timeframe; interval microstructure changes with
-   aggregation, while generic structure itself is timeframe-independent.
+2. Use the row and structure-event layer for the intended timeframe; interval
+   microstructure changes with aggregation, and each generic-structure
+   timeframe owns an independent local swing and break state.
 3. Gate structure events on `qmd_structure_event_at_ms`, never pivot time.
 4. Use zone bounds, not only center price, and require the zone to remain on the
    correct side of the current reference.
@@ -478,8 +494,9 @@ structural pressure. New code should prefer `qmd_structure_*`.
 
 - `src/microstructure_interval.rs`: interval sufficient statistics, component
   formulas, reliability, confidence, and action.
-- `src/generic_structure.rs`: event-native level books, timeframe promotions,
-  lifecycle events, footprints, structural pressure, and persistence state.
+- `src/generic_structure.rs`: event-native immediate level books,
+  timeframe-local exact-trade swings and breaks, footprints, structural
+  pressure, and persistence state.
 - `src/indicators.rs`: schema, cumulative flow, reference attachment,
   compatibility fields, and ClickHouse persistence.
 - `src/indicator_catalog.rs`: discoverable field catalog.
