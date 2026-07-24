@@ -2,6 +2,8 @@ use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 use std::collections::HashMap;
 
+pub const QMD_EPISODE_ALGORITHM_VERSION: u16 = 2;
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum QmdEpisodePreset {
@@ -27,9 +29,6 @@ impl QmdEpisodePreset {
                 start_confidence: 0.35,
                 opposite_confidence: 0.40,
                 opposite_dwell_ms: 500,
-                exhaustion_confidence: 0.18,
-                exhaustion_dwell_ms: 15_000,
-                max_duration_ms: 120_000,
                 invalidation_buffer_fraction: 0.0015,
                 confidence_alpha: 0.55,
                 confidence_decay_alpha: 0.06,
@@ -38,15 +37,12 @@ impl QmdEpisodePreset {
                 update_interval_ms: 1_000,
                 setup_max_duration_ms: 30_000,
                 minimum_favorable_thresholds: 2.0,
-                supportive_signal_grace_ms: 2_000,
+                macd_interval_ms: 1_000,
             },
             Self::Tactical => QmdEpisodeConfig {
                 start_confidence: 0.45,
                 opposite_confidence: 0.50,
                 opposite_dwell_ms: 1_500,
-                exhaustion_confidence: 0.22,
-                exhaustion_dwell_ms: 60_000,
-                max_duration_ms: 900_000,
                 invalidation_buffer_fraction: 0.0035,
                 confidence_alpha: 0.25,
                 confidence_decay_alpha: 0.02,
@@ -55,15 +51,12 @@ impl QmdEpisodePreset {
                 update_interval_ms: 5_000,
                 setup_max_duration_ms: 180_000,
                 minimum_favorable_thresholds: 1.75,
-                supportive_signal_grace_ms: 5_000,
+                macd_interval_ms: 5_000,
             },
             Self::Context => QmdEpisodeConfig {
                 start_confidence: 0.55,
                 opposite_confidence: 0.60,
                 opposite_dwell_ms: 5_000,
-                exhaustion_confidence: 0.28,
-                exhaustion_dwell_ms: 300_000,
-                max_duration_ms: 3_600_000,
                 invalidation_buffer_fraction: 0.0075,
                 confidence_alpha: 0.10,
                 confidence_decay_alpha: 0.005,
@@ -72,7 +65,7 @@ impl QmdEpisodePreset {
                 update_interval_ms: 15_000,
                 setup_max_duration_ms: 900_000,
                 minimum_favorable_thresholds: 1.5,
-                supportive_signal_grace_ms: 15_000,
+                macd_interval_ms: 15_000,
             },
         }
     }
@@ -83,9 +76,6 @@ struct QmdEpisodeConfig {
     start_confidence: f64,
     opposite_confidence: f64,
     opposite_dwell_ms: i64,
-    exhaustion_confidence: f64,
-    exhaustion_dwell_ms: i64,
-    max_duration_ms: i64,
     invalidation_buffer_fraction: f64,
     confidence_alpha: f64,
     confidence_decay_alpha: f64,
@@ -94,7 +84,7 @@ struct QmdEpisodeConfig {
     update_interval_ms: i64,
     setup_max_duration_ms: i64,
     minimum_favorable_thresholds: f64,
-    supportive_signal_grace_ms: i64,
+    macd_interval_ms: i64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -104,6 +94,8 @@ pub struct QmdEpisodeScaleInput {
     pub threshold: f64,
     pub swing_high: f64,
     pub swing_low: f64,
+    pub structure_break_direction: i8,
+    pub structure_break_confidence: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -142,14 +134,29 @@ pub struct QmdEpisodeState {
     pub invalidation_price: f64,
     pub best_price: f64,
     pub last_progress_at: DateTime<Utc>,
+    pub current_price: f64,
+    pub macd_line: f64,
+    pub macd_signal: f64,
+    pub macd_converging: bool,
     #[serde(skip_serializing)]
     trailing_swing_price: f64,
     #[serde(skip_serializing)]
-    last_supportive_signal_at: DateTime<Utc>,
+    favorable_swing_price: f64,
+    #[serde(skip_serializing)]
+    last_scale_swing_high: f64,
+    #[serde(skip_serializing)]
+    last_scale_swing_low: f64,
+    #[serde(skip_serializing)]
+    failed_swing_price: f64,
+    #[serde(skip_serializing)]
+    failed_swing_confirmed: bool,
+    #[serde(skip_serializing)]
+    resolution_reference_price: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct QmdEpisodeEvent {
+    pub algorithm_version: u16,
     pub sym: String,
     pub preset: QmdEpisodePreset,
     pub episode_id: u64,
@@ -163,6 +170,11 @@ pub struct QmdEpisodeEvent {
     pub invalidation_price: f64,
     pub best_price: f64,
     pub maximum_favorable_move_pct: f64,
+    pub event_price: f64,
+    pub reference_price: f64,
+    pub macd_line: f64,
+    pub macd_signal: f64,
+    pub macd_converging: bool,
     pub resolution: String,
 }
 
@@ -170,15 +182,14 @@ pub struct QmdEpisodeEvent {
 struct PresetState {
     active: Option<QmdEpisodeState>,
     setup: Option<QmdEpisodeSetup>,
-    low_confidence_since: Option<DateTime<Utc>>,
     last_emitted_bucket: i16,
     last_emitted_at: Option<DateTime<Utc>>,
     cooldown_until: Option<DateTime<Utc>>,
     opposite_since: Option<DateTime<Utc>>,
-    opposing_structure_since: Option<DateTime<Utc>>,
     rearm_direction: i8,
     rearm_neutral_since: Option<DateTime<Utc>>,
     last_close: Option<f64>,
+    macd: PresetMacdState,
 }
 
 #[derive(Clone, Debug)]
@@ -189,6 +200,74 @@ struct QmdEpisodeSetup {
     invalidation_price: f64,
     breakout_was_unbroken: bool,
     confidence: f64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct MacdReading {
+    line: f64,
+    signal: f64,
+    ready: bool,
+    converging: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct PresetMacdState {
+    bucket: Option<i64>,
+    bucket_close: f64,
+    fast: Option<f64>,
+    slow: Option<f64>,
+    signal: Option<f64>,
+    samples: usize,
+    previous_diff: Option<f64>,
+    reading: MacdReading,
+}
+
+impl PresetMacdState {
+    fn update(&mut self, occurred_at: DateTime<Utc>, close: f64, interval_ms: i64) -> MacdReading {
+        if !close.is_finite() || close <= 0.0 || interval_ms <= 0 {
+            return self.reading;
+        }
+        let bucket = occurred_at.timestamp_millis().div_euclid(interval_ms);
+        if self.bucket.is_none() {
+            self.bucket = Some(bucket);
+            self.bucket_close = close;
+            return self.reading;
+        }
+        if self.bucket == Some(bucket) {
+            self.bucket_close = close;
+            return self.reading;
+        }
+        self.finalize_bucket();
+        self.bucket = Some(bucket);
+        self.bucket_close = close;
+        self.reading
+    }
+
+    fn finalize_bucket(&mut self) {
+        let close = self.bucket_close;
+        self.fast = Some(ema_next(self.fast, close, 12));
+        self.slow = Some(ema_next(self.slow, close, 26));
+        let line = self.fast.unwrap_or(close) - self.slow.unwrap_or(close);
+        self.signal = Some(ema_next(self.signal, line, 9));
+        let signal = self.signal.unwrap_or(line);
+        let diff = line - signal;
+        self.samples = self.samples.saturating_add(1);
+        let converging = self
+            .previous_diff
+            .is_some_and(|previous| diff.abs() < previous.abs());
+        self.previous_diff = Some(diff);
+        self.reading = MacdReading {
+            line,
+            signal,
+            ready: self.samples >= 26,
+            converging,
+        };
+    }
+}
+
+fn ema_next(previous: Option<f64>, value: f64, period: u32) -> f64 {
+    let alpha = 2.0 / (period as f64 + 1.0);
+    previous.map_or(value, |prior| alpha * value + (1.0 - alpha) * prior)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -242,8 +321,11 @@ impl QmdEpisodeEngine {
             (input.close.abs() * config.invalidation_buffer_fraction).max(0.0001)
         };
         let state = self.presets.entry(preset).or_default();
+        let macd = state
+            .macd
+            .update(input.occurred_at, input.close, config.macd_interval_ms);
         let prior_close = state.last_close;
-        let mut ending = None;
+        let mut ending: Option<(&str, f64)> = None;
         let mut ended_direction = 0;
         let qualified_direction = if input.decision_direction != 0
             && input.decision_confidence >= config.start_confidence
@@ -269,11 +351,10 @@ impl QmdEpisodeEngine {
         }
 
         if let Some(active) = state.active.as_mut() {
-            let elapsed_ms = (input.occurred_at - active.started_at).num_milliseconds();
             let opposite_decision = input.decision_direction == -active.direction
                 && input.decision_confidence >= config.opposite_confidence;
-            let opposing_structure = scale.direction == -active.direction
-                && scale.confidence >= config.opposing_structure_confidence;
+            let opposing_structure = scale.structure_break_direction == -active.direction
+                && scale.structure_break_confidence >= config.opposing_structure_confidence;
             let invalidated = (active.direction > 0 && input.close <= active.invalidation_price)
                 || (active.direction < 0 && input.close >= active.invalidation_price);
             let favorable_price = if active.direction > 0 {
@@ -290,15 +371,59 @@ impl QmdEpisodeEngine {
                 active.best_price = favorable_price;
                 active.last_progress_at = input.occurred_at;
             }
-            if qualified_direction == active.direction {
-                active.last_supportive_signal_at = input.occurred_at;
-            }
+            active.current_price = input.close;
+            active.macd_line = macd.line;
+            active.macd_signal = macd.signal;
+            active.macd_converging = macd.converging;
             let minimum_favorable_move = threshold * config.minimum_favorable_thresholds;
             let has_meaningful_progress = if active.direction > 0 {
                 active.best_price >= active.rail_price + minimum_favorable_move
             } else {
                 active.best_price <= active.rail_price - minimum_favorable_move
             };
+            let swing_change_buffer = (threshold * 0.10).max(input.close.abs() * 0.00002);
+            if materially_changed(
+                scale.swing_high,
+                active.last_scale_swing_high,
+                swing_change_buffer,
+            ) {
+                active.last_scale_swing_high = scale.swing_high;
+                if active.direction > 0 {
+                    if active.favorable_swing_price <= 0.0
+                        || scale.swing_high > active.favorable_swing_price + swing_change_buffer
+                    {
+                        active.favorable_swing_price = scale.swing_high;
+                        active.failed_swing_confirmed = false;
+                        active.failed_swing_price = 0.0;
+                    } else if has_meaningful_progress
+                        && scale.swing_high < active.favorable_swing_price - swing_change_buffer
+                    {
+                        active.failed_swing_confirmed = true;
+                        active.failed_swing_price = scale.swing_high;
+                    }
+                }
+            }
+            if materially_changed(
+                scale.swing_low,
+                active.last_scale_swing_low,
+                swing_change_buffer,
+            ) {
+                active.last_scale_swing_low = scale.swing_low;
+                if active.direction < 0 {
+                    if active.favorable_swing_price <= 0.0
+                        || scale.swing_low < active.favorable_swing_price - swing_change_buffer
+                    {
+                        active.favorable_swing_price = scale.swing_low;
+                        active.failed_swing_confirmed = false;
+                        active.failed_swing_price = 0.0;
+                    } else if has_meaningful_progress
+                        && scale.swing_low > active.favorable_swing_price + swing_change_buffer
+                    {
+                        active.failed_swing_confirmed = true;
+                        active.failed_swing_price = scale.swing_low;
+                    }
+                }
+            }
             if active.direction > 0 {
                 let candidate = scale.swing_low;
                 if has_meaningful_progress
@@ -322,10 +447,7 @@ impl QmdEpisodeEngine {
                 }
             }
             let exhaustion_buffer = threshold * 0.15;
-            let supportive_signal_is_stale = input.occurred_at - active.last_supportive_signal_at
-                >= Duration::milliseconds(config.supportive_signal_grace_ms);
-            let exhausted_after_failed_extension = has_meaningful_progress
-                && supportive_signal_is_stale
+            let protected_swing_broken = has_meaningful_progress
                 && if active.direction > 0 {
                     active.trailing_swing_price > active.rail_price
                         && input.close < active.trailing_swing_price - exhaustion_buffer
@@ -334,17 +456,36 @@ impl QmdEpisodeEngine {
                         && active.trailing_swing_price < active.rail_price
                         && input.close > active.trailing_swing_price + exhaustion_buffer
                 };
+            let macd_opposes = macd.ready
+                && if active.direction > 0 {
+                    macd.line < macd.signal
+                } else {
+                    macd.line > macd.signal
+                };
+            let failed_swing_with_macd = active.failed_swing_confirmed && macd_opposes;
             if opposite_decision {
                 let since = state.opposite_since.get_or_insert(input.occurred_at);
                 if input.occurred_at - *since >= Duration::milliseconds(config.opposite_dwell_ms) {
-                    ending = Some("opposite_signal");
+                    ending = Some(("opposite_qmd_decision", input.close));
                 }
             } else if invalidated {
-                ending = Some("invalidation");
-            } else if exhausted_after_failed_extension {
-                ending = Some("swing_exhaustion");
-            } else if elapsed_ms >= config.max_duration_ms {
-                ending = Some("maximum_duration");
+                ending = Some(("structural_invalidation", active.invalidation_price));
+            } else if protected_swing_broken && macd_opposes {
+                ending = Some((
+                    "protected_swing_break_macd_confirmation",
+                    active.trailing_swing_price,
+                ));
+            } else if opposing_structure {
+                ending = Some(("structure_reversal", input.close));
+            } else if failed_swing_with_macd {
+                ending = Some((
+                    if active.direction > 0 {
+                        "lower_high_macd_confirmation"
+                    } else {
+                        "higher_low_macd_confirmation"
+                    },
+                    active.failed_swing_price,
+                ));
             } else {
                 state.opposite_since = None;
                 active.confidence = if input.decision_direction == active.direction {
@@ -355,33 +496,6 @@ impl QmdEpisodeEngine {
                     ((1.0 - config.confidence_decay_alpha) * active.confidence).clamp(0.0, 1.0)
                 };
                 active.last_updated_at = input.occurred_at;
-                let progress_stale = input.occurred_at - active.last_progress_at
-                    >= Duration::milliseconds(config.exhaustion_dwell_ms);
-                if active.confidence <= config.exhaustion_confidence {
-                    state.low_confidence_since.get_or_insert(input.occurred_at);
-                } else {
-                    state.low_confidence_since = None;
-                }
-                if opposing_structure {
-                    state
-                        .opposing_structure_since
-                        .get_or_insert(input.occurred_at);
-                } else {
-                    state.opposing_structure_since = None;
-                }
-                let weak_for_dwell = state.low_confidence_since.is_some_and(|since| {
-                    input.occurred_at - since >= Duration::milliseconds(config.exhaustion_dwell_ms)
-                });
-                let structure_opposed_for_dwell =
-                    state.opposing_structure_since.is_some_and(|since| {
-                        input.occurred_at - since
-                            >= Duration::milliseconds(config.exhaustion_dwell_ms)
-                    });
-                if progress_stale && structure_opposed_for_dwell {
-                    ending = Some("opposing_structure");
-                } else if progress_stale && weak_for_dwell {
-                    ending = Some("evidence_exhausted");
-                }
                 let bucket = confidence_bucket(active.confidence);
                 let update_due = state.last_emitted_at.is_none_or(|last| {
                     input.occurred_at - last >= Duration::milliseconds(config.update_interval_ms)
@@ -394,16 +508,19 @@ impl QmdEpisodeEngine {
             }
         }
 
-        if let Some(resolution) = ending {
+        if let Some((resolution, reference_price)) = ending {
             if let Some(mut active) = state.active.take() {
                 active.last_updated_at = input.occurred_at;
+                active.current_price = input.close;
+                active.macd_line = macd.line;
+                active.macd_signal = macd.signal;
+                active.macd_converging = macd.converging;
+                active.resolution_reference_price = reference_price;
                 ended_direction = active.direction;
                 events.push(event_from_state(sym, &active, "end", resolution));
             }
             state.setup = None;
-            state.low_confidence_since = None;
             state.opposite_since = None;
-            state.opposing_structure_since = None;
             state.last_emitted_bucket = -1;
             state.last_emitted_at = None;
             state.rearm_direction = ended_direction;
@@ -447,7 +564,11 @@ impl QmdEpisodeEngine {
                         input.close < setup.breakout_price - buffer
                     }
             });
-            if breakout {
+            let entry_conflicts_with_structure = state.setup.as_ref().is_some_and(|setup| {
+                scale.structure_break_direction == -setup.direction
+                    && scale.structure_break_confidence >= config.opposing_structure_confidence
+            });
+            if breakout && !entry_conflicts_with_structure {
                 let setup = state
                     .setup
                     .take()
@@ -482,8 +603,21 @@ impl QmdEpisodeEngine {
                         observed_low
                     },
                     last_progress_at: input.occurred_at,
+                    current_price: input.close,
+                    macd_line: macd.line,
+                    macd_signal: macd.signal,
+                    macd_converging: macd.converging,
                     trailing_swing_price: 0.0,
-                    last_supportive_signal_at: input.occurred_at,
+                    favorable_swing_price: if setup.direction > 0 {
+                        scale.swing_high
+                    } else {
+                        scale.swing_low
+                    },
+                    last_scale_swing_high: scale.swing_high,
+                    last_scale_swing_low: scale.swing_low,
+                    failed_swing_price: 0.0,
+                    failed_swing_confirmed: false,
+                    resolution_reference_price: setup.breakout_price,
                 };
                 state.last_emitted_bucket = confidence_bucket(active.confidence);
                 state.last_emitted_at = Some(input.occurred_at);
@@ -544,6 +678,7 @@ fn event_from_state(
     resolution: &str,
 ) -> QmdEpisodeEvent {
     QmdEpisodeEvent {
+        algorithm_version: QMD_EPISODE_ALGORITHM_VERSION,
         sym: sym.to_string(),
         preset: state.preset,
         episode_id: state.episode_id,
@@ -562,8 +697,21 @@ fn event_from_state(
         } else {
             0.0
         },
+        event_price: state.current_price,
+        reference_price: state.resolution_reference_price,
+        macd_line: state.macd_line,
+        macd_signal: state.macd_signal,
+        macd_converging: state.macd_converging,
         resolution: resolution.to_string(),
     }
+}
+
+fn materially_changed(value: f64, previous: f64, tolerance: f64) -> bool {
+    value.is_finite()
+        && value > 0.0
+        && (!previous.is_finite()
+            || previous <= 0.0
+            || (value - previous).abs() > tolerance.max(0.000_001))
 }
 
 #[cfg(test)]
@@ -578,6 +726,8 @@ mod tests {
             threshold: 0.5,
             swing_high: 102.0,
             swing_low: 98.0,
+            structure_break_direction: 0,
+            structure_break_confidence: 0.0,
         };
         QmdEpisodeInput {
             occurred_at: Utc.timestamp_millis_opt(ms).unwrap(),
@@ -618,7 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn micro_exhaustion_requires_causal_dwell() {
+    fn neutral_qmd_and_stalled_progress_do_not_end_a_directional_regime() {
         let mut engine = QmdEpisodeEngine::default();
         engine.update("TEST", input(1_000, 1, 0.40));
         engine.update("TEST", breakout(1_100, 1, 0.40));
@@ -626,18 +776,16 @@ mod tests {
             .update("TEST", input(1_500, 0, 0.0))
             .iter()
             .all(|event| event.event_type != "end"));
-        let mut ended = false;
-        for timestamp in (2_000..40_000).step_by(500) {
-            ended |= engine
+        for timestamp in (2_000..180_000).step_by(500) {
+            assert!(engine
                 .update("TEST", input(timestamp, 0, 0.0))
                 .iter()
-                .any(|event| {
-                    event.preset == QmdEpisodePreset::Micro
-                        && event.event_type == "end"
-                        && event.resolution == "evidence_exhausted"
-                });
+                .all(|event| event.event_type != "end"));
         }
-        assert!(ended);
+        assert!(engine
+            .states()
+            .iter()
+            .any(|state| state.preset == QmdEpisodePreset::Micro));
     }
 
     #[test]
@@ -653,7 +801,7 @@ mod tests {
         assert!(events.iter().any(|event| {
             event.preset == QmdEpisodePreset::Micro
                 && event.event_type == "end"
-                && event.resolution == "opposite_signal"
+                && event.resolution == "opposite_qmd_decision"
         }));
         assert!(events.iter().all(|event| event.event_type != "start"));
         assert!(engine
@@ -697,32 +845,22 @@ mod tests {
     }
 
     #[test]
-    fn opposing_structure_requires_persistence_and_stalled_price() {
+    fn confirmed_opposing_structure_ends_the_regime_without_a_time_delay() {
         let mut engine = QmdEpisodeEngine::default();
         engine.update("TEST", input(1_000, 1, 0.60));
         engine.update("TEST", breakout(1_050, 1, 0.60));
         let mut opposed = input(1_100, 1, 0.60);
-        opposed.micro.direction = -1;
-        opposed.micro.confidence = 0.90;
-        assert!(engine
-            .update("TEST", opposed)
-            .iter()
-            .all(|event| event.event_type != "end"));
-        opposed.occurred_at = Utc.timestamp_millis_opt(15_900).unwrap();
-        assert!(engine
-            .update("TEST", opposed)
-            .iter()
-            .all(|event| event.event_type != "end"));
-        opposed.occurred_at = Utc.timestamp_millis_opt(16_200).unwrap();
+        opposed.micro.structure_break_direction = -1;
+        opposed.micro.structure_break_confidence = 0.90;
         assert!(engine.update("TEST", opposed).iter().any(|event| {
             event.preset == QmdEpisodePreset::Micro
                 && event.event_type == "end"
-                && event.resolution == "opposing_structure"
+                && event.resolution == "structure_reversal"
         }));
     }
 
     #[test]
-    fn a_meaningful_new_confirmed_swing_ends_the_micro_episode() {
+    fn a_break_of_the_protected_higher_low_requires_bearish_macd_confirmation() {
         let mut engine = QmdEpisodeEngine::default();
         engine.update("TEST", input(1_000, 1, 0.60));
         engine.update("TEST", breakout(1_100, 1, 0.60));
@@ -743,10 +881,66 @@ mod tests {
         exhausted.low = 102.8;
         exhausted.micro.swing_high = 105.0;
         exhausted.micro.swing_low = 103.0;
+        assert!(engine
+            .update("TEST", exhausted)
+            .iter()
+            .all(|event| event.event_type != "end"));
+
+        let micro = engine
+            .presets
+            .get_mut(&QmdEpisodePreset::Micro)
+            .expect("micro preset exists");
+        micro.macd.bucket = Some(4);
+        micro.macd.bucket_close = 102.5;
+        micro.macd.reading = MacdReading {
+            line: -0.10,
+            signal: -0.02,
+            ready: true,
+            converging: false,
+        };
+        exhausted.occurred_at = Utc.timestamp_millis_opt(4_000).unwrap();
         assert!(engine.update("TEST", exhausted).iter().any(|event| {
             event.preset == QmdEpisodePreset::Micro
                 && event.event_type == "end"
-                && event.resolution == "swing_exhaustion"
+                && event.resolution == "protected_swing_break_macd_confirmation"
+        }));
+    }
+
+    #[test]
+    fn a_confirmed_lower_high_with_bearish_macd_ends_the_long_regime() {
+        let mut engine = QmdEpisodeEngine::default();
+        engine.update("TEST", input(1_000, 1, 0.60));
+        engine.update("TEST", breakout(1_100, 1, 0.60));
+
+        let mut higher_high = input(2_000, 0, 0.0);
+        higher_high.close = 105.0;
+        higher_high.high = 105.0;
+        higher_high.low = 104.5;
+        higher_high.micro.swing_high = 105.0;
+        engine.update("TEST", higher_high);
+
+        let micro = engine
+            .presets
+            .get_mut(&QmdEpisodePreset::Micro)
+            .expect("micro preset exists");
+        micro.macd.bucket = Some(3);
+        micro.macd.bucket_close = 103.8;
+        micro.macd.reading = MacdReading {
+            line: -0.10,
+            signal: -0.02,
+            ready: true,
+            converging: false,
+        };
+        let mut lower_high = input(3_000, 0, 0.0);
+        lower_high.close = 103.8;
+        lower_high.high = 104.0;
+        lower_high.low = 103.5;
+        lower_high.micro.swing_high = 104.0;
+        assert!(engine.update("TEST", lower_high).iter().any(|event| {
+            event.preset == QmdEpisodePreset::Micro
+                && event.event_type == "end"
+                && event.resolution == "lower_high_macd_confirmation"
+                && (event.reference_price - 104.0).abs() < f64::EPSILON
         }));
     }
 

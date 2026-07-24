@@ -189,6 +189,46 @@ structural context (absolute context at least 0.12) vetoes the action to
 `qmd_decision_action`, and `qmd_decision_reason`. This is causal short-horizon
 evidence, not a calibrated return probability or an execution instruction.
 
+### Directional regime lifecycle
+
+`QmdEpisodeEngine` algorithm version 2 converts the canonical 100 ms decisions
+into one persistent regime per Micro, Tactical, and Context scale:
+
+1. A decision above the preset confidence threshold arms the last confirmed
+   eligible-trade swing.
+2. A later 100 ms traded close must break that frozen swing before the regime
+   starts. `swing_breakout` is therefore an entry reason, not the earlier QMD
+   setup time.
+3. Higher highs and higher lows sustain a Long; lower lows and lower highs
+   sustain a Short. Neutral QMD readings, confidence decay, elapsed time, and a
+   single opposing candle cannot close the regime.
+4. A confirmed lower high in a Long or higher low in a Short becomes an
+   exhaustion candidate. These pivots are available only after the Generic
+   Structure reversal threshold causally confirms them.
+5. The regime closes on one of the following explicit resolutions:
+
+| Resolution | Meaning |
+|---|---|
+| `opposite_qmd_decision` | An opposite QMD action exceeded the preset threshold for its dwell period. |
+| `structural_invalidation` | Price crossed the structural invalidation frozen at entry. |
+| `protected_swing_break_macd_confirmation` | Price crossed the latest protected higher low or lower high after meaningful progress while preset-native MACD was on the opposing side of signal. |
+| `structure_reversal` | The selected scale emitted a new, sufficiently confident opposing BoS or CHoCH after entry. A pre-existing opposing state cannot close a new regime. |
+| `lower_high_macd_confirmation` | A Long formed a confirmed lower high while its preset-native MACD was below signal. |
+| `higher_low_macd_confirmation` | A Short formed a confirmed higher low while its preset-native MACD was above signal. |
+
+The standard MACD calculation is EMA(12) minus EMA(26), with an EMA(9) signal
+line. Micro finalizes one MACD input every 1 second, Tactical every 5 seconds,
+and Context every 15 seconds. These clocks belong to the strategy preset, not
+the chart display timeframe. Convergence is exposed as warning evidence;
+being on the opposing side confirms a failed-swing exit.
+
+Each serialized regime event includes its algorithm version, event and
+reference prices, current MACD and signal values, convergence state, confidence,
+fixed breakout rail, structural invalidation, favorable excursion, and the
+entry or exit resolution. Live and historical gateways use this same shared
+engine, so replayed boundaries and reasons are strategy-safe and do not depend
+on frontend aggregation.
+
 ## 2. Session-Anchored OFI and Trade Delta
 
 The anchor is one zero baseline at 04:00 New York time. It does not reset at

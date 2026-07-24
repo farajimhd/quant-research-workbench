@@ -101,24 +101,36 @@ opposition is a veto: the result becomes Wait instead of averaging contradictory
 evidence into a weak direction. A directional action requires at least 35%
 microstructure confidence and an absolute trigger of 0.15.
 
-The oscillator shows signed decision and 0-1 confidence. The 100 ms chart keeps
-each canonical transition. On a larger chart, the selected Micro, Tactical, or
-Context preset converts the same 100 ms stream into a causal trade episode:
+The oscillator shows signed decision and 0-1 confidence. The selected Micro,
+Tactical, or Context preset converts the same canonical 100 ms stream into a
+causal directional regime:
 
 1. a qualifying QMD decision arms the setup;
 2. the engine freezes the last confirmed traded-price swing in that direction;
 3. entry begins only when a later 100 ms close crosses that frozen level;
-4. the episode trails newly confirmed favorable opposite swings; and
-5. it ends when price breaks that trailing swing after QMD support has gone
-   stale, or sooner on invalidation, persistent opposition, evidence
-   exhaustion, or the preset safety duration.
+4. new higher highs and higher lows extend a Long, while lower lows and lower
+   highs extend a Short;
+5. a confirmed lower high during a Long, or higher low during a Short, becomes
+   an exhaustion candidate rather than an immediate hindsight exit; and
+6. the regime closes only on a persistent opposite QMD decision, structural
+   invalidation, a protected-swing break confirmed by opposing MACD, a newly
+   confirmed opposing BoS or CHoCH event,
+   or a failed swing accompanied by opposing preset-native MACD confirmation.
 
-The breakout level is the episode rail. Green means Buy, red means Sell, and
-Wait draws nothing. Confidence text is evidence confidence, not a return target
-or calibrated win probability. Start and end timestamps are independent of the
-displayed candle interval; larger candles only consolidate the same episode
-geometry. Historical range fill is continuous between adjacent candle slots
-and never uses future confidence to restyle an earlier segment.
+Neutral QMD, confidence decay, elapsed time, or one opposing candle does not end
+the regime. Micro samples its MACD helper from completed 1-second closes,
+Tactical from 5-second closes, and Context from 15-second closes. MACD
+convergence is a warning; MACD on the opposing side of its signal confirms a
+failed-swing exit.
+
+The breakout level is the fixed regime rail. Green means Long and red means
+Short. The entry marker states confidence and the swing-break reason; the close
+marker states the exact causal exit reason. Confidence text is evidence
+confidence, not a return target or calibrated win probability. Start and end
+timestamps are independent of the displayed candle interval; larger candles
+only consolidate the same regime geometry. Historical shading is continuous
+between adjacent candle slots and never uses future confidence to restyle an
+earlier segment.
 
 ## Anchored OFI + Trade Delta Pane
 

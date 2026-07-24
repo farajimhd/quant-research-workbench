@@ -1042,19 +1042,27 @@ pub fn qmd_episode_input(row: &IndicatorRow, high: f64, low: f64) -> QmdEpisodeI
         "sell" => -1,
         _ => 0,
     };
-    let scale = |scale_direction: i8, threshold: f64, swing_high: f64, swing_low: f64| {
-        QmdEpisodeScaleInput {
-            direction: scale_direction,
-            confidence: if scale_direction == 0 {
-                0.0
-            } else {
-                row.qmd_structure_confidence.clamp(0.0, 1.0)
-            },
-            threshold,
-            swing_high,
-            swing_low,
-        }
-    };
+    let scale =
+        |name: &str, scale_direction: i8, threshold: f64, swing_high: f64, swing_low: f64| {
+            let structure_break = row.qmd_structure_events.iter().rev().find(|event| {
+                event.scale == name
+                    && matches!(event.event_kind.as_str(), "bos" | "choch")
+                    && event.confirmed_at <= row.bar_end
+            });
+            QmdEpisodeScaleInput {
+                direction: scale_direction,
+                confidence: if scale_direction == 0 {
+                    0.0
+                } else {
+                    row.qmd_structure_confidence.clamp(0.0, 1.0)
+                },
+                threshold,
+                swing_high,
+                swing_low,
+                structure_break_direction: structure_break.map_or(0, |event| event.direction),
+                structure_break_confidence: structure_break.map_or(0.0, |event| event.confidence),
+            }
+        };
     QmdEpisodeInput {
         occurred_at: row.bar_end,
         close: row.close,
@@ -1063,18 +1071,21 @@ pub fn qmd_episode_input(row: &IndicatorRow, high: f64, low: f64) -> QmdEpisodeI
         decision_direction: direction,
         decision_confidence: row.qmd_decision_confidence.clamp(0.0, 1.0),
         micro: scale(
+            "micro",
             row.qmd_structure_micro_direction,
             row.qmd_structure_micro_threshold,
             row.qmd_structure_micro_swing_high,
             row.qmd_structure_micro_swing_low,
         ),
         tactical: scale(
+            "tactical",
             row.qmd_structure_tactical_direction,
             row.qmd_structure_tactical_threshold,
             row.qmd_structure_tactical_swing_high,
             row.qmd_structure_tactical_swing_low,
         ),
         context: scale(
+            "context",
             row.qmd_structure_context_direction,
             row.qmd_structure_context_threshold,
             row.qmd_structure_context_swing_high,

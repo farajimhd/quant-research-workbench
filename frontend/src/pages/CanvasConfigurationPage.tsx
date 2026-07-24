@@ -178,6 +178,7 @@ type QmdBarHistory = {
 };
 type QmdEpisodePreset = "micro" | "tactical" | "context";
 type QmdEpisodeEvent = {
+  algorithm_version: number;
   sym: string;
   preset: QmdEpisodePreset;
   episode_id: number;
@@ -189,6 +190,11 @@ type QmdEpisodeEvent = {
   entry_price: number;
   rail_price: number;
   invalidation_price: number;
+  event_price: number;
+  reference_price: number;
+  macd_line: number;
+  macd_signal: number;
+  macd_converging: boolean;
   resolution: string;
 };
 type QmdDecisionEvent = {
@@ -359,20 +365,20 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     },
   ),
   {
-    ...displayIndicator("indicator.qmd_decision_chart", "QMD Decision · Chart episodes", "microstructure", ["qmd_decision_signal", "qmd_decision_confidence", "qmd_decision_action"], "price", {
-    shortDescription: "Canonical 100 ms decisions consolidated into causal Micro, Tactical, or Context episodes.",
-    detailedDescription: "On a 100 ms chart every raw Buy or Sell transition remains visible. On larger charts, a qualifying QMD decision first arms the selected scale. The episode starts only when traded price subsequently breaks that scale's last confirmed swing in the same direction. Green is Buy, red is Sell, and Wait is blank.",
-    calculation: "All presets consume the same ordered 100 ms decisions and the same 100 ms eligible-trade structure clock. Micro arms at 35% confidence, freezes the last confirmed Micro swing, and starts on its causal break. Tactical and Context apply the same sequence to their wider structural scales. A meaningful newly confirmed favorable swing ends the episode when price reverses far enough to confirm exhaustion. Invalidation, a persistent opposite decision, persistent opposing structure, weak stalled evidence, or the preset safety duration can end it sooner. The same lingering decision cannot immediately rearm another episode.",
-    readingGuide: "The arrow marks the actionable swing-break entry, not the earlier QMD setup. The horizontal rail is the broken swing reference and thickens with confidence. One continuous shaded path starts at entry and expands to the running high for Buy or running low for Sell. It ends when the move exhausts or another causal exit rule fires; prior confidence and range never repaint.",
+    ...displayIndicator("indicator.qmd_decision_chart", "QMD Decision · Directional regimes", "microstructure", ["qmd_decision_signal", "qmd_decision_confidence", "qmd_decision_action"], "price", {
+    shortDescription: "Canonical 100 ms decisions consolidated into causal Micro, Tactical, or Context directional regimes.",
+    detailedDescription: "A qualifying QMD decision arms the selected scale. The regime starts only when eligible traded price later breaks that scale's last confirmed swing in the same direction. It persists through neutral QMD readings and ordinary pullbacks while the favorable swing sequence remains intact.",
+    calculation: "All presets consume the same ordered 100 ms decisions and eligible-trade structure clock. Micro arms at 35% confidence, freezes its confirmed swing, and enters on its later break; Tactical and Context use their wider structural scales. A new higher high or lower low extends the same regime. A confirmed lower high or higher low becomes an exhaustion candidate. The regime closes on a persistent opposite QMD decision, structural invalidation, a protected-swing break confirmed by opposing MACD, a newly confirmed opposing BoS or CHoCH event, or a failed swing accompanied by opposing preset-native MACD confirmation. A previously established structure direction, an unconfirmed pullback, neutral QMD, falling confidence, elapsed time, and a single opposing candle do not close it.",
+    readingGuide: "The entry arrow states the confidence and High break or Low break reason. The fixed rail is the broken swing. The shaded region remains continuous from entry to close and expands only with causally observed favorable range. The close arrow states the exact exit reason, including QMD opposition, invalidation, CHoCH, lower-high or higher-low failure, and protected-swing failure with MACD confirmation. Historical segments retain the confidence known at each moment and never repaint.",
     bullishEvidence: "A green up arrow means QMD was bullish first and traded price then broke the frozen last swing high.",
     bearishEvidence: "A red down arrow means QMD was bearish first and traded price then broke the frozen last swing low.",
     timeframeBehavior: "Chart timeframe changes only the candle geometry used to draw the episode. Episode start and end timestamps are identical across chart timeframes and are available to strategies through the gateway. Historical confidence updates are rate-limited per preset for an efficient causal display; the live gateway retains the exact active state.",
-    caveats: ["A preset is a causal setup and holding policy, not a forecast guarantee.", "A QMD decision without a later swing break is not an entry.", "Confidence is evidence quality, not win probability.", "The running rectangle is favorable excursion, not a profit target."],
+    caveats: ["A preset is a causal regime policy, not a forecast guarantee.", "A QMD decision without a later swing break is not an entry.", "A lower high or higher low is published only after causal reversal confirmation; the engine does not mark the pivot using future knowledge.", "MACD convergence is a warning, while an opposing crossover confirms a failed-swing exit.", "Confidence is evidence quality, not win probability.", "The running rectangle is favorable excursion, not a profit target."],
   }),
     presetOptions: [
-      { value: "micro", label: "Micro", description: "Fastest response; 2 minute safety cap." },
-      { value: "tactical", label: "Tactical", description: "Intermediate confirmation; 15 minute safety cap." },
-      { value: "context", label: "Context", description: "Most selective structural horizon; 60 minute safety cap." },
+      { value: "micro", label: "Micro", description: "Fastest eligible-trade structure with a 1-second MACD helper." },
+      { value: "tactical", label: "Tactical", description: "Intermediate structure with a 5-second MACD helper." },
+      { value: "context", label: "Context", description: "Most selective structure with a 15-second MACD helper." },
     ],
   },
   displayIndicator("indicator.qmd_transaction_imbalance", "QMD Transaction Imbalance", "microstructure", ["microstructure_transaction_imbalance", "microstructure_buy_trade_count", "microstructure_sell_trade_count"], "qmd_transaction", qmdIndicatorKnowledge("Buy-versus-sell trade-count imbalance", "Counts eligible prints classified at the ask as buys and at the bid as sells, then computes (buys - sells) / classified trades.", "Persistent positive readings mean buyer-initiated prints are arriving more often; negative readings mean seller-initiated prints dominate.", "It ignores trade size, so compare it with Signed-volume Imbalance.")),
@@ -937,6 +943,10 @@ function qmdEpisodePresentation(
     const firstBar = sortedBars[firstIndex];
     const eventRail = finiteNumber(start.rail_price);
     const rail = eventRail > 0 ? eventRail : start.direction > 0 ? firstBar.low : firstBar.high;
+    const entryReason = qmdRegimeReason(start.resolution, start.direction, "start");
+    const exitReason = endEvent
+      ? qmdRegimeReason(endEvent.resolution, start.direction, "end")
+      : "";
     let runningExtreme = start.direction > 0
       ? Math.max(rail, firstBar.high)
       : Math.min(rail, firstBar.low);
@@ -951,7 +961,7 @@ function qmdEpisodePresentation(
       settingsId: "qmd-decision-episodes",
       shape: start.direction > 0 ? "arrowUp" : "arrowDown",
       size: 1,
-      text: `${Math.round(boundedUnit(start.confidence) * 100)}%`,
+      text: `${Math.round(boundedUnit(start.confidence) * 100)}% · ${entryReason}`,
       time: (firstBar.startMs / 1000) as UTCTimestamp,
     });
     for (let index = firstIndex; index < sortedBars.length; index += 1) {
@@ -979,6 +989,27 @@ function qmdEpisodePresentation(
       });
     }
     if (!steps.length) return;
+    if (endEvent) {
+      let exitBar = firstBar;
+      for (let index = firstIndex; index < sortedBars.length; index += 1) {
+        if (endMs < sortedBars[index].startMs) break;
+        if (endMs <= sortedBars[index].endMs) {
+          exitBar = sortedBars[index];
+          break;
+        }
+      }
+      markers.push({
+        color: start.direction > 0 ? "var(--danger)" : "var(--success)",
+        displayItemId: "indicator.qmd_decision_chart",
+        position: start.direction > 0 ? "aboveBar" : "belowBar",
+        preset: start.preset,
+        settingsId: "qmd-decision-episodes",
+        shape: start.direction > 0 ? "arrowDown" : "arrowUp",
+        size: 1,
+        text: `Exit · ${exitReason}`,
+        time: (exitBar.startMs / 1000) as UTCTimestamp,
+      });
+    }
     const shared = {
       confidence: steps[steps.length - 1].confidence,
       defaultVisible: true,
@@ -998,8 +1029,8 @@ function qmdEpisodePresentation(
       color: start.direction > 0 ? "var(--success)" : "var(--danger)",
       fillColor: start.direction > 0 ? "var(--success)" : "var(--danger)",
       fillOpacity: 0.14,
-      label: `${start.preset} ${start.direction > 0 ? "buy" : "sell"} episode`,
-      legendLabel: "QMD decision episodes",
+      label: `${start.preset} ${start.direction > 0 ? "long" : "short"} regime · ${entryReason}${exitReason ? ` → ${exitReason}` : " · active"}`,
+      legendLabel: "QMD directional regimes",
       lower: Math.min(...steps.map((step) => step.lower)),
       renderMode: "zone",
       upper: Math.max(...steps.map((step) => step.upper)),
@@ -1009,14 +1040,33 @@ function qmdEpisodePresentation(
       annotationKind: "signal-episode-rail",
       borderOpacity: 0,
       color: start.direction > 0 ? "var(--success)" : "var(--danger)",
-      label: `${start.preset} confidence rail`,
-      legendLabel: "QMD decision episodes",
+      label: `${start.preset} ${start.direction > 0 ? "long" : "short"} breakout rail`,
+      legendLabel: "QMD directional regimes",
       lower: rail,
       renderMode: "line",
       upper: rail,
     });
   });
   return { markers, zones };
+}
+
+function qmdRegimeReason(
+  resolution: string,
+  direction: number,
+  eventType: "start" | "end",
+) {
+  if (eventType === "start") {
+    return direction > 0 ? "High break" : "Low break";
+  }
+  if (resolution === "opposite_qmd_decision") return direction > 0 ? "QMD↓" : "QMD↑";
+  if (resolution === "structural_invalidation") return "Invalidated";
+  if (resolution === "protected_swing_break_macd_confirmation") {
+    return direction > 0 ? "HL break + MACD↓" : "LH break + MACD↑";
+  }
+  if (resolution === "structure_reversal") return direction > 0 ? "CHoCH↓" : "CHoCH↑";
+  if (resolution === "lower_high_macd_confirmation") return "LH + MACD↓";
+  if (resolution === "higher_low_macd_confirmation") return "HL + MACD↑";
+  return resolution ? resolution.replaceAll("_", " ") : "Regime ended";
 }
 
 function extendedSessionRegions(bars: QmdLiveBar[]) {
@@ -1879,11 +1929,16 @@ function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl,
   const timeframe = settings.chart.timeframe;
   const payload = useMemo<ChartPayload>(() => {
     const microBars = timeframe === "100ms";
-    const episodePresentation = microBars
-      ? { markers: [] as ChartPayload["markers"], zones: [] as NonNullable<ChartPayload["price_zones"]> }
-      : qmdEpisodePresentation(liveChart.episodeEvents, liveChart.bars, visibleIndicators);
+    const episodePresentation = qmdEpisodePresentation(
+      liveChart.episodeEvents,
+      liveChart.bars,
+      visibleIndicators,
+    );
     const decisionMarkers = microBars
-      ? qmdDecisionChartMarkers(liveChart.decisionEvents, liveChart.bars, visibleIndicators)
+      ? [
+          ...qmdDecisionChartMarkers(liveChart.decisionEvents, liveChart.bars, visibleIndicators),
+          ...(episodePresentation.markers ?? []),
+        ]
       : episodePresentation.markers;
     return {
       candles: liveChart.bars.map((bar) => ({ close: bar.close, high: bar.high, low: bar.low, open: bar.open, time: Date.parse(bar.bar_start) / 1000 })),
