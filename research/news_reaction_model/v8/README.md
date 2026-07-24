@@ -38,7 +38,10 @@ validated and persisted by `openai_embeddings_v1`.
 The prepared table retains `Array(Float32)` vectors for auditability. Loaders
 project those arrays as lossless little-endian Float32/base64 payloads before
 HTTP transport, avoiding the much larger decimal JSON representation without
-changing any vector value.
+changing any vector value. Each scalar is padded to exactly four bytes before
+concatenation because ClickHouse numeric-to-string reinterpretation otherwise
+omits trailing zero bytes. The loader validates the byte count and reports the
+exact article identity before constructing a tensor.
 
 ## Prepared dataset
 
@@ -89,7 +92,11 @@ python -m research.news_reaction_model.v8.run_train
 
 Profiling is recommended because replacing sparse TF-IDF bags with a dense
 3,072-value tensor changes loader and GPU memory behavior. Using the V7 batch
-size without profiling would not be a controlled systems assumption.
+size without profiling would not be a controlled systems assumption. The
+profiler streams its real-data source sample through one bounded 2,048-article
+loader instead of issuing concurrent queries at the largest candidate batch
+size; only the requested 32,768-article maximum sample is retained in host
+memory.
 
 Evaluation:
 

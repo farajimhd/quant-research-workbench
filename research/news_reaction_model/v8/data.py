@@ -29,6 +29,20 @@ def qi(value: str) -> str:
     return "`" + str(value).replace("`", "``") + "`"
 
 
+def float32_array_base64_sql(expression: str) -> str:
+    """Encode every Float32 as exactly four little-endian bytes.
+
+    ClickHouse ``reinterpretAsString(Float32)`` omits trailing zero bytes.
+    Padding each scalar before concatenation preserves zero-valued and other
+    byte-suffix-zero components without decimal JSON inflation.
+    """
+    return (
+        "base64Encode(arrayStringConcat(arrayMap("
+        f"x -> rightPad(reinterpretAsString(x), 4, char(0)), {expression}"
+        ")))"
+    )
+
+
 @dataclass(slots=True)
 class NewsReactionBatch:
     x: dict[str, torch.Tensor]
@@ -69,10 +83,10 @@ def prepared_batch_sql(
     limit: int,
 ) -> str:
     table = f"{qi(config.dataset_database)}.{qi(config.dataset_table)}"
+    embedding_transport = float32_array_base64_sql("openai_embedding")
     return f"""
 SELECT canonical_news_id AS source_id, ticker, published_at_utc,
- base64Encode(arrayStringConcat(arrayMap(x -> reinterpretAsString(x), openai_embedding)))
-  AS openai_embedding_b64,
+ {embedding_transport} AS openai_embedding_b64,
  stock_state, publication_session, horizon_codes, return_targets
 FROM {table} FINAL
 WHERE dataset_version = {q(config.dataset_version)}
@@ -270,9 +284,25 @@ def rows_to_batch(rows: list[dict[str, Any]], config: LoaderConfig) -> NewsReact
     for row in rows:
         encoded = str(row.get("openai_embedding_b64") or "")
         if encoded:
-            vector = np.frombuffer(base64.b64decode(encoded, validate=True), dtype="<f4")
+            raw = base64.b64decode(encoded, validate=True)
+            expected_bytes = config.openai_embedding_dim * np.dtype("<f4").itemsize
+            if len(raw) != expected_bytes:
+                raise ValueError(
+                    "OpenAI embedding binary transport returned "
+                    f"{len(raw)} bytes instead of {expected_bytes} for "
+                    f"{row.get('source_id', '<unknown>')} / {row.get('ticker', '<unknown>')} / "
+                    f"{row.get('published_at_utc', '<unknown>')}."
+                )
+            vector = np.frombuffer(raw, dtype="<f4")
         else:
             vector = np.asarray(row.get("openai_embedding", ()), dtype=np.float32)
+        if vector.shape != (config.openai_embedding_dim,):
+            raise ValueError(
+                f"OpenAI embedding has shape {vector.shape} instead of "
+                f"{(config.openai_embedding_dim,)} for "
+                f"{row.get('source_id', '<unknown>')} / {row.get('ticker', '<unknown>')} / "
+                f"{row.get('published_at_utc', '<unknown>')}."
+            )
         embedding_rows.append(vector)
     openai_embedding = torch.from_numpy(
         np.stack(embedding_rows).astype(np.float32, copy=False)

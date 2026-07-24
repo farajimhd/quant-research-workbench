@@ -112,7 +112,7 @@ class NewsReactionModelV8Tests(unittest.TestCase):
             "horizon_codes": [],
             "return_targets": [],
         }
-        with self.assertRaisesRegex(ValueError, "openai_embedding shape"):
+        with self.assertRaisesRegex(ValueError, "OpenAI embedding has shape"):
             rows_to_batch([row], config)
 
     def test_batch_decodes_lossless_float32_base64_transport(self) -> None:
@@ -129,6 +129,20 @@ class NewsReactionModelV8Tests(unittest.TestCase):
         }
         batch = rows_to_batch([row], config)
         self.assertTrue(torch.allclose(batch.x["openai_embedding"][0], torch.tensor(values)))
+
+    def test_batch_rejects_short_binary_transport_with_identity(self) -> None:
+        config = LoaderConfig(openai_embedding_dim=4, stock_state_dim=2)
+        row = {
+            "source_id": "news-123",
+            "ticker": "ZERO",
+            "published_at_utc": "2026-01-01 12:00:00",
+            "openai_embedding_b64": base64.b64encode(struct.pack("<3f", 0.0, 1.0, 2.0)).decode("ascii"),
+            "stock_state": [0.1, 0.2],
+            "horizon_codes": [],
+            "return_targets": [],
+        }
+        with self.assertRaisesRegex(ValueError, "12 bytes instead of 16.*news-123 / ZERO"):
+            rows_to_batch([row], config)
 
     def test_model_forward_and_loss_preserve_v7_output_contract(self) -> None:
         loader = LoaderConfig(openai_embedding_dim=16, stock_state_dim=8)
@@ -159,6 +173,8 @@ class NewsReactionModelV8Tests(unittest.TestCase):
         for sql in (batch_sql, evaluation_sql):
             self.assertIn("openai_embedding_b64", sql)
             self.assertIn("reinterpretAsString", sql)
+            self.assertIn("rightPad", sql)
+            self.assertIn("char(0)", sql)
             self.assertIn("stock_state", sql)
             self.assertNotIn("word_ids", sql)
             self.assertNotIn("char_ids", sql)

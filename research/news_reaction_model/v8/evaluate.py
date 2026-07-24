@@ -19,7 +19,15 @@ from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_p
 from research.mlops.env import discover_env_files, load_env_files
 from research.news_reaction_model.v8 import HORIZONS, MODEL_VERSION
 from research.news_reaction_model.v8.config import LoaderConfig, ModelConfig
-from research.news_reaction_model.v8.data import NewsReactionBatch, audit_prepared_dataset, month_ranges, q, qi, rows_to_batch
+from research.news_reaction_model.v8.data import (
+    NewsReactionBatch,
+    audit_prepared_dataset,
+    float32_array_base64_sql,
+    month_ranges,
+    q,
+    qi,
+    rows_to_batch,
+)
 from research.news_reaction_model.v8.inference import trade_plans
 from research.news_reaction_model.v8.model import NewsReactionModelV8
 from research.news_reaction_model.price_bucket_pnl import AnchorPricePnlBreakdown, write_anchor_price_pnl_csv
@@ -106,6 +114,7 @@ def evaluation_batch_sql(config: LoaderConfig, start: dt.date, end: dt.date, cur
     prepared = f"{qi(config.dataset_database)}.{qi(config.dataset_table)}"
     reactions = f"{qi(config.news_database)}.{qi(config.reaction_table)}"
     horizons = ",".join(q(value) for value in config.horizons)
+    embedding_transport = float32_array_base64_sql("p.openai_embedding")
     return f"""
 WITH anchors AS
 (
@@ -119,8 +128,7 @@ WITH anchors AS
  GROUP BY canonical_news_id, ticker, published_at_utc
 )
 SELECT p.canonical_news_id AS source_id, p.ticker, p.published_at_utc,
- base64Encode(arrayStringConcat(arrayMap(x -> reinterpretAsString(x), p.openai_embedding)))
-  AS openai_embedding_b64,
+ {embedding_transport} AS openai_embedding_b64,
  p.stock_state,
  p.publication_session, p.horizon_codes, p.return_targets, a.anchor_values
 FROM {prepared} AS p FINAL

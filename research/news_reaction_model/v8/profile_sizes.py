@@ -53,11 +53,18 @@ def main(argv: Iterable[str] | None = None) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     report = run_dir / "profile.jsonl"
     max_batch = max(csv_ints(args.batch_sizes))
+    # Profiling needs one bounded source sample, not 16 concurrent full-size
+    # month queries. Stream ordinary loader chunks and retain only the exact
+    # largest requested batch in host memory.
+    sample_chunk_articles = min(LoaderConfig().query_batch_articles, max_batch)
     loader = LoaderConfig(
         dataset_database=args.dataset_database, dataset_table=args.dataset_table, dataset_version=args.dataset_version,
         openai_embedding_dim=max(1, args.openai_embedding_dim),
         stock_state_dim=max(1, args.stock_state_dim),
-        batch_size=max_batch, query_batch_articles=max_batch,
+        batch_size=sample_chunk_articles,
+        query_batch_articles=sample_chunk_articles,
+        workers=1,
+        prefetch_batches=1,
     )
     if args.real_data:
         audit = audit_prepared_dataset(loader, args.data_start, args.data_end_exclusive)
