@@ -198,11 +198,14 @@ selected chart interval are visible by default. Open the indicator legend to
 enable other timeframe layers for comparison. Breaks additionally expose the
 swing-to-break connector toggle. Each break is rendered as one clean semantic
 color from the originating pivot time to the accepted break time, with the
-plain `BoS` or `CHoCH` label inset directly into the connector at its fixed
-time midpoint. When the connector is too short or its centered label would
-collide with another structure label, the label keeps that same horizontal
-midpoint but moves into the first free lane above a bullish connector or below
-a bearish connector. Label layout is deterministic: current support and
+plain `BoS` or `CHoCH` label fixed horizontally at the visual midpoint between
+its causal swing and break candle. A bullish label always sits above its
+connector and a bearish label always sits below; zoom never switches it into
+an inline layout. When the first lane would collide with another structure
+label, the label keeps that same horizontal midpoint and moves into the next
+free lane on the same semantic side. Its font contracts smoothly as bars
+become denser while the configured size remains the maximum at normal and
+close zoom levels. Label layout is deterministic: current support and
 resistance labels reserve space first, then the newest structure breaks, then
 swing references, then supporting annotations. A candidate that would overlap
 a candle or a higher-priority label is never drawn in that location; no label

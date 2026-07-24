@@ -4681,6 +4681,7 @@ function drawPriceZones(
             candleBoxes,
             width,
             plotBottom,
+            barWidth,
           );
         } else if (labelSpan) {
           candleBoxes ??= visibleCandleBoxes(chart, priceSeries, candles, barWidth, width, plotBottom);
@@ -4904,26 +4905,26 @@ function drawAnchoredStructureBreakLabel(
   candleBoxes: CanvasBox[],
   layerWidth: number,
   plotBottom: number,
+  barWidth: number,
 ) {
   if (!Number.isFinite(pivotX) || !Number.isFinite(eventX) || lineY < 2 || lineY > plotBottom - 2) return false;
-  const fontSize = Math.max(9, settings.labelFontSize);
+  const configuredFontSize = Math.max(9, settings.labelFontSize);
+  // Zoom changes typography only. The semantic x anchor remains the exact
+  // visual midpoint between the causal pivot and accepted break candle.
+  const zoomScale = Math.max(0.62, Math.min(1, barWidth / 8));
+  const fontSize = Math.max(7, Math.round(configuredFontSize * zoomScale * 2) / 2);
   context.save();
   context.font = `600 ${fontSize}px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
   const labelWidth = Math.ceil(context.measureText(text).width) + 12;
   const labelHeight = fontSize + 5;
   const anchorX = (pivotX + eventX) / 2;
   const left = anchorX - labelWidth / 2;
-  const connectorWidth = Math.abs(eventX - pivotX);
-  const inlineTop = lineY - labelHeight / 2;
   const direction = fallbackPlacement === "above" ? -1 : 1;
-  const fallbackTops = [1, 2, 3].map((lane) => (
+  const candidates = [1, 2, 3].map((lane) => (
     direction < 0
       ? lineY - lane * (labelHeight + 3)
       : lineY + 3 + (lane - 1) * (labelHeight + 3)
   ));
-  const candidates = connectorWidth >= labelWidth + 16
-    ? [inlineTop, ...fallbackTops]
-    : fallbackTops;
   let selected: CanvasBox | null = null;
   for (const top of candidates) {
     const candidate = { bottom: top + labelHeight, left, right: left + labelWidth, top };
