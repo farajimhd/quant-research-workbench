@@ -475,18 +475,30 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     ],
     caveats: ["QMD observes consolidated Level-1 NBBO and eligible prints, not full venue depth or hidden liquidity.", "A local swing is unknowable at its pivot instant; it becomes causal only after the following timeframe bucket completes. Strategies must use confirmed_at, never pivot_at.", "Nearest means absolute distance from current price. Strongest combines causal strength and confidence; it does not necessarily mean closest or most likely to hold.", "The footprint classifies aggressor side from available trade and NBBO evidence and therefore cannot reveal hidden orders.", "BoS, CHoCH, support, and resistance are deterministic evidence states—not trade instructions or win probabilities."],
   }),
-  displayIndicator("indicator.qmd_level_footprint", "QMD Level Volume Footprint", "price_action", [
-    "qmd_structure_active_levels",
-  ], "price", {
-    shortDescription: "Price-aligned executed-volume histograms around the active QMD event-native level book.",
-    detailedDescription: "Each active level carries nine price bins spanning four minimum ticks below through four ticks above the level. The chart unions identical price bins so overlapping level windows never double-count the same session volume.",
-    calculation: "For every eligible trade, QMD classifies aggressor side from trade and NBBO evidence and accumulates total, buyer-initiated, seller-initiated, and neutral volume by exact tick price. The visible profile uses the nearest active levels on each side plus any strongest level not already included.",
-    readingGuide: "Bar length compares total executed volume across the displayed level neighborhoods. Red is seller-initiated volume, gray is neutral or unclassified volume, and green is buyer-initiated volume. Read the profile together with the nearby support or resistance—not as a standalone direction signal.",
-    bullishEvidence: "Relatively heavy buyer-initiated volume at a support level, followed by price holding above it, supports evidence of acceptance or absorption.",
-    bearishEvidence: "Relatively heavy seller-initiated volume at a resistance level, followed by price rejecting below it, supports evidence of supply or absorption.",
-    timeframeBehavior: "The eligible-trade volume authority is independent of chart candles and promotion metadata. Changing chart timeframe changes candle presentation but does not recompute, average, or hide the active level-book trade volume.",
-    caveats: ["The profile contains only eligible consolidated trades, not hidden liquidity or full depth.", "High volume can mean acceptance or a contested level; price response determines which.", "Aggressor classification can be neutral when trade and NBBO evidence is insufficient."],
-  }),
+  {
+    ...displayIndicator("indicator.qmd_level_footprint", "QMD Level Volume Footprint", "price_action", [
+      "qmd_structure_active_levels",
+    ], "price", {
+      shortDescription: "Executed-volume evidence shown either as a complete encountered-level price profile or as normalized buy/sell rails at each causal swing.",
+      detailedDescription: "All encountered levels retains the last causal footprint snapshot for every level observed in the loaded history, then unions identical price bins without double-counting overlapping nine-tick windows. Swing rails use the volume stored on each selected-timeframe swing event: the upper green rail is buyer-initiated volume divided by total volume, and the lower red rail is seller-initiated volume divided by total volume.",
+      calculation: "For every eligible trade, QMD classifies aggressor side from trade and NBBO evidence and accumulates total, buyer-initiated, seller-initiated, and neutral volume by exact tick price. The axis profile compares absolute total volume across prices. At a swing, both rail lengths use the same fixed track: buy share = buy volume / total volume and sell share = sell volume / total volume. Unfilled track is neutral or unclassified volume.",
+      readingGuide: "In All encountered levels mode, longer right-edge bars identify prices where more eligible volume accumulated; red, gray, and green divide seller-, neutral-, and buyer-initiated volume. In Swing buy/sell rails mode, compare the two short rails immediately below each swing line. A long green rail and short red rail means aggressive buyers dominated that swing bucket; the reverse means aggressive sellers dominated. Always confirm the subsequent price response.",
+      bullishEvidence: "Buyer-dominant volume at a swing low or support, followed by price holding or advancing, supports acceptance or bullish absorption evidence.",
+      bearishEvidence: "Seller-dominant volume at a swing high or resistance, followed by rejection or decline, supports supply or bearish absorption evidence.",
+      timeframeBehavior: "The all-level profile is event-native and independent of chart candles. Swing rails show only causal swing occurrences for the selected chart timeframe, but their volume comes from the underlying eligible trades inside that timeframe bucket rather than candle direction.",
+      components: [
+        { label: "All encountered levels", description: "Right-aligned absolute-volume profile built from every distinct level observed in the loaded causal history, including levels that are no longer active.", tone: "info" },
+        { label: "Upper green swing rail", description: "Buyer-initiated eligible volume divided by total eligible volume in the exact bucket that formed the swing.", tone: "buy" },
+        { label: "Lower red swing rail", description: "Seller-initiated eligible volume divided by total eligible volume in the exact bucket that formed the swing.", tone: "sell" },
+        { label: "Unfilled rail track", description: "Neutral or unclassified eligible volume. It remains unfilled rather than being assigned to buy or sell.", tone: "neutral" },
+      ],
+      caveats: ["The profile contains only eligible consolidated trades, not hidden liquidity or full depth.", "High volume can mean acceptance or a contested level; price response determines which.", "Aggressor classification can be neutral when trade and NBBO evidence is insufficient.", "Rail percentages describe the swing bucket's executed-flow composition, not the probability that the level will hold."],
+    }),
+    presetOptions: [
+      { value: "axis-history", label: "All encountered levels", description: "Absolute buy, neutral, and sell volume by price for every level observed in loaded causal history." },
+      { value: "swing-rails", label: "Swing buy/sell rails", description: "Normalized buy and sell shares drawn directly below every selected-timeframe swing occurrence." },
+    ],
+  },
 ];
 
 const INDICATOR_SERIES = [
@@ -2027,7 +2039,13 @@ function historicalMarketLevelZones(
     );
   }
   if (visibleIndicators.includes("indicator.qmd_level_footprint")) {
-    pushLevelVolumeFootprint(zones, rows, chartEnd);
+    pushLevelVolumeFootprint(
+      zones,
+      rows,
+      structureEvents.length ? structureEvents : structureEventsFromSampledRows(rows),
+      chartEnd,
+      timeframe,
+    );
   }
   if (visibleIndicators.includes("indicator.qmd_reference_levels")) {
     pushGenericStructureReferences(zones, rows, chartEnd);
@@ -2235,27 +2253,18 @@ function pushCurrentStructureLevels(
 function pushLevelVolumeFootprint(
   zones: NonNullable<ChartPayload["price_zones"]>,
   rows: HistoricalIndicator[],
+  structureEvents: QmdStructureEvent[],
   chartEnd: number,
+  selectedTimeframe: CanvasChartTimeframe,
 ) {
-  const latest = rows[rows.length - 1];
-  const candidates = Array.isArray(latest?.qmd_structure_active_levels)
-    ? latest.qmd_structure_active_levels
-      .filter(isQmdStructureLevelCandidate)
-    : [];
-  if (!candidates.length) return;
-  const selectedById = new Map<string, QmdStructureLevelCandidate>();
+  const encounteredById = new Map<string, QmdStructureLevelCandidate>();
   const levelKey = (candidate: QmdStructureLevelCandidate) =>
     `${candidate.created_at_ms}:${candidate.side}:${candidate.price.toFixed(8)}`;
-  ([1, -1] as const).forEach((side) => {
-    const sideCandidates = candidates
-      .filter((candidate) => candidate.side === side)
-      .sort((left, right) => left.distance - right.distance || right.evidence_score - left.evidence_score);
-    sideCandidates.slice(0, 3).forEach((candidate) => selectedById.set(levelKey(candidate), candidate));
-    const strongest = sideCandidates.reduce<QmdStructureLevelCandidate | null>(
-      (best, candidate) => !best || candidate.evidence_score > best.evidence_score ? candidate : best,
-      null,
-    );
-    if (strongest) selectedById.set(levelKey(strongest), strongest);
+  rows.forEach((row) => {
+    if (!Array.isArray(row.qmd_structure_active_levels)) return;
+    row.qmd_structure_active_levels
+      .filter(isQmdStructureLevelCandidate)
+      .forEach((candidate) => encounteredById.set(levelKey(candidate), candidate));
   });
   const binsByPrice = new Map<string, {
     buyVolume: number;
@@ -2264,7 +2273,7 @@ function pushLevelVolumeFootprint(
     sellVolume: number;
     totalVolume: number;
   }>();
-  selectedById.forEach((candidate) => {
+  encounteredById.forEach((candidate) => {
     candidate.footprint.forEach((bin) => {
       if (!(Number(bin.price) > 0) || !(Number(bin.total_volume) > 0)) return;
       const key = Number(bin.price).toFixed(8);
@@ -2300,6 +2309,8 @@ function pushLevelVolumeFootprint(
       lower: bin.price,
       buyVolume: bin.buyVolume,
       neutralVolume: bin.neutralVolume,
+      preset: "axis-history",
+      presetDefault: "axis-history",
       renderMode: "zone",
       sellVolume: bin.sellVolume,
       settingsId: "indicator.qmd_level_footprint",
@@ -2309,6 +2320,42 @@ function pushLevelVolumeFootprint(
       upper: bin.price + tick,
     });
   });
+  structureEvents
+    .filter((event) =>
+      event.event_kind === "level_promoted"
+      && event.timeframe === selectedTimeframe
+      && Number(event.price) > 0
+      && Number(event.total_volume) > 0)
+    .forEach((event) => {
+      const totalVolume = Number(event.total_volume) || 0;
+      const buyVolume = Math.max(0, Number(event.buy_volume) || 0);
+      const sellVolume = Math.max(0, Number(event.sell_volume) || 0);
+      const neutralVolume = Math.max(0, Number(event.neutral_volume) || 0);
+      const start = Date.parse(event.pivot_at) / 1000;
+      if (!Number.isFinite(start)) return;
+      zones.push({
+        annotationKind: "swing-footprint",
+        buyVolume,
+        color: "var(--muted-foreground)",
+        defaultVisible: true,
+        displayItemId: "indicator.qmd_level_footprint",
+        end: start,
+        label: `${selectedTimeframe} swing footprint · ${formatLevelPrice(Number(event.price))} · ${formatQuantity(totalVolume)} traded · ${percentLabel(buyVolume / totalVolume)} buy / ${percentLabel(sellVolume / totalVolume)} sell / ${percentLabel(neutralVolume / totalVolume)} neutral · ${formatQuantity(Number(event.trade_count) || 0)} trades`,
+        latest: false,
+        legendLabel: "Level volume footprint",
+        lower: Number(event.price),
+        neutralVolume,
+        preset: "swing-rails",
+        presetDefault: "axis-history",
+        renderMode: "line",
+        sellVolume,
+        settingsId: "indicator.qmd_level_footprint",
+        start,
+        tone: Number(event.direction) < 0 ? "sell" : "buy",
+        totalVolume,
+        upper: Number(event.price),
+      });
+    });
 }
 
 function isQmdStructureLevelCandidate(value: unknown): value is QmdStructureLevelCandidate {

@@ -102,8 +102,9 @@ type TradeAnnotation = {
   stopPrice?: number;
   triggerPrice?: number;
 };
+type ChartPreset = "micro" | "tactical" | "context" | "axis-history" | "swing-rails";
 type PriceZone = {
-  annotationKind?: "band" | "bos" | "choch" | "level-footprint" | "structure-break" | "level" | "liquidity-resistance" | "liquidity-support" | "signal-episode-rail" | "signal-episode-range" | "swing-high" | "swing-low";
+  annotationKind?: "band" | "bos" | "choch" | "level-footprint" | "swing-footprint" | "structure-break" | "level" | "liquidity-resistance" | "liquidity-support" | "signal-episode-rail" | "signal-episode-range" | "swing-high" | "swing-low";
   axisLabelDefault?: boolean;
   borderColor?: string;
   borderOpacity?: number;
@@ -137,7 +138,8 @@ type PriceZone = {
   lower: number;
   maxPixelHeight?: number;
   minPixelHeight?: number;
-  preset?: "micro" | "tactical" | "context";
+  preset?: ChartPreset;
+  presetDefault?: ChartPreset;
   renderMode?: "line" | "zone";
   settingsId?: string;
   start: number;
@@ -201,7 +203,7 @@ export type ChartDisplayItem = ChartCatalogItem & {
   artifactGroups?: string[];
   featureGroups?: string[];
   sourceColumns?: string[];
-  presetOptions?: Array<{ description?: string; label: string; value: "micro" | "tactical" | "context" }>;
+  presetOptions?: Array<{ description?: string; label: string; value: ChartPreset }>;
 };
 export type ChartLabelOption = {
   group: string;
@@ -215,7 +217,7 @@ type AnySeriesApi = ISeriesApi<SeriesType>;
 type CandleSeriesDatum = Candle | { time: number };
 type ChartMarker = SeriesMarker<Time> & {
   displayItemId?: string;
-  preset?: "micro" | "tactical" | "context";
+  preset?: ChartPreset;
   settingsId?: string;
 };
 type LegendPane = "price" | "oscillator";
@@ -252,7 +254,7 @@ type LegendSeriesSettings = {
   lineStyle?: LegendLineStyle;
   lineWidth?: number;
   opacity?: number;
-  preset?: "micro" | "tactical" | "context";
+  preset?: ChartPreset;
   showConnectors?: boolean;
   showAxisLabel?: boolean;
   showHistoricalLabels?: boolean;
@@ -1740,8 +1742,8 @@ type LegendItem = {
   lineStyle: LegendLineStyle;
   lineWidth: number;
   opacity: number;
-  preset?: "micro" | "tactical" | "context";
-  presetOptions?: Array<{ description?: string; label: string; value: "micro" | "tactical" | "context" }>;
+  preset?: ChartPreset;
+  presetOptions?: Array<{ description?: string; label: string; value: ChartPreset }>;
   seriesStyle: "candlestick" | "histogram" | "line";
   semanticColor: boolean;
   semanticColors: { down: string; neutral: string; up: string };
@@ -1976,10 +1978,10 @@ function LegendEditor({
       </label>
       {item.supportsPreset && item.presetOptions?.length ? (
         <label>
-          Episode horizon
+          Mode
           <select
             value={item.preset ?? "micro"}
-            onChange={(event) => onUpdate({ preset: event.target.value as "micro" | "tactical" | "context" })}
+            onChange={(event) => onUpdate({ preset: event.target.value as ChartPreset })}
           >
             {item.presetOptions.map((option) => (
               <option key={option.value} value={option.value}>{option.label}</option>
@@ -2965,16 +2967,20 @@ function buildPriceZoneLegendItems(
       showHistoricalLabels: settings.showHistoricalLabels,
       showValue: true,
       supportsConnectors: itemZones.some(isStructureBreakZone),
-      supportsSemanticColorEditing: itemZones.some((zone) =>
+      supportsSemanticColorEditing: selectedZones.some((zone) =>
         zone.annotationKind === "swing-high"
         || zone.annotationKind === "swing-low"
         || zone.annotationKind === "level-footprint"
+        || zone.annotationKind === "swing-footprint"
         || isStructureBreakZone(zone)),
       supportsCurrentLevelCount: itemZones.some((zone) => Boolean(zone.currentLevelSide)),
       supportsAxisLabel: itemZones.some((zone) => typeof zone.axisLabelDefault === "boolean"),
       supportsHistoricalLabels: itemZones.some((zone) => (zone.renderMode === "line" && Boolean(zone.compactLabel)) || isStructureBreakZone(zone)),
-      supportsHistoryWindow: itemZones.some((zone) => !zone.latest),
-      supportsStroke: !itemZones.some((zone) => Boolean(zone.currentLevelSide) || zone.annotationKind === "level-footprint"),
+      supportsHistoryWindow: selectedZones.some((zone) => !zone.latest),
+      supportsStroke: !selectedZones.some((zone) =>
+        Boolean(zone.currentLevelSide)
+        || zone.annotationKind === "level-footprint"
+        || zone.annotationKind === "swing-footprint"),
       supportsPreset: Boolean(displayItem?.presetOptions?.length),
       value: itemZones.some((zone) => zone.annotationKind === "signal-episode-range")
         ? `${episodeIds.size} episode${episodeIds.size === 1 ? "" : "s"}`
@@ -3448,7 +3454,7 @@ type ResolvedPriceZoneLegendSettings = {
   lineStyle: LegendLineStyle;
   lineWidth: number;
   opacity: number;
-  preset: "micro" | "tactical" | "context";
+  preset: ChartPreset;
   showConnectors: boolean;
   showAxisLabel: boolean;
   showHistoricalLabels: boolean;
@@ -3466,7 +3472,12 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     lineStyle: stored.lineStyle ?? zoneBorderStyle(zone?.borderStyle),
     lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? zone?.borderWidth ?? 1))),
     opacity: clampNumber(stored.opacity ?? 1, 0, 1, 1),
-    preset: stored.preset === "tactical" || stored.preset === "context" ? stored.preset : "micro",
+    preset: stored.preset === "tactical"
+      || stored.preset === "context"
+      || stored.preset === "axis-history"
+      || stored.preset === "swing-rails"
+      ? stored.preset
+      : zone?.presetDefault ?? zone?.preset ?? "micro",
     showConnectors: stored.showConnectors !== false,
     showAxisLabel: stored.showAxisLabel ?? zone?.axisLabelDefault ?? false,
     showHistoricalLabels: stored.showHistoricalLabels ?? zone?.historicalLabelsDefault ?? false,
@@ -4327,20 +4338,36 @@ function drawPriceZonePrimitiveGeometry(
     const settings = resolvePriceZoneLegendSettings(legendSettings, priceZoneLegendKey(id), itemZones[itemZones.length - 1]);
     if (!settings.visible) return;
     const historyStart = candles[Math.max(0, candles.length - settings.historyBars)]?.time ?? Number.NEGATIVE_INFINITY;
-    if (itemZones.some((zone) => zone.annotationKind === "level-footprint")) {
+    const selectedZones = itemZones.filter((zone) => !zone.preset || zone.preset === settings.preset);
+    if (selectedZones.some((zone) => zone.annotationKind === "level-footprint")) {
       drawLevelFootprintProfile(
         priceSeries,
         context,
         width,
         height,
-        itemZones,
+        selectedZones,
         settings,
         chartBackground,
       );
       return;
     }
-    itemZones.forEach((zone) => {
-      if (zone.preset && zone.preset !== settings.preset) return;
+    if (selectedZones.some((zone) => zone.annotationKind === "swing-footprint")) {
+      drawSwingFootprintRails(
+        chart,
+        priceSeries,
+        context,
+        width,
+        height,
+        selectedZones,
+        settings,
+        chartBackground,
+        candles,
+        candleDuration,
+        historyStart,
+      );
+      return;
+    }
+    selectedZones.forEach((zone) => {
       if (!priceZoneWithinHistory(zone, historyStart)) return;
       if (
         zone.currentLevelSide
@@ -4590,6 +4617,66 @@ function drawLevelFootprintProfile(
   context.restore();
 }
 
+function drawSwingFootprintRails(
+  chart: IChartApi,
+  priceSeries: ISeriesApi<"Candlestick">,
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  zones: PriceZone[],
+  settings: ResolvedPriceZoneLegendSettings,
+  chartBackground: string,
+  candles: Candle[],
+  candleDuration: number,
+  historyStart: number,
+) {
+  const validZones = zones.filter((zone) =>
+    zone.annotationKind === "swing-footprint"
+    && zone.start >= historyStart
+    && Number.isFinite(zone.totalVolume)
+    && Number(zone.totalVolume) > 0,
+  );
+  if (!validZones.length) return;
+  const barWidth = estimateBarWidth(chart, candles);
+  const trackWidth = Math.max(26, Math.min(58, barWidth * 2.5));
+  const railHeight = Math.max(3, Math.min(4, barWidth * 0.22));
+  const railGap = Math.max(2, Math.min(3, railHeight * 0.75));
+  const upColor = validHexColor(settings.upColor, resolveChartColor("var(--success)"));
+  const downColor = validHexColor(settings.downColor, resolveChartColor("var(--danger)"));
+  const trackColor = mixHexColors(
+    chartBackground,
+    validHexColor(resolveChartColor("var(--muted-foreground)"), "#73778A"),
+    0.28,
+  );
+  context.save();
+  context.globalCompositeOperation = "source-over";
+  validZones.forEach((zone) => {
+    const totalVolume = Number(zone.totalVolume) || 0;
+    const price = Number(zone.lower);
+    const x = xForStructureEventTime(chart, zone.start, candles, candleDuration);
+    const lineY = priceSeries.priceToCoordinate(price);
+    if (x === null || lineY === null || x < -trackWidth || x > width + trackWidth) return;
+    const buyShare = clampNumber((Number(zone.buyVolume) || 0) / totalVolume, 0, 1, 0);
+    const sellShare = clampNumber((Number(zone.sellVolume) || 0) / totalVolume, 0, 1, 0);
+    const left = x - trackWidth / 2;
+    const buyTop = lineY + 5;
+    const sellTop = buyTop + railHeight + railGap;
+    if (buyTop > height || sellTop + railHeight < 0) return;
+    context.fillStyle = rgbaFromHex(trackColor, 0.24 + settings.opacity * 0.28);
+    context.fillRect(left, buyTop, trackWidth, railHeight);
+    context.fillRect(left, sellTop, trackWidth, railHeight);
+    if (buyShare > 0) {
+      context.fillStyle = rgbaFromHex(upColor, 0.34 + settings.opacity * 0.62);
+      context.fillRect(left, buyTop, trackWidth * buyShare, railHeight);
+    }
+    if (sellShare > 0) {
+      context.fillStyle = rgbaFromHex(downColor, 0.34 + settings.opacity * 0.62);
+      context.fillRect(left, sellTop, trackWidth * sellShare, railHeight);
+    }
+  });
+  context.restore();
+}
+
 function signalEpisodeStepCoordinates(
   chart: IChartApi,
   candles: Candle[],
@@ -4653,7 +4740,9 @@ function drawPriceZonePrimitiveLabels(
   orderedLabelGroups.forEach(([id, itemZones]) => {
     const settings = resolvePriceZoneLegendSettings(legendSettings, priceZoneLegendKey(id), itemZones[itemZones.length - 1]);
     if (!settings.visible) return;
-    if (itemZones.some((zone) => zone.annotationKind === "level-footprint")) return;
+    if (itemZones.some((zone) =>
+      zone.annotationKind === "level-footprint"
+      || zone.annotationKind === "swing-footprint")) return;
     const historyStart = candles[Math.max(0, candles.length - settings.historyBars)]?.time ?? Number.NEGATIVE_INFINITY;
     const eligibleZones = itemZones.filter((zone) => {
       if (zone.preset && zone.preset !== settings.preset) return false;
@@ -4837,6 +4926,7 @@ function isStructureBreakZone(zone: PriceZone) {
 
 function priceZoneWithinHistory(zone: PriceZone, historyStart: number) {
   if (zone.annotationKind === "level-footprint") return true;
+  if (zone.annotationKind === "swing-footprint") return zone.start >= historyStart;
   if (isStructureBreakZone(zone)) return (zone.eventTime ?? zone.end) >= historyStart;
   if (zone.annotationKind === "swing-high" || zone.annotationKind === "swing-low") {
     return zone.start >= historyStart;
