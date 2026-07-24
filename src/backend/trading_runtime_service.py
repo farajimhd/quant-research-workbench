@@ -433,6 +433,7 @@ def historical_bar_history_before(
     indicators = list(snapshot.get("indicators") or []) if isinstance(snapshot, dict) else []
     decision_events = list(snapshot.get("decision_events") or []) if isinstance(snapshot, dict) else []
     episode_events = list(snapshot.get("episode_events") or []) if isinstance(snapshot, dict) else []
+    structure_events = list(snapshot.get("structure_events") or []) if isinstance(snapshot, dict) else []
     bars.sort(key=_bar_start_sort_key)
     indicators.sort(key=_bar_start_sort_key)
     has_more_in_session = bool(snapshot.get("has_more")) if isinstance(snapshot, dict) else False
@@ -452,6 +453,7 @@ def historical_bar_history_before(
         "indicators": indicators,
         "decision_events": decision_events,
         "episode_events": episode_events,
+        "structure_events": structure_events,
         "indicators_available": bool(snapshot.get("indicators_available")) if isinstance(snapshot, dict) else False,
         "earliest_session_date": session_date_text if bars else "",
         "has_more": has_more_in_session or bool(previous_session_before),

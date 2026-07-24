@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
 
-pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v23";
+pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v24";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProfile {
@@ -169,6 +169,7 @@ struct EntryState {
     bars: Vec<BarUpdate>,
     decision_events: Vec<QmdDecisionEvent>,
     episode_events: Vec<QmdEpisodeEvent>,
+    structure_events: Vec<GenericStructureEvent>,
     frames: Vec<DerivedUpdate>,
     products: Option<MarketProductEngine>,
 }
@@ -393,11 +394,22 @@ impl HistoricalDerivedCache {
                 .iter()
                 .map(|frame| frame.indicator.clone())
                 .collect::<Vec<_>>();
-            let mut structure_events = selected
-                .iter()
-                .flat_map(|frame| frame.indicator.qmd_structure_events.iter().cloned())
-                .filter(|event| event.confirmed_at <= as_of)
-                .collect::<Vec<_>>();
+            let mut structure_events = bars
+                .first()
+                .zip(bars.last())
+                .map(|(first, last)| {
+                    state
+                        .structure_events
+                        .iter()
+                        .filter(|event| {
+                            event.confirmed_at >= first.bar_start
+                                && event.confirmed_at <= last.bar_end
+                                && event.confirmed_at <= as_of
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             structure_events.sort_by_key(|event| (event.confirmed_at, event.event_id));
             structure_events.dedup_by_key(|event| event.event_id);
             let next_before = has_more.then(|| bars[0].bar_start);
@@ -709,6 +721,9 @@ impl HistoricalDerivedCache {
                             if valid_price_bar(&bar) {
                                 calculator.apply_market_levels(&mut indicator, &bar);
                             }
+                            worker_entry
+                                .push_structure_events(&indicator.qmd_structure_events)
+                                .await?;
                             last_base_indicator = Some(indicator.clone());
                             aggregate.push(&indicator);
                             for event in episode_engine.update(
@@ -1039,6 +1054,7 @@ impl CacheEntry {
             update_count,
             state.decision_events.len(),
             state.episode_events.len(),
+            state.structure_events.len(),
         );
         if state.bars.len() >= self.max_updates || frame_bytes > self.max_update_bytes {
             return Err(format!(
@@ -1107,6 +1123,7 @@ impl CacheEntry {
             state.bars.len(),
             state.decision_events.len(),
             state.episode_events.len(),
+            state.structure_events.len(),
         );
         if frame_bytes > self.max_update_bytes {
             state.decision_events.pop();
@@ -1119,6 +1136,72 @@ impl CacheEntry {
             .set_estimated_bytes(frame_bytes as u64 + self.product_bytes.load(Ordering::Acquire))
         {
             state.decision_events.pop();
+            return Err(error);
+        }
+        self.frame_bytes
+            .store(frame_bytes as u64, Ordering::Release);
+        Ok(())
+    }
+
+    async fn push_structure_events(&self, events: &[GenericStructureEvent]) -> Result<(), String> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let mut state = self.state.lock().await;
+        let original_len = state.structure_events.len();
+        for event in events.iter().filter(|event| {
+            matches!(
+                event.event_kind.as_str(),
+                "level_promoted" | "level_crossed" | "structure_break" | "bos" | "choch"
+            )
+        }) {
+            if state
+                .structure_events
+                .last()
+                .is_some_and(|previous| event.confirmed_at < previous.confirmed_at)
+            {
+                state.structure_events.truncate(original_len);
+                return Err(format!(
+                    "historical QMD structure events must be chronological: previous={} next={}",
+                    state.structure_events.last().unwrap().confirmed_at,
+                    event.confirmed_at,
+                ));
+            }
+            if state
+                .structure_events
+                .iter()
+                .rev()
+                .take(events.len().max(16))
+                .any(|previous| previous.event_id == event.event_id)
+            {
+                continue;
+            }
+            if state.structure_events.len() >= self.max_updates {
+                state.structure_events.truncate(original_len);
+                return Err(format!(
+                    "historical QMD structure event cache exceeded max_updates={}",
+                    self.max_updates,
+                ));
+            }
+            state.structure_events.push(event.clone());
+        }
+        let frame_bytes = estimated_frame_bytes(
+            state.bars.len(),
+            state.decision_events.len(),
+            state.episode_events.len(),
+            state.structure_events.len(),
+        );
+        if frame_bytes > self.max_update_bytes {
+            state.structure_events.truncate(original_len);
+            return Err(format!(
+                "historical QMD structure event cache exceeded max_update_bytes={}",
+                self.max_update_bytes,
+            ));
+        }
+        if let Err(error) = self
+            .set_estimated_bytes(frame_bytes as u64 + self.product_bytes.load(Ordering::Acquire))
+        {
+            state.structure_events.truncate(original_len);
             return Err(error);
         }
         self.frame_bytes
@@ -1147,6 +1230,7 @@ impl CacheEntry {
             state.bars.len(),
             state.decision_events.len(),
             state.episode_events.len(),
+            state.structure_events.len(),
         );
         if frame_bytes > self.max_update_bytes {
             state.episode_events.pop();
@@ -1238,10 +1322,12 @@ fn estimated_frame_bytes(
     bar_count: usize,
     decision_event_count: usize,
     episode_event_count: usize,
+    structure_event_count: usize,
 ) -> usize {
     bar_count.saturating_mul(size_of::<BarUpdate>() + size_of::<DerivedUpdate>() + 768)
         + decision_event_count.saturating_mul(size_of::<QmdDecisionEvent>() + 160)
         + episode_event_count.saturating_mul(size_of::<QmdEpisodeEvent>() + 192)
+        + structure_event_count.saturating_mul(size_of::<GenericStructureEvent>() + 224)
 }
 
 fn ensure_monotonic_bar_start(
@@ -1379,6 +1465,7 @@ mod tests {
     };
     use crate::source::EventWindow;
     use chrono::{TimeZone, Utc};
+    use qmd_core::generic_structure::GenericStructureEvent;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::Arc;
     use tokio::sync::{broadcast, Mutex, Notify};
@@ -1479,6 +1566,64 @@ mod tests {
         assert_eq!(allocated.load(Ordering::Acquire), 900);
         drop(entry);
         assert_eq!(allocated.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn structure_events_are_retained_independently_across_timeframes() {
+        let allocated = Arc::new(AtomicU64::new(0));
+        let (updates, _) = broadcast::channel(16);
+        let (bar_updates, _) = broadcast::channel(16);
+        let entry = CacheEntry {
+            allocated_bytes: allocated,
+            complete: AtomicBool::new(false),
+            frame_bytes: AtomicU64::new(0),
+            global_max_bytes: 100_000,
+            notify: Notify::new(),
+            state: Mutex::new(EntryState::default()),
+            bar_updates,
+            updates,
+            estimated_bytes: AtomicU64::new(0),
+            max_update_bytes: 100_000,
+            max_updates: 100,
+            product_bytes: AtomicU64::new(0),
+        };
+        let confirmed_at = Utc.with_ymd_and_hms(2026, 7, 17, 13, 30, 0).unwrap();
+        let event = |event_id: u64, timeframe: &str| GenericStructureEvent {
+            algorithm_version: 2,
+            event_id,
+            level_id: 11,
+            sym: "VEEE".to_string(),
+            timeframe: timeframe.to_string(),
+            event_kind: "level_promoted".to_string(),
+            direction: 1,
+            price: 42.0,
+            lower: 42.0,
+            upper: 42.0,
+            strength: 0.7,
+            confidence: 0.8,
+            lifecycle: "active".to_string(),
+            total_volume: 500.0,
+            buy_volume: 400.0,
+            sell_volume: 100.0,
+            neutral_volume: 0.0,
+            trade_count: 5,
+            pivot_at: confirmed_at - chrono::Duration::seconds(1),
+            confirmed_at,
+        };
+
+        entry
+            .push_structure_events(&[event(1, "100ms"), event(2, "1s")])
+            .await
+            .unwrap();
+        entry
+            .push_structure_events(&[event(1, "100ms")])
+            .await
+            .unwrap();
+
+        let state = entry.state.lock().await;
+        assert_eq!(state.structure_events.len(), 2);
+        assert_eq!(state.structure_events[0].timeframe, "100ms");
+        assert_eq!(state.structure_events[1].timeframe, "1s");
     }
 
     #[test]

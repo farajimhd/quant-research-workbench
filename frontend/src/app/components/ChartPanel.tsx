@@ -103,7 +103,7 @@ type TradeAnnotation = {
   triggerPrice?: number;
 };
 type PriceZone = {
-  annotationKind?: "band" | "bos" | "choch" | "level" | "liquidity-resistance" | "liquidity-support" | "signal-episode-rail" | "signal-episode-range" | "swing-high" | "swing-low";
+  annotationKind?: "band" | "bos" | "choch" | "structure-break" | "level" | "liquidity-resistance" | "liquidity-support" | "signal-episode-rail" | "signal-episode-range" | "swing-high" | "swing-low";
   axisLabelDefault?: boolean;
   borderColor?: string;
   borderOpacity?: number;
@@ -2938,7 +2938,7 @@ function buildPriceZoneLegendItems(
       showAxisLabel: settings.showAxisLabel,
       showHistoricalLabels: settings.showHistoricalLabels,
       showValue: true,
-      supportsConnectors: itemZones.some((zone) => zone.annotationKind === "bos" || zone.annotationKind === "choch"),
+      supportsConnectors: itemZones.some(isStructureBreakZone),
       supportsCurrentLevelCount: itemZones.some((zone) => Boolean(zone.currentLevelSide)),
       supportsAxisLabel: itemZones.some((zone) => typeof zone.axisLabelDefault === "boolean"),
       supportsHistoricalLabels: itemZones.some((zone) => (zone.renderMode === "line" && Boolean(zone.compactLabel)) || isStructureBreakZone(zone)),
@@ -4350,7 +4350,7 @@ function drawPriceZonePrimitiveGeometry(
       }
       if (span.width < 1 || zoneHeight < 1) return;
       const { borderColor, confidence, fillColor } = priceZonePresentationColors(zone, chartBackground);
-      const lineOnly = zone.renderMode === "line" || zone.annotationKind === "bos" || zone.annotationKind === "choch";
+      const lineOnly = zone.renderMode === "line" || isStructureBreakZone(zone);
       const baseFillOpacity = clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08);
       const fillOpacity = lineOnly ? 0 : baseFillOpacity * (confidence === null ? 1 : 0.45 + 0.55 * confidence) * settings.opacity;
       const borderOpacity = zone.annotationKind === "signal-episode-range"
@@ -4370,7 +4370,7 @@ function drawPriceZonePrimitiveGeometry(
       context.strokeStyle = rgbaFromHex(borderColor, borderOpacity);
       context.lineWidth = lineWidth;
       context.setLineDash(canvasLineDash(settings.lineStyle, lineWidth));
-      if (zone.annotationKind === "bos" || zone.annotationKind === "choch") {
+      if (isStructureBreakZone(zone)) {
         if (settings.showConnectors) {
           const eventX = zone.eventTime ? chart.timeScale().timeToCoordinate(zone.eventTime as Time) : coordinates.end;
           const connector = clippedHorizontalSpan(coordinates.start, eventX ?? coordinates.end, width);
@@ -4578,7 +4578,7 @@ function drawPriceZones(
       if (!span) return;
       const { borderColor } = priceZonePresentationColors(zone, chartBackground);
       let labelSpan: HorizontalSpan | null = span;
-      if (zone.annotationKind === "bos" || zone.annotationKind === "choch") {
+      if (isStructureBreakZone(zone)) {
         const eventX = zone.eventTime ? chart.timeScale().timeToCoordinate(zone.eventTime as Time) : coordinates.end;
         labelSpan = settings.showConnectors ? clippedHorizontalSpan(coordinates.start, eventX ?? coordinates.end, width) : null;
       }
@@ -4689,7 +4689,9 @@ function clippedHorizontalSpan(start: number, end: number, viewportWidth: number
 }
 
 function isStructureBreakZone(zone: PriceZone) {
-  return zone.annotationKind === "bos" || zone.annotationKind === "choch";
+  return zone.annotationKind === "bos"
+    || zone.annotationKind === "choch"
+    || zone.annotationKind === "structure-break";
 }
 
 function isVisibleCoordinate(coordinate: number | null, viewportWidth: number, overscan = 24) {
@@ -4698,7 +4700,7 @@ function isVisibleCoordinate(coordinate: number | null, viewportWidth: number, o
 
 function priceZoneLineLabelPlacement(zone: PriceZone): "above" | "below" {
   if (zone.annotationKind === "swing-low" || zone.annotationKind === "liquidity-support") return "below";
-  if ((zone.annotationKind === "bos" || zone.annotationKind === "choch") && zone.compactLabel?.endsWith("-")) return "below";
+  if (isStructureBreakZone(zone) && zone.compactLabel?.endsWith("-")) return "below";
   return "above";
 }
 

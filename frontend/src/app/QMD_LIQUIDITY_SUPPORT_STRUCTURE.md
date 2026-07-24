@@ -156,14 +156,17 @@ not normalized against each other.
 
 ## Generic Structure Price Overlay
 
-Generic Structure derives pivots, direction, BoS, and CHoCH from the close of
-each canonical 100 ms bucket of ordered eligible trades, not from the selected
-candle OHLC. That single trade-derived structure clock prevents multiple venue
-prints inside one 100 ms interval from manufacturing contradictory swings.
-NBBO updates maintain displayed-liquidity evidence and zone context, but an
-unexecuted quote move cannot create price structure. Changing the displayed
-timeframe changes sampling density and chart history, but it does not redefine
-the underlying pivots or zones.
+Generic Structure maintains one causal high/low level book from every ordered
+eligible trade. The current developing extreme uses the highest or lowest trade
+inside each canonical 100 ms interval, not the selected candle close. The first
+opposing eligible trade freezes that extreme as a provisional level. NBBO
+updates maintain displayed-liquidity evidence and zone context, but an
+unexecuted quote move cannot create price structure.
+
+The same extracted levels are promoted independently for 100 ms, 1 s, 5 s,
+10 s, 30 s, 1 m, 5 m, and 1 h use. Changing the chart interval selects the
+matching promotion layer by default; it does not rebuild levels from candle
+OHLC or delay their initial extraction.
 
 ### Current support and resistance zones
 
@@ -178,16 +181,20 @@ the full zone is below current reference price. Resistance is only shown when
 the full zone is above. A crossed or in-play zone is omitted until its causal
 lifecycle resolves.
 
-### Scale-specific audit layers
+### Timeframe audit layers
 
-Micro, Tactical, and Context zones, swing references, and structure breaks are
-independent configurable layers. This lets an operator enable one scale at a
-time and verify that its confirmed swing, BoS, and CHoCH sequence is correct.
-They are diagnostics rather than competing signals. Tactical structure uses
-three times the adaptive base threshold, requires three events or 300 ms of
-break acceptance, carries a five-day evidence half-life, and is useful for
-intraday retests, invalidation, and breakout context. The half-life is evidence
-retention, not a five-day forecast horizon.
+Each timeframe has one configurable **Swings & breaks** layer containing:
+
+- **SH / SL lines** from the original traded-price pivot until the level is
+  crossed, accepted, or role-reversed; and
+- **BoS / CHoCH connectors** from the pivot to the accepted break.
+
+Only the layer matching the selected chart interval is visible by default.
+Open the indicator legend to enable other timeframe layers for comparison. This
+keeps a 1 s chart readable while still allowing the 100 ms through 1 h
+promotions to be audited. A first crossing is immediate but does not become BoS
+or CHoCH until the deterministic acceptance rule confirms price remained beyond
+the level.
 
 ### Historical structure
 
@@ -208,13 +215,8 @@ opening range, trade-volume POC, estimated LULD, completed
 52-week high/low, and prior-month high/low/close. They are context references,
 not all support/resistance evidence of equal quality.
 
-Micro, tactical, and context are response scales on the canonical 100 ms trade
-path, not chart timeframes.
-The base threshold has a two-tick or 0.5-basis-point floor, adapts to recent
-spread and eligible-trade movement, and is capped at the larger of 25 basis
-points or four ticks so one transient quote cannot inflate the Micro scale.
-The three scales use 1×, 3×, and 8× that base plus increasingly long evidence
-half-lives.
+The timeframe labels are promotion and filtering horizons over the same
+event-native level book. They are not separate candle-derived swing engines.
 
 ## Structural context inside QMD Decision
 

@@ -313,99 +313,53 @@ between symbols.
 
 ## 3. Generic Structure
 
-Generic structure is independent of chart candle timeframe. One per-symbol
-engine consumes ordered valid NBBO midpoints, while eligible trades confirm
-accepted breaks and build volume-at-price references. Every chart timeframe
-samples the same causal state at its bar end.
+Generic structure is independent of chart candle construction. One per-symbol
+engine consumes ordered eligible trades and maintains developing extremes,
+active high/low level books, timeframe promotions, lifecycle state, and
+executed-volume footprints. Quotes contribute displayed-liquidity context but
+cannot create price structure.
 
-### Adaptive scales
+The first opposing trade at least one tick away freezes the exact developing
+extreme as a provisional level. The engine then promotes that same level for
+`100ms`, `1s`, `5s`, `10s`, `30s`, `1m`, `5m`, and `1h` according to causal
+survival and movement evidence. Timeframe promotion filters one shared level
+book; it never substitutes candle highs, lows, or closes for the traded price.
 
-The base movement threshold is the maximum of:
+### Break lifecycle and role correction
 
-```text
-2 * price tick
-1.25 * spread EWMA
-1.50 * midpoint-move EWMA
-reference price * 0.00005
-```
+The first eligible trade through an active level emits `level_crossed` and a
+timeframe-specific `structure_crossed`. It is not yet BoS or CHoCH. A second
+trade beyond the level, or 100 ms of continued acceptance, emits
+`break_accepted` and the timeframe-specific classification:
 
-| Scale | Threshold | Break acceptance | Evidence half-life | Unified weight |
-|---|---:|---:|---:|---:|
-| micro | 1x base | 2 events or 100 ms | 30 minutes | 0.20 |
-| tactical | 3x base | 3 events or 300 ms | 5 days | 0.35 |
-| context | 8x base | 5 events or 1,000 ms | 45 days | 0.45 |
+- `bos` when the accepted direction continues that timeframe's established
+  structure;
+- `choch` when it opposes established structure; or
+- `structure_break` when the timeframe does not yet have an established
+  direction.
 
-A high pivot is confirmed only after midpoint falls by the scale threshold from
-the candidate high; a low pivot is confirmed only after midpoint rises by the
-threshold. The pivot's `pivot_at` time is descriptive. The later `confirmed_at`
-time is the causal availability boundary.
+A return through the level before acceptance emits `break_rejected`. A broken
+level changes role only after a later retest and rejection from the opposite
+side. A simple cross cannot silently turn support into resistance.
 
-Higher highs with higher lows set positive scale direction; lower highs with
-lower lows set negative direction. A break requires midpoint persistence beyond
-the far zone boundary plus an eligible trade beyond it. A break in the current
-trend direction is BoS; a break against an established trend is CHoCH.
+### Levels, evidence, and chart layers
 
-### Zone lifecycle and role correction
-
-Zones progress through active, boundary-breach candidate, awaiting retest,
-retest contact, rejection candidate, and retired states. Crossing a support
-does not immediately relabel it resistance. The original zone retires after a
-confirmed break; the opposite role is created only after a later retest from
-the broken side and a separately confirmed rejection. A zone containing the
-current reference price is in play and is not exposed as either side. Exposed
-support must be fully below reference; exposed resistance must be fully above.
-
-### Strength, confidence, and selection
-
-For a zone, pre-decay evidence is:
-
-```text
-0.18
-+ min(touches, 6) * 0.10
-+ min(holds, 4) * 0.13
-+ min(trade confirmations, 3) * 0.08
-- min(breaks, 3) * 0.20
-```
-
-Strength is evidence times scale-specific freshness decay, bounded by any
-seeded strength and clamped to `[0, 1]`. Confidence is based on
-`sqrt((touches + 1.5 * holds) / 7)`, bounded by seeded confidence, discounted
-by freshness, and clamped to `[0, 1]`. Strength describes accumulated quality;
-confidence describes how well-tested and fresh that evidence is.
-
-Within a scale, the selected level maximizes
-`strength * confidence / (1 + 0.12 * normalized distance)`. The unified selected
-level additionally accounts for scale weight. `qmd_structure_active_levels`
-exposes up to eight nearest valid zones per side and also includes the strongest
-distant zone if it was not already selected. Each candidate supplies scale,
-side, price, lower/upper bounds, strength, confidence, evidence score, distance,
-touch/hold counts, and creation/test timestamps.
-
-### Unified structure score
-
-Scale directions are weighted 0.20/0.35/0.45. Weighted direction above +0.15
-is bullish, below -0.15 bearish, otherwise neutral. Agreement is absolute
-weighted direction divided by active directional weight. Unified strength and
-confidence are weighted across scales; confidence is further discounted when
-scales disagree. The final score is:
-
-```text
-direction * strength * confidence * (0.5 + 0.5 * agreement)
-```
-
-Core fields are `qmd_structure_direction`, `qmd_structure_score`,
-`qmd_structure_agreement`, `qmd_structure_strength`, and
-`qmd_structure_confidence`. Selected unified zones use
-`qmd_structure_{support,resistance}_{price,lower,upper,strength,confidence}`.
-The same suffixes exist for `micro`, `tactical`, and `context`, together with
-each scale's direction, threshold, swing high, and swing low.
+`qmd_structure_active_levels` exposes currently active candidates, including
+price, side, bounds, lifecycle, promotions, touch/hold evidence, confidence,
+strength, and a nine-bin executed-volume footprint. The application renders one
+**Swings & breaks** layer per promoted timeframe. SH/SL lines begin at the
+original pivot trade and terminate at the first crossing, accepted break, or
+role reversal. BoS and CHoCH connectors terminate at their causal confirmation
+event. Only the chart's selected timeframe is visible by default; other
+timeframe layers remain configurable for audit.
 
 ### Causal event fields
 
 `qmd_structure_event_*` exposes the latest confirmed event: deterministic id,
-pivot origin time, confirmation time, kind, scale, direction, and price.
-Available event kinds include `pivot_high`, `pivot_low`, `touch`, `hold`,
-`bos`, `choch`, `level_break`, and `role_reversal`.
+pivot origin time, confirmation time, kind, timeframe, direction, and price.
+The full immutable event stream includes `level_promoted`, `level_crossed`,
+`structure_crossed`, `break_accepted`, `break_rejected`, `structure_break`,
+`bos`, `choch`, `retest`, and `role_reversal`.
 
 ### Important reference levels
 
@@ -524,8 +478,8 @@ structural pressure. New code should prefer `qmd_structure_*`.
 
 - `src/microstructure_interval.rs`: interval sufficient statistics, component
   formulas, reliability, confidence, and action.
-- `src/generic_structure.rs`: adaptive pivots, zones, lifecycle, events,
-  structural pressure, and persistence state.
+- `src/generic_structure.rs`: event-native level books, timeframe promotions,
+  lifecycle events, footprints, structural pressure, and persistence state.
 - `src/indicators.rs`: schema, cumulative flow, reference attachment,
   compatibility fields, and ClickHouse persistence.
 - `src/indicator_catalog.rs`: discoverable field catalog.

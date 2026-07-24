@@ -68,10 +68,20 @@ type QmdStructureLevelCandidate = {
   touch_count: number;
   upper: number;
 };
+type QmdStructureTimeframeState = {
+  timeframe: string;
+  direction: number;
+  swing_high: number;
+  swing_low: number;
+  support?: Record<string, unknown>;
+  resistance?: Record<string, unknown>;
+  promoted_level_count: number;
+};
 type HistoricalIndicator = {
   bar_start: string;
   qmd_structure_active_levels?: QmdStructureLevelCandidate[];
-} & Record<string, number | string | QmdStructureLevelCandidate[] | undefined>;
+  qmd_structure_timeframe_states?: QmdStructureTimeframeState[];
+} & Record<string, number | string | QmdStructureLevelCandidate[] | QmdStructureTimeframeState[] | undefined>;
 type PreviewRow = Record<string, unknown>;
 type PnlCandleTimeframe = "30m" | "1h" | "1d" | "1M";
 type PnlCandle = {
@@ -228,6 +238,12 @@ type QmdStructureEvent = {
   upper: number;
   strength: number;
   confidence: number;
+  lifecycle?: string;
+  total_volume?: number;
+  buy_volume?: number;
+  sell_volume?: number;
+  neutral_volume?: number;
+  trade_count?: number;
   pivot_at: string;
   confirmed_at: string;
 };
@@ -670,7 +686,7 @@ function mergeStructureEvents(current: QmdStructureEvent[], incoming: QmdStructu
   });
   return [...byId.values()]
     .sort((left, right) => Date.parse(left.confirmed_at) - Date.parse(right.confirmed_at) || left.event_id - right.event_id)
-    .slice(-500);
+    .slice(-25_000);
 }
 
 function mergeDecisionEvents(current: QmdDecisionEvent[], incoming: QmdDecisionEvent[] | undefined) {
@@ -1985,10 +2001,17 @@ function historicalMarketLevelZones(
   const zones: NonNullable<ChartPayload["price_zones"]> = [];
   if (visibleIndicators.includes("indicator.qmd_generic_structure")) {
     pushCurrentStructureLevels(zones, rows, chartEnd, timeframe);
+    pushEventStructureSwingLevels(
+      zones,
+      structureEvents.length ? structureEvents : structureEventsFromSampledRows(rows),
+      chartEnd,
+      timeframe,
+    );
     pushStructureEvents(
       zones,
       structureEvents.length ? structureEvents : structureEventsFromSampledRows(rows),
       chartEnd,
+      timeframe,
     );
   }
   if (visibleIndicators.includes("indicator.qmd_reference_levels")) {
@@ -2258,13 +2281,87 @@ function pushStructureZoneSegment(
   });
 }
 
+const QMD_STRUCTURE_TIMEFRAMES = ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"] as const;
+
+function qmdStructureLayerId(timeframe: string) {
+  return `indicator.qmd_generic_structure.v6.${timeframe}`;
+}
+
+function qmdStructureLineWidth(timeframe: string) {
+  const index = QMD_STRUCTURE_TIMEFRAMES.indexOf(timeframe as typeof QMD_STRUCTURE_TIMEFRAMES[number]);
+  return index < 0 ? 1.5 : 1.25 + index * 0.12;
+}
+
+function pushEventStructureSwingLevels(
+  zones: NonNullable<ChartPayload["price_zones"]>,
+  events: QmdStructureEvent[],
+  chartEnd: number,
+  selectedTimeframe: CanvasChartTimeframe,
+) {
+  const ordered = [...events].sort((left, right) =>
+    Date.parse(left.confirmed_at) - Date.parse(right.confirmed_at) || left.event_id - right.event_id);
+  const lifecycleByLevel = new Map<number, QmdStructureEvent[]>();
+  ordered.forEach((event) => {
+    if (!Number.isFinite(event.level_id) || Number(event.level_id) <= 0) return;
+    const levelId = Number(event.level_id);
+    const levelEvents = lifecycleByLevel.get(levelId) ?? [];
+    levelEvents.push(event);
+    lifecycleByLevel.set(levelId, levelEvents);
+  });
+  ordered
+    .filter((event) => event.event_kind === "level_promoted" && QMD_STRUCTURE_TIMEFRAMES.includes(event.timeframe as typeof QMD_STRUCTURE_TIMEFRAMES[number]))
+    .slice(-1_600)
+    .forEach((event) => {
+      const timeframe = event.timeframe as CanvasChartTimeframe;
+      const start = Date.parse(event.pivot_at) / 1000;
+      const promotedAt = Date.parse(event.confirmed_at);
+      const price = Number(event.price);
+      if (!Number.isFinite(start) || !(price > 0)) return;
+      const terminal = lifecycleByLevel.get(Number(event.level_id))?.find((candidate) =>
+        Date.parse(candidate.confirmed_at) >= promotedAt
+        && ["level_crossed", "break_accepted", "role_reversal"].includes(candidate.event_kind));
+      const end = Math.min(chartEnd, terminal ? Date.parse(terminal.confirmed_at) / 1000 : chartEnd);
+      if (!Number.isFinite(end) || end <= start) return;
+      const swingHigh = Number(event.direction) < 0;
+      const color = swingHigh ? "var(--danger)" : "var(--success)";
+      zones.push({
+        annotationKind: swingHigh ? "swing-high" : "swing-low",
+        axisLabelDefault: false,
+        borderColor: color,
+        borderOpacity: 0.72,
+        borderStyle: "solid",
+        borderWidth: qmdStructureLineWidth(timeframe),
+        color,
+        compactLabel: swingHigh ? "SH" : "SL",
+        confidence: Number(event.confidence || 0),
+        defaultVisible: timeframe === selectedTimeframe,
+        displayItemId: "indicator.qmd_generic_structure",
+        end,
+        fillOpacity: 0,
+        historicalLabelsDefault: timeframe === selectedTimeframe,
+        historicalTagLimitDefault: timeframe === selectedTimeframe ? 8 : 0,
+        label: `${timeframe} swing ${swingHigh ? "high" : "low"} · ${formatLevelPrice(price)} · ${percentLabel(Number(event.confidence || 0))} confidence`,
+        latest: !terminal,
+        legendLabel: `${timeframe} · Swings & breaks`,
+        lower: price,
+        minPixelHeight: 1,
+        renderMode: "line",
+        settingsId: qmdStructureLayerId(timeframe),
+        start,
+        strength: Number(event.strength || 0),
+        upper: price,
+        zoneHeightMode: "price",
+      });
+    });
+}
+
 function structureEventsFromSampledRows(rows: HistoricalIndicator[]): QmdStructureEvent[] {
   const events: QmdStructureEvent[] = [];
   let previousId = "";
   rows.forEach((row) => {
     const eventId = String(row.qmd_structure_event_id || "");
     const eventKind = String(row.qmd_structure_event_kind || "").toLowerCase();
-    if (!eventId || eventId === "0" || eventId === previousId || !["bos", "choch"].includes(eventKind)) {
+    if (!eventId || eventId === "0" || eventId === previousId || !["bos", "choch", "structure_break"].includes(eventKind)) {
       previousId = eventId;
       return;
     }
@@ -2299,10 +2396,11 @@ function pushStructureEvents(
   zones: NonNullable<ChartPayload["price_zones"]>,
   events: QmdStructureEvent[],
   chartEnd: number,
+  selectedTimeframe: CanvasChartTimeframe,
 ) {
   events
-    .filter((event) => ["bos", "choch"].includes(String(event.event_kind || "").toLowerCase()))
-    .slice(-100)
+    .filter((event) => ["bos", "choch", "structure_break"].includes(String(event.event_kind || "").toLowerCase()))
+    .slice(-1_600)
     .forEach((event) => {
     const confirmedAt = Date.parse(event.confirmed_at) / 1000;
     const direction = Number(event.direction || 0);
@@ -2313,29 +2411,30 @@ function pushStructureEvents(
     const end = Math.min(chartEnd, confirmedAt);
     if (!(price > 0) || !Number.isFinite(pivotAt) || !Number.isFinite(confirmedAt) || !(end > pivotAt)) return;
     const bullish = direction > 0;
-    const label = kind === "choch" ? "CHoCH" : "BoS";
+    const label = kind === "choch" ? "CHoCH" : kind === "bos" ? "BoS" : "Break";
+    if (!QMD_STRUCTURE_TIMEFRAMES.includes(scale as typeof QMD_STRUCTURE_TIMEFRAMES[number])) return;
     zones.push({
-      annotationKind: kind as "bos" | "choch",
+      annotationKind: kind === "structure_break" ? "structure-break" : kind === "choch" ? "choch" : "bos",
       borderColor: bullish ? "var(--success)" : "var(--danger)",
       borderOpacity: 0.82,
       borderStyle: kind === "choch" ? "dashed" : "solid",
-      borderWidth: scale === "context" ? 3 : scale === "tactical" ? 2.5 : 2,
+      borderWidth: qmdStructureLineWidth(scale) + 0.35,
       color: bullish ? "var(--success)" : "var(--danger)",
       compactLabel: `${label}${bullish ? "+" : "-"}`,
       displayItemId: "indicator.qmd_generic_structure",
       end,
       eventTime: confirmedAt,
       fillOpacity: 0,
-      historicalLabelsDefault: true,
-      historicalTagLimitDefault: 5,
+      historicalLabelsDefault: scale === selectedTimeframe,
+      historicalTagLimitDefault: scale === selectedTimeframe ? 8 : 0,
       label: `${label}${bullish ? "+" : "-"} · ${scale || "structure"} · ${formatLevelPrice(price)}`,
       latest: false,
-      defaultVisible: scale !== "micro",
-      legendLabel: `${scale ? `${scale[0].toUpperCase()}${scale.slice(1)}` : "Structure"} · Structure breaks`,
+      defaultVisible: scale === selectedTimeframe,
+      legendLabel: `${scale} · Swings & breaks`,
       lower: price,
       minPixelHeight: 1,
       renderMode: "line",
-      settingsId: `indicator.qmd_generic_structure.${scale || "unknown"}-breaks`,
+      settingsId: qmdStructureLayerId(scale),
       start: pivotAt,
       upper: price,
       zoneHeightMode: "price",

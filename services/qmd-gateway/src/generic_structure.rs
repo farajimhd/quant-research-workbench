@@ -694,23 +694,10 @@ impl GenericStructureEngine {
                         direction,
                     ));
                     for promotion in &level.promotions {
-                        let prior_direction = self
-                            .timeframe_states
-                            .iter()
-                            .find(|state| state.timeframe == promotion.timeframe)
-                            .map(|state| state.direction)
-                            .unwrap_or_default();
-                        let kind = if prior_direction != 0 && direction != prior_direction {
-                            "choch"
-                        } else if prior_direction != 0 {
-                            "bos"
-                        } else {
-                            "structure_break"
-                        };
                         pending.push((
                             level.level_id,
                             promotion.timeframe.clone(),
-                            kind.to_string(),
+                            "structure_crossed".to_string(),
                             direction,
                         ));
                     }
@@ -750,6 +737,27 @@ impl GenericStructureEngine {
                             "break_accepted".to_string(),
                             direction,
                         ));
+                        for promotion in &level.promotions {
+                            let prior_direction = self
+                                .timeframe_states
+                                .iter()
+                                .find(|state| state.timeframe == promotion.timeframe)
+                                .map(|state| state.direction)
+                                .unwrap_or_default();
+                            let kind = if prior_direction != 0 && direction != prior_direction {
+                                "choch"
+                            } else if prior_direction != 0 {
+                                "bos"
+                            } else {
+                                "structure_break"
+                            };
+                            pending.push((
+                                level.level_id,
+                                promotion.timeframe.clone(),
+                                kind.to_string(),
+                                direction,
+                            ));
+                        }
                     } else {
                         level.lifecycle = LevelLifecycle::Crossed {
                             direction,
@@ -1771,6 +1779,20 @@ mod tests {
         assert!(crossed.iter().any(|event| {
             event.event_kind == "level_crossed" && event.confirmed_at == crossing_at
         }));
+        assert!(crossed.iter().all(|event| !matches!(
+            event.event_kind.as_str(),
+            "bos" | "choch" | "structure_break"
+        )));
+        let (_, accepted) = engine.apply_event(
+            &trade(start + 152, 100.12, 200.0, 12),
+            TradeUpdateRule::regular(),
+        );
+        assert!(accepted
+            .iter()
+            .any(|event| event.event_kind == "break_accepted"));
+        assert!(accepted
+            .iter()
+            .any(|event| { event.event_kind == "structure_break" && event.timeframe == "100ms" }));
     }
 
     #[test]

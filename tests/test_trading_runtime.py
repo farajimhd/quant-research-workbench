@@ -200,6 +200,18 @@ class HistoricalContractTests(unittest.TestCase):
             "indicators": [{"bar_start": "2026-07-10T13:44:00+00:00", "ema_20": 314.8}],
             "indicators_available": True,
             "next_before": "2026-07-10T13:44:00+00:00",
+            "structure_events": [
+                {
+                    "event_id": 91,
+                    "event_kind": "level_promoted",
+                    "timeframe": "100ms",
+                },
+                {
+                    "event_id": 92,
+                    "event_kind": "level_promoted",
+                    "timeframe": "1s",
+                },
+            ],
         }
 
         result = historical_bar_history_before(
@@ -222,6 +234,10 @@ class HistoricalContractTests(unittest.TestCase):
         self.assertEqual(result["next_before"], "2026-07-10T13:44:00+00:00")
         self.assertTrue(result["has_more_in_session"])
         self.assertEqual(len(result["indicators"]), 1)
+        self.assertEqual(
+            [(row["event_id"], row["timeframe"]) for row in result["structure_events"]],
+            [(91, "100ms"), (92, "1s")],
+        )
 
     @patch("src.backend.trading_runtime_service._historical_gateway_get")
     def test_chart_history_orders_fractional_rfc3339_timestamps_chronologically(self, gateway_get) -> None:

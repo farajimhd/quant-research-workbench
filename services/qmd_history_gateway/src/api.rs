@@ -327,6 +327,7 @@ fn project_chart_snapshot(
                 object.retain(|key, _| columns.contains(key));
                 if index + 1 < indicator_count {
                     object.remove("qmd_structure_active_levels");
+                    object.remove("qmd_structure_timeframe_states");
                 }
             }
             Ok(value)
