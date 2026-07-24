@@ -288,9 +288,30 @@ class PriceZonePrimitive implements ISeriesPrimitive<Time> {
       });
     },
   };
+  private readonly labelRendererImpl: IPrimitivePaneRenderer = {
+    draw: (target) => {
+      if (!this.chart || !this.series) return;
+      target.useMediaCoordinateSpace(({ context, mediaSize }) => {
+        drawPriceZonePrimitiveLabels(
+          this.chart as IChartApi,
+          this.series as ISeriesApi<"Candlestick">,
+          context,
+          mediaSize.width,
+          mediaSize.height,
+          this.state.zones,
+          this.state.candles,
+          this.state.legendSettings,
+        );
+      });
+    },
+  };
   private readonly paneView: IPrimitivePaneView = {
     renderer: () => this.rendererImpl,
     zOrder: () => "bottom",
+  };
+  private readonly labelPaneView: IPrimitivePaneView = {
+    renderer: () => this.labelRendererImpl,
+    zOrder: () => "top",
   };
 
   attached({ chart, requestUpdate, series }: Parameters<NonNullable<ISeriesPrimitive<Time>["attached"]>>[0]) {
@@ -306,7 +327,7 @@ class PriceZonePrimitive implements ISeriesPrimitive<Time> {
   }
 
   paneViews() {
-    return [this.paneView];
+    return [this.paneView, this.labelPaneView];
   }
 
   setState(state: PriceZonePrimitiveState) {
@@ -1217,7 +1238,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       zones: selectedZones,
     });
     syncPriceZoneAxisLines(candleRef.current, selectedZones, legendSettingsRef.current, priceZoneAxisLinesRef.current);
-    drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, selectedZones, currentPayload.trade_annotations ?? [], currentPayload.candles, timeline, chartSettingsRef.current, legendSettingsRef.current, liveEntryLineRef.current);
+    drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, currentPayload.trade_annotations ?? [], currentPayload.candles, timeline, chartSettingsRef.current, liveEntryLineRef.current);
     oscillatorPaneRuntimesRef.current.forEach((_runtime, key) => {
       drawSessionRegions(
         chart,
@@ -4112,20 +4133,16 @@ function drawRegions(
   priceSeries: ISeriesApi<"Candlestick"> | null,
   layer: HTMLDivElement | null,
   regions: Region[],
-  priceZones: PriceZone[],
   tradeAnnotations: TradeAnnotation[],
   candles: Candle[],
   timeline: CandleSeriesDatum[],
   settings: ChartAppearanceSettings,
-  legendSettings: LegendSettingsMap,
   liveEntryLine?: LiveEntryLine | null
 ) {
   if (!layer) return;
-  const plotLayer = drawSessionRegions(chart, layer, regions, timeline, candles, settings, true, true);
+  const plotLayer = drawSessionRegions(chart, layer, regions, timeline, candles, settings, true);
   if (!plotLayer) return;
   const barWidth = estimateBarWidth(chart, candles);
-  const candleDuration = estimateCandleDuration(candles);
-  drawPriceZones(chart, priceSeries, layer, priceZones, candles, barWidth, candleDuration, legendSettings);
   drawTradeAnnotations(chart, priceSeries, layer, tradeAnnotations, candles, barWidth);
   drawLiveEntryLine(chart, priceSeries, layer, candles, liveEntryLine);
 }
@@ -4138,10 +4155,9 @@ function drawSessionRegions(
   candles: Candle[],
   settings: ChartAppearanceSettings,
   drawSeparators: boolean,
-  preservePriceZoneCanvas = false,
 ) {
   if (!layer) return null;
-  clearOverlayLayer(layer, preservePriceZoneCanvas);
+  clearOverlayLayer(layer);
   const plotLayer = document.createElement("div");
   plotLayer.className = "session-plot-region";
   plotLayer.style.left = `${chart.priceScale("left").width()}px`;
@@ -4166,11 +4182,8 @@ function drawSessionRegions(
   return plotLayer;
 }
 
-function clearOverlayLayer(layer: HTMLDivElement, preservePriceZoneCanvas: boolean) {
-  Array.from(layer.children).forEach((child) => {
-    if (preservePriceZoneCanvas && child.classList.contains("price-zone-canvas")) return;
-    child.remove();
-  });
+function clearOverlayLayer(layer: HTMLDivElement) {
+  layer.replaceChildren();
 }
 
 function drawLiveEntryLine(
@@ -4550,38 +4563,20 @@ function signalEpisodeStepCoordinates(
   };
 }
 
-function drawPriceZones(
+function drawPriceZonePrimitiveLabels(
   chart: IChartApi,
-  priceSeries: ISeriesApi<"Candlestick"> | null,
-  layer: HTMLDivElement,
+  priceSeries: ISeriesApi<"Candlestick">,
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
   zones: PriceZone[],
   candles: Candle[],
-  barWidth: number,
-  candleDuration: number,
   legendSettings: LegendSettingsMap,
 ) {
-  const width = Math.max(1, layer.clientWidth);
-  const height = Math.max(1, layer.clientHeight);
-  const pixelRatio = Math.max(1, window.devicePixelRatio || 1);
-  let canvas = Array.from(layer.children).find((child): child is HTMLCanvasElement => child instanceof HTMLCanvasElement && child.classList.contains("price-zone-canvas"));
-  if (!canvas) {
-    canvas = document.createElement("canvas");
-    canvas.className = "price-zone-canvas";
-    layer.prepend(canvas);
-  }
-  const bitmapWidth = Math.max(1, Math.round(width * pixelRatio));
-  const bitmapHeight = Math.max(1, Math.round(height * pixelRatio));
-  if (canvas.width !== bitmapWidth) canvas.width = bitmapWidth;
-  if (canvas.height !== bitmapHeight) canvas.height = bitmapHeight;
-  canvas.style.width = `${width}px`;
-  canvas.style.height = `${height}px`;
-  const context = canvas.getContext("2d");
-  if (!context) return;
-  context.setTransform(1, 0, 0, 1, 0, 0);
-  context.clearRect(0, 0, bitmapWidth, bitmapHeight);
-  if (!priceSeries || !zones.length) return;
-  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-  const plotBottom = Math.max(0, height - chart.timeScale().height());
+  if (!zones.length || width < 1 || height < 1) return;
+  const barWidth = estimateBarWidth(chart, candles);
+  const candleDuration = estimateCandleDuration(candles);
+  const plotBottom = height;
   const chartBackground = validHexColor(readChartPalette().background, "#ffffff");
   const lineLabelBoxes: CanvasBox[] = [];
   let candleBoxes: CanvasBox[] | null = null;

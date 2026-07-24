@@ -210,6 +210,10 @@ resistance labels reserve space first, then the newest structure breaks, then
 swing references, then supporting annotations. A candidate that would overlap
 a candle or a higher-priority label is never drawn in that location; no label
 is shifted sideways away from its causal midpoint.
+Connector geometry and its label share one native chart primitive and one
+render frame. Initial fitting, panning, and horizontal zoom therefore apply
+exactly the same time-scale transform to both; there is no independent overlay
+coordinate system that can lag or drift.
 Swing lines and break connectors both start and end at the horizontal center
 of the candles containing their causal event timestamps; they never expand to
 the left or right candle edge. The break connector masks any overlapping
