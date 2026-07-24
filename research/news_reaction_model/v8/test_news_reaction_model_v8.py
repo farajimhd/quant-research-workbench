@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import argparse
 import dataclasses
 import datetime as dt
 import json
@@ -31,7 +32,13 @@ from research.news_reaction_model.v8.data import (
     prepared_dataset_audit_sql,
     rows_to_batch,
 )
-from research.news_reaction_model.v8.evaluate import evaluation_batch_sql
+from research.news_reaction_model.v8.evaluate import (
+    PositionLedger,
+    ThresholdRule,
+    evaluation_batch_sql,
+    parse_threshold_values,
+    threshold_side,
+)
 from research.news_reaction_model.v8.inference import LiveFeatureEncoder, trade_plans
 from research.news_reaction_model.v8.losses import compute_loss
 from research.news_reaction_model.v8.model import NewsReactionModelV8
@@ -160,6 +167,50 @@ class NewsReactionModelV8Tests(unittest.TestCase):
         self.assertTrue(torch.isfinite(compute_loss(output, batch).loss))
         plans = trade_plans(output)
         self.assertEqual(set(plans), set(v8.HORIZONS))
+        for plan in plans.values():
+            self.assertIn("edge_pct", plan)
+            self.assertIn("plan_confidence", plan)
+            self.assertTrue(torch.allclose(
+                plan["edge_pct"],
+                torch.abs(plan["upside_pct"] - plan["downside_pct"]),
+            ))
+            self.assertTrue(torch.allclose(
+                plan["plan_confidence"],
+                torch.minimum(plan["high_confidence"], plan["low_confidence"]),
+            ))
+
+    def test_threshold_rule_filters_without_changing_the_baseline(self) -> None:
+        side = [1, -1, 1, 0]
+        confidence = [0.8, 0.45, 0.3, 0.9]
+        edge = [1.5, 0.75, 0.2, 4.0]
+        baseline = threshold_side(side, confidence, edge, ThresholdRule(0.0, 0.0))
+        filtered = threshold_side(side, confidence, edge, ThresholdRule(0.4, 0.5))
+        self.assertEqual(baseline.tolist(), side)
+        self.assertEqual(filtered.tolist(), [1, -1, 0, 0])
+
+    def test_threshold_parser_is_sorted_unique_and_bounded(self) -> None:
+        self.assertEqual(
+            parse_threshold_values("0.5, 0, 0.5, 0.3", name="confidence", maximum=1.0),
+            (0.0, 0.3, 0.5),
+        )
+        with self.assertRaisesRegex(argparse.ArgumentTypeError, "must not exceed"):
+            parse_threshold_values("0,1.1", name="confidence", maximum=1.0)
+
+    def test_position_ledger_reports_trade_quality_and_return_uncertainty(self) -> None:
+        ledger = PositionLedger()
+        ledger.add(
+            side=torch.tensor([1, -1, 0]).numpy(),
+            pnl=torch.tensor([2.0, -1.0, 0.0]).numpy(),
+            touched=torch.tensor([True, False, False]).numpy(),
+            anchors=torch.tensor([100.0, 50.0, 25.0]).numpy(),
+        )
+        summary = ledger.summary()
+        self.assertEqual(summary["active"], 2)
+        self.assertEqual(summary["flat"], 1)
+        self.assertAlmostEqual(summary["coverage"], 2 / 3)
+        self.assertAlmostEqual(summary["profit_factor"], 2.0)
+        self.assertAlmostEqual(summary["win_rate"], 0.5)
+        self.assertAlmostEqual(summary["mean_active_return"], 0.0)
 
     def test_prepared_queries_do_not_request_tfidf_fields(self) -> None:
         config = LoaderConfig()

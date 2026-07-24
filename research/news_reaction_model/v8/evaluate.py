@@ -5,10 +5,11 @@ import csv
 import datetime as dt
 import gzip
 import json
+import math
 import queue
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -52,8 +53,20 @@ class PositionLedger:
     short_one_share_pnl: float = 0.0
     one_share_pnl: float = 0.0
     labels: int = 0
+    profitable: int = 0
+    losing: int = 0
+    breakeven: int = 0
+    gross_profit: float = 0.0
+    gross_loss: float = 0.0
+    active_returns: list[float] = field(default_factory=list)
 
-    def add(self, side: np.ndarray, pnl: np.ndarray, touched: np.ndarray) -> None:
+    def add(
+        self,
+        side: np.ndarray,
+        pnl: np.ndarray,
+        touched: np.ndarray,
+        anchors: np.ndarray | None = None,
+    ) -> None:
         side = np.asarray(side, dtype=np.int8).reshape(-1)
         pnl = np.asarray(pnl, dtype=np.float64).reshape(-1)
         touched = np.asarray(touched, dtype=bool).reshape(-1)
@@ -71,9 +84,33 @@ class PositionLedger:
         self.short_one_share_pnl += float(pnl[short].sum())
         self.one_share_pnl += float(pnl.sum())
         self.labels += int(len(side))
+        active_pnl = pnl[active]
+        self.profitable += int((active_pnl > 0).sum())
+        self.losing += int((active_pnl < 0).sum())
+        self.breakeven += int((active_pnl == 0).sum())
+        self.gross_profit += float(active_pnl[active_pnl > 0].sum())
+        self.gross_loss += float(active_pnl[active_pnl < 0].sum())
+        if anchors is not None:
+            anchors = np.asarray(anchors, dtype=np.float64).reshape(-1)[valid]
+            active_anchors = anchors[active]
+            valid_returns = np.isfinite(active_anchors) & (active_anchors > 0)
+            self.active_returns.extend(
+                (active_pnl[valid_returns] / active_anchors[valid_returns]).tolist()
+            )
 
     def summary(self) -> dict[str, Any]:
         active = self.long + self.short
+        returns = np.asarray(self.active_returns, dtype=np.float64)
+        if returns.size > 1:
+            mean_return = float(returns.mean())
+            return_se = float(returns.std(ddof=1) / math.sqrt(returns.size))
+            return_ci = (mean_return - 1.96 * return_se, mean_return + 1.96 * return_se)
+        elif returns.size == 1:
+            mean_return = float(returns[0])
+            return_ci = (mean_return, mean_return)
+        else:
+            mean_return = 0.0
+            return_ci = (0.0, 0.0)
         return {
             "long": self.long,
             "long_one_share_pnl": self.long_one_share_pnl,
@@ -87,7 +124,57 @@ class PositionLedger:
             "target_touch_rate": self.target_touches / max(active, 1),
             "one_share_mean_pnl_per_active": self.one_share_pnl / max(active, 1),
             "labels": self.labels,
+            "coverage": active / max(self.labels, 1),
+            "profitable": self.profitable,
+            "losing": self.losing,
+            "breakeven": self.breakeven,
+            "win_rate": self.profitable / max(active, 1),
+            "gross_profit": self.gross_profit,
+            "gross_loss": self.gross_loss,
+            "profit_factor": self.gross_profit / -self.gross_loss if self.gross_loss < 0 else None,
+            "mean_active_return": mean_return,
+            "median_active_return": float(np.median(returns)) if returns.size else 0.0,
+            "mean_active_return_95ci_naive": list(return_ci),
         }
+
+
+@dataclass(frozen=True, slots=True)
+class ThresholdRule:
+    confidence: float
+    edge_pct: float
+
+    @property
+    def key(self) -> tuple[float, float]:
+        return self.confidence, self.edge_pct
+
+
+def parse_threshold_values(raw: str, *, name: str, maximum: float | None = None) -> tuple[float, ...]:
+    try:
+        values = tuple(sorted({float(value.strip()) for value in raw.split(",") if value.strip()}))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{name} must be a comma-separated list of numbers") from exc
+    if not values:
+        raise argparse.ArgumentTypeError(f"{name} must contain at least one value")
+    if any(not math.isfinite(value) or value < 0 for value in values):
+        raise argparse.ArgumentTypeError(f"{name} values must be finite and non-negative")
+    if maximum is not None and any(value > maximum for value in values):
+        raise argparse.ArgumentTypeError(f"{name} values must not exceed {maximum}")
+    return values
+
+
+def threshold_side(
+    base_side: np.ndarray,
+    plan_confidence: np.ndarray,
+    edge_pct: np.ndarray,
+    rule: ThresholdRule,
+) -> np.ndarray:
+    base_side = np.asarray(base_side, dtype=np.int8)
+    selected = (
+        (base_side != 0)
+        & (np.asarray(plan_confidence, dtype=np.float64) >= rule.confidence)
+        & (np.asarray(edge_pct, dtype=np.float64) >= rule.edge_pct)
+    )
+    return np.where(selected, base_side, 0).astype(np.int8, copy=False)
 
 
 def simulate_exits(
@@ -219,10 +306,30 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--end-exclusive", default="2027-01-01")
     parser.add_argument("--export-predictions", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--confidence-thresholds",
+        default="0,0.3,0.4,0.5,0.6,0.7",
+        help="Comma-separated minimum plan confidences. Plan confidence is min(high, low).",
+    )
+    parser.add_argument(
+        "--edge-thresholds-pct",
+        default="0,0.25,0.5,1,2",
+        help="Comma-separated minimum directional edges in percentage points.",
+    )
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
-def evaluate_checkpoint(checkpoint: Path, *, output_dir: Path | None = None, start: str = "2026-01-01", end_exclusive: str = "2027-01-01", export_predictions: bool = True, amp: bool = True) -> dict[str, Any]:
+def evaluate_checkpoint(
+    checkpoint: Path,
+    *,
+    output_dir: Path | None = None,
+    start: str = "2026-01-01",
+    end_exclusive: str = "2027-01-01",
+    export_predictions: bool = True,
+    amp: bool = True,
+    confidence_thresholds: tuple[float, ...] = (0.0, 0.3, 0.4, 0.5, 0.6, 0.7),
+    edge_thresholds_pct: tuple[float, ...] = (0.0, 0.25, 0.5, 1.0, 2.0),
+) -> dict[str, Any]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     with torch.serialization.safe_globals([type(Path())]):
         state = torch.load(checkpoint, map_location=device, weights_only=True)
@@ -236,11 +343,34 @@ def evaluate_checkpoint(checkpoint: Path, *, output_dir: Path | None = None, sta
     ledgers = {horizon: PositionLedger() for horizon in HORIZONS}; overall = PositionLedger()
     price_breakdowns = {horizon: AnchorPricePnlBreakdown() for horizon in HORIZONS}
     overall_price_breakdown = AnchorPricePnlBreakdown()
+    confidence_thresholds = tuple(sorted(set(float(value) for value in confidence_thresholds)))
+    edge_thresholds_pct = tuple(sorted(set(float(value) for value in edge_thresholds_pct)))
+    if 0.0 not in confidence_thresholds or 0.0 not in edge_thresholds_pct:
+        raise ValueError("Threshold sweep must include confidence=0 and edge_pct=0 to preserve the baseline audit")
+    rules = tuple(
+        ThresholdRule(confidence, edge_pct)
+        for confidence in confidence_thresholds
+        for edge_pct in edge_thresholds_pct
+    )
+    sweep_ledgers = {
+        horizon: {rule.key: PositionLedger() for rule in rules}
+        for horizon in HORIZONS
+    }
+    overall_sweep_ledgers = {rule.key: PositionLedger() for rule in rules}
+    sweep_price_breakdowns = {
+        horizon: {rule.key: AnchorPricePnlBreakdown() for rule in rules}
+        for horizon in HORIZONS
+    }
+    overall_sweep_price_breakdowns = {
+        rule.key: AnchorPricePnlBreakdown() for rule in rules
+    }
+    article_pnl_parts: list[np.ndarray] = []
     dataset = ClickHouseEvaluationDataset(loader_config, start=start, end_exclusive=end_exclusive)
     articles = labels = 0; started = time.perf_counter()
     try:
         for batch_index, evaluation in enumerate(dataset.iter_batches(), start=1):
             cpu_batch = evaluation.model_batch
+            batch_article_pnl = np.zeros((cpu_batch.sample_count, len(rules)), dtype=np.float64)
             with torch.inference_mode(), torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda" and amp):
                 plans = trade_plans(model(cpu_batch.to(device).x))
             returns = cpu_batch.return_targets.numpy(); mask = cpu_batch.label_mask.numpy().astype(bool)
@@ -252,9 +382,31 @@ def evaluate_checkpoint(checkpoint: Path, *, output_dir: Path | None = None, sta
                 actual = returns[valid, horizon_index].astype(np.float64)
                 anchors = evaluation.anchors[valid, horizon_index]
                 touched, _exit_return, pnl = simulate_exits(side, target_pct, actual, anchors)
-                ledgers[horizon].add(side, pnl, touched); overall.add(side, pnl, touched)
+                ledgers[horizon].add(side, pnl, touched, anchors)
+                overall.add(side, pnl, touched, anchors)
                 price_breakdowns[horizon].add(side, pnl, anchors); overall_price_breakdown.add(side, pnl, anchors)
                 labels += int(valid.sum())
+                plan_confidence = plan["plan_confidence"][valid].astype(np.float64)
+                edge_pct = plan["edge_pct"][valid].astype(np.float64)
+                valid_indices = np.flatnonzero(valid)
+                for rule_index, rule in enumerate(rules):
+                    filtered_side = threshold_side(side, plan_confidence, edge_pct, rule)
+                    selected = filtered_side != 0
+                    filtered_pnl = np.where(selected, pnl, 0.0)
+                    filtered_touched = selected & touched
+                    sweep_ledgers[horizon][rule.key].add(
+                        filtered_side, filtered_pnl, filtered_touched, anchors
+                    )
+                    overall_sweep_ledgers[rule.key].add(
+                        filtered_side, filtered_pnl, filtered_touched, anchors
+                    )
+                    sweep_price_breakdowns[horizon][rule.key].add(
+                        filtered_side, filtered_pnl, anchors
+                    )
+                    overall_sweep_price_breakdowns[rule.key].add(
+                        filtered_side, filtered_pnl, anchors
+                    )
+                    batch_article_pnl[valid_indices, rule_index] += filtered_pnl
                 if prediction_file is not None:
                     for local, row_index in enumerate(np.flatnonzero(valid)):
                         prediction_file.write(json.dumps({
@@ -264,11 +416,20 @@ def evaluate_checkpoint(checkpoint: Path, *, output_dir: Path | None = None, sta
                             "horizon": horizon, "position": int(side[local]), "target_pct": float(target_pct[local]),
                             "predicted_high_class": int(plan["high_class"][row_index]), "predicted_low_class": int(plan["low_class"][row_index]),
                             "predicted_ending_class": int(plan["ending_class"][row_index]), "target_touched": bool(touched[local]),
+                            "upside_pct": float(plan["upside_pct"][row_index]),
+                            "downside_pct": float(plan["downside_pct"][row_index]),
+                            "span_pct": float(plan["span_pct"][row_index]),
+                            "edge_pct": float(plan["edge_pct"][row_index]),
+                            "plan_confidence": float(plan["plan_confidence"][row_index]),
+                            "high_confidence": float(plan["high_confidence"][row_index]),
+                            "low_confidence": float(plan["low_confidence"][row_index]),
+                            "ending_confidence": float(plan["ending_confidence"][row_index]),
                             "exit": "target" if touched[local] else "ending", "anchor_price": float(anchors[local]),
                             "actual_ending_return": float(actual[local, 0]), "actual_high_return": float(actual[local, 1]),
                             "actual_low_return": float(actual[local, 2]), "gross_one_share_pnl": float(pnl[local]),
                         }, separators=(",", ":"), allow_nan=False) + "\n")
             articles += cpu_batch.sample_count
+            article_pnl_parts.append(batch_article_pnl)
             if batch_index == 1 or batch_index % 10 == 0:
                 print(f"EVALUATE batches={batch_index:,} articles={articles:,}/{audit['rows']:,} labels={labels:,} rate={articles / max(time.perf_counter()-started, 1e-9):,.0f} articles/s", flush=True)
     finally:
@@ -278,6 +439,50 @@ def evaluate_checkpoint(checkpoint: Path, *, output_dir: Path | None = None, sta
         horizon: {**ledger.summary(), "anchor_price_pnl": price_breakdowns[horizon].summary()}
         for horizon, ledger in ledgers.items()
     }
+    article_pnl = (
+        np.concatenate(article_pnl_parts, axis=0)
+        if article_pnl_parts
+        else np.empty((0, len(rules)), dtype=np.float64)
+    )
+    sweep_rows: list[dict[str, Any]] = []
+    for horizon in (*HORIZONS, "ALL_INDEPENDENT_HORIZONS"):
+        horizon_ledgers = (
+            overall_sweep_ledgers
+            if horizon == "ALL_INDEPENDENT_HORIZONS"
+            else sweep_ledgers[horizon]
+        )
+        for rule_index, rule in enumerate(rules):
+            row = {
+                "horizon": horizon,
+                "confidence_threshold": rule.confidence,
+                "edge_threshold_pct": rule.edge_pct,
+                **horizon_ledgers[rule.key].summary(),
+            }
+            if horizon == "ALL_INDEPENDENT_HORIZONS" and article_pnl.shape[0]:
+                values = article_pnl[:, rule_index]
+                mean = float(values.mean())
+                se = float(values.std(ddof=1) / math.sqrt(values.size)) if values.size > 1 else 0.0
+                row.update({
+                    "article_mean_one_share_pnl": mean,
+                    "article_mean_one_share_pnl_95ci": [
+                        mean - 1.96 * se,
+                        mean + 1.96 * se,
+                    ],
+                })
+            sweep_rows.append(row)
+    baseline_key = (0.0, 0.0)
+    baseline_summary = overall_sweep_ledgers[baseline_key].summary()
+    direct_summary = overall.summary()
+    for key in ("labels", "active", "long", "short", "flat", "target_touches", "ending_fallbacks"):
+        if baseline_summary[key] != direct_summary[key]:
+            raise RuntimeError(f"Threshold baseline drift for {key}: {baseline_summary[key]} != {direct_summary[key]}")
+    if not math.isclose(
+        baseline_summary["one_share_pnl"],
+        direct_summary["one_share_pnl"],
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    ):
+        raise RuntimeError("Threshold baseline P&L does not reproduce the unchanged evaluation")
     summary = {
         "model_version": MODEL_VERSION, "checkpoint": str(checkpoint), "validation_range": [start, end_exclusive],
         "articles": articles, "labels": labels, "elapsed_seconds": time.perf_counter() - started,
@@ -287,6 +492,25 @@ def evaluate_checkpoint(checkpoint: Path, *, output_dir: Path | None = None, sta
         "overall_across_independent_horizons": {
             **overall.summary(), "anchor_price_pnl": overall_price_breakdown.summary()
         }, "horizons": horizons,
+        "threshold_sweep": {
+            "selection_contract": (
+                "retain an existing non-flat plan only when min(high_confidence, low_confidence) "
+                "meets the confidence threshold and abs(conservative_upside_pct - "
+                "conservative_downside_pct) meets the directional-edge threshold"
+            ),
+            "confidence_thresholds": list(confidence_thresholds),
+            "edge_thresholds_pct": list(edge_thresholds_pct),
+            "baseline_reproduced": True,
+            "statistical_note": (
+                "active-return intervals treat positions as independent; overall article P&L "
+                "intervals cluster all horizons from one article-ticker row"
+            ),
+            "selection_warning": (
+                "This is exploratory tuning on the held-out 2026 comparison set. A chosen rule "
+                "requires confirmation on a later untouched period before production use."
+            ),
+            "rows": sweep_rows,
+        },
     }
     (destination / "evaluation_summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False), encoding="utf-8")
     fields = ["horizon", "long", "long_one_share_pnl", "short", "short_one_share_pnl", "flat", "target_touches", "ending_fallbacks", "target_touch_rate", "one_share_pnl", "active", "one_share_mean_pnl_per_active", "labels"]
@@ -299,6 +523,63 @@ def evaluate_checkpoint(checkpoint: Path, *, output_dir: Path | None = None, sta
         [(horizon, price_breakdowns[horizon]) for horizon in HORIZONS]
         + [("ALL_INDEPENDENT_HORIZONS", overall_price_breakdown)],
     )
+    sweep_fields = [
+        "horizon", "confidence_threshold", "edge_threshold_pct", "labels", "active",
+        "coverage", "long", "long_one_share_pnl", "short", "short_one_share_pnl",
+        "flat", "one_share_pnl", "one_share_mean_pnl_per_active", "profitable",
+        "losing", "breakeven", "win_rate", "gross_profit", "gross_loss",
+        "profit_factor", "target_touches", "ending_fallbacks", "target_touch_rate",
+        "mean_active_return", "median_active_return", "mean_active_return_95ci_naive",
+        "article_mean_one_share_pnl", "article_mean_one_share_pnl_95ci",
+    ]
+    with (destination / "evaluation_threshold_sweep.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=sweep_fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(sweep_rows)
+    threshold_price_fields = [
+        "horizon", "confidence_threshold", "edge_threshold_pct", "price_bucket",
+        "price_label", "minimum_inclusive", "maximum_exclusive", "labels",
+        "active_positions", "abstained", "one_share_pnl",
+        "mean_one_share_pnl_per_active", "long_positions", "long_one_share_pnl",
+        "long_mean_one_share_pnl", "long_win_rate", "short_positions",
+        "short_one_share_pnl", "short_mean_one_share_pnl", "short_win_rate",
+    ]
+    with (destination / "evaluation_threshold_sweep_anchor_price.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as handle:
+        writer = csv.DictWriter(handle, fieldnames=threshold_price_fields)
+        writer.writeheader()
+        for horizon in (*HORIZONS, "ALL_INDEPENDENT_HORIZONS"):
+            breakdowns = (
+                overall_sweep_price_breakdowns
+                if horizon == "ALL_INDEPENDENT_HORIZONS"
+                else sweep_price_breakdowns[horizon]
+            )
+            for rule in rules:
+                bucket_rows = breakdowns[rule.key].summary()["buckets"]
+                for bucket_key, bucket in bucket_rows.items():
+                    writer.writerow({
+                        "horizon": horizon,
+                        "confidence_threshold": rule.confidence,
+                        "edge_threshold_pct": rule.edge_pct,
+                        "price_bucket": bucket_key,
+                        "price_label": bucket["label"],
+                        "minimum_inclusive": bucket["minimum_inclusive"],
+                        "maximum_exclusive": bucket["maximum_exclusive"],
+                        "labels": bucket["labels"],
+                        "active_positions": bucket["active_positions"],
+                        "abstained": bucket["abstained"],
+                        "one_share_pnl": bucket["one_share_pnl"],
+                        "mean_one_share_pnl_per_active": bucket["mean_one_share_pnl_per_active"],
+                        "long_positions": bucket["long"]["positions"],
+                        "long_one_share_pnl": bucket["long"]["one_share_pnl"],
+                        "long_mean_one_share_pnl": bucket["long"]["mean_one_share_pnl"],
+                        "long_win_rate": bucket["long"]["win_rate"],
+                        "short_positions": bucket["short"]["positions"],
+                        "short_one_share_pnl": bucket["short"]["one_share_pnl"],
+                        "short_mean_one_share_pnl": bucket["short"]["mean_one_share_pnl"],
+                        "short_win_rate": bucket["short"]["win_rate"],
+                    })
     print(f"COMPLETED articles={articles:,} labels={labels:,} summary={destination / 'evaluation_summary.json'}", flush=True)
     return summary
 
@@ -306,7 +587,22 @@ def evaluate_checkpoint(checkpoint: Path, *, output_dir: Path | None = None, sta
 def main(argv: Iterable[str] | None = None) -> int:
     load_env_files(discover_env_files(REPO_ROOT), verbose=True)
     args = parse_args(argv)
-    evaluate_checkpoint(Path(args.checkpoint), output_dir=Path(args.output_dir) if args.output_dir else None, start=args.start, end_exclusive=args.end_exclusive, export_predictions=args.export_predictions, amp=args.amp)
+    confidence_thresholds = parse_threshold_values(
+        args.confidence_thresholds, name="confidence thresholds", maximum=1.0
+    )
+    edge_thresholds_pct = parse_threshold_values(
+        args.edge_thresholds_pct, name="edge thresholds"
+    )
+    evaluate_checkpoint(
+        Path(args.checkpoint),
+        output_dir=Path(args.output_dir) if args.output_dir else None,
+        start=args.start,
+        end_exclusive=args.end_exclusive,
+        export_predictions=args.export_predictions,
+        amp=args.amp,
+        confidence_thresholds=confidence_thresholds,
+        edge_thresholds_pct=edge_thresholds_pct,
+    )
     return 0
 
 

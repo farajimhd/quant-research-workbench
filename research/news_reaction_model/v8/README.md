@@ -104,6 +104,47 @@ Evaluation:
 python -m research.news_reaction_model.v8.run_evaluate
 ```
 
+Evaluation preserves the original V7/V8 position ledger and additionally runs
+a selection-only threshold sweep from the same checkpoint. It does not retrain
+the model or change the baseline plan:
+
+- `plan_confidence = min(high winning-class probability, low winning-class probability)`
+  because both excursion heads determine direction;
+- `directional_edge_pct = abs(conservative upside - conservative downside)`;
+- an existing non-flat plan is retained only when both configured thresholds
+  are met;
+- the `(confidence=0, edge=0)` row is checked against the original evaluation
+  counts and P&L and the job fails on any drift.
+
+Default grids are confidence `0,0.3,0.4,0.5,0.6,0.7` and directional edge
+`0,0.25,0.5,1,2` percentage points. Override them without another inference
+implementation:
+
+```powershell
+python -m research.news_reaction_model.v8.run_evaluate `
+  --confidence-thresholds 0,0.25,0.35,0.45,0.55 `
+  --edge-thresholds-pct 0,0.1,0.25,0.5,1
+```
+
+New evaluation artifacts are:
+
+- `evaluation_threshold_sweep.csv`: coverage, long/short counts and P&L,
+  win rate, profit factor, target-touch rate, mean/median active return, a
+  position-level mean-return interval, and an overall article-clustered P&L
+  interval for every horizon/rule;
+- `evaluation_threshold_sweep_anchor_price.csv`: the same selection grid split
+  into the established anchor-price bands;
+- `evaluation_predictions.jsonl.gz`: now also records all three head
+  confidences, plan confidence, conservative upside/downside, span, and
+  directional edge, allowing later offline audits;
+- `evaluation_summary.json`: embeds the grid, contracts, rows, baseline audit,
+  and the explicit warning that choosing a rule on 2026 is exploratory tuning.
+
+Confidence is not assumed to be calibrated probability of profit. The sweep
+tests whether stricter selection improves held-out trade quality. A threshold
+chosen using 2026 must be confirmed on a later untouched period before it is
+treated as production evidence.
+
 ## Comparison contract
 
 V8 uses the same W&B project as V7: `news-reaction-model-v3`. Its default run

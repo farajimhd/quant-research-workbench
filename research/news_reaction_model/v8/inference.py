@@ -82,6 +82,11 @@ def trade_plans(output: NewsReactionRangeOutput) -> dict[str, dict[str, torch.Te
         upside = upside_values[predicted["high"]]
         downside = downside_values[predicted["low"]]
         span = upside + downside
+        edge = torch.abs(upside - downside)
+        # Direction depends on both excursion heads, so its confidence is the
+        # weaker of the high/low winning-class probabilities. Ending confidence
+        # is exported separately because it does not choose the position.
+        plan_confidence = torch.minimum(confidence["high"], confidence["low"])
         active = (span > spec.minimum_span_pct) & (upside != downside)
         side = torch.where(upside > downside, 1, -1)
         side = torch.where(active, side, 0)
@@ -92,6 +97,8 @@ def trade_plans(output: NewsReactionRangeOutput) -> dict[str, dict[str, torch.Te
             "upside_pct": upside,
             "downside_pct": downside,
             "span_pct": span,
+            "edge_pct": edge,
+            "plan_confidence": plan_confidence,
             "ending_class": predicted["ending"],
             "high_class": predicted["high"],
             "low_class": predicted["low"],
@@ -140,6 +147,8 @@ def forecast_rows(
                 "upside_pct": float(plan["upside_pct"][row_index]),
                 "downside_pct": float(plan["downside_pct"][row_index]),
                 "span_pct": float(plan["span_pct"][row_index]),
+                "edge_pct": float(plan["edge_pct"][row_index]),
+                "plan_confidence": float(plan["plan_confidence"][row_index]),
                 "ranges": ranges,
             }
         results.append({
