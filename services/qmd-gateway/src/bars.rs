@@ -1646,8 +1646,30 @@ mod tests {
         let five_state = &five_second.history.last().unwrap().qmd_structure;
         assert_eq!(fine_state.reference_price, one_state.reference_price);
         assert_eq!(one_state.reference_price, five_state.reference_price);
-        assert_eq!(fine_state.micro.direction, one_state.micro.direction);
-        assert_eq!(one_state.tactical.direction, five_state.tactical.direction);
+        assert_eq!(
+            fine_state
+                .timeframe_states
+                .iter()
+                .map(|state| (state.timeframe.as_str(), state.direction))
+                .collect::<Vec<_>>(),
+            one_state
+                .timeframe_states
+                .iter()
+                .map(|state| (state.timeframe.as_str(), state.direction))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            one_state
+                .timeframe_states
+                .iter()
+                .map(|state| (state.timeframe.as_str(), state.direction))
+                .collect::<Vec<_>>(),
+            five_state
+                .timeframe_states
+                .iter()
+                .map(|state| (state.timeframe.as_str(), state.direction))
+                .collect::<Vec<_>>()
+        );
         assert_eq!(fine_state.last_event_id, five_state.last_event_id);
         let checkpoints = bars.structure_checkpoints_since(&HashMap::new()).await;
         assert_eq!(checkpoints.len(), 1);

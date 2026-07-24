@@ -156,8 +156,9 @@ struct MacroQueryRow {
 struct PersistedStructureEventRow {
     algorithm_version: u16,
     event_id: String,
+    level_id: String,
     sym: String,
-    scale: String,
+    timeframe: String,
     event_kind: String,
     direction: i8,
     price: f64,
@@ -165,6 +166,12 @@ struct PersistedStructureEventRow {
     upper: f64,
     strength: f64,
     confidence: f64,
+    lifecycle: String,
+    total_volume: f64,
+    buy_volume: f64,
+    sell_volume: f64,
+    neutral_volume: f64,
+    trade_count: u64,
     pivot_at: String,
     confirmed_at: String,
 }
@@ -563,8 +570,9 @@ impl HistoricalEventSource {
             r#"SELECT
                 algorithm_version,
                 toString(event_id) AS event_id,
+                toString(level_id) AS level_id,
                 sym,
-                scale,
+                timeframe,
                 event_kind,
                 direction,
                 price,
@@ -572,6 +580,12 @@ impl HistoricalEventSource {
                 upper,
                 strength,
                 confidence,
+                lifecycle,
+                total_volume,
+                buy_volume,
+                sell_volume,
+                neutral_volume,
+                trade_count,
                 formatDateTime(pivot_at, '%Y-%m-%dT%H:%i:%s.%fZ', 'UTC') AS pivot_at,
                 formatDateTime(confirmed_at, '%Y-%m-%dT%H:%i:%s.%fZ', 'UTC') AS confirmed_at
             FROM {table} FINAL
@@ -599,8 +613,11 @@ impl HistoricalEventSource {
                     event_id: row.event_id.parse::<u64>().map_err(|error| {
                         format!("invalid persisted structure event id: {error}")
                     })?,
+                    level_id: row.level_id.parse::<u64>().map_err(|error| {
+                        format!("invalid persisted structure level id: {error}")
+                    })?,
                     sym: row.sym,
-                    scale: row.scale,
+                    timeframe: row.timeframe,
                     event_kind: row.event_kind,
                     direction: row.direction,
                     price: row.price,
@@ -608,6 +625,12 @@ impl HistoricalEventSource {
                     upper: row.upper,
                     strength: row.strength,
                     confidence: row.confidence,
+                    lifecycle: row.lifecycle,
+                    total_volume: row.total_volume,
+                    buy_volume: row.buy_volume,
+                    sell_volume: row.sell_volume,
+                    neutral_volume: row.neutral_volume,
+                    trade_count: row.trade_count,
                     pivot_at: parse_clickhouse_datetime(&row.pivot_at)?,
                     confirmed_at: parse_clickhouse_datetime(&row.confirmed_at)?,
                 })

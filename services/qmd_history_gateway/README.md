@@ -61,7 +61,7 @@ Defaults:
 - database: `market_sip_compact`
 - yearly-table prefix: `events_`
 - durable macro table: `macro_bars_by_time_symbol`
-- generic-structure database/table: `q_live.qmd_structure_events_v1`
+- generic-structure database/table: `q_live.qmd_structure_events_v2`
 - batch size: `25000`
 - maximum events in one derived calculation: `10000000`
 - revision-aware derived cache entries: `256`

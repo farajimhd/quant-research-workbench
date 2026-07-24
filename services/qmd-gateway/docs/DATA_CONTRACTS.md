@@ -469,8 +469,8 @@ status are documented in
 
 ## Generic Structure Persistence Contract
 
-`qmd_structure_events_v1` stores the confirmed causal event history keyed by a
-deterministic event id. `qmd_structure_state_v1` is a `ReplacingMergeTree`
+`qmd_structure_events_v2` stores the causal trade-level and timeframe-promotion
+event history keyed by a deterministic event id. `qmd_structure_state_v2` is a `ReplacingMergeTree`
 latest-state table containing the full versioned engine checkpoint: adaptive
 threshold EWMAs, pending directional state, zones, session references, eligible
 trade volume-at-price, and the last causal event. This restores the next event

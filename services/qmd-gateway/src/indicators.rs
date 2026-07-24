@@ -3,7 +3,7 @@ use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::generic_structure::{
     GenericStructureCheckpoint, GenericStructureEvent, GenericStructureSnapshot,
-    StructureLevelCandidate,
+    StructureLevelCandidate, StructureTimeframeSnapshot,
 };
 use crate::metrics::SharedMetrics;
 use crate::microstructure_interval::{
@@ -187,6 +187,10 @@ pub struct IndicatorRow {
     pub qmd_structure_resistance_strength: f64,
     pub qmd_structure_resistance_confidence: f64,
     pub qmd_structure_active_levels: Vec<StructureLevelCandidate>,
+    pub qmd_structure_timeframe_states: Vec<StructureTimeframeSnapshot>,
+    pub qmd_structure_developing_high: f64,
+    pub qmd_structure_developing_low: f64,
+    pub qmd_structure_developing_direction: i8,
     pub qmd_structure_micro_direction: i8,
     pub qmd_structure_micro_threshold: f64,
     pub qmd_structure_micro_swing_high: f64,
@@ -233,7 +237,7 @@ pub struct IndicatorRow {
     pub qmd_structure_event_pivot_at_ms: i64,
     pub qmd_structure_event_at_ms: i64,
     pub qmd_structure_event_kind: String,
-    pub qmd_structure_event_scale: String,
+    pub qmd_structure_event_timeframe: String,
     pub qmd_structure_event_direction: i8,
     pub qmd_structure_event_price: f64,
     pub qmd_structure_session_high: f64,
@@ -1045,7 +1049,7 @@ pub fn qmd_episode_input(row: &IndicatorRow, high: f64, low: f64) -> QmdEpisodeI
     let scale =
         |name: &str, scale_direction: i8, threshold: f64, swing_high: f64, swing_low: f64| {
             let structure_break = row.qmd_structure_events.iter().rev().find(|event| {
-                event.scale == name
+                event.timeframe == name
                     && matches!(event.event_kind.as_str(), "bos" | "choch")
                     && event.confirmed_at <= row.bar_end
             });
@@ -1071,21 +1075,21 @@ pub fn qmd_episode_input(row: &IndicatorRow, high: f64, low: f64) -> QmdEpisodeI
         decision_direction: direction,
         decision_confidence: row.qmd_decision_confidence.clamp(0.0, 1.0),
         micro: scale(
-            "micro",
+            "100ms",
             row.qmd_structure_micro_direction,
             row.qmd_structure_micro_threshold,
             row.qmd_structure_micro_swing_high,
             row.qmd_structure_micro_swing_low,
         ),
         tactical: scale(
-            "tactical",
+            "10s",
             row.qmd_structure_tactical_direction,
             row.qmd_structure_tactical_threshold,
             row.qmd_structure_tactical_swing_high,
             row.qmd_structure_tactical_swing_low,
         ),
         context: scale(
-            "context",
+            "1m",
             row.qmd_structure_context_direction,
             row.qmd_structure_context_threshold,
             row.qmd_structure_context_swing_high,
@@ -1445,6 +1449,20 @@ impl BarIndicatorState {
             bar.vwap,
         );
         let structure = &bar.qmd_structure;
+        let state_for = |timeframe: &str| {
+            structure
+                .timeframe_states
+                .iter()
+                .find(|state| state.timeframe == timeframe)
+                .cloned()
+                .unwrap_or_default()
+        };
+        // Temporary compatibility projections for consumers that still deserialize the
+        // former three-scale columns. They are sourced from the canonical timeframe
+        // states; the level book itself has no micro/tactical/context extraction path.
+        let micro_state = state_for("100ms");
+        let tactical_state = state_for("10s");
+        let context_state = state_for("1m");
         let references = self.market_structure_references;
 
         IndicatorRow {
@@ -1570,53 +1588,57 @@ impl BarIndicatorState {
             qmd_structure_resistance_strength: structure.resistance.strength,
             qmd_structure_resistance_confidence: structure.resistance.confidence,
             qmd_structure_active_levels: structure.active_levels.clone(),
-            qmd_structure_micro_direction: structure.micro.direction,
-            qmd_structure_micro_threshold: structure.micro.threshold,
-            qmd_structure_micro_swing_high: structure.micro.swing_high,
-            qmd_structure_micro_swing_low: structure.micro.swing_low,
-            qmd_structure_micro_support_price: structure.micro.support.price,
-            qmd_structure_micro_support_lower: structure.micro.support.lower,
-            qmd_structure_micro_support_upper: structure.micro.support.upper,
-            qmd_structure_micro_support_strength: structure.micro.support.strength,
-            qmd_structure_micro_support_confidence: structure.micro.support.confidence,
-            qmd_structure_micro_resistance_price: structure.micro.resistance.price,
-            qmd_structure_micro_resistance_lower: structure.micro.resistance.lower,
-            qmd_structure_micro_resistance_upper: structure.micro.resistance.upper,
-            qmd_structure_micro_resistance_strength: structure.micro.resistance.strength,
-            qmd_structure_micro_resistance_confidence: structure.micro.resistance.confidence,
-            qmd_structure_tactical_direction: structure.tactical.direction,
-            qmd_structure_tactical_threshold: structure.tactical.threshold,
-            qmd_structure_tactical_swing_high: structure.tactical.swing_high,
-            qmd_structure_tactical_swing_low: structure.tactical.swing_low,
-            qmd_structure_tactical_support_price: structure.tactical.support.price,
-            qmd_structure_tactical_support_lower: structure.tactical.support.lower,
-            qmd_structure_tactical_support_upper: structure.tactical.support.upper,
-            qmd_structure_tactical_support_strength: structure.tactical.support.strength,
-            qmd_structure_tactical_support_confidence: structure.tactical.support.confidence,
-            qmd_structure_tactical_resistance_price: structure.tactical.resistance.price,
-            qmd_structure_tactical_resistance_lower: structure.tactical.resistance.lower,
-            qmd_structure_tactical_resistance_upper: structure.tactical.resistance.upper,
-            qmd_structure_tactical_resistance_strength: structure.tactical.resistance.strength,
-            qmd_structure_tactical_resistance_confidence: structure.tactical.resistance.confidence,
-            qmd_structure_context_direction: structure.context.direction,
-            qmd_structure_context_threshold: structure.context.threshold,
-            qmd_structure_context_swing_high: structure.context.swing_high,
-            qmd_structure_context_swing_low: structure.context.swing_low,
-            qmd_structure_context_support_price: structure.context.support.price,
-            qmd_structure_context_support_lower: structure.context.support.lower,
-            qmd_structure_context_support_upper: structure.context.support.upper,
-            qmd_structure_context_support_strength: structure.context.support.strength,
-            qmd_structure_context_support_confidence: structure.context.support.confidence,
-            qmd_structure_context_resistance_price: structure.context.resistance.price,
-            qmd_structure_context_resistance_lower: structure.context.resistance.lower,
-            qmd_structure_context_resistance_upper: structure.context.resistance.upper,
-            qmd_structure_context_resistance_strength: structure.context.resistance.strength,
-            qmd_structure_context_resistance_confidence: structure.context.resistance.confidence,
+            qmd_structure_timeframe_states: structure.timeframe_states.clone(),
+            qmd_structure_developing_high: structure.developing_high,
+            qmd_structure_developing_low: structure.developing_low,
+            qmd_structure_developing_direction: structure.developing_direction,
+            qmd_structure_micro_direction: micro_state.direction,
+            qmd_structure_micro_threshold: 0.0,
+            qmd_structure_micro_swing_high: micro_state.swing_high,
+            qmd_structure_micro_swing_low: micro_state.swing_low,
+            qmd_structure_micro_support_price: micro_state.support.price,
+            qmd_structure_micro_support_lower: micro_state.support.lower,
+            qmd_structure_micro_support_upper: micro_state.support.upper,
+            qmd_structure_micro_support_strength: micro_state.support.strength,
+            qmd_structure_micro_support_confidence: micro_state.support.confidence,
+            qmd_structure_micro_resistance_price: micro_state.resistance.price,
+            qmd_structure_micro_resistance_lower: micro_state.resistance.lower,
+            qmd_structure_micro_resistance_upper: micro_state.resistance.upper,
+            qmd_structure_micro_resistance_strength: micro_state.resistance.strength,
+            qmd_structure_micro_resistance_confidence: micro_state.resistance.confidence,
+            qmd_structure_tactical_direction: tactical_state.direction,
+            qmd_structure_tactical_threshold: 0.0,
+            qmd_structure_tactical_swing_high: tactical_state.swing_high,
+            qmd_structure_tactical_swing_low: tactical_state.swing_low,
+            qmd_structure_tactical_support_price: tactical_state.support.price,
+            qmd_structure_tactical_support_lower: tactical_state.support.lower,
+            qmd_structure_tactical_support_upper: tactical_state.support.upper,
+            qmd_structure_tactical_support_strength: tactical_state.support.strength,
+            qmd_structure_tactical_support_confidence: tactical_state.support.confidence,
+            qmd_structure_tactical_resistance_price: tactical_state.resistance.price,
+            qmd_structure_tactical_resistance_lower: tactical_state.resistance.lower,
+            qmd_structure_tactical_resistance_upper: tactical_state.resistance.upper,
+            qmd_structure_tactical_resistance_strength: tactical_state.resistance.strength,
+            qmd_structure_tactical_resistance_confidence: tactical_state.resistance.confidence,
+            qmd_structure_context_direction: context_state.direction,
+            qmd_structure_context_threshold: 0.0,
+            qmd_structure_context_swing_high: context_state.swing_high,
+            qmd_structure_context_swing_low: context_state.swing_low,
+            qmd_structure_context_support_price: context_state.support.price,
+            qmd_structure_context_support_lower: context_state.support.lower,
+            qmd_structure_context_support_upper: context_state.support.upper,
+            qmd_structure_context_support_strength: context_state.support.strength,
+            qmd_structure_context_support_confidence: context_state.support.confidence,
+            qmd_structure_context_resistance_price: context_state.resistance.price,
+            qmd_structure_context_resistance_lower: context_state.resistance.lower,
+            qmd_structure_context_resistance_upper: context_state.resistance.upper,
+            qmd_structure_context_resistance_strength: context_state.resistance.strength,
+            qmd_structure_context_resistance_confidence: context_state.resistance.confidence,
             qmd_structure_event_id: structure.last_event_id,
             qmd_structure_event_pivot_at_ms: structure.last_event_pivot_at_ms,
             qmd_structure_event_at_ms: structure.last_event_at_ms,
             qmd_structure_event_kind: structure.last_event_kind.clone(),
-            qmd_structure_event_scale: structure.last_event_scale.clone(),
+            qmd_structure_event_timeframe: structure.last_event_timeframe.clone(),
             qmd_structure_event_direction: structure.last_event_direction,
             qmd_structure_event_price: structure.last_event_price,
             qmd_structure_session_high: structure.session_high,
@@ -2153,7 +2175,6 @@ impl IndicatorClickHouseWriter {
                 ADD COLUMN IF NOT EXISTS qmd_structure_event_pivot_at_ms Int64,
                 ADD COLUMN IF NOT EXISTS qmd_structure_event_at_ms Int64,
                 ADD COLUMN IF NOT EXISTS qmd_structure_event_kind LowCardinality(String),
-                ADD COLUMN IF NOT EXISTS qmd_structure_event_scale LowCardinality(String),
                 ADD COLUMN IF NOT EXISTS qmd_structure_event_direction Int8,
                 ADD COLUMN IF NOT EXISTS qmd_structure_event_price Float64,
                 ADD COLUMN IF NOT EXISTS qmd_structure_session_high Float64,
@@ -2170,18 +2191,23 @@ impl IndicatorClickHouseWriter {
                 ADD COLUMN IF NOT EXISTS qmd_structure_52_week_low Float64,
                 ADD COLUMN IF NOT EXISTS qmd_structure_prior_month_high Float64,
                 ADD COLUMN IF NOT EXISTS qmd_structure_prior_month_low Float64,
-                ADD COLUMN IF NOT EXISTS qmd_structure_prior_month_close Float64"#,
+                ADD COLUMN IF NOT EXISTS qmd_structure_prior_month_close Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_developing_high Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_developing_low Float64,
+                ADD COLUMN IF NOT EXISTS qmd_structure_developing_direction Int8,
+                ADD COLUMN IF NOT EXISTS qmd_structure_event_timeframe LowCardinality(String)"#,
             true,
         )
         .await?;
         self.execute(
-            r#"CREATE TABLE IF NOT EXISTS qmd_structure_events_v1
+            r#"CREATE TABLE IF NOT EXISTS qmd_structure_events_v2
             (
                 event_date Date,
                 algorithm_version UInt16,
                 event_id UInt64,
+                level_id UInt64,
                 sym LowCardinality(String),
-                scale LowCardinality(String),
+                timeframe LowCardinality(String),
                 event_kind LowCardinality(String),
                 direction Int8,
                 price Float64,
@@ -2189,17 +2215,23 @@ impl IndicatorClickHouseWriter {
                 upper Float64,
                 strength Float64,
                 confidence Float64,
+                lifecycle LowCardinality(String),
+                total_volume Float64,
+                buy_volume Float64,
+                sell_volume Float64,
+                neutral_volume Float64,
+                trade_count UInt64,
                 pivot_at DateTime64(6, 'UTC'),
                 confirmed_at DateTime64(6, 'UTC')
             )
             ENGINE = ReplacingMergeTree
             PARTITION BY toYYYYMM(event_date)
-            ORDER BY (sym, confirmed_at, scale, event_kind, event_id)"#,
+            ORDER BY (sym, confirmed_at, timeframe, event_kind, event_id)"#,
             true,
         )
         .await?;
         self.execute(
-            r#"CREATE TABLE IF NOT EXISTS qmd_structure_state_v1
+            r#"CREATE TABLE IF NOT EXISTS qmd_structure_state_v2
             (
                 algorithm_version UInt16,
                 sym LowCardinality(String),
@@ -2219,7 +2251,7 @@ impl IndicatorClickHouseWriter {
     ) -> Result<Vec<(String, GenericStructureCheckpoint)>, String> {
         let sql = format!(
             r#"SELECT sym, argMax(snapshot_json, updated_at) AS snapshot_json
-            FROM qmd_structure_state_v1
+            FROM qmd_structure_state_v2
             WHERE algorithm_version = {}
             GROUP BY sym
             FORMAT JSONEachRow"#,
@@ -2389,8 +2421,9 @@ impl IndicatorClickHouseWriter {
                     "event_date": event.confirmed_at.date_naive().to_string(),
                     "algorithm_version": event.algorithm_version,
                     "event_id": event.event_id,
+                    "level_id": event.level_id,
                     "sym": &event.sym,
-                    "scale": &event.scale,
+                    "timeframe": &event.timeframe,
                     "event_kind": &event.event_kind,
                     "direction": event.direction,
                     "price": event.price,
@@ -2398,6 +2431,12 @@ impl IndicatorClickHouseWriter {
                     "upper": event.upper,
                     "strength": event.strength,
                     "confidence": event.confidence,
+                    "lifecycle": &event.lifecycle,
+                    "total_volume": event.total_volume,
+                    "buy_volume": event.buy_volume,
+                    "sell_volume": event.sell_volume,
+                    "neutral_volume": event.neutral_volume,
+                    "trade_count": event.trade_count,
                     "pivot_at": event.pivot_at.format("%Y-%m-%d %H:%M:%S%.6f").to_string(),
                     "confirmed_at": event.confirmed_at.format("%Y-%m-%d %H:%M:%S%.6f").to_string(),
                 }))
@@ -2406,7 +2445,7 @@ impl IndicatorClickHouseWriter {
             .collect::<Vec<_>>()
             .join("\n");
         self.query_with_body(
-            "INSERT INTO qmd_structure_events_v1 FORMAT JSONEachRow",
+            "INSERT INTO qmd_structure_events_v2 FORMAT JSONEachRow",
             body,
         )
         .await
@@ -2435,7 +2474,7 @@ impl IndicatorClickHouseWriter {
             .collect::<Vec<_>>()
             .join("\n");
         self.query_with_body(
-            "INSERT INTO qmd_structure_state_v1 FORMAT JSONEachRow",
+            "INSERT INTO qmd_structure_state_v2 FORMAT JSONEachRow",
             body,
         )
         .await
@@ -2489,6 +2528,7 @@ fn indicator_insert_row(row: &IndicatorRow) -> serde_json::Value {
         // versioned generic-structure checkpoint and event tables, so the wide
         // per-bar indicator table intentionally does not duplicate this array.
         object.remove("qmd_structure_active_levels");
+        object.remove("qmd_structure_timeframe_states");
         object.insert(
             "bar_start".to_string(),
             serde_json::Value::String(clickhouse_datetime64(&row.bar_start)),

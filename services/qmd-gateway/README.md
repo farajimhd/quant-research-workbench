@@ -156,8 +156,8 @@ The service writes to:
 - `live_massive_quotes`, only when `QMD_PERSIST_RAW_EVENTS=true`
 - `intraday_family_bars_v2`
 - `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`
-- `qmd_structure_events_v1`, when `QMD_PERSIST_STRUCTURE_EVENTS=true`; immutable BoS/CHoCH and zone lifecycle events with separate pivot and confirmation timestamps
-- `qmd_structure_state_v1`, when `QMD_PERSIST_STRUCTURE_EVENTS=true`; latest full event-native engine checkpoint per symbol for exact restart continuity, coalesced once per changed symbol per writer flush
+- `qmd_structure_events_v2`, when `QMD_PERSIST_STRUCTURE_EVENTS=true`; immutable level-book promotion, crossing, acceptance, BoS/CHoCH, retest, and role-reversal events with exact trade pivots, timeframe promotions, and volume evidence
+- `qmd_structure_state_v2`, when `QMD_PERSIST_STRUCTURE_EVENTS=true`; latest compact restart-safe active level books, timeframe promotion states, and session footprints, coalesced once per changed symbol per writer flush
 - `qmd_gap_fill_runs`
 - `qmd_market_coverage_manifest_v1`
 - `qmd_live_event_coverage_v1`

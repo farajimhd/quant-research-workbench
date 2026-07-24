@@ -46,6 +46,7 @@ import { TRADING_WORKSPACE_CONTAINERS, containerSupportsCanvasLink, containerSup
 
 type HistoricalBar = { bar_end?: string; bar_start: string; close: number; high: number; is_closed?: boolean; low: number; open: number; volume: number };
 type QmdStructureLevelCandidate = {
+  level_id: number;
   confidence: number;
   created_at_ms: number;
   distance: number;
@@ -53,8 +54,15 @@ type QmdStructureLevelCandidate = {
   hold_count: number;
   last_test_at_ms: number;
   lower: number;
+  lifecycle: string;
   price: number;
-  scale: "micro" | "tactical" | "context" | string;
+  promotions: Array<{ timeframe: string; promoted_at_ms: number; score: number }>;
+  footprint: Array<{ offset_ticks: number; price: number; total_volume: number; buy_volume: number; sell_volume: number; neutral_volume: number; trade_count: number; largest_trade: number }>;
+  total_volume: number;
+  buy_volume: number;
+  sell_volume: number;
+  neutral_volume: number;
+  trade_count: number;
   side: number;
   strength: number;
   touch_count: number;
@@ -211,7 +219,8 @@ type QmdStructureEvent = {
   algorithm_version: number;
   event_id: number;
   sym: string;
-  scale: "micro" | "tactical" | "context" | string;
+  level_id?: number;
+  timeframe: string;
   event_kind: string;
   direction: number;
   price: number;
@@ -424,40 +433,31 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     "qmd_structure_score", "qmd_structure_direction", "qmd_structure_agreement", "qmd_structure_strength", "qmd_structure_confidence",
     "qmd_structure_support_price", "qmd_structure_support_lower", "qmd_structure_support_upper", "qmd_structure_support_strength", "qmd_structure_support_confidence",
     "qmd_structure_resistance_price", "qmd_structure_resistance_lower", "qmd_structure_resistance_upper", "qmd_structure_resistance_strength", "qmd_structure_resistance_confidence",
-    "qmd_structure_active_levels",
-    "qmd_structure_micro_direction", "qmd_structure_micro_threshold", "qmd_structure_micro_swing_high", "qmd_structure_micro_swing_low",
-    "qmd_structure_micro_support_price", "qmd_structure_micro_support_lower", "qmd_structure_micro_support_upper", "qmd_structure_micro_support_strength", "qmd_structure_micro_support_confidence",
-    "qmd_structure_micro_resistance_price", "qmd_structure_micro_resistance_lower", "qmd_structure_micro_resistance_upper", "qmd_structure_micro_resistance_strength", "qmd_structure_micro_resistance_confidence",
-    "qmd_structure_tactical_direction", "qmd_structure_tactical_threshold", "qmd_structure_tactical_swing_high", "qmd_structure_tactical_swing_low",
-    "qmd_structure_tactical_support_price", "qmd_structure_tactical_support_lower", "qmd_structure_tactical_support_upper", "qmd_structure_tactical_support_strength", "qmd_structure_tactical_support_confidence",
-    "qmd_structure_tactical_resistance_price", "qmd_structure_tactical_resistance_lower", "qmd_structure_tactical_resistance_upper", "qmd_structure_tactical_resistance_strength", "qmd_structure_tactical_resistance_confidence",
-    "qmd_structure_context_direction", "qmd_structure_context_threshold", "qmd_structure_context_swing_high", "qmd_structure_context_swing_low",
-    "qmd_structure_context_support_price", "qmd_structure_context_support_lower", "qmd_structure_context_support_upper", "qmd_structure_context_support_strength", "qmd_structure_context_support_confidence",
-    "qmd_structure_context_resistance_price", "qmd_structure_context_resistance_lower", "qmd_structure_context_resistance_upper", "qmd_structure_context_resistance_strength", "qmd_structure_context_resistance_confidence",
-    "qmd_structure_event_id", "qmd_structure_event_pivot_at_ms", "qmd_structure_event_at_ms", "qmd_structure_event_kind", "qmd_structure_event_scale", "qmd_structure_event_direction", "qmd_structure_event_price",
+    "qmd_structure_active_levels", "qmd_structure_timeframe_states",
+    "qmd_structure_developing_high", "qmd_structure_developing_low", "qmd_structure_developing_direction",
+    "qmd_structure_event_id", "qmd_structure_event_pivot_at_ms", "qmd_structure_event_at_ms", "qmd_structure_event_kind", "qmd_structure_event_timeframe", "qmd_structure_event_direction", "qmd_structure_event_price",
   ], "price", {
-    shortDescription: "One causal, event-native map of market structure and support/resistance that remains the same across chart timeframes.",
-    detailedDescription: "QMD derives price structure from the close of each canonical 100 ms bucket of ordered eligible trades. This remains trade-derived and independent of the displayed chart timeframe, while preventing multiple venue prints inside the same 100 ms interval from manufacturing contradictory swings. Consolidated NBBO updates still maintain displayed-liquidity evidence and zones, but a quote that was never executed cannot create a swing, BoS, or CHoCH. The engine extracts three simultaneous price-response scales—micro, tactical, and context—and clusters confirmed traded-price pivots into persistent support and resistance zones.",
-    calculation: "The adaptive base reversal threshold has a two-tick or 0.5-basis-point floor, follows the larger of 1.25 times recent spread and 1.5 times recent 100 ms eligible-trade movement, and is capped at the larger of 25 basis points or four ticks so a transient quote cannot turn Micro into a broad swing scale. Micro, tactical, and context use 1×, 3×, and 8× that base. A pivot is published only after the canonical trade path reverses by the scale threshold. A break requires traded price beyond the frozen pivot plus scale-specific persistence. A break with the prior structure is BoS; the first accepted break against it is CHoCH.",
-    readingGuide: "Begin with Current support & resistance. By default it shows the three nearest active zones below and above price; configure the count from 1 to 6. The strongest support and resistance by confidence-adjusted evidence are retained when they fall outside that nearest set and carry an asterisk. S1/R1 are closest to price. Each current region is a short live-edge band: darker shading and the printed percentage indicate confidence, not a win probability. Micro, tactical, and context zones, swings, and BoS/CHoCH connectors are independent legend layers so each scale can be audited without enabling every layer. A zone containing current price is temporarily in play and is omitted from both sides. A confirmed break retires the original role; the opposite role appears only after price retests from the other side and confirms rejection with persistence plus an eligible trade. Historical regions preserve the evidence bucket known at that time and are never restyled with later confidence. BoS and CHoCH connectors come from the gateway's complete causal event stream, begin at the confirmed pivot, and end at break confirmation. Auction and regulatory references live in the separate QMD Reference Levels package.",
-    bullishEvidence: "Support below price gains weight when it is retested and holds, tactical/context direction is positive, accepted bullish BoS events persist, and eligible buying trades beyond resistance.",
-    bearishEvidence: "Resistance above price gains weight when it is retested and holds, tactical/context direction is negative, accepted bearish BoS events persist, and eligible selling trades below support.",
-    timeframeBehavior: "Structure is independent of the selected candle timeframe. Every chart interval samples the same ordered quote/trade engine at that bar's end, so aligned timestamps carry the same state. Confirmed events are stored durably; live restarts restore one compact state per symbol, and historical requests warm from that ticker's earlier persisted events without using future data.",
+    shortDescription: "An immediate eligible-trade level book with causal timeframe promotion, break lifecycle, and executed-volume footprints.",
+    detailedDescription: "QMD maintains one causal book of traded-price highs and lows from every ordered eligible trade. The current developing high and low update immediately at the exact trade price; a first opposing one-tick trade freezes the developing extreme as a provisional level. Quotes may add liquidity context, but an unexecuted quote cannot create a level, swing, BoS, or CHoCH. The extraction is common to every chart interval. Timeframes only decide when the same level has survived and moved far enough to be promoted for use at 100 ms, 1 s, 5 s, 10 s, 30 s, 1 m, 5 m, or 1 h.",
+    calculation: "A crossing is emitted on the first eligible trade through an active level, without waiting for a candle close. The gateway then classifies the crossing as accepted or rejected from subsequent eligible trades; acceptance requires a confirming trade or 100 ms of persistence. Each chart timeframe maintains its own promoted direction and labels an accepted continuation break as BoS or the first accepted break against that direction as CHoCH. Broken levels remain in history, may be retested, and only reverse role after a confirmed rejection from the opposite side. Every level also owns a nine-bin footprint spanning four ticks below through four ticks above, split into buyer-, seller-, and neutral-initiated executed volume.",
+    readingGuide: "Select the chart timeframe you want to audit. The chart shows only levels promoted to that timeframe, while their origin still comes from the same event-native book. Current support and resistance shows the nearest configured levels on either side of price and also retains the strongest omitted level. Darker fill indicates stronger causal evidence, not a probability of profit. Hover a zone to inspect total, buy, sell, and neutral executed volume around the level. A developing extreme is available immediately but is not presented as established structure until the first opposing trade freezes it. Crossing, accepted break, BoS, CHoCH, retest, and role-reversal connectors retain their original event timestamps and never repaint earlier confidence with later evidence.",
+    bullishEvidence: "Bullish evidence increases when resistance is crossed and accepted, an upward BoS or CHoCH is confirmed for the selected timeframe, support survives retests, and buyer-initiated footprint volume concentrates at or above the level.",
+    bearishEvidence: "Bearish evidence increases when support is crossed and accepted, a downward BoS or CHoCH is confirmed for the selected timeframe, resistance survives retests, and seller-initiated footprint volume concentrates at or below the level.",
+    timeframeBehavior: "All intervals consume the same ordered eligible-trade extraction. A timeframe changes only promotion, filtering, and its own BoS/CHoCH state; it never rebuilds swings from candle OHLC. Historical and live paths persist the same level, event, promotion, lifecycle, and footprint contracts, so a strategy can request the timeframe relevant to its holding period without introducing bar-close delay.",
     components: [
-      { label: "S1–S6 / R1–R6 · Current zones", description: "Nearest active support and resistance candidates ranked by distance from current NBBO midpoint. The configured nearest count is shown on each side, plus the strongest omitted candidate when necessary. An asterisk marks that strongest candidate.", tone: "neutral" },
-      { label: "Selected S / R", description: "Optional single support and resistance winners selected across micro, tactical, and context by strength, confidence, scale weight, and distance. This is not another signal and is off by default because Current zones retain more information.", tone: "neutral" },
-      { label: "μ-S / μ-R · Micro", description: "Fast reactions using the base adaptive threshold. Useful for execution and immediate liquidity response; decays with a 30-minute half-life.", tone: "info" },
-      { label: "T-S / T-R · Tactical", description: "Intermediate zones using three times the base threshold. Useful for intraday trade structure; decays with a five-day half-life.", tone: "warning" },
-      { label: "C-S / C-R · Context", description: "Broad zones using eight times the base threshold. Useful for multi-session structure; decays with a 45-day half-life.", tone: "neutral" },
-      { label: "BoS", description: "Break of Structure: an eligible traded-price break through a frozen confirmed pivot in the established direction, followed by the scale's acceptance persistence.", tone: "buy" },
-      { label: "CHoCH", description: "Change of Character: an accepted pivot break against the established direction. It warns of a possible regime change; it does not guarantee reversal.", tone: "warning" },
-      { label: "Strength", description: "Accumulated and time-decayed pivot, touch, hold, and trade-confirmation evidence. It contributes to strongest-level selection; it is not displayed as a second competing visual encoding.", tone: "info" },
-      { label: "Confidence", description: "Evidence repeatability and freshness. It controls borderless region density and appears as a percentage inside each current zone. It is not a forecast probability.", tone: "warning" },
-      { label: "Broken / role-reversed zone", description: "A decisive boundary break deactivates the original support or resistance. It changes sides only after a later retest from the opposite side is rejected with the same persistence and eligible-trade confirmation; a simple cross never flips the label.", tone: "warning" },
-      { label: "Structure score", description: "Direction × strength × confidence × an agreement adjustment. Positive is bullish, negative bearish, and near zero means weak or conflicted structure.", tone: "neutral" },
-      { label: "Auction references", description: "04:00 ET session and premarket extremes, 09:30–09:35 opening range, exact eligible-trade volume POC, estimated LULD, completed 52-week/prior-month levels, and nearest round price.", tone: "neutral" },
+      { label: "S1–S6 / R1–R6 · Promoted levels", description: "Nearest active support and resistance levels promoted to the selected chart timeframe. The configured nearest count appears on each side; an asterisk identifies the strongest additional level retained outside that set.", tone: "neutral" },
+      { label: "Developing high / low", description: "The exact highest or lowest eligible trade in the currently developing move. It has zero extraction delay but remains provisional until an opposing trade freezes it.", tone: "info" },
+      { label: "Crossing", description: "The first eligible trade through a level. It is immediate and causal, but not yet evidence that price accepted the break.", tone: "warning" },
+      { label: "Accepted / rejected", description: "Accepted means a later eligible trade confirms the crossed side or the break persists for 100 ms. Rejected means price returns through the level before acceptance.", tone: "neutral" },
+      { label: "BoS", description: "Break of Structure: an accepted break in the selected timeframe's established direction.", tone: "buy" },
+      { label: "CHoCH", description: "Change of Character: the first accepted break against the selected timeframe's established direction. It is reversal evidence, not a guaranteed reversal.", tone: "warning" },
+      { label: "Level footprint", description: "Executed volume within four ticks of the level, split into buyer-, seller-, and neutral-initiated volume. The nine bins show where trading actually concentrated around the reference.", tone: "info" },
+      { label: "Retest / role reversal", description: "A broken level stays historical. It changes from support to resistance, or the reverse, only after a later retest from the opposite side is rejected.", tone: "warning" },
+      { label: "Strength", description: "Accumulated causal evidence from survival, touches, holds, accepted breaks, retests, and traded volume. It contributes to strongest-level selection.", tone: "info" },
+      { label: "Confidence", description: "Evidence repeatability and freshness for the level at that event time. It controls borderless region density and is not a forecast probability.", tone: "warning" },
+      { label: "Auction references", description: "Session and premarket extremes, opening range, eligible-trade volume POC, estimated LULD, completed 52-week/prior-month levels, and round prices remain a separate reference-level package.", tone: "neutral" },
     ],
-    caveats: ["QMD observes consolidated Level-1 NBBO and eligible prints, not full venue depth or hidden liquidity.", "Displayed liquidity can be cancelled; trade confirmation and subsequent price response still matter.", "Nearest means absolute distance from the current NBBO midpoint. Strongest means strength × confidence × scale weight; it does not necessarily mean closest or most likely to hold.", "BoS, CHoCH, support, and resistance are deterministic evidence states—not trade instructions or win probabilities.", "Only confirmed events are durable. An unconfirmed reversal candidate is intentionally rebuilt after a restart rather than persisted as structure."],
+    caveats: ["QMD observes consolidated Level-1 NBBO and eligible prints, not full venue depth or hidden liquidity.", "A provisional level is intentionally sensitive; promotion supplies timeframe relevance without delaying the underlying extraction.", "Nearest means absolute distance from current price. Strongest combines causal strength and confidence; it does not necessarily mean closest or most likely to hold.", "The footprint classifies aggressor side from available trade and NBBO evidence and therefore cannot reveal hidden orders.", "BoS, CHoCH, support, and resistance are deterministic evidence states—not trade instructions or win probabilities."],
   }),
 ];
 
@@ -1946,7 +1946,7 @@ function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl,
       oscillator_series: historicalIndicatorSeries(indicators, "oscillator", visibleIndicators),
       overlay_series: historicalIndicatorSeries(indicators, "price", visibleIndicators),
       price_zones: [
-        ...historicalMarketLevelZones(indicators, liveChart.bars, liveChart.structureEvents, visibleIndicators),
+        ...historicalMarketLevelZones(indicators, liveChart.bars, liveChart.structureEvents, visibleIndicators, timeframe),
         ...episodePresentation.zones,
       ],
       regions: MACRO_TIMEFRAMES.has(timeframe) ? [] : extendedSessionRegions(liveChart.bars),
@@ -1978,25 +1978,13 @@ function historicalMarketLevelZones(
   bars: HistoricalBar[],
   structureEvents: QmdStructureEvent[],
   visibleIndicators: string[],
+  timeframe: CanvasChartTimeframe,
 ): NonNullable<ChartPayload["price_zones"]> {
   if (!rows.length || !bars.length) return [];
   const chartEnd = Date.parse(bars[bars.length - 1].bar_end || bars[bars.length - 1].bar_start) / 1000 + 1;
   const zones: NonNullable<ChartPayload["price_zones"]> = [];
   if (visibleIndicators.includes("indicator.qmd_generic_structure")) {
-    pushCurrentStructureLevels(zones, rows, chartEnd);
-  ([
-    ["micro", "μ-S", "μ-R", "Micro"],
-    ["tactical", "T-S", "T-R", "Tactical"],
-    ["context", "C-S", "C-R", "Context"],
-  ] as const).forEach(([scope, supportLabel, resistanceLabel, title]) => {
-    pushStructureZoneSegments(zones, rows, chartEnd, {
-      compactLabel: supportLabel, label: `${title} support`, prefix: `qmd_structure_${scope}_support`, scope, side: "support",
-    });
-    pushStructureZoneSegments(zones, rows, chartEnd, {
-      compactLabel: resistanceLabel, label: `${title} resistance`, prefix: `qmd_structure_${scope}_resistance`, scope, side: "resistance",
-    });
-  });
-    pushStructureSwingLevels(zones, rows, chartEnd);
+    pushCurrentStructureLevels(zones, rows, chartEnd, timeframe);
     pushStructureEvents(
       zones,
       structureEvents.length ? structureEvents : structureEventsFromSampledRows(rows),
@@ -2145,11 +2133,14 @@ function pushCurrentStructureLevels(
   zones: NonNullable<ChartPayload["price_zones"]>,
   rows: HistoricalIndicator[],
   chartEnd: number,
+  timeframe: CanvasChartTimeframe,
 ) {
   const latestIndex = rows.length - 1;
   const latest = rows[latestIndex];
   const candidates = Array.isArray(latest?.qmd_structure_active_levels)
-    ? latest.qmd_structure_active_levels.filter(isQmdStructureLevelCandidate)
+    ? latest.qmd_structure_active_levels
+      .filter(isQmdStructureLevelCandidate)
+      .filter((candidate) => candidate.promotions.some((promotion) => promotion.timeframe === timeframe))
     : [];
   if (!candidates.length) return;
   const startIndex = latestIndex;
@@ -2191,7 +2182,7 @@ function pushCurrentStructureLevels(
         fillOpacity: 0.04 + 0.16 * confidence,
         historicalLabelsDefault: false,
         historicalTagLimitDefault: 0,
-        label: `${sideName === "support" ? "Support" : "Resistance"} ${index + 1} · ${candidate.scale} · ${percentLabel(confidence)} confidence · ${percentLabel(strength)} strength`,
+        label: `${sideName === "support" ? "Support" : "Resistance"} ${index + 1} · ${timeframe} promoted · ${percentLabel(confidence)} confidence · ${percentLabel(strength)} strength · ${formatQuantity(candidate.total_volume)} traded (${formatQuantity(candidate.buy_volume)} buy / ${formatQuantity(candidate.sell_volume)} sell)`,
         latest: true,
         legendLabel: "Current support & resistance",
         lower: candidate.lower > 0 ? candidate.lower : candidate.price,
@@ -2216,6 +2207,7 @@ function isQmdStructureLevelCandidate(value: unknown): value is QmdStructureLeve
     && Number.isFinite(candidate.strength)
     && Number.isFinite(candidate.distance)
     && Number.isFinite(candidate.evidence_score)
+    && Array.isArray(candidate.promotions)
     && (candidate.side === 1 || candidate.side === -1);
 }
 
@@ -2293,7 +2285,7 @@ function structureEventsFromSampledRows(rows: HistoricalIndicator[]): QmdStructu
       lower: price,
       pivot_at: new Date(pivotAtMs).toISOString(),
       price,
-      scale: String(row.qmd_structure_event_scale || "").toLowerCase(),
+      timeframe: String(row.qmd_structure_event_timeframe || "").toLowerCase(),
       strength: finiteNumber(row.qmd_structure_strength),
       sym: "",
       upper: price,
@@ -2317,7 +2309,7 @@ function pushStructureEvents(
     const kind = String(event.event_kind || "").toLowerCase();
     const pivotAt = Date.parse(event.pivot_at) / 1000;
     const price = Number(event.price || 0);
-    const scale = String(event.scale || "").toLowerCase();
+    const scale = String(event.timeframe || "").toLowerCase();
     const end = Math.min(chartEnd, confirmedAt);
     if (!(price > 0) || !Number.isFinite(pivotAt) || !Number.isFinite(confirmedAt) || !(end > pivotAt)) return;
     const bullish = direction > 0;

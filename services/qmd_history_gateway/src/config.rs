@@ -75,7 +75,7 @@ impl HistoricalGatewayConfig {
             structure_database: env_string("QMD_HISTORY_STRUCTURE_DATABASE", "q_live"),
             structure_events_table: env_string(
                 "QMD_HISTORY_STRUCTURE_EVENTS_TABLE",
-                "qmd_structure_events_v1",
+                "qmd_structure_events_v2",
             ),
             table_prefix: env_string("QMD_HISTORY_TABLE_PREFIX", "events_"),
         }

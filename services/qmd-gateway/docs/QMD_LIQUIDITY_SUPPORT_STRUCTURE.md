@@ -1,5 +1,60 @@
 # QMD Liquidity, Support, and Structure Guide
 
+## Generic Structure v6: immediate trade-level book
+
+Generic Structure v6 has one authority: the ordered stream of eligible executed
+trades. It no longer extracts Micro, Tactical, and Context swings from adaptive
+reversal thresholds or from 100 ms bar closes.
+
+The engine keeps active high and low books:
+
+1. Every eligible trade updates the developing high or low immediately.
+2. The first opposing trade at least one tick away freezes the exact extreme as
+   a provisional level. This is the only confirmation delay.
+3. The same level can be promoted independently to `100ms`, `1s`, `5s`, `10s`,
+   `30s`, `1m`, `5m`, and `1h`. A timeframe controls survival/promotion and
+   display filtering; it never changes the underlying extracted price.
+4. The first eligible trade beyond a level emits `level_crossed` at that trade
+   timestamp. A second beyond-level trade or 100 ms of continued acceptance
+   emits `break_accepted`; a return first emits `break_rejected`.
+5. An accepted break is BoS when it agrees with that timeframe's established
+   promoted high/low sequence and CHoCH when it opposes the sequence.
+6. A broken level changes from support to resistance, or the reverse, only
+   after a later retest and rejection. A simple price cross does not relabel it.
+
+### Executed-volume footprint
+
+Each exposed level includes nine tick bins: the level price plus or minus four
+ticks. Every bin reports total eligible shares, buy-aggressor shares,
+sell-aggressor shares, unclassified shares, trade count, and largest trade.
+Totals cover the current 04:00 ET session, including volume traded before the
+level was created. This footprint describes participation at the price; it is
+not a forecast probability.
+
+### Strategy contract
+
+Strategies should select levels whose `promotions[].timeframe` matches their
+decision horizon. They may react immediately to `level_crossed`, or require the
+more conservative `break_accepted`, `bos`, or `choch` event. All events include
+`level_id`, `timeframe`, pivot and confirmation timestamps, lifecycle, evidence,
+and volume totals. Live checkpoints and historical warm starts use
+`qmd_structure_state_v2` and `qmd_structure_events_v2`.
+
+### Chart reading
+
+The chart shows only levels promoted to its selected timeframe. Green zones are
+support below the latest eligible trade and red zones are resistance above it.
+Opacity is evidence confidence. The level tooltip reports strength, confidence,
+and total/buy/sell executed volume around the level. BoS and CHoCH connectors
+start at the exact frozen trade extreme and end at the causal break event.
+Changing chart timeframe filters promotions; it does not move or recompute a
+level.
+
+Do not interpret a large footprint as direction by itself. High sell-aggressor
+volume that repeatedly holds a support may indicate absorption; the same volume
+followed by an accepted downside break indicates failure. Use lifecycle, price
+response, and QMD flow together.
+
 This is the calculation and service-contract authority for QMD liquidity,
 support/resistance, market structure, and structural-pressure indicators. It
 documents indicator schema version 15 and generic-structure algorithm version
@@ -431,10 +486,11 @@ updates.
 
 Closed bar indicators are memory-first. They are written to
 `live_market_indicators` only when `QMD_PERSIST_INDICATORS=true`.
-`qmd_structure_events_v1` and `qmd_structure_state_v1` persist confirmed events
-and versioned engine checkpoints when `QMD_PERSIST_STRUCTURE_EVENTS=true`
-(default). The structure state restores adaptive thresholds, pending state,
-zones, references, and event lineage without replaying the full session.
+`qmd_structure_events_v2` and `qmd_structure_state_v2` persist the immutable
+level lifecycle and versioned engine checkpoints when
+`QMD_PERSIST_STRUCTURE_EVENTS=true` (default). The state restores developing
+extrema, active and broken level books, timeframe promotions, pending crossings,
+footprints, references, and event lineage without replaying the full session.
 
 ## Active, Compatibility, and Retired Fields
 
