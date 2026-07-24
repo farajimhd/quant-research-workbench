@@ -4592,7 +4592,10 @@ function drawPriceZones(
     if (group) group.push(zone);
     else historicalBySettings.set(id, [zone]);
   });
-  historicalBySettings.forEach((itemZones, id) => {
+  const orderedLabelGroups = Array.from(historicalBySettings.entries()).sort(([, firstZones], [, secondZones]) => (
+    priceZoneLabelGroupPriority(firstZones) - priceZoneLabelGroupPriority(secondZones)
+  ));
+  orderedLabelGroups.forEach(([id, itemZones]) => {
     const settings = resolvePriceZoneLegendSettings(legendSettings, priceZoneLegendKey(id), itemZones[itemZones.length - 1]);
     if (!settings.visible) return;
     const historyStart = candles[Math.max(0, candles.length - settings.historyBars)]?.time ?? Number.NEGATIVE_INFINITY;
@@ -4608,7 +4611,11 @@ function drawPriceZones(
         ? eligibleZones.filter((zone) => Boolean(zone.compactLabel) && (!zone.latest || isStructureBreakZone(zone))).slice(-settings.maxHistoricalTags)
         : [],
     );
-    eligibleZones.forEach((zone) => {
+    const orderedLabelZones = [...eligibleZones].sort((first, second) => (
+      priceZoneLabelPriority(first) - priceZoneLabelPriority(second)
+      || priceZoneLabelTime(second) - priceZoneLabelTime(first)
+    ));
+    orderedLabelZones.forEach((zone) => {
       const coordinates = priceZoneCoordinates(chart, zone, candles, barWidth, candleDuration);
       if (!coordinates) return;
       const upper = priceSeries.priceToCoordinate(zone.upper);
@@ -4653,6 +4660,7 @@ function drawPriceZones(
         && historicalTagZones.has(zone)
       ) {
         if (isStructureBreakZone(zone)) {
+          candleBoxes ??= visibleCandleBoxes(chart, priceSeries, candles, barWidth, width, plotBottom);
           const eventX = xForStructureEventTime(
             chart,
             zone.eventTime ?? zone.end,
@@ -4670,6 +4678,7 @@ function drawPriceZones(
             zone.tone === "buy" ? "above" : "below",
             settings,
             lineLabelBoxes,
+            candleBoxes,
             width,
             plotBottom,
           );
@@ -4752,6 +4761,25 @@ function isStructureBreakZone(zone: PriceZone) {
     || zone.annotationKind === "structure-break";
 }
 
+function isSwingReferenceZone(zone: PriceZone) {
+  return zone.annotationKind === "swing-high" || zone.annotationKind === "swing-low";
+}
+
+function priceZoneLabelPriority(zone: PriceZone) {
+  if (zone.currentLevelSide) return 0;
+  if (isStructureBreakZone(zone)) return 1;
+  if (isSwingReferenceZone(zone)) return 2;
+  return 3;
+}
+
+function priceZoneLabelGroupPriority(zones: PriceZone[]) {
+  return zones.reduce((priority, zone) => Math.min(priority, priceZoneLabelPriority(zone)), 3);
+}
+
+function priceZoneLabelTime(zone: PriceZone) {
+  return zone.eventTime ?? zone.end ?? zone.start;
+}
+
 function isVisibleCoordinate(coordinate: number | null, viewportWidth: number, overscan = 24) {
   return coordinate !== null && Number.isFinite(coordinate) && coordinate >= -overscan && coordinate <= viewportWidth + overscan;
 }
@@ -4797,6 +4825,15 @@ function boxesOverlap(first: CanvasBox, second: CanvasBox, gap = 0) {
     && first.right + gap > second.left
     && first.top < second.bottom + gap
     && first.bottom + gap > second.top;
+}
+
+function expandCanvasBox(box: CanvasBox, padding: number): CanvasBox {
+  return {
+    bottom: box.bottom + padding,
+    left: box.left - padding,
+    right: box.right + padding,
+    top: box.top - padding,
+  };
 }
 
 function drawPriceZoneLineLabel(
@@ -4864,6 +4901,7 @@ function drawAnchoredStructureBreakLabel(
   fallbackPlacement: "above" | "below",
   settings: ResolvedPriceZoneLegendSettings,
   placed: CanvasBox[],
+  candleBoxes: CanvasBox[],
   layerWidth: number,
   plotBottom: number,
 ) {
@@ -4877,12 +4915,15 @@ function drawAnchoredStructureBreakLabel(
   const left = anchorX - labelWidth / 2;
   const connectorWidth = Math.abs(eventX - pivotX);
   const inlineTop = lineY - labelHeight / 2;
-  const fallbackTop = fallbackPlacement === "above"
-    ? lineY - labelHeight - 3
-    : lineY + 3;
+  const direction = fallbackPlacement === "above" ? -1 : 1;
+  const fallbackTops = [1, 2, 3].map((lane) => (
+    direction < 0
+      ? lineY - lane * (labelHeight + 3)
+      : lineY + 3 + (lane - 1) * (labelHeight + 3)
+  ));
   const candidates = connectorWidth >= labelWidth + 16
-    ? [inlineTop, fallbackTop]
-    : [fallbackTop];
+    ? [inlineTop, ...fallbackTops]
+    : fallbackTops;
   let selected: CanvasBox | null = null;
   for (const top of candidates) {
     const candidate = { bottom: top + labelHeight, left, right: left + labelWidth, top };
@@ -4891,6 +4932,7 @@ function drawAnchoredStructureBreakLabel(
       && candidate.top >= 2
       && candidate.bottom <= plotBottom - 2;
     if (!insidePlot || placed.some((item) => boxesOverlap(candidate, item, 3))) continue;
+    if (candleBoxes.some((candleBox) => boxesOverlap(candidate, candleBox, 2))) continue;
     selected = candidate;
     break;
   }
@@ -4902,7 +4944,10 @@ function drawAnchoredStructureBreakLabel(
     context.fillStyle = color;
     context.textBaseline = "middle";
     context.fillText(text, selected.left + 6, selected.top + labelHeight / 2);
-    placed.push(selected);
+    // A break label has higher semantic priority than a nearby swing tag.
+    // Reserve a small visual corridor around it so the later swing-label pass
+    // cannot create a stacked CHoCH/SH or BoS/SL cluster.
+    placed.push(expandCanvasBox(selected, 6));
   }
   context.restore();
   return selected !== null;

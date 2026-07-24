@@ -201,7 +201,12 @@ color from the originating pivot time to the accepted break time, with the
 plain `BoS` or `CHoCH` label inset directly into the connector at its fixed
 time midpoint. When the connector is too short or its centered label would
 collide with another structure label, the label keeps that same horizontal
-midpoint but moves above a bullish connector or below a bearish connector.
+midpoint but moves into the first free lane above a bullish connector or below
+a bearish connector. Label layout is deterministic: current support and
+resistance labels reserve space first, then the newest structure breaks, then
+swing references, then supporting annotations. A candidate that would overlap
+a candle or a higher-priority label is never drawn in that location; no label
+is shifted sideways away from its causal midpoint.
 Swing lines and break connectors both start and end at the horizontal center
 of the candles containing their causal event timestamps; they never expand to
 the left or right candle edge. The break connector masks any overlapping
