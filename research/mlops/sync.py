@@ -22,7 +22,10 @@ def sync_version_code(
     research_destination = destination_root / "research"
     copy_tree(repo_root / "research" / "mlops", research_destination / "mlops")
     copy_tree(repo_root / "research" / "market_references", research_destination / "market_references")
-    copy_tree(repo_root / "research" / model_family / version, research_destination / model_family / version)
+    family_source = repo_root / "research" / model_family
+    family_destination = research_destination / model_family
+    copy_family_runtime_modules(family_source, family_destination)
+    copy_tree(family_source / version, family_destination / version)
     init_path = research_destination / "__init__.py"
     init_path.parent.mkdir(parents=True, exist_ok=True)
     init_path.write_text('"""Runtime research package."""\n', encoding="utf-8")
@@ -31,6 +34,21 @@ def sync_version_code(
     if not family_init.exists():
         family_init.write_text('"""Runtime model family package."""\n', encoding="utf-8")
     return destination_root
+
+
+def copy_family_runtime_modules(source: Path, destination: Path) -> None:
+    """Copy importable modules shared by versions within one model family.
+
+    Version packages may import stable helpers from their parent package. A
+    standalone workstation runtime must therefore include those modules as
+    well as the selected version directory. Tests are deliberately excluded
+    from the runtime payload.
+    """
+    destination.mkdir(parents=True, exist_ok=True)
+    for path in source.glob("*.py"):
+        if path.name.startswith("test_") or should_ignore_runtime_path(path):
+            continue
+        shutil.copy2(path, destination / path.name)
 
 
 def copy_tree(source: Path, destination: Path) -> None:
