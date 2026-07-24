@@ -24,6 +24,7 @@ from research.news_reaction_model.v10.evaluate import (
     evaluation_batch_sql,
     midpoint_proxy_pnl,
 )
+from research.news_reaction_model.v10.fit_diagnostic import fit_comparison
 from research.news_reaction_model.v10.inference import (
     LiveFeatureEncoder,
     opportunity_predictions,
@@ -32,6 +33,10 @@ from research.news_reaction_model.v10.losses import compute_loss
 from research.news_reaction_model.v10.model import (
     NewsReactionModelV10,
     NewsReactionOpportunityOutput,
+)
+from research.news_reaction_model.v10.memorization_test import (
+    deterministic_subset_sql,
+    slice_batch,
 )
 from research.news_reaction_model.v10.opportunity import (
     OPPORTUNITY_CLASSES,
@@ -273,6 +278,58 @@ class NewsReactionModelV10Tests(unittest.TestCase):
             self.assertIn("stock_state", sql)
             self.assertNotIn("word_ids", sql)
         self.assertIn("length(openai_embedding) != 3072", audit_sql)
+
+    def test_fit_comparison_reports_train_validation_gaps(self) -> None:
+        training = {
+            "metrics": {
+                f"train/{metric}": value
+                for metric, value in {
+                    "accuracy": 0.8,
+                    "balanced_accuracy": 0.7,
+                    "macro_f1": 0.6,
+                    "log_loss": 0.4,
+                    "mean_confidence": 0.9,
+                }.items()
+            }
+        }
+        validation = {
+            "metrics": {
+                f"validation/{metric}": value
+                for metric, value in {
+                    "accuracy": 0.5,
+                    "balanced_accuracy": 0.45,
+                    "macro_f1": 0.4,
+                    "log_loss": 0.8,
+                    "mean_confidence": 0.6,
+                }.items()
+            }
+        }
+        comparison = fit_comparison(training, validation)
+        self.assertAlmostEqual(comparison["train_minus_validation_accuracy"], 0.3)
+        self.assertAlmostEqual(comparison["train_minus_validation_log_loss"], -0.4)
+
+    def test_memorization_subset_is_deterministic_and_slices_all_tensors(self) -> None:
+        config = LoaderConfig(openai_embedding_dim=4, stock_state_dim=2)
+        sql = deterministic_subset_sql(
+            config,
+            start="2019-01-01",
+            end_exclusive="2026-01-01",
+            subset_size=10_000,
+            subset_seed=17,
+        )
+        self.assertIn("cityHash64", sql)
+        self.assertIn("toString(17)", sql)
+        self.assertIn("LIMIT 10000", sql)
+        self.assertIn("news_reaction_openai_stock_state_dataset_v8", sql)
+
+        batch = make_dummy_batch(4, config)
+        sliced = slice_batch(batch, torch.tensor([3, 1]))
+        self.assertEqual(sliced.sample_count, 2)
+        self.assertEqual(
+            sliced.identity["canonical_news_id"],
+            ["dummy-3", "dummy-1"],
+        )
+        self.assertEqual(tuple(sliced.x["openai_embedding"].shape), (2, 4))
 
 
 if __name__ == "__main__":

@@ -128,6 +128,33 @@ training. To rerun evaluation:
 python -m research.news_reaction_model.v10.run_evaluate
 ```
 
+To compare the best checkpoint on the complete dropout-disabled 2019-2025
+training population and the complete 2026 validation population:
+
+```powershell
+python -m research.news_reaction_model.v10.run_fit_diagnostic
+```
+
+This writes `fit_diagnostic_summary.json` and
+`fit_diagnostic_metrics.csv` beside the training run. It is the authoritative
+train-versus-validation comparison. The `train/accuracy` printed during
+ordinary training is only the current dropout-enabled optimization batch and is
+not a complete training-set evaluation.
+
+To test whether the unchanged V10 architecture and optimizer can memorize one
+fixed label population:
+
+```powershell
+python -m research.news_reaction_model.v10.run_memorization_test
+```
+
+The memorization diagnostic selects 10,000 training articles by a deterministic
+identity hash, initializes a fresh model with the architecture stored in the
+reference checkpoint, trains and evaluates on that exact same subset, and stops
+when eval-mode accuracy reaches 99 percent or after 100 epochs. It never loads
+the reference model weights. Its JSONL curve and final JSON summary are written
+under the run's `memorization_test` directory.
+
 Focused tests:
 
 ```powershell
