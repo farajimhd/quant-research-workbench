@@ -4404,7 +4404,9 @@ function drawPriceZonePrimitiveGeometry(
       context.setLineDash(canvasLineDash(settings.lineStyle, lineWidth));
       if (isStructureBreakZone(zone)) {
         if (settings.showConnectors) {
-          const eventX = zone.eventTime ? chart.timeScale().timeToCoordinate(zone.eventTime as Time) : coordinates.end;
+          const eventX = zone.eventTime
+            ? xForStructureEventTime(chart, zone.eventTime, candles, candleDuration)
+            : coordinates.end;
           const connector = clippedHorizontalSpan(coordinates.start, eventX ?? coordinates.end, width);
           if (connector) {
             // Break connectors reuse the originating swing's price. Clear the
@@ -4623,7 +4625,9 @@ function drawPriceZones(
       const { borderColor } = priceZonePresentationColors(zone, chartBackground, settings);
       let labelSpan: HorizontalSpan | null = span;
       if (isStructureBreakZone(zone)) {
-        const eventX = zone.eventTime ? chart.timeScale().timeToCoordinate(zone.eventTime as Time) : coordinates.end;
+        const eventX = zone.eventTime
+          ? xForStructureEventTime(chart, zone.eventTime, candles, candleDuration)
+          : coordinates.end;
         labelSpan = settings.showConnectors ? clippedHorizontalSpan(coordinates.start, eventX ?? coordinates.end, width) : null;
       }
       if (zone.currentLevelSide && zone.compactLabel && labelSpan) {
@@ -4649,7 +4653,12 @@ function drawPriceZones(
         && historicalTagZones.has(zone)
       ) {
         if (isStructureBreakZone(zone)) {
-          const eventX = xForAnnotationTime(chart, zone.eventTime ?? zone.end, candles) ?? coordinates.end;
+          const eventX = xForStructureEventTime(
+            chart,
+            zone.eventTime ?? zone.end,
+            candles,
+            candleDuration,
+          ) ?? coordinates.end;
           drawAnchoredStructureBreakLabel(
             context,
             zone.compactLabel,
@@ -4873,7 +4882,7 @@ function drawAnchoredStructureBreakLabel(
   const overlapsLabel = placed.some((item) => boxesOverlap(selected, item, 3));
   if (insidePlot && !overlapsLabel) {
     context.fillStyle = chartBackground;
-    context.globalAlpha = 0.96 * settings.opacity;
+    context.globalAlpha = 1;
     context.fillRect(selected.left, selected.top, labelWidth, labelHeight);
     context.globalAlpha = settings.opacity;
     context.fillStyle = color;
@@ -4886,6 +4895,11 @@ function drawAnchoredStructureBreakLabel(
 }
 
 function priceZoneCoordinates(chart: IChartApi, zone: PriceZone, candles: Candle[], barWidth: number, candleDuration: number) {
+  if (isStructureTimelineZone(zone)) {
+    const start = xForStructureEventTime(chart, zone.start, candles, candleDuration);
+    const end = xForStructureEventTime(chart, zone.end, candles, candleDuration);
+    return start === null || end === null ? null : { end, start };
+  }
   let firstIndex = lowerBoundCandleTime(candles, zone.start - candleDuration);
   while (firstIndex < candles.length && !(candles[firstIndex].time < zone.end && candles[firstIndex].time + candleDuration > zone.start)) firstIndex += 1;
   const endIndex = lowerBoundCandleTime(candles, zone.end);
@@ -4915,6 +4929,35 @@ function lowerBoundCandleTime(candles: Candle[], target: number) {
     else right = middle;
   }
   return left;
+}
+
+function isStructureTimelineZone(zone: PriceZone) {
+  return isStructureBreakZone(zone)
+    || zone.annotationKind === "swing-high"
+    || zone.annotationKind === "swing-low";
+}
+
+function xForStructureEventTime(
+  chart: IChartApi,
+  time: number,
+  candles: Candle[],
+  candleDuration: number,
+) {
+  if (!candles.length || !Number.isFinite(time)) return null;
+  const insertionIndex = lowerBoundCandleTime(candles, time);
+  if (insertionIndex < candles.length && candles[insertionIndex].time === time) {
+    return chart.timeScale().timeToCoordinate(candles[insertionIndex].time as Time);
+  }
+  const previousIndex = insertionIndex - 1;
+  if (
+    previousIndex >= 0
+    && time >= candles[previousIndex].time
+    && time < candles[previousIndex].time + candleDuration
+  ) {
+    return chart.timeScale().timeToCoordinate(candles[previousIndex].time as Time);
+  }
+  const nearest = candles[nearestCandleIndex(candles, time)];
+  return nearest ? chart.timeScale().timeToCoordinate(nearest.time as Time) : null;
 }
 
 function sessionRegionColor(region: Region, settings: ChartAppearanceSettings) {
