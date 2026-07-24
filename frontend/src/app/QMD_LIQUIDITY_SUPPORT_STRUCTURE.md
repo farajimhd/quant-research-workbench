@@ -196,13 +196,16 @@ Each layer has its own bullish and bearish colors, line shape, width, opacity,
 history window, and historical-label settings. Only both layers matching the
 selected chart interval are visible by default. Open the indicator legend to
 enable other timeframe layers for comparison. Breaks additionally expose the
-swing-to-break connector toggle. BoS / CHoCH text is anchored to the fixed
-midpoint in time between the causal pivot and break event; panning or scaling
-can hide an off-screen label but never relocate it to a different part of the
-connector. This keeps a 1 s chart readable while still allowing the independent
-100 ms through 1 h hierarchies to be audited. A first crossing is immediate but
-does not become BoS or CHoCH until the deterministic acceptance rule confirms
-price remained beyond the level.
+swing-to-break connector toggle. Each break is rendered as one clean semantic
+color from the originating pivot time to the accepted break time, with the
+plain `BoS` or `CHoCH` label inset directly into the connector at its fixed
+time midpoint. The break connector masks any overlapping swing-reference
+segment so dashed styles do not mix bullish and bearish colors. Panning or
+scaling can hide an off-screen label but never relocate it to a different part
+of the connector. This keeps a 1 s chart readable while still allowing the
+independent 100 ms through 1 h hierarchies to be audited. A first crossing is
+immediate but does not become BoS or CHoCH until the deterministic acceptance
+rule confirms price remained beyond the level.
 
 ### Historical structure
 

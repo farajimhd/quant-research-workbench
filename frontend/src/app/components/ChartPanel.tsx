@@ -4407,6 +4407,18 @@ function drawPriceZonePrimitiveGeometry(
           const eventX = zone.eventTime ? chart.timeScale().timeToCoordinate(zone.eventTime as Time) : coordinates.end;
           const connector = clippedHorizontalSpan(coordinates.start, eventX ?? coordinates.end, width);
           if (connector) {
+            // Break connectors reuse the originating swing's price. Clear the
+            // swing reference beneath this segment so dashed break styles do
+            // not expose a second semantic color through their gaps.
+            context.save();
+            context.strokeStyle = chartBackground;
+            context.lineWidth = lineWidth + 2;
+            context.setLineDash([]);
+            context.beginPath();
+            context.moveTo(connector.left, center);
+            context.lineTo(connector.right, center);
+            context.stroke();
+            context.restore();
             context.beginPath();
             context.moveTo(connector.left, center);
             context.lineTo(connector.right, center);
@@ -4646,7 +4658,6 @@ function drawPriceZones(
             center,
             borderColor,
             chartBackground,
-            priceZoneLineLabelPlacement(zone),
             settings,
             lineLabelBoxes,
             width,
@@ -4820,7 +4831,7 @@ function drawPriceZoneLineLabel(
   }
   if (selected) {
     context.fillStyle = chartBackground;
-    context.globalAlpha = 0.96 * settings.opacity;
+    context.globalAlpha = 1;
     context.fillRect(selected.left, selected.top, labelWidth, labelHeight);
     context.globalAlpha = settings.opacity;
     context.fillStyle = color;
@@ -4840,7 +4851,6 @@ function drawAnchoredStructureBreakLabel(
   lineY: number,
   color: string,
   chartBackground: string,
-  placement: "above" | "below",
   settings: ResolvedPriceZoneLegendSettings,
   placed: CanvasBox[],
   layerWidth: number,
@@ -4850,11 +4860,11 @@ function drawAnchoredStructureBreakLabel(
   const fontSize = Math.max(9, settings.labelFontSize);
   context.save();
   context.font = `600 ${fontSize}px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
-  const labelWidth = Math.ceil(context.measureText(text).width) + 8;
+  const labelWidth = Math.ceil(context.measureText(text).width) + 12;
   const labelHeight = fontSize + 5;
   const anchorX = (pivotX + eventX) / 2;
   const left = anchorX - labelWidth / 2;
-  const top = placement === "above" ? lineY - labelHeight - 3 : lineY + 3;
+  const top = lineY - labelHeight / 2;
   const selected = { bottom: top + labelHeight, left, right: left + labelWidth, top };
   const insidePlot = selected.left >= 2
     && selected.right <= layerWidth - 2
@@ -4863,12 +4873,12 @@ function drawAnchoredStructureBreakLabel(
   const overlapsLabel = placed.some((item) => boxesOverlap(selected, item, 3));
   if (insidePlot && !overlapsLabel) {
     context.fillStyle = chartBackground;
-    context.globalAlpha = 0.94 * settings.opacity;
+    context.globalAlpha = 0.96 * settings.opacity;
     context.fillRect(selected.left, selected.top, labelWidth, labelHeight);
     context.globalAlpha = settings.opacity;
     context.fillStyle = color;
     context.textBaseline = "middle";
-    context.fillText(text, selected.left + 4, selected.top + labelHeight / 2);
+    context.fillText(text, selected.left + 6, selected.top + labelHeight / 2);
     placed.push(selected);
   }
   context.restore();
