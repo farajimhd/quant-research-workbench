@@ -78,6 +78,7 @@ class TrainConfig:
     scheduler: str = "cosine"
     scheduler_restarts: int = 3
     scheduler_eta_min: float = 1e-6
+    scheduler_cycle_decay: float = 1.0
     amp: bool = True
     amp_dtype: str = "bf16"
     compile_model: bool = True

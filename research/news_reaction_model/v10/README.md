@@ -128,6 +128,14 @@ run can be launched explicitly without overwriting the original run:
 python -m research.news_reaction_model.v10.run_train --epochs 50 --learning-rate 1e-4 --scheduler none --scheduler-restarts 0 --run-name news-v10-opportunity-openai-stock-state-d384-l4-b2048-e50-lr1e4-constant
 ```
 
+For the epoch-restart experiment, use one cosine cycle per epoch. The first
+cycle peaks at `3e-4`; every subsequent epoch multiplies its peak by `0.98`,
+while each cycle decays toward `1e-6`:
+
+```powershell
+python -m research.news_reaction_model.v10.run_train --epochs 50 --learning-rate 3e-4 --scheduler cosine --scheduler-restarts 49 --scheduler-cycle-decay 0.98 --scheduler-eta-min 1e-6 --run-name news-v10-opportunity-openai-stock-state-d384-l4-b2048-e50-cosine-r49-gamma098
+```
+
 The best validation-log-loss checkpoint is evaluated automatically after
 training. To rerun evaluation:
 

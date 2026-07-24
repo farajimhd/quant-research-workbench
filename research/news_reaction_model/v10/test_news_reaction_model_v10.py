@@ -52,6 +52,7 @@ from research.news_reaction_model.v10.opportunity import (
     opportunity_targets,
 )
 from research.news_reaction_model.v10.train import validate_config
+from research.news_reaction_model.v10.train import SampleCosineRestartScheduler
 
 
 class NewsReactionModelV10Tests(unittest.TestCase):
@@ -102,6 +103,38 @@ class NewsReactionModelV10Tests(unittest.TestCase):
         validate_config(config)
         config.train.epochs = 51
         with self.assertRaisesRegex(ValueError, "between 1 and 50"):
+            validate_config(config)
+
+    def test_epoch_restart_scheduler_decays_each_cycle_peak(self) -> None:
+        parameter = torch.nn.Parameter(torch.zeros(()))
+        optimizer = torch.optim.AdamW([parameter], lr=3e-4)
+        train = TrainConfig(
+            epochs=50,
+            scheduler="cosine",
+            scheduler_restarts=49,
+            scheduler_eta_min=1e-6,
+            scheduler_cycle_decay=0.98,
+        )
+        scheduler = SampleCosineRestartScheduler(
+            optimizer,
+            train,
+            planned_samples=50_000,
+        )
+        self.assertEqual(scheduler.cycle, 1_000)
+        scheduler.step(1_000)
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 3e-4 * 0.98)
+        scheduler.step(49_000)
+        self.assertAlmostEqual(
+            optimizer.param_groups[0]["lr"],
+            3e-4 * (0.98 ** 49),
+        )
+        state = scheduler.state_dict()
+        self.assertEqual(state["cycle_decay"], 0.98)
+
+    def test_scheduler_cycle_decay_validation(self) -> None:
+        config = ExperimentConfig()
+        config.train.scheduler_cycle_decay = 0.0
+        with self.assertRaisesRegex(ValueError, "cycle-decay"):
             validate_config(config)
 
     def test_opportunity_contract_has_exactly_three_classes(self) -> None:

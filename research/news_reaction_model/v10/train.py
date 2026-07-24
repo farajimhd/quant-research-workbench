@@ -72,6 +72,12 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--scheduler", choices=("none", "cosine"), default=train.scheduler)
     parser.add_argument("--scheduler-restarts", type=int, default=train.scheduler_restarts)
     parser.add_argument("--scheduler-eta-min", type=float, default=train.scheduler_eta_min)
+    parser.add_argument(
+        "--scheduler-cycle-decay",
+        type=float,
+        default=train.scheduler_cycle_decay,
+        help="Multiply the cosine peak learning rate by this factor after each restart.",
+    )
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=train.amp)
     parser.add_argument("--amp-dtype", choices=("bf16", "fp16", "float32"), default=train.amp_dtype)
     parser.add_argument("--compile-model", action=argparse.BooleanOptionalAction, default=train.compile_model)
@@ -113,7 +119,9 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
     train = TrainConfig(
         output_root=Path(args.output_root), run_name=args.run_name, epochs=args.epochs, max_samples=args.max_samples,
         learning_rate=args.learning_rate, weight_decay=args.weight_decay, grad_clip_norm=args.grad_clip_norm,
-        scheduler=args.scheduler, scheduler_restarts=args.scheduler_restarts, scheduler_eta_min=args.scheduler_eta_min,
+        scheduler=args.scheduler, scheduler_restarts=args.scheduler_restarts,
+        scheduler_eta_min=args.scheduler_eta_min,
+        scheduler_cycle_decay=args.scheduler_cycle_decay,
         amp=args.amp, amp_dtype=args.amp_dtype, compile_model=args.compile_model,
         logging_samples=args.logging_samples, validation_max_batches=args.validation_max_batches,
         checkpoint_latest_samples=args.checkpoint_latest_samples, checkpoint_archive_samples=args.checkpoint_archive_samples,
@@ -131,6 +139,8 @@ def validate_config(config: ExperimentConfig) -> None:
         config.train.scheduler_restarts < 0 or config.train.scheduler_restarts >= config.train.epochs
     ):
         raise ValueError("--scheduler-restarts must be nonnegative and less than --epochs")
+    if not 0.0 < config.train.scheduler_cycle_decay <= 1.0:
+        raise ValueError("--scheduler-cycle-decay must be in (0, 1]")
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -347,7 +357,9 @@ class SampleCosineRestartScheduler:
         self.restarts = int(config.scheduler_restarts)
         self.cycles = self.restarts + 1
         self.cycle = max(1, math.ceil(self.planned_samples / self.cycles))
-        self.eta_min, self.samples = config.scheduler_eta_min, 0
+        self.eta_min = config.scheduler_eta_min
+        self.cycle_decay = float(config.scheduler_cycle_decay)
+        self.samples = 0
 
     def cycle_index(self, samples: int) -> int:
         return min(max(0, int(samples)) // self.cycle, self.restarts)
@@ -364,7 +376,10 @@ class SampleCosineRestartScheduler:
         position = (self.samples - cycle_start) / max(1, cycle_end - cycle_start)
         position = min(max(position, 0.0), 1.0)
         for base, group in zip(self.base_lrs, self.optimizer.param_groups):
-            group["lr"] = self.eta_min + 0.5 * (base - self.eta_min) * (1 + math.cos(math.pi * position))
+            cycle_peak = base * (self.cycle_decay ** cycle_index)
+            group["lr"] = self.eta_min + 0.5 * (cycle_peak - self.eta_min) * (
+                1 + math.cos(math.pi * position)
+            )
 
     def state_dict(self) -> dict[str, Any]:
         return {
@@ -373,14 +388,22 @@ class SampleCosineRestartScheduler:
             "planned_samples": self.planned_samples,
             "restarts": self.restarts,
             "cycle": self.cycle,
+            "cycle_decay": self.cycle_decay,
         }
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
         if (
             int(state.get("planned_samples", self.planned_samples)) != self.planned_samples
             or int(state.get("restarts", self.restarts)) != self.restarts
+            or not math.isclose(
+                float(state.get("cycle_decay", self.cycle_decay)),
+                self.cycle_decay,
+            )
         ):
-            raise ValueError("checkpoint scheduler plan does not match the current sample count and restart count")
+            raise ValueError(
+                "checkpoint scheduler plan does not match the current sample count, "
+                "restart count, and cycle decay"
+            )
         self.samples = int(state.get("samples", 0))
         self.base_lrs = list(state.get("base_lrs", self.base_lrs))
         self.step(self.samples)
