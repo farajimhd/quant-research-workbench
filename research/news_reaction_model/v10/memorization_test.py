@@ -27,7 +27,10 @@ from research.news_reaction_model.v10.data import (
     rows_to_batch,
 )
 from research.news_reaction_model.v10.losses import compute_loss
-from research.news_reaction_model.v10.metrics import OpportunityAccumulator
+from research.news_reaction_model.v10.metrics import (
+    OpportunityAccumulator,
+    TrainingLossAccumulator,
+)
 from research.news_reaction_model.v10.model import NewsReactionModelV10
 from research.news_reaction_model.v10.opportunity import (
     OPPORTUNITY_CLASS_NAMES,
@@ -258,9 +261,7 @@ def run_memorization_test(args: argparse.Namespace) -> dict[str, Any]:
         model.train()
         generator = torch.Generator().manual_seed(args.seed + epoch)
         order = torch.randperm(subset.sample_count, generator=generator)
-        loss_sum = 0.0
-        correct_sum = 0.0
-        label_sum = 0.0
+        training_metrics = TrainingLossAccumulator()
         for offset in range(0, subset.sample_count, args.batch_size):
             indices = order[offset : offset + args.batch_size]
             batch = slice_batch(subset, indices).to(device)
@@ -275,11 +276,9 @@ def run_memorization_test(args: argparse.Namespace) -> dict[str, Any]:
             result.loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm)
             optimizer.step()
-            valid_labels = result.metrics["train/valid_labels"]
-            loss_sum += result.metrics["train/loss"] * valid_labels
-            correct_sum += result.metrics["train/accuracy"] * valid_labels
-            label_sum += valid_labels
+            training_metrics.add(result)
 
+        train_summary = training_metrics.compute("train")
         evaluation = evaluate_same_subset(
             model,
             subset,
@@ -290,8 +289,9 @@ def run_memorization_test(args: argparse.Namespace) -> dict[str, Any]:
         accuracy = float(evaluation["memorization/accuracy"])
         record: dict[str, Any] = {
             "epoch": epoch,
-            "train_mode_loss": loss_sum / max(label_sum, 1.0),
-            "train_mode_accuracy": correct_sum / max(label_sum, 1.0),
+            "train_mode_loss": train_summary["train/loss"],
+            "train_mode_micro_log_loss": train_summary["train/micro_log_loss"],
+            "train_mode_accuracy": train_summary["train/accuracy"],
             "eval_mode_accuracy": accuracy,
             "eval_mode_balanced_accuracy": float(
                 evaluation["memorization/balanced_accuracy"]

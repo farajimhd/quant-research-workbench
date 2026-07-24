@@ -26,6 +26,8 @@ class CheckpointPolicy:
     skip_latest_if_busy: bool = True
     clock_name: str = "step"
     archive_prefix: str = "checkpoint_step"
+    threshold_intervals: bool = False
+    archive_on_force: bool = True
 
 
 class AsyncCheckpointManager:
@@ -43,9 +45,11 @@ class AsyncCheckpointManager:
         self.policy = policy or CheckpointPolicy()
         self.best_train_loss = float("inf")
         self.best_val_loss = float("inf")
+        self.last_latest_bucket = 0
+        self.last_archive_bucket = 0
         self.message_callback = message_callback
         self.jobs: queue.Queue[tuple[dict[str, Any], list[tuple[Path, str]], dict[str, Any]] | None] = queue.Queue(maxsize=2)
-        self.pending_paths: set[Path] = set()
+        self.pending_paths: dict[Path, int] = {}
         self.pending_lock = threading.RLock()
         self.worker = threading.Thread(target=self._worker, name="async-checkpoint-writer", daemon=True)
         self.worker.start()
@@ -66,7 +70,27 @@ class AsyncCheckpointManager:
         reasons: list[tuple[Path, str]] = []
         train_metrics = train_metrics or {}
         val_metrics = val_metrics or {}
-        if force or self.policy.latest_steps > 0 and step % self.policy.latest_steps == 0:
+        latest_bucket = (
+            step // self.policy.latest_steps
+            if self.policy.latest_steps > 0
+            else 0
+        )
+        archive_bucket = (
+            step // self.policy.archive_steps
+            if self.policy.archive_steps > 0
+            else 0
+        )
+        latest_due = self.policy.latest_steps > 0 and (
+            latest_bucket > self.last_latest_bucket
+            if self.policy.threshold_intervals
+            else step % self.policy.latest_steps == 0
+        )
+        archive_due = self.policy.archive_steps > 0 and (
+            archive_bucket > self.last_archive_bucket
+            if self.policy.threshold_intervals
+            else step % self.policy.archive_steps == 0
+        )
+        if force or latest_due:
             reasons.append((self.checkpoint_dir / "checkpoint_latest.pt", "latest"))
         train_loss = train_metrics.get(self.policy.monitor_train_key)
         val_loss = val_metrics.get(self.policy.monitor_val_key)
@@ -82,7 +106,7 @@ class AsyncCheckpointManager:
         if self.policy.save_best_val and val_loss is not None and val_loss < self.best_val_loss:
             self.best_val_loss = float(val_loss)
             reasons.append((self.checkpoint_dir / "checkpoint_best_val.pt", "best_val"))
-        if force or self.policy.archive_steps > 0 and step % self.policy.archive_steps == 0:
+        if archive_due or (force and self.policy.archive_on_force):
             reasons.append((self.checkpoint_dir / f"{self.policy.archive_prefix}_{step:012d}.pt", "archive"))
         if not reasons:
             return
@@ -90,6 +114,10 @@ class AsyncCheckpointManager:
         if latest_only and self.policy.skip_latest_if_busy and self.jobs.qsize() > 0:
             self._message(f"Skipped latest checkpoint at {self.policy.clock_name} {step}; checkpoint writer is still busy.")
             return
+        if latest_due:
+            self.last_latest_bucket = latest_bucket
+        if archive_due:
+            self.last_archive_bucket = archive_bucket
         if payload is None:
             if payload_factory is None:
                 raise ValueError("Checkpoint payload or payload_factory is required when a checkpoint is due.")
@@ -102,7 +130,29 @@ class AsyncCheckpointManager:
             "train_loss": train_loss,
             "val_loss": val_loss,
         }
-        self._enqueue(cpu_payload, reasons, event)
+        self._enqueue(cpu_payload, reasons, event, allow_pending=force)
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "best_train_loss": self.best_train_loss,
+            "best_val_loss": self.best_val_loss,
+            "last_latest_bucket": self.last_latest_bucket,
+            "last_archive_bucket": self.last_archive_bucket,
+        }
+
+    def load_state_dict(self, state: dict[str, Any] | None) -> None:
+        if not state:
+            return
+        self.best_train_loss = float(
+            state.get("best_train_loss", self.best_train_loss)
+        )
+        self.best_val_loss = float(state.get("best_val_loss", self.best_val_loss))
+        self.last_latest_bucket = int(
+            state.get("last_latest_bucket", self.last_latest_bucket)
+        )
+        self.last_archive_bucket = int(
+            state.get("last_archive_bucket", self.last_archive_bucket)
+        )
 
     def close(self, *, wait: bool = True, timeout: float | None = None) -> None:
         try:
@@ -117,15 +167,22 @@ class AsyncCheckpointManager:
         if wait:
             self.worker.join(timeout=timeout)
 
-    def _enqueue(self, payload: dict[str, Any], reasons: list[tuple[Path, str]], event: dict[str, Any]) -> None:
+    def _enqueue(
+        self,
+        payload: dict[str, Any],
+        reasons: list[tuple[Path, str]],
+        event: dict[str, Any],
+        *,
+        allow_pending: bool = False,
+    ) -> None:
         with self.pending_lock:
             filtered = []
             for path, reason in reasons:
                 resolved = path.resolve()
-                if resolved in self.pending_paths:
+                if self.pending_paths.get(resolved, 0) and not allow_pending:
                     self._message(f"Skipped checkpoint {reason}; save is already pending for {path}.")
                     continue
-                self.pending_paths.add(resolved)
+                self.pending_paths[resolved] = self.pending_paths.get(resolved, 0) + 1
                 filtered.append((path, reason))
             reasons = filtered
         if not reasons:
@@ -150,7 +207,12 @@ class AsyncCheckpointManager:
                     self._message(f"Saved checkpoint {reason}: {path}")
                 finally:
                     with self.pending_lock:
-                        self.pending_paths.discard(path.resolve())
+                        resolved = path.resolve()
+                        pending = self.pending_paths.get(resolved, 0)
+                        if pending <= 1:
+                            self.pending_paths.pop(resolved, None)
+                        else:
+                            self.pending_paths[resolved] = pending - 1
 
     def _append_manifest(self, event: dict[str, Any]) -> None:
         with self.manifest_path.open("a", encoding="utf-8") as handle:

@@ -41,7 +41,7 @@ class ResidualMLP(nn.Module):
 
 
 class NewsReactionModelV10(nn.Module):
-    """V8 encoder with only one three-class opportunity head per horizon."""
+    """Corrected three-channel encoder with one opportunity head per horizon."""
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
@@ -57,8 +57,13 @@ class NewsReactionModelV10(nn.Module):
             nn.Linear(config.stock_state_dim, d),
             nn.GELU(),
         )
+        self.time_projection = nn.Sequential(
+            nn.LayerNorm(config.time_feature_dim),
+            nn.Linear(config.time_feature_dim, d),
+            nn.GELU(),
+        )
         self.chunk_projection = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, d), nn.GELU())
-        self.chunk_position = nn.Embedding(2, d)
+        self.chunk_position = nn.Embedding(3, d)
         self.chunk_gate = nn.Linear(d, 1)
         self.horizon_embedding = nn.Embedding(len(config.horizons), config.horizon_dim)
         joint = d + config.horizon_dim
@@ -74,11 +79,14 @@ class NewsReactionModelV10(nn.Module):
     def forward(self, x: dict[str, Any]) -> NewsReactionOpportunityOutput:
         openai_text = self.openai_text_projection(x["openai_embedding"])
         stock_state = self.stock_state_projection(x["stock_state"])
+        time_features = self.time_projection(x["time_features"])
         mask = x["channel_mask"].bool()
         if (~mask.any(dim=1)).any():
             mask = mask.clone()
             mask[~mask.any(dim=1), 0] = True
-        hidden = self.chunk_projection(torch.stack((openai_text, stock_state), dim=1))
+        hidden = self.chunk_projection(
+            torch.stack((openai_text, stock_state, time_features), dim=1)
+        )
         positions = torch.arange(hidden.shape[1], device=hidden.device)
         hidden = hidden + self.chunk_position(positions).unsqueeze(0)
         scores = self.chunk_gate(hidden).squeeze(-1).masked_fill(~mask, float("-inf"))
@@ -125,11 +133,13 @@ def build_model_mermaid() -> str:
             "flowchart LR",
             '  text["OpenAI text embedding, 3072 values"] --> textproj["V8 text projection"]',
             '  state["V8 point-in-time stock state"] --> stateproj["V8 state projection"]',
-            '  textproj --> pooling["V8 gated two-channel pooling"]',
+            '  time["Causal exchange session and time features"] --> timeproj["Time projection"]',
+            '  textproj --> pooling["Gated three-channel pooling"]',
             "  stateproj --> pooling",
+            "  timeproj --> pooling",
             '  horizons["V8 horizon embedding"] --> encoder["V8 residual horizon encoder"]',
             "  pooling --> encoder",
             '  encoder --> opportunity["One three-class opportunity head per horizon"]',
-            '  opportunity --> classes["none | upside | downside | two-sided"]',
+            '  opportunity --> classes["none | upside | downside"]',
         ]
     )

@@ -3,12 +3,17 @@ from __future__ import annotations
 import base64
 import dataclasses
 import datetime as dt
+import random
 import struct
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import torch
 
+from research.mlops.checkpoints import AsyncCheckpointManager, CheckpointPolicy
 from research.news_reaction_model import v9, v10
 from research.news_reaction_model.v9.config import ModelConfig as V9ModelConfig
 from research.news_reaction_model.v9.config import TrainConfig as V9TrainConfig
@@ -19,6 +24,7 @@ from research.news_reaction_model.v10.config import (
     TrainConfig,
 )
 from research.news_reaction_model.v10.data import (
+    deterministic_buffered_batches,
     make_dummy_batch,
     prepared_batch_sql,
     prepared_dataset_audit_sql,
@@ -35,6 +41,7 @@ from research.news_reaction_model.v10.inference import (
     opportunity_predictions,
 )
 from research.news_reaction_model.v10.losses import compute_loss
+from research.news_reaction_model.v10.metrics import TrainingLossAccumulator
 from research.news_reaction_model.v10.model import (
     NewsReactionModelV10,
     NewsReactionOpportunityOutput,
@@ -51,21 +58,33 @@ from research.news_reaction_model.v10.opportunity import (
     opportunity_contract,
     opportunity_targets,
 )
-from research.news_reaction_model.v10.train import validate_config
-from research.news_reaction_model.v10.train import SampleCosineRestartScheduler
+from research.news_reaction_model.v10.time_features import (
+    TIME_FEATURE_DIM,
+    encode_time_features,
+)
+from research.news_reaction_model.v10.train import (
+    SampleCosineRestartScheduler,
+    TrainingCursor,
+    capture_rng_state,
+    checkpoint_payload,
+    restore,
+    restore_rng_state,
+    validate_config,
+)
 
 
 class NewsReactionModelV10Tests(unittest.TestCase):
-    def test_v10_is_a_class_only_ablation_over_v9(self) -> None:
+    def test_v10_retains_v9_horizons_and_prepared_dataset(self) -> None:
         loader = LoaderConfig()
         self.assertEqual(v10.MODEL_VERSION, "v10")
         self.assertEqual(v10.HORIZONS, v9.HORIZONS)
         self.assertEqual(loader.dataset_table, "news_reaction_openai_stock_state_dataset_v8")
         self.assertEqual(loader.dataset_version, "news_reaction_openai_stock_state_dataset_v8")
 
-    def test_encoder_and_training_defaults_match_v9(self) -> None:
+    def test_corrected_v10_preserves_v9_capacity_while_adding_time_channel(self) -> None:
         v9_model = dataclasses.asdict(V9ModelConfig())
         v10_model = dataclasses.asdict(ModelConfig())
+        self.assertEqual(v10_model.pop("time_feature_dim"), TIME_FEATURE_DIM)
         self.assertEqual(v10_model, v9_model)
         v9_train = dataclasses.asdict(V9TrainConfig())
         v10_train = dataclasses.asdict(TrainConfig())
@@ -278,6 +297,7 @@ class NewsReactionModelV10Tests(unittest.TestCase):
             "source_id": "n1",
             "ticker": "AAPL",
             "published_at_utc": "2026-01-01 12:00:00",
+            "publication_session": "premarket",
             "openai_embedding_b64": base64.b64encode(struct.pack("<4f", *values)).decode("ascii"),
             "stock_state": [0.1, 0.2],
             "horizon_codes": [],
@@ -286,18 +306,269 @@ class NewsReactionModelV10Tests(unittest.TestCase):
         batch = rows_to_batch([row], config)
         self.assertTrue(torch.allclose(batch.x["openai_embedding"][0], torch.tensor(values)))
 
-    def test_live_encoder_retains_exact_v8_input_contract(self) -> None:
+    def test_live_encoder_requires_and_encodes_causal_publication_time(self) -> None:
         encoder = LiveFeatureEncoder(LoaderConfig(openai_embedding_dim=4, stock_state_dim=2))
         encoded = encoder.encode(
-            [{"openai_embedding": [1, 2, 3, 4], "stock_state": [0.1, 0.2]}],
+            [{
+                "openai_embedding": [1, 2, 3, 4],
+                "stock_state": [0.1, 0.2],
+                "published_at_utc": "2026-01-01 14:31:00",
+                "publication_session": "regular",
+            }],
             device=torch.device("cpu"),
         )
-        self.assertEqual(set(encoded), {"openai_embedding", "stock_state", "channel_mask"})
+        self.assertEqual(
+            set(encoded),
+            {"openai_embedding", "stock_state", "time_features", "channel_mask"},
+        )
+        self.assertEqual(tuple(encoded["time_features"].shape), (1, TIME_FEATURE_DIM))
+        self.assertEqual(encoded["channel_mask"].tolist(), [[True, True, True]])
         with self.assertRaisesRegex(ValueError, "4-value"):
             encoder.encode(
-                [{"openai_embedding": [1, 2], "stock_state": [0.1, 0.2]}],
+                [{
+                    "openai_embedding": [1, 2],
+                    "stock_state": [0.1, 0.2],
+                    "published_at_utc": "2026-01-01 14:31:00",
+                    "publication_session": "regular",
+                }],
                 device=torch.device("cpu"),
             )
+
+    def test_time_features_are_exchange_local_and_session_explicit(self) -> None:
+        premarket = encode_time_features("2026-07-14 13:00:00", "premarket")
+        regular = encode_time_features("2026-07-14 14:00:00", "regular")
+        self.assertEqual(len(premarket), TIME_FEATURE_DIM)
+        self.assertEqual(premarket[:4], [1.0, 0.0, 0.0, 0.0])
+        self.assertEqual(regular[:4], [0.0, 1.0, 0.0, 0.0])
+        self.assertNotEqual(premarket[4:], regular[4:])
+
+    def test_loss_weights_each_horizon_equally_not_each_label(self) -> None:
+        loader = LoaderConfig(openai_embedding_dim=4, stock_state_dim=2)
+        batch = make_dummy_batch(4, loader)
+        batch.label_mask.zero_()
+        batch.label_mask[:, 0] = True
+        batch.label_mask[0, 1] = True
+        logits = {
+            horizon: torch.zeros((4, 3), dtype=torch.float32)
+            for horizon in v10.HORIZONS
+        }
+        logits[v10.HORIZONS[0]][:, 1] = 3.0
+        logits[v10.HORIZONS[1]][0, 1] = -3.0
+        result = compute_loss(
+            NewsReactionOpportunityOutput(
+                logits=logits,
+                article_embedding=torch.zeros((4, 8)),
+                profile={},
+            ),
+            batch,
+        )
+        targets = opportunity_targets(batch.return_targets, batch.label_mask)
+        expected = torch.stack([
+            torch.nn.functional.cross_entropy(
+                logits[v10.HORIZONS[0]], targets[v10.HORIZONS[0]]
+            ),
+            torch.nn.functional.cross_entropy(
+                logits[v10.HORIZONS[1]][:1], targets[v10.HORIZONS[1]][:1]
+            ),
+        ]).mean()
+        self.assertTrue(torch.allclose(result.loss, expected))
+        self.assertNotAlmostEqual(
+            result.metrics["train/loss"],
+            result.metrics["train/micro_log_loss"],
+        )
+
+    def test_training_accumulator_is_invariant_to_batch_partitioning(self) -> None:
+        loader = LoaderConfig(openai_embedding_dim=4, stock_state_dim=2)
+        batch = make_dummy_batch(6, loader)
+        model = NewsReactionModelV10(
+            ModelConfig(
+                openai_embedding_dim=4,
+                stock_state_dim=2,
+                d_model=8,
+                hidden_dim=8,
+                layers=1,
+                dropout=0.0,
+            )
+        )
+        output = model(batch.x)
+        whole = TrainingLossAccumulator()
+        whole.add(compute_loss(output, batch))
+        partitioned = TrainingLossAccumulator()
+        for indices in (torch.tensor([0, 1]), torch.tensor([2, 3, 4, 5])):
+            sliced = slice_batch(batch, indices)
+            partitioned.add(compute_loss(model(sliced.x), sliced))
+        whole_metrics = whole.compute("x")
+        partitioned_metrics = partitioned.compute("x")
+        self.assertEqual(set(whole_metrics), set(partitioned_metrics))
+        for key in whole_metrics:
+            self.assertAlmostEqual(
+                whole_metrics[key],
+                partitioned_metrics[key],
+                places=6,
+                msg=key,
+            )
+
+    def test_buffered_shuffle_is_deterministic_and_resume_exact(self) -> None:
+        config = LoaderConfig(
+            openai_embedding_dim=4,
+            stock_state_dim=2,
+            batch_size=3,
+            query_batch_articles=4,
+            shuffle_buffer_articles=6,
+        )
+        source_batches = [
+            make_dummy_batch(3, config),
+            make_dummy_batch(3, config),
+            make_dummy_batch(2, config),
+        ]
+        next_id = 0
+        for batch in source_batches:
+            values = [f"id-{index}" for index in range(next_id, next_id + batch.sample_count)]
+            batch.identity["canonical_news_id"] = values
+            next_id += batch.sample_count
+
+        class FakeDataset:
+            def __init__(self, *_args: object, **_kwargs: object) -> None:
+                pass
+
+            def iter_batches(self) -> object:
+                yield from source_batches
+
+            def stop(self) -> None:
+                pass
+
+        def identities(skip: int = 0, epoch: int = 2) -> list[str]:
+            with mock.patch(
+                "research.news_reaction_model.v10.data.ClickHouseNewsReactionDataset",
+                FakeDataset,
+            ):
+                return [
+                    identity
+                    for shuffled in deterministic_buffered_batches(
+                        config,
+                        start="2019-01-01",
+                        end_exclusive="2020-01-01",
+                        epoch=epoch,
+                        seed=17,
+                        skip_articles=skip,
+                    )
+                    for identity in shuffled.identity["canonical_news_id"]
+                ]
+
+        full = identities()
+        self.assertEqual(full, identities())
+        self.assertEqual(full[3:], identities(skip=3))
+        self.assertNotEqual(full, identities(epoch=3))
+
+    def test_rng_state_round_trip_is_exact(self) -> None:
+        random.seed(9)
+        np.random.seed(9)
+        torch.manual_seed(9)
+        state = capture_rng_state()
+        expected = (random.random(), np.random.random(), torch.rand(3))
+        restore_rng_state(state)
+        actual = (random.random(), np.random.random(), torch.rand(3))
+        self.assertEqual(expected[0], actual[0])
+        self.assertEqual(expected[1], actual[1])
+        self.assertTrue(torch.equal(expected[2], actual[2]))
+
+    def test_checkpoint_restores_exact_next_dropout_forward(self) -> None:
+        loader = LoaderConfig(
+            openai_embedding_dim=4,
+            stock_state_dim=2,
+            batch_size=2,
+            shuffle_buffer_articles=4,
+        )
+        config = ExperimentConfig(
+            loader=loader,
+            model=ModelConfig(
+                openai_embedding_dim=4,
+                stock_state_dim=2,
+                d_model=8,
+                hidden_dim=8,
+                layers=1,
+                dropout=0.25,
+            ),
+            train=TrainConfig(
+                epochs=2,
+                scheduler="none",
+                compile_model=False,
+                amp=False,
+                seed=23,
+            ),
+        )
+        batch = make_dummy_batch(2, loader)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            model = NewsReactionModelV10(config.model)
+            optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.learning_rate)
+            scaler = torch.amp.GradScaler("cuda", enabled=False)
+            manager = AsyncCheckpointManager(
+                root / "source",
+                root / "source.jsonl",
+                CheckpointPolicy(archive_on_force=False),
+            )
+            window = TrainingLossAccumulator()
+            epoch = TrainingLossAccumulator()
+            cursor = TrainingCursor(
+                samples_seen=2,
+                epoch=0,
+                epoch_articles_seen=2,
+                next_log=50_000,
+            )
+            torch.manual_seed(config.train.seed)
+            payload = checkpoint_payload(
+                model,
+                optimizer,
+                None,
+                scaler,
+                manager,
+                config,
+                cursor,
+                window,
+                epoch,
+                4,
+                {"train/loss": 1.2},
+                {"val/loss": 1.1},
+            )
+            checkpoint = root / "resume.pt"
+            torch.save(payload, checkpoint)
+            expected = model(batch.x).article_embedding.detach()
+            manager.close()
+
+            restored_model = NewsReactionModelV10(config.model)
+            restored_optimizer = torch.optim.AdamW(
+                restored_model.parameters(),
+                lr=config.train.learning_rate,
+            )
+            restored_scaler = torch.amp.GradScaler("cuda", enabled=False)
+            restored_manager = AsyncCheckpointManager(
+                root / "restored",
+                root / "restored.jsonl",
+                CheckpointPolicy(archive_on_force=False),
+            )
+            restored_window = TrainingLossAccumulator()
+            restored_epoch = TrainingLossAccumulator()
+            restored = restore(
+                str(checkpoint),
+                restored_model,
+                restored_optimizer,
+                None,
+                restored_scaler,
+                restored_manager,
+                restored_window,
+                restored_epoch,
+                torch.device("cpu"),
+                config=config,
+                train_articles=4,
+                logging_samples=50_000,
+            )
+            actual = restored_model(batch.x).article_embedding.detach()
+            restored_manager.close()
+            self.assertEqual(restored.cursor, cursor)
+            self.assertEqual(restored.last_train, {"train/loss": 1.2})
+            self.assertEqual(restored.last_val, {"val/loss": 1.1})
+            self.assertTrue(torch.equal(expected, actual))
 
     def test_prepared_and_evaluation_queries_reuse_v8_schema(self) -> None:
         config = LoaderConfig()

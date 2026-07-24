@@ -5,7 +5,7 @@ import datetime as dt
 import json
 import queue
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterator
 
 import numpy as np
@@ -19,6 +19,7 @@ from research.mlops.clickhouse import (
 )
 from research.news_reaction_model.v10 import HORIZONS, SESSIONS
 from research.news_reaction_model.v10.config import LoaderConfig
+from research.news_reaction_model.v10.time_features import encode_time_features
 
 
 def q(value: str) -> str:
@@ -103,6 +104,7 @@ FORMAT JSONEachRow
 
 def prepared_dataset_audit_sql(config: LoaderConfig, start: str, end_exclusive: str) -> str:
     table = f"{qi(config.dataset_database)}.{qi(config.dataset_table)}"
+    session_values = ", ".join(q(value) for value in SESSIONS)
     return f"""
 SELECT count(), uniqExact(canonical_news_id), min(published_at_utc), max(published_at_utc),
  countIf(length(openai_embedding) != {config.openai_embedding_dim}
@@ -110,6 +112,7 @@ SELECT count(), uniqExact(canonical_news_id), min(published_at_utc), max(publish
  countIf(arrayExists(x -> NOT isFinite(x), openai_embedding)
       OR arrayExists(x -> NOT isFinite(x), stock_state)),
  countIf(length(horizon_codes) != length(return_targets)),
+ countIf(publication_session NOT IN ({session_values})),
  uniqExact(representation_sha256), any(representation_name), any(representation_sha256),
  countIf(arrayExists(x -> x != 0, openai_embedding)),
  countIf(arrayExists(x -> x != 0, stock_state))
@@ -139,11 +142,12 @@ def audit_prepared_dataset(config: LoaderConfig, start: str, end_exclusive: str)
         "invalid_feature_shapes": int(fields[4]) if len(fields) > 4 and fields[4] else 0,
         "invalid_feature_values": int(fields[5]) if len(fields) > 5 and fields[5] else 0,
         "invalid_targets": int(fields[6]) if len(fields) > 6 and fields[6] else 0,
-        "representation_versions": int(fields[7]) if len(fields) > 7 and fields[7] else 0,
-        "representation_name": fields[8] if len(fields) > 8 else "",
-        "representation_sha256": fields[9] if len(fields) > 9 else "",
-        "embedding_articles": int(fields[10]) if len(fields) > 10 and fields[10] else 0,
-        "state_articles": int(fields[11]) if len(fields) > 11 and fields[11] else 0,
+        "invalid_publication_sessions": int(fields[7]) if len(fields) > 7 and fields[7] else 0,
+        "representation_versions": int(fields[8]) if len(fields) > 8 and fields[8] else 0,
+        "representation_name": fields[9] if len(fields) > 9 else "",
+        "representation_sha256": fields[10] if len(fields) > 10 else "",
+        "embedding_articles": int(fields[11]) if len(fields) > 11 and fields[11] else 0,
+        "state_articles": int(fields[12]) if len(fields) > 12 and fields[12] else 0,
     }
     if rows == 0:
         raise RuntimeError(
@@ -154,6 +158,7 @@ def audit_prepared_dataset(config: LoaderConfig, start: str, end_exclusive: str)
         or result["invalid_feature_shapes"]
         or result["invalid_feature_values"]
         or result["invalid_targets"]
+        or result["invalid_publication_sessions"]
         or result["representation_versions"] != 1
         or result["representation_name"] != config.representation_name
         or result["embedding_articles"] != rows
@@ -267,11 +272,12 @@ def rows_to_batch(rows: list[dict[str, Any]], config: LoaderConfig) -> NewsReact
     returns = np.zeros((b, h, 3), dtype=np.float32)
     label_mask = np.zeros((b, h), dtype=np.bool_)
     horizon_index = {value: index for index, value in enumerate(config.horizons)}
-    ids, tickers, timestamps = [], [], []
+    ids, tickers, timestamps, sessions = [], [], [], []
     for row_index, row in enumerate(rows):
         ids.append(str(row["source_id"]))
         tickers.append(str(row["ticker"]))
         timestamps.append(str(row["published_at_utc"]))
+        sessions.append(str(row["publication_session"]))
         for code, target_returns in zip(row.get("horizon_codes", ()), row.get("return_targets", ())):
             hi = horizon_index.get(str(code))
             if hi is not None:
@@ -320,13 +326,27 @@ def rows_to_batch(rows: list[dict[str, Any]], config: LoaderConfig) -> NewsReact
     )
     if stock_state.shape != (b, config.stock_state_dim):
         raise ValueError(f"Expected stock_state shape {(b, config.stock_state_dim)}, got {tuple(stock_state.shape)}.")
+    time_features = torch.tensor(
+        [
+            encode_time_features(row["published_at_utc"], row["publication_session"])
+            for row in rows
+        ],
+        dtype=torch.float32,
+    )
+    if time_features.shape != (b, config.time_feature_dim):
+        raise ValueError(
+            f"Expected time_features shape {(b, config.time_feature_dim)}, "
+            f"got {tuple(time_features.shape)}."
+        )
     return NewsReactionBatch(
         x={
             "openai_embedding": openai_embedding,
             "stock_state": stock_state,
+            "time_features": time_features,
             "channel_mask": torch.stack((
                 openai_embedding.ne(0).any(dim=1),
                 stock_state.ne(0).any(dim=1),
+                torch.ones(b, dtype=torch.bool),
             ), dim=1),
         },
         return_targets=torch.from_numpy(returns),
@@ -335,9 +355,106 @@ def rows_to_batch(rows: list[dict[str, Any]], config: LoaderConfig) -> NewsReact
             "canonical_news_id": ids,
             "ticker": tickers,
             "published_at_utc": timestamps,
+            "publication_session": sessions,
         },
         sample_count=b,
     )
+
+
+def concatenate_batches(batches: list[NewsReactionBatch]) -> NewsReactionBatch:
+    if not batches:
+        raise ValueError("At least one batch is required.")
+    return NewsReactionBatch(
+        x={
+            key: torch.cat([batch.x[key] for batch in batches], dim=0)
+            for key in batches[0].x
+        },
+        return_targets=torch.cat([batch.return_targets for batch in batches], dim=0),
+        label_mask=torch.cat([batch.label_mask for batch in batches], dim=0),
+        identity={
+            key: [value for batch in batches for value in batch.identity[key]]
+            for key in batches[0].identity
+        },
+        sample_count=sum(batch.sample_count for batch in batches),
+    )
+
+
+def index_batch(batch: NewsReactionBatch, indices: np.ndarray) -> NewsReactionBatch:
+    tensor_indices = torch.from_numpy(np.asarray(indices, dtype=np.int64))
+    selected = tensor_indices.tolist()
+    return NewsReactionBatch(
+        x={key: value.index_select(0, tensor_indices) for key, value in batch.x.items()},
+        return_targets=batch.return_targets.index_select(0, tensor_indices),
+        label_mask=batch.label_mask.index_select(0, tensor_indices),
+        identity={
+            key: [values[index] for index in selected]
+            for key, values in batch.identity.items()
+        },
+        sample_count=len(selected),
+    )
+
+
+def deterministic_buffered_batches(
+    config: LoaderConfig,
+    *,
+    start: str,
+    end_exclusive: str,
+    epoch: int,
+    seed: int,
+    skip_articles: int = 0,
+) -> Iterator[NewsReactionBatch]:
+    """Yield a bounded, deterministic article-level shuffle for one epoch.
+
+    Source rows are read in one canonical stream. Each bounded block is
+    permuted with ``seed + epoch`` and emitted with stable batch boundaries.
+    Resume reconstructs the same sequence and skips complete committed
+    batches, avoiding a checkpoint-sized copy of the shuffle buffer.
+    """
+    if config.shuffle_buffer_articles < config.batch_size:
+        raise ValueError("shuffle_buffer_articles must be at least batch_size")
+    source_config = replace(config, workers=1)
+    source = ClickHouseNewsReactionDataset(
+        source_config,
+        start=start,
+        end_exclusive=end_exclusive,
+        shuffle_months=False,
+    )
+    rng = np.random.default_rng(int(seed) + int(epoch))
+    buffered: list[NewsReactionBatch] = []
+    buffered_articles = 0
+    remaining_skip = max(0, int(skip_articles))
+
+    def shuffled(blocks: list[NewsReactionBatch]) -> Iterator[NewsReactionBatch]:
+        nonlocal remaining_skip
+        merged = concatenate_batches(blocks)
+        permutation = rng.permutation(merged.sample_count)
+        for offset in range(0, merged.sample_count, config.batch_size):
+            batch = index_batch(merged, permutation[offset : offset + config.batch_size])
+            if remaining_skip:
+                if remaining_skip < batch.sample_count:
+                    raise RuntimeError(
+                        "Resume cursor does not align with a deterministic training batch: "
+                        f"remaining={remaining_skip}, batch={batch.sample_count}."
+                    )
+                remaining_skip -= batch.sample_count
+                continue
+            yield batch
+
+    try:
+        for batch in source.iter_batches():
+            buffered.append(batch)
+            buffered_articles += batch.sample_count
+            if buffered_articles >= config.shuffle_buffer_articles:
+                yield from shuffled(buffered)
+                buffered, buffered_articles = [], 0
+        if buffered:
+            yield from shuffled(buffered)
+    finally:
+        source.stop()
+    if remaining_skip:
+        raise RuntimeError(
+            f"Resume cursor exceeds the reconstructed epoch by {remaining_skip} articles."
+        )
 
 
 def make_dummy_batch(

@@ -8,6 +8,7 @@ from typing import Any
 from research.mlops.paths import default_run_root
 from research.news_reaction_model.v10 import HORIZONS, MODEL_FAMILY, MODEL_VERSION
 from research.news_reaction_model.v10.stock_state import STOCK_STATE_DIM
+from research.news_reaction_model.v10.time_features import TIME_FEATURE_DIM
 
 
 OPENAI_EMBEDDING_DIM = 3_072
@@ -28,7 +29,8 @@ def default_representation_artifact_root() -> Path:
 @dataclass(slots=True)
 class LoaderConfig:
     dataset_database: str = "market_sip_compact"
-    # V10 changes only V9's supervised class space and reuses the exact V8 rows.
+    # Corrected V10 still reuses the exact prepared V8 rows; its causal time
+    # channel is derived losslessly from their timestamp and session columns.
     dataset_table: str = "news_reaction_openai_stock_state_dataset_v8"
     dataset_version: str = "news_reaction_openai_stock_state_dataset_v8"
     embedding_version: str = OPENAI_EMBEDDING_VERSION
@@ -47,10 +49,12 @@ class LoaderConfig:
     query_batch_articles: int = 2048
     workers: int = 16
     prefetch_batches: int = 4
+    shuffle_buffer_articles: int = 32_768
     max_threads_per_query: int = 4
     max_memory_usage: str = "16G"
     openai_embedding_dim: int = OPENAI_EMBEDDING_DIM
     stock_state_dim: int = STOCK_STATE_DIM
+    time_feature_dim: int = TIME_FEATURE_DIM
     horizons: tuple[str, ...] = HORIZONS
 
 
@@ -58,6 +62,7 @@ class LoaderConfig:
 class ModelConfig:
     openai_embedding_dim: int = OPENAI_EMBEDDING_DIM
     stock_state_dim: int = STOCK_STATE_DIM
+    time_feature_dim: int = TIME_FEATURE_DIM
     d_model: int = 384
     hidden_dim: int = 384
     layers: int = 4
@@ -111,6 +116,6 @@ def default_run_name(config: ExperimentConfig) -> str:
     if config.train.run_name:
         return config.train.run_name
     return (
-        f"news-v10-opportunity-openai-stock-state-d{config.model.d_model}"
+        f"news-v10-opportunity-openai-stock-state-time-balanced-d{config.model.d_model}"
         f"-l{config.model.layers}-b{config.loader.batch_size}"
     )

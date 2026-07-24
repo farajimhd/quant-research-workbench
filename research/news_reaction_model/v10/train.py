@@ -7,6 +7,7 @@ import math
 import random
 import signal
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -22,15 +23,40 @@ from research.mlops.paths import RunPaths
 from research.mlops.wandb_utils import init_wandb
 from research.news_reaction_model.v10 import HORIZONS, MODEL_FAMILY, MODEL_VERSION
 from research.news_reaction_model.v10.config import ExperimentConfig, LoaderConfig, ModelConfig, TrainConfig, default_run_name, to_dict
-from research.news_reaction_model.v10.data import ClickHouseNewsReactionDataset, NewsReactionBatch, audit_prepared_dataset, make_dummy_batch
+from research.news_reaction_model.v10.data import (
+    ClickHouseNewsReactionDataset,
+    NewsReactionBatch,
+    audit_prepared_dataset,
+    deterministic_buffered_batches,
+    make_dummy_batch,
+)
 from research.news_reaction_model.v10.evaluate import evaluate_checkpoint
 from research.news_reaction_model.v10.losses import compute_loss
-from research.news_reaction_model.v10.metrics import OpportunityAccumulator
+from research.news_reaction_model.v10.metrics import (
+    OpportunityAccumulator,
+    TrainingLossAccumulator,
+)
 from research.news_reaction_model.v10.model import NewsReactionModelV10, build_model_mermaid
 from research.news_reaction_model.v10.opportunity import opportunity_contract
+from research.news_reaction_model.v10.time_features import contract_payload as time_contract
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 _INTERRUPTED = False
+
+
+@dataclass(slots=True)
+class TrainingCursor:
+    samples_seen: int = 0
+    epoch: int = 0
+    epoch_articles_seen: int = 0
+    next_log: int = 0
+
+
+@dataclass(slots=True)
+class RestoredTrainingState:
+    cursor: TrainingCursor
+    last_train: dict[str, float]
+    last_val: dict[str, float]
 
 
 def handle_interrupt(_signum: int, _frame: Any) -> None:
@@ -52,6 +78,11 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--query-batch-articles", type=int, default=loader.query_batch_articles)
     parser.add_argument("--loader-workers", type=int, default=loader.workers)
     parser.add_argument("--prefetch-batches", type=int, default=loader.prefetch_batches)
+    parser.add_argument(
+        "--shuffle-buffer-articles",
+        type=int,
+        default=loader.shuffle_buffer_articles,
+    )
     parser.add_argument("--max-threads-per-query", type=int, default=loader.max_threads_per_query)
     parser.add_argument("--max-memory-usage", default=loader.max_memory_usage)
     parser.add_argument("--dataset-database", default=loader.dataset_database)
@@ -108,12 +139,15 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         train_start=args.train_start, train_end_exclusive=args.train_end_exclusive,
         validation_start=args.validation_start, validation_end_exclusive=args.validation_end_exclusive,
         batch_size=args.batch_size, query_batch_articles=args.query_batch_articles, workers=args.loader_workers,
-        prefetch_batches=args.prefetch_batches, max_threads_per_query=args.max_threads_per_query,
+        prefetch_batches=args.prefetch_batches,
+        shuffle_buffer_articles=args.shuffle_buffer_articles,
+        max_threads_per_query=args.max_threads_per_query,
         max_memory_usage=args.max_memory_usage,
     )
     model = ModelConfig(
         openai_embedding_dim=loader.openai_embedding_dim,
         stock_state_dim=loader.stock_state_dim,
+        time_feature_dim=loader.time_feature_dim,
         d_model=args.d_model, hidden_dim=args.hidden_dim, layers=args.layers, dropout=args.dropout,
     )
     train = TrainConfig(
@@ -141,9 +175,13 @@ def validate_config(config: ExperimentConfig) -> None:
         raise ValueError("--scheduler-restarts must be nonnegative and less than --epochs")
     if not 0.0 < config.train.scheduler_cycle_decay <= 1.0:
         raise ValueError("--scheduler-cycle-decay must be in (0, 1]")
+    if config.loader.shuffle_buffer_articles < config.loader.batch_size:
+        raise ValueError("--shuffle-buffer-articles must be at least --batch-size")
 
 
 def main(argv: Iterable[str] | None = None) -> int:
+    global _INTERRUPTED
+    _INTERRUPTED = False
     signal.signal(signal.SIGINT, handle_interrupt)
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, handle_interrupt)
@@ -199,13 +237,17 @@ def main(argv: Iterable[str] | None = None) -> int:
         input_contract={
             "openai_embedding": ["B", config.loader.openai_embedding_dim],
             "stock_state": ["B", config.loader.stock_state_dim],
-            "channel_mask": ["B", 2],
+            "time_features": ["B", config.loader.time_feature_dim],
+            "channel_mask": ["B", 3],
         },
-        output_contract={"opportunity_logits": opportunity_contract()},
+        output_contract={
+            "opportunity_logits": opportunity_contract(),
+            "time_features": time_contract(),
+        },
         architecture_mermaid=build_model_mermaid(),
         summary_notes=(
-            "V10 retains V8's OpenAI embedding, stock-state input, and encoder. Only the supervised "
-            "output is replaced by one three-class opportunity head per horizon."
+            "Corrected V10 adds a causal exchange-time channel, equal horizon loss, "
+            "deterministic buffered article shuffling, and exact resume state."
         ),
         dummy_input_factory=lambda: ((make_dummy_batch(2, config.loader, device=device).x,), {}), wandb_run=wandb_run,
     )
@@ -219,27 +261,56 @@ def main(argv: Iterable[str] | None = None) -> int:
         if config.train.scheduler == "cosine" else None
     )
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda" and config.train.amp and config.train.amp_dtype == "fp16")
-    samples_seen, epoch_start = restore(args.resume_checkpoint, raw_model, optimizer, scheduler, scaler, device)
     logger = JsonlMetricLogger(paths.metrics_path, wandb_run)
     checkpointer = AsyncCheckpointManager(paths.checkpoints_dir, paths.checkpoint_manifest_path, CheckpointPolicy(
         latest_steps=max(1, config.train.checkpoint_latest_samples), archive_steps=max(0, config.train.checkpoint_archive_samples),
-        monitor_train_key="train/loss", monitor_val_key="val/log_loss", clock_name="sample", archive_prefix="checkpoint_sample",
+        save_best_train=False, monitor_train_key="train/loss", monitor_val_key="val/loss",
+        clock_name="sample", archive_prefix="checkpoint_sample", threshold_intervals=True,
+        archive_on_force=False,
     ))
-    next_log = samples_seen
-    last_train: dict[str, float] = {}
-    last_val: dict[str, float] = {}
+    window_train = TrainingLossAccumulator()
+    epoch_train = TrainingLossAccumulator()
+    restored = restore(
+        args.resume_checkpoint,
+        raw_model,
+        optimizer,
+        scheduler,
+        scaler,
+        checkpointer,
+        window_train,
+        epoch_train,
+        device,
+        config=config,
+        train_articles=train_articles,
+        logging_samples=config.train.logging_samples,
+    )
+    cursor = restored.cursor
+    last_train = restored.last_train
+    last_val = restored.last_val
     started = time.perf_counter()
+    window_started = started
+    window_articles = 0
     try:
-        for epoch in range(epoch_start, config.train.epochs):
+        for epoch in range(cursor.epoch, config.train.epochs):
             if _INTERRUPTED:
                 break
-            iterator = dummy_batches(config, device, args.dummy_batches) if args.dummy_data else real_batches(config, train=True)
+            iterator = training_batches(
+                config,
+                device,
+                args.dummy_data,
+                args.dummy_batches,
+                epoch=epoch,
+                skip_articles=cursor.epoch_articles_seen,
+            )
             model.train()
             for batch in iterator:
-                if _INTERRUPTED or config.train.max_samples > 0 and samples_seen >= config.train.max_samples:
+                if (
+                    _INTERRUPTED
+                    or config.train.max_samples > 0
+                    and cursor.samples_seen >= config.train.max_samples
+                ):
                     break
                 batch = batch.to(device)
-                step_started = time.perf_counter()
                 optimizer.zero_grad(set_to_none=True)
                 with torch.autocast(device_type=device.type, dtype=amp_dtype(config.train.amp_dtype), enabled=device.type == "cuda" and config.train.amp):
                     output = model(batch.x)
@@ -250,32 +321,140 @@ def main(argv: Iterable[str] | None = None) -> int:
                     scaler.step(optimizer); scaler.update()
                 else:
                     result.loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip_norm); optimizer.step()
-                samples_seen += batch.sample_count
+                window_train.add(result)
+                epoch_train.add(result)
+                cursor.samples_seen += batch.sample_count
+                cursor.epoch_articles_seen += batch.sample_count
+                window_articles += batch.sample_count
                 if scheduler is not None:
-                    scheduler.step(samples_seen)
-                last_train = {**result.metrics, "train/samples_seen": float(samples_seen), "train/epoch": float(epoch + 1),
-                              "train/learning_rate": float(optimizer.param_groups[0]["lr"]),
-                              "train/samples_per_second": batch.sample_count / max(time.perf_counter() - step_started, 1e-9)}
-                if samples_seen >= next_log:
-                    logger.log(last_train, samples_seen)
+                    scheduler.step(cursor.samples_seen)
+                if cursor.samples_seen >= cursor.next_log:
+                    last_train = {
+                        **window_train.compute("train"),
+                        "train/samples_seen": float(cursor.samples_seen),
+                        "train/epoch": float(epoch + 1),
+                        "train/epoch_articles_seen": float(cursor.epoch_articles_seen),
+                        "train/learning_rate": float(optimizer.param_groups[0]["lr"]),
+                        "train/samples_per_second": window_articles
+                        / max(time.perf_counter() - window_started, 1e-9),
+                    }
+                    logger.log(last_train, cursor.samples_seen)
                     print(
-                        f"TRAIN samples={samples_seen:,} epoch={epoch + 1}/{config.train.epochs} "
+                        f"TRAIN samples={cursor.samples_seen:,} epoch={epoch + 1}/{config.train.epochs} "
                         f"loss={last_train['train/loss']:.4f} accuracy={last_train['train/accuracy']:.3f} "
                         f"rate={last_train['train/samples_per_second']:,.0f} articles/s lr={last_train['train/learning_rate']:.2e}",
                         flush=True,
                     )
-                    next_log = samples_seen + config.train.logging_samples
-                checkpointer.maybe_save(step=samples_seen, payload_factory=lambda: checkpoint_payload(raw_model, optimizer, scheduler, scaler, config, samples_seen, epoch), train_metrics=last_train, val_metrics=last_val)
+                    cursor.next_log = cursor.samples_seen + config.train.logging_samples
+                    window_train = TrainingLossAccumulator()
+                    window_articles = 0
+                    window_started = time.perf_counter()
+                checkpointer.maybe_save(
+                    step=cursor.samples_seen,
+                    payload_factory=lambda: checkpoint_payload(
+                        raw_model,
+                        optimizer,
+                        scheduler,
+                        scaler,
+                        checkpointer,
+                        config,
+                        cursor,
+                        window_train,
+                        epoch_train,
+                        train_articles,
+                        last_train,
+                        last_val,
+                    ),
+                    train_metrics=last_train,
+                    val_metrics=last_val,
+                )
+            epoch_complete = cursor.epoch_articles_seen == train_articles
+            if _INTERRUPTED or (
+                config.train.max_samples > 0
+                and cursor.samples_seen >= config.train.max_samples
+            ):
+                checkpointer.maybe_save(
+                    step=cursor.samples_seen,
+                    payload_factory=lambda: checkpoint_payload(
+                        raw_model,
+                        optimizer,
+                        scheduler,
+                        scaler,
+                        checkpointer,
+                        config,
+                        cursor,
+                        window_train,
+                        epoch_train,
+                        train_articles,
+                        last_train,
+                        last_val,
+                    ),
+                    train_metrics=last_train,
+                    val_metrics=last_val,
+                    force=True,
+                )
+                break
+            if not epoch_complete:
+                raise RuntimeError(
+                    f"Epoch {epoch + 1} yielded {cursor.epoch_articles_seen:,} articles; "
+                    f"expected {train_articles:,}."
+                )
+            last_train = {
+                **epoch_train.compute("train"),
+                "train/samples_seen": float(cursor.samples_seen),
+                "train/epoch": float(epoch + 1),
+                "train/epoch_articles_seen": float(cursor.epoch_articles_seen),
+                "train/learning_rate": float(optimizer.param_groups[0]["lr"]),
+            }
+            logger.log(
+                {
+                    **{
+                        key.replace("train/", "train_epoch/", 1): value
+                        for key, value in last_train.items()
+                        if key.startswith("train/")
+                    },
+                    "train_epoch/epoch": float(epoch + 1),
+                },
+                cursor.samples_seen,
+            )
             last_val = validate(model, config, device, args.dummy_data, args.dummy_batches)
-            logger.log({**last_val, "val/epoch": float(epoch + 1)}, samples_seen)
+            logger.log({**last_val, "val/epoch": float(epoch + 1)}, cursor.samples_seen)
             print_validation_summary(last_val)
-            checkpointer.maybe_save(step=samples_seen, payload_factory=lambda: checkpoint_payload(raw_model, optimizer, scheduler, scaler, config, samples_seen, epoch + 1), train_metrics=last_train, val_metrics=last_val, force=True)
+            cursor.epoch = epoch + 1
+            cursor.epoch_articles_seen = 0
+            epoch_train = TrainingLossAccumulator()
+            checkpointer.maybe_save(
+                step=cursor.samples_seen,
+                payload_factory=lambda: checkpoint_payload(
+                    raw_model,
+                    optimizer,
+                    scheduler,
+                    scaler,
+                    checkpointer,
+                    config,
+                    cursor,
+                    window_train,
+                    epoch_train,
+                    train_articles,
+                    last_train,
+                    last_val,
+                ),
+                train_metrics=last_train,
+                val_metrics=last_val,
+                force=True,
+            )
     finally:
         checkpointer.close(wait=True, timeout=180)
         if wandb_run is not None:
             wandb_run.finish()
     final_evaluation: dict[str, Any] = {}
-    if config.train.evaluate_at_end and not args.dummy_data and not _INTERRUPTED:
+    training_complete = cursor.epoch >= config.train.epochs
+    if (
+        config.train.evaluate_at_end
+        and training_complete
+        and not args.dummy_data
+        and not _INTERRUPTED
+    ):
         best_checkpoint = paths.checkpoints_dir / "checkpoint_best_val.pt"
         if not best_checkpoint.exists():
             raise RuntimeError(f"Best validation checkpoint was not written: {best_checkpoint}")
@@ -287,7 +466,12 @@ def main(argv: Iterable[str] | None = None) -> int:
         )
     write_model_card(paths.run_root / "model_card.json", {
         "model_family": MODEL_FAMILY, "version": MODEL_VERSION, "run_name": config.train.run_name,
-        "samples_seen": samples_seen, "elapsed_seconds": time.perf_counter() - started,
+        "samples_seen": cursor.samples_seen, "elapsed_seconds": time.perf_counter() - started,
+        "training_complete": training_complete,
+        "training_cursor": {
+            "epoch": cursor.epoch,
+            "epoch_articles_seen": cursor.epoch_articles_seen,
+        },
         "train_range": [config.loader.train_start, config.loader.train_end_exclusive],
         "validation_range": [config.loader.validation_start, config.loader.validation_end_exclusive],
         "single_ticker_only": True, "exact_join": ["source_id=canonical_news_id", "ticker", "published_at_utc"],
@@ -300,7 +484,12 @@ def main(argv: Iterable[str] | None = None) -> int:
 def real_batches(config: ExperimentConfig, *, train: bool) -> Iterable[NewsReactionBatch]:
     start = config.loader.train_start if train else config.loader.validation_start
     end = config.loader.train_end_exclusive if train else config.loader.validation_end_exclusive
-    dataset = ClickHouseNewsReactionDataset(config.loader, start=start, end_exclusive=end, shuffle_months=train, seed=config.train.seed)
+    dataset = ClickHouseNewsReactionDataset(
+        config.loader,
+        start=start,
+        end_exclusive=end,
+        shuffle_months=False,
+    )
     try:
         yield from dataset.iter_batches()
     finally:
@@ -312,10 +501,44 @@ def dummy_batches(config: ExperimentConfig, device: torch.device, count: int) ->
         yield make_dummy_batch(config.loader.batch_size, config.loader, device=device)
 
 
+def training_batches(
+    config: ExperimentConfig,
+    device: torch.device,
+    dummy: bool,
+    dummy_count: int,
+    *,
+    epoch: int,
+    skip_articles: int,
+) -> Iterable[NewsReactionBatch]:
+    if not dummy:
+        yield from deterministic_buffered_batches(
+            config.loader,
+            start=config.loader.train_start,
+            end_exclusive=config.loader.train_end_exclusive,
+            epoch=epoch,
+            seed=config.train.seed,
+            skip_articles=skip_articles,
+        )
+        return
+    remaining = int(skip_articles)
+    for batch in dummy_batches(config, device, dummy_count):
+        if remaining:
+            if remaining < batch.sample_count:
+                raise RuntimeError(
+                    "Dummy resume cursor does not align with a complete batch."
+                )
+            remaining -= batch.sample_count
+            continue
+        yield batch
+    if remaining:
+        raise RuntimeError("Dummy resume cursor exceeds the reconstructed epoch.")
+
+
 def print_validation_summary(metrics: dict[str, float]) -> None:
     print(
         f"VALIDATION samples={int(metrics.get('val/samples', 0)):,} "
         f"loss={metrics.get('val/loss', 0.0):.4f} accuracy={metrics.get('val/accuracy', 0.0):.3f} "
+        f"horizon_macro_accuracy={metrics.get('val/horizon_macro_accuracy', 0.0):.3f} "
         f"macro_f1={metrics.get('val/macro_f1', 0.0):.3f} "
         f"balanced_accuracy={metrics.get('val/balanced_accuracy', 0.0):.3f} "
         f"log_loss={metrics.get('val/log_loss', 0.0):.4f} confidence={metrics.get('val/mean_confidence', 0.0):.3f}",
@@ -334,19 +557,28 @@ def print_validation_summary(metrics: dict[str, float]) -> None:
 
 @torch.no_grad()
 def validate(model: torch.nn.Module, config: ExperimentConfig, device: torch.device, dummy: bool, dummy_count: int) -> dict[str, float]:
-    model.eval(); accumulator = OpportunityAccumulator(); loss_sum = 0.0; batches = 0
+    model.eval(); accumulator = OpportunityAccumulator(); batches = 0
     iterator = dummy_batches(config, device, min(dummy_count, 2)) if dummy else real_batches(config, train=False)
     for batch in iterator:
         batch = batch.to(device)
         with torch.autocast(device_type=device.type, dtype=amp_dtype(config.train.amp_dtype), enabled=device.type == "cuda" and config.train.amp):
             output = model(batch.x)
-            result = compute_loss(output, batch)
         accumulator.add(output, batch.return_targets, batch.label_mask)
-        loss_sum += float(result.loss.detach().cpu()); batches += 1
+        batches += 1
         if config.train.validation_max_batches > 0 and batches >= config.train.validation_max_batches:
             break
     metrics = accumulator.compute("val")
-    metrics["val/loss"] = loss_sum / max(batches, 1); metrics["val/batches"] = float(batches)
+    horizon_losses = [
+        metrics[f"val/{horizon}/log_loss"]
+        for horizon in HORIZONS
+        if f"val/{horizon}/log_loss" in metrics
+    ]
+    metrics["val/micro_log_loss"] = metrics.get("val/log_loss", 0.0)
+    metrics["val/macro_horizon_log_loss"] = (
+        float(np.mean(horizon_losses)) if horizon_losses else 0.0
+    )
+    metrics["val/loss"] = metrics["val/macro_horizon_log_loss"]
+    metrics["val/batches"] = float(batches)
     return metrics
 
 
@@ -409,24 +641,172 @@ class SampleCosineRestartScheduler:
         self.step(self.samples)
 
 
-def checkpoint_payload(model: torch.nn.Module, optimizer: torch.optim.Optimizer, scheduler: Any, scaler: Any, config: ExperimentConfig, samples: int, epoch: int) -> dict[str, Any]:
+def checkpoint_payload(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: Any,
+    scaler: Any,
+    checkpointer: AsyncCheckpointManager,
+    config: ExperimentConfig,
+    cursor: TrainingCursor,
+    window_train: TrainingLossAccumulator,
+    epoch_train: TrainingLossAccumulator,
+    train_articles: int,
+    last_train: dict[str, float],
+    last_val: dict[str, float],
+) -> dict[str, Any]:
     serializable_config = json.loads(json.dumps(to_dict(config), default=str))
-    return {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict() if scheduler else None,
-            "scaler": scaler.state_dict(), "config": serializable_config, "samples_seen": samples, "epoch": epoch}
+    return {
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict() if scheduler else None,
+        "scaler": scaler.state_dict(),
+        "config": serializable_config,
+        "resume_contract": resume_contract(config),
+        "train_articles": int(train_articles),
+        "training_cursor": {
+            "samples_seen": cursor.samples_seen,
+            "epoch": cursor.epoch,
+            "epoch_articles_seen": cursor.epoch_articles_seen,
+            "next_log": cursor.next_log,
+        },
+        "window_train": window_train.state_dict(),
+        "epoch_train": epoch_train.state_dict(),
+        "checkpoint_manager": checkpointer.state_dict(),
+        "last_train": dict(last_train),
+        "last_val": dict(last_val),
+        "rng_state": capture_rng_state(),
+        # Retained for old inspection tools.
+        "samples_seen": cursor.samples_seen,
+        "epoch": cursor.epoch,
+    }
 
 
-def restore(path: str, model: torch.nn.Module, optimizer: torch.optim.Optimizer, scheduler: Any, scaler: Any, device: torch.device) -> tuple[int, int]:
-    if not path: return 0, 0
+def resume_contract(config: ExperimentConfig) -> dict[str, Any]:
+    return {
+        "dataset_database": config.loader.dataset_database,
+        "dataset_table": config.loader.dataset_table,
+        "dataset_version": config.loader.dataset_version,
+        "train_range": [
+            config.loader.train_start,
+            config.loader.train_end_exclusive,
+        ],
+        "batch_size": config.loader.batch_size,
+        "shuffle_buffer_articles": config.loader.shuffle_buffer_articles,
+        "seed": config.train.seed,
+        "model": json.loads(json.dumps(to_dict(config.model), default=str)),
+        "optimizer": {
+            "learning_rate": config.train.learning_rate,
+            "weight_decay": config.train.weight_decay,
+        },
+        "scheduler": {
+            "name": config.train.scheduler,
+            "restarts": config.train.scheduler_restarts,
+            "eta_min": config.train.scheduler_eta_min,
+            "cycle_decay": config.train.scheduler_cycle_decay,
+            "epochs": config.train.epochs,
+            "max_samples": config.train.max_samples,
+        },
+    }
+
+
+def capture_rng_state() -> dict[str, Any]:
+    numpy_state = np.random.get_state()
+    return {
+        "python": random.getstate(),
+        "numpy": {
+            "bit_generator": numpy_state[0],
+            "state": torch.from_numpy(numpy_state[1].copy()),
+            "position": int(numpy_state[2]),
+            "has_gauss": int(numpy_state[3]),
+            "cached_gaussian": float(numpy_state[4]),
+        },
+        "torch_cpu": torch.get_rng_state(),
+        "torch_cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
+    }
+
+
+def restore_rng_state(state: dict[str, Any] | None) -> None:
+    if not state:
+        raise ValueError("Checkpoint is missing exact RNG state.")
+    random.setstate(state["python"])
+    numpy_state = state["numpy"]
+    np.random.set_state(
+        (
+            str(numpy_state["bit_generator"]),
+            numpy_state["state"].cpu().numpy().astype(np.uint32, copy=False),
+            int(numpy_state["position"]),
+            int(numpy_state["has_gauss"]),
+            float(numpy_state["cached_gaussian"]),
+        )
+    )
+    torch.set_rng_state(state["torch_cpu"].cpu())
+    if torch.cuda.is_available():
+        cuda_states = state.get("torch_cuda") or []
+        if len(cuda_states) != torch.cuda.device_count():
+            raise ValueError(
+                "Checkpoint CUDA RNG state does not match the current device count."
+            )
+        torch.cuda.set_rng_state_all([value.cpu() for value in cuda_states])
+
+
+def restore(
+    path: str,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: Any,
+    scaler: Any,
+    checkpointer: AsyncCheckpointManager,
+    window_train: TrainingLossAccumulator,
+    epoch_train: TrainingLossAccumulator,
+    device: torch.device,
+    *,
+    config: ExperimentConfig,
+    train_articles: int,
+    logging_samples: int,
+) -> RestoredTrainingState:
+    if not path:
+        return RestoredTrainingState(
+            TrainingCursor(next_log=max(1, int(logging_samples))),
+            {},
+            {},
+        )
     # PyTorch 2.6+ defaults to restricted weights-only loading. Older versioned
     # checkpoints contain only one non-default safe type: the local output-root
     # WindowsPath stored in config metadata. Allowlist that exact type while
     # keeping restricted loading enabled; new checkpoints stringify paths.
     with torch.serialization.safe_globals([type(Path())]):
         state = torch.load(path, map_location=device, weights_only=True)
+    expected_contract = resume_contract(config)
+    if state.get("resume_contract") != expected_contract:
+        raise ValueError(
+            "Checkpoint predates or violates the exact V10 resume contract."
+        )
+    if int(state.get("train_articles", -1)) != int(train_articles):
+        raise ValueError(
+            "Checkpoint training-population size does not match the current dataset audit."
+        )
     model.load_state_dict(state["model"]); optimizer.load_state_dict(state["optimizer"])
     if scheduler and state.get("scheduler"): scheduler.load_state_dict(state["scheduler"])
     if state.get("scaler"): scaler.load_state_dict(state["scaler"])
-    return int(state.get("samples_seen", 0)), int(state.get("epoch", 0))
+    checkpointer.load_state_dict(state.get("checkpoint_manager"))
+    window_train.load_state_dict(state.get("window_train"))
+    epoch_train.load_state_dict(state.get("epoch_train"))
+    cursor = TrainingCursor(**state["training_cursor"])
+    if not 0 <= cursor.epoch_articles_seen <= int(train_articles):
+        raise ValueError("Checkpoint epoch cursor is outside the training population.")
+    restore_rng_state(state.get("rng_state"))
+    return RestoredTrainingState(
+        cursor=cursor,
+        last_train={
+            str(key): float(value)
+            for key, value in state.get("last_train", {}).items()
+        },
+        last_val={
+            str(key): float(value)
+            for key, value in state.get("last_val", {}).items()
+        },
+    )
 
 
 def maybe_compile(model: torch.nn.Module, enabled: bool) -> torch.nn.Module:
@@ -448,7 +828,9 @@ def amp_dtype(name: str) -> torch.dtype:
 
 def set_seed(seed: int) -> None:
     random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
-    if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.benchmark = False
 
 
 if __name__ == "__main__":

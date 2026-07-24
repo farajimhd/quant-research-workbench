@@ -1,12 +1,24 @@
 # News Reaction Model V10
 
-V10 is a controlled learning-task ablation over V9. It keeps the complete V9
-input representation, encoder, chronological split, capacity, optimizer,
-scheduler, W&B project, checkpointing, and artifact workflow. It removes all 30
-ending/high/low range heads and uses one three-class opportunity head for each
-horizon. The only V9-to-V10 change is the target space: V10 removes the
-two-sided/ambiguous class and assigns every meaningful move to its larger
-absolute excursion.
+V10 is the three-class opportunity experiment derived from V9. Its target
+contract still removes all 30 ending/high/low range heads and uses one
+three-class opportunity head for each horizon. After the training-system audit,
+V10 also contains five fundamental corrections required for a trustworthy
+retrain:
+
+1. checkpoints restore the exact model, optimizer, scheduler, scaler, RNG,
+   training cursor, rolling metrics, epoch metrics, and best-checkpoint state;
+2. training uses bounded deterministic article-level shuffling, not only a
+   shuffled month order;
+3. every available horizon contributes equally to the optimized loss;
+4. rolling and full-epoch metrics are aggregated across every contributing
+   batch, while validation reports both horizon-macro and label-micro metrics;
+5. the model receives explicit causal exchange-session and publication-time
+   features.
+
+These corrections intentionally make new checkpoints architecture- and
+resume-incompatible with the earlier V10 baseline. Use a new run name; do not
+resume an earlier V10 checkpoint.
 
 V10 deliberately reads the completed V8 prepared table. There is no V10
 preparation job and no duplicate feature matrix.
@@ -56,15 +68,42 @@ OpenAI text-embedding-3-large (3,072)
 Point-in-time stock state (85)
     -> unchanged V8 state projection
 
-unchanged V8 gated fusion
+Causal publication time (11)
+    -> time projection
+
+three-channel gated fusion
     -> unchanged horizon-conditioned residual MLP
     -> one three-logit opportunity head per horizon
 ```
 
-The objective is sample-weighted cross entropy across all valid
-article/horizon labels. Validation reports accuracy, macro-F1, balanced
-accuracy, log loss, and mean winning-class confidence for every horizon and in
-aggregate.
+The objective is the arithmetic mean of per-horizon cross-entropy means in each
+batch. This prevents horizons with more available labels from owning the
+gradient. Validation reports per-horizon metrics, label-micro aggregate
+metrics, and horizon-macro accuracy, balanced accuracy, macro-F1, and log loss.
+`val/loss` is the horizon-macro log loss and is the best-checkpoint authority.
+
+The time channel is strictly causal and contains:
+
+- premarket, regular, after-hours, or closed-session one-hot state;
+- cyclic exchange-local minute and weekday;
+- scaled time to 09:30, 16:00, and 20:00 New York.
+
+It deliberately excludes ticker, issuer, year, and month.
+
+## Training and resume semantics
+
+Training reads one canonical source order and shuffles bounded 32,768-article
+buffers deterministically for each epoch. The buffer bounds memory while
+mixing articles across adjacent source batches. A mid-epoch resume reconstructs
+the same epoch permutation and skips only complete, durably committed batches.
+
+A resume is rejected if its dataset, range, population size, batch size,
+shuffle buffer, seed, model, optimizer, scheduler, epochs, or sample cap differs
+from the current run. This is intentional: changing any of these would no
+longer be an exact continuation.
+
+`checkpoint_best_train.pt` is no longer written from a single optimization
+batch. The authoritative model is `checkpoint_best_val.pt`.
 
 ## Position and P&L diagnostic
 
@@ -115,25 +154,28 @@ Optional model/batch profiler:
 python -m research.news_reaction_model.v10.run_profile_sizes --real-data
 ```
 
-Training:
+Corrected training:
 
 ```powershell
 python -m research.news_reaction_model.v10.run_train
 ```
 
-The default remains 15 epochs. A controlled 50-epoch constant-learning-rate
-run can be launched explicitly without overwriting the original run:
+The launcher now uses the aligned 50-epoch schedule: initial learning rate
+`3e-4`, one cosine cycle per epoch, `0.98` peak decay after each cycle, and
+`1e-6` minimum learning rate. It writes a new
+`time-balanced` run and keeps the previous V10 run as the baseline.
+
+Equivalent explicit command:
 
 ```powershell
-python -m research.news_reaction_model.v10.run_train --epochs 50 --learning-rate 1e-4 --scheduler none --scheduler-restarts 0 --run-name news-v10-opportunity-openai-stock-state-d384-l4-b2048-e50-lr1e4-constant
+python -m research.news_reaction_model.v10.run_train --epochs 50 --learning-rate 3e-4 --scheduler cosine --scheduler-restarts 49 --scheduler-cycle-decay 0.98 --scheduler-eta-min 1e-6 --shuffle-buffer-articles 32768 --run-name news-v10-opportunity-openai-stock-state-time-balanced-d384-l4-b2048-e50-cosine-r49-gamma098
 ```
 
-For the epoch-restart experiment, use one cosine cycle per epoch. The first
-cycle peaks at `3e-4`; every subsequent epoch multiplies its peak by `0.98`,
-while each cycle decays toward `1e-6`:
+To continue an interrupted corrected run, point to that same run's latest
+checkpoint and keep every training argument unchanged:
 
 ```powershell
-python -m research.news_reaction_model.v10.run_train --epochs 50 --learning-rate 3e-4 --scheduler cosine --scheduler-restarts 49 --scheduler-cycle-decay 0.98 --scheduler-eta-min 1e-6 --run-name news-v10-opportunity-openai-stock-state-d384-l4-b2048-e50-cosine-r49-gamma098
+python -m research.news_reaction_model.v10.run_train --resume-checkpoint D:\TradingML\runtimes\news-reaction-model\v10\train\news-v10-opportunity-openai-stock-state-time-balanced-d384-l4-b2048-e50-cosine-r49-gamma098\checkpoints\checkpoint_latest.pt
 ```
 
 The best validation-log-loss checkpoint is evaluated automatically after

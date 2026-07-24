@@ -11,10 +11,11 @@ from research.news_reaction_model.v10.opportunity import (
     OPPORTUNITY_CLASS_NAMES,
     OpportunityClass,
 )
+from research.news_reaction_model.v10.time_features import encode_time_features
 
 
 class LiveFeatureEncoder:
-    """Validate the unchanged V8 OpenAI-embedding plus stock-state input contract."""
+    """Validate text/state inputs and derive the corrected causal time channel."""
 
     def __init__(self, loader_config: LoaderConfig) -> None:
         self.loader_config = loader_config
@@ -22,6 +23,7 @@ class LiveFeatureEncoder:
     def encode(self, rows: list[dict[str, Any]], *, device: torch.device) -> dict[str, torch.Tensor]:
         embeddings: list[list[float]] = []
         states: list[list[float]] = []
+        times: list[list[float]] = []
         masks: list[list[bool]] = []
         for source in rows:
             embedding = source.get("openai_embedding")
@@ -38,17 +40,29 @@ class LiveFeatureEncoder:
                 )
             embedding_values = [float(value) for value in embedding]
             state_values = [float(value) for value in state]
+            published_at_utc = source.get("published_at_utc")
+            publication_session = source.get("publication_session")
+            if not published_at_utc or not publication_session:
+                raise ValueError(
+                    "V10 live inference requires published_at_utc and publication_session "
+                    "to reproduce the causal exchange-time channel."
+                )
             embeddings.append(embedding_values)
             states.append(state_values)
+            times.append(
+                encode_time_features(published_at_utc, publication_session)
+            )
             masks.append(
                 [
                     any(value != 0.0 for value in embedding_values),
                     any(value != 0.0 for value in state_values),
+                    True,
                 ]
             )
         return {
             "openai_embedding": torch.tensor(embeddings, dtype=torch.float32, device=device),
             "stock_state": torch.tensor(states, dtype=torch.float32, device=device),
+            "time_features": torch.tensor(times, dtype=torch.float32, device=device),
             "channel_mask": torch.tensor(masks, dtype=torch.bool, device=device),
         }
 

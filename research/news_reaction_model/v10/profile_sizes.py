@@ -141,6 +141,7 @@ def concatenate_batches(batches: list[NewsReactionBatch]) -> NewsReactionBatch:
         "channel_mask": torch.cat([batch.x["channel_mask"] for batch in batches], dim=0),
         "openai_embedding": torch.cat([batch.x["openai_embedding"] for batch in batches], dim=0),
         "stock_state": torch.cat([batch.x["stock_state"] for batch in batches], dim=0),
+        "time_features": torch.cat([batch.x["time_features"] for batch in batches], dim=0),
     }
     return NewsReactionBatch(
         x=x,
@@ -160,6 +161,7 @@ def slice_batch(batch: NewsReactionBatch, size: int, device: torch.device) -> Ne
         "channel_mask": batch.x["channel_mask"][:size].to(device),
         "openai_embedding": batch.x["openai_embedding"][:size].to(device),
         "stock_state": batch.x["stock_state"][:size].to(device),
+        "time_features": batch.x["time_features"][:size].to(device),
     }
     return NewsReactionBatch(
         x=x,
@@ -173,6 +175,7 @@ def profile_configuration(source: NewsReactionBatch, batch_size: int, d_model: i
     config = ModelConfig(
         openai_embedding_dim=loader.openai_embedding_dim,
         stock_state_dim=loader.stock_state_dim,
+        time_feature_dim=loader.time_feature_dim,
         d_model=d_model, hidden_dim=d_model, layers=layers,
     )
     try:
