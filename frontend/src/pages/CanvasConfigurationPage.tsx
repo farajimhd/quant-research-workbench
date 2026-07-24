@@ -456,7 +456,7 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     shortDescription: "Exact eligible-trade price levels plus a separate causal local swing and break hierarchy for every supported timeframe.",
     detailedDescription: "QMD has two related authorities. The immediate level book updates from every ordered eligible trade and retains price/volume evidence without waiting for a candle. Separately, each timeframe groups those same trades into fixed event-time buckets using the exact highest and lowest executed prices. A completed three-bucket neighborhood confirms the middle bucket only when it is a local high or low. Quotes may add liquidity context, but an unexecuted quote cannot create a swing, BoS, or CHoCH.",
     calculation: "For a selected timeframe, the middle completed trade bucket is a swing high when its exact high is at least the prior bucket high and strictly above the following bucket high; swing lows use the inverse rule. The last bucket in a same-price plateau owns the pivot, preventing duplicates. Confirmation occurs only after the following bucket is complete, so history never repaints. Only the latest confirmed local high and low can generate that timeframe's break. The first eligible trade through it emits Crossing; a second confirming trade or 100 ms of persistence emits the accepted Break, BoS, or CHoCH.",
-    readingGuide: "Select the same timeframe as the chart to audit its local hierarchy. SH and SL lines are bounded: they start at the exact pivot trade and end when crossed or when a newer same-side local swing supersedes them. BoS continues the last accepted break direction; CHoCH is the first accepted break in the opposite direction. The pivot time shows where the extreme occurred, while the tooltip's later confirmation time is the earliest moment a strategy could have known it. Current support/resistance and its volume footprint remain a separate immediate level-book view.",
+    readingGuide: "The chart automatically enables only the swing and break layers matching its current timeframe; the other timeframe layers stay listed for audit but cannot be manually enabled. SH and SL lines are bounded: they start at the exact pivot trade and end when crossed or when a newer same-side local swing supersedes them. BoS continues the last accepted break direction; CHoCH is the first accepted break in the opposite direction. The pivot time shows where the extreme occurred, while the tooltip's later confirmation time is the earliest moment a strategy could have known it. Current support/resistance and its volume footprint remain a separate immediate level-book view.",
     bullishEvidence: "Bullish evidence increases when resistance is crossed and accepted, an upward BoS or CHoCH is confirmed for the selected timeframe, support survives retests, and buyer-initiated footprint volume concentrates at or above the level.",
     bearishEvidence: "Bearish evidence increases when support is crossed and accepted, a downward BoS or CHoCH is confirmed for the selected timeframe, resistance survives retests, and seller-initiated footprint volume concentrates at or below the level.",
     timeframeBehavior: "All intervals consume the same ordered eligible trades, but each interval owns its local extrema and break state. The timeframe controls the event-time neighborhood used to confirm a swing; it does not resample chart candle closes or inherit another timeframe's breaks. A 1-second BoS therefore breaks the latest confirmed 1-second swing, while 5-second and 1-minute structure remain independent.",
@@ -474,6 +474,18 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
       { label: "Auction references", description: "Session and premarket extremes, opening range, eligible-trade volume POC, estimated LULD, completed 52-week/prior-month levels, and round prices remain a separate reference-level package.", tone: "neutral" },
     ],
     caveats: ["QMD observes consolidated Level-1 NBBO and eligible prints, not full venue depth or hidden liquidity.", "A local swing is unknowable at its pivot instant; it becomes causal only after the following timeframe bucket completes. Strategies must use confirmed_at, never pivot_at.", "Nearest means absolute distance from current price. Strongest combines causal strength and confidence; it does not necessarily mean closest or most likely to hold.", "The footprint classifies aggressor side from available trade and NBBO evidence and therefore cannot reveal hidden orders.", "BoS, CHoCH, support, and resistance are deterministic evidence states—not trade instructions or win probabilities."],
+  }),
+  displayIndicator("indicator.qmd_level_footprint", "QMD Level Volume Footprint", "price_action", [
+    "qmd_structure_active_levels",
+  ], "price", {
+    shortDescription: "Price-aligned executed-volume histograms around the active QMD event-native level book.",
+    detailedDescription: "Each active level carries nine price bins spanning four minimum ticks below through four ticks above the level. The chart unions identical price bins so overlapping level windows never double-count the same session volume.",
+    calculation: "For every eligible trade, QMD classifies aggressor side from trade and NBBO evidence and accumulates total, buyer-initiated, seller-initiated, and neutral volume by exact tick price. The visible profile uses the nearest active levels on each side plus any strongest level not already included.",
+    readingGuide: "Bar length compares total executed volume across the displayed level neighborhoods. Red is seller-initiated volume, gray is neutral or unclassified volume, and green is buyer-initiated volume. Read the profile together with the nearby support or resistance—not as a standalone direction signal.",
+    bullishEvidence: "Relatively heavy buyer-initiated volume at a support level, followed by price holding above it, supports evidence of acceptance or absorption.",
+    bearishEvidence: "Relatively heavy seller-initiated volume at a resistance level, followed by price rejecting below it, supports evidence of supply or absorption.",
+    timeframeBehavior: "The eligible-trade volume authority is independent of chart candles and promotion metadata. Changing chart timeframe changes candle presentation but does not recompute, average, or hide the active level-book trade volume.",
+    caveats: ["The profile contains only eligible consolidated trades, not hidden liquidity or full depth.", "High volume can mean acceptance or a contested level; price response determines which.", "Aggressor classification can be neutral when trade and NBBO evidence is insufficient."],
   }),
 ];
 
@@ -2014,6 +2026,9 @@ function historicalMarketLevelZones(
       timeframe,
     );
   }
+  if (visibleIndicators.includes("indicator.qmd_level_footprint")) {
+    pushLevelVolumeFootprint(zones, rows, chartEnd);
+  }
   if (visibleIndicators.includes("indicator.qmd_reference_levels")) {
     pushGenericStructureReferences(zones, rows, chartEnd);
   }
@@ -2044,7 +2059,6 @@ function pushStructureSwingLevels(
         displayItemId: "indicator.qmd_generic_structure",
         fillOpacity: 0.018,
         historicalLabelsDefault: false,
-        historicalTagLimitDefault: 0,
         label: `${title} swing ${side}`,
         legendLabel: `${title} · Swing references`,
         minPixelHeight: 3,
@@ -2204,7 +2218,6 @@ function pushCurrentStructureLevels(
         fillColor: color,
         fillOpacity: 0.04 + 0.16 * confidence,
         historicalLabelsDefault: false,
-        historicalTagLimitDefault: 0,
         label: `${sideName === "support" ? "Support" : "Resistance"} ${index + 1} · ${timeframe} promoted · ${percentLabel(confidence)} confidence · ${percentLabel(strength)} strength · ${formatQuantity(candidate.total_volume)} traded (${formatQuantity(candidate.buy_volume)} buy / ${formatQuantity(candidate.sell_volume)} sell)`,
         latest: true,
         legendLabel: "Current support & resistance",
@@ -2215,6 +2228,85 @@ function pushCurrentStructureLevels(
         strength,
         upper: candidate.upper > 0 ? candidate.upper : candidate.price,
       });
+    });
+  });
+}
+
+function pushLevelVolumeFootprint(
+  zones: NonNullable<ChartPayload["price_zones"]>,
+  rows: HistoricalIndicator[],
+  chartEnd: number,
+) {
+  const latest = rows[rows.length - 1];
+  const candidates = Array.isArray(latest?.qmd_structure_active_levels)
+    ? latest.qmd_structure_active_levels
+      .filter(isQmdStructureLevelCandidate)
+    : [];
+  if (!candidates.length) return;
+  const selectedById = new Map<string, QmdStructureLevelCandidate>();
+  const levelKey = (candidate: QmdStructureLevelCandidate) =>
+    `${candidate.created_at_ms}:${candidate.side}:${candidate.price.toFixed(8)}`;
+  ([1, -1] as const).forEach((side) => {
+    const sideCandidates = candidates
+      .filter((candidate) => candidate.side === side)
+      .sort((left, right) => left.distance - right.distance || right.evidence_score - left.evidence_score);
+    sideCandidates.slice(0, 3).forEach((candidate) => selectedById.set(levelKey(candidate), candidate));
+    const strongest = sideCandidates.reduce<QmdStructureLevelCandidate | null>(
+      (best, candidate) => !best || candidate.evidence_score > best.evidence_score ? candidate : best,
+      null,
+    );
+    if (strongest) selectedById.set(levelKey(strongest), strongest);
+  });
+  const binsByPrice = new Map<string, {
+    buyVolume: number;
+    neutralVolume: number;
+    price: number;
+    sellVolume: number;
+    totalVolume: number;
+  }>();
+  selectedById.forEach((candidate) => {
+    candidate.footprint.forEach((bin) => {
+      if (!(Number(bin.price) > 0) || !(Number(bin.total_volume) > 0)) return;
+      const key = Number(bin.price).toFixed(8);
+      const current = binsByPrice.get(key);
+      binsByPrice.set(key, {
+        buyVolume: Math.max(current?.buyVolume ?? 0, Number(bin.buy_volume) || 0),
+        neutralVolume: Math.max(current?.neutralVolume ?? 0, Number(bin.neutral_volume) || 0),
+        price: Number(bin.price),
+        sellVolume: Math.max(current?.sellVolume ?? 0, Number(bin.sell_volume) || 0),
+        totalVolume: Math.max(current?.totalVolume ?? 0, Number(bin.total_volume) || 0),
+      });
+    });
+  });
+  const orderedBins = [...binsByPrice.values()].sort((left, right) => left.price - right.price);
+  orderedBins.forEach((bin, index) => {
+    const nextPrice = orderedBins[index + 1]?.price;
+    const previousPrice = orderedBins[index - 1]?.price;
+    const tick = nextPrice && nextPrice > bin.price
+      ? nextPrice - bin.price
+      : previousPrice && bin.price > previousPrice
+        ? bin.price - previousPrice
+        : Math.max(bin.price * 0.00002, 0.0001);
+    zones.push({
+      annotationKind: "level-footprint",
+      color: "var(--muted-foreground)",
+      defaultVisible: true,
+      displayItemId: "indicator.qmd_level_footprint",
+      end: chartEnd,
+      fillOpacity: 0.5,
+      label: `${formatLevelPrice(bin.price)} · ${formatQuantity(bin.totalVolume)} traded (${formatQuantity(bin.buyVolume)} buy / ${formatQuantity(bin.sellVolume)} sell / ${formatQuantity(bin.neutralVolume)} neutral)`,
+      latest: true,
+      legendLabel: "Level volume footprint",
+      lower: bin.price,
+      buyVolume: bin.buyVolume,
+      neutralVolume: bin.neutralVolume,
+      renderMode: "zone",
+      sellVolume: bin.sellVolume,
+      settingsId: "indicator.qmd_level_footprint",
+      start: chartEnd,
+      tone: "neutral",
+      totalVolume: bin.totalVolume,
+      upper: bin.price + tick,
     });
   });
 }
@@ -2231,6 +2323,7 @@ function isQmdStructureLevelCandidate(value: unknown): value is QmdStructureLeve
     && Number.isFinite(candidate.distance)
     && Number.isFinite(candidate.evidence_score)
     && Array.isArray(candidate.promotions)
+    && Array.isArray(candidate.footprint)
     && (candidate.side === 1 || candidate.side === -1);
 }
 
@@ -2268,7 +2361,6 @@ function pushStructureZoneSegment(
     fillColor: color,
     fillOpacity: 0.01 + spec.strength * 0.04 * scopeOpacity,
     historicalLabelsDefault: false,
-    historicalTagLimitDefault: 0,
     label: `${spec.label} · ${percentLabel(spec.strength)} strength · ${percentLabel(spec.confidence)} confidence`,
     latest,
     legendLabel: `${spec.scope[0].toUpperCase()}${spec.scope.slice(1)} zones`,
@@ -2284,16 +2376,11 @@ function pushStructureZoneSegment(
 const QMD_STRUCTURE_TIMEFRAMES = ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"] as const;
 
 function qmdStructureSwingLayerId(timeframe: string) {
-  return `indicator.qmd_generic_structure.v8.${timeframe}.swings`;
+  return `indicator.qmd_generic_structure.v9.${timeframe}.swings`;
 }
 
 function qmdStructureBreakLayerId(timeframe: string) {
-  return `indicator.qmd_generic_structure.v8.${timeframe}.breaks`;
-}
-
-function qmdStructureLineWidth(timeframe: string) {
-  const index = QMD_STRUCTURE_TIMEFRAMES.indexOf(timeframe as typeof QMD_STRUCTURE_TIMEFRAMES[number]);
-  return index < 0 ? 1.5 : 1.25 + index * 0.12;
+  return `indicator.qmd_generic_structure.v9.${timeframe}.breaks`;
 }
 
 function pushEventStructureSwingLevels(
@@ -2339,8 +2426,8 @@ function pushEventStructureSwingLevels(
         axisLabelDefault: false,
         borderColor: color,
         borderOpacity: 0.72,
-        borderStyle: "solid",
-        borderWidth: qmdStructureLineWidth(timeframe),
+        borderStyle: "dashed",
+        borderWidth: 1,
         color,
         compactLabel: swingHigh ? "SH" : "SL",
         confidence: Number(event.confidence || 0),
@@ -2349,7 +2436,6 @@ function pushEventStructureSwingLevels(
         end,
         fillOpacity: 0,
         historicalLabelsDefault: timeframe === selectedTimeframe,
-        historicalTagLimitDefault: timeframe === selectedTimeframe ? 8 : 0,
         label: `${timeframe} local swing ${swingHigh ? "high" : "low"} · ${formatLevelPrice(price)} · causal confirmation ${event.confirmed_at} · ${percentLabel(Number(event.confidence || 0))} confidence`,
         latest: !terminal,
         legendLabel: `${timeframe} · Swing levels`,
@@ -2361,6 +2447,7 @@ function pushEventStructureSwingLevels(
         strength: Number(event.strength || 0),
         tone: swingHigh ? "sell" : "buy",
         upper: price,
+        visibilityLocked: true,
         zoneHeightMode: "price",
       });
     });
@@ -2428,8 +2515,8 @@ function pushStructureEvents(
       annotationKind: kind === "structure_break" ? "structure-break" : kind === "choch" ? "choch" : "bos",
       borderColor: bullish ? "var(--success)" : "var(--danger)",
       borderOpacity: 0.82,
-      borderStyle: kind === "choch" ? "dashed" : "solid",
-      borderWidth: qmdStructureLineWidth(scale) + 0.35,
+      borderStyle: "dashed",
+      borderWidth: 1,
       color: bullish ? "var(--success)" : "var(--danger)",
       compactLabel: label,
       displayItemId: "indicator.qmd_generic_structure",
@@ -2437,7 +2524,6 @@ function pushStructureEvents(
       eventTime: confirmedAt,
       fillOpacity: 0,
       historicalLabelsDefault: scale === selectedTimeframe,
-      historicalTagLimitDefault: scale === selectedTimeframe ? 8 : 0,
       label: `${bullish ? "Bullish" : "Bearish"} ${label} · ${scale || "structure"} · ${formatLevelPrice(price)}`,
       latest: false,
       defaultVisible: scale === selectedTimeframe,
@@ -2449,6 +2535,7 @@ function pushStructureEvents(
       start: pivotAt,
       tone: bullish ? "buy" : "sell",
       upper: price,
+      visibilityLocked: true,
       zoneHeightMode: "price",
     });
   });
@@ -2495,7 +2582,6 @@ function pushGenericStructureReferences(
       displayItemId: "indicator.qmd_reference_levels",
       fillOpacity: 0.025,
       historicalLabelsDefault: false,
-      historicalTagLimitDefault: 0,
       label,
       legendLabel: groupedLegendLabel,
       minPixelHeight: 3,
@@ -2517,7 +2603,6 @@ type LevelZoneStyle = {
   displayItemId: string;
   fillOpacity: number;
   historicalLabelsDefault?: boolean;
-  historicalTagLimitDefault?: number;
   label: string;
   legendLabel: string;
   minPixelHeight: number;
@@ -2579,7 +2664,6 @@ function pushHistoricalLevelSegment(
     fillColor: style.color,
     fillOpacity: style.fillOpacity,
     historicalLabelsDefault: style.historicalLabelsDefault,
-    historicalTagLimitDefault: style.historicalTagLimitDefault,
     label: `${style.label} · ${formatLevelPrice(value)}`,
     latest: endIndex >= rows.length,
     legendLabel: style.legendLabel,

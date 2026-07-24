@@ -103,7 +103,7 @@ type TradeAnnotation = {
   triggerPrice?: number;
 };
 type PriceZone = {
-  annotationKind?: "band" | "bos" | "choch" | "structure-break" | "level" | "liquidity-resistance" | "liquidity-support" | "signal-episode-rail" | "signal-episode-range" | "swing-high" | "swing-low";
+  annotationKind?: "band" | "bos" | "choch" | "level-footprint" | "structure-break" | "level" | "liquidity-resistance" | "liquidity-support" | "signal-episode-rail" | "signal-episode-range" | "swing-high" | "swing-low";
   axisLabelDefault?: boolean;
   borderColor?: string;
   borderOpacity?: number;
@@ -131,7 +131,6 @@ type PriceZone = {
   fillColor?: string;
   fillOpacity?: number;
   historicalLabelsDefault?: boolean;
-  historicalTagLimitDefault?: number;
   label: string;
   latest?: boolean;
   legendLabel?: string;
@@ -144,7 +143,12 @@ type PriceZone = {
   start: number;
   strength?: number;
   tone?: "buy" | "sell" | "neutral";
+  totalVolume?: number;
+  buyVolume?: number;
+  sellVolume?: number;
+  neutralVolume?: number;
   upper: number;
+  visibilityLocked?: boolean;
   zoneHeightMode?: string;
 };
 export type LiveEntryLine = {
@@ -247,7 +251,6 @@ type LegendSeriesSettings = {
   labelFontSize?: number;
   lineStyle?: LegendLineStyle;
   lineWidth?: number;
-  maxHistoricalTags?: number;
   opacity?: number;
   preset?: "micro" | "tactical" | "context";
   showConnectors?: boolean;
@@ -1736,7 +1739,6 @@ type LegendItem = {
   label: string;
   lineStyle: LegendLineStyle;
   lineWidth: number;
-  maxHistoricalTags?: number;
   opacity: number;
   preset?: "micro" | "tactical" | "context";
   presetOptions?: Array<{ description?: string; label: string; value: "micro" | "tactical" | "context" }>;
@@ -1758,6 +1760,7 @@ type LegendItem = {
   supportsPreset?: boolean;
   value: string;
   visible: boolean;
+  visibilityLocked?: boolean;
 };
 
 function ChartLegend({
@@ -1816,9 +1819,12 @@ function ChartLegend({
                 {item.configurable ? (
                   <span className="legend-row-actions">
                     <button
-                      aria-label={item.visible ? `Hide ${item.label}` : `Show ${item.label}`}
-                      onClick={() => onUpdate(item.key, { visible: !item.visible })}
-                      title={item.visible ? "Hide" : "Show"}
+                      aria-label={item.visibilityLocked ? `${item.label} follows chart timeframe` : item.visible ? `Hide ${item.label}` : `Show ${item.label}`}
+                      disabled={item.visibilityLocked}
+                      onClick={() => {
+                        if (!item.visibilityLocked) onUpdate(item.key, { visible: !item.visible });
+                      }}
+                      title={item.visibilityLocked ? "Visibility follows the chart timeframe" : item.visible ? "Hide" : "Show"}
                       type="button"
                     >
                       {item.visible ? <Eye size={13} /> : <EyeOff size={13} />}
@@ -2021,14 +2027,14 @@ function LegendEditor({
           <span className="legend-range-control">
             <input
               aria-label={`${item.label} history bars`}
-              min={10}
-              max={500}
+              min={20}
+              max={1000}
               step={10}
               type="range"
-              value={item.historyBars ?? 100}
+              value={item.historyBars ?? 20}
               onChange={(event) => onUpdate({ historyBars: Number(event.target.value) })}
             />
-            <output>{item.historyBars ?? 100} bars</output>
+            <output>{item.historyBars ?? 20} bars</output>
           </span>
         </label>
       ) : null}
@@ -2073,21 +2079,10 @@ function LegendEditor({
             </label>
           ) : null}
           {item.supportsHistoricalLabels ? (
-            <>
-              <label className="legend-checkbox">
-                <input checked={item.showHistoricalLabels !== false} type="checkbox" onChange={(event) => onUpdate({ showHistoricalLabels: event.target.checked })} />
-                Labels on historical lines
-              </label>
-              {item.showHistoricalLabels !== false ? (
-                <label>
-                  {item.supportsConnectors ? "Break label limit" : "Historical label limit"}
-                  <span className="legend-range-control">
-                    <input min={0} max={16} step={1} type="range" value={item.maxHistoricalTags ?? 6} onChange={(event) => onUpdate({ maxHistoricalTags: Number(event.target.value) })} />
-                    <output>{item.maxHistoricalTags ?? 6}</output>
-                  </span>
-                </label>
-              ) : null}
-            </>
+            <label className="legend-checkbox">
+              <input checked={item.showHistoricalLabels !== false} type="checkbox" onChange={(event) => onUpdate({ showHistoricalLabels: event.target.checked })} />
+              Labels on historical lines
+            </label>
           ) : null}
           {item.supportsConnectors ? (
             <label className="legend-checkbox">
@@ -2959,7 +2954,6 @@ function buildPriceZoneLegendItems(
       labelFontSize: settings.labelFontSize,
       lineStyle: settings.lineStyle,
       lineWidth: settings.lineWidth,
-      maxHistoricalTags: settings.maxHistoricalTags,
       opacity: settings.opacity,
       preset: settings.preset,
       presetOptions: displayItem?.presetOptions,
@@ -2974,17 +2968,19 @@ function buildPriceZoneLegendItems(
       supportsSemanticColorEditing: itemZones.some((zone) =>
         zone.annotationKind === "swing-high"
         || zone.annotationKind === "swing-low"
+        || zone.annotationKind === "level-footprint"
         || isStructureBreakZone(zone)),
       supportsCurrentLevelCount: itemZones.some((zone) => Boolean(zone.currentLevelSide)),
       supportsAxisLabel: itemZones.some((zone) => typeof zone.axisLabelDefault === "boolean"),
       supportsHistoricalLabels: itemZones.some((zone) => (zone.renderMode === "line" && Boolean(zone.compactLabel)) || isStructureBreakZone(zone)),
       supportsHistoryWindow: itemZones.some((zone) => !zone.latest),
-      supportsStroke: !itemZones.some((zone) => Boolean(zone.currentLevelSide)),
+      supportsStroke: !itemZones.some((zone) => Boolean(zone.currentLevelSide) || zone.annotationKind === "level-footprint"),
       supportsPreset: Boolean(displayItem?.presetOptions?.length),
       value: itemZones.some((zone) => zone.annotationKind === "signal-episode-range")
         ? `${episodeIds.size} episode${episodeIds.size === 1 ? "" : "s"}`
         : `${selectedZones.length} level${selectedZones.length === 1 ? "" : "s"}`,
       visible: settings.visible,
+      visibilityLocked: itemZones.some((zone) => zone.visibilityLocked),
     };
   });
 }
@@ -3405,11 +3401,10 @@ function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettin
     color: resolveChartColor(series.color),
     downColor: resolveChartColor("var(--danger)"),
     currentLevelCount: 3,
-    historyBars: 100,
+    historyBars: 20,
     labelFontSize: 11,
     lineStyle: series.lineStyle ?? "solid",
     lineWidth: Math.max(1, Math.min(4, Math.round(series.lineWidth || 1))),
-    maxHistoricalTags: 10,
     opacity: 1,
     preset: "micro",
     showConnectors: true,
@@ -3429,11 +3424,10 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
     color: resolveChartColor(stored.color || defaults.color),
     downColor: validHexColor(stored.downColor, defaults.downColor),
     currentLevelCount: Math.max(1, Math.min(6, Math.round(stored.currentLevelCount ?? defaults.currentLevelCount))),
-    historyBars: Math.max(10, Math.min(500, Math.round(stored.historyBars ?? defaults.historyBars))),
+    historyBars: Math.max(20, Math.min(1000, Math.round(stored.historyBars ?? defaults.historyBars))),
     labelFontSize: Math.max(9, Math.min(18, Math.round(stored.labelFontSize ?? defaults.labelFontSize))),
     lineStyle: stored.lineStyle || defaults.lineStyle,
     lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? defaults.lineWidth))),
-    maxHistoricalTags: Math.max(0, Math.min(30, Math.round(stored.maxHistoricalTags ?? defaults.maxHistoricalTags))),
     opacity: clampNumber(stored.opacity ?? defaults.opacity, 0, 1, 1),
     preset: stored.preset === "tactical" || stored.preset === "context" ? stored.preset : defaults.preset,
     showConnectors: stored.showConnectors ?? defaults.showConnectors,
@@ -3453,7 +3447,6 @@ type ResolvedPriceZoneLegendSettings = {
   labelFontSize: number;
   lineStyle: LegendLineStyle;
   lineWidth: number;
-  maxHistoricalTags: number;
   opacity: number;
   preset: "micro" | "tactical" | "context";
   showConnectors: boolean;
@@ -3468,18 +3461,17 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
   return {
     currentLevelCount: Math.max(1, Math.min(6, Math.round(stored.currentLevelCount ?? 3))),
     downColor: validHexColor(stored.downColor, resolveChartColor("var(--danger)")),
-    historyBars: Math.max(10, Math.min(500, Math.round(stored.historyBars ?? 100))),
+    historyBars: Math.max(20, Math.min(1000, Math.round(stored.historyBars ?? 20))),
     labelFontSize: Math.max(9, Math.min(18, Math.round(stored.labelFontSize ?? 11))),
     lineStyle: stored.lineStyle ?? zoneBorderStyle(zone?.borderStyle),
     lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? zone?.borderWidth ?? 1))),
-    maxHistoricalTags: Math.max(0, Math.min(30, Math.round(stored.maxHistoricalTags ?? zone?.historicalTagLimitDefault ?? 10))),
     opacity: clampNumber(stored.opacity ?? 1, 0, 1, 1),
     preset: stored.preset === "tactical" || stored.preset === "context" ? stored.preset : "micro",
     showConnectors: stored.showConnectors !== false,
     showAxisLabel: stored.showAxisLabel ?? zone?.axisLabelDefault ?? false,
     showHistoricalLabels: stored.showHistoricalLabels ?? zone?.historicalLabelsDefault ?? false,
     upColor: validHexColor(stored.upColor, resolveChartColor("var(--success)")),
-    visible: stored.visible ?? zone?.defaultVisible ?? true,
+    visible: zone?.visibilityLocked ? zone.defaultVisible !== false : stored.visible ?? zone?.defaultVisible ?? true,
   };
 }
 
@@ -4335,9 +4327,21 @@ function drawPriceZonePrimitiveGeometry(
     const settings = resolvePriceZoneLegendSettings(legendSettings, priceZoneLegendKey(id), itemZones[itemZones.length - 1]);
     if (!settings.visible) return;
     const historyStart = candles[Math.max(0, candles.length - settings.historyBars)]?.time ?? Number.NEGATIVE_INFINITY;
+    if (itemZones.some((zone) => zone.annotationKind === "level-footprint")) {
+      drawLevelFootprintProfile(
+        priceSeries,
+        context,
+        width,
+        height,
+        itemZones,
+        settings,
+        chartBackground,
+      );
+      return;
+    }
     itemZones.forEach((zone) => {
       if (zone.preset && zone.preset !== settings.preset) return;
-      if (!(zone.latest || zone.end > historyStart)) return;
+      if (!priceZoneWithinHistory(zone, historyStart)) return;
       if (
         zone.currentLevelSide
         && !zone.currentLevelStrongest
@@ -4530,6 +4534,62 @@ function drawSignalEpisodePrimitive(
   context.restore();
 }
 
+function drawLevelFootprintProfile(
+  priceSeries: ISeriesApi<"Candlestick">,
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  zones: PriceZone[],
+  settings: ResolvedPriceZoneLegendSettings,
+  chartBackground: string,
+) {
+  const validZones = zones.filter((zone) =>
+    zone.annotationKind === "level-footprint"
+    && Number.isFinite(zone.totalVolume)
+    && Number(zone.totalVolume) > 0,
+  );
+  if (!validZones.length) return;
+  const maximumVolume = Math.max(...validZones.map((zone) => Number(zone.totalVolume) || 0));
+  if (!(maximumVolume > 0)) return;
+  const profileWidth = Math.min(220, Math.max(90, width * 0.18));
+  const right = Math.max(0, width - 4);
+  const upColor = validHexColor(settings.upColor, resolveChartColor("var(--success)"));
+  const downColor = validHexColor(settings.downColor, resolveChartColor("var(--danger)"));
+  const neutralColor = validHexColor(resolveChartColor("var(--muted-foreground)"), "#73778A");
+  context.save();
+  context.globalCompositeOperation = "source-over";
+  validZones.forEach((zone) => {
+    const center = priceSeries.priceToCoordinate(zone.lower);
+    if (center === null || center < 0 || center > height) return;
+    const nextPrice = zone.upper > zone.lower ? zone.upper : zone.lower + Math.max(Math.abs(zone.lower) * 0.00002, 0.0001);
+    const next = priceSeries.priceToCoordinate(nextPrice);
+    const rowHeight = Math.max(2, Math.min(10, next === null ? 4 : Math.abs(next - center) * 0.82));
+    const totalVolume = Number(zone.totalVolume) || 0;
+    const barWidth = profileWidth * totalVolume / maximumVolume;
+    const buyWidth = barWidth * Math.max(0, Number(zone.buyVolume) || 0) / totalVolume;
+    const sellWidth = barWidth * Math.max(0, Number(zone.sellVolume) || 0) / totalVolume;
+    const neutralWidth = Math.max(0, barWidth - buyWidth - sellWidth);
+    let cursor = right - barWidth;
+    context.fillStyle = rgbaFromHex(chartBackground, Math.min(0.78, 0.26 + settings.opacity * 0.42));
+    context.fillRect(cursor, center - rowHeight / 2, barWidth, rowHeight);
+    if (sellWidth > 0) {
+      context.fillStyle = rgbaFromHex(downColor, 0.28 + settings.opacity * 0.62);
+      context.fillRect(cursor, center - rowHeight / 2, sellWidth, rowHeight);
+      cursor += sellWidth;
+    }
+    if (neutralWidth > 0) {
+      context.fillStyle = rgbaFromHex(neutralColor, 0.18 + settings.opacity * 0.46);
+      context.fillRect(cursor, center - rowHeight / 2, neutralWidth, rowHeight);
+      cursor += neutralWidth;
+    }
+    if (buyWidth > 0) {
+      context.fillStyle = rgbaFromHex(upColor, 0.28 + settings.opacity * 0.62);
+      context.fillRect(cursor, center - rowHeight / 2, buyWidth, rowHeight);
+    }
+  });
+  context.restore();
+}
+
 function signalEpisodeStepCoordinates(
   chart: IChartApi,
   candles: Candle[],
@@ -4593,18 +4653,20 @@ function drawPriceZonePrimitiveLabels(
   orderedLabelGroups.forEach(([id, itemZones]) => {
     const settings = resolvePriceZoneLegendSettings(legendSettings, priceZoneLegendKey(id), itemZones[itemZones.length - 1]);
     if (!settings.visible) return;
+    if (itemZones.some((zone) => zone.annotationKind === "level-footprint")) return;
     const historyStart = candles[Math.max(0, candles.length - settings.historyBars)]?.time ?? Number.NEGATIVE_INFINITY;
     const eligibleZones = itemZones.filter((zone) => {
       if (zone.preset && zone.preset !== settings.preset) return false;
-      if (!(zone.latest || zone.end > historyStart)) return false;
+      if (!priceZoneWithinHistory(zone, historyStart)) return false;
       if (!zone.currentLevelSide) return true;
       return Boolean(zone.currentLevelStrongest)
         || (zone.currentLevelDistanceRank ?? Number.POSITIVE_INFINITY) <= settings.currentLevelCount;
     });
     const historicalTagZones = new Set(
-      settings.maxHistoricalTags > 0
-        ? eligibleZones.filter((zone) => Boolean(zone.compactLabel) && (!zone.latest || isStructureBreakZone(zone))).slice(-settings.maxHistoricalTags)
-        : [],
+      eligibleZones
+        .filter((zone) => Boolean(zone.compactLabel))
+        .sort((first, second) => priceZoneLabelTime(first) - priceZoneLabelTime(second))
+        .slice(-settings.historyBars),
     );
     const orderedLabelZones = [...eligibleZones].sort((first, second) => (
       priceZoneLabelPriority(first) - priceZoneLabelPriority(second)
@@ -4677,6 +4739,22 @@ function drawPriceZonePrimitiveLabels(
             width,
             plotBottom,
             barWidth,
+          );
+        } else if (labelSpan && isSwingReferenceZone(zone)) {
+          candleBoxes ??= visibleCandleBoxes(chart, priceSeries, candles, barWidth, width, plotBottom);
+          drawAnchoredSwingLabel(
+            context,
+            zone.compactLabel,
+            coordinates.start,
+            center,
+            borderColor,
+            chartBackground,
+            priceZoneLineLabelPlacement(zone),
+            settings,
+            lineLabelBoxes,
+            candleBoxes,
+            width,
+            plotBottom,
           );
         } else if (labelSpan) {
           candleBoxes ??= visibleCandleBoxes(chart, priceSeries, candles, barWidth, width, plotBottom);
@@ -4755,6 +4833,15 @@ function isStructureBreakZone(zone: PriceZone) {
   return zone.annotationKind === "bos"
     || zone.annotationKind === "choch"
     || zone.annotationKind === "structure-break";
+}
+
+function priceZoneWithinHistory(zone: PriceZone, historyStart: number) {
+  if (zone.annotationKind === "level-footprint") return true;
+  if (isStructureBreakZone(zone)) return (zone.eventTime ?? zone.end) >= historyStart;
+  if (zone.annotationKind === "swing-high" || zone.annotationKind === "swing-low") {
+    return zone.start >= historyStart;
+  }
+  return Boolean(zone.latest) || zone.end > historyStart;
 }
 
 function isSwingReferenceZone(zone: PriceZone) {
@@ -4872,6 +4959,70 @@ function drawPriceZoneLineLabel(
     selected = box;
     break;
   }
+  if (selected) {
+    context.fillStyle = chartBackground;
+    context.globalAlpha = 1;
+    context.fillRect(selected.left, selected.top, labelWidth, labelHeight);
+    context.globalAlpha = settings.opacity;
+    context.fillStyle = color;
+    context.textBaseline = "middle";
+    context.fillText(text, selected.left + 4, selected.top + labelHeight / 2);
+    placed.push(selected);
+  }
+  context.restore();
+  return selected !== null;
+}
+
+function drawAnchoredSwingLabel(
+  context: CanvasRenderingContext2D,
+  text: string,
+  pivotX: number,
+  lineY: number,
+  color: string,
+  chartBackground: string,
+  placement: "above" | "below",
+  settings: ResolvedPriceZoneLegendSettings,
+  placed: CanvasBox[],
+  candleBoxes: CanvasBox[],
+  layerWidth: number,
+  plotBottom: number,
+) {
+  if (!Number.isFinite(pivotX) || lineY < 2 || lineY > plotBottom - 2) return false;
+  const fontSize = Math.max(9, settings.labelFontSize);
+  context.save();
+  context.font = `600 ${fontSize}px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+  const labelWidth = Math.ceil(context.measureText(text).width) + 8;
+  const labelHeight = fontSize + 5;
+  const leftCandidates = [
+    pivotX - labelWidth / 2,
+    pivotX + 4,
+    pivotX - labelWidth - 4,
+  ];
+  const direction = placement === "above" ? -1 : 1;
+  let selected: CanvasBox | null = null;
+  let inBoundsFallback: CanvasBox | null = null;
+  for (let lane = 1; lane <= 3 && !selected; lane += 1) {
+    const top = direction < 0
+      ? lineY - lane * (labelHeight + 3)
+      : lineY + 3 + (lane - 1) * (labelHeight + 3);
+    for (const left of leftCandidates) {
+      const candidate = { bottom: top + labelHeight, left, right: left + labelWidth, top };
+      const insidePlot = candidate.left >= 2
+        && candidate.right <= layerWidth - 2
+        && candidate.top >= 2
+        && candidate.bottom <= plotBottom - 2;
+      if (!insidePlot) continue;
+      inBoundsFallback ??= candidate;
+      if (placed.some((item) => boxesOverlap(candidate, item, 3))) continue;
+      if (candleBoxes.some((candleBox) => boxesOverlap(candidate, candleBox, 2))) continue;
+      selected = candidate;
+      break;
+    }
+  }
+  // Every selected-timeframe swing is an audit object. If candles occupy every
+  // nearby lane, retain the causal pivot anchor rather than silently dropping
+  // the SH/SL label.
+  selected ??= inBoundsFallback;
   if (selected) {
     context.fillStyle = chartBackground;
     context.globalAlpha = 1;
