@@ -12,7 +12,12 @@ import torch
 from research.news_reaction_model import v9, v10
 from research.news_reaction_model.v9.config import ModelConfig as V9ModelConfig
 from research.news_reaction_model.v9.config import TrainConfig as V9TrainConfig
-from research.news_reaction_model.v10.config import LoaderConfig, ModelConfig, TrainConfig
+from research.news_reaction_model.v10.config import (
+    ExperimentConfig,
+    LoaderConfig,
+    ModelConfig,
+    TrainConfig,
+)
 from research.news_reaction_model.v10.data import (
     make_dummy_batch,
     prepared_batch_sql,
@@ -46,6 +51,7 @@ from research.news_reaction_model.v10.opportunity import (
     opportunity_contract,
     opportunity_targets,
 )
+from research.news_reaction_model.v10.train import validate_config
 
 
 class NewsReactionModelV10Tests(unittest.TestCase):
@@ -88,6 +94,15 @@ class NewsReactionModelV10Tests(unittest.TestCase):
         ):
             self.assertEqual(v10_train[key], v9_train[key], key)
         self.assertNotIn("ordinal_loss_weight", v10_train)
+
+    def test_explicit_long_run_accepts_50_epochs_but_not_more(self) -> None:
+        config = ExperimentConfig()
+        config.train.epochs = 50
+        config.train.scheduler = "none"
+        validate_config(config)
+        config.train.epochs = 51
+        with self.assertRaisesRegex(ValueError, "between 1 and 50"):
+            validate_config(config)
 
     def test_opportunity_contract_has_exactly_three_classes(self) -> None:
         self.assertEqual(OPPORTUNITY_CLASSES, 3)

@@ -121,6 +121,13 @@ Training:
 python -m research.news_reaction_model.v10.run_train
 ```
 
+The default remains 15 epochs. A controlled 50-epoch constant-learning-rate
+run can be launched explicitly without overwriting the original run:
+
+```powershell
+python -m research.news_reaction_model.v10.run_train --epochs 50 --learning-rate 1e-4 --scheduler none --scheduler-restarts 0 --run-name news-v10-opportunity-openai-stock-state-d384-l4-b2048-e50-lr1e4-constant
+```
+
 The best validation-log-loss checkpoint is evaluated automatically after
 training. To rerun evaluation:
 

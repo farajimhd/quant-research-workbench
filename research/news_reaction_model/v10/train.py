@@ -125,8 +125,8 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
 
 
 def validate_config(config: ExperimentConfig) -> None:
-    if not 1 <= config.train.epochs <= 15:
-        raise ValueError("V10 training requires --epochs between 1 and 15 inclusive")
+    if not 1 <= config.train.epochs <= 50:
+        raise ValueError("V10 training requires --epochs between 1 and 50 inclusive")
     if config.train.scheduler == "cosine" and (
         config.train.scheduler_restarts < 0 or config.train.scheduler_restarts >= config.train.epochs
     ):
