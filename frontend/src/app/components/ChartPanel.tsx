@@ -4667,6 +4667,7 @@ function drawPriceZones(
             center,
             borderColor,
             chartBackground,
+            zone.tone === "buy" ? "above" : "below",
             settings,
             lineLabelBoxes,
             width,
@@ -4860,6 +4861,7 @@ function drawAnchoredStructureBreakLabel(
   lineY: number,
   color: string,
   chartBackground: string,
+  fallbackPlacement: "above" | "below",
   settings: ResolvedPriceZoneLegendSettings,
   placed: CanvasBox[],
   layerWidth: number,
@@ -4873,14 +4875,26 @@ function drawAnchoredStructureBreakLabel(
   const labelHeight = fontSize + 5;
   const anchorX = (pivotX + eventX) / 2;
   const left = anchorX - labelWidth / 2;
-  const top = lineY - labelHeight / 2;
-  const selected = { bottom: top + labelHeight, left, right: left + labelWidth, top };
-  const insidePlot = selected.left >= 2
-    && selected.right <= layerWidth - 2
-    && selected.top >= 2
-    && selected.bottom <= plotBottom - 2;
-  const overlapsLabel = placed.some((item) => boxesOverlap(selected, item, 3));
-  if (insidePlot && !overlapsLabel) {
+  const connectorWidth = Math.abs(eventX - pivotX);
+  const inlineTop = lineY - labelHeight / 2;
+  const fallbackTop = fallbackPlacement === "above"
+    ? lineY - labelHeight - 3
+    : lineY + 3;
+  const candidates = connectorWidth >= labelWidth + 16
+    ? [inlineTop, fallbackTop]
+    : [fallbackTop];
+  let selected: CanvasBox | null = null;
+  for (const top of candidates) {
+    const candidate = { bottom: top + labelHeight, left, right: left + labelWidth, top };
+    const insidePlot = candidate.left >= 2
+      && candidate.right <= layerWidth - 2
+      && candidate.top >= 2
+      && candidate.bottom <= plotBottom - 2;
+    if (!insidePlot || placed.some((item) => boxesOverlap(candidate, item, 3))) continue;
+    selected = candidate;
+    break;
+  }
+  if (selected) {
     context.fillStyle = chartBackground;
     context.globalAlpha = 1;
     context.fillRect(selected.left, selected.top, labelWidth, labelHeight);
@@ -4891,7 +4905,7 @@ function drawAnchoredStructureBreakLabel(
     placed.push(selected);
   }
   context.restore();
-  return insidePlot && !overlapsLabel;
+  return selected !== null;
 }
 
 function priceZoneCoordinates(chart: IChartApi, zone: PriceZone, candles: Candle[], barWidth: number, candleDuration: number) {
