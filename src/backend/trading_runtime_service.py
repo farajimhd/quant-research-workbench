@@ -338,6 +338,7 @@ def historical_bar_chunk(
         bars.append(dict(snapshot["current"]))
     indicators = list(snapshot.get("indicators") or []) if isinstance(snapshot, dict) else []
     structure_events = list(snapshot.get("structure_events") or []) if isinstance(snapshot, dict) else []
+    structure_level_history = list(snapshot.get("structure_level_history") or []) if isinstance(snapshot, dict) else []
     return {
         "ticker": resolved_ticker,
         "timeframe": resolved_timeframe,
@@ -350,6 +351,7 @@ def historical_bar_chunk(
         "bars": bars,
         "indicators": indicators,
         "structure_events": structure_events,
+        "structure_level_history": structure_level_history,
         "bar_count": len(bars),
         "source": "qmd_history_gateway",
     }
@@ -399,6 +401,7 @@ def historical_bar_history_before(
             "decision_events": [],
             "episode_events": [],
             "structure_events": [],
+            "structure_level_history": [],
             "earliest_session_date": "",
             "has_more": False,
             "source": "qmd_history_gateway",
@@ -434,6 +437,7 @@ def historical_bar_history_before(
     decision_events = list(snapshot.get("decision_events") or []) if isinstance(snapshot, dict) else []
     episode_events = list(snapshot.get("episode_events") or []) if isinstance(snapshot, dict) else []
     structure_events = list(snapshot.get("structure_events") or []) if isinstance(snapshot, dict) else []
+    structure_level_history = list(snapshot.get("structure_level_history") or []) if isinstance(snapshot, dict) else []
     bars.sort(key=_bar_start_sort_key)
     indicators.sort(key=_bar_start_sort_key)
     has_more_in_session = bool(snapshot.get("has_more")) if isinstance(snapshot, dict) else False
@@ -454,6 +458,7 @@ def historical_bar_history_before(
         "decision_events": decision_events,
         "episode_events": episode_events,
         "structure_events": structure_events,
+        "structure_level_history": structure_level_history,
         "indicators_available": bool(snapshot.get("indicators_available")) if isinstance(snapshot, dict) else False,
         "earliest_session_date": session_date_text if bars else "",
         "has_more": has_more_in_session or bool(previous_session_before),
@@ -526,6 +531,7 @@ def historical_macro_bar_history(
         "decision_events": [],
         "episode_events": [],
         "structure_events": [],
+        "structure_level_history": [],
         "indicators_available": False,
         "earliest_session_date": str(rows[0].get("session_date") or "") if rows else "",
         "has_more": False,

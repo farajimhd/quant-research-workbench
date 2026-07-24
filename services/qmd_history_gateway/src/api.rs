@@ -344,6 +344,7 @@ fn project_chart_snapshot(
         "indicators_available": snapshot.indicators_available,
         "next_before": snapshot.next_before,
         "structure_events": snapshot.structure_events,
+        "structure_level_history": snapshot.structure_level_history,
         "ticker": snapshot.ticker,
         "timeframe": snapshot.timeframe,
     }))

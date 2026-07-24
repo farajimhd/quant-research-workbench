@@ -4,7 +4,7 @@ use chrono::{DateTime, Duration, Utc};
 use qmd_core::bars::{BarRow, BarSnapshot, SharedBarStore, BAR_SCHEMA_VERSION};
 use qmd_core::compact_event::LiveCompactEvent;
 use qmd_core::event::MarketEvent;
-use qmd_core::generic_structure::GenericStructureEvent;
+use qmd_core::generic_structure::{GenericStructureEvent, StructureLevelCandidate};
 use qmd_core::indicators::{
     qmd_episode_input, BarIndicatorCalculator, IndicatorRow, MarketStructureReferenceLevels,
     MicrostructureSampleAggregate, QmdDecisionEvent, INDICATOR_SCHEMA_VERSION,
@@ -17,13 +17,14 @@ use qmd_core::market_products::{
 use qmd_core::microstructure_interval::MicrostructureIntervalWindow;
 use qmd_core::qmd_episode::{QmdEpisodeEngine, QmdEpisodeEvent, QmdEpisodePreset};
 use serde::Serialize;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
 
 pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v25";
+const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProfile {
@@ -120,8 +121,35 @@ pub struct ChartSnapshot {
     pub indicators_available: bool,
     pub next_before: Option<DateTime<Utc>>,
     pub structure_events: Vec<GenericStructureEvent>,
+    pub structure_level_history: Vec<StructureLevelCandidate>,
     pub ticker: String,
     pub timeframe: String,
+}
+
+fn encountered_structure_levels(indicators: &[IndicatorRow]) -> Vec<StructureLevelCandidate> {
+    bounded_encountered_structure_levels(
+        indicators
+            .iter()
+            .flat_map(|indicator| indicator.qmd_structure_active_levels.iter().cloned()),
+    )
+}
+
+fn bounded_encountered_structure_levels(
+    levels: impl IntoIterator<Item = StructureLevelCandidate>,
+) -> Vec<StructureLevelCandidate> {
+    let mut by_identity = BTreeMap::<(i64, i8, u64), StructureLevelCandidate>::new();
+    for level in levels {
+        by_identity.insert(
+            (level.created_at_ms, level.side, level.price.to_bits()),
+            level,
+        );
+    }
+    let mut levels = by_identity.into_values().collect::<Vec<_>>();
+    levels.sort_by_key(|level| level.created_at_ms);
+    if levels.len() > MAX_ENCOUNTERED_STRUCTURE_LEVELS {
+        levels.drain(..levels.len() - MAX_ENCOUNTERED_STRUCTURE_LEVELS);
+    }
+    levels
 }
 
 #[derive(Clone)]
@@ -394,6 +422,7 @@ impl HistoricalDerivedCache {
                 .iter()
                 .map(|frame| frame.indicator.clone())
                 .collect::<Vec<_>>();
+            let structure_level_history = encountered_structure_levels(&indicators);
             let mut structure_events = bars
                 .first()
                 .zip(bars.last())
@@ -452,6 +481,7 @@ impl HistoricalDerivedCache {
                 indicators_available: true,
                 next_before,
                 structure_events,
+                structure_level_history,
                 ticker,
                 timeframe,
             });
@@ -495,6 +525,7 @@ impl HistoricalDerivedCache {
             indicators_available: false,
             next_before,
             structure_events: Vec::new(),
+            structure_level_history: Vec::new(),
             ticker,
             timeframe,
         })
@@ -1460,12 +1491,13 @@ fn valid_price_bar(bar: &BarRow) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        cache_key, ensure_monotonic_bar_start, split_event_window, CacheEntry, CacheProfile,
-        EntryState, SourceRevision, HISTORICAL_ENGINE_VERSION,
+        bounded_encountered_structure_levels, cache_key, ensure_monotonic_bar_start,
+        split_event_window, CacheEntry, CacheProfile, EntryState, SourceRevision,
+        HISTORICAL_ENGINE_VERSION, MAX_ENCOUNTERED_STRUCTURE_LEVELS,
     };
     use crate::source::EventWindow;
     use chrono::{TimeZone, Utc};
-    use qmd_core::generic_structure::GenericStructureEvent;
+    use qmd_core::generic_structure::{GenericStructureEvent, StructureLevelCandidate};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::Arc;
     use tokio::sync::{broadcast, Mutex, Notify};
@@ -1540,6 +1572,33 @@ mod tests {
         assert_ne!(one_minute, five_minute);
         assert_ne!(one_minute, products);
         assert_ne!(five_minute, products);
+    }
+
+    #[test]
+    fn encountered_structure_history_keeps_latest_exact_identity_and_bounds_oldest() {
+        let level =
+            |created_at_ms: i64, side: i8, price: f64, total_volume: f64| StructureLevelCandidate {
+                created_at_ms,
+                side,
+                price,
+                total_volume,
+                ..StructureLevelCandidate::default()
+            };
+        let mut candidates = (0..=MAX_ENCOUNTERED_STRUCTURE_LEVELS)
+            .map(|index| level(index as i64, 1, 100.0 + index as f64 * 0.01, index as f64))
+            .collect::<Vec<_>>();
+        candidates.push(level(
+            MAX_ENCOUNTERED_STRUCTURE_LEVELS as i64,
+            1,
+            100.0 + MAX_ENCOUNTERED_STRUCTURE_LEVELS as f64 * 0.01,
+            9_999.0,
+        ));
+
+        let history = bounded_encountered_structure_levels(candidates);
+
+        assert_eq!(history.len(), MAX_ENCOUNTERED_STRUCTURE_LEVELS);
+        assert_eq!(history.first().unwrap().created_at_ms, 1);
+        assert_eq!(history.last().unwrap().total_volume, 9_999.0);
     }
 
     #[test]

@@ -40,6 +40,30 @@ Totals cover the current 04:00 ET session, including volume traded before the
 level was created. This footprint describes participation at the price; it is
 not a forecast probability.
 
+The chart exposes two presentations of this same canonical footprint:
+
+- **All encountered levels** unions the latest cumulative snapshot for every
+  distinct causal level returned in loaded history. Exact prices are preserved
+  by the service. The renderer combines prices only when the current vertical
+  scale maps them into the same screen row, then draws buyer, neutral, and
+  seller volume as a left-side price profile. Bar length uses the visible
+  95th-percentile screen-row volume as its display reference so one exceptional
+  print does not flatten the rest of the profile; this caps drawing width only
+  and does not change reported volume.
+- **Swing buy/sell rails** draws two fixed-track ratios in a reserved lane
+  beyond each selected-timeframe SH or SL label. The upper track is
+  `buy_volume / total_volume`; the lower track is
+  `sell_volume / total_volume`; the unfilled part is neutral or unclassified
+  volume. The tracks stay attached to the swing price and resize with the chart
+  scale.
+
+QMD History returns a bounded `structure_level_history` alongside chart bars.
+It is built set-wise from the loaded indicator history before the latest-row
+projection is applied, so a historical profile is not incorrectly reduced to
+the levels that remain active at the final bar. Identity is
+`created_at_ms + side + exact price`, and the service retains the newest 4,000
+encountered levels per response.
+
 ### Strategy contract
 
 Strategies should select local swing events whose `timeframe` matches their

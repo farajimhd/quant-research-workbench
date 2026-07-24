@@ -212,6 +212,14 @@ class HistoricalContractTests(unittest.TestCase):
                     "timeframe": "1s",
                 },
             ],
+            "structure_level_history": [
+                {
+                    "created_at_ms": 1_752_155_940_000,
+                    "side": 1,
+                    "price": 314.75,
+                    "footprint": [{"price": 314.75, "total_volume": 2_400.0}],
+                }
+            ],
         }
 
         result = historical_bar_history_before(
@@ -238,6 +246,7 @@ class HistoricalContractTests(unittest.TestCase):
             [(row["event_id"], row["timeframe"]) for row in result["structure_events"]],
             [(91, "100ms"), (92, "1s")],
         )
+        self.assertEqual(result["structure_level_history"][0]["price"], 314.75)
 
     @patch("src.backend.trading_runtime_service._historical_gateway_get")
     def test_chart_history_orders_fractional_rfc3339_timestamps_chronologically(self, gateway_get) -> None:

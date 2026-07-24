@@ -1954,8 +1954,8 @@ function LegendEditor({
         {item.semanticColor ? (
           item.supportsSemanticColorEditing ? (
             <span className="legend-semantic-color-inputs">
-              <span><input aria-label="Bullish color" type="color" value={item.semanticColors.up} onChange={(event) => onUpdate({ upColor: event.target.value })} />Bullish</span>
-              <span><input aria-label="Bearish color" type="color" value={item.semanticColors.down} onChange={(event) => onUpdate({ downColor: event.target.value })} />Bearish</span>
+              <span><input aria-label={item.label.includes("footprint") ? "Buyer color" : "Bullish color"} type="color" value={item.semanticColors.up} onChange={(event) => onUpdate({ upColor: event.target.value })} />{item.label.includes("footprint") ? "Buyer" : "Bullish"}</span>
+              <span><input aria-label={item.label.includes("footprint") ? "Seller color" : "Bearish color"} type="color" value={item.semanticColors.down} onChange={(event) => onUpdate({ downColor: event.target.value })} />{item.label.includes("footprint") ? "Seller" : "Bearish"}</span>
             </span>
           ) : (
             <span
@@ -4570,42 +4570,67 @@ function drawLevelFootprintProfile(
     && Number(zone.totalVolume) > 0,
   );
   if (!validZones.length) return;
-  const maximumVolume = Math.max(...validZones.map((zone) => Number(zone.totalVolume) || 0));
-  if (!(maximumVolume > 0)) return;
-  const profileWidth = Math.min(220, Math.max(90, width * 0.18));
-  const right = Math.max(0, width - 4);
+  const rowHeight = Math.max(4, Math.min(9, height / 110));
+  const renderedBins = new Map<number, {
+    buyVolume: number;
+    center: number;
+    neutralVolume: number;
+    sellVolume: number;
+    totalVolume: number;
+  }>();
+  validZones.forEach((zone) => {
+    const center = priceSeries.priceToCoordinate(zone.lower);
+    if (center === null || center < -rowHeight || center > height + rowHeight) return;
+    const bucket = Math.round(center / rowHeight);
+    const current = renderedBins.get(bucket) ?? {
+      buyVolume: 0,
+      center: bucket * rowHeight,
+      neutralVolume: 0,
+      sellVolume: 0,
+      totalVolume: 0,
+    };
+    current.buyVolume += Math.max(0, Number(zone.buyVolume) || 0);
+    current.neutralVolume += Math.max(0, Number(zone.neutralVolume) || 0);
+    current.sellVolume += Math.max(0, Number(zone.sellVolume) || 0);
+    current.totalVolume += Math.max(0, Number(zone.totalVolume) || 0);
+    renderedBins.set(bucket, current);
+  });
+  const bins = [...renderedBins.values()].filter((bin) => bin.totalVolume > 0);
+  if (!bins.length) return;
+  const orderedVolumes = bins.map((bin) => bin.totalVolume).sort((left, right) => left - right);
+  const referenceIndex = Math.max(0, Math.min(orderedVolumes.length - 1, Math.ceil(orderedVolumes.length * 0.95) - 1));
+  const referenceVolume = orderedVolumes[referenceIndex];
+  if (!(referenceVolume > 0)) return;
+  const profileWidth = Math.min(280, Math.max(120, width * 0.2));
+  const left = 5;
   const upColor = validHexColor(settings.upColor, resolveChartColor("var(--success)"));
   const downColor = validHexColor(settings.downColor, resolveChartColor("var(--danger)"));
   const neutralColor = validHexColor(resolveChartColor("var(--muted-foreground)"), "#73778A");
   context.save();
   context.globalCompositeOperation = "source-over";
-  validZones.forEach((zone) => {
-    const center = priceSeries.priceToCoordinate(zone.lower);
-    if (center === null || center < 0 || center > height) return;
-    const nextPrice = zone.upper > zone.lower ? zone.upper : zone.lower + Math.max(Math.abs(zone.lower) * 0.00002, 0.0001);
-    const next = priceSeries.priceToCoordinate(nextPrice);
-    const rowHeight = Math.max(2, Math.min(10, next === null ? 4 : Math.abs(next - center) * 0.82));
-    const totalVolume = Number(zone.totalVolume) || 0;
-    const barWidth = profileWidth * totalVolume / maximumVolume;
-    const buyWidth = barWidth * Math.max(0, Number(zone.buyVolume) || 0) / totalVolume;
-    const sellWidth = barWidth * Math.max(0, Number(zone.sellVolume) || 0) / totalVolume;
+  context.fillStyle = rgbaFromHex(chartBackground, 0.1 + settings.opacity * 0.08);
+  context.fillRect(left, 0, profileWidth, height);
+  bins.forEach((bin) => {
+    const barWidth = profileWidth * Math.min(1, bin.totalVolume / referenceVolume);
+    const buyWidth = barWidth * bin.buyVolume / bin.totalVolume;
+    const sellWidth = barWidth * bin.sellVolume / bin.totalVolume;
     const neutralWidth = Math.max(0, barWidth - buyWidth - sellWidth);
-    let cursor = right - barWidth;
-    context.fillStyle = rgbaFromHex(chartBackground, Math.min(0.78, 0.26 + settings.opacity * 0.42));
-    context.fillRect(cursor, center - rowHeight / 2, barWidth, rowHeight);
-    if (sellWidth > 0) {
-      context.fillStyle = rgbaFromHex(downColor, 0.28 + settings.opacity * 0.62);
-      context.fillRect(cursor, center - rowHeight / 2, sellWidth, rowHeight);
-      cursor += sellWidth;
+    let cursor = left;
+    const top = bin.center - rowHeight * 0.43;
+    const heightPx = Math.max(2, rowHeight * 0.86);
+    if (buyWidth > 0) {
+      context.fillStyle = rgbaFromHex(upColor, 0.2 + settings.opacity * 0.72);
+      context.fillRect(cursor, top, buyWidth, heightPx);
+      cursor += buyWidth;
     }
     if (neutralWidth > 0) {
-      context.fillStyle = rgbaFromHex(neutralColor, 0.18 + settings.opacity * 0.46);
-      context.fillRect(cursor, center - rowHeight / 2, neutralWidth, rowHeight);
+      context.fillStyle = rgbaFromHex(neutralColor, 0.14 + settings.opacity * 0.42);
+      context.fillRect(cursor, top, neutralWidth, heightPx);
       cursor += neutralWidth;
     }
-    if (buyWidth > 0) {
-      context.fillStyle = rgbaFromHex(upColor, 0.28 + settings.opacity * 0.62);
-      context.fillRect(cursor, center - rowHeight / 2, buyWidth, rowHeight);
+    if (sellWidth > 0) {
+      context.fillStyle = rgbaFromHex(downColor, 0.2 + settings.opacity * 0.72);
+      context.fillRect(cursor, top, sellWidth, heightPx);
     }
   });
   context.restore();
@@ -4632,9 +4657,10 @@ function drawSwingFootprintRails(
   );
   if (!validZones.length) return;
   const barWidth = estimateBarWidth(chart, candles);
-  const trackWidth = Math.max(26, Math.min(58, barWidth * 2.5));
-  const railHeight = Math.max(3, Math.min(4, barWidth * 0.22));
-  const railGap = Math.max(2, Math.min(3, railHeight * 0.75));
+  const trackWidth = Math.max(38, Math.min(96, barWidth * 4));
+  const railHeight = Math.max(4, Math.min(7, barWidth * 0.32));
+  const railGap = Math.max(2, Math.min(4, railHeight * 0.55));
+  const labelClearance = Math.max(15, Math.min(24, (settings.labelFontSize || 11) + barWidth * 0.55));
   const upColor = validHexColor(settings.upColor, resolveChartColor("var(--success)"));
   const downColor = validHexColor(settings.downColor, resolveChartColor("var(--danger)"));
   const trackColor = mixHexColors(
@@ -4652,9 +4678,14 @@ function drawSwingFootprintRails(
     if (x === null || lineY === null || x < -trackWidth || x > width + trackWidth) return;
     const buyShare = clampNumber((Number(zone.buyVolume) || 0) / totalVolume, 0, 1, 0);
     const sellShare = clampNumber((Number(zone.sellVolume) || 0) / totalVolume, 0, 1, 0);
-    const left = x - trackWidth / 2;
-    const buyTop = lineY + 5;
-    const sellTop = buyTop + railHeight + railGap;
+    const left = Math.max(4, Math.min(width - trackWidth - 4, x - trackWidth / 2));
+    const cardHeight = railHeight * 2 + railGap;
+    const preferredTop = lineY + labelClearance;
+    const cardTop = preferredTop + cardHeight <= height - 3
+      ? preferredTop
+      : Math.max(3, lineY - labelClearance - cardHeight);
+    const buyTop = cardTop;
+    const sellTop = cardTop + railHeight + railGap;
     if (buyTop > height || sellTop + railHeight < 0) return;
     context.fillStyle = rgbaFromHex(trackColor, 0.24 + settings.opacity * 0.28);
     context.fillRect(left, buyTop, trackWidth, railHeight);

@@ -189,6 +189,7 @@ type QmdBarHistory = {
   indicators: HistoricalIndicator[];
   indicators_available: boolean;
   structure_events: QmdStructureEvent[];
+  structure_level_history: QmdStructureLevelCandidate[];
   next_before: string;
   previous_session_before: string;
   ticker: string;
@@ -265,6 +266,7 @@ type CanvasLiveChartState = {
   indicators: HistoricalIndicator[];
   indicatorsAvailable: boolean;
   structureEvents: QmdStructureEvent[];
+  structureLevelHistory: QmdStructureLevelCandidate[];
   lastUpdateAt: string;
   loadEarlier: () => void;
   loading: boolean;
@@ -479,24 +481,24 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     ...displayIndicator("indicator.qmd_level_footprint", "QMD Level Volume Footprint", "price_action", [
       "qmd_structure_active_levels",
     ], "price", {
-      shortDescription: "Executed-volume evidence shown either as a complete encountered-level price profile or as normalized buy/sell rails at each causal swing.",
-      detailedDescription: "All encountered levels retains the last causal footprint snapshot for every level observed in the loaded history, then unions identical price bins without double-counting overlapping nine-tick windows. Swing rails use the volume stored on each selected-timeframe swing event: the upper green rail is buyer-initiated volume divided by total volume, and the lower red rail is seller-initiated volume divided by total volume.",
-      calculation: "For every eligible trade, QMD classifies aggressor side from trade and NBBO evidence and accumulates total, buyer-initiated, seller-initiated, and neutral volume by exact tick price. The axis profile compares absolute total volume across prices. At a swing, both rail lengths use the same fixed track: buy share = buy volume / total volume and sell share = sell volume / total volume. Unfilled track is neutral or unclassified volume.",
-      readingGuide: "In All encountered levels mode, longer right-edge bars identify prices where more eligible volume accumulated; red, gray, and green divide seller-, neutral-, and buyer-initiated volume. In Swing buy/sell rails mode, compare the two short rails immediately below each swing line. A long green rail and short red rail means aggressive buyers dominated that swing bucket; the reverse means aggressive sellers dominated. Always confirm the subsequent price response.",
+      shortDescription: "Executed-volume evidence shown either as a left-side price profile or as two scale-aware buyer/seller rails at each causal swing.",
+      detailedDescription: "All encountered levels keeps the latest causal session-volume snapshot for each exact price exposed around every level in loaded history. Identical prices are unioned without double counting and nearby prices are combined only when the current zoom would draw them in the same screen row. Swing rails use the volume stored on each selected-timeframe swing event. They occupy a reserved lane beyond the SH or SL label so the structure label and footprint remain independently readable.",
+      calculation: "For every eligible trade, QMD classifies aggressor side from trade and NBBO evidence and accumulates total, buyer-initiated, seller-initiated, and neutral volume by exact tick price. The profile draws those absolute volumes by price; its visible-length reference is the 95th-percentile screen bin so one exceptional print cannot flatten the rest of the distribution. Values beyond that reference are capped visually, not numerically. At a swing: buy share = buy volume / total volume and sell share = sell volume / total volume. Unfilled track is neutral or unclassified volume.",
+      readingGuide: "In All encountered levels mode, read the profile from the left edge of the chart: longer rows identify prices where more eligible volume accumulated. Green, gray, and red divide buyer-, neutral-, and seller-initiated volume. Blank prices have no exposed eligible volume and are never filled artificially. In Swing buy/sell rails mode, the upper track is buyer share and the lower track is seller share; both move with the swing price and resize with chart spacing. A long green rail and short red rail means aggressive buyers dominated that swing bucket; the reverse means aggressive sellers dominated. Always confirm the subsequent price response.",
       bullishEvidence: "Buyer-dominant volume at a swing low or support, followed by price holding or advancing, supports acceptance or bullish absorption evidence.",
       bearishEvidence: "Seller-dominant volume at a swing high or resistance, followed by rejection or decline, supports supply or bearish absorption evidence.",
       timeframeBehavior: "The all-level profile is event-native and independent of chart candles. Swing rails show only causal swing occurrences for the selected chart timeframe, but their volume comes from the underlying eligible trades inside that timeframe bucket rather than candle direction.",
       components: [
-        { label: "All encountered levels", description: "Right-aligned absolute-volume profile built from every distinct level observed in the loaded causal history, including levels that are no longer active.", tone: "info" },
-        { label: "Upper green swing rail", description: "Buyer-initiated eligible volume divided by total eligible volume in the exact bucket that formed the swing.", tone: "buy" },
-        { label: "Lower red swing rail", description: "Seller-initiated eligible volume divided by total eligible volume in the exact bucket that formed the swing.", tone: "sell" },
+        { label: "Left price profile", description: "Absolute eligible volume for every exposed price in loaded causal history. Screen rows combine only when the current y-scale cannot display their prices separately.", tone: "info" },
+        { label: "Upper buyer rail", description: "Buyer-initiated eligible volume divided by total eligible volume in the exact bucket that formed the swing.", tone: "buy" },
+        { label: "Lower seller rail", description: "Seller-initiated eligible volume divided by total eligible volume in the exact bucket that formed the swing.", tone: "sell" },
         { label: "Unfilled rail track", description: "Neutral or unclassified eligible volume. It remains unfilled rather than being assigned to buy or sell.", tone: "neutral" },
       ],
       caveats: ["The profile contains only eligible consolidated trades, not hidden liquidity or full depth.", "High volume can mean acceptance or a contested level; price response determines which.", "Aggressor classification can be neutral when trade and NBBO evidence is insufficient.", "Rail percentages describe the swing bucket's executed-flow composition, not the probability that the level will hold."],
     }),
     presetOptions: [
-      { value: "axis-history", label: "All encountered levels", description: "Absolute buy, neutral, and sell volume by price for every level observed in loaded causal history." },
-      { value: "swing-rails", label: "Swing buy/sell rails", description: "Normalized buy and sell shares drawn directly below every selected-timeframe swing occurrence." },
+      { value: "axis-history", label: "All encountered levels", description: "Left-side absolute buyer, neutral, and seller volume profile for prices exposed in loaded causal history." },
+      { value: "swing-rails", label: "Swing buy/sell rails", description: "Scale-aware buyer and seller shares in a reserved lane beyond every selected-timeframe swing label." },
     ],
   },
 ];
@@ -584,7 +586,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
   const pointInTime = true;
   const indicatorColumns = useMemo(() => requestedIndicatorColumns(visibleIndicatorIds), [visibleIndicatorIds]);
   const rowBudget = useMemo(() => chartRowBudget(indicatorColumns), [indicatorColumns]);
-  const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier">>({ bars: [], canLoadEarlier: false, connected: false, decisionEvents: [], episodeEvents: [], error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime, structureEvents: [] });
+  const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier">>({ bars: [], canLoadEarlier: false, connected: false, decisionEvents: [], episodeEvents: [], error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime, structureEvents: [], structureLevelHistory: [] });
   const historyCursorRef = useRef<ChartHistoryCursor | null>(null);
   const historyRequestRef = useRef(false);
   const historyAbortRef = useRef<AbortController | null>(null);
@@ -625,6 +627,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
             indicators: merged.indicators,
             indicatorsAvailable: payload.indicators_available,
             structureEvents: mergeStructureEvents(current.structureEvents, payload.structure_events),
+            structureLevelHistory: mergeStructureLevelHistory(current.structureLevelHistory, payload.structure_level_history),
           };
         });
       })
@@ -650,7 +653,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
     requestKeyRef.current = requestKey;
     historyCursorRef.current = null;
     historyRequestRef.current = false;
-    setState({ bars: [], canLoadEarlier: false, connected: false, decisionEvents: [], episodeEvents: [], error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime, structureEvents: [] });
+    setState({ bars: [], canLoadEarlier: false, connected: false, decisionEvents: [], episodeEvents: [], error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime, structureEvents: [], structureLevelHistory: [] });
 
     const fetchHistoricalPage = () => {
       historyRequestRef.current = true;
@@ -676,6 +679,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
               indicators: merged.indicators,
               indicatorsAvailable: payload.indicators_available,
               structureEvents: mergeStructureEvents(current.structureEvents, payload.structure_events),
+              structureLevelHistory: mergeStructureLevelHistory(current.structureLevelHistory, payload.structure_level_history),
               loading: false,
             };
           });
@@ -711,6 +715,20 @@ function mergeStructureEvents(current: QmdStructureEvent[], incoming: QmdStructu
   return [...byId.values()]
     .sort((left, right) => Date.parse(left.confirmed_at) - Date.parse(right.confirmed_at) || left.event_id - right.event_id)
     .slice(-25_000);
+}
+
+function mergeStructureLevelHistory(
+  current: QmdStructureLevelCandidate[],
+  incoming: QmdStructureLevelCandidate[] | undefined,
+) {
+  const byIdentity = new Map<string, QmdStructureLevelCandidate>();
+  [...current, ...(incoming ?? [])].forEach((level) => {
+    if (!isQmdStructureLevelCandidate(level)) return;
+    byIdentity.set(`${level.created_at_ms}:${level.side}:${Number(level.price).toFixed(8)}`, level);
+  });
+  return [...byIdentity.values()]
+    .sort((left, right) => left.created_at_ms - right.created_at_ms)
+    .slice(-4_000);
 }
 
 function mergeDecisionEvents(current: QmdDecisionEvent[], incoming: QmdDecisionEvent[] | undefined) {
@@ -1986,13 +2004,13 @@ function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl,
       oscillator_series: historicalIndicatorSeries(indicators, "oscillator", visibleIndicators),
       overlay_series: historicalIndicatorSeries(indicators, "price", visibleIndicators),
       price_zones: [
-        ...historicalMarketLevelZones(indicators, liveChart.bars, liveChart.structureEvents, visibleIndicators, timeframe),
+        ...historicalMarketLevelZones(indicators, liveChart.bars, liveChart.structureEvents, liveChart.structureLevelHistory, visibleIndicators, timeframe),
         ...episodePresentation.zones,
       ],
       regions: MACRO_TIMEFRAMES.has(timeframe) ? [] : extendedSessionRegions(liveChart.bars),
       volume: settings.chart.showVolume ? liveChart.bars.map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
     };
-  }, [indicators, liveChart.bars, liveChart.decisionEvents, liveChart.episodeEvents, liveChart.structureEvents, settings.chart.showVolume, timeframe, visibleIndicators]);
+  }, [indicators, liveChart.bars, liveChart.decisionEvents, liveChart.episodeEvents, liveChart.structureEvents, liveChart.structureLevelHistory, settings.chart.showVolume, timeframe, visibleIndicators]);
   function updateChart(symbol: string, nextTimeframe: CanvasChartTimeframe) {
     updateSettings((current) => ({ ...current, chart: { ...current.chart, symbol, timeframe: nextTimeframe } }));
     onLinkContextChange({ symbol });
@@ -2017,6 +2035,7 @@ function historicalMarketLevelZones(
   rows: HistoricalIndicator[],
   bars: HistoricalBar[],
   structureEvents: QmdStructureEvent[],
+  structureLevelHistory: QmdStructureLevelCandidate[],
   visibleIndicators: string[],
   timeframe: CanvasChartTimeframe,
 ): NonNullable<ChartPayload["price_zones"]> {
@@ -2042,6 +2061,7 @@ function historicalMarketLevelZones(
     pushLevelVolumeFootprint(
       zones,
       rows,
+      structureLevelHistory,
       structureEvents.length ? structureEvents : structureEventsFromSampledRows(rows),
       chartEnd,
       timeframe,
@@ -2253,6 +2273,7 @@ function pushCurrentStructureLevels(
 function pushLevelVolumeFootprint(
   zones: NonNullable<ChartPayload["price_zones"]>,
   rows: HistoricalIndicator[],
+  structureLevelHistory: QmdStructureLevelCandidate[],
   structureEvents: QmdStructureEvent[],
   chartEnd: number,
   selectedTimeframe: CanvasChartTimeframe,
@@ -2260,6 +2281,9 @@ function pushLevelVolumeFootprint(
   const encounteredById = new Map<string, QmdStructureLevelCandidate>();
   const levelKey = (candidate: QmdStructureLevelCandidate) =>
     `${candidate.created_at_ms}:${candidate.side}:${candidate.price.toFixed(8)}`;
+  structureLevelHistory.forEach((candidate) => {
+    if (isQmdStructureLevelCandidate(candidate)) encounteredById.set(levelKey(candidate), candidate);
+  });
   rows.forEach((row) => {
     if (!Array.isArray(row.qmd_structure_active_levels)) return;
     row.qmd_structure_active_levels

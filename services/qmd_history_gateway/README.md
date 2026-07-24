@@ -99,6 +99,11 @@ Supported bar timeframes are the live QMD set: `100ms`, `1s`, `5s`, `10s`,
 - `GET /snapshot/chart-macro-bars/{ticker}?start=...&end=...&as_of=...&timeframe=1d|1mo` (bounded chart history; monthly rows aggregate durable daily macro families)
 - `GET /snapshot/compact-events/{ticker}?start=...&end=...&limit=...`
 - `GET /snapshot/bars/{ticker}?start=...&end=...&timeframe=1m&limit=...` (bars plus canonical QMD bar indicators)
+- `GET /snapshot/chart-bars/{ticker}?start=...&end=...&timeframe=100ms|1s|5s|10s|30s|1m|5m|1h&limit=...`
+  (bounded chronological chart bars and indicators, structure events, and the
+  newest 4,000 distinct causal `structure_level_history` entries needed to
+  reconstruct encountered-level volume profiles without projecting historical
+  levels onto only the final indicator row)
 - `WS /stream/compact-events?start=...&end=...&tickers=AAPL,MSFT`
 - `WS /stream/events?start=...&end=...&tickers=AAPL,MSFT`
 - `WS /stream/bars/{ticker}?start=...&end=...&timeframe=1m`
