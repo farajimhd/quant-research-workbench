@@ -48,6 +48,15 @@ from research.news_reaction_model.v11.opportunity import (
     opportunity_targets,
 )
 
+RETURN_TARGET_CONTRACT = (
+    "raw anchor-relative asset returns: price / pre-news anchor_price - 1; "
+    "not SPY-adjusted abnormal returns"
+)
+PNL_PROXY_CONTRACT = (
+    "descriptive one-share proxy: position * anchor_price * "
+    "((raw_high_return + raw_low_return) / 2)"
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -466,13 +475,13 @@ def evaluate_checkpoint(
             "long only for predicted upside_dominant; short only for predicted "
             "downside_dominant; no position for no_meaningful_opportunity"
         ),
-        "pnl_contract": (
-            "descriptive one-share proxy: position * anchor_price * "
-            "((actual_high_return + actual_low_return) / 2)"
-        ),
+        "return_target_contract": RETURN_TARGET_CONTRACT,
+        "pnl_contract": PNL_PROXY_CONTRACT,
         "limitation": (
-            "The three-class model predicts no exit price. Midpoint P&L uses realized label extrema, "
-            "is not executable, ignores path ordering and costs, and is only a learning-task diagnostic."
+            "The three-class model predicts no exit price. Midpoint P&L uses "
+            "realized raw asset-return extrema, is not executable, ignores path "
+            "ordering, overlapping capital, slippage, fees, and spread, and is "
+            "only a learning-task diagnostic."
         ),
         "overall_across_independent_horizons": overall.summary(),
         "horizons": horizon_summaries,

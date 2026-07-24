@@ -54,6 +54,24 @@ Likewise, evaluation still opens one-share long for upside, one-share short for
 downside, and no position for no opportunity. Its realized-extrema midpoint P&L
 is a descriptive comparison proxy, not a deployable execution rule.
 
+The targets are raw, anchor-relative asset returns:
+
+```text
+ending_return = ending_price / pre_news_anchor_price - 1
+high_return   = highest_price / pre_news_anchor_price - 1
+low_return    = lowest_price / pre_news_anchor_price - 1
+```
+
+They are not market-adjusted or SPY-relative abnormal returns. V1-V3 used the
+separate `abnormal_*_return` columns; V4 changed the experiment family to the
+raw `target_return`, `high_return`, and `low_return` columns, and V8 preserved
+that contract through V7 for V10 and V11. The 2019-2025 versus 2026 split only
+defines training and evaluation time ranges; it does not transform returns.
+
+The midpoint proxy is still not realized trading P&L because it chooses the
+midpoint of the observed high and low without an executable exit, ordering,
+capital-overlap, spread, slippage, fee, or risk-management contract.
+
 The default split remains:
 
 - training: 2019-01-01 through 2025-12-31;
@@ -77,6 +95,15 @@ Causal V1 time vector (12) ────┘
 The objective remains the arithmetic mean of per-horizon cross-entropy means,
 so horizons with more labels do not dominate the gradient. Validation reports
 per-horizon metrics plus label-micro and horizon-macro aggregates.
+
+Operational invariants inherited from fixed V10:
+
+- `val/loss` is the equal-horizon mean log loss and selects the best checkpoint;
+- `val/micro_log_loss` is separately weighted by every valid label;
+- training logs contain bounded rolling metrics and full-epoch metrics;
+- single-batch `best_train` checkpoints are disabled;
+- periodic latest/archive checkpoints fire when a sample threshold is crossed,
+  rather than requiring a batch boundary to equal the threshold exactly.
 
 ## Run
 

@@ -265,12 +265,11 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda" and config.train.amp and config.train.amp_dtype == "fp16")
     logger = JsonlMetricLogger(paths.metrics_path, wandb_run)
-    checkpointer = AsyncCheckpointManager(paths.checkpoints_dir, paths.checkpoint_manifest_path, CheckpointPolicy(
-        latest_steps=max(1, config.train.checkpoint_latest_samples), archive_steps=max(0, config.train.checkpoint_archive_samples),
-        save_best_train=False, monitor_train_key="train/loss", monitor_val_key="val/loss",
-        clock_name="sample", archive_prefix="checkpoint_sample", threshold_intervals=True,
-        archive_on_force=False,
-    ))
+    checkpointer = AsyncCheckpointManager(
+        paths.checkpoints_dir,
+        paths.checkpoint_manifest_path,
+        checkpoint_policy(config.train),
+    )
     window_train = TrainingLossAccumulator()
     epoch_train = TrainingLossAccumulator()
     restored = restore(
@@ -558,6 +557,42 @@ def print_validation_summary(metrics: dict[str, float]) -> None:
         print("HORIZONS labels/macro_f1 | " + "  ".join(horizon_parts), flush=True)
 
 
+def checkpoint_policy(config: TrainConfig) -> CheckpointPolicy:
+    """Build V11's sample-threshold checkpoint contract."""
+    return CheckpointPolicy(
+        latest_steps=max(1, config.checkpoint_latest_samples),
+        archive_steps=max(0, config.checkpoint_archive_samples),
+        save_best_train=False,
+        monitor_train_key="train/loss",
+        monitor_val_key="val/loss",
+        clock_name="sample",
+        archive_prefix="checkpoint_sample",
+        threshold_intervals=True,
+        archive_on_force=False,
+    )
+
+
+def finalize_validation_metrics(
+    metrics: dict[str, float],
+    *,
+    batches: int,
+) -> dict[str, float]:
+    """Expose both micro and equal-horizon losses without batch-size bias."""
+    finalized = dict(metrics)
+    horizon_losses = [
+        finalized[f"val/{horizon}/log_loss"]
+        for horizon in HORIZONS
+        if f"val/{horizon}/log_loss" in finalized
+    ]
+    finalized["val/micro_log_loss"] = finalized.get("val/log_loss", 0.0)
+    finalized["val/macro_horizon_log_loss"] = (
+        float(np.mean(horizon_losses)) if horizon_losses else 0.0
+    )
+    finalized["val/loss"] = finalized["val/macro_horizon_log_loss"]
+    finalized["val/batches"] = float(batches)
+    return finalized
+
+
 @torch.no_grad()
 def validate(model: torch.nn.Module, config: ExperimentConfig, device: torch.device, dummy: bool, dummy_count: int) -> dict[str, float]:
     model.eval(); accumulator = OpportunityAccumulator(); batches = 0
@@ -570,19 +605,7 @@ def validate(model: torch.nn.Module, config: ExperimentConfig, device: torch.dev
         batches += 1
         if config.train.validation_max_batches > 0 and batches >= config.train.validation_max_batches:
             break
-    metrics = accumulator.compute("val")
-    horizon_losses = [
-        metrics[f"val/{horizon}/log_loss"]
-        for horizon in HORIZONS
-        if f"val/{horizon}/log_loss" in metrics
-    ]
-    metrics["val/micro_log_loss"] = metrics.get("val/log_loss", 0.0)
-    metrics["val/macro_horizon_log_loss"] = (
-        float(np.mean(horizon_losses)) if horizon_losses else 0.0
-    )
-    metrics["val/loss"] = metrics["val/macro_horizon_log_loss"]
-    metrics["val/batches"] = float(batches)
-    return metrics
+    return finalize_validation_metrics(accumulator.compute("val"), batches=batches)
 
 
 class SampleCosineRestartScheduler:

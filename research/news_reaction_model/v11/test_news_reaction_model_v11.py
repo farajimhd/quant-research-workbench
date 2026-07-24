@@ -34,6 +34,8 @@ from research.news_reaction_model.v11.data import (
 )
 from research.news_reaction_model.v11.evaluate import (
     OpportunityLedger,
+    PNL_PROXY_CONTRACT,
+    RETURN_TARGET_CONTRACT,
     evaluation_batch_sql,
     midpoint_proxy_pnl,
 )
@@ -69,7 +71,9 @@ from research.news_reaction_model.v11.train import (
     SampleCosineRestartScheduler,
     TrainingCursor,
     capture_rng_state,
+    checkpoint_policy,
     checkpoint_payload,
+    finalize_validation_metrics,
     restore,
     restore_rng_state,
     validate_config,
@@ -396,6 +400,60 @@ class NewsReactionModelV11Tests(unittest.TestCase):
                 places=6,
                 msg=key,
             )
+
+    def test_validation_loss_is_equal_horizon_not_batch_or_label_weighted(self) -> None:
+        finalized = finalize_validation_metrics(
+            {
+                "val/log_loss": 0.8,
+                "val/1m/log_loss": 0.2,
+                "val/5m/log_loss": 1.0,
+                "val/1m/samples": 100.0,
+                "val/5m/samples": 1.0,
+            },
+            batches=7,
+        )
+        self.assertAlmostEqual(finalized["val/loss"], 0.6)
+        self.assertAlmostEqual(finalized["val/macro_horizon_log_loss"], 0.6)
+        self.assertAlmostEqual(finalized["val/micro_log_loss"], 0.8)
+        self.assertEqual(finalized["val/batches"], 7.0)
+
+    def test_v11_checkpoint_policy_disables_best_train_and_uses_thresholds(self) -> None:
+        policy = checkpoint_policy(TrainConfig())
+        self.assertFalse(policy.save_best_train)
+        self.assertTrue(policy.threshold_intervals)
+        self.assertFalse(policy.archive_on_force)
+        self.assertEqual(policy.monitor_val_key, "val/loss")
+
+    def test_sample_checkpoint_fires_when_batch_crosses_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manager = AsyncCheckpointManager(
+                root / "checkpoints",
+                root / "manifest.jsonl",
+                CheckpointPolicy(
+                    latest_steps=500_000,
+                    archive_steps=0,
+                    save_best_train=False,
+                    save_best_val=False,
+                    skip_latest_if_busy=False,
+                    threshold_intervals=True,
+                ),
+            )
+            manager.maybe_save(step=499_712, payload={"step": 499_712})
+            self.assertFalse((root / "checkpoints" / "checkpoint_latest.pt").exists())
+            manager.maybe_save(step=501_760, payload={"step": 501_760})
+            manager.close()
+            saved = torch.load(
+                root / "checkpoints" / "checkpoint_latest.pt",
+                map_location="cpu",
+                weights_only=False,
+            )
+            self.assertEqual(saved["step"], 501_760)
+
+    def test_v11_evaluation_declares_raw_not_abnormal_returns(self) -> None:
+        self.assertIn("raw anchor-relative", RETURN_TARGET_CONTRACT)
+        self.assertIn("not SPY-adjusted abnormal", RETURN_TARGET_CONTRACT)
+        self.assertIn("raw_high_return", PNL_PROXY_CONTRACT)
 
     def test_buffered_shuffle_is_deterministic_and_resume_exact(self) -> None:
         config = LoaderConfig(
