@@ -143,6 +143,7 @@ type PriceZone = {
   settingsId?: string;
   start: number;
   strength?: number;
+  tone?: "buy" | "sell" | "neutral";
   upper: number;
   zoneHeightMode?: string;
 };
@@ -241,6 +242,7 @@ type LegendLineStyle = "solid" | "dashed" | "dotted";
 type LegendSeriesSettings = {
   currentLevelCount?: number;
   color?: string;
+  downColor?: string;
   historyBars?: number;
   labelFontSize?: number;
   lineStyle?: LegendLineStyle;
@@ -253,6 +255,7 @@ type LegendSeriesSettings = {
   showHistoricalLabels?: boolean;
   showLabels?: boolean;
   showValue?: boolean;
+  upColor?: string;
   visible?: boolean;
 };
 type LegendSettingsMap = Record<string, LegendSeriesSettings>;
@@ -1725,6 +1728,7 @@ type LegendItem = {
   showLabels?: boolean;
   showValue: boolean;
   supportsConnectors?: boolean;
+  supportsSemanticColorEditing?: boolean;
   supportsCurrentLevelCount?: boolean;
   supportsAxisLabel?: boolean;
   supportsHistoricalLabels?: boolean;
@@ -1924,16 +1928,23 @@ function LegendEditor({
       <label>
         Color
         {item.semanticColor ? (
-          <span
-            className="legend-semantic-colors"
-            style={{
-              "--legend-semantic-down": item.semanticColors.down,
-              "--legend-semantic-neutral": item.semanticColors.neutral,
-              "--legend-semantic-up": item.semanticColors.up,
-            } as CSSProperties}
-          >
-            <i data-tone="buy" />+ <i data-tone="sell" />− <i data-tone="neutral" />0
-          </span>
+          item.supportsSemanticColorEditing ? (
+            <span className="legend-semantic-color-inputs">
+              <span><input aria-label="Bullish color" type="color" value={item.semanticColors.up} onChange={(event) => onUpdate({ upColor: event.target.value })} />Bullish</span>
+              <span><input aria-label="Bearish color" type="color" value={item.semanticColors.down} onChange={(event) => onUpdate({ downColor: event.target.value })} />Bearish</span>
+            </span>
+          ) : (
+            <span
+              className="legend-semantic-colors"
+              style={{
+                "--legend-semantic-down": item.semanticColors.down,
+                "--legend-semantic-neutral": item.semanticColors.neutral,
+                "--legend-semantic-up": item.semanticColors.up,
+              } as CSSProperties}
+            >
+              <i data-tone="buy" />+ <i data-tone="sell" />− <i data-tone="neutral" />0
+            </span>
+          )
         ) : <input type="color" value={item.color} onChange={(event) => onUpdate({ color: event.target.value })} />}
       </label>
       {item.supportsPreset && item.presetOptions?.length ? (
@@ -1968,7 +1979,7 @@ function LegendEditor({
       ) : null}
       {item.itemKind === "zone" && item.supportsHistoricalLabels ? (
         <label>
-          Connector label size
+          {item.supportsConnectors ? "Break label size" : "Line label size"}
           <span className="legend-range-control">
             <input
               aria-label={`${item.label} label text size`}
@@ -2048,7 +2059,7 @@ function LegendEditor({
               </label>
               {item.showHistoricalLabels !== false ? (
                 <label>
-                  Connector label limit
+                  {item.supportsConnectors ? "Break label limit" : "Historical label limit"}
                   <span className="legend-range-control">
                     <input min={0} max={16} step={1} type="range" value={item.maxHistoricalTags ?? 6} onChange={(event) => onUpdate({ maxHistoricalTags: Number(event.target.value) })} />
                     <output>{item.maxHistoricalTags ?? 6}</output>
@@ -2933,12 +2944,16 @@ function buildPriceZoneLegendItems(
       presetOptions: displayItem?.presetOptions,
       seriesStyle: "line" as const,
       semanticColor: true,
-      semanticColors: { down: appearance.downColor, neutral: readNeutralChartColor(), up: appearance.upColor },
+      semanticColors: { down: settings.downColor, neutral: readNeutralChartColor(), up: settings.upColor },
       showConnectors: settings.showConnectors,
       showAxisLabel: settings.showAxisLabel,
       showHistoricalLabels: settings.showHistoricalLabels,
       showValue: true,
       supportsConnectors: itemZones.some(isStructureBreakZone),
+      supportsSemanticColorEditing: itemZones.some((zone) =>
+        zone.annotationKind === "swing-high"
+        || zone.annotationKind === "swing-low"
+        || isStructureBreakZone(zone)),
       supportsCurrentLevelCount: itemZones.some((zone) => Boolean(zone.currentLevelSide)),
       supportsAxisLabel: itemZones.some((zone) => typeof zone.axisLabelDefault === "boolean"),
       supportsHistoricalLabels: itemZones.some((zone) => (zone.renderMode === "line" && Boolean(zone.compactLabel)) || isStructureBreakZone(zone)),
@@ -3338,12 +3353,21 @@ function mixHexColors(background: string, foreground: string, foregroundWeight: 
   return `#${channel(0)}${channel(2)}${channel(4)}`;
 }
 
-function priceZonePresentationColors(zone: PriceZone, chartBackground: string) {
+function priceZonePresentationColors(
+  zone: PriceZone,
+  chartBackground: string,
+  settings?: Pick<ResolvedPriceZoneLegendSettings, "downColor" | "upColor">,
+) {
   const confidence = typeof zone.confidence === "number" && Number.isFinite(zone.confidence)
     ? clampNumber(zone.confidence, 0, 1, 0)
     : null;
-  const semanticFillColor = validHexColor(resolveChartColor(zone.fillColor || zone.color), "#1E3A5F");
-  const semanticBorderColor = validHexColor(resolveChartColor(zone.borderColor || semanticFillColor), semanticFillColor);
+  const configuredToneColor = zone.tone === "buy"
+    ? settings?.upColor
+    : zone.tone === "sell"
+      ? settings?.downColor
+      : undefined;
+  const semanticFillColor = validHexColor(resolveChartColor(configuredToneColor || zone.fillColor || zone.color), "#1E3A5F");
+  const semanticBorderColor = validHexColor(resolveChartColor(configuredToneColor || zone.borderColor || semanticFillColor), semanticFillColor);
   return {
     borderColor: confidence === null
       ? semanticBorderColor
@@ -3358,6 +3382,7 @@ function priceZonePresentationColors(zone: PriceZone, chartBackground: string) {
 function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettings> {
   return {
     color: resolveChartColor(series.color),
+    downColor: resolveChartColor("var(--danger)"),
     currentLevelCount: 3,
     historyBars: 100,
     labelFontSize: 11,
@@ -3371,6 +3396,7 @@ function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettin
     showHistoricalLabels: true,
     showLabels: true,
     showValue: true,
+    upColor: resolveChartColor("var(--success)"),
     visible: series.defaultVisible !== false
   };
 }
@@ -3380,6 +3406,7 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
   const stored = settingsMap[key] ?? {};
   return {
     color: resolveChartColor(stored.color || defaults.color),
+    downColor: validHexColor(stored.downColor, defaults.downColor),
     currentLevelCount: Math.max(1, Math.min(6, Math.round(stored.currentLevelCount ?? defaults.currentLevelCount))),
     historyBars: Math.max(10, Math.min(500, Math.round(stored.historyBars ?? defaults.historyBars))),
     labelFontSize: Math.max(9, Math.min(18, Math.round(stored.labelFontSize ?? defaults.labelFontSize))),
@@ -3393,12 +3420,14 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
     showHistoricalLabels: stored.showHistoricalLabels ?? defaults.showHistoricalLabels,
     showLabels: stored.showLabels ?? defaults.showLabels,
     showValue: stored.showValue ?? defaults.showValue,
+    upColor: validHexColor(stored.upColor, defaults.upColor),
     visible: stored.visible ?? defaults.visible
   };
 }
 
 type ResolvedPriceZoneLegendSettings = {
   currentLevelCount: number;
+  downColor: string;
   historyBars: number;
   labelFontSize: number;
   lineStyle: LegendLineStyle;
@@ -3409,6 +3438,7 @@ type ResolvedPriceZoneLegendSettings = {
   showConnectors: boolean;
   showAxisLabel: boolean;
   showHistoricalLabels: boolean;
+  upColor: string;
   visible: boolean;
 };
 
@@ -3416,6 +3446,7 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
   const stored = settingsMap[key] ?? {};
   return {
     currentLevelCount: Math.max(1, Math.min(6, Math.round(stored.currentLevelCount ?? 3))),
+    downColor: validHexColor(stored.downColor, resolveChartColor("var(--danger)")),
     historyBars: Math.max(10, Math.min(500, Math.round(stored.historyBars ?? 100))),
     labelFontSize: Math.max(9, Math.min(18, Math.round(stored.labelFontSize ?? 11))),
     lineStyle: stored.lineStyle ?? zoneBorderStyle(zone?.borderStyle),
@@ -3426,6 +3457,7 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     showConnectors: stored.showConnectors !== false,
     showAxisLabel: stored.showAxisLabel ?? zone?.axisLabelDefault ?? false,
     showHistoricalLabels: stored.showHistoricalLabels ?? zone?.historicalLabelsDefault ?? false,
+    upColor: validHexColor(stored.upColor, resolveChartColor("var(--success)")),
     visible: stored.visible ?? zone?.defaultVisible ?? true,
   };
 }
@@ -4225,7 +4257,7 @@ function syncPriceZoneAxisLines(
     const settings = resolvePriceZoneLegendSettings(legendSettings, priceZoneLegendKey(settingsId), zone);
     if (!settings.visible || !settings.showAxisLabel || settings.opacity <= 0) return;
     const key = `${settingsId}:${compactLabel}`;
-    const presentationColor = priceZonePresentationColors(zone, chartBackground).borderColor;
+    const presentationColor = priceZonePresentationColors(zone, chartBackground, settings).borderColor;
     // Lightweight Charts intentionally converts price-axis label colors to opaque RGB
     // while deriving contrast text, so an RGBA alpha channel is discarded. Precompose
     // the requested opacity against the active chart surface to preserve the same visible
@@ -4349,7 +4381,7 @@ function drawPriceZonePrimitiveGeometry(
         }
       }
       if (span.width < 1 || zoneHeight < 1) return;
-      const { borderColor, confidence, fillColor } = priceZonePresentationColors(zone, chartBackground);
+      const { borderColor, confidence, fillColor } = priceZonePresentationColors(zone, chartBackground, settings);
       const lineOnly = zone.renderMode === "line" || isStructureBreakZone(zone);
       const baseFillOpacity = clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08);
       const fillOpacity = lineOnly ? 0 : baseFillOpacity * (confidence === null ? 1 : 0.45 + 0.55 * confidence) * settings.opacity;
@@ -4410,7 +4442,7 @@ function drawSignalEpisodePrimitive(
 ) {
   const steps = zone.episodeSteps ?? [];
   if (!steps.length) return;
-  const { borderColor, fillColor } = priceZonePresentationColors(zone, chartBackground);
+  const { borderColor, fillColor } = priceZonePresentationColors(zone, chartBackground, settings);
   context.save();
   context.lineCap = "butt";
   const renderedSteps = steps.flatMap((step) => {
@@ -4576,7 +4608,7 @@ function drawPriceZones(
         width,
       );
       if (!span) return;
-      const { borderColor } = priceZonePresentationColors(zone, chartBackground);
+      const { borderColor } = priceZonePresentationColors(zone, chartBackground, settings);
       let labelSpan: HorizontalSpan | null = span;
       if (isStructureBreakZone(zone)) {
         const eventX = zone.eventTime ? chart.timeScale().timeToCoordinate(zone.eventTime as Time) : coordinates.end;
@@ -4598,27 +4630,18 @@ function drawPriceZones(
           plotBottom,
         );
       }
-      if (zone.compactLabel && labelSpan && settings.showHistoricalLabels && historicalTagZones.has(zone)) {
-        candleBoxes ??= visibleCandleBoxes(chart, priceSeries, candles, barWidth, width, plotBottom);
-        const labelDrawn = drawPriceZoneLineLabel(
-          context,
-          zone.compactLabel,
-          labelSpan,
-          center,
-          borderColor,
-          chartBackground,
-          priceZoneLineLabelPlacement(zone),
-          settings,
-          lineLabelBoxes,
-          candleBoxes,
-          width,
-          plotBottom,
-        );
-        if (!labelDrawn && isStructureBreakZone(zone)) {
+      if (
+        zone.compactLabel
+        && (labelSpan || isStructureBreakZone(zone))
+        && settings.showHistoricalLabels
+        && historicalTagZones.has(zone)
+      ) {
+        if (isStructureBreakZone(zone)) {
           const eventX = xForAnnotationTime(chart, zone.eventTime ?? zone.end, candles) ?? coordinates.end;
-          drawStructureBreakEventLabel(
+          drawAnchoredStructureBreakLabel(
             context,
             zone.compactLabel,
+            coordinates.start,
             eventX,
             center,
             borderColor,
@@ -4626,8 +4649,22 @@ function drawPriceZones(
             priceZoneLineLabelPlacement(zone),
             settings,
             lineLabelBoxes,
+            width,
+            plotBottom,
+          );
+        } else if (labelSpan) {
+          candleBoxes ??= visibleCandleBoxes(chart, priceSeries, candles, barWidth, width, plotBottom);
+          drawPriceZoneLineLabel(
+            context,
+            zone.compactLabel,
+            labelSpan,
+            center,
+            borderColor,
+            chartBackground,
+            priceZoneLineLabelPlacement(zone),
+            settings,
+            lineLabelBoxes,
             candleBoxes,
-            Math.max(3, barWidth),
             width,
             plotBottom,
           );
@@ -4795,9 +4832,10 @@ function drawPriceZoneLineLabel(
   return selected !== null;
 }
 
-function drawStructureBreakEventLabel(
+function drawAnchoredStructureBreakLabel(
   context: CanvasRenderingContext2D,
   text: string,
+  pivotX: number,
   eventX: number,
   lineY: number,
   color: string,
@@ -4805,32 +4843,25 @@ function drawStructureBreakEventLabel(
   placement: "above" | "below",
   settings: ResolvedPriceZoneLegendSettings,
   placed: CanvasBox[],
-  candleBoxes: CanvasBox[],
-  barWidth: number,
   layerWidth: number,
   plotBottom: number,
 ) {
-  if (!Number.isFinite(eventX) || lineY < 2 || lineY > plotBottom - 2) return false;
+  if (!Number.isFinite(pivotX) || !Number.isFinite(eventX) || lineY < 2 || lineY > plotBottom - 2) return false;
   const fontSize = Math.max(9, settings.labelFontSize);
   context.save();
   context.font = `600 ${fontSize}px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
   const labelWidth = Math.ceil(context.measureText(text).width) + 8;
   const labelHeight = fontSize + 5;
-  const horizontalCandidates = [eventX - labelWidth - barWidth, eventX + barWidth, eventX - labelWidth / 2];
-  const direction = placement === "above" ? -1 : 1;
-  let selected: CanvasBox | null = null;
-  for (let lane = 1; lane <= 4 && !selected; lane += 1) {
-    const top = lineY + direction * (lane * (labelHeight + 3)) - (placement === "above" ? labelHeight : 0);
-    for (const left of horizontalCandidates) {
-      const box = { bottom: top + labelHeight, left, right: left + labelWidth, top };
-      if (box.left < 2 || box.right > layerWidth - 2 || box.top < 2 || box.bottom > plotBottom - 2) continue;
-      if (placed.some((item) => boxesOverlap(box, item, 3))) continue;
-      if (candleBoxes.some((candle) => boxesOverlap(box, candle, 2))) continue;
-      selected = box;
-      break;
-    }
-  }
-  if (selected) {
+  const anchorX = (pivotX + eventX) / 2;
+  const left = anchorX - labelWidth / 2;
+  const top = placement === "above" ? lineY - labelHeight - 3 : lineY + 3;
+  const selected = { bottom: top + labelHeight, left, right: left + labelWidth, top };
+  const insidePlot = selected.left >= 2
+    && selected.right <= layerWidth - 2
+    && selected.top >= 2
+    && selected.bottom <= plotBottom - 2;
+  const overlapsLabel = placed.some((item) => boxesOverlap(selected, item, 3));
+  if (insidePlot && !overlapsLabel) {
     context.fillStyle = chartBackground;
     context.globalAlpha = 0.94 * settings.opacity;
     context.fillRect(selected.left, selected.top, labelWidth, labelHeight);
@@ -4841,7 +4872,7 @@ function drawStructureBreakEventLabel(
     placed.push(selected);
   }
   context.restore();
-  return selected !== null;
+  return insidePlot && !overlapsLabel;
 }
 
 function priceZoneCoordinates(chart: IChartApi, zone: PriceZone, candles: Candle[], barWidth: number, candleDuration: number) {

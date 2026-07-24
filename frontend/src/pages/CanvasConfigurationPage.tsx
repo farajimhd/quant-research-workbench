@@ -2283,8 +2283,12 @@ function pushStructureZoneSegment(
 
 const QMD_STRUCTURE_TIMEFRAMES = ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"] as const;
 
-function qmdStructureLayerId(timeframe: string) {
-  return `indicator.qmd_generic_structure.v7.${timeframe}`;
+function qmdStructureSwingLayerId(timeframe: string) {
+  return `indicator.qmd_generic_structure.v8.${timeframe}.swings`;
+}
+
+function qmdStructureBreakLayerId(timeframe: string) {
+  return `indicator.qmd_generic_structure.v8.${timeframe}.breaks`;
 }
 
 function qmdStructureLineWidth(timeframe: string) {
@@ -2348,13 +2352,14 @@ function pushEventStructureSwingLevels(
         historicalTagLimitDefault: timeframe === selectedTimeframe ? 8 : 0,
         label: `${timeframe} local swing ${swingHigh ? "high" : "low"} · ${formatLevelPrice(price)} · causal confirmation ${event.confirmed_at} · ${percentLabel(Number(event.confidence || 0))} confidence`,
         latest: !terminal,
-        legendLabel: `${timeframe} · Swings & breaks`,
+        legendLabel: `${timeframe} · Swing levels`,
         lower: price,
         minPixelHeight: 1,
         renderMode: "line",
-        settingsId: qmdStructureLayerId(timeframe),
+        settingsId: qmdStructureSwingLayerId(timeframe),
         start,
         strength: Number(event.strength || 0),
+        tone: swingHigh ? "sell" : "buy",
         upper: price,
         zoneHeightMode: "price",
       });
@@ -2436,12 +2441,13 @@ function pushStructureEvents(
       label: `${label}${bullish ? "+" : "-"} · ${scale || "structure"} · ${formatLevelPrice(price)}`,
       latest: false,
       defaultVisible: scale === selectedTimeframe,
-      legendLabel: `${scale} · Swings & breaks`,
+      legendLabel: `${scale} · Structure breaks`,
       lower: price,
       minPixelHeight: 1,
       renderMode: "line",
-      settingsId: qmdStructureLayerId(scale),
+      settingsId: qmdStructureBreakLayerId(scale),
       start: pivotAt,
+      tone: bullish ? "buy" : "sell",
       upper: price,
       zoneHeightMode: "price",
     });

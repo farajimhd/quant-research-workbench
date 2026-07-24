@@ -185,18 +185,24 @@ lifecycle resolves.
 
 ### Timeframe audit layers
 
-Each timeframe has one configurable **Swings & breaks** layer containing:
+Each timeframe has two independently configurable audit layers:
 
-- **SH / SL lines** from the exact traded-price pivot until it is crossed or a
-  newer same-side local swing supersedes it; and
-- **BoS / CHoCH connectors** from the pivot to the accepted break.
+- **Swing levels** contains SH / SL lines from the exact traded-price pivot
+  until it is crossed or a newer same-side local swing supersedes it.
+- **Structure breaks** contains BoS / CHoCH connectors from the pivot to the
+  accepted break.
 
-Only the layer matching the selected chart interval is visible by default.
-Open the indicator legend to enable other timeframe layers for comparison. This
-keeps a 1 s chart readable while still allowing the independent 100 ms through
-1 h hierarchies to be audited. A first crossing is immediate but does not become
-BoS or CHoCH until the deterministic acceptance rule confirms price remained
-beyond the level.
+Each layer has its own bullish and bearish colors, line shape, width, opacity,
+history window, and historical-label settings. Only both layers matching the
+selected chart interval are visible by default. Open the indicator legend to
+enable other timeframe layers for comparison. Breaks additionally expose the
+swing-to-break connector toggle. BoS / CHoCH text is anchored to the fixed
+midpoint in time between the causal pivot and break event; panning or scaling
+can hide an off-screen label but never relocate it to a different part of the
+connector. This keeps a 1 s chart readable while still allowing the independent
+100 ms through 1 h hierarchies to be audited. A first crossing is immediate but
+does not become BoS or CHoCH until the deterministic acceptance rule confirms
+price remained beyond the level.
 
 ### Historical structure
 
