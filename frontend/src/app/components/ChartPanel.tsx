@@ -150,7 +150,6 @@ type PriceZone = {
   sellVolume?: number;
   neutralVolume?: number;
   upper: number;
-  visibilityLocked?: boolean;
   zoneHeightMode?: string;
 };
 export type LiveEntryLine = {
@@ -1762,7 +1761,6 @@ type LegendItem = {
   supportsPreset?: boolean;
   value: string;
   visible: boolean;
-  visibilityLocked?: boolean;
 };
 
 function ChartLegend({
@@ -1821,12 +1819,9 @@ function ChartLegend({
                 {item.configurable ? (
                   <span className="legend-row-actions">
                     <button
-                      aria-label={item.visibilityLocked ? `${item.label} follows chart timeframe` : item.visible ? `Hide ${item.label}` : `Show ${item.label}`}
-                      disabled={item.visibilityLocked}
-                      onClick={() => {
-                        if (!item.visibilityLocked) onUpdate(item.key, { visible: !item.visible });
-                      }}
-                      title={item.visibilityLocked ? "Visibility follows the chart timeframe" : item.visible ? "Hide" : "Show"}
+                      aria-label={item.visible ? `Hide ${item.label}` : `Show ${item.label}`}
+                      onClick={() => onUpdate(item.key, { visible: !item.visible })}
+                      title={item.visible ? "Hide" : "Show"}
                       type="button"
                     >
                       {item.visible ? <Eye size={13} /> : <EyeOff size={13} />}
@@ -2986,7 +2981,6 @@ function buildPriceZoneLegendItems(
         ? `${episodeIds.size} episode${episodeIds.size === 1 ? "" : "s"}`
         : `${selectedZones.length} level${selectedZones.length === 1 ? "" : "s"}`,
       visible: settings.visible,
-      visibilityLocked: itemZones.some((zone) => zone.visibilityLocked),
     };
   });
 }
@@ -3482,7 +3476,7 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     showAxisLabel: stored.showAxisLabel ?? zone?.axisLabelDefault ?? false,
     showHistoricalLabels: stored.showHistoricalLabels ?? zone?.historicalLabelsDefault ?? false,
     upColor: validHexColor(stored.upColor, resolveChartColor("var(--success)")),
-    visible: zone?.visibilityLocked ? zone.defaultVisible !== false : stored.visible ?? zone?.defaultVisible ?? true,
+    visible: stored.visible ?? zone?.defaultVisible ?? true,
   };
 }
 

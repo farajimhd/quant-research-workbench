@@ -456,7 +456,7 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     shortDescription: "Exact eligible-trade price levels plus a separate causal local swing and break hierarchy for every supported timeframe.",
     detailedDescription: "QMD has two related authorities. The immediate level book updates from every ordered eligible trade and retains price/volume evidence without waiting for a candle. Separately, each timeframe groups those same trades into fixed event-time buckets using the exact highest and lowest executed prices. A completed three-bucket neighborhood confirms the middle bucket only when it is a local high or low. Quotes may add liquidity context, but an unexecuted quote cannot create a swing, BoS, or CHoCH.",
     calculation: "For a selected timeframe, the middle completed trade bucket is a swing high when its exact high is at least the prior bucket high and strictly above the following bucket high; swing lows use the inverse rule. The last bucket in a same-price plateau owns the pivot, preventing duplicates. Confirmation occurs only after the following bucket is complete, so history never repaints. Only the latest confirmed local high and low can generate that timeframe's break. The first eligible trade through it emits Crossing; a second confirming trade or 100 ms of persistence emits the accepted Break, BoS, or CHoCH.",
-    readingGuide: "The chart automatically enables only the swing and break layers matching its current timeframe; the other timeframe layers stay listed for audit but cannot be manually enabled. SH and SL lines are bounded: they start at the exact pivot trade and end when crossed or when a newer same-side local swing supersedes them. BoS continues the last accepted break direction; CHoCH is the first accepted break in the opposite direction. The pivot time shows where the extreme occurred, while the tooltip's later confirmation time is the earliest moment a strategy could have known it. Current support/resistance and its volume footprint remain a separate immediate level-book view.",
+    readingGuide: "The chart enables the swing and break layers matching its current timeframe by default. Other timeframe layers start hidden to keep the chart readable, but their eye controls remain available so you can overlay and compare them; each manual visibility choice is persisted independently. SH and SL lines are bounded: they start at the exact pivot trade and end when crossed or when a newer same-side local swing supersedes them. BoS continues the last accepted break direction; CHoCH is the first accepted break in the opposite direction. The pivot time shows where the extreme occurred, while the tooltip's later confirmation time is the earliest moment a strategy could have known it. Current support/resistance and its volume footprint remain a separate immediate level-book view.",
     bullishEvidence: "Bullish evidence increases when resistance is crossed and accepted, an upward BoS or CHoCH is confirmed for the selected timeframe, support survives retests, and buyer-initiated footprint volume concentrates at or above the level.",
     bearishEvidence: "Bearish evidence increases when support is crossed and accepted, a downward BoS or CHoCH is confirmed for the selected timeframe, resistance survives retests, and seller-initiated footprint volume concentrates at or below the level.",
     timeframeBehavior: "All intervals consume the same ordered eligible trades, but each interval owns its local extrema and break state. The timeframe controls the event-time neighborhood used to confirm a swing; it does not resample chart candle closes or inherit another timeframe's breaks. A 1-second BoS therefore breaks the latest confirmed 1-second swing, while 5-second and 1-minute structure remain independent.",
@@ -2494,7 +2494,6 @@ function pushEventStructureSwingLevels(
         strength: Number(event.strength || 0),
         tone: swingHigh ? "sell" : "buy",
         upper: price,
-        visibilityLocked: true,
         zoneHeightMode: "price",
       });
     });
@@ -2582,7 +2581,6 @@ function pushStructureEvents(
       start: pivotAt,
       tone: bullish ? "buy" : "sell",
       upper: price,
-      visibilityLocked: true,
       zoneHeightMode: "price",
     });
   });

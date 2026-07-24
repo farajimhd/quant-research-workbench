@@ -249,7 +249,8 @@ def validate_price_zone_legend(
         )
         guide_text = guide.inner_text()
         for expected_explanation in (
-            "automatically enables only the swing and break layers",
+            "matching its current timeframe by default",
+            "eye controls remain available",
             "sh and sl lines are bounded",
             "volume footprint remain a separate immediate level-book view",
         ):
@@ -265,15 +266,27 @@ def validate_price_zone_legend(
                 full_page=True,
             )
         guide.get_by_role("button", name="Close").click()
-    locked_visibility = price_legend.locator(
-        'button[aria-label$="follows chart timeframe"]'
-    )
-    if locked_visibility.count() < 2:
-        issues.append("timeframe structure layers do not expose locked visibility")
-    elif locked_visibility.evaluate_all(
-        "elements => elements.filter(element => !element.disabled).length"
-    ):
-        issues.append("timeframe structure visibility can be manually overridden")
+    active_layers = {
+        f"{active_timeframe} · Swing levels",
+        f"{active_timeframe} · Structure breaks",
+    }
+    inactive_layer_count = 0
+    for layer_kind in ("Swing levels", "Structure breaks"):
+        visibility_controls = price_legend.locator(
+            f'button[aria-label$="· {layer_kind}"]'
+        )
+        for index in range(visibility_controls.count()):
+            visibility = visibility_controls.nth(index)
+            aria_label = visibility.get_attribute("aria-label") or ""
+            label = aria_label.removeprefix("Show ").removeprefix("Hide ")
+            if label in active_layers and not aria_label.startswith("Hide "):
+                issues.append(f"{label} is not enabled by default")
+            if label not in active_layers:
+                inactive_layer_count += 1
+            if not visibility.is_enabled():
+                issues.append(f"{label} visibility control is disabled")
+    if inactive_layer_count < 2:
+        issues.append("structure legend does not expose toggleable nonmatching timeframe layers")
     for layer_kind in ("Swing levels", "Structure breaks"):
         legend_label = f"{active_timeframe} · {layer_kind}"
         configure_layer = price_legend.get_by_role(
