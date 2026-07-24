@@ -31,13 +31,15 @@ from research.mlops.packed_market.scanner_sidecar import (
     ScannerSidecarManager,
     completed_scanner_bar_end_us,
 )
-
-SESSION_TIMEZONE = "America/New_York"
-SESSION_START_SECOND = 4 * 3600
-SESSION_REGULAR_START_SECOND = 9 * 3600 + 30 * 60
-SESSION_REGULAR_END_SECOND = 16 * 3600
-SESSION_END_SECOND = 20 * 3600
-SESSION_LENGTH_SECOND = SESSION_END_SECOND - SESSION_START_SECOND
+from research.mlops.packed_market.time_features import (
+    CAUSAL_TIME_FEATURE_NAMES,
+    SESSION_END_SECOND,
+    SESSION_LENGTH_SECOND,
+    SESSION_REGULAR_END_SECOND,
+    SESSION_REGULAR_START_SECOND,
+    SESSION_START_SECOND,
+    SESSION_TIMEZONE,
+)
 
 STREAM_EVENT_FEATURE_NAMES = (
     "event_meta",
@@ -52,18 +54,7 @@ STREAM_EVENT_FEATURE_NAMES = (
     "condition_token_3",
     "condition_token_4",
     "condition_token_5",
-    "utc_second_of_day_sin",
-    "utc_second_of_day_cos",
-    "utc_day_of_week_sin",
-    "utc_day_of_week_cos",
-    "utc_day_of_year_sin",
-    "utc_day_of_year_cos",
-    "years_since_2000",
-    "session_second",
-    "session_progress",
-    "is_regular_hours",
-    "is_premarket",
-    "is_afterhours",
+    *CAUSAL_TIME_FEATURE_NAMES,
 )
 
 DEFAULT_HORIZONS_US = {
