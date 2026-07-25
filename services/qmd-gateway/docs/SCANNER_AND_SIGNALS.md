@@ -1,118 +1,76 @@
-# QMD Gateway Scanner And Signal Contracts
+# QMD Market-Signal Contracts
 
-This file separates two ideas that should not be mixed:
+QMD owns reusable, causal market signals derived exclusively from canonical
+market data. Strategies may consume these events alongside portfolio,
+reference, risk, news, or model inputs, but only a strategy owns the final
+entry, exit, hold, wait, and order intent.
 
-- **Scanner primitive**: a fast candidate emitted by `qmd-gateway` from Massive quotes/trades only.
-- **Signal method**: a documented trading setup contract. It may require broker state, reference data, or app-backend logic and is not automatically active in the gateway.
+This separates three contracts:
 
-The gateway currently emits scanner primitives. The signal catalog defines future detector contracts and lets the app, replay runner, and backtest simulator use the same names and required fields.
+- **Indicator**: continuously computed descriptive state.
+- **Market signal**: a versioned QMD lifecycle event that calls attention to a
+  reproducible market condition.
+- **Strategy signal**: a strategy-owned decision that may cite one or more QMD
+  market-signal ids as evidence.
 
-## Current Scanner Primitive Output
-
-Endpoint:
-
-```text
-GET /snapshot/scanner-primitives?limit=250
-WS  /stream/scanner-primitives
-```
-
-Each emitted row has this contract:
-
-| Field | Meaning |
-|---|---|
-| `schema_version` | Current scanner primitive contract version. |
-| `detected_at` | UTC time when the gateway emitted the primitive. |
-| `ticker` | Massive ticker. |
-| `timeframe` | Bar timeframe that produced the primitive. |
-| `primitive_key` | Primitive family, such as `tape_acceleration`. |
-| `side_bias` | Current value is `long`. Short-side primitives are not implemented yet. |
-| `score` | 0 to 1 rank score. Inputs are clamped to 0..1 and averaged. |
-| `trigger_reason` | Short reason for the primitive. |
-| `reject_reason` | Empty for current emitted primitives. Reserved for future rejected-candidate audit rows. |
-| `close`, `vwap`, `price_change_pct` | Price evidence from the closed bar. |
-| `volume`, `dollar_volume` | Activity evidence from the closed bar. |
-| `trade_rate`, `quote_rate` | Event-rate evidence from the closed bar. |
-| `tape_imbalance` | Buy-vs-sell volume proxy from trade classification. |
-| `spread_bps` | Close spread in basis points. |
-| `liquidity_score` | Dollar volume per unit of spread. Higher is better. |
-| `estimated_luld_active`, `estimated_luld_state` | Local estimated LULD session flag and proximity state copied from the source bar. This is not official SIP LULD state. |
-| `estimated_luld_distance_to_upper_pct`, `estimated_luld_distance_to_lower_pct` | Estimated percent distance to the locally calculated upper/lower LULD bands. Lower values mean closer to a band. |
-
-## Active Primitive Rules
-
-All rules use a closed bar. They do not use `conid`, float, short interest, account state, portfolio state, or IBKR.
-
-| Primitive | Trigger | Score Inputs | Why It Exists |
-|---|---|---|---|
-| `tape_acceleration` | `trade_count_accel > 10`, `tape_imbalance > 0.15`, `spread_bps_close < 80` | trade acceleration, positive tape imbalance, positive price change, liquidity score | Finds early names where trade frequency and buyer pressure are increasing. |
-| `volume_shock` | `dollar_volume_accel > 250000`, `price_change_pct > 0.25` | dollar-volume acceleration, percent gain, trade rate | Finds names where dollar activity appears suddenly. |
-| `liquidity_recovery` | spread tightened, quote-rate acceleration is positive, liquidity score is positive | spread improvement, quote-rate acceleration, liquidity score | Finds symbols becoming routeable after poor spread conditions. |
-| `vwap_reclaim` | trade close and quote midpoint are above VWAP, tape imbalance is positive | close-vs-VWAP, midpoint-vs-VWAP, tape imbalance | Finds reclaim behavior with tape confirmation. |
-| `high_momentum_bar` | `price_change_pct > 1`, close is within 0.5 percent of bar high, `trade_rate > 0.5` | percent gain, trade rate, tape imbalance | Finds strong bars that close near the high instead of fading. |
-
-These thresholds are starter values. Treat them as gateway defaults, not final trading rules.
-
-## Signal Method Catalog
-
-Endpoint:
+## Endpoints
 
 ```text
+GET /snapshot/signals?limit=250
+GET /snapshot/signal-events?limit=1000
+WS  /stream/signals
 GET /signal-catalog
 ```
 
-A catalog row tells a detector what it needs:
+`/snapshot/signals` contains only active lifecycles. The event snapshot and
+stream contain `triggered`, `updated`, and `resolved` events. The legacy
+`/snapshot/scanner-primitives` and `/stream/scanner-primitives` paths are
+compatibility aliases over this same payload and are not a separate authority.
+
+## Lifecycle Contract
 
 | Field | Meaning |
 |---|---|
-| `key` | Stable method id. |
-| `label` | Human-readable name. |
-| `category` | Setup family, such as tape acceleration or VWAP. |
-| `priority` | `P0` default candidates, `P1` useful secondary methods, `P2` research or opt-in methods. |
-| `compute_mode` | How it should run: tick, bar close, hybrid, or cross-timeframe. |
-| `persistence_policy` | What should be written. Current stance is decision snapshots, not every intermediate value. |
-| `status` | `cataloged` means contract exists. `implemented` should be used only after a detector writes decisions. |
-| `working_timeframes` | Timeframes where the method is evaluated. |
-| `confirmation_timeframes` | Timeframes used to confirm or reject the setup. |
-| `required_bar_fields` | Bar fields needed by the detector. |
-| `required_indicator_fields` | Indicator fields needed by the detector. |
-| `required_reference_fields` | Non-Massive context needed by the detector. These belong in the app backend. |
-| `trigger_rules` | Plain-English trigger conditions. |
-| `confirmation_rules` | Conditions that strengthen the setup. |
-| `reject_rules` | Conditions that block or weaken the setup. |
-| `emits` | Output fields expected from a detector. |
-| `snapshot_fields` | Evidence fields that should be saved when a signal is emitted or rejected. |
+| `schema_version`, `engine_version` | Version the event schema and deterministic engine separately. |
+| `event_id` | Unique id for one lifecycle event. |
+| `signal_id` | Stable id shared by all events in one lifecycle. |
+| `signal_key`, `producer` | Reusable detector identity and its authority. |
+| `ticker` | Uppercase market symbol. |
+| `working_timeframe`, `confirmation_timeframe` | The calculation clock and optional context clock. |
+| `observed_at`, `effective_at` | When QMD observed and made the event usable. Both remain causal. |
+| `state` | `triggered`, `updated`, or `resolved`. |
+| `direction` | `bullish`, `bearish`, or `neutral`. It is not an order side. |
+| `score`, `confidence` | Signed/unsigned detector output on normalized scales. |
+| `trigger_reason`, `resolution_reason` | Human-readable lifecycle evidence. |
+| `reference_price`, `invalidation_price`, `expires_at` | Price/time context, never an implicit order instruction. |
+| `evidence` | Exact bar and microstructure measurements used at that event. |
 
-## Cataloged Signal Methods
+The chart must plot `effective_at`, not the opening timestamp of the containing
+display candle. A larger chart timeframe changes presentation only; it cannot
+delay or backdate the underlying signal.
 
-| Method | Priority | Working Timeframes | Confirmation | Gateway/App Boundary |
-|---|---|---|---|---|
-| `tape_acceleration_breakout` | P0 | `1s`, `10s`, `30s` | `1m` | Gateway can provide tape fields. App adds float/short context and final route filters. |
-| `volume_shock_momentum` | P0 | `10s`, `30s`, `1m` | `5m` | Gateway provides bar/tape activity. App adds market-cap/float context. |
-| `opening_range_breakout` | P0 | `1m`, `5m` | `5m`, `1h` | Needs session/opening-range state, planned for gateway; app still applies context and route rules. |
-| `vwap_reclaim_momentum` | P0 | `10s`, `30s`, `1m` | `5m` | Gateway provides VWAP and tape state. App applies strategy-specific risk. |
-| `liquidity_pullback_reversal` | P0 | `30s`, `1m` | `5m` | Gateway provides spread/liquidity and trend fields. App decides if the pullback is tradable. |
-| `gap_and_go_continuation` | P0 | `1m`, `5m` | `5m`, `1h` | Requires previous-close/session context and news/reference context. |
-| `short_squeeze_pressure` | P0 | `10s`, `30s`, `1m` | `5m` | Gateway provides tape acceleration. App adds float, short labels, freshness checks, and route limits. |
-| `high_of_day_break` | P1 | `10s`, `30s`, `1m` | `5m` | Gateway can supply day-high state once session indicators are implemented. |
-| `trend_continuation` | P1 | `1m`, `5m` | `1h` | Needs cross-timeframe trend state. |
-| `cross_timeframe_trend_alignment` | P1 | `1m`, `5m`, `1h` | none | Mainly a confirmation method for ranking other candidates. |
-| `failed_breakout_exhaustion` | P1 | `30s`, `1m` | `5m` | Useful for rejecting weak breakouts and later reversal strategies. |
-| `liquidity_recovery_after_spread_shock` | P1 | `1s`, `10s`, `30s` | `1m` | Gateway-native NBBO/spread method. |
-| `premarket_leader_continuation` | P1 | `1m`, `5m` | `5m`, `1h` | Requires session phase and reference/news context. |
-| `news_volume_breakout` | P1 | `10s`, `30s`, `1m` | `5m` | App backend owns news recency. Gateway owns live volume/tape evidence. |
-| `mean_reversion_to_vwap` | P2 | `1m`, `5m` | `5m` | Disabled by default because momentum names can continue far past normal extension levels. |
-| `range_compression_expansion` | P2 | `1m`, `5m` | `5m`, `1h` | Research candidate; useful after validation. |
+## Implemented QMD Detectors
 
-## Persistence Rule For Signals
+| Signal | Working timeframes | Purpose |
+|---|---|---|
+| `tape_acceleration_breakout` | `1s`, `10s`, `30s` | Directional trade acceleration while the spread remains routeable. |
+| `volume_shock_momentum` | `10s`, `30s`, `1m` | Unusual dollar-volume acceleration with material price displacement. |
+| `liquidity_recovery_after_spread_shock` | `1s`, `10s`, `30s` | NBBO spread/liquidity recovery after a stressed state. |
+| `vwap_reclaim_momentum` | `10s`, `30s`, `1m` | Price and tape confirmation around session VWAP. |
+| `high_of_day_break` | `10s`, `30s`, `1m` | Session-high breakout evidence when the required session state is available. |
 
-Raw quotes, raw trades, and bars are already persisted. For signals, persist the decision snapshot:
+Catalog entries marked `cataloged` describe future contracts only. They must
+not appear as active scanner or strategy evidence until a detector emits the
+canonical lifecycle contract.
 
-- method key and version
-- ticker and timeframes
-- emitted/rejected status
-- score and side
-- trigger, confirmation, and reject reasons
-- exact evidence fields used at decision time
-- route-blocking context from the app backend, if any
+## Persistence And Replay
 
-Do not persist every possible live indicator just because a signal might use it later. If a signal method becomes production-critical, promote the exact required fields through a versioned persistence contract.
+Raw quotes, trades, and bars remain the reproducible source. Persist lifecycle
+events only when downstream audit/replay requires durable signal decisions.
+Historical QMD computes the same Rust engine and publishes the same event shape
+under `market_signal_events`; it never substitutes frontend heuristics.
+
+Strategies that act on a market signal persist a separate strategy-owned row
+with action, direction, score, confidence, strategy revision, source signal
+ids, invalidation, reason, and effective time. An active QMD signal alone can
+never place an order.

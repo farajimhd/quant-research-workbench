@@ -17,6 +17,7 @@ from src.trading_runtime.clickhouse import TRADING_TABLE_DDL, _specialized_rows
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.orchestrator import historical_run_window
 from src.trading_runtime.runtime import RunConfig, RunMode, TradingRuntime
+from src.trading_runtime.signals import MarketSignal, StrategyEvaluation, StrategySignal
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, SimulationConfig
 
 
@@ -143,6 +144,40 @@ class JournalTests(unittest.TestCase):
             self.assertTrue(all("q_live.tr_" in statement for statement in TRADING_TABLE_DDL))
             journal.close()
 
+    def test_clickhouse_contract_projects_typed_strategy_signal_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            record = journal.append(
+                run_id="00000000-0000-0000-0000-000000000001",
+                category="strategy_decision",
+                entity_type="signal",
+                entity_id="strategy-signal-1",
+                account_id="DU123",
+                event_time=TS,
+                payload={
+                    "strategy_id": "breakout",
+                    "strategy_revision": 3,
+                    "ticker": "AAPL",
+                    "signal_type": "entry_decision",
+                    "action": "enter_long",
+                    "direction": "bullish",
+                    "working_timeframe": "1s",
+                    "score": 0.74,
+                    "confidence": 0.82,
+                    "source_signal_ids": ["qmd-1"],
+                    "invalidation_price": 313.5,
+                    "reason": "QMD flow confirmed the structural break.",
+                },
+            )
+
+            typed = _specialized_rows([record])["tr_signal_v2"][0]
+            self.assertEqual(typed["signal_id"], "strategy-signal-1")
+            self.assertEqual(typed["strategy_revision"], 3)
+            self.assertEqual(typed["action"], "enter_long")
+            self.assertEqual(typed["source_signal_ids"], ["qmd-1"])
+            self.assertEqual(typed["invalidation_price"], 313.5)
+            journal.close()
+
 
 class HistoricalContractTests(unittest.TestCase):
     def test_subsecond_and_five_second_charts_use_enriched_indicator_contract(self) -> None:
@@ -220,6 +255,15 @@ class HistoricalContractTests(unittest.TestCase):
                     "footprint": [{"price": 314.75, "total_volume": 2_400.0}],
                 }
             ],
+            "market_signal_events": [
+                {
+                    "event_id": "event-1",
+                    "signal_id": "signal-1",
+                    "signal_key": "vwap_reclaim_momentum",
+                    "state": "triggered",
+                    "effective_at": "2026-07-10T13:44:59.900+00:00",
+                }
+            ],
         }
 
         result = historical_bar_history_before(
@@ -247,6 +291,7 @@ class HistoricalContractTests(unittest.TestCase):
             [(91, "100ms"), (92, "1s")],
         )
         self.assertEqual(result["structure_level_history"][0]["price"], 314.75)
+        self.assertEqual(result["market_signal_events"][0]["signal_id"], "signal-1")
 
     @patch("src.backend.trading_runtime_service._historical_gateway_get")
     def test_chart_history_orders_fractional_rfc3339_timestamps_chronologically(self, gateway_get) -> None:
@@ -407,7 +452,114 @@ class _NoopStrategy:
         return []
 
 
+class _SignalAwareStrategy(_NoopStrategy):
+    strategy_id = "signal-aware"
+    revision = 2
+
+    async def on_market_signal(self, signal, account_id):
+        return StrategyEvaluation(
+            signals=(
+                StrategySignal(
+                    signal_id="strategy-decision-1",
+                    signal_type="market_signal_assessment",
+                    ticker=signal.ticker,
+                    event_time=signal.effective_at,
+                    action="hold",
+                    direction=signal.direction,
+                    score=signal.score,
+                    confidence=signal.confidence,
+                    reason="Observed reusable QMD evidence; no order condition yet.",
+                    source_signal_ids=(signal.signal_id,),
+                    working_timeframe=signal.working_timeframe,
+                ),
+            )
+        )
+
+
 class RuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_market_signal_validates_qmd_payload_at_strategy_boundary(self) -> None:
+        payload = {
+            "signal_id": "qmd-signal-1",
+            "event_id": "qmd-event-1",
+            "signal_key": "tape_acceleration_breakout",
+            "schema_version": 1,
+            "engine_version": "qmd-market-signal-v1",
+            "producer": "qmd",
+            "ticker": "aapl",
+            "working_timeframe": "1s",
+            "observed_at": TS.isoformat(),
+            "effective_at": TS.isoformat(),
+            "state": "triggered",
+            "direction": "bearish",
+            "score": -0.7,
+            "confidence": 0.8,
+            "reference_price": 314.5,
+            "evidence": {"tape_imbalance": -0.4},
+        }
+        signal = MarketSignal.from_qmd_payload(payload)
+        self.assertEqual(signal.ticker, "AAPL")
+        self.assertEqual(signal.score, -0.7)
+        self.assertEqual(signal.effective_at, TS)
+
+        with self.assertRaisesRegex(ValueError, "must include a timezone"):
+            MarketSignal.from_qmd_payload(
+                {
+                    **payload,
+                    "observed_at": "2026-07-13T14:00:00",
+                    "effective_at": "2026-07-13T14:00:00",
+                }
+            )
+
+    async def test_market_signal_is_interpreted_by_strategy_without_implicit_order(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            try:
+                broker = SimulatedBrokerAdapter(["DU123"])
+                runtime = TradingRuntime(
+                    RunConfig(
+                        RunMode.BACKTEST,
+                        "signal-aware",
+                        2,
+                        ("DU123",),
+                        date(2026, 7, 14),
+                        run_id="00000000-0000-0000-0000-000000000002",
+                    ),
+                    broker,
+                    _SignalAwareStrategy(),
+                    journal,
+                )
+                await runtime.initialize()
+                await runtime.process_market_signal(
+                    MarketSignal(
+                        signal_id="qmd-signal-1",
+                        event_id="qmd-event-1",
+                        signal_key="vwap_reclaim_momentum",
+                        schema_version=1,
+                        engine_version="qmd-market-signal-v1",
+                        producer="qmd-gateway",
+                        ticker="AAPL",
+                        working_timeframe="100ms",
+                        observed_at=TS,
+                        effective_at=TS,
+                        state="triggered",
+                        direction="bullish",
+                        score=0.64,
+                        confidence=0.71,
+                        trigger_reason="Price reclaimed VWAP with positive flow.",
+                        reference_price=315.0,
+                    )
+                )
+
+                records = journal.records(runtime.run_id)
+                strategy_records = [row for row in records if row.entity_type == "signal"]
+                order_records = [row for row in records if row.entity_type == "order"]
+                self.assertEqual(len(strategy_records), 1)
+                self.assertEqual(strategy_records[0].payload["action"], "hold")
+                self.assertEqual(strategy_records[0].payload["source_signal_ids"], ["qmd-signal-1"])
+                self.assertEqual(order_records, [])
+            finally:
+                journal.close()
+
     async def test_runtime_rejects_out_of_order_events_and_persists_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")

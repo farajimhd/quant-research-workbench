@@ -400,6 +400,7 @@ def historical_bar_history_before(
             "indicators": [],
             "decision_events": [],
             "episode_events": [],
+            "market_signal_events": [],
             "structure_events": [],
             "structure_level_history": [],
             "earliest_session_date": "",
@@ -436,6 +437,7 @@ def historical_bar_history_before(
     indicators = list(snapshot.get("indicators") or []) if isinstance(snapshot, dict) else []
     decision_events = list(snapshot.get("decision_events") or []) if isinstance(snapshot, dict) else []
     episode_events = list(snapshot.get("episode_events") or []) if isinstance(snapshot, dict) else []
+    market_signal_events = list(snapshot.get("market_signal_events") or []) if isinstance(snapshot, dict) else []
     structure_events = list(snapshot.get("structure_events") or []) if isinstance(snapshot, dict) else []
     structure_level_history = list(snapshot.get("structure_level_history") or []) if isinstance(snapshot, dict) else []
     bars.sort(key=_bar_start_sort_key)
@@ -457,6 +459,7 @@ def historical_bar_history_before(
         "indicators": indicators,
         "decision_events": decision_events,
         "episode_events": episode_events,
+        "market_signal_events": market_signal_events,
         "structure_events": structure_events,
         "structure_level_history": structure_level_history,
         "indicators_available": bool(snapshot.get("indicators_available")) if isinstance(snapshot, dict) else False,
@@ -530,6 +533,7 @@ def historical_macro_bar_history(
         "indicators": [],
         "decision_events": [],
         "episode_events": [],
+        "market_signal_events": [],
         "structure_events": [],
         "structure_level_history": [],
         "indicators_available": False,

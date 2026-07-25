@@ -11,6 +11,11 @@ from src.trading_runtime.broker import BrokerAdapter
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.risk import RiskAuthority
+from src.trading_runtime.signals import (
+    MarketSignal,
+    StrategyEvaluation,
+    normalize_strategy_evaluation,
+)
 
 
 class RunMode(StrEnum):
@@ -26,7 +31,9 @@ class AutomaticStrategy(Protocol):
     revision: int
     automatic: bool
 
-    async def on_event(self, event: MarketEvent, account_id: str) -> list[OrderRequest]: ...
+    async def on_event(
+        self, event: MarketEvent, account_id: str
+    ) -> StrategyEvaluation | list[OrderRequest]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,7 +99,11 @@ class TradingRuntime:
                 account_id=execution.account, event_time=execution.trade_time, payload=execution.to_cpapi(),
             )
         for account_id in self.config.account_ids:
-            requests = await self.strategy.on_event(event, account_id)
+            evaluation = normalize_strategy_evaluation(
+                await self.strategy.on_event(event, account_id)
+            )
+            self._record_strategy_signals(evaluation, account_id)
+            requests = list(evaluation.orders)
             for request in requests:
                 if request.acctId != account_id:
                     raise ValueError("Strategy emitted an order for a different account")
@@ -110,6 +121,59 @@ class TradingRuntime:
                     )
         cursor = f"{event.ts.astimezone(timezone.utc).isoformat()}|{event.sequence}|{event.kind}"
         self.journal.save_checkpoint(self.run_id, cursor, {"processed_events": self.processed_events}, event.ts)
+
+    async def process_market_signal(self, signal: MarketSignal) -> None:
+        """Deliver one causal reusable signal without coupling QMD to order routing."""
+        handler = getattr(self.strategy, "on_market_signal", None)
+        if handler is None:
+            return
+        for account_id in self.config.account_ids:
+            evaluation = normalize_strategy_evaluation(await handler(signal, account_id))
+            self._record_strategy_signals(evaluation, account_id)
+            requests = list(evaluation.orders)
+            for request in requests:
+                if request.acctId != account_id:
+                    raise ValueError("Strategy emitted an order for a different account")
+                self.journal.append(
+                    run_id=self.run_id,
+                    category="command",
+                    entity_type="order",
+                    entity_id=request.cOID,
+                    account_id=account_id,
+                    event_time=signal.effective_at,
+                    payload=request.to_cpapi(),
+                )
+            if requests:
+                await self.risk.validate(self.broker, account_id, requests)
+                responses = await self.broker.place_orders(account_id, requests)
+                for response in responses:
+                    self.journal.append(
+                        run_id=self.run_id,
+                        category="broker",
+                        entity_type="order",
+                        entity_id=str(response.get("order_id") or ""),
+                        account_id=account_id,
+                        event_time=signal.effective_at,
+                        payload=response,
+                    )
+
+    def _record_strategy_signals(
+        self, evaluation: StrategyEvaluation, account_id: str
+    ) -> None:
+        for signal in evaluation.signals:
+            self.journal.append(
+                run_id=self.run_id,
+                category="strategy_decision",
+                entity_type="signal",
+                entity_id=signal.signal_id,
+                account_id=account_id,
+                event_time=signal.event_time,
+                payload={
+                    **signal.payload(),
+                    "strategy_id": self.config.strategy_id,
+                    "strategy_revision": self.config.strategy_revision,
+                },
+            )
 
     async def snapshot_portfolios(self) -> None:
         event_time = self.last_event_time or datetime.now(timezone.utc)

@@ -6,7 +6,8 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -94,16 +95,94 @@ def qmd_live_market_state(ticker: str) -> dict[str, Any]:
 
 
 def qmd_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
-    primitive_payload = qmd_get_json("/snapshot/scanner-primitives", {"limit": row_limit}, timeout=3)
-    primitive_rows = primitive_payload.get("rows", []) if isinstance(primitive_payload, dict) else []
-    if primitive_rows:
-        rows = [normalize_qmd_scanner_primitive(row) for row in primitive_rows if isinstance(row, dict)]
-        return qmd_scanner_payload(rows, primitive_payload, row_limit, source="scanner-primitives")
-
-    snapshot_payload = qmd_get_json("/snapshot/scanner", {"limit": row_limit}, timeout=3)
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        scanner_future = executor.submit(
+            qmd_get_json, "/snapshot/scanner", {"limit": row_limit}, timeout=3
+        )
+        active_signal_future = executor.submit(
+            qmd_get_json, "/snapshot/signals", {"limit": row_limit}, timeout=3
+        )
+        signal_event_future = executor.submit(
+            qmd_get_json, "/snapshot/signal-events", {"limit": row_limit}, timeout=3
+        )
+        snapshot_payload = scanner_future.result()
+        active_signal_payload = active_signal_future.result()
+        signal_event_payload = signal_event_future.result()
     snapshot_rows = snapshot_payload.get("rows", []) if isinstance(snapshot_payload, dict) else []
     rows = [normalize_qmd_symbol_snapshot(row) for row in snapshot_rows if isinstance(row, dict)]
-    return qmd_scanner_payload(rows, snapshot_payload if isinstance(snapshot_payload, dict) else {}, row_limit, source="scanner")
+    active_rows = [
+        normalize_qmd_market_signal(row)
+        for row in (
+            active_signal_payload.get("rows", [])
+            if isinstance(active_signal_payload, dict)
+            else []
+        )
+        if isinstance(row, dict)
+    ]
+    strongest_by_ticker: dict[str, dict[str, Any]] = {}
+    for signal in active_rows:
+        ticker = str(signal.get("ticker") or "")
+        current = strongest_by_ticker.get(ticker)
+        if current is None or float_value(signal.get("signal_confidence")) > float_value(
+            current.get("signal_confidence")
+        ):
+            strongest_by_ticker[ticker] = signal
+    active_counts: dict[str, int] = {}
+    for signal in active_rows:
+        ticker = str(signal.get("ticker") or "")
+        active_counts[ticker] = active_counts.get(ticker, 0) + 1
+    rows = [
+        {
+            **row,
+            **strongest_by_ticker.get(str(row.get("ticker") or ""), {}),
+            "active_signal_count": active_counts.get(str(row.get("ticker") or ""), 0),
+        }
+        for row in rows
+    ]
+    payload = qmd_scanner_payload(
+        rows,
+        snapshot_payload if isinstance(snapshot_payload, dict) else {},
+        row_limit,
+        source="scanner",
+    )
+    payload["signal_rows"] = [
+        normalize_qmd_market_signal(row)
+        for row in (
+            signal_event_payload.get("rows", [])
+            if isinstance(signal_event_payload, dict)
+            else []
+        )
+        if isinstance(row, dict)
+    ]
+    payload["signal_row_count"] = len(payload["signal_rows"])
+    return payload
+
+
+def qmd_market_signals(
+    symbol: str,
+    *,
+    include_history: bool = False,
+    row_limit: int = 250,
+) -> dict[str, Any]:
+    ticker = symbol.strip().upper()
+    if not ticker:
+        raise ValueError("symbol is required for QMD market signals.")
+    path = "/snapshot/signal-events" if include_history else "/snapshot/signals"
+    payload = qmd_get_json(path, {"limit": row_limit}, timeout=3)
+    source_rows = payload.get("rows", []) if isinstance(payload, dict) else []
+    rows = [
+        normalize_qmd_market_signal(row)
+        for row in source_rows
+        if isinstance(row, dict) and str(row.get("ticker") or "").strip().upper() == ticker
+    ]
+    return {
+        "as_of": payload.get("as_of") if isinstance(payload, dict) else None,
+        "mode": "lifecycle_history" if include_history else "active",
+        "row_count": len(rows),
+        "rows": rows,
+        "source": "qmd-gateway",
+        "ticker": ticker,
+    }
 
 
 def qmd_bars(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) -> dict[str, Any]:
@@ -258,7 +337,7 @@ def qmd_catalogs() -> dict[str, Any]:
 
 
 def qmd_scanner_payload(rows: list[dict[str, Any]], raw_payload: dict[str, Any], row_limit: int, *, source: str) -> dict[str, Any]:
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     rows = rows[: max(1, min(int(row_limit or 250), 5000))]
     return {
         "provider": "qmd-gateway",
@@ -330,6 +409,45 @@ def normalize_qmd_scanner_primitive(row: dict[str, Any]) -> dict[str, Any]:
         "liquidity_score": float_value(row.get("liquidity_score")),
         "provider": "qmd-gateway",
         "live_priority": score,
+    }
+
+
+def normalize_qmd_market_signal(row: dict[str, Any]) -> dict[str, Any]:
+    evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+    score = float_value(row.get("score"))
+    confidence = float_value(row.get("confidence"))
+    return {
+        "ticker": str(row.get("ticker") or "").upper(),
+        "bar_time_market": str(row.get("effective_at") or ""),
+        "event_time": str(row.get("effective_at") or ""),
+        "timeframe": str(row.get("working_timeframe") or ""),
+        "working_timeframe": str(row.get("working_timeframe") or ""),
+        "confirmation_timeframe": row.get("confirmation_timeframe"),
+        "current_open": float_value(evidence.get("close")),
+        "last_close": float_value(evidence.get("close")),
+        "last_vwap": float_value(evidence.get("vwap")),
+        "spread_bps_abs": optional_float(evidence.get("spread_bps")),
+        "signal_id": str(row.get("signal_id") or ""),
+        "signal_event_id": str(row.get("event_id") or ""),
+        "signal_type": str(row.get("signal_key") or ""),
+        "signal_state": str(row.get("state") or ""),
+        "direction": str(row.get("direction") or "neutral"),
+        "market_state": str(row.get("direction") or "neutral"),
+        "signal_score": score,
+        "signal_confidence": confidence,
+        "scanner_score": confidence,
+        "live_reasons": str(row.get("trigger_reason") or ""),
+        "live_risks": str(row.get("resolution_reason") or ""),
+        "evidence": str(row.get("trigger_reason") or ""),
+        "source": "QMD market signal",
+        "last_day_volume_so_far": float_value(evidence.get("volume")),
+        "last_day_dollar_volume_so_far": float_value(evidence.get("dollar_volume")),
+        "trade_rate_10s": float_value(evidence.get("trade_rate")),
+        "quote_rate_10s": float_value(evidence.get("quote_rate")),
+        "tape_imbalance": float_value(evidence.get("tape_imbalance")),
+        "liquidity_score": float_value(evidence.get("liquidity_score")),
+        "provider": "qmd-gateway",
+        "live_priority": confidence,
     }
 
 

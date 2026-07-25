@@ -1,10 +1,10 @@
 use serde::Serialize;
 
-/// Signal methods are scanner/trading decision templates.
+/// Signal methods are reusable market-signal templates.
 ///
 /// They are intentionally separate from indicators:
 /// - indicators describe reusable computed state
-/// - signal methods describe how that state is combined into a tradable event
+/// - signal methods describe how that state is combined into a causal market event
 ///
 /// Every method declares its working timeframe and confirmation timeframe so a
 /// live detector, replay runner, and backtest simulator can use the same
@@ -54,12 +54,12 @@ pub enum SignalComputeMode {
     CrossTimeframe,
 }
 
-/// Signal persistence is decision-snapshot oriented.
+/// Signal persistence is lifecycle-event oriented.
 ///
 /// We persist raw quotes/trades and bars continuously. Signal methods should
-/// write the exact evidence used when a candidate is emitted, rejected, routed,
-/// or later replayed. This avoids creating a wide publication table for every
-/// possible intermediate field.
+/// write the exact evidence used when a lifecycle is triggered, updated, or
+/// resolved. A strategy may consume that event, but QMD does not own strategy
+/// decisions or order intent.
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SignalPersistencePolicy {
@@ -112,16 +112,27 @@ const HIGHER_TFS: &[&str] = &["5m", "1h"];
 const EMPTY_TFS: &[&str] = &[];
 
 const COMMON_EMITS: &[&str] = &[
+    "schema_version",
+    "engine_version",
+    "event_id",
     "signal_id",
     "signal_key",
+    "producer",
     "ticker",
     "working_timeframe",
     "confirmation_timeframe",
-    "side",
-    "signal_strength",
-    "scanner_score",
-    "entry_bias",
-    "reject_reason",
+    "observed_at",
+    "effective_at",
+    "state",
+    "direction",
+    "score",
+    "confidence",
+    "trigger_reason",
+    "resolution_reason",
+    "reference_price",
+    "invalidation_price",
+    "expires_at",
+    "evidence",
 ];
 
 const COMMON_SNAPSHOT: &[&str] = &[
@@ -150,29 +161,21 @@ const SIGNAL_CATALOG: &[SignalMethodEntry] = &[
         label: "Tape Acceleration Breakout",
         category: SignalCategory::TapeAcceleration,
         priority: SignalPriority::P0,
-        compute_mode: SignalComputeMode::HybridTickAndBar,
+        compute_mode: SignalComputeMode::RealtimeBarClose,
         persistence_policy: SignalPersistencePolicy::DecisionSnapshotOnly,
-        status: SignalStatus::Cataloged,
+        status: SignalStatus::Implemented,
         working_timeframes: TICK_TFS,
         confirmation_timeframes: &["1m"],
-        required_bar_fields: &["close", "high", "volume", "vwap", "price_change_pct"],
-        required_indicator_fields: &[
-            "trade_rate_10s",
-            "trade_rate_60s",
-            "quote_rate_10s",
-            "quote_rate_60s",
-            "trade_accel_10s_60s",
-            "tape_imbalance_60s",
-            "spread_bps",
-        ],
-        required_reference_fields: &["float_bucket", "short_pressure_label"],
+        required_bar_fields: &["close", "high", "low", "trade_count_accel", "tape_imbalance", "spread_bps_close"],
+        required_indicator_fields: &[],
+        required_reference_fields: &[],
         trigger_rules: &[
-            "trade_rate_10s materially exceeds trade_rate_60s",
-            "price breaks recent high or range boundary on positive tape imbalance",
-            "spread_bps remains inside the configured tradability limit",
+            "absolute trade_count_accel exceeds 10",
+            "absolute tape_imbalance exceeds 0.15 and determines direction",
+            "spread_bps_close remains below 80",
         ],
-        confirmation_rules: &["1m close holds above breakout level", "volume or dollar_volume expands versus recent bars"],
-        reject_rules: &["spread shock widens after trigger", "price immediately loses breakout level", "halt_or_ssr_risk blocks the route"],
+        confirmation_rules: &["the finalized working-timeframe bar carries all required evidence"],
+        reject_rules: &["any trigger condition no longer holds"],
         emits: COMMON_EMITS,
         snapshot_fields: COMMON_SNAPSHOT,
         rationale: "Primary early-move detector for live tape because acceleration often appears before clean multi-minute bars.",
@@ -182,21 +185,21 @@ const SIGNAL_CATALOG: &[SignalMethodEntry] = &[
         label: "Volume Shock Momentum",
         category: SignalCategory::VolumeShock,
         priority: SignalPriority::P0,
-        compute_mode: SignalComputeMode::HybridTickAndBar,
+        compute_mode: SignalComputeMode::RealtimeBarClose,
         persistence_policy: SignalPersistencePolicy::DecisionSnapshotOnly,
-        status: SignalStatus::Cataloged,
+        status: SignalStatus::Implemented,
         working_timeframes: FAST_BAR_TFS,
         confirmation_timeframes: &["5m"],
-        required_bar_fields: &["close", "high", "volume", "dollar_volume", "vwap", "price_change_pct"],
-        required_indicator_fields: &["rvol_1m", "volume_zscore", "dollar_volume_zscore", "trade_rate_zscore", "price_vs_vwap_pct"],
-        required_reference_fields: &["market_cap_bucket", "float_bucket"],
+        required_bar_fields: &["close", "high", "low", "dollar_volume_accel", "price_change_pct", "trade_rate"],
+        required_indicator_fields: &[],
+        required_reference_fields: &[],
         trigger_rules: &[
-            "volume_zscore or dollar_volume_zscore exceeds configured shock threshold",
-            "price_change_pct is positive and close is above vwap",
-            "trade activity confirms the bar-level volume shock",
+            "absolute dollar_volume_accel exceeds 250000",
+            "absolute price_change_pct exceeds 0.25",
+            "price_change_pct determines direction",
         ],
-        confirmation_rules: &["5m trend is not down", "spread_bps and liquidity_score stay tradable"],
-        reject_rules: &["volume shock occurs into day high rejection", "close returns below vwap", "quoted liquidity disappears"],
+        confirmation_rules: &["the finalized working-timeframe bar carries all required evidence"],
+        reject_rules: &["any trigger condition no longer holds"],
         emits: COMMON_EMITS,
         snapshot_fields: COMMON_SNAPSHOT,
         rationale: "Catches liquid symbols that suddenly become active enough for scanner attention.",
@@ -230,21 +233,21 @@ const SIGNAL_CATALOG: &[SignalMethodEntry] = &[
         label: "VWAP Reclaim Momentum",
         category: SignalCategory::Vwap,
         priority: SignalPriority::P0,
-        compute_mode: SignalComputeMode::HybridTickAndBar,
+        compute_mode: SignalComputeMode::RealtimeBarClose,
         persistence_policy: SignalPersistencePolicy::DecisionSnapshotOnly,
-        status: SignalStatus::Cataloged,
+        status: SignalStatus::Implemented,
         working_timeframes: FAST_BAR_TFS,
         confirmation_timeframes: &["5m"],
-        required_bar_fields: &["close", "low", "volume", "vwap"],
-        required_indicator_fields: &["price_vs_vwap_pct", "vwap_reclaim", "tape_imbalance_60s", "ema_9", "ema_20"],
-        required_reference_fields: &["float_bucket"],
+        required_bar_fields: &["close", "high", "low", "vwap", "vwap_distance_pct", "mid_vwap_distance_pct", "tape_imbalance"],
+        required_indicator_fields: &[],
+        required_reference_fields: &[],
         trigger_rules: &[
-            "price crosses from below vwap to above vwap",
-            "positive tape imbalance appears during the reclaim",
-            "close holds above vwap by the end of the working timeframe",
+            "previous and current closes causally cross VWAP",
+            "vwap_distance_pct and mid_vwap_distance_pct agree with the cross",
+            "tape_imbalance agrees with the cross direction",
         ],
-        confirmation_rules: &["ema_9 is above or curling toward ema_20", "5m price action is not making lower lows"],
-        reject_rules: &["reclaim happens on declining volume", "spread widens through the reclaim", "price loses vwap within the next bar"],
+        confirmation_rules: &["the current working-timeframe close remains on the reclaimed side of VWAP"],
+        reject_rules: &["the causal cross or directional agreement no longer holds"],
         emits: COMMON_EMITS,
         snapshot_fields: COMMON_SNAPSHOT,
         rationale: "Useful for intraday reversals where tape confirms institutional-style reclaim behavior.",
@@ -326,21 +329,21 @@ const SIGNAL_CATALOG: &[SignalMethodEntry] = &[
         label: "High Of Day Break",
         category: SignalCategory::HighOfDay,
         priority: SignalPriority::P1,
-        compute_mode: SignalComputeMode::HybridTickAndBar,
+        compute_mode: SignalComputeMode::RealtimeBarClose,
         persistence_policy: SignalPersistencePolicy::DecisionSnapshotOnly,
-        status: SignalStatus::Cataloged,
+        status: SignalStatus::Implemented,
         working_timeframes: FAST_BAR_TFS,
         confirmation_timeframes: &["5m"],
-        required_bar_fields: &["close", "high", "volume", "vwap"],
-        required_indicator_fields: &["day_high_break", "rvol_1m", "tape_imbalance_60s", "spread_bps", "trend_score"],
-        required_reference_fields: &["float_bucket"],
+        required_bar_fields: &["close", "high", "low", "vwap", "tape_imbalance", "trade_rate"],
+        required_indicator_fields: &[],
+        required_reference_fields: &[],
         trigger_rules: &[
-            "price breaks current session high",
-            "break has favorable tape imbalance and elevated relative volume",
-            "break occurs above vwap",
+            "high and close exceed the prior finalized session high",
+            "close is above VWAP and within 0.5 percent of the bar high",
+            "tape_imbalance is positive and trade_rate exceeds 0.5",
         ],
-        confirmation_rules: &["5m trend_score is positive", "working timeframe closes near high"],
-        reject_rules: &["breakout is late and overextended by ATR", "immediate failed breakout wick appears", "spread exceeds max route threshold"],
+        confirmation_rules: &["the finalized working-timeframe bar carries all required evidence"],
+        reject_rules: &["price or tape confirmation no longer holds"],
         emits: COMMON_EMITS,
         snapshot_fields: COMMON_SNAPSHOT,
         rationale: "A clean but common continuation method; lower priority than tape acceleration because it often triggers later.",
@@ -446,21 +449,21 @@ const SIGNAL_CATALOG: &[SignalMethodEntry] = &[
         label: "Liquidity Recovery After Spread Shock",
         category: SignalCategory::LiquidityRecovery,
         priority: SignalPriority::P1,
-        compute_mode: SignalComputeMode::RealtimeTick,
+        compute_mode: SignalComputeMode::RealtimeBarClose,
         persistence_policy: SignalPersistencePolicy::DecisionSnapshotOnly,
-        status: SignalStatus::Cataloged,
+        status: SignalStatus::Implemented,
         working_timeframes: TICK_TFS,
         confirmation_timeframes: &["1m"],
-        required_bar_fields: &["close", "volume", "vwap"],
-        required_indicator_fields: &["spread_zscore", "spread_bps", "liquidity_score", "quote_rate_10s", "quote_pressure"],
+        required_bar_fields: &["close", "high", "low", "spread_bps_close", "quote_rate_accel", "liquidity_score", "tape_imbalance"],
+        required_indicator_fields: &[],
         required_reference_fields: &[],
         trigger_rules: &[
-            "spread shock normalizes back under the tradability threshold",
-            "quote rate recovers without locked/crossed quotes dominating",
-            "price remains directionally stable during recovery",
+            "previous spread_bps_close is at least 1.5 times the current spread",
+            "quote_rate_accel is positive and liquidity_score improves",
+            "absolute tape_imbalance exceeds 0.15 and determines direction",
         ],
-        confirmation_rules: &["1m close confirms recovery direction", "liquidity_score remains stable for configured dwell time"],
-        reject_rules: &["spread widens again", "quote feed appears unstable", "price jumps beyond routeable range"],
+        confirmation_rules: &["the finalized working-timeframe bar confirms the recovery"],
+        reject_rules: &["the recovery conditions no longer hold"],
         emits: COMMON_EMITS,
         snapshot_fields: COMMON_SNAPSHOT,
         rationale: "Prevents entering during bad NBBO conditions while allowing the scanner to re-enable a symbol quickly.",

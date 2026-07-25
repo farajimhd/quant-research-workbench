@@ -100,10 +100,11 @@ Supported bar timeframes are the live QMD set: `100ms`, `1s`, `5s`, `10s`,
 - `GET /snapshot/compact-events/{ticker}?start=...&end=...&limit=...`
 - `GET /snapshot/bars/{ticker}?start=...&end=...&timeframe=1m&limit=...` (bars plus canonical QMD bar indicators)
 - `GET /snapshot/chart-bars/{ticker}?start=...&end=...&timeframe=100ms|1s|5s|10s|30s|1m|5m|1h&limit=...`
-  (bounded chronological chart bars and indicators, structure events, and the
-  newest 4,000 distinct causal `structure_level_history` entries needed to
-  reconstruct encountered-level volume profiles without projecting historical
-  levels onto only the final indicator row)
+  (bounded chronological chart bars and indicators, canonical
+  `market_signal_events`, structure events, and the newest 4,000 distinct
+  causal `structure_level_history` entries needed to reconstruct
+  encountered-level volume profiles without projecting historical levels onto
+  only the final indicator row)
 - `WS /stream/compact-events?start=...&end=...&tickers=AAPL,MSFT`
 - `WS /stream/events?start=...&end=...&tickers=AAPL,MSFT`
 - `WS /stream/bars/{ticker}?start=...&end=...&timeframe=1m`
@@ -120,6 +121,11 @@ diagnostic fields. Its QMD Decision values confidence-weight the canonical
 Timestamped 100 ms decision transitions are returned separately as
 `decision_events`, so a chart can render the first actionable transition inside
 a larger candle without waiting for that candle to close.
+Versioned QMD market signals are calculated by the same Rust
+`MarketSignalEngine` used by live QMD and are returned separately as
+`market_signal_events`. Their `effective_at` is the causal close of the
+method's declared working timeframe, so historical charts and strategies do
+not wait for a larger display candle to close.
 Generic Structure local swings and accepted breaks are likewise retained in a
 separate chronological `structure_events` stream produced from the same ordered
 eligible trades. Each supported timeframe owns its exact trade-extrema buckets,

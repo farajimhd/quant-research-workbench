@@ -14,6 +14,7 @@ use qmd_core::market_products::{
     FamilyBarSnapshot, MacroBarSnapshot, MarketProductEngine, ProductCacheLimits, ProductState,
     MARKET_PRODUCT_SCHEMA_VERSION,
 };
+use qmd_core::market_signal::{MarketSignalEngine, MarketSignalEvent};
 use qmd_core::microstructure_interval::MicrostructureIntervalWindow;
 use qmd_core::qmd_episode::{QmdEpisodeEngine, QmdEpisodeEvent, QmdEpisodePreset};
 use serde::Serialize;
@@ -23,7 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
 
-pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v25";
+pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v26";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -119,6 +120,7 @@ pub struct ChartSnapshot {
     pub has_more: bool,
     pub indicators: Vec<IndicatorRow>,
     pub indicators_available: bool,
+    pub market_signal_events: Vec<MarketSignalEvent>,
     pub next_before: Option<DateTime<Utc>>,
     pub structure_events: Vec<GenericStructureEvent>,
     pub structure_level_history: Vec<StructureLevelCandidate>,
@@ -197,6 +199,7 @@ struct EntryState {
     bars: Vec<BarUpdate>,
     decision_events: Vec<QmdDecisionEvent>,
     episode_events: Vec<QmdEpisodeEvent>,
+    market_signal_events: Vec<MarketSignalEvent>,
     structure_events: Vec<GenericStructureEvent>,
     frames: Vec<DerivedUpdate>,
     products: Option<MarketProductEngine>,
@@ -466,6 +469,22 @@ impl HistoricalDerivedCache {
                     )
                 })
                 .unwrap_or_default();
+            let market_signal_events = bars
+                .first()
+                .zip(bars.last())
+                .map(|(first, last)| {
+                    state
+                        .market_signal_events
+                        .iter()
+                        .filter(|event| {
+                            event.effective_at >= first.bar_start
+                                && event.effective_at <= last.bar_end
+                                && event.effective_at <= as_of
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             return Ok(ChartSnapshot {
                 as_of,
                 bars,
@@ -475,6 +494,7 @@ impl HistoricalDerivedCache {
                 has_more,
                 indicators,
                 indicators_available: true,
+                market_signal_events,
                 next_before,
                 structure_events,
                 structure_level_history,
@@ -519,6 +539,7 @@ impl HistoricalDerivedCache {
             has_more,
             indicators: Vec::new(),
             indicators_available: false,
+            market_signal_events: Vec::new(),
             next_before,
             structure_events: Vec::new(),
             structure_level_history: Vec::new(),
@@ -710,6 +731,7 @@ impl HistoricalDerivedCache {
                 let mut aggregate = MicrostructureSampleAggregate::default();
                 let mut last_decision_action = "wait".to_string();
                 let mut episode_engine = QmdEpisodeEngine::default();
+                let mut market_signal_engine = MarketSignalEngine::default();
                 let mut last_base_indicator: Option<IndicatorRow> = None;
                 while let Some(work) = receiver.recv().await {
                     let bars = match work {
@@ -720,6 +742,9 @@ impl HistoricalDerivedCache {
                         IndicatorWork::Finalize { bars } => bars,
                     };
                     for (sequence, bar) in bars {
+                        for event in market_signal_engine.update(&bar) {
+                            worker_entry.push_market_signal_event(event).await?;
+                        }
                         if bar.timeframe.eq_ignore_ascii_case("100ms") {
                             let interval = microstructure.interval_at(bar.bar_end, &worker_rules);
                             let calculator =
@@ -1138,6 +1163,7 @@ impl CacheEntry {
             state.decision_events.len(),
             state.episode_events.len(),
             state.structure_events.len(),
+            state.market_signal_events.len(),
         );
         if state.bars.len() >= self.max_updates || frame_bytes > self.max_update_bytes {
             return Err(format!(
@@ -1207,6 +1233,7 @@ impl CacheEntry {
             state.decision_events.len(),
             state.episode_events.len(),
             state.structure_events.len(),
+            state.market_signal_events.len(),
         );
         if frame_bytes > self.max_update_bytes {
             state.decision_events.pop();
@@ -1273,6 +1300,7 @@ impl CacheEntry {
             state.decision_events.len(),
             state.episode_events.len(),
             state.structure_events.len(),
+            state.market_signal_events.len(),
         );
         if frame_bytes > self.max_update_bytes {
             state.structure_events.truncate(original_len);
@@ -1314,6 +1342,7 @@ impl CacheEntry {
             state.decision_events.len(),
             state.episode_events.len(),
             state.structure_events.len(),
+            state.market_signal_events.len(),
         );
         if frame_bytes > self.max_update_bytes {
             state.episode_events.pop();
@@ -1326,6 +1355,51 @@ impl CacheEntry {
             .set_estimated_bytes(frame_bytes as u64 + self.product_bytes.load(Ordering::Acquire))
         {
             state.episode_events.pop();
+            return Err(error);
+        }
+        self.frame_bytes
+            .store(frame_bytes as u64, Ordering::Release);
+        Ok(())
+    }
+
+    async fn push_market_signal_event(&self, event: MarketSignalEvent) -> Result<(), String> {
+        let mut state = self.state.lock().await;
+        if state
+            .market_signal_events
+            .last()
+            .is_some_and(|previous| event.effective_at < previous.effective_at)
+        {
+            return Err(format!(
+                "historical market signal events must be chronological: previous={} next={}",
+                state.market_signal_events.last().unwrap().effective_at,
+                event.effective_at,
+            ));
+        }
+        if state.market_signal_events.len() >= self.max_updates {
+            return Err(format!(
+                "historical market signal event cache exceeded max_updates={}",
+                self.max_updates,
+            ));
+        }
+        state.market_signal_events.push(event);
+        let frame_bytes = estimated_frame_bytes(
+            state.bars.len(),
+            state.decision_events.len(),
+            state.episode_events.len(),
+            state.structure_events.len(),
+            state.market_signal_events.len(),
+        );
+        if frame_bytes > self.max_update_bytes {
+            state.market_signal_events.pop();
+            return Err(format!(
+                "historical market signal event cache exceeded max_update_bytes={}",
+                self.max_update_bytes,
+            ));
+        }
+        if let Err(error) = self
+            .set_estimated_bytes(frame_bytes as u64 + self.product_bytes.load(Ordering::Acquire))
+        {
+            state.market_signal_events.pop();
             return Err(error);
         }
         self.frame_bytes
@@ -1406,11 +1480,13 @@ fn estimated_frame_bytes(
     decision_event_count: usize,
     episode_event_count: usize,
     structure_event_count: usize,
+    market_signal_event_count: usize,
 ) -> usize {
     bar_count.saturating_mul(size_of::<BarUpdate>() + size_of::<DerivedUpdate>() + 768)
         + decision_event_count.saturating_mul(size_of::<QmdDecisionEvent>() + 160)
         + episode_event_count.saturating_mul(size_of::<QmdEpisodeEvent>() + 192)
         + structure_event_count.saturating_mul(size_of::<GenericStructureEvent>() + 224)
+        + market_signal_event_count.saturating_mul(size_of::<MarketSignalEvent>() + 384)
 }
 
 fn ensure_monotonic_bar_start(

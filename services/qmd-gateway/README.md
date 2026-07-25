@@ -22,7 +22,7 @@ Current responsibilities:
 - build memory-only enriched quote/trade bars for scanner and indicator consumers
 - persist one canonical sparse intraday bar table from `100ms` through `1h`
 - build sharded streaming tick and bar-level indicators
-- build Massive-only scanner primitive candidates from live bars
+- build canonical, versioned market-signal lifecycles from live bars
 - publish compact local snapshots/streams to the quant app
 - stream compact unified market events for live ML consumers
 - batch-write compact unified market events to the app-owned ClickHouse database
@@ -30,7 +30,8 @@ Current responsibilities:
 - batch-write closed canonical intraday bars to the app-owned ClickHouse database
 - optionally batch-write closed indicator rows to the app-owned ClickHouse database
 - expose a documented indicator catalog for live/offline compute policy
-- expose a documented signal-method catalog with explicit working and confirmation timeframes
+- expose active and recent signal lifecycles plus a documented signal-method
+  catalog with explicit working and confirmation timeframes
 
 The gateway keeps two paths separate:
 

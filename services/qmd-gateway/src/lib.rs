@@ -23,6 +23,7 @@ pub mod live_market_state;
 pub mod maintenance;
 pub mod market_calendar;
 pub mod market_products;
+pub mod market_signal;
 pub mod massive;
 pub mod metrics;
 pub mod microstructure_interval;

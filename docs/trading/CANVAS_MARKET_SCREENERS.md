@@ -7,7 +7,7 @@ The market-screening package contains three related Canvas containers that share
 | Container | Job | State authority |
 | --- | --- | --- |
 | Scanner | Cross-sectional state of the available market universe | Canonical market, reference, news, SEC, facts, and derived-score sources |
-| Signal Stream | Newest-first observations that satisfy a deterministic rule or a strategy-owned rule | Reconstructed market events plus durable strategy events |
+| Signal Stream | Newest-first reusable QMD market signals and strategy-owned decisions | Canonical QMD signal lifecycle plus durable strategy events |
 | Watchlist | Small, named set of securities selected by a user or strategy | Persisted membership; projected market values |
 
 The table rows never own copies of market facts. Every displayed market value is projected at the active Canvas clock. This keeps historical replay, backtests, paper trading, and live trading on the same field semantics.
@@ -38,16 +38,23 @@ Provenance is visible in the column picker and table heading:
 
 A missing value remains missing. The UI does not substitute zero for unavailable float, fundamentals, news, SEC, or signal evidence.
 
-## Signal Stream persistence
+## Signal Stream authority and persistence
 
-Deterministic market rules are reconstructed from canonical historical inputs and are not separately persisted merely for the UI. Initial rules include:
+Signal Stream does not derive events in the browser. QMD emits versioned,
+causal market-signal lifecycle rows from the shared live/historical signal
+engine. Strategy-owned interpretations are persisted by the strategy runtime
+with their detection timestamp, symbol, strategy revision, action, direction,
+score, confidence, source signal identities, evidence, and correlation
+identifiers. Signal Stream merges those canonical collections without changing
+either authority.
 
-- 5% and 10% five-minute price moves in either direction
-- continuation when the five-minute and scanner-window returns agree
-- trade-arrival and quote-arrival activity bursts
-- hot ticker-news and SEC-disclosure events
+The scanner market universe remains separate from the event stream. A scanner
+row may expose its strongest active QMD signal and active-signal count, while
+`signal_rows` carries newest-first lifecycle events. Active signals must never
+replace the scanner universe.
 
-Strategy-owned, model-generated, discretionary, or otherwise non-deterministic signals must be persisted by the strategy runtime with their detection timestamp, symbol, rule or model version, direction, evidence, and correlation identifiers. Signal Stream merges those durable rows with reconstructable market events without changing either authority.
+See [QMD market-signal architecture](../architecture/QMD_SIGNAL_ARCHITECTURE.md)
+for the authority matrix, lifecycle schema, causal clock, and strategy contract.
 
 ## Watchlist ownership
 
@@ -95,6 +102,11 @@ QMD live scanner state is the live cross-sectional authority. Historical and rep
 4. A changed upstream revision causes a new snapshot revision to be written; older rows remain auditable.
 
 The dedicated `GET /api/trading/canvas-scanner` route makes the Scanner, Watchlist, and market-derived Signal Stream independent of the broad Canvas preview request. An unrelated QMD History coverage failure therefore cannot replace a valid persisted scanner snapshot with a six-symbol sample or an empty universe. News and SEC enrichments are attached in batch at the same clock and report their failures separately from market-state availability.
+
+Live consumers use `GET /api/trading/canvas-market-signals/{symbol}` and
+`WS /api/trading/canvas-market-signals/stream/{symbol}` for ticker-bounded
+canonical signal state. These endpoints proxy QMD lifecycle rows; they do not
+derive a second browser-owned signal.
 
 ### Technical calculation projection
 

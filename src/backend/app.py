@@ -85,6 +85,7 @@ from src.backend.qmd_gateway_client import (
     qmd_compact_events,
     qmd_indicators,
     qmd_live_market_state,
+    qmd_market_signals,
     qmd_service_status,
     qmd_status,
     qmd_websocket_url,
@@ -293,8 +294,8 @@ SERVICE_REGISTRY: dict[str, dict[str, str]] = {
         "kind": "market data",
         "bind_env": "QMD_GATEWAY_BIND",
         "default_bind": "127.0.0.1:8795",
-        "description": "Massive quote/trade ingest, recent gap repair, live bars, scanner primitives, and market-state publication.",
-        "recent_path": "/snapshot/scanner-primitives?limit=25",
+        "description": "Massive quote/trade ingest, recent gap repair, live bars, reusable market signals, and market-state publication.",
+        "recent_path": "/snapshot/signals?limit=25",
     },
     "qmd-history": {
         "id": "qmd-history",
@@ -4828,6 +4829,25 @@ def trading_canvas_live_chart(symbol: str, timeframe: str = "1m", row_limit: int
     }
 
 
+@app.get("/api/trading/canvas-market-signals/{symbol}")
+def trading_canvas_market_signals(
+    symbol: str,
+    include_history: bool = False,
+    row_limit: int = Query(default=250, ge=1, le=5000),
+) -> dict[str, Any]:
+    ticker = symbol.strip().upper()
+    if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
+        raise HTTPException(status_code=400, detail="symbol must be a valid ticker")
+    try:
+        return qmd_market_signals(
+            ticker,
+            include_history=include_history,
+            row_limit=row_limit,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.get("/api/trading/canvas-market-events/{symbol}")
 def trading_canvas_market_events(
     symbol: str,
@@ -5032,6 +5052,42 @@ async def trading_canvas_market_events_stream(websocket: WebSocket, symbol: str)
     except Exception as exc:
         try:
             await websocket.send_json({"error": f"QMD compact-event stream unavailable: {exc}"})
+            await websocket.close(code=1011)
+        except Exception:
+            return
+
+
+@app.websocket("/api/trading/canvas-market-signals/stream/{symbol}")
+async def trading_canvas_market_signals_stream(websocket: WebSocket, symbol: str) -> None:
+    await websocket.accept()
+    ticker = symbol.strip().upper()
+    if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
+        await websocket.send_json({"error": "Invalid market-signal stream request."})
+        await websocket.close(code=1008)
+        return
+    try:
+        upstream_url = qmd_websocket_url("/stream/signals")
+        async with websockets.connect(
+            upstream_url,
+            ping_interval=20,
+            ping_timeout=20,
+            max_size=2 * 1024 * 1024,
+        ) as upstream:
+            await websocket.send_json({"status": "connected", "ticker": ticker})
+            async for message in upstream:
+                payload = json.loads(message.decode("utf-8") if isinstance(message, bytes) else message)
+                if (
+                    not isinstance(payload, dict)
+                    or str(payload.get("ticker") or "").strip().upper() == ticker
+                    or "warning" in payload
+                    or "error" in payload
+                ):
+                    await websocket.send_json(payload)
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        try:
+            await websocket.send_json({"error": f"QMD market-signal stream unavailable: {exc}"})
             await websocket.close(code=1011)
         except Exception:
             return

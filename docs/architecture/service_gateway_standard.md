@@ -217,7 +217,7 @@ their implementation spreads into separate conventions.
 
 | Service | Type | Primary sources | Primary sinks | Cadence | Canonical responsibility |
 | --- | --- | --- | --- | --- | --- |
-| QMD Gateway | high-rate Rust streaming gateway | Massive stock websocket `T.*`, `Q.*`; Massive REST repair; historical `market_sip_compact.events_<year>` coverage | `q_live.events`, `q_live.intraday_family_bars_v2`, sparse abnormal market-state rows, QMD coverage tables, local streams | continuous websocket plus startup/after-hours repair | Lossless live market-event capture, training-aligned rolling intraday bars, compact streams, and Massive-only scanner primitives. |
+| QMD Gateway | high-rate Rust streaming gateway | Massive stock websocket `T.*`, `Q.*`; Massive REST repair; historical `market_sip_compact.events_<year>` coverage | `q_live.events`, `q_live.intraday_family_bars_v2`, sparse abnormal market-state rows, QMD coverage tables, local streams | continuous websocket plus startup/after-hours repair | Lossless live market-event capture, training-aligned rolling intraday bars, compact streams, and reusable causal market signals. |
 | News Gateway | Python REST/text gateway | Massive-served Benzinga REST, approved external URL/PDF artifacts | `q_live.benzinga_news_normalized_v1`, `q_live.benzinga_news_ticker_v1`, coverage manifest, raw artifacts | market-aware polling | Canonical Benzinga news rows and ticker links with async enrichment. |
 | SEC Gateway | Python SEC filing gateway | SEC current Atom feed, submissions JSON, companyfacts JSON, daily archives | `q_live.sec_filing_v2`, `sec_filing_document_v2`, `sec_filing_text_v2`, SEC XBRL tables, SEC coverage | market-aware polling plus historical gap fill | Canonical SEC filing/text/XBRL rows. |
 | Reference Gateway | Python low-frequency reference reconciler | Massive reference endpoints, q_live identity tables, IBKR Client Portal, FINRA/SEC/Massive publications | identity graph, source mappings, issues, tradable/scanner publications, market reference publications, reference alerts | daemon cycles and after-hours maintenance | Keep market reference identity, conid/routing evidence, tradability publications, and slow reference publications coherent. |
@@ -232,9 +232,9 @@ their implementation spreads into separate conventions.
 
 **Role:** QMD is the only high-frequency market data service. It stays narrow:
 Massive quote/trade ingest, compact live events, bars, live abnormal
-market-state overlay, Massive-only scanner primitives, and market-data repair.
+market-state overlay, reusable causal market signals, and market-data repair.
 It must not own broker orders, account state, portfolios, conids, logos,
-fundamentals, issuer identity, or final trading signals.
+fundamentals, issuer identity, strategy decisions, or order intent.
 
 **Sources:**
 

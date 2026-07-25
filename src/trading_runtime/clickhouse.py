@@ -35,6 +35,14 @@ TRADING_TABLE_DDL = (
         signal_id UUID, run_id UUID, strategy_id String, account_id String, ticker LowCardinality(String),
         signal_type LowCardinality(String), event_time DateTime64(9, 'UTC'), payload_json String
     ) ENGINE = MergeTree PARTITION BY toYYYYMM(event_time) ORDER BY (run_id, event_time, signal_id)""",
+    """CREATE TABLE IF NOT EXISTS q_live.tr_signal_v2 (
+        signal_id String, run_id String, strategy_id String, strategy_revision UInt32,
+        account_id String, ticker LowCardinality(String), signal_type LowCardinality(String),
+        action LowCardinality(String), direction LowCardinality(String), working_timeframe LowCardinality(String),
+        score Float64, confidence Float64, event_time DateTime64(9, 'UTC'),
+        source_signal_ids Array(String), invalidation_price Nullable(Float64), reason String, payload_json String
+    ) ENGINE = MergeTree PARTITION BY toYYYYMM(event_time)
+      ORDER BY (run_id, strategy_id, ticker, event_time, signal_id)""",
     """CREATE TABLE IF NOT EXISTS q_live.tr_order_event_v1 (
         record_id UUID, run_id UUID, account_id String, order_id String, client_order_id String,
         status LowCardinality(String), event_time DateTime64(9, 'UTC'), payload_json String
@@ -484,7 +492,10 @@ def _journal_row(record: JournalRecord) -> dict[str, Any]:
 
 
 def _specialized_rows(records: list[JournalRecord]) -> dict[str, list[dict[str, Any]]]:
-    grouped = {"tr_order_event_v1": [], "tr_fill_v1": [], "tr_portfolio_v1": [], "tr_position_v1": [], "tr_signal_v1": []}
+    grouped = {
+        "tr_order_event_v1": [], "tr_fill_v1": [], "tr_portfolio_v1": [],
+        "tr_position_v1": [], "tr_signal_v1": [], "tr_signal_v2": [],
+    }
     for record in records:
         payload = record.payload
         payload_json = json.dumps(payload, separators=(",", ":"), sort_keys=True, default=str)
@@ -534,6 +545,27 @@ def _specialized_rows(records: list[JournalRecord]) -> dict[str, list[dict[str, 
                     "signal_id": record.record_id, "run_id": record.run_id, "strategy_id": str(payload.get("strategy_id") or ""),
                     "account_id": record.account_id, "ticker": str(payload.get("ticker") or ""),
                     "signal_type": str(payload.get("signal_type") or record.category), "event_time": record.event_time.isoformat(),
+                    "payload_json": payload_json,
+                }
+            )
+            grouped["tr_signal_v2"].append(
+                {
+                    "signal_id": record.entity_id,
+                    "run_id": record.run_id,
+                    "strategy_id": str(payload.get("strategy_id") or ""),
+                    "strategy_revision": int(payload.get("strategy_revision") or 0),
+                    "account_id": record.account_id,
+                    "ticker": str(payload.get("ticker") or ""),
+                    "signal_type": str(payload.get("signal_type") or record.category),
+                    "action": str(payload.get("action") or "wait"),
+                    "direction": str(payload.get("direction") or "neutral"),
+                    "working_timeframe": str(payload.get("working_timeframe") or ""),
+                    "score": float(payload.get("score") or 0),
+                    "confidence": float(payload.get("confidence") or 0),
+                    "event_time": record.event_time.isoformat(),
+                    "source_signal_ids": list(payload.get("source_signal_ids") or []),
+                    "invalidation_price": payload.get("invalidation_price"),
+                    "reason": str(payload.get("reason") or ""),
                     "payload_json": payload_json,
                 }
             )

@@ -3,10 +3,155 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from src.backend.qmd_gateway_client import normalize_qmd_macro_bar_snapshot, qmd_compact_events, qmd_live_market_state, qmd_microstructure_forecast, qmd_websocket_url
+from src.backend.qmd_gateway_client import (
+    normalize_qmd_macro_bar_snapshot,
+    normalize_qmd_market_signal,
+    qmd_compact_events,
+    qmd_live_market_state,
+    qmd_market_signals,
+    qmd_scanner_snapshot,
+    qmd_websocket_url,
+)
 
 
 class QmdGatewayClientTests(unittest.TestCase):
+    @patch("src.backend.qmd_gateway_client.qmd_get_json")
+    def test_market_signal_snapshot_filters_symbol_without_recomputing_signals(
+        self, get_json
+    ) -> None:
+        get_json.return_value = {
+            "as_of": "2026-07-17T13:45:01Z",
+            "rows": [
+                {
+                    "event_id": "event-a",
+                    "signal_id": "signal-a",
+                    "signal_key": "vwap_reclaim_momentum",
+                    "state": "triggered",
+                    "ticker": "AAPL",
+                    "working_timeframe": "100ms",
+                    "direction": "bullish",
+                    "score": 0.72,
+                    "confidence": 0.81,
+                    "effective_at": "2026-07-17T13:45:00.100Z",
+                },
+                {
+                    "event_id": "event-b",
+                    "signal_id": "signal-b",
+                    "signal_key": "volume_shock_momentum",
+                    "state": "triggered",
+                    "ticker": "MSFT",
+                    "working_timeframe": "100ms",
+                    "direction": "bearish",
+                    "score": -0.62,
+                    "confidence": 0.71,
+                    "effective_at": "2026-07-17T13:45:00.200Z",
+                },
+            ],
+        }
+
+        payload = qmd_market_signals("aapl", include_history=True, row_limit=20)
+
+        self.assertEqual(payload["ticker"], "AAPL")
+        self.assertEqual(payload["mode"], "lifecycle_history")
+        self.assertEqual(payload["row_count"], 1)
+        self.assertEqual(payload["rows"][0]["signal_event_id"], "event-a")
+        get_json.assert_called_once_with(
+            "/snapshot/signal-events", {"limit": 20}, timeout=3
+        )
+
+    def test_market_signal_normalizer_preserves_lifecycle_identity(self) -> None:
+        row = normalize_qmd_market_signal(
+            {
+                "event_id": "event-2",
+                "signal_id": "signal-1",
+                "signal_key": "vwap_reclaim_momentum",
+                "state": "updated",
+                "ticker": "AAPL",
+                "working_timeframe": "100ms",
+                "direction": "bullish",
+                "score": 0.72,
+                "confidence": 0.81,
+                "effective_at": "2026-07-17T13:45:00.100Z",
+            }
+        )
+
+        self.assertEqual(row["signal_event_id"], "event-2")
+        self.assertEqual(row["signal_id"], "signal-1")
+        self.assertEqual(row["signal_state"], "updated")
+        self.assertEqual(row["signal_confidence"], 0.81)
+
+    @patch("src.backend.qmd_gateway_client.qmd_get_json")
+    def test_scanner_keeps_market_universe_and_joins_active_signal_state(
+        self, get_json
+    ) -> None:
+        def response(path, params=None, *, timeout=3):
+            self.assertEqual(timeout, 3)
+            if path == "/snapshot/scanner":
+                return {
+                    "rows": [
+                        {"ticker": "AAPL", "price": 315.0},
+                        {"ticker": "MSFT", "price": 500.0},
+                    ],
+                    "as_of": "2026-07-17T13:45:01Z",
+                }
+            if path == "/snapshot/signals":
+                return {
+                    "rows": [
+                        {
+                            "event_id": "active-a",
+                            "signal_id": "signal-a",
+                            "signal_key": "vwap_reclaim_momentum",
+                            "state": "triggered",
+                            "ticker": "AAPL",
+                            "working_timeframe": "100ms",
+                            "direction": "bullish",
+                            "score": 0.70,
+                            "confidence": 0.60,
+                            "effective_at": "2026-07-17T13:45:00.100Z",
+                        },
+                        {
+                            "event_id": "active-b",
+                            "signal_id": "signal-b",
+                            "signal_key": "high_of_day_break",
+                            "state": "updated",
+                            "ticker": "AAPL",
+                            "working_timeframe": "100ms",
+                            "direction": "bullish",
+                            "score": 0.80,
+                            "confidence": 0.90,
+                            "effective_at": "2026-07-17T13:45:00.200Z",
+                        },
+                    ]
+                }
+            if path == "/snapshot/signal-events":
+                return {
+                    "rows": [
+                        {
+                            "event_id": "resolved-c",
+                            "signal_id": "signal-c",
+                            "signal_key": "volume_shock_momentum",
+                            "state": "resolved",
+                            "ticker": "MSFT",
+                            "working_timeframe": "100ms",
+                            "direction": "bearish",
+                            "score": -0.55,
+                            "confidence": 0.75,
+                            "effective_at": "2026-07-17T13:44:59.900Z",
+                        }
+                    ]
+                }
+            self.fail(f"Unexpected QMD route: {path}")
+
+        get_json.side_effect = response
+        payload = qmd_scanner_snapshot(row_limit=25)
+
+        self.assertEqual([row["ticker"] for row in payload["rows"]], ["AAPL", "MSFT"])
+        self.assertEqual(payload["rows"][0]["signal_id"], "signal-b")
+        self.assertEqual(payload["rows"][0]["active_signal_count"], 2)
+        self.assertNotIn("signal_id", payload["rows"][1])
+        self.assertEqual(payload["signal_rows"][0]["signal_event_id"], "resolved-c")
+        self.assertEqual(payload["signal_row_count"], 1)
+
     @patch("src.backend.qmd_gateway_client.qmd_get_json")
     def test_live_market_state_uses_symbol_snapshot(self, get_json) -> None:
         get_json.return_value = {"ticker": "AAPL", "is_live_tradable": True}
@@ -20,20 +165,6 @@ class QmdGatewayClientTests(unittest.TestCase):
 
         self.assertEqual(qmd_compact_events("aapl", row_limit=50), [{"ticker": "AAPL", "arrival_sequence": 7}])
         get_json.assert_called_once_with("/snapshot/compact-events/AAPL", {"limit": 50}, timeout=3)
-
-    @patch("src.backend.qmd_gateway_client.qmd_get_json")
-    def test_microstructure_forecast_uses_canonical_qmd_route(self, get_json) -> None:
-        get_json.return_value = {"method": "deterministic_microstructure_v2", "horizons": []}
-
-        self.assertEqual(
-            qmd_microstructure_forecast("aapl"),
-            {"method": "deterministic_microstructure_v2", "horizons": []},
-        )
-        get_json.assert_called_once_with(
-            "/snapshot/microstructure-forecast/AAPL",
-            {"limit": 1_024},
-            timeout=3,
-        )
 
     def test_macro_snapshot_projects_trade_family_and_current_bar(self) -> None:
         result = normalize_qmd_macro_bar_snapshot(

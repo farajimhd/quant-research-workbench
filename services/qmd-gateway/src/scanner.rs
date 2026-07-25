@@ -1,4 +1,5 @@
 use crate::bars::BarRow;
+use crate::market_signal::{MarketSignalEngine, MarketSignalEvent};
 use crate::metrics::SharedMetrics;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -7,6 +8,13 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
 
 pub const SCANNER_PRIMITIVE_SCHEMA_VERSION: u16 = 1;
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MarketSignalSnapshot {
+    pub as_of: DateTime<Utc>,
+    pub row_count: usize,
+    pub rows: Vec<MarketSignalEvent>,
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ScannerPrimitiveSnapshot {
@@ -48,8 +56,8 @@ pub struct SharedScannerStore {
 }
 
 struct ScannerStore {
-    latest_by_key: HashMap<String, ScannerPrimitive>,
-    history: VecDeque<ScannerPrimitive>,
+    latest_by_key: HashMap<String, MarketSignalEvent>,
+    history: VecDeque<MarketSignalEvent>,
     history_limit: usize,
 }
 
@@ -75,33 +83,78 @@ impl SharedScannerStore {
         }
     }
 
-    pub async fn apply(&self, primitive: ScannerPrimitive) {
+    pub async fn apply(&self, signal: MarketSignalEvent) {
         let mut store = self.inner.write().await;
         let key = format!(
             "{}:{}:{}",
-            primitive.ticker, primitive.timeframe, primitive.primitive_key
+            signal.ticker, signal.working_timeframe, signal.signal_key
         );
-        store.latest_by_key.insert(key, primitive.clone());
-        store.history.push_back(primitive);
+        if signal.state == "resolved" || signal.state == "expired" {
+            store.latest_by_key.remove(&key);
+        } else {
+            store.latest_by_key.insert(key, signal.clone());
+        }
+        store.history.push_back(signal);
         while store.history.len() > store.history_limit {
             store.history.pop_front();
         }
     }
 
-    pub async fn snapshot(&self, limit: usize) -> ScannerPrimitiveSnapshot {
+    pub async fn signal_snapshot(&self, limit: usize) -> MarketSignalSnapshot {
         let store = self.inner.read().await;
         let mut rows = store.latest_by_key.values().cloned().collect::<Vec<_>>();
         rows.sort_by(|left, right| {
             right
-                .score
-                .partial_cmp(&left.score)
+                .confidence
+                .partial_cmp(&left.confidence)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| right.effective_at.cmp(&left.effective_at))
+                .then_with(|| left.signal_id.cmp(&right.signal_id))
         });
         rows.truncate(limit);
-        ScannerPrimitiveSnapshot {
-            as_of: Utc::now(),
+        let as_of = rows
+            .iter()
+            .map(|row| row.effective_at)
+            .max()
+            .unwrap_or_else(Utc::now);
+        MarketSignalSnapshot {
+            as_of,
             row_count: rows.len(),
             rows,
+        }
+    }
+
+    pub async fn signal_event_snapshot(&self, limit: usize) -> MarketSignalSnapshot {
+        let store = self.inner.read().await;
+        let rows = store
+            .history
+            .iter()
+            .rev()
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>();
+        let as_of = rows
+            .iter()
+            .map(|row| row.effective_at)
+            .max()
+            .unwrap_or_else(Utc::now);
+        MarketSignalSnapshot {
+            as_of,
+            row_count: rows.len(),
+            rows,
+        }
+    }
+
+    pub async fn snapshot(&self, limit: usize) -> ScannerPrimitiveSnapshot {
+        let snapshot = self.signal_snapshot(limit).await;
+        ScannerPrimitiveSnapshot {
+            as_of: snapshot.as_of,
+            row_count: snapshot.row_count,
+            rows: snapshot
+                .rows
+                .into_iter()
+                .map(ScannerPrimitive::from)
+                .collect(),
         }
     }
 }
@@ -110,14 +163,14 @@ pub fn spawn_scanner_primitive_engine(
     store: SharedScannerStore,
     channel_capacity: usize,
     metrics: SharedMetrics,
-    primitive_sender: broadcast::Sender<ScannerPrimitive>,
+    signal_sender: broadcast::Sender<MarketSignalEvent>,
 ) -> ScannerPrimitiveRouter {
     let (sender, receiver) = mpsc::channel::<BarRow>(channel_capacity.max(1));
     tokio::spawn(run_scanner_primitive_engine(
         store,
         receiver,
         metrics,
-        primitive_sender,
+        signal_sender,
     ));
     ScannerPrimitiveRouter { sender }
 }
@@ -126,149 +179,58 @@ async fn run_scanner_primitive_engine(
     store: SharedScannerStore,
     mut receiver: mpsc::Receiver<BarRow>,
     metrics: SharedMetrics,
-    primitive_sender: broadcast::Sender<ScannerPrimitive>,
+    signal_sender: broadcast::Sender<MarketSignalEvent>,
 ) {
+    let mut engine = MarketSignalEngine::default();
     while let Some(row) = receiver.recv().await {
-        let primitives = evaluate_bar(&row);
-        if primitives.is_empty() {
+        let signals = engine.update(&row);
+        if signals.is_empty() {
             continue;
         }
-        metrics.inc_scanner_candidates(primitives.len() as u64);
-        for primitive in primitives {
-            store.apply(primitive.clone()).await;
-            let _ = primitive_sender.send(primitive);
+        metrics.inc_scanner_candidates(signals.len() as u64);
+        for signal in signals {
+            store.apply(signal.clone()).await;
+            let _ = signal_sender.send(signal);
         }
     }
 }
 
-fn evaluate_bar(row: &BarRow) -> Vec<ScannerPrimitive> {
-    if !row.is_closed || row.close <= 0.0 {
-        return Vec::new();
+impl From<MarketSignalEvent> for ScannerPrimitive {
+    fn from(signal: MarketSignalEvent) -> Self {
+        Self {
+            schema_version: SCANNER_PRIMITIVE_SCHEMA_VERSION,
+            detected_at: signal.effective_at,
+            ticker: signal.ticker,
+            timeframe: signal.working_timeframe,
+            primitive_key: signal.signal_key,
+            side_bias: signal.direction,
+            score: signal.score,
+            trigger_reason: signal.trigger_reason,
+            reject_reason: signal.resolution_reason,
+            close: signal.evidence.close,
+            vwap: signal.evidence.vwap,
+            price_change_pct: signal.evidence.price_change_pct,
+            volume: signal.evidence.volume,
+            dollar_volume: signal.evidence.dollar_volume,
+            trade_rate: signal.evidence.trade_rate,
+            quote_rate: signal.evidence.quote_rate,
+            tape_imbalance: signal.evidence.tape_imbalance,
+            spread_bps: signal.evidence.spread_bps,
+            liquidity_score: signal.evidence.liquidity_score,
+            estimated_luld_active: signal.evidence.estimated_luld_active,
+            estimated_luld_state: signal.evidence.estimated_luld_state,
+            estimated_luld_distance_to_upper_pct: 0.0,
+            estimated_luld_distance_to_lower_pct: 0.0,
+        }
     }
-    let mut primitives = Vec::new();
-    maybe_push(
-        &mut primitives,
-        row,
-        "tape_acceleration",
-        row.trade_count_accel > 10.0 && row.tape_imbalance > 0.15 && row.spread_bps_close < 80.0,
-        weighted_score(&[
-            row.trade_count_accel / 50.0,
-            row.tape_imbalance.max(0.0),
-            row.price_change_pct.max(0.0) / 5.0,
-            row.liquidity_score.log10().max(0.0) / 8.0,
-        ]),
-        "trade count acceleration with positive tape imbalance",
-    );
-    maybe_push(
-        &mut primitives,
-        row,
-        "volume_shock",
-        row.dollar_volume_accel > 250_000.0 && row.price_change_pct > 0.25,
-        weighted_score(&[
-            row.dollar_volume_accel / 2_000_000.0,
-            row.price_change_pct / 5.0,
-            row.trade_rate / 50.0,
-        ]),
-        "dollar volume expansion with positive price change",
-    );
-    maybe_push(
-        &mut primitives,
-        row,
-        "liquidity_recovery",
-        row.spread_bps_close > 0.0
-            && row.spread_bps_close < row.spread_bps_mean
-            && row.quote_rate_accel > 0.0
-            && row.liquidity_score > 0.0,
-        weighted_score(&[
-            (row.spread_bps_mean - row.spread_bps_close).max(0.0) / 100.0,
-            row.quote_rate_accel / 50.0,
-            row.liquidity_score.log10().max(0.0) / 8.0,
-        ]),
-        "spread tightened while quote activity and liquidity recovered",
-    );
-    maybe_push(
-        &mut primitives,
-        row,
-        "vwap_reclaim",
-        row.vwap_distance_pct > 0.0 && row.mid_vwap_distance_pct > 0.0 && row.tape_imbalance > 0.0,
-        weighted_score(&[
-            row.vwap_distance_pct / 2.0,
-            row.mid_vwap_distance_pct / 2.0,
-            row.tape_imbalance.max(0.0),
-        ]),
-        "trade and quote midpoint reclaimed VWAP with favorable tape",
-    );
-    maybe_push(
-        &mut primitives,
-        row,
-        "high_momentum_bar",
-        row.price_change_pct > 1.0 && row.close >= row.high * 0.995 && row.trade_rate > 0.5,
-        weighted_score(&[
-            row.price_change_pct / 5.0,
-            row.trade_rate / 20.0,
-            row.tape_imbalance.max(0.0),
-        ]),
-        "strong close near bar high with trade activity",
-    );
-    primitives
-}
-
-fn maybe_push(
-    primitives: &mut Vec<ScannerPrimitive>,
-    row: &BarRow,
-    key: &str,
-    condition: bool,
-    score: f64,
-    reason: &str,
-) {
-    if !condition {
-        return;
-    }
-    primitives.push(ScannerPrimitive {
-        schema_version: SCANNER_PRIMITIVE_SCHEMA_VERSION,
-        detected_at: Utc::now(),
-        ticker: row.sym.clone(),
-        timeframe: row.timeframe.clone(),
-        primitive_key: key.to_string(),
-        side_bias: "long".to_string(),
-        score: score.clamp(0.0, 1.0),
-        trigger_reason: reason.to_string(),
-        reject_reason: String::new(),
-        close: row.close,
-        vwap: row.vwap,
-        price_change_pct: row.price_change_pct,
-        volume: row.volume,
-        dollar_volume: row.dollar_volume,
-        trade_rate: row.trade_rate,
-        quote_rate: row.quote_rate,
-        tape_imbalance: row.tape_imbalance,
-        spread_bps: row.spread_bps_close,
-        liquidity_score: row.liquidity_score,
-        estimated_luld_active: row.estimated_luld_active,
-        estimated_luld_state: row.estimated_luld_state.clone(),
-        estimated_luld_distance_to_upper_pct: row.estimated_luld_distance_to_upper_pct,
-        estimated_luld_distance_to_lower_pct: row.estimated_luld_distance_to_lower_pct,
-    });
-}
-
-fn weighted_score(values: &[f64]) -> f64 {
-    if values.is_empty() {
-        return 0.0;
-    }
-    values
-        .iter()
-        .copied()
-        .map(|value| value.clamp(0.0, 1.0))
-        .sum::<f64>()
-        / values.len() as f64
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use chrono::Utc;
 
-    fn base_bar() -> BarRow {
+    pub(crate) fn base_bar() -> BarRow {
         BarRow {
             schema_version: crate::bars::BAR_SCHEMA_VERSION,
             session_date: "2026-06-05".to_string(),
@@ -375,12 +337,12 @@ mod tests {
 
     #[test]
     fn emits_massive_only_primitives_from_bar() {
-        let primitives = evaluate_bar(&base_bar());
-        assert!(primitives
+        let signals = MarketSignalEngine::default().update(&base_bar());
+        assert!(signals
             .iter()
-            .any(|row| row.primitive_key == "tape_acceleration"));
-        assert!(primitives
+            .any(|row| row.signal_key == "tape_acceleration_breakout"));
+        assert!(signals
             .iter()
-            .all(|row| row.schema_version == SCANNER_PRIMITIVE_SCHEMA_VERSION));
+            .all(|row| row.schema_version == crate::market_signal::MARKET_SIGNAL_SCHEMA_VERSION));
     }
 }

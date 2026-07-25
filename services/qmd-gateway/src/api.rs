@@ -16,8 +16,9 @@ use crate::market_products::{
     parse_resolution_us, ConditionBarSnapshot, FamilyBarSnapshot, MacroBarSnapshot,
     ProductCacheMetrics, SharedMarketProductStore,
 };
+use crate::market_signal::MarketSignalEvent;
 use crate::metrics::{MetricsSnapshot, OperationalSnapshot, SharedMetrics};
-use crate::scanner::{ScannerPrimitive, ScannerPrimitiveSnapshot, SharedScannerStore};
+use crate::scanner::{MarketSignalSnapshot, ScannerPrimitiveSnapshot, SharedScannerStore};
 use crate::session::session_phase;
 use crate::signal_catalog::{signal_catalog, SignalMethodEntry};
 use crate::state::{ScannerSnapshot, SharedMarketState, StatusMetrics, SymbolSnapshot};
@@ -53,7 +54,7 @@ pub struct AppState {
     pub metrics: SharedMetrics,
     pub intraday_bars: broadcast::Sender<IntradayBarRow>,
     pub scanner: SharedScannerStore,
-    pub scanner_events: broadcast::Sender<ScannerPrimitive>,
+    pub scanner_events: broadcast::Sender<MarketSignalEvent>,
     pub shutdown: watch::Sender<bool>,
     pub trade_aggregation_rules: TradeAggregationRules,
 }
@@ -119,6 +120,8 @@ pub fn app(state: AppState) -> Router {
         .route("/snapshot/coverage", get(coverage_snapshot))
         .route("/indicator-catalog", get(indicator_catalog_snapshot))
         .route("/signal-catalog", get(signal_catalog_snapshot))
+        .route("/snapshot/signals", get(market_signal_snapshot))
+        .route("/snapshot/signal-events", get(market_signal_event_snapshot))
         .route("/snapshot/scanner", get(scanner_snapshot))
         .route(
             "/snapshot/scanner-primitives",
@@ -151,7 +154,10 @@ pub fn app(state: AppState) -> Router {
         .route("/stream/events", get(event_stream))
         .route("/stream/live-market-state", get(live_market_state_stream))
         .route("/stream/scanner", get(scanner_stream))
-        .route("/stream/scanner-primitives", get(scanner_primitive_stream))
+        .route("/stream/signals", get(market_signal_stream))
+        // Deprecated compatibility alias. The wire payload is the canonical
+        // MarketSignalEvent contract, not the former unversioned primitive.
+        .route("/stream/scanner-primitives", get(market_signal_stream))
         .route("/stream/ticker/{ticker}", get(ticker_stream))
         .route("/stream/bars/{ticker}", get(bar_stream))
         .route("/stream/family-bars/{ticker}", get(family_bar_stream))
@@ -670,6 +676,30 @@ async fn scanner_primitive_snapshot(
     )
 }
 
+async fn market_signal_snapshot(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<LimitQuery>,
+) -> Json<MarketSignalSnapshot> {
+    Json(
+        state
+            .scanner
+            .signal_snapshot(query.limit.unwrap_or(250).min(5_000))
+            .await,
+    )
+}
+
+async fn market_signal_event_snapshot(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<LimitQuery>,
+) -> Json<MarketSignalSnapshot> {
+    Json(
+        state
+            .scanner
+            .signal_event_snapshot(query.limit.unwrap_or(1_000).min(10_000))
+            .await,
+    )
+}
+
 async fn ticker_snapshot(
     State(state): State<Arc<AppState>>,
     Path(ticker): Path<String>,
@@ -843,12 +873,12 @@ async fn scanner_stream(
     })
 }
 
-async fn scanner_primitive_stream(
+async fn market_signal_stream(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
-        stream_scanner_primitives(socket, state).await;
+        stream_market_signals(socket, state).await;
     })
 }
 
@@ -1259,7 +1289,7 @@ async fn stream_scanner(mut socket: WebSocket, state: Arc<AppState>) {
     }
 }
 
-async fn stream_scanner_primitives(mut socket: WebSocket, state: Arc<AppState>) {
+async fn stream_market_signals(mut socket: WebSocket, state: Arc<AppState>) {
     let mut receiver = state.scanner_events.subscribe();
     loop {
         match receiver.recv().await {
@@ -1281,7 +1311,7 @@ async fn stream_scanner_primitives(mut socket: WebSocket, state: Arc<AppState>) 
             },
             Err(broadcast::error::RecvError::Lagged(count)) => {
                 let warning =
-                    format!(r#"{{"warning":"scanner_primitive_stream_lagged","skipped":{count}}}"#);
+                    format!(r#"{{"warning":"market_signal_stream_lagged","skipped":{count}}}"#);
                 if socket.send(Message::Text(warning.into())).await.is_err() {
                     break;
                 }

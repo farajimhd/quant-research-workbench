@@ -11,11 +11,30 @@ This file documents the values produced by `qmd-gateway`. A **formula** is the e
 | Raw Massive quotes | `schema_version` | `1` | Increment when durable raw table semantics change. |
 | Bars | `schema_version` | `2` | Increment when bar fields or formulas change. |
 | Bar indicators | `schema_version` | `9` | Increment when persisted indicator fields or formulas change. |
-| Deterministic microstructure forecast | `schema_version` | `2` | Increment when horizon or unified-action fields or formulas change. |
-| Scanner primitives | `schema_version` | `1` | Increment when primitive output contract changes. |
+| Reusable market-signal lifecycle | `schema_version` | `1` | Increment when signal identity, lifecycle, timing, direction, confidence, or evidence semantics change. |
 | Live abnormal market-state events | `schema_version` | `1` | Increment when abnormal state event semantics change. |
 
 Once production data is written under a version, do not change that version's field meaning. Add a new version or field.
+
+## Reusable Market-Signal Lifecycle
+
+QMD is authoritative for causal, strategy-independent market signals. Each
+event uses `event_id` as the unique lifecycle-event identity and `signal_id` as
+the stable identity shared by the `triggered`, `updated`, and `resolved`
+events of one signal lifecycle. `observed_at` and `effective_at` are QMD event
+times; chart placement and strategy evaluation must not move the event back to
+the opening time of a larger display bar.
+
+The current snapshot is available from `GET /snapshot/signals`; bounded
+lifecycle history is available from `GET /snapshot/signal-events`; and live
+events stream from `WS /stream/signals`. The legacy scanner-primitive routes
+remain compatibility aliases over the same versioned `MarketSignalEvent`
+payload. The historical chart response carries the identical contract in
+`market_signal_events`.
+
+QMD does not convert these market signals into entries, exits, or orders.
+Strategies own that decision and persist their resulting
+`StrategySignal` separately.
 
 ## Live Compact Unified Event Row
 

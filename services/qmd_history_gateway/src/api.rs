@@ -342,6 +342,7 @@ fn project_chart_snapshot(
         "has_more": snapshot.has_more,
         "indicators": indicators,
         "indicators_available": snapshot.indicators_available,
+        "market_signal_events": snapshot.market_signal_events,
         "next_before": snapshot.next_before,
         "structure_events": snapshot.structure_events,
         "structure_level_history": snapshot.structure_level_history,

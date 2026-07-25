@@ -4569,7 +4569,7 @@ function serviceActivitySpec(service: ServiceStatusPayload): ServiceActivitySpec
   const status = stringMetric(metrics, ["activity_status", "run_status", "status"]) || service.status || "unknown";
   if (service.registry.id === "qmd") {
     return {
-      description: "Recent scanner primitives, market-state signals, live event throughput, and persistence activity.",
+      description: "Recent reusable market signals, market-state events, live throughput, and persistence activity.",
       status,
       summary: [
         metricSummary(metrics, "Events", ["total_events", "ingest_events", "events"]),
@@ -4766,7 +4766,7 @@ function serviceActivitySubject(service: ServiceStatusPayload, row: Record<strin
 function serviceActivityKind(service: ServiceStatusPayload, row: Record<string, unknown>) {
   const explicit = firstString(row, ["kind", "type", "category", "source", "event"]);
   if (explicit) return explicit;
-  if (service.registry.id === "qmd") return "scanner primitive";
+  if (service.registry.id === "qmd") return "market signal";
   if (service.registry.id === "qmd-history") return "historical gateway";
   if (service.registry.id === "sec") return "filing feed";
   if (service.registry.id === "text-embed") return "embedding work";

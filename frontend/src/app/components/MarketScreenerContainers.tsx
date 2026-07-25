@@ -122,7 +122,13 @@ const FIELD_CATALOG: FieldDefinition[] = [
   field("sec_labels", "SEC", "News & SEC", "derived", "text", "Explainable SEC disclosure categories."),
   field("event_time", "Detected", "Signal event", "raw", "date", "First causal detection time for this event."),
   field("signal_type", "Signal", "Signal event", "derived", "text", "Stable event class or strategy-defined signal name."),
+  field("signal_state", "State", "Signal event", "raw", "text", "Triggered, updated, resolved, or expired lifecycle state from the signal authority."),
   field("direction", "Direction", "Signal event", "derived", "text", "Bullish, bearish, or neutral direction assigned by the rule owner."),
+  field("working_timeframe", "Working interval", "Signal event", "raw", "text", "Market-data interval on which the reusable signal rule was evaluated."),
+  field("signal_score", "Score", "Signal event", "derived", "number", "Normalized signed or directional evidence score supplied by the signal authority."),
+  field("signal_confidence_pct", "Confidence", "Signal event", "derived", "percentPlain", "Evidence completeness and agreement, not forecast win probability."),
+  field("active_signal_count", "Active signals", "Signal event", "derived", "integer", "Count of currently active reusable QMD market signals for this ticker."),
+  field("action", "Strategy action", "Signal event", "derived", "text", "Enter, exit, hold, or wait interpretation owned by the strategy."),
   field("magnitude", "Magnitude", "Signal event", "derived", "percent", "Observed move or normalized event magnitude."),
   field("source", "Authority", "Signal event", "raw", "text", "Market-derived rule or durable strategy runtime authority."),
   field("evidence", "Evidence", "Signal event", "derived", "text", "Compact explanation of the inputs that triggered the row."),
@@ -136,11 +142,11 @@ const SCANNER_PRESETS: Record<string, string[]> = {
 };
 const LOCKED_MARKET_LIST_COLUMNS = ["logo", "ticker", "news_labels", "sec_labels"];
 const SIGNAL_PRESETS: Record<string, string[]> = {
-  All: ["ticker", "event_time", "signal_type", "direction", "magnitude", "last", "source", "evidence", "news_labels", "sec_labels"],
-  "Price moves": ["ticker", "event_time", "signal_type", "magnitude", "last", "change_5m_pct", "source", "news_labels", "sec_labels"],
-  Activity: ["ticker", "event_time", "signal_type", "direction", "trade_count", "quote_count", "source", "evidence", "news_labels", "sec_labels"],
+  All: ["ticker", "event_time", "signal_type", "signal_state", "direction", "working_timeframe", "signal_score", "signal_confidence_pct", "last", "source", "evidence", "news_labels", "sec_labels"],
+  "Price moves": ["ticker", "event_time", "signal_type", "signal_state", "direction", "working_timeframe", "signal_confidence_pct", "last", "change_5m_pct", "source", "news_labels", "sec_labels"],
+  Activity: ["ticker", "event_time", "signal_type", "signal_state", "direction", "working_timeframe", "signal_confidence_pct", "trade_count", "quote_count", "source", "evidence", "news_labels", "sec_labels"],
   Intelligence: ["ticker", "event_time", "signal_type", "direction", "source", "evidence", "news_labels", "sec_labels"],
-  Strategy: ["ticker", "event_time", "signal_type", "direction", "last", "source", "evidence", "news_labels", "sec_labels"],
+  Strategy: ["ticker", "event_time", "signal_type", "action", "direction", "working_timeframe", "signal_score", "signal_confidence_pct", "last", "source", "evidence", "news_labels", "sec_labels"],
 };
 const WATCHLIST_DEFAULT_COLUMNS = ["ticker", "last", "change_pct", "change_5m_pct", "volume", "news_labels", "sec_labels"];
 
@@ -185,7 +191,7 @@ export function SignalStreamContainer({ asOf, onSettingsChange, onTickerSelect, 
     presets={Object.keys(SIGNAL_PRESETS)}
     preset={settings.preset}
     rows={filtered}
-    subtitle="Reproducible market events and durable strategy signals"
+    subtitle="Canonical QMD market signals and durable strategy decisions"
     title="Signal stream"
   />;
 }
@@ -468,27 +474,29 @@ function ColumnPicker({
 }
 
 function buildSignalEvents(rows: ScreenerRow[], strategySignals: ScreenerRow[], asOf: string) {
-  const derived = rows.flatMap((row) => {
-    const ticker = String(row.ticker ?? "");
-    const fiveMinute = numberValue(row.change_5m_pct);
-    const windowChange = numberValue(row.change_pct);
-    const events: ScreenerRow[] = [];
-    const add = (signalType: string, direction: string, magnitude: number, evidence: string) => events.push({ ...row, direction, event_time: asOf, evidence, magnitude, signal_type: signalType, source: "Market rule" });
-    if (Math.abs(fiveMinute) >= 10) add(fiveMinute > 0 ? "10% pop · 5m" : "10% drop · 5m", fiveMinute > 0 ? "bullish" : "bearish", fiveMinute, `Five-minute return crossed ${fiveMinute > 0 ? "+" : "−"}10%.`);
-    else if (Math.abs(fiveMinute) >= 5) add(fiveMinute > 0 ? "5% pop · 5m" : "5% drop · 5m", fiveMinute > 0 ? "bullish" : "bearish", fiveMinute, `Five-minute return crossed ${fiveMinute > 0 ? "+" : "−"}5%.`);
-    if (Math.abs(windowChange) >= 5 && Math.sign(windowChange) === Math.sign(fiveMinute)) add("Momentum continuation", windowChange > 0 ? "bullish" : "bearish", windowChange, "Five-minute and observation-window returns agree.");
-    if (numberValue(row.trade_count) >= 500) add("Trade activity burst", "neutral", 0, `${formatCompact(numberValue(row.trade_count))} eligible prints in the observation window.`);
-    if (numberValue(row.quote_count) >= 1000) add("Quote activity burst", "neutral", 0, `${formatCompact(numberValue(row.quote_count))} NBBO updates in the observation window.`);
-    if (String(row.live_news_recency).toLowerCase() === "hot") add("Hot ticker news", "neutral", 0, "Ticker-linked news published within the hot window.");
-    if (String(row.sec_recency).toLowerCase() === "hot") add("Hot SEC disclosure", "neutral", 0, "Ticker-linked filing accepted within the hot window.");
-    return events.map((event) => ({ ...event, ticker }));
-  });
+  const derived: ScreenerRow[] = rows
+    .filter((row) => Boolean(row.signal_id) && Boolean(row.signal_type))
+    .map((row) => ({
+      ...row,
+      direction: String(row.direction ?? row.market_state ?? "neutral").toLowerCase(),
+      event_time: row.event_time ?? row.bar_time_market ?? asOf,
+      evidence: row.evidence ?? row.live_reasons ?? "QMD emitted this causal market signal.",
+      magnitude: row.signal_score ?? row.scanner_score ?? 0,
+      signal_confidence_pct: numberValue(row.signal_confidence) * 100,
+      source: row.source ?? "QMD market signal",
+      ticker: String(row.ticker ?? row.symbol ?? "").toUpperCase(),
+    }));
   const strategy: ScreenerRow[] = strategySignals.map((row) => ({
+    ...row,
+    action: row.action ?? "wait",
     direction: String(row.direction ?? "neutral").toLowerCase(),
     event_time: row.time ?? row.event_time ?? asOf,
     evidence: row.detail ?? row.reason ?? "Strategy runtime emitted this durable signal.",
     last: row.value,
     magnitude: row.magnitude ?? 0,
+    signal_confidence_pct: numberValue(row.confidence ?? row.signal_confidence) * 100,
+    signal_score: row.score ?? row.signal_score ?? row.magnitude ?? 0,
+    signal_state: row.signal_state ?? "triggered",
     signal_type: row.signal ?? row.signal_type ?? "Strategy signal",
     source: "Strategy runtime",
     ticker: String(row.symbol ?? row.ticker ?? "").toUpperCase(),

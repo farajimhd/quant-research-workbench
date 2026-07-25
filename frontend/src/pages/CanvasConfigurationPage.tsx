@@ -175,6 +175,7 @@ type CanvasScannerSnapshot = {
   errors: Record<string, string>;
   meta: ScannerSnapshotMeta;
   rows: Record<string, unknown>[];
+  signal_rows?: Record<string, unknown>[];
 };
 type CanvasContext = { coverage: { event_count: number; session_date: string | null; ticker_count: number }; preview_time: string; session_date: string | null };
 type QmdLiveBar = HistoricalBar & { session_date?: string };
@@ -182,6 +183,7 @@ type QmdBarHistory = {
   as_of: string;
   decision_events: QmdDecisionEvent[];
   episode_events: QmdEpisodeEvent[];
+  market_signal_events: QmdMarketSignalEvent[];
   earliest_session_date: string;
   has_more: boolean;
   has_more_in_session: boolean;
@@ -226,6 +228,27 @@ type QmdDecisionEvent = {
   source_bar_start: string;
   sym: string;
 };
+type QmdMarketSignalEvent = {
+  schema_version: number;
+  engine_version: string;
+  event_id: string;
+  signal_id: string;
+  signal_key: string;
+  producer: string;
+  ticker: string;
+  working_timeframe: string;
+  confirmation_timeframe?: string | null;
+  observed_at: string;
+  effective_at: string;
+  state: "triggered" | "updated" | "resolved" | "expired";
+  direction: "bullish" | "bearish" | "neutral";
+  score: number;
+  confidence: number;
+  trigger_reason: string;
+  resolution_reason?: string;
+  reference_price: number;
+  invalidation_price?: number | null;
+};
 type QmdStructureEvent = {
   algorithm_version: number;
   event_id: number;
@@ -260,6 +283,7 @@ type CanvasLiveChartState = {
   connected: boolean;
   decisionEvents: QmdDecisionEvent[];
   episodeEvents: QmdEpisodeEvent[];
+  marketSignalEvents: QmdMarketSignalEvent[];
   error: string;
   historyError: string;
   historyNotice: string;
@@ -408,6 +432,28 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
       { value: "context", label: "Context", description: "Most selective structure with a 15-second MACD helper." },
     ],
   },
+  displayIndicator(
+    "indicator.qmd_market_signals",
+    "QMD Market Signals",
+    "microstructure",
+    [],
+    "price",
+    {
+      shortDescription: "Reusable causal market observations emitted by QMD before any strategy decides whether to trade.",
+      detailedDescription: "Each marker is a versioned QMD signal event with a stable type, lifecycle state, direction, working timeframe, score, confidence, evidence, and exact effective timestamp.",
+      calculation: "The same QMD state machine evaluates closed causal market-data buckets in live and historical paths. It emits Triggered when a rule first holds, Updated when material evidence changes, and Resolved when the setup no longer holds. The chart draws Triggered events only to avoid update noise.",
+      readingGuide: "Green arrows are bullish observations and red arrows are bearish observations. The percentage is evidence confidence; the suffix is the originating working timeframe. A marker is not an order or a promised return.",
+      bullishEvidence: "A green marker means the named QMD rule observed aligned bullish evidence at that exact market timestamp.",
+      bearishEvidence: "A red marker means the named QMD rule observed aligned bearish evidence at that exact market timestamp.",
+      interpretation: "Treat the event as reusable evidence. A strategy may combine it with structure, risk, portfolio state, and its own timing rules to emit Enter, Exit, Hold, or Wait.",
+      timeframeBehavior: "The event keeps its originating working timeframe regardless of chart timeframe. On a larger chart it is placed on the candle containing its effective timestamp; the chart never waits for that larger candle to close.",
+      caveats: [
+        "Confidence measures evidence completeness and agreement, not win probability.",
+        "QMD owns reusable market observations; strategies remain the authority for entries, exits, sizing, and orders.",
+        "Resolved and Updated events remain available in the API and Signal Stream but are not drawn as repeated chart arrows.",
+      ],
+    },
+  ),
   displayIndicator("indicator.qmd_transaction_imbalance", "QMD Transaction Imbalance", "microstructure", ["microstructure_transaction_imbalance", "microstructure_buy_trade_count", "microstructure_sell_trade_count"], "qmd_transaction", qmdIndicatorKnowledge("Buy-versus-sell trade-count imbalance", "Counts eligible prints classified at the ask as buys and at the bid as sells, then computes (buys - sells) / classified trades.", "Persistent positive readings mean buyer-initiated prints are arriving more often; negative readings mean seller-initiated prints dominate.", "It ignores trade size, so compare it with Signed-volume Imbalance.")),
   displayIndicator("indicator.qmd_signed_volume", "QMD Signed-volume Imbalance", "microstructure", ["microstructure_signed_volume_imbalance", "microstructure_buy_volume", "microstructure_sell_volume"], "qmd_signed_volume", qmdIndicatorKnowledge("Buy-versus-sell executed-volume imbalance", "Sums eligible volume at the ask and bid inside the selected bar, then computes (buy volume - sell volume) / classified volume.", "Positive values show aggressive buy volume; negative values show aggressive sell volume. Agreement with transaction imbalance is stronger evidence than either alone.", "A few large prints can dominate the value; inspect trade conditions and resiliency.")),
   displayIndicator("indicator.qmd_level1_ofi", "QMD Level-1 OFI", "microstructure", ["microstructure_level1_ofi"], "qmd_level1_ofi", qmdIndicatorKnowledge("Best-quote order-flow imbalance", "Measures price-improving and size-changing flow at the NBBO, normalized by exposed best-level depth and aggregated from raw quote transitions.", "Positive OFI indicates bid support or ask withdrawal; negative OFI indicates bid withdrawal or ask supply.", "Displayed orders can be cancelled and do not reveal deeper or hidden liquidity.")),
@@ -586,7 +632,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
   const pointInTime = true;
   const indicatorColumns = useMemo(() => requestedIndicatorColumns(visibleIndicatorIds), [visibleIndicatorIds]);
   const rowBudget = useMemo(() => chartRowBudget(indicatorColumns), [indicatorColumns]);
-  const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier">>({ bars: [], canLoadEarlier: false, connected: false, decisionEvents: [], episodeEvents: [], error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime, structureEvents: [], structureLevelHistory: [] });
+  const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier">>({ bars: [], canLoadEarlier: false, connected: false, decisionEvents: [], episodeEvents: [], error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, marketSignalEvents: [], pointInTime, structureEvents: [], structureLevelHistory: [] });
   const historyCursorRef = useRef<ChartHistoryCursor | null>(null);
   const historyRequestRef = useRef(false);
   const historyAbortRef = useRef<AbortController | null>(null);
@@ -622,6 +668,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
             canLoadEarlier: payload.has_more && !merged.atCapacity,
             decisionEvents: mergeDecisionEvents(current.decisionEvents, payload.decision_events),
             episodeEvents: mergeEpisodeEvents(current.episodeEvents, payload.episode_events),
+            marketSignalEvents: mergeMarketSignalEvents(current.marketSignalEvents, payload.market_signal_events),
             historyError: "",
             historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : "",
             indicators: merged.indicators,
@@ -653,7 +700,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
     requestKeyRef.current = requestKey;
     historyCursorRef.current = null;
     historyRequestRef.current = false;
-    setState({ bars: [], canLoadEarlier: false, connected: false, decisionEvents: [], episodeEvents: [], error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, pointInTime, structureEvents: [], structureLevelHistory: [] });
+    setState({ bars: [], canLoadEarlier: false, connected: false, decisionEvents: [], episodeEvents: [], error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, marketSignalEvents: [], pointInTime, structureEvents: [], structureLevelHistory: [] });
 
     const fetchHistoricalPage = () => {
       historyRequestRef.current = true;
@@ -674,6 +721,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
               canLoadEarlier: payload.has_more && !merged.atCapacity,
               decisionEvents: mergeDecisionEvents(current.decisionEvents, payload.decision_events),
               episodeEvents: mergeEpisodeEvents(current.episodeEvents, payload.episode_events),
+              marketSignalEvents: mergeMarketSignalEvents(current.marketSignalEvents, payload.market_signal_events),
               historyError: "",
               historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : "",
               indicators: merged.indicators,
@@ -759,6 +807,17 @@ function mergeEpisodeEvents(current: QmdEpisodeEvent[], incoming: QmdEpisodeEven
     const timeDifference = Date.parse(left.occurred_at) - Date.parse(right.occurred_at);
     return timeDifference || left.preset.localeCompare(right.preset) || left.episode_id - right.episode_id;
   });
+}
+
+function mergeMarketSignalEvents(current: QmdMarketSignalEvent[], incoming: QmdMarketSignalEvent[] | undefined) {
+  const merged = new Map<string, QmdMarketSignalEvent>();
+  [...current, ...(incoming ?? [])].forEach((event) => {
+    if (event.event_id) merged.set(event.event_id, event);
+  });
+  return [...merged.values()]
+    .sort((left, right) => Date.parse(left.effective_at) - Date.parse(right.effective_at)
+      || left.event_id.localeCompare(right.event_id))
+    .slice(-10_000);
 }
 
 function chartPageSize(timeframe: string) {
@@ -971,6 +1030,41 @@ function qmdDecisionChartMarkers(
     });
   });
   return markers;
+}
+
+function qmdMarketSignalChartMarkers(
+  events: QmdMarketSignalEvent[],
+  bars: HistoricalBar[],
+  visibleIndicators: string[],
+): ChartPayload["markers"] {
+  if (!visibleIndicators.includes("indicator.qmd_market_signals") || !events.length || !bars.length) {
+    return [];
+  }
+  const intervals = bars.map((bar) => ({
+    end: Date.parse(bar.bar_end || "") || Date.parse(bar.bar_start) + 1,
+    start: Date.parse(bar.bar_start),
+    time: Date.parse(bar.bar_start) / 1000,
+  }));
+  return events
+    .filter((event) => event.state === "triggered" && ["bullish", "bearish"].includes(event.direction))
+    .map((event) => {
+      const effectiveAt = Date.parse(event.effective_at);
+      if (!Number.isFinite(effectiveAt)) return null;
+      const interval = intervals.find((candidate) => effectiveAt >= candidate.start && effectiveAt < candidate.end)
+        ?? intervals.find((candidate) => candidate.start >= effectiveAt);
+      if (!interval) return null;
+      const bullish = event.direction === "bullish";
+      return {
+        color: bullish ? "var(--success)" : "var(--danger)",
+        displayItemId: "indicator.qmd_market_signals",
+        position: bullish ? "belowBar" : "aboveBar",
+        shape: bullish ? "arrowUp" : "arrowDown",
+        size: 1,
+        text: `${Math.round(boundedUnit(event.confidence) * 100)}% · ${event.working_timeframe}`,
+        time: interval.time as UTCTimestamp,
+      } satisfies NonNullable<ChartPayload["markers"]>[number];
+    })
+    .filter((marker): marker is NonNullable<typeof marker> => marker !== null);
 }
 
 function qmdEpisodePresentation(
@@ -1899,7 +1993,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
       : definition.id === "scanner"
         ? <MarketScannerContainer asOf={new Date(chartCutoffMs).toISOString()} meta={scannerSnapshot?.meta ?? preview?.scanner_meta} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, scanner: { ...state.scanner, ...patch } }))} onTickerSelect={onTickerChartOpen} rows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.scanner} />
       : definition.id === "signal_stream"
-        ? <SignalStreamContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, signal_stream: { ...state.signal_stream, ...patch } }))} onTickerSelect={onTickerChartOpen} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.signal_stream} strategySignals={preview?.strategy.signals ?? []} />
+        ? <SignalStreamContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, signal_stream: { ...state.signal_stream, ...patch } }))} onTickerSelect={onTickerChartOpen} scannerRows={scannerSnapshot?.signal_rows ?? []} settings={settings.signal_stream} strategySignals={preview?.strategy.signals ?? []} />
       : definition.id === "watchlist"
         ? <WatchlistContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...patch } }))} onTickerSelect={onTickerChartOpen} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
       : loading && !preview
@@ -2006,9 +2100,14 @@ function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl,
           ...(episodePresentation.markers ?? []),
         ]
       : episodePresentation.markers;
+    const marketSignalMarkers = qmdMarketSignalChartMarkers(
+      liveChart.marketSignalEvents,
+      liveChart.bars,
+      visibleIndicators,
+    );
     return {
       candles: liveChart.bars.map((bar) => ({ close: bar.close, high: bar.high, low: bar.low, open: bar.open, time: Date.parse(bar.bar_start) / 1000 })),
-      markers: decisionMarkers,
+      markers: [...(decisionMarkers ?? []), ...(marketSignalMarkers ?? [])],
       oscillator_series: historicalIndicatorSeries(indicators, "oscillator", visibleIndicators),
       overlay_series: historicalIndicatorSeries(indicators, "price", visibleIndicators),
       price_zones: [
@@ -2018,7 +2117,7 @@ function ChartPreview({ changeAsOf, instanceId, linkContext, liveChart, logoUrl,
       regions: MACRO_TIMEFRAMES.has(timeframe) ? [] : extendedSessionRegions(liveChart.bars),
       volume: settings.chart.showVolume ? liveChart.bars.map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
     };
-  }, [indicators, liveChart.bars, liveChart.decisionEvents, liveChart.episodeEvents, liveChart.structureEvents, liveChart.structureLevelHistory, settings.chart.showVolume, timeframe, visibleIndicators]);
+  }, [indicators, liveChart.bars, liveChart.decisionEvents, liveChart.episodeEvents, liveChart.marketSignalEvents, liveChart.structureEvents, liveChart.structureLevelHistory, settings.chart.showVolume, timeframe, visibleIndicators]);
   function updateChart(symbol: string, nextTimeframe: CanvasChartTimeframe) {
     updateSettings((current) => ({ ...current, chart: { ...current.chart, symbol, timeframe: nextTimeframe } }));
     onLinkContextChange({ symbol });

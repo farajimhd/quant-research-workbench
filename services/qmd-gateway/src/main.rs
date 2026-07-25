@@ -23,9 +23,10 @@ use qmd_core::market_calendar::{run_market_calendar_refresh, MarketCalendarClien
 use qmd_core::market_products::{
     parse_resolution_us, ConditionClassifier, ProductCacheLimits, SharedMarketProductStore,
 };
+use qmd_core::market_signal::MarketSignalEvent;
 use qmd_core::massive::{run_massive_ingest, MarketEventFanout};
 use qmd_core::metrics::SharedMetrics;
-use qmd_core::scanner::{spawn_scanner_primitive_engine, ScannerPrimitive, SharedScannerStore};
+use qmd_core::scanner::{spawn_scanner_primitive_engine, SharedScannerStore};
 use qmd_core::state::SharedMarketState;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -166,7 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (event_sender, _event_receiver) = broadcast::channel::<MarketEvent>(10_000);
     let (compact_event_sender, _compact_event_receiver) =
         broadcast::channel::<LiveCompactEvent>(10_000);
-    let (scanner_sender, _scanner_receiver) = broadcast::channel::<ScannerPrimitive>(10_000);
+    let (scanner_sender, _scanner_receiver) = broadcast::channel::<MarketSignalEvent>(10_000);
     let (live_market_state_sender, _live_market_state_receiver) =
         broadcast::channel::<LiveSymbolMarketStateEvent>(10_000);
     let intraday_bar_service = spawn_intraday_bar_service(config.clone(), metrics.clone())
