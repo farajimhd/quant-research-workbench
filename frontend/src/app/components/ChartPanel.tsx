@@ -362,6 +362,7 @@ type ChartAppearanceSettings = {
   daySeparatorsVisible: boolean;
   downColor: string;
   legendGutterVisible: boolean;
+  rightLegendGutterVisible: boolean;
   premarketColor: string;
   premarketOpacity: number;
   upColor: string;
@@ -457,6 +458,7 @@ const defaultChartAppearanceSettings: ChartAppearanceSettings = {
   daySeparatorsVisible: true,
   downColor: "#FD0E50",
   legendGutterVisible: true,
+  rightLegendGutterVisible: true,
   premarketColor: "#F2A65A",
   premarketOpacity: 0.16,
   upColor: "#33E42A",
@@ -615,6 +617,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   // adding an oscillator cannot change the plot width. Traders can explicitly
   // reclaim the left gutter; the setting is persisted per chart instance.
   const alignLeftPriceScale = chartSettings.legendGutterVisible;
+  const reserveRightPriceScale = chartSettings.rightLegendGutterVisible;
   const priceLegendItems = [
     ...buildSeriesLegendItems(displayedOverlaySeries, "price", legendSettings, displayItemOptions, catalogColumns, chartSettings),
     ...buildPriceZoneLegendItems(displayedPriceZones, legendSettings, displayItemOptions, catalogColumns, chartSettings),
@@ -868,7 +871,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     }
     if (!priceRef.current || priceChartRef.current) return undefined;
     const palette = readChartPalette();
-    const priceChart = createChart(priceRef.current, chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettingsRef.current, timeframe, true, alignLeftPriceScale));
+    const priceChart = createChart(priceRef.current, chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettingsRef.current, timeframe, true, alignLeftPriceScale, reserveRightPriceScale));
     priceChartRef.current = priceChart;
     const candleSeries = priceChart.addSeries(CandlestickSeries, {
       ...candleSeriesOptions(chartSettingsRef.current),
@@ -987,7 +990,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const palette = readChartPalette();
     const priceChart = priceChartRef.current;
     if (priceChart && priceRef.current) {
-      priceChart.applyOptions(chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettingsRef.current, timeframe, true, alignLeftPriceScale));
+      priceChart.applyOptions(chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettingsRef.current, timeframe, true, alignLeftPriceScale, reserveRightPriceScale));
       candleRef.current?.applyOptions(candleSeriesOptions(chartSettingsRef.current));
       if (payloadRef.current && volumeRef.current) {
         syncRendererData(volumeRef.current, volumeDataForSettings(payloadRef.current, chartSettingsRef.current) as unknown as RendererDatum[], volumeStyleKey(chartSettingsRef.current));
@@ -2901,11 +2904,15 @@ function ChartSettingsPopover({
 
       <ChartSettingsSection title="Layout">
         <p className="chart-settings-help">
-          The left gutter keeps price and oscillator legends aligned. Turn it off to reclaim the reserved axis space; legends remain inset slightly over the plot.
+          Reserved gutters keep plot widths aligned across panes. Turning one off removes its fixed minimum while preserving any required axis labels.
         </p>
         <label className="chart-setting-toggle">
           <input checked={settings.legendGutterVisible} type="checkbox" onChange={(event) => onChange("legendGutterVisible", event.target.checked)} />
           Reserve left legend gutter
+        </label>
+        <label className="chart-setting-toggle">
+          <input checked={settings.rightLegendGutterVisible} type="checkbox" onChange={(event) => onChange("rightLegendGutterVisible", event.target.checked)} />
+          Reserve right legend gutter
         </label>
       </ChartSettingsSection>
 
@@ -3201,6 +3208,7 @@ function normalizeChartAppearanceSettings(settings: Partial<ChartAppearanceSetti
       typeof settings.daySeparatorsVisible === "boolean" ? settings.daySeparatorsVisible : defaultChartAppearanceSettings.daySeparatorsVisible,
     downColor: validHexColor(settings.downColor, defaultChartAppearanceSettings.downColor),
     legendGutterVisible: typeof settings.legendGutterVisible === "boolean" ? settings.legendGutterVisible : defaultChartAppearanceSettings.legendGutterVisible,
+    rightLegendGutterVisible: typeof settings.rightLegendGutterVisible === "boolean" ? settings.rightLegendGutterVisible : defaultChartAppearanceSettings.rightLegendGutterVisible,
     premarketColor: premarketColor.toUpperCase() === "#FBBF24" ? defaultChartAppearanceSettings.premarketColor : premarketColor,
     premarketOpacity: settings.premarketOpacity === 0.22 ? defaultChartAppearanceSettings.premarketOpacity : clampNumber(settings.premarketOpacity, 0, 0.6, defaultChartAppearanceSettings.premarketOpacity),
     upColor: validHexColor(settings.upColor, defaultChartAppearanceSettings.upColor),
@@ -3814,6 +3822,7 @@ function chartOptions(
   timeframe = "1m",
   showTimeScale = true,
   showLeftPriceScale = true,
+  reserveRightPriceScale = true,
 ) {
   const timeframeSeconds = chartTimeframeSeconds(timeframe);
   const showSeconds = timeframeSeconds !== null && timeframeSeconds < 60;
@@ -3849,7 +3858,7 @@ function chartOptions(
     // Price-axis labels must remain at their actual value coordinate. The library's
     // default collision alignment stacks dense indicator tags at screen-stable offsets,
     // which visually detaches them from the scale while the chart is panned vertically.
-    rightPriceScale: { alignLabels: false, borderColor: palette.grid, minimumWidth: CHART_PRICE_SCALE_MIN_WIDTH },
+    rightPriceScale: { alignLabels: false, borderColor: palette.grid, minimumWidth: reserveRightPriceScale ? CHART_PRICE_SCALE_MIN_WIDTH : 0 },
     leftPriceScale: { alignLabels: false, borderColor: palette.grid, minimumWidth: CHART_PRICE_SCALE_MIN_WIDTH, visible: showLeftPriceScale },
     timeScale: {
       borderColor: palette.grid,

@@ -23239,10 +23239,10 @@ button {
 
 .charts-quotes-header {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(220px, .62fr) minmax(490px, 1.45fr) minmax(360px, 1fr);
   align-items: stretch;
   min-width: 0;
-  min-height: 66px;
+  min-height: 124px;
   border-bottom: 1px solid var(--charts-quotes-rule);
 }
 
@@ -23269,16 +23269,73 @@ button {
   position: relative;
 }
 
-.charts-quotes-header > .ticker-identity-with-change {
-  flex: 0 0 auto;
-  align-self: center;
-  padding: 8px 12px;
+.charts-quotes-identity {
+  align-content: center;
+  display: grid;
+  gap: 11px;
+  min-width: 0;
+  padding: 11px 12px;
 }
 
-.charts-quotes-header-metrics {
+.charts-quotes-identity > .ticker-identity-with-change {
+  min-width: 0;
+}
+
+.charts-quotes-nbbo,
+.charts-quotes-flow {
+  border-left: 1px solid var(--charts-quotes-rule);
   display: grid;
-  grid-template-columns: repeat(6, minmax(76px, 1fr));
-  align-items: stretch;
+  gap: 0;
+  grid-template-rows: auto 1fr auto;
+  min-width: 0;
+  padding: 8px 10px 9px;
+}
+
+.charts-quotes-header-heading {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 0 2px 5px;
+}
+
+.charts-quotes-header-heading strong {
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 780;
+  letter-spacing: .065em;
+  text-transform: uppercase;
+}
+
+.charts-quotes-header-heading span {
+  color: var(--text-secondary);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.charts-quotes-nbbo-primary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(94px, .66fr) minmax(0, 1fr);
+  min-width: 0;
+}
+
+.charts-quotes-supporting-metrics {
+  border-top: 1px solid var(--charts-quotes-rule);
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  min-width: 0;
+}
+
+.charts-quotes-tape-primary {
+  min-width: 0;
+}
+
+.charts-quotes-flow-grid {
+  border-top: 1px solid var(--charts-quotes-rule);
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   min-width: 0;
 }
 
@@ -23286,36 +23343,76 @@ button {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 3px;
+  gap: 4px;
   min-width: 0;
-  padding: 8px 10px;
-  border-left: 1px solid var(--charts-quotes-rule);
+  padding: 7px 8px;
   font-variant-numeric: tabular-nums;
 }
 
-.charts-quotes-header-metric small {
+.charts-quotes-header-metric + .charts-quotes-header-metric {
+  border-left: 1px solid var(--charts-quotes-rule);
+}
+
+.charts-quotes-header-metric .metric-label {
   color: var(--text-secondary);
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 650;
-  letter-spacing: .055em;
-  text-transform: uppercase;
+  letter-spacing: .02em;
+}
+
+.charts-quotes-header-metric .micro-help-tip svg {
+  height: 10px;
+  width: 10px;
 }
 
 .charts-quotes-header-metric strong {
   color: var(--text-primary);
-  font-size: 15px;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 16px;
+  font-weight: 720;
+  letter-spacing: -.025em;
   line-height: 1;
   white-space: nowrap;
+}
+
+.charts-quotes-header-metric > span {
+  color: var(--text-secondary);
+  font-size: 9px;
+  line-height: 1.1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.charts-quotes-header-metric[data-primary="true"] {
+  background: color-mix(in oklab, var(--surface-alt) 50%, var(--surface));
+  min-height: 55px;
+}
+
+.charts-quotes-header-metric[data-primary="true"] strong {
+  font-size: 25px;
+  font-weight: 780;
+}
+
+.charts-quotes-nbbo-primary .charts-quotes-header-metric:nth-child(2) {
+  align-items: flex-start;
+  background: color-mix(in oklab, var(--surface-alt) 72%, var(--surface));
+}
+
+.charts-quotes-nbbo-primary .charts-quotes-header-metric:nth-child(2) strong {
+  font-size: 23px;
 }
 
 .charts-quotes-header-metric[data-tone="buy"] strong { color: var(--success); }
 .charts-quotes-header-metric[data-tone="sell"] strong { color: var(--danger); }
 
 .charts-quotes-actions {
-  align-self: center;
-  margin-left: auto;
-  padding: 8px 10px;
-  white-space: nowrap;
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+  padding: 0;
 }
 
 .charts-quotes-main-chart,

@@ -227,9 +227,21 @@ export function ChartsQuotesMarketLayout({
   const sellVolume = trades.reduce((sum, item) => sum + (item.direction === "sell" ? item.size : 0), 0);
   const directionalVolume = buyVolume + sellVolume;
   const buyShare = directionalVolume ? buyVolume / directionalVolume : 0.5;
+  const netFlow = buyVolume - sellVolume;
+  const pace = eventRate(trades.map((item) => item.timestampUs));
+  const eligibleTrades = trades.filter((print) => isPriceEligibleTrade(print, references));
+  const priceWindow = timeWindowPriceChange(eligibleTrades, 500_000);
   const totalSize = current ? current.bidSize + current.askSize : 0;
   const imbalance = current && totalSize ? (current.bidSize - current.askSize) / totalSize : 0;
   const spread = current ? Math.max(0, current.ask - current.bid) : 0;
+  const quoteSpread = current ? Math.max(0.0001, spread) : 0.01;
+  const absorption = directionalVolume > 0 && Math.abs(buyShare - 0.5) >= 0.18 && priceWindow.ready && Math.abs(priceWindow.change) < quoteSpread * 0.5;
+  const midpoint = current ? (current.ask + current.bid) / 2 : 0;
+  const microprice = current && totalSize ? (current.ask * current.bidSize + current.bid * current.askSize) / totalSize : midpoint;
+  const spreadState = classifySpread(spread, quotes);
+  const bidVenue = venueReference(current?.bidExchange ?? 0, references);
+  const askVenue = venueReference(current?.askExchange ?? 0, references);
+  const quoteRate = eventRate(quotes.map((quote) => quote.timestampUs));
   const presentations = useTickerPresentations([symbol]);
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const [workingLayout, setWorkingLayout] = useState(layout);
@@ -293,16 +305,35 @@ export function ChartsQuotesMarketLayout({
 
   return <section aria-label={`${symbol} charts and quotes`} className="charts-quotes-layout" data-market-state={connected}>
     <header className="charts-quotes-header">
-      <TickerIdentityWithChange asOf={end || new Date().toISOString()} inputAriaLabel="Charts and quotes ticker" logoUrl={presentations[symbol]?.logo_url} onTickerChange={onSymbolChange} ticker={symbol} />
-      <div className="charts-quotes-header-metrics">
-        <HeaderMarketMetric label="Bid" tone="buy" value={current ? `${formatPrice(current.bid)} · ${formatSize(current.bidSize)}` : "—"} />
-        <HeaderMarketMetric label="Ask" tone="sell" value={current ? `${formatPrice(current.ask)} · ${formatSize(current.askSize)}` : "—"} />
-        <HeaderMarketMetric label="Spread" tone={classifySpread(spread, quotes) === "Tighter" ? "buy" : classifySpread(spread, quotes) === "Wider" ? "sell" : "mid"} value={current ? formatPrice(spread) : "—"} />
-        <HeaderMarketMetric label="Last" tone={last?.direction ?? "mid"} value={last ? `${formatPrice(last.price)} · ${formatTradeSize(last.size)}` : "—"} />
-        <HeaderMarketMetric label="Buy share" tone={buyShare >= 0.5 ? "buy" : "sell"} value={`${Math.round(buyShare * 100)}%`} />
-        <HeaderMarketMetric label="Imbalance" tone={imbalance >= 0 ? "buy" : "sell"} value={signedPercent(imbalance)} />
+      <div className="charts-quotes-identity">
+        <TickerIdentityWithChange asOf={end || new Date().toISOString()} inputAriaLabel="Charts and quotes ticker" logoUrl={presentations[symbol]?.logo_url} onTickerChange={onSymbolChange} ticker={symbol} />
+        <MicrostructureHeaderActions connected={connected} marketState={marketState} references={references} />
       </div>
-      <MicrostructureHeaderActions connected={connected} marketState={marketState} references={references} />
+      <section aria-label="Current consolidated quote" className="charts-quotes-nbbo">
+        <ChartsQuotesHeaderHeading count={quotes.length} label="NBBO" unit="updates" />
+        <div className="charts-quotes-nbbo-primary">
+          <HeaderMarketMetric detail={current ? `${formatSize(current.bidSize)} shares · ${bidVenue.code}` : "No quote"} help={`Current consolidated national best bid; ${bidVenue.name} is posting it.`} label="Bid" primary tone="buy" value={current ? formatPrice(current.bid) : "—"} />
+          <HeaderMarketMetric detail={current ? `${spreadState} · mid ${formatPrice(midpoint)}` : "No quote"} help="Current best ask minus current best bid. Tighter spreads generally reduce execution cost." label="Spread" primary tone={spreadState === "Tighter" ? "buy" : spreadState === "Wider" ? "sell" : "mid"} value={current ? formatPrice(spread) : "—"} />
+          <HeaderMarketMetric detail={current ? `${formatSize(current.askSize)} shares · ${askVenue.code}` : "No quote"} help={`Current consolidated national best ask; ${askVenue.name} is posting it.`} label="Ask" primary tone="sell" value={current ? formatPrice(current.ask) : "—"} />
+        </div>
+        <div className="charts-quotes-supporting-metrics">
+          <HeaderMarketMetric help="Size-weighted NBBO price. It leans toward the side with less displayed liquidity." label="Microprice" tone={microprice >= midpoint ? "buy" : "sell"} value={current ? formatPrice(microprice) : "—"} />
+          <HeaderMarketMetric help="(Bid size − ask size) ÷ total displayed NBBO size. Positive values are bid-heavy." label="Size imbalance" tone={imbalance >= 0 ? "buy" : "sell"} value={signedPercent(imbalance)} />
+          <HeaderMarketMetric help="Average NBBO updates per second across the visible quote window." label="Quote rate" tone="mid" value={`${quoteRate.toFixed(1)}/s`} />
+        </div>
+      </section>
+      <section aria-label="Current tape flow" className="charts-quotes-flow">
+        <ChartsQuotesHeaderHeading count={trades.length} label="Tape" unit="prints" />
+        <div className="charts-quotes-tape-primary">
+          <HeaderMarketMetric detail={last ? `${directionLabel(last.direction)} · ${formatTradeSize(last.size)} shares` : "Waiting for a trade"} help="Most recent eligible trade at or before the displayed time." label="Last print" primary tone={last?.direction ?? "mid"} value={last ? formatPrice(last.price) : "—"} />
+        </div>
+        <div className="charts-quotes-flow-grid">
+          <HeaderMarketMetric help="At-ask volume divided by all directionally classified volume in the visible tape window." label="Buy share" tone={buyShare >= 0.5 ? "buy" : "sell"} value={`${Math.round(buyShare * 100)}%`} />
+          <HeaderMarketMetric help="At-ask share volume minus at-bid share volume in the visible tape window." label="Net flow" tone={netFlow >= 0 ? "buy" : "sell"} value={signedCompact(netFlow)} />
+          <HeaderMarketMetric help="Average prints per second across the visible tape window." label="Pace" tone="mid" value={`${pace.toFixed(pace >= 10 ? 0 : 1)}/s`} />
+          <HeaderMarketMetric help="One-sided aggressive flow with little price response can indicate passive liquidity absorbing it." label="Absorption" tone={absorption ? (buyShare >= 0.5 ? "sell" : "buy") : "mid"} value={absorption ? "Possible" : "None"} />
+        </div>
+      </section>
     </header>
     <div className="charts-quotes-body" ref={bodyRef} style={layoutStyle}>
       <div className="charts-quotes-main-chart">{mainChart}</div>
@@ -369,8 +400,30 @@ function resizeChartsQuotesLayout(layout: ChartsQuotesLayoutSettings, kind: Char
   return { ...layout, monthColumnPercent: clampLayoutRatio(layout.monthColumnPercent + amount, 28, 72) };
 }
 
-function HeaderMarketMetric({ label, tone, value }: { label: string; tone: Direction; value: string }) {
-  return <div className="charts-quotes-header-metric" data-tone={tone}><small>{label}</small><strong>{value}</strong></div>;
+function ChartsQuotesHeaderHeading({ count, label, unit }: { count: number; label: string; unit: string }) {
+  return <div className="charts-quotes-header-heading"><strong>{label}</strong><span>{formatCount(count)} {unit}</span></div>;
+}
+
+function HeaderMarketMetric({
+  detail,
+  help,
+  label,
+  primary = false,
+  tone,
+  value,
+}: {
+  detail?: string;
+  help: string;
+  label: string;
+  primary?: boolean;
+  tone: Direction;
+  value: string;
+}) {
+  return <div className="charts-quotes-header-metric" data-primary={primary || undefined} data-tone={tone}>
+    <MetricLabel help={help} label={label} />
+    <strong>{value}</strong>
+    {detail ? <span>{detail}</span> : null}
+  </div>;
 }
 
 function MicrostructureHeaderActions({ connected, marketState, references }: { connected: ConnectionState; marketState: MarketState | null; references: MarketReferences }) {
