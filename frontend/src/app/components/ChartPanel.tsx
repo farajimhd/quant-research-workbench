@@ -361,6 +361,7 @@ type ChartAppearanceSettings = {
   daySeparatorStyle: DaySeparatorStyle;
   daySeparatorsVisible: boolean;
   downColor: string;
+  legendGutterVisible: boolean;
   premarketColor: string;
   premarketOpacity: number;
   upColor: string;
@@ -403,6 +404,7 @@ type ChartPanelProps = {
   errorMessage?: string;
   infoMessage?: string;
   featureOptions: string[];
+  fillHeight?: boolean;
   indicatorOptions: string[];
   initialFitMode?: "default" | "last_market_day" | "live_first_10" | "recent";
   labelOptions?: ChartLabelOption[];
@@ -454,6 +456,7 @@ const defaultChartAppearanceSettings: ChartAppearanceSettings = {
   daySeparatorStyle: "dashed",
   daySeparatorsVisible: true,
   downColor: "#FD0E50",
+  legendGutterVisible: true,
   premarketColor: "#F2A65A",
   premarketOpacity: 0.16,
   upColor: "#33E42A",
@@ -481,6 +484,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   errorMessage,
   infoMessage,
   featureOptions,
+  fillHeight = false,
   indicatorOptions,
   initialFitMode = "default",
   labelOptions = [],
@@ -566,6 +570,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const [supervisionMenuOpen, setSupervisionMenuOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
+  const [chartSettingsAnchor, setChartSettingsAnchor] = useState<HTMLButtonElement | null>(null);
   const legendStorageKey = settingsStorageKey ? `${settingsStorageKey}.legend` : LEGEND_SETTINGS_STORAGE_KEY;
   const oscillatorThresholdStorageKey = settingsStorageKey ? `${settingsStorageKey}.oscillator-thresholds` : OSCILLATOR_THRESHOLD_STORAGE_KEY;
   const appearanceStorageKey = settingsStorageKey ? `${settingsStorageKey}.appearance` : CHART_APPEARANCE_STORAGE_KEY;
@@ -606,10 +611,10 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const nativeChartHeight: CSSProperties["height"] = fullscreen
     ? `calc(100vh - 322px + ${oscillatorPaneTotalHeight}px)`
     : baseHeight + oscillatorPaneTotalHeight;
-  // Reserve one stable price-scale gutter on both sides for every pane. Dynamic
-  // left-scale visibility changed the plot width whenever an oscillator was
-  // added and left each legend at a different horizontal origin.
-  const alignLeftPriceScale = true;
+  // The shared default reserves a stable price-scale gutter on both sides so
+  // adding an oscillator cannot change the plot width. Traders can explicitly
+  // reclaim the left gutter; the setting is persisted per chart instance.
+  const alignLeftPriceScale = chartSettings.legendGutterVisible;
   const priceLegendItems = [
     ...buildSeriesLegendItems(displayedOverlaySeries, "price", legendSettings, displayItemOptions, catalogColumns, chartSettings),
     ...buildPriceZoneLegendItems(displayedPriceZones, legendSettings, displayItemOptions, catalogColumns, chartSettings),
@@ -807,26 +812,6 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   useEffect(() => {
     setDraftTicker(normalizeTickerValue(ticker));
   }, [normalizeTicker, ticker]);
-
-  useEffect(() => {
-    if (!chartSettingsOpen) return;
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target?.closest(".chart-settings-slot") || target?.closest("[data-chart-settings-trigger='true']")) {
-        return;
-      }
-      setChartSettingsOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setChartSettingsOpen(false);
-    };
-    document.addEventListener("pointerdown", closeOnOutsidePointer);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOnOutsidePointer);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [chartSettingsOpen]);
 
   useEffect(() => {
     if (!columnMenuOpen && !supervisionMenuOpen && !periodMenuOpen) return;
@@ -1388,7 +1373,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
 
   return (
     <div
-      className={fullscreen ? "chart-shell fullscreen" : "chart-shell"}
+      className={`chart-shell${fullscreen ? " fullscreen" : ""}${fillHeight ? " fill-height" : ""}`}
       onPointerDownCapture={(event) => {
         if ((event.target as HTMLElement).closest(".chart-pane-canvas")) claimViewportForUser(event.target);
       }}
@@ -1498,10 +1483,11 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           data-chart-settings-trigger="true"
           type="button"
           title="Chart settings"
-          onClick={() => {
+          onClick={(event) => {
             setColumnMenuOpen(false);
             setSupervisionMenuOpen(false);
             setPeriodMenuOpen(false);
+            setChartSettingsAnchor(event.currentTarget);
             setChartSettingsOpen((value) => !value);
           }}
         >
@@ -1530,6 +1516,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       </div>
       {chartSettingsOpen ? (
         <ChartSettingsPopover
+          anchor={chartSettingsAnchor}
           onChange={updateChartSettings}
           onClose={() => setChartSettingsOpen(false)}
           onReset={resetChartSettings}
@@ -2730,18 +2717,65 @@ function uniqueStrings(values: string[]) {
 }
 
 function ChartSettingsPopover({
+  anchor,
   onChange,
   onClose,
   onReset,
   settings
 }: {
+  anchor: HTMLElement | null;
   onChange: <K extends keyof ChartAppearanceSettings>(key: K, value: ChartAppearanceSettings[K]) => void;
   onClose: () => void;
   onReset: () => void;
   settings: ChartAppearanceSettings;
 }) {
-  return (
-    <div className="chart-settings-slot">
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const [position, setPosition] = useState({ left: 8, maxHeight: 320, top: 8, visibility: "hidden" as "hidden" | "visible" });
+
+  useLayoutEffect(() => {
+    const placePanel = () => {
+      const panel = panelRef.current;
+      if (!anchor || !panel || !anchor.isConnected) return;
+      const anchorRect = anchor.getBoundingClientRect();
+      const margin = 8;
+      const availableBelow = window.innerHeight - anchorRect.bottom - margin - 6;
+      const availableAbove = anchorRect.top - margin - 6;
+      const useBelow = availableBelow >= Math.min(420, panel.scrollHeight) || availableBelow >= availableAbove;
+      const maxHeight = Math.max(220, useBelow ? availableBelow : availableAbove);
+      const measuredWidth = panel.getBoundingClientRect().width;
+      const left = Math.max(margin, Math.min(anchorRect.right - measuredWidth, window.innerWidth - measuredWidth - margin));
+      const top = useBelow ? anchorRect.bottom + 6 : Math.max(margin, anchorRect.top - Math.min(panel.scrollHeight, maxHeight) - 6);
+      setPosition({ left, maxHeight, top, visibility: "visible" });
+    };
+    placePanel();
+    window.addEventListener("resize", placePanel);
+    window.addEventListener("scroll", placePanel, true);
+    return () => {
+      window.removeEventListener("resize", placePanel);
+      window.removeEventListener("scroll", placePanel, true);
+    };
+  }, [anchor]);
+
+  useEffect(() => {
+    const closeOnPointer = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && (panelRef.current?.contains(target) || anchor?.contains(target))) return;
+      onClose();
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("pointerdown", closeOnPointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnPointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [anchor, onClose]);
+
+  if (!anchor) return null;
+  return createPortal(
+    <div className="chart-settings-slot" ref={panelRef} role="dialog" aria-label="Chart settings" style={position}>
       <div className="chart-settings-header">
         <div>
           <b>Chart Settings</b>
@@ -2865,10 +2899,21 @@ function ChartSettingsPopover({
         ) : null}
       </ChartSettingsSection>
 
+      <ChartSettingsSection title="Layout">
+        <p className="chart-settings-help">
+          The left gutter keeps price and oscillator legends aligned. Turn it off to reclaim the reserved axis space; legends remain inset slightly over the plot.
+        </p>
+        <label className="chart-setting-toggle">
+          <input checked={settings.legendGutterVisible} type="checkbox" onChange={(event) => onChange("legendGutterVisible", event.target.checked)} />
+          Reserve left legend gutter
+        </label>
+      </ChartSettingsSection>
+
       <div className="chart-setting-actions">
         <button className="text-button" onClick={onReset} type="button">Reset</button>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -3155,6 +3200,7 @@ function normalizeChartAppearanceSettings(settings: Partial<ChartAppearanceSetti
     daySeparatorsVisible:
       typeof settings.daySeparatorsVisible === "boolean" ? settings.daySeparatorsVisible : defaultChartAppearanceSettings.daySeparatorsVisible,
     downColor: validHexColor(settings.downColor, defaultChartAppearanceSettings.downColor),
+    legendGutterVisible: typeof settings.legendGutterVisible === "boolean" ? settings.legendGutterVisible : defaultChartAppearanceSettings.legendGutterVisible,
     premarketColor: premarketColor.toUpperCase() === "#FBBF24" ? defaultChartAppearanceSettings.premarketColor : premarketColor,
     premarketOpacity: settings.premarketOpacity === 0.22 ? defaultChartAppearanceSettings.premarketOpacity : clampNumber(settings.premarketOpacity, 0, 0.6, defaultChartAppearanceSettings.premarketOpacity),
     upColor: validHexColor(settings.upColor, defaultChartAppearanceSettings.upColor),
@@ -4165,8 +4211,8 @@ function drawSessionRegions(
   clearOverlayLayer(layer);
   const plotLayer = document.createElement("div");
   plotLayer.className = "session-plot-region";
-  plotLayer.style.left = `${chart.priceScale("left").width()}px`;
-  plotLayer.style.right = `${chart.priceScale("right").width()}px`;
+  plotLayer.style.left = `${priceScaleWidth(chart, "left")}px`;
+  plotLayer.style.right = `${priceScaleWidth(chart, "right")}px`;
   plotLayer.style.bottom = `${chart.timeScale().height()}px`;
   layer.appendChild(plotLayer);
   const barWidth = estimateBarWidth(chart, candles);
@@ -4185,6 +4231,17 @@ function drawSessionRegions(
   });
   if (drawSeparators) drawDaySeparators(chart, plotLayer, candles, settings, barWidth);
   return plotLayer;
+}
+
+function priceScaleWidth(chart: IChartApi, scaleId: "left" | "right") {
+  try {
+    const width = chart.priceScale(scaleId).width();
+    return Number.isFinite(width) ? width : 0;
+  } catch {
+    // Lightweight Charts has no price-axis widget while a scale is hidden or
+    // being recreated. An absent axis occupies no plot gutter.
+    return 0;
+  }
 }
 
 function clearOverlayLayer(layer: HTMLDivElement) {

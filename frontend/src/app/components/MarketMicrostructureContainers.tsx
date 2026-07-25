@@ -1,5 +1,5 @@
 import { Activity, BookOpen, ChevronRight, CircleHelp, Radio, ShieldAlert, WifiOff } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 
 import { api, query } from "../../api/client";
 import { CompactTapeQuoteCharts, QuoteChartGallery, TapeChartGallery } from "./MarketMicrostructureChartGallery";
@@ -7,6 +7,11 @@ import { Modal } from "./Modal";
 import { TickerIdentityWithChange, useTickerPresentations } from "./TickerIdentity";
 
 export type MarketEventSettings = { limit: number };
+export type ChartsQuotesLayoutSettings = {
+  lowerRowPercent: number;
+  monthColumnPercent: number;
+  tapeColumnPercent: number;
+};
 
 type CompactEvent = {
   arrival_sequence: number;
@@ -193,16 +198,20 @@ export function QuotesTapeContainer({ end, onSymbolChange, start, symbol }: Mark
 export function ChartsQuotesMarketLayout({
   dailyChart,
   end,
+  layout,
   mainChart,
   monthChart,
+  onLayoutChange,
   onSymbolChange,
   start,
   symbol,
 }: {
   dailyChart: ReactNode;
   end?: string;
+  layout: ChartsQuotesLayoutSettings;
   mainChart: ReactNode;
   monthChart: ReactNode;
+  onLayoutChange: (layout: ChartsQuotesLayoutSettings) => void;
   onSymbolChange?: (symbol: string) => void;
   start?: string;
   symbol: string;
@@ -222,6 +231,65 @@ export function ChartsQuotesMarketLayout({
   const imbalance = current && totalSize ? (current.bidSize - current.askSize) / totalSize : 0;
   const spread = current ? Math.max(0, current.ask - current.bid) : 0;
   const presentations = useTickerPresentations([symbol]);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const [workingLayout, setWorkingLayout] = useState(layout);
+
+  useEffect(() => {
+    setWorkingLayout(layout);
+  }, [layout.lowerRowPercent, layout.monthColumnPercent, layout.tapeColumnPercent]);
+
+  const leftWidth = 100 - workingLayout.tapeColumnPercent;
+  const monthWidth = leftWidth * workingLayout.monthColumnPercent / 100;
+  const dailyWidth = leftWidth - monthWidth;
+  const layoutStyle = {
+    "--charts-quotes-col-daily": `${dailyWidth}%`,
+    "--charts-quotes-col-month": `${monthWidth}%`,
+    "--charts-quotes-col-tape": `${workingLayout.tapeColumnPercent}%`,
+    "--charts-quotes-row-lower": `${workingLayout.lowerRowPercent}%`,
+    "--charts-quotes-row-upper": `${100 - workingLayout.lowerRowPercent}%`,
+  } as CSSProperties;
+
+  const resizeByKeyboard = (kind: ChartsQuotesResizeKind, event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    const direction = event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : 0;
+    if (!direction) return;
+    event.preventDefault();
+    const amount = (event.shiftKey ? 5 : 1) * direction;
+    const next = resizeChartsQuotesLayout(workingLayout, kind, amount);
+    setWorkingLayout(next);
+    onLayoutChange(next);
+  };
+
+  const startResize = (kind: ChartsQuotesResizeKind, event: ReactPointerEvent<HTMLButtonElement>) => {
+    const body = bodyRef.current;
+    if (!body) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = body.getBoundingClientRect();
+    let latest = workingLayout;
+    const move = (pointerEvent: PointerEvent) => {
+      if (kind === "rows") {
+        const lower = (bounds.bottom - pointerEvent.clientY) / Math.max(1, bounds.height) * 100;
+        latest = { ...latest, lowerRowPercent: clampLayoutRatio(lower, 22, 58) };
+      } else if (kind === "tape") {
+        const tape = (bounds.right - pointerEvent.clientX) / Math.max(1, bounds.width) * 100;
+        latest = { ...latest, tapeColumnPercent: clampLayoutRatio(tape, 14, 38) };
+      } else {
+        const leftAreaWidth = bounds.width * (100 - latest.tapeColumnPercent) / 100;
+        const month = (pointerEvent.clientX - bounds.left) / Math.max(1, leftAreaWidth) * 100;
+        latest = { ...latest, monthColumnPercent: clampLayoutRatio(month, 28, 72) };
+      }
+      setWorkingLayout(latest);
+    };
+    const finish = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      onLayoutChange(latest);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+  };
 
   return <section aria-label={`${symbol} charts and quotes`} className="charts-quotes-layout" data-market-state={connected}>
     <header className="charts-quotes-header">
@@ -236,18 +304,69 @@ export function ChartsQuotesMarketLayout({
       </div>
       <MicrostructureHeaderActions connected={connected} marketState={marketState} references={references} />
     </header>
-    <div className="charts-quotes-main-chart">{mainChart}</div>
-    <aside aria-label="Tape and liquidity" className="charts-quotes-tape">
-      <CompactTapeQuoteCharts quotes={quotes} trades={trades} />
-      <section className="charts-quotes-trades">
-        <header><span><strong>Trade prints</strong><small>Latest 1,024 executions</small></span><em>{formatCount(prints.length)}</em></header>
-        {error && !prints.length ? <MicrostructureEmpty message={error} /> : prints.length ? <TapePrintTable prints={prints} references={references} /> : <MicrostructureEmpty message="Waiting for trade prints." />}
-      </section>
-    </aside>
-    <div className="charts-quotes-month-chart">{monthChart}</div>
-    <div className="charts-quotes-daily-chart">{dailyChart}</div>
-    <aside aria-label="Reserved workspace" className="charts-quotes-reserved"><span>Reserved</span><small>Available for the next market context module.</small></aside>
+    <div className="charts-quotes-body" ref={bodyRef} style={layoutStyle}>
+      <div className="charts-quotes-main-chart">{mainChart}</div>
+      <aside aria-label="Tape and liquidity" className="charts-quotes-tape">
+        <CompactTapeQuoteCharts quotes={quotes} trades={trades} />
+        <section className="charts-quotes-trades">
+          <header><span><strong>Trade prints</strong><small>Latest 1,024 executions</small></span><em>{formatCount(prints.length)}</em></header>
+          {error && !prints.length ? <MicrostructureEmpty message={error} /> : prints.length ? <TapePrintTable prints={prints} references={references} /> : <MicrostructureEmpty message="Waiting for trade prints." />}
+        </section>
+      </aside>
+      <div className="charts-quotes-month-chart">{monthChart}</div>
+      <div className="charts-quotes-daily-chart">{dailyChart}</div>
+      <aside aria-label="Reserved workspace" className="charts-quotes-reserved"><span>Reserved</span><small>Available for the next market context module.</small></aside>
+      <ChartsQuotesResizeHandle ariaLabel="Resize upper and lower chart rows" className="charts-quotes-row-resizer" kind="rows" onDoubleClick={() => onLayoutChange({ ...workingLayout, lowerRowPercent: 33 })} onKeyDown={resizeByKeyboard} onPointerDown={startResize} value={workingLayout.lowerRowPercent} />
+      <ChartsQuotesResizeHandle ariaLabel="Resize chart and tape columns" className="charts-quotes-tape-resizer" kind="tape" onDoubleClick={() => onLayoutChange({ ...workingLayout, tapeColumnPercent: 20 })} onKeyDown={resizeByKeyboard} onPointerDown={startResize} value={workingLayout.tapeColumnPercent} />
+      <ChartsQuotesResizeHandle ariaLabel="Resize monthly and daily chart columns" className="charts-quotes-context-resizer" kind="context" onDoubleClick={() => onLayoutChange({ ...workingLayout, monthColumnPercent: 50 })} onKeyDown={resizeByKeyboard} onPointerDown={startResize} value={workingLayout.monthColumnPercent} />
+    </div>
   </section>;
+}
+
+type ChartsQuotesResizeKind = "context" | "rows" | "tape";
+
+function ChartsQuotesResizeHandle({
+  ariaLabel,
+  className,
+  kind,
+  onDoubleClick,
+  onKeyDown,
+  onPointerDown,
+  value,
+}: {
+  ariaLabel: string;
+  className: string;
+  kind: ChartsQuotesResizeKind;
+  onDoubleClick: () => void;
+  onKeyDown: (kind: ChartsQuotesResizeKind, event: ReactKeyboardEvent<HTMLButtonElement>) => void;
+  onPointerDown: (kind: ChartsQuotesResizeKind, event: ReactPointerEvent<HTMLButtonElement>) => void;
+  value: number;
+}) {
+  const horizontal = kind === "rows";
+  return <button
+    aria-label={ariaLabel}
+    aria-orientation={horizontal ? "horizontal" : "vertical"}
+    aria-valuemax={kind === "rows" ? 58 : kind === "tape" ? 38 : 72}
+    aria-valuemin={kind === "rows" ? 22 : kind === "tape" ? 14 : 28}
+    aria-valuenow={Math.round(value)}
+    className={`charts-quotes-resizer ${className}`}
+    onDoubleClick={onDoubleClick}
+    onKeyDown={(event) => onKeyDown(kind, event)}
+    onPointerDown={(event) => onPointerDown(kind, event)}
+    role="separator"
+    title={`${ariaLabel}. Drag or use arrow keys; double-click to reset.`}
+    type="button"
+  ><span /></button>;
+}
+
+function clampLayoutRatio(value: number, minimum: number, maximum: number) {
+  return Math.max(minimum, Math.min(maximum, Math.round(value * 10) / 10));
+}
+
+function resizeChartsQuotesLayout(layout: ChartsQuotesLayoutSettings, kind: ChartsQuotesResizeKind, amount: number): ChartsQuotesLayoutSettings {
+  if (kind === "rows") return { ...layout, lowerRowPercent: clampLayoutRatio(layout.lowerRowPercent + amount, 22, 58) };
+  if (kind === "tape") return { ...layout, tapeColumnPercent: clampLayoutRatio(layout.tapeColumnPercent + amount, 14, 38) };
+  return { ...layout, monthColumnPercent: clampLayoutRatio(layout.monthColumnPercent + amount, 28, 72) };
 }
 
 function HeaderMarketMetric({ label, tone, value }: { label: string; tone: Direction; value: string }) {

@@ -13012,13 +13012,10 @@ button {
 }
 
 .chart-settings-slot {
-  position: absolute;
-  top: 50px;
-  right: 10px;
-  z-index: 7;
+  position: fixed;
+  z-index: 10130;
   display: grid;
-  width: min(390px, calc(100% - 20px));
-  max-height: min(680px, calc(100vh - 140px));
+  width: min(390px, calc(var(--app-zoomed-viewport-width) - 16px));
   gap: 10px;
   overflow: auto;
   border: 1px solid color-mix(in oklab, var(--surface-border) 72%, transparent);
@@ -13026,6 +13023,7 @@ button {
   background: color-mix(in oklab, var(--surface) 97%, var(--surface-alt));
   box-shadow: 0 18px 46px rgba(16, 24, 40, 0.16);
   padding: 12px;
+  zoom: var(--app-zoom);
 }
 
 .chart-settings-header {
@@ -23230,14 +23228,8 @@ button {
 @container (max-width:460px) { .xbrl-analysis-header > span { display: none; }.xbrl-hero { grid-template-columns: 1fr; min-width: 0; }.xbrl-hero > div + div { border-left: 0; border-top: 1px solid var(--border); }.xbrl-facets { grid-template-columns: 1fr 1fr; min-width: 0; }.xbrl-facets > button:nth-child(n) { border-left: 0; }.xbrl-facets > button:nth-child(even) { border-left: 1px solid var(--border); }.xbrl-facets > button:nth-child(n+3) { border-top: 1px solid var(--border); }.xbrl-metrics > div { grid-template-columns: 1fr; min-width: 0; } }
 .charts-quotes-layout {
   --charts-quotes-rule: var(--border);
-  display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 2fr) minmax(0, 1fr);
-  grid-template-areas:
-    "header header header"
-    "main main tape"
-    "month daily reserved";
-  align-items: stretch;
+  display: flex;
+  flex-direction: column;
   background: var(--surface);
   height: 100%;
   min-height: 980px;
@@ -23246,13 +23238,35 @@ button {
 }
 
 .charts-quotes-header {
-  grid-area: header;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: stretch;
   min-width: 0;
   min-height: 66px;
   border-bottom: 1px solid var(--charts-quotes-rule);
+}
+
+.charts-quotes-body {
+  --charts-quotes-col-month: 40%;
+  --charts-quotes-col-daily: 40%;
+  --charts-quotes-col-tape: 20%;
+  --charts-quotes-row-upper: 67%;
+  --charts-quotes-row-lower: 33%;
+  display: grid;
+  flex: 1;
+  grid-template-areas:
+    "main main tape"
+    "month daily reserved";
+  grid-template-columns:
+    minmax(0, var(--charts-quotes-col-month))
+    minmax(0, var(--charts-quotes-col-daily))
+    minmax(0, var(--charts-quotes-col-tape));
+  grid-template-rows:
+    minmax(0, var(--charts-quotes-row-upper))
+    minmax(0, var(--charts-quotes-row-lower));
+  min-height: 0;
+  min-width: 0;
+  position: relative;
 }
 
 .charts-quotes-header > .ticker-identity-with-change {
@@ -23444,4 +23458,107 @@ button {
 .charts-quotes-layout .chart-shell {
   height: 100%;
   border: 0;
+}
+
+.charts-quotes-layout .chart-shell.fill-height .chart-canvas-stack,
+.charts-quotes-layout .chart-shell.fill-height .chart-native-surface {
+  min-height: 0;
+}
+
+.charts-quotes-layout .chart-shell.fill-height .chart-native-surface {
+  flex: 1;
+  height: auto !important;
+}
+
+.charts-quotes-resizer {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  display: flex;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  position: absolute;
+  touch-action: none;
+  z-index: 12;
+}
+
+.charts-quotes-resizer::before {
+  background: color-mix(in oklab, var(--primary) 42%, var(--border-strong));
+  content: "";
+  opacity: 0;
+  position: absolute;
+  transition: opacity 120ms ease;
+}
+
+.charts-quotes-resizer:hover::before,
+.charts-quotes-resizer:focus-visible::before {
+  opacity: 1;
+}
+
+.charts-quotes-resizer:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--primary) 55%, transparent);
+  outline-offset: -2px;
+}
+
+.charts-quotes-resizer span {
+  background: color-mix(in oklab, var(--text-secondary) 48%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--border-strong) 78%, transparent);
+  border-radius: 999px;
+  box-shadow: 0 1px 3px color-mix(in oklab, var(--foreground) 10%, transparent);
+  display: block;
+  position: relative;
+  z-index: 1;
+}
+
+.charts-quotes-row-resizer {
+  cursor: row-resize;
+  height: 11px;
+  left: 0;
+  right: 0;
+  top: var(--charts-quotes-row-upper);
+  transform: translateY(-50%);
+}
+
+.charts-quotes-row-resizer::before {
+  height: 2px;
+  left: 0;
+  right: 0;
+}
+
+.charts-quotes-row-resizer span {
+  height: 3px;
+  width: 38px;
+}
+
+.charts-quotes-tape-resizer,
+.charts-quotes-context-resizer {
+  cursor: col-resize;
+  transform: translateX(-50%);
+  width: 11px;
+}
+
+.charts-quotes-tape-resizer::before,
+.charts-quotes-context-resizer::before {
+  bottom: 0;
+  top: 0;
+  width: 2px;
+}
+
+.charts-quotes-tape-resizer span,
+.charts-quotes-context-resizer span {
+  height: 38px;
+  width: 3px;
+}
+
+.charts-quotes-tape-resizer {
+  bottom: 0;
+  left: calc(100% - var(--charts-quotes-col-tape));
+  top: 0;
+}
+
+.charts-quotes-context-resizer {
+  bottom: 0;
+  left: var(--charts-quotes-col-month);
+  top: var(--charts-quotes-row-upper);
 }

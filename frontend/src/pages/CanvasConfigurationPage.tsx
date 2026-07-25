@@ -35,7 +35,7 @@ import { AllNewsContainer, NewsDetailContainer, TickerNewsContainer } from "../a
 import { AllSecContainer, SecDetailContainer, TickerSecContainer } from "../app/components/SecContainers";
 import { MarketTime } from "../app/components/MarketTime";
 import { MarketStatusBadge, historicalMarketStatus } from "../app/components/MarketStatusBadge";
-import { ChartsQuotesMarketLayout, QuotesTapeContainer } from "../app/components/MarketMicrostructureContainers";
+import { ChartsQuotesMarketLayout, QuotesTapeContainer, type ChartsQuotesLayoutSettings } from "../app/components/MarketMicrostructureContainers";
 import { MarketScannerContainer, SCANNER_TIMEFRAMES, SignalStreamContainer, WatchlistContainer, type MarketScannerSettings, type ScannerCustomColumn, type ScannerSnapshotMeta, type ScannerTimeframe, type SignalStreamSettings, type WatchlistSettings } from "../app/components/MarketScreenerContainers";
 import { StockFactsContainer } from "../app/components/StockFactsContainer";
 import { XbrlAnalysisContainer, type XbrlAnalysisSettings } from "../app/components/XbrlAnalysisContainer";
@@ -300,10 +300,11 @@ type CanvasLiveChartState = {
 
 type CanvasChartSettings = { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
 type ContainerSettings = {
-  version: 18;
+  version: 19;
   chart: CanvasChartSettings;
   charts_quotes: {
     daily: CanvasChartSettings;
+    layout: ChartsQuotesLayoutSettings;
     main: CanvasChartSettings;
     month: CanvasChartSettings;
   };
@@ -334,12 +335,13 @@ type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; tit
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const MANAGER_DEFAULT_CONTAINER_IDS: WorkspaceContainerId[] = ["scanner", "chart", "portfolio", "positions", "orders"];
 const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 18,
+  version: 19,
   chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.qmd_decision", "indicator.qmd_decision_chart"] },
   charts_quotes: {
     main: { showVolume: true, symbol: "AAPL", timeframe: "10s", visibleIndicators: ["indicator.macd"] },
     month: { showVolume: true, symbol: "AAPL", timeframe: "1mo", visibleIndicators: [] },
     daily: { showVolume: true, symbol: "AAPL", timeframe: "1d", visibleIndicators: [] },
+    layout: { lowerRowPercent: 33, monthColumnPercent: 50, tapeColumnPercent: 20 },
   },
   microstructure: { limit: 1024 },
   fills: { limit: 5, showCommission: true },
@@ -1894,6 +1896,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
                   chart: { ...current.chart, symbol },
                   charts_quotes: {
                     daily: { ...current.charts_quotes.daily, symbol },
+                    layout: current.charts_quotes.layout,
                     main: { ...current.charts_quotes.main, symbol },
                     month: { ...current.charts_quotes.month, symbol },
                   },
@@ -2089,15 +2092,17 @@ function ChartsQuotesContainerPreview({ cutoffMs, instanceId, linkContext, onLin
   const presentations = useTickerPresentations([linkContext.symbol]);
   const logoUrl = presentations[linkContext.symbol]?.logo_url;
   const changeAsOf = new Date(cutoffMs).toISOString();
-  const updateSlot = (slot: keyof ContainerSettings["charts_quotes"], next: CanvasChartSettings) => {
+  const updateSlot = (slot: "daily" | "main" | "month", next: CanvasChartSettings) => {
     updateSettings((current) => ({ ...current, charts_quotes: { ...current.charts_quotes, [slot]: next } }));
   };
   const chartProps = { changeAsOf, linkContext, logoUrl, onLinkContextChange, symbolEditable: false, toolbarVariant: "compact" as const, trading };
   return <ChartsQuotesMarketLayout
-    dailyChart={<ChartPreview {...chartProps} baseHeight={255} chartSettings={settings.charts_quotes.daily} instanceId={`${instanceId}.daily`} liveChart={daily} onChartSettingsChange={(next) => updateSlot("daily", { ...next, timeframe: "1d" })} timeframes={["1d"]} />}
+    dailyChart={<ChartPreview {...chartProps} baseHeight={255} chartSettings={settings.charts_quotes.daily} fillHeight instanceId={`${instanceId}.daily`} liveChart={daily} onChartSettingsChange={(next) => updateSlot("daily", { ...next, timeframe: "1d" })} timeframes={["1d"]} />}
     end={changeAsOf}
-    mainChart={<ChartPreview {...chartProps} baseHeight={460} chartSettings={settings.charts_quotes.main} instanceId={`${instanceId}.main`} liveChart={main} onChartSettingsChange={(next) => updateSlot("main", next)} timeframes={HISTORICAL_TIMEFRAMES} />}
-    monthChart={<ChartPreview {...chartProps} baseHeight={255} chartSettings={settings.charts_quotes.month} instanceId={`${instanceId}.month`} liveChart={month} onChartSettingsChange={(next) => updateSlot("month", { ...next, timeframe: "1mo" })} timeframes={["1mo"]} />}
+    layout={settings.charts_quotes.layout}
+    mainChart={<ChartPreview {...chartProps} baseHeight={460} chartSettings={settings.charts_quotes.main} fillHeight instanceId={`${instanceId}.main`} liveChart={main} onChartSettingsChange={(next) => updateSlot("main", next)} timeframes={HISTORICAL_TIMEFRAMES} />}
+    monthChart={<ChartPreview {...chartProps} baseHeight={255} chartSettings={settings.charts_quotes.month} fillHeight instanceId={`${instanceId}.month`} liveChart={month} onChartSettingsChange={(next) => updateSlot("month", { ...next, timeframe: "1mo" })} timeframes={["1mo"]} />}
+    onLayoutChange={(layout) => updateSettings((current) => ({ ...current, charts_quotes: { ...current.charts_quotes, layout } }))}
     onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined}
     start={dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()}
     symbol={linkContext.symbol}
@@ -2143,6 +2148,7 @@ function ChartPreview({
   symbolEditable,
   timeframes = HISTORICAL_TIMEFRAMES,
   toolbarVariant = "full",
+  fillHeight = false,
   trading,
 }: {
   baseHeight?: number;
@@ -2157,6 +2163,7 @@ function ChartPreview({
   symbolEditable: boolean;
   timeframes?: CanvasChartTimeframe[];
   toolbarVariant?: "full" | "compact";
+  fillHeight?: boolean;
   trading?: CanonicalTradingPreview;
 }) {
   const indicators = liveChart.indicators;
@@ -2210,7 +2217,7 @@ function ChartPreview({
     quantity,
   } satisfies LiveEntryLine : null;
   const emptyMessage = `No closed ${linkContext.symbol} ${timeframe} bars are available from QMD History at this Canvas clock.`;
-  return <ChartPanel baseHeight={baseHeight} canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={liveChart.indicatorsAvailable ? CHART_INDICATORS : []} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} indicatorOptions={[]} initialFitMode="recent" infoMessage={liveChart.historyNotice} liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => onChartSettingsChange({ ...chartSettings, visibleIndicators: nextVisibleIndicators })} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={timeframes} toolbarVariant={toolbarVariant} visibleColumns={visibleIndicators} />;
+  return <ChartPanel baseHeight={baseHeight} canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={liveChart.indicatorsAvailable ? CHART_INDICATORS : []} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} fillHeight={fillHeight} indicatorOptions={[]} initialFitMode="recent" infoMessage={liveChart.historyNotice} liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => onChartSettingsChange({ ...chartSettings, visibleIndicators: nextVisibleIndicators })} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={timeframes} toolbarVariant={toolbarVariant} visibleColumns={visibleIndicators} />;
 }
 
 function historicalMarketLevelZones(
@@ -3475,7 +3482,7 @@ function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, 
   if (id === "chart") return <><TextField label="Symbol" onChange={(value) => { patch({ symbol: value.toUpperCase() }); onLinkContextChange({ symbol: value.toUpperCase() }); }} value={linkContext.symbol} /><SelectField label="Bar interval" onChange={(value) => patch({ timeframe: value as CanvasChartTimeframe })} optionLabel={formatChartTimeframe} options={HISTORICAL_TIMEFRAMES} value={settings.chart.timeframe} /><CheckField checked={Boolean(current.showVolume)} label="Show volume" onChange={(value) => patch({ showVolume: value })} /></>;
   if (id === "portfolio") return <><CheckField checked={Boolean(current.showExposure)} label="Show exposure" onChange={(value) => patch({ showExposure: value })} /><CheckField checked={Boolean(current.showPnl)} label="Show P&L" onChange={(value) => patch({ showPnl: value })} /></>;
   if (id === "strategy") return <CheckField checked={Boolean(current.showSignals)} label="Show recent signals" onChange={(value) => patch({ showSignals: value })} />;
-  if (id === "charts_quotes") return <div className="canvas-settings-note">The main chart starts at 10 seconds with MACD. Its timeframe, indicators, pane layout, and appearance persist from controls inside the chart. The lower charts remain fixed to monthly and daily horizons.</div>;
+  if (id === "charts_quotes") return <div className="canvas-settings-note">The main chart starts at 10 seconds with MACD. Its timeframe, indicators, pane layout, and appearance persist from controls inside the chart. The lower charts remain fixed to monthly and daily horizons. Drag the dividers between rows and columns to persist the workspace proportions.</div>;
   if (id === "scanner") return <><NumberField label="Maximum rows" max={5000} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><div className="canvas-settings-note">Columns, sorting, and filters are managed inside Scanner and persist with this container instance.</div></>;
   if (id === "signal_stream") return <><NumberField label="Maximum events" max={5000} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><div className="canvas-settings-note">Market rules are reconstructed from canonical data. Strategy events remain durable records owned by the strategy runtime.</div></>;
   if (id === "watchlist") return <><TextField label="List name" onChange={(value) => patch({ ownerName: value })} value={String(current.ownerName)} /><SelectField label="Owner" onChange={(value) => patch({ ownerKind: value })} options={["user", "strategy"]} value={String(current.ownerKind)} /><NumberField label="Maximum rows" max={500} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><div className="canvas-settings-note">Membership follows its named owner. Market values remain a projection at the shared clock, not copied watchlist state.</div></>;
@@ -3537,6 +3544,7 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
       main: normalizeChartSlot(stored.charts_quotes?.main, DEFAULT_SETTINGS.charts_quotes.main),
       month: { ...normalizeChartSlot(stored.charts_quotes?.month, DEFAULT_SETTINGS.charts_quotes.month), timeframe: "1mo" },
       daily: { ...normalizeChartSlot(stored.charts_quotes?.daily, DEFAULT_SETTINGS.charts_quotes.daily), timeframe: "1d" },
+      layout: normalizeChartsQuotesLayout(stored.charts_quotes?.layout),
     },
     microstructure: { limit: 1024 },
     fills: { ...DEFAULT_SETTINGS.fills, ...(stored.fills ?? {}) },
@@ -3577,6 +3585,19 @@ function normalizeChartSlot(stored: Partial<CanvasChartSettings> | undefined, de
   const timeframe = HISTORICAL_TIMEFRAMES.includes(stored?.timeframe as CanvasChartTimeframe) ? stored!.timeframe! : defaults.timeframe;
   const visibleIndicators = Array.isArray(stored?.visibleIndicators) ? stored.visibleIndicators.filter((value): value is string => typeof value === "string") : defaults.visibleIndicators;
   return { ...defaults, ...(stored ?? {}), timeframe, visibleIndicators: [...visibleIndicators] };
+}
+
+function normalizeChartsQuotesLayout(stored: Partial<ChartsQuotesLayoutSettings> | undefined): ChartsQuotesLayoutSettings {
+  return {
+    lowerRowPercent: normalizeLayoutValue(stored?.lowerRowPercent, 22, 58, DEFAULT_SETTINGS.charts_quotes.layout.lowerRowPercent),
+    monthColumnPercent: normalizeLayoutValue(stored?.monthColumnPercent, 28, 72, DEFAULT_SETTINGS.charts_quotes.layout.monthColumnPercent),
+    tapeColumnPercent: normalizeLayoutValue(stored?.tapeColumnPercent, 14, 38, DEFAULT_SETTINGS.charts_quotes.layout.tapeColumnPercent),
+  };
+}
+
+function normalizeLayoutValue(value: unknown, minimum: number, maximum: number, fallback: number) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.max(minimum, Math.min(maximum, numeric)) : fallback;
 }
 
 function normalizeTechnicalListSettings<T extends MarketScannerSettings | SignalStreamSettings>(
