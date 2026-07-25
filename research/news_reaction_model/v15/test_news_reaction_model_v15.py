@@ -17,6 +17,8 @@ from research.news_reaction_model.v15.config import (
     ExperimentConfig,
     LoaderConfig,
     ModelConfig,
+    TrainConfig,
+    to_dict,
 )
 from research.news_reaction_model.v15.context import (
     CONTEXT_FEATURE_DIM,
@@ -33,7 +35,7 @@ from research.news_reaction_model.v15.data import (
     make_dummy_batch,
     rows_to_batch,
 )
-from research.news_reaction_model.v15.evaluate import midpoint_proxy_pnl
+from research.news_reaction_model.v15.evaluate import anchor_price_sql, midpoint_proxy_pnl
 from research.news_reaction_model.v15.inference import LiveFeatureEncoder
 from research.news_reaction_model.v15.losses import compute_loss
 from research.news_reaction_model.v15.model import NewsReactionModelV15
@@ -74,6 +76,32 @@ def tiny_configs(root: Path | None = None) -> tuple[LoaderConfig, ModelConfig]:
 
 
 class NewsReactionModelV15Tests(unittest.TestCase):
+    def test_json_checkpoint_config_restores_runtime_types(self) -> None:
+        config = ExperimentConfig(
+            loader=LoaderConfig(
+                representation_artifact_root=Path("representation"),
+                prepared_dataset_root=Path("prepared"),
+            ),
+            model=ModelConfig(),
+            train=TrainConfig(output_root=Path("output")),
+        )
+        serialized = json.loads(json.dumps(to_dict(config), default=str))
+        loader = LoaderConfig(**serialized["loader"])
+        model = ModelConfig(**serialized["model"])
+        train = TrainConfig(**serialized["train"])
+
+        self.assertIsInstance(loader.representation_artifact_root, Path)
+        self.assertIsInstance(loader.prepared_dataset_root, Path)
+        self.assertEqual(loader.prepared_dataset_root / "manifest.json", Path("prepared/manifest.json"))
+        self.assertIsInstance(loader.horizons, tuple)
+        self.assertIsInstance(model.horizons, tuple)
+        self.assertIsInstance(train.output_root, Path)
+
+    def test_anchor_query_does_not_shadow_datetime_with_string_alias(self) -> None:
+        sql = anchor_price_sql(LoaderConfig(), "2026-01-01", "2027-01-01")
+        self.assertIn("toString(published_at_utc) AS published_at_utc_text", sql)
+        self.assertNotIn("toString(published_at_utc) AS published_at_utc,", sql)
+
     def test_version_preserves_v12_task_and_adds_fixed_context_contract(self) -> None:
         loader = LoaderConfig()
         self.assertEqual(v15.MODEL_VERSION, "v15")

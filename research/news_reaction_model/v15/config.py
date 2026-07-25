@@ -78,6 +78,14 @@ class LoaderConfig:
     context_feature_dim: int = CONTEXT_FEATURE_DIM
     horizons: tuple[str, ...] = HORIZONS
 
+    def __post_init__(self) -> None:
+        # Checkpoints store a JSON-safe config, so Path and tuple fields cross
+        # the serialization boundary as strings and lists. Restore the declared
+        # runtime types here so every checkpoint consumer gets one contract.
+        self.representation_artifact_root = Path(self.representation_artifact_root)
+        self.prepared_dataset_root = Path(self.prepared_dataset_root)
+        self.horizons = tuple(self.horizons)
+
 
 @dataclass(slots=True)
 class ModelConfig:
@@ -93,6 +101,9 @@ class ModelConfig:
     dropout: float = 0.10
     horizon_dim: int = 32
     horizons: tuple[str, ...] = HORIZONS
+
+    def __post_init__(self) -> None:
+        self.horizons = tuple(self.horizons)
 
 
 @dataclass(slots=True)
@@ -123,6 +134,9 @@ class TrainConfig:
     wandb_mode: str = "auto"
     wandb_init_timeout: int = 120
     seed: int = 17
+
+    def __post_init__(self) -> None:
+        self.output_root = Path(self.output_root)
 
 
 @dataclass(slots=True)

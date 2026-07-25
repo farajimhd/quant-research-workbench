@@ -172,7 +172,7 @@ def anchor_price_sql(config: LoaderConfig, start: str, end_exclusive: str) -> st
 SELECT
  canonical_news_id,
  ticker,
- toString(published_at_utc) AS published_at_utc,
+ toString(published_at_utc) AS published_at_utc_text,
  horizon_code,
  anchor_price
 FROM {reactions} FINAL
@@ -218,7 +218,7 @@ def load_anchor_prices(
         key = _identity_key(
             str(row["canonical_news_id"]),
             str(row["ticker"]),
-            row["published_at_utc"],
+            row["published_at_utc_text"],
         )
         values = anchors.setdefault(
             key,
@@ -275,6 +275,11 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--output-dir", default="")
+    parser.add_argument(
+        "--prepared-root",
+        default="",
+        help="Optional prepared-dataset relocation for evaluating a checkpoint on another host.",
+    )
     parser.add_argument("--start", default="2026-01-01")
     parser.add_argument("--end-exclusive", default="2027-01-01")
     parser.add_argument("--export-predictions", action=argparse.BooleanOptionalAction, default=True)
@@ -290,11 +295,14 @@ def evaluate_checkpoint(
     end_exclusive: str = "2027-01-01",
     export_predictions: bool = True,
     amp: bool = True,
+    prepared_root: Path | None = None,
 ) -> dict[str, Any]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     with torch.serialization.safe_globals([type(Path())]):
         state = torch.load(checkpoint, map_location=device, weights_only=True)
     loader_config = LoaderConfig(**state["config"]["loader"])
+    if prepared_root is not None:
+        loader_config.prepared_dataset_root = Path(prepared_root)
     model = NewsReactionModelV15(ModelConfig(**state["config"]["model"])).to(device)
     model.load_state_dict(state["model"])
     model.eval()
@@ -486,6 +494,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         end_exclusive=args.end_exclusive,
         export_predictions=args.export_predictions,
         amp=args.amp,
+        prepared_root=Path(args.prepared_root) if args.prepared_root else None,
     )
     return 0
 
