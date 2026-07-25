@@ -307,33 +307,21 @@ export function ChartsQuotesMarketLayout({
     <header className="charts-quotes-header">
       <div className="charts-quotes-identity">
         <TickerIdentityWithChange asOf={end || new Date().toISOString()} inputAriaLabel="Charts and quotes ticker" logoUrl={presentations[symbol]?.logo_url} onTickerChange={onSymbolChange} ticker={symbol} />
-        <MicrostructureHeaderActions connected={connected} marketState={marketState} references={references} />
       </div>
-      <section aria-label="Current consolidated quote" className="charts-quotes-nbbo">
-        <ChartsQuotesHeaderHeading count={quotes.length} label="NBBO" unit="updates" />
-        <div className="charts-quotes-nbbo-primary">
-          <HeaderMarketMetric detail={current ? `${formatSize(current.bidSize)} shares · ${bidVenue.code}` : "No quote"} help={`Current consolidated national best bid; ${bidVenue.name} is posting it.`} label="Bid" primary tone="buy" value={current ? formatPrice(current.bid) : "—"} />
-          <HeaderMarketMetric detail={current ? `${spreadState} · mid ${formatPrice(midpoint)}` : "No quote"} help="Current best ask minus current best bid. Tighter spreads generally reduce execution cost." label="Spread" primary tone={spreadState === "Tighter" ? "buy" : spreadState === "Wider" ? "sell" : "mid"} value={current ? formatPrice(spread) : "—"} />
-          <HeaderMarketMetric detail={current ? `${formatSize(current.askSize)} shares · ${askVenue.code}` : "No quote"} help={`Current consolidated national best ask; ${askVenue.name} is posting it.`} label="Ask" primary tone="sell" value={current ? formatPrice(current.ask) : "—"} />
-        </div>
-        <div className="charts-quotes-supporting-metrics">
-          <HeaderMarketMetric help="Size-weighted NBBO price. It leans toward the side with less displayed liquidity." label="Microprice" tone={microprice >= midpoint ? "buy" : "sell"} value={current ? formatPrice(microprice) : "—"} />
-          <HeaderMarketMetric help="(Bid size − ask size) ÷ total displayed NBBO size. Positive values are bid-heavy." label="Size imbalance" tone={imbalance >= 0 ? "buy" : "sell"} value={signedPercent(imbalance)} />
-          <HeaderMarketMetric help="Average NBBO updates per second across the visible quote window." label="Quote rate" tone="mid" value={`${quoteRate.toFixed(1)}/s`} />
-        </div>
+      <section aria-label="Current quote and tape decision metrics" className="charts-quotes-market-strip">
+        <HeaderMarketMetric detail={current ? `${formatSize(current.bidSize)} sh · ${bidVenue.code}` : "No quote"} help={`Current consolidated national best bid; ${bidVenue.name} is posting it.`} label="Bid" primary tone="buy" value={current ? formatPrice(current.bid) : "—"} />
+        <HeaderMarketMetric detail={current ? `${spreadState} · mid ${formatPrice(midpoint)}` : "No quote"} help="Current best ask minus current best bid. Tighter spreads generally reduce execution cost." label="Spread" primary tone={spreadState === "Tighter" ? "buy" : spreadState === "Wider" ? "sell" : "mid"} value={current ? formatPrice(spread) : "—"} />
+        <HeaderMarketMetric detail={current ? `${formatSize(current.askSize)} sh · ${askVenue.code}` : "No quote"} help={`Current consolidated national best ask; ${askVenue.name} is posting it.`} label="Ask" primary tone="sell" value={current ? formatPrice(current.ask) : "—"} />
+        <HeaderMarketMetric detail={last ? `${directionLabel(last.direction)} · ${formatTradeSize(last.size)} sh` : "Waiting"} help="Most recent eligible trade at or before the displayed time." label="Last" primary tone={last?.direction ?? "mid"} value={last ? formatPrice(last.price) : "—"} />
+        <HeaderMarketMetric help="Size-weighted NBBO price. It leans toward the side with less displayed liquidity." label="Microprice" tone={microprice >= midpoint ? "buy" : "sell"} value={current ? formatPrice(microprice) : "—"} />
+        <HeaderMarketMetric help="(Bid size − ask size) ÷ total displayed NBBO size. Positive values are bid-heavy." label="Imbalance" tone={imbalance >= 0 ? "buy" : "sell"} value={signedPercent(imbalance)} />
+        <HeaderMarketMetric help="Average NBBO updates per second across the visible quote window." label="Quote rate" tone="mid" value={`${quoteRate.toFixed(1)}/s`} />
+        <HeaderMarketMetric help="At-ask volume divided by all directionally classified volume in the visible tape window." label="Buy share" tone={buyShare >= 0.5 ? "buy" : "sell"} value={`${Math.round(buyShare * 100)}%`} />
+        <HeaderMarketMetric help="At-ask share volume minus at-bid share volume in the visible tape window." label="Net flow" tone={netFlow >= 0 ? "buy" : "sell"} value={signedCompact(netFlow)} />
+        <HeaderMarketMetric help="Average prints per second across the visible tape window." label="Pace" tone="mid" value={`${pace.toFixed(pace >= 10 ? 0 : 1)}/s`} />
+        <HeaderMarketMetric help="One-sided aggressive flow with little price response can indicate passive liquidity absorbing it." label="Absorption" tone={absorption ? (buyShare >= 0.5 ? "sell" : "buy") : "mid"} value={absorption ? "Possible" : "None"} />
       </section>
-      <section aria-label="Current tape flow" className="charts-quotes-flow">
-        <ChartsQuotesHeaderHeading count={trades.length} label="Tape" unit="prints" />
-        <div className="charts-quotes-tape-primary">
-          <HeaderMarketMetric detail={last ? `${directionLabel(last.direction)} · ${formatTradeSize(last.size)} shares` : "Waiting for a trade"} help="Most recent eligible trade at or before the displayed time." label="Last print" primary tone={last?.direction ?? "mid"} value={last ? formatPrice(last.price) : "—"} />
-        </div>
-        <div className="charts-quotes-flow-grid">
-          <HeaderMarketMetric help="At-ask volume divided by all directionally classified volume in the visible tape window." label="Buy share" tone={buyShare >= 0.5 ? "buy" : "sell"} value={`${Math.round(buyShare * 100)}%`} />
-          <HeaderMarketMetric help="At-ask share volume minus at-bid share volume in the visible tape window." label="Net flow" tone={netFlow >= 0 ? "buy" : "sell"} value={signedCompact(netFlow)} />
-          <HeaderMarketMetric help="Average prints per second across the visible tape window." label="Pace" tone="mid" value={`${pace.toFixed(pace >= 10 ? 0 : 1)}/s`} />
-          <HeaderMarketMetric help="One-sided aggressive flow with little price response can indicate passive liquidity absorbing it." label="Absorption" tone={absorption ? (buyShare >= 0.5 ? "sell" : "buy") : "mid"} value={absorption ? "Possible" : "None"} />
-        </div>
-      </section>
+      <MicrostructureHeaderActions connected={connected} marketState={marketState} references={references} />
     </header>
     <div className="charts-quotes-body" ref={bodyRef} style={layoutStyle}>
       <div className="charts-quotes-main-chart">{mainChart}</div>
@@ -398,10 +386,6 @@ function resizeChartsQuotesLayout(layout: ChartsQuotesLayoutSettings, kind: Char
   if (kind === "rows") return { ...layout, lowerRowPercent: clampLayoutRatio(layout.lowerRowPercent + amount, 22, 58) };
   if (kind === "tape") return { ...layout, tapeColumnPercent: clampLayoutRatio(layout.tapeColumnPercent + amount, 14, 38) };
   return { ...layout, monthColumnPercent: clampLayoutRatio(layout.monthColumnPercent + amount, 28, 72) };
-}
-
-function ChartsQuotesHeaderHeading({ count, label, unit }: { count: number; label: string; unit: string }) {
-  return <div className="charts-quotes-header-heading"><strong>{label}</strong><span>{formatCount(count)} {unit}</span></div>;
 }
 
 function HeaderMarketMetric({
