@@ -12661,7 +12661,13 @@ button {
 .chart-legend {
   position: absolute;
   top: 8px;
-  left: calc(var(--chart-price-scale-min-width, 56px) + 10px);
+  /*
+   * Every native pane reserves the same left price-scale gutter so adding an
+   * oscillator cannot change the plot width.  Legends belong in that stable
+   * gutter, rather than after it: this keeps the price and pane legends on one
+   * vertical guide and uses the otherwise-empty space without moving candles.
+   */
+  left: var(--chart-legend-inline-padding, 10px);
   z-index: 6;
   width: min(260px, calc(100% - 20px));
   overflow: hidden;
@@ -12676,8 +12682,8 @@ button {
 
 .chart-context-modal-panel .chart-legend {
   top: 12px;
-  left: calc(var(--chart-price-scale-min-width, 56px) + 14px);
-  width: min(260px, calc(100% - var(--chart-price-scale-min-width, 56px) - 28px));
+  left: var(--chart-legend-inline-padding, 14px);
+  width: min(260px, calc(100% - 28px));
 }
 
 .chart-legend.collapsed {
