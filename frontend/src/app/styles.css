@@ -23317,10 +23317,11 @@ button {
 }
 
 .charts-quotes-header-metric {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
+  align-content: center;
+  align-items: start;
+  display: grid;
   gap: 1px;
+  grid-template-rows: 11px 23px 10px;
   min-width: 0;
   padding: 4px 7px;
   font-variant-numeric: tabular-nums;
@@ -23360,6 +23361,7 @@ button {
 }
 
 .charts-quotes-header-metric strong {
+  align-self: center;
   color: var(--text-primary);
   font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 15px;
