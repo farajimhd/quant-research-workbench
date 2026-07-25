@@ -458,7 +458,7 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     shortDescription: "Exact eligible-trade price levels plus a separate causal local swing and break hierarchy for every supported timeframe.",
     detailedDescription: "QMD has two related authorities. The immediate level book updates from every ordered eligible trade and retains price/volume evidence without waiting for a candle. Separately, each timeframe groups those same trades into fixed event-time buckets using the exact highest and lowest executed prices. A completed three-bucket neighborhood confirms the middle bucket only when it is a local high or low. Quotes may add liquidity context, but an unexecuted quote cannot create a swing, BoS, or CHoCH.",
     calculation: "For a selected timeframe, the middle completed trade bucket is a swing high when its exact high is at least the prior bucket high and strictly above the following bucket high; swing lows use the inverse rule. The last bucket in a same-price plateau owns the pivot, preventing duplicates. Confirmation occurs only after the following bucket is complete, so history never repaints. Only the latest confirmed local high and low can generate that timeframe's break. The first eligible trade through it emits Crossing; a second confirming trade or 100 ms of persistence emits the accepted Break, BoS, or CHoCH.",
-    readingGuide: "The chart enables the swing and break layers matching its current timeframe by default. Other timeframe layers start hidden to keep the chart readable, but their eye controls remain available so you can overlay and compare them; each manual visibility choice is persisted independently. SH and SL lines are bounded: they start at the exact pivot trade and end when crossed or when a newer same-side local swing supersedes them. BoS continues the last accepted break direction; CHoCH is the first accepted break in the opposite direction. The pivot time shows where the extreme occurred, while the tooltip's later confirmation time is the earliest moment a strategy could have known it. Current support/resistance and its volume footprint remain a separate immediate level-book view.",
+    readingGuide: "The chart enables the swing and break layers matching its current timeframe by default. Other timeframe layers start hidden to keep the chart readable, but their eye controls remain available so you can overlay and compare them; each manual visibility choice is persisted independently. History is counted in the enabled layer's own bars, so 20 bars of 5-minute structure means 100 minutes even on a 1-second chart. The latest still-active high and low for each timeframe are carried into a shorter visible chart page. SH and SL lines are bounded: they start at the exact pivot trade and end when crossed or when a newer same-side local swing supersedes them. BoS continues the last accepted break direction; CHoCH is the first accepted break in the opposite direction. The pivot time shows where the extreme occurred, while the tooltip's later confirmation time is the earliest moment a strategy could have known it. Current support/resistance and its volume footprint remain a separate immediate level-book view.",
     bullishEvidence: "Bullish evidence increases when resistance is crossed and accepted, an upward BoS or CHoCH is confirmed for the selected timeframe, support survives retests, and buyer-initiated footprint volume concentrates at or above the level.",
     bearishEvidence: "Bearish evidence increases when support is crossed and accepted, a downward BoS or CHoCH is confirmed for the selected timeframe, resistance survives retests, and seller-initiated footprint volume concentrates at or below the level.",
     timeframeBehavior: "All intervals consume the same ordered eligible trades, but each interval owns its local extrema and break state. The timeframe controls the event-time neighborhood used to confirm a swing; it does not resample chart candle closes or inherit another timeframe's breaks. A 1-second BoS therefore breaks the latest confirmed 1-second swing, while 5-second and 1-minute structure remain independent.",
@@ -710,11 +710,19 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
 function mergeStructureEvents(current: QmdStructureEvent[], incoming: QmdStructureEvent[] | undefined) {
   const byId = new Map<number, QmdStructureEvent>();
   [...current, ...(incoming ?? [])].forEach((event) => {
-    if (Number.isFinite(event.event_id) && event.event_id > 0) byId.set(event.event_id, event);
+    if (
+      Number.isFinite(event.event_id)
+      && event.event_id > 0
+      && ["level_promoted", "structure_crossed", "structure_break", "bos", "choch"].includes(event.event_kind)
+    ) {
+      byId.set(event.event_id, event);
+    }
   });
-  return [...byId.values()]
-    .sort((left, right) => Date.parse(left.confirmed_at) - Date.parse(right.confirmed_at) || left.event_id - right.event_id)
-    .slice(-25_000);
+  return retainStructureEventsPerTimeframe(
+    [...byId.values()].sort((left, right) =>
+      Date.parse(left.confirmed_at) - Date.parse(right.confirmed_at) || left.event_id - right.event_id),
+    () => true,
+  );
 }
 
 function mergeStructureLevelHistory(
@@ -2445,6 +2453,7 @@ function pushStructureZoneSegment(
 }
 
 const QMD_STRUCTURE_TIMEFRAMES = ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"] as const;
+const QMD_STRUCTURE_HISTORY_LIMIT = 1_000;
 
 function qmdStructureSwingLayerId(timeframe: string) {
   return `indicator.qmd_generic_structure.v9.${timeframe}.swings`;
@@ -2452,6 +2461,35 @@ function qmdStructureSwingLayerId(timeframe: string) {
 
 function qmdStructureBreakLayerId(timeframe: string) {
   return `indicator.qmd_generic_structure.v9.${timeframe}.breaks`;
+}
+
+function qmdStructureTimeframeSeconds(timeframe: string) {
+  const values: Record<string, number> = {
+    "100ms": 0.1,
+    "1s": 1,
+    "5s": 5,
+    "10s": 10,
+    "30s": 30,
+    "1m": 60,
+    "5m": 300,
+    "1h": 3_600,
+  };
+  return values[timeframe] ?? 0;
+}
+
+function retainStructureEventsPerTimeframe(
+  events: QmdStructureEvent[],
+  predicate: (event: QmdStructureEvent) => boolean,
+) {
+  const retainedIds = new Set(
+    QMD_STRUCTURE_TIMEFRAMES.flatMap((timeframe) =>
+      events
+        .filter((event) => event.timeframe === timeframe && predicate(event))
+        .slice(-QMD_STRUCTURE_HISTORY_LIMIT)
+        .map((event) => event.event_id),
+    ),
+  );
+  return events.filter((event) => retainedIds.has(event.event_id));
 }
 
 function pushEventStructureSwingLevels(
@@ -2470,9 +2508,10 @@ function pushEventStructureSwingLevels(
     levelEvents.push(event);
     lifecycleByLevel.set(levelId, levelEvents);
   });
-  const promoted = ordered
-    .filter((event) => event.event_kind === "level_promoted" && QMD_STRUCTURE_TIMEFRAMES.includes(event.timeframe as typeof QMD_STRUCTURE_TIMEFRAMES[number]))
-    .slice(-1_600);
+  const promoted = retainStructureEventsPerTimeframe(
+    ordered,
+    (event) => event.event_kind === "level_promoted",
+  );
   promoted.forEach((event, eventIndex) => {
       const timeframe = event.timeframe as CanvasChartTimeframe;
       const start = Date.parse(event.pivot_at) / 1000;
@@ -2496,9 +2535,9 @@ function pushEventStructureSwingLevels(
         annotationKind: swingHigh ? "swing-high" : "swing-low",
         axisLabelDefault: false,
         borderColor: color,
-        borderOpacity: 0.72,
-        borderStyle: "dashed",
-        borderWidth: 1,
+        borderOpacity: 0.5,
+        borderStyle: "solid",
+        borderWidth: 4,
         color,
         compactLabel: swingHigh ? "SH" : "SL",
         confidence: Number(event.confidence || 0),
@@ -2507,11 +2546,13 @@ function pushEventStructureSwingLevels(
         end,
         fillOpacity: 0,
         historicalLabelsDefault: timeframe === selectedTimeframe,
+        historyTimeframeSeconds: qmdStructureTimeframeSeconds(timeframe),
         label: `${timeframe} local swing ${swingHigh ? "high" : "low"} · ${formatLevelPrice(price)} · causal confirmation ${event.confirmed_at} · ${percentLabel(Number(event.confidence || 0))} confidence`,
         latest: !terminal,
         legendLabel: `${timeframe} · Swing levels`,
         lower: price,
         minPixelHeight: 1,
+        opacityDefault: 0.5,
         renderMode: "line",
         settingsId: qmdStructureSwingLayerId(timeframe),
         start,
@@ -2566,9 +2607,10 @@ function pushStructureEvents(
   chartEnd: number,
   selectedTimeframe: CanvasChartTimeframe,
 ) {
-  events
-    .filter((event) => ["bos", "choch", "structure_break"].includes(String(event.event_kind || "").toLowerCase()))
-    .slice(-1_600)
+  retainStructureEventsPerTimeframe(
+    events,
+    (event) => ["bos", "choch", "structure_break"].includes(String(event.event_kind || "").toLowerCase()),
+  )
     .forEach((event) => {
     const confirmedAt = Date.parse(event.confirmed_at) / 1000;
     const direction = Number(event.direction || 0);
@@ -2594,6 +2636,7 @@ function pushStructureEvents(
       eventTime: confirmedAt,
       fillOpacity: 0,
       historicalLabelsDefault: scale === selectedTimeframe,
+      historyTimeframeSeconds: qmdStructureTimeframeSeconds(scale),
       label: `${bullish ? "Bullish" : "Bearish"} ${label} · ${scale || "structure"} · ${formatLevelPrice(price)}`,
       latest: false,
       defaultVisible: scale === selectedTimeframe,

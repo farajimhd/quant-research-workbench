@@ -132,12 +132,14 @@ type PriceZone = {
   fillColor?: string;
   fillOpacity?: number;
   historicalLabelsDefault?: boolean;
+  historyTimeframeSeconds?: number;
   label: string;
   latest?: boolean;
   legendLabel?: string;
   lower: number;
   maxPixelHeight?: number;
   minPixelHeight?: number;
+  opacityDefault?: number;
   preset?: ChartPreset;
   presetDefault?: ChartPreset;
   renderMode?: "line" | "zone";
@@ -3465,7 +3467,7 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     labelFontSize: Math.max(9, Math.min(18, Math.round(stored.labelFontSize ?? 11))),
     lineStyle: stored.lineStyle ?? zoneBorderStyle(zone?.borderStyle),
     lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? zone?.borderWidth ?? 1))),
-    opacity: clampNumber(stored.opacity ?? 1, 0, 1, 1),
+    opacity: clampNumber(stored.opacity ?? zone?.opacityDefault ?? 1, 0, 1, 1),
     preset: stored.preset === "tactical"
       || stored.preset === "context"
       || stored.preset === "axis-history"
@@ -4331,7 +4333,7 @@ function drawPriceZonePrimitiveGeometry(
   historicalBySettings.forEach((itemZones, id) => {
     const settings = resolvePriceZoneLegendSettings(legendSettings, priceZoneLegendKey(id), itemZones[itemZones.length - 1]);
     if (!settings.visible) return;
-    const historyStart = candles[Math.max(0, candles.length - settings.historyBars)]?.time ?? Number.NEGATIVE_INFINITY;
+    const historyStart = priceZoneHistoryStart(candles, itemZones, settings.historyBars);
     const selectedZones = itemZones.filter((zone) => !zone.preset || zone.preset === settings.preset);
     if (selectedZones.some((zone) => zone.annotationKind === "level-footprint")) {
       drawLevelFootprintProfile(
@@ -4774,7 +4776,7 @@ function drawPriceZonePrimitiveLabels(
     if (itemZones.some((zone) =>
       zone.annotationKind === "level-footprint"
       || zone.annotationKind === "swing-footprint")) return;
-    const historyStart = candles[Math.max(0, candles.length - settings.historyBars)]?.time ?? Number.NEGATIVE_INFINITY;
+    const historyStart = priceZoneHistoryStart(candles, itemZones, settings.historyBars);
     const eligibleZones = itemZones.filter((zone) => {
       if (zone.preset && zone.preset !== settings.preset) return false;
       if (!priceZoneWithinHistory(zone, historyStart)) return false;
@@ -4953,6 +4955,17 @@ function isStructureBreakZone(zone: PriceZone) {
   return zone.annotationKind === "bos"
     || zone.annotationKind === "choch"
     || zone.annotationKind === "structure-break";
+}
+
+function priceZoneHistoryStart(candles: Candle[], zones: PriceZone[], historyBars: number) {
+  const latestTime = candles[candles.length - 1]?.time;
+  const sourceSeconds = zones.find((zone) =>
+    Number.isFinite(zone.historyTimeframeSeconds) && Number(zone.historyTimeframeSeconds) > 0
+  )?.historyTimeframeSeconds;
+  if (Number.isFinite(latestTime) && Number.isFinite(sourceSeconds) && Number(sourceSeconds) > 0) {
+    return Number(latestTime) - historyBars * Number(sourceSeconds);
+  }
+  return candles[Math.max(0, candles.length - historyBars)]?.time ?? Number.NEGATIVE_INFINITY;
 }
 
 function priceZoneWithinHistory(zone: PriceZone, historyStart: number) {

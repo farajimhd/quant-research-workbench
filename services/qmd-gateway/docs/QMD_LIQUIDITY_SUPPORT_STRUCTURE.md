@@ -389,7 +389,17 @@ strength, and a nine-bin executed-volume footprint. The application renders one
 trade and terminate at the first crossing or the next same-side local swing.
 BoS and CHoCH connectors terminate at their causal confirmation event. Only the
 chart's selected timeframe is visible by default; other timeframe layers remain
-configurable for audit.
+hidden but independently configurable for audit. A manual cross-timeframe
+selection persists through chart timeframe changes and reloads. The history
+setting is measured in the selected structure layer's own bars, not the chart's
+bars: 20 bars of a 5-minute layer means 100 minutes even when it is overlaid on
+a 1-second chart. Each timeframe retains its own bounded event history so dense
+100-millisecond activity cannot evict sparse 5-minute or 1-hour events. A chart
+page also carries the latest still-active pre-window high and low for every
+timeframe; this lets an explicitly enabled slower layer remain visible even
+when its confirming pivot predates the currently loaded chart page. Swing
+lines default to solid, maximum-width strokes at 50% opacity, and retain
+independent style controls.
 
 ### Causal event fields
 

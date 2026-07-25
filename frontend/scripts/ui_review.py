@@ -311,7 +311,19 @@ def validate_price_zone_legend(
             )
         shape = layer_editor.get_by_label("Shape")
         width = layer_editor.get_by_role("slider", name="Width")
-        if shape.input_value() != "dashed" or width.input_value() != "1":
+        opacity = layer_editor.get_by_role(
+            "slider", name=f"{legend_label} opacity"
+        )
+        if layer_kind == "Swing levels":
+            if (
+                shape.input_value() != "solid"
+                or width.input_value() != "4"
+                or opacity.input_value() != "50"
+            ):
+                issues.append(
+                    f"{legend_label} does not default to a solid four-pixel line at 50% opacity"
+                )
+        elif shape.input_value() != "dashed" or width.input_value() != "1":
             issues.append(f"{legend_label} does not default to a dashed one-pixel line")
         if layer_editor.get_by_text(
             re.compile(r"(break|historical) label limit", re.IGNORECASE)

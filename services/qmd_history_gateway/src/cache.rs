@@ -427,16 +427,12 @@ impl HistoricalDerivedCache {
                 .first()
                 .zip(bars.last())
                 .map(|(first, last)| {
-                    state
-                        .structure_events
-                        .iter()
-                        .filter(|event| {
-                            event.confirmed_at >= first.bar_start
-                                && event.confirmed_at <= last.bar_end
-                                && event.confirmed_at <= as_of
-                        })
-                        .cloned()
-                        .collect::<Vec<_>>()
+                    structure_events_overlapping(
+                        &state.structure_events,
+                        first.bar_start,
+                        last.bar_end,
+                        as_of,
+                    )
                 })
                 .unwrap_or_default();
             structure_events.sort_by_key(|event| (event.confirmed_at, event.event_id));
@@ -1045,6 +1041,62 @@ fn episode_events_overlapping(
         .collect()
 }
 
+fn structure_events_overlapping(
+    events: &[GenericStructureEvent],
+    first_bar_start: DateTime<Utc>,
+    last_bar_end: DateTime<Utc>,
+    as_of: DateTime<Utc>,
+) -> Vec<GenericStructureEvent> {
+    let terminal_before_window = events
+        .iter()
+        .filter(|event| {
+            chart_structure_event(event)
+                && event.confirmed_at < first_bar_start
+                && event.confirmed_at <= as_of
+                && matches!(
+                    event.event_kind.as_str(),
+                    "structure_break" | "bos" | "choch"
+                )
+        })
+        .map(|event| event.level_id)
+        .collect::<std::collections::HashSet<_>>();
+    let mut latest_promotion = HashMap::<(String, i8), &GenericStructureEvent>::new();
+    for event in events.iter().filter(|event| {
+        chart_structure_event(event)
+            && event.event_kind == "level_promoted"
+            && event.confirmed_at < first_bar_start
+            && event.confirmed_at <= as_of
+    }) {
+        latest_promotion.insert((event.timeframe.clone(), event.direction), event);
+    }
+    let mut selected = latest_promotion
+        .into_values()
+        .filter(|event| !terminal_before_window.contains(&event.level_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    selected.extend(
+        events
+            .iter()
+            .filter(|event| {
+                chart_structure_event(event)
+                    && event.confirmed_at >= first_bar_start
+                    && event.confirmed_at <= last_bar_end
+                    && event.confirmed_at <= as_of
+            })
+            .cloned(),
+    );
+    selected.sort_by_key(|event| (event.confirmed_at, event.event_id));
+    selected.dedup_by_key(|event| event.event_id);
+    selected
+}
+
+fn chart_structure_event(event: &GenericStructureEvent) -> bool {
+    matches!(
+        event.event_kind.as_str(),
+        "level_promoted" | "structure_crossed" | "structure_break" | "bos" | "choch"
+    )
+}
+
 impl CacheEntry {
     pub fn subscribe(&self) -> broadcast::Receiver<DerivedUpdate> {
         self.updates.subscribe()
@@ -1492,11 +1544,11 @@ fn valid_price_bar(bar: &BarRow) -> bool {
 mod tests {
     use super::{
         bounded_encountered_structure_levels, cache_key, ensure_monotonic_bar_start,
-        split_event_window, CacheEntry, CacheProfile, EntryState, SourceRevision,
-        HISTORICAL_ENGINE_VERSION, MAX_ENCOUNTERED_STRUCTURE_LEVELS,
+        split_event_window, structure_events_overlapping, CacheEntry, CacheProfile, EntryState,
+        SourceRevision, HISTORICAL_ENGINE_VERSION, MAX_ENCOUNTERED_STRUCTURE_LEVELS,
     };
     use crate::source::EventWindow;
-    use chrono::{TimeZone, Utc};
+    use chrono::{DateTime, Duration, TimeZone, Utc};
     use qmd_core::generic_structure::{GenericStructureEvent, StructureLevelCandidate};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::Arc;
@@ -1683,6 +1735,90 @@ mod tests {
         assert_eq!(state.structure_events.len(), 2);
         assert_eq!(state.structure_events[0].timeframe, "100ms");
         assert_eq!(state.structure_events[1].timeframe, "1s");
+    }
+
+    #[test]
+    fn chart_window_carries_only_active_pre_window_swings_per_timeframe() {
+        let window_start = Utc.with_ymd_and_hms(2026, 7, 17, 13, 40, 0).unwrap();
+        let window_end = window_start + chrono::Duration::minutes(5);
+        let event = |event_id: u64,
+                     level_id: u64,
+                     timeframe: &str,
+                     event_kind: &str,
+                     direction: i8,
+                     confirmed_at: DateTime<Utc>| GenericStructureEvent {
+            algorithm_version: 2,
+            event_id,
+            level_id,
+            sym: "VEEE".to_string(),
+            timeframe: timeframe.to_string(),
+            event_kind: event_kind.to_string(),
+            direction,
+            price: 42.0,
+            lower: 42.0,
+            upper: 42.0,
+            strength: 0.7,
+            confidence: 0.8,
+            lifecycle: "active".to_string(),
+            total_volume: 500.0,
+            buy_volume: 400.0,
+            sell_volume: 100.0,
+            neutral_volume: 0.0,
+            trade_count: 5,
+            pivot_at: confirmed_at - chrono::Duration::seconds(1),
+            confirmed_at,
+        };
+        let events = vec![
+            event(
+                1,
+                10,
+                "5m",
+                "level_promoted",
+                -1,
+                window_start - Duration::minutes(12),
+            ),
+            event(
+                2,
+                11,
+                "5m",
+                "level_promoted",
+                -1,
+                window_start - Duration::minutes(6),
+            ),
+            event(3, 11, "5m", "bos", 1, window_start - Duration::minutes(2)),
+            event(
+                4,
+                12,
+                "5m",
+                "level_promoted",
+                1,
+                window_start - Duration::minutes(4),
+            ),
+            event(
+                5,
+                13,
+                "1h",
+                "level_promoted",
+                -1,
+                window_start - Duration::minutes(30),
+            ),
+            event(
+                6,
+                14,
+                "1s",
+                "level_promoted",
+                -1,
+                window_start + Duration::seconds(5),
+            ),
+        ];
+
+        let selected = structure_events_overlapping(&events, window_start, window_end, window_end);
+        let ids = selected
+            .iter()
+            .map(|event| event.event_id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec![5, 4, 6]);
     }
 
     #[test]
