@@ -414,9 +414,8 @@ event name for a confirmed timeframe-local swing), `level_crossed`,
 
 | Fields | Source and timing |
 |---|---|
-| `qmd_structure_session_high/low` | NBBO midpoint extrema from the 04:00 New York session anchor. |
-| `qmd_structure_premarket_high/low` | NBBO midpoint extrema from 04:00 through 09:30 New York. |
-| `qmd_structure_opening_range_high/low` | NBBO midpoint extrema from 09:30 through 09:35 New York. |
+| `qmd_structure_session_high/low` | Eligible-trade extrema across the current 04:00-20:00 New York extended session. Premarket seeds the same pair; regular and after-hours trades continue updating it. |
+| `qmd_structure_opening_range_high/low` | Eligible-trade extrema from 09:30 through 09:35 New York. |
 | `qmd_structure_trade_volume_poc` | Price with the greatest eligible session trade volume. |
 | `qmd_structure_nearest_round` | Adaptive nearest round-number reference. |
 | `qmd_structure_luld_upper/lower` | Locally estimated LULD bands; not an official exchange feed. |

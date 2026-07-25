@@ -494,13 +494,13 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
   displayIndicator("indicator.qmd_arrival_intensity", "QMD Arrival-intensity Imbalance", "microstructure", ["microstructure_arrival_intensity_imbalance", "microstructure_arrival_rate_per_second"], "qmd_arrival", qmdIndicatorKnowledge("Direction of information arrival", "Combines directional quote transitions and classified trade arrivals, while retaining total arrivals per second as an activity diagnostic.", "A directional imbalance with a rising arrival rate signals urgent pressure; low-rate readings deserve less weight.", "Bursts can be fleeting and should be confirmed by price response or OFI.")),
   displayIndicator("indicator.qmd_resiliency", "QMD Liquidity Resiliency", "microstructure", ["microstructure_resiliency"], "qmd_resiliency", qmdIndicatorKnowledge("How displayed liquidity replenishes after depletion", "Compares same-side best-level replenishment with depletion across raw quote transitions and signs the result by the side recovering more effectively.", "Positive values favor bid recovery; negative values favor ask recovery. Near zero means balanced or insufficient recovery evidence.", "NBBO-only resiliency cannot observe deeper-book replenishment.")),
   displayIndicator("indicator.qmd_reference_levels", "QMD Reference Levels", "price_action", [
-    "qmd_structure_session_high", "qmd_structure_session_low", "qmd_structure_premarket_high", "qmd_structure_premarket_low",
+    "qmd_structure_session_high", "qmd_structure_session_low",
     "qmd_structure_opening_range_high", "qmd_structure_opening_range_low", "qmd_structure_trade_volume_poc",
     "qmd_structure_luld_upper", "qmd_structure_luld_lower", "qmd_structure_52_week_high", "qmd_structure_52_week_low",
     "qmd_structure_prior_month_high", "qmd_structure_prior_month_low", "qmd_structure_prior_month_close",
   ], "price", indicatorGuide(
     "Independent auction and regulatory reference levels; they are context, not Generic Structure evidence.",
-    "Samples session/premarket extremes, opening range, eligible-trade volume POC, estimated LULD, and completed higher-timeframe levels from QMD's causal state. Estimated LULD upper and lower values render as continuous stepped lines because QMD updates the rolling five-minute estimate discretely; missing or inactive observations remain true gaps.",
+    "Samples the eligible-trade high and low across the complete 04:00-20:00 New York extended session, plus opening range, eligible-trade volume POC, estimated LULD, and completed higher-timeframe levels from QMD's causal state. Estimated LULD upper and lower values render as continuous stepped lines because QMD updates the rolling five-minute estimate discretely; missing or inactive observations remain true gaps.",
     "Holding above an important accepted reference can support bullish context when flow confirms.",
     "Rejecting below an important reference can support bearish context when flow confirms.",
     "The underlying references are timestamp-driven; the selected chart timeframe changes only sampling density.",
@@ -532,7 +532,7 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
       { label: "Retest / role reversal", description: "A broken level stays historical. It changes from support to resistance, or the reverse, only after a later retest from the opposite side is rejected.", tone: "warning" },
       { label: "Strength", description: "Accumulated causal evidence from survival, touches, holds, accepted breaks, retests, and traded volume. It contributes to strongest-level selection.", tone: "info" },
       { label: "Confidence", description: "Evidence repeatability and freshness for the level at that event time. It controls borderless region density and is not a forecast probability.", tone: "warning" },
-      { label: "Auction references", description: "Session and premarket extremes, opening range, eligible-trade volume POC, estimated LULD, completed 52-week/prior-month levels, and round prices remain a separate reference-level package.", tone: "neutral" },
+      { label: "Auction references", description: "Unified 04:00-20:00 New York eligible-trade extrema, opening range, eligible-trade volume POC, estimated LULD, completed 52-week/prior-month levels, and round prices remain a separate reference-level package.", tone: "neutral" },
     ],
     caveats: ["QMD observes consolidated Level-1 NBBO and eligible prints, not full venue depth or hidden liquidity.", "A local swing is unknowable at its pivot instant; it becomes causal only after the following timeframe bucket completes. Strategies must use confirmed_at, never pivot_at.", "Nearest means absolute distance from current price. Strongest combines causal strength and confidence; it does not necessarily mean closest or most likely to hold.", "The footprint classifies aggressor side from available trade and NBBO evidence and therefore cannot reveal hidden orders.", "BoS, CHoCH, support, and resistance are deterministic evidence states—not trade instructions or win probabilities."],
   }),
@@ -2844,10 +2844,8 @@ function pushGenericStructureReferences(
   chartEnd: number,
 ) {
   const specs = [
-    ["qmd_structure_session_high", "Session high", "Sess H", "var(--info)", "session", "Session H/L", false, "sell"],
-    ["qmd_structure_session_low", "Session low", "Sess L", "var(--info)", "session", "Session H/L", false, "buy"],
-    ["qmd_structure_premarket_high", "Premarket high", "PM H", "var(--warning)", "premarket", "Premarket H/L", true, "sell"],
-    ["qmd_structure_premarket_low", "Premarket low", "PM L", "var(--warning)", "premarket", "Premarket H/L", true, "buy"],
+    ["qmd_structure_session_high", "Extended-session high", "Sess H", "var(--info)", "session", "Extended session H/L", false, "sell"],
+    ["qmd_structure_session_low", "Extended-session low", "Sess L", "var(--info)", "session", "Extended session H/L", false, "buy"],
     ["qmd_structure_opening_range_high", "Opening range high", "OR H", "var(--foreground)", "opening-range", "Opening range", true, "sell"],
     ["qmd_structure_opening_range_low", "Opening range low", "OR L", "var(--foreground)", "opening-range", "Opening range", true, "buy"],
     ["qmd_structure_trade_volume_poc", "Eligible-trade volume POC", "POC", "var(--primary)", "poc", "Trade-volume POC", true, "neutral"],
@@ -2860,13 +2858,13 @@ function pushGenericStructureReferences(
     ["qmd_structure_prior_month_close", "Prior-month close", "PrevM C", "var(--muted-foreground)", "prior-month", "Prior month H/L/C", false, "neutral"],
   ] as const;
   specs.forEach(([column, label, compactLabel, color, settingsSuffix, legendLabel, axisLabelDefault, tone]) => {
-    const settingsGroup = ["session", "premarket"].includes(settingsSuffix)
+    const settingsGroup = settingsSuffix === "session"
       ? "session-levels"
       : ["52-week", "prior-month"].includes(settingsSuffix)
         ? "higher-timeframe"
         : settingsSuffix;
     const groupedLegendLabel = settingsGroup === "session-levels"
-      ? "Session & premarket"
+      ? "Extended session H/L"
       : settingsGroup === "higher-timeframe"
         ? "Higher-timeframe levels"
         : legendLabel;

@@ -609,8 +609,6 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "qmd_structure_event_pivot_at_ms",
             "qmd_structure_session_high",
             "qmd_structure_session_low",
-            "qmd_structure_premarket_high",
-            "qmd_structure_premarket_low",
             "qmd_structure_opening_range_high",
             "qmd_structure_opening_range_low",
             "qmd_structure_trade_volume_poc",
@@ -626,7 +624,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
         typical_timeframes: ENRICHED_QMD_TFS,
         storage_target:
             "qmd_structure_events_v2,qmd_structure_state_v2,live_market_indicators",
-        rationale: "One causal eligible-trade authority updates exact developing extrema immediately, freezes active levels on the first opposing trade, promotes the same level book independently by chart timeframe, and persists break lifecycle plus executed-volume footprints for live, historical, chart, and strategy consumers.",
+        rationale: "One causal eligible-trade authority updates exact developing extrema and the 04:00-20:00 New York extended-session high/low immediately, freezes active levels on the first opposing trade, promotes the same level book independently by chart timeframe, and persists break lifecycle plus executed-volume footprints for live, historical, chart, and strategy consumers.",
     },
     IndicatorCatalogEntry {
         key: "shock_features",

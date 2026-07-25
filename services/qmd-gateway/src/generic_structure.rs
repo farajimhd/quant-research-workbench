@@ -5,7 +5,7 @@ use chrono_tz::America::New_York;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
-pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 7;
+pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 8;
 pub const STRUCTURE_TIMEFRAMES: [(&str, i64); 8] = [
     ("100ms", 100),
     ("1s", 1_000),
@@ -18,6 +18,7 @@ pub const STRUCTURE_TIMEFRAMES: [(&str, i64); 8] = [
 ];
 
 const SESSION_ANCHOR_SECONDS: u32 = 4 * 60 * 60;
+const SESSION_END_SECONDS: u32 = 20 * 60 * 60;
 const REGULAR_OPEN_SECONDS: u32 = 9 * 60 * 60 + 30 * 60;
 const OPENING_RANGE_END_SECONDS: u32 = 9 * 60 * 60 + 35 * 60;
 const FOOTPRINT_RADIUS_TICKS: i32 = 4;
@@ -133,8 +134,6 @@ pub struct GenericStructureSnapshot {
     pub last_event_price: f64,
     pub session_high: f64,
     pub session_low: f64,
-    pub premarket_high: f64,
-    pub premarket_low: f64,
     pub opening_range_high: f64,
     pub opening_range_low: f64,
     pub trade_volume_poc: f64,
@@ -396,8 +395,6 @@ pub struct GenericStructureEngine {
     session_anchor: Option<NaiveDate>,
     session_high: f64,
     session_low: f64,
-    premarket_high: f64,
-    premarket_low: f64,
     opening_range_high: f64,
     opening_range_low: f64,
     session_volume_by_price: HashMap<i64, PriceVolumeBin>,
@@ -424,8 +421,6 @@ pub struct GenericStructureCheckpoint {
     session_anchor: Option<NaiveDate>,
     session_high: f64,
     session_low: f64,
-    premarket_high: f64,
-    premarket_low: f64,
     opening_range_high: f64,
     opening_range_low: f64,
     session_volume_by_price: HashMap<i64, PriceVolumeBin>,
@@ -455,8 +450,6 @@ impl GenericStructureEngine {
             session_anchor: None,
             session_high: 0.0,
             session_low: 0.0,
-            premarket_high: 0.0,
-            premarket_low: 0.0,
             opening_range_high: 0.0,
             opening_range_low: 0.0,
             session_volume_by_price: HashMap::new(),
@@ -492,7 +485,6 @@ impl GenericStructureEngine {
                 self.bid = quote.bid_price;
                 self.ask = quote.ask_price;
                 self.last_reference_price = (quote.bid_price + quote.ask_price) / 2.0;
-                self.observe_reference(ts, self.last_reference_price);
             }
             MarketEvent::Trade(trade)
                 if trade_rule.update_last && trade.price > 0.0 && trade.price.is_finite() =>
@@ -504,7 +496,7 @@ impl GenericStructureEngine {
                 };
                 let aggressor = self.classify_aggressor(trade.price);
                 self.last_reference_price = trade.price;
-                self.observe_reference(ts, trade.price);
+                self.observe_trade_reference(ts, trade.price);
                 self.observe_trade_volume(trade.price, size, aggressor);
                 self.update_level_footprints(trade.price, size, aggressor);
                 self.update_level_lifecycles(ts, trade.price, size, &mut emitted);
@@ -856,16 +848,12 @@ impl GenericStructureEngine {
             .unwrap_or_default();
     }
 
-    fn observe_reference(&mut self, ts: DateTime<Utc>, reference: f64) {
+    fn observe_trade_reference(&mut self, ts: DateTime<Utc>, reference: f64) {
         let local = ts.with_timezone(&New_York);
         let seconds = local.time().num_seconds_from_midnight();
-        if seconds >= SESSION_ANCHOR_SECONDS {
+        if (SESSION_ANCHOR_SECONDS..SESSION_END_SECONDS).contains(&seconds) {
             self.session_high = self.session_high.max(reference);
             self.session_low = positive_min(self.session_low, reference);
-        }
-        if (SESSION_ANCHOR_SECONDS..REGULAR_OPEN_SECONDS).contains(&seconds) {
-            self.premarket_high = self.premarket_high.max(reference);
-            self.premarket_low = positive_min(self.premarket_low, reference);
         }
         if (REGULAR_OPEN_SECONDS..OPENING_RANGE_END_SECONDS).contains(&seconds) {
             self.opening_range_high = self.opening_range_high.max(reference);
@@ -885,8 +873,6 @@ impl GenericStructureEngine {
         self.session_anchor = Some(anchor);
         self.session_high = 0.0;
         self.session_low = 0.0;
-        self.premarket_high = 0.0;
-        self.premarket_low = 0.0;
         self.opening_range_high = 0.0;
         self.opening_range_low = 0.0;
         self.session_volume_by_price.clear();
@@ -1016,8 +1002,6 @@ impl GenericStructureEngine {
             last_event_price: last.map(|event| event.price).unwrap_or_default(),
             session_high: self.session_high,
             session_low: self.session_low,
-            premarket_high: self.premarket_high,
-            premarket_low: self.premarket_low,
             opening_range_high: self.opening_range_high,
             opening_range_low: self.opening_range_low,
             trade_volume_poc: self.trade_volume_poc,
@@ -1163,8 +1147,6 @@ impl GenericStructureEngine {
             .collect();
         self.session_high = snapshot.session_high;
         self.session_low = snapshot.session_low;
-        self.premarket_high = snapshot.premarket_high;
-        self.premarket_low = snapshot.premarket_low;
         self.opening_range_high = snapshot.opening_range_high;
         self.opening_range_low = snapshot.opening_range_low;
         self.trade_volume_poc = snapshot.trade_volume_poc;
@@ -1189,8 +1171,6 @@ impl GenericStructureEngine {
             session_anchor: self.session_anchor,
             session_high: self.session_high,
             session_low: self.session_low,
-            premarket_high: self.premarket_high,
-            premarket_low: self.premarket_low,
             opening_range_high: self.opening_range_high,
             opening_range_low: self.opening_range_low,
             session_volume_by_price: self.session_volume_by_price.clone(),
@@ -1219,8 +1199,6 @@ impl GenericStructureEngine {
         self.session_anchor = checkpoint.session_anchor;
         self.session_high = checkpoint.session_high;
         self.session_low = checkpoint.session_low;
-        self.premarket_high = checkpoint.premarket_high;
-        self.premarket_low = checkpoint.premarket_low;
         self.opening_range_high = checkpoint.opening_range_high;
         self.opening_range_low = checkpoint.opening_range_low;
         self.session_volume_by_price = checkpoint.session_volume_by_price.clone();
@@ -2038,6 +2016,106 @@ mod tests {
             ticker: "TEST".to_string(),
             ts: Utc.timestamp_millis_opt(ms).unwrap(),
         })
+    }
+
+    fn new_york_ms(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> i64 {
+        New_York
+            .with_ymd_and_hms(year, month, day, hour, minute, second)
+            .unwrap()
+            .with_timezone(&Utc)
+            .timestamp_millis()
+    }
+
+    #[test]
+    fn extended_session_extrema_use_eligible_trades_not_quote_midpoints() {
+        let mut engine = GenericStructureEngine::new("TEST");
+        let premarket = new_york_ms(2026, 7, 24, 8, 0, 0);
+        engine.apply_event(&quote(premarket, 49.0, 51.0, 1), TradeUpdateRule::regular());
+        engine.apply_event(
+            &trade(premarket + 1, 100.0, 100.0, 2),
+            TradeUpdateRule::regular(),
+        );
+        engine.apply_event(
+            &quote(premarket + 2, 9.0, 11.0, 3),
+            TradeUpdateRule::regular(),
+        );
+
+        let snapshot = engine.snapshot(Utc::now());
+        assert_eq!(snapshot.session_high, 100.0);
+        assert_eq!(snapshot.session_low, 100.0);
+    }
+
+    #[test]
+    fn extended_session_extrema_span_premarket_regular_and_after_hours() {
+        let mut engine = GenericStructureEngine::new("TEST");
+        for (sequence, (hour, minute, price)) in [
+            (4, 0, 100.0),
+            (9, 30, 101.0),
+            (15, 59, 99.0),
+            (19, 59, 102.0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            engine.apply_event(
+                &trade(
+                    new_york_ms(2026, 7, 24, hour, minute, 0),
+                    price,
+                    100.0,
+                    sequence as u64,
+                ),
+                TradeUpdateRule::regular(),
+            );
+        }
+
+        let snapshot = engine.snapshot(Utc::now());
+        assert_eq!(snapshot.session_high, 102.0);
+        assert_eq!(snapshot.session_low, 99.0);
+    }
+
+    #[test]
+    fn extended_session_extrema_ignore_trades_outside_four_to_twenty_et() {
+        let mut engine = GenericStructureEngine::new("TEST");
+        for (sequence, (hour, minute, price)) in [
+            (3, 59, 10.0),
+            (4, 0, 100.0),
+            (19, 59, 101.0),
+            (20, 0, 250.0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            engine.apply_event(
+                &trade(
+                    new_york_ms(2026, 7, 24, hour, minute, 0),
+                    price,
+                    100.0,
+                    sequence as u64,
+                ),
+                TradeUpdateRule::regular(),
+            );
+        }
+
+        let snapshot = engine.snapshot(Utc::now());
+        assert_eq!(snapshot.session_high, 101.0);
+        assert_eq!(snapshot.session_low, 100.0);
+    }
+
+    #[test]
+    fn extended_session_extrema_reset_at_next_four_et_trade() {
+        let mut engine = GenericStructureEngine::new("TEST");
+        engine.apply_event(
+            &trade(new_york_ms(2026, 7, 24, 19, 59, 0), 101.0, 100.0, 1),
+            TradeUpdateRule::regular(),
+        );
+        engine.apply_event(
+            &trade(new_york_ms(2026, 7, 25, 4, 0, 0), 75.0, 100.0, 2),
+            TradeUpdateRule::regular(),
+        );
+
+        let snapshot = engine.snapshot(Utc::now());
+        assert_eq!(snapshot.session_high, 75.0);
+        assert_eq!(snapshot.session_low, 75.0);
     }
 
     #[test]

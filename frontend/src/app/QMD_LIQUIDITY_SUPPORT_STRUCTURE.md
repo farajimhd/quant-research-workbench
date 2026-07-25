@@ -34,7 +34,7 @@ These package ids are available in the Indicators menu and chart legend:
 | `indicator.qmd_decision` | QMD Decision · Oscillator | canonical decision, confidence, action, reason | One signed Buy/Sell/Wait oscillator with confidence. |
 | `indicator.qmd_decision_chart` | QMD Decision · Chart signals | the same canonical decision | Green Buy or red Sell marker on the next actionable candle; Wait is blank. |
 | `indicator.qmd_generic_structure` | QMD Generic Structure | active zones, complete causal event stream, three-scale swings | Price overlay with independently configurable micro, tactical, and context layers. |
-| `indicator.qmd_reference_levels` | QMD Reference Levels | session, premarket, opening range, POC, LULD, and completed higher-timeframe references | Independent price lines, not structural evidence. |
+| `indicator.qmd_reference_levels` | QMD Reference Levels | extended-session high/low, opening range, POC, LULD, and completed higher-timeframe references | Independent price lines, not structural evidence. |
 
 Every package exposes its guide from both the indicator picker and configured
 chart legend. QMD Decision is the action surface. Generic Structure remains an
@@ -238,7 +238,8 @@ CHoCH is an accepted break against an established trend. Their connectors run
 from the confirmed swing origin to the later break confirmation. Pivot, BoS,
 CHoCH, break, and role-reversal availability begins at confirmation time.
 
-Configurable QMD Reference Levels include session high/low, premarket high/low,
+Configurable QMD Reference Levels include the eligible-trade high/low across
+the unified 04:00-20:00 New York extended session,
 opening range, trade-volume POC, estimated LULD, completed
 52-week high/low, and prior-month high/low/close. They are context references,
 not all support/resistance evidence of equal quality.
@@ -283,7 +284,7 @@ Generic Structure exposes useful controls for:
 - independent micro, tactical, and context zone/swing/break visibility; and
 - QMD Decision oscillator thresholds and native pane height.
 
-Swing references, session/premarket levels, opening range, POC, estimated LULD,
+Swing references, extended-session levels, opening range, POC, estimated LULD,
 completed higher-timeframe references, and structure-break
 connectors render as true lines rather than translucent fixed-height bands.
 Their opacity control is the final line opacity from 0-100%; shape, width,
