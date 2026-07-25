@@ -139,7 +139,14 @@ class NewsReactionModelV16(nn.Module):
             {horizon: nn.Linear(d, OPPORTUNITY_CLASSES) for horizon in config.horizons}
         )
 
-    def forward(self, x: dict[str, Any]) -> NewsReactionOpportunityOutput:
+    def encode_article(self, x: dict[str, Any]) -> torch.Tensor:
+        """Encode the complete V16 input contract without evaluating V16 heads.
+
+        V17 reuses this method as the single authority for OpenAI text, stock
+        state, time, prior-news, current-market, cross-market-news, and leader
+        context. Keeping the encoder here prevents experimental descendants
+        from copying or recomputing V16 input logic.
+        """
         openai_text = self.openai_text_projection(x["openai_embedding"])
         stock_state = self.stock_state_projection(x["stock_state"])
         time_features = self.time_projection(x["time_features"])
@@ -247,7 +254,11 @@ class NewsReactionModelV16(nn.Module):
             torch.cat((article, market_attended.squeeze(1)), dim=-1)
         )
         article = torch.where(has_market.unsqueeze(-1), market_article, article)
-        horizon_ids = torch.arange(len(self.config.horizons), device=hidden.device)
+        return article
+
+    def forward(self, x: dict[str, Any]) -> NewsReactionOpportunityOutput:
+        article = self.encode_article(x)
+        horizon_ids = torch.arange(len(self.config.horizons), device=article.device)
         horizon_embedding = self.horizon_embedding(horizon_ids).unsqueeze(0).expand(
             article.shape[0], -1, -1
         )

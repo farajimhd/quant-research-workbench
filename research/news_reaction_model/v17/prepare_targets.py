@@ -1,0 +1,746 @@
+from __future__ import annotations
+
+import argparse
+import bisect
+import datetime as dt
+import json
+import math
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
+
+import numpy as np
+
+from research.mlops.clickhouse import (
+    ClickHouseHttpClient,
+    default_clickhouse_password,
+    default_clickhouse_url,
+    default_clickhouse_user,
+)
+from research.mlops.env import discover_env_files, load_env_files
+from research.news_reaction_model.v16.prepared import close_arrays, open_arrays
+from research.news_reaction_model.v17 import RESPONSE_WINDOWS
+from research.news_reaction_model.v17.config import LoaderConfig
+from research.news_reaction_model.v17.prepared import (
+    BUILD_STATE_FILE,
+    MANIFEST_FILE,
+    THRESHOLDS_FILE,
+    create_target_arrays,
+    open_target_arrays_for_resume,
+    row_key_hash,
+    write_json_atomic,
+)
+from research.news_reaction_model.v17.targets import (
+    RAW_METRIC_NAMES,
+    TARGET_VERSION,
+    TargetThresholds,
+    classify_persistence,
+    classify_window,
+    fit_thresholds,
+)
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+UTC = dt.timezone.utc
+EASTERN = ZoneInfo("America/New_York")
+PHASE_TO_HORIZON = {
+    "premarket": ("event_premarket", "premarket_close"),
+    "regular": ("event_regular", "regular_close"),
+    "afterhours": ("event_afterhours", "extended_close"),
+}
+
+
+def _q(value: Any) -> str:
+    return "'" + str(value).replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def _qi(value: str) -> str:
+    return "`" + value.replace("`", "``") + "`"
+
+
+def _decode(value: Any) -> str:
+    return bytes(value).rstrip(b"\x00").decode("utf-8")
+
+
+def _parse_utc(value: str) -> dt.datetime:
+    parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def _clickhouse_utc(value: dt.datetime) -> str:
+    return value.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
+def _event_table(base: str, day: dt.date) -> str:
+    return base if base.rsplit("_", 1)[-1].isdigit() else f"{base}_{day.year}"
+
+
+def calendar_sessions(client: ClickHouseHttpClient, config: LoaderConfig) -> list[dt.date]:
+    text = client.query_tsv(
+        f"""
+SELECT current_session_date
+FROM {_qi(config.news_database)}.{_qi(config.reaction_calendar_table)} FINAL
+WHERE calendar_version = {_q(config.reaction_calendar_version)}
+  AND is_session = 1
+  AND current_session_date >= toDate({_q(config.train_start)}) - 7
+  AND current_session_date < toDate({_q(config.validation_end_exclusive)}) + 14
+ORDER BY current_session_date
+"""
+    )
+    values = [dt.date.fromisoformat(line.strip()) for line in text.splitlines() if line.strip()]
+    if not values:
+        raise RuntimeError("Reaction calendar returned no exchange sessions.")
+    return values
+
+
+def _session_bounds(day: dt.date) -> tuple[dt.datetime, dt.datetime, dt.datetime, dt.datetime]:
+    def at(hour: int, minute: int = 0) -> dt.datetime:
+        return dt.datetime.combine(day, dt.time(hour, minute), EASTERN).astimezone(UTC)
+
+    return at(4), at(9, 30), at(16), at(20)
+
+
+def source_label_rows(
+    client: ClickHouseHttpClient,
+    config: LoaderConfig,
+    start: dt.datetime,
+    end: dt.datetime,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    phase_codes = tuple(value[1] for value in PHASE_TO_HORIZON.values())
+    text = client.execute(
+        f"""
+SELECT
+    canonical_news_id,
+    ticker,
+    toString(published_at_utc),
+    publication_session,
+    toString(reaction_session_date),
+    horizon_code,
+    ifNull(anchor_price, nan),
+    ifNull(high_return, nan),
+    ifNull(low_return, nan),
+    ifNull(target_return, nan),
+    ifNull(toFloat64(toUnixTimestamp64Micro(window_high_timestamp_utc)), nan),
+    ifNull(toFloat64(toUnixTimestamp64Micro(window_low_timestamp_utc)), nan),
+    ifNull(toFloat64(toUnixTimestamp64Micro(target_at_utc)), nan),
+    observation_count,
+    quality_status
+FROM {_qi(config.news_database)}.{_qi(config.reaction_table)} FINAL
+WHERE label_version = {_q(config.label_version)}
+  AND published_at_utc >= toDateTime64({_q(_clickhouse_utc(start))}, 6, 'UTC')
+  AND published_at_utc < toDateTime64({_q(_clickhouse_utc(end))}, 6, 'UTC')
+  AND horizon_code IN ({", ".join(_q(value) for value in phase_codes)})
+ORDER BY published_at_utc, canonical_news_id, ticker, horizon_code
+FORMAT TabSeparatedRaw
+"""
+    )
+    rows: dict[tuple[str, str], dict[str, Any]] = {}
+    for line in text.splitlines():
+        if not line:
+            continue
+        fields = line.split("\t")
+        key = (fields[0], fields[1])
+        publication_session = fields[3]
+        expected = PHASE_TO_HORIZON.get(publication_session, ("", ""))[1]
+        base = rows.setdefault(
+            key,
+            {
+                "publication_session": publication_session,
+                "reaction_session_date": dt.date.fromisoformat(fields[4]),
+                "phase": None,
+            },
+        )
+        if fields[5] == expected:
+            base["phase"] = {
+                "anchor_price": float(fields[6]),
+                "high_return": float(fields[7]),
+                "low_return": float(fields[8]),
+                "terminal_return": float(fields[9]),
+                "high_timestamp": float(fields[10]),
+                "low_timestamp": float(fields[11]),
+                "end_timestamp": float(fields[12]),
+                "observation_count": int(fields[13]),
+                "quality_status": fields[14],
+            }
+        if math.isfinite(float(fields[6])):
+            base["anchor_price"] = float(fields[6])
+    return rows
+
+
+def event_rows(
+    client: ClickHouseHttpClient,
+    config: LoaderConfig,
+    ticker: str,
+    session_day: dt.date,
+) -> np.ndarray:
+    table_names = tuple(
+        dict.fromkeys(
+            _event_table(config.events_table_base, value)
+            for value in (session_day, session_day + dt.timedelta(days=1))
+        )
+    )
+    tables = [f"{_qi(config.market_database)}.{_qi(value)}" for value in table_names]
+    source = tables[0] if len(tables) == 1 else (
+        "(" + " UNION ALL ".join(
+            f"SELECT * FROM {table} WHERE event_date >= toDate({_q(session_day)}) "
+            f"AND event_date <= toDate({_q(session_day)}) + 1"
+            for table in tables
+        ) + ")"
+    )
+    condition_reference = (
+        f"{_qi(config.market_database)}.{_qi(config.condition_reference_table)}"
+    )
+    start_utc, _regular, _close, end_utc = _session_bounds(session_day)
+    text = client.execute(
+        f"""
+WITH
+  (SELECT groupArray(toUInt8(token_id)) FROM {condition_reference}
+   WHERE source_family='trade_conditions' AND is_join_canonical=1 AND update_last=1)
+      AS update_last_tokens,
+  (SELECT groupArray(toUInt8(token_id)) FROM {condition_reference}
+   WHERE source_family='trade_conditions' AND is_join_canonical=1 AND update_high_low=1)
+      AS update_high_low_tokens,
+  (SELECT groupArray(toUInt8(token_id)) FROM {condition_reference}
+   WHERE source_family='trade_conditions' AND is_join_canonical=1
+     AND update_last=1 AND update_high_low=1) AS full_tokens,
+  (SELECT any(toUInt8(token_id)) FROM {condition_reference}
+   WHERE source_family='trade_conditions' AND is_join_canonical=1 AND modifier_int=12)
+      AS form_t_token,
+raw AS
+(
+  SELECT
+    ticker,
+    sip_timestamp_us,
+    ordinal,
+    bitAnd(event_meta,1)=1 AS is_trade,
+    toFloat64(price_primary_int)/if(bitAnd(event_meta,2)=2,10000.0,100.0)
+      AS primary_price,
+    toFloat64(price_secondary_int)/if(bitAnd(event_meta,4)=4,10000.0,100.0)
+      AS secondary_price,
+    toFloat64(size_primary) AS trade_size,
+    arrayFilter(x -> x != 0, [condition_token_1,condition_token_2,
+      condition_token_3,condition_token_4,condition_token_5]) AS condition_tokens,
+    toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us),'UTC'),
+      'America/New_York') AS local_timestamp,
+    toUInt8(
+      toHour(local_timestamp)<9
+      OR (toHour(local_timestamp)=9 AND toMinute(local_timestamp)<30)
+      OR toHour(local_timestamp)>=16
+    ) AS is_extended_hours
+  FROM {source}
+  WHERE ticker={_q(ticker)}
+    AND sip_timestamp_us >= toUInt64(toUnixTimestamp64Micro(
+      toDateTime64({_q(_clickhouse_utc(start_utc))},6,'UTC')))
+    AND sip_timestamp_us < toUInt64(toUnixTimestamp64Micro(
+      toDateTime64({_q(_clickhouse_utc(end_utc))},6,'UTC')))
+    AND sip_timestamp_us > 0 AND ordinal > 0
+),
+trades AS
+(
+  SELECT
+    ticker,
+    sip_timestamp_us,
+    ordinal,
+    primary_price AS trade_price,
+    trade_size,
+    toUInt8(
+      empty(condition_tokens)
+      OR if(
+        is_extended_hours=1 AND has(condition_tokens,form_t_token)
+          AND arrayAll(x -> x=form_t_token OR has(full_tokens,x),condition_tokens),
+        1,
+        arrayAll(x -> has(update_last_tokens,x),condition_tokens)
+      )
+    ) AS update_last,
+    toUInt8(
+      empty(condition_tokens)
+      OR if(
+        is_extended_hours=1 AND has(condition_tokens,form_t_token)
+          AND arrayAll(x -> x=form_t_token OR has(full_tokens,x),condition_tokens),
+        1,
+        arrayAll(x -> has(update_high_low_tokens,x),condition_tokens)
+      )
+    ) AS update_high_low
+  FROM raw
+  WHERE is_trade AND primary_price>0 AND trade_size>0
+),
+eligible_trades AS
+(
+  SELECT *
+  FROM trades
+  WHERE update_last=1 OR update_high_low=1
+),
+quotes AS
+(
+  SELECT
+    ticker,
+    sip_timestamp_us,
+    secondary_price AS bid_price,
+    primary_price AS ask_price
+  FROM raw
+  WHERE NOT is_trade AND secondary_price>0 AND primary_price>=secondary_price
+)
+SELECT
+  t.sip_timestamp_us,
+  t.ordinal,
+  t.trade_price,
+  t.trade_size,
+  ifNull(q.bid_price,0),
+  ifNull(q.ask_price,0),
+  t.update_last,
+  t.update_high_low
+FROM eligible_trades AS t
+ASOF LEFT JOIN quotes AS q
+  ON t.ticker=q.ticker AND t.sip_timestamp_us>=q.sip_timestamp_us
+ORDER BY t.sip_timestamp_us,t.ordinal
+SETTINGS max_threads=2,max_memory_usage='4G',join_algorithm='full_sorting_merge'
+FORMAT TabSeparatedRaw
+"""
+    )
+    if not text.strip():
+        return np.empty((0, 8), dtype=np.float64)
+    values = np.fromstring(text, sep="\t", dtype=np.float64)
+    if values.size % 8:
+        raise RuntimeError(f"Malformed compact event result for {ticker} {session_day}.")
+    return values.reshape(-1, 8)
+
+
+def summarize_events(
+    event_days: list[np.ndarray],
+    *,
+    start: dt.datetime,
+    end: dt.datetime,
+    anchor_price: float,
+    exact_phase: dict[str, Any] | None = None,
+    minimum_observations: int = 3,
+    absolute_cache: dict[tuple[int, int], dict[str, float]] | None = None,
+) -> tuple[np.ndarray, bool]:
+    start_us = int(start.timestamp() * 1_000_000)
+    end_us = int(end.timestamp() * 1_000_000)
+    cache_key = (start_us, end_us)
+    absolute = absolute_cache.get(cache_key) if absolute_cache is not None else None
+    if absolute is None:
+        slices: list[np.ndarray] = []
+        for events in event_days:
+            if not events.size:
+                continue
+            lower = int(np.searchsorted(events[:, 0], start_us, side="left"))
+            upper = int(np.searchsorted(events[:, 0], end_us, side="left"))
+            if upper > lower:
+                slices.append(events[lower:upper])
+        selected = (
+            slices[0]
+            if len(slices) == 1
+            else np.concatenate(slices, axis=0)
+            if slices
+            else np.empty((0, 8), dtype=np.float64)
+        )
+        update_last = selected[:, 6].astype(np.bool_) if selected.size else np.zeros(0, dtype=np.bool_)
+        update_high_low = (
+            selected[:, 7].astype(np.bool_) if selected.size else np.zeros(0, dtype=np.bool_)
+        )
+        last = selected[update_last]
+        extrema = selected[update_high_low]
+        if last.size and extrema.size:
+            prices = last[:, 2]
+            sizes = last[:, 3]
+            notionals = prices * sizes
+            bids = last[:, 4]
+            asks = last[:, 5]
+            valid_quote = (bids > 0) & (asks >= bids)
+            midpoint = np.where(valid_quote, (bids + asks) / 2.0, 0.0)
+            buys = valid_quote & ((prices >= asks) | ((prices > bids) & (prices >= midpoint)))
+            sells = valid_quote & ~buys
+            unknowns = ~valid_quote
+            high_index = int(np.argmax(extrema[:, 2]))
+            low_index = int(np.argmin(extrema[:, 2]))
+            running_peak = np.maximum.accumulate(prices)
+            running_trough = np.minimum.accumulate(prices)
+            absolute = {
+                "high_price": float(extrema[high_index, 2]),
+                "high_timestamp": float(extrema[high_index, 0]),
+                "low_price": float(extrema[low_index, 2]),
+                "low_timestamp": float(extrema[low_index, 0]),
+                "terminal_price": float(prices[-1]),
+                "vwap_price": float(np.sum(notionals) / np.sum(sizes)),
+                "peak_to_trough_return": float(np.min(prices / running_peak - 1.0)),
+                "trough_to_peak_return": float(np.max(prices / running_trough - 1.0)),
+                "buy_notional": float(np.sum(notionals[buys])),
+                "sell_notional": float(np.sum(notionals[sells])),
+                "unknown_notional": float(np.sum(notionals[unknowns])),
+                "observation_count": float(last.shape[0]),
+            }
+        else:
+            absolute = {}
+        if absolute_cache is not None:
+            absolute_cache[cache_key] = absolute
+    observation_count = int(absolute.get("observation_count", 0.0))
+    high_point = (
+        int(absolute["high_timestamp"]),
+        float(absolute["high_price"]),
+    ) if absolute else None
+    low_point = (
+        int(absolute["low_timestamp"]),
+        float(absolute["low_price"]),
+    ) if absolute else None
+    terminal = float(absolute.get("terminal_price", math.nan))
+    if (
+        not math.isfinite(anchor_price)
+        or anchor_price <= 0
+        or observation_count < 1
+        or (
+            (high_point is None or low_point is None)
+            and not (exact_phase and exact_phase.get("quality_status") == "clean")
+        )
+        or end_us <= start_us
+    ):
+        return np.full(len(RAW_METRIC_NAMES), np.nan, dtype=np.float32), False
+    high_return = (
+        high_point[1] / anchor_price - 1.0 if high_point is not None else math.nan
+    )
+    low_return = (
+        low_point[1] / anchor_price - 1.0 if low_point is not None else math.nan
+    )
+    terminal_return = terminal / anchor_price - 1.0
+    if exact_phase and exact_phase.get("quality_status") == "clean":
+        high_return = exact_phase["high_return"]
+        low_return = exact_phase["low_return"]
+        terminal_return = exact_phase["terminal_return"]
+        high_ts = exact_phase["high_timestamp"] * 1_000_000
+        low_ts = exact_phase["low_timestamp"] * 1_000_000
+        observation_count = exact_phase["observation_count"]
+    else:
+        assert high_point is not None and low_point is not None
+        high_ts = high_point[0]
+        low_ts = low_point[0]
+    duration_us = end_us - start_us
+    buy = float(absolute.get("buy_notional", 0.0))
+    sell = float(absolute.get("sell_notional", 0.0))
+    unknown = float(absolute.get("unknown_notional", 0.0))
+    total_notional = buy + sell + unknown
+    metrics = np.asarray(
+        [
+            anchor_price,
+            high_return,
+            low_return,
+            terminal_return,
+            min(max((high_ts - start_us) / duration_us, 0.0), 1.0),
+            min(max((low_ts - start_us) / duration_us, 0.0), 1.0),
+            float(absolute["vwap_price"]) / anchor_price - 1.0,
+            float(absolute["peak_to_trough_return"]),
+            float(absolute["trough_to_peak_return"]),
+            buy / total_notional if total_notional else 0.0,
+            sell / total_notional if total_notional else 0.0,
+            unknown / total_notional if total_notional else 1.0,
+            math.nan,
+            math.nan,
+            observation_count,
+            duration_us / 1_000_000,
+        ],
+        dtype=np.float32,
+    )
+    return metrics, observation_count >= minimum_observations
+
+
+def build_windows(
+    published: dt.datetime,
+    publication_session: str,
+    reaction_day: dt.date,
+    sessions: list[dt.date],
+) -> list[tuple[dt.datetime, dt.datetime] | None]:
+    pre, regular, close, extended = _session_bounds(reaction_day)
+    phase: dict[str, tuple[dt.datetime, dt.datetime]] = {
+        "premarket": (published, regular),
+        "regular": (published, close),
+        "afterhours": (published, extended),
+    }
+    result: list[tuple[dt.datetime, dt.datetime] | None] = [None, None, None]
+    if publication_session in PHASE_TO_HORIZON:
+        index = RESPONSE_WINDOWS.index(PHASE_TO_HORIZON[publication_session][0])
+        result[index] = phase[publication_session]
+    position = bisect.bisect_left(sessions, reaction_day)
+    if publication_session == "closed":
+        next_position = position
+    else:
+        next_position = bisect.bisect_right(sessions, reaction_day)
+    if next_position < len(sessions):
+        next_day = sessions[next_position]
+        result.append((_session_bounds(next_day)[0], _session_bounds(next_day)[3]))
+    else:
+        result.append(None)
+    fifth = next_position + 4
+    if next_position < len(sessions) and fifth < len(sessions):
+        result.append((_session_bounds(sessions[next_position])[0], _session_bounds(sessions[fifth])[3]))
+    else:
+        result.append(None)
+    return result
+
+
+def build_parser() -> argparse.ArgumentParser:
+    defaults = LoaderConfig()
+    parser = argparse.ArgumentParser(description="Build V17 target sidecar over completed V16 arrays.")
+    parser.add_argument("--prepared-root", default=str(defaults.prepared_dataset_root))
+    parser.add_argument("--target-root", default=str(defaults.target_root))
+    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--threshold-quantile", type=float, default=0.35)
+    parser.add_argument("--execute", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    load_env_files(discover_env_files(REPO_ROOT), verbose=True)
+    config = LoaderConfig(
+        prepared_dataset_root=Path(args.prepared_root),
+        target_root=Path(args.target_root),
+    )
+    if not args.execute:
+        print(
+            f"PREFLIGHT ONLY | V16={config.prepared_dataset_root} "
+            f"V17 targets={config.target_root} | add --execute",
+            flush=True,
+        )
+        return 0
+    client = ClickHouseHttpClient(
+        default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()
+    )
+    v16, manifest = open_arrays(config)
+    completed_manifest_path = config.target_root / MANIFEST_FILE
+    if completed_manifest_path.exists():
+        completed = json.loads(completed_manifest_path.read_text(encoding="utf-8"))
+        if (
+            completed.get("status") == "complete"
+            and int(completed.get("rows", -1)) == int(manifest["rows"])
+            and completed.get("v16_representation_sha256")
+            == manifest.get("representation_sha256")
+        ):
+            close_arrays(v16)
+            print(
+                f"ALREADY COMPLETE | rows={int(manifest['rows']):,} "
+                f"root={config.target_root}",
+                flush=True,
+            )
+            return 0
+        close_arrays(v16)
+        raise RuntimeError(
+            "Existing V17 target manifest does not match the completed V16 authority. "
+            "Move the V17 target root aside before an intentional rebuild."
+        )
+    state_path = config.target_root / BUILD_STATE_FILE
+    if state_path.exists():
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if (
+            int(state.get("rows", -1)) != int(manifest["rows"])
+            or state.get("v16_representation_sha256")
+            != manifest.get("representation_sha256")
+        ):
+            raise RuntimeError(
+                "V17 resumable state does not match the completed V16 authority. "
+                "Move the V17 target root aside before intentionally rebuilding."
+            )
+        targets = open_target_arrays_for_resume(config, int(manifest["rows"]))
+        resume_month = dt.datetime.fromisoformat(state["next_month"]).replace(tzinfo=UTC)
+        print(f"RESUME | next_month={resume_month:%Y-%m}", flush=True)
+    else:
+        targets = create_target_arrays(config, int(manifest["rows"]))
+        resume_month = dt.datetime(2019, 1, 1, tzinfo=UTC)
+        write_json_atomic(
+            state_path,
+            {
+                "status": "building",
+                "rows": int(manifest["rows"]),
+                "v16_representation_sha256": manifest["representation_sha256"],
+                "next_month": resume_month.date().isoformat(),
+            },
+        )
+    sessions = calendar_sessions(client, config)
+    try:
+        timestamps = np.asarray(v16["published_at_us"])
+        start_us = int(_parse_utc(config.train_start).timestamp() * 1_000_000)
+        end_us = int(_parse_utc(config.validation_end_exclusive).timestamp() * 1_000_000)
+        lower = int(np.searchsorted(timestamps, start_us))
+        upper = int(np.searchsorted(timestamps, end_us))
+        month_start = resume_month
+        month_number = 0
+        while month_start < dt.datetime(2027, 1, 1, tzinfo=UTC):
+            month_number += 1
+            next_month = (
+                month_start.replace(year=month_start.year + 1, month=1)
+                if month_start.month == 12
+                else month_start.replace(month=month_start.month + 1)
+            )
+            month_lower = max(
+                lower,
+                int(np.searchsorted(timestamps, int(month_start.timestamp() * 1_000_000))),
+            )
+            month_upper = min(
+                upper,
+                int(np.searchsorted(timestamps, int(next_month.timestamp() * 1_000_000))),
+            )
+            if month_upper <= month_lower:
+                month_start = next_month
+                continue
+            labels = source_label_rows(client, config, month_start, next_month)
+            groups: dict[str, list[int]] = {}
+            for row_index in range(month_lower, month_upper):
+                groups.setdefault(_decode(v16["ticker"][row_index]), []).append(row_index)
+
+            def process_ticker(item: tuple[str, list[int]]) -> list[tuple[int, np.ndarray, np.ndarray]]:
+                ticker, indices = item
+                cache: OrderedDict[dt.date, np.ndarray] = OrderedDict()
+                absolute_cache: dict[tuple[int, int], dict[str, float]] = {}
+                output: list[tuple[int, np.ndarray, np.ndarray]] = []
+
+                def cached_events(day: dt.date) -> np.ndarray:
+                    if day in cache:
+                        cache.move_to_end(day)
+                        return cache[day]
+                    rows = event_rows(client, config, ticker, day)
+                    cache[day] = rows
+                    cache.move_to_end(day)
+                    while len(cache) > 6:
+                        cache.popitem(last=False)
+                    return rows
+
+                for row_index in indices:
+                    news_id = _decode(v16["canonical_news_id"][row_index])
+                    published_text = _decode(v16["published_at_utc"][row_index])
+                    key = (news_id, ticker)
+                    label = labels.get(key)
+                    raw = np.full(
+                        (len(RESPONSE_WINDOWS), len(RAW_METRIC_NAMES)),
+                        np.nan,
+                        dtype=np.float32,
+                    )
+                    masks = np.zeros(len(RESPONSE_WINDOWS), dtype=np.bool_)
+                    if label is None or not math.isfinite(float(label.get("anchor_price", math.nan))):
+                        output.append((row_index, raw, masks))
+                        continue
+                    published = _parse_utc(published_text)
+                    windows = build_windows(
+                        published,
+                        label["publication_session"],
+                        label["reaction_session_date"],
+                        sessions,
+                    )
+                    for window_index, bounds in enumerate(windows):
+                        if bounds is None:
+                            continue
+                        first_day = bounds[0].astimezone(EASTERN).date()
+                        last_day = bounds[1].astimezone(EASTERN).date()
+                        selected_days = [
+                            value for value in sessions
+                            if first_day <= value <= last_day
+                        ]
+                        event_days = [cached_events(day) for day in selected_days]
+                        exact = label.get("phase") if window_index < 3 else None
+                        if exact is not None and exact.get("quality_status") != "clean":
+                            continue
+                        raw[window_index], masks[window_index] = summarize_events(
+                            event_days,
+                            start=bounds[0],
+                            end=bounds[1],
+                            anchor_price=float(label["anchor_price"]),
+                            exact_phase=exact,
+                            minimum_observations=3,
+                            absolute_cache=absolute_cache,
+                        )
+                    output.append((row_index, raw, masks))
+                return output
+
+            with ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
+                futures = [executor.submit(process_ticker, item) for item in groups.items()]
+                completed = 0
+                for future in as_completed(futures):
+                    for row_index, raw, masks in future.result():
+                        targets["raw_metrics"][row_index] = raw
+                        targets["window_mask"][row_index] = masks
+                        targets["row_key_hash"][row_index] = row_key_hash(
+                            _decode(v16["canonical_news_id"][row_index]),
+                            _decode(v16["ticker"][row_index]),
+                            _decode(v16["published_at_utc"][row_index]),
+                        )
+                    completed += 1
+                    if completed % 100 == 0 or completed == len(futures):
+                        print(
+                            f"TARGETS {month_start:%Y-%m} tickers={completed:,}/{len(futures):,}",
+                            flush=True,
+                        )
+            for array in targets.values():
+                array.flush()
+            write_json_atomic(
+                state_path,
+                {
+                    "status": "building",
+                    "rows": int(manifest["rows"]),
+                    "v16_representation_sha256": manifest["representation_sha256"],
+                    "next_month": next_month.date().isoformat(),
+                },
+            )
+            month_start = next_month
+
+        train_upper = int(
+            np.searchsorted(
+                timestamps,
+                int(_parse_utc(config.train_end_exclusive).timestamp() * 1_000_000),
+            )
+        )
+        thresholds = fit_thresholds(
+            np.asarray(targets["raw_metrics"][lower:train_upper]),
+            np.asarray(targets["window_mask"][lower:train_upper]),
+            quantile=args.threshold_quantile,
+        )
+        for row_index in range(lower, upper):
+            for window_index in range(len(RESPONSE_WINDOWS)):
+                if not targets["window_mask"][row_index, window_index]:
+                    continue
+                direction, path, flow = classify_window(
+                    targets["raw_metrics"][row_index, window_index],
+                    threshold=thresholds.meaningful_return[window_index],
+                    contract=thresholds,
+                )
+                targets["direction"][row_index, window_index] = int(direction)
+                targets["path"][row_index, window_index] = int(path)
+                targets["flow"][row_index, window_index] = int(flow)
+            if targets["window_mask"][row_index].any():
+                targets["persistence"][row_index] = int(
+                    classify_persistence(
+                        targets["direction"][row_index],
+                        targets["window_mask"][row_index],
+                    )
+                )
+                targets["persistence_mask"][row_index] = True
+        for array in targets.values():
+            array.flush()
+        write_json_atomic(config.target_root / THRESHOLDS_FILE, thresholds.as_dict())
+        write_json_atomic(
+            config.target_root / MANIFEST_FILE,
+            {
+                "status": "complete",
+                "target_version": TARGET_VERSION,
+                "rows": int(manifest["rows"]),
+                "response_windows": list(RESPONSE_WINDOWS),
+                "raw_metric_names": list(RAW_METRIC_NAMES),
+                "v16_prepared_root": str(config.prepared_dataset_root),
+                "v16_representation_sha256": manifest["representation_sha256"],
+                "threshold_fit_start": config.train_start,
+                "threshold_fit_end_exclusive": config.train_end_exclusive,
+                "threshold_quantile": args.threshold_quantile,
+            },
+        )
+        state_path.unlink(missing_ok=True)
+        print(
+            f"COMPLETED | V17 target sidecar rows={int(manifest['rows']):,} "
+            f"root={config.target_root}",
+            flush=True,
+        )
+        return 0
+    finally:
+        close_arrays(v16)
+        close_arrays(targets)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
