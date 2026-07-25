@@ -23284,6 +23284,21 @@ button {
   min-width: 0;
 }
 
+.charts-quotes-market-state {
+  align-items: center;
+  border-right: 1px solid var(--charts-quotes-rule);
+  display: flex;
+  flex: 0 0 auto;
+  gap: 3px;
+  padding: 4px 5px;
+}
+
+.charts-quotes-market-state .market-status-badge,
+.charts-quotes-market-state .luld-status-badge {
+  min-height: 23px;
+  padding-inline: 5px;
+}
+
 .charts-quotes-market-strip {
   display: grid;
   flex: 1 1 auto;
@@ -23439,7 +23454,17 @@ button {
 
 @container (max-width: 1320px) {
   .charts-quotes-identity {
-    flex-basis: 218px;
+    flex-basis: 205px;
+  }
+
+  .charts-quotes-market-state {
+    gap: 2px;
+    padding-inline: 3px;
+  }
+
+  .charts-quotes-market-state .market-status-badge,
+  .charts-quotes-market-state .luld-status-badge {
+    padding-inline: 4px;
   }
 
   .charts-quotes-market-strip {

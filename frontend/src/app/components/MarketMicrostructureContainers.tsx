@@ -314,6 +314,7 @@ export function ChartsQuotesMarketLayout({
       <div className="charts-quotes-identity">
         <TickerIdentityWithChange asOf={end || new Date().toISOString()} inputAriaLabel="Charts and quotes ticker" logoUrl={presentations[symbol]?.logo_url} onTickerChange={onSymbolChange} ticker={symbol} />
       </div>
+      <MicrostructureHeaderMarketState marketState={marketState} />
       <section aria-label="Current quote and tape decision metrics" className="charts-quotes-market-strip">
         <HeaderMarketMetric detail={last ? `${directionLabel(last.direction)} · ${formatTradeSize(last.size)} sh` : "Waiting"} help="Most recent eligible trade at or before the displayed time." label="Last" marketRole="last" primary tone={last?.direction ?? "mid"} value={last ? formatPrice(last.price) : "—"} />
         <HeaderMarketMetric detail={current ? `${formatSize(current.bidSize)} sh · ${bidVenue.code}` : "No quote"} help={`Current consolidated national best bid; ${bidVenue.name} is posting it.`} label="Bid" marketRole="bid" primary tone="buy" value={current ? formatPrice(current.bid) : "—"} />
@@ -327,7 +328,7 @@ export function ChartsQuotesMarketLayout({
         <HeaderMarketMetric help="Average prints per second across the visible tape window." label="Pace" tone="mid" value={`${pace.toFixed(pace >= 10 ? 0 : 1)}/s`} />
         <HeaderMarketMetric help="One-sided aggressive flow with little price response can indicate passive liquidity absorbing it." label="Absorption" tone={absorption ? (buyShare >= 0.5 ? "sell" : "buy") : "mid"} value={absorption ? "Possible" : "None"} />
       </section>
-      <MicrostructureHeaderActions connected={connected} marketState={marketState} references={references} />
+      <MicrostructureHeaderActions connected={connected} references={references} />
     </header>
     <div className="charts-quotes-body" ref={bodyRef} style={layoutStyle}>
       <div className="charts-quotes-main-chart">{mainChart}</div>
@@ -438,11 +439,16 @@ function HeaderMarketMetric({
   </div>;
 }
 
-function MicrostructureHeaderActions({ connected, marketState, references }: { connected: ConnectionState; marketState: MarketState | null; references: MarketReferences }) {
+function MicrostructureHeaderMarketState({ marketState }: { marketState: MarketState | null }) {
   const status = marketStatusPresentation(marketState);
-  return <div className="microstructure-header-actions charts-quotes-actions">
+  return <div aria-label="Trading and LULD status" className="charts-quotes-market-state">
     <span className="market-status-badge" data-status={status.tone} title={status.help}>{status.tone === "halted" ? <ShieldAlert size={13} /> : <Radio size={12} />}{status.label}</span>
     <span className="luld-status-badge" data-status={status.luldTone} title={status.luldHelp}>LULD {status.luldLabel}<HelpTip label={status.luldHelp} /></span>
+  </div>;
+}
+
+function MicrostructureHeaderActions({ connected, references }: { connected: ConnectionState; references: MarketReferences }) {
+  return <div className="microstructure-header-actions charts-quotes-actions">
     <MicrostructureGuide references={references} />
     {connected === "connecting" || connected === "reconnecting" ? <span className="market-context-badge" data-state={connected}>{connected}</span> : null}
   </div>;
