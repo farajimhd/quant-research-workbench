@@ -13,6 +13,8 @@ MARKET_CONTEXT_MAX_SESSION_DISTANCE = 3
 MARKET_LEADER_SIZE = 20
 MARKET_WINDOWS_SECONDS = (60, 300, 600, 1800)
 MARKET_WINDOW_NAMES = ("1m", "5m", "10m", "30m")
+MARKET_RETURN_ENCODING = "signed_log1p_scale1_clip8_v2"
+MARKET_RETURN_LIMIT = 8.0
 
 WINDOW_FIELDS = (
     "terminal_return",
@@ -78,6 +80,30 @@ LEADER_FEATURE_NAMES = CURRENT_MARKET_FEATURE_NAMES + (
     "recent_news_count_log",
 )
 LEADER_FEATURE_DIM = len(LEADER_FEATURE_NAMES)
+CURRENT_MARKET_RETURN_INDICES = tuple(
+    window_index * len(WINDOW_FIELDS) + field_index
+    for window_index in range(len(MARKET_WINDOW_NAMES) + 1)
+    for field_index in (
+        WINDOW_FIELDS.index("terminal_return"),
+        WINDOW_FIELDS.index("high_return"),
+        WINDOW_FIELDS.index("low_return"),
+        WINDOW_FIELDS.index("vwap_distance"),
+    )
+)
+OBSERVED_RETURN_INDICES = tuple(
+    len(CURRENT_MARKET_FEATURE_NAMES)
+    + window_index * len(OBSERVED_WINDOW_FIELDS)
+    + field_index
+    for window_index in range(len(MARKET_WINDOW_NAMES) + 1)
+    for field_index in (
+        OBSERVED_WINDOW_FIELDS.index("terminal_return"),
+        OBSERVED_WINDOW_FIELDS.index("high_return"),
+        OBSERVED_WINDOW_FIELDS.index("low_return"),
+    )
+)
+MARKET_NEWS_RETURN_INDICES = (
+    CURRENT_MARKET_RETURN_INDICES + OBSERVED_RETURN_INDICES
+)
 
 
 def signed_log1p(value: Any, *, scale: float = 10.0, limit: float = 8.0) -> float:
@@ -100,6 +126,26 @@ def nonnegative_log1p(value: Any, *, scale: float = 10.0, limit: float = 8.0) ->
     return min(limit, math.log1p(number) / scale)
 
 
+def encode_market_return(value: Any) -> float:
+    """Encode an unbounded simple return without losing sign or local scale.
+
+    ``log1p`` is approximately identity near zero, while the explicit cap keeps
+    malformed prints and genuine extreme moves representable in float16 market
+    context arrays.
+    """
+    if value is None:
+        return 0.0
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid market return {value!r}.") from exc
+    if math.isnan(number):
+        raise ValueError("Market returns cannot be NaN.")
+    if math.isinf(number):
+        return math.copysign(MARKET_RETURN_LIMIT, number)
+    return signed_log1p(number, scale=1.0, limit=MARKET_RETURN_LIMIT)
+
+
 def bounded_unit(value: Any) -> float:
     try:
         number = float(value)
@@ -115,14 +161,14 @@ def encode_market_window(values: Mapping[str, Any] | None) -> np.ndarray:
         return np.zeros(len(WINDOW_FIELDS), dtype=np.float32)
     return np.asarray(
         (
-            float(row.get("terminal_return") or 0.0),
-            float(row.get("high_return") or 0.0),
-            float(row.get("low_return") or 0.0),
+            encode_market_return(row.get("terminal_return")),
+            encode_market_return(row.get("high_return")),
+            encode_market_return(row.get("low_return")),
             nonnegative_log1p(row.get("volume")),
             nonnegative_log1p(row.get("dollar_volume")),
             nonnegative_log1p(row.get("trade_count")),
             nonnegative_log1p(row.get("quote_count")),
-            float(row.get("vwap_distance") or 0.0),
+            encode_market_return(row.get("vwap_distance")),
             1.0,
         ),
         dtype=np.float32,
@@ -167,9 +213,9 @@ def encode_observed_window(values: Mapping[str, Any] | None) -> np.ndarray:
         return np.zeros(len(OBSERVED_WINDOW_FIELDS), dtype=np.float32)
     return np.asarray(
         (
-            float(row.get("terminal_return") or 0.0),
-            float(row.get("high_return") or 0.0),
-            float(row.get("low_return") or 0.0),
+            encode_market_return(row.get("terminal_return")),
+            encode_market_return(row.get("high_return")),
+            encode_market_return(row.get("low_return")),
             nonnegative_log1p(row.get("volume")),
             nonnegative_log1p(row.get("dollar_volume")),
             nonnegative_log1p(row.get("trade_count")),
@@ -221,7 +267,7 @@ def encode_market_news_feature(
 
 def contract_payload() -> dict[str, Any]:
     return {
-        "version": "news_market_context_v16",
+        "version": "news_market_context_v16_returnlog_v2",
         "selection": {
             "articles": (
                 "latest 100 canonical single-ticker articles with publication time "
@@ -234,6 +280,15 @@ def contract_payload() -> dict[str, Any]:
             ),
         },
         "pre_news_windows_seconds": MARKET_WINDOWS_SECONDS,
+        "return_encoding": {
+            "version": MARKET_RETURN_ENCODING,
+            "formula": "sign(return) * min(log1p(abs(return)), 8)",
+            "scope": (
+                "terminal, high, low, and VWAP-distance returns in current and "
+                "leader features; terminal, high, and low returns in observed "
+                "prior-news reactions"
+            ),
+        },
         "current_feature_names": CURRENT_MARKET_FEATURE_NAMES,
         "market_news_feature_names": MARKET_NEWS_FEATURE_NAMES,
         "leader_feature_names": LEADER_FEATURE_NAMES,
@@ -258,6 +313,14 @@ def contract_payload() -> dict[str, Any]:
             "leader_slots": MARKET_LEADER_SIZE,
         },
     }
+
+
+def legacy_contract_payload() -> dict[str, Any]:
+    """Return the exact pre-return-encoding contract for safe array migration."""
+    payload = contract_payload()
+    payload["version"] = "news_market_context_v16"
+    payload.pop("return_encoding")
+    return payload
 
 
 def contract_sha256() -> str:

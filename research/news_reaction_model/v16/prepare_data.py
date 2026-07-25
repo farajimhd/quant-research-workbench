@@ -32,6 +32,7 @@ from research.news_reaction_model.v16.market_context import (
     MARKET_WINDOWS_SECONDS,
     encode_market_news_feature,
     contract_payload as market_context_contract,
+    legacy_contract_payload as legacy_market_context_contract,
     nonnegative_log1p,
 )
 from research.news_reaction_model.v16.market_data import (
@@ -46,6 +47,7 @@ from research.news_reaction_model.v16.prepared import (
     create_arrays,
     expected_storage_bytes,
     load_json,
+    migrate_legacy_market_return_arrays,
     open_arrays,
     write_json_atomic,
 )
@@ -291,6 +293,7 @@ def build_representation_sha256(
     *,
     source_representation_sha256: str,
     source_rows_count: int,
+    market_contract: Mapping[str, Any] | None = None,
 ) -> str:
     payload = {
         "model_version": MODEL_VERSION,
@@ -309,7 +312,7 @@ def build_representation_sha256(
         "horizons": list(config.horizons),
         "source_range": [config.train_start, config.validation_end_exclusive],
         "context": context_contract(),
-        "market_context": market_context_contract(),
+        "market_context": market_contract or market_context_contract(),
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -936,7 +939,48 @@ def main(argv: list[str] | None = None) -> int:
         source_representation_sha256=str(source_audit["representation_sha256"]),
         source_rows_count=int(source_audit["rows"]),
     )
+    legacy_representation_sha256 = build_representation_sha256(
+        config,
+        source_representation_sha256=str(source_audit["representation_sha256"]),
+        source_rows_count=int(source_audit["rows"]),
+        market_contract=legacy_market_context_contract(),
+    )
     manifest_path = config.prepared_dataset_root / MANIFEST_FILE
+    state_path = config.prepared_dataset_root / BUILD_STATE_FILE
+    if state_path.exists() and not args.restart:
+        legacy_state = load_json(state_path)
+        if (
+            legacy_state.get("dataset_version") == config.prepared_dataset_version
+            and legacy_state.get("representation_sha256")
+            == legacy_representation_sha256
+            and int(legacy_state.get("source_rows") or 0)
+            == int(source_audit["rows"])
+        ):
+            print(
+                "MIGRATION REQUIRED | converting V16 market returns to "
+                "bounded signed-log encoding without rebuilding source rows",
+                flush=True,
+            )
+            migrate_legacy_market_return_arrays(
+                config,
+                int(source_audit["rows"]),
+            )
+            legacy_state["representation_sha256"] = representation_sha256
+            legacy_state["market_return_encoding_migrated"] = True
+            write_json_atomic(state_path, legacy_state)
+            write_json_atomic(
+                manifest_path,
+                {
+                    "status": "building",
+                    "dataset_version": config.prepared_dataset_version,
+                    "representation_sha256": representation_sha256,
+                    "rows": int(source_audit["rows"]),
+                },
+            )
+            print(
+                f"MIGRATION COMPLETE | representation={representation_sha256}",
+                flush=True,
+            )
     if manifest_path.exists() and not args.restart:
         existing = load_json(manifest_path)
         if (
@@ -960,7 +1004,6 @@ def main(argv: list[str] | None = None) -> int:
             )
     if args.restart:
         clear_known_outputs(config.prepared_dataset_root)
-    state_path = config.prepared_dataset_root / BUILD_STATE_FILE
     if state_path.exists():
         state = load_json(state_path)
         if (

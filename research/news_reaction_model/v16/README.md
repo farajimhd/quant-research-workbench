@@ -60,8 +60,11 @@ The current ticker and every leader use one schema:
 
 Each window contains terminal/high/low return, volume, dollar volume, trade
 count, quote count, VWAP distance, and availability. Volume/count values are
-log encoded. Relative volume is causal session-to-date volume divided by the
-mean daily trade volume from up to 20 prior daily macro sessions.
+log encoded. Every market return is encoded as
+`sign(r) * min(log1p(abs(r)), 8)`: this is approximately identity for ordinary
+small returns while keeping genuine extreme moves and malformed source prints
+finite in float16. Relative volume is causal session-to-date volume divided by
+the mean daily trade volume from up to 20 prior daily macro sessions.
 
 Each prior market-news token contains its 57 pre-news values, four completed
 post-news windows, one current as-of window, age, same-ticker,
@@ -101,10 +104,9 @@ authoritative availability time passes, and a prior session's final as-of
 reaction is memoized after that exchange date closes. Same-session as-of
 reactions remain dynamic. This removes repeated bar searches without freezing
 information that was not yet observable.
-These are transport and scheduling changes only: event eligibility, completed
-minute boundaries, market ranks, causal ordering, and prepared representations
-are unchanged. A partially built dataset remains compatible and resumes from
-its last completed month.
+Event eligibility, completed-minute boundaries, market ranks, and causal
+ordering remain unchanged. The market-return representation is explicitly
+versioned as `signed_log1p_scale1_clip8_v2`.
 
 Prepared arrays default to:
 
@@ -116,6 +118,14 @@ OpenAI embeddings remain unique. Both V15 same-ticker and V16 market-news
 contexts store earlier row indices. Large market metadata arrays use float16;
 model batches convert them to float32. The builder checkpoints only completed
 months and reconstructs the bounded causal histories when resuming.
+
+If a pre-v2 build reached its final audit, rerunning the same command performs
+a resumable array migration rather than repeating ClickHouse extraction. It
+reads the completed raw-return arrays, writes each return-log array to a
+separate temporary memmap, atomically promotes it, and only then removes that
+array's legacy source. The migration refuses NaNs, converts representational
+positive/negative infinity to the documented `+8/-8` saturation, updates the
+representation hash, and reruns the complete integrity audit.
 
 ```powershell
 python -m research.news_reaction_model.v16.run_prepare_data --execute

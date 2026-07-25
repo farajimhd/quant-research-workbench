@@ -9,6 +9,11 @@ from typing import Any
 import numpy as np
 
 from research.news_reaction_model.v16.config import LoaderConfig
+from research.news_reaction_model.v16.market_context import (
+    CURRENT_MARKET_RETURN_INDICES,
+    MARKET_NEWS_RETURN_INDICES,
+    MARKET_RETURN_LIMIT,
+)
 
 
 MANIFEST_FILE = "manifest.json"
@@ -22,17 +27,27 @@ ARRAY_FILES = {
     "context_indices": "context_indices.i32.npy",
     "context_features": "context_features.f32.npy",
     "context_mask": "context_mask.bool.npy",
-    "current_market_features": "current_market_features.f32.npy",
+    "current_market_features": "current_market_features.returnlog.f32.npy",
     "market_context_indices": "market_context_indices.i32.npy",
-    "market_context_features": "market_context_features.f16.npy",
+    "market_context_features": "market_context_features.returnlog.f16.npy",
     "market_context_mask": "market_context_mask.bool.npy",
-    "market_leader_features": "market_leader_features.f16.npy",
+    "market_leader_features": "market_leader_features.returnlog.f16.npy",
     "market_leader_mask": "market_leader_mask.bool.npy",
     "canonical_news_id": "canonical_news_id.s64.npy",
     "ticker": "ticker.s32.npy",
     "published_at_utc": "published_at_utc.s40.npy",
     "published_at_us": "published_at_us.i64.npy",
     "publication_session": "publication_session.s16.npy",
+}
+LEGACY_MARKET_ARRAY_FILES = {
+    "current_market_features": "current_market_features.f32.npy",
+    "market_context_features": "market_context_features.f16.npy",
+    "market_leader_features": "market_leader_features.f16.npy",
+}
+MARKET_RETURN_INDICES = {
+    "current_market_features": CURRENT_MARKET_RETURN_INDICES,
+    "market_context_features": MARKET_NEWS_RETURN_INDICES,
+    "market_leader_features": CURRENT_MARKET_RETURN_INDICES,
 }
 
 
@@ -102,6 +117,120 @@ def expected_storage_bytes(config: LoaderConfig, rows: int) -> int:
             for name, shape in shapes.items()
         )
     )
+
+
+def migrate_legacy_market_return_arrays(
+    config: LoaderConfig,
+    rows: int,
+    *,
+    chunk_rows: int = 256,
+) -> None:
+    """Migrate completed or resumable raw-return arrays without rebuilding V16.
+
+    Every destination is written to a separate memmap and atomically promoted
+    before its legacy source is removed. An interrupted migration can therefore
+    restart the active array while retaining every previously completed array.
+    """
+    root = config.prepared_dataset_root
+    shapes = expected_shapes(config, rows)
+    dtypes = expected_dtypes()
+    legacy_sizes = [
+        (root / legacy_filename).stat().st_size
+        for name, legacy_filename in LEGACY_MARKET_ARRAY_FILES.items()
+        if (root / legacy_filename).exists()
+        and not (root / ARRAY_FILES[name]).exists()
+    ]
+    required_extra = max(legacy_sizes, default=0)
+    free = int(shutil.disk_usage(root).free)
+    if free < int(required_extra * 1.05):
+        raise RuntimeError(
+            "V16 return-encoding migration requires enough temporary space for "
+            f"the largest market array ({required_extra / 2**30:.1f} GiB), but "
+            f"only {free / 2**30:.1f} GiB is free under {root}."
+        )
+
+    for name, legacy_filename in LEGACY_MARKET_ARRAY_FILES.items():
+        legacy_path = root / legacy_filename
+        destination = root / ARRAY_FILES[name]
+        temporary = destination.with_suffix(destination.suffix + ".migrating")
+        if destination.exists():
+            migrated = np.load(destination, mmap_mode="r", allow_pickle=False)
+            if migrated.shape != shapes[name] or migrated.dtype != dtypes[name]:
+                raise RuntimeError(
+                    f"Migrated V16 array {destination} has shape/dtype "
+                    f"{migrated.shape}/{migrated.dtype}; expected "
+                    f"{shapes[name]}/{dtypes[name]}."
+                )
+            mmap = getattr(migrated, "_mmap", None)
+            if mmap is not None:
+                mmap.close()
+            del migrated
+            if legacy_path.exists():
+                legacy_path.unlink()
+            if temporary.exists():
+                temporary.unlink()
+            print(f"MIGRATION READY | {name}", flush=True)
+            continue
+        if not legacy_path.exists():
+            raise RuntimeError(
+                f"Cannot migrate V16 {name}: neither {legacy_path} nor "
+                f"{destination} exists."
+            )
+        if temporary.exists():
+            temporary.unlink()
+
+        source = np.load(legacy_path, mmap_mode="r", allow_pickle=False)
+        if source.shape != shapes[name] or source.dtype != dtypes[name]:
+            raise RuntimeError(
+                f"Legacy V16 array {legacy_path} has shape/dtype "
+                f"{source.shape}/{source.dtype}; expected "
+                f"{shapes[name]}/{dtypes[name]}."
+            )
+        target = np.lib.format.open_memmap(
+            temporary,
+            mode="w+",
+            dtype=dtypes[name],
+            shape=shapes[name],
+        )
+        indices = np.asarray(MARKET_RETURN_INDICES[name], dtype=np.int64)
+        next_report = 0.1
+        for start in range(0, rows, max(1, int(chunk_rows))):
+            end = min(rows, start + max(1, int(chunk_rows)))
+            block = np.asarray(source[start:end]).copy()
+            raw = block[..., indices].astype(np.float32, copy=False)
+            if np.isnan(raw).any():
+                coordinates = np.argwhere(np.isnan(raw))[0]
+                raise RuntimeError(
+                    f"V16 {name} contains NaN at migration chunk row "
+                    f"{start + int(coordinates[0])}; refusing lossy repair."
+                )
+            encoded = np.sign(raw) * np.minimum(
+                np.log1p(np.abs(raw)),
+                np.float32(MARKET_RETURN_LIMIT),
+            )
+            if not np.isfinite(encoded).all():
+                raise RuntimeError(
+                    f"V16 {name} return migration produced non-finite values."
+                )
+            block[..., indices] = encoded.astype(block.dtype, copy=False)
+            target[start:end] = block
+            fraction = end / rows
+            if fraction >= next_report or end == rows:
+                print(
+                    f"MIGRATING {name} | {end:,}/{rows:,} "
+                    f"({fraction:.0%})",
+                    flush=True,
+                )
+                next_report += 0.1
+        target.flush()
+        del target
+        source_mmap = getattr(source, "_mmap", None)
+        if source_mmap is not None:
+            source_mmap.close()
+        del source
+        temporary.replace(destination)
+        legacy_path.unlink()
+        print(f"MIGRATED | {name} -> {destination.name}", flush=True)
 
 
 def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:

@@ -45,8 +45,12 @@ from research.news_reaction_model.v16.inference import LiveFeatureEncoder
 from research.news_reaction_model.v16.losses import compute_loss
 from research.news_reaction_model.v16.model import NewsReactionModelV16
 from research.news_reaction_model.v16.market_context import (
+    CURRENT_MARKET_RETURN_INDICES,
     CURRENT_MARKET_FEATURE_DIM,
+    MARKET_NEWS_RETURN_INDICES,
+    MARKET_RETURN_LIMIT,
     MARKET_WINDOW_NAMES,
+    encode_market_return,
 )
 from research.news_reaction_model.v16.market_data import (
     DayMarketCache,
@@ -56,8 +60,13 @@ from research.news_reaction_model.v16.market_data import (
     parse_minute_bar_rows,
 )
 from research.news_reaction_model.v16.prepared import (
+    ARRAY_FILES,
+    LEGACY_MARKET_ARRAY_FILES,
     close_arrays,
     create_arrays,
+    expected_dtypes,
+    expected_shapes,
+    migrate_legacy_market_return_arrays,
     write_json_atomic,
 )
 from research.news_reaction_model.v16.prepare_data import (
@@ -290,6 +299,73 @@ class NewsReactionModelV16Tests(unittest.TestCase):
         )
         self.assertAlmostEqual(session["terminal_return"], 0.01)
         self.assertGreater(features[-12], 0.5)
+
+    def test_market_return_encoding_is_local_and_bounds_extreme_prints(self) -> None:
+        self.assertAlmostEqual(encode_market_return(0.01), np.log1p(0.01))
+        self.assertAlmostEqual(encode_market_return(-0.01), -np.log1p(0.01))
+        self.assertEqual(encode_market_return(645_799.0), MARKET_RETURN_LIMIT)
+        self.assertEqual(encode_market_return(np.inf), MARKET_RETURN_LIMIT)
+        with self.assertRaisesRegex(ValueError, "NaN"):
+            encode_market_return(np.nan)
+
+    def test_legacy_market_arrays_migrate_without_rebuilding_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            loader, _ = tiny_configs(Path(temporary))
+            rows = 3
+            shapes = expected_shapes(loader, rows)
+            dtypes = expected_dtypes()
+            raw_value = 645_799.0
+            for name, filename in LEGACY_MARKET_ARRAY_FILES.items():
+                array = np.lib.format.open_memmap(
+                    Path(temporary) / filename,
+                    mode="w+",
+                    dtype=dtypes[name],
+                    shape=shapes[name],
+                )
+                array.fill(0)
+                indices = (
+                    MARKET_NEWS_RETURN_INDICES
+                    if name == "market_context_features"
+                    else CURRENT_MARKET_RETURN_INDICES
+                )
+                array[..., indices[0]] = (
+                    np.inf if dtypes[name].itemsize == 2 else raw_value
+                )
+                array[..., indices[1]] = np.inf
+                array.flush()
+                del array
+
+            migrate_legacy_market_return_arrays(loader, rows, chunk_rows=2)
+
+            for name, old_filename in LEGACY_MARKET_ARRAY_FILES.items():
+                self.assertFalse((Path(temporary) / old_filename).exists())
+                migrated = np.load(
+                    Path(temporary) / ARRAY_FILES[name],
+                    mmap_mode="r",
+                    allow_pickle=False,
+                )
+                indices = (
+                    MARKET_NEWS_RETURN_INDICES
+                    if name == "market_context_features"
+                    else CURRENT_MARKET_RETURN_INDICES
+                )
+                self.assertTrue(np.isfinite(migrated).all())
+                self.assertTrue(
+                    np.all(
+                        np.asarray(migrated[..., indices[0]], dtype=np.float32)
+                        == MARKET_RETURN_LIMIT
+                    )
+                )
+                self.assertTrue(
+                    np.all(
+                        np.asarray(migrated[..., indices[1]], dtype=np.float32)
+                        == MARKET_RETURN_LIMIT
+                    )
+                )
+                mmap = getattr(migrated, "_mmap", None)
+                if mmap is not None:
+                    mmap.close()
+                del migrated
 
     def test_market_tsv_decoder_preserves_typed_ordered_rows(self) -> None:
         rows = parse_minute_bar_rows(
