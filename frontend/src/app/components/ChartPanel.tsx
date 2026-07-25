@@ -4602,20 +4602,21 @@ function drawLevelFootprintProfile(
   const referenceVolume = orderedVolumes[referenceIndex];
   if (!(referenceVolume > 0)) return;
   const profileWidth = Math.min(280, Math.max(120, width * 0.2));
-  const left = 5;
+  const right = width - 5;
+  const profileLeft = right - profileWidth;
   const upColor = validHexColor(settings.upColor, resolveChartColor("var(--success)"));
   const downColor = validHexColor(settings.downColor, resolveChartColor("var(--danger)"));
   const neutralColor = validHexColor(resolveChartColor("var(--muted-foreground)"), "#73778A");
   context.save();
   context.globalCompositeOperation = "source-over";
   context.fillStyle = rgbaFromHex(chartBackground, 0.1 + settings.opacity * 0.08);
-  context.fillRect(left, 0, profileWidth, height);
+  context.fillRect(profileLeft, 0, profileWidth, height);
   bins.forEach((bin) => {
     const barWidth = profileWidth * Math.min(1, bin.totalVolume / referenceVolume);
     const buyWidth = barWidth * bin.buyVolume / bin.totalVolume;
     const sellWidth = barWidth * bin.sellVolume / bin.totalVolume;
     const neutralWidth = Math.max(0, barWidth - buyWidth - sellWidth);
-    let cursor = left;
+    let cursor = right - barWidth;
     const top = bin.center - rowHeight * 0.43;
     const heightPx = Math.max(2, rowHeight * 0.86);
     if (buyWidth > 0) {
@@ -4678,7 +4679,12 @@ function drawSwingFootprintRails(
     if (x === null || lineY === null || x < -trackWidth || x > width + trackWidth) return;
     const buyShare = clampNumber((Number(zone.buyVolume) || 0) / totalVolume, 0, 1, 0);
     const sellShare = clampNumber((Number(zone.sellVolume) || 0) / totalVolume, 0, 1, 0);
-    const left = Math.max(4, Math.min(width - trackWidth - 4, x - trackWidth / 2));
+    // The swing-candle center is the causal x-origin. Keep that anchor
+    // invariant and extend both volume tracks to the right rather than
+    // straddling the candle.
+    const left = Math.max(4, x);
+    const visibleTrackWidth = Math.min(trackWidth, width - 4 - left);
+    if (visibleTrackWidth < 2) return;
     const cardHeight = railHeight * 2 + railGap;
     const preferredTop = lineY + labelClearance;
     const cardTop = preferredTop + cardHeight <= height - 3
@@ -4688,15 +4694,15 @@ function drawSwingFootprintRails(
     const sellTop = cardTop + railHeight + railGap;
     if (buyTop > height || sellTop + railHeight < 0) return;
     context.fillStyle = rgbaFromHex(trackColor, 0.24 + settings.opacity * 0.28);
-    context.fillRect(left, buyTop, trackWidth, railHeight);
-    context.fillRect(left, sellTop, trackWidth, railHeight);
+    context.fillRect(left, buyTop, visibleTrackWidth, railHeight);
+    context.fillRect(left, sellTop, visibleTrackWidth, railHeight);
     if (buyShare > 0) {
       context.fillStyle = rgbaFromHex(upColor, 0.34 + settings.opacity * 0.62);
-      context.fillRect(left, buyTop, trackWidth * buyShare, railHeight);
+      context.fillRect(left, buyTop, Math.min(visibleTrackWidth, trackWidth * buyShare), railHeight);
     }
     if (sellShare > 0) {
       context.fillStyle = rgbaFromHex(downColor, 0.34 + settings.opacity * 0.62);
-      context.fillRect(left, sellTop, trackWidth * sellShare, railHeight);
+      context.fillRect(left, sellTop, Math.min(visibleTrackWidth, trackWidth * sellShare), railHeight);
     }
   });
   context.restore();
