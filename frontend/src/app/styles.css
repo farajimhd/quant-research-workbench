@@ -23312,6 +23312,10 @@ button {
   font-variant-numeric: tabular-nums;
 }
 
+.charts-quotes-header-metric:not([data-primary="true"]) {
+  padding: 2px 3px;
+}
+
 .charts-quotes-header-metric + .charts-quotes-header-metric {
   border-left: 1px solid var(--charts-quotes-rule);
 }
@@ -23340,6 +23344,16 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.charts-quotes-header-metric:not([data-primary="true"]) .metric-label {
+  font-size: 10px;
+  font-weight: 680;
+}
+
+.charts-quotes-header-metric:not([data-primary="true"]) strong {
+  font-size: 17px;
+  font-weight: 760;
 }
 
 .charts-quotes-header-metric > span {
@@ -23439,6 +23453,10 @@ button {
 
   .charts-quotes-header-metric {
     padding-inline: 5px;
+  }
+
+  .charts-quotes-header-metric:not([data-primary="true"]) {
+    padding-inline: 2px;
   }
 
 }
