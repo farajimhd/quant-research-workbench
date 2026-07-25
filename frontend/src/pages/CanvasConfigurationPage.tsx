@@ -341,7 +341,7 @@ const DEFAULT_SETTINGS: ContainerSettings = {
     main: { showVolume: true, symbol: "AAPL", timeframe: "10s", visibleIndicators: ["indicator.macd"] },
     month: { showVolume: true, symbol: "AAPL", timeframe: "1mo", visibleIndicators: [] },
     daily: { showVolume: true, symbol: "AAPL", timeframe: "1d", visibleIndicators: [] },
-    layout: { lowerRowPercent: 33, monthColumnPercent: 50, tapeColumnPercent: 20 },
+    layout: { lowerRowPercent: 33, monthColumnPercent: 40, reservedColumnPercent: 20, tapeColumnPercent: 20 },
   },
   microstructure: { limit: 1024 },
   fills: { limit: 5, showCommission: true },
@@ -3592,10 +3592,25 @@ function normalizeChartSlot(stored: Partial<CanvasChartSettings> | undefined, de
 }
 
 function normalizeChartsQuotesLayout(stored: Partial<ChartsQuotesLayoutSettings> | undefined): ChartsQuotesLayoutSettings {
+  const tapeColumnPercent = normalizeLayoutValue(stored?.tapeColumnPercent, 14, 38, DEFAULT_SETTINGS.charts_quotes.layout.tapeColumnPercent);
+  const storedReserved = Number(stored?.reservedColumnPercent);
+  const hasReservedColumn = Number.isFinite(storedReserved);
+  const storedMonth = Number(stored?.monthColumnPercent);
+  const migratedMonth = !hasReservedColumn && Number.isFinite(storedMonth)
+    ? storedMonth * (100 - tapeColumnPercent) / 100
+    : stored?.monthColumnPercent;
+  const monthColumnPercent = normalizeLayoutValue(migratedMonth, 20, 68, DEFAULT_SETTINGS.charts_quotes.layout.monthColumnPercent);
+  const reservedColumnPercent = normalizeLayoutValue(
+    stored?.reservedColumnPercent,
+    12,
+    80 - monthColumnPercent,
+    DEFAULT_SETTINGS.charts_quotes.layout.reservedColumnPercent,
+  );
   return {
     lowerRowPercent: normalizeLayoutValue(stored?.lowerRowPercent, 22, 58, DEFAULT_SETTINGS.charts_quotes.layout.lowerRowPercent),
-    monthColumnPercent: normalizeLayoutValue(stored?.monthColumnPercent, 28, 72, DEFAULT_SETTINGS.charts_quotes.layout.monthColumnPercent),
-    tapeColumnPercent: normalizeLayoutValue(stored?.tapeColumnPercent, 14, 38, DEFAULT_SETTINGS.charts_quotes.layout.tapeColumnPercent),
+    monthColumnPercent,
+    reservedColumnPercent,
+    tapeColumnPercent,
   };
 }
 

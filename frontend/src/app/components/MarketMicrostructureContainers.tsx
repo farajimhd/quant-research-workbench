@@ -10,6 +10,7 @@ export type MarketEventSettings = { limit: number };
 export type ChartsQuotesLayoutSettings = {
   lowerRowPercent: number;
   monthColumnPercent: number;
+  reservedColumnPercent: number;
   tapeColumnPercent: number;
 };
 
@@ -248,14 +249,14 @@ export function ChartsQuotesMarketLayout({
 
   useEffect(() => {
     setWorkingLayout(layout);
-  }, [layout.lowerRowPercent, layout.monthColumnPercent, layout.tapeColumnPercent]);
+  }, [layout.lowerRowPercent, layout.monthColumnPercent, layout.reservedColumnPercent, layout.tapeColumnPercent]);
 
-  const leftWidth = 100 - workingLayout.tapeColumnPercent;
-  const monthWidth = leftWidth * workingLayout.monthColumnPercent / 100;
-  const dailyWidth = leftWidth - monthWidth;
+  const dailyWidth = 100 - workingLayout.monthColumnPercent - workingLayout.reservedColumnPercent;
   const layoutStyle = {
+    "--charts-quotes-col-main": `${100 - workingLayout.tapeColumnPercent}%`,
     "--charts-quotes-col-daily": `${dailyWidth}%`,
-    "--charts-quotes-col-month": `${monthWidth}%`,
+    "--charts-quotes-col-month": `${workingLayout.monthColumnPercent}%`,
+    "--charts-quotes-col-reserved": `${workingLayout.reservedColumnPercent}%`,
     "--charts-quotes-col-tape": `${workingLayout.tapeColumnPercent}%`,
     "--charts-quotes-row-lower": `${workingLayout.lowerRowPercent}%`,
     "--charts-quotes-row-upper": `${100 - workingLayout.lowerRowPercent}%`,
@@ -285,10 +286,15 @@ export function ChartsQuotesMarketLayout({
       } else if (kind === "tape") {
         const tape = (bounds.right - pointerEvent.clientX) / Math.max(1, bounds.width) * 100;
         latest = { ...latest, tapeColumnPercent: clampLayoutRatio(tape, 14, 38) };
+      } else if (kind === "context-left") {
+        const pointerPercent = (pointerEvent.clientX - bounds.left) / Math.max(1, bounds.width) * 100;
+        const rightBoundary = latest.monthColumnPercent + latest.reservedColumnPercent;
+        const month = clampLayoutRatio(pointerPercent, 20, rightBoundary - 12);
+        latest = { ...latest, monthColumnPercent: month, reservedColumnPercent: rightBoundary - month };
       } else {
-        const leftAreaWidth = bounds.width * (100 - latest.tapeColumnPercent) / 100;
-        const month = (pointerEvent.clientX - bounds.left) / Math.max(1, leftAreaWidth) * 100;
-        latest = { ...latest, monthColumnPercent: clampLayoutRatio(month, 28, 72) };
+        const pointerPercent = (pointerEvent.clientX - bounds.left) / Math.max(1, bounds.width) * 100;
+        const rightBoundary = clampLayoutRatio(pointerPercent, latest.monthColumnPercent + 12, 80);
+        latest = { ...latest, reservedColumnPercent: rightBoundary - latest.monthColumnPercent };
       }
       setWorkingLayout(latest);
     };
@@ -309,9 +315,9 @@ export function ChartsQuotesMarketLayout({
         <TickerIdentityWithChange asOf={end || new Date().toISOString()} inputAriaLabel="Charts and quotes ticker" logoUrl={presentations[symbol]?.logo_url} onTickerChange={onSymbolChange} ticker={symbol} />
       </div>
       <section aria-label="Current quote and tape decision metrics" className="charts-quotes-market-strip">
-        <HeaderMarketMetric detail={current ? `${formatSize(current.bidSize)} sh · ${bidVenue.code}` : "No quote"} help={`Current consolidated national best bid; ${bidVenue.name} is posting it.`} label="Bid" primary tone="buy" value={current ? formatPrice(current.bid) : "—"} />
-        <HeaderMarketMetric detail={current ? `${spreadState} · mid ${formatPrice(midpoint)}` : "No quote"} help="Current best ask minus current best bid. Tighter spreads generally reduce execution cost." label="Spread" primary tone={spreadState === "Tighter" ? "buy" : spreadState === "Wider" ? "sell" : "mid"} value={current ? formatPrice(spread) : "—"} />
-        <HeaderMarketMetric detail={current ? `${formatSize(current.askSize)} sh · ${askVenue.code}` : "No quote"} help={`Current consolidated national best ask; ${askVenue.name} is posting it.`} label="Ask" primary tone="sell" value={current ? formatPrice(current.ask) : "—"} />
+        <HeaderMarketMetric detail={current ? `${formatSize(current.bidSize)} sh · ${bidVenue.code}` : "No quote"} help={`Current consolidated national best bid; ${bidVenue.name} is posting it.`} label="Bid" marketRole="bid" primary tone="buy" value={current ? formatPrice(current.bid) : "—"} />
+        <HeaderMarketMetric detail={current ? `${spreadState} · mid ${formatPrice(midpoint)}` : "No quote"} help="Current best ask minus current best bid. Tighter spreads generally reduce execution cost." label="Spread" marketRole="spread" primary tone={spreadState === "Tighter" ? "buy" : spreadState === "Wider" ? "sell" : "mid"} value={current ? formatPrice(spread) : "—"} />
+        <HeaderMarketMetric detail={current ? `${formatSize(current.askSize)} sh · ${askVenue.code}` : "No quote"} help={`Current consolidated national best ask; ${askVenue.name} is posting it.`} label="Ask" marketRole="ask" primary tone="sell" value={current ? formatPrice(current.ask) : "—"} />
         <HeaderMarketMetric detail={last ? `${directionLabel(last.direction)} · ${formatTradeSize(last.size)} sh` : "Waiting"} help="Most recent eligible trade at or before the displayed time." label="Last" primary tone={last?.direction ?? "mid"} value={last ? formatPrice(last.price) : "—"} />
         <HeaderMarketMetric help="Size-weighted NBBO price. It leans toward the side with less displayed liquidity." label="Microprice" tone={microprice >= midpoint ? "buy" : "sell"} value={current ? formatPrice(microprice) : "—"} />
         <HeaderMarketMetric help="(Bid size − ask size) ÷ total displayed NBBO size. Positive values are bid-heavy." label="Imbalance" tone={imbalance >= 0 ? "buy" : "sell"} value={signedPercent(imbalance)} />
@@ -332,22 +338,35 @@ export function ChartsQuotesMarketLayout({
           {error && !prints.length ? <MicrostructureEmpty message={error} /> : prints.length ? <TapePrintTable prints={prints} references={references} /> : <MicrostructureEmpty message="Waiting for trade prints." />}
         </section>
       </aside>
-      <div className="charts-quotes-month-chart">{monthChart}</div>
-      <div className="charts-quotes-daily-chart">{dailyChart}</div>
-      <aside aria-label="Reserved workspace" className="charts-quotes-reserved"><span>Reserved</span><small>Available for the next market context module.</small></aside>
+      <div className="charts-quotes-context-row">
+        <div className="charts-quotes-month-chart">{monthChart}</div>
+        <aside aria-label="Reserved workspace" className="charts-quotes-reserved"><span>Reserved</span><small>Available for the next market context module.</small></aside>
+        <div className="charts-quotes-daily-chart">{dailyChart}</div>
+        <ChartsQuotesResizeHandle ariaLabel="Resize monthly chart and reserved workspace" className="charts-quotes-context-left-resizer" kind="context-left" maximum={workingLayout.monthColumnPercent + workingLayout.reservedColumnPercent - 12} minimum={20} onDoubleClick={() => {
+          const next = { ...workingLayout, monthColumnPercent: 40, reservedColumnPercent: 20 };
+          setWorkingLayout(next);
+          onLayoutChange(next);
+        }} onKeyDown={resizeByKeyboard} onPointerDown={startResize} value={workingLayout.monthColumnPercent} />
+        <ChartsQuotesResizeHandle ariaLabel="Resize reserved workspace and daily chart" className="charts-quotes-context-right-resizer" kind="context-right" maximum={80} minimum={workingLayout.monthColumnPercent + 12} onDoubleClick={() => {
+          const next = { ...workingLayout, monthColumnPercent: 40, reservedColumnPercent: 20 };
+          setWorkingLayout(next);
+          onLayoutChange(next);
+        }} onKeyDown={resizeByKeyboard} onPointerDown={startResize} value={workingLayout.monthColumnPercent + workingLayout.reservedColumnPercent} />
+      </div>
       <ChartsQuotesResizeHandle ariaLabel="Resize upper and lower chart rows" className="charts-quotes-row-resizer" kind="rows" onDoubleClick={() => onLayoutChange({ ...workingLayout, lowerRowPercent: 33 })} onKeyDown={resizeByKeyboard} onPointerDown={startResize} value={workingLayout.lowerRowPercent} />
       <ChartsQuotesResizeHandle ariaLabel="Resize chart and tape columns" className="charts-quotes-tape-resizer" kind="tape" onDoubleClick={() => onLayoutChange({ ...workingLayout, tapeColumnPercent: 20 })} onKeyDown={resizeByKeyboard} onPointerDown={startResize} value={workingLayout.tapeColumnPercent} />
-      <ChartsQuotesResizeHandle ariaLabel="Resize monthly and daily chart columns" className="charts-quotes-context-resizer" kind="context" onDoubleClick={() => onLayoutChange({ ...workingLayout, monthColumnPercent: 50 })} onKeyDown={resizeByKeyboard} onPointerDown={startResize} value={workingLayout.monthColumnPercent} />
     </div>
   </section>;
 }
 
-type ChartsQuotesResizeKind = "context" | "rows" | "tape";
+type ChartsQuotesResizeKind = "context-left" | "context-right" | "rows" | "tape";
 
 function ChartsQuotesResizeHandle({
   ariaLabel,
   className,
   kind,
+  maximum,
+  minimum,
   onDoubleClick,
   onKeyDown,
   onPointerDown,
@@ -356,6 +375,8 @@ function ChartsQuotesResizeHandle({
   ariaLabel: string;
   className: string;
   kind: ChartsQuotesResizeKind;
+  maximum?: number;
+  minimum?: number;
   onDoubleClick: () => void;
   onKeyDown: (kind: ChartsQuotesResizeKind, event: ReactKeyboardEvent<HTMLButtonElement>) => void;
   onPointerDown: (kind: ChartsQuotesResizeKind, event: ReactPointerEvent<HTMLButtonElement>) => void;
@@ -365,8 +386,8 @@ function ChartsQuotesResizeHandle({
   return <button
     aria-label={ariaLabel}
     aria-orientation={horizontal ? "horizontal" : "vertical"}
-    aria-valuemax={kind === "rows" ? 58 : kind === "tape" ? 38 : 72}
-    aria-valuemin={kind === "rows" ? 22 : kind === "tape" ? 14 : 28}
+    aria-valuemax={maximum ?? (kind === "rows" ? 58 : kind === "tape" ? 38 : 80)}
+    aria-valuemin={minimum ?? (kind === "rows" ? 22 : kind === "tape" ? 14 : 12)}
     aria-valuenow={Math.round(value)}
     className={`charts-quotes-resizer ${className}`}
     onDoubleClick={onDoubleClick}
@@ -385,13 +406,19 @@ function clampLayoutRatio(value: number, minimum: number, maximum: number) {
 function resizeChartsQuotesLayout(layout: ChartsQuotesLayoutSettings, kind: ChartsQuotesResizeKind, amount: number): ChartsQuotesLayoutSettings {
   if (kind === "rows") return { ...layout, lowerRowPercent: clampLayoutRatio(layout.lowerRowPercent + amount, 22, 58) };
   if (kind === "tape") return { ...layout, tapeColumnPercent: clampLayoutRatio(layout.tapeColumnPercent + amount, 14, 38) };
-  return { ...layout, monthColumnPercent: clampLayoutRatio(layout.monthColumnPercent + amount, 28, 72) };
+  if (kind === "context-left") {
+    const rightBoundary = layout.monthColumnPercent + layout.reservedColumnPercent;
+    const month = clampLayoutRatio(layout.monthColumnPercent + amount, 20, rightBoundary - 12);
+    return { ...layout, monthColumnPercent: month, reservedColumnPercent: rightBoundary - month };
+  }
+  return { ...layout, reservedColumnPercent: clampLayoutRatio(layout.reservedColumnPercent + amount, 12, 80 - layout.monthColumnPercent) };
 }
 
 function HeaderMarketMetric({
   detail,
   help,
   label,
+  marketRole,
   primary = false,
   tone,
   value,
@@ -399,11 +426,12 @@ function HeaderMarketMetric({
   detail?: string;
   help: string;
   label: string;
+  marketRole?: "ask" | "bid" | "spread";
   primary?: boolean;
   tone: Direction;
   value: string;
 }) {
-  return <div className="charts-quotes-header-metric" data-primary={primary || undefined} data-tone={tone}>
+  return <div className="charts-quotes-header-metric" data-market-role={marketRole} data-primary={primary || undefined} data-tone={tone}>
     <MetricLabel help={help} label={label} />
     <strong>{value}</strong>
     {detail ? <span>{detail}</span> : null}

@@ -116,9 +116,19 @@ export function TickerLogo({ logoUrl, ticker }: { logoUrl?: string; ticker: stri
 }
 
 function TickerLogoImage({ className, logoUrl, title }: { className?: string; logoUrl?: string; title?: string }) {
-  const [failedUrl, setFailedUrl] = useState("");
-  if (!logoUrl || failedUrl === logoUrl) return null;
-  return <img alt="" aria-hidden="true" className={className} loading="lazy" onError={() => setFailedUrl(logoUrl)} src={logoUrl} title={title} />;
+  const [loadedUrl, setLoadedUrl] = useState("");
+  useEffect(() => {
+    let active = true;
+    setLoadedUrl("");
+    if (!logoUrl) return () => { active = false; };
+    const probe = new Image();
+    probe.onload = () => { if (active) setLoadedUrl(logoUrl); };
+    probe.onerror = () => { if (active) setLoadedUrl(""); };
+    probe.src = logoUrl;
+    return () => { active = false; };
+  }, [logoUrl]);
+  if (!logoUrl || loadedUrl !== logoUrl) return null;
+  return <img alt="" aria-hidden="true" className={className} src={logoUrl} title={title} />;
 }
 
 function normalizeTickers(tickers: string[]) {

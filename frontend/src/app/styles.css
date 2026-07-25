@@ -23248,7 +23248,9 @@ button {
 }
 
 .charts-quotes-body {
+  --charts-quotes-col-main: 80%;
   --charts-quotes-col-month: 40%;
+  --charts-quotes-col-reserved: 20%;
   --charts-quotes-col-daily: 40%;
   --charts-quotes-col-tape: 20%;
   --charts-quotes-row-upper: 67%;
@@ -23256,11 +23258,10 @@ button {
   display: grid;
   flex: 1;
   grid-template-areas:
-    "main main tape"
-    "month daily reserved";
+    "main tape"
+    "context context";
   grid-template-columns:
-    minmax(0, var(--charts-quotes-col-month))
-    minmax(0, var(--charts-quotes-col-daily))
+    minmax(0, var(--charts-quotes-col-main))
     minmax(0, var(--charts-quotes-col-tape));
   grid-template-rows:
     minmax(0, var(--charts-quotes-row-upper))
@@ -23350,20 +23351,34 @@ button {
   white-space: nowrap;
 }
 
-.charts-quotes-header-metric[data-primary="true"] {
-  background: color-mix(in oklab, var(--surface-alt) 50%, var(--surface));
-}
-
 .charts-quotes-header-metric[data-primary="true"] strong {
   font-size: 19px;
   font-weight: 780;
 }
 
-.charts-quotes-market-strip .charts-quotes-header-metric:nth-child(2) {
-  background: color-mix(in oklab, var(--surface-alt) 72%, var(--surface));
+.charts-quotes-header-metric[data-market-role="bid"] {
+  background: color-mix(in oklab, var(--success) 30%, var(--surface));
+  box-shadow: inset 0 -3px 0 color-mix(in oklab, var(--success) 88%, transparent);
 }
 
-.charts-quotes-market-strip .charts-quotes-header-metric:nth-child(2) strong {
+.charts-quotes-header-metric[data-market-role="ask"] {
+  background: color-mix(in oklab, var(--danger) 30%, var(--surface));
+  box-shadow: inset 0 -3px 0 color-mix(in oklab, var(--danger) 88%, transparent);
+}
+
+.charts-quotes-header-metric[data-market-role="spread"][data-tone="buy"] {
+  background: color-mix(in oklab, var(--success) 21%, var(--surface));
+}
+
+.charts-quotes-header-metric[data-market-role="spread"][data-tone="sell"] {
+  background: color-mix(in oklab, var(--danger) 21%, var(--surface));
+}
+
+.charts-quotes-header-metric[data-market-role="spread"][data-tone="mid"] {
+  background: color-mix(in oklab, var(--warning) 18%, var(--surface));
+}
+
+.charts-quotes-header-metric[data-market-role="spread"] strong {
   font-size: 18px;
 }
 
@@ -23419,6 +23434,7 @@ button {
 }
 
 .charts-quotes-main-chart,
+.charts-quotes-context-row,
 .charts-quotes-month-chart,
 .charts-quotes-daily-chart,
 .charts-quotes-tape,
@@ -23443,17 +23459,24 @@ button {
 }
 
 .charts-quotes-month-chart {
-  grid-area: month;
   border-right: 1px solid var(--charts-quotes-rule);
 }
 
 .charts-quotes-daily-chart {
-  grid-area: daily;
-  border-right: 1px solid var(--charts-quotes-rule);
+  border-left: 1px solid var(--charts-quotes-rule);
+}
+
+.charts-quotes-context-row {
+  display: grid;
+  grid-area: context;
+  grid-template-columns:
+    minmax(0, var(--charts-quotes-col-month))
+    minmax(0, var(--charts-quotes-col-reserved))
+    minmax(0, var(--charts-quotes-col-daily));
+  position: relative;
 }
 
 .charts-quotes-reserved {
-  grid-area: reserved;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -23632,33 +23655,44 @@ button {
 }
 
 .charts-quotes-tape-resizer,
-.charts-quotes-context-resizer {
+.charts-quotes-context-left-resizer,
+.charts-quotes-context-right-resizer {
   cursor: col-resize;
   transform: translateX(-50%);
   width: 11px;
 }
 
 .charts-quotes-tape-resizer::before,
-.charts-quotes-context-resizer::before {
+.charts-quotes-context-left-resizer::before,
+.charts-quotes-context-right-resizer::before {
   bottom: 0;
   top: 0;
   width: 2px;
 }
 
 .charts-quotes-tape-resizer span,
-.charts-quotes-context-resizer span {
+.charts-quotes-context-left-resizer span,
+.charts-quotes-context-right-resizer span {
   height: 38px;
   width: 3px;
 }
 
 .charts-quotes-tape-resizer {
-  bottom: 0;
+  bottom: var(--charts-quotes-row-lower);
   left: calc(100% - var(--charts-quotes-col-tape));
   top: 0;
 }
 
-.charts-quotes-context-resizer {
+.charts-quotes-context-left-resizer,
+.charts-quotes-context-right-resizer {
   bottom: 0;
+  top: 0;
+}
+
+.charts-quotes-context-left-resizer {
   left: var(--charts-quotes-col-month);
-  top: var(--charts-quotes-row-upper);
+}
+
+.charts-quotes-context-right-resizer {
+  left: calc(var(--charts-quotes-col-month) + var(--charts-quotes-col-reserved));
 }
