@@ -57,6 +57,8 @@ type QmdStructureLevelCandidate = {
   lifecycle: string;
   price: number;
   promotions: Array<{ timeframe: string; promoted_at_ms: number; score: number }>;
+  footprint_session_date: string;
+  footprint_as_of_ms: number;
   footprint: Array<{ offset_ticks: number; price: number; total_volume: number; buy_volume: number; sell_volume: number; neutral_volume: number; trade_count: number; largest_trade: number }>;
   total_volume: number;
   buy_volume: number;
@@ -793,10 +795,16 @@ function mergeStructureLevelHistory(
   const byIdentity = new Map<string, QmdStructureLevelCandidate>();
   [...current, ...(incoming ?? [])].forEach((level) => {
     if (!isQmdStructureLevelCandidate(level)) return;
-    byIdentity.set(`${level.created_at_ms}:${level.side}:${Number(level.price).toFixed(8)}`, level);
+    const key = `${level.footprint_session_date}:${level.created_at_ms}:${level.side}:${Number(level.price).toFixed(8)}`;
+    const existing = byIdentity.get(key);
+    if (!existing || level.footprint_as_of_ms >= existing.footprint_as_of_ms) {
+      byIdentity.set(key, level);
+    }
   });
   return [...byIdentity.values()]
-    .sort((left, right) => left.created_at_ms - right.created_at_ms)
+    .sort((left, right) =>
+      left.footprint_as_of_ms - right.footprint_as_of_ms
+      || left.created_at_ms - right.created_at_ms)
     .slice(-4_000);
 }
 
@@ -2258,6 +2266,7 @@ function historicalMarketLevelZones(
       structureEvents.length ? structureEvents : structureEventsFromSampledRows(rows),
       chartEnd,
       timeframe,
+      String(rows[rows.length - 1]?.session_date ?? ""),
     );
   }
   if (visibleIndicators.includes("indicator.qmd_reference_levels")) {
@@ -2470,20 +2479,35 @@ function pushLevelVolumeFootprint(
   structureEvents: QmdStructureEvent[],
   chartEnd: number,
   selectedTimeframe: CanvasChartTimeframe,
+  footprintSessionDate: string,
 ) {
+  if (!footprintSessionDate) return;
   const encounteredById = new Map<string, QmdStructureLevelCandidate>();
   const levelKey = (candidate: QmdStructureLevelCandidate) =>
-    `${candidate.created_at_ms}:${candidate.side}:${candidate.price.toFixed(8)}`;
+    `${candidate.footprint_session_date}:${candidate.created_at_ms}:${candidate.side}:${candidate.price.toFixed(8)}`;
   structureLevelHistory.forEach((candidate) => {
-    if (isQmdStructureLevelCandidate(candidate)) encounteredById.set(levelKey(candidate), candidate);
+    if (
+      isQmdStructureLevelCandidate(candidate)
+      && candidate.footprint_session_date === footprintSessionDate
+    ) {
+      encounteredById.set(levelKey(candidate), candidate);
+    }
   });
   rows.forEach((row) => {
     if (!Array.isArray(row.qmd_structure_active_levels)) return;
     row.qmd_structure_active_levels
       .filter(isQmdStructureLevelCandidate)
-      .forEach((candidate) => encounteredById.set(levelKey(candidate), candidate));
+      .filter((candidate) => candidate.footprint_session_date === footprintSessionDate)
+      .forEach((candidate) => {
+        const key = levelKey(candidate);
+        const existing = encounteredById.get(key);
+        if (!existing || candidate.footprint_as_of_ms >= existing.footprint_as_of_ms) {
+          encounteredById.set(key, candidate);
+        }
+      });
   });
   const binsByPrice = new Map<string, {
+    asOfMs: number;
     buyVolume: number;
     neutralVolume: number;
     price: number;
@@ -2491,16 +2515,19 @@ function pushLevelVolumeFootprint(
     totalVolume: number;
   }>();
   encounteredById.forEach((candidate) => {
+    const asOfMs = Number(candidate.footprint_as_of_ms) || 0;
     candidate.footprint.forEach((bin) => {
       if (!(Number(bin.price) > 0) || !(Number(bin.total_volume) > 0)) return;
       const key = Number(bin.price).toFixed(8);
       const current = binsByPrice.get(key);
+      if (current && current.asOfMs > asOfMs) return;
       binsByPrice.set(key, {
-        buyVolume: Math.max(current?.buyVolume ?? 0, Number(bin.buy_volume) || 0),
-        neutralVolume: Math.max(current?.neutralVolume ?? 0, Number(bin.neutral_volume) || 0),
+        asOfMs,
+        buyVolume: Math.max(0, Number(bin.buy_volume) || 0),
+        neutralVolume: Math.max(0, Number(bin.neutral_volume) || 0),
         price: Number(bin.price),
-        sellVolume: Math.max(current?.sellVolume ?? 0, Number(bin.sell_volume) || 0),
-        totalVolume: Math.max(current?.totalVolume ?? 0, Number(bin.total_volume) || 0),
+        sellVolume: Math.max(0, Number(bin.sell_volume) || 0),
+        totalVolume: Math.max(0, Number(bin.total_volume) || 0),
       });
     });
   });
@@ -2586,6 +2613,10 @@ function isQmdStructureLevelCandidate(value: unknown): value is QmdStructureLeve
     && Number.isFinite(candidate.strength)
     && Number.isFinite(candidate.distance)
     && Number.isFinite(candidate.evidence_score)
+    && typeof candidate.footprint_session_date === "string"
+    && candidate.footprint_session_date.length > 0
+    && Number.isFinite(candidate.footprint_as_of_ms)
+    && Number(candidate.footprint_as_of_ms) > 0
     && Array.isArray(candidate.promotions)
     && Array.isArray(candidate.footprint)
     && (candidate.side === 1 || candidate.side === -1);

@@ -5,7 +5,7 @@ use chrono_tz::America::New_York;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
-pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 8;
+pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 9;
 pub const STRUCTURE_TIMEFRAMES: [(&str, i64); 8] = [
     ("100ms", 100),
     ("1s", 1_000),
@@ -83,6 +83,14 @@ pub struct StructureLevelCandidate {
     pub last_test_at_ms: i64,
     pub lifecycle: String,
     pub promotions: Vec<StructurePromotionSnapshot>,
+    /// Extended-hours market session whose cumulative executed volume is
+    /// represented by `footprint` (04:00-20:00 America/New_York).
+    #[serde(default)]
+    pub footprint_session_date: String,
+    /// Event time of this cumulative footprint snapshot. Consumers must retain
+    /// the newest complete snapshot rather than combining individual fields.
+    #[serde(default)]
+    pub footprint_as_of_ms: i64,
     pub footprint: Vec<StructureFootprintBin>,
     pub total_volume: f64,
     pub buy_volume: f64,
@@ -894,14 +902,19 @@ impl GenericStructureEngine {
         self.levels.drain(0..remove);
     }
 
-    pub fn snapshot(&self, _now: DateTime<Utc>) -> GenericStructureSnapshot {
+    pub fn snapshot(&self, now: DateTime<Utc>) -> GenericStructureSnapshot {
         let reference = if self.last_trade_price > 0.0 {
             self.last_trade_price
         } else {
             self.last_reference_price
         };
-        let active_levels =
-            exposed_active_levels(&self.levels, &self.session_volume_by_price, reference);
+        let active_levels = exposed_active_levels(
+            &self.levels,
+            &self.session_volume_by_price,
+            reference,
+            self.session_anchor,
+            now,
+        );
         let support = active_levels
             .iter()
             .filter(|level| level.side > 0 && level.price < reference)
@@ -1563,6 +1576,8 @@ fn exposed_active_levels(
     levels: &[StructureLevel],
     session_volume: &HashMap<i64, PriceVolumeBin>,
     reference: f64,
+    footprint_session_date: Option<NaiveDate>,
+    footprint_as_of: DateTime<Utc>,
 ) -> Vec<StructureLevelCandidate> {
     let mut supports = levels
         .iter()
@@ -1579,7 +1594,15 @@ fn exposed_active_levels(
         .into_iter()
         .take(MAX_EXPOSED_LEVELS_PER_SIDE)
         .chain(resistances.into_iter().take(MAX_EXPOSED_LEVELS_PER_SIDE))
-        .map(|level| level_candidate(level, session_volume, reference))
+        .map(|level| {
+            level_candidate(
+                level,
+                session_volume,
+                reference,
+                footprint_session_date,
+                footprint_as_of,
+            )
+        })
         .collect()
 }
 
@@ -1587,6 +1610,8 @@ fn level_candidate(
     level: &StructureLevel,
     session_volume: &HashMap<i64, PriceVolumeBin>,
     reference: f64,
+    footprint_session_date: Option<NaiveDate>,
+    footprint_as_of: DateTime<Utc>,
 ) -> StructureLevelCandidate {
     let (strength, confidence) = level_evidence(level);
     let footprint = footprint_snapshot(level, session_volume);
@@ -1615,6 +1640,10 @@ fn level_candidate(
                 score: promotion.score,
             })
             .collect(),
+        footprint_session_date: footprint_session_date
+            .map(|date| date.to_string())
+            .unwrap_or_default(),
+        footprint_as_of_ms: footprint_as_of.timestamp_millis(),
         footprint,
         total_volume: totals.0,
         buy_volume: totals.1,
@@ -2355,6 +2384,8 @@ mod tests {
         assert!(level.total_volume > 0.0);
         assert!(level.trade_count > 0);
         assert_eq!(level.footprint.len(), 9);
+        assert_eq!(level.footprint_session_date, "2026-07-24");
+        assert!(level.footprint_as_of_ms >= start);
     }
 
     #[test]

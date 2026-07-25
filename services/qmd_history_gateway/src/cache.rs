@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
 
-pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v26";
+pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v27";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -129,20 +129,43 @@ pub struct ChartSnapshot {
 }
 
 fn encountered_structure_levels(indicators: &[IndicatorRow]) -> Vec<StructureLevelCandidate> {
-    bounded_encountered_structure_levels(
+    let Some(session_date) = indicators
+        .last()
+        .map(|indicator| indicator.session_date.as_str())
+    else {
+        return Vec::new();
+    };
+    encountered_structure_levels_for_session(
+        session_date,
         indicators
             .iter()
             .flat_map(|indicator| indicator.qmd_structure_active_levels.iter().cloned()),
     )
 }
 
+fn encountered_structure_levels_for_session(
+    session_date: &str,
+    levels: impl IntoIterator<Item = StructureLevelCandidate>,
+) -> Vec<StructureLevelCandidate> {
+    bounded_encountered_structure_levels(
+        levels
+            .into_iter()
+            .filter(|level| level.footprint_session_date == session_date),
+    )
+}
+
 fn bounded_encountered_structure_levels(
     levels: impl IntoIterator<Item = StructureLevelCandidate>,
 ) -> Vec<StructureLevelCandidate> {
-    let mut by_identity = BTreeMap::<(i64, i8, u64), StructureLevelCandidate>::new();
+    let mut by_identity = BTreeMap::<(String, i64, i8, u64), StructureLevelCandidate>::new();
     for level in levels {
         by_identity.insert(
-            (level.created_at_ms, level.side, level.price.to_bits()),
+            (
+                level.footprint_session_date.clone(),
+                level.created_at_ms,
+                level.side,
+                level.price.to_bits(),
+            ),
             level,
         );
     }
@@ -1619,9 +1642,10 @@ fn valid_price_bar(bar: &BarRow) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_encountered_structure_levels, cache_key, ensure_monotonic_bar_start,
-        split_event_window, structure_events_overlapping, CacheEntry, CacheProfile, EntryState,
-        SourceRevision, HISTORICAL_ENGINE_VERSION, MAX_ENCOUNTERED_STRUCTURE_LEVELS,
+        bounded_encountered_structure_levels, cache_key, encountered_structure_levels_for_session,
+        ensure_monotonic_bar_start, split_event_window, structure_events_overlapping, CacheEntry,
+        CacheProfile, EntryState, SourceRevision, HISTORICAL_ENGINE_VERSION,
+        MAX_ENCOUNTERED_STRUCTURE_LEVELS,
     };
     use crate::source::EventWindow;
     use chrono::{DateTime, Duration, TimeZone, Utc};
@@ -1709,6 +1733,7 @@ mod tests {
                 created_at_ms,
                 side,
                 price,
+                footprint_session_date: "2026-07-24".to_string(),
                 total_volume,
                 ..StructureLevelCandidate::default()
             };
@@ -1727,6 +1752,50 @@ mod tests {
         assert_eq!(history.len(), MAX_ENCOUNTERED_STRUCTURE_LEVELS);
         assert_eq!(history.first().unwrap().created_at_ms, 1);
         assert_eq!(history.last().unwrap().total_volume, 9_999.0);
+    }
+
+    #[test]
+    fn encountered_structure_history_does_not_merge_sessions() {
+        let level = |session: &str, as_of_ms: i64| StructureLevelCandidate {
+            created_at_ms: 100,
+            side: 1,
+            price: 45.0,
+            footprint_session_date: session.to_string(),
+            footprint_as_of_ms: as_of_ms,
+            total_volume: as_of_ms as f64,
+            ..StructureLevelCandidate::default()
+        };
+
+        let history = bounded_encountered_structure_levels([
+            level("2026-07-16", 1_000),
+            level("2026-07-17", 2_000),
+        ]);
+
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].footprint_session_date, "2026-07-16");
+        assert_eq!(history[1].footprint_session_date, "2026-07-17");
+    }
+
+    #[test]
+    fn encountered_structure_history_excludes_prior_session_levels() {
+        let level = |session: &str, price: f64| StructureLevelCandidate {
+            created_at_ms: 100,
+            side: 1,
+            price,
+            footprint_session_date: session.to_string(),
+            footprint_as_of_ms: 2_000,
+            total_volume: 1_000.0,
+            ..StructureLevelCandidate::default()
+        };
+
+        let history = encountered_structure_levels_for_session(
+            "2026-07-17",
+            [level("2026-07-16", 35.0), level("2026-07-17", 45.0)],
+        );
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].footprint_session_date, "2026-07-17");
+        assert_eq!(history[0].price, 45.0);
     }
 
     #[test]

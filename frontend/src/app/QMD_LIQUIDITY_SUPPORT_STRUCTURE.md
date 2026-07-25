@@ -248,6 +248,21 @@ The timeframe labels are separate event-native local swing and break states.
 A 1 s BoS can only break the active 1 s swing; it cannot inherit a 100 ms or
 1 h break. They are still not candle-derived swing engines.
 
+### Level volume footprint
+
+The right-axis footprint is cumulative executed volume for the chart's latest
+04:00-20:00 New York session, not a projection of volume from every loaded
+day. Each canonical level snapshot includes `footprint_session_date` and
+`footprint_as_of_ms`. Loading an earlier chart page therefore cannot replace a
+newer same-level snapshot or introduce a prior session's prices.
+
+When multiple level windows expose the same exact price, the application keeps
+the single newest complete snapshot at that price. It must not independently
+maximize total, buy, sell, or neutral fields because that would create a volume
+bar that never existed in the source state. Only after causal prices and
+volumes are selected does the renderer combine bins that occupy the same screen
+row at the current vertical scale.
+
 ## Structural context inside QMD Decision
 
 The standalone Structure and Structural Pressure oscillators are retired. Their
@@ -310,7 +325,7 @@ resize authority.
 
 ## Data and Failure States
 
-- `schema_version` below 15 may not contain the current structure/pressure
+- `schema_version` below 17 may not contain the current structure/pressure
   contract.
 - Zero can mean neutral, but it can also mean missing evidence. Check counts,
   coverage, reliability, and service freshness before interpreting it.

@@ -452,7 +452,7 @@ Table: `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`.
 
 | Field | Formula | Streaming Method |
 |---|---|---|
-| `schema_version` | Current value is `15`. | Constant per row. |
+| `schema_version` | Current value is `17`. | Constant per row. |
 | `session_date`, `timeframe`, `sym`, `bar_start`, `bar_end` | Copied from closed bar. | One row per closed bar. |
 | `close`, `volume` | Copied from closed bar. | Inputs for chart and indicator display. |
 | `vwap` | TradingView-compatible session VWAP: cumulative `sum(hlc3 * volume) / sum(volume)` from the 04:00 New York extended-session open. It continues through 09:30 without resetting and remains anchored through after-hours. The canonical bar's own `vwap` remains its event-level `dollar_volume / volume`. | Keep cumulative typical-price notional and volume per ticker/timeframe/market-session anchor. |

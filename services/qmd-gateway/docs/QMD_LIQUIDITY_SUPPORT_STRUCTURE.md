@@ -42,11 +42,17 @@ not a forecast probability.
 
 The chart exposes two presentations of this same canonical footprint:
 
-- **All encountered levels** unions the latest cumulative snapshot for every
-  distinct causal level returned in loaded history. Exact prices are preserved
-  by the service. The renderer combines prices only when the current vertical
-  scale maps them into the same screen row, then draws buyer, neutral, and
-  seller volume inward from the right price axis. Bar length uses the visible
+- **All encountered levels** unions the newest complete cumulative snapshot for
+  every distinct causal level in the chart's latest 04:00 ET market session.
+  Every candidate carries `footprint_session_date` and
+  `footprint_as_of_ms`; an older page cannot replace a newer snapshot or leak a
+  prior session's prices into the current profile. Exact prices are preserved
+  by the service. When several level windows expose the same exact price, the
+  renderer selects the single newest complete snapshot for that price rather
+  than taking independent maxima that could synthesize a volume combination
+  which never existed. Prices are combined only when the current vertical
+  scale maps them into the same screen row, then buyer, neutral, and seller
+  volume is drawn inward from the right price axis. Bar length uses the visible
   95th-percentile screen-row volume as its display reference so one exceptional
   print does not flatten the rest of the profile; this caps drawing width only
   and does not change reported volume.
@@ -58,12 +64,12 @@ The chart exposes two presentations of this same canonical footprint:
   volume. The tracks stay attached to the swing price and candle center and
   resize with the chart scale.
 
-QMD History returns a bounded `structure_level_history` alongside chart bars.
-It is built set-wise from the loaded indicator history before the latest-row
-projection is applied, so a historical profile is not incorrectly reduced to
-the levels that remain active at the final bar. Identity is
-`created_at_ms + side + exact price`, and the service retains the newest 4,000
-encountered levels per response.
+QMD History returns a bounded, session-scoped `structure_level_history`
+alongside chart bars. It is built set-wise from the loaded indicator history
+before the latest-row projection is applied, so a historical profile is not
+incorrectly reduced to the levels that remain active at the final bar.
+Identity is `footprint_session_date + created_at_ms + side + exact price`, and
+the service retains the newest 4,000 encountered levels per response.
 
 ### Strategy contract
 
@@ -91,8 +97,8 @@ response, and QMD flow together.
 
 This is the calculation and service-contract authority for QMD liquidity,
 support/resistance, market structure, and structural-pressure indicators. It
-documents indicator schema version 15 and generic-structure algorithm version
-7. The application rendering contract is documented in
+documents indicator schema version 17 and generic-structure algorithm version
+9. The application rendering contract is documented in
 [`frontend/src/app/QMD_LIQUIDITY_SUPPORT_STRUCTURE.md`](../../../frontend/src/app/QMD_LIQUIDITY_SUPPORT_STRUCTURE.md).
 
 ## Scope and Interpretation Boundary
@@ -510,7 +516,7 @@ structural pressure. New code should prefer `qmd_structure_*`.
 
 ## Strategy Use Checklist
 
-1. Confirm `schema_version >= 15` and a current `bar_end`.
+1. Confirm `schema_version >= 17` and a current `bar_end`.
 2. Use the row and structure-event layer for the intended timeframe; interval
    microstructure changes with aggregation, and each generic-structure
    timeframe owns an independent local swing and break state.
