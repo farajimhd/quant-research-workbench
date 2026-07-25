@@ -23357,13 +23357,22 @@ button {
 }
 
 .charts-quotes-header-metric[data-market-role="bid"] {
-  background: color-mix(in oklab, var(--success) 30%, var(--surface));
-  box-shadow: inset 0 -3px 0 color-mix(in oklab, var(--success) 88%, transparent);
+  background: var(--quote-bid-neon);
+  box-shadow: inset 0 -3px 0 color-mix(in oklab, var(--primary-foreground) 42%, transparent);
 }
 
 .charts-quotes-header-metric[data-market-role="ask"] {
-  background: color-mix(in oklab, var(--danger) 30%, var(--surface));
-  box-shadow: inset 0 -3px 0 color-mix(in oklab, var(--danger) 88%, transparent);
+  background: var(--quote-ask-neon);
+  box-shadow: inset 0 -3px 0 color-mix(in oklab, var(--primary-foreground) 42%, transparent);
+}
+
+.charts-quotes-header-metric:is([data-market-role="bid"], [data-market-role="ask"]) .metric-label,
+.charts-quotes-header-metric:is([data-market-role="bid"], [data-market-role="ask"]) > span {
+  color: color-mix(in oklab, var(--primary-foreground) 84%, transparent);
+}
+
+.charts-quotes-header-metric[data-primary="true"]:is([data-market-role="bid"], [data-market-role="ask"]) strong {
+  color: var(--primary-foreground);
 }
 
 .charts-quotes-header-metric[data-market-role="spread"][data-tone="buy"] {

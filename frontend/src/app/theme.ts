@@ -59,6 +59,8 @@ type AppThemeTokenMap = {
   primary: string;
   primaryForeground: string;
   progressTrack: string;
+  quoteAsk: string;
+  quoteBid: string;
   sidebar: string;
   sidebarAccent: string;
   sidebarForeground: string;
@@ -336,6 +338,8 @@ export function applyThemeDefinition(target: HTMLElement, themeId: AppThemeId = 
     "--primary": tokens.primary,
     "--primary-foreground": tokens.primaryForeground,
     "--progress-track": tokens.progressTrack,
+    "--quote-ask-neon": tokens.quoteAsk,
+    "--quote-bid-neon": tokens.quoteBid,
     "--ring": tokens.focusRing,
     "--secondary": tokens.cardMuted,
     "--secondary-foreground": tokens.foreground,
@@ -464,6 +468,8 @@ function buildTheme({
       primary: palette.primary,
       primaryForeground: "#ffffff",
       progressTrack: tone === "light" ? "rgba(113, 113, 130, 0.16)" : withOpacity(palette.primary, "0.16"),
+      quoteAsk: "#ed174c",
+      quoteBid: "#00a83b",
       sidebar: palette.sidebar,
       sidebarAccent: tone === "light" ? palette.secondary : withOpacity(palette.primary, "0.10"),
       sidebarForeground: palette.sidebarForeground,
