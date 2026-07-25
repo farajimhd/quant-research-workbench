@@ -884,7 +884,11 @@ function closedRowsAtCutoff<T extends { bar_start: string }>(rows: T[], timefram
   const durationMs = timeframeDurationMs(timeframe);
   return rows.filter((row) => {
     const closeMetadata = row as T & { bar_end?: string; is_closed?: boolean };
-    if (closeMetadata.is_closed === false) return false;
+    // QMD History builds the current calendar month causally from completed
+    // daily bars through the requested as-of clock. It remains an explicitly
+    // partial monthly row, but it is still the correct last candle to present.
+    // Other open bars stay excluded from historical Canvas charts.
+    if (closeMetadata.is_closed === false && timeframe !== "1mo") return false;
     const startMs = Date.parse(row.bar_start);
     const endMs = closeMetadata.bar_end ? Date.parse(closeMetadata.bar_end) : startMs + durationMs;
     return Number.isFinite(startMs) && Number.isFinite(endMs) && endMs <= cutoffMs;
