@@ -315,10 +315,10 @@ export function ChartsQuotesMarketLayout({
         <TickerIdentityWithChange asOf={end || new Date().toISOString()} inputAriaLabel="Charts and quotes ticker" logoUrl={presentations[symbol]?.logo_url} onTickerChange={onSymbolChange} ticker={symbol} />
       </div>
       <section aria-label="Current quote and tape decision metrics" className="charts-quotes-market-strip">
+        <HeaderMarketMetric detail={last ? `${directionLabel(last.direction)} · ${formatTradeSize(last.size)} sh` : "Waiting"} help="Most recent eligible trade at or before the displayed time." label="Last" marketRole="last" primary tone={last?.direction ?? "mid"} value={last ? formatPrice(last.price) : "—"} />
         <HeaderMarketMetric detail={current ? `${formatSize(current.bidSize)} sh · ${bidVenue.code}` : "No quote"} help={`Current consolidated national best bid; ${bidVenue.name} is posting it.`} label="Bid" marketRole="bid" primary tone="buy" value={current ? formatPrice(current.bid) : "—"} />
         <HeaderMarketMetric detail={current ? `${spreadState} · mid ${formatPrice(midpoint)}` : "No quote"} help="Current best ask minus current best bid. Tighter spreads generally reduce execution cost." label="Spread" marketRole="spread" primary tone={spreadState === "Tighter" ? "buy" : spreadState === "Wider" ? "sell" : "mid"} value={current ? formatPrice(spread) : "—"} />
         <HeaderMarketMetric detail={current ? `${formatSize(current.askSize)} sh · ${askVenue.code}` : "No quote"} help={`Current consolidated national best ask; ${askVenue.name} is posting it.`} label="Ask" marketRole="ask" primary tone="sell" value={current ? formatPrice(current.ask) : "—"} />
-        <HeaderMarketMetric detail={last ? `${directionLabel(last.direction)} · ${formatTradeSize(last.size)} sh` : "Waiting"} help="Most recent eligible trade at or before the displayed time." label="Last" primary tone={last?.direction ?? "mid"} value={last ? formatPrice(last.price) : "—"} />
         <HeaderMarketMetric help="Size-weighted NBBO price. It leans toward the side with less displayed liquidity." label="Microprice" tone={microprice >= midpoint ? "buy" : "sell"} value={current ? formatPrice(microprice) : "—"} />
         <HeaderMarketMetric help="(Bid size − ask size) ÷ total displayed NBBO size. Positive values are bid-heavy." label="Imbalance" tone={imbalance >= 0 ? "buy" : "sell"} value={signedPercent(imbalance)} />
         <HeaderMarketMetric help="Average NBBO updates per second across the visible quote window." label="Quote rate" tone="mid" value={`${quoteRate.toFixed(1)}/s`} />
@@ -426,7 +426,7 @@ function HeaderMarketMetric({
   detail?: string;
   help: string;
   label: string;
-  marketRole?: "ask" | "bid" | "spread";
+  marketRole?: "ask" | "bid" | "last" | "spread";
   primary?: boolean;
   tone: Direction;
   value: string;

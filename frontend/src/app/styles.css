@@ -23288,17 +23288,17 @@ button {
   display: grid;
   flex: 1 1 auto;
   grid-template-columns:
-    minmax(76px, 1.1fr)
-    minmax(66px, .82fr)
-    minmax(76px, 1.1fr)
-    minmax(76px, 1fr)
-    minmax(70px, .88fr)
-    minmax(62px, .78fr)
-    minmax(60px, .72fr)
-    minmax(58px, .7fr)
-    minmax(62px, .78fr)
-    minmax(50px, .6fr)
-    minmax(68px, .82fr);
+    minmax(90px, 1.05fr)
+    minmax(112px, 1.3fr)
+    minmax(96px, 1.08fr)
+    minmax(112px, 1.3fr)
+    minmax(78px, .86fr)
+    minmax(70px, .78fr)
+    minmax(70px, .76fr)
+    minmax(68px, .74fr)
+    minmax(72px, .8fr)
+    minmax(56px, .62fr)
+    minmax(78px, .86fr);
   min-width: 0;
 }
 
@@ -23306,9 +23306,9 @@ button {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 2px;
+  gap: 1px;
   min-width: 0;
-  padding: 6px 7px;
+  padding: 4px 7px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -23318,23 +23318,23 @@ button {
 
 .charts-quotes-header-metric .metric-label {
   color: var(--text-secondary);
-  font-size: 8px;
-  font-weight: 650;
+  font-size: 9px;
+  font-weight: 680;
   letter-spacing: .025em;
   line-height: 1;
   white-space: nowrap;
 }
 
 .charts-quotes-header-metric .micro-help-tip svg {
-  height: 10px;
-  width: 10px;
+  height: 11px;
+  width: 11px;
 }
 
 .charts-quotes-header-metric strong {
   color: var(--text-primary);
   font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 13px;
-  font-weight: 720;
+  font-size: 15px;
+  font-weight: 740;
   letter-spacing: -.025em;
   line-height: 1;
   overflow: hidden;
@@ -23344,16 +23344,21 @@ button {
 
 .charts-quotes-header-metric > span {
   color: var(--text-secondary);
-  font-size: 8px;
-  line-height: 1.1;
+  font-size: 9px;
+  font-weight: 560;
+  line-height: 1.05;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .charts-quotes-header-metric[data-primary="true"] strong {
-  font-size: 19px;
+  font-size: 21px;
   font-weight: 780;
+}
+
+.charts-quotes-header-metric[data-market-role="last"] {
+  background: color-mix(in oklab, var(--surface-alt) 72%, var(--surface));
 }
 
 .charts-quotes-header-metric[data-market-role="bid"] {
@@ -23371,8 +23376,14 @@ button {
   color: color-mix(in oklab, var(--primary-foreground) 84%, transparent);
 }
 
+.charts-quotes-header-metric:is([data-market-role="bid"], [data-market-role="ask"]) > span {
+  font-size: 10px;
+  font-weight: 680;
+}
+
 .charts-quotes-header-metric[data-primary="true"]:is([data-market-role="bid"], [data-market-role="ask"]) strong {
   color: var(--primary-foreground);
+  font-size: 23px;
 }
 
 .charts-quotes-header-metric[data-market-role="spread"][data-tone="buy"] {
@@ -23388,7 +23399,7 @@ button {
 }
 
 .charts-quotes-header-metric[data-market-role="spread"] strong {
-  font-size: 18px;
+  font-size: 23px;
 }
 
 .charts-quotes-header-metric[data-tone="buy"] strong { color: var(--success); }
@@ -23419,20 +23430,17 @@ button {
 
   .charts-quotes-market-strip {
     grid-template-columns:
-      minmax(72px, 1fr)
-      minmax(62px, .76fr)
-      minmax(72px, 1fr)
-      minmax(72px, .95fr)
-      repeat(7, minmax(52px, .7fr));
+      minmax(76px, .95fr)
+      minmax(96px, 1.15fr)
+      minmax(80px, .92fr)
+      minmax(96px, 1.15fr)
+      repeat(7, minmax(58px, .68fr));
   }
 
   .charts-quotes-header-metric {
     padding-inline: 5px;
   }
 
-  .charts-quotes-header-metric > span {
-    display: none;
-  }
 }
 
 @container (max-width: 1180px) {
