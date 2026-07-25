@@ -1,0 +1,20 @@
+from __future__ import annotations
+
+import shlex
+import sys
+
+from research.news_reaction_model.v16.profile_sizes import main
+
+DEFAULT_ARGS = [
+    "--model-sizes", "192,384,576,768",
+    "--batch-sizes", "256,512,1024,2048,4096,8192",
+    "--layers", "1,2,4",
+    "--attention-heads", "6",
+    "--data-start", "2019-01-01",
+    "--data-end-exclusive", "2027-01-01",
+]
+
+if __name__ == "__main__":
+    args = DEFAULT_ARGS + sys.argv[1:]
+    print("COMMAND python -m research.news_reaction_model.v16.profile_sizes " + " ".join(shlex.quote(value) for value in args), flush=True)
+    raise SystemExit(main(args))
