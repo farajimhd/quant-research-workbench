@@ -487,7 +487,7 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
     "qmd_structure_prior_month_high", "qmd_structure_prior_month_low", "qmd_structure_prior_month_close",
   ], "price", indicatorGuide(
     "Independent auction and regulatory reference levels; they are context, not Generic Structure evidence.",
-    "Samples session/premarket extremes, opening range, eligible-trade volume POC, estimated LULD, and completed higher-timeframe levels from QMD's causal state.",
+    "Samples session/premarket extremes, opening range, eligible-trade volume POC, estimated LULD, and completed higher-timeframe levels from QMD's causal state. Estimated LULD upper and lower values render as continuous stepped lines because QMD updates the rolling five-minute estimate discretely; missing or inactive observations remain true gaps.",
     "Holding above an important accepted reference can support bullish context when flow confirms.",
     "Rejecting below an important reference can support bearish context when flow confirms.",
     "The underlying references are timestamp-driven; the selected chart timeframe changes only sampling density.",
@@ -2758,22 +2758,22 @@ function pushGenericStructureReferences(
   chartEnd: number,
 ) {
   const specs = [
-    ["qmd_structure_session_high", "Session high", "Sess H", "var(--info)", "session", "Session H/L", false],
-    ["qmd_structure_session_low", "Session low", "Sess L", "var(--info)", "session", "Session H/L", false],
-    ["qmd_structure_premarket_high", "Premarket high", "PM H", "var(--warning)", "premarket", "Premarket H/L", true],
-    ["qmd_structure_premarket_low", "Premarket low", "PM L", "var(--warning)", "premarket", "Premarket H/L", true],
-    ["qmd_structure_opening_range_high", "Opening range high", "OR H", "var(--foreground)", "opening-range", "Opening range", true],
-    ["qmd_structure_opening_range_low", "Opening range low", "OR L", "var(--foreground)", "opening-range", "Opening range", true],
-    ["qmd_structure_trade_volume_poc", "Eligible-trade volume POC", "POC", "var(--primary)", "poc", "Trade-volume POC", true],
-    ["qmd_structure_luld_upper", "Estimated LULD upper", "LULD U", "var(--danger)", "luld", "Estimated LULD", false],
-    ["qmd_structure_luld_lower", "Estimated LULD lower", "LULD L", "var(--danger)", "luld", "Estimated LULD", false],
-    ["qmd_structure_52_week_high", "52-week high", "52W H", "var(--warning)", "52-week", "52-week H/L", false],
-    ["qmd_structure_52_week_low", "52-week low", "52W L", "var(--info)", "52-week", "52-week H/L", false],
-    ["qmd_structure_prior_month_high", "Prior-month high", "PrevM H", "var(--primary)", "prior-month", "Prior month H/L/C", false],
-    ["qmd_structure_prior_month_low", "Prior-month low", "PrevM L", "var(--primary)", "prior-month", "Prior month H/L/C", false],
-    ["qmd_structure_prior_month_close", "Prior-month close", "PrevM C", "var(--muted-foreground)", "prior-month", "Prior month H/L/C", false],
+    ["qmd_structure_session_high", "Session high", "Sess H", "var(--info)", "session", "Session H/L", false, "sell"],
+    ["qmd_structure_session_low", "Session low", "Sess L", "var(--info)", "session", "Session H/L", false, "buy"],
+    ["qmd_structure_premarket_high", "Premarket high", "PM H", "var(--warning)", "premarket", "Premarket H/L", true, "sell"],
+    ["qmd_structure_premarket_low", "Premarket low", "PM L", "var(--warning)", "premarket", "Premarket H/L", true, "buy"],
+    ["qmd_structure_opening_range_high", "Opening range high", "OR H", "var(--foreground)", "opening-range", "Opening range", true, "sell"],
+    ["qmd_structure_opening_range_low", "Opening range low", "OR L", "var(--foreground)", "opening-range", "Opening range", true, "buy"],
+    ["qmd_structure_trade_volume_poc", "Eligible-trade volume POC", "POC", "var(--primary)", "poc", "Trade-volume POC", true, "neutral"],
+    ["qmd_structure_luld_upper", "Estimated LULD upper", "LULD U", "var(--danger)", "luld", "Estimated LULD", false, "sell"],
+    ["qmd_structure_luld_lower", "Estimated LULD lower", "LULD L", "var(--success)", "luld", "Estimated LULD", false, "buy"],
+    ["qmd_structure_52_week_high", "52-week high", "52W H", "var(--warning)", "52-week", "52-week H/L", false, "sell"],
+    ["qmd_structure_52_week_low", "52-week low", "52W L", "var(--info)", "52-week", "52-week H/L", false, "buy"],
+    ["qmd_structure_prior_month_high", "Prior-month high", "PrevM H", "var(--primary)", "prior-month", "Prior month H/L/C", false, "sell"],
+    ["qmd_structure_prior_month_low", "Prior-month low", "PrevM L", "var(--primary)", "prior-month", "Prior month H/L/C", false, "buy"],
+    ["qmd_structure_prior_month_close", "Prior-month close", "PrevM C", "var(--muted-foreground)", "prior-month", "Prior month H/L/C", false, "neutral"],
   ] as const;
-  specs.forEach(([column, label, compactLabel, color, settingsSuffix, legendLabel, axisLabelDefault]) => {
+  specs.forEach(([column, label, compactLabel, color, settingsSuffix, legendLabel, axisLabelDefault, tone]) => {
     const settingsGroup = ["session", "premarket"].includes(settingsSuffix)
       ? "session-levels"
       : ["52-week", "prior-month"].includes(settingsSuffix)
@@ -2785,7 +2785,7 @@ function pushGenericStructureReferences(
         ? "Higher-timeframe levels"
         : legendLabel;
     pushTrailingLevelZones(zones, rows, column, chartEnd, LEVEL_SOURCE_HISTORY_BARS, {
-      annotationKind: "level",
+      annotationKind: settingsGroup === "luld" ? "luld-line" : "level",
       axisLabelDefault,
       color,
       compactLabel,
@@ -2798,12 +2798,13 @@ function pushGenericStructureReferences(
       minPixelHeight: 3,
       renderMode: "line",
       settingsId: `indicator.qmd_reference_levels.${settingsGroup}`,
+      tone: tone === "neutral" ? undefined : tone,
     });
   });
 }
 
 type LevelZoneStyle = {
-  annotationKind: "level" | "liquidity-resistance" | "liquidity-support" | "swing-high" | "swing-low";
+  annotationKind: "level" | "luld-line" | "liquidity-resistance" | "liquidity-support" | "swing-high" | "swing-low";
   axisLabelDefault?: boolean;
   borderStyle?: string;
   borderWidth?: number;
@@ -2820,9 +2821,10 @@ type LevelZoneStyle = {
   renderMode?: "line" | "zone";
   settingsId: string;
   strength?: number;
+  tone?: "buy" | "sell";
 };
 
-const LEVEL_SOURCE_HISTORY_BARS = 500;
+const LEVEL_SOURCE_HISTORY_BARS = 1000;
 
 
 function pushTrailingLevelZones(
@@ -2884,6 +2886,7 @@ function pushHistoricalLevelSegment(
     settingsId: style.settingsId,
     start,
     strength: style.strength,
+    tone: style.tone,
     upper: value,
     zoneHeightMode: "fixed_px",
   });

@@ -104,7 +104,7 @@ type TradeAnnotation = {
 };
 type ChartPreset = "micro" | "tactical" | "context" | "axis-history" | "swing-rails";
 type PriceZone = {
-  annotationKind?: "band" | "bos" | "choch" | "level-footprint" | "swing-footprint" | "structure-break" | "level" | "liquidity-resistance" | "liquidity-support" | "signal-episode-rail" | "signal-episode-range" | "swing-high" | "swing-low";
+  annotationKind?: "band" | "bos" | "choch" | "level-footprint" | "swing-footprint" | "structure-break" | "level" | "luld-line" | "liquidity-resistance" | "liquidity-support" | "signal-episode-rail" | "signal-episode-range" | "swing-high" | "swing-low";
   axisLabelDefault?: boolean;
   borderColor?: string;
   borderOpacity?: number;
@@ -1754,6 +1754,7 @@ type LegendItem = {
   showLabels?: boolean;
   showValue: boolean;
   supportsConnectors?: boolean;
+  supportsNeutralColorEditing?: boolean;
   supportsSemanticColorEditing?: boolean;
   supportsCurrentLevelCount?: boolean;
   supportsAxisLabel?: boolean;
@@ -1958,6 +1959,9 @@ function LegendEditor({
             <span className="legend-semantic-color-inputs">
               <span><input aria-label={item.label.includes("footprint") ? "Buyer color" : "Bullish color"} type="color" value={item.semanticColors.up} onChange={(event) => onUpdate({ upColor: event.target.value })} />{item.label.includes("footprint") ? "Buyer" : "Bullish"}</span>
               <span><input aria-label={item.label.includes("footprint") ? "Seller color" : "Bearish color"} type="color" value={item.semanticColors.down} onChange={(event) => onUpdate({ downColor: event.target.value })} />{item.label.includes("footprint") ? "Seller" : "Bearish"}</span>
+              {item.supportsNeutralColorEditing ? (
+                <span><input aria-label="Neutral color" type="color" value={item.color} onChange={(event) => onUpdate({ color: event.target.value })} />Neutral</span>
+              ) : null}
             </span>
           ) : (
             <span
@@ -2941,7 +2945,7 @@ function buildPriceZoneLegendItems(
     const selectedZones = itemZones.filter((zone) => !zone.preset || zone.preset === settings.preset);
     const episodeIds = new Set(selectedZones.filter((zone) => zone.episodeId !== undefined).map((zone) => `${zone.preset}:${zone.episodeId}`));
     return {
-      color: readNeutralChartColor(),
+      color: settings.color,
       configurable: true,
       currentLevelCount: settings.currentLevelCount,
       guideHelp,
@@ -2957,19 +2961,15 @@ function buildPriceZoneLegendItems(
       preset: settings.preset,
       presetOptions: displayItem?.presetOptions,
       seriesStyle: "line" as const,
-      semanticColor: true,
-      semanticColors: { down: settings.downColor, neutral: readNeutralChartColor(), up: settings.upColor },
+      semanticColor: selectedZones.some((zone) => zone.tone === "buy" || zone.tone === "sell"),
+      semanticColors: { down: settings.downColor, neutral: settings.color, up: settings.upColor },
       showConnectors: settings.showConnectors,
       showAxisLabel: settings.showAxisLabel,
       showHistoricalLabels: settings.showHistoricalLabels,
       showValue: true,
       supportsConnectors: itemZones.some(isStructureBreakZone),
-      supportsSemanticColorEditing: selectedZones.some((zone) =>
-        zone.annotationKind === "swing-high"
-        || zone.annotationKind === "swing-low"
-        || zone.annotationKind === "level-footprint"
-        || zone.annotationKind === "swing-footprint"
-        || isStructureBreakZone(zone)),
+      supportsNeutralColorEditing: selectedZones.some((zone) => !zone.tone),
+      supportsSemanticColorEditing: selectedZones.some((zone) => zone.tone === "buy" || zone.tone === "sell"),
       supportsCurrentLevelCount: itemZones.some((zone) => Boolean(zone.currentLevelSide)),
       supportsAxisLabel: itemZones.some((zone) => typeof zone.axisLabelDefault === "boolean"),
       supportsHistoricalLabels: itemZones.some((zone) => (zone.renderMode === "line" && Boolean(zone.compactLabel)) || isStructureBreakZone(zone)),
@@ -3375,7 +3375,7 @@ function mixHexColors(background: string, foreground: string, foregroundWeight: 
 function priceZonePresentationColors(
   zone: PriceZone,
   chartBackground: string,
-  settings?: Pick<ResolvedPriceZoneLegendSettings, "downColor" | "upColor">,
+  settings?: Pick<ResolvedPriceZoneLegendSettings, "color" | "downColor" | "upColor">,
 ) {
   const confidence = typeof zone.confidence === "number" && Number.isFinite(zone.confidence)
     ? clampNumber(zone.confidence, 0, 1, 0)
@@ -3384,7 +3384,7 @@ function priceZonePresentationColors(
     ? settings?.upColor
     : zone.tone === "sell"
       ? settings?.downColor
-      : undefined;
+      : settings?.color;
   const semanticFillColor = validHexColor(resolveChartColor(configuredToneColor || zone.fillColor || zone.color), "#1E3A5F");
   const semanticBorderColor = validHexColor(resolveChartColor(configuredToneColor || zone.borderColor || semanticFillColor), semanticFillColor);
   return {
@@ -3443,6 +3443,7 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
 }
 
 type ResolvedPriceZoneLegendSettings = {
+  color: string;
   currentLevelCount: number;
   downColor: string;
   historyBars: number;
@@ -3461,6 +3462,7 @@ type ResolvedPriceZoneLegendSettings = {
 function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: string, zone?: PriceZone): ResolvedPriceZoneLegendSettings {
   const stored = settingsMap[key] ?? {};
   return {
+    color: validHexColor(stored.color, resolveChartColor(zone?.color || "var(--muted-foreground)")),
     currentLevelCount: Math.max(1, Math.min(6, Math.round(stored.currentLevelCount ?? 3))),
     downColor: validHexColor(stored.downColor, resolveChartColor("var(--danger)")),
     historyBars: Math.max(20, Math.min(1000, Math.round(stored.historyBars ?? 20))),
@@ -4363,6 +4365,22 @@ function drawPriceZonePrimitiveGeometry(
       );
       return;
     }
+    if (selectedZones.some((zone) => zone.annotationKind === "luld-line")) {
+      drawContinuousReferenceLines(
+        chart,
+        priceSeries,
+        context,
+        width,
+        height,
+        selectedZones,
+        settings,
+        chartBackground,
+        candles,
+        candleDuration,
+        historyStart,
+      );
+      return;
+    }
     selectedZones.forEach((zone) => {
       if (!priceZoneWithinHistory(zone, historyStart)) return;
       if (
@@ -4478,6 +4496,72 @@ function drawPriceZonePrimitiveGeometry(
       }
       context.restore();
     });
+  });
+}
+
+function drawContinuousReferenceLines(
+  chart: IChartApi,
+  priceSeries: ISeriesApi<"Candlestick">,
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  zones: PriceZone[],
+  settings: ResolvedPriceZoneLegendSettings,
+  chartBackground: string,
+  candles: Candle[],
+  candleDuration: number,
+  historyStart: number,
+) {
+  const grouped = new Map<string, PriceZone[]>();
+  zones
+    .filter((zone) => zone.annotationKind === "luld-line" && priceZoneWithinHistory(zone, historyStart))
+    .forEach((zone) => {
+      const key = zone.compactLabel || zone.label;
+      grouped.set(key, [...(grouped.get(key) ?? []), zone]);
+    });
+  grouped.forEach((lineZones) => {
+    const ordered = [...lineZones].sort((left, right) => left.start - right.start);
+    if (!ordered.length) return;
+    const { borderColor } = priceZonePresentationColors(ordered[0], chartBackground, settings);
+    context.save();
+    context.strokeStyle = rgbaFromHex(borderColor, settings.opacity);
+    context.lineWidth = settings.lineWidth;
+    context.setLineDash(canvasLineDash(settings.lineStyle, settings.lineWidth));
+    context.lineJoin = "round";
+    context.beginPath();
+    let drawing = false;
+    let previousEnd = Number.NaN;
+    let previousY = Number.NaN;
+    ordered.forEach((zone) => {
+      const startX = xForStructureEventTime(chart, zone.start, candles, candleDuration);
+      const endX = xForStructureEventTime(chart, zone.end, candles, candleDuration);
+      const y = priceSeries.priceToCoordinate(zone.lower);
+      if (startX === null || endX === null || y === null || y < 0 || y > height) {
+        drawing = false;
+        previousEnd = Number.NaN;
+        previousY = Number.NaN;
+        return;
+      }
+      const start = Math.max(0, Math.min(width, startX));
+      const end = Math.max(0, Math.min(width, endX));
+      if (end <= start) return;
+      const contiguous = drawing
+        && Math.abs(zone.start - previousEnd) <= Math.max(0.001, candleDuration * 0.51);
+      if (!contiguous) {
+        context.moveTo(start, y);
+      } else {
+        // QMD updates these estimated bands discretely. A step joins the prior
+        // observation to the next without inventing an unobserved diagonal.
+        context.lineTo(start, previousY);
+        context.lineTo(start, y);
+      }
+      context.lineTo(end, y);
+      drawing = true;
+      previousEnd = zone.end;
+      previousY = y;
+    });
+    context.stroke();
+    context.restore();
   });
 }
 
