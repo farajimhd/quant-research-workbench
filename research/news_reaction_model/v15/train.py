@@ -1,0 +1,881 @@
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import math
+import random
+import signal
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable
+
+import numpy as np
+import torch
+
+from research.mlops.checkpoints import AsyncCheckpointManager, CheckpointPolicy
+from research.mlops.env import discover_env_files, load_env_files
+from research.mlops.manifest import write_run_manifest
+from research.mlops.metrics import JsonlMetricLogger
+from research.mlops.model_artifacts import parameter_summary, write_model_artifacts, write_model_card
+from research.mlops.paths import RunPaths
+from research.mlops.wandb_utils import init_wandb
+from research.news_reaction_model.v15 import HORIZONS, MODEL_FAMILY, MODEL_VERSION
+from research.news_reaction_model.v15.config import ExperimentConfig, LoaderConfig, ModelConfig, TrainConfig, default_run_name, to_dict
+from research.news_reaction_model.v15.data import (
+    PreparedNewsReactionDataset,
+    NewsReactionBatch,
+    audit_prepared_dataset,
+    deterministic_buffered_batches,
+    make_dummy_batch,
+)
+from research.news_reaction_model.v15.evaluate import evaluate_checkpoint
+from research.news_reaction_model.v15.losses import compute_loss
+from research.news_reaction_model.v15.metrics import (
+    OpportunityAccumulator,
+    TrainingLossAccumulator,
+)
+from research.news_reaction_model.v15.model import NewsReactionModelV15, build_model_mermaid
+from research.news_reaction_model.v15.context import (
+    CONTEXT_FEATURE_DIM,
+    CONTEXT_LOOKBACK_DAYS,
+    CONTEXT_SIZE,
+    context_contract,
+)
+from research.news_reaction_model.v15.opportunity import opportunity_contract
+from research.news_reaction_model.v15.time_features import contract_payload as time_contract
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+_INTERRUPTED = False
+
+
+@dataclass(slots=True)
+class TrainingCursor:
+    samples_seen: int = 0
+    epoch: int = 0
+    epoch_articles_seen: int = 0
+    next_log: int = 0
+
+
+@dataclass(slots=True)
+class RestoredTrainingState:
+    cursor: TrainingCursor
+    last_train: dict[str, float]
+    last_val: dict[str, float]
+
+
+def handle_interrupt(_signum: int, _frame: Any) -> None:
+    global _INTERRUPTED
+    _INTERRUPTED = True
+    print("Interrupt received; stopping after the current batch and saving a checkpoint.", flush=True)
+
+
+def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
+    loader, model, train = LoaderConfig(), ModelConfig(), TrainConfig()
+    parser = argparse.ArgumentParser(
+        description=(
+            "Train V15: V12 opportunity heads plus strictly causal prior same-ticker "
+            "news context."
+        )
+    )
+    parser.add_argument("--train-start", default=loader.train_start)
+    parser.add_argument("--train-end-exclusive", default=loader.train_end_exclusive)
+    parser.add_argument("--validation-start", default=loader.validation_start)
+    parser.add_argument("--validation-end-exclusive", default=loader.validation_end_exclusive)
+    parser.add_argument("--batch-size", type=int, default=loader.batch_size)
+    parser.add_argument("--query-batch-articles", type=int, default=loader.query_batch_articles)
+    parser.add_argument("--loader-workers", type=int, default=loader.workers)
+    parser.add_argument("--prefetch-batches", type=int, default=loader.prefetch_batches)
+    parser.add_argument(
+        "--shuffle-buffer-articles",
+        type=int,
+        default=loader.shuffle_buffer_articles,
+    )
+    parser.add_argument("--max-threads-per-query", type=int, default=loader.max_threads_per_query)
+    parser.add_argument("--max-memory-usage", default=loader.max_memory_usage)
+    parser.add_argument("--dataset-database", default=loader.dataset_database)
+    parser.add_argument("--dataset-table", default=loader.dataset_table)
+    parser.add_argument("--dataset-version", default=loader.dataset_version)
+    parser.add_argument("--representation-artifact-root", default=str(loader.representation_artifact_root))
+    parser.add_argument("--prepared-root", default=str(loader.prepared_dataset_root))
+    parser.add_argument("--openai-embedding-dim", type=int, default=loader.openai_embedding_dim)
+    parser.add_argument("--stock-state-dim", type=int, default=loader.stock_state_dim)
+    parser.add_argument("--context-size", type=int, default=loader.context_size)
+    parser.add_argument("--context-lookback-days", type=int, default=loader.context_lookback_days)
+    parser.add_argument("--d-model", type=int, default=model.d_model)
+    parser.add_argument("--attention-heads", type=int, default=model.attention_heads)
+    parser.add_argument("--hidden-dim", type=int, default=model.hidden_dim)
+    parser.add_argument("--layers", type=int, default=model.layers)
+    parser.add_argument("--dropout", type=float, default=model.dropout)
+    parser.add_argument("--epochs", type=int, default=train.epochs)
+    parser.add_argument("--max-samples", type=int, default=train.max_samples)
+    parser.add_argument("--learning-rate", type=float, default=train.learning_rate)
+    parser.add_argument("--weight-decay", type=float, default=train.weight_decay)
+    parser.add_argument("--grad-clip-norm", type=float, default=train.grad_clip_norm)
+    parser.add_argument("--scheduler", choices=("none", "cosine"), default=train.scheduler)
+    parser.add_argument("--scheduler-restarts", type=int, default=train.scheduler_restarts)
+    parser.add_argument("--scheduler-eta-min", type=float, default=train.scheduler_eta_min)
+    parser.add_argument(
+        "--scheduler-cycle-decay",
+        type=float,
+        default=train.scheduler_cycle_decay,
+        help="Multiply the cosine peak learning rate by this factor after each restart.",
+    )
+    parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=train.amp)
+    parser.add_argument("--amp-dtype", choices=("bf16", "fp16", "float32"), default=train.amp_dtype)
+    parser.add_argument("--compile-model", action=argparse.BooleanOptionalAction, default=train.compile_model)
+    parser.add_argument("--logging-samples", type=int, default=train.logging_samples)
+    parser.add_argument("--validation-max-batches", type=int, default=train.validation_max_batches)
+    parser.add_argument("--checkpoint-latest-samples", type=int, default=train.checkpoint_latest_samples)
+    parser.add_argument("--checkpoint-archive-samples", type=int, default=train.checkpoint_archive_samples)
+    parser.add_argument("--evaluate-at-end", action=argparse.BooleanOptionalAction, default=train.evaluate_at_end)
+    parser.add_argument("--output-root", default=str(train.output_root.parent))
+    parser.add_argument("--run-name", default="")
+    parser.add_argument("--wandb-project", default=train.wandb_project)
+    parser.add_argument("--wandb-entity", default=train.wandb_entity)
+    parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default=train.wandb_mode)
+    parser.add_argument("--wandb-init-timeout", type=int, default=train.wandb_init_timeout)
+    parser.add_argument("--resume-checkpoint", default="")
+    parser.add_argument("--dummy-data", action="store_true")
+    parser.add_argument("--dummy-batches", type=int, default=8)
+    parser.add_argument("--seed", type=int, default=train.seed)
+    return parser.parse_args(list(argv) if argv is not None else None)
+
+
+def build_config(args: argparse.Namespace) -> ExperimentConfig:
+    loader = LoaderConfig(
+        dataset_database=args.dataset_database, dataset_table=args.dataset_table, dataset_version=args.dataset_version,
+        representation_artifact_root=Path(args.representation_artifact_root),
+        prepared_dataset_root=Path(args.prepared_root),
+        openai_embedding_dim=max(1, args.openai_embedding_dim),
+        stock_state_dim=max(1, args.stock_state_dim),
+        context_size=max(1, args.context_size),
+        context_lookback_days=max(1, args.context_lookback_days),
+        train_start=args.train_start, train_end_exclusive=args.train_end_exclusive,
+        validation_start=args.validation_start, validation_end_exclusive=args.validation_end_exclusive,
+        batch_size=args.batch_size, query_batch_articles=args.query_batch_articles, workers=args.loader_workers,
+        prefetch_batches=args.prefetch_batches,
+        shuffle_buffer_articles=args.shuffle_buffer_articles,
+        max_threads_per_query=args.max_threads_per_query,
+        max_memory_usage=args.max_memory_usage,
+    )
+    model = ModelConfig(
+        openai_embedding_dim=loader.openai_embedding_dim,
+        stock_state_dim=loader.stock_state_dim,
+        time_feature_dim=loader.time_feature_dim,
+        context_size=loader.context_size,
+        context_feature_dim=loader.context_feature_dim,
+        attention_heads=max(1, args.attention_heads),
+        d_model=args.d_model, hidden_dim=args.hidden_dim, layers=args.layers, dropout=args.dropout,
+    )
+    train = TrainConfig(
+        output_root=Path(args.output_root), run_name=args.run_name, epochs=args.epochs, max_samples=args.max_samples,
+        learning_rate=args.learning_rate, weight_decay=args.weight_decay, grad_clip_norm=args.grad_clip_norm,
+        scheduler=args.scheduler, scheduler_restarts=args.scheduler_restarts,
+        scheduler_eta_min=args.scheduler_eta_min,
+        scheduler_cycle_decay=args.scheduler_cycle_decay,
+        amp=args.amp, amp_dtype=args.amp_dtype, compile_model=args.compile_model,
+        logging_samples=args.logging_samples, validation_max_batches=args.validation_max_batches,
+        checkpoint_latest_samples=args.checkpoint_latest_samples, checkpoint_archive_samples=args.checkpoint_archive_samples,
+        evaluate_at_end=args.evaluate_at_end,
+        wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_mode=args.wandb_mode,
+        wandb_init_timeout=args.wandb_init_timeout, seed=args.seed,
+    )
+    return ExperimentConfig(loader, model, train)
+
+
+def validate_config(config: ExperimentConfig) -> None:
+    if not 1 <= config.train.epochs <= 50:
+        raise ValueError("V15 training requires --epochs between 1 and 50 inclusive")
+    if config.train.scheduler == "cosine" and (
+        config.train.scheduler_restarts < 0 or config.train.scheduler_restarts >= config.train.epochs
+    ):
+        raise ValueError("--scheduler-restarts must be nonnegative and less than --epochs")
+    if not 0.0 < config.train.scheduler_cycle_decay <= 1.0:
+        raise ValueError("--scheduler-cycle-decay must be in (0, 1]")
+    if config.loader.shuffle_buffer_articles < config.loader.batch_size:
+        raise ValueError("--shuffle-buffer-articles must be at least --batch-size")
+    if (
+        config.loader.context_size != CONTEXT_SIZE
+        or config.loader.context_lookback_days != CONTEXT_LOOKBACK_DAYS
+        or config.loader.context_feature_dim != CONTEXT_FEATURE_DIM
+    ):
+        raise ValueError(
+            "V15 prepared context contract is fixed at "
+            f"N={CONTEXT_SIZE}, lookback={CONTEXT_LOOKBACK_DAYS} days, "
+            f"feature_dim={CONTEXT_FEATURE_DIM}."
+        )
+    if config.model.context_size != config.loader.context_size:
+        raise ValueError("Model and loader context sizes must match.")
+    if config.model.context_feature_dim != config.loader.context_feature_dim:
+        raise ValueError("Model and loader context feature dimensions must match.")
+    if config.model.d_model % config.model.attention_heads:
+        raise ValueError("--d-model must be divisible by --attention-heads")
+
+
+def main(argv: Iterable[str] | None = None) -> int:
+    global _INTERRUPTED
+    _INTERRUPTED = False
+    signal.signal(signal.SIGINT, handle_interrupt)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, handle_interrupt)
+    load_env_files(discover_env_files(REPO_ROOT), verbose=True)
+    args = parse_args(argv)
+    set_seed(args.seed)
+    config = build_config(args)
+    validate_config(config)
+    config.train.run_name = default_run_name(config)
+    train_articles = config.loader.batch_size * max(1, args.dummy_batches)
+    if not args.dummy_data:
+        train_audit = audit_prepared_dataset(config.loader, config.loader.train_start, config.loader.train_end_exclusive)
+        validation_audit = audit_prepared_dataset(config.loader, config.loader.validation_start, config.loader.validation_end_exclusive)
+        if train_audit["representation_sha256"] != validation_audit["representation_sha256"]:
+            raise RuntimeError("V15 train and validation rows were built by different representations.")
+        print(
+            f"DATASET ready | train={train_audit['rows']:,} articles | validation={validation_audit['rows']:,} articles | "
+            f"context_train={train_audit['context_articles']:,} | "
+            f"context_validation={validation_audit['context_articles']:,} | "
+            f"version={config.loader.prepared_dataset_version}",
+            flush=True,
+        )
+        train_articles = int(train_audit["rows"])
+    run_root = Path(config.train.output_root) / config.train.run_name
+    paths = RunPaths.create(run_root)
+    (paths.run_root / "config.json").write_text(json.dumps(to_dict(config), indent=2, default=str), encoding="utf-8")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda":
+        torch.set_float32_matmul_precision("high")
+    raw_model = NewsReactionModelV15(config.model).to(device)
+    wandb_run = init_wandb(entity=config.train.wandb_entity, project=config.train.wandb_project,
+                           run_name=config.train.run_name, config=to_dict(config), run_dir=paths.wandb_dir,
+                           mode=config.train.wandb_mode, timeout_seconds=config.train.wandb_init_timeout)
+    write_run_manifest(paths.manifest_path, repo_root=REPO_ROOT, model_family=MODEL_FAMILY, version=MODEL_VERSION,
+                       job_type="train", run_name=config.train.run_name, args=vars(args), config=to_dict(config),
+                       data_roots={"prepared_dataset": str(config.loader.prepared_dataset_root),
+                                   "prepared_dataset_version": config.loader.prepared_dataset_version,
+                                   "source_dataset": f"{config.loader.dataset_database}.{config.loader.dataset_table}",
+                                   "source_dataset_version": config.loader.dataset_version,
+                                   "source_model_version": "v12",
+                                   "representation": config.loader.representation_name,
+                                   "feature_artifacts": str(config.loader.representation_artifact_root),
+                                   "openai_embedding_version": config.loader.embedding_version,
+                                   "source_reactions": f"{config.loader.news_database}.{config.loader.reaction_table}",
+                                   "context_contract": context_contract()},
+                       output_root=paths.run_root,
+                       wandb_info={"project": config.train.wandb_project, "run_id": getattr(wandb_run, "id", "")})
+    write_model_artifacts(
+        model=raw_model, artifact_dir=paths.artifacts_dir, model_config=config.model,
+        input_contract={
+            "openai_embedding": ["B", config.loader.openai_embedding_dim],
+            "stock_state": ["B", config.loader.stock_state_dim],
+            "time_features": ["B", config.loader.time_feature_dim],
+            "channel_mask": ["B", 3],
+            "prior_openai_embeddings": [
+                "B",
+                config.loader.context_size,
+                config.loader.openai_embedding_dim,
+            ],
+            "prior_context_features": [
+                "B",
+                config.loader.context_size,
+                config.loader.context_feature_dim,
+            ],
+            "prior_context_mask": ["B", config.loader.context_size],
+        },
+        output_contract={
+            "opportunity_logits": opportunity_contract(),
+            "time_features": time_contract(),
+        },
+        architecture_mermaid=build_model_mermaid(),
+        summary_notes=(
+            "V15 preserves the corrected V12 opportunity task and adds up to four "
+            "strictly earlier same-ticker articles from a seven-day lookback. Prior "
+            "reaction values are masked until their authoritative availability time."
+        ),
+        dummy_input_factory=lambda: ((make_dummy_batch(2, config.loader, device=device).x,), {}), wandb_run=wandb_run,
+    )
+    model = maybe_compile(raw_model, config.train.compile_model)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay, foreach=True)
+    planned_samples = train_articles * config.train.epochs
+    if config.train.max_samples > 0:
+        planned_samples = min(planned_samples, config.train.max_samples)
+    scheduler = (
+        SampleCosineRestartScheduler(optimizer, config.train, planned_samples)
+        if config.train.scheduler == "cosine" else None
+    )
+    scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda" and config.train.amp and config.train.amp_dtype == "fp16")
+    logger = JsonlMetricLogger(paths.metrics_path, wandb_run)
+    checkpointer = AsyncCheckpointManager(paths.checkpoints_dir, paths.checkpoint_manifest_path, CheckpointPolicy(
+        latest_steps=max(1, config.train.checkpoint_latest_samples), archive_steps=max(0, config.train.checkpoint_archive_samples),
+        save_best_train=False, monitor_train_key="train/loss", monitor_val_key="val/loss",
+        clock_name="sample", archive_prefix="checkpoint_sample", threshold_intervals=True,
+        archive_on_force=False,
+    ))
+    window_train = TrainingLossAccumulator()
+    epoch_train = TrainingLossAccumulator()
+    restored = restore(
+        args.resume_checkpoint,
+        raw_model,
+        optimizer,
+        scheduler,
+        scaler,
+        checkpointer,
+        window_train,
+        epoch_train,
+        device,
+        config=config,
+        train_articles=train_articles,
+        logging_samples=config.train.logging_samples,
+    )
+    cursor = restored.cursor
+    last_train = restored.last_train
+    last_val = restored.last_val
+    started = time.perf_counter()
+    window_started = started
+    window_articles = 0
+    try:
+        for epoch in range(cursor.epoch, config.train.epochs):
+            if _INTERRUPTED:
+                break
+            iterator = training_batches(
+                config,
+                device,
+                args.dummy_data,
+                args.dummy_batches,
+                epoch=epoch,
+                skip_articles=cursor.epoch_articles_seen,
+            )
+            model.train()
+            for batch in iterator:
+                if (
+                    _INTERRUPTED
+                    or config.train.max_samples > 0
+                    and cursor.samples_seen >= config.train.max_samples
+                ):
+                    break
+                batch = batch.to(device)
+                optimizer.zero_grad(set_to_none=True)
+                with torch.autocast(device_type=device.type, dtype=amp_dtype(config.train.amp_dtype), enabled=device.type == "cuda" and config.train.amp):
+                    output = model(batch.x)
+                    result = compute_loss(output, batch)
+                if scaler.is_enabled():
+                    scaler.scale(result.loss).backward(); scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip_norm)
+                    scaler.step(optimizer); scaler.update()
+                else:
+                    result.loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip_norm); optimizer.step()
+                window_train.add(result)
+                epoch_train.add(result)
+                cursor.samples_seen += batch.sample_count
+                cursor.epoch_articles_seen += batch.sample_count
+                window_articles += batch.sample_count
+                if scheduler is not None:
+                    scheduler.step(cursor.samples_seen)
+                if cursor.samples_seen >= cursor.next_log:
+                    last_train = {
+                        **window_train.compute("train"),
+                        "train/samples_seen": float(cursor.samples_seen),
+                        "train/epoch": float(epoch + 1),
+                        "train/epoch_articles_seen": float(cursor.epoch_articles_seen),
+                        "train/learning_rate": float(optimizer.param_groups[0]["lr"]),
+                        "train/samples_per_second": window_articles
+                        / max(time.perf_counter() - window_started, 1e-9),
+                    }
+                    logger.log(last_train, cursor.samples_seen)
+                    print(
+                        f"TRAIN samples={cursor.samples_seen:,} epoch={epoch + 1}/{config.train.epochs} "
+                        f"loss={last_train['train/loss']:.4f} accuracy={last_train['train/accuracy']:.3f} "
+                        f"rate={last_train['train/samples_per_second']:,.0f} articles/s lr={last_train['train/learning_rate']:.2e}",
+                        flush=True,
+                    )
+                    cursor.next_log = cursor.samples_seen + config.train.logging_samples
+                    window_train = TrainingLossAccumulator()
+                    window_articles = 0
+                    window_started = time.perf_counter()
+                checkpointer.maybe_save(
+                    step=cursor.samples_seen,
+                    payload_factory=lambda: checkpoint_payload(
+                        raw_model,
+                        optimizer,
+                        scheduler,
+                        scaler,
+                        checkpointer,
+                        config,
+                        cursor,
+                        window_train,
+                        epoch_train,
+                        train_articles,
+                        last_train,
+                        last_val,
+                    ),
+                    train_metrics=last_train,
+                    val_metrics=last_val,
+                )
+            epoch_complete = cursor.epoch_articles_seen == train_articles
+            if _INTERRUPTED or (
+                config.train.max_samples > 0
+                and cursor.samples_seen >= config.train.max_samples
+            ):
+                checkpointer.maybe_save(
+                    step=cursor.samples_seen,
+                    payload_factory=lambda: checkpoint_payload(
+                        raw_model,
+                        optimizer,
+                        scheduler,
+                        scaler,
+                        checkpointer,
+                        config,
+                        cursor,
+                        window_train,
+                        epoch_train,
+                        train_articles,
+                        last_train,
+                        last_val,
+                    ),
+                    train_metrics=last_train,
+                    val_metrics=last_val,
+                    force=True,
+                )
+                break
+            if not epoch_complete:
+                raise RuntimeError(
+                    f"Epoch {epoch + 1} yielded {cursor.epoch_articles_seen:,} articles; "
+                    f"expected {train_articles:,}."
+                )
+            last_train = {
+                **epoch_train.compute("train"),
+                "train/samples_seen": float(cursor.samples_seen),
+                "train/epoch": float(epoch + 1),
+                "train/epoch_articles_seen": float(cursor.epoch_articles_seen),
+                "train/learning_rate": float(optimizer.param_groups[0]["lr"]),
+            }
+            logger.log(
+                {
+                    **{
+                        key.replace("train/", "train_epoch/", 1): value
+                        for key, value in last_train.items()
+                        if key.startswith("train/")
+                    },
+                    "train_epoch/epoch": float(epoch + 1),
+                },
+                cursor.samples_seen,
+            )
+            last_val = validate(model, config, device, args.dummy_data, args.dummy_batches)
+            logger.log({**last_val, "val/epoch": float(epoch + 1)}, cursor.samples_seen)
+            print_validation_summary(last_val)
+            cursor.epoch = epoch + 1
+            cursor.epoch_articles_seen = 0
+            epoch_train = TrainingLossAccumulator()
+            checkpointer.maybe_save(
+                step=cursor.samples_seen,
+                payload_factory=lambda: checkpoint_payload(
+                    raw_model,
+                    optimizer,
+                    scheduler,
+                    scaler,
+                    checkpointer,
+                    config,
+                    cursor,
+                    window_train,
+                    epoch_train,
+                    train_articles,
+                    last_train,
+                    last_val,
+                ),
+                train_metrics=last_train,
+                val_metrics=last_val,
+                force=True,
+            )
+    finally:
+        checkpointer.close(wait=True, timeout=180)
+        if wandb_run is not None:
+            wandb_run.finish()
+    final_evaluation: dict[str, Any] = {}
+    training_complete = cursor.epoch >= config.train.epochs
+    if (
+        config.train.evaluate_at_end
+        and training_complete
+        and not args.dummy_data
+        and not _INTERRUPTED
+    ):
+        best_checkpoint = paths.checkpoints_dir / "checkpoint_best_val.pt"
+        if not best_checkpoint.exists():
+            raise RuntimeError(f"Best validation checkpoint was not written: {best_checkpoint}")
+        final_evaluation = evaluate_checkpoint(
+            best_checkpoint,
+            output_dir=paths.run_root / "evaluation",
+            start=config.loader.validation_start,
+            end_exclusive=config.loader.validation_end_exclusive,
+        )
+    write_model_card(paths.run_root / "model_card.json", {
+        "model_family": MODEL_FAMILY, "version": MODEL_VERSION, "run_name": config.train.run_name,
+        "samples_seen": cursor.samples_seen, "elapsed_seconds": time.perf_counter() - started,
+        "training_complete": training_complete,
+        "training_cursor": {
+            "epoch": cursor.epoch,
+            "epoch_articles_seen": cursor.epoch_articles_seen,
+        },
+        "train_range": [config.loader.train_start, config.loader.train_end_exclusive],
+        "validation_range": [config.loader.validation_start, config.loader.validation_end_exclusive],
+        "single_ticker_only": True, "exact_join": ["source_id=canonical_news_id", "ticker", "published_at_utc"],
+        "final_validation": last_val,
+        "best_checkpoint_position_evaluation": final_evaluation,
+    })
+    return 130 if _INTERRUPTED else 0
+
+
+def real_batches(config: ExperimentConfig, *, train: bool) -> Iterable[NewsReactionBatch]:
+    start = config.loader.train_start if train else config.loader.validation_start
+    end = config.loader.train_end_exclusive if train else config.loader.validation_end_exclusive
+    dataset = PreparedNewsReactionDataset(
+        config.loader,
+        start=start,
+        end_exclusive=end,
+        shuffle_months=False,
+    )
+    try:
+        yield from dataset.iter_batches()
+    finally:
+        dataset.stop()
+
+
+def dummy_batches(config: ExperimentConfig, device: torch.device, count: int) -> Iterable[NewsReactionBatch]:
+    for _ in range(max(1, count)):
+        yield make_dummy_batch(config.loader.batch_size, config.loader, device=device)
+
+
+def training_batches(
+    config: ExperimentConfig,
+    device: torch.device,
+    dummy: bool,
+    dummy_count: int,
+    *,
+    epoch: int,
+    skip_articles: int,
+) -> Iterable[NewsReactionBatch]:
+    if not dummy:
+        yield from deterministic_buffered_batches(
+            config.loader,
+            start=config.loader.train_start,
+            end_exclusive=config.loader.train_end_exclusive,
+            epoch=epoch,
+            seed=config.train.seed,
+            skip_articles=skip_articles,
+        )
+        return
+    remaining = int(skip_articles)
+    for batch in dummy_batches(config, device, dummy_count):
+        if remaining:
+            if remaining < batch.sample_count:
+                raise RuntimeError(
+                    "Dummy resume cursor does not align with a complete batch."
+                )
+            remaining -= batch.sample_count
+            continue
+        yield batch
+    if remaining:
+        raise RuntimeError("Dummy resume cursor exceeds the reconstructed epoch.")
+
+
+def print_validation_summary(metrics: dict[str, float]) -> None:
+    print(
+        f"VALIDATION samples={int(metrics.get('val/samples', 0)):,} "
+        f"loss={metrics.get('val/loss', 0.0):.4f} accuracy={metrics.get('val/accuracy', 0.0):.3f} "
+        f"horizon_macro_accuracy={metrics.get('val/horizon_macro_accuracy', 0.0):.3f} "
+        f"macro_f1={metrics.get('val/macro_f1', 0.0):.3f} "
+        f"balanced_accuracy={metrics.get('val/balanced_accuracy', 0.0):.3f} "
+        f"log_loss={metrics.get('val/log_loss', 0.0):.4f} confidence={metrics.get('val/mean_confidence', 0.0):.3f}",
+        flush=True,
+    )
+    horizon_parts = []
+    for horizon in HORIZONS:
+        count_key = f"val/{horizon}/samples"
+        if count_key in metrics:
+            horizon_parts.append(
+                f"{horizon}:{int(metrics[count_key])}/{metrics[f'val/{horizon}/macro_f1']:.2f}"
+            )
+    if horizon_parts:
+        print("HORIZONS labels/macro_f1 | " + "  ".join(horizon_parts), flush=True)
+
+
+@torch.no_grad()
+def validate(model: torch.nn.Module, config: ExperimentConfig, device: torch.device, dummy: bool, dummy_count: int) -> dict[str, float]:
+    model.eval(); accumulator = OpportunityAccumulator(); batches = 0
+    iterator = dummy_batches(config, device, min(dummy_count, 2)) if dummy else real_batches(config, train=False)
+    for batch in iterator:
+        batch = batch.to(device)
+        with torch.autocast(device_type=device.type, dtype=amp_dtype(config.train.amp_dtype), enabled=device.type == "cuda" and config.train.amp):
+            output = model(batch.x)
+        accumulator.add(output, batch.return_targets, batch.label_mask)
+        batches += 1
+        if config.train.validation_max_batches > 0 and batches >= config.train.validation_max_batches:
+            break
+    metrics = accumulator.compute("val")
+    horizon_losses = [
+        metrics[f"val/{horizon}/log_loss"]
+        for horizon in HORIZONS
+        if f"val/{horizon}/log_loss" in metrics
+    ]
+    metrics["val/micro_log_loss"] = metrics.get("val/log_loss", 0.0)
+    metrics["val/macro_horizon_log_loss"] = (
+        float(np.mean(horizon_losses)) if horizon_losses else 0.0
+    )
+    metrics["val/loss"] = metrics["val/macro_horizon_log_loss"]
+    metrics["val/batches"] = float(batches)
+    return metrics
+
+
+class SampleCosineRestartScheduler:
+    def __init__(self, optimizer: torch.optim.Optimizer, config: TrainConfig, planned_samples: int) -> None:
+        self.optimizer, self.base_lrs = optimizer, [float(group["lr"]) for group in optimizer.param_groups]
+        self.planned_samples = max(1, int(planned_samples))
+        self.restarts = int(config.scheduler_restarts)
+        self.cycles = self.restarts + 1
+        self.cycle = max(1, math.ceil(self.planned_samples / self.cycles))
+        self.eta_min = config.scheduler_eta_min
+        self.cycle_decay = float(config.scheduler_cycle_decay)
+        self.samples = 0
+
+    def cycle_index(self, samples: int) -> int:
+        return min(max(0, int(samples)) // self.cycle, self.restarts)
+
+    def step(self, samples: int) -> None:
+        self.samples = min(max(0, int(samples)), self.planned_samples)
+        cycle_index = self.cycle_index(self.samples)
+        cycle_start = cycle_index * self.cycle
+        cycle_end = (
+            self.planned_samples
+            if cycle_index == self.restarts
+            else min((cycle_index + 1) * self.cycle, self.planned_samples)
+        )
+        position = (self.samples - cycle_start) / max(1, cycle_end - cycle_start)
+        position = min(max(position, 0.0), 1.0)
+        for base, group in zip(self.base_lrs, self.optimizer.param_groups):
+            cycle_peak = base * (self.cycle_decay ** cycle_index)
+            group["lr"] = self.eta_min + 0.5 * (cycle_peak - self.eta_min) * (
+                1 + math.cos(math.pi * position)
+            )
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "samples": self.samples,
+            "base_lrs": self.base_lrs,
+            "planned_samples": self.planned_samples,
+            "restarts": self.restarts,
+            "cycle": self.cycle,
+            "cycle_decay": self.cycle_decay,
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        if (
+            int(state.get("planned_samples", self.planned_samples)) != self.planned_samples
+            or int(state.get("restarts", self.restarts)) != self.restarts
+            or not math.isclose(
+                float(state.get("cycle_decay", self.cycle_decay)),
+                self.cycle_decay,
+            )
+        ):
+            raise ValueError(
+                "checkpoint scheduler plan does not match the current sample count, "
+                "restart count, and cycle decay"
+            )
+        self.samples = int(state.get("samples", 0))
+        self.base_lrs = list(state.get("base_lrs", self.base_lrs))
+        self.step(self.samples)
+
+
+def checkpoint_payload(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: Any,
+    scaler: Any,
+    checkpointer: AsyncCheckpointManager,
+    config: ExperimentConfig,
+    cursor: TrainingCursor,
+    window_train: TrainingLossAccumulator,
+    epoch_train: TrainingLossAccumulator,
+    train_articles: int,
+    last_train: dict[str, float],
+    last_val: dict[str, float],
+) -> dict[str, Any]:
+    serializable_config = json.loads(json.dumps(to_dict(config), default=str))
+    return {
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict() if scheduler else None,
+        "scaler": scaler.state_dict(),
+        "config": serializable_config,
+        "resume_contract": resume_contract(config),
+        "train_articles": int(train_articles),
+        "training_cursor": {
+            "samples_seen": cursor.samples_seen,
+            "epoch": cursor.epoch,
+            "epoch_articles_seen": cursor.epoch_articles_seen,
+            "next_log": cursor.next_log,
+        },
+        "window_train": window_train.state_dict(),
+        "epoch_train": epoch_train.state_dict(),
+        "checkpoint_manager": checkpointer.state_dict(),
+        "last_train": dict(last_train),
+        "last_val": dict(last_val),
+        "rng_state": capture_rng_state(),
+        # Retained for old inspection tools.
+        "samples_seen": cursor.samples_seen,
+        "epoch": cursor.epoch,
+    }
+
+
+def resume_contract(config: ExperimentConfig) -> dict[str, Any]:
+    return {
+        "dataset_database": config.loader.dataset_database,
+        "dataset_table": config.loader.dataset_table,
+        "dataset_version": config.loader.dataset_version,
+        "train_range": [
+            config.loader.train_start,
+            config.loader.train_end_exclusive,
+        ],
+        "batch_size": config.loader.batch_size,
+        "shuffle_buffer_articles": config.loader.shuffle_buffer_articles,
+        "seed": config.train.seed,
+        "model": json.loads(json.dumps(to_dict(config.model), default=str)),
+        "optimizer": {
+            "learning_rate": config.train.learning_rate,
+            "weight_decay": config.train.weight_decay,
+        },
+        "scheduler": {
+            "name": config.train.scheduler,
+            "restarts": config.train.scheduler_restarts,
+            "eta_min": config.train.scheduler_eta_min,
+            "cycle_decay": config.train.scheduler_cycle_decay,
+            "epochs": config.train.epochs,
+            "max_samples": config.train.max_samples,
+        },
+    }
+
+
+def capture_rng_state() -> dict[str, Any]:
+    numpy_state = np.random.get_state()
+    return {
+        "python": random.getstate(),
+        "numpy": {
+            "bit_generator": numpy_state[0],
+            "state": torch.from_numpy(numpy_state[1].copy()),
+            "position": int(numpy_state[2]),
+            "has_gauss": int(numpy_state[3]),
+            "cached_gaussian": float(numpy_state[4]),
+        },
+        "torch_cpu": torch.get_rng_state(),
+        "torch_cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
+    }
+
+
+def restore_rng_state(state: dict[str, Any] | None) -> None:
+    if not state:
+        raise ValueError("Checkpoint is missing exact RNG state.")
+    random.setstate(state["python"])
+    numpy_state = state["numpy"]
+    np.random.set_state(
+        (
+            str(numpy_state["bit_generator"]),
+            numpy_state["state"].cpu().numpy().astype(np.uint32, copy=False),
+            int(numpy_state["position"]),
+            int(numpy_state["has_gauss"]),
+            float(numpy_state["cached_gaussian"]),
+        )
+    )
+    torch.set_rng_state(state["torch_cpu"].cpu())
+    if torch.cuda.is_available():
+        cuda_states = state.get("torch_cuda") or []
+        if len(cuda_states) != torch.cuda.device_count():
+            raise ValueError(
+                "Checkpoint CUDA RNG state does not match the current device count."
+            )
+        torch.cuda.set_rng_state_all([value.cpu() for value in cuda_states])
+
+
+def restore(
+    path: str,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: Any,
+    scaler: Any,
+    checkpointer: AsyncCheckpointManager,
+    window_train: TrainingLossAccumulator,
+    epoch_train: TrainingLossAccumulator,
+    device: torch.device,
+    *,
+    config: ExperimentConfig,
+    train_articles: int,
+    logging_samples: int,
+) -> RestoredTrainingState:
+    if not path:
+        return RestoredTrainingState(
+            TrainingCursor(next_log=max(1, int(logging_samples))),
+            {},
+            {},
+        )
+    # PyTorch 2.6+ defaults to restricted weights-only loading. Older versioned
+    # checkpoints contain only one non-default safe type: the local output-root
+    # WindowsPath stored in config metadata. Allowlist that exact type while
+    # keeping restricted loading enabled; new checkpoints stringify paths.
+    with torch.serialization.safe_globals([type(Path())]):
+        state = torch.load(path, map_location=device, weights_only=True)
+    expected_contract = resume_contract(config)
+    if state.get("resume_contract") != expected_contract:
+        raise ValueError(
+            "Checkpoint predates or violates the exact V15 resume contract."
+        )
+    if int(state.get("train_articles", -1)) != int(train_articles):
+        raise ValueError(
+            "Checkpoint training-population size does not match the current dataset audit."
+        )
+    model.load_state_dict(state["model"]); optimizer.load_state_dict(state["optimizer"])
+    if scheduler and state.get("scheduler"): scheduler.load_state_dict(state["scheduler"])
+    if state.get("scaler"): scaler.load_state_dict(state["scaler"])
+    checkpointer.load_state_dict(state.get("checkpoint_manager"))
+    window_train.load_state_dict(state.get("window_train"))
+    epoch_train.load_state_dict(state.get("epoch_train"))
+    cursor = TrainingCursor(**state["training_cursor"])
+    if not 0 <= cursor.epoch_articles_seen <= int(train_articles):
+        raise ValueError("Checkpoint epoch cursor is outside the training population.")
+    restore_rng_state(state.get("rng_state"))
+    return RestoredTrainingState(
+        cursor=cursor,
+        last_train={
+            str(key): float(value)
+            for key, value in state.get("last_train", {}).items()
+        },
+        last_val={
+            str(key): float(value)
+            for key, value in state.get("last_val", {}).items()
+        },
+    )
+
+
+def maybe_compile(model: torch.nn.Module, enabled: bool) -> torch.nn.Module:
+    if not enabled:
+        return model
+    if not hasattr(torch, "compile"):
+        print("WARN --compile-model requested, but this PyTorch build does not expose torch.compile.", flush=True)
+        return model
+    if torch.cuda.is_available() and importlib.util.find_spec("triton") is None:
+        print("WARN --compile-model requested, but Triton is unavailable; continuing without torch.compile.", flush=True)
+        return model
+    print("Compiling model with torch.compile...", flush=True)
+    return torch.compile(model)
+
+
+def amp_dtype(name: str) -> torch.dtype:
+    return torch.bfloat16 if name == "bf16" else torch.float16 if name == "fp16" else torch.float32
+
+
+def set_seed(seed: int) -> None:
+    random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.benchmark = False
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
