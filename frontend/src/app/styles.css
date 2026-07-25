@@ -23273,7 +23273,6 @@ button {
 
 .charts-quotes-identity {
   align-items: center;
-  border-right: 1px solid var(--charts-quotes-rule);
   display: flex;
   flex: 0 1 245px;
   min-width: 0;
@@ -23328,7 +23327,18 @@ button {
 }
 
 .charts-quotes-header-metric:not([data-primary="true"]) {
+  background: color-mix(in oklab, var(--surface-alt) 38%, var(--surface));
   padding: 2px 3px;
+}
+
+.charts-quotes-header-metric:not([data-primary="true"])[data-tone="buy"] {
+  background: color-mix(in oklab, var(--success) 7%, var(--surface));
+  box-shadow: inset 0 -3px 0 color-mix(in oklab, var(--success) 48%, transparent);
+}
+
+.charts-quotes-header-metric:not([data-primary="true"])[data-tone="sell"] {
+  background: color-mix(in oklab, var(--danger) 7%, var(--surface));
+  box-shadow: inset 0 -3px 0 color-mix(in oklab, var(--danger) 48%, transparent);
 }
 
 .charts-quotes-header-metric + .charts-quotes-header-metric {
@@ -23436,7 +23446,6 @@ button {
 
 .charts-quotes-actions {
   align-items: center;
-  border-left: 1px solid var(--charts-quotes-rule);
   display: flex;
   flex: 0 0 auto;
   flex-wrap: nowrap;
