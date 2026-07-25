@@ -23228,6 +23228,7 @@ button {
 @container (max-width:460px) { .xbrl-analysis-header > span { display: none; }.xbrl-hero { grid-template-columns: 1fr; min-width: 0; }.xbrl-hero > div + div { border-left: 0; border-top: 1px solid var(--border); }.xbrl-facets { grid-template-columns: 1fr 1fr; min-width: 0; }.xbrl-facets > button:nth-child(n) { border-left: 0; }.xbrl-facets > button:nth-child(even) { border-left: 1px solid var(--border); }.xbrl-facets > button:nth-child(n+3) { border-top: 1px solid var(--border); }.xbrl-metrics > div { grid-template-columns: 1fr; min-width: 0; } }
 .charts-quotes-layout {
   --charts-quotes-rule: var(--border);
+  --charts-quotes-metric-surface: color-mix(in oklab, var(--surface-alt) 72%, var(--surface));
   display: flex;
   flex-direction: column;
   background: var(--surface);
@@ -23328,17 +23329,17 @@ button {
 }
 
 .charts-quotes-header-metric:not([data-primary="true"]) {
-  background: color-mix(in oklab, var(--surface-alt) 38%, var(--surface));
+  background: var(--charts-quotes-metric-surface);
   padding: 2px 3px;
 }
 
 .charts-quotes-header-metric:not([data-primary="true"])[data-tone="buy"] {
-  background: color-mix(in oklab, var(--success) 7%, var(--surface));
+  background: var(--charts-quotes-metric-surface);
   box-shadow: inset 0 -3px 0 color-mix(in oklab, var(--success) 48%, transparent);
 }
 
 .charts-quotes-header-metric:not([data-primary="true"])[data-tone="sell"] {
-  background: color-mix(in oklab, var(--danger) 7%, var(--surface));
+  background: var(--charts-quotes-metric-surface);
   box-shadow: inset 0 -3px 0 color-mix(in oklab, var(--danger) 48%, transparent);
 }
 
@@ -23400,7 +23401,7 @@ button {
 }
 
 .charts-quotes-header-metric[data-market-role="last"] {
-  background: color-mix(in oklab, var(--surface-alt) 72%, var(--surface));
+  background: var(--charts-quotes-metric-surface);
 }
 
 .charts-quotes-header-metric[data-market-role="bid"] {
