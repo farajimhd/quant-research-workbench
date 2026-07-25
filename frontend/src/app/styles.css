@@ -23638,6 +23638,37 @@ button {
   white-space: nowrap;
 }
 
+.compact-tape-table th {
+  padding-bottom: 5px;
+  padding-top: 5px;
+}
+
+.compact-tape-table td {
+  height: 24px;
+  line-height: 1;
+  padding-bottom: 2px;
+  padding-top: 2px;
+}
+
+.compact-tape-table .venue-code {
+  font-size: 8.5px;
+  font-weight: 540;
+}
+
+.compact-tape-table .trade-condition-list {
+  gap: 2px;
+}
+
+.compact-tape-table .condition-code {
+  font-size: 8px;
+  gap: 2px;
+  padding: 1px 3px;
+}
+
+.compact-tape-table .trade-condition-list .condition-code small {
+  font-size: 6px;
+}
+
 .chart-component-toolbar.compact {
   min-height: 34px;
   padding-left: 8px;
