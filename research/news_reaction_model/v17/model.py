@@ -105,7 +105,7 @@ def build_model_mermaid() -> str:
             '  encoder --> article["Causal article and market-state representation"]',
             '  windows["Five learned response-window tokens"] --> fusion["Shared response encoder"]',
             "  article --> fusion",
-            '  fusion --> direction["Direction: neutral / upside / downside / two-sided"]',
+            '  fusion --> direction["Direction: neutral / upside / downside"]',
             '  fusion --> path["Path: no move / sustained / spike-fade / flush-recovery / reversal / mixed"]',
             '  fusion --> flow["Flow: balanced / demand / supply"]',
             '  fusion --> persistence["Cross-window persistence head"]',

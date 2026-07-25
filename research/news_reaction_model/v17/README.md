@@ -18,7 +18,7 @@ read-only and validates:
 
 Only target evidence is stored under:
 
-`D:\market-data\prepared\news_reaction_model\v17\market_response_targets_v1`
+`D:\market-data\prepared\news_reaction_model\v17\market_response_targets_v2`
 
 The model calls `NewsReactionModelV16.encode_article()` directly. V16's former
 opportunity heads are removed from the V17 module, optimizer, checkpoint, and
@@ -62,7 +62,7 @@ claims that the issuer sold shares.
 
 Per response window:
 
-- direction: neutral, upside, downside, two-sided;
+- direction: neutral, upside, downside;
 - path: no move, sustained, spike-fade, flush-recovery, reversal,
   volatile/mixed;
 - flow: balanced, demand-dominant, supply-dominant.
@@ -112,16 +112,20 @@ meaningful_up   = up_move >= meaningful_threshold
 meaningful_down = down_move >= meaningful_threshold
 ```
 
-The current four-class rule is evaluated in this exact order:
+The three-class rule is evaluated in this exact order:
 
-1. `two_sided` when both moves are meaningful and the smaller move is at least
-   `65%` of the larger move;
-2. `upside` when the upside is meaningful and larger than the downside;
-3. `downside` when the downside is meaningful;
-4. `neutral` otherwise.
+1. `neutral` when neither excursion is meaningful;
+2. `upside` when the absolute upside excursion is larger;
+3. `downside` when the absolute downside excursion is larger.
 
-The order is important: comparable meaningful excursions in both directions are
-assigned to `two_sided` before the dominant side is considered.
+When the absolute excursions are exactly equal, the terminal-return sign breaks
+the tie. If the terminal return is also exactly zero, the direction of the later
+extremum breaks the tie. Therefore, a large symmetric response is never called
+neutral solely because its high and low excursions have equal magnitude.
+
+Comparable meaningful excursions are not discarded. Their dominant side is the
+direction target, while their ordering and resolution remain represented by the
+path target and their exact high/low values remain in the raw target evidence.
 
 ### Path
 
@@ -161,27 +165,15 @@ next-session and five-session directions:
 - `next_session`: it persists through the next-session window only;
 - `event_phase_only`: none of the preceding persistence rules applies.
 
-Only `upside` and `downside` count as directional in the persistence rule.
+`upside` and `downside` are the directional classes used by persistence.
 
-## Why `two_sided` is still present
+## Direction-contract version
 
-`two_sided` remains because the agreed V17 contract explicitly treated
-comparable meaningful excursions in both directions as a descriptive outcome.
-It is intentional in the current code, not an accidental carry-over.
-
-There is nevertheless a real design conflict. Earlier opportunity experiments
-showed that `two_sided` was difficult to learn and was not an actionable
-direction. V17 now has a separate path head that already represents reversal,
-spike-fade, flush-recovery, and volatile/mixed behavior; the raw high and low
-metrics also preserve both excursions. The persistence rule exposes the
-redundancy further because it does not treat `two_sided` as a direction.
-
-The recommended correction before the final V17 target sidecar is built is to
-make direction three-class (`neutral`, `upside`, `downside`), assign a
-meaningful two-sided response to its larger absolute excursion, and preserve
-the two-sided trajectory in the path target. That would change the target
-version and direction-head width, so it must be an explicit experiment-contract
-change rather than a silent documentation edit.
+This three-class direction contract is
+`news_market_response_targets_v17_direction3_v2`. Its sidecar uses
+`market_response_targets_v2`, and the direction head has three logits. The
+version and separate root prevent an incomplete four-class sidecar or
+four-logit checkpoint from being resumed as this experiment.
 
 ## Commands
 

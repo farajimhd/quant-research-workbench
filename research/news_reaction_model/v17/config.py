@@ -14,7 +14,7 @@ def default_target_root() -> Path:
     return Path(
         os.environ.get(
             "NEWS_REACTION_V17_TARGET_ROOT",
-            r"D:\market-data\prepared\news_reaction_model\v17\market_response_targets_v1",
+            r"D:\market-data\prepared\news_reaction_model\v17\market_response_targets_v2",
         )
     )
 
@@ -22,8 +22,6 @@ def default_target_root() -> Path:
 @dataclass(slots=True)
 class LoaderConfig(V16LoaderConfig):
     target_root: Path = field(default_factory=default_target_root)
-    target_table: str = "news_market_response_outcomes_v1"
-    target_version: str = "news_market_response_targets_v17"
     response_windows: tuple[str, ...] = RESPONSE_WINDOWS
 
     def __post_init__(self) -> None:
@@ -47,7 +45,7 @@ class ModelConfig(V16ModelConfig):
 @dataclass(slots=True)
 class TrainConfig:
     output_root: Path = default_run_root(
-        MODEL_FAMILY, MODEL_VERSION, "train", "v16-input-response-archetypes"
+        MODEL_FAMILY, MODEL_VERSION, "train", "v16-input-response-archetypes-direction3"
     )
     run_name: str = ""
     epochs: int = 50

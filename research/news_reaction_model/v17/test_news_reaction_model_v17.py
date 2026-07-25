@@ -90,6 +90,59 @@ class V17TargetTests(unittest.TestCase):
         )
         self.assertEqual(path, Path.FLUSH_RECOVERY)
 
+    def test_two_sided_excursion_uses_dominant_direction_and_keeps_path(self) -> None:
+        direction, path, _ = classify_window(
+            self.metrics(
+                high=0.08,
+                low=-0.06,
+                terminal=0.01,
+                high_time=0.2,
+                low_time=0.8,
+            ),
+            threshold=0.01,
+            contract=self.contract,
+        )
+        self.assertEqual(direction, Direction.UPSIDE)
+        self.assertEqual(path, Path.SPIKE_FADE)
+
+    def test_equal_excursions_use_terminal_then_extremum_order_as_tie_breakers(self) -> None:
+        positive_terminal, _, _ = classify_window(
+            self.metrics(
+                high=0.05,
+                low=-0.05,
+                terminal=0.01,
+                high_time=0.2,
+                low_time=0.8,
+            ),
+            threshold=0.01,
+            contract=self.contract,
+        )
+        negative_terminal, _, _ = classify_window(
+            self.metrics(
+                high=0.05,
+                low=-0.05,
+                terminal=-0.01,
+                high_time=0.8,
+                low_time=0.2,
+            ),
+            threshold=0.01,
+            contract=self.contract,
+        )
+        zero_terminal, _, _ = classify_window(
+            self.metrics(
+                high=0.05,
+                low=-0.05,
+                terminal=0.0,
+                high_time=0.8,
+                low_time=0.2,
+            ),
+            threshold=0.01,
+            contract=self.contract,
+        )
+        self.assertEqual(positive_terminal, Direction.UPSIDE)
+        self.assertEqual(negative_terminal, Direction.DOWNSIDE)
+        self.assertEqual(zero_terminal, Direction.UPSIDE)
+
     def test_persistence_uses_future_windows_without_actor_attribution(self) -> None:
         self.assertEqual(
             classify_persistence(
@@ -215,7 +268,7 @@ class V17ModelTests(unittest.TestCase):
             ),
         }
         output = model(x)
-        self.assertEqual(tuple(output.direction_logits.shape), (batch, 5, 4))
+        self.assertEqual(tuple(output.direction_logits.shape), (batch, 5, 3))
         self.assertEqual(tuple(output.path_logits.shape), (batch, 5, 6))
         self.assertEqual(tuple(output.flow_logits.shape), (batch, 5, 3))
         self.assertEqual(tuple(output.persistence_logits.shape), (batch, 6))

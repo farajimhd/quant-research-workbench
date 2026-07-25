@@ -9,7 +9,7 @@ import numpy as np
 from research.news_reaction_model.v17 import RESPONSE_WINDOWS
 
 
-TARGET_VERSION = "news_market_response_targets_v17"
+TARGET_VERSION = "news_market_response_targets_v17_direction3_v2"
 RAW_METRIC_NAMES = (
     "anchor_price",
     "high_return",
@@ -34,7 +34,6 @@ class Direction(IntEnum):
     NEUTRAL = 0
     UPSIDE = 1
     DOWNSIDE = 2
-    TWO_SIDED = 3
 
 
 class Path(IntEnum):
@@ -72,7 +71,6 @@ class TargetThresholds:
     """Frozen thresholds fitted only on the 2019-2025 training partition."""
 
     meaningful_return: tuple[float, ...]
-    two_sided_ratio: float = 0.65
     retained_move_ratio: float = 0.60
     fade_ratio: float = 0.35
     flow_imbalance: float = 0.12
@@ -96,7 +94,6 @@ class TargetThresholds:
             raise ValueError("Threshold response-window contract does not match V17.")
         return cls(
             meaningful_return=tuple(float(value) for value in payload["meaningful_return"]),
-            two_sided_ratio=float(payload["two_sided_ratio"]),
             retained_move_ratio=float(payload["retained_move_ratio"]),
             fade_ratio=float(payload["fade_ratio"]),
             flow_imbalance=float(payload["flow_imbalance"]),
@@ -152,14 +149,25 @@ def classify_window(
     down = abs(low)
     meaningful_up = up >= threshold
     meaningful_down = down >= threshold
-    if meaningful_up and meaningful_down and min(up, down) >= contract.two_sided_ratio * max(up, down):
-        direction = Direction.TWO_SIDED
-    elif meaningful_up and up > down:
+    if not meaningful_up and not meaningful_down:
+        direction = Direction.NEUTRAL
+    elif up > down:
         direction = Direction.UPSIDE
-    elif meaningful_down:
+    elif down > up:
+        direction = Direction.DOWNSIDE
+    elif terminal > 0.0:
+        direction = Direction.UPSIDE
+    elif terminal < 0.0:
         direction = Direction.DOWNSIDE
     else:
-        direction = Direction.NEUTRAL
+        # Exact excursion and terminal ties are rare. Resolve them toward the
+        # later extremum so a large symmetric response is not mislabeled as
+        # neutral merely because neither absolute excursion is larger.
+        direction = (
+            Direction.UPSIDE
+            if values["high_time_fraction"] > values["low_time_fraction"]
+            else Direction.DOWNSIDE
+        )
 
     high_first = values["high_time_fraction"] <= values["low_time_fraction"]
     if direction is Direction.NEUTRAL:
