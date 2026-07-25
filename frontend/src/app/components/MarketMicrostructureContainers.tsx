@@ -1,8 +1,8 @@
 import { Activity, BookOpen, ChevronRight, CircleHelp, Radio, ShieldAlert, WifiOff } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { api, query } from "../../api/client";
-import { QuoteChartGallery, TapeChartGallery } from "./MarketMicrostructureChartGallery";
+import { CompactTapeQuoteCharts, QuoteChartGallery, TapeChartGallery } from "./MarketMicrostructureChartGallery";
 import { Modal } from "./Modal";
 import { TickerIdentityWithChange, useTickerPresentations } from "./TickerIdentity";
 
@@ -188,6 +188,98 @@ export function QuotesTapeContainer({ end, onSymbolChange, start, symbol }: Mark
       </section>
     </div>
   </section>;
+}
+
+export function ChartsQuotesMarketLayout({
+  dailyChart,
+  end,
+  mainChart,
+  monthChart,
+  onSymbolChange,
+  start,
+  symbol,
+}: {
+  dailyChart: ReactNode;
+  end?: string;
+  mainChart: ReactNode;
+  monthChart: ReactNode;
+  onSymbolChange?: (symbol: string) => void;
+  start?: string;
+  symbol: string;
+}) {
+  const { connected, error, events, marketState, references } = useMarketEvents(symbol, start, end);
+  const decoded = useMemo(() => decodeMarketEvents(events), [events]);
+  const quotes = decoded.quotes.slice(-MARKET_EVENT_HISTORY_LIMIT);
+  const trades = decoded.trades.slice(-MARKET_EVENT_HISTORY_LIMIT);
+  const prints = [...trades].reverse();
+  const current = quotes.at(-1);
+  const last = prints[0];
+  const buyVolume = trades.reduce((sum, item) => sum + (item.direction === "buy" ? item.size : 0), 0);
+  const sellVolume = trades.reduce((sum, item) => sum + (item.direction === "sell" ? item.size : 0), 0);
+  const directionalVolume = buyVolume + sellVolume;
+  const buyShare = directionalVolume ? buyVolume / directionalVolume : 0.5;
+  const totalSize = current ? current.bidSize + current.askSize : 0;
+  const imbalance = current && totalSize ? (current.bidSize - current.askSize) / totalSize : 0;
+  const spread = current ? Math.max(0, current.ask - current.bid) : 0;
+  const presentations = useTickerPresentations([symbol]);
+
+  return <section aria-label={`${symbol} charts and quotes`} className="charts-quotes-layout" data-market-state={connected}>
+    <header className="charts-quotes-header">
+      <TickerIdentityWithChange asOf={end || new Date().toISOString()} inputAriaLabel="Charts and quotes ticker" logoUrl={presentations[symbol]?.logo_url} onTickerChange={onSymbolChange} ticker={symbol} />
+      <div className="charts-quotes-header-metrics">
+        <HeaderMarketMetric label="Bid" tone="buy" value={current ? `${formatPrice(current.bid)} · ${formatSize(current.bidSize)}` : "—"} />
+        <HeaderMarketMetric label="Ask" tone="sell" value={current ? `${formatPrice(current.ask)} · ${formatSize(current.askSize)}` : "—"} />
+        <HeaderMarketMetric label="Spread" tone={classifySpread(spread, quotes) === "Tighter" ? "buy" : classifySpread(spread, quotes) === "Wider" ? "sell" : "mid"} value={current ? formatPrice(spread) : "—"} />
+        <HeaderMarketMetric label="Last" tone={last?.direction ?? "mid"} value={last ? `${formatPrice(last.price)} · ${formatTradeSize(last.size)}` : "—"} />
+        <HeaderMarketMetric label="Buy share" tone={buyShare >= 0.5 ? "buy" : "sell"} value={`${Math.round(buyShare * 100)}%`} />
+        <HeaderMarketMetric label="Imbalance" tone={imbalance >= 0 ? "buy" : "sell"} value={signedPercent(imbalance)} />
+      </div>
+      <MicrostructureHeaderActions connected={connected} marketState={marketState} references={references} />
+    </header>
+    <div className="charts-quotes-main-chart">{mainChart}</div>
+    <aside aria-label="Tape and liquidity" className="charts-quotes-tape">
+      <CompactTapeQuoteCharts quotes={quotes} trades={trades} />
+      <section className="charts-quotes-trades">
+        <header><span><strong>Trade prints</strong><small>Latest 1,024 executions</small></span><em>{formatCount(prints.length)}</em></header>
+        {error && !prints.length ? <MicrostructureEmpty message={error} /> : prints.length ? <TapePrintTable prints={prints} references={references} /> : <MicrostructureEmpty message="Waiting for trade prints." />}
+      </section>
+    </aside>
+    <div className="charts-quotes-month-chart">{monthChart}</div>
+    <div className="charts-quotes-daily-chart">{dailyChart}</div>
+    <aside aria-label="Reserved workspace" className="charts-quotes-reserved"><span>Reserved</span><small>Available for the next market context module.</small></aside>
+  </section>;
+}
+
+function HeaderMarketMetric({ label, tone, value }: { label: string; tone: Direction; value: string }) {
+  return <div className="charts-quotes-header-metric" data-tone={tone}><small>{label}</small><strong>{value}</strong></div>;
+}
+
+function MicrostructureHeaderActions({ connected, marketState, references }: { connected: ConnectionState; marketState: MarketState | null; references: MarketReferences }) {
+  const status = marketStatusPresentation(marketState);
+  return <div className="microstructure-header-actions charts-quotes-actions">
+    <span className="market-status-badge" data-status={status.tone} title={status.help}>{status.tone === "halted" ? <ShieldAlert size={13} /> : <Radio size={12} />}{status.label}</span>
+    <span className="luld-status-badge" data-status={status.luldTone} title={status.luldHelp}>LULD {status.luldLabel}<HelpTip label={status.luldHelp} /></span>
+    <MicrostructureGuide references={references} />
+    {connected === "connecting" || connected === "reconnecting" ? <span className="market-context-badge" data-state={connected}>{connected}</span> : null}
+  </div>;
+}
+
+function TapePrintTable({ prints, references }: { prints: TapePrint[]; references: MarketReferences }) {
+  return <div className="microstructure-scroll"><table className="tape-table compact-tape-table">
+    <thead><tr><th>Time ET</th><th>Price</th><th>Size</th><th>Exchange</th><th>Condition</th></tr></thead>
+    <tbody>{prints.map((print) => {
+      const exchange = venueReference(print.exchange, references);
+      const condition = tradeCondition(print, references);
+      const conditions = tradeConditionItems(print, references);
+      return <tr data-condition-tone={condition.tone} data-direction={print.direction} key={print.id}>
+        <td><time>{formatEventTime(print.timestampUs)}</time></td>
+        <td className="numeric price">{formatPrice(print.price)}</td>
+        <td className="numeric size">{formatTradeSize(print.size)}</td>
+        <td><span className="venue-code" title={exchange.name}>{exchange.code}</span></td>
+        <td><span className="trade-condition-list">{conditions.length ? conditions.map((item) => <span className="condition-code" data-condition-tone={conditionTone(item.name)} data-special={item.special} key={`${print.id}-${item.token}-${item.slot}`}><small>C{item.slot}</small>{item.label}</span>) : <span className="condition-empty">—</span>}</span></td>
+      </tr>;
+    })}</tbody>
+  </table></div>;
 }
 
 function useMarketEvents(symbol: string, start?: string, end?: string) {

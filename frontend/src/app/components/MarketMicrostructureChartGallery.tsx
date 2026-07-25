@@ -74,6 +74,15 @@ export function TapeChartGallery({ trades }: { trades: MicroTrade[] }) {
   return chart ? <ChartPanel chart={chart} /> : <span className="visual-empty">Trade prints are required to calculate executed volume and aggressor mix.</span>;
 }
 
+export function CompactTapeQuoteCharts({ quotes, trades }: { quotes: MicroQuote[]; trades: MicroTrade[] }) {
+  const imbalance = useMemo(() => focusedQuoteCharts(quotes).find((chart) => chart.id === "imbalance"), [quotes]);
+  const volume = useMemo(() => tapeChart(trades), [trades]);
+  return <div className="charts-quotes-flow-charts">
+    {volume ? <ChartPanel chart={volume} compact /> : <span className="visual-empty">Trade prints are required for executed volume by price.</span>}
+    {imbalance ? <ChartPanel chart={imbalance} compact /> : <span className="visual-empty">Quote updates are required for size imbalance.</span>}
+  </div>;
+}
+
 function ChartPanel({ chart, compact = false }: { chart: ChartChoice; compact?: boolean }) {
   const [guideOpen, setGuideOpen] = useState(false);
   return <div className="microstructure-visual micro-chart-gallery">

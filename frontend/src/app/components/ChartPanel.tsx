@@ -396,6 +396,7 @@ export type ChartPanelHandle = {
 };
 
 type ChartPanelProps = {
+  baseHeight?: number;
   catalogColumns?: ChartCatalogItem[];
   displayItemOptions?: ChartDisplayItem[];
   emptyMessage?: string;
@@ -435,6 +436,7 @@ type ChartPanelProps = {
   tickerLogoUrl?: string;
   tickerInputWidth?: number | string;
   tickerMaxLength?: number;
+  toolbarVariant?: "full" | "compact";
   timeframe: string;
   timeframes: string[];
   visibleColumns: string[];
@@ -472,6 +474,7 @@ type ChartPalette = {
 };
 
 const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
+  baseHeight = 620,
   catalogColumns = [],
   displayItemOptions = [],
   emptyMessage = "No chart data for the selected ticker/date range/timeframe.",
@@ -511,6 +514,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   tickerLogoUrl,
   tickerInputWidth,
   tickerMaxLength = 10,
+  toolbarVariant = "full",
   timeframe,
   timeframes,
   visibleColumns,
@@ -601,7 +605,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const oscillatorPaneTotalHeight = oscillatorPaneGroups.reduce((total, group) => total + defaultOscillatorPaneHeight(group), 0);
   const nativeChartHeight: CSSProperties["height"] = fullscreen
     ? `calc(100vh - 322px + ${oscillatorPaneTotalHeight}px)`
-    : 620 + oscillatorPaneTotalHeight;
+    : baseHeight + oscillatorPaneTotalHeight;
   // Reserve one stable price-scale gutter on both sides for every pane. Dynamic
   // left-scale visibility changed the plot width whenever an oscillator was
   // added and left each legend at a different horizontal origin.
@@ -1404,8 +1408,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       }}
       ref={shellRef}
     >
-      <div className="chart-component-toolbar">
-        {tickerEditable ? <form className="chart-ticker-form" onSubmit={commitTicker}>
+      <div className={toolbarVariant === "compact" ? "chart-component-toolbar compact" : "chart-component-toolbar"}>
+        {toolbarVariant === "compact" ? null : tickerEditable ? <form className="chart-ticker-form" onSubmit={commitTicker}>
           <TickerLogo logoUrl={tickerLogoUrl} ticker={ticker} />
           <input
             aria-label="Ticker"
@@ -1417,7 +1421,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
             value={draftTicker}
           />
         </form> : <TickerIdentity className="chart-ticker-readonly" logoUrl={tickerLogoUrl} ticker={ticker} />}
-        {tickerChangeAsOf ? <TickerChangeBadge asOf={tickerChangeAsOf} ticker={ticker} /> : null}
+        {toolbarVariant === "full" && tickerChangeAsOf ? <TickerChangeBadge asOf={tickerChangeAsOf} ticker={ticker} /> : null}
         {periodStart && periodEnd && onPeriodChange ? (
           <ChartPeriodSelect
             end={periodEnd}
@@ -1436,7 +1440,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
             start={periodStart}
           />
         ) : null}
-        <span className="toolbar-divider" />
+        {toolbarVariant === "full" ? <span className="toolbar-divider" /> : null}
         <div className="chart-timeframe-row">
           {timeframes.map((item) => (
             <button className={buildSegmentButtonClassName(item === timeframe)} key={item} onClick={() => onTimeframeChange(item)} type="button">

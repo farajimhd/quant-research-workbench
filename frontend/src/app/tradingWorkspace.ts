@@ -2,6 +2,7 @@ export type TradingWorkspaceMode = "live" | "paper" | "replay" | "backtest" | "b
 
 export type WorkspaceContainerId =
   | "chart"
+  | "charts_quotes"
   | "facts"
   | "microstructure"
   | "scanner"
@@ -170,6 +171,16 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
     linkScope: "single-symbol",
     modes: allModes,
     defaultOpen: { live: true, paper: true, replay: true, backtest_debug: true },
+    sourceByMode: marketSourceByMode,
+  },
+  {
+    id: "charts_quotes",
+    title: "Charts & Quotes",
+    groupedTitle: "Charts & quotes",
+    description: "A synchronized multi-horizon chart workspace with compact NBBO, executed-volume, size-imbalance, and time-and-sales context for one symbol.",
+    linkScope: "single-symbol",
+    modes: allModes,
+    defaultOpen: {},
     sourceByMode: marketSourceByMode,
   },
   {

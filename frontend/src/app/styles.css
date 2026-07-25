@@ -23228,3 +23228,220 @@ button {
 .xbrl-guide-intro { font-size: 14px; }.xbrl-guide-grid article strong { font-size: 13px; }.xbrl-guide-grid article p { font-size: 12.5px; }
 @container (max-width:720px) { .xbrl-hero { grid-template-columns: 1fr 1fr; min-width: 520px; }.xbrl-facets { grid-template-columns: repeat(3,minmax(155px,1fr)); min-width: 520px; }.xbrl-facets > button:nth-child(4) { border-left: 0; }.xbrl-facets > button:nth-child(n+4) { border-top: 1px solid var(--border); }.xbrl-metrics > div { grid-template-columns: repeat(2,minmax(175px,1fr)); min-width: 430px; } }
 @container (max-width:460px) { .xbrl-analysis-header > span { display: none; }.xbrl-hero { grid-template-columns: 1fr; min-width: 0; }.xbrl-hero > div + div { border-left: 0; border-top: 1px solid var(--border); }.xbrl-facets { grid-template-columns: 1fr 1fr; min-width: 0; }.xbrl-facets > button:nth-child(n) { border-left: 0; }.xbrl-facets > button:nth-child(even) { border-left: 1px solid var(--border); }.xbrl-facets > button:nth-child(n+3) { border-top: 1px solid var(--border); }.xbrl-metrics > div { grid-template-columns: 1fr; min-width: 0; } }
+.charts-quotes-layout {
+  --charts-quotes-rule: var(--border);
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 2fr) minmax(0, 1fr);
+  grid-template-areas:
+    "header header header"
+    "main main tape"
+    "month daily reserved";
+  align-items: stretch;
+  background: var(--surface);
+  height: 100%;
+  min-height: 980px;
+  min-width: 1150px;
+  overflow: hidden;
+}
+
+.charts-quotes-header {
+  grid-area: header;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: stretch;
+  min-width: 0;
+  min-height: 66px;
+  border-bottom: 1px solid var(--charts-quotes-rule);
+}
+
+.charts-quotes-header > .ticker-identity-with-change {
+  flex: 0 0 auto;
+  align-self: center;
+  padding: 8px 12px;
+}
+
+.charts-quotes-header-metrics {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(76px, 1fr));
+  align-items: stretch;
+  min-width: 0;
+}
+
+.charts-quotes-header-metric {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-left: 1px solid var(--charts-quotes-rule);
+  font-variant-numeric: tabular-nums;
+}
+
+.charts-quotes-header-metric small {
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: .055em;
+  text-transform: uppercase;
+}
+
+.charts-quotes-header-metric strong {
+  color: var(--text-primary);
+  font-size: 15px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.charts-quotes-header-metric[data-tone="buy"] strong { color: var(--success); }
+.charts-quotes-header-metric[data-tone="sell"] strong { color: var(--danger); }
+
+.charts-quotes-actions {
+  align-self: center;
+  margin-left: auto;
+  padding: 8px 10px;
+  white-space: nowrap;
+}
+
+.charts-quotes-main-chart,
+.charts-quotes-month-chart,
+.charts-quotes-daily-chart,
+.charts-quotes-tape,
+.charts-quotes-reserved {
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface);
+}
+
+.charts-quotes-main-chart {
+  grid-area: main;
+  border-right: 1px solid var(--charts-quotes-rule);
+  border-bottom: 1px solid var(--charts-quotes-rule);
+}
+
+.charts-quotes-tape {
+  grid-area: tape;
+  display: grid;
+  grid-template-rows: minmax(220px, .8fr) minmax(0, 1.2fr);
+  border-bottom: 1px solid var(--charts-quotes-rule);
+  overflow: hidden;
+}
+
+.charts-quotes-month-chart {
+  grid-area: month;
+  border-right: 1px solid var(--charts-quotes-rule);
+}
+
+.charts-quotes-daily-chart {
+  grid-area: daily;
+  border-right: 1px solid var(--charts-quotes-rule);
+}
+
+.charts-quotes-reserved {
+  grid-area: reserved;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
+  min-height: 0;
+  color: var(--text-tertiary);
+  background: var(--surface-subtle);
+}
+
+.charts-quotes-reserved span {
+  padding: 3px 8px;
+  border: 1px solid var(--charts-quotes-rule);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.charts-quotes-reserved small {
+  max-width: 180px;
+  padding: 2px 6px;
+  background: var(--surface);
+  text-align: center;
+}
+
+.charts-quotes-flow-charts {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+  border-bottom: 1px solid var(--charts-quotes-rule);
+}
+
+.charts-quotes-flow-charts .microstructure-visual {
+  border: 0;
+  border-bottom: 1px solid var(--charts-quotes-rule);
+}
+
+.charts-quotes-flow-charts .microstructure-visual:last-child { border-bottom: 0; }
+.charts-quotes-flow-charts .micro-chart-heading { padding: 7px 8px; }
+.charts-quotes-flow-charts .micro-chart-heading strong { font-size: 12px; }
+.charts-quotes-flow-charts .micro-chart-heading small { display: none; }
+.charts-quotes-flow-charts .micro-chart-stage { min-height: 76px; padding: 4px 6px 7px; }
+.charts-quotes-flow-charts .micro-chart-heading button { padding: 3px 5px; font-size: 10px; }
+
+.charts-quotes-trades {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+}
+
+.charts-quotes-trades > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 9px;
+  border-bottom: 1px solid var(--charts-quotes-rule);
+}
+
+.charts-quotes-trades > header span {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.charts-quotes-trades > header strong { font-size: 13px; }
+.charts-quotes-trades > header small,
+.charts-quotes-trades > header em { color: var(--text-secondary); font-size: 10px; font-style: normal; }
+.charts-quotes-trades .microstructure-scroll {
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+}
+
+.compact-tape-table {
+  width: max-content;
+  min-width: 100%;
+}
+
+.compact-tape-table th,
+.compact-tape-table td {
+  padding-left: 7px;
+  padding-right: 7px;
+  white-space: nowrap;
+}
+
+.chart-component-toolbar.compact {
+  min-height: 34px;
+  padding-left: 8px;
+  border-bottom: 1px solid var(--charts-quotes-rule);
+}
+
+.chart-component-toolbar.compact .chart-timeframe-row button {
+  color: var(--text-primary);
+  font-weight: 750;
+}
+
+.charts-quotes-layout .chart-shell {
+  height: 100%;
+  border: 0;
+}

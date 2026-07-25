@@ -974,6 +974,7 @@ function createGlobalLayouts(ids: string[], instances: Record<string, WorkspaceC
     signal_stream: { h: 330, w: columnWidth, x: margin, y: 252 },
     watchlist: { h: 300, w: columnWidth, x: margin, y: 584 },
     chart: { h: 410, w: columnWidth, x: margin + columnWidth + gap, y: 0 },
+    charts_quotes: { h: 1120, w: width, x: margin, y: 4460 },
     facts: { h: 620, w: columnWidth, x: margin, y: 1680 },
     microstructure: { h: 720, w: width, x: margin, y: 2302 },
     portfolio: { h: 230, w: columnWidth, x: margin, y: 252 },
@@ -1140,6 +1141,7 @@ function workspaceRootMinHeight(
 function containerIcon(id: WorkspaceContainerId) {
   const icons = {
     chart: BarChart3,
+    charts_quotes: BarChart3,
     facts: BadgeInfo,
     microstructure: Rows3,
     fills: ListChecks,
