@@ -83,10 +83,28 @@ market_sip_compact.news_reaction_openai_stock_state_dataset_v8
 
 The full-period intraday bar and scanner tables are incomplete, so V16 does not
 use them. It derives bounded daily completed-minute state directly from
-`market_sip_compact.events_YYYY`, one exchange session at a time, and keeps at
-most five sessions in memory. ClickHouse performs the event aggregation with
-bounded parallelism. This is a targeted news-timestamp build, not a global
-intraday-bar backfill.
+`market_sip_compact.events_YYYY`. The preparation pipeline submits four exchange
+sessions concurrently, consumes them in chronological article order, and keeps
+at most five consumed sessions plus four bounded look-ahead results in memory.
+Each ClickHouse request is capped at four threads and 16 GiB, so the default
+aggregate concurrency claim is 16 threads and 64 GiB rather than an accidental
+four-times multiplication of the former per-query limits. This is a targeted
+news-timestamp build, not a global intraday-bar backfill.
+One bounded month of article rows is materialized before session prefetch begins
+so article paging does not add hidden ClickHouse work above that market-query
+budget.
+
+ClickHouse returns typed tab-separated minute rows. The Python loader no longer
+creates one JSON dictionary per bar or re-sorts the already ordered result.
+Completed fixed-horizon reactions for prior articles are memoized once their
+authoritative availability time passes, and a prior session's final as-of
+reaction is memoized after that exchange date closes. Same-session as-of
+reactions remain dynamic. This removes repeated bar searches without freezing
+information that was not yet observable.
+These are transport and scheduling changes only: event eligibility, completed
+minute boundaries, market ranks, causal ordering, and prepared representations
+are unchanged. A partially built dataset remains compatible and resumes from
+its last completed month.
 
 Prepared arrays default to:
 
@@ -102,6 +120,21 @@ months and reconstructs the bounded causal histories when resuming.
 ```powershell
 python -m research.news_reaction_model.v16.run_prepare_data --execute
 ```
+
+The defaults can be overridden explicitly when profiling a different
+ClickHouse host:
+
+```powershell
+python -m research.news_reaction_model.v16.run_prepare_data `
+  --market-prefetch-workers 4 `
+  --market-max-threads 4 `
+  --market-max-memory-usage 16G `
+  --execute
+```
+
+`market-prefetch-workers * market-max-threads` is the intended aggregate CPU
+budget. Increase one only after measuring the ClickHouse host; completed
+futures also retain one in-memory market day per worker.
 
 Use `--restart` only when intentionally discarding the known V16 prepared
 files:

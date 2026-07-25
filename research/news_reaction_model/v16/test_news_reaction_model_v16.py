@@ -6,10 +6,13 @@ import gc
 import json
 import struct
 import tempfile
+import threading
+import time
 import unittest
 from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -45,13 +48,21 @@ from research.news_reaction_model.v16.market_context import (
     CURRENT_MARKET_FEATURE_DIM,
     MARKET_WINDOW_NAMES,
 )
-from research.news_reaction_model.v16.market_data import DayMarketData, MINUTE_US
+from research.news_reaction_model.v16.market_data import (
+    DayMarketCache,
+    DayMarketData,
+    MINUTE_US,
+    parse_daily_volume_rows,
+    parse_minute_bar_rows,
+)
 from research.news_reaction_model.v16.prepared import (
     close_arrays,
     create_arrays,
     write_json_atomic,
 )
 from research.news_reaction_model.v16.prepare_data import (
+    HistoryRecord,
+    _observed_market_reactions,
     build_representation_sha256,
     decode_targets,
     month_ranges,
@@ -279,6 +290,119 @@ class NewsReactionModelV16Tests(unittest.TestCase):
         )
         self.assertAlmostEqual(session["terminal_return"], 0.01)
         self.assertGreater(features[-12], 0.5)
+
+    def test_market_tsv_decoder_preserves_typed_ordered_rows(self) -> None:
+        rows = parse_minute_bar_rows(
+            "AAPL\t100\t10\t12\t9\t11\t50\t550\t3\t4\n"
+            "MSFT\t100\t20\t21\t19\t20.5\t70\t1435\t5\t6\n"
+        )
+        self.assertEqual(rows[0], ("AAPL", 100, 10.0, 12.0, 9.0, 11.0, 50.0, 550.0, 3, 4))
+        self.assertEqual(
+            parse_daily_volume_rows("AAPL\t1000\nMSFT\t0\n"),
+            {"AAPL": 1000.0},
+        )
+        day = DayMarketData(
+            dt.date(2026, 7, 14),
+            rows,
+            {"AAPL": 1_000.0},
+            rows_chronological=True,
+        )
+        self.assertEqual(day.tickers, ("AAPL", "MSFT"))
+
+    def test_market_cache_prefetches_days_concurrently_with_bounded_queue(self) -> None:
+        active = 0
+        maximum_active = 0
+        lock = threading.Lock()
+
+        def fake_load(_client: object, _config: object, session_date: dt.date) -> DayMarketData:
+            nonlocal active, maximum_active
+            with lock:
+                active += 1
+                maximum_active = max(maximum_active, active)
+            time.sleep(0.03)
+            with lock:
+                active -= 1
+            return DayMarketData(session_date, [])
+
+        dates = [dt.date(2026, 7, day) for day in (13, 14, 15, 16)]
+        with patch(
+            "research.news_reaction_model.v16.market_data.load_day_market_data",
+            side_effect=fake_load,
+        ):
+            with DayMarketCache(
+                object(),
+                SimpleNamespace(),
+                max_sessions=3,
+                prefetch_workers=2,
+            ) as cache:
+                cache.prefetch(dates)
+                self.assertLessEqual(len(cache._pending), 2)
+                loaded = [cache.get(value).session_date for value in dates]
+        self.assertEqual(loaded, dates)
+        self.assertGreaterEqual(maximum_active, 2)
+
+    def test_completed_prior_reactions_are_cached_without_freezing_same_day_asof(self) -> None:
+        class FakeDay:
+            def __init__(self) -> None:
+                self.calls: list[int | None] = []
+
+            def post_news_window(self, *_: object, horizon_seconds: int | None, **__: object) -> dict[str, object]:
+                self.calls.append(horizon_seconds)
+                return {
+                    "available": True,
+                    "terminal_return": float(len(self.calls)),
+                }
+
+        day = FakeDay()
+        cache = SimpleNamespace(get=lambda _: day)
+        published = dt.datetime(2026, 7, 14, 13, 30, tzinfo=dt.timezone.utc)
+        prior = HistoryRecord(
+            row_index=1,
+            canonical_news_id="n1",
+            ticker="AAPL",
+            published_at_utc=published,
+            published_at_text=str(published),
+            publication_session="regular",
+            reaction_session_date=dt.date(2026, 7, 14),
+            reaction_session_index=1,
+            horizon_codes=("1m", "5m", "10m", "30m"),
+            return_targets=np.zeros((4, 3), dtype=np.float32),
+            available_at_by_horizon={
+                name: published + dt.timedelta(seconds=seconds)
+                for name, seconds in zip(
+                    ("1m", "5m", "10m", "30m"),
+                    (60, 300, 600, 1800),
+                )
+            },
+            pre_market_features=np.zeros(CURRENT_MARKET_FEATURE_DIM, dtype=np.float32),
+        )
+        same_day_first = published + dt.timedelta(hours=1)
+        same_day_second = published + dt.timedelta(hours=2)
+        _observed_market_reactions(
+            prior,
+            current_published=same_day_first,
+            market_days=cache,
+        )
+        _observed_market_reactions(
+            prior,
+            current_published=same_day_second,
+            market_days=cache,
+        )
+        self.assertEqual(day.calls.count(None), 2)
+        self.assertEqual(len([value for value in day.calls if value is not None]), 4)
+
+        later_session = published + dt.timedelta(days=1)
+        _observed_market_reactions(
+            prior,
+            current_published=later_session,
+            market_days=cache,
+        )
+        _observed_market_reactions(
+            prior,
+            current_published=later_session + dt.timedelta(hours=1),
+            market_days=cache,
+        )
+        self.assertEqual(day.calls.count(None), 3)
 
     def test_prior_observation_masks_incomplete_horizon_and_excludes_news_minute(self) -> None:
         day = DayMarketData(dt.date(2026, 7, 14), self._market_rows())

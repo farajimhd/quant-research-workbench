@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import bisect
 import datetime as dt
-import json
+import time
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
@@ -186,7 +188,7 @@ HAVING trade_count > 0 AND open > 0 AND close > 0 AND high > 0 AND low > 0
 ORDER BY minute_end_us, ticker
 SETTINGS max_threads={int(config.market_max_threads)},
  max_memory_usage={_q(config.market_max_memory_usage)}
-FORMAT JSONEachRow
+FORMAT TabSeparatedRaw
 """
 
 
@@ -206,12 +208,60 @@ FROM
     LIMIT 20 BY sym
 )
 GROUP BY sym
-FORMAT JSONEachRow
+ORDER BY ticker
+SETTINGS max_threads={int(config.market_max_threads)},
+ max_memory_usage={_q(config.market_max_memory_usage)}
+FORMAT TabSeparatedRaw
 """
 
 
-def _json_rows(text: str) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in text.splitlines() if line.strip()]
+MinuteBarRow = tuple[str, int, float, float, float, float, float, float, int, int]
+
+
+def parse_minute_bar_rows(text: str) -> list[MinuteBarRow]:
+    """Decode the bounded ClickHouse result without per-row JSON dictionaries."""
+    rows: list[MinuteBarRow] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if not line:
+            continue
+        fields = line.split("\t")
+        if len(fields) != 10:
+            raise RuntimeError(
+                f"Malformed minute-bar row {line_number}: expected 10 fields, "
+                f"received {len(fields)}."
+            )
+        rows.append(
+            (
+                fields[0],
+                int(fields[1]),
+                float(fields[2]),
+                float(fields[3]),
+                float(fields[4]),
+                float(fields[5]),
+                float(fields[6]),
+                float(fields[7]),
+                int(fields[8]),
+                int(fields[9]),
+            )
+        )
+    return rows
+
+
+def parse_daily_volume_rows(text: str) -> dict[str, float]:
+    result: dict[str, float] = {}
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if not line:
+            continue
+        fields = line.split("\t")
+        if len(fields) != 2:
+            raise RuntimeError(
+                f"Malformed daily-volume row {line_number}: expected 2 fields, "
+                f"received {len(fields)}."
+            )
+        value = float(fields[1])
+        if value > 0:
+            result[fields[0]] = value
+    return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,12 +325,14 @@ class DayMarketData:
     def __init__(
         self,
         session_date: dt.date,
-        rows: Sequence[Mapping[str, Any]],
+        rows: Sequence[Mapping[str, Any] | MinuteBarRow],
         average_daily_volume: Mapping[str, float] | None = None,
+        *,
+        rows_chronological: bool = False,
     ) -> None:
         self.session_date = session_date
         self.average_daily_volume = dict(average_daily_volume or {})
-        clean = sorted(
+        clean = [
             (
                 (
                     str(row["ticker"]),
@@ -294,10 +346,13 @@ class DayMarketData:
                     int(row["trade_count"]),
                     int(row["quote_count"]),
                 )
-                for row in rows
-            ),
-            key=lambda value: (value[1], value[0]),
-        )
+                if isinstance(row, Mapping)
+                else row
+            )
+            for row in rows
+        ]
+        if not rows_chronological:
+            clean.sort(key=lambda value: (value[1], value[0]))
         grouped: dict[str, list[tuple[Any, ...]]] = {}
         for row in clean:
             grouped.setdefault(row[0], []).append(row)
@@ -520,13 +575,18 @@ def load_day_market_data(
     config: Any,
     session_date: dt.date,
 ) -> DayMarketData:
-    rows = _json_rows(client.execute(daily_minute_bars_sql(config, session_date)))
-    baselines = {
-        str(row["ticker"]): float(row["average_daily_volume"])
-        for row in _json_rows(client.execute(prior_daily_volume_sql(config, session_date)))
-        if float(row.get("average_daily_volume") or 0.0) > 0
-    }
-    return DayMarketData(session_date, rows, baselines)
+    rows = parse_minute_bar_rows(
+        client.execute(daily_minute_bars_sql(config, session_date))
+    )
+    baselines = parse_daily_volume_rows(
+        client.execute(prior_daily_volume_sql(config, session_date))
+    )
+    return DayMarketData(
+        session_date,
+        rows,
+        baselines,
+        rows_chronological=True,
+    )
 
 
 class DayMarketCache:
@@ -536,18 +596,56 @@ class DayMarketCache:
         config: Any,
         *,
         max_sessions: int = 5,
+        prefetch_workers: int = 1,
     ) -> None:
         self.client = client
         self.config = config
         self.max_sessions = max(2, int(max_sessions))
+        self.prefetch_workers = max(1, int(prefetch_workers))
         self._days: dict[dt.date, DayMarketData] = {}
         self._order: list[dt.date] = []
+        self._scheduled: deque[dt.date] = deque()
+        self._scheduled_set: set[dt.date] = set()
+        self._pending: dict[
+            dt.date, Future[tuple[DayMarketData, float]]
+        ] = {}
+        self._executor = ThreadPoolExecutor(
+            max_workers=self.prefetch_workers,
+            thread_name_prefix="v16-market-day",
+        )
+        self._closed = False
 
-    def get(self, session_date: dt.date) -> DayMarketData:
-        item = self._days.get(session_date)
-        if item is not None:
-            return item
+    def _load_timed(self, session_date: dt.date) -> tuple[DayMarketData, float]:
+        started = time.perf_counter()
         item = load_day_market_data(self.client, self.config, session_date)
+        return item, time.perf_counter() - started
+
+    def _fill_pending(self) -> None:
+        if self._closed:
+            return
+        while self._scheduled and len(self._pending) < self.prefetch_workers:
+            session_date = self._scheduled.popleft()
+            self._scheduled_set.discard(session_date)
+            if session_date in self._days or session_date in self._pending:
+                continue
+            self._pending[session_date] = self._executor.submit(
+                self._load_timed, session_date
+            )
+
+    def prefetch(self, session_dates: Iterable[dt.date]) -> None:
+        """Queue a bounded ordered lookahead without retaining an entire month."""
+        for session_date in sorted(set(session_dates)):
+            if (
+                session_date in self._days
+                or session_date in self._pending
+                or session_date in self._scheduled_set
+            ):
+                continue
+            self._scheduled.append(session_date)
+            self._scheduled_set.add(session_date)
+        self._fill_pending()
+
+    def _install(self, session_date: dt.date, item: DayMarketData) -> None:
         self._days[session_date] = item
         bisect.insort(self._order, session_date)
         newest = self._order[-1]
@@ -557,4 +655,44 @@ class DayMarketCache:
         while len(self._order) > self.max_sessions:
             expired = self._order.pop(0)
             self._days.pop(expired, None)
+
+    def get(self, session_date: dt.date) -> DayMarketData:
+        item = self._days.get(session_date)
+        if item is not None:
+            return item
+        future = self._pending.pop(session_date, None)
+        try:
+            if future is None:
+                item, elapsed = self._load_timed(session_date)
+            else:
+                item, elapsed = future.result()
+        except Exception as exc:
+            raise RuntimeError(
+                f"V16 market session load failed for {session_date}."
+            ) from exc
+        self._install(session_date, item)
+        self._fill_pending()
+        print(
+            f"MARKET READY | session={session_date} tickers={len(item.tickers):,} "
+            f"load={elapsed:.1f}s pending={len(self._pending)} "
+            f"queued={len(self._scheduled)}",
+            flush=True,
+        )
         return item
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._scheduled.clear()
+        self._scheduled_set.clear()
+        for future in self._pending.values():
+            future.cancel()
+        self._executor.shutdown(wait=True, cancel_futures=True)
+        self._pending.clear()
+
+    def __enter__(self) -> "DayMarketCache":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()

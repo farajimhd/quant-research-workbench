@@ -67,8 +67,12 @@ class LoaderConfig:
     events_table_base: str = "events"
     condition_reference_table: str = "event_condition_token_reference"
     macro_bar_table: str = "macro_bars_by_time_symbol"
-    market_max_threads: int = 16
-    market_max_memory_usage: str = "64G"
+    # Session aggregation is parallelized across exchange days. Keep the
+    # per-query limits bounded so concurrent requests do not multiply into an
+    # unbounded ClickHouse thread or memory claim.
+    market_prefetch_workers: int = 4
+    market_max_threads: int = 4
+    market_max_memory_usage: str = "16G"
     representation_name: str = "openai_3072_plus_point_in_time_stock_state_v1"
     representation_artifact_root: Path = field(default_factory=default_representation_artifact_root)
     prepared_dataset_root: Path = field(default_factory=default_prepared_dataset_root)

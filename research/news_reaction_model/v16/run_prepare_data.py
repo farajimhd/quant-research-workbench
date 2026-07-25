@@ -15,10 +15,12 @@ DEFAULT_ARGS = [
     "4",
     "--max-memory-usage",
     "16G",
+    "--market-prefetch-workers",
+    "4",
     "--market-max-threads",
-    "16",
+    "4",
     "--market-max-memory-usage",
-    "64G",
+    "16G",
 ]
 
 

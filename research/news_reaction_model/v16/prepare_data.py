@@ -7,7 +7,7 @@ import hashlib
 import json
 import time
 from collections import defaultdict, deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
@@ -34,7 +34,11 @@ from research.news_reaction_model.v16.market_context import (
     contract_payload as market_context_contract,
     nonnegative_log1p,
 )
-from research.news_reaction_model.v16.market_data import DayMarketCache, MINUTE_US
+from research.news_reaction_model.v16.market_data import (
+    DayMarketCache,
+    EXCHANGE_TZ,
+    MINUTE_US,
+)
 from research.news_reaction_model.v16.prepared import (
     ARRAY_FILES,
     BUILD_STATE_FILE,
@@ -230,6 +234,11 @@ class HistoryRecord:
     return_targets: np.ndarray
     available_at_by_horizon: Mapping[str, dt.datetime]
     pre_market_features: np.ndarray
+    # Fixed completed windows are immutable once their authoritative
+    # availability time has passed. Cache them on the history record instead
+    # of repeating the same bar searches for every later article.
+    observed_market_windows: dict[str, dict[str, Any]] = field(default_factory=dict)
+    final_market_reaction: dict[str, Any] | None = None
 
 
 def decode_embedding(row: Mapping[str, Any], expected_dim: int) -> np.ndarray:
@@ -452,22 +461,30 @@ def _observed_market_reactions(
         if available_at is None or not available_at < current_published:
             completed[name] = {"available": False}
             continue
-        activity = day.post_news_window(
+        activity = prior.observed_market_windows.get(name)
+        if activity is None:
+            activity = day.post_news_window(
+                prior.ticker,
+                published_us=prior_us,
+                observed_through_us=current_us,
+                horizon_seconds=seconds,
+            )
+            prior.observed_market_windows[name] = activity
+        completed[name] = activity
+    is_later_session = (
+        current_published.astimezone(EXCHANGE_TZ).date()
+        > prior.reaction_session_date
+    )
+    asof = prior.final_market_reaction if is_later_session else None
+    if asof is None:
+        asof = day.post_news_window(
             prior.ticker,
             published_us=prior_us,
             observed_through_us=current_us,
-            horizon_seconds=seconds,
+            horizon_seconds=None,
         )
-        if not activity.get("available"):
-            completed[name] = {"available": False}
-            continue
-        completed[name] = activity
-    asof = day.post_news_window(
-        prior.ticker,
-        published_us=prior_us,
-        observed_through_us=current_us,
-        horizon_seconds=None,
-    )
+        if is_later_session:
+            prior.final_market_reaction = asof
     return completed, asof
 
 
@@ -494,7 +511,7 @@ def select_market_history(
     return list(reversed(selected_reversed))
 
 
-def populate(
+def _populate(
     client: ClickHouseHttpClient,
     config: LoaderConfig,
     arrays: Mapping[str, np.ndarray],
@@ -503,6 +520,7 @@ def populate(
     representation_sha256: str,
     state: dict[str, Any],
     session_index: Mapping[dt.date, int],
+    market_days: DayMarketCache,
 ) -> dict[str, Any]:
     ranges = month_ranges(config.train_start, config.validation_end_exclusive)
     next_month = str(state.get("next_month_start") or config.train_start)
@@ -519,11 +537,6 @@ def populate(
         resume_at=ranges[start_index][0] if start_index < len(ranges) else dt.date.fromisoformat(config.validation_end_exclusive),
         session_index=session_index,
     )
-    market_days = DayMarketCache(
-        client,
-        config,
-        max_sessions=config.market_context_max_session_distance + 2,
-    )
     started = time.perf_counter()
     context_rows = int(state.get("context_rows") or 0)
     context_slots = int(state.get("context_slots") or 0)
@@ -534,8 +547,25 @@ def populate(
     for month_index in range(start_index, len(ranges)):
         month_start, month_end = ranges[month_index]
         reactions = load_reactions(client, config, month_start, month_end)
+        # Materialize one bounded month before starting market prefetch. This
+        # prevents article-page queries from silently exceeding the declared
+        # ClickHouse thread budget while four day aggregations are active.
+        month_source_rows = list(
+            source_rows(client, config, month_start, month_end)
+        )
+        session_dates = sorted(
+            {item.reaction_session_date for item in reactions.values()}
+        )
+        market_days.prefetch(session_dates)
+        print(
+            f"[{month_index + 1}/{len(ranges)}] {month_start:%Y-%m} START "
+            f"sessions={len(session_dates)} rows={len(month_source_rows):,} "
+            f"market_workers={config.market_prefetch_workers} "
+            f"threads_per_query={config.market_max_threads}",
+            flush=True,
+        )
         month_rows = 0
-        for row in source_rows(client, config, month_start, month_end):
+        for row in month_source_rows:
             if row_offset >= int(source_audit["rows"]):
                 raise RuntimeError("V16 source produced more rows than its audited count.")
             key = key_for(row)
@@ -735,6 +765,34 @@ def populate(
     return state
 
 
+def populate(
+    client: ClickHouseHttpClient,
+    config: LoaderConfig,
+    arrays: Mapping[str, np.ndarray],
+    *,
+    source_audit: Mapping[str, Any],
+    representation_sha256: str,
+    state: dict[str, Any],
+    session_index: Mapping[dt.date, int],
+) -> dict[str, Any]:
+    with DayMarketCache(
+        client,
+        config,
+        max_sessions=config.market_context_max_session_distance + 2,
+        prefetch_workers=config.market_prefetch_workers,
+    ) as market_days:
+        return _populate(
+            client,
+            config,
+            arrays,
+            source_audit=source_audit,
+            representation_sha256=representation_sha256,
+            state=state,
+            session_index=session_index,
+            market_days=market_days,
+        )
+
+
 def final_audit(
     config: LoaderConfig,
     arrays: Mapping[str, np.ndarray],
@@ -827,6 +885,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--query-batch-articles", type=int, default=defaults.query_batch_articles)
     parser.add_argument("--max-threads-per-query", type=int, default=defaults.max_threads_per_query)
     parser.add_argument("--max-memory-usage", default=defaults.max_memory_usage)
+    parser.add_argument(
+        "--market-prefetch-workers",
+        type=int,
+        default=defaults.market_prefetch_workers,
+    )
     parser.add_argument("--market-max-threads", type=int, default=defaults.market_max_threads)
     parser.add_argument(
         "--market-max-memory-usage", default=defaults.market_max_memory_usage
@@ -844,6 +907,7 @@ def main(argv: list[str] | None = None) -> int:
         query_batch_articles=max(1, args.query_batch_articles),
         max_threads_per_query=max(1, args.max_threads_per_query),
         max_memory_usage=args.max_memory_usage,
+        market_prefetch_workers=max(1, args.market_prefetch_workers),
         market_max_threads=max(1, args.market_max_threads),
         market_max_memory_usage=args.market_max_memory_usage,
     )
