@@ -23321,7 +23321,7 @@ button {
   align-items: start;
   display: grid;
   gap: 1px;
-  grid-template-rows: 11px 23px 10px;
+  grid-template-rows: 11px 25px 10px;
   min-width: 0;
   padding: 4px 7px;
   font-variant-numeric: tabular-nums;
@@ -23362,6 +23362,7 @@ button {
 
 .charts-quotes-header-metric strong {
   align-self: center;
+  box-sizing: border-box;
   color: var(--text-primary);
   font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 15px;
@@ -23369,6 +23370,7 @@ button {
   letter-spacing: -.025em;
   line-height: 1;
   overflow: hidden;
+  padding-top: 1px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -23379,7 +23381,7 @@ button {
 }
 
 .charts-quotes-header-metric:not([data-primary="true"]) strong {
-  font-size: 17px;
+  font-size: 18px;
   font-weight: 760;
 }
 
@@ -23394,7 +23396,7 @@ button {
 }
 
 .charts-quotes-header-metric[data-primary="true"] strong {
-  font-size: 21px;
+  font-size: 22px;
   font-weight: 780;
 }
 
@@ -23424,7 +23426,7 @@ button {
 
 .charts-quotes-header-metric[data-primary="true"]:is([data-market-role="bid"], [data-market-role="ask"]) strong {
   color: var(--primary-foreground);
-  font-size: 23px;
+  font-size: 24px;
 }
 
 .charts-quotes-header-metric[data-market-role="spread"][data-tone="buy"] {
@@ -23440,7 +23442,7 @@ button {
 }
 
 .charts-quotes-header-metric[data-market-role="spread"] strong {
-  font-size: 23px;
+  font-size: 24px;
 }
 
 .charts-quotes-header-metric[data-tone="buy"] strong { color: var(--success); }
