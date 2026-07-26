@@ -1219,6 +1219,8 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
   const [previewContext, setPreviewContext] = useState<CanvasPreviewContext>(readPreviewContext);
   const [preview, setPreview] = useState<CanvasPreview | null>(null);
   const [scannerSnapshot, setScannerSnapshot] = useState<CanvasScannerSnapshot | null>(null);
+  const [scannerLoading, setScannerLoading] = useState(false);
+  const [scannerError, setScannerError] = useState("");
   const [contextReady, setContextReady] = useState(false);
   const [contextError, setContextError] = useState("");
   const [workspaceState, setWorkspaceState] = useState<CanvasWorkspaceState | null>(initialCanvasState);
@@ -1348,17 +1350,33 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
   }, [activeSymbol, contextError, contextReady, previewContainerKey, previewContext.previewTime, previewContext.sessionDate]);
 
   useEffect(() => {
-    if (!contextReady || !scannerContainerKey) {
+    if (!scannerContainerKey) {
       setScannerSnapshot(null);
+      setScannerLoading(false);
+      setScannerError("");
+      return;
+    }
+    if (!contextReady) {
+      setScannerSnapshot(null);
+      setScannerLoading(true);
+      setScannerError("");
       return;
     }
     const controller = new AbortController();
     const asOf = new Date(chartCutoffMs).toISOString();
+    setScannerSnapshot(null);
+    setScannerLoading(true);
+    setScannerError("");
     api<CanvasScannerSnapshot>(`/api/trading/canvas-scanner${query({ as_of: asOf, lookback_minutes: 15, technical_windows: scannerTechnicalWindows })}`, {
       signal: controller.signal,
       timeoutMs: 90000,
     }).then((payload) => { if (!controller.signal.aborted) setScannerSnapshot(payload); })
-      .catch(() => { if (!controller.signal.aborted) setScannerSnapshot(null); });
+      .catch((exc) => {
+        if (controller.signal.aborted) return;
+        setScannerSnapshot(null);
+        setScannerError(exc instanceof Error ? exc.message : String(exc));
+      })
+      .finally(() => { if (!controller.signal.aborted) setScannerLoading(false); });
     return () => controller.abort();
   }, [chartCutoffMs, contextReady, scannerContainerKey, scannerTechnicalWindows]);
 
@@ -1387,6 +1405,20 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
         status: contextError ? "error" : "ready",
       };
     }
+    if (["scanner", "signal_stream", "watchlist"].includes(definition.id)) {
+      return {
+        detail: scannerError
+          ? `The point-in-time scanner request failed: ${scannerError}`
+          : scannerLoading
+            ? "Building and enriching the complete point-in-time market cross-section."
+            : scannerSnapshot
+              ? `${definition.title} rendered from the complete point-in-time market cross-section.`
+              : "Waiting for the point-in-time market cross-section.",
+        freshness: previewContext.previewTime,
+        sourceLabel: scannerError ? "Unavailable" : "QMD History",
+        status: scannerError ? "error" : scannerLoading ? "connecting" : scannerSnapshot ? "ready" : "idle",
+      };
+    }
     const sourceError = preview?.errors[definition.id] ?? preview?.errors[definition.id === "sec" ? "sec" : definition.id === "xbrl" ? "xbrl" : ""];
     const newsContainer = ["news", "ticker_news", "news_detail"].includes(definition.id);
     const secContainer = ["sec", "ticker_sec", "sec_detail"].includes(definition.id);
@@ -1396,7 +1428,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
       sourceLabel: sourceError ? "Unavailable" : definition.id === "scanner" ? "QMD History" : newsContainer || secContainer || definition.id === "xbrl" ? "Point-in-time" : "IBKR preview",
       status: sourceError ? "error" : newsContainer || secContainer || preview ? "ready" : "idle",
     };
-  }, [contextError, preview, previewContext.previewTime]);
+  }, [contextError, preview, previewContext.previewTime, scannerError, scannerLoading, scannerSnapshot]);
 
   const canvasTargets = registry.canvases.map((canvas, index) => ({
     color: ["var(--primary)", "var(--info)", "var(--success)", "var(--warning)"][index % 4],
@@ -1655,6 +1687,8 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
               });
             }}
             preview={preview}
+            scannerError={scannerError}
+            scannerLoading={scannerLoading}
             scannerSnapshot={scannerSnapshot}
             onTickerChartOpen={(ticker) => openChartForTicker(instanceId, ticker)}
             previewContext={previewContext}
@@ -1719,7 +1753,7 @@ function CanvasManager({ onCreate, onOpen, onRemove, registry }: { onCreate: () 
 
 type SettingsUpdater = (update: ContainerSettings | ((current: ContainerSettings) => ContainerSettings)) => void;
 
-function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, linkContext, linkGroup, linkedContainers, linkOpen, loading, onLinkChange, onLinkContextChange, onTickerChartOpen, preview, previewContext, requestedNewsId, requestedSecAccession, requestedSecCik, scannerSnapshot, settings, settingsOpen, symbolEditable, updateSettings }: {
+function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, linkContext, linkGroup, linkedContainers, linkOpen, loading, onLinkChange, onLinkContextChange, onTickerChartOpen, preview, previewContext, requestedNewsId, requestedSecAccession, requestedSecCik, scannerError, scannerLoading, scannerSnapshot, settings, settingsOpen, symbolEditable, updateSettings }: {
   canvasId: string;
   chartCutoffMs: number;
   definition: WorkspaceContainerDefinition;
@@ -1733,6 +1767,8 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
   onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void;
   onTickerChartOpen: (ticker: string) => void;
   preview: CanvasPreview | null;
+  scannerError: string;
+  scannerLoading: boolean;
   scannerSnapshot: CanvasScannerSnapshot | null;
   previewContext: CanvasPreviewContext;
   requestedNewsId?: string;
@@ -1770,11 +1806,23 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
       : definition.id === "xbrl"
         ? <XbrlAnalysisContainer asOf={new Date(chartCutoffMs).toISOString()} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} settings={settings.xbrl} symbol={linkContext.symbol} />
       : definition.id === "scanner"
-        ? <MarketScannerContainer asOf={new Date(chartCutoffMs).toISOString()} meta={scannerSnapshot?.meta ?? preview?.scanner_meta} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, scanner: { ...state.scanner, ...patch } }))} onTickerSelect={onTickerChartOpen} rows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.scanner} />
+        ? scannerLoading && !scannerSnapshot
+          ? <div className="canvas-preview-loading">Building the complete historical scanner snapshot…</div>
+          : scannerError && !scannerSnapshot
+            ? <div className="canvas-inline-error">Historical scanner unavailable: {scannerError}</div>
+            : <MarketScannerContainer asOf={new Date(chartCutoffMs).toISOString()} meta={scannerSnapshot?.meta ?? preview?.scanner_meta} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, scanner: { ...state.scanner, ...patch } }))} onTickerSelect={onTickerChartOpen} rows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.scanner} />
       : definition.id === "signal_stream"
-        ? <SignalStreamContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, signal_stream: { ...state.signal_stream, ...patch } }))} onTickerSelect={onTickerChartOpen} scannerRows={scannerSnapshot?.signal_rows ?? []} settings={settings.signal_stream} strategySignals={preview?.strategy.signals ?? []} />
+        ? scannerLoading && !scannerSnapshot
+          ? <div className="canvas-preview-loading">Loading the historical signal cross-section…</div>
+          : scannerError && !scannerSnapshot
+            ? <div className="canvas-inline-error">Historical signals unavailable: {scannerError}</div>
+            : <SignalStreamContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, signal_stream: { ...state.signal_stream, ...patch } }))} onTickerSelect={onTickerChartOpen} scannerRows={scannerSnapshot?.signal_rows ?? []} settings={settings.signal_stream} strategySignals={preview?.strategy.signals ?? []} />
       : definition.id === "watchlist"
-        ? <WatchlistContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...patch } }))} onTickerSelect={onTickerChartOpen} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
+        ? scannerLoading && !scannerSnapshot
+          ? <div className="canvas-preview-loading">Loading the historical watchlist snapshot…</div>
+          : scannerError && !scannerSnapshot
+            ? <div className="canvas-inline-error">Historical watchlist unavailable: {scannerError}</div>
+            : <WatchlistContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...patch } }))} onTickerSelect={onTickerChartOpen} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
       : loading && !preview
         ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div>
         : renderPreview(definition.id, preview, settings, linkGroup, onLinkContextChange)}</div>
