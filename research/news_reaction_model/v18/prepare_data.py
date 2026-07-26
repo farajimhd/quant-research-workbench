@@ -13,7 +13,7 @@ import time
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -29,6 +29,7 @@ from research.mlops.clickhouse import (
 from research.mlops.env import discover_env_files, load_env_files
 from research.news_reaction_model.v15.prepared import close_arrays as close_v15_arrays
 from research.news_reaction_model.v15.prepared import open_arrays as open_v15_arrays
+from research.news_reaction_model.v15.stock_state import STOCK_STATE_NAMES
 from research.news_reaction_model.v17.prepare_targets import (
     CancellationController,
     EMPTY_EVENT_ROWS,
@@ -175,34 +176,28 @@ def source_identity_index(
     return result
 
 
-def anchor_prices(
-    client: ClickHouseHttpClient,
-    config: LoaderConfig,
+def planning_anchor_prices(
+    arrays: Mapping[str, np.ndarray],
+    identities: Mapping[tuple[str, str, int], int],
 ) -> dict[tuple[str, str, int], float]:
-    text = client.execute(f"""
-SELECT
-  canonical_news_id,
-  ticker,
-  toUnixTimestamp64Micro(published_at_utc),
-  arrayFirst(x -> isFinite(x) AND x > 0, anchor_prices)
-FROM {qi(config.certified_database)}.{qi(config.certified_table)} FINAL
-WHERE dataset_version = {q(config.certified_version)}
-  AND published_at_utc >= toDateTime64({q(config.train_start)}, 9, 'UTC')
-  AND published_at_utc < toDateTime64({q(config.validation_end_exclusive)}, 9, 'UTC')
-  AND arrayExists(x -> isFinite(x) AND x > 0, anchor_prices)
-ORDER BY published_at_utc, ticker, canonical_news_id
-FORMAT TabSeparatedRaw
-""")
+    """Recover V15's causal anchor solely for inexpensive episode planning.
+
+    V15 stores the strictly pre-publication anchor as a signed-log feature.
+    V18 never uses the recovered approximation as a target authority: the
+    ordered SIP reader replaces it with the exact eligible trade price.
+    """
+    price_index = STOCK_STATE_NAMES.index("anchor_price")
+    present_index = STOCK_STATE_NAMES.index("anchor_present")
+    stock_state = np.asarray(arrays["stock_state"])
     result: dict[tuple[str, str, int], float] = {}
-    for line in text.splitlines():
-        if not line:
+    for key, source_index in identities.items():
+        state = stock_state[source_index]
+        if float(state[present_index]) < 0.5:
             continue
-        news_id, ticker, published_us, price = line.split("\t")
-        key = (news_id, ticker, int(published_us))
-        value = float(price)
-        if key in result and not math.isclose(result[key], value, rel_tol=0, abs_tol=1e-9):
-            raise RuntimeError(f"Conflicting certified anchors for {key}.")
-        result[key] = value
+        encoded = float(state[price_index])
+        value = math.copysign(math.expm1(abs(encoded) * 20.0), encoded)
+        if math.isfinite(value) and value > 0:
+            result[key] = value
     return result
 
 
@@ -376,12 +371,18 @@ def article_from_row(
 
 
 def _can_start(article: Article, config: LoaderConfig) -> bool:
+    # V15's anchor is an invertible but float32-compressed planning feature.
+    # Admit a narrow boundary margin here; the exact ordered-SIP anchor enforces
+    # the strict sub-$20 root contract before any row becomes trainable.
+    planning_limit = config.root_max_price * (
+        1.0 + config.root_planning_slack_fraction
+    )
     return bool(
         article.ticker_count == 1
         and article.classification.root_eligible
         and article.source_index is not None
         and article.anchor_price is not None
-        and 0 < article.anchor_price < config.root_max_price
+        and 0 < article.anchor_price < planning_limit
     )
 
 
@@ -666,6 +667,47 @@ def datetime_from_us(value: int) -> dt.datetime:
     return dt.datetime.fromtimestamp(value / 1_000_000, UTC)
 
 
+def anchor_session_days(
+    sessions: Sequence[dt.date],
+    start_day: dt.date,
+) -> tuple[dt.date, ...]:
+    """Return only the sessions that can contain the pre-publication anchor."""
+    position = bisect.bisect_left(sessions, start_day)
+    values: list[dt.date] = []
+    if position > 0:
+        values.append(sessions[position - 1])
+    if position < len(sessions) and sessions[position] == start_day:
+        values.append(sessions[position])
+    # target_days can begin after a weekend/holiday publication. The previous
+    # session above remains the only causal anchor session in that case.
+    return tuple(dict.fromkeys(values))
+
+
+def exact_anchor_price(
+    event_days: Sequence[np.ndarray],
+    *,
+    published: dt.datetime,
+) -> float | None:
+    """Find the final update-last trade strictly before publication."""
+    published_us = timestamp_us(published)
+    for events in reversed(event_days):
+        if not events.size:
+            continue
+        upper = int(np.searchsorted(events[:, 0], published_us, side="left"))
+        if upper <= 0:
+            continue
+        candidates = events[:upper]
+        eligible = (
+            (candidates[:, 6] > 0.5)
+            & np.isfinite(candidates[:, 2])
+            & (candidates[:, 2] > 0)
+        )
+        positions = np.flatnonzero(eligible)
+        if positions.size:
+            return float(candidates[int(positions[-1]), 2])
+    return None
+
+
 def process_interval_batch(
     *,
     config: LoaderConfig,
@@ -675,7 +717,8 @@ def process_interval_batch(
     split_dates: Mapping[str, frozenset[dt.date]],
     items: list[tuple[str, list[int]]],
     cancellation: CancellationController,
-) -> tuple[list[tuple[int, np.ndarray, bool]], int, int]:
+    event_loader: Callable[..., dict[str, np.ndarray]] = event_rows_for_tickers,
+) -> tuple[list[tuple[int, np.ndarray, bool, float, float]], int, int]:
     client = ClickHouseHttpClient(
         default_clickhouse_url(),
         default_clickhouse_user(),
@@ -684,10 +727,25 @@ def process_interval_batch(
     required_by_day: dict[dt.date, set[str]] = defaultdict(set)
     work_by_end_day: dict[
         dt.date,
-        list[tuple[int, str, tuple[dt.date, ...], dt.datetime, dt.datetime, float]],
+        list[
+            tuple[
+                int,
+                str,
+                tuple[dt.date, ...],
+                tuple[dt.date, ...],
+                dt.datetime,
+                dt.datetime,
+                float,
+            ]
+        ],
     ] = defaultdict(list)
     results = {
-        index: (np.full(len(RAW_METRIC_NAMES), np.nan, np.float32), False)
+        index: (
+            np.full(len(RAW_METRIC_NAMES), np.nan, np.float32),
+            False,
+            math.nan,
+            math.nan,
+        )
         for _ticker, indices in items
         for index in indices
     }
@@ -705,12 +763,14 @@ def process_interval_batch(
             selected_days = session_days_between(sessions, start_day, end_day)
             if not selected_days:
                 continue
-            for day in selected_days:
+            anchor_days = anchor_session_days(sessions, start_day)
+            for day in (*anchor_days, *selected_days):
                 required_by_day[day].add(ticker)
             work_by_end_day[selected_days[-1]].append(
                 (
                     index,
                     ticker,
+                    anchor_days,
                     selected_days,
                     start,
                     end,
@@ -726,21 +786,37 @@ def process_interval_batch(
     for day in sorted(required_by_day):
         cancellation.raise_if_requested()
         requested = sorted(required_by_day[day])
-        loaded = event_rows_for_tickers(
+        loaded = event_loader(
             client, config, requested, day, cancellation=cancellation
         )
         queries += 1
         event_rows += sum(int(value.shape[0]) for value in loaded.values())
         cache[day] = loaded
-        for index, ticker, selected_days, start, end, anchor in work_by_end_day.get(day, ()):
-            missing = [value for value in selected_days if value not in cache]
+        for (
+            index,
+            ticker,
+            anchor_days,
+            selected_days,
+            start,
+            end,
+            planning_anchor,
+        ) in work_by_end_day.get(day, ()):
+            needed_days = tuple(dict.fromkeys((*anchor_days, *selected_days)))
+            missing = [value for value in needed_days if value not in cache]
             if missing:
                 raise RuntimeError(f"V18 event cache lost required sessions: {missing}.")
+            exact_anchor = exact_anchor_price(
+                [cache[value].get(ticker, EMPTY_EVENT_ROWS) for value in anchor_days],
+                published=start,
+            )
+            if exact_anchor is None:
+                continue
+            relative_delta = abs(exact_anchor - planning_anchor) / exact_anchor
             raw16, valid = summarize_events(
                 [cache[value].get(ticker, EMPTY_EVENT_ROWS) for value in selected_days],
                 start=start,
                 end=end,
-                anchor_price=anchor,
+                anchor_price=exact_anchor,
                 minimum_observations=3,
                 absolute_cache=absolute_caches[ticker],
             )
@@ -748,7 +824,14 @@ def process_interval_batch(
                 raw14 = np.delete(raw16, [12, 13]).astype(np.float32, copy=False)
                 if raw14.shape != (len(RAW_METRIC_NAMES),) or not np.isfinite(raw14).all():
                     raise RuntimeError(f"V18 target metrics are invalid for row {index}.")
-                results[index] = (raw14, True)
+                results[index] = (raw14, True, exact_anchor, relative_delta)
+            else:
+                results[index] = (
+                    np.full(len(RAW_METRIC_NAMES), np.nan, np.float32),
+                    False,
+                    exact_anchor,
+                    relative_delta,
+                )
         while len(cache) > config.episode_inactivity_sessions + 2:
             cache.popitem(last=False)
     return (
@@ -803,6 +886,9 @@ def build_targets(
     started = time.perf_counter()
     queries = int(state.get("target_queries") or 0)
     events = int(state.get("target_event_rows") or 0)
+    anchors = int(state.get("exact_anchor_count") or 0)
+    anchor_mismatches = int(state.get("anchor_audit_mismatch_count") or 0)
+    maximum_anchor_delta = float(state.get("maximum_anchor_relative_delta") or 0.0)
     try:
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=max(1, config.workers),
@@ -826,9 +912,16 @@ def build_targets(
                 if cancellation.requested:
                     break
                 rows, batch_queries, batch_events = future.result()
-                for row_index, raw, valid in rows:
+                for row_index, raw, valid, exact_anchor, relative_delta in rows:
                     arrays["raw_metrics"][row_index] = raw
                     arrays["target_mask"][row_index] = valid
+                    arrays["anchor_price"][row_index] = exact_anchor
+                    if math.isfinite(exact_anchor):
+                        anchors += 1
+                    if math.isfinite(relative_delta):
+                        maximum_anchor_delta = max(maximum_anchor_delta, relative_delta)
+                        if relative_delta > config.anchor_audit_relative_tolerance:
+                            anchor_mismatches += 1
                 completed.add(batch_index)
                 queries += batch_queries
                 events += batch_events
@@ -839,6 +932,9 @@ def build_targets(
                     "completed_target_batches": sorted(completed),
                     "target_queries": queries,
                     "target_event_rows": events,
+                    "exact_anchor_count": anchors,
+                    "anchor_audit_mismatch_count": anchor_mismatches,
+                    "maximum_anchor_relative_delta": maximum_anchor_delta,
                 }
                 write_json_atomic(config.prepared_dataset_root / BUILD_STATE_FILE, state)
                 elapsed = time.perf_counter() - started
@@ -847,6 +943,7 @@ def build_targets(
                 print(
                     f"TARGET {len(completed)}/{len(batches)} "
                     f"queries={queries:,} events={events:,} "
+                    f"anchors={anchors:,} anchor_mismatch={anchor_mismatches:,} "
                     f"valid={int(np.count_nonzero(arrays['target_mask'])):,} "
                     f"elapsed={elapsed / 60:.1f}m eta={eta / 60:.1f}m",
                     flush=True,
@@ -858,11 +955,46 @@ def build_targets(
     return state
 
 
+def enforce_exact_root_contract(
+    arrays: Mapping[str, np.ndarray],
+    *,
+    root_max_price: float,
+) -> dict[str, int]:
+    """Remove complete episodes whose exact SIP root anchor is unavailable/ineligible."""
+    roles = np.asarray(arrays["node_role"], dtype=np.int8)
+    anchors = np.asarray(arrays["anchor_price"], dtype=np.float64)
+    episodes = np.asarray(arrays["episode_id"])
+    root_rows = np.flatnonzero(roles == int(NodeRole.ROOT))
+    invalid_ids = {
+        bytes(episodes[index])
+        for index in root_rows
+        if not math.isfinite(float(anchors[index]))
+        or not (0.0 < float(anchors[index]) < root_max_price)
+    }
+    invalid_rows = np.asarray(
+        [bytes(value) in invalid_ids for value in episodes],
+        dtype=np.bool_,
+    )
+    if invalid_rows.any():
+        arrays["target_mask"][invalid_rows] = False
+        arrays["raw_metrics"][invalid_rows] = np.nan
+        arrays["anchor_price"][invalid_rows] = np.nan
+    flush_arrays(arrays)
+    return {
+        "exact_root_rejected_episodes": len(invalid_ids),
+        "exact_root_rejected_rows": int(invalid_rows.sum()),
+    }
+
+
 def classify_targets(
     config: LoaderConfig,
     v15: Mapping[str, np.ndarray],
     arrays: Mapping[str, np.ndarray],
 ) -> TargetThresholds:
+    arrays["direction"].fill(-1)
+    arrays["path"].fill(-1)
+    arrays["flow"].fill(-1)
+    arrays["regression_targets"].fill(np.nan)
     source_indices = np.asarray(arrays["source_index"], dtype=np.int64)
     published = np.asarray(v15["published_at_us"][source_indices], dtype=np.int64)
     boundary = timestamp_us(parse_utc(config.train_end_exclusive))
@@ -914,6 +1046,7 @@ def audit(
     v15_manifest: Mapping[str, Any],
     plan_counts: Mapping[str, int],
     thresholds: TargetThresholds,
+    target_state: Mapping[str, Any],
 ) -> dict[str, Any]:
     rows = int(arrays["source_index"].shape[0])
     shapes, dtypes = expected_shapes(rows), expected_dtypes()
@@ -943,6 +1076,16 @@ def audit(
     raw = np.asarray(arrays["raw_metrics"])
     if not np.isfinite(raw[mask]).all() or np.any(raw[mask, 0] <= 0):
         raise RuntimeError("V18 populated targets are invalid.")
+    anchors = np.asarray(arrays["anchor_price"], dtype=np.float64)
+    if not np.allclose(anchors[mask], raw[mask, 0], rtol=0, atol=1e-5):
+        raise RuntimeError("V18 exact anchor and target metric authorities diverged.")
+    root_rows = np.asarray(arrays["node_role"]) == int(NodeRole.ROOT)
+    populated_roots = root_rows & mask
+    if np.any(
+        (anchors[populated_roots] <= 0)
+        | (anchors[populated_roots] >= config.root_max_price)
+    ):
+        raise RuntimeError("V18 contains a populated root outside its price contract.")
     if np.any(arrays["direction"][~mask] != -1) or np.any(
         arrays["path"][~mask] != -1
     ) or np.any(arrays["flow"][~mask] != -1):
@@ -969,6 +1112,18 @@ def audit(
         "valid_targets": int(mask.sum()),
         "episodes": len(set(decode(value) for value in arrays["episode_id"])),
         "plan_counts": dict(plan_counts),
+        "anchor_audit": {
+            "exact_anchor_count": int(
+                target_state.get("exact_anchor_count") or 0
+            ),
+            "planning_anchor_mismatches": int(
+                target_state.get("anchor_audit_mismatch_count") or 0
+            ),
+            "relative_tolerance": config.anchor_audit_relative_tolerance,
+            "maximum_relative_delta": float(
+                target_state.get("maximum_anchor_relative_delta") or 0.0
+            ),
+        },
         "thresholds": thresholds.as_dict(),
         "v15_rows": int(v15_manifest["rows"]),
         "v15_representation_sha256": v15_manifest["representation_sha256"],
@@ -1034,8 +1189,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     if not args.execute:
         print(
-            "PREFLIGHT ONLY | add --execute after V15 and certified-target authorities "
-            "are complete.",
+            "PREFLIGHT ONLY | add --execute after V15 is complete. Exact anchors "
+            "and interval targets come directly from ordered SIP events.",
             flush=True,
         )
         return 0
@@ -1063,6 +1218,11 @@ def main(argv: list[str] | None = None) -> int:
         state_path = config.prepared_dataset_root / BUILD_STATE_FILE
         if state_path.exists() and not args.restart:
             state = json.loads(state_path.read_text(encoding="utf-8"))
+            if state.get("dataset_version") != DATASET_VERSION:
+                raise RuntimeError(
+                    "V18 build-state version changed. Rerun with --restart to "
+                    "discard the incompatible partial sidecar."
+                )
             rows = int(state["rows"])
             arrays = {
                 name: np.load(
@@ -1082,19 +1242,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             indices = source_identity_index(v15)
-            anchors = anchor_prices(client, config)
-            certified_v15_rows = len(set(indices) & set(anchors))
-            missing_anchor_authority = len(indices) - certified_v15_rows
-            if certified_v15_rows < int(0.95 * len(indices)):
-                raise RuntimeError(
-                    "Certified target authority does not cover at least 95% of V15 "
-                    f"identities ({certified_v15_rows:,}/{len(indices):,}). Complete "
-                    "research.news_reaction_model.certified_targets_v1.run_build first; "
-                    "V18 will not build against a partial authority."
-                )
+            anchors = planning_anchor_prices(v15, indices)
             print(
-                f"AUTHORITIES | V15={len(indices):,} certified_anchors={len(anchors):,} "
-                f"V15_without_anchor={missing_anchor_authority:,}",
+                f"AUTHORITIES | V15={len(indices):,} planning_anchors={len(anchors):,} "
+                f"V15_without_anchor={len(indices) - len(anchors):,}; "
+                "exact anchors will be derived from ordered SIP events",
                 flush=True,
             )
             planned, plan_counts = plan_episodes(
@@ -1123,6 +1275,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         split_dates = load_split_dates(client, config)
         state = build_targets(config, v15, arrays, sessions, split_dates, state)
+        exact_root_counts = enforce_exact_root_contract(
+            arrays,
+            root_max_price=config.root_max_price,
+        )
+        plan_counts = {**plan_counts, **exact_root_counts}
         thresholds = classify_targets(config, v15, arrays)
         manifest = audit(
             config,
@@ -1131,6 +1288,7 @@ def main(argv: list[str] | None = None) -> int:
             v15_manifest,
             plan_counts,
             thresholds,
+            state,
         )
         write_json_atomic(manifest_path, manifest)
         if state_path.exists():

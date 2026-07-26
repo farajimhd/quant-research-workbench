@@ -25,8 +25,9 @@ when all of these conditions hold:
 1. the article is company-specific, regulatory, editorial, or an independent
    analyst action;
 2. it has the exact V15/OpenAI, point-in-time stock-state, and time inputs;
-3. the last certified eligible trade strictly before publication is positive
-   and below `$20`.
+3. V15's causal pre-publication anchor feature is positive and within the 1%
+   planning margin around `$20`, and the exact ordered-SIP anchor is strictly
+   below `$20` before the episode is admitted to the completed dataset.
 
 Once an episode starts, later single-ticker follow-ups remain eligible even if
 the stock moves above `$20`. The root price, not the later price, defines the
@@ -81,14 +82,26 @@ V16 market-wide news, leader, and attention channels are deliberately absent.
 
 ## Target authority
 
-Anchors come from
-`market_sip_compact.news_reaction_certified_targets_v1`. V18 refuses to build
-when that authority covers less than 95% of V15 identities.
+V18 has no dependency on the old fixed-horizon reaction-label authority or
+the V16/V17 certified-target sidecar. V15's signed-log anchor feature is
+inverted only as a cheap planning filter. Because that feature is
+float32-compressed, planning admits a 1% boundary margin; this cannot make a
+row trainable. It is never retained as target truth.
 
 For each article interval V18 reads compact SIP events in exact
 `(sip_timestamp_us, ordinal)` order and applies the shared canonical trade
-condition and causal quote-ASOF contract. Corporate-action crossings are
-masked. The target interval is `[published_at_utc, boundary_utc)`.
+condition and causal quote-ASOF contract. The reader includes the immediately
+preceding exchange session when necessary and selects the last `update_last`
+trade strictly before publication as the exact anchor. The same ordered event
+batch supplies the interval high, low, terminal, path, and flow evidence.
+Corporate-action crossings are masked. The target interval is
+`[published_at_utc, boundary_utc)`.
+
+The completed audit requires every populated target's stored anchor to equal
+the anchor embedded in its raw target metrics. Episodes whose exact root
+anchor is missing, non-positive, or at least `$20` are removed as a whole.
+The manifest also records differences between the V15 planning approximation
+and exact SIP anchors.
 
 Workers own bounded ticker groups. Each worker fetches one exchange session
 once for all required tickers in its group, evaluates every interval sharing
@@ -114,15 +127,9 @@ classification losses and the weighted regression loss are averaged.
 
 ## Build
 
-First complete V15, the corrected event-label authority, and the certified
-target sidecar. Run only those first two phases; V18 does not require a V16 or
-V17 feature build:
-
-```powershell
-python -m research.news_reaction_model.run_certified_v16_v17_build --execute --stop-after sidecar --reaction-workers 16
-```
-
-Then build V18:
+V18 requires only the completed V15 representation and the existing compact
+SIP events, condition reference, exchange calendar, and split table. Do not
+run the old V16/V17 authority or fixed-horizon builders for V18.
 
 ```powershell
 python -m research.news_reaction_model.v18.run_prepare_data --execute
@@ -134,8 +141,9 @@ The launcher defaults to:
 --workers 16 --tickers-per-query 64
 ```
 
-The target phase is safely resumable after Ctrl+C. Use `--restart` only to
-discard the known V18 sidecar and rebuild episode planning from the beginning.
+The target phase is safely resumable after Ctrl+C. Because this is the V18.2
+target contract, any older partial V18 state fails closed; use `--restart` once
+to discard an incompatible V18.1 sidecar.
 
 To use more workstation concurrency:
 

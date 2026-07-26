@@ -18,7 +18,18 @@ from research.news_reaction_model.v18.episode_contract import (
     current_episode_features,
 )
 from research.news_reaction_model.v18.model import NewsReactionModelV18
-from research.news_reaction_model.v18.prepare_data import Article, consume_article
+from research.news_reaction_model.v15.stock_state import STOCK_STATE_NAMES, signed_log
+from research.news_reaction_model.v18.prepare_data import (
+    Article,
+    CancellationController,
+    anchor_session_days,
+    consume_article,
+    enforce_exact_root_contract,
+    exact_anchor_price,
+    planning_anchor_prices,
+    process_interval_batch,
+    timestamp_us,
+)
 from research.news_reaction_model.v18.targets import (
     Direction,
     Flow,
@@ -202,6 +213,111 @@ class EpisodeContractTest(unittest.TestCase):
 
 
 class TargetContractTest(unittest.TestCase):
+    def test_v15_anchor_is_planning_only_and_exact_anchor_is_strictly_prior(self) -> None:
+        stock_state = np.zeros((1, len(STOCK_STATE_NAMES)), dtype=np.float32)
+        stock_state[0, STOCK_STATE_NAMES.index("anchor_price")] = signed_log(10.0)
+        stock_state[0, STOCK_STATE_NAMES.index("anchor_present")] = 1.0
+        identity = ("news", "TEST", 1_000_000)
+        planning = planning_anchor_prices(
+            {"stock_state": stock_state},
+            {identity: 0},
+        )
+        self.assertAlmostEqual(planning[identity], 10.0, places=5)
+
+        events = np.asarray(
+            [
+                [800_000, 1, 9.8, 100, 9.7, 9.8, 1, 1],
+                [900_000, 2, 10.1, 100, 10.0, 10.1, 1, 1],
+                # A high/low-only print cannot become the last-price anchor.
+                [950_000, 3, 12.0, 100, 11.9, 12.0, 0, 1],
+                # A trade at the publication timestamp is not causal input.
+                [1_000_000, 4, 11.0, 100, 10.9, 11.0, 1, 1],
+            ],
+            dtype=np.float64,
+        )
+        exact = exact_anchor_price(
+            [events],
+            published=dt.datetime.fromtimestamp(1.0, dt.timezone.utc),
+        )
+        self.assertEqual(exact, 10.1)
+
+    def test_anchor_sessions_include_only_current_and_immediate_predecessor(self) -> None:
+        sessions = (
+            dt.date(2026, 7, 10),
+            dt.date(2026, 7, 13),
+            dt.date(2026, 7, 14),
+        )
+        self.assertEqual(
+            anchor_session_days(sessions, dt.date(2026, 7, 13)),
+            (dt.date(2026, 7, 10), dt.date(2026, 7, 13)),
+        )
+        self.assertEqual(
+            anchor_session_days(sessions, dt.date(2026, 7, 12)),
+            (dt.date(2026, 7, 10),),
+        )
+
+    def test_exact_root_rejection_removes_the_complete_episode(self) -> None:
+        arrays = {
+            "node_role": np.asarray(
+                [int(NodeRole.ROOT), int(NodeRole.MATERIAL_UPDATE)], dtype=np.int8
+            ),
+            "anchor_price": np.asarray([20.5, 21.0], dtype=np.float64),
+            "episode_id": np.asarray([b"episode", b"episode"], dtype="S64"),
+            "target_mask": np.asarray([True, True], dtype=np.bool_),
+            "raw_metrics": np.ones((2, 14), dtype=np.float32),
+        }
+        result = enforce_exact_root_contract(arrays, root_max_price=20.0)
+        self.assertEqual(result["exact_root_rejected_episodes"], 1)
+        self.assertEqual(result["exact_root_rejected_rows"], 2)
+        self.assertFalse(arrays["target_mask"].any())
+        self.assertTrue(np.isnan(arrays["anchor_price"]).all())
+
+    def test_interval_batch_reuses_prior_session_for_exact_anchor(self) -> None:
+        friday = dt.date(2026, 7, 10)
+        monday = dt.date(2026, 7, 13)
+        published = dt.datetime(2026, 7, 13, 13, 30, tzinfo=dt.timezone.utc)
+        end = published + dt.timedelta(minutes=5)
+        prior = np.asarray(
+            [[timestamp_us(published - dt.timedelta(days=3, minutes=1)), 1, 9.9, 100, 9.8, 9.9, 1, 1]],
+            dtype=np.float64,
+        )
+        current = np.asarray(
+            [
+                [timestamp_us(published + dt.timedelta(seconds=1)), 2, 10.0, 100, 9.9, 10.0, 1, 1],
+                [timestamp_us(published + dt.timedelta(seconds=2)), 3, 10.2, 100, 10.1, 10.2, 1, 1],
+                [timestamp_us(published + dt.timedelta(seconds=3)), 4, 10.1, 100, 10.0, 10.1, 1, 1],
+            ],
+            dtype=np.float64,
+        )
+        calls: list[dt.date] = []
+
+        def loader(_client, _config, tickers, day, **_kwargs):
+            calls.append(day)
+            rows = prior if day == friday else current
+            return {ticker: rows for ticker in tickers}
+
+        rows, queries, _event_rows = process_interval_batch(
+            config=LoaderConfig(workers=1),
+            v15={"ticker": np.asarray([b"TEST"], dtype="S8")},
+            arrays={
+                "target_start_us": np.asarray([timestamp_us(published)]),
+                "target_end_us": np.asarray([timestamp_us(end)]),
+                "anchor_price": np.asarray([10.0]),
+            },
+            sessions=[friday, monday],
+            split_dates={},
+            items=[("TEST", [0])],
+            cancellation=CancellationController(),
+            event_loader=loader,
+        )
+        row_index, raw, valid, anchor, _delta = rows[0]
+        self.assertEqual(row_index, 0)
+        self.assertTrue(valid)
+        self.assertEqual(anchor, 9.9)
+        self.assertAlmostEqual(float(raw[0]), 9.9, places=5)
+        self.assertEqual(queries, 2)
+        self.assertEqual(calls, [friday, monday])
+
     def test_classification_preserves_dominant_excursion_and_actual_returns(self) -> None:
         metrics = np.asarray(
             [10.0, 0.08, -0.02, 0.05, 0.2, 0.8, 0.03, -0.02, 0.08, 0.7, 0.2, 0.1, 50, 60],

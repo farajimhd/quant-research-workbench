@@ -51,9 +51,6 @@ class LoaderConfig:
     relevance_version: str = "news_ticker_relevance_rules_v2_1"
     semantic_table: str = "news_semantic_event_features_v2"
     semantic_version: str = "news_semantic_event_dictionary_v2_1"
-    certified_database: str = "market_sip_compact"
-    certified_table: str = "news_reaction_certified_targets_v1"
-    certified_version: str = "news_reaction_certified_targets_v1"
     reaction_calendar_table: str = "news_reaction_calendar_v1"
     reaction_calendar_version: str = "xnys_pandas_market_calendars_v1"
     market_database: str = "market_sip_compact"
@@ -65,6 +62,7 @@ class LoaderConfig:
     validation_start: str = "2026-01-01"
     validation_end_exclusive: str = "2027-01-01"
     root_max_price: float = 20.0
+    root_planning_slack_fraction: float = 0.01
     episode_inactivity_sessions: int = 2
     context_size: int = CONTEXT_SIZE
     batch_size: int = 2048
@@ -73,6 +71,7 @@ class LoaderConfig:
     prefetch_batches: int = 4
     max_threads_per_query: int = 2
     max_memory_usage: str = "4G"
+    anchor_audit_relative_tolerance: float = 0.005
     openai_embedding_dim: int = OPENAI_EMBEDDING_DIM
     stock_state_dim: int = STOCK_STATE_DIM
     time_feature_dim: int = TIME_FEATURE_DIM
