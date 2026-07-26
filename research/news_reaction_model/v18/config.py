@@ -12,7 +12,7 @@ from research.news_reaction_model.v15.config import (
 from research.news_reaction_model.v15.config import OPENAI_EMBEDDING_DIM
 from research.news_reaction_model.v15.stock_state import STOCK_STATE_DIM
 from research.news_reaction_model.v15.time_features import TIME_FEATURE_DIM
-from research.news_reaction_model.v18 import MODEL_FAMILY, MODEL_VERSION
+from research.news_reaction_model.v18 import DATASET_VERSION, MODEL_FAMILY, MODEL_VERSION
 from research.news_reaction_model.v18.episode_contract import (
     CONTEXT_FEATURE_DIM,
     CONTEXT_SIZE,
@@ -43,7 +43,7 @@ class LoaderConfig:
     v15_prepared_root: Path = field(default_factory=default_v15_root)
     v15_dataset_version: str = "news_reaction_openai_causal_context_dataset_v15"
     prepared_dataset_root: Path = field(default_factory=default_prepared_root)
-    prepared_dataset_version: str = "news_reaction_single_ticker_episode_dataset_v18"
+    prepared_dataset_version: str = DATASET_VERSION
     news_database: str = "q_live"
     normalized_news_table: str = "benzinga_news_normalized_v1"
     ticker_link_table: str = "benzinga_news_ticker_v1"
