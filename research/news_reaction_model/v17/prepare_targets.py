@@ -407,7 +407,10 @@ FROM eligible_trades AS t
 ASOF LEFT JOIN quotes AS q
   ON t.ticker=q.ticker AND t.event_order_key>=q.event_order_key
 ORDER BY t.ticker,t.sip_timestamp_us,t.ordinal
-SETTINGS max_threads=2,max_memory_usage='4G',join_algorithm='full_sorting_merge'
+SETTINGS
+  max_threads={max(1, int(getattr(config, "max_threads_per_query", 2)))},
+  max_memory_usage={_q(getattr(config, "max_memory_usage", "4G"))},
+  join_algorithm='full_sorting_merge'
 FORMAT TabSeparatedRaw
 """
     query_id = cancellation.register_query() if cancellation is not None else None
