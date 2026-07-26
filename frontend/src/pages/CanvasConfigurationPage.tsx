@@ -212,6 +212,7 @@ type QmdDecisionEvent = {
 };
 type QmdMarketSignalEvent = {
   schema_version: number;
+  signal_version: number;
   engine_version: string;
   event_id: string;
   signal_id: string;
@@ -225,6 +226,7 @@ type QmdMarketSignalEvent = {
   state: "triggered" | "updated" | "resolved" | "expired";
   direction: "bullish" | "bearish" | "neutral";
   score: number;
+  rank_score: number;
   confidence: number;
   trigger_reason: string;
   resolution_reason?: string;

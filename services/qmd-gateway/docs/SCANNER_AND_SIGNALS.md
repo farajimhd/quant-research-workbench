@@ -31,7 +31,7 @@ compatibility aliases over this same payload and are not a separate authority.
 
 | Field | Meaning |
 |---|---|
-| `schema_version`, `engine_version` | Version the event schema and deterministic engine separately. |
+| `schema_version`, `signal_version`, `engine_version` | Version the event schema, observation method, and deterministic engine separately. |
 | `event_id` | Unique id for one lifecycle event. |
 | `signal_id` | Stable id shared by all events in one lifecycle. |
 | `signal_key`, `producer` | Reusable detector identity and its authority. |
@@ -40,7 +40,7 @@ compatibility aliases over this same payload and are not a separate authority.
 | `observed_at`, `effective_at` | When QMD observed and made the event usable. Both remain causal. |
 | `state` | `triggered`, `updated`, or `resolved`. |
 | `direction` | `bullish`, `bearish`, or `neutral`. It is not an order side. |
-| `score`, `confidence` | Signed/unsigned detector output on normalized scales. |
+| `score`, `rank_score`, `confidence` | Signed directional strength, comparable causal-surprise rank, and evidence completeness on normalized scales. |
 | `trigger_reason`, `resolution_reason` | Human-readable lifecycle evidence. |
 | `reference_price`, `invalidation_price`, `expires_at` | Price/time context, never an implicit order instruction. |
 | `evidence` | Exact bar and microstructure measurements used at that event. |
@@ -53,15 +53,23 @@ delay or backdate the underlying signal.
 
 | Signal | Working timeframes | Purpose |
 |---|---|---|
-| `tape_acceleration_breakout` | `1s`, `10s`, `30s` | Directional trade acceleration while the spread remains routeable. |
-| `volume_shock_momentum` | `10s`, `30s`, `1m` | Unusual dollar-volume acceleration with material price displacement. |
-| `liquidity_recovery_after_spread_shock` | `1s`, `10s`, `30s` | NBBO spread/liquidity recovery after a stressed state. |
-| `vwap_reclaim_momentum` | `10s`, `30s`, `1m` | Price and tape confirmation around session VWAP. |
-| `high_of_day_break` | `10s`, `30s`, `1m` | Session-high breakout evidence when the required session state is available. |
+| `directional_flow_acceleration` | `100ms` event-native | Abrupt buyer- or seller-initiated flow acceleration. |
+| `price_volume_expansion` | `1s`, `10s`, `30s`, `1m` closed bars | Concurrent exceptional price and activity expansion. |
+| `vwap_transition` | `1s`, `10s`, `30s`, `1m` closed bars | Causal price transition across session VWAP. |
+| `liquidity_dislocation` | `100ms` event-native | Exceptional spread widening with displayed-liquidity deterioration. |
+| `liquidity_recovery` | `100ms` event-native | Measurable restoration after a liquidity dislocation. |
+| `flow_price_divergence` | `100ms` event-native | Exceptional aggressive flow without confirming price acceptance. |
 
-Catalog entries marked `cataloged` describe future contracts only. They must
-not appear as active scanner or strategy evidence until a detector emits the
-canonical lifecycle contract.
+These are observations, not setups. Session-level breaks, structure breaks,
+level rejection, opening-range breakout, gap-and-go, and similar strategy
+concepts are deliberately absent. Strategies compose the six observations with
+QMD structure/level indicators, news, SEC, model, portfolio, and risk inputs.
+
+All six methods are implemented and emitted. The Canvas Scanner joins the
+strongest active QMD lifecycle to each security and sorts its Signals preset by
+`rank_score`; Signal Stream shows lifecycle events and the live method catalog.
+The rank score is produced by QMD from causal, per-symbol/timeframe normalized
+surprises rather than recomputed in the UI.
 
 ## Persistence And Replay
 

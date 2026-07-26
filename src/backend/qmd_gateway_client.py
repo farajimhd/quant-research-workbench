@@ -132,11 +132,11 @@ def qmd_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
         ticker = str(signal.get("ticker") or "")
         current = strongest_by_ticker.get(ticker)
         signal_rank = (
-            abs(float_value(signal.get("signal_score"))),
+            float_value(signal.get("signal_rank_score")),
             float_value(signal.get("signal_confidence")),
         )
         current_rank = (
-            abs(float_value(current.get("signal_score"))) if current else -1.0,
+            float_value(current.get("signal_rank_score")) if current else -1.0,
             float_value(current.get("signal_confidence")) if current else -1.0,
         )
         if current is None or signal_rank > current_rank:
@@ -160,11 +160,9 @@ def qmd_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
             **indicator_by_ticker.get(str(row.get("ticker") or ""), {}),
             **strongest_by_ticker.get(str(row.get("ticker") or ""), {}),
             "active_signal_count": active_counts.get(str(row.get("ticker") or ""), 0),
-            "signal_rank_score": abs(
-                float_value(
-                    strongest_by_ticker.get(str(row.get("ticker") or ""), {}).get(
-                        "signal_score"
-                    )
+            "signal_rank_score": float_value(
+                strongest_by_ticker.get(str(row.get("ticker") or ""), {}).get(
+                    "signal_rank_score"
                 )
             ),
         }
@@ -447,6 +445,11 @@ def normalize_qmd_market_signal(row: dict[str, Any]) -> dict[str, Any]:
     evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
     clock = row.get("clock") if isinstance(row.get("clock"), dict) else {}
     score = float_value(row.get("score"))
+    rank_score = (
+        float_value(row.get("rank_score"))
+        if row.get("rank_score") is not None
+        else abs(score)
+    )
     confidence = float_value(row.get("confidence"))
     return {
         "ticker": str(row.get("ticker") or "").upper(),
@@ -461,6 +464,7 @@ def normalize_qmd_market_signal(row: dict[str, Any]) -> dict[str, Any]:
         "spread_bps_abs": optional_float(evidence.get("spread_bps")),
         "signal_id": str(row.get("signal_id") or ""),
         "signal_event_id": str(row.get("event_id") or ""),
+        "signal_version": int(row.get("signal_version") or 1),
         "signal_type": str(row.get("signal_key") or ""),
         "signal_domain": str(row.get("domain") or "market"),
         "signal_producer": str(row.get("producer") or "qmd"),
@@ -468,9 +472,9 @@ def normalize_qmd_market_signal(row: dict[str, Any]) -> dict[str, Any]:
         "direction": str(row.get("direction") or "neutral"),
         "market_state": str(row.get("direction") or "neutral"),
         "signal_score": score,
-        "signal_rank_score": abs(score),
+        "signal_rank_score": rank_score,
         "signal_confidence": confidence,
-        "scanner_score": abs(score),
+        "scanner_score": rank_score,
         "live_reasons": str(row.get("trigger_reason") or ""),
         "live_risks": str(row.get("resolution_reason") or ""),
         "evidence": str(row.get("trigger_reason") or ""),
@@ -482,7 +486,7 @@ def normalize_qmd_market_signal(row: dict[str, Any]) -> dict[str, Any]:
         "tape_imbalance": float_value(evidence.get("tape_imbalance")),
         "liquidity_score": float_value(evidence.get("liquidity_score")),
         "provider": "qmd-gateway",
-        "live_priority": abs(score),
+        "live_priority": rank_score,
         "input_basis": str(clock.get("input_basis") or "bar_derived"),
         "calculation_window": str(clock.get("calculation_window") or row.get("working_timeframe") or ""),
         "evaluation_mode": str(clock.get("evaluation_mode") or "closed_only"),

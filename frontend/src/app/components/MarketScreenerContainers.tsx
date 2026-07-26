@@ -23,7 +23,7 @@ type TechnicalListSettings = { columns: string[]; customColumns: ScannerCustomCo
 export type MarketScannerSettings = TechnicalListSettings & { limit: number; preset: string };
 export type SignalStreamSettings = TechnicalListSettings & { limit: number; preset: string };
 export type WatchlistSettings = TechnicalListSettings & { limit: number; ownerKind: "strategy" | "user"; ownerName: string; symbols: string[] };
-type SignalMethod = { key: string; label: string; status: string; compute_mode: string; working_timeframes: string[]; confirmation_timeframes: string[]; trigger_rules: string[]; rationale: string; domain?: string; producer?: string; input_basis?: string; evaluation_mode?: string; update_trigger?: string; publication_cadence?: string; score_required?: boolean };
+type SignalMethod = { key: string; label: string; signal_version: number; status: string; compute_mode: string; working_timeframes: string[]; confirmation_timeframes: string[]; trigger_rules: string[]; rationale: string; domain?: string; producer?: string; input_basis?: string; evaluation_mode?: string; update_trigger?: string; publication_cadence?: string; publication_interval_ms?: number | null; score_required?: boolean; rank_score_required?: boolean };
 
 type FieldKind = "derived" | "estimated" | "raw";
 type FieldDefinition = {
@@ -135,7 +135,7 @@ const FIELD_CATALOG: FieldDefinition[] = [
   field("direction", "Direction", "Signal event", "derived", "text", "Bullish, bearish, or neutral direction assigned by the rule owner."),
   field("working_timeframe", "Working interval", "Signal event", "raw", "text", "Market-data interval on which the reusable signal rule was evaluated."),
   field("signal_score", "Score", "Signal event", "derived", "number", "Normalized signed or directional evidence score supplied by the signal authority."),
-  field("signal_rank_score", "Signal strength", "Signal event", "derived", "score", "Absolute market-signal score used to rank active observations without discarding bullish or bearish direction."),
+  field("signal_rank_score", "Rank score", "Signal event", "derived", "score", "QMD-calibrated causal-surprise strength used to compare and rank active observations across symbols and methods."),
   field("signal_confidence_pct", "Confidence", "Signal event", "derived", "percentPlain", "Evidence completeness and agreement, not forecast win probability."),
   field("active_signal_count", "Active signals", "Signal event", "derived", "integer", "Count of currently active reusable QMD market signals for this ticker."),
   field("action", "Strategy action", "Signal event", "derived", "text", "Enter, exit, hold, or wait interpretation owned by the strategy."),
@@ -172,8 +172,8 @@ const SCANNER_PRESETS: Record<string, string[]> = {
 };
 const LOCKED_MARKET_LIST_COLUMNS = ["logo", "ticker", "news_labels", "sec_labels"];
 const SIGNAL_PRESETS: Record<string, string[]> = {
-  All: ["ticker", "event_time", "signal_domain", "signal_type", "signal_state", "direction", "working_timeframe", "signal_score", "signal_confidence_pct", "last", "source", "evidence", "news_labels", "sec_labels"],
-  Market: ["ticker", "event_time", "signal_type", "signal_state", "direction", "working_timeframe", "signal_score", "signal_confidence_pct", "last", "source", "evidence"],
+  All: ["ticker", "event_time", "signal_domain", "signal_type", "signal_state", "direction", "working_timeframe", "signal_score", "signal_rank_score", "signal_confidence_pct", "last", "source", "evidence", "news_labels", "sec_labels"],
+  Market: ["ticker", "event_time", "signal_type", "signal_state", "direction", "working_timeframe", "signal_score", "signal_rank_score", "signal_confidence_pct", "last", "source", "evidence"],
   News: ["ticker", "event_time", "signal_type", "direction", "signal_score", "signal_confidence_pct", "source", "evidence", "news_labels"],
   SEC: ["ticker", "event_time", "signal_type", "direction", "signal_score", "signal_confidence_pct", "source", "evidence", "sec_labels"],
   Strategy: ["ticker", "event_time", "signal_type", "action", "direction", "working_timeframe", "signal_score", "signal_confidence_pct", "last", "source", "evidence"],
@@ -221,7 +221,7 @@ export function SignalStreamContainer({ asOf, onSettingsChange, onTickerSelect, 
     customColumns={settings.customColumns}
     empty="No market or strategy events match this stream."
     eyebrow="Newest first"
-    guide={signalMethods.length ? <details className="market-signal-methods"><summary>Review {signalMethods.length} implemented market-signal methods</summary><div>{signalMethods.map((method) => <article key={method.key}><strong>{method.label}</strong><span>{method.domain ?? "market"} · {method.producer ?? "qmd"} · {method.input_basis?.replaceAll("_", " ") ?? method.compute_mode.replaceAll("_", " ")} · {method.working_timeframes.join(", ")}</span><p>{method.rationale}</p><small>{method.trigger_rules[0] ?? "See the QMD catalog for trigger rules."}</small></article>)}</div></details> : null}
+    guide={signalMethods.length ? <details className="market-signal-methods"><summary>Review {signalMethods.length} emitted QMD market observations</summary><div>{signalMethods.map((method) => <article key={method.key}><strong>{method.label} · v{method.signal_version}</strong><span>{method.domain ?? "market"} · {method.producer ?? "qmd"} · {method.input_basis?.replaceAll("_", " ") ?? method.compute_mode.replaceAll("_", " ")} · {method.working_timeframes.join(", ")} · {method.publication_cadence?.replaceAll("_", " ") ?? "on update"}</span><p>{method.rationale}</p><small>{method.trigger_rules[0] ?? "See the QMD catalog for trigger rules."}</small></article>)}</div></details> : null}
     limit={settings.limit}
     lockedColumns={LOCKED_MARKET_LIST_COLUMNS}
     onColumnsChange={(columns) => onSettingsChange({ columns })}

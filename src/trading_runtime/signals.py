@@ -27,6 +27,7 @@ class MarketSignal:
     event_id: str
     signal_key: str
     schema_version: int
+    signal_version: int
     engine_version: str
     producer: str
     ticker: str
@@ -36,6 +37,7 @@ class MarketSignal:
     state: SignalState
     direction: SignalDirection
     score: float
+    rank_score: float
     confidence: float
     trigger_reason: str
     reference_price: float
@@ -52,6 +54,8 @@ class MarketSignal:
             raise ValueError("MarketSignal domain must be market")
         if not -1.0 <= self.score <= 1.0:
             raise ValueError("MarketSignal score must be between -1 and 1")
+        if not 0.0 <= self.rank_score <= 1.0:
+            raise ValueError("MarketSignal rank_score must be between 0 and 1")
         if not 0.0 <= self.confidence <= 1.0:
             raise ValueError("MarketSignal confidence must be between 0 and 1")
         if self.clock is None:
@@ -84,6 +88,8 @@ class MarketSignal:
             "direction",
             "score",
         )
+        if int(payload.get("schema_version") or 0) >= 3:
+            required += ("signal_version", "rank_score", "clock")
         missing = [key for key in required if payload.get(key) in (None, "")]
         if missing:
             raise ValueError(f"QMD market signal is missing: {', '.join(missing)}")
@@ -129,6 +135,7 @@ class MarketSignal:
             event_id=str(payload["event_id"]),
             signal_key=str(payload["signal_key"]),
             schema_version=int(payload["schema_version"]),
+            signal_version=int(payload.get("signal_version") or 1),
             engine_version=str(payload["engine_version"]),
             producer=str(payload.get("producer") or "qmd"),
             ticker=str(payload["ticker"]).upper(),
@@ -143,6 +150,11 @@ class MarketSignal:
             state=state,  # type: ignore[arg-type]
             direction=direction,  # type: ignore[arg-type]
             score=float(payload.get("score") or 0.0),
+            rank_score=float(
+                payload.get("rank_score")
+                if payload.get("rank_score") is not None
+                else abs(float(payload.get("score") or 0.0))
+            ),
             confidence=float(payload.get("confidence") or 0.0),
             trigger_reason=str(payload.get("trigger_reason") or ""),
             resolution_reason=str(payload.get("resolution_reason") or ""),

@@ -3,12 +3,16 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub const MARKET_SIGNAL_SCHEMA_VERSION: u16 = 2;
-pub const MARKET_SIGNAL_ENGINE_VERSION: &str = "qmd-market-signal-v1";
+pub const MARKET_SIGNAL_SCHEMA_VERSION: u16 = 3;
+pub const MARKET_SIGNAL_ENGINE_VERSION: &str = "qmd-market-signal-v2";
+const SIGNAL_VERSION: u16 = 1;
+const BASELINE_WARMUP: u64 = 8;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct MarketSignalEvent {
     pub schema_version: u16,
+    #[serde(default = "default_signal_version")]
+    pub signal_version: u16,
     pub engine_version: String,
     pub event_id: String,
     pub signal_id: String,
@@ -26,6 +30,8 @@ pub struct MarketSignalEvent {
     pub state: String,
     pub direction: String,
     pub score: f64,
+    #[serde(default)]
+    pub rank_score: f64,
     pub confidence: f64,
     pub trigger_reason: String,
     pub resolution_reason: String,
@@ -46,19 +52,29 @@ pub struct SignalClock {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
 pub struct MarketSignalEvidence {
     pub close: f64,
     pub high: f64,
     pub low: f64,
     pub vwap: f64,
     pub price_change_pct: f64,
+    pub return_1_bar: f64,
     pub volume: f64,
+    pub volume_rate: f64,
     pub dollar_volume: f64,
+    pub dollar_volume_rate: f64,
     pub trade_rate: f64,
     pub quote_rate: f64,
     pub tape_imbalance: f64,
+    pub tape_imbalance_accel: f64,
     pub spread_bps: f64,
     pub liquidity_score: f64,
+    pub depth_imbalance_proxy: f64,
+    pub price_surprise: f64,
+    pub activity_surprise: f64,
+    pub flow_surprise: f64,
+    pub liquidity_surprise: f64,
     pub estimated_luld_active: bool,
     pub estimated_luld_state: String,
 }
@@ -66,19 +82,123 @@ pub struct MarketSignalEvidence {
 #[derive(Clone, Debug)]
 struct Candidate {
     key: &'static str,
-    confirmation_timeframe: Option<&'static str>,
     direction: &'static str,
     score: f64,
+    rank_score: f64,
     confidence: f64,
-    reason: &'static str,
+    reason: String,
     invalidation_price: Option<f64>,
+    surprises: SignalSurprises,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct SignalSurprises {
+    price: f64,
+    activity: f64,
+    flow: f64,
+    liquidity: f64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct CausalStats {
+    count: u64,
+    mean: f64,
+    variance: f64,
+}
+
+impl CausalStats {
+    fn update(&mut self, value: f64) {
+        if !value.is_finite() {
+            return;
+        }
+        self.count += 1;
+        if self.count == 1 {
+            self.mean = value;
+            return;
+        }
+        let alpha = 0.10;
+        let delta = value - self.mean;
+        self.mean += alpha * delta;
+        self.variance = (1.0 - alpha) * (self.variance + alpha * delta * delta);
+    }
+
+    fn positive_surprise(&self, value: f64) -> f64 {
+        if self.count < BASELINE_WARMUP || !value.is_finite() {
+            return 0.0;
+        }
+        let scale = self
+            .variance
+            .max(0.0)
+            .sqrt()
+            .max(self.mean.abs() * 0.10)
+            .max(1e-9);
+        ((value - self.mean) / scale).max(0.0)
+    }
+
+    fn negative_surprise(&self, value: f64) -> f64 {
+        if self.count < BASELINE_WARMUP || !value.is_finite() {
+            return 0.0;
+        }
+        let scale = self
+            .variance
+            .max(0.0)
+            .sqrt()
+            .max(self.mean.abs() * 0.10)
+            .max(1e-9);
+        ((self.mean - value) / scale).max(0.0)
+    }
+
+    fn reliability(&self) -> f64 {
+        (self.count as f64 / 30.0).clamp(0.0, 1.0)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct Baselines {
+    absolute_return: CausalStats,
+    volume_rate: CausalStats,
+    dollar_volume_rate: CausalStats,
+    trade_rate: CausalStats,
+    quote_rate: CausalStats,
+    absolute_tape: CausalStats,
+    absolute_tape_accel: CausalStats,
+    spread_bps: CausalStats,
+    liquidity_score: CausalStats,
+}
+
+impl Baselines {
+    fn update(&mut self, row: &BarRow) {
+        self.absolute_return.update(row.return_1_bar.abs());
+        self.volume_rate.update(row.volume_rate);
+        self.dollar_volume_rate.update(row.dollar_volume_rate);
+        self.trade_rate.update(row.trade_rate);
+        self.quote_rate.update(row.quote_rate);
+        self.absolute_tape.update(row.tape_imbalance.abs());
+        self.absolute_tape_accel
+            .update(row.tape_imbalance_accel.abs());
+        if row.spread_bps_close > 0.0 {
+            self.spread_bps.update(row.spread_bps_close);
+        }
+        if row.liquidity_score >= 0.0 {
+            self.liquidity_score.update(row.liquidity_score);
+        }
+    }
+
+    fn reliability(&self) -> f64 {
+        weighted_score(&[
+            self.absolute_return.reliability(),
+            self.trade_rate.reliability(),
+            self.quote_rate.reliability(),
+            self.spread_bps.reliability(),
+        ])
+    }
 }
 
 #[derive(Clone, Debug)]
 struct SignalSeriesState {
     session_date: String,
-    session_high: f64,
     previous: BarRow,
+    baselines: Baselines,
 }
 
 #[derive(Default)]
@@ -101,17 +221,20 @@ impl MarketSignalEngine {
         let prior = self
             .series
             .get(&series_key)
-            .filter(|state| state.session_date == row.session_date);
-        let prior_session_high = prior.map_or(0.0, |state| state.session_high);
-        let candidates = evaluate_bar(row, prior.map(|state| &state.previous), prior_session_high);
+            .filter(|state| state.session_date == row.session_date)
+            .cloned();
+        let baselines = prior
+            .as_ref()
+            .map(|state| state.baselines.clone())
+            .unwrap_or_default();
+        let candidates = evaluate_bar(row, prior.as_ref().map(|state| &state.previous), &baselines);
         let candidate_by_key = candidates
             .iter()
             .map(|candidate| (candidate.key, candidate))
             .collect::<HashMap<_, _>>();
-        let relevant_keys = signal_keys_for_timeframe(&row.timeframe);
         let mut events = Vec::new();
 
-        for key in relevant_keys {
+        for key in signal_keys_for_timeframe(&row.timeframe) {
             let identity = signal_identity(&row.sym, &row.timeframe, key);
             match (
                 self.active.get(&identity).cloned(),
@@ -126,7 +249,7 @@ impl MarketSignalEngine {
                     let resolved = resolve_event(
                         row,
                         &previous,
-                        "direction reversed before the prior setup reconfirmed",
+                        "direction changed before the prior observation reconfirmed",
                     );
                     events.push(resolved);
                     let triggered = build_event(row, candidate, "triggered", "", None);
@@ -134,7 +257,7 @@ impl MarketSignalEngine {
                     events.push(triggered);
                 }
                 (Some(previous), Some(candidate))
-                    if (previous.score.abs() - candidate.score).abs() >= 0.05
+                    if (previous.rank_score - candidate.rank_score).abs() >= 0.05
                         || (previous.confidence - candidate.confidence).abs() >= 0.05 =>
                 {
                     let updated =
@@ -148,174 +271,280 @@ impl MarketSignalEngine {
                     events.push(resolve_event(
                         row,
                         &previous,
-                        "trigger conditions no longer hold",
+                        "normalized trigger conditions no longer hold",
                     ));
                 }
                 (None, None) => {}
             }
         }
+
+        let mut updated_baselines = baselines;
+        updated_baselines.update(row);
         self.series.insert(
             series_key,
             SignalSeriesState {
                 session_date: row.session_date.clone(),
-                session_high: prior_session_high.max(row.high),
                 previous: row.clone(),
+                baselines: updated_baselines,
             },
         );
         events
     }
 }
 
-fn evaluate_bar(
-    row: &BarRow,
-    previous: Option<&BarRow>,
-    prior_session_high: f64,
-) -> Vec<Candidate> {
+fn evaluate_bar(row: &BarRow, previous: Option<&BarRow>, baselines: &Baselines) -> Vec<Candidate> {
     let mut candidates = Vec::new();
-    let tape_direction = if row.tape_imbalance > 0.15 {
-        Some("bullish")
-    } else if row.tape_imbalance < -0.15 {
-        Some("bearish")
-    } else {
-        None
-    };
-    if matches_timeframe(&row.timeframe, &["1s", "10s", "30s"])
-        && row.trade_count_accel.abs() > 10.0
-        && row.spread_bps_close < 80.0
-    {
-        if let Some(direction) = tape_direction {
-            candidates.push(Candidate {
-                key: "tape_acceleration_breakout",
-                confirmation_timeframe: None,
-                direction,
-                score: weighted_score(&[
-                    row.trade_count_accel.abs() / 50.0,
-                    row.tape_imbalance.abs(),
-                    row.price_change_pct.abs() / 5.0,
-                ]),
-                confidence: evidence_confidence(row),
-                reason: "trade acceleration and directional tape pressure remain routeable",
-                invalidation_price: Some(if direction == "bullish" {
-                    row.low
-                } else {
-                    row.high
-                }),
-            });
-        }
-    }
+    let confidence = evidence_confidence(row, baselines);
 
-    if matches_timeframe(&row.timeframe, &["10s", "30s", "1m"])
-        && row.dollar_volume_accel.abs() > 250_000.0
-        && row.price_change_pct.abs() > 0.25
-    {
-        let direction = if row.price_change_pct > 0.0 {
-            "bullish"
-        } else {
-            "bearish"
-        };
-        candidates.push(Candidate {
-            key: "volume_shock_momentum",
-            confirmation_timeframe: None,
-            direction,
-            score: weighted_score(&[
-                row.dollar_volume_accel.abs() / 2_000_000.0,
-                row.price_change_pct.abs() / 5.0,
-                row.trade_rate / 50.0,
-            ]),
-            confidence: evidence_confidence(row),
-            reason: "dollar-volume expansion confirms directional price momentum",
-            invalidation_price: Some(if direction == "bullish" {
-                row.low
-            } else {
-                row.high
-            }),
-        });
-    }
-
-    if let Some(previous) = previous {
-        if matches_timeframe(&row.timeframe, &["1s", "10s", "30s"])
-            && row.spread_bps_close > 0.0
-            && previous.spread_bps_close >= row.spread_bps_close * 1.5
-            && row.quote_rate_accel > 0.0
-            && row.liquidity_score > previous.liquidity_score
+    if row.timeframe.eq_ignore_ascii_case("100ms") {
+        let flow_z = baselines
+            .absolute_tape
+            .positive_surprise(row.tape_imbalance.abs());
+        let flow_accel_z = baselines
+            .absolute_tape_accel
+            .positive_surprise(row.tape_imbalance_accel.abs());
+        let flow_surprise = flow_z.max(flow_accel_z);
+        if row.trade_count >= 2
+            && row.quote_count >= 1
+            && row.tape_imbalance.abs() >= 0.15
+            && flow_surprise >= 2.5
         {
-            if let Some(direction) = tape_direction {
-                candidates.push(Candidate {
-                    key: "liquidity_recovery_after_spread_shock",
-                    confirmation_timeframe: None,
+            let direction = direction_from_sign(row.tape_imbalance);
+            let strength = weighted_score(&[
+                z_strength(flow_z),
+                z_strength(flow_accel_z),
+                row.tape_imbalance.abs(),
+            ]);
+            candidates.push(candidate(
+                "directional_flow_acceleration",
+                direction,
+                strength,
+                confidence,
+                format!(
+                    "directional flow expanded {:.1} standard deviations above its causal baseline",
+                    flow_surprise
+                ),
+                Some(directional_invalidation(row, direction)),
+                SignalSurprises {
+                    flow: flow_surprise,
+                    ..Default::default()
+                },
+            ));
+        }
+
+        let spread_z = baselines.spread_bps.positive_surprise(row.spread_bps_close);
+        let liquidity_down_z = baselines
+            .liquidity_score
+            .negative_surprise(row.liquidity_score);
+        let quote_down_z = baselines.quote_rate.negative_surprise(row.quote_rate);
+        let deterioration_z = liquidity_down_z.max(quote_down_z);
+        if row.spread_bps_close > 0.0
+            && spread_z >= 2.5
+            && (deterioration_z >= 1.0 || spread_z >= 4.0)
+        {
+            let strength = weighted_score(&[z_strength(spread_z), z_strength(deterioration_z)]);
+            candidates.push(candidate(
+                "liquidity_dislocation",
+                "neutral",
+                strength,
+                confidence,
+                format!(
+                    "spread widened {:.1} standard deviations while displayed liquidity deteriorated",
+                    spread_z
+                ),
+                None,
+                SignalSurprises {
+                    liquidity: spread_z.max(deterioration_z),
+                    ..Default::default()
+                },
+            ));
+        }
+
+        if let Some(previous) = previous {
+            let previous_spread_z = baselines
+                .spread_bps
+                .positive_surprise(previous.spread_bps_close);
+            let spread_reduction = if previous.spread_bps_close > 0.0 {
+                1.0 - row.spread_bps_close / previous.spread_bps_close
+            } else {
+                0.0
+            };
+            let liquidity_improvement = if previous.liquidity_score > 0.0 {
+                row.liquidity_score / previous.liquidity_score - 1.0
+            } else {
+                0.0
+            };
+            let quote_improvement = if previous.quote_rate > 0.0 {
+                row.quote_rate / previous.quote_rate - 1.0
+            } else {
+                0.0
+            };
+            if previous_spread_z >= 2.5
+                && spread_reduction >= 0.30
+                && (liquidity_improvement >= 0.20
+                    || quote_improvement >= 0.20
+                    || row.quote_rate_accel > 0.0)
+            {
+                let direction = if row.tape_imbalance.abs() >= 0.15 {
+                    direction_from_sign(row.tape_imbalance)
+                } else {
+                    "neutral"
+                };
+                let recovery_strength = weighted_score(&[
+                    spread_reduction,
+                    liquidity_improvement.max(quote_improvement).max(0.0),
+                    z_strength(previous_spread_z),
+                ]);
+                candidates.push(candidate(
+                    "liquidity_recovery",
                     direction,
-                    score: weighted_score(&[
-                        (previous.spread_bps_close - row.spread_bps_close) / 100.0,
-                        row.quote_rate_accel / 50.0,
-                        row.tape_imbalance.abs(),
-                    ]),
-                    confidence: evidence_confidence(row),
-                    reason:
-                        "spread recovered from the prior-bar shock while liquidity and tape agreed",
-                    invalidation_price: Some(if direction == "bullish" {
-                        row.low
-                    } else {
-                        row.high
-                    }),
-                });
+                    recovery_strength,
+                    confidence,
+                    format!(
+                        "spread contracted {:.0}% after a {:.1}-sigma liquidity dislocation",
+                        spread_reduction * 100.0,
+                        previous_spread_z
+                    ),
+                    None,
+                    SignalSurprises {
+                        liquidity: previous_spread_z,
+                        ..Default::default()
+                    },
+                ));
             }
         }
 
-        if matches_timeframe(&row.timeframe, &["10s", "30s", "1m"]) {
-            let bullish = previous.close <= previous.vwap
+        let price_z = baselines
+            .absolute_return
+            .positive_surprise(row.return_1_bar.abs());
+        let divergent = (row.tape_imbalance > 0.0 && row.return_1_bar <= 0.0)
+            || (row.tape_imbalance < 0.0 && row.return_1_bar >= 0.0);
+        if row.trade_count >= 2 && row.tape_imbalance.abs() >= 0.30 && flow_z >= 2.5 && divergent {
+            let direction = if row.tape_imbalance > 0.0 {
+                "bearish"
+            } else {
+                "bullish"
+            };
+            let strength = weighted_score(&[
+                z_strength(flow_z),
+                row.tape_imbalance.abs(),
+                1.0 - z_strength(price_z),
+            ]);
+            candidates.push(candidate(
+                "flow_price_divergence",
+                direction,
+                strength,
+                confidence,
+                "aggressive flow expanded but price failed to accept in the same direction"
+                    .to_string(),
+                Some(directional_invalidation(row, direction)),
+                SignalSurprises {
+                    price: price_z,
+                    flow: flow_z,
+                    ..Default::default()
+                },
+            ));
+        }
+    }
+
+    if matches_timeframe(&row.timeframe, &["1s", "10s", "30s", "1m"]) {
+        let price_z = baselines
+            .absolute_return
+            .positive_surprise(row.return_1_bar.abs());
+        let activity_z = baselines
+            .volume_rate
+            .positive_surprise(row.volume_rate)
+            .max(
+                baselines
+                    .dollar_volume_rate
+                    .positive_surprise(row.dollar_volume_rate),
+            )
+            .max(baselines.trade_rate.positive_surprise(row.trade_rate));
+        if row.return_1_bar.abs() > 0.0 && price_z >= 2.5 && activity_z >= 2.5 {
+            let direction = direction_from_sign(row.return_1_bar);
+            let strength = weighted_score(&[z_strength(price_z), z_strength(activity_z)]);
+            candidates.push(candidate(
+                "price_volume_expansion",
+                direction,
+                strength,
+                confidence,
+                format!(
+                    "price and activity expanded {:.1} and {:.1} standard deviations above causal baselines",
+                    price_z, activity_z
+                ),
+                Some(directional_invalidation(row, direction)),
+                SignalSurprises {
+                    price: price_z,
+                    activity: activity_z,
+                    ..Default::default()
+                },
+            ));
+        }
+
+        if let Some(previous) = previous {
+            let bullish = previous.vwap > 0.0
+                && previous.close <= previous.vwap
                 && row.close > row.vwap
                 && row.vwap_distance_pct > 0.0
                 && row.mid_vwap_distance_pct > 0.0
-                && row.tape_imbalance > 0.0;
-            let bearish = previous.close >= previous.vwap
+                && row.tape_imbalance >= -0.05;
+            let bearish = previous.vwap > 0.0
+                && previous.close >= previous.vwap
                 && row.close < row.vwap
                 && row.vwap_distance_pct < 0.0
                 && row.mid_vwap_distance_pct < 0.0
-                && row.tape_imbalance < 0.0;
+                && row.tape_imbalance <= 0.05;
             if bullish || bearish {
                 let direction = if bullish { "bullish" } else { "bearish" };
-                candidates.push(Candidate {
-                    key: "vwap_reclaim_momentum",
-                    confirmation_timeframe: None,
+                let distance_strength = weighted_score(&[
+                    z_strength(price_z),
+                    (row.vwap_distance_pct.abs() / 0.50).clamp(0.0, 1.0),
+                    (row.mid_vwap_distance_pct.abs() / 0.50).clamp(0.0, 1.0),
+                ]);
+                candidates.push(candidate(
+                    "vwap_transition",
                     direction,
-                    score: weighted_score(&[
-                        row.vwap_distance_pct.abs() / 2.0,
-                        row.mid_vwap_distance_pct.abs() / 2.0,
-                        row.tape_imbalance.abs(),
-                    ]),
-                    confidence: evidence_confidence(row),
-                    reason:
-                        "price crossed VWAP and the current midpoint and tape confirmed the reclaim",
-                    invalidation_price: (row.vwap > 0.0).then_some(row.vwap),
-                });
+                    distance_strength,
+                    confidence,
+                    "price causally crossed VWAP with trade-mid agreement and non-opposing tape"
+                        .to_string(),
+                    Some(row.vwap),
+                    SignalSurprises {
+                        price: price_z,
+                        ..Default::default()
+                    },
+                ));
             }
         }
     }
 
-    if matches_timeframe(&row.timeframe, &["10s", "30s", "1m"])
-        && prior_session_high > 0.0
-        && row.high > prior_session_high
-        && row.close > prior_session_high
-        && row.close > row.vwap
-        && row.tape_imbalance > 0.0
-        && row.close >= row.high * 0.995
-        && row.trade_rate > 0.5
-    {
-        candidates.push(Candidate {
-            key: "high_of_day_break",
-            confirmation_timeframe: None,
-            direction: "bullish",
-            score: weighted_score(&[
-                (row.close - prior_session_high) / prior_session_high * 100.0,
-                row.trade_rate / 20.0,
-                row.tape_imbalance.max(0.0),
-            ]),
-            confidence: evidence_confidence(row),
-            reason: "price closed above the prior session high with confirming tape activity",
-            invalidation_price: Some(prior_session_high),
-        });
-    }
     candidates
+}
+
+fn candidate(
+    key: &'static str,
+    direction: &'static str,
+    strength: f64,
+    confidence: f64,
+    reason: String,
+    invalidation_price: Option<f64>,
+    surprises: SignalSurprises,
+) -> Candidate {
+    let calibrated_strength = strength.clamp(0.0, 1.0);
+    Candidate {
+        key,
+        direction,
+        score: if direction == "neutral" {
+            0.0
+        } else {
+            calibrated_strength
+        },
+        rank_score: (calibrated_strength * (0.50 + 0.50 * confidence)).clamp(0.0, 1.0),
+        confidence,
+        reason,
+        invalidation_price,
+        surprises,
+    }
 }
 
 fn build_event(
@@ -336,6 +565,7 @@ fn build_event(
     });
     MarketSignalEvent {
         schema_version: MARKET_SIGNAL_SCHEMA_VERSION,
+        signal_version: SIGNAL_VERSION,
         engine_version: MARKET_SIGNAL_ENGINE_VERSION.to_string(),
         event_id: format!(
             "{}:{}:{}:{}:{}",
@@ -351,36 +581,63 @@ fn build_event(
         domain: market_domain(),
         ticker: row.sym.clone(),
         working_timeframe: row.timeframe.clone(),
-        clock: SignalClock {
-            input_basis: "bar_derived".to_string(),
-            calculation_window: row.timeframe.clone(),
-            evaluation_mode: "closed_only".to_string(),
-            update_trigger: "bar_close".to_string(),
-            publication_cadence: "bar_close".to_string(),
-            publication_interval_ms: None,
-        },
-        confirmation_timeframe: candidate.confirmation_timeframe.map(str::to_string),
+        clock: clock_for(candidate.key, &row.timeframe),
+        confirmation_timeframe: None,
         observed_at: row.bar_end,
         effective_at: row.bar_end,
         state: state.to_string(),
         direction: candidate.direction.to_string(),
         score: if candidate.direction == "bearish" {
-            -candidate.score.clamp(0.0, 1.0)
+            -candidate.score
         } else {
-            candidate.score.clamp(0.0, 1.0)
+            candidate.score
         },
+        rank_score: candidate.rank_score,
         confidence: candidate.confidence.clamp(0.0, 1.0),
-        trigger_reason: candidate.reason.to_string(),
+        trigger_reason: candidate.reason.clone(),
         resolution_reason: resolution_reason.to_string(),
         reference_price: row.close,
         invalidation_price: candidate.invalidation_price,
         expires_at: None,
-        evidence: evidence(row),
+        evidence: evidence(row, candidate.surprises),
+    }
+}
+
+fn clock_for(key: &str, timeframe: &str) -> SignalClock {
+    match key {
+        "directional_flow_acceleration" | "flow_price_divergence" => SignalClock {
+            input_basis: "event_native".to_string(),
+            calculation_window: "100ms".to_string(),
+            evaluation_mode: "closed_only".to_string(),
+            update_trigger: "bar_close".to_string(),
+            publication_cadence: "interval".to_string(),
+            publication_interval_ms: Some(100),
+        },
+        "liquidity_dislocation" | "liquidity_recovery" => SignalClock {
+            input_basis: "event_native".to_string(),
+            calculation_window: "100ms".to_string(),
+            evaluation_mode: "closed_only".to_string(),
+            update_trigger: "bar_close".to_string(),
+            publication_cadence: "on_change".to_string(),
+            publication_interval_ms: None,
+        },
+        _ => SignalClock {
+            input_basis: "bar_derived".to_string(),
+            calculation_window: timeframe.to_string(),
+            evaluation_mode: "closed_only".to_string(),
+            update_trigger: "bar_close".to_string(),
+            publication_cadence: "bar_close".to_string(),
+            publication_interval_ms: None,
+        },
     }
 }
 
 fn market_domain() -> String {
     "market".to_string()
+}
+
+fn default_signal_version() -> u16 {
+    1
 }
 
 fn resolve_event(row: &BarRow, previous: &MarketSignalEvent, reason: &str) -> MarketSignalEvent {
@@ -397,61 +654,57 @@ fn resolve_event(row: &BarRow, previous: &MarketSignalEvent, reason: &str) -> Ma
     event.state = "resolved".to_string();
     event.resolution_reason = reason.to_string();
     event.reference_price = row.close;
-    event.evidence = evidence(row);
+    event.evidence = evidence(row, SignalSurprises::default());
     event
 }
 
-fn evidence(row: &BarRow) -> MarketSignalEvidence {
+fn evidence(row: &BarRow, surprises: SignalSurprises) -> MarketSignalEvidence {
     MarketSignalEvidence {
         close: row.close,
         high: row.high,
         low: row.low,
         vwap: row.vwap,
         price_change_pct: row.price_change_pct,
+        return_1_bar: row.return_1_bar,
         volume: row.volume,
+        volume_rate: row.volume_rate,
         dollar_volume: row.dollar_volume,
+        dollar_volume_rate: row.dollar_volume_rate,
         trade_rate: row.trade_rate,
         quote_rate: row.quote_rate,
         tape_imbalance: row.tape_imbalance,
+        tape_imbalance_accel: row.tape_imbalance_accel,
         spread_bps: row.spread_bps_close,
         liquidity_score: row.liquidity_score,
+        depth_imbalance_proxy: row.depth_imbalance_proxy,
+        price_surprise: surprises.price,
+        activity_surprise: surprises.activity,
+        flow_surprise: surprises.flow,
+        liquidity_surprise: surprises.liquidity,
         estimated_luld_active: row.estimated_luld_active,
         estimated_luld_state: row.estimated_luld_state.clone(),
     }
 }
 
-fn evidence_confidence(row: &BarRow) -> f64 {
+fn evidence_confidence(row: &BarRow, baselines: &Baselines) -> f64 {
     weighted_score(&[
-        row.trade_rate / 20.0,
-        row.quote_rate / 50.0,
-        row.tape_imbalance.abs(),
-        row.liquidity_score.max(0.0).log10().max(0.0) / 8.0,
-        if row.spread_bps_close > 0.0 {
-            1.0 - (row.spread_bps_close / 100.0).clamp(0.0, 1.0)
-        } else {
-            0.0
-        },
+        if row.trade_count > 0 { 1.0 } else { 0.0 },
+        if row.quote_count > 0 { 1.0 } else { 0.0 },
+        if row.vwap > 0.0 { 1.0 } else { 0.0 },
+        if row.spread_bps_close > 0.0 { 1.0 } else { 0.0 },
+        baselines.reliability(),
     ])
 }
 
 fn signal_keys_for_timeframe(timeframe: &str) -> &'static [&'static str] {
     match timeframe.to_ascii_lowercase().as_str() {
-        "1s" => &[
-            "tape_acceleration_breakout",
-            "liquidity_recovery_after_spread_shock",
+        "100ms" => &[
+            "directional_flow_acceleration",
+            "liquidity_dislocation",
+            "liquidity_recovery",
+            "flow_price_divergence",
         ],
-        "10s" | "30s" => &[
-            "tape_acceleration_breakout",
-            "volume_shock_momentum",
-            "liquidity_recovery_after_spread_shock",
-            "vwap_reclaim_momentum",
-            "high_of_day_break",
-        ],
-        "1m" => &[
-            "volume_shock_momentum",
-            "vwap_reclaim_momentum",
-            "high_of_day_break",
-        ],
+        "1s" | "10s" | "30s" | "1m" => &["price_volume_expansion", "vwap_transition"],
         _ => &[],
     }
 }
@@ -465,10 +718,30 @@ fn signal_identity(ticker: &str, timeframe: &str, key: &str) -> String {
     )
 }
 
+fn direction_from_sign(value: f64) -> &'static str {
+    if value >= 0.0 {
+        "bullish"
+    } else {
+        "bearish"
+    }
+}
+
+fn directional_invalidation(row: &BarRow, direction: &str) -> f64 {
+    if direction == "bullish" {
+        row.low
+    } else {
+        row.high
+    }
+}
+
 fn matches_timeframe(value: &str, allowed: &[&str]) -> bool {
     allowed
         .iter()
         .any(|candidate| candidate.eq_ignore_ascii_case(value))
+}
+
+fn z_strength(value: f64) -> f64 {
+    (value / 6.0).clamp(0.0, 1.0)
 }
 
 fn weighted_score(values: &[f64]) -> f64 {
@@ -486,114 +759,182 @@ fn weighted_score(values: &[f64]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
 
-    #[test]
-    fn event_time_is_bar_time_and_lifecycle_is_causal() {
-        let mut engine = MarketSignalEngine::default();
+    fn warm_up(engine: &mut MarketSignalEngine, timeframe: &str) -> BarRow {
         let mut bar = crate::scanner::tests::base_bar();
-        bar.timeframe = "10s".to_string();
-        let triggered = engine.update(&bar);
-        assert!(triggered.iter().any(|event| {
-            event.signal_key == "tape_acceleration_breakout"
-                && event.state == "triggered"
-                && event.effective_at == bar.bar_end
-                && event.domain == "market"
-                && event.clock.input_basis == "bar_derived"
-                && event.clock.calculation_window == "10s"
-                && event.clock.publication_cadence == "bar_close"
-                && event.schema_version == MARKET_SIGNAL_SCHEMA_VERSION
-        }));
-
-        bar.bar_start = bar.bar_end;
-        bar.bar_end += chrono::Duration::seconds(10);
-        bar.trade_count_accel = 0.0;
-        bar.dollar_volume_accel = 0.0;
-        bar.vwap_distance_pct = 0.0;
-        bar.mid_vwap_distance_pct = 0.0;
-        bar.price_change_pct = 0.0;
-        let resolved = engine.update(&bar);
-        let triggered_signal = triggered
-            .iter()
-            .find(|event| event.signal_key == "tape_acceleration_breakout")
-            .unwrap();
-        let resolved_signal = resolved
-            .iter()
-            .find(|event| {
-                event.signal_key == "tape_acceleration_breakout" && event.state == "resolved"
-            })
-            .unwrap();
-        assert_eq!(resolved_signal.signal_id, triggered_signal.signal_id);
-        assert_ne!(resolved_signal.event_id, triggered_signal.event_id);
+        bar.timeframe = timeframe.to_string();
+        bar.return_1_bar = 0.01;
+        bar.price_change_pct = 0.01;
+        bar.volume = 100.0;
+        bar.volume_rate = 100.0;
+        bar.dollar_volume = 1_000.0;
+        bar.dollar_volume_rate = 1_000.0;
+        bar.trade_count = 10;
+        bar.trade_rate = 10.0;
+        bar.quote_count = 10;
+        bar.quote_rate = 10.0;
+        bar.tape_imbalance = 0.05;
+        bar.tape_imbalance_accel = 0.01;
+        bar.spread_bps_close = 5.0;
+        bar.liquidity_score = 10_000.0;
+        bar.close = 10.01;
+        bar.vwap = 10.0;
+        let step = if timeframe == "100ms" {
+            Duration::milliseconds(100)
+        } else {
+            Duration::seconds(1)
+        };
+        for _ in 0..12 {
+            assert!(engine.update(&bar).is_empty());
+            bar.bar_start = bar.bar_end;
+            bar.bar_end += step;
+        }
+        bar
     }
 
     #[test]
-    fn tape_signal_is_symmetric() {
+    fn event_native_flow_emits_rankable_100ms_signal() {
         let mut engine = MarketSignalEngine::default();
-        let mut bar = crate::scanner::tests::base_bar();
-        bar.timeframe = "10s".to_string();
-        bar.tape_imbalance = -0.4;
-        bar.price_change_pct = -2.0;
-        let events = engine.update(&bar);
-        assert!(events.iter().any(|event| {
-            event.signal_key == "tape_acceleration_breakout"
-                && event.direction == "bearish"
-                && event.score < 0.0
-        }));
+        let mut bar = warm_up(&mut engine, "100ms");
+        bar.trade_count = 4;
+        bar.quote_count = 4;
+        bar.tape_imbalance = 0.80;
+        bar.tape_imbalance_accel = 0.70;
+        let event = engine
+            .update(&bar)
+            .into_iter()
+            .find(|event| event.signal_key == "directional_flow_acceleration")
+            .expect("flow acceleration should emit");
+        assert_eq!(event.schema_version, 3);
+        assert_eq!(event.signal_version, 1);
+        assert_eq!(event.clock.input_basis, "event_native");
+        assert_eq!(event.clock.publication_interval_ms, Some(100));
+        assert!(event.rank_score > 0.0);
+        assert!(event.evidence.flow_surprise >= 2.5);
     }
 
     #[test]
-    fn vwap_reclaim_requires_a_causal_cross() {
+    fn price_and_volume_expansion_includes_one_second_bars() {
         let mut engine = MarketSignalEngine::default();
-        let mut prior = crate::scanner::tests::base_bar();
-        prior.timeframe = "10s".to_string();
-        prior.close = prior.vwap - 0.05;
-        prior.vwap_distance_pct = -0.02;
-        prior.mid_vwap_distance_pct = -0.02;
-        assert!(engine
-            .update(&prior)
-            .iter()
-            .all(|event| event.signal_key != "vwap_reclaim_momentum"));
+        let mut bar = warm_up(&mut engine, "1s");
+        bar.return_1_bar = 1.0;
+        bar.price_change_pct = 1.0;
+        bar.volume_rate = 5_000.0;
+        bar.dollar_volume_rate = 50_000.0;
+        bar.trade_rate = 100.0;
+        let event = engine
+            .update(&bar)
+            .into_iter()
+            .find(|event| event.signal_key == "price_volume_expansion")
+            .expect("price and volume expansion should emit");
+        assert_eq!(event.working_timeframe, "1s");
+        assert_eq!(event.direction, "bullish");
+        assert!(event.score > 0.0);
+        assert!(event.rank_score > 0.0);
+    }
+
+    #[test]
+    fn liquidity_dislocation_and_recovery_emit_distinct_lifecycles() {
+        let mut engine = MarketSignalEngine::default();
+        let mut shock = warm_up(&mut engine, "100ms");
+        shock.spread_bps_close = 50.0;
+        shock.liquidity_score = 1_000.0;
+        shock.quote_rate = 1.0;
+        let dislocation = engine
+            .update(&shock)
+            .into_iter()
+            .find(|event| event.signal_key == "liquidity_dislocation")
+            .expect("liquidity shock should emit");
+        assert_eq!(dislocation.direction, "neutral");
+        assert_eq!(dislocation.score, 0.0);
+        assert!(dislocation.rank_score > 0.0);
+
+        let mut recovered = shock.clone();
+        recovered.bar_start = shock.bar_end;
+        recovered.bar_end += Duration::milliseconds(100);
+        recovered.spread_bps_close = 5.0;
+        recovered.liquidity_score = 12_000.0;
+        recovered.quote_rate = 20.0;
+        recovered.quote_rate_accel = 19.0;
+        let recovery = engine
+            .update(&recovered)
+            .into_iter()
+            .find(|event| event.signal_key == "liquidity_recovery")
+            .expect("liquidity recovery should emit");
+        assert!(recovery.rank_score > 0.0);
+        assert_eq!(recovery.clock.publication_cadence, "on_change");
+    }
+
+    #[test]
+    fn flow_price_divergence_reports_absorption_direction() {
+        let mut engine = MarketSignalEngine::default();
+        let mut bar = warm_up(&mut engine, "100ms");
+        bar.trade_count = 4;
+        bar.quote_count = 4;
+        bar.tape_imbalance = 0.80;
+        bar.tape_imbalance_accel = 0.70;
+        bar.return_1_bar = -0.01;
+        let divergence = engine
+            .update(&bar)
+            .into_iter()
+            .find(|event| event.signal_key == "flow_price_divergence")
+            .expect("buy flow without price acceptance should emit");
+        assert_eq!(divergence.direction, "bearish");
+        assert!(divergence.score < 0.0);
+        assert!(divergence.evidence.flow_surprise >= 2.5);
+    }
+
+    #[test]
+    fn vwap_transition_requires_a_causal_cross() {
+        let mut engine = MarketSignalEngine::default();
+        let mut prior = warm_up(&mut engine, "10s");
+        prior.close = 9.95;
+        prior.vwap = 10.0;
+        prior.vwap_distance_pct = -0.5;
+        prior.mid_vwap_distance_pct = -0.5;
+        engine.update(&prior);
 
         let mut crossed = prior.clone();
         crossed.bar_start = prior.bar_end;
-        crossed.bar_end += chrono::Duration::seconds(10);
-        crossed.close = crossed.vwap + 0.05;
-        crossed.vwap_distance_pct = 0.02;
-        crossed.mid_vwap_distance_pct = 0.02;
-        crossed.tape_imbalance = 0.4;
+        crossed.bar_end += Duration::seconds(10);
+        crossed.close = 10.05;
+        crossed.vwap_distance_pct = 0.5;
+        crossed.mid_vwap_distance_pct = 0.5;
+        crossed.tape_imbalance = 0.20;
         assert!(engine.update(&crossed).iter().any(|event| {
-            event.signal_key == "vwap_reclaim_momentum"
+            event.signal_key == "vwap_transition"
                 && event.direction == "bullish"
                 && event.state == "triggered"
         }));
     }
 
     #[test]
-    fn high_of_day_break_uses_the_prior_session_high() {
+    fn lifecycle_keeps_signal_identity_on_resolution() {
         let mut engine = MarketSignalEngine::default();
-        let mut prior = crate::scanner::tests::base_bar();
-        prior.timeframe = "10s".to_string();
-        prior.high = 101.0;
-        prior.close = 100.5;
-        assert!(engine
-            .update(&prior)
-            .iter()
-            .all(|event| event.signal_key != "high_of_day_break"));
-
-        let mut breakout = prior.clone();
-        breakout.bar_start = prior.bar_end;
-        breakout.bar_end += chrono::Duration::seconds(10);
-        breakout.high = 102.0;
-        breakout.close = 102.0;
-        breakout.vwap = 100.0;
-        breakout.tape_imbalance = 0.4;
-        breakout.trade_rate = 10.0;
-        let event = engine
-            .update(&breakout)
+        let mut bar = warm_up(&mut engine, "100ms");
+        bar.trade_count = 4;
+        bar.quote_count = 4;
+        bar.tape_imbalance = 0.80;
+        bar.tape_imbalance_accel = 0.70;
+        let triggered = engine
+            .update(&bar)
             .into_iter()
-            .find(|event| event.signal_key == "high_of_day_break")
-            .expect("session-high break should emit");
-        assert_eq!(event.invalidation_price, Some(101.0));
-        assert_eq!(event.effective_at, breakout.bar_end);
+            .find(|event| event.signal_key == "directional_flow_acceleration")
+            .unwrap();
+
+        bar.bar_start = bar.bar_end;
+        bar.bar_end += Duration::milliseconds(100);
+        bar.tape_imbalance = 0.02;
+        bar.tape_imbalance_accel = 0.01;
+        let resolved = engine
+            .update(&bar)
+            .into_iter()
+            .find(|event| {
+                event.signal_key == "directional_flow_acceleration" && event.state == "resolved"
+            })
+            .unwrap();
+        assert_eq!(resolved.signal_id, triggered.signal_id);
+        assert_ne!(resolved.event_id, triggered.event_id);
     }
 }

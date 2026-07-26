@@ -25,24 +25,26 @@ class QmdGatewayClientTests(unittest.TestCase):
                 {
                     "event_id": "event-a",
                     "signal_id": "signal-a",
-                    "signal_key": "vwap_reclaim_momentum",
+                    "signal_key": "vwap_transition",
                     "state": "triggered",
                     "ticker": "AAPL",
-                    "working_timeframe": "100ms",
+                    "working_timeframe": "1s",
                     "direction": "bullish",
                     "score": 0.72,
+                    "rank_score": 0.67,
                     "confidence": 0.81,
                     "effective_at": "2026-07-17T13:45:00.100Z",
                 },
                 {
                     "event_id": "event-b",
                     "signal_id": "signal-b",
-                    "signal_key": "volume_shock_momentum",
+                    "signal_key": "price_volume_expansion",
                     "state": "triggered",
                     "ticker": "MSFT",
-                    "working_timeframe": "100ms",
+                    "working_timeframe": "1s",
                     "direction": "bearish",
                     "score": -0.62,
+                    "rank_score": 0.59,
                     "confidence": 0.71,
                     "effective_at": "2026-07-17T13:45:00.200Z",
                 },
@@ -64,12 +66,13 @@ class QmdGatewayClientTests(unittest.TestCase):
             {
                 "event_id": "event-2",
                 "signal_id": "signal-1",
-                "signal_key": "vwap_reclaim_momentum",
+                "signal_key": "vwap_transition",
                 "state": "updated",
                 "ticker": "AAPL",
-                "working_timeframe": "100ms",
+                "working_timeframe": "1s",
                 "direction": "bullish",
                 "score": 0.72,
+                "rank_score": 0.67,
                 "confidence": 0.81,
                 "effective_at": "2026-07-17T13:45:00.100Z",
             }
@@ -78,7 +81,7 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(row["signal_event_id"], "event-2")
         self.assertEqual(row["signal_id"], "signal-1")
         self.assertEqual(row["signal_state"], "updated")
-        self.assertEqual(row["signal_rank_score"], 0.72)
+        self.assertEqual(row["signal_rank_score"], 0.67)
         self.assertEqual(row["signal_confidence"], 0.81)
         self.assertEqual(row["signal_domain"], "market")
         self.assertEqual(row["signal_producer"], "qmd")
@@ -105,24 +108,26 @@ class QmdGatewayClientTests(unittest.TestCase):
                         {
                             "event_id": "active-a",
                             "signal_id": "signal-a",
-                            "signal_key": "vwap_reclaim_momentum",
+                            "signal_key": "vwap_transition",
                             "state": "triggered",
                             "ticker": "AAPL",
-                            "working_timeframe": "100ms",
+                            "working_timeframe": "1s",
                             "direction": "bearish",
                             "score": -0.95,
+                            "rank_score": 0.74,
                             "confidence": 0.60,
                             "effective_at": "2026-07-17T13:45:00.100Z",
                         },
                         {
                             "event_id": "active-b",
                             "signal_id": "signal-b",
-                            "signal_key": "high_of_day_break",
+                            "signal_key": "price_volume_expansion",
                             "state": "updated",
                             "ticker": "AAPL",
-                            "working_timeframe": "100ms",
+                            "working_timeframe": "1s",
                             "direction": "bullish",
                             "score": 0.80,
+                            "rank_score": 0.91,
                             "confidence": 0.90,
                             "effective_at": "2026-07-17T13:45:00.200Z",
                         },
@@ -134,12 +139,13 @@ class QmdGatewayClientTests(unittest.TestCase):
                         {
                             "event_id": "resolved-c",
                             "signal_id": "signal-c",
-                            "signal_key": "volume_shock_momentum",
+                            "signal_key": "price_volume_expansion",
                             "state": "resolved",
                             "ticker": "MSFT",
-                            "working_timeframe": "100ms",
+                            "working_timeframe": "1s",
                             "direction": "bearish",
                             "score": -0.55,
+                            "rank_score": 0.63,
                             "confidence": 0.75,
                             "effective_at": "2026-07-17T13:44:59.900Z",
                         }
@@ -163,8 +169,8 @@ class QmdGatewayClientTests(unittest.TestCase):
         payload = qmd_scanner_snapshot(row_limit=25)
 
         self.assertEqual([row["ticker"] for row in payload["rows"]], ["AAPL", "MSFT"])
-        self.assertEqual(payload["rows"][0]["signal_id"], "signal-a")
-        self.assertEqual(payload["rows"][0]["signal_rank_score"], 0.95)
+        self.assertEqual(payload["rows"][0]["signal_id"], "signal-b")
+        self.assertEqual(payload["rows"][0]["signal_rank_score"], 0.91)
         self.assertEqual(payload["rows"][0]["active_signal_count"], 2)
         self.assertEqual(payload["rows"][0]["qmd_decision_signal"], -0.4)
         self.assertEqual(payload["rows"][0]["indicator_timeframe"], "10s")

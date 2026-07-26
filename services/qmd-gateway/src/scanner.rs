@@ -7,7 +7,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
 
-pub const SCANNER_PRIMITIVE_SCHEMA_VERSION: u16 = 1;
+pub const SCANNER_PRIMITIVE_SCHEMA_VERSION: u16 = 2;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct MarketSignalSnapshot {
@@ -32,6 +32,7 @@ pub struct ScannerPrimitive {
     pub primitive_key: String,
     pub side_bias: String,
     pub score: f64,
+    pub rank_score: f64,
     pub trigger_reason: String,
     pub reject_reason: String,
     pub close: f64,
@@ -105,9 +106,8 @@ impl SharedScannerStore {
         let mut rows = store.latest_by_key.values().cloned().collect::<Vec<_>>();
         rows.sort_by(|left, right| {
             right
-                .score
-                .abs()
-                .partial_cmp(&left.score.abs())
+                .rank_score
+                .partial_cmp(&left.rank_score)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| {
                     right
@@ -212,6 +212,7 @@ impl From<MarketSignalEvent> for ScannerPrimitive {
             primitive_key: signal.signal_key,
             side_bias: signal.direction,
             score: signal.score,
+            rank_score: signal.rank_score,
             trigger_reason: signal.trigger_reason,
             reject_reason: signal.resolution_reason,
             close: signal.evidence.close,
@@ -342,41 +343,65 @@ pub(crate) mod tests {
         }
     }
 
+    fn signal_template() -> MarketSignalEvent {
+        let mut engine = MarketSignalEngine::default();
+        let mut bar = base_bar();
+        bar.timeframe = "1s".to_string();
+        bar.return_1_bar = 0.01;
+        bar.price_change_pct = 0.01;
+        bar.volume_rate = 100.0;
+        bar.dollar_volume_rate = 1_000.0;
+        bar.trade_rate = 10.0;
+        for _ in 0..12 {
+            assert!(engine.update(&bar).is_empty());
+            bar.bar_start = bar.bar_end;
+            bar.bar_end += chrono::Duration::seconds(1);
+        }
+        bar.return_1_bar = 1.0;
+        bar.price_change_pct = 1.0;
+        bar.volume_rate = 5_000.0;
+        bar.dollar_volume_rate = 50_000.0;
+        bar.trade_rate = 100.0;
+        engine
+            .update(&bar)
+            .into_iter()
+            .find(|row| row.signal_key == "price_volume_expansion")
+            .expect("expanded bar should emit")
+    }
+
     #[test]
-    fn emits_massive_only_primitives_from_bar() {
-        let signals = MarketSignalEngine::default().update(&base_bar());
-        assert!(signals
-            .iter()
-            .any(|row| row.signal_key == "tape_acceleration_breakout"));
-        assert!(signals
-            .iter()
-            .all(|row| row.schema_version == crate::market_signal::MARKET_SIGNAL_SCHEMA_VERSION));
+    fn emits_only_rankable_qmd_market_observations() {
+        let signal = signal_template();
+        assert_eq!(signal.signal_key, "price_volume_expansion");
+        assert_eq!(
+            signal.schema_version,
+            crate::market_signal::MARKET_SIGNAL_SCHEMA_VERSION
+        );
+        assert!(signal.rank_score > 0.0);
     }
 
     #[tokio::test]
-    async fn active_signals_rank_by_absolute_score_before_confidence() {
-        let template = MarketSignalEngine::default()
-            .update(&base_bar())
-            .into_iter()
-            .next()
-            .expect("base bar should emit a signal");
-        let mut lower_score = template.clone();
-        lower_score.ticker = "LOW".to_string();
-        lower_score.signal_key = "lower_score".to_string();
-        lower_score.score = 0.25;
-        lower_score.confidence = 0.99;
-        let mut higher_score = template;
-        higher_score.ticker = "HIGH".to_string();
-        higher_score.signal_key = "higher_score".to_string();
-        higher_score.score = -0.80;
-        higher_score.confidence = 0.40;
+    async fn active_signals_rank_by_authority_rank_score() {
+        let template = signal_template();
+        let mut lower_rank = template.clone();
+        lower_rank.ticker = "LOW".to_string();
+        lower_rank.signal_key = "lower_rank".to_string();
+        lower_rank.score = 0.95;
+        lower_rank.rank_score = 0.25;
+        lower_rank.confidence = 0.99;
+        let mut higher_rank = template;
+        higher_rank.ticker = "HIGH".to_string();
+        higher_rank.signal_key = "higher_rank".to_string();
+        higher_rank.score = -0.20;
+        higher_rank.rank_score = 0.80;
+        higher_rank.confidence = 0.40;
 
         let store = SharedScannerStore::new(10);
-        store.apply(lower_score).await;
-        store.apply(higher_score).await;
+        store.apply(lower_rank).await;
+        store.apply(higher_rank).await;
         let snapshot = store.signal_snapshot(10).await;
 
         assert_eq!(snapshot.rows[0].ticker, "HIGH");
-        assert_eq!(snapshot.rows[0].score, -0.80);
+        assert_eq!(snapshot.rows[0].rank_score, 0.80);
     }
 }

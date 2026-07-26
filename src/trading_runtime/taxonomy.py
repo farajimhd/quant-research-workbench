@@ -108,6 +108,7 @@ class SignalDefinition:
     clock: ClockContract
     description: str = ""
     score_required: bool = True
+    rank_score_required: bool = True
 
     def __post_init__(self) -> None:
         _require_identifier(self.signal_id, "signal_id")
@@ -115,6 +116,8 @@ class SignalDefinition:
             raise ValueError("Signal producer is required")
         if not self.score_required:
             raise ValueError("Every ranked signal must require a score")
+        if not self.rank_score_required:
+            raise ValueError("Every scanner signal must require an authority rank score")
 
     def payload(self) -> dict[str, Any]:
         return _enum_payload(asdict(self))

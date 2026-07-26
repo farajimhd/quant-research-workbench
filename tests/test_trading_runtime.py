@@ -259,7 +259,7 @@ class HistoricalContractTests(unittest.TestCase):
                 {
                     "event_id": "event-1",
                     "signal_id": "signal-1",
-                    "signal_key": "vwap_reclaim_momentum",
+                    "signal_key": "vwap_transition",
                     "state": "triggered",
                     "effective_at": "2026-07-10T13:44:59.900+00:00",
                 }
@@ -481,28 +481,39 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         payload = {
             "signal_id": "qmd-signal-1",
             "event_id": "qmd-event-1",
-            "signal_key": "tape_acceleration_breakout",
-            "schema_version": 1,
-            "engine_version": "qmd-market-signal-v1",
+            "signal_key": "directional_flow_acceleration",
+            "schema_version": 3,
+            "signal_version": 1,
+            "engine_version": "qmd-market-signal-v2",
             "producer": "qmd",
             "ticker": "aapl",
-            "working_timeframe": "1s",
+            "working_timeframe": "100ms",
             "observed_at": TS.isoformat(),
             "effective_at": TS.isoformat(),
             "state": "triggered",
             "direction": "bearish",
             "score": -0.7,
+            "rank_score": 0.66,
             "confidence": 0.8,
             "reference_price": 314.5,
             "evidence": {"tape_imbalance": -0.4},
+            "clock": {
+                "input_basis": "event_native",
+                "calculation_window": "100ms",
+                "evaluation_mode": "closed_only",
+                "update_trigger": "bar_close",
+                "publication_cadence": "interval",
+                "publication_interval_ms": 100,
+            },
         }
         signal = MarketSignal.from_qmd_payload(payload)
         self.assertEqual(signal.ticker, "AAPL")
         self.assertEqual(signal.score, -0.7)
+        self.assertEqual(signal.rank_score, 0.66)
         self.assertEqual(signal.effective_at, TS)
         self.assertEqual(signal.domain.value, "market")
-        self.assertEqual(signal.clock.calculation_window, "1s")
-        self.assertEqual(signal.clock.publication_cadence.value, "bar_close")
+        self.assertEqual(signal.clock.calculation_window, "100ms")
+        self.assertEqual(signal.clock.publication_cadence.value, "interval")
 
         with self.assertRaisesRegex(ValueError, "must include a timezone"):
             MarketSignal.from_qmd_payload(
@@ -514,6 +525,10 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
         with self.assertRaisesRegex(ValueError, "missing: score"):
             MarketSignal.from_qmd_payload({key: value for key, value in payload.items() if key != "score"})
+        with self.assertRaisesRegex(ValueError, "missing: rank_score"):
+            MarketSignal.from_qmd_payload(
+                {key: value for key, value in payload.items() if key != "rank_score"}
+            )
 
     async def test_market_signal_is_interpreted_by_strategy_without_implicit_order(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -538,17 +553,19 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                     MarketSignal(
                         signal_id="qmd-signal-1",
                         event_id="qmd-event-1",
-                        signal_key="vwap_reclaim_momentum",
-                        schema_version=1,
-                        engine_version="qmd-market-signal-v1",
+                        signal_key="vwap_transition",
+                        schema_version=3,
+                        signal_version=1,
+                        engine_version="qmd-market-signal-v2",
                         producer="qmd-gateway",
                         ticker="AAPL",
-                        working_timeframe="100ms",
+                        working_timeframe="1s",
                         observed_at=TS,
                         effective_at=TS,
                         state="triggered",
                         direction="bullish",
                         score=0.64,
+                        rank_score=0.60,
                         confidence=0.71,
                         trigger_reason="Price reclaimed VWAP with positive flow.",
                         reference_price=315.0,
