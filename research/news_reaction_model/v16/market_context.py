@@ -267,7 +267,11 @@ def encode_market_news_feature(
 
 def contract_payload() -> dict[str, Any]:
     return {
-        "version": "news_market_context_v16_returnlog_v2",
+        "version": "news_market_context_v16_returnlog_v3",
+        "minute_bar_transfer_order": (
+            "ticker, minute_end_us, open, high, low, close, volume, "
+            "dollar_volume, trade_count, quote_count"
+        ),
         "selection": {
             "articles": (
                 "latest 100 canonical single-ticker articles with publication time "

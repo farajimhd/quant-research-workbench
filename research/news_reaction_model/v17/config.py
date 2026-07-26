@@ -21,6 +21,20 @@ def default_target_root() -> Path:
 
 @dataclass(slots=True)
 class LoaderConfig(V16LoaderConfig):
+    # V17 is an already-started controlled experiment bound to the exact
+    # original V16 representation. Keep that source explicit after V16 moves
+    # future builds to the corrected OHLC v2 contract; silently switching this
+    # target sidecar to a different feature matrix would invalidate its resume
+    # state and ablation identity.
+    prepared_dataset_root: Path = field(
+        default_factory=lambda: Path(
+            os.environ.get(
+                "NEWS_REACTION_V16_FEATURE_ROOT",
+                r"D:\market-data\prepared\news_reaction_model\v16\market_attention_v1",
+            )
+        )
+    )
+    prepared_dataset_version: str = "news_reaction_openai_market_attention_dataset_v16"
     target_root: Path = field(default_factory=default_target_root)
     response_windows: tuple[str, ...] = RESPONSE_WINDOWS
 

@@ -36,7 +36,12 @@ def event_table_for_date(base: str, session_date: dt.date) -> str:
     return f"{base}_{session_date.year}" if not base.rsplit("_", 1)[-1].isdigit() else base
 
 
-def daily_minute_bars_sql(config: Any, session_date: dt.date) -> str:
+def daily_minute_bars_sql(
+    config: Any,
+    session_date: dt.date,
+    *,
+    tickers: Sequence[str] | None = None,
+) -> str:
     source_dates = (session_date, session_date + dt.timedelta(days=1))
     source_tables = tuple(
         dict.fromkeys(event_table_for_date(config.events_table_base, value) for value in source_dates)
@@ -57,6 +62,14 @@ def daily_minute_bars_sql(config: Any, session_date: dt.date) -> str:
     )
     condition_reference = (
         f"{_qi(config.market_database)}.{_qi(config.condition_reference_table)}"
+    )
+    ticker_values = tuple(
+        dict.fromkeys(str(value).strip().upper() for value in (tickers or ()) if str(value).strip())
+    )
+    ticker_predicate = (
+        f" AND ticker IN ({','.join(_q(value) for value in ticker_values)})"
+        if ticker_values
+        else ""
     )
     # event_date is a UTC partition key. One adjacent day is required because
     # the 04:00-20:00 New York session crosses UTC date boundaries in DST.
@@ -110,6 +123,7 @@ source AS
     WHERE event_date >= toDate({_q(session_date.isoformat())})
       AND event_date <= toDate({_q(session_date.isoformat())}) + INTERVAL 1 DAY
       AND ticker != '' AND sip_timestamp_us > 0 AND ordinal > 0
+      {ticker_predicate}
 ),
 classified AS
 (
@@ -157,10 +171,6 @@ SELECT
         trade_price, tuple(sip_timestamp_us, ordinal),
         is_trade AND trade_price > 0 AND trade_size > 0 AND update_last = 1
     ) AS open,
-    argMaxIf(
-        trade_price, tuple(sip_timestamp_us, ordinal),
-        is_trade AND trade_price > 0 AND trade_size > 0 AND update_last = 1
-    ) AS close,
     maxIf(
         trade_price,
         is_trade AND trade_price > 0 AND trade_size > 0 AND update_high_low = 1
@@ -169,6 +179,10 @@ SELECT
         trade_price,
         is_trade AND trade_price > 0 AND trade_size > 0 AND update_high_low = 1
     ) AS low,
+    argMaxIf(
+        trade_price, tuple(sip_timestamp_us, ordinal),
+        is_trade AND trade_price > 0 AND trade_size > 0 AND update_last = 1
+    ) AS close,
     sumIf(
         trade_size,
         is_trade AND trade_price > 0 AND trade_size > 0 AND update_last = 1
@@ -384,6 +398,26 @@ class DayMarketData:
     @property
     def tickers(self) -> tuple[str, ...]:
         return tuple(self._by_ticker)
+
+    def minute_rows(self, ticker: str) -> list[dict[str, Any]]:
+        """Return a copy of the authoritative eligible-trade minute path."""
+        data = self._by_ticker.get(str(ticker).strip().upper())
+        if data is None:
+            return []
+        return [
+            {
+                "minute_end_us": int(data["end"][index]),
+                "open": float(data["open"][index]),
+                "high": float(data["high"][index]),
+                "low": float(data["low"][index]),
+                "close": float(data["close"][index]),
+                "volume": float(data["volume"][index]),
+                "dollar_volume": float(data["dollar"][index]),
+                "trade_count": int(data["trades"][index]),
+                "quote_count": int(data["quotes"][index]),
+            }
+            for index in range(len(data["end"]))
+        ]
 
     def window(
         self,

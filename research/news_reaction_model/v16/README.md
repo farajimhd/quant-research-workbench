@@ -66,6 +66,24 @@ small returns while keeping genuine extreme moves and malformed source prints
 finite in float16. Relative volume is causal session-to-date volume divided by
 the mean daily trade volume from up to 20 prior daily macro sessions.
 
+The typed minute-bar transfer contract is explicitly:
+
+```text
+ticker, minute_end_us, open, high, low, close,
+volume, dollar_volume, trade_count, quote_count
+```
+
+The original `market_attention_v1` preparation emitted SQL fields as
+`open, close, high, low` while the typed `DayMarketData` consumer read the tuple
+as `open, high, low, close`. Consequently, its V16-only current-market,
+market-news, and leader features are not trustworthy. Event-derived reaction
+labels and the inherited V8 article embedding and stock-state inputs are not
+affected. The corrected transfer is deliberately versioned as
+`news_reaction_openai_market_attention_dataset_v16_v2` under
+`market_attention_v2`; the old complete manifest cannot be silently reused or
+migrated because the original OHLC values cannot be reconstructed from the
+prepared feature vectors.
+
 Each prior market-news token contains its 57 pre-news values, four completed
 post-news windows, one current as-of window, age, same-ticker,
 same-exchange-session, and exchange-session distance. A leader token adds
@@ -111,7 +129,7 @@ versioned as `signed_log1p_scale1_clip8_v2`.
 Prepared arrays default to:
 
 ```text
-D:\market-data\prepared\news_reaction_model\v16\market_attention_v1
+D:\market-data\prepared\news_reaction_model\v16\market_attention_v2
 ```
 
 OpenAI embeddings remain unique. Both V15 same-ticker and V16 market-news
@@ -176,6 +194,60 @@ python -m research.news_reaction_model.v16.run_evaluate
 
 The split remains train 2019-2025 and validation 2026. W&B remains
 `news-reaction-model-v3` for direct comparison with V15.
+
+## Systematic 2026 error study
+
+After exporting the best-checkpoint predictions, run:
+
+```powershell
+python -m research.news_reaction_model.v16.run_error_study `
+  --checkpoint D:\...\checkpoint_best_val.pt `
+  --predictions D:\...\evaluation_predictions.jsonl.gz `
+  --output-dir D:\...\error_study_2026
+```
+
+The launcher discovers the latest conventional V16 run when all three paths
+are available. Explicit paths remain the reproducible authority.
+
+The study:
+
+- creates one article-level hard-vote audit across every authoritative
+  applicable horizon;
+- assigns false-long, false-short, missed-upside, missed-downside, and
+  false-opportunity error classes;
+- records two-sided outcomes, horizon conflicts, and timing mismatches as
+  orthogonal diagnostic attributes;
+- produces confidence calibration and statistically guarded slices by
+  publication session, price, source metadata, deterministic news kind/topic,
+  V16 context availability, market leadership, ticker frequency, and nearby
+  same-ticker news;
+- selects 100 cases from each of six fixed review strata;
+- retrieves approximate OpenAI-embedding candidates from 2019-2025 and reranks
+  them with exact cosine similarity;
+- reconstructs condition-aware eligible-trade minute paths for the review
+  cases using the same shared query as V16.
+
+Outputs are written under one run directory:
+
+```text
+manifest.json
+error_study_summary.json
+error_study_report.md
+article_audit.jsonl.gz
+error_taxonomy.csv
+confidence_calibration.csv
+slice_metrics.csv
+human_review_sample.csv
+embedding_neighbors.jsonl.gz
+price_paths.jsonl.gz
+```
+
+`--no-news-enrichment`, `--no-embedding-neighbors`, and `--no-price-paths`
+support bounded diagnostic runs without pretending those stages completed.
+The manifest records the actual enabled stages, input hashes, representation
+hash, configuration, and output inventory. See
+[`ERROR_STUDY_GUIDE.md`](ERROR_STUDY_GUIDE.md) for label semantics and the
+review protocol.
 
 ## Live inference contract
 

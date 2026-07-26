@@ -43,7 +43,7 @@ def default_prepared_dataset_root() -> Path:
     return Path(
         os.environ.get(
             "NEWS_REACTION_V16_DATA_ROOT",
-            r"D:\market-data\prepared\news_reaction_model\v16\market_attention_v1",
+            r"D:\market-data\prepared\news_reaction_model\v16\market_attention_v2",
         )
     )
 
@@ -76,7 +76,7 @@ class LoaderConfig:
     representation_name: str = "openai_3072_plus_point_in_time_stock_state_v1"
     representation_artifact_root: Path = field(default_factory=default_representation_artifact_root)
     prepared_dataset_root: Path = field(default_factory=default_prepared_dataset_root)
-    prepared_dataset_version: str = "news_reaction_openai_market_attention_dataset_v16"
+    prepared_dataset_version: str = "news_reaction_openai_market_attention_dataset_v16_v2"
     train_start: str = "2019-01-01"
     train_end_exclusive: str = "2026-01-01"
     validation_start: str = "2026-01-01"

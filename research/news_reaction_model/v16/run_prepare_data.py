@@ -8,7 +8,7 @@ from research.news_reaction_model.v16.prepare_data import main
 
 DEFAULT_ARGS = [
     "--prepared-root",
-    r"D:\market-data\prepared\news_reaction_model\v16\market_attention_v1",
+    r"D:\market-data\prepared\news_reaction_model\v16\market_attention_v2",
     "--query-batch-articles",
     "2048",
     "--max-threads-per-query",
