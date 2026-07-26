@@ -89,19 +89,28 @@ def month_ranges(start: str, end_exclusive: str) -> list[tuple[dt.date, dt.date]
 
 
 def source_audit_sql(config: LoaderConfig) -> str:
-    table = f"{qi(config.dataset_database)}.{qi(config.dataset_table)}"
+    source = f"{qi(config.dataset_database)}.{qi(config.dataset_table)}"
+    targets = f"{qi(config.certified_target_database)}.{qi(config.certified_target_table)}"
     return f"""
-SELECT count(), uniqExact(tuple(canonical_news_id, ticker, published_at_utc)),
- min(published_at_utc), max(published_at_utc),
- uniqExact(representation_name), uniqExact(representation_sha256),
- any(representation_name), any(representation_sha256),
- countIf(length(openai_embedding) != {config.openai_embedding_dim}
-      OR length(stock_state) != {config.stock_state_dim}
-      OR length(horizon_codes) != length(return_targets))
-FROM {table} FINAL
-WHERE dataset_version = {q(config.dataset_version)}
- AND published_at_utc >= toDateTime64({q(config.train_start)}, 9, 'UTC')
- AND published_at_utc < toDateTime64({q(config.validation_end_exclusive)}, 9, 'UTC')
+SELECT count(), uniqExact(tuple(s.canonical_news_id, s.ticker, s.published_at_utc)),
+ min(s.published_at_utc), max(s.published_at_utc),
+ uniqExact(s.representation_name), uniqExact(s.representation_sha256),
+ any(s.representation_name), any(s.representation_sha256),
+ countIf(length(s.openai_embedding) != {config.openai_embedding_dim}
+      OR length(s.stock_state) != {config.stock_state_dim}
+      OR c.canonical_news_id = ''
+      OR length(c.horizon_codes) != length(c.return_targets)),
+ uniqExact(c.source_signature), any(c.source_signature)
+FROM (SELECT * FROM {source} FINAL) AS s
+LEFT JOIN
+(
+ SELECT *
+ FROM {targets} FINAL
+ WHERE dataset_version = {q(config.certified_target_version)}
+) AS c USING (canonical_news_id, ticker, published_at_utc)
+WHERE s.dataset_version = {q(config.dataset_version)}
+ AND s.published_at_utc >= toDateTime64({q(config.train_start)}, 9, 'UTC')
+ AND s.published_at_utc < toDateTime64({q(config.validation_end_exclusive)}, 9, 'UTC')
 FORMAT TSV
 """
 
@@ -112,19 +121,27 @@ def source_page_sql(
     end: dt.date,
     cursor: tuple[str, str, str],
 ) -> str:
-    table = f"{qi(config.dataset_database)}.{qi(config.dataset_table)}"
+    source = f"{qi(config.dataset_database)}.{qi(config.dataset_table)}"
+    targets = f"{qi(config.certified_target_database)}.{qi(config.certified_target_table)}"
     embedding = float32_array_base64_sql("openai_embedding")
     timestamp, ticker, canonical_id = cursor
     return f"""
-SELECT canonical_news_id, ticker, published_at_utc, publication_session,
- {embedding} AS openai_embedding_b64, stock_state, horizon_codes, return_targets
-FROM {table} FINAL
-WHERE dataset_version = {q(config.dataset_version)}
- AND published_at_utc >= toDateTime64({q(start.isoformat())}, 9, 'UTC')
- AND published_at_utc < toDateTime64({q(end.isoformat())}, 9, 'UTC')
- AND (published_at_utc, ticker, canonical_news_id) >
+SELECT s.canonical_news_id, s.ticker, s.published_at_utc, s.publication_session,
+ {embedding} AS openai_embedding_b64, s.stock_state,
+ c.horizon_codes AS horizon_codes, c.return_targets AS return_targets
+FROM (SELECT * FROM {source} FINAL) AS s
+INNER JOIN
+(
+ SELECT canonical_news_id, ticker, published_at_utc, horizon_codes, return_targets
+ FROM {targets} FINAL
+ WHERE dataset_version = {q(config.certified_target_version)}
+) AS c USING (canonical_news_id, ticker, published_at_utc)
+WHERE s.dataset_version = {q(config.dataset_version)}
+ AND s.published_at_utc >= toDateTime64({q(start.isoformat())}, 9, 'UTC')
+ AND s.published_at_utc < toDateTime64({q(end.isoformat())}, 9, 'UTC')
+ AND (s.published_at_utc, s.ticker, s.canonical_news_id) >
      (toDateTime64({q(timestamp)}, 9, 'UTC'), {q(ticker)}, {q(canonical_id)})
-ORDER BY published_at_utc, ticker, canonical_news_id
+ORDER BY s.published_at_utc, s.ticker, s.canonical_news_id
 LIMIT {int(config.query_batch_articles)}
 SETTINGS max_threads={config.max_threads_per_query}, max_memory_usage={q(config.max_memory_usage)}
 FORMAT JSONEachRow
@@ -293,6 +310,7 @@ def build_representation_sha256(
     *,
     source_representation_sha256: str,
     source_rows_count: int,
+    certified_target_source_signature: str,
     market_contract: Mapping[str, Any] | None = None,
 ) -> str:
     payload = {
@@ -300,8 +318,13 @@ def build_representation_sha256(
         "prepared_dataset_version": config.prepared_dataset_version,
         "source_dataset": f"{config.dataset_database}.{config.dataset_table}",
         "source_dataset_version": config.dataset_version,
+        "certified_target_source": (
+            f"{config.certified_target_database}.{config.certified_target_table}"
+        ),
+        "certified_target_version": config.certified_target_version,
         "source_representation_sha256": source_representation_sha256,
         "source_rows": source_rows_count,
+        "certified_target_source_signature": certified_target_source_signature,
         "embedding_version": config.embedding_version,
         "reaction_source": f"{config.news_database}.{config.reaction_table}",
         "label_version": config.label_version,
@@ -321,7 +344,7 @@ def build_representation_sha256(
 
 def audit_source(client: ClickHouseHttpClient, config: LoaderConfig) -> dict[str, Any]:
     fields = client.execute(source_audit_sql(config)).strip().split("\t")
-    if len(fields) < 9:
+    if len(fields) < 11:
         raise RuntimeError(f"Unexpected V8 source audit response: {fields}.")
     result = {
         "rows": int(fields[0]),
@@ -333,6 +356,8 @@ def audit_source(client: ClickHouseHttpClient, config: LoaderConfig) -> dict[str
         "representation_name": fields[6],
         "representation_sha256": fields[7],
         "invalid_rows": int(fields[8]),
+        "target_source_signatures": int(fields[9]),
+        "target_source_signature": fields[10],
     }
     if (
         result["rows"] <= 0
@@ -341,6 +366,8 @@ def audit_source(client: ClickHouseHttpClient, config: LoaderConfig) -> dict[str
         or result["representation_versions"] != 1
         or result["representation_name"] != config.representation_name
         or result["invalid_rows"]
+        or result["target_source_signatures"] != 1
+        or not result["target_source_signature"]
     ):
         raise RuntimeError(f"V16 source audit failed: {result}.")
     return result
@@ -938,11 +965,13 @@ def main(argv: list[str] | None = None) -> int:
         config,
         source_representation_sha256=str(source_audit["representation_sha256"]),
         source_rows_count=int(source_audit["rows"]),
+        certified_target_source_signature=str(source_audit["target_source_signature"]),
     )
     legacy_representation_sha256 = build_representation_sha256(
         config,
         source_representation_sha256=str(source_audit["representation_sha256"]),
         source_rows_count=int(source_audit["rows"]),
+        certified_target_source_signature=str(source_audit["target_source_signature"]),
         market_contract=legacy_market_context_contract(),
     )
     manifest_path = config.prepared_dataset_root / MANIFEST_FILE

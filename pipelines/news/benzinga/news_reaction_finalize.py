@@ -46,9 +46,9 @@ from research.mlops.env import discover_env_files, load_env_files, secret_status
 
 UTC = dt.timezone.utc
 EASTERN = ZoneInfo("America/New_York")
-FINALIZER_VERSION = "news_reaction_finalizer_v1"
-QUALITY_VERSION = "news_reaction_quality_overlay_v1"
-ROBUST_STATS_VERSION = "news_phrase_event_reaction_stats_v4"
+FINALIZER_VERSION = "news_reaction_finalizer_v2"
+QUALITY_VERSION = "news_reaction_quality_overlay_v2"
+ROBUST_STATS_VERSION = "news_phrase_event_reaction_stats_v6"
 PREDICTION_VERSION = "news_phrase_probability_classifier_v1"
 
 
@@ -144,11 +144,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--events-table", default="events")
     parser.add_argument("--calendar-table", default="news_reaction_calendar_v1")
     parser.add_argument("--features-table", default="news_language_features_v1")
-    parser.add_argument("--reactions-table", default="news_reaction_labels_v2")
+    parser.add_argument("--reactions-table", default="news_reaction_labels_v3")
     parser.add_argument("--status-table", default="news_reaction_build_status_v1")
     parser.add_argument("--split-table", default="market_stock_split_v1")
-    parser.add_argument("--quality-table", default="news_reaction_quality_overlay_v1")
-    parser.add_argument("--robust-stats-table", default="news_phrase_reaction_stats_v3")
+    parser.add_argument("--quality-table", default="news_reaction_quality_overlay_v2")
+    parser.add_argument("--robust-stats-table", default="news_phrase_reaction_stats_v6")
     parser.add_argument("--finalization-table", default="news_reaction_finalization_state_v1")
     parser.add_argument("--storage-policy", default=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or os.environ.get("CLICKHOUSE_STORAGE_POLICY") or "")
     parser.add_argument("--output-root", default="D:/market-data/prepared/news_reaction_labels")
@@ -858,7 +858,9 @@ joined AS
     SELECT
         r.*,
         arrayDistinct(arrayFlatten(groupArray(if(
-            s.execution_date BETWEEN toDate(ifNull(r.anchor_timestamp_utc, r.published_at_utc)) AND toDate(r.target_at_utc),
+            s.execution_date BETWEEN
+                toDate(toTimeZone(ifNull(r.anchor_timestamp_utc, r.published_at_utc), 'America/New_York'))
+                AND toDate(toTimeZone(r.target_at_utc, 'America/New_York')),
             s.split_ids,
             []
         )))) AS corporate_action_ids
@@ -906,20 +908,32 @@ def audit_quality_overlay(client: ClickHouseHttpClient, args: argparse.Namespace
     row = parse_one_json(client.execute(f"""
 SELECT
     count() AS overlay_rows,
-    uniqExact(tuple(canonical_news_id, ticker, horizon_code)) AS unique_rows,
-    countIf(corporate_action_overlap = 1) AS corporate_action_rows,
-    countIf(return_outlier = 1) AS outlier_rows,
-    countIf(eligible_for_statistics = 1 AND notEmpty(exclusion_reasons)) AS contradictory_rows
-FROM {table(args.news_database, args.quality_table)} FINAL
-WHERE quality_version = {sql_string(QUALITY_VERSION)}
-  AND published_at_utc >= {dt_sql(args.start_date)}
-  AND published_at_utc < {dt_sql(watermarks.stable_end_exclusive)}
+    uniqExact(tuple(q.canonical_news_id, q.ticker, q.published_at_utc, q.horizon_code)) AS unique_rows,
+    countIf(q.corporate_action_overlap = 1) AS corporate_action_rows,
+    countIf(q.return_outlier = 1) AS outlier_rows,
+    countIf(q.eligible_for_statistics = 1 AND notEmpty(q.exclusion_reasons)) AS contradictory_rows,
+    countIf(
+        q.corporate_action_overlap != r.corporate_action_overlap
+        OR arraySort(q.corporate_action_ids) != arraySort(r.corporate_action_ids)
+    ) AS authority_mismatches
+FROM (SELECT * FROM {table(args.news_database, args.quality_table)} FINAL) AS q
+INNER JOIN (SELECT * FROM {table(args.news_database, args.reactions_table)} FINAL) AS r
+  ON r.label_version = q.label_version
+ AND r.canonical_news_id = q.canonical_news_id
+ AND r.ticker = q.ticker
+ AND r.published_at_utc = q.published_at_utc
+ AND r.horizon_code = q.horizon_code
+WHERE q.quality_version = {sql_string(QUALITY_VERSION)}
+  AND q.published_at_utc >= {dt_sql(args.start_date)}
+  AND q.published_at_utc < {dt_sql(watermarks.stable_end_exclusive)}
 FORMAT JSONEachRow
 """))
     if int(row["overlay_rows"]) != int(row["unique_rows"]):
         raise RuntimeError("quality overlay contains duplicate news/ticker/horizon rows")
     if int(row["contradictory_rows"]) != 0:
         raise RuntimeError("quality overlay marks excluded rows eligible")
+    if int(row["authority_mismatches"]) != 0:
+        raise RuntimeError("quality overlay corporate-action evidence disagrees with label authority")
 
 
 def robust_stats_insert_sql(args: argparse.Namespace) -> str:

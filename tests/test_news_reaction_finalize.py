@@ -103,7 +103,7 @@ class NewsReactionFinalizeTests(unittest.TestCase):
 
     def test_holdout_predictions_use_only_pre_2026_statistics(self) -> None:
         sql = prediction_ctes(self.args, self.watermarks)
-        self.assertIn("news_phrase_event_reaction_stats_v4", sql)
+        self.assertIn("news_phrase_event_reaction_stats_v6", sql)
         self.assertIn("2026-01-01", sql)
         self.assertIn("r.canonical_news_id AS canonical_news_id", sql)
         self.assertIn("ON f.canonical_news_id = r.canonical_news_id", sql)

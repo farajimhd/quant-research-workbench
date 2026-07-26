@@ -12,13 +12,16 @@ context items, or market leaders. The V17 loader opens the completed V16 arrays
 read-only and validates:
 
 - V16 row count;
-- V16 `representation_sha256`;
 - the V17 target-sidecar row count;
-- a stable hash of `(canonical_news_id, ticker, published_at_utc)`.
+- a stable hash of every `(canonical_news_id, ticker, published_at_utc)` row.
+
+The V17 contract is bound to that complete identity hash rather than V16's
+feature representation hash. Feature-only V16 changes therefore do not force a
+target rebuild, while any row reassignment does.
 
 Only target evidence is stored under:
 
-`D:\market-data\prepared\news_reaction_model\v17\market_response_targets_v2`
+`D:\market-data\prepared\news_reaction_model\v17\market_response_targets_v3`
 
 The model calls `NewsReactionModelV16.encode_article()` directly. V16's former
 opportunity heads are removed from the V17 module, optimizer, checkpoint, and
@@ -40,7 +43,7 @@ response window.
 
 ## Target authority and extraction
 
-The builder reuses `q_live.news_reaction_labels_v2` for:
+The builder reuses certified `q_live.news_reaction_labels_v3` rows for:
 
 - the last eligible trade strictly before publication;
 - exact phase high, low, terminal return, and extrema timestamps;
@@ -59,6 +62,15 @@ per ticker or article. Every annual-table branch carries an explicit
 `event_date` predicate so ClickHouse prunes monthly partitions. The batch size
 is configurable through `--tickers-per-query`; concurrency remains separately
 bounded by `--workers`. The builder does not rebuild V16 market state.
+
+All exact-event paths retain SIP `ordinal` and are ordered by
+`(sip_timestamp_us, ordinal)`. The causal quote test also performs its ASOF join
+on that composite event key, so a quote with the same timestamp but a later
+ordinal cannot leak backward into a trade. Every source-label lookup uses the complete
+article identity `(canonical_news_id, ticker, published_at_utc)`, requires
+`applicable = 1`, and rejects corporate-action crossings. V17 independently
+checks all row identities and every populated target array; sampling the first,
+middle, and last rows is not considered certification.
 
 The quote-test direction matches the QMD contract: at/above ask is buyer
 initiated, at/below bid is seller initiated, then midpoint fallback. `Supply`
@@ -178,7 +190,7 @@ next-session and five-session directions:
 
 This three-class direction contract is
 `news_market_response_targets_v17_direction3_v2`. Its sidecar uses
-`market_response_targets_v2`, and the direction head has three logits. The
+`market_response_targets_v3`, and the direction head has three logits. The
 version and separate root prevent an incomplete four-class sidecar or
 four-logit checkpoint from being resumed as this experiment.
 

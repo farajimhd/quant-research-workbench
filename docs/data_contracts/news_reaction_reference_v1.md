@@ -48,11 +48,12 @@ position-array alias expansion.
 | `q_live.news_reaction_calendar_v1` | calendar date | Current and next XNYS premarket, open, close, and extended-close boundaries. |
 | `q_live.news_phrase_dictionary_v1` | dictionary version + phrase | Canonical concept, variants, family, prior direction/strength, and feature role. |
 | `q_live.news_language_features_v1` | article + canonical phrase | One presence fact per article and phrase, with title/body/tag/channel provenance. Repetition counts are not stored. |
-| `q_live.news_reaction_labels_v2` | news + ticker + horizon | Exact event-relative anchor, terminal observation, high/low, market-adjusted returns, applicability, overlap, and quality evidence. |
+| `q_live.news_reaction_labels_v3` | news + ticker + horizon | Exact event-relative anchor, terminal observation, high/low, their SIP ordinals, market-adjusted returns, applicability, overlap, corporate-action evidence, and quality state. |
 | `q_live.news_phrase_reaction_stats_v2` | phrase + horizon + publication session | Smoothed probabilities and reaction distributions from clean 2019-2025 samples. |
 | `q_live.news_reaction_build_status_v1` | stage + semantic version + date chunk | Restart-safe completed-chunk state and timing. |
-| `q_live.news_reaction_quality_overlay_v1` | news + ticker + horizon | Split overlap, extreme-return evidence, and the final statistical-eligibility decision without rewriting source reaction labels. |
-| `q_live.news_phrase_reaction_stats_v3` | phrase + horizon + publication session | Split-aware probabilities plus raw, median, and 1%-trimmed reaction summaries from 2019-2025. |
+| `q_live.news_reaction_quality_overlay_v2` | news + ticker + horizon | Independent split-overlap agreement check, extreme-return evidence, and final statistical eligibility without rewriting source reaction labels. |
+| `q_live.news_phrase_reaction_stats_v6` | phrase + horizon + publication session | Ordinal- and split-aware probabilities plus raw, median, and 1%-trimmed reaction summaries from 2019-2025. |
+| `market_sip_compact.news_reaction_certified_targets_v1` | article + ticker | Embedding-independent sidecar containing only audited clean terminal/high/low targets from the v3 authority. |
 | `q_live.news_reaction_finalization_state_v1` | finalized feature month or reaction day | Source signature, source/event watermarks, certified row counts, and the audit that authorized finalization. |
 
 ## Exact causal labeling
@@ -76,8 +77,18 @@ XNYS schedule.
 
 There is no time-grid resolution in this contract. A publication at
 `09:41:20.600` includes an event at `09:41:20.601`; it does not discard the
-remaining fraction of that second. The active semantic versions are
-`news_reaction_event_labels_v3` and `news_phrase_event_reaction_stats_v3`.
+remaining fraction of that second. Events sharing a timestamp are ordered by
+the canonical SIP `ordinal`. Anchor, terminal, high, and low evidence stores
+that ordinal, and all event arrays sort by `(sip_timestamp_us, ordinal)`.
+Compact prices use the canonical scale bit: `price_primary_int / 10000` when
+`event_meta & 2`, otherwise `price_primary_int / 100`.
+
+Any horizon whose publication-to-target ET-date interval crosses a recorded
+stock split is marked `corporate_action_overlap` and is not certifiable. The
+independent quality overlay must agree with the label authority's split IDs.
+
+The active semantic versions are
+`news_reaction_event_labels_v4` and `news_phrase_event_reaction_stats_v5`.
 They never resume the obsolete fixed-bar checkpoints.
 
 SPY is processed from the same exact event source. Terminal SPY return is

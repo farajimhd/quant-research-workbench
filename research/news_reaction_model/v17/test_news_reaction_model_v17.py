@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import unittest
 import datetime as dt
-from pathlib import Path
+import tempfile
+from pathlib import Path as FsPath
 
 import numpy as np
 import torch
@@ -16,6 +17,7 @@ from research.news_reaction_model.v17.prepare_targets import (
     EASTERN,
     build_windows,
     event_rows_for_tickers,
+    clear_target_sidecar,
     process_ticker_batch,
     session_days_between,
     summarize_events,
@@ -36,6 +38,19 @@ from research.news_reaction_model.v17.targets import (
 class V17TargetTests(unittest.TestCase):
     def setUp(self) -> None:
         self.contract = TargetThresholds((0.01,) * len(RESPONSE_WINDOWS))
+
+    def test_restart_removes_only_owned_sidecar_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = FsPath(temporary)
+            config = LoaderConfig(target_root=root)
+            owned = root / "manifest.json"
+            unrelated = root / "human_notes.txt"
+            owned.write_text("{}", encoding="utf-8")
+            unrelated.write_text("keep", encoding="utf-8")
+            removed = clear_target_sidecar(config)
+            self.assertIn("manifest.json", removed)
+            self.assertFalse(owned.exists())
+            self.assertTrue(unrelated.exists())
 
     def metrics(
         self,
@@ -254,6 +269,9 @@ class V17TargetTests(unittest.TestCase):
         )
         self.assertIn("event_date >= toDate('2026-01-02')", client.query)
         self.assertIn("ticker IN ('AAPL', 'MSFT')", client.query)
+        self.assertIn("bitShiftLeft(toUInt128(sip_timestamp_us), 64)", client.query)
+        self.assertIn("t.event_order_key>=q.event_order_key", client.query)
+        self.assertNotIn("t.sip_timestamp_us>=q.sip_timestamp_us", client.query)
         self.assertIn("ORDER BY t.ticker,t.sip_timestamp_us,t.ordinal", client.query)
         self.assertTrue(client.query_id.startswith("news-v17-targets-"))
         self.assertEqual(cancellation.active_query_ids(), ())
@@ -320,7 +338,7 @@ class V17TargetTests(unittest.TestCase):
         }
         labels = {}
         for news_id, ticker in (("news-a", "AAPL"), ("news-m", "MSFT")):
-            labels[(news_id, ticker)] = {
+            labels[(news_id, ticker, published.isoformat())] = {
                 "publication_session": "regular",
                 "reaction_session_date": sessions[0],
                 "anchor_price": 100.0,
@@ -386,7 +404,11 @@ class V17TargetTests(unittest.TestCase):
                     bounds[1].astimezone(EASTERN).date(),
                 )
                 exact = labels[
-                    ("news-a" if ticker == "AAPL" else "news-m", ticker)
+                    (
+                        "news-a" if ticker == "AAPL" else "news-m",
+                        ticker,
+                        published.isoformat(),
+                    )
                 ]["phase"] if window_index < 3 else None
                 expected[window_index], expected_mask[window_index] = summarize_events(
                     [make_rows(ticker, day) for day in selected],

@@ -44,7 +44,7 @@ def context_contract() -> dict[str, Any]:
             for component in ("terminal", "high", "low")
         ],
         "reaction_availability": [f"{horizon}_available" for horizon in HORIZONS],
-        "availability_rule": "q_live.news_reaction_labels_v2.available_at_utc < current published_at_utc",
+        "availability_rule": "certified target horizon available_at_utc < current published_at_utc",
         "temporal_features": [
             "log_gap_minutes",
             "calendar_days_ago",

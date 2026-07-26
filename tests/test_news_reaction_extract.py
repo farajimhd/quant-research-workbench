@@ -69,7 +69,15 @@ class NewsReactionExtractTests(unittest.TestCase):
         self.assertIn("fully_price_eligible_tokens", sql)
         self.assertIn("modifier_int = 12", sql)
         self.assertIn("point_arrays AS", sql)
-        self.assertIn("arraySort(event -> tupleElement(event, 1), groupArrayIf", sql)
+        self.assertIn(
+            "arraySort(event -> tuple(tupleElement(event, 1), tupleElement(event, 2)), groupArrayIf",
+            sql,
+        )
+        self.assertIn(
+            "tuple(last_trade_timestamp_us, ordinal, price, update_last, update_high_low)",
+            sql,
+        )
+        self.assertIn("corporate_action_overlap", sql)
         self.assertNotIn("ASOF", sql)
         self.assertNotIn("intraday_base_bars", sql)
         self.assertNotIn("label_resolution_us", sql)
@@ -101,9 +109,9 @@ class NewsReactionExtractTests(unittest.TestCase):
         self.assertNotIn("price_resolution_us", reaction_schema)
 
     def test_event_label_semantics_are_versioned(self) -> None:
-        self.assertEqual(LABEL_VERSION, "news_reaction_event_labels_v3")
-        self.assertEqual(STATS_VERSION, "news_phrase_event_reaction_stats_v3")
-        self.assertEqual(self.args.reactions_table, "news_reaction_labels_v2")
+        self.assertEqual(LABEL_VERSION, "news_reaction_event_labels_v4")
+        self.assertEqual(STATS_VERSION, "news_phrase_event_reaction_stats_v5")
+        self.assertEqual(self.args.reactions_table, "news_reaction_labels_v3")
 
     def test_event_source_routes_only_required_years(self) -> None:
         source = event_source_table(self.args, dt.date(2025, 12, 31), dt.date(2026, 1, 2))

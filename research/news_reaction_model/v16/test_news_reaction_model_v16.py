@@ -76,6 +76,7 @@ from research.news_reaction_model.v16.prepare_data import (
     decode_targets,
     month_ranges,
     select_market_history,
+    source_page_sql,
 )
 from research.news_reaction_model.v16.train import validate_config
 
@@ -104,6 +105,16 @@ def tiny_configs(root: Path | None = None) -> tuple[LoaderConfig, ModelConfig]:
 
 
 class NewsReactionModelV16Tests(unittest.TestCase):
+    def test_source_page_aliases_certified_target_arrays(self) -> None:
+        sql = source_page_sql(
+            LoaderConfig(),
+            dt.date(2026, 7, 10),
+            dt.date(2026, 7, 11),
+            ("1970-01-01 00:00:00.000000000", "", ""),
+        )
+        self.assertIn("c.horizon_codes AS horizon_codes", sql)
+        self.assertIn("c.return_targets AS return_targets", sql)
+
     @staticmethod
     def _market_rows() -> list[dict[str, object]]:
         base = int(
@@ -652,11 +663,13 @@ class NewsReactionModelV16Tests(unittest.TestCase):
             loader,
             source_representation_sha256="source",
             source_rows_count=6,
+            certified_target_source_signature="targets",
         )
         second = build_representation_sha256(
             loader,
             source_representation_sha256="source",
             source_rows_count=6,
+            certified_target_source_signature="targets",
         )
         self.assertEqual(first, second)
 

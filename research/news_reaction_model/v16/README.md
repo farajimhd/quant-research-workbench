@@ -102,6 +102,19 @@ The immutable article/embedding source remains:
 market_sip_compact.news_reaction_openai_stock_state_dataset_v8
 ```
 
+Targets are read from the embedding-independent certified sidecar:
+
+```text
+market_sip_compact.news_reaction_certified_targets_v1
+```
+
+That sidecar is built only after `q_live.news_reaction_labels_v3` proves exactly
+one ordinal-aware row for every article/ticker/horizon identity. It copies only
+clean, finite abnormal terminal/high/low targets whose corresponding raw asset
+returns are correctly ordered, and excludes every horizon crossing a recorded
+corporate action. Rebuilding this authority does not read, regenerate, or
+rewrite OpenAI embeddings.
+
 The full-period intraday bar and scanner tables are incomplete, so V16 does not
 use them. It derives bounded daily completed-minute state directly from
 `market_sip_compact.events_YYYY`. The preparation pipeline submits four exchange
@@ -170,6 +183,19 @@ files:
 ```powershell
 python -m research.news_reaction_model.v16.run_prepare_data --restart --execute
 ```
+
+Before a full rebuild, benchmark one representative high-volume session with
+the identical bounded reader:
+
+```powershell
+python -m research.news_reaction_model.v16.run_benchmark_reader `
+  --session-date 2026-07-10 `
+  --no-write
+```
+
+The benchmark reports ticker count, completed-minute count, elapsed time,
+throughput, and Python peak memory. V16 preparation must not start unless the
+reaction authority and certified target sidecar audits have passed.
 
 ## Model
 
@@ -264,5 +290,5 @@ may be omitted only for an explicit cold start.
   event-derived reaction labels.
 - Relative volume uses prior full-day volume rather than a minute-of-session
   seasonality curve.
-- The existing labels are abnormal, market-adjusted returns. Evaluation's
+- The certified labels are abnormal, market-adjusted returns. Evaluation's
   midpoint P&L remains descriptive, not an executable fill/exit simulation.

@@ -55,14 +55,18 @@ class LoaderConfig:
     # embeddings remain unique; prior-news context references them by row index.
     dataset_table: str = "news_reaction_openai_stock_state_dataset_v8"
     dataset_version: str = "news_reaction_openai_stock_state_dataset_v8"
+    certified_target_database: str = "market_sip_compact"
+    certified_target_table: str = "news_reaction_certified_targets_v1"
+    certified_target_version: str = "news_reaction_certified_targets_v1"
     embedding_version: str = OPENAI_EMBEDDING_VERSION
     embedding_model: str = OPENAI_EMBEDDING_MODEL
     embedding_text_contract: str = OPENAI_TEXT_CONTRACT
     news_database: str = "q_live"
-    reaction_table: str = "news_reaction_labels_v2"
+    reaction_table: str = "news_reaction_labels_v3"
+    split_table: str = "market_stock_split_v1"
     reaction_calendar_table: str = "news_reaction_calendar_v1"
     reaction_calendar_version: str = "xnys_pandas_market_calendars_v1"
-    label_version: str = "news_reaction_event_labels_v3"
+    label_version: str = "news_reaction_event_labels_v4"
     market_database: str = "market_sip_compact"
     events_table_base: str = "events"
     condition_reference_table: str = "event_condition_token_reference"

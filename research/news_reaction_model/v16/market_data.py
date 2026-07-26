@@ -396,6 +396,14 @@ class DayMarketData:
         self._snapshot_cache: dict[int, MarketSnapshot] = {}
 
     @property
+    def ticker_count(self) -> int:
+        return len(self._by_ticker)
+
+    @property
+    def minute_row_count(self) -> int:
+        return sum(int(values["end"].shape[0]) for values in self._by_ticker.values())
+
+    @property
     def tickers(self) -> tuple[str, ...]:
         return tuple(self._by_ticker)
 

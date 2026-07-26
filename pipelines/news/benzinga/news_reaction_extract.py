@@ -39,8 +39,8 @@ from research.mlops.env import discover_env_files, load_env_files, secret_status
 EASTERN = ZoneInfo("America/New_York")
 UTC = dt.timezone.utc
 CALENDAR_VERSION = "xnys_pandas_market_calendars_v1"
-LABEL_VERSION = "news_reaction_event_labels_v3"
-STATS_VERSION = "news_phrase_event_reaction_stats_v3"
+LABEL_VERSION = "news_reaction_event_labels_v4"
+STATS_VERSION = "news_phrase_event_reaction_stats_v5"
 HORIZONS: tuple[tuple[str, str, int], ...] = (
     ("1m", "fixed", 60),
     ("5m", "fixed", 5 * 60),
@@ -133,8 +133,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--calendar-table", default="news_reaction_calendar_v1")
     parser.add_argument("--dictionary-table", default="news_phrase_dictionary_v1")
     parser.add_argument("--features-table", default="news_language_features_v1")
-    parser.add_argument("--reactions-table", default="news_reaction_labels_v2")
-    parser.add_argument("--stats-table", default="news_phrase_reaction_stats_v2")
+    parser.add_argument("--reactions-table", default="news_reaction_labels_v3")
+    parser.add_argument("--stats-table", default="news_phrase_reaction_stats_v5")
+    parser.add_argument("--split-table", default="market_stock_split_v1")
     parser.add_argument("--status-table", default="news_reaction_build_status_v1")
     parser.add_argument("--storage-policy", default=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or os.environ.get("CLICKHOUSE_STORAGE_POLICY") or "")
     parser.add_argument("--output-root", default="D:/market-data/prepared/news_reaction_labels")
@@ -354,6 +355,7 @@ def ensure_sources(client: ClickHouseHttpClient, args: argparse.Namespace) -> No
     required = (
         (args.news_database, args.normalized_table),
         (args.news_database, args.ticker_table),
+        (args.news_database, args.split_table),
         (args.market_database, args.condition_reference_table),
     )
     missing = [f"{db}.{table}" for db, table in required if not table_exists(client, db, table)]
@@ -419,8 +421,10 @@ def ensure_target_tables(client: ClickHouseHttpClient, args: argparse.Namespace)
         args.features_table: {"extraction_version", "canonical_news_id", "published_at_utc", "phrase_id", "source_mask", "text_hash"},
         args.reactions_table: {
             "label_version", "canonical_news_id", "ticker", "published_at_utc", "horizon_code",
-            "anchor_price", "target_price", "window_high_price", "window_low_price",
+            "anchor_ordinal", "anchor_price", "target_ordinal", "target_price",
+            "window_high_ordinal", "window_high_price", "window_low_ordinal", "window_low_price",
             "abnormal_target_return", "abnormal_high_return", "abnormal_low_return",
+            "corporate_action_overlap", "corporate_action_ids",
             "quality_status", "quality_flags", "source_revision", "observation_count",
         },
         args.stats_table: {
@@ -512,16 +516,20 @@ CREATE TABLE IF NOT EXISTS {table(args.news_database, args.reactions_table)}
     applicable UInt8,
     target_at_utc DateTime64(6, 'UTC'),
     anchor_timestamp_utc Nullable(DateTime64(6, 'UTC')),
+    anchor_ordinal Nullable(UInt64),
     anchor_price Nullable(Float64),
     anchor_basis LowCardinality(String),
     anchor_age_ms Nullable(UInt64),
     target_timestamp_utc Nullable(DateTime64(6, 'UTC')),
+    target_ordinal Nullable(UInt64),
     target_price Nullable(Float64),
     target_basis LowCardinality(String),
     target_age_ms Nullable(UInt64),
     window_high_timestamp_utc Nullable(DateTime64(6, 'UTC')),
+    window_high_ordinal Nullable(UInt64),
     window_high_price Nullable(Float64),
     window_low_timestamp_utc Nullable(DateTime64(6, 'UTC')),
+    window_low_ordinal Nullable(UInt64),
     window_low_price Nullable(Float64),
     target_return Nullable(Float64),
     high_return Nullable(Float64),
@@ -533,6 +541,8 @@ CREATE TABLE IF NOT EXISTS {table(args.news_database, args.reactions_table)}
     reaction_bin LowCardinality(String),
     observation_count UInt64,
     overlapping_news_count UInt32,
+    corporate_action_overlap UInt8,
+    corporate_action_ids Array(String),
     quality_status LowCardinality(String),
     quality_flags Array(String),
     calendar_version LowCardinality(String),
@@ -1200,6 +1210,7 @@ updates AS
     SELECT
         ticker AS ticker,
         event_date,
+        toUInt64(ordinal) AS ordinal,
         toNullable(toFloat64(price_primary_int) / if(bitAnd(event_meta, 2) = 2, 10000.0, 100.0)) AS trade_close,
         trade_close AS trade_high,
         trade_close AS trade_low,
@@ -1238,6 +1249,7 @@ points AS
     SELECT
         ticker,
         event_date,
+        ordinal,
         first_trade_timestamp_us,
         last_trade_timestamp_us,
         trade_close AS price,
@@ -1282,8 +1294,8 @@ point_arrays AS
     SELECT
         ticker,
         event_date,
-        arraySort(event -> tupleElement(event, 1), groupArrayIf(
-            tuple(last_trade_timestamp_us, price, update_last, update_high_low),
+        arraySort(event -> tuple(tupleElement(event, 1), tupleElement(event, 2)), groupArrayIf(
+            tuple(last_trade_timestamp_us, ordinal, price, update_last, update_high_low),
             update_last = 1 OR update_high_low = 1
         )) AS eligible_events
     FROM points
@@ -1295,8 +1307,8 @@ prior_anchor_points AS
     SELECT
         ticker,
         argMaxIf(
-            tuple(last_trade_timestamp_us, price),
-            last_trade_timestamp_us,
+            tuple(last_trade_timestamp_us, ordinal, price),
+            tuple(last_trade_timestamp_us, ordinal),
             update_last = 1
             AND last_trade_timestamp_us < toUInt64(toUnixTimestamp64Micro({dt_sql(start.isoformat())}))
         ) AS prior_anchor_event
@@ -1308,7 +1320,7 @@ market_prior_anchor AS
     SELECT
         argMaxIf(
             prior_anchor_event,
-            tupleElement(prior_anchor_event, 1),
+            tuple(tupleElement(prior_anchor_event, 1), tupleElement(prior_anchor_event, 2)),
             tupleElement(prior_anchor_event, 1) > 0
         ) AS market_prior_anchor_event
     FROM prior_anchor_points
@@ -1317,7 +1329,7 @@ market_prior_anchor AS
 market_all_events AS
 (
     SELECT
-        arraySort(event -> tupleElement(event, 1), groupArrayArray(eligible_events)) AS all_market_events
+        arraySort(event -> tuple(tupleElement(event, 1), tupleElement(event, 2)), groupArrayArray(eligible_events)) AS all_market_events
     FROM point_arrays
     WHERE ticker = {sql_string(args.benchmark_ticker.upper())}
 ),
@@ -1419,7 +1431,7 @@ asset_event_sets AS
         any(joined.publication_session) AS publication_session,
         any(joined.pub_us) AS pub_us,
         any(joined.prior_anchor_event) AS prior_anchor_event,
-        arraySort(event -> tupleElement(event, 1), groupArrayArray(joined.daily_events)) AS all_events
+        arraySort(event -> tuple(tupleElement(event, 1), tupleElement(event, 2)), groupArrayArray(joined.daily_events)) AS all_events
     FROM
     (
         SELECT
@@ -1489,31 +1501,35 @@ asset_metrics AS
         horizon_type,
         applicable,
         target_us,
-        arrayLast(event -> tupleElement(event, 3) = 1 AND tupleElement(event, 1) < pub_us AND tupleElement(event, 1) <= target_us, all_events) AS current_anchor_event,
-        if(tupleElement(current_anchor_event, 1) > 0, current_anchor_event, tuple(tupleElement(prior_anchor_event, 1), tupleElement(prior_anchor_event, 2), toUInt8(1), toUInt8(1))) AS anchor_event,
+        arrayLast(event -> tupleElement(event, 4) = 1 AND tupleElement(event, 1) < pub_us AND tupleElement(event, 1) <= target_us, all_events) AS current_anchor_event,
+        if(tupleElement(current_anchor_event, 1) > 0, current_anchor_event, tuple(tupleElement(prior_anchor_event, 1), tupleElement(prior_anchor_event, 2), tupleElement(prior_anchor_event, 3), toUInt8(1), toUInt8(1))) AS anchor_event,
         if(tupleElement(anchor_event, 1) > 0, toNullable(tupleElement(anchor_event, 1)), toNullable(NULL)) AS anchor_ts_us,
-        if(tupleElement(anchor_event, 1) > 0, toNullable(tupleElement(anchor_event, 2)), toNullable(NULL)) AS anchor_price,
+        if(tupleElement(anchor_event, 1) > 0, toNullable(tupleElement(anchor_event, 2)), toNullable(NULL)) AS anchor_ordinal,
+        if(tupleElement(anchor_event, 1) > 0, toNullable(tupleElement(anchor_event, 3)), toNullable(NULL)) AS anchor_price,
         if(anchor_ts_us > 0, toNullable('eligible_trade_event'), toNullable(NULL)) AS anchor_basis,
-        arrayLast(event -> applicable = 1 AND tupleElement(event, 3) = 1 AND tupleElement(event, 1) > pub_us AND tupleElement(event, 1) <= target_us, all_events) AS target_event,
-        if(tupleElement(target_event, 1) > 0, toNullable(tupleElement(target_event, 2)), toNullable(NULL)) AS target_price,
+        arrayLast(event -> applicable = 1 AND tupleElement(event, 4) = 1 AND tupleElement(event, 1) > pub_us AND tupleElement(event, 1) <= target_us, all_events) AS target_event,
+        if(tupleElement(target_event, 1) > 0, toNullable(tupleElement(target_event, 2)), toNullable(NULL)) AS target_ordinal,
+        if(tupleElement(target_event, 1) > 0, toNullable(tupleElement(target_event, 3)), toNullable(NULL)) AS target_price,
         if(tupleElement(target_event, 1) > 0, toNullable(tupleElement(target_event, 1)), toNullable(NULL)) AS target_ts_us,
         if(tupleElement(target_event, 1) > 0, toNullable('eligible_trade_event'), toNullable(NULL)) AS target_basis,
-        arrayMax(event -> if(applicable = 1 AND tupleElement(event, 4) = 1 AND tupleElement(event, 1) > pub_us AND tupleElement(event, 1) <= target_us, tuple(tupleElement(event, 2), tupleElement(event, 1)), tuple(toFloat64('-inf'), toUInt64(0))), all_events) AS high_event,
+        arrayMax(event -> if(applicable = 1 AND tupleElement(event, 5) = 1 AND tupleElement(event, 1) > pub_us AND tupleElement(event, 1) <= target_us, tuple(tupleElement(event, 3), tupleElement(event, 1), tupleElement(event, 2)), tuple(toFloat64('-inf'), toUInt64(0), toUInt64(0))), all_events) AS high_event,
         if(tupleElement(high_event, 2) > 0, toNullable(tupleElement(high_event, 1)), toNullable(NULL)) AS high_price,
         if(tupleElement(high_event, 2) > 0, toNullable(tupleElement(high_event, 2)), toNullable(NULL)) AS high_ts_us,
-        arrayMin(event -> if(applicable = 1 AND tupleElement(event, 4) = 1 AND tupleElement(event, 1) > pub_us AND tupleElement(event, 1) <= target_us, tuple(tupleElement(event, 2), tupleElement(event, 1)), tuple(toFloat64('inf'), toUInt64(0))), all_events) AS low_event,
+        if(tupleElement(high_event, 2) > 0, toNullable(tupleElement(high_event, 3)), toNullable(NULL)) AS high_ordinal,
+        arrayMin(event -> if(applicable = 1 AND tupleElement(event, 5) = 1 AND tupleElement(event, 1) > pub_us AND tupleElement(event, 1) <= target_us, tuple(tupleElement(event, 3), tupleElement(event, 1), tupleElement(event, 2)), tuple(toFloat64('inf'), toUInt64(0), toUInt64(0))), all_events) AS low_event,
         if(tupleElement(low_event, 2) > 0, toNullable(tupleElement(low_event, 1)), toNullable(NULL)) AS low_price,
         if(tupleElement(low_event, 2) > 0, toNullable(tupleElement(low_event, 2)), toNullable(NULL)) AS low_ts_us,
-        toUInt64(arrayCount(event -> applicable = 1 AND (tupleElement(event, 3) = 1 OR tupleElement(event, 4) = 1) AND tupleElement(event, 1) > pub_us AND tupleElement(event, 1) <= target_us, all_events)) AS observation_count,
-        arrayLast(event -> tupleElement(event, 3) = 1 AND tupleElement(event, 1) < pub_us, market_events.all_market_events) AS current_market_anchor_event,
-        if(tupleElement(current_market_anchor_event, 1) > 0, current_market_anchor_event, tuple(tupleElement(market_prior.market_prior_anchor_event, 1), tupleElement(market_prior.market_prior_anchor_event, 2), toUInt8(1), toUInt8(1))) AS market_anchor_event,
-        if(tupleElement(market_anchor_event, 1) > 0, toNullable(tupleElement(market_anchor_event, 2)), toNullable(NULL)) AS market_anchor_price,
-        arrayLast(event -> applicable = 1 AND tupleElement(event, 3) = 1 AND tupleElement(event, 1) > pub_us AND tupleElement(event, 1) <= target_us, market_events.all_market_events) AS market_target_event,
-        if(tupleElement(market_target_event, 1) > 0, toNullable(tupleElement(market_target_event, 2)), toNullable(NULL)) AS market_target_price,
-        arrayLast(event -> tupleElement(event, 3) = 1 AND tupleElement(event, 1) <= high_ts_us, market_events.all_market_events) AS aligned_market_high_event,
-        arrayLast(event -> tupleElement(event, 3) = 1 AND tupleElement(event, 1) <= low_ts_us, market_events.all_market_events) AS aligned_market_low_event,
-        if(tupleElement(aligned_market_high_event, 1) > 0, toNullable(tupleElement(aligned_market_high_event, 2)), toNullable(NULL)) AS aligned_market_high_price,
-        if(tupleElement(aligned_market_low_event, 1) > 0, toNullable(tupleElement(aligned_market_low_event, 2)), toNullable(NULL)) AS aligned_market_low_price
+        if(tupleElement(low_event, 2) > 0, toNullable(tupleElement(low_event, 3)), toNullable(NULL)) AS low_ordinal,
+        toUInt64(arrayCount(event -> applicable = 1 AND (tupleElement(event, 4) = 1 OR tupleElement(event, 5) = 1) AND tupleElement(event, 1) > pub_us AND tupleElement(event, 1) <= target_us, all_events)) AS observation_count,
+        arrayLast(event -> tupleElement(event, 4) = 1 AND tupleElement(event, 1) < pub_us, market_events.all_market_events) AS current_market_anchor_event,
+        if(tupleElement(current_market_anchor_event, 1) > 0, current_market_anchor_event, tuple(tupleElement(market_prior.market_prior_anchor_event, 1), tupleElement(market_prior.market_prior_anchor_event, 2), tupleElement(market_prior.market_prior_anchor_event, 3), toUInt8(1), toUInt8(1))) AS market_anchor_event,
+        if(tupleElement(market_anchor_event, 1) > 0, toNullable(tupleElement(market_anchor_event, 3)), toNullable(NULL)) AS market_anchor_price,
+        arrayLast(event -> applicable = 1 AND tupleElement(event, 4) = 1 AND tupleElement(event, 1) > pub_us AND tupleElement(event, 1) <= target_us, market_events.all_market_events) AS market_target_event,
+        if(tupleElement(market_target_event, 1) > 0, toNullable(tupleElement(market_target_event, 3)), toNullable(NULL)) AS market_target_price,
+        arrayLast(event -> tupleElement(event, 4) = 1 AND tupleElement(event, 1) <= high_ts_us, market_events.all_market_events) AS aligned_market_high_event,
+        arrayLast(event -> tupleElement(event, 4) = 1 AND tupleElement(event, 1) <= low_ts_us, market_events.all_market_events) AS aligned_market_low_event,
+        if(tupleElement(aligned_market_high_event, 1) > 0, toNullable(tupleElement(aligned_market_high_event, 3)), toNullable(NULL)) AS aligned_market_high_price,
+        if(tupleElement(aligned_market_low_event, 1) > 0, toNullable(tupleElement(aligned_market_low_event, 3)), toNullable(NULL)) AS aligned_market_low_price
     FROM asset_event_windows AS a
     CROSS JOIN market_all_events AS market_events
     CROSS JOIN market_prior_anchor AS market_prior
@@ -1553,15 +1569,19 @@ final_rows AS
         applicable,
         target_us,
         anchor_ts_us,
+        anchor_ordinal,
         anchor_price,
         anchor_basis,
         target_price,
         target_ts_us,
+        target_ordinal,
         target_basis,
         high_price,
         high_ts_us,
+        high_ordinal,
         low_price,
         low_ts_us,
+        low_ordinal,
         observation_count,
         market_anchor_price,
         market_target_price,
@@ -1575,6 +1595,43 @@ final_rows AS
         low_return - if(isNotNull(market_anchor_price) AND market_anchor_price > 0 AND isNotNull(aligned_market_low_price), aligned_market_low_price / market_anchor_price - 1.0, toNullable(NULL)) AS abnormal_low_return
     FROM asset_metrics
     LEFT JOIN overlaps AS o USING (canonical_news_id, ticker, horizon_code)
+),
+split_actions AS
+(
+    SELECT
+        upperUTF8(provider_ticker) AS ticker,
+        execution_date,
+        groupUniqArray(stock_split_id) AS split_ids
+    FROM {table(args.news_database, args.split_table)} FINAL
+    WHERE provider_ticker != ''
+      AND split_from > 0
+      AND split_to > 0
+      AND split_from != split_to
+      AND execution_date >= toDate({sql_string(lookback.isoformat())})
+      AND execution_date < toDate({sql_string(lookahead.isoformat())})
+    GROUP BY ticker, execution_date
+),
+split_annotated AS
+(
+    SELECT
+        r.*,
+        arrayDistinct(arrayFlatten(groupArray(if(
+            s.execution_date BETWEEN
+                toDate(toTimeZone(ifNull(
+                    fromUnixTimestamp64Micro(toInt64(r.anchor_ts_us), 'UTC'),
+                    r.published_at_utc
+                ), 'America/New_York'))
+                AND
+                toDate(toTimeZone(
+                    fromUnixTimestamp64Micro(toInt64(r.target_us), 'UTC'),
+                    'America/New_York'
+                )),
+            s.split_ids,
+            []
+        )))) AS corporate_action_ids
+    FROM final_rows AS r
+    LEFT JOIN split_actions AS s ON s.ticker = r.ticker
+    GROUP BY ALL
 )
 SELECT
     {sql_string(LABEL_VERSION)} AS label_version,
@@ -1589,16 +1646,20 @@ SELECT
     applicable,
     fromUnixTimestamp64Micro(toInt64(target_us)) AS target_at_utc,
     if(anchor_ts_us > 0, fromUnixTimestamp64Micro(toInt64(anchor_ts_us)), NULL) AS anchor_timestamp_utc,
+    anchor_ordinal,
     anchor_price,
     ifNull(anchor_basis, 'missing') AS anchor_basis,
     if(anchor_ts_us > 0, toUInt64((toUnixTimestamp64Micro(published_at_utc) - toInt64(anchor_ts_us)) / 1000), NULL) AS anchor_age_ms,
     if(isNotNull(target_ts_us), fromUnixTimestamp64Micro(toInt64(target_ts_us)), NULL) AS target_timestamp_utc,
+    target_ordinal,
     target_price,
     ifNull(target_basis, 'missing') AS target_basis,
     if(isNotNull(target_ts_us), toUInt64((toInt64(target_us) - toInt64(target_ts_us)) / 1000), NULL) AS target_age_ms,
     if(isNotNull(high_ts_us), fromUnixTimestamp64Micro(toInt64(high_ts_us)), NULL) AS window_high_timestamp_utc,
+    high_ordinal AS window_high_ordinal,
     high_price AS window_high_price,
     if(isNotNull(low_ts_us), fromUnixTimestamp64Micro(toInt64(low_ts_us)), NULL) AS window_low_timestamp_utc,
+    low_ordinal AS window_low_ordinal,
     low_price AS window_low_price,
     target_return,
     high_return,
@@ -1621,7 +1682,10 @@ SELECT
     ) AS reaction_bin,
     observation_count,
     overlap_count AS overlapping_news_count,
+    toUInt8(notEmpty(corporate_action_ids)) AS corporate_action_overlap,
+    corporate_action_ids,
     multiIf(
+        notEmpty(corporate_action_ids), 'corporate_action_overlap',
         applicable = 0, 'not_applicable',
         isNull(anchor_price), 'missing_anchor',
         observation_count = 0 OR isNull(target_price), 'missing_target',
@@ -1635,15 +1699,16 @@ SELECT
         if(applicable = 0, 'horizon_not_applicable', ''),
         if(isNull(anchor_price), 'missing_anchor', ''),
         if(observation_count = 0 OR isNull(target_price), 'missing_target', ''),
+        if(notEmpty(corporate_action_ids), 'corporate_action_overlap', ''),
         if(publication_session != 'closed' AND isNotNull(anchor_ts_us) AND (toUnixTimestamp64Micro(published_at_utc) - toInt64(anchor_ts_us)) > {int(args.active_anchor_max_age_seconds) * 1_000_000}, 'stale_active_anchor', ''),
         if(isNotNull(target_ts_us) AND (toInt64(target_us) - toInt64(target_ts_us)) > {int(args.target_max_age_seconds) * 1_000_000}, 'stale_target', ''),
         if(isNull(market_anchor_price) OR isNull(market_target_price), 'missing_market_reference', ''),
         if(overlap_count > 0, 'overlapping_ticker_news', '')
     ]) AS quality_flags,
     {sql_string(CALENDAR_VERSION)} AS calendar_version,
-    {source_revision} AS source_revision,
+    {sql_string(f"compact_events_exact_v2_ordinal:{args.market_database}.{source_name}")} AS source_revision,
     now64(6) AS finalized_at
-FROM final_rows
+FROM split_annotated
 """
     if event_cache_table_name:
         cached_point_ctes = f"""active_cache_tickers AS
@@ -1673,7 +1738,10 @@ point_arrays AS
 ),
 market_all_events AS
 (
-    SELECT arraySort(event -> tupleElement(event, 1), groupArrayArray(eligible_events)) AS all_market_events
+    SELECT arraySort(
+        event -> tuple(tupleElement(event, 1), tupleElement(event, 2)),
+        groupArrayArray(eligible_events)
+    ) AS all_market_events
     FROM point_arrays
     WHERE ticker = {sql_string(args.benchmark_ticker.upper())}
 ),
@@ -1681,8 +1749,8 @@ prior_anchor_points AS
 (
     SELECT
         ticker,
-        arrayLast(event -> tupleElement(event, 3) = 1, arraySort(
-            event -> tupleElement(event, 1),
+        arrayLast(event -> tupleElement(event, 4) = 1, arraySort(
+            event -> tuple(tupleElement(event, 1), tupleElement(event, 2)),
             groupArrayArray(eligible_events)
         )) AS prior_anchor_event
     FROM {table(args.news_database, event_cache_table_name)}
@@ -1695,7 +1763,7 @@ market_prior_anchor AS
     SELECT
         argMaxIf(
             prior_anchor_event,
-            tupleElement(prior_anchor_event, 1),
+            tuple(tupleElement(prior_anchor_event, 1), tupleElement(prior_anchor_event, 2)),
             tupleElement(prior_anchor_event, 1) > 0
         ) AS market_prior_anchor_event
     FROM prior_anchor_points
@@ -1755,7 +1823,13 @@ WITH
     SELECT
         ticker,
         addDays(toDate({sql_string(start.isoformat())}), -1) AS event_date,
-        [tuple(tupleElement(prior_anchor_event, 1), tupleElement(prior_anchor_event, 2), toUInt8(1), toUInt8(1))] AS eligible_events
+        [tuple(
+            tupleElement(prior_anchor_event, 1),
+            tupleElement(prior_anchor_event, 2),
+            tupleElement(prior_anchor_event, 3),
+            toUInt8(1),
+            toUInt8(1)
+        )] AS eligible_events
     FROM prior_anchor_points
     WHERE tupleElement(prior_anchor_event, 1) > 0
 )
@@ -1896,9 +1970,59 @@ def audit_outputs(
             "audit language features",
         ).strip()
     if "reactions" in stages:
+        expected_reaction_rows = f"""
+            SELECT count() * {len(HORIZONS)}
+            FROM
+            (
+                SELECT canonical_news_id, ticker, published_at_utc
+                FROM {table(args.news_database, args.ticker_table)} FINAL
+                WHERE published_at_utc >= {dt_sql(args.start_date)}
+                  AND published_at_utc < {dt_sql(args.end_date)}
+                  AND ticker != ''
+            ) AS t
+            INNER JOIN
+            (
+                SELECT canonical_news_id
+                FROM {table(args.news_database, args.normalized_table)} FINAL
+                WHERE published_at_utc >= {dt_sql(args.start_date)}
+                  AND published_at_utc < {dt_sql(args.end_date)}
+            ) AS n USING (canonical_news_id)
+        """
         checks["reactions"] = monitored_execute(
             client,
-            f"SELECT concat(toString(count()), '\\t', toString(uniqExact(tuple(canonical_news_id, ticker, horizon_code))), '\\t', toString(countIf(quality_status = 'clean')), '\\t', toString(countIf(quality_status = 'missing_anchor')), '\\t', toString(countIf(quality_status = 'missing_target'))) FROM {table(args.news_database, args.reactions_table)} FINAL WHERE label_version = {sql_string(LABEL_VERSION)} AND published_at_utc >= {dt_sql(args.start_date)} AND published_at_utc < {dt_sql(args.end_date)}",
+            f"""SELECT concat(
+                toString(count()), '\\t',
+                toString(uniqExact(tuple(canonical_news_id, ticker, published_at_utc, horizon_code))), '\\t',
+                toString(({expected_reaction_rows})), '\\t',
+                toString(countIf(quality_status = 'clean')), '\\t',
+                toString(countIf(quality_status = 'missing_anchor')), '\\t',
+                toString(countIf(quality_status = 'missing_target')), '\\t',
+                toString(countIf(corporate_action_overlap = 1)), '\\t',
+                toString(countIf(
+                    (isNotNull(anchor_timestamp_utc) AND isNull(anchor_ordinal))
+                    OR (isNotNull(target_timestamp_utc) AND isNull(target_ordinal))
+                    OR (isNotNull(window_high_timestamp_utc) AND isNull(window_high_ordinal))
+                    OR (isNotNull(window_low_timestamp_utc) AND isNull(window_low_ordinal))
+                )), '\\t',
+                toString(countIf(corporate_action_overlap = 1 AND quality_status != 'corporate_action_overlap')), '\\t',
+                toString(countIf(
+                    quality_status = 'clean'
+                    AND (
+                        isNull(target_return)
+                        OR isNull(high_return)
+                        OR isNull(low_return)
+                        OR NOT isFinite(target_return)
+                        OR NOT isFinite(high_return)
+                        OR NOT isFinite(low_return)
+                        OR low_return > target_return
+                        OR target_return > high_return
+                    )
+                ))
+            )
+            FROM {table(args.news_database, args.reactions_table)} FINAL
+            WHERE label_version = {sql_string(LABEL_VERSION)}
+              AND published_at_utc >= {dt_sql(args.start_date)}
+              AND published_at_utc < {dt_sql(args.end_date)}""",
             reporter,
             "audit reaction labels",
         ).strip()
@@ -1912,6 +2036,16 @@ def audit_outputs(
         values = checks["reactions"].split("\\t")
         if values[0] != values[1]:
             raise RuntimeError("reaction table contains duplicate news/ticker/horizon rows")
+        if values[0] != values[2]:
+            raise RuntimeError(
+                "reaction table is incomplete for the requested news/ticker/horizon authority"
+            )
+        if int(values[7]) != 0:
+            raise RuntimeError("eligible reaction rows are missing exact SIP ordinals")
+        if int(values[8]) != 0:
+            raise RuntimeError("corporate-action rows are not excluded by the label authority")
+        if int(values[9]) != 0:
+            raise RuntimeError("clean reaction rows contain invalid or misordered returns")
 
 
 def chunk_completed(client: ClickHouseHttpClient, args: argparse.Namespace, stage: str, version: str, start: dt.date, end: dt.date) -> bool:

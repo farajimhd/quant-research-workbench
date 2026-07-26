@@ -27,12 +27,15 @@ from research.news_reaction_model.v16.prepared import close_arrays, open_arrays
 from research.news_reaction_model.v17 import RESPONSE_WINDOWS
 from research.news_reaction_model.v17.config import LoaderConfig
 from research.news_reaction_model.v17.prepared import (
+    ARRAY_FILES,
     BUILD_STATE_FILE,
     MANIFEST_FILE,
     THRESHOLDS_FILE,
+    audit_target_arrays,
     create_target_arrays,
     open_target_arrays_for_resume,
     row_key_hash,
+    v16_identity_sha256,
     write_json_atomic,
 )
 from research.news_reaction_model.v17.targets import (
@@ -164,7 +167,7 @@ def source_label_rows(
     config: LoaderConfig,
     start: dt.datetime,
     end: dt.datetime,
-) -> dict[tuple[str, str], dict[str, Any]]:
+) -> dict[tuple[str, str, str], dict[str, Any]]:
     phase_codes = tuple(value[1] for value in PHASE_TO_HORIZON.values())
     text = client.execute(
         f"""
@@ -188,17 +191,20 @@ FROM {_qi(config.news_database)}.{_qi(config.reaction_table)} FINAL
 WHERE label_version = {_q(config.label_version)}
   AND published_at_utc >= toDateTime64({_q(_clickhouse_utc(start))}, 6, 'UTC')
   AND published_at_utc < toDateTime64({_q(_clickhouse_utc(end))}, 6, 'UTC')
+  AND applicable = 1
+  AND quality_status = 'clean'
+  AND corporate_action_overlap = 0
   AND horizon_code IN ({", ".join(_q(value) for value in phase_codes)})
 ORDER BY published_at_utc, canonical_news_id, ticker, horizon_code
 FORMAT TabSeparatedRaw
 """
     )
-    rows: dict[tuple[str, str], dict[str, Any]] = {}
+    rows: dict[tuple[str, str, str], dict[str, Any]] = {}
     for line in text.splitlines():
         if not line:
             continue
         fields = line.split("\t")
-        key = (fields[0], fields[1])
+        key = (fields[0], fields[1], fields[2])
         publication_session = fields[3]
         expected = PHASE_TO_HORIZON.get(publication_session, ("", ""))[1]
         base = rows.setdefault(
@@ -224,6 +230,32 @@ FORMAT TabSeparatedRaw
         if math.isfinite(float(fields[6])):
             base["anchor_price"] = float(fields[6])
     return rows
+
+
+def load_split_dates(
+    client: ClickHouseHttpClient,
+    config: LoaderConfig,
+) -> dict[str, frozenset[dt.date]]:
+    text = client.execute(f"""
+SELECT upperUTF8(provider_ticker), execution_date
+FROM {_qi(config.news_database)}.{_qi(config.split_table)} FINAL
+WHERE provider_ticker != ''
+  AND split_from > 0
+  AND split_to > 0
+  AND split_from != split_to
+  AND execution_date >= toDate({_q(config.train_start)})
+  AND execution_date < toDate({_q(config.validation_end_exclusive)})
+GROUP BY provider_ticker, execution_date
+ORDER BY provider_ticker, execution_date
+FORMAT TabSeparatedRaw
+""")
+    grouped: dict[str, set[dt.date]] = {}
+    for line in text.splitlines():
+        if not line:
+            continue
+        ticker, date_text = line.split("\t", 1)
+        grouped.setdefault(ticker, set()).add(dt.date.fromisoformat(date_text))
+    return {ticker: frozenset(values) for ticker, values in grouped.items()}
 
 
 EMPTY_EVENT_ROWS = np.empty((0, 8), dtype=np.float64)
@@ -286,6 +318,10 @@ raw AS
     ticker,
     sip_timestamp_us,
     ordinal,
+    bitOr(
+      bitShiftLeft(toUInt128(sip_timestamp_us), 64),
+      toUInt128(ordinal)
+    ) AS event_order_key,
     bitAnd(event_meta,1)=1 AS is_trade,
     toFloat64(price_primary_int)/if(bitAnd(event_meta,2)=2,10000.0,100.0)
       AS primary_price,
@@ -315,6 +351,7 @@ trades AS
     ticker,
     sip_timestamp_us,
     ordinal,
+    event_order_key,
     primary_price AS trade_price,
     trade_size,
     toUInt8(
@@ -349,6 +386,8 @@ quotes AS
   SELECT
     ticker,
     sip_timestamp_us,
+    ordinal,
+    event_order_key,
     secondary_price AS bid_price,
     primary_price AS ask_price
   FROM raw
@@ -366,7 +405,7 @@ SELECT
   t.update_high_low
 FROM eligible_trades AS t
 ASOF LEFT JOIN quotes AS q
-  ON t.ticker=q.ticker AND t.sip_timestamp_us>=q.sip_timestamp_us
+  ON t.ticker=q.ticker AND t.event_order_key>=q.event_order_key
 ORDER BY t.ticker,t.sip_timestamp_us,t.ordinal
 SETTINGS max_threads=2,max_memory_usage='4G',join_algorithm='full_sorting_merge'
 FORMAT TabSeparatedRaw
@@ -616,9 +655,10 @@ def process_ticker_batch(
     client: ClickHouseHttpClient,
     config: LoaderConfig,
     v16: dict[str, np.ndarray],
-    labels: dict[tuple[str, str], dict[str, Any]],
+    labels: dict[tuple[str, str, str], dict[str, Any]],
     sessions: list[dt.date],
     items: list[tuple[str, list[int]]],
+    split_dates: dict[str, frozenset[dt.date]] | None = None,
     event_loader: Callable[
         [
             ClickHouseHttpClient,
@@ -639,6 +679,7 @@ def process_ticker_batch(
     """
     if cancellation is not None:
         cancellation.raise_if_requested()
+    split_dates = split_dates or {}
     output: dict[int, tuple[np.ndarray, np.ndarray]] = {}
     work_by_end_day: dict[
         dt.date,
@@ -669,12 +710,13 @@ def process_ticker_batch(
             masks = np.zeros(len(RESPONSE_WINDOWS), dtype=np.bool_)
             output[row_index] = (raw, masks)
             news_id = _decode(v16["canonical_news_id"][row_index])
-            label = labels.get((news_id, ticker))
+            published_text = _decode(v16["published_at_utc"][row_index])
+            label = labels.get((news_id, ticker, published_text))
             if label is None or not math.isfinite(
                 float(label.get("anchor_price", math.nan))
             ):
                 continue
-            published = _parse_utc(_decode(v16["published_at_utc"][row_index]))
+            published = _parse_utc(published_text)
             windows = build_windows(
                 published,
                 label["publication_session"],
@@ -683,6 +725,13 @@ def process_ticker_batch(
             )
             for window_index, bounds in enumerate(windows):
                 if bounds is None:
+                    continue
+                split_start = published.astimezone(EASTERN).date()
+                split_end = bounds[1].astimezone(EASTERN).date()
+                if any(
+                    split_start <= split_date <= split_end
+                    for split_date in split_dates.get(ticker, ())
+                ):
                     continue
                 exact = label.get("phase") if window_index < 3 else None
                 if exact is not None and exact.get("quality_status") != "clean":
@@ -772,7 +821,33 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tickers-per-query", type=int, default=64)
     parser.add_argument("--threshold-quantile", type=float, default=0.35)
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument(
+        "--restart",
+        action="store_true",
+        help="Delete only the known V17 v3 sidecar arrays/state before rebuilding.",
+    )
     return parser
+
+
+def clear_target_sidecar(config: LoaderConfig) -> tuple[str, ...]:
+    """Remove only files owned by the versioned V17 target sidecar."""
+    names = (
+        *ARRAY_FILES.values(),
+        BUILD_STATE_FILE,
+        MANIFEST_FILE,
+        THRESHOLDS_FILE,
+    )
+    removed: list[str] = []
+    root = config.target_root.resolve()
+    for name in names:
+        path = (config.target_root / name).resolve()
+        if path.parent != root:
+            raise RuntimeError(f"Refusing unsafe V17 restart path: {path}")
+        for candidate in (path, path.with_suffix(path.suffix + ".tmp")):
+            if candidate.exists():
+                candidate.unlink()
+                removed.append(candidate.name)
+    return tuple(removed)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -789,18 +864,24 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
         return 0
+    if args.restart:
+        removed = clear_target_sidecar(config)
+        print(
+            f"V17 RESTART | removed={len(removed)} root={config.target_root}",
+            flush=True,
+        )
     client = ClickHouseHttpClient(
         default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()
     )
     v16, manifest = open_arrays(config)
+    identity_sha256 = v16_identity_sha256(v16)
     completed_manifest_path = config.target_root / MANIFEST_FILE
     if completed_manifest_path.exists():
         completed = json.loads(completed_manifest_path.read_text(encoding="utf-8"))
         if (
             completed.get("status") == "complete"
             and int(completed.get("rows", -1)) == int(manifest["rows"])
-            and completed.get("v16_representation_sha256")
-            == manifest.get("representation_sha256")
+            and completed.get("v16_identity_sha256") == identity_sha256
         ):
             close_arrays(v16)
             print(
@@ -819,8 +900,7 @@ def main(argv: list[str] | None = None) -> int:
         state = json.loads(state_path.read_text(encoding="utf-8"))
         if (
             int(state.get("rows", -1)) != int(manifest["rows"])
-            or state.get("v16_representation_sha256")
-            != manifest.get("representation_sha256")
+            or state.get("v16_identity_sha256") != identity_sha256
         ):
             raise RuntimeError(
                 "V17 resumable state does not match the completed V16 authority. "
@@ -837,11 +917,12 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "status": "building",
                 "rows": int(manifest["rows"]),
-                "v16_representation_sha256": manifest["representation_sha256"],
+                "v16_identity_sha256": identity_sha256,
                 "next_month": resume_month.date().isoformat(),
             },
         )
     sessions = calendar_sessions(client, config)
+    split_dates = load_split_dates(client, config)
     cancellation = CancellationController()
     try:
         timestamps = np.asarray(v16["published_at_us"])
@@ -893,6 +974,7 @@ def main(argv: list[str] | None = None) -> int:
                         config=config,
                         v16=v16,
                         labels=labels,
+                        split_dates=split_dates,
                         sessions=sessions,
                         items=batch,
                         cancellation=cancellation,
@@ -949,7 +1031,7 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "status": "building",
                     "rows": int(manifest["rows"]),
-                    "v16_representation_sha256": manifest["representation_sha256"],
+                    "v16_identity_sha256": identity_sha256,
                     "next_month": next_month.date().isoformat(),
                 },
             )
@@ -988,6 +1070,7 @@ def main(argv: list[str] | None = None) -> int:
                 targets["persistence_mask"][row_index] = True
         for array in targets.values():
             array.flush()
+        target_audit = audit_target_arrays(v16, targets)
         write_json_atomic(config.target_root / THRESHOLDS_FILE, thresholds.as_dict())
         write_json_atomic(
             config.target_root / MANIFEST_FILE,
@@ -998,10 +1081,11 @@ def main(argv: list[str] | None = None) -> int:
                 "response_windows": list(RESPONSE_WINDOWS),
                 "raw_metric_names": list(RAW_METRIC_NAMES),
                 "v16_prepared_root": str(config.prepared_dataset_root),
-                "v16_representation_sha256": manifest["representation_sha256"],
+                "v16_identity_sha256": identity_sha256,
                 "threshold_fit_start": config.train_start,
                 "threshold_fit_end_exclusive": config.train_end_exclusive,
                 "threshold_quantile": args.threshold_quantile,
+                "audit": target_audit,
             },
         )
         state_path.unlink(missing_ok=True)

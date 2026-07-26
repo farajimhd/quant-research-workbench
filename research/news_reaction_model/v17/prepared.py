@@ -37,6 +37,103 @@ def row_key_hash(canonical_news_id: str, ticker: str, published_at_utc: str) -> 
     return np.frombuffer(digest, dtype="<u8")[0]
 
 
+def v16_identity_sha256(
+    arrays: Mapping[str, np.ndarray],
+    *,
+    chunk_rows: int = 4096,
+) -> str:
+    """Hash every ordered V16 article identity without binding target data to features."""
+    digest = hashlib.sha256()
+    rows = int(arrays["canonical_news_id"].shape[0])
+    for offset in range(0, rows, max(1, int(chunk_rows))):
+        upper = min(rows, offset + max(1, int(chunk_rows)))
+        values = np.empty(upper - offset, dtype="<u8")
+        for local_index, row_index in enumerate(range(offset, upper)):
+            values[local_index] = row_key_hash(
+                _decode(arrays["canonical_news_id"][row_index]),
+                _decode(arrays["ticker"][row_index]),
+                _decode(arrays["published_at_utc"][row_index]),
+            )
+        digest.update(values.tobytes(order="C"))
+    return digest.hexdigest()
+
+
+def audit_all_row_identities(
+    v16_arrays: Mapping[str, np.ndarray],
+    target_hashes: np.ndarray,
+    *,
+    chunk_rows: int = 4096,
+) -> None:
+    rows = int(v16_arrays["canonical_news_id"].shape[0])
+    if int(target_hashes.shape[0]) != rows:
+        raise RuntimeError("V17 identity audit row-count mismatch.")
+    for offset in range(0, rows, max(1, int(chunk_rows))):
+        upper = min(rows, offset + max(1, int(chunk_rows)))
+        expected = np.empty(upper - offset, dtype="<u8")
+        for local_index, row_index in enumerate(range(offset, upper)):
+            expected[local_index] = row_key_hash(
+                _decode(v16_arrays["canonical_news_id"][row_index]),
+                _decode(v16_arrays["ticker"][row_index]),
+                _decode(v16_arrays["published_at_utc"][row_index]),
+            )
+        actual = np.asarray(target_hashes[offset:upper], dtype="<u8")
+        if not np.array_equal(actual, expected):
+            mismatch = int(np.flatnonzero(actual != expected)[0]) + offset
+            raise RuntimeError(f"V17 target row identity does not match V16 at row {mismatch}.")
+
+
+def audit_target_arrays(
+    v16_arrays: Mapping[str, np.ndarray],
+    target_arrays: Mapping[str, np.ndarray],
+    *,
+    chunk_rows: int = 4096,
+) -> dict[str, int]:
+    """Exhaustively certify identity, masks, metrics, and class contracts."""
+    audit_all_row_identities(v16_arrays, target_arrays["row_key_hash"], chunk_rows=chunk_rows)
+    rows = int(target_arrays["window_mask"].shape[0])
+    populated_windows = 0
+    persistence_rows = 0
+    for offset in range(0, rows, max(1, int(chunk_rows))):
+        upper = min(rows, offset + max(1, int(chunk_rows)))
+        mask = np.asarray(target_arrays["window_mask"][offset:upper], dtype=np.bool_)
+        raw = np.asarray(target_arrays["raw_metrics"][offset:upper], dtype=np.float32)
+        direction = np.asarray(target_arrays["direction"][offset:upper], dtype=np.int8)
+        path = np.asarray(target_arrays["path"][offset:upper], dtype=np.int8)
+        flow = np.asarray(target_arrays["flow"][offset:upper], dtype=np.int8)
+        persistence = np.asarray(target_arrays["persistence"][offset:upper], dtype=np.int8)
+        persistence_mask = np.asarray(
+            target_arrays["persistence_mask"][offset:upper], dtype=np.bool_
+        )
+        selected = raw[mask]
+        if not np.isfinite(selected).all():
+            raise RuntimeError(f"V17 populated raw metrics contain non-finite values near row {offset}.")
+        if np.any(selected[:, 0] <= 0):
+            raise RuntimeError(f"V17 populated windows contain invalid anchors near row {offset}.")
+        if np.any(selected[:, 2] > selected[:, 3]) or np.any(selected[:, 3] > selected[:, 1]):
+            raise RuntimeError(f"V17 low/terminal/high ordering failed near row {offset}.")
+        if np.any((direction[mask] < 0) | (direction[mask] > 2)):
+            raise RuntimeError(f"V17 direction classes are invalid near row {offset}.")
+        if np.any((path[mask] < 0) | (path[mask] > 5)):
+            raise RuntimeError(f"V17 path classes are invalid near row {offset}.")
+        if np.any((flow[mask] < 0) | (flow[mask] > 2)):
+            raise RuntimeError(f"V17 flow classes are invalid near row {offset}.")
+        if np.any(direction[~mask] != -1) or np.any(path[~mask] != -1) or np.any(flow[~mask] != -1):
+            raise RuntimeError(f"V17 unobserved windows contain classes near row {offset}.")
+        if np.any(persistence_mask != mask.any(axis=1)):
+            raise RuntimeError(f"V17 persistence mask disagrees with window coverage near row {offset}.")
+        if np.any((persistence[persistence_mask] < 0) | (persistence[persistence_mask] > 5)):
+            raise RuntimeError(f"V17 persistence classes are invalid near row {offset}.")
+        if np.any(persistence[~persistence_mask] != -1):
+            raise RuntimeError(f"V17 unobserved rows contain persistence classes near row {offset}.")
+        populated_windows += int(mask.sum())
+        persistence_rows += int(persistence_mask.sum())
+    return {
+        "rows": rows,
+        "populated_windows": populated_windows,
+        "persistence_rows": persistence_rows,
+    }
+
+
 def _decode(value: Any) -> str:
     return bytes(value).rstrip(b"\x00").decode("utf-8")
 
@@ -130,7 +227,8 @@ def open_v17_arrays(
     """Open V16 inputs and the small V17 target sidecar read-only.
 
     No V16 input array is copied into V17. The manifest binds both products by
-    V16 representation hash, row count, and per-row identity hash.
+    Complete ordered V16 article identity vector and row count. Target identity
+    is intentionally independent of embedding and market-feature revisions.
     """
     v16_arrays, v16_manifest = open_v16_arrays(config, mode=mode)
     try:
@@ -147,10 +245,9 @@ def open_v17_arrays(
             raise RuntimeError("V17 target-version mismatch.")
         if int(manifest.get("rows", -1)) != int(v16_manifest["rows"]):
             raise RuntimeError("V17 target rows do not match V16 prepared rows.")
-        if manifest.get("v16_representation_sha256") != v16_manifest.get(
-            "representation_sha256"
-        ):
-            raise RuntimeError("V17 targets were built against a different V16 representation.")
+        current_identity_sha256 = v16_identity_sha256(v16_arrays)
+        if manifest.get("v16_identity_sha256") != current_identity_sha256:
+            raise RuntimeError("V17 targets were built against a different V16 article identity vector.")
         shapes = expected_shapes(int(v16_manifest["rows"]), len(config.response_windows))
         dtypes = expected_dtypes()
         target_arrays: dict[str, np.ndarray] = {}
@@ -162,17 +259,7 @@ def open_v17_arrays(
                     f"expected {shapes[name]}/{dtypes[name]}."
                 )
             target_arrays[name] = array
-        row_count = int(v16_manifest["rows"])
-        for index in sorted({0, row_count // 2, row_count - 1}):
-            expected_hash = row_key_hash(
-                _decode(v16_arrays["canonical_news_id"][index]),
-                _decode(v16_arrays["ticker"][index]),
-                _decode(v16_arrays["published_at_utc"][index]),
-            )
-            if target_arrays["row_key_hash"][index] != expected_hash:
-                raise RuntimeError(
-                    f"V17 target row identity does not match V16 at row {index}."
-                )
+        audit_all_row_identities(v16_arrays, target_arrays["row_key_hash"])
         return v16_arrays, target_arrays, v16_manifest, manifest
     except Exception:
         close_v16_arrays(v16_arrays)

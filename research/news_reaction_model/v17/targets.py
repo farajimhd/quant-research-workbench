@@ -9,7 +9,7 @@ import numpy as np
 from research.news_reaction_model.v17 import RESPONSE_WINDOWS
 
 
-TARGET_VERSION = "news_market_response_targets_v17_direction3_v2"
+TARGET_VERSION = "news_market_response_targets_v17_direction3_v3"
 RAW_METRIC_NAMES = (
     "anchor_price",
     "high_return",
