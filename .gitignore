@@ -237,3 +237,9 @@ prepared/
 .codex
 .agents
 .streamlit
+
+frontend/artifacts
+
+frontend/frontend/artifacts
+runtime
+runtimes
