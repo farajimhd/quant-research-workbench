@@ -185,7 +185,6 @@ type CanvasContext = { coverage: { event_count: number; session_date: string | n
 type QmdLiveBar = HistoricalBar & { session_date?: string };
 type QmdBarHistory = {
   as_of: string;
-  decision_events: QmdDecisionEvent[];
   market_signal_events: QmdMarketSignalEvent[];
   earliest_session_date: string;
   has_more: boolean;
@@ -199,16 +198,6 @@ type QmdBarHistory = {
   previous_session_before: string;
   ticker: string;
   timeframe: string;
-};
-type QmdDecisionEvent = {
-  action: string;
-  confidence: number;
-  reason: string;
-  signal: number;
-  signal_at: string;
-  source_bar_end: string;
-  source_bar_start: string;
-  sym: string;
 };
 type QmdMarketSignalEvent = {
   schema_version: number;
@@ -265,7 +254,6 @@ type CanvasLiveChartState = {
   bars: QmdLiveBar[];
   canLoadEarlier: boolean;
   connected: boolean;
-  decisionEvents: QmdDecisionEvent[];
   marketSignalEvents: QmdMarketSignalEvent[];
   error: string;
   historyError: string;
@@ -283,7 +271,7 @@ type CanvasLiveChartState = {
 
 type CanvasChartSettings = { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
 type ContainerSettings = {
-  version: 19;
+  version: 20;
   chart: CanvasChartSettings;
   charts_quotes: {
     daily: CanvasChartSettings;
@@ -318,8 +306,8 @@ type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; tit
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const MANAGER_DEFAULT_CONTAINER_IDS: WorkspaceContainerId[] = ["scanner", "chart", "portfolio", "positions", "orders"];
 const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 19,
-  chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.qmd_decision"] },
+  version: 20,
+  chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.flow_structure_composite"] },
   charts_quotes: {
     main: { showVolume: true, symbol: "AAPL", timeframe: "10s", visibleIndicators: ["indicator.macd"] },
     month: { showVolume: true, symbol: "AAPL", timeframe: "1mo", visibleIndicators: [] },
@@ -384,28 +372,28 @@ const CHART_INDICATORS: ChartDisplayItem[] = [
   displayIndicator("indicator.price_vwap", "Price vs VWAP", "volume_liquidity", ["price_vs_vwap_pct"], "distance"),
   displayIndicator("indicator.trend_score", "Trend Score", "momentum", ["trend_score"], "trend"),
   displayIndicator(
-    "indicator.qmd_decision",
-    "QMD Decision · Oscillator",
+    "indicator.flow_structure_composite",
+    "Flow-Structure Composite · Oscillator",
     "microstructure",
     [
-      "qmd_decision_signal",
-      "qmd_decision_confidence",
-      "qmd_decision_action",
-      "qmd_decision_reason",
+      "flow_structure_composite_score",
+      "flow_structure_composite_confidence",
+      "flow_structure_composite_bias",
+      "flow_structure_composite_reason",
     ],
     "microstructure",
     {
-      bearishEvidence: "A negative signal with rising confidence, negative aggressive flow, ask-side displayed pressure, and negative price response indicates aligned short-horizon sell pressure.",
-      bullishEvidence: "A positive signal with rising confidence, positive aggressive flow, bid-side displayed pressure, and positive price response indicates aligned short-horizon buy pressure.",
-      calculation: "Every closed 100 ms evidence bucket produces one microstructure trigger from aggressive flow, displayed liquidity, and response/resiliency. Generic Structure and structural pressure then act as causal context: aligned context can reinforce the trigger, while material opposition vetoes it to WAIT. The actionable result is 78% trigger and 22% structural context after gating. Larger display bars confidence-weight these already-causal states into a consensus view without originating another decision.",
-      shortDescription: "One canonical Buy, Sell, or Wait decision combining QMD flow with causal market structure.",
-      detailedDescription: "Signal runs from -1 (sell) to +1 (buy). A decision requires an absolute microstructure trigger of at least 0.15 and at least 35% flow confidence. Material opposing structure changes the action to WAIT instead of averaging contradictory evidence into a misleading direction.",
-      interpretation: "Read direction first and confidence second. Green is Buy, red is Sell, and zero is Wait. A Wait state means evidence is weak or structure and flow conflict; it is an explicit risk decision, not missing data.",
-      readingGuide: "Read the signed decision against zero, then confidence. Use the optional microstructure diagnostics only to explain why the decision changed; do not vote them together again.",
-      timeframeBehavior: "The actionable decision always comes from the canonical 100 ms stream. A larger chart bar never creates a later replacement signal: its oscillator point is only a confidence-weighted consensus summary of the 100 ms states inside that display bucket.",
+      bearishEvidence: "A negative composite with rising confidence means event-native selling pressure and causal structural context lean lower.",
+      bullishEvidence: "A positive composite with rising confidence means event-native buying pressure and causal structural context lean higher.",
+      calculation: "Each closed 100 ms observation confidence-weights the unified microstructure score against Generic Structure and structural pressure. Agreement preserves confidence, conflict discounts it, and weak evidence remains visible instead of being vetoed to zero. Larger display bars summarize the canonical 100 ms values by confidence-weighted consensus.",
+      shortDescription: "A continuous, causal flow-versus-structure bias from -1 to +1.",
+      detailedDescription: "The composite is an indicator, not an entry instruction. It reports bullish, bearish, or neutral bias and exposes confidence plus the reason for the current relationship.",
+      interpretation: "Read the signed score against zero, then confidence. Stronger color means the directional evidence is both larger and more reliable.",
+      readingGuide: "Use the composite to inspect alignment. The separately scored Flow-Structure Alignment market signal adds the 3-of-5 persistence rule used for scanner ranking and chart markers.",
+      timeframeBehavior: "The canonical calculation closes every 100 ms. Higher chart timeframes display a confidence-weighted consensus of those non-overlapping observations.",
       caveats: [
         "This is a deterministic microstructure estimate, not a guaranteed price forecast.",
-        "Each actionable state is final after its originating 100 ms bucket closes; a larger display bar can still accumulate a different consensus summary until that display bar closes.",
+        "Each 100 ms value is final after its originating bucket closes; a larger display bar can still accumulate a different consensus until it closes.",
         "Sparse bars receive lower confidence because classification and quote coverage are weaker.",
         "Displayed NBBO and eligible trades do not reveal all hidden liquidity or execution intent.",
       ],
@@ -548,8 +536,8 @@ const INDICATOR_SERIES = [
   { column: "price_vs_ema20_pct", color: "var(--info)", displayItemId: "indicator.price_ema", label: "Price vs EMA 20", pane: "distance" },
   { column: "price_vs_vwap_pct", color: "var(--warning)", displayItemId: "indicator.price_vwap", label: "Price vs VWAP", pane: "distance" },
   { column: "trend_score", color: "var(--primary)", displayItemId: "indicator.trend_score", label: "Trend Score", pane: "trend" },
-  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Decision", colorMode: "confidence-sign", column: "qmd_decision_signal", color: "var(--foreground)", displayItemId: "indicator.qmd_decision", label: "Decision", lineWidth: 3, pane: "qmd_decision", priceScaleId: "right", style: "histogram" },
-  { autoscaleMax: 1, autoscaleMin: 0, axisTitle: "Confidence", column: "qmd_decision_confidence", color: "var(--primary)", displayItemId: "indicator.qmd_decision", label: "Confidence", lineStyle: "dashed", lineWidth: 2, opacity: 0.82, pane: "qmd_decision", priceScaleId: "left" },
+  { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Composite", colorMode: "confidence-sign", column: "flow_structure_composite_score", color: "var(--foreground)", displayItemId: "indicator.flow_structure_composite", label: "Composite", lineWidth: 3, pane: "flow_structure_composite", priceScaleId: "right", style: "histogram" },
+  { autoscaleMax: 1, autoscaleMin: 0, axisTitle: "Confidence", column: "flow_structure_composite_confidence", color: "var(--primary)", displayItemId: "indicator.flow_structure_composite", label: "Confidence", lineStyle: "dashed", lineWidth: 2, opacity: 0.82, pane: "flow_structure_composite", priceScaleId: "left" },
   { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Imbalance", column: "microstructure_transaction_imbalance", color: "var(--foreground)", displayItemId: "indicator.qmd_transaction_imbalance", label: "Transaction imbalance", pane: "qmd_transaction", style: "histogram" },
   { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "Imbalance", column: "microstructure_signed_volume_imbalance", color: "var(--foreground)", displayItemId: "indicator.qmd_signed_volume", label: "Signed volume", pane: "qmd_signed_volume", style: "histogram" },
   { autoscaleMax: 1, autoscaleMin: -1, axisTitle: "OFI", column: "microstructure_level1_ofi", color: "var(--foreground)", displayItemId: "indicator.qmd_level1_ofi", label: "Level-1 OFI", pane: "qmd_level1_ofi", style: "histogram" },
@@ -611,7 +599,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
   const pointInTime = true;
   const indicatorColumns = useMemo(() => requestedIndicatorColumns(visibleIndicatorIds), [visibleIndicatorIds]);
   const rowBudget = useMemo(() => chartRowBudget(indicatorColumns), [indicatorColumns]);
-  const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier">>({ bars: [], canLoadEarlier: false, connected: false, decisionEvents: [], error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, marketSignalEvents: [], pointInTime, structureEvents: [], structureLevelHistory: [] });
+  const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier">>({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, marketSignalEvents: [], pointInTime, structureEvents: [], structureLevelHistory: [] });
   const historyCursorRef = useRef<ChartHistoryCursor | null>(null);
   const historyRequestRef = useRef(false);
   const historyAbortRef = useRef<AbortController | null>(null);
@@ -645,7 +633,6 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
             ...current,
             bars: merged.bars,
             canLoadEarlier: payload.has_more && !merged.atCapacity,
-            decisionEvents: mergeDecisionEvents(current.decisionEvents, payload.decision_events),
             marketSignalEvents: mergeMarketSignalEvents(current.marketSignalEvents, payload.market_signal_events),
             historyError: "",
             historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : "",
@@ -678,7 +665,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
     requestKeyRef.current = requestKey;
     historyCursorRef.current = null;
     historyRequestRef.current = false;
-    setState({ bars: [], canLoadEarlier: false, connected: false, decisionEvents: [], error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, marketSignalEvents: [], pointInTime, structureEvents: [], structureLevelHistory: [] });
+    setState({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, marketSignalEvents: [], pointInTime, structureEvents: [], structureLevelHistory: [] });
 
     const fetchHistoricalPage = () => {
       historyRequestRef.current = true;
@@ -697,7 +684,6 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
               ...current,
               bars: merged.bars,
               canLoadEarlier: payload.has_more && !merged.atCapacity,
-              decisionEvents: mergeDecisionEvents(current.decisionEvents, payload.decision_events),
               marketSignalEvents: mergeMarketSignalEvents(current.marketSignalEvents, payload.market_signal_events),
               historyError: "",
               historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : "",
@@ -768,16 +754,6 @@ function mergeStructureLevelHistory(
       left.footprint_as_of_ms - right.footprint_as_of_ms
       || left.created_at_ms - right.created_at_ms)
     .slice(-4_000);
-}
-
-function mergeDecisionEvents(current: QmdDecisionEvent[], incoming: QmdDecisionEvent[] | undefined) {
-  const byTimestamp = new Map<string, QmdDecisionEvent>();
-  [...current, ...(incoming ?? [])].forEach((event) => {
-    if (event.signal_at) byTimestamp.set(event.signal_at, event);
-  });
-  return [...byTimestamp.values()]
-    .sort((left, right) => Date.parse(left.signal_at) - Date.parse(right.signal_at))
-    .slice(-10_000);
 }
 
 function mergeMarketSignalEvents(current: QmdMarketSignalEvent[], incoming: QmdMarketSignalEvent[] | undefined) {
@@ -2888,7 +2864,7 @@ function formatLevelPrice(value: number) {
 
 function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscillator" | "price", visibleIndicators: string[]): ChartPayload["overlay_series"] {
   const visible = new Set(visibleIndicators);
-  const latestDecision = [...rows].reverse().find((row) => Number.isFinite(Number(row.qmd_decision_signal)));
+  const latestComposite = [...rows].reverse().find((row) => Number.isFinite(Number(row.flow_structure_composite_score)));
   const latestAnchoredFlow = [...rows].reverse().find((row) => Number.isFinite(Number(row.microstructure_cumulative_level1_ofi)) && Number.isFinite(Number(row.microstructure_cumulative_signed_volume_delta)));
   return INDICATOR_SERIES.filter((spec) => visible.has(spec.displayItemId) && (spec.pane === "price" ? "price" : "oscillator") === target).map((spec) => ({
     ...( "autoscaleMax" in spec ? { autoscaleMax: spec.autoscaleMax, autoscaleMin: spec.autoscaleMin } : {}),
@@ -2900,8 +2876,8 @@ function historicalIndicatorSeries(rows: HistoricalIndicator[], target: "oscilla
     data: rows.map((row) => indicatorSeriesPoint(row, spec.column, "colorMode" in spec ? spec.colorMode : undefined)).filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value)),
     ...( "defaultVisible" in spec ? { defaultVisible: Boolean(spec.defaultVisible) } : {}),
     displayItemId: spec.displayItemId,
-    label: spec.column === "qmd_decision_signal"
-      ? qmdDecisionLabel(latestDecision)
+    label: spec.column === "flow_structure_composite_score"
+      ? flowStructureCompositeLabel(latestComposite)
       : spec.column === "microstructure_anchored_flow_relationship"
         ? anchoredFlowRelationshipLabel(latestAnchoredFlow)
         : spec.label,
@@ -2922,9 +2898,9 @@ function indicatorSeriesPoint(row: HistoricalIndicator, column: string, colorMod
     return { color: relationship.color, time, value: relationship.value };
   }
   return {
-    ...(colorMode === "confidence-sign" ? { confidence: boundedUnit(column === "qmd_decision_signal" ? row.qmd_decision_confidence : row.qmd_structure_confidence) } : {}),
-    ...(column === "qmd_decision_signal"
-      ? { tone: microstructureActionTone(String(row.qmd_decision_action || "WAIT")) }
+    ...(colorMode === "confidence-sign" ? { confidence: boundedUnit(column === "flow_structure_composite_score" ? row.flow_structure_composite_confidence : row.qmd_structure_confidence) } : {}),
+    ...(column === "flow_structure_composite_score"
+      ? { tone: flowStructureBiasTone(String(row.flow_structure_composite_bias || "neutral")) }
       : qmdDirectionalColumn(column)
         ? { tone: microstructureValueTone(Number(row[column])) }
         : {}),
@@ -2965,10 +2941,16 @@ function microstructureValueTone(value: number): "buy" | "neutral" | "sell" {
   return "neutral";
 }
 
-function qmdDecisionLabel(row?: HistoricalIndicator) {
-  const action = String(row?.qmd_decision_action || "WAIT").toUpperCase();
-  const confidence = boundedUnit(row?.qmd_decision_confidence);
-  return `Decision ${action} · ${Math.round(confidence * 100)}%`;
+function flowStructureBiasTone(bias: string): "buy" | "neutral" | "sell" {
+  if (bias.toLowerCase() === "bullish") return "buy";
+  if (bias.toLowerCase() === "bearish") return "sell";
+  return "neutral";
+}
+
+function flowStructureCompositeLabel(row?: HistoricalIndicator) {
+  const bias = String(row?.flow_structure_composite_bias || "neutral").toUpperCase();
+  const confidence = boundedUnit(row?.flow_structure_composite_confidence);
+  return `Composite ${bias} · ${Math.round(confidence * 100)}%`;
 }
 
 function PreviewTable({ columns, onSymbolSelect, rows }: { columns: string[]; onSymbolSelect?: (symbol: string) => void; rows: PreviewRow[] }) {
@@ -3405,7 +3387,7 @@ function readSettings(): ContainerSettings {
 
 function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSettings {
   const storedIndicators = Array.isArray(stored.chart?.visibleIndicators) ? stored.chart.visibleIndicators : DEFAULT_SETTINGS.chart.visibleIndicators;
-  const obsoleteDecisionIndicators = ["indicator.microstructure_outlook", "indicator.qmd_architecture", "indicator.qmd_structural_pressure"];
+  const obsoleteDecisionIndicators = ["indicator.microstructure_outlook", "indicator.qmd_architecture", "indicator.qmd_structural_pressure", "indicator.qmd_decision"];
   const replacedStructure = storedIndicators.some((id) => ["indicator.qmd_liquidity_levels", "indicator.market_structure_levels", "indicator.qmd_level_confluence"].includes(id));
   const replacedDecision = storedIndicators.some((id) => obsoleteDecisionIndicators.includes(id));
   const canonicalIndicators = storedIndicators.filter((id) => ![
@@ -3415,11 +3397,11 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
     ...obsoleteDecisionIndicators,
   ].includes(id));
   if (replacedStructure && !canonicalIndicators.includes("indicator.qmd_generic_structure")) canonicalIndicators.push("indicator.qmd_generic_structure");
-  if (replacedDecision && !canonicalIndicators.includes("indicator.qmd_decision")) canonicalIndicators.push("indicator.qmd_decision");
+  if (replacedDecision && !canonicalIndicators.includes("indicator.flow_structure_composite")) canonicalIndicators.push("indicator.flow_structure_composite");
   const migratedIndicators = stored.version === DEFAULT_SETTINGS.version || canonicalIndicators.includes("indicator.macd") ? canonicalIndicators : [...canonicalIndicators, "indicator.macd"];
   const visibleIndicators = stored.version === DEFAULT_SETTINGS.version
     ? migratedIndicators
-    : Array.from(new Set([...migratedIndicators, "indicator.qmd_decision"]));
+    : Array.from(new Set([...migratedIndicators, "indicator.flow_structure_composite"]));
   const timeframe = HISTORICAL_TIMEFRAMES.includes(stored.chart?.timeframe as CanvasChartTimeframe) ? stored.chart!.timeframe! : DEFAULT_SETTINGS.chart.timeframe;
   const storedPerformance = stored.performance_journal as (Partial<ContainerSettings["performance_journal"]> & { showFees?: boolean }) | undefined;
   return {

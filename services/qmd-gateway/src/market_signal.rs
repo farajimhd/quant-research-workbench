@@ -1,10 +1,11 @@
 use crate::bars::BarRow;
+use crate::indicators::IndicatorRow;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 pub const MARKET_SIGNAL_SCHEMA_VERSION: u16 = 3;
-pub const MARKET_SIGNAL_ENGINE_VERSION: &str = "qmd-market-signal-v2";
+pub const MARKET_SIGNAL_ENGINE_VERSION: &str = "qmd-market-signal-v3";
 const SIGNAL_VERSION: u16 = 1;
 const BASELINE_WARMUP: u64 = 8;
 
@@ -75,6 +76,12 @@ pub struct MarketSignalEvidence {
     pub activity_surprise: f64,
     pub flow_surprise: f64,
     pub liquidity_surprise: f64,
+    pub flow_structure_composite_score: f64,
+    pub flow_structure_composite_confidence: f64,
+    pub flow_structure_composite_bias: String,
+    pub flow_structure_composite_reason: String,
+    pub alignment_persistence: f64,
+    pub composite_surprise: f64,
     pub estimated_luld_active: bool,
     pub estimated_luld_state: String,
 }
@@ -91,12 +98,18 @@ struct Candidate {
     surprises: SignalSurprises,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct SignalSurprises {
     price: f64,
     activity: f64,
     flow: f64,
     liquidity: f64,
+    composite: f64,
+    persistence: f64,
+    composite_score: f64,
+    composite_confidence: f64,
+    composite_bias: String,
+    composite_reason: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -164,10 +177,11 @@ struct Baselines {
     absolute_tape_accel: CausalStats,
     spread_bps: CausalStats,
     liquidity_score: CausalStats,
+    absolute_composite: CausalStats,
 }
 
 impl Baselines {
-    fn update(&mut self, row: &BarRow) {
+    fn update(&mut self, row: &BarRow, indicator: Option<&IndicatorRow>) {
         self.absolute_return.update(row.return_1_bar.abs());
         self.volume_rate.update(row.volume_rate);
         self.dollar_volume_rate.update(row.dollar_volume_rate);
@@ -181,6 +195,10 @@ impl Baselines {
         }
         if row.liquidity_score >= 0.0 {
             self.liquidity_score.update(row.liquidity_score);
+        }
+        if let Some(indicator) = indicator {
+            self.absolute_composite
+                .update(indicator.flow_structure_composite_score.abs());
         }
     }
 
@@ -199,6 +217,7 @@ struct SignalSeriesState {
     session_date: String,
     previous: BarRow,
     baselines: Baselines,
+    alignment_history: VecDeque<i8>,
 }
 
 #[derive(Default)]
@@ -209,6 +228,14 @@ pub struct MarketSignalEngine {
 
 impl MarketSignalEngine {
     pub fn update(&mut self, row: &BarRow) -> Vec<MarketSignalEvent> {
+        self.update_with_indicator(row, None)
+    }
+
+    pub fn update_with_indicator(
+        &mut self,
+        row: &BarRow,
+        indicator: Option<&IndicatorRow>,
+    ) -> Vec<MarketSignalEvent> {
         if !row.is_closed || row.close <= 0.0 {
             return Vec::new();
         }
@@ -227,7 +254,24 @@ impl MarketSignalEngine {
             .as_ref()
             .map(|state| state.baselines.clone())
             .unwrap_or_default();
-        let candidates = evaluate_bar(row, prior.as_ref().map(|state| &state.previous), &baselines);
+        let mut alignment_history = prior
+            .as_ref()
+            .map(|state| state.alignment_history.clone())
+            .unwrap_or_default();
+        let alignment_direction = indicator
+            .map(alignment_observation_direction)
+            .unwrap_or_default();
+        alignment_history.push_back(alignment_direction);
+        while alignment_history.len() > 5 {
+            alignment_history.pop_front();
+        }
+        let candidates = evaluate_bar(
+            row,
+            indicator,
+            prior.as_ref().map(|state| &state.previous),
+            &baselines,
+            &alignment_history,
+        );
         let candidate_by_key = candidates
             .iter()
             .map(|candidate| (candidate.key, candidate))
@@ -279,24 +323,87 @@ impl MarketSignalEngine {
         }
 
         let mut updated_baselines = baselines;
-        updated_baselines.update(row);
+        updated_baselines.update(row, indicator);
         self.series.insert(
             series_key,
             SignalSeriesState {
                 session_date: row.session_date.clone(),
                 previous: row.clone(),
                 baselines: updated_baselines,
+                alignment_history,
             },
         );
         events
     }
 }
 
-fn evaluate_bar(row: &BarRow, previous: Option<&BarRow>, baselines: &Baselines) -> Vec<Candidate> {
+fn evaluate_bar(
+    row: &BarRow,
+    indicator: Option<&IndicatorRow>,
+    previous: Option<&BarRow>,
+    baselines: &Baselines,
+    alignment_history: &VecDeque<i8>,
+) -> Vec<Candidate> {
     let mut candidates = Vec::new();
     let confidence = evidence_confidence(row, baselines);
 
     if row.timeframe.eq_ignore_ascii_case("100ms") {
+        if let Some(indicator) = indicator {
+            let direction_value = alignment_observation_direction(indicator);
+            let persistence_count = alignment_history
+                .iter()
+                .filter(|value| **value == direction_value && direction_value != 0)
+                .count();
+            let persistence = persistence_count as f64 / 5.0;
+            if direction_value != 0 && persistence_count >= 3 {
+                let composite_score = indicator.flow_structure_composite_score;
+                let composite_confidence = indicator
+                    .flow_structure_composite_confidence
+                    .clamp(0.0, 1.0);
+                let composite_surprise = baselines
+                    .absolute_composite
+                    .positive_surprise(composite_score.abs());
+                let strength = weighted_score(&[
+                    composite_score.abs(),
+                    z_strength(composite_surprise),
+                    composite_confidence,
+                    persistence,
+                ]);
+                candidates.push(candidate_with_rank(
+                    "flow_structure_alignment",
+                    if direction_value > 0 {
+                        "bullish"
+                    } else {
+                        "bearish"
+                    },
+                    composite_score.abs(),
+                    strength,
+                    composite_confidence,
+                    format!(
+                        "{} persisted in {} of the latest 5 canonical observations",
+                        indicator.flow_structure_composite_reason, persistence_count
+                    ),
+                    Some(directional_invalidation(
+                        row,
+                        if direction_value > 0 {
+                            "bullish"
+                        } else {
+                            "bearish"
+                        },
+                    )),
+                    SignalSurprises {
+                        composite: composite_surprise,
+                        persistence,
+                        composite_score,
+                        composite_confidence,
+                        composite_bias: indicator.flow_structure_composite_bias.clone(),
+                        composite_reason: indicator.flow_structure_composite_reason.clone(),
+                        ..Default::default()
+                    },
+                ));
+            }
+        }
+
         let flow_z = baselines
             .absolute_tape
             .positive_surprise(row.tape_imbalance.abs());
@@ -547,6 +654,28 @@ fn candidate(
     }
 }
 
+fn candidate_with_rank(
+    key: &'static str,
+    direction: &'static str,
+    score: f64,
+    rank_score: f64,
+    confidence: f64,
+    reason: String,
+    invalidation_price: Option<f64>,
+    surprises: SignalSurprises,
+) -> Candidate {
+    Candidate {
+        key,
+        direction,
+        score: score.clamp(0.0, 1.0),
+        rank_score: rank_score.clamp(0.0, 1.0),
+        confidence: confidence.clamp(0.0, 1.0),
+        reason,
+        invalidation_price,
+        surprises,
+    }
+}
+
 fn build_event(
     row: &BarRow,
     candidate: &Candidate,
@@ -599,12 +728,20 @@ fn build_event(
         reference_price: row.close,
         invalidation_price: candidate.invalidation_price,
         expires_at: None,
-        evidence: evidence(row, candidate.surprises),
+        evidence: evidence(row, candidate.surprises.clone()),
     }
 }
 
 fn clock_for(key: &str, timeframe: &str) -> SignalClock {
     match key {
+        "flow_structure_alignment" => SignalClock {
+            input_basis: "indicator_derived".to_string(),
+            calculation_window: "100ms".to_string(),
+            evaluation_mode: "closed_only".to_string(),
+            update_trigger: "indicator_update".to_string(),
+            publication_cadence: "on_change".to_string(),
+            publication_interval_ms: None,
+        },
         "directional_flow_acceleration" | "flow_price_divergence" => SignalClock {
             input_basis: "event_native".to_string(),
             calculation_window: "100ms".to_string(),
@@ -681,6 +818,12 @@ fn evidence(row: &BarRow, surprises: SignalSurprises) -> MarketSignalEvidence {
         activity_surprise: surprises.activity,
         flow_surprise: surprises.flow,
         liquidity_surprise: surprises.liquidity,
+        flow_structure_composite_score: surprises.composite_score,
+        flow_structure_composite_confidence: surprises.composite_confidence,
+        flow_structure_composite_bias: surprises.composite_bias,
+        flow_structure_composite_reason: surprises.composite_reason,
+        alignment_persistence: surprises.persistence,
+        composite_surprise: surprises.composite,
         estimated_luld_active: row.estimated_luld_active,
         estimated_luld_state: row.estimated_luld_state.clone(),
     }
@@ -699,6 +842,7 @@ fn evidence_confidence(row: &BarRow, baselines: &Baselines) -> f64 {
 fn signal_keys_for_timeframe(timeframe: &str) -> &'static [&'static str] {
     match timeframe.to_ascii_lowercase().as_str() {
         "100ms" => &[
+            "flow_structure_alignment",
             "directional_flow_acceleration",
             "liquidity_dislocation",
             "liquidity_recovery",
@@ -706,6 +850,25 @@ fn signal_keys_for_timeframe(timeframe: &str) -> &'static [&'static str] {
         ],
         "1s" | "10s" | "30s" | "1m" => &["price_volume_expansion", "vwap_transition"],
         _ => &[],
+    }
+}
+
+fn alignment_observation_direction(indicator: &IndicatorRow) -> i8 {
+    let meaningful = indicator.flow_structure_composite_score.abs() >= 0.15
+        && indicator.flow_structure_composite_confidence >= 0.35;
+    let aligned = indicator
+        .flow_structure_composite_reason
+        .starts_with("aligned_");
+    if meaningful && aligned {
+        if indicator.flow_structure_composite_bias == "bullish" {
+            1
+        } else if indicator.flow_structure_composite_bias == "bearish" {
+            -1
+        } else {
+            0
+        }
+    } else {
+        0
     }
 }
 
@@ -812,6 +975,42 @@ mod tests {
         assert_eq!(event.clock.publication_interval_ms, Some(100));
         assert!(event.rank_score > 0.0);
         assert!(event.evidence.flow_surprise >= 2.5);
+    }
+
+    #[test]
+    fn flow_structure_alignment_requires_three_of_five_and_preserves_composite_score() {
+        let mut engine = MarketSignalEngine::default();
+        let mut bar = warm_up(&mut engine, "100ms");
+        let mut emitted = Vec::new();
+        for _ in 0..3 {
+            let mut indicator =
+                crate::indicators::calculate_bar_indicators(&[bar.clone()]).remove(0);
+            indicator.microstructure_unified_signal = 0.72;
+            indicator.microstructure_unified_confidence = 84.0;
+            indicator.qmd_structure_score = 0.55;
+            indicator.qmd_structure_confidence = 0.80;
+            indicator.qmd_structure_agreement = 0.85;
+            indicator.qmd_structure_pressure_bias = 0.35;
+            indicator.qmd_structure_pressure_confidence = 0.75;
+            indicator.flow_structure_composite_score = 0.64;
+            indicator.flow_structure_composite_confidence = 0.79;
+            indicator.flow_structure_composite_bias = "bullish".to_string();
+            indicator.flow_structure_composite_reason = "aligned_bullish_evidence".to_string();
+            emitted = engine.update_with_indicator(&bar, Some(&indicator));
+            bar.bar_start = bar.bar_end;
+            bar.bar_end += Duration::milliseconds(100);
+        }
+        let event = emitted
+            .iter()
+            .find(|event| event.signal_key == "flow_structure_alignment")
+            .expect("third aligned observation should trigger");
+        assert_eq!(event.direction, "bullish");
+        assert_eq!(event.score, 0.64);
+        assert_eq!(event.clock.input_basis, "indicator_derived");
+        assert_eq!(event.clock.update_trigger, "indicator_update");
+        assert_eq!(event.evidence.alignment_persistence, 0.6);
+        assert_eq!(event.evidence.flow_structure_composite_confidence, 0.79);
+        assert!(event.rank_score > 0.0);
     }
 
     #[test]

@@ -158,8 +158,8 @@ class QmdGatewayClientTests(unittest.TestCase):
                             "sym": "AAPL",
                             "timeframe": "10s",
                             "bar_end": "2026-07-17T13:45:00Z",
-                            "qmd_decision_signal": -0.4,
-                            "qmd_decision_confidence": 0.8,
+                            "flow_structure_composite_score": -0.4,
+                            "flow_structure_composite_confidence": 0.8,
                         }
                     ]
                 }
@@ -172,7 +172,7 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(payload["rows"][0]["signal_id"], "signal-b")
         self.assertEqual(payload["rows"][0]["signal_rank_score"], 0.91)
         self.assertEqual(payload["rows"][0]["active_signal_count"], 2)
-        self.assertEqual(payload["rows"][0]["qmd_decision_signal"], -0.4)
+        self.assertEqual(payload["rows"][0]["flow_structure_composite_score"], -0.4)
         self.assertEqual(payload["rows"][0]["indicator_timeframe"], "10s")
         self.assertEqual(payload["rows"][0]["indicator_type"], "qmd")
         self.assertEqual(payload["rows"][0]["indicator_input_basis"], "event_native")

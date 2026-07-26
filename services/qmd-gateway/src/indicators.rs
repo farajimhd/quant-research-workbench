@@ -9,6 +9,7 @@ use crate::metrics::SharedMetrics;
 use crate::microstructure_interval::{
     MicrostructureIntervalFeatures, MicrostructureIntervalWindow,
 };
+use crate::scanner::ScannerPrimitiveRouter;
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use chrono_tz::America::New_York;
@@ -20,7 +21,7 @@ use std::sync::{Arc, RwLock as StdRwLock};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, sleep, Duration};
 
-pub const INDICATOR_SCHEMA_VERSION: u16 = 17;
+pub const INDICATOR_SCHEMA_VERSION: u16 = 18;
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const PREMARKET_SESSION_START_SECONDS: u32 = 4 * 60 * 60;
 
@@ -40,18 +41,6 @@ pub struct IndicatorScannerSnapshot {
     pub total_symbols: usize,
     pub row_count: usize,
     pub rows: Vec<IndicatorRow>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct QmdDecisionEvent {
-    pub sym: String,
-    pub signal_at: DateTime<Utc>,
-    pub source_bar_start: DateTime<Utc>,
-    pub source_bar_end: DateTime<Utc>,
-    pub signal: f64,
-    pub confidence: f64,
-    pub action: String,
-    pub reason: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -133,10 +122,10 @@ pub struct IndicatorRow {
     pub microstructure_displayed_liquidity_score: f64,
     pub microstructure_response_resiliency_score: f64,
     pub microstructure_regime_reliability: f64,
-    pub qmd_decision_signal: f64,
-    pub qmd_decision_confidence: f64,
-    pub qmd_decision_action: String,
-    pub qmd_decision_reason: String,
+    pub flow_structure_composite_score: f64,
+    pub flow_structure_composite_confidence: f64,
+    pub flow_structure_composite_bias: String,
+    pub flow_structure_composite_reason: String,
     pub liquidity_support_price: f64,
     pub liquidity_support_strength: f64,
     pub liquidity_support_confidence: f64,
@@ -294,11 +283,11 @@ impl IndicatorRow {
         self.microstructure_unified_confidence = interval.unified_confidence;
         self.microstructure_unified_action = interval.unified_action.to_string();
         self.microstructure_interval = interval.clone();
-        self.refresh_qmd_decision();
+        self.refresh_flow_structure_composite();
     }
 
-    fn refresh_qmd_decision(&mut self) {
-        let (signal, confidence, action, reason) = calculate_qmd_decision(
+    fn refresh_flow_structure_composite(&mut self) {
+        let (score, confidence, bias, reason) = calculate_flow_structure_composite(
             self.microstructure_unified_signal,
             self.microstructure_unified_confidence,
             self.qmd_structure_score,
@@ -307,14 +296,14 @@ impl IndicatorRow {
             self.qmd_structure_confidence,
             self.qmd_structure_agreement,
         );
-        self.qmd_decision_signal = signal;
-        self.qmd_decision_confidence = confidence;
-        self.qmd_decision_action = action.to_string();
-        self.qmd_decision_reason = reason.to_string();
+        self.flow_structure_composite_score = score;
+        self.flow_structure_composite_confidence = confidence;
+        self.flow_structure_composite_bias = bias.to_string();
+        self.flow_structure_composite_reason = reason.to_string();
     }
 }
 
-fn calculate_qmd_decision(
+fn calculate_flow_structure_composite(
     flow: f64,
     flow_confidence_percent: f64,
     structure: f64,
@@ -326,51 +315,61 @@ fn calculate_qmd_decision(
     let flow = flow.clamp(-1.0, 1.0);
     let flow_confidence = (flow_confidence_percent / 100.0).clamp(0.0, 1.0);
     let structure = structure.clamp(-1.0, 1.0);
-    let pressure = (pressure_bias * pressure_confidence.clamp(0.0, 1.0)).clamp(-1.0, 1.0);
+    let pressure_confidence = pressure_confidence.clamp(0.0, 1.0);
+    let pressure = (pressure_bias * pressure_confidence).clamp(-1.0, 1.0);
     let context = (0.75 * structure + 0.25 * pressure).clamp(-1.0, 1.0);
-    let flow_directional = flow.abs() >= 0.15 && flow_confidence >= 0.35;
-    let context_conflict =
-        flow_directional && context.abs() >= 0.12 && flow.signum() != context.signum();
-    let signal = if flow_directional && !context_conflict {
-        (0.78 * flow + 0.22 * context).clamp(-1.0, 1.0)
+    let context_confidence = ((0.65 * structure_confidence.clamp(0.0, 1.0)
+        + 0.35 * pressure_confidence)
+        * (0.6 + 0.4 * structure_agreement.clamp(0.0, 1.0)))
+    .clamp(0.0, 1.0);
+    let evidence_weight = flow_confidence + context_confidence;
+    let score = if evidence_weight > f64::EPSILON {
+        ((flow * flow_confidence + context * context_confidence) / evidence_weight).clamp(-1.0, 1.0)
     } else {
         0.0
     };
-    let structure_quality =
-        (0.5 * structure_confidence + 0.5 * structure_agreement).clamp(0.0, 1.0);
-    let confidence = if signal == 0.0 {
-        flow_confidence * if context_conflict { 0.45 } else { 0.65 }
+    let flow_meaningful = flow.abs() >= 0.15 && flow_confidence >= 0.35;
+    let context_meaningful = context.abs() >= 0.05 && context_confidence >= 0.25;
+    let aligned = flow_meaningful && context_meaningful && flow.signum() == context.signum();
+    let conflicting = flow_meaningful && context_meaningful && flow.signum() != context.signum();
+    let agreement_factor = if aligned {
+        1.0
+    } else if conflicting {
+        0.4
     } else {
-        flow_confidence * (0.75 + 0.25 * structure_quality)
-    }
-    .clamp(0.0, 1.0);
-    let (action, reason) = if !flow_directional {
-        ("wait", "insufficient_microstructure_evidence")
-    } else if context_conflict {
-        ("wait", "structure_flow_conflict")
-    } else if signal > 0.0 {
-        (
-            "buy",
-            if context.abs() >= 0.05 {
-                "aligned_buy_evidence"
-            } else {
-                "buy_flow_neutral_structure"
-            },
-        )
+        0.7
+    };
+    let confidence =
+        ((0.65 * flow_confidence + 0.35 * context_confidence) * agreement_factor).clamp(0.0, 1.0);
+    let directional = score.abs() >= 0.15 && confidence >= 0.35;
+    let bias = if directional {
+        if score > 0.0 {
+            "bullish"
+        } else {
+            "bearish"
+        }
     } else {
-        (
-            "sell",
-            if context.abs() >= 0.05 {
-                "aligned_sell_evidence"
-            } else {
-                "sell_flow_neutral_structure"
-            },
-        )
+        "neutral"
+    };
+    let reason = if aligned {
+        if score >= 0.0 {
+            "aligned_bullish_evidence"
+        } else {
+            "aligned_bearish_evidence"
+        }
+    } else if conflicting {
+        "conflicting_flow_structure_evidence"
+    } else if flow_meaningful {
+        "flow_dominant_evidence"
+    } else if context_meaningful {
+        "structure_dominant_evidence"
+    } else {
+        "weak_flow_structure_evidence"
     };
     (
-        (signal * 10_000.0).round() / 10_000.0,
+        (score * 10_000.0).round() / 10_000.0,
         (confidence * 100.0).round() / 100.0,
-        action,
+        bias,
         reason,
     )
 }
@@ -1067,18 +1066,19 @@ fn indicator_valid_price_bar(bar: &BarRow) -> bool {
 pub struct MicrostructureSampleAggregate {
     sample_count: u64,
     interval: MicrostructureIntervalFeatures,
-    decision_confidence_sum: f64,
-    decision_weighted_signal_sum: f64,
-    decision_sample_count: u64,
+    composite_confidence_sum: f64,
+    composite_weighted_score_sum: f64,
+    composite_sample_count: u64,
 }
 
 impl MicrostructureSampleAggregate {
     pub fn push(&mut self, row: &IndicatorRow) {
         self.push_interval(&row.microstructure_interval);
-        let confidence = row.qmd_decision_confidence.clamp(0.0, 1.0);
-        self.decision_confidence_sum += confidence;
-        self.decision_weighted_signal_sum += row.qmd_decision_signal.clamp(-1.0, 1.0) * confidence;
-        self.decision_sample_count += 1;
+        let confidence = row.flow_structure_composite_confidence.clamp(0.0, 1.0);
+        self.composite_confidence_sum += confidence;
+        self.composite_weighted_score_sum +=
+            row.flow_structure_composite_score.clamp(-1.0, 1.0) * confidence;
+        self.composite_sample_count += 1;
     }
 
     pub fn push_interval(&mut self, interval: &MicrostructureIntervalFeatures) {
@@ -1096,29 +1096,29 @@ impl MicrostructureSampleAggregate {
         };
         interval.refresh(coverage);
         target.apply_microstructure_interval(&interval);
-        self.apply_decision_summary(target);
+        self.apply_composite_summary(target);
     }
 
     pub fn reset(&mut self) {
         *self = Self::default();
     }
 
-    fn apply_decision_summary(&self, target: &mut IndicatorRow) {
-        if let Some((signal, confidence, action, reason)) = summarize_canonical_decisions(
-            self.decision_weighted_signal_sum,
-            self.decision_confidence_sum,
-            self.decision_sample_count,
+    fn apply_composite_summary(&self, target: &mut IndicatorRow) {
+        if let Some((score, confidence, bias, reason)) = summarize_canonical_composites(
+            self.composite_weighted_score_sum,
+            self.composite_confidence_sum,
+            self.composite_sample_count,
         ) {
-            target.qmd_decision_signal = signal;
-            target.qmd_decision_confidence = confidence;
-            target.qmd_decision_action = action.to_string();
-            target.qmd_decision_reason = reason.to_string();
+            target.flow_structure_composite_score = score;
+            target.flow_structure_composite_confidence = confidence;
+            target.flow_structure_composite_bias = bias.to_string();
+            target.flow_structure_composite_reason = reason.to_string();
         }
     }
 }
 
-fn summarize_canonical_decisions(
-    weighted_signal_sum: f64,
+fn summarize_canonical_composites(
+    weighted_score_sum: f64,
     confidence_sum: f64,
     sample_count: u64,
 ) -> Option<(f64, f64, &'static str, &'static str)> {
@@ -1126,21 +1126,21 @@ fn summarize_canonical_decisions(
         return None;
     }
     let mean_confidence = (confidence_sum / sample_count as f64).clamp(0.0, 1.0);
-    let consensus_signal = if confidence_sum > f64::EPSILON {
-        (weighted_signal_sum / confidence_sum).clamp(-1.0, 1.0)
+    let consensus_score = if confidence_sum > f64::EPSILON {
+        (weighted_score_sum / confidence_sum).clamp(-1.0, 1.0)
     } else {
         0.0
     };
-    let summary_confidence = (mean_confidence * consensus_signal.abs()).clamp(0.0, 1.0);
-    let directional = consensus_signal.abs() >= 0.15 && summary_confidence >= 0.35;
-    let action = if directional {
-        if consensus_signal > 0.0 {
-            "buy"
+    let summary_confidence = (mean_confidence * consensus_score.abs()).clamp(0.0, 1.0);
+    let directional = consensus_score.abs() >= 0.15 && summary_confidence >= 0.35;
+    let bias = if directional {
+        if consensus_score > 0.0 {
+            "bullish"
         } else {
-            "sell"
+            "bearish"
         }
     } else {
-        "wait"
+        "neutral"
     };
     let reason = if directional {
         "canonical_100ms_consensus"
@@ -1148,9 +1148,9 @@ fn summarize_canonical_decisions(
         "canonical_100ms_mixed_or_weak"
     };
     Some((
-        (consensus_signal * 10_000.0).round() / 10_000.0,
+        (consensus_score * 10_000.0).round() / 10_000.0,
         (summary_confidence * 100.0).round() / 100.0,
-        action,
+        bias,
         reason,
     ))
 }
@@ -1482,10 +1482,10 @@ impl BarIndicatorState {
             microstructure_displayed_liquidity_score: 0.0,
             microstructure_response_resiliency_score: 0.0,
             microstructure_regime_reliability: 0.0,
-            qmd_decision_signal: 0.0,
-            qmd_decision_confidence: 0.0,
-            qmd_decision_action: "wait".to_string(),
-            qmd_decision_reason: "insufficient_microstructure_evidence".to_string(),
+            flow_structure_composite_score: 0.0,
+            flow_structure_composite_confidence: 0.0,
+            flow_structure_composite_bias: "neutral".to_string(),
+            flow_structure_composite_reason: "weak_flow_structure_evidence".to_string(),
             liquidity_support_price: 0.0,
             liquidity_support_strength: 0.0,
             liquidity_support_confidence: 0.0,
@@ -1785,6 +1785,8 @@ pub fn spawn_indicator_engines(
     event_channel_capacity: usize,
     bar_channel_capacity: usize,
     writer_sender: mpsc::Sender<IndicatorRow>,
+    scanner_sender: ScannerPrimitiveRouter,
+    metrics: SharedMetrics,
 ) -> IndicatorEventRouter {
     let shard_count = indicators.shard_count();
     let per_shard_event_capacity = (event_channel_capacity / shard_count).max(1);
@@ -1802,6 +1804,8 @@ pub fn spawn_indicator_engines(
             event_receiver,
             bar_receiver,
             writer_sender.clone(),
+            scanner_sender.clone(),
+            metrics.clone(),
         ));
     }
     let (bar_sender, bar_receiver) = mpsc::channel::<BarRow>(bar_channel_capacity.max(1));
@@ -1830,6 +1834,8 @@ async fn run_indicator_engine(
     mut event_receiver: mpsc::Receiver<MarketEvent>,
     mut bar_receiver: mpsc::Receiver<BarRow>,
     writer_sender: mpsc::Sender<IndicatorRow>,
+    scanner_sender: ScannerPrimitiveRouter,
+    metrics: SharedMetrics,
 ) {
     loop {
         tokio::select! {
@@ -1842,7 +1848,16 @@ async fn run_indicator_engine(
             bar = bar_receiver.recv() => {
                 match bar {
                     Some(bar) => {
+                        let source_bar = bar.clone();
                         let row = shard.apply_bar(bar).await;
+                        if scanner_sender
+                            .send_observation(source_bar, row.clone())
+                            .await
+                            .is_err()
+                        {
+                            metrics.inc_bar_scanner_dropped();
+                            eprintln!("Scanner receiver closed; shard {shard_id} could not route one indicator observation.");
+                        }
                         if writer_sender.send(row).await.is_err() {
                             eprintln!("Indicator writer receiver closed; shard {shard_id} could not persist one indicator row.");
                         }
@@ -1940,10 +1955,10 @@ impl IndicatorClickHouseWriter {
                 microstructure_displayed_liquidity_score Float64,
                 microstructure_response_resiliency_score Float64,
                 microstructure_regime_reliability Float64,
-                qmd_decision_signal Float64,
-                qmd_decision_confidence Float64,
-                qmd_decision_action LowCardinality(String),
-                qmd_decision_reason LowCardinality(String),
+                flow_structure_composite_score Float64,
+                flow_structure_composite_confidence Float64,
+                flow_structure_composite_bias LowCardinality(String),
+                flow_structure_composite_reason LowCardinality(String),
                 liquidity_support_price Float64,
                 liquidity_support_strength Float64,
                 liquidity_support_confidence Float64,
@@ -2020,10 +2035,10 @@ impl IndicatorClickHouseWriter {
                 ADD COLUMN IF NOT EXISTS microstructure_displayed_liquidity_score Float64,
                 ADD COLUMN IF NOT EXISTS microstructure_response_resiliency_score Float64,
                 ADD COLUMN IF NOT EXISTS microstructure_regime_reliability Float64,
-                ADD COLUMN IF NOT EXISTS qmd_decision_signal Float64,
-                ADD COLUMN IF NOT EXISTS qmd_decision_confidence Float64,
-                ADD COLUMN IF NOT EXISTS qmd_decision_action LowCardinality(String),
-                ADD COLUMN IF NOT EXISTS qmd_decision_reason LowCardinality(String),
+                ADD COLUMN IF NOT EXISTS flow_structure_composite_score Float64,
+                ADD COLUMN IF NOT EXISTS flow_structure_composite_confidence Float64,
+                ADD COLUMN IF NOT EXISTS flow_structure_composite_bias LowCardinality(String),
+                ADD COLUMN IF NOT EXISTS flow_structure_composite_reason LowCardinality(String),
                 ADD COLUMN IF NOT EXISTS liquidity_support_price Float64,
                 ADD COLUMN IF NOT EXISTS liquidity_support_strength Float64,
                 ADD COLUMN IF NOT EXISTS liquidity_support_confidence Float64,
@@ -2562,9 +2577,10 @@ fn safe_div(numerator: f64, denominator: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        anchored_flow_relationship, anchored_market_session_date, calculate_qmd_decision,
-        market_structure_reference_sql, parse_market_structure_reference_rows,
-        summarize_canonical_decisions, MicrostructureCumulativeFlow, SessionVwapState,
+        anchored_flow_relationship, anchored_market_session_date,
+        calculate_flow_structure_composite, market_structure_reference_sql,
+        parse_market_structure_reference_rows, summarize_canonical_composites,
+        MicrostructureCumulativeFlow, SessionVwapState,
     };
     use chrono::{TimeZone, Utc};
 
@@ -2623,39 +2639,40 @@ mod tests {
     }
 
     #[test]
-    fn qmd_decision_emits_direction_only_for_reliable_non_conflicting_flow() {
-        let (signal, confidence, action, reason) =
-            calculate_qmd_decision(0.6, 80.0, 0.45, 0.30, 0.8, 0.75, 0.9);
-        assert!(signal > 0.5);
+    fn flow_structure_composite_preserves_continuous_evidence_and_discounts_conflict() {
+        let (score, confidence, bias, reason) =
+            calculate_flow_structure_composite(0.6, 80.0, 0.45, 0.30, 0.8, 0.75, 0.9);
+        assert!(score > 0.4);
         assert!(confidence > 0.7);
-        assert_eq!(action, "buy");
-        assert_eq!(reason, "aligned_buy_evidence");
+        assert_eq!(bias, "bullish");
+        assert_eq!(reason, "aligned_bullish_evidence");
 
-        let (signal, _, action, reason) =
-            calculate_qmd_decision(0.6, 80.0, -0.7, -0.4, 0.9, 0.8, 0.8);
-        assert_eq!(signal, 0.0);
-        assert_eq!(action, "wait");
-        assert_eq!(reason, "structure_flow_conflict");
+        let (score, confidence, bias, reason) =
+            calculate_flow_structure_composite(0.6, 80.0, -0.7, -0.4, 0.9, 0.8, 0.8);
+        assert!(score.abs() < 0.2);
+        assert!(confidence < 0.35);
+        assert_eq!(bias, "neutral");
+        assert_eq!(reason, "conflicting_flow_structure_evidence");
 
-        let (signal, _, action, reason) =
-            calculate_qmd_decision(-0.5, 20.0, -0.4, -0.3, 0.8, 0.8, 0.8);
-        assert_eq!(signal, 0.0);
-        assert_eq!(action, "wait");
-        assert_eq!(reason, "insufficient_microstructure_evidence");
+        let (score, _, bias, reason) =
+            calculate_flow_structure_composite(-0.5, 20.0, -0.4, -0.3, 0.8, 0.8, 0.8);
+        assert!(score < 0.0);
+        assert_eq!(bias, "neutral");
+        assert_eq!(reason, "structure_dominant_evidence");
     }
 
     #[test]
-    fn higher_timeframe_decision_is_a_summary_of_canonical_100ms_states() {
-        let bullish = summarize_canonical_decisions(1.08, 1.8, 3).unwrap();
+    fn higher_timeframe_composite_is_a_summary_of_canonical_100ms_states() {
+        let bullish = summarize_canonical_composites(1.08, 1.8, 3).unwrap();
         assert_eq!(bullish.0, 0.6);
         assert_eq!(bullish.1, 0.36);
-        assert_eq!(bullish.2, "buy");
+        assert_eq!(bullish.2, "bullish");
         assert_eq!(bullish.3, "canonical_100ms_consensus");
 
-        let mixed = summarize_canonical_decisions(0.0, 1.8, 3).unwrap();
+        let mixed = summarize_canonical_composites(0.0, 1.8, 3).unwrap();
         assert_eq!(mixed.0, 0.0);
         assert_eq!(mixed.1, 0.0);
-        assert_eq!(mixed.2, "wait");
+        assert_eq!(mixed.2, "neutral");
         assert_eq!(mixed.3, "canonical_100ms_mixed_or_weak");
     }
 

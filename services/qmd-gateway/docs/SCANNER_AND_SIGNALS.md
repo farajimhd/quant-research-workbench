@@ -53,6 +53,7 @@ delay or backdate the underlying signal.
 
 | Signal | Working timeframes | Purpose |
 |---|---|---|
+| `flow_structure_alignment` | `100ms` indicator-derived | Persistent agreement between event-native flow and causal structural context. |
 | `directional_flow_acceleration` | `100ms` event-native | Abrupt buyer- or seller-initiated flow acceleration. |
 | `price_volume_expansion` | `1s`, `10s`, `30s`, `1m` closed bars | Concurrent exceptional price and activity expansion. |
 | `vwap_transition` | `1s`, `10s`, `30s`, `1m` closed bars | Causal price transition across session VWAP. |
@@ -62,10 +63,10 @@ delay or backdate the underlying signal.
 
 These are observations, not setups. Session-level breaks, structure breaks,
 level rejection, opening-range breakout, gap-and-go, and similar strategy
-concepts are deliberately absent. Strategies compose the six observations with
+concepts are deliberately absent. Strategies compose the seven observations with
 QMD structure/level indicators, news, SEC, model, portfolio, and risk inputs.
 
-All six methods are implemented and emitted. The Canvas Scanner joins the
+All seven methods are implemented and emitted. The Canvas Scanner joins the
 strongest active QMD lifecycle to each security and sorts its Signals preset by
 `rank_score`; Signal Stream shows lifecycle events and the live method catalog.
 The rank score is produced by QMD from causal, per-symbol/timeframe normalized

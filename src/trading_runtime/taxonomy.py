@@ -26,6 +26,7 @@ class SignalDomain(StrEnum):
 class InputBasis(StrEnum):
     EVENT_NATIVE = "event_native"
     BAR_DERIVED = "bar_derived"
+    INDICATOR_DERIVED = "indicator_derived"
     DOCUMENT_EVENT = "document_event"
     REFERENCE_SNAPSHOT = "reference_snapshot"
     MODEL_OUTPUT = "model_output"
@@ -40,6 +41,7 @@ class EvaluationMode(StrEnum):
 class UpdateTrigger(StrEnum):
     MARKET_EVENT = "market_event"
     BAR_CLOSE = "bar_close"
+    INDICATOR_UPDATE = "indicator_update"
     SOURCE_EVENT = "source_event"
     SCHEDULE = "schedule"
     MANUAL = "manual"

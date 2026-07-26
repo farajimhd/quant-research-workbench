@@ -144,9 +144,54 @@ const COMMON_SNAPSHOT: &[&str] = &[
     "activity_surprise",
     "flow_surprise",
     "liquidity_surprise",
+    "flow_structure_composite_score",
+    "flow_structure_composite_confidence",
+    "flow_structure_composite_bias",
+    "flow_structure_composite_reason",
+    "alignment_persistence",
+    "composite_surprise",
 ];
 
 const SIGNAL_CATALOG: &[SignalMethodEntry] = &[
+    SignalMethodEntry {
+        key: "flow_structure_alignment",
+        label: "Flow-Structure Alignment",
+        signal_version: 1,
+        category: SignalCategory::Flow,
+        priority: SignalPriority::P0,
+        compute_mode: SignalComputeMode::RealtimeTick,
+        persistence_policy: SignalPersistencePolicy::DecisionSnapshotOnly,
+        status: SignalStatus::Implemented,
+        working_timeframes: EVENT_TFS,
+        confirmation_timeframes: EMPTY_TFS,
+        required_bar_fields: &["close", "high", "low"],
+        required_indicator_fields: &[
+            "flow_structure_composite_score",
+            "flow_structure_composite_confidence",
+            "flow_structure_composite_bias",
+            "flow_structure_composite_reason",
+        ],
+        required_reference_fields: EMPTY_TFS,
+        trigger_rules: &[
+            "meaningful event-native flow and structural context agree directionally",
+            "the alignment persists in at least three of the latest five canonical 100 ms observations",
+        ],
+        confirmation_rules: &[
+            "the signed composite remains directional and confidence stays above threshold",
+        ],
+        reject_rules: &[
+            "flow and structure conflict, become weak, or persistence drops below three of five",
+        ],
+        emits: COMMON_EMITS,
+        snapshot_fields: COMMON_SNAPSHOT,
+        rationale: "Promotes the continuous flow-structure indicator into a ranked market observation without embedding strategy entry logic.",
+        input_basis: "indicator_derived",
+        calculation_windows: EVENT_TFS,
+        evaluation_mode: "closed_only",
+        update_trigger: "indicator_update",
+        publication_cadence: "on_change",
+        publication_interval_ms: None,
+    },
     SignalMethodEntry {
         key: "directional_flow_acceleration",
         label: "Directional Flow Acceleration",
@@ -334,15 +379,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalog_contains_only_the_six_implemented_market_observations() {
+    fn catalog_contains_only_the_seven_implemented_market_observations() {
         let catalog = signal_taxonomy_catalog();
-        assert_eq!(catalog.len(), 6);
+        assert_eq!(catalog.len(), 7);
         assert_eq!(
             catalog
                 .iter()
                 .map(|entry| entry.definition.key)
                 .collect::<Vec<_>>(),
             vec![
+                "flow_structure_alignment",
                 "directional_flow_acceleration",
                 "price_volume_expansion",
                 "vwap_transition",
@@ -369,6 +415,13 @@ mod tests {
         assert_eq!(flow.working_timeframes, &["100ms"]);
         assert_eq!(flow.input_basis, "event_native");
         assert_eq!(flow.publication_interval_ms, Some(100));
+
+        let alignment = catalog
+            .iter()
+            .find(|entry| entry.key == "flow_structure_alignment")
+            .unwrap();
+        assert_eq!(alignment.input_basis, "indicator_derived");
+        assert_eq!(alignment.update_trigger, "indicator_update");
 
         let expansion = catalog
             .iter()

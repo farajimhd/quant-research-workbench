@@ -272,17 +272,20 @@ structural context =
     0.75 * qmd_structure_score
   + 0.25 * (pressure bias * pressure confidence)
 
-QMD decision signal =
-    0.78 * microstructure unified signal
-  + 0.22 * structural context
+Flow-Structure Composite =
+    confidence-weighted mean(
+      microstructure unified signal,
+      structural context
+    )
 ```
 
-The direction is eligible only when the microstructure trigger has absolute
-magnitude at least 0.15 and confidence at least 35%. Material opposing
-structural context (absolute context at least 0.12) vetoes the action to
-`wait`. Fields are `qmd_decision_signal`, `qmd_decision_confidence`,
-`qmd_decision_action`, and `qmd_decision_reason`. This is causal short-horizon
-evidence, not a calibrated return probability or an execution instruction.
+Agreement preserves confidence and conflict discounts it; neither case erases
+the continuous score. Fields are `flow_structure_composite_score`,
+`flow_structure_composite_confidence`, `flow_structure_composite_bias`, and
+`flow_structure_composite_reason`. The derived `flow_structure_alignment`
+market signal requires directional agreement in at least three of the latest
+five canonical 100 ms observations. This remains causal short-horizon evidence,
+not a calibrated return probability or an execution instruction.
 ## 2. Session-Anchored OFI and Trade Delta
 
 The anchor is one zero baseline at 04:00 New York time. It does not reset at

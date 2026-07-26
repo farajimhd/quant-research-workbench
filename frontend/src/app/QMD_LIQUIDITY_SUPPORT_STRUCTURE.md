@@ -31,12 +31,12 @@ These package ids are available in the Indicators menu and chart legend:
 | `indicator.qmd_aggressor_persistence` | QMD Aggressor Persistence | `microstructure_aggressor_persistence` | Signed oscillator histogram. |
 | `indicator.qmd_arrival_intensity` | QMD Arrival-intensity Imbalance | imbalance and arrival rate | Signed oscillator; rate is supporting evidence. |
 | `indicator.qmd_resiliency` | QMD Liquidity Resiliency | `microstructure_resiliency` | Signed oscillator histogram. |
-| `indicator.qmd_decision` | QMD Decision · Oscillator | canonical decision, confidence, action, reason | One signed Buy/Sell/Wait oscillator with confidence. |
+| `indicator.flow_structure_composite` | Flow-Structure Composite · Oscillator | continuous score, confidence, bias, reason | Confidence-weighted flow-versus-structure indicator; market-signal markers use the separate 3-of-5 lifecycle. |
 | `indicator.qmd_generic_structure` | QMD Generic Structure | active zones, complete causal event stream, three-scale swings | Price overlay with independently configurable micro, tactical, and context layers. |
 | `indicator.qmd_reference_levels` | QMD Reference Levels | extended-session high/low, opening range, POC, LULD, and completed higher-timeframe references | Independent price lines, not structural evidence. |
 
 Every package exposes its guide from both the indicator picker and configured
-chart legend. QMD Decision is the action surface. Generic Structure remains an
+chart legend. Flow-Structure Composite is the relationship surface. Generic Structure remains an
 audit and location surface: micro, tactical, and context swings, zones, and
 breaks can be turned on independently to verify the causal engine.
 
@@ -79,7 +79,7 @@ Midpoint and trade returns are realized response within the selected bar. Flow
 and return in the same direction suggest continuation. Strong aggressive flow
 with little or opposite midpoint response may indicate passive absorption.
 
-## QMD Decision
+## Flow-Structure Composite
 
 The gateway first calculates a timeframe-native microstructure trigger:
 
@@ -94,42 +94,17 @@ The gateway first calculates a timeframe-native microstructure trigger:
 - **Reliability**: data quality, evidence density, coverage, and block
   agreement. It is non-directional.
 
-It then combines that trigger with Generic Structure and structural pressure.
-The trigger contributes 78% and structure contributes 22%, but material
-opposition is a veto: the result becomes Wait instead of averaging contradictory
-evidence into a weak direction. A directional action requires at least 35%
-microstructure confidence and an absolute trigger of 0.15.
+It confidence-weights that trigger with Generic Structure and structural
+pressure. Agreement preserves confidence, conflict discounts it, and the
+continuous score is never hidden behind a Buy/Sell/Wait action. The oscillator
+shows signed bias and 0-1 confidence.
 
-The oscillator shows signed decision and 0-1 confidence. The selected Micro,
-Tactical, or Context preset converts the same canonical 100 ms stream into a
-causal directional regime:
-
-1. a qualifying QMD decision arms the setup;
-2. the engine freezes the last confirmed traded-price swing in that direction;
-3. entry begins only when a later 100 ms close crosses that frozen level;
-4. new higher highs and higher lows extend a Long, while lower lows and lower
-   highs extend a Short;
-5. a confirmed lower high during a Long, or higher low during a Short, becomes
-   an exhaustion candidate rather than an immediate hindsight exit; and
-6. the regime closes only on a persistent opposite QMD decision, structural
-   invalidation, a protected-swing break confirmed by opposing MACD, a newly
-   confirmed opposing BoS or CHoCH event,
-   or a failed swing accompanied by opposing preset-native MACD confirmation.
-
-Neutral QMD, confidence decay, elapsed time, or one opposing candle does not end
-the regime. Micro samples its MACD helper from completed 1-second closes,
-Tactical from 5-second closes, and Context from 15-second closes. MACD
-convergence is a warning; MACD on the opposing side of its signal confirms a
-failed-swing exit.
-
-The breakout level is the fixed regime rail. Green means Long and red means
-Short. The entry marker states confidence and the swing-break reason; the close
-marker states the exact causal exit reason. Confidence text is evidence
-confidence, not a return target or calibrated win probability. Start and end
-timestamps are independent of the displayed candle interval; larger candles
-only consolidate the same regime geometry. Historical shading is continuous
-between adjacent candle slots and never uses future confidence to restyle an
-earlier segment.
+The separate `flow_structure_alignment` market signal requires meaningful flow
+and structure to agree in at least three of the latest five canonical 100 ms
+observations. Its signed score is the composite magnitude; scanner rank also
+uses confidence, persistence, and causal surprise. Chart markers and Scanner
+consume that same lifecycle. It is a reusable observation, not a strategy,
+regime, entry, exit, or order instruction.
 
 ## Anchored OFI + Trade Delta Pane
 
@@ -262,10 +237,10 @@ bar that never existed in the source state. Only after causal prices and
 volumes are selected does the renderer combine bins that occupy the same screen
 row at the current vertical scale.
 
-## Structural context inside QMD Decision
+## Structural context inside the Flow-Structure Composite
 
 The standalone Structure and Structural Pressure oscillators are retired. Their
-canonical fields remain available to strategies and feed QMD Decision:
+canonical fields remain available to strategies and feed the composite:
 
 - **Support field**: proximity-weighted support evidence, 0-1;
 - **Resistance field**: proximity-weighted resistance evidence, 0-1;
@@ -296,7 +271,7 @@ Generic Structure exposes useful controls for:
 - causal history length and historical tag density;
 - fill intensity and line style where a line is actually drawn;
 - independent micro, tactical, and context zone/swing/break visibility; and
-- QMD Decision oscillator thresholds and native pane height.
+- Flow-Structure Composite oscillator thresholds and native pane height.
 
 Swing references, extended-session levels, opening range, POC, estimated LULD,
 completed higher-timeframe references, and structure-break

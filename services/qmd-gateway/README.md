@@ -186,19 +186,21 @@ separately measures event coverage, quote validity, trade classification,
 evidence density, and agreement among the three blocks. `action` is `buy` or
 `sell` only when confidence is at least
 35% and absolute score is at least 0.15; otherwise it is `wait`. The canonical
-`qmd_decision_*` fields then combine that trigger with event-native Generic
-Structure and structural pressure: material disagreement vetoes the direction
-to `wait`. This is short-horizon evidence, not an order instruction, return
+`flow_structure_composite_*` fields then confidence-weight that flow with
+event-native Generic Structure and structural pressure. Agreement preserves
+confidence, conflict discounts it, and the continuous score remains inspectable
+instead of being vetoed to zero. This is short-horizon evidence, not an order instruction, return
 forecast, or price target; strategies must still apply market-state, LULD,
 spread, risk, and execution gates.
 
-QMD Decision has one timing authority: every closed 100 ms evidence bucket.
-Strategies consume those `qmd_decision_*` states directly, so changing a chart
-timeframe cannot delay or replace an actionable transition. For higher
+The Flow-Structure Composite has one timing authority: every closed 100 ms
+evidence bucket. The scored `flow_structure_alignment` market signal adds a
+3-of-5 persistence requirement and is emitted to the chart and scanner from the
+same lifecycle engine. For higher
 timeframes, QMD still sums counts and volume, chains log returns, accumulates
 raw OFI and liquidity depletion/replenishment, and sample-weights queue,
 microprice, persistence, and arrival evidence for diagnostic indicators. The
-higher-timeframe QMD Decision point is only a confidence-weighted consensus of
+higher-timeframe composite point is only a confidence-weighted consensus of
 the canonical 100 ms states inside that display bucket. It is a presentation
 summary, not a second strategy signal.
 

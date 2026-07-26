@@ -1,4 +1,5 @@
 use crate::bars::BarRow;
+use crate::indicators::IndicatorRow;
 use crate::market_signal::{MarketSignalEngine, MarketSignalEvent};
 use crate::metrics::SharedMetrics;
 use chrono::{DateTime, Utc};
@@ -64,13 +65,25 @@ struct ScannerStore {
 
 #[derive(Clone)]
 pub struct ScannerPrimitiveRouter {
-    sender: mpsc::Sender<BarRow>,
+    sender: mpsc::Sender<ScannerObservation>,
 }
 
 impl ScannerPrimitiveRouter {
-    pub async fn send_bar(&self, row: BarRow) -> Result<(), mpsc::error::SendError<BarRow>> {
-        self.sender.send(row).await
+    pub async fn send_observation(
+        &self,
+        bar: BarRow,
+        indicator: IndicatorRow,
+    ) -> Result<(), mpsc::error::SendError<ScannerObservation>> {
+        self.sender
+            .send(ScannerObservation { bar, indicator })
+            .await
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct ScannerObservation {
+    pub bar: BarRow,
+    pub indicator: IndicatorRow,
 }
 
 impl SharedScannerStore {
@@ -172,7 +185,7 @@ pub fn spawn_scanner_primitive_engine(
     metrics: SharedMetrics,
     signal_sender: broadcast::Sender<MarketSignalEvent>,
 ) -> ScannerPrimitiveRouter {
-    let (sender, receiver) = mpsc::channel::<BarRow>(channel_capacity.max(1));
+    let (sender, receiver) = mpsc::channel::<ScannerObservation>(channel_capacity.max(1));
     tokio::spawn(run_scanner_primitive_engine(
         store,
         receiver,
@@ -184,13 +197,13 @@ pub fn spawn_scanner_primitive_engine(
 
 async fn run_scanner_primitive_engine(
     store: SharedScannerStore,
-    mut receiver: mpsc::Receiver<BarRow>,
+    mut receiver: mpsc::Receiver<ScannerObservation>,
     metrics: SharedMetrics,
     signal_sender: broadcast::Sender<MarketSignalEvent>,
 ) {
     let mut engine = MarketSignalEngine::default();
-    while let Some(row) = receiver.recv().await {
-        let signals = engine.update(&row);
+    while let Some(observation) = receiver.recv().await {
+        let signals = engine.update_with_indicator(&observation.bar, Some(&observation.indicator));
         if signals.is_empty() {
             continue;
         }

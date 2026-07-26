@@ -116,11 +116,10 @@ each finalized bar before the bounded indicator worker calculates its evidence,
 so chart price data is never held behind indicator calculation. Builds calculate
 only the requested output timeframe plus the canonical 100 ms evidence grid.
 Each higher-timeframe microstructure row aggregates raw 100 ms evidence for its
-diagnostic fields. Its QMD Decision values confidence-weight the canonical
-100 ms decision states inside the display bar and apply an agreement penalty.
-Timestamped 100 ms decision transitions are returned separately as
-`decision_events`, so a chart can render the first actionable transition inside
-a larger candle without waiting for that candle to close.
+diagnostic fields. Its Flow-Structure Composite values confidence-weight the
+canonical 100 ms composite states inside the display bar. Timestamped scored
+lifecycles are returned as `market_signal_events`, so a chart can render the
+first transition inside a larger candle without waiting for that candle to close.
 Versioned QMD market signals are calculated by the same Rust
 `MarketSignalEngine` used by live QMD and are returned separately as
 `market_signal_events`. Their `effective_at` is the causal close of the

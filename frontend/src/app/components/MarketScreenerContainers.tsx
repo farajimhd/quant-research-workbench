@@ -150,9 +150,9 @@ const FIELD_CATALOG: FieldDefinition[] = [
   field("indicator_evaluation_mode", "Evaluation mode", "Indicator clock", "raw", "text", "Developing, closed-only, or point-in-time evaluation semantics."),
   field("indicator_update_trigger", "Update trigger", "Indicator clock", "raw", "text", "Event that causes the indicator to be evaluated."),
   field("indicator_publication_cadence", "Publication cadence", "Indicator clock", "raw", "text", "When the indicator becomes visible to consumers."),
-  field("qmd_decision_signal", "QMD decision", "Indicators · QMD", "derived", "score", "Signed reusable QMD observation; strategy code remains responsible for trading actions."),
-  field("qmd_decision_confidence_pct", "QMD confidence", "Indicators · QMD", "derived", "percentPlain", "Evidence coverage and agreement for the QMD observation."),
-  field("qmd_decision_action", "QMD direction", "Indicators · QMD", "derived", "text", "Buy, sell, or wait observation emitted by QMD; this is not an order instruction."),
+  field("flow_structure_composite_score", "Flow-structure composite", "Indicators · QMD", "derived", "score", "Continuous signed agreement between event-native flow and causal structural context."),
+  field("flow_structure_composite_confidence_pct", "Composite confidence", "Indicators · QMD", "derived", "percentPlain", "Confidence-weighted evidence quality and agreement for the composite."),
+  field("flow_structure_composite_bias", "Composite bias", "Indicators · QMD", "derived", "text", "Bullish, bearish, or neutral indicator bias; this is not an order instruction."),
   field("microstructure_unified_signal", "Flow signal", "Indicators · QMD", "derived", "score", "Signed unified microstructure evidence from the event-native QMD indicator engine."),
   field("microstructure_unified_confidence_pct", "Flow confidence", "Indicators · QMD", "derived", "percentPlain", "Evidence quality for the unified microstructure observation."),
   field("microstructure_signed_volume_imbalance", "Volume imbalance", "Indicators · QMD", "derived", "score", "Signed eligible-trade volume imbalance in the current QMD interval."),
@@ -168,7 +168,7 @@ const SCANNER_PRESETS: Record<string, string[]> = {
   Intelligence: ["ticker", "last", "change_pct", "live_news_count", "sec_count", "news_labels", "sec_labels"],
   Fundamentals: ["ticker", "xbrl_quality_score", "financial_trajectory_score", "xbrl_profitability_score", "xbrl_growth_score", "xbrl_cash_quality_score", "xbrl_balance_sheet_score", "xbrl_capital_discipline_score", "fundamental_revenue_growth_pct", "fundamental_operating_margin_pct", "valuation_pe"],
   Signals: ["ticker", "signal_domain", "signal_type", "direction", "signal_score", "signal_rank_score", "signal_confidence_pct", "active_signal_count", "working_timeframe", "evidence"],
-  "QMD indicators": ["ticker", "qmd_decision_signal", "qmd_decision_confidence_pct", "qmd_decision_action", "microstructure_unified_signal", "microstructure_unified_confidence_pct", "microstructure_signed_volume_imbalance", "microstructure_level1_ofi", "microstructure_queue_imbalance", "qmd_structure_score", "qmd_structure_confidence_pct", "indicator_timeframe"],
+  "QMD indicators": ["ticker", "flow_structure_composite_score", "flow_structure_composite_confidence_pct", "flow_structure_composite_bias", "microstructure_unified_signal", "microstructure_unified_confidence_pct", "microstructure_signed_volume_imbalance", "microstructure_level1_ofi", "microstructure_queue_imbalance", "qmd_structure_score", "qmd_structure_confidence_pct", "indicator_timeframe"],
 };
 const LOCKED_MARKET_LIST_COLUMNS = ["logo", "ticker", "news_labels", "sec_labels"];
 const SIGNAL_PRESETS: Record<string, string[]> = {
@@ -574,7 +574,7 @@ function normalizeScannerRows(rows: ScreenerRow[]) {
       ...row,
       dollar_volume: row.dollar_volume ?? (last > 0 && volume > 0 ? last * volume : undefined),
       microstructure_unified_confidence_pct: numberValue(row.microstructure_unified_confidence) * 100,
-      qmd_decision_confidence_pct: numberValue(row.qmd_decision_confidence) * 100,
+      flow_structure_composite_confidence_pct: numberValue(row.flow_structure_composite_confidence) * 100,
       qmd_structure_confidence_pct: numberValue(row.qmd_structure_confidence) * 100,
       ticker,
     };

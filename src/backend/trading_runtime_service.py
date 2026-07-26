@@ -418,7 +418,6 @@ def historical_bar_history_before(
             "timeframe": resolved_timeframe,
             "history": [],
             "indicators": [],
-            "decision_events": [],
             "market_signal_events": [],
             "structure_events": [],
             "structure_level_history": [],
@@ -454,7 +453,6 @@ def historical_bar_history_before(
     )
     bars = list(snapshot.get("bars") or []) if isinstance(snapshot, dict) else []
     indicators = list(snapshot.get("indicators") or []) if isinstance(snapshot, dict) else []
-    decision_events = list(snapshot.get("decision_events") or []) if isinstance(snapshot, dict) else []
     market_signal_events = list(snapshot.get("market_signal_events") or []) if isinstance(snapshot, dict) else []
     structure_events = list(snapshot.get("structure_events") or []) if isinstance(snapshot, dict) else []
     structure_level_history = list(snapshot.get("structure_level_history") or []) if isinstance(snapshot, dict) else []
@@ -475,7 +473,6 @@ def historical_bar_history_before(
         "timeframe": resolved_timeframe,
         "history": bars,
         "indicators": indicators,
-        "decision_events": decision_events,
         "market_signal_events": market_signal_events,
         "structure_events": structure_events,
         "structure_level_history": structure_level_history,
@@ -548,7 +545,6 @@ def historical_macro_bar_history(
         "timeframe": timeframe,
         "history": rows,
         "indicators": [],
-        "decision_events": [],
         "market_signal_events": [],
         "structure_events": [],
         "structure_level_history": [],

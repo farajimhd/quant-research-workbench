@@ -284,17 +284,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         bars.clone(),
         structure_watermarks,
     )));
-    let indicator_router = spawn_indicator_engines(
-        indicators.clone(),
-        config.indicator_channel_capacity,
-        config.indicator_bar_channel_capacity,
-        indicator_writer_sender,
-    );
     let scanner_router = spawn_scanner_primitive_engine(
         scanner.clone(),
         config.scanner_primitive_channel_capacity,
         metrics.clone(),
         scanner_sender.clone(),
+    );
+    let indicator_router = spawn_indicator_engines(
+        indicators.clone(),
+        config.indicator_channel_capacity,
+        config.indicator_bar_channel_capacity,
+        indicator_writer_sender,
+        scanner_router.clone(),
+        metrics.clone(),
     );
     let (live_market_state_router, live_market_state_task) = spawn_live_market_state_service(
         config.clone(),
@@ -306,7 +308,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         bars.clone(),
         config.bar_channel_capacity,
         Some(indicator_router.bar_sender()),
-        Some(scanner_router.clone()),
         Some(live_market_state_router.clone()),
         metrics.clone(),
     );
