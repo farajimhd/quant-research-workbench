@@ -5,7 +5,7 @@ import sys
 from research.news_reaction_model.v17.prepare_targets import main
 
 
-DEFAULTS = ["--workers", "4"]
+DEFAULTS = ["--workers", "4", "--tickers-per-query", "64"]
 
 
 if __name__ == "__main__":

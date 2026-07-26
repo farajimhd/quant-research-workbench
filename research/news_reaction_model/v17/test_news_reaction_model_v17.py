@@ -8,9 +8,16 @@ import numpy as np
 import torch
 
 from research.news_reaction_model.v17 import RESPONSE_WINDOWS
-from research.news_reaction_model.v17.config import ModelConfig
+from research.news_reaction_model.v17.config import LoaderConfig, ModelConfig
 from research.news_reaction_model.v17.model import NewsResponseModelV17
-from research.news_reaction_model.v17.prepare_targets import summarize_events
+from research.news_reaction_model.v17.prepare_targets import (
+    EASTERN,
+    build_windows,
+    event_rows_for_tickers,
+    process_ticker_batch,
+    session_days_between,
+    summarize_events,
+)
 from research.news_reaction_model.v17.prepared import row_key_hash
 from research.news_reaction_model.v17.targets import (
     Direction,
@@ -220,6 +227,146 @@ class V17TargetTests(unittest.TestCase):
         self.assertLess(float(metrics[7]), -0.08)
         self.assertGreater(float(metrics[9]), 0.0)
         self.assertGreater(float(metrics[10]), 0.0)
+
+    def test_batched_event_query_always_prunes_dates_and_splits_tickers(self) -> None:
+        class Client:
+            query = ""
+
+            def execute(self, query: str) -> str:
+                self.query = query
+                return (
+                    "AAPL\t100\t1\t10.0\t5\t9.9\t10.0\t1\t1\n"
+                    "MSFT\t200\t2\t20.0\t7\t19.9\t20.0\t1\t1\n"
+                )
+
+        client = Client()
+        rows = event_rows_for_tickers(
+            client, LoaderConfig(), ["AAPL", "MSFT"], dt.date(2026, 1, 2)
+        )
+        self.assertIn("event_date >= toDate('2026-01-02')", client.query)
+        self.assertIn("ticker IN ('AAPL', 'MSFT')", client.query)
+        self.assertIn("ORDER BY t.ticker,t.sip_timestamp_us,t.ordinal", client.query)
+        self.assertEqual(rows["AAPL"].shape, (1, 8))
+        self.assertEqual(rows["MSFT"].shape, (1, 8))
+        self.assertEqual(float(rows["MSFT"][0, 2]), 20.0)
+
+    def test_session_slice_uses_closed_exchange_interval(self) -> None:
+        sessions = [
+            dt.date(2026, 1, 2),
+            dt.date(2026, 1, 5),
+            dt.date(2026, 1, 6),
+        ]
+        self.assertEqual(
+            session_days_between(
+                sessions, dt.date(2026, 1, 3), dt.date(2026, 1, 6)
+            ),
+            (dt.date(2026, 1, 5), dt.date(2026, 1, 6)),
+        )
+
+    def test_ticker_batch_fetches_each_session_once_for_multiple_tickers(self) -> None:
+        sessions = [
+            dt.date(2026, 1, 2),
+            dt.date(2026, 1, 5),
+            dt.date(2026, 1, 6),
+            dt.date(2026, 1, 7),
+            dt.date(2026, 1, 8),
+            dt.date(2026, 1, 9),
+        ]
+        published = dt.datetime(2026, 1, 2, 15, 0, tzinfo=dt.timezone.utc)
+        v16 = {
+            "canonical_news_id": np.asarray([b"news-a", b"news-m"], dtype="S16"),
+            "ticker": np.asarray([b"AAPL", b"MSFT"], dtype="S8"),
+            "published_at_utc": np.asarray(
+                [
+                    published.isoformat().encode(),
+                    published.isoformat().encode(),
+                ],
+                dtype="S40",
+            ),
+        }
+        labels = {}
+        for news_id, ticker in (("news-a", "AAPL"), ("news-m", "MSFT")):
+            labels[(news_id, ticker)] = {
+                "publication_session": "regular",
+                "reaction_session_date": sessions[0],
+                "anchor_price": 100.0,
+                "phase": {
+                    "quality_status": "clean",
+                    "high_return": 0.02,
+                    "low_return": -0.01,
+                    "terminal_return": 0.01,
+                    "high_timestamp": published.timestamp() + 60,
+                    "low_timestamp": published.timestamp() + 120,
+                    "observation_count": 3,
+                },
+            }
+        calls: list[tuple[dt.date, tuple[str, ...]]] = []
+
+        def make_rows(ticker: str, day: dt.date) -> np.ndarray:
+            start = dt.datetime.combine(day, dt.time(15), tzinfo=dt.timezone.utc)
+            start_us = int(start.timestamp() * 1_000_000)
+            base = 100.0 if ticker == "AAPL" else 101.0
+            return np.asarray(
+                [
+                    [start_us + 1, 1, base, 10, base - 0.1, base, 1, 1],
+                    [start_us + 2, 2, base + 1, 20, base, base + 1, 1, 1],
+                    [start_us + 3, 3, base + 0.5, 30, base + 0.4, base + 0.5, 1, 1],
+                ],
+                dtype=np.float64,
+            )
+
+        def loader(_client, _config, tickers, day):
+            calls.append((day, tuple(tickers)))
+            return {ticker: make_rows(ticker, day) for ticker in tickers}
+
+        output, query_count, event_count = process_ticker_batch(
+            client=object(),
+            config=LoaderConfig(),
+            v16=v16,
+            labels=labels,
+            sessions=sessions,
+            items=[("AAPL", [0]), ("MSFT", [1])],
+            event_loader=loader,
+        )
+        self.assertEqual(query_count, len(sessions))
+        self.assertEqual(len(calls), len(sessions))
+        self.assertTrue(all(set(tickers) == {"AAPL", "MSFT"} for _day, tickers in calls))
+        self.assertEqual(event_count, len(sessions) * 2 * 3)
+        self.assertEqual(len(output), 2)
+        by_row = {row_index: (raw, mask) for row_index, raw, mask in output}
+        for row_index, (raw, mask) in by_row.items():
+            self.assertTrue(mask[1])
+            self.assertTrue(mask[3])
+            self.assertTrue(mask[4])
+            ticker = "AAPL" if row_index == 0 else "MSFT"
+            windows = build_windows(published, "regular", sessions[0], sessions)
+            expected = np.full_like(raw, np.nan)
+            expected_mask = np.zeros_like(mask)
+            absolute_cache = {}
+            for window_index, bounds in enumerate(windows):
+                if bounds is None:
+                    continue
+                selected = session_days_between(
+                    sessions,
+                    bounds[0].astimezone(EASTERN).date(),
+                    bounds[1].astimezone(EASTERN).date(),
+                )
+                exact = labels[
+                    ("news-a" if ticker == "AAPL" else "news-m", ticker)
+                ]["phase"] if window_index < 3 else None
+                expected[window_index], expected_mask[window_index] = summarize_events(
+                    [make_rows(ticker, day) for day in selected],
+                    start=bounds[0],
+                    end=bounds[1],
+                    anchor_price=100.0,
+                    exact_phase=exact,
+                    minimum_observations=3,
+                    absolute_cache=absolute_cache,
+                )
+            np.testing.assert_allclose(
+                raw, expected, equal_nan=True, rtol=0.0, atol=0.0
+            )
+            np.testing.assert_array_equal(mask, expected_mask)
 
 
 class V17ModelTests(unittest.TestCase):

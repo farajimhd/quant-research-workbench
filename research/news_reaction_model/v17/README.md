@@ -49,9 +49,16 @@ The builder reuses `q_live.news_reaction_labels_v2` for:
 
 It reads compact events only for evidence missing from that table: within-window
 VWAP and quote-test buy/sell/unknown notional, plus the next-session and
-five-session ordered paths. Each worker owns one ticker for a month and caches
-every required ticker/session event stream once. It does not issue one query per
-article and does not rebuild V16 market state.
+five-session ordered paths. Preparation groups a month's tickers into bounded
+64-ticker batches. Each worker advances its batch chronologically, issues one
+partition-pruned query per required exchange session, and evaluates windows
+when their final session arrives. A six-session rolling cache retains the
+complete five-session path while bounding resident event memory. Shared
+ticker/session evidence is therefore fetched once per batch rather than once
+per ticker or article. Every annual-table branch carries an explicit
+`event_date` predicate so ClickHouse prunes monthly partitions. The batch size
+is configurable through `--tickers-per-query`; concurrency remains separately
+bounded by `--workers`. The builder does not rebuild V16 market state.
 
 The quote-test direction matches the QMD contract: at/above ask is buyer
 initiated, at/below bid is seller initiated, then midpoint fallback. `Supply`
@@ -187,7 +194,8 @@ python -m research.news_reaction_model.v17.run_evaluate --checkpoint <best_val.p
 ```
 
 `run_prepare_targets` is resumable at month boundaries through durable arrays
-and a manifest contract. The training run writes local metrics, latest and
-best-validation checkpoints, a run manifest, a Mermaid model diagram, W&B
-metrics in the existing `news-reaction-model-v3` project, and final 2026
-evaluation.
+and a manifest contract. Progress reports completed ticker batches, tickers,
+ClickHouse queries, returned eligible events, elapsed time, and ETA. The
+training run writes local metrics, latest and best-validation checkpoints, a
+run manifest, a Mermaid model diagram, W&B metrics in the existing
+`news-reaction-model-v3` project, and final 2026 evaluation.

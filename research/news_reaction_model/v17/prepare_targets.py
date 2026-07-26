@@ -5,10 +5,11 @@ import bisect
 import datetime as dt
 import json
 import math
+import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -169,12 +170,18 @@ FORMAT TabSeparatedRaw
     return rows
 
 
-def event_rows(
+EMPTY_EVENT_ROWS = np.empty((0, 8), dtype=np.float64)
+
+
+def event_rows_for_tickers(
     client: ClickHouseHttpClient,
     config: LoaderConfig,
-    ticker: str,
+    tickers: list[str] | tuple[str, ...],
     session_day: dt.date,
-) -> np.ndarray:
+) -> dict[str, np.ndarray]:
+    requested = tuple(dict.fromkeys(str(value) for value in tickers if str(value)))
+    if not requested:
+        return {}
     table_names = tuple(
         dict.fromkeys(
             _event_table(config.events_table_base, value)
@@ -182,12 +189,19 @@ def event_rows(
         )
     )
     tables = [f"{_qi(config.market_database)}.{_qi(value)}" for value in table_names]
-    source = tables[0] if len(tables) == 1 else (
-        "(" + " UNION ALL ".join(
-            f"SELECT * FROM {table} WHERE event_date >= toDate({_q(session_day)}) "
-            f"AND event_date <= toDate({_q(session_day)}) + 1"
-            for table in tables
-        ) + ")"
+    date_predicate = (
+        f"event_date >= toDate({_q(session_day)}) "
+        f"AND event_date <= toDate({_q(session_day)}) + 1"
+    )
+    # The source is annual and partitioned by event month. Keep the date
+    # predicate inside every branch even when only one annual table is used;
+    # otherwise a one-session request scans the ticker's entire year.
+    source = (
+        "("
+        + " UNION ALL ".join(
+            f"SELECT * FROM {table} WHERE {date_predicate}" for table in tables
+        )
+        + ")"
     )
     condition_reference = (
         f"{_qi(config.market_database)}.{_qi(config.condition_reference_table)}"
@@ -230,7 +244,7 @@ raw AS
       OR toHour(local_timestamp)>=16
     ) AS is_extended_hours
   FROM {source}
-  WHERE ticker={_q(ticker)}
+  WHERE ticker IN ({", ".join(_q(value) for value in requested)})
     AND sip_timestamp_us >= toUInt64(toUnixTimestamp64Micro(
       toDateTime64({_q(_clickhouse_utc(start_utc))},6,'UTC')))
     AND sip_timestamp_us < toUInt64(toUnixTimestamp64Micro(
@@ -283,6 +297,7 @@ quotes AS
   WHERE NOT is_trade AND secondary_price>0 AND primary_price>=secondary_price
 )
 SELECT
+  t.ticker,
   t.sip_timestamp_us,
   t.ordinal,
   t.trade_price,
@@ -294,17 +309,44 @@ SELECT
 FROM eligible_trades AS t
 ASOF LEFT JOIN quotes AS q
   ON t.ticker=q.ticker AND t.sip_timestamp_us>=q.sip_timestamp_us
-ORDER BY t.sip_timestamp_us,t.ordinal
+ORDER BY t.ticker,t.sip_timestamp_us,t.ordinal
 SETTINGS max_threads=2,max_memory_usage='4G',join_algorithm='full_sorting_merge'
 FORMAT TabSeparatedRaw
 """
     )
     if not text.strip():
-        return np.empty((0, 8), dtype=np.float64)
-    values = np.fromstring(text, sep="\t", dtype=np.float64)
-    if values.size % 8:
-        raise RuntimeError(f"Malformed compact event result for {ticker} {session_day}.")
-    return values.reshape(-1, 8)
+        return {ticker: EMPTY_EVENT_ROWS for ticker in requested}
+    payloads: dict[str, list[str]] = {}
+    for line in text.splitlines():
+        if not line:
+            continue
+        ticker, separator, payload = line.partition("\t")
+        if not separator:
+            raise RuntimeError(
+                f"Malformed compact event result for ticker batch on {session_day}."
+            )
+        payloads.setdefault(ticker, []).append(payload)
+    result: dict[str, np.ndarray] = {}
+    for ticker in requested:
+        rows = payloads.get(ticker)
+        if not rows:
+            result[ticker] = EMPTY_EVENT_ROWS
+            continue
+        values = np.fromstring("\t".join(rows), sep="\t", dtype=np.float64)
+        if values.size % 8:
+            raise RuntimeError(f"Malformed compact event result for {ticker} {session_day}.")
+        result[ticker] = values.reshape(-1, 8)
+    return result
+
+
+def event_rows(
+    client: ClickHouseHttpClient,
+    config: LoaderConfig,
+    ticker: str,
+    session_day: dt.date,
+) -> np.ndarray:
+    """Compatibility wrapper for focused validation and single-ticker callers."""
+    return event_rows_for_tickers(client, config, [ticker], session_day)[ticker]
 
 
 def summarize_events(
@@ -478,12 +520,165 @@ def build_windows(
     return result
 
 
+def session_days_between(
+    sessions: list[dt.date],
+    first_day: dt.date,
+    last_day: dt.date,
+) -> tuple[dt.date, ...]:
+    """Return exchange sessions in a closed date interval without a full scan."""
+    lower = bisect.bisect_left(sessions, first_day)
+    upper = bisect.bisect_right(sessions, last_day)
+    return tuple(sessions[lower:upper])
+
+
+def process_ticker_batch(
+    *,
+    client: ClickHouseHttpClient,
+    config: LoaderConfig,
+    v16: dict[str, np.ndarray],
+    labels: dict[tuple[str, str], dict[str, Any]],
+    sessions: list[dt.date],
+    items: list[tuple[str, list[int]]],
+    event_loader: Callable[
+        [ClickHouseHttpClient, LoaderConfig, list[str] | tuple[str, ...], dt.date],
+        dict[str, np.ndarray],
+    ] = event_rows_for_tickers,
+) -> tuple[list[tuple[int, np.ndarray, np.ndarray]], int, int]:
+    """Build one bounded ticker batch with a six-session rolling event cache.
+
+    Every session is queried once for all tickers in this batch that need it.
+    Windows are evaluated when their final session arrives, which keeps only
+    the six most recent sessions resident while preserving exact event order.
+    """
+    output: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    work_by_end_day: dict[
+        dt.date,
+        list[
+            tuple[
+                int,
+                int,
+                str,
+                tuple[dt.date, ...],
+                tuple[dt.datetime, dt.datetime],
+                float,
+                dict[str, Any] | None,
+            ]
+        ],
+    ] = {}
+    required_tickers_by_day: dict[dt.date, set[str]] = {}
+    absolute_caches: dict[str, dict[tuple[int, int], dict[str, float]]] = {
+        ticker: {} for ticker, _indices in items
+    }
+
+    for ticker, indices in items:
+        for row_index in indices:
+            raw = np.full(
+                (len(RESPONSE_WINDOWS), len(RAW_METRIC_NAMES)),
+                np.nan,
+                dtype=np.float32,
+            )
+            masks = np.zeros(len(RESPONSE_WINDOWS), dtype=np.bool_)
+            output[row_index] = (raw, masks)
+            news_id = _decode(v16["canonical_news_id"][row_index])
+            label = labels.get((news_id, ticker))
+            if label is None or not math.isfinite(
+                float(label.get("anchor_price", math.nan))
+            ):
+                continue
+            published = _parse_utc(_decode(v16["published_at_utc"][row_index]))
+            windows = build_windows(
+                published,
+                label["publication_session"],
+                label["reaction_session_date"],
+                sessions,
+            )
+            for window_index, bounds in enumerate(windows):
+                if bounds is None:
+                    continue
+                exact = label.get("phase") if window_index < 3 else None
+                if exact is not None and exact.get("quality_status") != "clean":
+                    continue
+                selected_days = session_days_between(
+                    sessions,
+                    bounds[0].astimezone(EASTERN).date(),
+                    bounds[1].astimezone(EASTERN).date(),
+                )
+                if not selected_days:
+                    continue
+                for day in selected_days:
+                    required_tickers_by_day.setdefault(day, set()).add(ticker)
+                work_by_end_day.setdefault(selected_days[-1], []).append(
+                    (
+                        row_index,
+                        window_index,
+                        ticker,
+                        selected_days,
+                        bounds,
+                        float(label["anchor_price"]),
+                        exact,
+                    )
+                )
+
+    event_cache: OrderedDict[dt.date, dict[str, np.ndarray]] = OrderedDict()
+    query_count = 0
+    event_row_count = 0
+    for day in sorted(required_tickers_by_day):
+        requested = sorted(required_tickers_by_day[day])
+        loaded = event_loader(client, config, requested, day)
+        query_count += 1
+        event_row_count += sum(int(rows.shape[0]) for rows in loaded.values())
+        event_cache[day] = loaded
+        event_cache.move_to_end(day)
+        for (
+            row_index,
+            window_index,
+            ticker,
+            selected_days,
+            bounds,
+            anchor_price,
+            exact,
+        ) in work_by_end_day.get(day, ()):
+            missing = [value for value in selected_days if value not in event_cache]
+            if missing:
+                raise RuntimeError(
+                    "V17 rolling event cache evicted required sessions before "
+                    f"window evaluation for {ticker}: {missing}."
+                )
+            event_days = [
+                event_cache[value].get(ticker, EMPTY_EVENT_ROWS)
+                for value in selected_days
+            ]
+            raw, masks = output[row_index]
+            raw[window_index], masks[window_index] = summarize_events(
+                event_days,
+                start=bounds[0],
+                end=bounds[1],
+                anchor_price=anchor_price,
+                exact_phase=exact,
+                minimum_observations=3,
+                absolute_cache=absolute_caches[ticker],
+            )
+        while len(event_cache) > 6:
+            event_cache.popitem(last=False)
+
+    return (
+        [
+            (row_index, output[row_index][0], output[row_index][1])
+            for _ticker, indices in items
+            for row_index in indices
+        ],
+        query_count,
+        event_row_count,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     defaults = LoaderConfig()
     parser = argparse.ArgumentParser(description="Build V17 target sidecar over completed V16 arrays.")
     parser.add_argument("--prepared-root", default=str(defaults.prepared_dataset_root))
     parser.add_argument("--target-root", default=str(defaults.target_root))
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--tickers-per-query", type=int, default=64)
     parser.add_argument("--threshold-quantile", type=float, default=0.35)
     parser.add_argument("--execute", action="store_true")
     return parser
@@ -586,75 +781,33 @@ def main(argv: list[str] | None = None) -> int:
             groups: dict[str, list[int]] = {}
             for row_index in range(month_lower, month_upper):
                 groups.setdefault(_decode(v16["ticker"][row_index]), []).append(row_index)
-
-            def process_ticker(item: tuple[str, list[int]]) -> list[tuple[int, np.ndarray, np.ndarray]]:
-                ticker, indices = item
-                cache: OrderedDict[dt.date, np.ndarray] = OrderedDict()
-                absolute_cache: dict[tuple[int, int], dict[str, float]] = {}
-                output: list[tuple[int, np.ndarray, np.ndarray]] = []
-
-                def cached_events(day: dt.date) -> np.ndarray:
-                    if day in cache:
-                        cache.move_to_end(day)
-                        return cache[day]
-                    rows = event_rows(client, config, ticker, day)
-                    cache[day] = rows
-                    cache.move_to_end(day)
-                    while len(cache) > 6:
-                        cache.popitem(last=False)
-                    return rows
-
-                for row_index in indices:
-                    news_id = _decode(v16["canonical_news_id"][row_index])
-                    published_text = _decode(v16["published_at_utc"][row_index])
-                    key = (news_id, ticker)
-                    label = labels.get(key)
-                    raw = np.full(
-                        (len(RESPONSE_WINDOWS), len(RAW_METRIC_NAMES)),
-                        np.nan,
-                        dtype=np.float32,
-                    )
-                    masks = np.zeros(len(RESPONSE_WINDOWS), dtype=np.bool_)
-                    if label is None or not math.isfinite(float(label.get("anchor_price", math.nan))):
-                        output.append((row_index, raw, masks))
-                        continue
-                    published = _parse_utc(published_text)
-                    windows = build_windows(
-                        published,
-                        label["publication_session"],
-                        label["reaction_session_date"],
-                        sessions,
-                    )
-                    for window_index, bounds in enumerate(windows):
-                        if bounds is None:
-                            continue
-                        first_day = bounds[0].astimezone(EASTERN).date()
-                        last_day = bounds[1].astimezone(EASTERN).date()
-                        selected_days = [
-                            value for value in sessions
-                            if first_day <= value <= last_day
-                        ]
-                        event_days = [cached_events(day) for day in selected_days]
-                        exact = label.get("phase") if window_index < 3 else None
-                        if exact is not None and exact.get("quality_status") != "clean":
-                            continue
-                        raw[window_index], masks[window_index] = summarize_events(
-                            event_days,
-                            start=bounds[0],
-                            end=bounds[1],
-                            anchor_price=float(label["anchor_price"]),
-                            exact_phase=exact,
-                            minimum_observations=3,
-                            absolute_cache=absolute_cache,
-                        )
-                    output.append((row_index, raw, masks))
-                return output
-
+            ticker_items = sorted(groups.items())
+            ticker_batch_size = max(1, int(args.tickers_per_query))
+            ticker_batches = [
+                ticker_items[offset : offset + ticker_batch_size]
+                for offset in range(0, len(ticker_items), ticker_batch_size)
+            ]
+            started = time.monotonic()
             with ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
-                futures = [executor.submit(process_ticker, item) for item in groups.items()]
-                completed = 0
+                futures = {
+                    executor.submit(
+                        process_ticker_batch,
+                        client=client,
+                        config=config,
+                        v16=v16,
+                        labels=labels,
+                        sessions=sessions,
+                        items=batch,
+                    ): len(batch)
+                    for batch in ticker_batches
+                }
+                completed_batches = 0
+                completed_tickers = 0
+                query_count = 0
+                event_row_count = 0
                 for future in as_completed(futures):
-                    for row_index, raw, masks in future.result():
+                    batch_output, batch_queries, batch_event_rows = future.result()
+                    for row_index, raw, masks in batch_output:
                         targets["raw_metrics"][row_index] = raw
                         targets["window_mask"][row_index] = masks
                         targets["row_key_hash"][row_index] = row_key_hash(
@@ -662,12 +815,22 @@ def main(argv: list[str] | None = None) -> int:
                             _decode(v16["ticker"][row_index]),
                             _decode(v16["published_at_utc"][row_index]),
                         )
-                    completed += 1
-                    if completed % 100 == 0 or completed == len(futures):
-                        print(
-                            f"TARGETS {month_start:%Y-%m} tickers={completed:,}/{len(futures):,}",
-                            flush=True,
-                        )
+                    completed_batches += 1
+                    completed_tickers += futures[future]
+                    query_count += batch_queries
+                    event_row_count += batch_event_rows
+                    elapsed = max(time.monotonic() - started, 1e-9)
+                    fraction = completed_batches / max(len(futures), 1)
+                    eta = elapsed * (1.0 - fraction) / max(fraction, 1e-9)
+                    print(
+                        f"TARGETS {month_start:%Y-%m} "
+                        f"batches={completed_batches:,}/{len(futures):,} "
+                        f"tickers={completed_tickers:,}/"
+                        f"{len(ticker_items):,} queries={query_count:,} "
+                        f"events={event_row_count:,} elapsed={elapsed / 60:.1f}m "
+                        f"eta={eta / 60:.1f}m",
+                        flush=True,
+                    )
             for array in targets.values():
                 array.flush()
             write_json_atomic(
