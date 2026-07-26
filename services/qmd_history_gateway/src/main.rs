@@ -1,11 +1,13 @@
 mod api;
 mod cache;
 mod config;
+mod scanner;
 mod source;
 
 use crate::api::{app, AppState};
 use crate::cache::HistoricalDerivedCache;
 use crate::config::HistoricalGatewayConfig;
+use crate::scanner::HistoricalScannerDerivedCache;
 use crate::source::HistoricalEventSource;
 use qmd_core::config::load_env_files;
 use std::io;
@@ -33,6 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             startup_error(format!("historical ClickHouse preflight failed: {error}"))
         })?;
     let cache = HistoricalDerivedCache::new(config.clone(), source.clone());
+    let scanner = HistoricalScannerDerivedCache::new(config.clone(), source.clone());
     let listener = tokio::net::TcpListener::bind(bind).await?;
     eprintln!(
         "qmd-history-gateway listening on {bind}; source={}.{}YYYY",
@@ -43,6 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         app(AppState {
             cache,
             config,
+            scanner,
             source,
         }),
     )

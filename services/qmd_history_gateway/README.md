@@ -53,7 +53,10 @@ Configuration uses `QMD_HISTORY_CLICKHOUSE_URL`, `QMD_HISTORY_DATABASE`,
 `QMD_HISTORY_CACHE_MAX_BYTES`, `QMD_HISTORY_CACHE_MAX_CONCURRENT_BUILDS`,
 `QMD_HISTORY_CACHE_MAX_CONCURRENT_FETCHES`, `QMD_HISTORY_FETCH_CHUNK_HOURS`,
 `QMD_HISTORY_CACHE_MAX_UPDATES_PER_ENTRY`, and
-`QMD_HISTORY_PRODUCT_CACHE_MAX_ROWS_PER_ENTRY`.
+`QMD_HISTORY_PRODUCT_CACHE_MAX_ROWS_PER_ENTRY`. Full-market Scanner replay is
+bounded by `QMD_HISTORY_SCANNER_CACHE_MAX_ENTRIES`,
+`QMD_HISTORY_SCANNER_MAX_EVENTS_PER_SNAPSHOT`, and
+`QMD_HISTORY_SCANNER_SHARD_COUNT`.
 
 Defaults:
 
@@ -78,6 +81,9 @@ window. The warm start is causal: only rows confirmed before the window are
 eligible, and the reconstructed event-native state is sampled at each bar end
 without changing semantics across chart timeframes.
 - maximum canonical product rows per entry: `2000000`
+- full-market Scanner cache entries: `2`
+- maximum events in one Scanner snapshot: `250000000`
+- Scanner calculation shards: `16`
 
 ## API
 
@@ -93,6 +99,10 @@ Supported bar timeframes are the live QMD set: `100ms`, `1s`, `5s`, `10s`,
 - `GET /coverage?start=...&end=...`
 - `GET /coverage/latest` (latest market day with canonical event coverage)
 - `GET /snapshot/cache` (cache hits, misses, builds, entries, and evictions)
+- `GET /snapshot/scanner-derived?start=...&end=...&as_of=...` (causal
+  full-market 100 ms QMD indicator projection, active scored signals on their
+  declared clocks, and the newest 20,000 lifecycle events; calculated with the
+  shared live engines)
 - `GET /snapshot/family-bars/{ticker}?start=...&end=...&as_of=...&resolution=1m`
 - `GET /snapshot/condition-bars/{ticker}?start=...&end=...&as_of=...&resolution=1m`
 - `GET /snapshot/macro-bars/{ticker}?start=...&end=...&as_of=...&timeframe=1d`
@@ -164,6 +174,14 @@ consume the chunk streams oldest-to-newest for causal indicators.
 The streaming endpoints close after the requested historical window is fully
 delivered. The live QMD equivalents remain open and publish newly arriving
 events; the event and bar payload schemas are shared.
+
+The Canvas backend durably materializes completed `scanner-derived` snapshots
+in `q_live.canvas_historical_qmd_scanner_v1`,
+`q_live.canvas_historical_qmd_signal_event_v1`, and
+`q_live.canvas_historical_qmd_snapshot_meta_v1`. Completion is accepted only
+when the non-empty stored indicator count matches metadata. Scanner requests
+return their base universe while the first replay runs, then poll the durable
+artifact; subsequent requests do not replay the session.
 
 `/coverage` verifies selected exchange days from
 `market_sip_compact.events_ordinal_continuity`, the canonical per-symbol,

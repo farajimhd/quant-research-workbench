@@ -15,7 +15,7 @@ use qmd_core::indicators::{
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::OnceCell;
+use tokio::sync::{mpsc, OnceCell};
 
 #[derive(Clone, Debug)]
 pub struct EventWindow {
@@ -78,7 +78,7 @@ pub struct HistoricalMacroChartSnapshot {
     pub timeframe: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct HistoricalCursor {
     pub ordinal: u64,
     pub sip_timestamp_us: u64,
@@ -210,18 +210,20 @@ impl HistoricalEventSource {
 
     pub async fn source_revision(&self, window: &EventWindow) -> Result<SourceRevision, String> {
         validate_window(window)?;
-        if window.tickers.is_empty() {
-            return Err("source revision requires at least one ticker".to_string());
-        }
-        let tickers = window
-            .tickers
-            .iter()
-            .map(|ticker| normalize_ticker(ticker))
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .map(|ticker| sql_literal(&ticker))
-            .collect::<Vec<_>>()
-            .join(",");
+        let ticker_filter = if window.tickers.is_empty() {
+            String::new()
+        } else {
+            let tickers = window
+                .tickers
+                .iter()
+                .map(|ticker| normalize_ticker(ticker))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .map(|ticker| sql_literal(&ticker))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(" AND ticker IN ({tickers})")
+        };
         let last_inclusive = window.end - chrono::Duration::microseconds(1);
         let continuity_table = format!(
             "{}.events_ordinal_continuity",
@@ -242,7 +244,7 @@ impl HistoricalEventSource {
                 FROM {continuity_table}
                 WHERE source_date >= toDate('{}')
                   AND source_date <= toDate('{}')
-                  AND ticker IN ({tickers})
+                  {ticker_filter}
                 GROUP BY ticker, source_date
             )
             FORMAT JSONEachRow"#,
@@ -282,6 +284,144 @@ impl HistoricalEventSource {
         Ok(events)
     }
 
+    pub fn stream_ordered(
+        &self,
+        window: EventWindow,
+        batch_size: usize,
+    ) -> Result<mpsc::Receiver<Result<Vec<LiveCompactEvent>, String>>, String> {
+        validate_window(&window)?;
+        let batch_size = batch_size.clamp(1, 100_000);
+        let (sender, receiver) = mpsc::channel(2);
+        let source = self.clone();
+        tokio::spawn(async move {
+            if let Err(error) = source
+                .stream_scanner_window(window, batch_size, sender.clone())
+                .await
+            {
+                let _ = sender.send(Err(error)).await;
+            }
+        });
+        Ok(receiver)
+    }
+
+    async fn stream_scanner_window(
+        &self,
+        window: EventWindow,
+        batch_size: usize,
+        sender: mpsc::Sender<Result<Vec<LiveCompactEvent>, String>>,
+    ) -> Result<(), String> {
+        let last_inclusive = window.end - chrono::Duration::microseconds(1);
+        if window.start.year() != last_inclusive.year() {
+            return Err("historical Scanner replay cannot cross a source-table year".to_string());
+        }
+        let ticker_filter = if window.tickers.is_empty() {
+            String::new()
+        } else {
+            let tickers = window
+                .tickers
+                .iter()
+                .map(|ticker| normalize_ticker(ticker))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .map(|ticker| sql_literal(&ticker))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(" AND ticker IN ({tickers})")
+        };
+        let sql = format!(
+            r#"SELECT
+                upper(source.ticker) AS ticker, ordinal, event_meta, sip_timestamp_us, price_primary_int,
+                price_secondary_int, size_primary, size_secondary, exchange_primary,
+                exchange_secondary, condition_token_1, condition_token_2,
+                condition_token_3, condition_token_4, condition_token_5,
+                toString(source.event_date) AS event_date
+            FROM {}.{}{} AS source
+            PREWHERE source.event_date >= toDate('{}')
+              AND source.event_date <= toDate('{}')
+              AND source.sip_timestamp_us >= {}
+              AND source.sip_timestamp_us < {}
+            WHERE 1
+              {}
+            ORDER BY upper(source.ticker), source.sip_timestamp_us, source.ordinal
+            FORMAT JSONEachRow"#,
+            self.config.clickhouse_database,
+            self.config.table_prefix,
+            window.start.year(),
+            window.start.date_naive(),
+            last_inclusive.date_naive(),
+            window.start.timestamp_micros(),
+            window.end.timestamp_micros(),
+            ticker_filter,
+        );
+        self.stream_query_rows(sql, batch_size, sender).await
+    }
+
+    async fn stream_query_rows(
+        &self,
+        sql: String,
+        batch_size: usize,
+        sender: mpsc::Sender<Result<Vec<LiveCompactEvent>, String>>,
+    ) -> Result<(), String> {
+        let url = format!(
+            "{}/?database={}&max_query_size=2097152&max_ast_elements=200000&max_expanded_ast_elements=200000",
+            self.config.clickhouse_url,
+            urlencoding::encode(&self.config.clickhouse_database)
+        );
+        let mut request = self
+            .client
+            .post(url)
+            .header("Content-Type", "text/plain; charset=utf-8")
+            .header("X-ClickHouse-User", &self.config.clickhouse_user)
+            .body(sql);
+        if !self.config.clickhouse_password.is_empty() {
+            request = request.header("X-ClickHouse-Key", &self.config.clickhouse_password);
+        }
+        let mut response = request.send().await.map_err(|error| error.to_string())?;
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.map_err(|error| error.to_string())?;
+            return Err(format!("ClickHouse HTTP {status}: {}", text.trim()));
+        }
+        let mut buffer = Vec::<u8>::with_capacity(256 * 1024);
+        let mut batch = Vec::with_capacity(batch_size);
+        while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+            buffer.extend_from_slice(&chunk);
+            let mut consumed = 0usize;
+            while let Some(relative_end) = buffer[consumed..].iter().position(|byte| *byte == b'\n')
+            {
+                let line_end = consumed + relative_end;
+                if line_end > consumed {
+                    let row = serde_json::from_slice::<HistoricalRow>(&buffer[consumed..line_end])
+                        .map_err(|error| format!("invalid historical stream row: {error}"))?;
+                    batch.push(row_to_event(row));
+                    if batch.len() >= batch_size {
+                        sender
+                            .send(Ok(std::mem::take(&mut batch)))
+                            .await
+                            .map_err(|_| "historical stream consumer closed".to_string())?;
+                        batch = Vec::with_capacity(batch_size);
+                    }
+                }
+                consumed = line_end + 1;
+            }
+            if consumed > 0 {
+                buffer.drain(..consumed);
+            }
+        }
+        if !buffer.iter().all(|byte| byte.is_ascii_whitespace()) {
+            let row = serde_json::from_slice::<HistoricalRow>(&buffer)
+                .map_err(|error| format!("invalid final historical stream row: {error}"))?;
+            batch.push(row_to_event(row));
+        }
+        if !batch.is_empty() {
+            sender
+                .send(Ok(batch))
+                .await
+                .map_err(|_| "historical stream consumer closed".to_string())?;
+        }
+        Ok(())
+    }
+
     async fn fetch_ordered(
         &self,
         window: &EventWindow,
@@ -319,6 +459,8 @@ impl HistoricalEventSource {
         let start_us = window.start.timestamp_micros();
         let end_us = window.end.timestamp_micros();
         let last_inclusive = window.end - chrono::Duration::microseconds(1);
+        let start_date = window.start.date_naive();
+        let end_date = last_inclusive.date_naive();
         let selects = (window.start.year()..=last_inclusive.year())
             .map(|year| {
                 format!(
@@ -327,13 +469,17 @@ impl HistoricalEventSource {
                         price_secondary_int, size_primary, size_secondary, exchange_primary,
                         exchange_secondary, condition_token_1, condition_token_2,
                         condition_token_3, condition_token_4, condition_token_5,
-                        toString(event_date) AS event_date
-                    FROM {}.{}{}
-                    PREWHERE sip_timestamp_us >= {} AND sip_timestamp_us < {}
+                        toString(source.event_date) AS event_date
+                    FROM {}.{}{} AS source
+                    PREWHERE source.event_date >= toDate('{}')
+                      AND source.event_date <= toDate('{}')
+                      AND source.sip_timestamp_us >= {} AND source.sip_timestamp_us < {}
                     WHERE 1{}{}"#,
                     self.config.clickhouse_database,
                     self.config.table_prefix,
                     year,
+                    start_date,
+                    end_date,
                     start_us,
                     end_us,
                     ticker_filter,
@@ -540,6 +686,19 @@ impl HistoricalEventSource {
         Ok(parse_market_structure_reference_rows(&text)?
             .remove(&ticker)
             .unwrap_or_default())
+    }
+
+    pub async fn market_structure_reference_levels_all(
+        &self,
+        as_of: DateTime<Utc>,
+    ) -> Result<std::collections::HashMap<String, MarketStructureReferenceLevels>, String> {
+        let sql = market_structure_reference_sql(
+            &self.config.clickhouse_database,
+            &self.config.macro_bars_table,
+            None,
+            as_of,
+        )?;
+        parse_market_structure_reference_rows(&self.query(&sql).await?)
     }
 
     pub async fn persisted_structure_events_before(

@@ -384,6 +384,31 @@ def historical_latest_coverage() -> dict[str, Any]:
     return payload
 
 
+def historical_scanner_derived_snapshot(as_of: datetime) -> dict[str, Any]:
+    """Build or reuse QMD's causal full-market derived Scanner projection."""
+    if as_of.tzinfo is None:
+        raise ValueError("historical Scanner as_of must include a timezone")
+    market_date = as_of.astimezone(ZoneInfo("America/New_York")).date()
+    window = historical_window_preview(
+        mode=RunMode.REPLAY.value,
+        anchor_date=market_date,
+        session_count=1,
+        replay_end_date=market_date,
+    )
+    payload = _historical_gateway_get(
+        "/snapshot/scanner-derived",
+        {
+            "as_of": as_of.isoformat(),
+            "end": window["end"],
+            "start": window["start"],
+        },
+        timeout=float(os.environ.get("QMD_HISTORY_SCANNER_TIMEOUT_SECONDS", "1800")),
+    )
+    if not isinstance(payload, dict):
+        raise RuntimeError("QMD History Scanner derived response must be an object")
+    return payload
+
+
 def historical_bar_history_before(
     *,
     before: date,

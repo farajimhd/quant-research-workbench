@@ -1344,20 +1344,34 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
     }
     const controller = new AbortController();
     const asOf = new Date(chartCutoffMs).toISOString();
+    let retryTimer: number | null = null;
     setScannerSnapshot(null);
     setScannerLoading(true);
     setScannerError("");
-    api<CanvasScannerSnapshot>(`/api/trading/canvas-scanner${query({ as_of: asOf, lookback_minutes: 15, technical_windows: scannerTechnicalWindows })}`, {
-      signal: controller.signal,
-      timeoutMs: 90000,
-    }).then((payload) => { if (!controller.signal.aborted) setScannerSnapshot(payload); })
-      .catch((exc) => {
+    const load = () => {
+      api<CanvasScannerSnapshot>(`/api/trading/canvas-scanner${query({ as_of: asOf, lookback_minutes: 15, technical_windows: scannerTechnicalWindows })}`, {
+        signal: controller.signal,
+        timeoutMs: 90000,
+      }).then((payload) => {
         if (controller.signal.aborted) return;
-        setScannerSnapshot(null);
-        setScannerError(exc instanceof Error ? exc.message : String(exc));
+        setScannerSnapshot(payload);
+        setScannerError("");
+        if (payload.meta?.qmd_derived_status === "building" || payload.meta?.qmd_derived_status === "error") {
+          retryTimer = window.setTimeout(load, payload.meta.qmd_derived_status === "building" ? 5_000 : 60_000);
+        }
       })
-      .finally(() => { if (!controller.signal.aborted) setScannerLoading(false); });
-    return () => controller.abort();
+        .catch((exc) => {
+          if (controller.signal.aborted) return;
+          setScannerSnapshot(null);
+          setScannerError(exc instanceof Error ? exc.message : String(exc));
+        })
+        .finally(() => { if (!controller.signal.aborted) setScannerLoading(false); });
+    };
+    load();
+    return () => {
+      controller.abort();
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+    };
   }, [chartCutoffMs, contextReady, scannerContainerKey, scannerTechnicalWindows]);
 
   const metaForContainer = useMemo(() => (definition: WorkspaceContainerDefinition): WorkspaceWindowMeta => {

@@ -72,6 +72,12 @@ strongest active QMD lifecycle to each security and sorts its Signals preset by
 The rank score is produced by QMD from causal, per-symbol/timeframe normalized
 surprises rather than recomputed in the UI.
 
+Historical Scanner snapshots use QMD History's full-market causal replay and
+are durably materialized by the Canvas backend. Until the first replay
+completes, the Scanner retains its base market rows and exposes a building
+state; it never fills Signal or Indicator columns with frontend-derived
+substitutes.
+
 ## Persistence And Replay
 
 Raw quotes, trades, and bars remain the reproducible source. Persist lifecycle

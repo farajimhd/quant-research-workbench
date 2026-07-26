@@ -96,6 +96,8 @@ The scanner market universe and the signal event stream are separate
 collections:
 
 - scanner rows remain one row per security;
+- the QMD indicator projection publishes the latest causal 100 ms observation,
+  while event-native state is advanced by every eligible event;
 - the strongest active QMD signal and active-signal count may be joined onto a
   scanner row for sorting and filtering;
 - `signal_rows` contains canonical lifecycle events for Signal Stream;
@@ -130,6 +132,8 @@ migration.
   new market signal.
 - Missing evidence remains missing; it is not converted to neutral evidence.
 - QMD signals never bypass strategy risk, account, or broker authorities.
-- Full-universe historical Signal Stream requires a causal materialized
-  cross-sectional signal artifact. It must not be approximated with per-ticker
-  frontend rules.
+- Full-universe historical Signal Stream uses QMD History's
+  `scanner-derived` replay and the Canvas-owned durable cross-sectional
+  artifact. The replay consumes canonical compact events through the same Rust
+  indicator and market-signal engines as live QMD; the frontend never
+  approximates it with per-ticker rules.

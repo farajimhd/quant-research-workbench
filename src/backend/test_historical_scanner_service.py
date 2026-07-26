@@ -3,7 +3,9 @@ import unittest
 from unittest.mock import patch
 
 from src.backend.historical_scanner_service import (
+    _qmd_snapshot_complete,
     historical_scanner_fundamental_projection,
+    historical_scanner_qmd_projection,
     historical_scanner_reference_projection,
     historical_scanner_snapshot,
 )
@@ -26,6 +28,122 @@ class FakeClient:
 
 
 class HistoricalScannerServiceTest(unittest.TestCase):
+    def test_qmd_completion_rejects_empty_and_count_mismatched_artifacts(self) -> None:
+        class CompletionClient:
+            def __init__(self, indicator_count: int, stored_count: int) -> None:
+                self.indicator_count = indicator_count
+                self.stored_count = stored_count
+
+            def execute(self, sql: str, **_kwargs) -> str:
+                if "FROM q_live.canvas_historical_qmd_snapshot_meta_v1 FINAL" in sql:
+                    return (
+                        f'{{"complete":1,"indicator_count":{self.indicator_count}}}\n'
+                    )
+                return f'{{"indicator_count":{self.stored_count}}}\n'
+
+        snapshot_at = datetime(2026, 7, 17, 13, 45, tzinfo=UTC)
+        self.assertFalse(
+            _qmd_snapshot_complete(CompletionClient(0, 0), snapshot_at, "revision")
+        )
+        self.assertFalse(
+            _qmd_snapshot_complete(CompletionClient(2, 1), snapshot_at, "revision")
+        )
+        self.assertTrue(
+            _qmd_snapshot_complete(CompletionClient(2, 2), snapshot_at, "revision")
+        )
+
+    def test_qmd_projection_materializes_canonical_indicators_and_ranked_signals(self) -> None:
+        class QmdClient:
+            calls: list[str] = []
+
+            def __init__(self, *_args) -> None:
+                pass
+
+            def execute(self, sql: str, **_kwargs) -> str:
+                self.calls.append(sql)
+                if f"FROM q_live.canvas_historical_qmd_snapshot_meta_v1 FINAL" in sql:
+                    return '{"complete":0}\n'
+                if "SELECT ticker, indicator_json, active_signals_json" in sql:
+                    return (
+                        '{"ticker":"AAPL","indicator_json":"{\\"sym\\":\\"AAPL\\",'
+                        '\\"timeframe\\":\\"10s\\",\\"bar_end\\":\\"2026-07-17T13:45:00Z\\",'
+                        '\\"flow_structure_composite_score\\":0.7}",'
+                        '"active_signals_json":"[{\\"event_id\\":\\"event-1\\",'
+                        '\\"signal_id\\":\\"signal-1\\",\\"signal_key\\":'
+                        '\\"price_volume_expansion\\",\\"ticker\\":\\"AAPL\\",'
+                        '\\"working_timeframe\\":\\"1s\\",\\"state\\":\\"triggered\\",'
+                        '\\"direction\\":\\"bullish\\",\\"score\\":0.8,'
+                        '\\"rank_score\\":0.91,\\"confidence\\":0.85,'
+                        '\\"effective_at\\":\\"2026-07-17T13:45:00Z\\"}]"}\n'
+                    )
+                if "SELECT event_json" in sql:
+                    return (
+                        '{"event_json":"{\\"event_id\\":\\"event-1\\",'
+                        '\\"signal_id\\":\\"signal-1\\",\\"signal_key\\":'
+                        '\\"price_volume_expansion\\",\\"ticker\\":\\"AAPL\\",'
+                        '\\"working_timeframe\\":\\"1s\\",\\"state\\":\\"triggered\\",'
+                        '\\"direction\\":\\"bullish\\",\\"score\\":0.8,'
+                        '\\"rank_score\\":0.91,\\"confidence\\":0.85,'
+                        '\\"effective_at\\":\\"2026-07-17T13:45:00Z\\"}"}\n'
+                    )
+                return ""
+
+        payload = {
+            "active_signals": [
+                {
+                    "event_id": "event-1",
+                    "signal_id": "signal-1",
+                    "signal_key": "price_volume_expansion",
+                    "ticker": "AAPL",
+                    "working_timeframe": "1s",
+                    "state": "triggered",
+                    "direction": "bullish",
+                    "score": 0.8,
+                    "rank_score": 0.91,
+                    "confidence": 0.85,
+                    "effective_at": "2026-07-17T13:45:00Z",
+                }
+            ],
+            "engine_version": "qmd-market-signal-v3",
+            "event_count": 1200,
+            "indicators": [
+                {
+                    "sym": "AAPL",
+                    "timeframe": "10s",
+                    "bar_end": "2026-07-17T13:45:00Z",
+                    "flow_structure_composite_score": 0.7,
+                }
+            ],
+            "recent_signal_events": [],
+            "schema_version": "canvas_historical_qmd_snapshot_v3",
+            "source_revision": {"token": "7:1200:2026-07-17 14:00:00"},
+        }
+        with (
+            patch("src.backend.historical_scanner_service.ClickHouseHttpClient", QmdClient),
+            patch(
+                "src.backend.historical_scanner_service.historical_scanner_derived_snapshot",
+                return_value=payload,
+            ),
+        ):
+            projection, signal_rows, meta = historical_scanner_qmd_projection(
+                datetime(2026, 7, 17, 13, 45, tzinfo=UTC),
+                source_revision="7:1200:2026-07-17 14:00:00",
+            )
+
+        self.assertEqual(projection["AAPL"]["indicator_type"], "qmd")
+        self.assertEqual(projection["AAPL"]["flow_structure_composite_score"], 0.7)
+        self.assertEqual(projection["AAPL"]["signal_type"], "price_volume_expansion")
+        self.assertEqual(projection["AAPL"]["signal_rank_score"], 0.91)
+        self.assertEqual(projection["AAPL"]["active_signal_count"], 1)
+        self.assertEqual(signal_rows[0]["signal_event_id"], "event-1")
+        self.assertEqual(meta["qmd_indicator_row_count"], 1)
+        self.assertTrue(
+            any(
+                "INSERT INTO q_live.canvas_historical_qmd_snapshot_meta_v1" in sql
+                for sql in QmdClient.calls
+            )
+        )
+
     def test_full_universe_snapshot_is_materialized_once_and_revision_keyed(self) -> None:
         FakeClient.calls = []
         with patch("src.backend.historical_scanner_service.ClickHouseHttpClient", FakeClient):

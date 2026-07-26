@@ -6,7 +6,18 @@ import { MarketTime } from "./MarketTime";
 import { TickerLogo, useTickerPresentations } from "./TickerIdentity";
 
 export type ScreenerRow = Record<string, unknown>;
-export type ScannerSnapshotMeta = { complete_universe?: boolean; field_coverage?: Record<string, number>; lookback_minutes?: number; materialized?: boolean; row_count?: number; snapshot_at_utc?: string };
+export type ScannerSnapshotMeta = {
+  complete_universe?: boolean;
+  field_coverage?: Record<string, number>;
+  lookback_minutes?: number;
+  materialized?: boolean;
+  qmd_derived_error?: string;
+  qmd_derived_status?: "building" | "error" | "ready";
+  qmd_indicator_row_count?: number;
+  qmd_signal_event_count?: number;
+  row_count?: number;
+  snapshot_at_utc?: string;
+};
 export type ScannerTimeframe = "100ms" | "1s" | "5s" | "10s" | "30s" | "1m" | "5m" | "15m" | "30m" | "1h" | "1d";
 export type TechnicalMetric = "change_pct" | "dollar_volume" | "high" | "low" | "quote_count" | "range_pct" | "relative_volume" | "trade_count" | "volume" | "vwap" | "vwap_distance_pct";
 export type ScannerSessionAnchor = "extended_session" | "regular_session";
@@ -188,6 +199,17 @@ const WATCHLIST_DEFAULT_COLUMNS = ["ticker", "last", "change_pct", "change_5m_pc
 export function MarketScannerContainer({ asOf, meta, onSettingsChange, onTickerSelect, rows, settings }: { asOf: string; meta?: ScannerSnapshotMeta; onSettingsChange: (patch: Partial<MarketScannerSettings>) => void; onTickerSelect: (ticker: string) => void; rows: ScreenerRow[]; settings: MarketScannerSettings }) {
   const normalizedRows = useMemo(() => normalizeScannerRows(rows), [rows]);
   const preset = normalizeMarketScannerPreset(settings.preset);
+  const qmdStatus = meta?.qmd_derived_status;
+  const qmdPreset = preset === "Signals" || preset === "Indicators";
+  const subtitle = qmdPreset && qmdStatus === "building"
+    ? "Building the causal QMD cross-section from canonical events · market rows remain available while replay completes"
+    : qmdPreset && qmdStatus === "error"
+      ? `QMD cross-section unavailable · ${meta?.qmd_derived_error || "the replay will retry automatically"}`
+      : qmdPreset && qmdStatus === "ready"
+        ? `${Number(meta?.qmd_indicator_row_count || 0).toLocaleString()} indicator rows · ${Number(meta?.qmd_signal_event_count || 0).toLocaleString()} recent signal events`
+        : meta?.complete_universe
+          ? `Full historical universe · ${meta.lookback_minutes ?? 15}-minute discovery window · cached interval analytics`
+          : "Scanner universe unavailable or incomplete";
   return <MarketListSurface
     asOf={asOf}
     columns={withLockedColumns(settings.columns.length ? settings.columns : SCANNER_PRESETS[preset] ?? SCANNER_PRESETS.Overview, LOCKED_MARKET_LIST_COLUMNS)}
@@ -204,8 +226,8 @@ export function MarketScannerContainer({ asOf, meta, onSettingsChange, onTickerS
     presets={Object.keys(SCANNER_PRESETS)}
     preset={preset}
     rows={normalizedRows}
-    sortColumn={preset === "Signals" ? "signal_rank_score" : "change_pct"}
-    subtitle={meta?.complete_universe ? `Full historical universe · ${meta.lookback_minutes ?? 15}-minute discovery window · cached interval analytics` : "Scanner universe unavailable or incomplete"}
+    sortColumn={preset === "Signals" ? "signal_rank_score" : preset === "Indicators" ? "flow_structure_composite_confidence" : "change_pct"}
+    subtitle={subtitle}
     title="Scanner"
   />;
 }
@@ -608,6 +630,7 @@ function normalizeScannerRows(rows: ScreenerRow[]) {
       microstructure_unified_confidence_pct: numberValue(row.microstructure_unified_confidence) * 100,
       flow_structure_composite_confidence_pct: numberValue(row.flow_structure_composite_confidence) * 100,
       qmd_structure_confidence_pct: numberValue(row.qmd_structure_confidence) * 100,
+      signal_confidence_pct: numberValue(row.signal_confidence) * 100,
       ticker,
     };
   });

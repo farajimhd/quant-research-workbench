@@ -5,6 +5,8 @@ import os
 import re
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
+from threading import Lock, Thread
+from time import monotonic
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -16,6 +18,10 @@ from research.mlops.clickhouse import (
     sql_string,
 )
 from src.backend.real_live_market_data.startup import logo_asset_url
+from src.backend.qmd_gateway_client import (
+    normalize_qmd_indicator_scanner_row,
+    normalize_qmd_market_signal,
+)
 from src.backend.ticker_facts_service import (
     FUNDAMENTAL_TAGS,
     XBRL_HISTORY_START,
@@ -25,12 +31,17 @@ from src.backend.ticker_facts_service import (
     share_base_card,
     valuation_card_from_facts,
 )
+from src.backend.trading_runtime_service import historical_scanner_derived_snapshot
 
 
 SCANNER_SCHEMA_VERSION = "canvas_historical_scanner_v1"
 SCANNER_TABLE = "q_live.canvas_historical_scanner_v1"
 SCANNER_TECHNICAL_SCHEMA_VERSION = "canvas_scanner_technical_v3"
 SCANNER_TECHNICAL_TABLE = "q_live.canvas_scanner_technical_v3"
+SCANNER_QMD_SCHEMA_VERSION = "canvas_historical_qmd_snapshot_v3"
+SCANNER_QMD_TABLE = "q_live.canvas_historical_qmd_scanner_v1"
+SCANNER_QMD_EVENT_TABLE = "q_live.canvas_historical_qmd_signal_event_v1"
+SCANNER_QMD_META_TABLE = "q_live.canvas_historical_qmd_snapshot_meta_v1"
 IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 NEW_YORK = ZoneInfo("America/New_York")
 EXTENDED_SESSION_START_MINUTE = 4 * 60
@@ -144,6 +155,9 @@ _DERIVED_FUNDAMENTAL_KEYS = {
     "dilution": "fundamental_dilution_pct", "cash_conversion": "fundamental_cash_conversion",
     "research_intensity": "fundamental_research_intensity_pct", "sga_intensity": "fundamental_sga_intensity_pct",
 }
+
+_QMD_MATERIALIZATION_LOCK = Lock()
+_QMD_MATERIALIZATIONS: dict[str, dict[str, Any]] = {}
 
 
 def historical_scanner_snapshot(as_of: datetime, *, lookback_minutes: int = 15) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -574,6 +588,163 @@ def historical_scanner_fundamental_projection(
     return projection
 
 
+def historical_scanner_qmd_projection(
+    as_of: datetime,
+    *,
+    source_revision: str,
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Return the durable, canonical QMD cross-sectional replay at ``as_of``.
+
+    QMD History owns calculation with the shared Rust engines. This service
+    owns only durable Canvas materialization and the row-shaped application
+    projection, so repeated UI requests never replay the market session.
+    """
+    if as_of.tzinfo is None:
+        raise ValueError("Historical Scanner QMD clock must be timezone-aware.")
+    snapshot_at = as_of.astimezone(UTC)
+    client = ClickHouseHttpClient(
+        default_clickhouse_url(),
+        default_clickhouse_user(),
+        default_clickhouse_password(),
+    )
+    _ensure_qmd_snapshot_tables(client)
+    if not _qmd_snapshot_complete(client, snapshot_at, source_revision):
+        payload = historical_scanner_derived_snapshot(snapshot_at)
+        payload_revision = str((payload.get("source_revision") or {}).get("token") or "")
+        if payload_revision != source_revision:
+            raise RuntimeError(
+                "QMD History source revision changed while the Scanner snapshot was being built; "
+                f"expected {source_revision!r}, received {payload_revision!r}."
+            )
+        if str(payload.get("schema_version") or "") != SCANNER_QMD_SCHEMA_VERSION:
+            raise RuntimeError(
+                "QMD History Scanner schema mismatch: "
+                f"expected {SCANNER_QMD_SCHEMA_VERSION}, received {payload.get('schema_version')!r}."
+            )
+        _materialize_qmd_snapshot(
+            client,
+            snapshot_at=snapshot_at,
+            source_revision=source_revision,
+            payload=payload,
+        )
+    cached_rows = _cached_qmd_rows(client, snapshot_at, source_revision)
+    projection: dict[str, dict[str, Any]] = {}
+    active_signal_count = 0
+    for cached in cached_rows:
+        ticker = str(cached.get("ticker") or "").strip().upper()
+        if not ticker:
+            continue
+        indicator = json.loads(str(cached.get("indicator_json") or "{}"))
+        active_signals = json.loads(str(cached.get("active_signals_json") or "[]"))
+        normalized_signals = [
+            normalize_qmd_market_signal(row)
+            for row in active_signals
+            if isinstance(row, dict)
+        ]
+        strongest = max(
+            normalized_signals,
+            key=lambda row: (
+                float(row.get("signal_rank_score") or 0),
+                float(row.get("signal_confidence") or 0),
+            ),
+            default={},
+        )
+        active_signal_count += len(normalized_signals)
+        projection[ticker] = {
+            **normalize_qmd_indicator_scanner_row(indicator),
+            **strongest,
+            "active_signal_count": len(normalized_signals),
+        }
+    signal_rows = [
+        normalize_qmd_market_signal(row)
+        for row in _cached_qmd_signal_events(client, snapshot_at, source_revision)
+        if isinstance(row, dict)
+    ]
+    return projection, signal_rows, {
+        "qmd_active_signal_count": active_signal_count,
+        "qmd_derived_materialized": True,
+        "qmd_derived_schema_version": SCANNER_QMD_SCHEMA_VERSION,
+        "qmd_indicator_row_count": len(projection),
+        "qmd_signal_event_count": len(signal_rows),
+    }
+
+
+def historical_scanner_qmd_projection_or_schedule(
+    as_of: datetime,
+    *,
+    source_revision: str,
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Read a durable QMD projection or start one bounded background build."""
+    if as_of.tzinfo is None:
+        raise ValueError("Historical Scanner QMD clock must be timezone-aware.")
+    snapshot_at = as_of.astimezone(UTC)
+    client = ClickHouseHttpClient(
+        default_clickhouse_url(),
+        default_clickhouse_user(),
+        default_clickhouse_password(),
+    )
+    _ensure_qmd_snapshot_tables(client)
+    if _qmd_snapshot_complete(client, snapshot_at, source_revision):
+        projection, signals, meta = historical_scanner_qmd_projection(
+            snapshot_at,
+            source_revision=source_revision,
+        )
+        return projection, signals, {**meta, "qmd_derived_status": "ready"}
+    key = f"{_clock(snapshot_at)}|{source_revision}|{SCANNER_QMD_SCHEMA_VERSION}"
+    now = monotonic()
+    with _QMD_MATERIALIZATION_LOCK:
+        state = _QMD_MATERIALIZATIONS.get(key)
+        retryable = state is None or (
+            state.get("status") == "error"
+            and now - float(state.get("finished_monotonic") or 0) >= 60
+        )
+        if retryable:
+            state = {"error": "", "started_monotonic": now, "status": "building"}
+            _QMD_MATERIALIZATIONS[key] = state
+            Thread(
+                target=_run_qmd_materialization,
+                args=(key, snapshot_at, source_revision),
+                daemon=True,
+                name=f"canvas-qmd-{snapshot_at:%Y%m%d-%H%M}",
+            ).start()
+        status = str(state.get("status") or "building")
+        error = str(state.get("error") or "")
+    return {}, [], {
+        "qmd_derived_error": error,
+        "qmd_derived_materialized": False,
+        "qmd_derived_schema_version": SCANNER_QMD_SCHEMA_VERSION,
+        "qmd_derived_status": status,
+        "qmd_indicator_row_count": 0,
+        "qmd_signal_event_count": 0,
+    }
+
+
+def _run_qmd_materialization(
+    key: str,
+    snapshot_at: datetime,
+    source_revision: str,
+) -> None:
+    try:
+        historical_scanner_qmd_projection(
+            snapshot_at,
+            source_revision=source_revision,
+        )
+    except Exception as exc:
+        with _QMD_MATERIALIZATION_LOCK:
+            _QMD_MATERIALIZATIONS[key] = {
+                "error": str(exc),
+                "finished_monotonic": monotonic(),
+                "status": "error",
+            }
+        return
+    with _QMD_MATERIALIZATION_LOCK:
+        _QMD_MATERIALIZATIONS[key] = {
+            "error": "",
+            "finished_monotonic": monotonic(),
+            "status": "ready",
+        }
+
+
 def _ensure_snapshot_table(client: ClickHouseHttpClient) -> None:
     client.execute(
         f"""
@@ -598,6 +769,226 @@ def _ensure_snapshot_table(client: ClickHouseHttpClient) -> None:
         """
     )
     client.execute(f"ALTER TABLE {SCANNER_TABLE} ADD COLUMN IF NOT EXISTS schema_version LowCardinality(String) DEFAULT '' AFTER lookback_minutes")
+
+
+def _ensure_qmd_snapshot_tables(client: ClickHouseHttpClient) -> None:
+    client.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCANNER_QMD_TABLE}
+        (
+            snapshot_at_utc DateTime64(6, 'UTC'),
+            schema_version LowCardinality(String),
+            source_revision String,
+            ticker LowCardinality(String),
+            indicator_json String,
+            active_signals_json String,
+            materialized_at_utc DateTime64(6, 'UTC') DEFAULT now64(6)
+        )
+        ENGINE = ReplacingMergeTree(materialized_at_utc)
+        PARTITION BY toYYYYMM(snapshot_at_utc)
+        ORDER BY (snapshot_at_utc, schema_version, source_revision, ticker)
+        """
+    )
+    client.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCANNER_QMD_EVENT_TABLE}
+        (
+            snapshot_at_utc DateTime64(6, 'UTC'),
+            schema_version LowCardinality(String),
+            source_revision String,
+            event_id String,
+            event_json String,
+            materialized_at_utc DateTime64(6, 'UTC') DEFAULT now64(6)
+        )
+        ENGINE = ReplacingMergeTree(materialized_at_utc)
+        PARTITION BY toYYYYMM(snapshot_at_utc)
+        ORDER BY (snapshot_at_utc, schema_version, source_revision, event_id)
+        """
+    )
+    client.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCANNER_QMD_META_TABLE}
+        (
+            snapshot_at_utc DateTime64(6, 'UTC'),
+            schema_version LowCardinality(String),
+            source_revision String,
+            engine_version String,
+            event_count UInt64,
+            indicator_count UInt32,
+            active_signal_count UInt32,
+            signal_event_count UInt32,
+            complete UInt8,
+            materialized_at_utc DateTime64(6, 'UTC') DEFAULT now64(6)
+        )
+        ENGINE = ReplacingMergeTree(materialized_at_utc)
+        PARTITION BY toYYYYMM(snapshot_at_utc)
+        ORDER BY (snapshot_at_utc, schema_version, source_revision)
+        """
+    )
+
+
+def _qmd_snapshot_complete(
+    client: ClickHouseHttpClient,
+    snapshot_at: datetime,
+    source_revision: str,
+) -> bool:
+    rows = _json_rows(
+        client.execute(
+            f"""
+            SELECT complete, indicator_count
+            FROM {SCANNER_QMD_META_TABLE} FINAL
+            WHERE snapshot_at_utc = toDateTime64({sql_string(_clock(snapshot_at))}, 6, 'UTC')
+              AND schema_version = {sql_string(SCANNER_QMD_SCHEMA_VERSION)}
+              AND source_revision = {sql_string(source_revision)}
+            LIMIT 1
+            FORMAT JSONEachRow
+            """
+        )
+    )
+    if not rows or int(rows[0].get("complete") or 0) != 1:
+        return False
+    expected_indicators = int(rows[0].get("indicator_count") or 0)
+    if expected_indicators <= 0:
+        return False
+    stored = _json_rows(
+        client.execute(
+            f"""
+            SELECT count() AS indicator_count
+            FROM {SCANNER_QMD_TABLE} FINAL
+            WHERE snapshot_at_utc = toDateTime64({sql_string(_clock(snapshot_at))}, 6, 'UTC')
+              AND schema_version = {sql_string(SCANNER_QMD_SCHEMA_VERSION)}
+              AND source_revision = {sql_string(source_revision)}
+            FORMAT JSONEachRow
+            """
+        )
+    )
+    return bool(
+        stored
+        and int(stored[0].get("indicator_count") or 0) == expected_indicators
+    )
+
+
+def _cached_qmd_rows(
+    client: ClickHouseHttpClient,
+    snapshot_at: datetime,
+    source_revision: str,
+) -> list[dict[str, Any]]:
+    return _json_rows(
+        client.execute(
+            f"""
+            SELECT ticker, indicator_json, active_signals_json
+            FROM {SCANNER_QMD_TABLE} FINAL
+            WHERE snapshot_at_utc = toDateTime64({sql_string(_clock(snapshot_at))}, 6, 'UTC')
+              AND schema_version = {sql_string(SCANNER_QMD_SCHEMA_VERSION)}
+              AND source_revision = {sql_string(source_revision)}
+            ORDER BY ticker
+            LIMIT 20000
+            FORMAT JSONEachRow
+            """
+        )
+    )
+
+
+def _cached_qmd_signal_events(
+    client: ClickHouseHttpClient,
+    snapshot_at: datetime,
+    source_revision: str,
+) -> list[dict[str, Any]]:
+    rows = _json_rows(
+        client.execute(
+            f"""
+            SELECT event_json
+            FROM {SCANNER_QMD_EVENT_TABLE} FINAL
+            WHERE snapshot_at_utc = toDateTime64({sql_string(_clock(snapshot_at))}, 6, 'UTC')
+              AND schema_version = {sql_string(SCANNER_QMD_SCHEMA_VERSION)}
+              AND source_revision = {sql_string(source_revision)}
+            ORDER BY event_id
+            LIMIT 20000
+            FORMAT JSONEachRow
+            """
+        )
+    )
+    return [json.loads(str(row.get("event_json") or "{}")) for row in rows]
+
+
+def _materialize_qmd_snapshot(
+    client: ClickHouseHttpClient,
+    *,
+    snapshot_at: datetime,
+    source_revision: str,
+    payload: dict[str, Any],
+) -> None:
+    active_by_ticker: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for signal in payload.get("active_signals") or []:
+        if not isinstance(signal, dict):
+            continue
+        ticker = str(signal.get("ticker") or "").strip().upper()
+        if ticker:
+            active_by_ticker[ticker].append(signal)
+    indicator_rows = [
+        {
+            "snapshot_at_utc": _clock(snapshot_at),
+            "schema_version": SCANNER_QMD_SCHEMA_VERSION,
+            "source_revision": source_revision,
+            "ticker": ticker,
+            "indicator_json": json.dumps(indicator, separators=(",", ":"), sort_keys=True),
+            "active_signals_json": json.dumps(
+                active_by_ticker.get(ticker, []),
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+        }
+        for indicator in payload.get("indicators") or []
+        if isinstance(indicator, dict)
+        if (ticker := str(indicator.get("sym") or "").strip().upper())
+    ]
+    event_rows = [
+        {
+            "snapshot_at_utc": _clock(snapshot_at),
+            "schema_version": SCANNER_QMD_SCHEMA_VERSION,
+            "source_revision": source_revision,
+            "event_id": str(event.get("event_id") or ""),
+            "event_json": json.dumps(event, separators=(",", ":"), sort_keys=True),
+        }
+        for event in payload.get("recent_signal_events") or []
+        if isinstance(event, dict) and event.get("event_id")
+    ]
+    _insert_json_rows(client, SCANNER_QMD_TABLE, indicator_rows)
+    _insert_json_rows(client, SCANNER_QMD_EVENT_TABLE, event_rows)
+    active_signal_count = sum(len(rows) for rows in active_by_ticker.values())
+    _insert_json_rows(
+        client,
+        SCANNER_QMD_META_TABLE,
+        [
+            {
+                "snapshot_at_utc": _clock(snapshot_at),
+                "schema_version": SCANNER_QMD_SCHEMA_VERSION,
+                "source_revision": source_revision,
+                "engine_version": str(payload.get("engine_version") or ""),
+                "event_count": int(payload.get("event_count") or 0),
+                "indicator_count": len(indicator_rows),
+                "active_signal_count": active_signal_count,
+                "signal_event_count": len(event_rows),
+                "complete": 1,
+            }
+        ],
+    )
+
+
+def _insert_json_rows(
+    client: ClickHouseHttpClient,
+    table: str,
+    rows: list[dict[str, Any]],
+    *,
+    batch_size: int = 1_000,
+) -> None:
+    for start in range(0, len(rows), batch_size):
+        body = "\n".join(
+            json.dumps(row, separators=(",", ":"), sort_keys=True)
+            for row in rows[start : start + batch_size]
+        )
+        if body:
+            client.execute(f"INSERT INTO {table} FORMAT JSONEachRow\n{body}")
 
 
 def _ensure_technical_snapshot_table(client: ClickHouseHttpClient) -> None:

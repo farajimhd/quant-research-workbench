@@ -25,6 +25,7 @@ from src.backend.historical_scanner_service import (
     historical_scanner_reference_projection,
     historical_scanner_snapshot,
     historical_scanner_technical_projection,
+    historical_scanner_qmd_projection_or_schedule,
 )
 from src.backend.news_classification import news_classification_sql
 from src.trading_runtime.domain import BrokerAccount, BrokerEventEnvelope, BrokerEventType, BrokerProvider, TradingMode
@@ -124,6 +125,7 @@ def scanner_snapshot_payload(
     errors: dict[str, str] = {}
     news: list[dict[str, Any]] = []
     sec: list[dict[str, Any]] = []
+    signal_rows: list[dict[str, Any]] = []
     prices_by_ticker = {
         str(row.get("symbol") or row.get("ticker") or "").strip().upper(): float(row.get("last") or 0)
         for row in rows
@@ -145,6 +147,11 @@ def scanner_snapshot_payload(
                 prices_by_ticker=prices_by_ticker,
             ),
             "news": executor.submit(_query_scanner_news_intelligence, cutoff),
+            "qmd": executor.submit(
+                historical_scanner_qmd_projection_or_schedule,
+                as_of,
+                source_revision=str(meta.get("source_revision") or ""),
+            ),
             "reference": executor.submit(historical_scanner_reference_projection, as_of),
             "sec": executor.submit(_query_scanner_sec_intelligence, cutoff),
         }
@@ -156,6 +163,11 @@ def scanner_snapshot_payload(
                         row.update(projection.get(str(row.get("symbol") or "").upper(), {}))
                 elif name == "news":
                     news = future.result()
+                elif name == "qmd":
+                    projection, signal_rows, qmd_meta = future.result()
+                    for row in rows:
+                        row.update(projection.get(str(row.get("symbol") or "").upper(), {}))
+                    meta = {**meta, **qmd_meta}
                 elif name == "reference":
                     projection = future.result()
                     for row in rows:
@@ -172,6 +184,15 @@ def scanner_snapshot_payload(
         "company_name", "exchange", "country", "sector", "market_cap", "shares_outstanding",
         "float_shares", "short_interest", "short_crowding_pct", "days_to_cover",
         *SCANNER_FUNDAMENTAL_FIELDS,
+        "indicator_type", "indicator_producer", "indicator_timeframe",
+        "flow_structure_composite_score", "flow_structure_composite_confidence",
+        "flow_structure_composite_bias", "flow_structure_composite_reason",
+        "microstructure_unified_signal", "microstructure_unified_confidence",
+        "microstructure_signed_volume_imbalance", "microstructure_level1_ofi",
+        "microstructure_queue_imbalance", "qmd_structure_score", "qmd_structure_confidence",
+        "signal_domain", "signal_producer", "signal_type", "direction", "signal_score",
+        "signal_rank_score", "signal_confidence", "active_signal_count", "working_timeframe",
+        "input_basis", "update_trigger", "evidence",
         *sorted(
             {
                 field
@@ -194,6 +215,7 @@ def scanner_snapshot_payload(
         "errors": errors,
         "meta": meta,
         "rows": rows,
+        "signal_rows": signal_rows,
     }
 
 

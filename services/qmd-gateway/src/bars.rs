@@ -517,6 +517,34 @@ impl SharedBarStore {
             .await
     }
 
+    /// Apply one ordered event through the same ticker-sharded bar authority
+    /// used by the live routers.
+    ///
+    /// Historical cross-sectional replay calls this directly so it can retain
+    /// a bounded latest-state projection without creating thousands of
+    /// per-symbol router tasks or copying the bar implementation.
+    pub async fn apply_event(&self, event: &MarketEvent) -> Vec<BarRow> {
+        self.shard_for_ticker(event.ticker()).apply_event(event).await
+    }
+
+    /// Finalize every ticker shard at an explicit event-time boundary.
+    ///
+    /// Live routers finalize against the wall clock. Historical replay must
+    /// instead use its requested causal cutoff.
+    pub async fn finalize_due(&self, as_of: DateTime<Utc>) -> Vec<BarRow> {
+        let mut rows = Vec::new();
+        for shard in self.shards.iter() {
+            rows.extend(shard.finalize_due(as_of).await);
+        }
+        rows.sort_by(|left, right| {
+            left.bar_end
+                .cmp(&right.bar_end)
+                .then_with(|| left.sym.cmp(&right.sym))
+                .then_with(|| left.timeframe.cmp(&right.timeframe))
+        });
+        rows
+    }
+
     pub async fn seed_structure_events(&self, events: Vec<GenericStructureEvent>) {
         let mut by_shard =
             vec![HashMap::<String, Vec<GenericStructureEvent>>::new(); self.shards.len()];

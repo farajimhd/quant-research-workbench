@@ -3,6 +3,7 @@ use crate::cache::{
     HISTORICAL_ENGINE_VERSION,
 };
 use crate::config::HistoricalGatewayConfig;
+use crate::scanner::{HistoricalScannerDerivedCache, HistoricalScannerDerivedSnapshot};
 use crate::source::{
     EventCoverage, EventWindow, HistoricalCursor, HistoricalEventSource, LatestEventCoverage,
 };
@@ -29,6 +30,7 @@ use tower_http::cors::CorsLayer;
 pub struct AppState {
     pub cache: HistoricalDerivedCache,
     pub config: HistoricalGatewayConfig,
+    pub scanner: HistoricalScannerDerivedCache,
     pub source: HistoricalEventSource,
 }
 
@@ -73,6 +75,13 @@ struct ProductQuery {
     resolution: Option<String>,
     start: String,
     timeframe: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ScannerDerivedQuery {
+    as_of: String,
+    end: String,
+    start: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,6 +131,7 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/snapshot/bars/{ticker}", get(bar_snapshot))
         .route("/snapshot/chart-bars/{ticker}", get(chart_bar_snapshot))
+        .route("/snapshot/scanner-derived", get(scanner_derived_snapshot))
         .route(
             "/snapshot/chart-macro-bars/{ticker}",
             get(chart_macro_bar_snapshot),
@@ -139,6 +149,21 @@ pub fn app(state: AppState) -> Router {
         .route("/stream/derived/{ticker}", get(derived_stream))
         .layer(CorsLayer::permissive())
         .with_state(Arc::new(state))
+}
+
+async fn scanner_derived_snapshot(
+    Query(query): Query<ScannerDerivedQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<HistoricalScannerDerivedSnapshot>, ApiError> {
+    let as_of = parse_timestamp(&query.as_of)?;
+    let mut replay_window = window(&query.start, &query.end, Vec::new())?;
+    replay_window.end = replay_window.end.min(as_of);
+    state
+        .scanner
+        .snapshot(replay_window, as_of)
+        .await
+        .map(Json)
+        .map_err(service_error)
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Result<Json<HealthPayload>, ApiError> {
