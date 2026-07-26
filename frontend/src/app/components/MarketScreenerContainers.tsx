@@ -135,14 +135,14 @@ const FIELD_CATALOG: FieldDefinition[] = [
   field("direction", "Direction", "Signal event", "derived", "text", "Bullish, bearish, or neutral direction assigned by the rule owner."),
   field("working_timeframe", "Working interval", "Signal event", "raw", "text", "Market-data interval on which the reusable signal rule was evaluated."),
   field("signal_score", "Score", "Signal event", "derived", "number", "Normalized signed or directional evidence score supplied by the signal authority."),
-  field("signal_rank_score", "Rank score", "Signal event", "derived", "score", "QMD-calibrated causal-surprise strength used to compare and rank active observations across symbols and methods."),
+  field("signal_rank_score", "Rank score", "Signal event", "derived", "score", "Comparable rank supplied by the signal authority for ordering active observations across symbols and methods."),
   field("signal_confidence_pct", "Confidence", "Signal event", "derived", "percentPlain", "Evidence completeness and agreement, not forecast win probability."),
-  field("active_signal_count", "Active signals", "Signal event", "derived", "integer", "Count of currently active reusable QMD market signals for this ticker."),
+  field("active_signal_count", "Active signals", "Signal event", "derived", "integer", "Count of currently active reusable signals for this ticker."),
   field("action", "Strategy action", "Signal event", "derived", "text", "Enter, exit, hold, or wait interpretation owned by the strategy."),
   field("magnitude", "Magnitude", "Signal event", "derived", "percent", "Observed move or normalized event magnitude."),
   field("source", "Authority", "Signal event", "raw", "text", "Market-derived rule or durable strategy runtime authority."),
   field("evidence", "Evidence", "Signal event", "derived", "text", "Compact explanation of the inputs that triggered the row."),
-  field("indicator_timeframe", "QMD interval", "Indicators · QMD", "raw", "text", "Closed publication interval for the cross-sectional event-native QMD indicator state."),
+  field("indicator_timeframe", "Indicator interval", "Indicator taxonomy", "raw", "text", "Closed publication interval for the cross-sectional indicator state."),
   field("indicator_type", "Indicator type", "Indicator taxonomy", "raw", "text", "Technical, QMD, fundamental, reference, or model indicator."),
   field("indicator_producer", "Indicator producer", "Indicator taxonomy", "raw", "text", "Service or model that owns the calculation."),
   field("indicator_input_basis", "Input basis", "Indicator clock", "raw", "text", "Source state that advances the indicator calculation."),
@@ -150,16 +150,17 @@ const FIELD_CATALOG: FieldDefinition[] = [
   field("indicator_evaluation_mode", "Evaluation mode", "Indicator clock", "raw", "text", "Developing, closed-only, or point-in-time evaluation semantics."),
   field("indicator_update_trigger", "Update trigger", "Indicator clock", "raw", "text", "Event that causes the indicator to be evaluated."),
   field("indicator_publication_cadence", "Publication cadence", "Indicator clock", "raw", "text", "When the indicator becomes visible to consumers."),
-  field("flow_structure_composite_score", "Flow-structure composite", "Indicators · QMD", "derived", "score", "Continuous signed agreement between event-native flow and causal structural context."),
-  field("flow_structure_composite_confidence_pct", "Composite confidence", "Indicators · QMD", "derived", "percentPlain", "Confidence-weighted evidence quality and agreement for the composite."),
-  field("flow_structure_composite_bias", "Composite bias", "Indicators · QMD", "derived", "text", "Bullish, bearish, or neutral indicator bias; this is not an order instruction."),
-  field("microstructure_unified_signal", "Flow signal", "Indicators · QMD", "derived", "score", "Signed unified microstructure evidence from the event-native QMD indicator engine."),
-  field("microstructure_unified_confidence_pct", "Flow confidence", "Indicators · QMD", "derived", "percentPlain", "Evidence quality for the unified microstructure observation."),
-  field("microstructure_signed_volume_imbalance", "Volume imbalance", "Indicators · QMD", "derived", "score", "Signed eligible-trade volume imbalance in the current QMD interval."),
-  field("microstructure_level1_ofi", "Level 1 OFI", "Indicators · QMD", "derived", "number", "Streaming level-one order-flow imbalance."),
-  field("microstructure_queue_imbalance", "Queue imbalance", "Indicators · QMD", "derived", "score", "Displayed bid-versus-ask queue imbalance."),
-  field("qmd_structure_score", "Structure score", "Indicators · QMD", "derived", "score", "Signed causal market-structure observation from QMD."),
-  field("qmd_structure_confidence_pct", "Structure confidence", "Indicators · QMD", "derived", "percentPlain", "Evidence quality for the current QMD structure observation."),
+  field("flow_structure_composite_score", "Flow-structure composite", "Indicators · Flow & structure", "derived", "score", "Continuous signed agreement between event-native flow and causal structural context."),
+  field("flow_structure_composite_confidence_pct", "Composite confidence", "Indicators · Flow & structure", "derived", "percentPlain", "Confidence-weighted evidence quality and agreement for the composite."),
+  field("flow_structure_composite_bias", "Composite bias", "Indicators · Flow & structure", "derived", "text", "Bullish, bearish, or neutral indicator bias; this is not an order instruction."),
+  field("flow_structure_composite_reason", "Composite evidence", "Indicators · Flow & structure", "derived", "text", "Current relationship between flow and structure, such as aligned, conflicting, or dominated by one evidence family."),
+  field("microstructure_unified_signal", "Flow signal", "Indicators · Flow & structure", "derived", "score", "Signed unified microstructure evidence from the event-native indicator engine."),
+  field("microstructure_unified_confidence_pct", "Flow confidence", "Indicators · Flow & structure", "derived", "percentPlain", "Evidence quality for the unified microstructure observation."),
+  field("microstructure_signed_volume_imbalance", "Volume imbalance", "Indicators · Flow & structure", "derived", "score", "Signed eligible-trade volume imbalance in the current indicator interval."),
+  field("microstructure_level1_ofi", "Level 1 OFI", "Indicators · Flow & structure", "derived", "number", "Streaming level-one order-flow imbalance."),
+  field("microstructure_queue_imbalance", "Queue imbalance", "Indicators · Flow & structure", "derived", "score", "Displayed bid-versus-ask queue imbalance."),
+  field("qmd_structure_score", "Structure score", "Indicators · Flow & structure", "derived", "score", "Signed causal market-structure observation."),
+  field("qmd_structure_confidence_pct", "Structure confidence", "Indicators · Flow & structure", "derived", "percentPlain", "Evidence quality for the current structure observation."),
 ];
 
 const SCANNER_PRESETS: Record<string, string[]> = {
@@ -167,6 +168,10 @@ const SCANNER_PRESETS: Record<string, string[]> = {
   Momentum: ["ticker", "last", "change_5m_pct", "change_pct", "dollar_volume", "trade_count", "quote_count"],
   Intelligence: ["ticker", "last", "change_pct", "live_news_count", "sec_count", "news_labels", "sec_labels"],
   Fundamentals: ["ticker", "xbrl_quality_score", "financial_trajectory_score", "xbrl_profitability_score", "xbrl_growth_score", "xbrl_cash_quality_score", "xbrl_balance_sheet_score", "xbrl_capital_discipline_score", "fundamental_revenue_growth_pct", "fundamental_operating_margin_pct", "valuation_pe"],
+  Signals: ["ticker", "signal_domain", "signal_producer", "signal_type", "direction", "signal_score", "signal_rank_score", "signal_confidence_pct", "active_signal_count", "working_timeframe", "input_basis", "update_trigger", "evidence"],
+  Indicators: ["ticker", "indicator_type", "indicator_producer", "indicator_timeframe", "flow_structure_composite_score", "flow_structure_composite_confidence_pct", "flow_structure_composite_bias", "flow_structure_composite_reason", "microstructure_unified_signal", "microstructure_unified_confidence_pct", "microstructure_signed_volume_imbalance", "microstructure_level1_ofi", "microstructure_queue_imbalance", "qmd_structure_score", "qmd_structure_confidence_pct"],
+};
+const LEGACY_SCANNER_PRESET_COLUMNS: Record<string, string[]> = {
   Signals: ["ticker", "signal_domain", "signal_type", "direction", "signal_score", "signal_rank_score", "signal_confidence_pct", "active_signal_count", "working_timeframe", "evidence"],
   "QMD indicators": ["ticker", "flow_structure_composite_score", "flow_structure_composite_confidence_pct", "flow_structure_composite_bias", "microstructure_unified_signal", "microstructure_unified_confidence_pct", "microstructure_signed_volume_imbalance", "microstructure_level1_ofi", "microstructure_queue_imbalance", "qmd_structure_score", "qmd_structure_confidence_pct", "indicator_timeframe"],
 };
@@ -182,9 +187,10 @@ const WATCHLIST_DEFAULT_COLUMNS = ["ticker", "last", "change_pct", "change_5m_pc
 
 export function MarketScannerContainer({ asOf, meta, onSettingsChange, onTickerSelect, rows, settings }: { asOf: string; meta?: ScannerSnapshotMeta; onSettingsChange: (patch: Partial<MarketScannerSettings>) => void; onTickerSelect: (ticker: string) => void; rows: ScreenerRow[]; settings: MarketScannerSettings }) {
   const normalizedRows = useMemo(() => normalizeScannerRows(rows), [rows]);
+  const preset = normalizeMarketScannerPreset(settings.preset);
   return <MarketListSurface
     asOf={asOf}
-    columns={withLockedColumns(settings.columns.length ? settings.columns : SCANNER_PRESETS[settings.preset] ?? SCANNER_PRESETS.Overview, LOCKED_MARKET_LIST_COLUMNS)}
+    columns={withLockedColumns(settings.columns.length ? settings.columns : SCANNER_PRESETS[preset] ?? SCANNER_PRESETS.Overview, LOCKED_MARKET_LIST_COLUMNS)}
     customColumns={settings.customColumns}
     empty="No securities are available at this market clock."
     eyebrow="Market snapshot"
@@ -196,12 +202,38 @@ export function MarketScannerContainer({ asOf, meta, onSettingsChange, onTickerS
     onPresetChange={(preset) => onSettingsChange({ columns: SCANNER_PRESETS[preset] ?? settings.columns, preset })}
     onTickerSelect={onTickerSelect}
     presets={Object.keys(SCANNER_PRESETS)}
-    preset={settings.preset}
+    preset={preset}
     rows={normalizedRows}
-    sortColumn={settings.preset === "Signals" ? "signal_rank_score" : "change_pct"}
+    sortColumn={preset === "Signals" ? "signal_rank_score" : "change_pct"}
     subtitle={meta?.complete_universe ? `Full historical universe · ${meta.lookback_minutes ?? 15}-minute discovery window · cached interval analytics` : "Scanner universe unavailable or incomplete"}
     title="Scanner"
   />;
+}
+
+export function migrateMarketScannerSettings(
+  settings: MarketScannerSettings,
+  storedVersion: number | undefined,
+): MarketScannerSettings {
+  const preset = normalizeMarketScannerPreset(settings.preset);
+  const legacyColumns = LEGACY_SCANNER_PRESET_COLUMNS[settings.preset];
+  const refreshBuiltInView = Number(storedVersion ?? 0) < 21
+    && (settings.preset === "QMD indicators"
+      || Boolean(legacyColumns && sameColumns(settings.columns, legacyColumns)));
+  return {
+    ...settings,
+    preset,
+    columns: refreshBuiltInView ? [...(SCANNER_PRESETS[preset] ?? SCANNER_PRESETS.Overview)] : settings.columns,
+  };
+}
+
+export function normalizeMarketScannerPreset(value: unknown): string {
+  const preset = String(value || "");
+  if (preset === "QMD indicators") return "Indicators";
+  return Object.hasOwn(SCANNER_PRESETS, preset) ? preset : "Overview";
+}
+
+function sameColumns(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((column, index) => column === right[index]);
 }
 
 export function SignalStreamContainer({ asOf, onSettingsChange, onTickerSelect, scannerRows, settings, strategySignals }: { asOf: string; onSettingsChange: (patch: Partial<SignalStreamSettings>) => void; onTickerSelect: (ticker: string) => void; scannerRows: ScreenerRow[]; settings: SignalStreamSettings; strategySignals: ScreenerRow[] }) {
@@ -221,7 +253,7 @@ export function SignalStreamContainer({ asOf, onSettingsChange, onTickerSelect, 
     customColumns={settings.customColumns}
     empty="No market or strategy events match this stream."
     eyebrow="Newest first"
-    guide={signalMethods.length ? <details className="market-signal-methods"><summary>Review {signalMethods.length} emitted QMD market observations</summary><div>{signalMethods.map((method) => <article key={method.key}><strong>{method.label} · v{method.signal_version}</strong><span>{method.domain ?? "market"} · {method.producer ?? "qmd"} · {method.input_basis?.replaceAll("_", " ") ?? method.compute_mode.replaceAll("_", " ")} · {method.working_timeframes.join(", ")} · {method.publication_cadence?.replaceAll("_", " ") ?? "on update"}</span><p>{method.rationale}</p><small>{method.trigger_rules[0] ?? "See the QMD catalog for trigger rules."}</small></article>)}</div></details> : null}
+    guide={signalMethods.length ? <details className="market-signal-methods"><summary>Review {signalMethods.length} implemented market signals</summary><div>{signalMethods.map((method) => <article key={method.key}><strong>{method.label} · v{method.signal_version}</strong><span>{method.domain ?? "market"} · producer: {method.producer ?? "qmd"} · {method.input_basis?.replaceAll("_", " ") ?? method.compute_mode.replaceAll("_", " ")} · {method.working_timeframes.join(", ")} · {method.publication_cadence?.replaceAll("_", " ") ?? "on update"}</span><p>{method.rationale}</p><small>{method.trigger_rules[0] ?? "See the signal catalog for trigger rules."}</small></article>)}</div></details> : null}
     limit={settings.limit}
     lockedColumns={LOCKED_MARKET_LIST_COLUMNS}
     onColumnsChange={(columns) => onSettingsChange({ columns })}
