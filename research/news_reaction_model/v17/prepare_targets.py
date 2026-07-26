@@ -5,7 +5,9 @@ import bisect
 import datetime as dt
 import json
 import math
+import threading
 import time
+import uuid
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -72,6 +74,60 @@ def _parse_utc(value: str) -> dt.datetime:
 
 def _clickhouse_utc(value: dt.datetime) -> str:
     return value.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
+class BuildCancelled(RuntimeError):
+    """Raised inside workers after the operator requests a graceful stop."""
+
+
+class CancellationController:
+    """Coordinate worker cancellation and terminate only this build's queries."""
+
+    def __init__(self) -> None:
+        self._requested = threading.Event()
+        self._lock = threading.Lock()
+        self._active_query_ids: set[str] = set()
+
+    @property
+    def requested(self) -> bool:
+        return self._requested.is_set()
+
+    def request_stop(self) -> None:
+        self._requested.set()
+
+    def raise_if_requested(self) -> None:
+        if self.requested:
+            raise BuildCancelled("V17 target preparation was cancelled.")
+
+    def register_query(self) -> str:
+        with self._lock:
+            if self._requested.is_set():
+                raise BuildCancelled("V17 target preparation was cancelled.")
+            query_id = f"news-v17-targets-{uuid.uuid4()}"
+            self._active_query_ids.add(query_id)
+            return query_id
+
+    def unregister_query(self, query_id: str) -> None:
+        with self._lock:
+            self._active_query_ids.discard(query_id)
+
+    def active_query_ids(self) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(sorted(self._active_query_ids))
+
+    def cancel_active_queries(
+        self,
+        client: ClickHouseHttpClient,
+    ) -> int:
+        query_ids = self.active_query_ids()
+        if not query_ids:
+            return 0
+        client.execute(
+            "KILL QUERY WHERE query_id IN ("
+            + ", ".join(_q(query_id) for query_id in query_ids)
+            + ") SYNC"
+        )
+        return len(query_ids)
 
 
 def _event_table(base: str, day: dt.date) -> str:
@@ -178,7 +234,10 @@ def event_rows_for_tickers(
     config: LoaderConfig,
     tickers: list[str] | tuple[str, ...],
     session_day: dt.date,
+    cancellation: CancellationController | None = None,
 ) -> dict[str, np.ndarray]:
+    if cancellation is not None:
+        cancellation.raise_if_requested()
     requested = tuple(dict.fromkeys(str(value) for value in tickers if str(value)))
     if not requested:
         return {}
@@ -207,8 +266,7 @@ def event_rows_for_tickers(
         f"{_qi(config.market_database)}.{_qi(config.condition_reference_table)}"
     )
     start_utc, _regular, _close, end_utc = _session_bounds(session_day)
-    text = client.execute(
-        f"""
+    sql = f"""
 WITH
   (SELECT groupArray(toUInt8(token_id)) FROM {condition_reference}
    WHERE source_family='trade_conditions' AND is_join_canonical=1 AND update_last=1)
@@ -313,7 +371,22 @@ ORDER BY t.ticker,t.sip_timestamp_us,t.ordinal
 SETTINGS max_threads=2,max_memory_usage='4G',join_algorithm='full_sorting_merge'
 FORMAT TabSeparatedRaw
 """
-    )
+    query_id = cancellation.register_query() if cancellation is not None else None
+    try:
+        text = (
+            client.execute(sql, query_id=query_id)
+            if query_id is not None
+            else client.execute(sql)
+        )
+    except RuntimeError as exc:
+        if cancellation is not None and cancellation.requested:
+            raise BuildCancelled("Active V17 ClickHouse query was cancelled.") from exc
+        raise
+    finally:
+        if cancellation is not None and query_id is not None:
+            cancellation.unregister_query(query_id)
+    if cancellation is not None:
+        cancellation.raise_if_requested()
     if not text.strip():
         return {ticker: EMPTY_EVENT_ROWS for ticker in requested}
     payloads: dict[str, list[str]] = {}
@@ -344,9 +417,16 @@ def event_rows(
     config: LoaderConfig,
     ticker: str,
     session_day: dt.date,
+    cancellation: CancellationController | None = None,
 ) -> np.ndarray:
     """Compatibility wrapper for focused validation and single-ticker callers."""
-    return event_rows_for_tickers(client, config, [ticker], session_day)[ticker]
+    return event_rows_for_tickers(
+        client,
+        config,
+        [ticker],
+        session_day,
+        cancellation=cancellation,
+    )[ticker]
 
 
 def summarize_events(
@@ -540,9 +620,16 @@ def process_ticker_batch(
     sessions: list[dt.date],
     items: list[tuple[str, list[int]]],
     event_loader: Callable[
-        [ClickHouseHttpClient, LoaderConfig, list[str] | tuple[str, ...], dt.date],
+        [
+            ClickHouseHttpClient,
+            LoaderConfig,
+            list[str] | tuple[str, ...],
+            dt.date,
+            CancellationController | None,
+        ],
         dict[str, np.ndarray],
     ] = event_rows_for_tickers,
+    cancellation: CancellationController | None = None,
 ) -> tuple[list[tuple[int, np.ndarray, np.ndarray]], int, int]:
     """Build one bounded ticker batch with a six-session rolling event cache.
 
@@ -550,6 +637,8 @@ def process_ticker_batch(
     Windows are evaluated when their final session arrives, which keeps only
     the six most recent sessions resident while preserving exact event order.
     """
+    if cancellation is not None:
+        cancellation.raise_if_requested()
     output: dict[int, tuple[np.ndarray, np.ndarray]] = {}
     work_by_end_day: dict[
         dt.date,
@@ -623,8 +712,10 @@ def process_ticker_batch(
     query_count = 0
     event_row_count = 0
     for day in sorted(required_tickers_by_day):
+        if cancellation is not None:
+            cancellation.raise_if_requested()
         requested = sorted(required_tickers_by_day[day])
-        loaded = event_loader(client, config, requested, day)
+        loaded = event_loader(client, config, requested, day, cancellation)
         query_count += 1
         event_row_count += sum(int(rows.shape[0]) for rows in loaded.values())
         event_cache[day] = loaded
@@ -751,6 +842,7 @@ def main(argv: list[str] | None = None) -> int:
             },
         )
     sessions = calendar_sessions(client, config)
+    cancellation = CancellationController()
     try:
         timestamps = np.asarray(v16["published_at_us"])
         start_us = int(_parse_utc(config.train_start).timestamp() * 1_000_000)
@@ -788,7 +880,12 @@ def main(argv: list[str] | None = None) -> int:
                 for offset in range(0, len(ticker_items), ticker_batch_size)
             ]
             started = time.monotonic()
-            with ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
+            executor = ThreadPoolExecutor(
+                max_workers=max(1, args.workers),
+                thread_name_prefix="v17-targets",
+            )
+            futures: dict[Any, int] = {}
+            try:
                 futures = {
                     executor.submit(
                         process_ticker_batch,
@@ -798,6 +895,7 @@ def main(argv: list[str] | None = None) -> int:
                         labels=labels,
                         sessions=sessions,
                         items=batch,
+                        cancellation=cancellation,
                     ): len(batch)
                     for batch in ticker_batches
                 }
@@ -831,6 +929,19 @@ def main(argv: list[str] | None = None) -> int:
                         f"eta={eta / 60:.1f}m",
                         flush=True,
                     )
+            except KeyboardInterrupt:
+                cancellation.request_stop()
+                cancelled_futures = sum(future.cancel() for future in futures)
+                cancelled_queries = cancellation.cancel_active_queries(client)
+                print(
+                    f"STOPPING | month={month_start:%Y-%m} "
+                    f"queued_batches_cancelled={cancelled_futures:,} "
+                    f"active_queries_cancelled={cancelled_queries:,}",
+                    flush=True,
+                )
+                raise
+            finally:
+                executor.shutdown(wait=True, cancel_futures=True)
             for array in targets.values():
                 array.flush()
             write_json_atomic(
@@ -900,6 +1011,14 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
         return 0
+    except KeyboardInterrupt:
+        cancellation.request_stop()
+        print(
+            f"INTERRUPTED | durable resume remains {state_path} "
+            "(the incomplete month will be recomputed)",
+            flush=True,
+        )
+        return 130
     finally:
         close_arrays(v16)
         close_arrays(targets)

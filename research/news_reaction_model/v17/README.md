@@ -196,6 +196,11 @@ python -m research.news_reaction_model.v17.run_evaluate --checkpoint <best_val.p
 `run_prepare_targets` is resumable at month boundaries through durable arrays
 and a manifest contract. Progress reports completed ticker batches, tickers,
 ClickHouse queries, returned eligible events, elapsed time, and ETA. The
-training run writes local metrics, latest and best-validation checkpoints, a
-run manifest, a Mermaid model diagram, W&B metrics in the existing
+builder assigns a unique query ID to every active ClickHouse request. On the
+first `Ctrl+C`, it marks the build cancelled, cancels queued ticker batches,
+kills only those registered V17 queries, joins the bounded worker pool, closes
+the memory maps, and exits with code 130. The interrupted month is intentionally
+recomputed on the next run; all earlier monthly checkpoints remain durable.
+The training run writes local metrics, latest and best-validation checkpoints,
+a run manifest, a Mermaid model diagram, W&B metrics in the existing
 `news-reaction-model-v3` project, and final 2026 evaluation.

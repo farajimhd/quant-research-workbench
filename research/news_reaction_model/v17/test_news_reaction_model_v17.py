@@ -11,6 +11,8 @@ from research.news_reaction_model.v17 import RESPONSE_WINDOWS
 from research.news_reaction_model.v17.config import LoaderConfig, ModelConfig
 from research.news_reaction_model.v17.model import NewsResponseModelV17
 from research.news_reaction_model.v17.prepare_targets import (
+    BuildCancelled,
+    CancellationController,
     EASTERN,
     build_windows,
     event_rows_for_tickers,
@@ -231,24 +233,56 @@ class V17TargetTests(unittest.TestCase):
     def test_batched_event_query_always_prunes_dates_and_splits_tickers(self) -> None:
         class Client:
             query = ""
+            query_id = ""
 
-            def execute(self, query: str) -> str:
+            def execute(self, query: str, *, query_id: str | None = None) -> str:
                 self.query = query
+                self.query_id = query_id or ""
                 return (
                     "AAPL\t100\t1\t10.0\t5\t9.9\t10.0\t1\t1\n"
                     "MSFT\t200\t2\t20.0\t7\t19.9\t20.0\t1\t1\n"
                 )
 
         client = Client()
+        cancellation = CancellationController()
         rows = event_rows_for_tickers(
-            client, LoaderConfig(), ["AAPL", "MSFT"], dt.date(2026, 1, 2)
+            client,
+            LoaderConfig(),
+            ["AAPL", "MSFT"],
+            dt.date(2026, 1, 2),
+            cancellation=cancellation,
         )
         self.assertIn("event_date >= toDate('2026-01-02')", client.query)
         self.assertIn("ticker IN ('AAPL', 'MSFT')", client.query)
         self.assertIn("ORDER BY t.ticker,t.sip_timestamp_us,t.ordinal", client.query)
+        self.assertTrue(client.query_id.startswith("news-v17-targets-"))
+        self.assertEqual(cancellation.active_query_ids(), ())
         self.assertEqual(rows["AAPL"].shape, (1, 8))
         self.assertEqual(rows["MSFT"].shape, (1, 8))
         self.assertEqual(float(rows["MSFT"][0, 2]), 20.0)
+
+    def test_cancellation_stops_new_work_and_targets_only_registered_queries(self) -> None:
+        class Client:
+            query = ""
+
+            def execute(self, query: str) -> str:
+                self.query = query
+                return ""
+
+        client = Client()
+        cancellation = CancellationController()
+        first = cancellation.register_query()
+        second = cancellation.register_query()
+        cancellation.request_stop()
+        self.assertEqual(cancellation.cancel_active_queries(client), 2)
+        self.assertIn("KILL QUERY WHERE query_id IN (", client.query)
+        self.assertIn(first, client.query)
+        self.assertIn(second, client.query)
+        with self.assertRaises(BuildCancelled):
+            cancellation.register_query()
+        cancellation.unregister_query(first)
+        cancellation.unregister_query(second)
+        self.assertEqual(cancellation.active_query_ids(), ())
 
     def test_session_slice_uses_closed_exchange_interval(self) -> None:
         sessions = [
@@ -315,7 +349,7 @@ class V17TargetTests(unittest.TestCase):
                 dtype=np.float64,
             )
 
-        def loader(_client, _config, tickers, day):
+        def loader(_client, _config, tickers, day, _cancellation):
             calls.append((day, tuple(tickers)))
             return {ticker: make_rows(ticker, day) for ticker in tickers}
 
