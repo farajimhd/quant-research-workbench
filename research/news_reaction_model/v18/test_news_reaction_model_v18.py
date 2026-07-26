@@ -29,6 +29,8 @@ from research.news_reaction_model.v17.prepare_targets import (
 from research.news_reaction_model.v18.prepare_data import (
     Article,
     anchor_session_days,
+    audit_anchor_storage_contract,
+    audit_target_interval_contract,
     consume_article,
     enforce_exact_root_contract,
     exact_anchor_price,
@@ -392,6 +394,43 @@ class TargetContractTest(unittest.TestCase):
                 for request in unit.requests
             )
         )
+
+    def test_same_timestamp_follow_up_remains_masked_causal_context(self) -> None:
+        result = audit_target_interval_contract(
+            np.asarray([100, 200, 300], dtype=np.int64),
+            np.asarray([100, 250, 350], dtype=np.int64),
+            np.asarray([False, True, False], dtype=np.bool_),
+        )
+        self.assertEqual(result["empty_censored_intervals"], 1)
+        self.assertEqual(result["positive_intervals"], 2)
+        self.assertEqual(result["masked_positive_intervals"], 1)
+
+    def test_empty_or_reversed_supervised_intervals_fail_closed(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "supervised empty"):
+            audit_target_interval_contract(
+                np.asarray([100], dtype=np.int64),
+                np.asarray([100], dtype=np.int64),
+                np.asarray([True], dtype=np.bool_),
+            )
+        with self.assertRaisesRegex(RuntimeError, "reversed"):
+            audit_target_interval_contract(
+                np.asarray([100], dtype=np.int64),
+                np.asarray([99], dtype=np.int64),
+                np.asarray([False], dtype=np.bool_),
+            )
+
+    def test_anchor_audit_uses_the_declared_float32_storage_contract(self) -> None:
+        exact = np.asarray([9.9, 281.05, np.nan], dtype=np.float64)
+        stored = exact.astype(np.float32)
+        mask = np.asarray([True, True, False], dtype=np.bool_)
+        result = audit_anchor_storage_contract(exact, stored, mask)
+        self.assertEqual(result["populated_anchors"], 2)
+        self.assertGreater(result["maximum_float32_quantization_delta"], 1e-5)
+
+        corrupted = stored.copy()
+        corrupted[1] = np.nextafter(corrupted[1], np.float32(np.inf))
+        with self.assertRaisesRegex(RuntimeError, "do not exactly encode"):
+            audit_anchor_storage_contract(exact, corrupted, mask)
 
     def test_memory_limited_unit_is_split_without_changing_durable_identity(self) -> None:
         requests = tuple(

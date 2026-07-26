@@ -97,9 +97,16 @@ batch supplies the interval high, low, terminal, path, and flow evidence.
 Corporate-action crossings are masked. The target interval is
 `[published_at_utc, boundary_utc)`.
 
-The completed audit requires every populated target's stored anchor to equal
-the anchor embedded in its raw target metrics. Episodes whose exact root
-anchor is missing, non-positive, or at least `$20` are removed as a whole.
+The completed audit requires every populated target's float32 raw-metric anchor
+to equal the exact float32 encoding of its float64 anchor authority; the
+manifest records the maximum representation-only quantization delta. Episodes
+whose exact root anchor is missing, non-positive, or at least `$20` are removed
+as a whole.
+When two same-ticker articles have the identical publication timestamp, the
+earlier node remains causal episode context but its response interval is
+immediately censored to zero length and remains unsupervised. The audit permits
+only that explicitly masked empty interval; it rejects every reversed interval
+and every empty interval carrying a target.
 The manifest also records differences between the V15 planning approximation
 and exact SIP anchors.
 

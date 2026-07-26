@@ -1219,6 +1219,76 @@ def representation_hash(
     ).hexdigest()
 
 
+def audit_target_interval_contract(
+    starts: np.ndarray,
+    ends: np.ndarray,
+    mask: np.ndarray,
+) -> dict[str, int]:
+    """Validate response intervals without discarding causal context-only rows.
+
+    Consecutive same-ticker articles can share an exact publication timestamp.
+    The earlier article is still a valid episode node and causal context item,
+    but its response is censored immediately by the follow-up. Such a row has
+    ``start == end`` and must remain masked. A reversed interval is never valid,
+    and an empty interval must never carry a supervised target.
+    """
+    start_values = np.asarray(starts, dtype=np.int64)
+    end_values = np.asarray(ends, dtype=np.int64)
+    target_mask = np.asarray(mask, dtype=np.bool_)
+    if (
+        start_values.shape != end_values.shape
+        or start_values.shape != target_mask.shape
+    ):
+        raise RuntimeError("V18 target interval arrays do not align.")
+    reversed_rows = end_values < start_values
+    if np.any(reversed_rows):
+        raise RuntimeError(
+            "V18 contains a reversed target interval, including masked rows."
+        )
+    empty_rows = end_values == start_values
+    supervised_empty_rows = empty_rows & target_mask
+    if np.any(supervised_empty_rows):
+        raise RuntimeError("V18 contains a supervised empty target interval.")
+    return {
+        "positive_intervals": int(np.count_nonzero(end_values > start_values)),
+        "empty_censored_intervals": int(np.count_nonzero(empty_rows)),
+        "masked_positive_intervals": int(
+            np.count_nonzero((end_values > start_values) & ~target_mask)
+        ),
+    }
+
+
+def audit_anchor_storage_contract(
+    anchors: np.ndarray,
+    stored_raw_anchors: np.ndarray,
+    mask: np.ndarray,
+) -> dict[str, float | int]:
+    """Prove that the float32 target copy exactly encodes the float64 authority."""
+    exact = np.asarray(anchors, dtype=np.float64)
+    stored = np.asarray(stored_raw_anchors, dtype=np.float32)
+    target_mask = np.asarray(mask, dtype=np.bool_)
+    if exact.shape != stored.shape or exact.shape != target_mask.shape:
+        raise RuntimeError("V18 anchor storage arrays do not align.")
+    populated = exact[target_mask]
+    populated_stored = stored[target_mask]
+    if not np.isfinite(populated).all() or not np.isfinite(populated_stored).all():
+        raise RuntimeError("V18 populated anchor storage contains non-finite values.")
+    expected_stored = populated.astype(np.float32)
+    if not np.array_equal(expected_stored, populated_stored):
+        raise RuntimeError(
+            "V18 float32 target anchors do not exactly encode the float64 authority."
+        )
+    quantization_delta = np.abs(
+        populated - populated_stored.astype(np.float64)
+    )
+    return {
+        "populated_anchors": int(populated.size),
+        "maximum_float32_quantization_delta": float(
+            quantization_delta.max(initial=0.0)
+        ),
+    }
+
+
 def audit(
     config: LoaderConfig,
     v15: Mapping[str, np.ndarray],
@@ -1248,17 +1318,21 @@ def audit(
         raise RuntimeError("V18 current episode features contain non-finite values.")
     if not np.isfinite(np.asarray(arrays["context_static"])).all():
         raise RuntimeError("V18 context static features contain non-finite values.")
-    starts = np.asarray(arrays["target_start_us"])
-    ends = np.asarray(arrays["target_end_us"])
-    if np.any(ends <= starts):
-        raise RuntimeError("V18 contains an empty or reversed target interval.")
     mask = np.asarray(arrays["target_mask"], dtype=np.bool_)
+    interval_audit = audit_target_interval_contract(
+        arrays["target_start_us"],
+        arrays["target_end_us"],
+        mask,
+    )
     raw = np.asarray(arrays["raw_metrics"])
     if not np.isfinite(raw[mask]).all() or np.any(raw[mask, 0] <= 0):
         raise RuntimeError("V18 populated targets are invalid.")
     anchors = np.asarray(arrays["anchor_price"], dtype=np.float64)
-    if not np.allclose(anchors[mask], raw[mask, 0], rtol=0, atol=1e-5):
-        raise RuntimeError("V18 exact anchor and target metric authorities diverged.")
+    anchor_storage_audit = audit_anchor_storage_contract(
+        anchors,
+        raw[:, 0],
+        mask,
+    )
     root_rows = np.asarray(arrays["node_role"]) == int(NodeRole.ROOT)
     populated_roots = root_rows & mask
     if np.any(
@@ -1303,7 +1377,9 @@ def audit(
             "maximum_relative_delta": float(
                 target_state.get("maximum_anchor_relative_delta") or 0.0
             ),
+            **anchor_storage_audit,
         },
+        "target_interval_audit": interval_audit,
         "thresholds": thresholds.as_dict(),
         "v15_rows": int(v15_manifest["rows"]),
         "v15_representation_sha256": v15_manifest["representation_sha256"],
