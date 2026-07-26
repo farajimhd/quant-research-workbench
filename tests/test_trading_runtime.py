@@ -500,6 +500,9 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(signal.ticker, "AAPL")
         self.assertEqual(signal.score, -0.7)
         self.assertEqual(signal.effective_at, TS)
+        self.assertEqual(signal.domain.value, "market")
+        self.assertEqual(signal.clock.calculation_window, "1s")
+        self.assertEqual(signal.clock.publication_cadence.value, "bar_close")
 
         with self.assertRaisesRegex(ValueError, "must include a timezone"):
             MarketSignal.from_qmd_payload(
@@ -509,6 +512,8 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                     "effective_at": "2026-07-13T14:00:00",
                 }
             )
+        with self.assertRaisesRegex(ValueError, "missing: score"):
+            MarketSignal.from_qmd_payload({key: value for key, value in payload.items() if key != "score"})
 
     async def test_market_signal_is_interpreted_by_strategy_without_implicit_order(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

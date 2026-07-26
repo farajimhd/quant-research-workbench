@@ -3,7 +3,7 @@ use crate::bars::{BarSnapshot, SharedBarStore};
 use crate::compact_event::{CompactEventDecoder, LiveCompactEvent, SharedCompactEventStore};
 use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
-use crate::indicator_catalog::{indicator_catalog, IndicatorCatalogEntry};
+use crate::indicator_catalog::{indicator_taxonomy_catalog, IndicatorTaxonomyEntry};
 use crate::indicators::{IndicatorScannerSnapshot, IndicatorSnapshot, SharedIndicatorStore};
 use crate::intraday_bars::IntradayBarRow;
 use crate::live_market_state::{
@@ -20,7 +20,7 @@ use crate::market_signal::MarketSignalEvent;
 use crate::metrics::{MetricsSnapshot, OperationalSnapshot, SharedMetrics};
 use crate::scanner::{MarketSignalSnapshot, ScannerPrimitiveSnapshot, SharedScannerStore};
 use crate::session::session_phase;
-use crate::signal_catalog::{signal_catalog, SignalMethodEntry};
+use crate::signal_catalog::{signal_taxonomy_catalog, SignalTaxonomyEntry};
 use crate::state::{ScannerSnapshot, SharedMarketState, StatusMetrics, SymbolSnapshot};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
@@ -616,12 +616,12 @@ async fn coverage_query_rows(config: &GatewayConfig, sql: &str) -> Result<Vec<Va
         .collect::<Vec<_>>())
 }
 
-async fn indicator_catalog_snapshot() -> Json<&'static [IndicatorCatalogEntry]> {
-    Json(indicator_catalog())
+async fn indicator_catalog_snapshot() -> Json<Vec<IndicatorTaxonomyEntry<'static>>> {
+    Json(indicator_taxonomy_catalog())
 }
 
-async fn signal_catalog_snapshot() -> Json<&'static [SignalMethodEntry]> {
-    Json(signal_catalog())
+async fn signal_catalog_snapshot() -> Json<Vec<SignalTaxonomyEntry<'static>>> {
+    Json(signal_taxonomy_catalog())
 }
 
 async fn clickhouse_query(

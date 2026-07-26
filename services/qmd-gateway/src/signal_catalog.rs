@@ -105,6 +105,65 @@ pub fn signal_catalog() -> &'static [SignalMethodEntry] {
     SIGNAL_CATALOG
 }
 
+#[derive(Serialize)]
+pub struct SignalTaxonomyEntry<'a> {
+    #[serde(flatten)]
+    pub definition: &'a SignalMethodEntry,
+    pub domain: &'static str,
+    pub producer: &'static str,
+    pub score_required: bool,
+    pub input_basis: &'static str,
+    pub calculation_windows: &'a [&'a str],
+    pub evaluation_mode: &'static str,
+    pub update_trigger: &'static str,
+    pub publication_cadence: &'static str,
+}
+
+pub fn signal_taxonomy_catalog() -> Vec<SignalTaxonomyEntry<'static>> {
+    signal_catalog()
+        .iter()
+        .map(|definition| {
+            let (input_basis, evaluation_mode, update_trigger, publication_cadence) =
+                match definition.compute_mode {
+                    SignalComputeMode::RealtimeTick => {
+                        ("event_native", "developing", "market_event", "on_change")
+                    }
+                    SignalComputeMode::RealtimeBarClose | SignalComputeMode::CrossTimeframe => {
+                        ("bar_derived", "closed_only", "bar_close", "bar_close")
+                    }
+                    SignalComputeMode::HybridTickAndBar => {
+                        ("event_native", "closed_only", "bar_close", "bar_close")
+                    }
+                };
+            SignalTaxonomyEntry {
+                definition,
+                domain: "market",
+                producer: "qmd",
+                score_required: true,
+                input_basis,
+                calculation_windows: definition.working_timeframes,
+                evaluation_mode,
+                update_trigger,
+                publication_cadence,
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod taxonomy_tests {
+    use super::*;
+
+    #[test]
+    fn qmd_produces_rankable_market_signals() {
+        let catalog = signal_taxonomy_catalog();
+        assert!(!catalog.is_empty());
+        assert!(catalog.iter().all(|entry| {
+            entry.domain == "market" && entry.producer == "qmd" && entry.score_required
+        }));
+    }
+}
+
 const TICK_TFS: &[&str] = &["1s", "10s", "30s"];
 const FAST_BAR_TFS: &[&str] = &["10s", "30s", "1m"];
 const INTRADAY_TFS: &[&str] = &["1m", "5m"];

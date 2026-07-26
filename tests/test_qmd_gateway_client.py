@@ -80,6 +80,10 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(row["signal_state"], "updated")
         self.assertEqual(row["signal_rank_score"], 0.72)
         self.assertEqual(row["signal_confidence"], 0.81)
+        self.assertEqual(row["signal_domain"], "market")
+        self.assertEqual(row["signal_producer"], "qmd")
+        self.assertEqual(row["input_basis"], "bar_derived")
+        self.assertEqual(row["publication_cadence"], "bar_close")
 
     @patch("src.backend.qmd_gateway_client.qmd_get_json")
     def test_scanner_keeps_market_universe_and_joins_active_signal_state(
@@ -164,6 +168,9 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(payload["rows"][0]["active_signal_count"], 2)
         self.assertEqual(payload["rows"][0]["qmd_decision_signal"], -0.4)
         self.assertEqual(payload["rows"][0]["indicator_timeframe"], "10s")
+        self.assertEqual(payload["rows"][0]["indicator_type"], "qmd")
+        self.assertEqual(payload["rows"][0]["indicator_input_basis"], "event_native")
+        self.assertEqual(payload["rows"][0]["indicator_publication_cadence"], "bar_close")
         self.assertNotIn("signal_id", payload["rows"][1])
         self.assertEqual(payload["signal_rows"][0]["signal_event_id"], "resolved-c")
         self.assertEqual(payload["signal_row_count"], 1)

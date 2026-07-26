@@ -120,6 +120,87 @@ pub fn indicator_catalog() -> &'static [IndicatorCatalogEntry] {
     INDICATOR_CATALOG
 }
 
+#[derive(Serialize)]
+pub struct IndicatorTaxonomyEntry<'a> {
+    #[serde(flatten)]
+    pub definition: &'a IndicatorCatalogEntry,
+    pub indicator_type: &'static str,
+    pub producer: &'static str,
+    pub input_basis: &'static str,
+    pub calculation_windows: &'a [&'a str],
+    pub evaluation_mode: &'static str,
+    pub update_trigger: &'static str,
+    pub publication_cadence: &'static str,
+}
+
+pub fn indicator_taxonomy_catalog() -> Vec<IndicatorTaxonomyEntry<'static>> {
+    indicator_catalog()
+        .iter()
+        .map(|definition| {
+            let (indicator_type, input_basis, evaluation_mode, update_trigger, publication_cadence) =
+                match definition.compute_mode {
+                    ComputeMode::RealtimeTick | ComputeMode::RealtimeInMemory => (
+                        "qmd",
+                        "event_native",
+                        "developing",
+                        "market_event",
+                        "on_change",
+                    ),
+                    ComputeMode::RealtimeBarClose => (
+                        "technical",
+                        "bar_derived",
+                        "closed_only",
+                        "bar_close",
+                        "bar_close",
+                    ),
+                    ComputeMode::ReferenceLoad => (
+                        "reference",
+                        "reference_snapshot",
+                        "point_in_time",
+                        "schedule",
+                        "on_change",
+                    ),
+                    ComputeMode::PolarsOnDemand => (
+                        "technical",
+                        "bar_derived",
+                        "point_in_time",
+                        "manual",
+                        "on_demand",
+                    ),
+                };
+            IndicatorTaxonomyEntry {
+                definition,
+                indicator_type,
+                producer: "qmd",
+                input_basis,
+                calculation_windows: definition.typical_timeframes,
+                evaluation_mode,
+                update_trigger,
+                publication_cadence,
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod taxonomy_tests {
+    use super::*;
+
+    #[test]
+    fn event_native_indicators_are_qmd_indicator_types() {
+        let catalog = indicator_taxonomy_catalog();
+        assert!(catalog.iter().any(|entry| {
+            entry.indicator_type == "qmd"
+                && entry.input_basis == "event_native"
+                && entry.producer == "qmd"
+        }));
+        assert!(catalog
+            .iter()
+            .filter(|entry| entry.input_basis == "event_native")
+            .all(|entry| entry.indicator_type == "qmd"));
+    }
+}
+
 const ALL_LIVE_TFS: &[&str] = &["1s", "10s", "30s", "1m", "5m", "1h"];
 const ENRICHED_QMD_TFS: &[&str] = &["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const BAR_TFS: &[&str] = &["10s", "30s", "1m", "5m", "1h"];

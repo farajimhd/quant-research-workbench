@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub const MARKET_SIGNAL_SCHEMA_VERSION: u16 = 1;
+pub const MARKET_SIGNAL_SCHEMA_VERSION: u16 = 2;
 pub const MARKET_SIGNAL_ENGINE_VERSION: &str = "qmd-market-signal-v1";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -14,8 +14,12 @@ pub struct MarketSignalEvent {
     pub signal_id: String,
     pub signal_key: String,
     pub producer: String,
+    #[serde(default = "market_domain")]
+    pub domain: String,
     pub ticker: String,
     pub working_timeframe: String,
+    #[serde(default)]
+    pub clock: SignalClock,
     pub confirmation_timeframe: Option<String>,
     pub observed_at: DateTime<Utc>,
     pub effective_at: DateTime<Utc>,
@@ -29,6 +33,16 @@ pub struct MarketSignalEvent {
     pub invalidation_price: Option<f64>,
     pub expires_at: Option<DateTime<Utc>>,
     pub evidence: MarketSignalEvidence,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct SignalClock {
+    pub input_basis: String,
+    pub calculation_window: String,
+    pub evaluation_mode: String,
+    pub update_trigger: String,
+    pub publication_cadence: String,
+    pub publication_interval_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -334,8 +348,17 @@ fn build_event(
         signal_id: stable_signal_id,
         signal_key: candidate.key.to_string(),
         producer: "qmd".to_string(),
+        domain: market_domain(),
         ticker: row.sym.clone(),
         working_timeframe: row.timeframe.clone(),
+        clock: SignalClock {
+            input_basis: "bar_derived".to_string(),
+            calculation_window: row.timeframe.clone(),
+            evaluation_mode: "closed_only".to_string(),
+            update_trigger: "bar_close".to_string(),
+            publication_cadence: "bar_close".to_string(),
+            publication_interval_ms: None,
+        },
         confirmation_timeframe: candidate.confirmation_timeframe.map(str::to_string),
         observed_at: row.bar_end,
         effective_at: row.bar_end,
@@ -354,6 +377,10 @@ fn build_event(
         expires_at: None,
         evidence: evidence(row),
     }
+}
+
+fn market_domain() -> String {
+    "market".to_string()
 }
 
 fn resolve_event(row: &BarRow, previous: &MarketSignalEvent, reason: &str) -> MarketSignalEvent {
@@ -470,6 +497,11 @@ mod tests {
             event.signal_key == "tape_acceleration_breakout"
                 && event.state == "triggered"
                 && event.effective_at == bar.bar_end
+                && event.domain == "market"
+                && event.clock.input_basis == "bar_derived"
+                && event.clock.calculation_window == "10s"
+                && event.clock.publication_cadence == "bar_close"
+                && event.schema_version == MARKET_SIGNAL_SCHEMA_VERSION
         }));
 
         bar.bar_start = bar.bar_end;

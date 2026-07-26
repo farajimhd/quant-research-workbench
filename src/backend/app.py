@@ -112,6 +112,7 @@ from src.backend.trading_runtime_service import (
     list_strategy_definitions,
     save_strategy_definition,
     save_trade_annotation,
+    trading_taxonomy_catalog,
 )
 from src.backend.ticker_presentation_service import ticker_presentation_payload
 from src.backend.ticker_facts_service import ticker_fact_history_payload, ticker_facts_payload
@@ -409,6 +410,7 @@ class StrategyDefinitionSubmit(BaseModel):
     automatic: bool = True
     enabled: bool = True
     config: dict[str, Any] = Field(default_factory=dict)
+    taxonomy: dict[str, Any] = Field(default_factory=dict)
 
 
 class HistoricalWindowPreviewRequest(BaseModel):
@@ -3807,6 +3809,11 @@ def update_trading_episode_annotation(episode_id: str, payload: TradeAnnotationS
 def trading_strategies(latest_only: bool = True) -> dict[str, Any]:
     rows = list_strategy_definitions(latest_only=latest_only)
     return {"rows": rows, "row_count": len(rows)}
+
+
+@app.get("/api/trading/taxonomy")
+def trading_taxonomy() -> dict[str, Any]:
+    return trading_taxonomy_catalog()
 
 
 @app.get("/api/trading/historical-gateway")

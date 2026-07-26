@@ -445,6 +445,7 @@ def normalize_qmd_scanner_primitive(row: dict[str, Any]) -> dict[str, Any]:
 
 def normalize_qmd_market_signal(row: dict[str, Any]) -> dict[str, Any]:
     evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+    clock = row.get("clock") if isinstance(row.get("clock"), dict) else {}
     score = float_value(row.get("score"))
     confidence = float_value(row.get("confidence"))
     return {
@@ -461,6 +462,8 @@ def normalize_qmd_market_signal(row: dict[str, Any]) -> dict[str, Any]:
         "signal_id": str(row.get("signal_id") or ""),
         "signal_event_id": str(row.get("event_id") or ""),
         "signal_type": str(row.get("signal_key") or ""),
+        "signal_domain": str(row.get("domain") or "market"),
+        "signal_producer": str(row.get("producer") or "qmd"),
         "signal_state": str(row.get("state") or ""),
         "direction": str(row.get("direction") or "neutral"),
         "market_state": str(row.get("direction") or "neutral"),
@@ -480,6 +483,12 @@ def normalize_qmd_market_signal(row: dict[str, Any]) -> dict[str, Any]:
         "liquidity_score": float_value(evidence.get("liquidity_score")),
         "provider": "qmd-gateway",
         "live_priority": abs(score),
+        "input_basis": str(clock.get("input_basis") or "bar_derived"),
+        "calculation_window": str(clock.get("calculation_window") or row.get("working_timeframe") or ""),
+        "evaluation_mode": str(clock.get("evaluation_mode") or "closed_only"),
+        "update_trigger": str(clock.get("update_trigger") or "bar_close"),
+        "publication_cadence": str(clock.get("publication_cadence") or "bar_close"),
+        "publication_interval_ms": clock.get("publication_interval_ms"),
     }
 
 
@@ -489,6 +498,14 @@ def normalize_qmd_indicator_scanner_row(row: dict[str, Any]) -> dict[str, Any]:
     payload["ticker"] = str(row.get("sym") or "").strip().upper()
     payload["indicator_timeframe"] = str(row.get("timeframe") or "")
     payload["indicator_as_of"] = str(row.get("bar_end") or "")
+    payload["indicator_type"] = "qmd"
+    payload["indicator_producer"] = "qmd"
+    payload["indicator_input_basis"] = "event_native"
+    payload["indicator_calculation_window"] = str(row.get("timeframe") or "")
+    payload["indicator_evaluation_mode"] = "closed_only"
+    payload["indicator_update_trigger"] = "bar_close"
+    payload["indicator_publication_cadence"] = "bar_close"
+    payload["indicator_publication_interval_ms"] = None
     return payload
 
 

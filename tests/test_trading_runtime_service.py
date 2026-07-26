@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 import urllib.error
 from datetime import date
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from src.backend.trading_runtime_service import (
     _historical_gateway_get,
@@ -15,10 +15,55 @@ from src.backend.trading_runtime_service import (
     historical_preflight,
     historical_window_preview,
     market_event_references,
+    save_strategy_definition,
+    trading_taxonomy_catalog,
 )
 
 
 class HistoricalTradingServiceTests(unittest.TestCase):
+    def test_automatic_strategy_definition_requires_and_persists_taxonomy(self) -> None:
+        journal = MagicMock()
+        stored: dict[str, object] = {}
+
+        def save_strategy(**payload) -> None:
+            stored.update(payload)
+            stored["config"] = dict(payload["config"])
+
+        journal.save_strategy.side_effect = save_strategy
+        journal.strategy.side_effect = lambda *_args: dict(stored) if stored else None
+        with patch("src.backend.trading_runtime_service.trading_journal", return_value=journal):
+            with self.assertRaisesRegex(ValueError, "declare at least one"):
+                save_strategy_definition(
+                    {
+                        "strategy_id": "continuation",
+                        "name": "Continuation",
+                        "implementation": "tests.strategy:Continuation",
+                        "automatic": True,
+                    }
+                )
+
+            saved = save_strategy_definition(
+                {
+                    "strategy_id": "continuation",
+                    "name": "Continuation",
+                    "implementation": "tests.strategy:Continuation",
+                    "automatic": True,
+                    "taxonomy": {
+                        "signals": [{"key": "market.vwap_reclaim"}],
+                        "presentation": {"label": "Continuation"},
+                    },
+                }
+            )
+
+        self.assertEqual(saved["taxonomy"]["signals"][0]["key"], "market.vwap_reclaim")
+        self.assertEqual(saved["taxonomy"]["presentation"]["label"], "Continuation")
+        self.assertEqual(saved["config"]["taxonomy"], saved["taxonomy"])
+
+    def test_taxonomy_catalog_keeps_qmd_out_of_signal_domains(self) -> None:
+        catalog = trading_taxonomy_catalog()
+        self.assertIn("qmd", catalog["indicator_types"])
+        self.assertNotIn("qmd", catalog["signal_domains"])
+
     @patch("src.backend.trading_runtime_service.urllib.request.urlopen")
     def test_history_gateway_connection_failure_is_actionable(self, urlopen) -> None:
         urlopen.side_effect = urllib.error.URLError(ConnectionRefusedError(10061, "refused"))

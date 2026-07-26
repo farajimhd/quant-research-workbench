@@ -5,6 +5,14 @@ from datetime import datetime
 from typing import Any, Literal
 
 from src.trading_runtime.ibkr_schema import OrderRequest
+from src.trading_runtime.taxonomy import (
+    ClockContract,
+    EvaluationMode,
+    InputBasis,
+    PublicationCadence,
+    SignalDomain,
+    UpdateTrigger,
+)
 
 SignalDirection = Literal["bullish", "bearish", "neutral"]
 SignalState = Literal["triggered", "updated", "resolved", "expired"]
@@ -36,6 +44,28 @@ class MarketSignal:
     invalidation_price: float | None = None
     expires_at: datetime | None = None
     evidence: dict[str, Any] = field(default_factory=dict)
+    domain: SignalDomain = SignalDomain.MARKET
+    clock: ClockContract | None = None
+
+    def __post_init__(self) -> None:
+        if self.domain != SignalDomain.MARKET:
+            raise ValueError("MarketSignal domain must be market")
+        if not -1.0 <= self.score <= 1.0:
+            raise ValueError("MarketSignal score must be between -1 and 1")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("MarketSignal confidence must be between 0 and 1")
+        if self.clock is None:
+            object.__setattr__(
+                self,
+                "clock",
+                ClockContract(
+                    input_basis=InputBasis.BAR_DERIVED,
+                    calculation_window=self.working_timeframe,
+                    evaluation_mode=EvaluationMode.CLOSED_ONLY,
+                    update_trigger=UpdateTrigger.BAR_CLOSE,
+                    publication_cadence=PublicationCadence.BAR_CLOSE,
+                ),
+            )
 
     @classmethod
     def from_qmd_payload(cls, payload: dict[str, Any]) -> "MarketSignal":
@@ -52,6 +82,7 @@ class MarketSignal:
             "effective_at",
             "state",
             "direction",
+            "score",
         )
         missing = [key for key in required if payload.get(key) in (None, "")]
         if missing:
@@ -70,6 +101,28 @@ class MarketSignal:
             _aware_timestamp(payload["expires_at"], "expires_at")
             if payload.get("expires_at")
             else None
+        )
+        domain = SignalDomain(str(payload.get("domain") or SignalDomain.MARKET))
+        clock_payload = dict(payload.get("clock") or {})
+        clock = ClockContract(
+            input_basis=InputBasis(str(clock_payload.get("input_basis") or InputBasis.BAR_DERIVED)),
+            calculation_window=str(
+                clock_payload.get("calculation_window") or payload["working_timeframe"]
+            ),
+            evaluation_mode=EvaluationMode(
+                str(clock_payload.get("evaluation_mode") or EvaluationMode.CLOSED_ONLY)
+            ),
+            update_trigger=UpdateTrigger(
+                str(clock_payload.get("update_trigger") or UpdateTrigger.BAR_CLOSE)
+            ),
+            publication_cadence=PublicationCadence(
+                str(clock_payload.get("publication_cadence") or PublicationCadence.BAR_CLOSE)
+            ),
+            publication_interval_ms=(
+                int(clock_payload["publication_interval_ms"])
+                if clock_payload.get("publication_interval_ms") is not None
+                else None
+            ),
         )
         return cls(
             signal_id=str(payload["signal_id"]),
@@ -101,6 +154,8 @@ class MarketSignal:
             ),
             expires_at=expires_at,
             evidence=dict(payload.get("evidence") or {}),
+            domain=domain,
+            clock=clock,
         )
 
 

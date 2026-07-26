@@ -43,8 +43,10 @@ import { TickerIdentity, TickerIdentityWithChange, useTickerPresentations } from
 import { TRADING_WORKSPACE_LAYOUT_VERSION, TradingWorkspace, createFocusLayouts } from "../app/components/TradingWorkspace";
 import type { WorkspaceWindowLayout, WorkspaceWindowMeta, WorkspaceWindowStatus } from "../app/components/WorkspaceCanvas";
 import { TRADING_WORKSPACE_CONTAINERS, containerSupportsCanvasLink, containerSupportsSymbolLink, type WorkspaceContainerDefinition, type WorkspaceContainerId } from "../app/tradingWorkspace";
+import { DEFAULT_STRATEGY_CHART_PRESENTATION, strategyInvalidationZones, strategyPresentationMarkers, type StrategyAction, type StrategyChartPresentation, type StrategyDecisionEvent } from "../app/strategyPresentation";
 
 type HistoricalBar = { bar_end?: string; bar_start: string; close: number; high: number; is_closed?: boolean; low: number; open: number; volume: number };
+const EMPTY_STRATEGY_DECISIONS: StrategyDecisionEvent[] = [];
 type QmdStructureLevelCandidate = {
   level_id: number;
   confidence: number;
@@ -167,7 +169,7 @@ type CanvasPreview = {
   scanner: PreviewRow[];
   scanner_meta?: ScannerSnapshotMeta;
   sec: PreviewRow[];
-  strategy: { automatic: boolean; revision: number; signals: PreviewRow[]; state: string; strategy_id: string };
+  strategy: { automatic: boolean; fixture?: boolean; revision: number; signals: PreviewRow[]; state: string; strategy_id: string; taxonomy?: { presentation?: Partial<StrategyChartPresentation> } };
   trading: CanonicalTradingPreview;
   xbrl: PreviewRow[];
 };
@@ -1784,7 +1786,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
     {linkOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} link configuration`} data-canvas-link-popover={instanceId}><div className="canvas-link-guide"><strong>Link color</strong><small>Same color = linked</small></div><LinkColorPicker containerTitle={definition.title} onChange={onLinkChange} value={linkGroup} /><LinkedContainerList containerTitle={definition.title} containers={linkedContainers} /></div> : null}
     {settingsOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} settings`}>{containerFields(definition.id, settings, linkContext, updateSettings, onLinkContextChange)}</div> : null}
     <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{definition.id === "chart"
-      ? <ChartContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} linkGroup={linkGroup} onLinkContextChange={onLinkContextChange} previewContext={previewContext} settings={settings} symbolEditable={symbolEditable} trading={preview?.trading} updateSettings={updateSettings} />
+        ? <ChartContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} linkGroup={linkGroup} onLinkContextChange={onLinkContextChange} previewContext={previewContext} settings={settings} strategy={preview?.strategy} symbolEditable={symbolEditable} trading={preview?.trading} updateSettings={updateSettings} />
       : definition.id === "charts_quotes"
         ? <ChartsQuotesContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} onLinkContextChange={onLinkContextChange} previewContext={previewContext} settings={settings} symbolEditable={symbolEditable} trading={preview?.trading} updateSettings={updateSettings} />
       : definition.id === "microstructure"
@@ -1873,15 +1875,18 @@ type ChartContainerPreviewProps = {
   onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void;
   previewContext: CanvasPreviewContext;
   settings: ContainerSettings;
+  strategy?: CanvasPreview["strategy"];
   symbolEditable: boolean;
   trading?: CanonicalTradingPreview;
   updateSettings: SettingsUpdater;
 };
 
-const ChartContainerPreview = memo(function ChartContainerPreview({ cutoffMs, instanceId, linkContext, onLinkContextChange, previewContext, settings, symbolEditable, trading, updateSettings }: ChartContainerPreviewProps) {
+const ChartContainerPreview = memo(function ChartContainerPreview({ cutoffMs, instanceId, linkContext, onLinkContextChange, previewContext, settings, strategy, symbolEditable, trading, updateSettings }: ChartContainerPreviewProps) {
   const liveChart = useCanvasHistoricalChart(linkContext.symbol, settings.chart.timeframe, cutoffMs, previewContext.sessionDate, settings.chart.visibleIndicators);
   const presentations = useTickerPresentations([linkContext.symbol]);
-  return <ChartPreview changeAsOf={new Date(cutoffMs).toISOString()} chartSettings={settings.chart} instanceId={instanceId} linkContext={linkContext} liveChart={liveChart} logoUrl={presentations[linkContext.symbol]?.logo_url} onChartSettingsChange={(next) => updateSettings((current) => ({ ...current, chart: next }))} onLinkContextChange={onLinkContextChange} symbolEditable={symbolEditable} trading={trading} />;
+  const strategyDecisions = useMemo(() => strategyDecisionEvents(strategy), [strategy]);
+  const strategyPresentation = useMemo(() => resolvedStrategyPresentation(strategy), [strategy]);
+  return <ChartPreview changeAsOf={new Date(cutoffMs).toISOString()} chartSettings={settings.chart} instanceId={instanceId} linkContext={linkContext} liveChart={liveChart} logoUrl={presentations[linkContext.symbol]?.logo_url} onChartSettingsChange={(next) => updateSettings((current) => ({ ...current, chart: next }))} onLinkContextChange={onLinkContextChange} strategyDecisions={strategyDecisions} strategyPresentation={strategyPresentation} symbolEditable={symbolEditable} trading={trading} />;
 }, chartContainerPreviewPropsEqual);
 
 function ChartsQuotesContainerPreview({ cutoffMs, instanceId, linkContext, onLinkContextChange, previewContext, settings, symbolEditable, trading, updateSettings }: Omit<ChartContainerPreviewProps, "linkGroup">) {
@@ -1918,6 +1923,7 @@ function chartContainerPreviewPropsEqual(previous: ChartContainerPreviewProps, n
     && previous.previewContext.sessionDate === next.previewContext.sessionDate
     && previous.previewContext.previewTime === next.previewContext.previewTime
     && tradingPositionSignature(previous.trading, previous.linkContext.symbol) === tradingPositionSignature(next.trading, next.linkContext.symbol)
+    && strategyPresentationSignature(previous.strategy) === strategyPresentationSignature(next.strategy)
     && previous.symbolEditable === next.symbolEditable
     && previousChart.symbol === nextChart.symbol
     && previousChart.timeframe === nextChart.timeframe
@@ -1928,6 +1934,61 @@ function chartContainerPreviewPropsEqual(previous: ChartContainerPreviewProps, n
 function tradingPositionSignature(trading: CanonicalTradingPreview | undefined, symbol: string) {
   const row = trading?.positions.find((position) => nestedValue(position, "instrument", "symbol") === symbol);
   return row ? `${row.account_id}:${row.quantity}:${row.average_price}:${row.market_price}:${row.unrealized_pnl}:${row.source_event_time}` : "";
+}
+
+function strategyDecisionEvents(strategy: CanvasPreview["strategy"] | undefined): StrategyDecisionEvent[] {
+  if (!strategy || strategy.fixture) return [];
+  return strategy.signals.flatMap((row, index) => {
+    const action = String(row.action || "wait").toLowerCase();
+    const effectiveAt = String(row.effective_at || row.event_time || row.time || "");
+    const ticker = String(row.ticker || row.symbol || "").trim().toUpperCase();
+    if (!isStrategyAction(action) || !ticker || !Number.isFinite(Date.parse(effectiveAt))) return [];
+    const directionValue = String(row.direction || "neutral").toLowerCase();
+    const direction = directionValue === "bullish" || directionValue === "bearish" ? directionValue : "neutral";
+    return [{
+      action,
+      confidence: Number(row.confidence || row.signal_confidence || 0),
+      direction,
+      effective_at: effectiveAt,
+      event_id: String(row.event_id || row.signal_id || `${strategy.strategy_id}:${strategy.revision}:${index}`),
+      invalidation_price: nullableNumber(row.invalidation_price),
+      reference_price: nullableNumber(row.reference_price || row.value),
+      score: Number(row.score || row.signal_score || row.magnitude || 0),
+      strategy_id: strategy.strategy_id,
+      strategy_revision: strategy.revision,
+      ticker,
+    }];
+  });
+}
+
+function resolvedStrategyPresentation(strategy: CanvasPreview["strategy"] | undefined): StrategyChartPresentation {
+  return { ...DEFAULT_STRATEGY_CHART_PRESENTATION, ...(strategy?.taxonomy?.presentation ?? {}) };
+}
+
+function strategyPresentationSignature(strategy: CanvasPreview["strategy"] | undefined) {
+  if (!strategy || strategy.fixture) return "";
+  return JSON.stringify({
+    presentation: resolvedStrategyPresentation(strategy),
+    revision: strategy.revision,
+    signals: strategy.signals.map((row) => [
+      row.event_id || row.signal_id,
+      row.effective_at || row.event_time || row.time,
+      row.action,
+      row.confidence || row.signal_confidence,
+      row.invalidation_price,
+    ]),
+    strategy_id: strategy.strategy_id,
+  });
+}
+
+function isStrategyAction(value: string): value is StrategyAction {
+  return ["enter_long", "enter_short", "exit", "hold", "wait"].includes(value);
+}
+
+function nullableNumber(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
 }
 
 function stringArraysEqual(previous: readonly string[], next: readonly string[]) {
@@ -1948,6 +2009,8 @@ function ChartPreview({
   timeframes = HISTORICAL_TIMEFRAMES,
   toolbarVariant = "full",
   fillHeight = false,
+  strategyDecisions = EMPTY_STRATEGY_DECISIONS,
+  strategyPresentation = DEFAULT_STRATEGY_CHART_PRESENTATION,
   trading,
 }: {
   baseHeight?: number;
@@ -1963,6 +2026,8 @@ function ChartPreview({
   timeframes?: CanvasChartTimeframe[];
   toolbarVariant?: "full" | "compact";
   fillHeight?: boolean;
+  strategyDecisions?: StrategyDecisionEvent[];
+  strategyPresentation?: StrategyChartPresentation;
   trading?: CanonicalTradingPreview;
 }) {
   const indicators = liveChart.indicators;
@@ -1974,18 +2039,29 @@ function ChartPreview({
       liveChart.bars,
       visibleIndicators,
     );
+    const strategyMarkers = strategyPresentationMarkers(
+      strategyDecisions.filter((event) => event.ticker === linkContext.symbol),
+      liveChart.bars,
+      strategyPresentation,
+    );
+    const strategyInvalidations = strategyInvalidationZones(
+      strategyDecisions.filter((event) => event.ticker === linkContext.symbol),
+      liveChart.bars,
+      strategyPresentation,
+    );
     return {
       candles: liveChart.bars.map((bar) => ({ close: bar.close, high: bar.high, low: bar.low, open: bar.open, time: Date.parse(bar.bar_start) / 1000 })),
-      markers: marketSignalMarkers,
+      markers: [...(marketSignalMarkers ?? []), ...strategyMarkers],
       oscillator_series: historicalIndicatorSeries(indicators, "oscillator", visibleIndicators),
       overlay_series: historicalIndicatorSeries(indicators, "price", visibleIndicators),
       price_zones: [
         ...historicalMarketLevelZones(indicators, liveChart.bars, liveChart.structureEvents, liveChart.structureLevelHistory, visibleIndicators, timeframe),
+        ...strategyInvalidations,
       ],
       regions: MACRO_TIMEFRAMES.has(timeframe) ? [] : extendedSessionRegions(liveChart.bars),
       volume: chartSettings.showVolume ? liveChart.bars.map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
     };
-  }, [chartSettings.showVolume, indicators, liveChart.bars, liveChart.marketSignalEvents, liveChart.structureEvents, liveChart.structureLevelHistory, timeframe, visibleIndicators]);
+  }, [chartSettings.showVolume, indicators, linkContext.symbol, liveChart.bars, liveChart.marketSignalEvents, liveChart.structureEvents, liveChart.structureLevelHistory, strategyDecisions, strategyPresentation, timeframe, visibleIndicators]);
   function updateChart(symbol: string, nextTimeframe: CanvasChartTimeframe) {
     onChartSettingsChange({ ...chartSettings, symbol, timeframe: nextTimeframe });
     onLinkContextChange({ symbol });
@@ -3369,7 +3445,10 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
     orders: { ...DEFAULT_SETTINGS.orders, ...(stored.orders ?? {}) },
     portfolio: { ...DEFAULT_SETTINGS.portfolio, ...(stored.portfolio ?? {}) },
     scanner: normalizeTechnicalListSettings(DEFAULT_SETTINGS.scanner, stored.scanner),
-    signal_stream: normalizeTechnicalListSettings(DEFAULT_SETTINGS.signal_stream, stored.signal_stream),
+    signal_stream: {
+      ...normalizeTechnicalListSettings(DEFAULT_SETTINGS.signal_stream, stored.signal_stream),
+      preset: normalizeSignalStreamPreset(stored.signal_stream?.preset),
+    },
     watchlist: {
       ...DEFAULT_SETTINGS.watchlist,
       ...(stored.watchlist ?? {}),
@@ -3386,6 +3465,12 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
       showRawTags: Boolean((stored.xbrl as { showRawTags?: boolean; showPeriod?: boolean } | undefined)?.showRawTags ?? (stored.xbrl as { showPeriod?: boolean } | undefined)?.showPeriod ?? DEFAULT_SETTINGS.xbrl.showRawTags),
     },
   };
+}
+
+function normalizeSignalStreamPreset(value: unknown) {
+  const preset = String(value || "");
+  if (["All", "Market", "News", "SEC", "Strategy"].includes(preset)) return preset;
+  return DEFAULT_SETTINGS.signal_stream.preset;
 }
 
 function normalizeChartSlot(stored: Partial<CanvasChartSettings> | undefined, defaults: CanvasChartSettings): CanvasChartSettings {

@@ -16,6 +16,7 @@ from pipelines.reference_data.clickhouse_load_market_references import build_con
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.orchestrator import historical_run_window
 from src.trading_runtime.runtime import RunMode
+from src.trading_runtime.taxonomy import StrategyTaxonomy, taxonomy_catalog_payload
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -50,6 +51,12 @@ def save_strategy_definition(payload: dict[str, Any]) -> dict[str, Any]:
     if not strategy_id or not name or not implementation:
         raise ValueError("strategy_id, name, and implementation are required")
     revision = int(payload.get("revision") or 0)
+    automatic = bool(payload.get("automatic", True))
+    config = dict(payload.get("config") or {})
+    taxonomy = StrategyTaxonomy.from_payload(payload.get("taxonomy") or config.get("taxonomy"))
+    if automatic and not (taxonomy.indicators or taxonomy.signals):
+        raise ValueError("Automatic strategies must declare at least one indicator or signal input")
+    config["taxonomy"] = taxonomy.payload()
     if revision <= 0:
         existing = trading_journal().strategy(strategy_id)
         revision = int(existing["revision"]) + 1 if existing else 1
@@ -58,22 +65,35 @@ def save_strategy_definition(payload: dict[str, Any]) -> dict[str, Any]:
         revision=revision,
         name=name,
         implementation=implementation,
-        automatic=bool(payload.get("automatic", True)),
+        automatic=automatic,
         enabled=bool(payload.get("enabled", True)),
-        config=dict(payload.get("config") or {}),
+        config=config,
     )
-    return trading_journal().strategy(strategy_id, revision) or {}
+    return _strategy_definition_payload(trading_journal().strategy(strategy_id, revision) or {})
 
 
 def list_strategy_definitions(latest_only: bool = True) -> list[dict[str, Any]]:
-    return trading_journal().strategies(latest_only=latest_only)
+    return [_strategy_definition_payload(row) for row in trading_journal().strategies(latest_only=latest_only)]
 
 
 def get_strategy_definition(strategy_id: str, revision: int | None = None) -> dict[str, Any]:
     result = trading_journal().strategy(strategy_id, revision)
     if result is None:
         raise KeyError(strategy_id)
-    return result
+    return _strategy_definition_payload(result)
+
+
+def trading_taxonomy_catalog() -> dict[str, Any]:
+    return taxonomy_catalog_payload()
+
+
+def _strategy_definition_payload(value: dict[str, Any]) -> dict[str, Any]:
+    if not value:
+        return value
+    config = dict(value.get("config") or {})
+    taxonomy_payload = config.get("taxonomy")
+    taxonomy = StrategyTaxonomy.from_payload(taxonomy_payload).payload() if taxonomy_payload else None
+    return {**value, "config": config, "taxonomy": taxonomy}
 
 
 def get_trade_annotation(episode_id: str) -> dict[str, Any]:
