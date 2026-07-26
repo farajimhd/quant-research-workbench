@@ -1311,7 +1311,7 @@ def capture(args: argparse.Namespace) -> int:
                             "timeframe": args.canvas_chart_timeframe,
                             "visibleIndicators": [
                                 value.strip()
-                                for value in (args.canvas_visible_indicators or "indicator.vwap,indicator.macd,indicator.qmd_decision,indicator.qmd_decision_chart,indicator.qmd_generic_structure").split(",")
+                                for value in (args.canvas_visible_indicators or "indicator.vwap,indicator.macd,indicator.qmd_decision,indicator.qmd_generic_structure").split(",")
                                 if value.strip()
                             ],
                         },

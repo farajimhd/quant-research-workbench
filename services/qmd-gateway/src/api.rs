@@ -4,7 +4,7 @@ use crate::compact_event::{CompactEventDecoder, LiveCompactEvent, SharedCompactE
 use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
 use crate::indicator_catalog::{indicator_catalog, IndicatorCatalogEntry};
-use crate::indicators::{IndicatorSnapshot, SharedIndicatorStore};
+use crate::indicators::{IndicatorScannerSnapshot, IndicatorSnapshot, SharedIndicatorStore};
 use crate::intraday_bars::IntradayBarRow;
 use crate::live_market_state::{
     LiveMarketStateSnapshot, LiveSymbolMarketStateEvent, SharedLiveMarketStateStore,
@@ -123,6 +123,10 @@ pub fn app(state: AppState) -> Router {
         .route("/snapshot/signals", get(market_signal_snapshot))
         .route("/snapshot/signal-events", get(market_signal_event_snapshot))
         .route("/snapshot/scanner", get(scanner_snapshot))
+        .route(
+            "/snapshot/scanner-indicators",
+            get(scanner_indicator_snapshot),
+        )
         .route(
             "/snapshot/scanner-primitives",
             get(scanner_primitive_snapshot),
@@ -672,6 +676,21 @@ async fn scanner_primitive_snapshot(
         state
             .scanner
             .snapshot(query.limit.unwrap_or(250).min(5_000))
+            .await,
+    )
+}
+
+async fn scanner_indicator_snapshot(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<BarsQuery>,
+) -> Json<IndicatorScannerSnapshot> {
+    Json(
+        state
+            .indicators
+            .scanner_snapshot(
+                query.timeframe.as_deref().unwrap_or("10s"),
+                query.limit.unwrap_or(5_000).min(5_000),
+            )
             .await,
     )
 }

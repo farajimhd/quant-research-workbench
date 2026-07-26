@@ -1,1 +1,0 @@
-"""Historical data adapters."""

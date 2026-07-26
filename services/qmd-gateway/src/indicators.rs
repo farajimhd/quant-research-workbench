@@ -9,9 +9,6 @@ use crate::metrics::SharedMetrics;
 use crate::microstructure_interval::{
     MicrostructureIntervalFeatures, MicrostructureIntervalWindow,
 };
-use crate::qmd_episode::{
-    QmdEpisodeEngine, QmdEpisodeEvent, QmdEpisodeInput, QmdEpisodeScaleInput, QmdEpisodeState,
-};
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use chrono_tz::America::New_York;
@@ -34,8 +31,15 @@ pub struct IndicatorSnapshot {
     pub timeframe: String,
     pub current: Option<IndicatorRow>,
     pub history: Vec<IndicatorRow>,
-    pub episode_states: Vec<QmdEpisodeState>,
-    pub episode_events: Vec<QmdEpisodeEvent>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct IndicatorScannerSnapshot {
+    pub as_of: DateTime<Utc>,
+    pub timeframe: String,
+    pub total_symbols: usize,
+    pub row_count: usize,
+    pub rows: Vec<IndicatorRow>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -593,8 +597,6 @@ struct IndicatorStore {
     microstructure: HashMap<String, MicrostructureIntervalWindow>,
     microstructure_aggregates: HashMap<IndicatorKey, MicrostructureSampleAggregate>,
     last_base_indicators: HashMap<String, IndicatorRow>,
-    qmd_episodes: HashMap<String, QmdEpisodeEngine>,
-    qmd_episode_events: HashMap<String, VecDeque<QmdEpisodeEvent>>,
     trade_rules: TradeAggregationRules,
     market_structure_references: Arc<StdRwLock<HashMap<String, MarketStructureReferenceLevels>>>,
 }
@@ -781,6 +783,47 @@ impl SharedIndicatorStore {
             .await
     }
 
+    pub async fn scanner_snapshot(
+        &self,
+        timeframe: &str,
+        limit: usize,
+    ) -> IndicatorScannerSnapshot {
+        let timeframe = canonical_timeframe(timeframe);
+        let mut rows = Vec::new();
+        for shard in self.shards.iter() {
+            let store = shard.inner.lock().await;
+            rows.extend(
+                store
+                    .history
+                    .iter()
+                    .filter(|(key, _)| key.timeframe == timeframe)
+                    .filter_map(|(_, history)| history.back().cloned()),
+            );
+        }
+        rows.sort_by(|left, right| {
+            right
+                .bar_end
+                .cmp(&left.bar_end)
+                .then_with(|| left.sym.cmp(&right.sym))
+        });
+        let total_symbols = rows.len();
+        rows.truncate(limit);
+        rows.iter_mut()
+            .for_each(|row| row.qmd_structure_active_levels.clear());
+        let as_of = rows
+            .iter()
+            .map(|row| row.bar_end)
+            .max()
+            .unwrap_or_else(Utc::now);
+        IndicatorScannerSnapshot {
+            as_of,
+            timeframe,
+            total_symbols,
+            row_count: rows.len(),
+            rows,
+        }
+    }
+
     pub async fn replace_market_structure_references(
         &self,
         references: HashMap<String, MarketStructureReferenceLevels>,
@@ -849,8 +892,6 @@ impl IndicatorShardStore {
                 microstructure: HashMap::new(),
                 microstructure_aggregates: HashMap::new(),
                 last_base_indicators: HashMap::new(),
-                qmd_episodes: HashMap::new(),
-                qmd_episode_events: HashMap::new(),
                 trade_rules,
                 market_structure_references,
             })),
@@ -897,24 +938,12 @@ impl IndicatorShardStore {
         history
             .iter_mut()
             .for_each(|row| row.qmd_structure_active_levels.clear());
-        let episode_states = store
-            .qmd_episodes
-            .get(ticker)
-            .map(QmdEpisodeEngine::states)
-            .unwrap_or_default();
-        let episode_events = store
-            .qmd_episode_events
-            .get(ticker)
-            .map(|events| events.iter().cloned().collect())
-            .unwrap_or_default();
         IndicatorSnapshot {
             ticker: ticker.to_string(),
             tick,
             timeframe: timeframe.to_string(),
             current,
             history,
-            episode_states,
-            episode_events,
         }
     }
 }
@@ -1005,20 +1034,6 @@ impl IndicatorStore {
                 .apply_market_levels(&mut row, &bar);
         }
         if is_base {
-            let input = qmd_episode_input(&row, bar.high, bar.low);
-            let events = self
-                .qmd_episodes
-                .entry(ticker.clone())
-                .or_default()
-                .update(&ticker, input);
-            if !events.is_empty() {
-                let event_limit = self.history_limit.max(1);
-                let stored = self.qmd_episode_events.entry(ticker.clone()).or_default();
-                stored.extend(events);
-                while stored.len() > event_limit {
-                    stored.pop_front();
-                }
-            }
             self.last_base_indicators.insert(ticker, row.clone());
         }
         let history_limit = self.history_limit_for(&bar.timeframe);
@@ -1035,64 +1050,6 @@ impl IndicatorStore {
             .get(&canonical_timeframe(timeframe))
             .copied()
             .unwrap_or(self.history_limit)
-    }
-}
-
-pub fn qmd_episode_input(row: &IndicatorRow, high: f64, low: f64) -> QmdEpisodeInput {
-    let direction = match row.qmd_decision_action.as_str() {
-        "buy" => 1,
-        "sell" => -1,
-        _ => 0,
-    };
-    let scale =
-        |name: &str, scale_direction: i8, threshold: f64, swing_high: f64, swing_low: f64| {
-            let structure_break = row.qmd_structure_events.iter().rev().find(|event| {
-                event.timeframe == name
-                    && matches!(event.event_kind.as_str(), "bos" | "choch")
-                    && event.confirmed_at <= row.bar_end
-            });
-            QmdEpisodeScaleInput {
-                direction: scale_direction,
-                confidence: if scale_direction == 0 {
-                    0.0
-                } else {
-                    row.qmd_structure_confidence.clamp(0.0, 1.0)
-                },
-                threshold,
-                swing_high,
-                swing_low,
-                structure_break_direction: structure_break.map_or(0, |event| event.direction),
-                structure_break_confidence: structure_break.map_or(0.0, |event| event.confidence),
-            }
-        };
-    QmdEpisodeInput {
-        occurred_at: row.bar_end,
-        close: row.close,
-        high,
-        low,
-        decision_direction: direction,
-        decision_confidence: row.qmd_decision_confidence.clamp(0.0, 1.0),
-        micro: scale(
-            "100ms",
-            row.qmd_structure_micro_direction,
-            row.qmd_structure_micro_threshold,
-            row.qmd_structure_micro_swing_high,
-            row.qmd_structure_micro_swing_low,
-        ),
-        tactical: scale(
-            "10s",
-            row.qmd_structure_tactical_direction,
-            row.qmd_structure_tactical_threshold,
-            row.qmd_structure_tactical_swing_high,
-            row.qmd_structure_tactical_swing_low,
-        ),
-        context: scale(
-            "1m",
-            row.qmd_structure_context_direction,
-            row.qmd_structure_context_threshold,
-            row.qmd_structure_context_swing_high,
-            row.qmd_structure_context_swing_low,
-        ),
     }
 }
 

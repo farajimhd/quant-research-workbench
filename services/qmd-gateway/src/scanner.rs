@@ -105,9 +105,16 @@ impl SharedScannerStore {
         let mut rows = store.latest_by_key.values().cloned().collect::<Vec<_>>();
         rows.sort_by(|left, right| {
             right
-                .confidence
-                .partial_cmp(&left.confidence)
+                .score
+                .abs()
+                .partial_cmp(&left.score.abs())
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    right
+                        .confidence
+                        .partial_cmp(&left.confidence)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
                 .then_with(|| right.effective_at.cmp(&left.effective_at))
                 .then_with(|| left.signal_id.cmp(&right.signal_id))
         });
@@ -344,5 +351,32 @@ pub(crate) mod tests {
         assert!(signals
             .iter()
             .all(|row| row.schema_version == crate::market_signal::MARKET_SIGNAL_SCHEMA_VERSION));
+    }
+
+    #[tokio::test]
+    async fn active_signals_rank_by_absolute_score_before_confidence() {
+        let template = MarketSignalEngine::default()
+            .update(&base_bar())
+            .into_iter()
+            .next()
+            .expect("base bar should emit a signal");
+        let mut lower_score = template.clone();
+        lower_score.ticker = "LOW".to_string();
+        lower_score.signal_key = "lower_score".to_string();
+        lower_score.score = 0.25;
+        lower_score.confidence = 0.99;
+        let mut higher_score = template;
+        higher_score.ticker = "HIGH".to_string();
+        higher_score.signal_key = "higher_score".to_string();
+        higher_score.score = -0.80;
+        higher_score.confidence = 0.40;
+
+        let store = SharedScannerStore::new(10);
+        store.apply(lower_score).await;
+        store.apply(higher_score).await;
+        let snapshot = store.signal_snapshot(10).await;
+
+        assert_eq!(snapshot.rows[0].ticker, "HIGH");
+        assert_eq!(snapshot.rows[0].score, -0.80);
     }
 }

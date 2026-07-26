@@ -95,19 +95,27 @@ def qmd_live_market_state(ticker: str) -> dict[str, Any]:
 
 
 def qmd_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    cross_section_limit = 5_000
+    with ThreadPoolExecutor(max_workers=4) as executor:
         scanner_future = executor.submit(
             qmd_get_json, "/snapshot/scanner", {"limit": row_limit}, timeout=3
         )
         active_signal_future = executor.submit(
-            qmd_get_json, "/snapshot/signals", {"limit": row_limit}, timeout=3
+            qmd_get_json, "/snapshot/signals", {"limit": cross_section_limit}, timeout=3
         )
         signal_event_future = executor.submit(
             qmd_get_json, "/snapshot/signal-events", {"limit": row_limit}, timeout=3
         )
+        indicator_future = executor.submit(
+            qmd_get_json,
+            "/snapshot/scanner-indicators",
+            {"limit": cross_section_limit, "timeframe": "10s"},
+            timeout=3,
+        )
         snapshot_payload = scanner_future.result()
         active_signal_payload = active_signal_future.result()
         signal_event_payload = signal_event_future.result()
+        indicator_payload = indicator_future.result()
     snapshot_rows = snapshot_payload.get("rows", []) if isinstance(snapshot_payload, dict) else []
     rows = [normalize_qmd_symbol_snapshot(row) for row in snapshot_rows if isinstance(row, dict)]
     active_rows = [
@@ -123,19 +131,42 @@ def qmd_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
     for signal in active_rows:
         ticker = str(signal.get("ticker") or "")
         current = strongest_by_ticker.get(ticker)
-        if current is None or float_value(signal.get("signal_confidence")) > float_value(
-            current.get("signal_confidence")
-        ):
+        signal_rank = (
+            abs(float_value(signal.get("signal_score"))),
+            float_value(signal.get("signal_confidence")),
+        )
+        current_rank = (
+            abs(float_value(current.get("signal_score"))) if current else -1.0,
+            float_value(current.get("signal_confidence")) if current else -1.0,
+        )
+        if current is None or signal_rank > current_rank:
             strongest_by_ticker[ticker] = signal
     active_counts: dict[str, int] = {}
     for signal in active_rows:
         ticker = str(signal.get("ticker") or "")
         active_counts[ticker] = active_counts.get(ticker, 0) + 1
+    indicator_by_ticker = {
+        str(row.get("sym") or "").strip().upper(): normalize_qmd_indicator_scanner_row(row)
+        for row in (
+            indicator_payload.get("rows", [])
+            if isinstance(indicator_payload, dict)
+            else []
+        )
+        if isinstance(row, dict) and str(row.get("sym") or "").strip()
+    }
     rows = [
         {
             **row,
+            **indicator_by_ticker.get(str(row.get("ticker") or ""), {}),
             **strongest_by_ticker.get(str(row.get("ticker") or ""), {}),
             "active_signal_count": active_counts.get(str(row.get("ticker") or ""), 0),
+            "signal_rank_score": abs(
+                float_value(
+                    strongest_by_ticker.get(str(row.get("ticker") or ""), {}).get(
+                        "signal_score"
+                    )
+                )
+            ),
         }
         for row in rows
     ]
@@ -434,8 +465,9 @@ def normalize_qmd_market_signal(row: dict[str, Any]) -> dict[str, Any]:
         "direction": str(row.get("direction") or "neutral"),
         "market_state": str(row.get("direction") or "neutral"),
         "signal_score": score,
+        "signal_rank_score": abs(score),
         "signal_confidence": confidence,
-        "scanner_score": confidence,
+        "scanner_score": abs(score),
         "live_reasons": str(row.get("trigger_reason") or ""),
         "live_risks": str(row.get("resolution_reason") or ""),
         "evidence": str(row.get("trigger_reason") or ""),
@@ -447,8 +479,17 @@ def normalize_qmd_market_signal(row: dict[str, Any]) -> dict[str, Any]:
         "tape_imbalance": float_value(evidence.get("tape_imbalance")),
         "liquidity_score": float_value(evidence.get("liquidity_score")),
         "provider": "qmd-gateway",
-        "live_priority": confidence,
+        "live_priority": abs(score),
     }
+
+
+def normalize_qmd_indicator_scanner_row(row: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(row)
+    payload.pop("qmd_structure_active_levels", None)
+    payload["ticker"] = str(row.get("sym") or "").strip().upper()
+    payload["indicator_timeframe"] = str(row.get("timeframe") or "")
+    payload["indicator_as_of"] = str(row.get("bar_end") or "")
+    return payload
 
 
 def optional_float(value: Any) -> float | None:

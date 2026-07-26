@@ -78,6 +78,7 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(row["signal_event_id"], "event-2")
         self.assertEqual(row["signal_id"], "signal-1")
         self.assertEqual(row["signal_state"], "updated")
+        self.assertEqual(row["signal_rank_score"], 0.72)
         self.assertEqual(row["signal_confidence"], 0.81)
 
     @patch("src.backend.qmd_gateway_client.qmd_get_json")
@@ -104,8 +105,8 @@ class QmdGatewayClientTests(unittest.TestCase):
                             "state": "triggered",
                             "ticker": "AAPL",
                             "working_timeframe": "100ms",
-                            "direction": "bullish",
-                            "score": 0.70,
+                            "direction": "bearish",
+                            "score": -0.95,
                             "confidence": 0.60,
                             "effective_at": "2026-07-17T13:45:00.100Z",
                         },
@@ -140,14 +141,29 @@ class QmdGatewayClientTests(unittest.TestCase):
                         }
                     ]
                 }
+            if path == "/snapshot/scanner-indicators":
+                return {
+                    "rows": [
+                        {
+                            "sym": "AAPL",
+                            "timeframe": "10s",
+                            "bar_end": "2026-07-17T13:45:00Z",
+                            "qmd_decision_signal": -0.4,
+                            "qmd_decision_confidence": 0.8,
+                        }
+                    ]
+                }
             self.fail(f"Unexpected QMD route: {path}")
 
         get_json.side_effect = response
         payload = qmd_scanner_snapshot(row_limit=25)
 
         self.assertEqual([row["ticker"] for row in payload["rows"]], ["AAPL", "MSFT"])
-        self.assertEqual(payload["rows"][0]["signal_id"], "signal-b")
+        self.assertEqual(payload["rows"][0]["signal_id"], "signal-a")
+        self.assertEqual(payload["rows"][0]["signal_rank_score"], 0.95)
         self.assertEqual(payload["rows"][0]["active_signal_count"], 2)
+        self.assertEqual(payload["rows"][0]["qmd_decision_signal"], -0.4)
+        self.assertEqual(payload["rows"][0]["indicator_timeframe"], "10s")
         self.assertNotIn("signal_id", payload["rows"][1])
         self.assertEqual(payload["signal_rows"][0]["signal_event_id"], "resolved-c")
         self.assertEqual(payload["signal_row_count"], 1)

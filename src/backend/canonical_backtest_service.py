@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+import json
 from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 import polars as pl
 
-from src.backtest.results import read_run_metadata
 from src.trading_runtime.domain import (
     AccountValue,
     BrokerAccount,
@@ -93,6 +93,20 @@ def canonical_backtest_state(run_dir: Path) -> dict[str, Any]:
     projector.stale = False
     projector.stale_reason = ""
     return trading_state_payload(projector.snapshot())
+
+
+def read_run_metadata(run_dir: Path) -> dict[str, Any] | None:
+    """Read immutable legacy run evidence without importing its retired engine."""
+    for filename in ("metadata.json", "run_metadata.json"):
+        path = run_dir / filename
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+    return None
 
 
 def _read(path: Path) -> list[dict[str, Any]]:

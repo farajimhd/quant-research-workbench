@@ -32,7 +32,6 @@ These package ids are available in the Indicators menu and chart legend:
 | `indicator.qmd_arrival_intensity` | QMD Arrival-intensity Imbalance | imbalance and arrival rate | Signed oscillator; rate is supporting evidence. |
 | `indicator.qmd_resiliency` | QMD Liquidity Resiliency | `microstructure_resiliency` | Signed oscillator histogram. |
 | `indicator.qmd_decision` | QMD Decision · Oscillator | canonical decision, confidence, action, reason | One signed Buy/Sell/Wait oscillator with confidence. |
-| `indicator.qmd_decision_chart` | QMD Decision · Chart signals | the same canonical decision | Green Buy or red Sell marker on the next actionable candle; Wait is blank. |
 | `indicator.qmd_generic_structure` | QMD Generic Structure | active zones, complete causal event stream, three-scale swings | Price overlay with independently configurable micro, tactical, and context layers. |
 | `indicator.qmd_reference_levels` | QMD Reference Levels | extended-session high/low, opening range, POC, LULD, and completed higher-timeframe references | Independent price lines, not structural evidence. |
 

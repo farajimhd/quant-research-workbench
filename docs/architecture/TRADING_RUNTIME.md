@@ -64,11 +64,11 @@ corresponding typed row are accepted.
 
 ## Current cutover status
 
-The new authorities and services are implemented. The old `/api/backtests/*`
-jobs still execute `src/backtest` while feature-dependent strategy inputs are
-migrated from prepared provider bars to event-derived bars. Until that cutover
-is complete, those routes are legacy research paths and must not be treated as
-proof of replay/live brokerage parity.
+The new authorities and services are implemented. The stale strategy catalog,
+`src/backtest` execution engine, and `/api/backtests/*` routes were retired in
+the controlled cutover. Immutable saved-run artifacts remain readable through
+the canonical trading-state adapter; they are evidence, not executable
+strategy definitions or proof of replay/live brokerage parity.
 
 Replay setup accepts one exchange date only. Symbol and bar interval are
 container concerns inside the active replay, not run-level parameters. The

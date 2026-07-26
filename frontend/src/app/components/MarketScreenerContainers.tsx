@@ -1,6 +1,7 @@
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronLeft, Columns3, FileCheck2, Filter, Flame, ListFilter, Plus, Search, Star, Trash2, X } from "lucide-react";
 import { forwardRef, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import { api } from "../../api/client";
 import { MarketTime } from "./MarketTime";
 import { TickerLogo, useTickerPresentations } from "./TickerIdentity";
 
@@ -22,6 +23,7 @@ type TechnicalListSettings = { columns: string[]; customColumns: ScannerCustomCo
 export type MarketScannerSettings = TechnicalListSettings & { limit: number; preset: string };
 export type SignalStreamSettings = TechnicalListSettings & { limit: number; preset: string };
 export type WatchlistSettings = TechnicalListSettings & { limit: number; ownerKind: "strategy" | "user"; ownerName: string; symbols: string[] };
+type SignalMethod = { key: string; label: string; status: string; compute_mode: string; working_timeframes: string[]; confirmation_timeframes: string[]; trigger_rules: string[]; rationale: string };
 
 type FieldKind = "derived" | "estimated" | "raw";
 type FieldDefinition = {
@@ -126,12 +128,24 @@ const FIELD_CATALOG: FieldDefinition[] = [
   field("direction", "Direction", "Signal event", "derived", "text", "Bullish, bearish, or neutral direction assigned by the rule owner."),
   field("working_timeframe", "Working interval", "Signal event", "raw", "text", "Market-data interval on which the reusable signal rule was evaluated."),
   field("signal_score", "Score", "Signal event", "derived", "number", "Normalized signed or directional evidence score supplied by the signal authority."),
+  field("signal_rank_score", "Signal strength", "Signal event", "derived", "score", "Absolute market-signal score used to rank active observations without discarding bullish or bearish direction."),
   field("signal_confidence_pct", "Confidence", "Signal event", "derived", "percentPlain", "Evidence completeness and agreement, not forecast win probability."),
   field("active_signal_count", "Active signals", "Signal event", "derived", "integer", "Count of currently active reusable QMD market signals for this ticker."),
   field("action", "Strategy action", "Signal event", "derived", "text", "Enter, exit, hold, or wait interpretation owned by the strategy."),
   field("magnitude", "Magnitude", "Signal event", "derived", "percent", "Observed move or normalized event magnitude."),
   field("source", "Authority", "Signal event", "raw", "text", "Market-derived rule or durable strategy runtime authority."),
   field("evidence", "Evidence", "Signal event", "derived", "text", "Compact explanation of the inputs that triggered the row."),
+  field("indicator_timeframe", "QMD interval", "QMD streaming indicators", "raw", "text", "Closed streaming interval that produced the cross-sectional QMD indicator state."),
+  field("qmd_decision_signal", "QMD decision", "QMD streaming indicators", "derived", "score", "Signed reusable QMD decision observation; strategy code remains responsible for trading actions."),
+  field("qmd_decision_confidence_pct", "QMD confidence", "QMD streaming indicators", "derived", "percentPlain", "Evidence coverage and agreement for the QMD decision observation."),
+  field("qmd_decision_action", "QMD direction", "QMD streaming indicators", "derived", "text", "Buy, sell, or wait observation emitted by QMD; this is not an order instruction."),
+  field("microstructure_unified_signal", "Flow signal", "QMD streaming indicators", "derived", "score", "Signed unified microstructure evidence from the streaming QMD indicator engine."),
+  field("microstructure_unified_confidence_pct", "Flow confidence", "QMD streaming indicators", "derived", "percentPlain", "Evidence quality for the unified microstructure signal."),
+  field("microstructure_signed_volume_imbalance", "Volume imbalance", "QMD streaming indicators", "derived", "score", "Signed eligible-trade volume imbalance in the current QMD interval."),
+  field("microstructure_level1_ofi", "Level 1 OFI", "QMD streaming indicators", "derived", "number", "Streaming level-one order-flow imbalance."),
+  field("microstructure_queue_imbalance", "Queue imbalance", "QMD streaming indicators", "derived", "score", "Displayed bid-versus-ask queue imbalance."),
+  field("qmd_structure_score", "Structure score", "QMD streaming indicators", "derived", "score", "Signed causal market-structure observation from QMD."),
+  field("qmd_structure_confidence_pct", "Structure confidence", "QMD streaming indicators", "derived", "percentPlain", "Evidence quality for the current QMD structure observation."),
 ];
 
 const SCANNER_PRESETS: Record<string, string[]> = {
@@ -139,6 +153,8 @@ const SCANNER_PRESETS: Record<string, string[]> = {
   Momentum: ["ticker", "last", "change_5m_pct", "change_pct", "dollar_volume", "trade_count", "quote_count"],
   Intelligence: ["ticker", "last", "change_pct", "live_news_count", "sec_count", "news_labels", "sec_labels"],
   Fundamentals: ["ticker", "xbrl_quality_score", "financial_trajectory_score", "xbrl_profitability_score", "xbrl_growth_score", "xbrl_cash_quality_score", "xbrl_balance_sheet_score", "xbrl_capital_discipline_score", "fundamental_revenue_growth_pct", "fundamental_operating_margin_pct", "valuation_pe"],
+  Signals: ["ticker", "signal_type", "direction", "signal_score", "signal_rank_score", "signal_confidence_pct", "active_signal_count", "working_timeframe", "evidence"],
+  "QMD indicators": ["ticker", "qmd_decision_signal", "qmd_decision_confidence_pct", "qmd_decision_action", "microstructure_unified_signal", "microstructure_unified_confidence_pct", "microstructure_signed_volume_imbalance", "microstructure_level1_ofi", "microstructure_queue_imbalance", "qmd_structure_score", "qmd_structure_confidence_pct", "indicator_timeframe"],
 };
 const LOCKED_MARKET_LIST_COLUMNS = ["logo", "ticker", "news_labels", "sec_labels"];
 const SIGNAL_PRESETS: Record<string, string[]> = {
@@ -168,6 +184,7 @@ export function MarketScannerContainer({ asOf, meta, onSettingsChange, onTickerS
     presets={Object.keys(SCANNER_PRESETS)}
     preset={settings.preset}
     rows={normalizedRows}
+    sortColumn={settings.preset === "Signals" ? "signal_rank_score" : "change_pct"}
     subtitle={meta?.complete_universe ? `Full historical universe · ${meta.lookback_minutes ?? 15}-minute discovery window · cached interval analytics` : "Scanner universe unavailable or incomplete"}
     title="Scanner"
   />;
@@ -176,12 +193,21 @@ export function MarketScannerContainer({ asOf, meta, onSettingsChange, onTickerS
 export function SignalStreamContainer({ asOf, onSettingsChange, onTickerSelect, scannerRows, settings, strategySignals }: { asOf: string; onSettingsChange: (patch: Partial<SignalStreamSettings>) => void; onTickerSelect: (ticker: string) => void; scannerRows: ScreenerRow[]; settings: SignalStreamSettings; strategySignals: ScreenerRow[] }) {
   const events = useMemo(() => buildSignalEvents(normalizeScannerRows(scannerRows), strategySignals, asOf), [asOf, scannerRows, strategySignals]);
   const filtered = useMemo(() => filterSignalPreset(events, settings.preset), [events, settings.preset]);
+  const [signalMethods, setSignalMethods] = useState<SignalMethod[]>([]);
+  useEffect(() => {
+    const controller = new AbortController();
+    api<{ signal_catalog?: SignalMethod[] }>("/api/real-live-trading/qmd-gateway/catalogs", { signal: controller.signal, timeoutMs: 10000 })
+      .then((payload) => setSignalMethods((payload.signal_catalog ?? []).filter((method) => method.status === "implemented")))
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, []);
   return <MarketListSurface
     asOf={asOf}
     columns={withLockedColumns(settings.columns.length ? settings.columns : SIGNAL_PRESETS[settings.preset] ?? SIGNAL_PRESETS.All, LOCKED_MARKET_LIST_COLUMNS)}
     customColumns={settings.customColumns}
     empty="No market or strategy events match this stream."
     eyebrow="Newest first"
+    guide={signalMethods.length ? <details className="market-signal-methods"><summary>Review {signalMethods.length} implemented QMD signal methods</summary><div>{signalMethods.map((method) => <article key={method.key}><strong>{method.label}</strong><span>{method.compute_mode.replaceAll("_", " ")} · {method.working_timeframes.join(", ")}</span><p>{method.rationale}</p><small>{method.trigger_rules[0] ?? "See the QMD catalog for trigger rules."}</small></article>)}</div></details> : null}
     limit={settings.limit}
     lockedColumns={LOCKED_MARKET_LIST_COLUMNS}
     onColumnsChange={(columns) => onSettingsChange({ columns })}
@@ -240,6 +266,7 @@ function MarketListSurface({
   empty,
   eyebrow,
   fieldCoverage,
+  guide,
   limit,
   lockedColumns = [],
   onColumnsChange,
@@ -249,6 +276,7 @@ function MarketListSurface({
   preset,
   presets,
   rows,
+  sortColumn,
   subtitle,
   title,
 }: {
@@ -258,6 +286,7 @@ function MarketListSurface({
   empty: string;
   eyebrow: string;
   fieldCoverage?: Record<string, number>;
+  guide?: ReactNode;
   limit: number;
   lockedColumns?: string[];
   onColumnsChange: (columns: string[]) => void;
@@ -267,6 +296,7 @@ function MarketListSurface({
   preset: string;
   presets: string[];
   rows: ScreenerRow[];
+  sortColumn?: string;
   subtitle: string;
   title: string;
 }) {
@@ -275,8 +305,9 @@ function MarketListSurface({
       <div><span className="market-list-eyebrow"><ListFilter size={12} /> {eyebrow}</span><h3>{title}</h3><p>{subtitle} · <MarketTime value={asOf} /></p></div>
       <strong>{formatCompact(rows.length)} rows</strong>
     </header>
+    {guide}
     <nav className="market-list-presets" aria-label={`${title} views`}>{presets.map((item) => <button aria-pressed={preset === item} className={preset === item ? "active" : undefined} key={item} onClick={() => onPresetChange(item)} type="button">{item}</button>)}</nav>
-    <MarketListTable columns={columns} customColumns={customColumns} empty={empty} fieldCoverage={fieldCoverage} limit={limit} lockedColumns={lockedColumns} onColumnsChange={onColumnsChange} onCustomColumnsChange={onCustomColumnsChange} onTickerSelect={onTickerSelect} rows={rows} title={title} />
+    <MarketListTable columns={columns} customColumns={customColumns} empty={empty} fieldCoverage={fieldCoverage} limit={limit} lockedColumns={lockedColumns} onColumnsChange={onColumnsChange} onCustomColumnsChange={onCustomColumnsChange} onTickerSelect={onTickerSelect} rows={rows} sortColumn={sortColumn} title={title} />
   </section>;
 }
 
@@ -292,6 +323,7 @@ function MarketListTable({
   onTickerSelect,
   rowAction,
   rows,
+  sortColumn,
   title,
 }: {
   columns: string[];
@@ -305,6 +337,7 @@ function MarketListTable({
   onTickerSelect?: (ticker: string) => void;
   rowAction?: (row: ScreenerRow) => ReactNode;
   rows: ScreenerRow[];
+  sortColumn?: string;
   title: string;
 }) {
   const [columnPickerOpen, setColumnPickerOpen] = useState(false);
@@ -314,6 +347,9 @@ function MarketListTable({
   const [sort, setSort] = useState<{ column: string; direction: "asc" | "desc" }>({ column: title === "Signal stream" ? "event_time" : "change_pct", direction: "desc" });
   const headerMenuRef = useRef<HTMLDivElement | null>(null);
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
+  useEffect(() => {
+    if (sortColumn) setSort({ column: sortColumn, direction: "desc" });
+  }, [sortColumn]);
   const labelFilters = useMemo(() => ({
     news: collectLabels(rows, "news_labels"),
     sec: collectLabels(rows, "sec_labels"),
@@ -519,7 +555,14 @@ function normalizeScannerRows(rows: ScreenerRow[]) {
     const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase();
     const last = numberValue(row.last ?? row.snapshot_last_price ?? row.close);
     const volume = numberValue(row.volume);
-    return { ...row, dollar_volume: row.dollar_volume ?? (last > 0 && volume > 0 ? last * volume : undefined), ticker };
+    return {
+      ...row,
+      dollar_volume: row.dollar_volume ?? (last > 0 && volume > 0 ? last * volume : undefined),
+      microstructure_unified_confidence_pct: numberValue(row.microstructure_unified_confidence) * 100,
+      qmd_decision_confidence_pct: numberValue(row.qmd_decision_confidence) * 100,
+      qmd_structure_confidence_pct: numberValue(row.qmd_structure_confidence) * 100,
+      ticker,
+    };
   });
 }
 

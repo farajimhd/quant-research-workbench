@@ -85,18 +85,13 @@ routed historical pages do not silently fall back to it.
 
 ### Backtesting and debugging
 
-`src/backtest` provides timestamp-ordered strategy simulation, order/fill and
-portfolio modeling, metrics, artifacts, and a step debugger. `src/data_provider`
-owns preparation and validation of bars, features, indicators, and supervision
-data; backtests consume those provider-built artifacts rather than rebuilding
-market data during a run.
-
 The routed Backtest setup and container workspace use the new historical
 contracts. Starting a new-runtime backtest remains blocked until strategies are
 migrated into the persisted event-runtime contract and the shared historical
-run-controller API is implemented. The old `/api/backtests/*` jobs and the
-disconnected `StrategyPage.tsx` continue to represent the legacy prepared-bar
-research engine; they are not presented as runtime parity.
+run-controller API is implemented. The old strategy catalog, `src/backtest`
+engine, `/api/backtests/*` jobs, and disconnected legacy pages were removed.
+Existing immutable run artifacts remain readable through the canonical
+trading-state adapter, but no retired strategy is executable.
 
 ### Live trading
 
