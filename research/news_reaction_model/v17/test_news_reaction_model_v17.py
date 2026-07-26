@@ -15,8 +15,10 @@ from research.news_reaction_model.v17.prepare_targets import (
     BuildCancelled,
     CancellationController,
     EASTERN,
+    IntervalRequest,
     build_windows,
     event_rows_for_tickers,
+    interval_aggregates,
     clear_target_sidecar,
     process_ticker_batch,
     session_days_between,
@@ -272,12 +274,41 @@ class V17TargetTests(unittest.TestCase):
         self.assertIn("bitShiftLeft(toUInt128(sip_timestamp_us), 64)", client.query)
         self.assertIn("t.event_order_key>=q.event_order_key", client.query)
         self.assertNotIn("t.sip_timestamp_us>=q.sip_timestamp_us", client.query)
-        self.assertIn("ORDER BY t.ticker,t.sip_timestamp_us,t.ordinal", client.query)
+        self.assertIn("ORDER BY ticker,sip_timestamp_us,ordinal", client.query)
         self.assertTrue(client.query_id.startswith("news-v17-targets-"))
         self.assertEqual(cancellation.active_query_ids(), ())
         self.assertEqual(rows["AAPL"].shape, (1, 8))
         self.assertEqual(rows["MSFT"].shape, (1, 8))
         self.assertEqual(float(rows["MSFT"][0, 2]), 20.0)
+
+    def test_interval_aggregation_returns_one_bounded_row_per_request(self) -> None:
+        class Client:
+            query = ""
+            query_id = ""
+
+            def execute(self, query: str, *, query_id: str | None = None) -> str:
+                self.query = query
+                self.query_id = query_id or ""
+                return "7\t10\t11\t1002\t9\t1001\t10.5\t10.2\t-0.1\t0.2\t60\t30\t10\t4\n"
+
+        client = Client()
+        cancellation = CancellationController()
+        request = IntervalRequest(7, "TEST", 800, 1000, 2000)
+        rows = interval_aggregates(
+            client,
+            LoaderConfig(),
+            [request],
+            cancellation=cancellation,
+        )
+        self.assertEqual(set(rows), {7})
+        self.assertEqual(rows[7].anchor_price, 10)
+        self.assertEqual(rows[7].observation_count, 4)
+        self.assertIn("FROM VALUES(", client.query)
+        self.assertIn("e.sip_timestamp_us>=i.anchor_start_us", client.query)
+        self.assertIn("e.sip_timestamp_us<i.end_us", client.query)
+        self.assertIn("arrayFold(", client.query)
+        self.assertTrue(client.query_id.startswith("news-v17-targets-"))
+        self.assertEqual(cancellation.active_query_ids(), ())
 
     def test_cancellation_stops_new_work_and_targets_only_registered_queries(self) -> None:
         class Client:

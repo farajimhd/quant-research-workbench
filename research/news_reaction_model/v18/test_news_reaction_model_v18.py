@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 import datetime as dt
 from collections import defaultdict
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -19,15 +20,24 @@ from research.news_reaction_model.v18.episode_contract import (
 )
 from research.news_reaction_model.v18.model import NewsReactionModelV18
 from research.news_reaction_model.v15.stock_state import STOCK_STATE_NAMES, signed_log
+from research.news_reaction_model.v17.prepare_targets import (
+    CancellationController,
+    IntervalAggregate,
+    IntervalRequest,
+    interval_aggregate_sql,
+)
 from research.news_reaction_model.v18.prepare_data import (
     Article,
-    CancellationController,
     anchor_session_days,
     consume_article,
     enforce_exact_root_contract,
     exact_anchor_price,
     planning_anchor_prices,
-    process_interval_batch,
+    raw_metrics_from_aggregate,
+    process_target_unit,
+    TargetProgress,
+    TargetWorkUnit,
+    target_work_units,
     timestamp_us,
 )
 from research.news_reaction_model.v18.targets import (
@@ -272,51 +282,163 @@ class TargetContractTest(unittest.TestCase):
         self.assertFalse(arrays["target_mask"].any())
         self.assertTrue(np.isnan(arrays["anchor_price"]).all())
 
-    def test_interval_batch_reuses_prior_session_for_exact_anchor(self) -> None:
+    def test_interval_aggregation_is_bounded_and_preserves_target_metrics(self) -> None:
         friday = dt.date(2026, 7, 10)
-        monday = dt.date(2026, 7, 13)
         published = dt.datetime(2026, 7, 13, 13, 30, tzinfo=dt.timezone.utc)
         end = published + dt.timedelta(minutes=5)
-        prior = np.asarray(
-            [[timestamp_us(published - dt.timedelta(days=3, minutes=1)), 1, 9.9, 100, 9.8, 9.9, 1, 1]],
-            dtype=np.float64,
+        request = IntervalRequest(
+            row_index=7,
+            ticker="TEST",
+            anchor_start_us=timestamp_us(
+                dt.datetime(2026, 7, 10, 8, tzinfo=dt.timezone.utc)
+            ),
+            start_us=timestamp_us(published),
+            end_us=timestamp_us(end),
         )
-        current = np.asarray(
-            [
-                [timestamp_us(published + dt.timedelta(seconds=1)), 2, 10.0, 100, 9.9, 10.0, 1, 1],
-                [timestamp_us(published + dt.timedelta(seconds=2)), 3, 10.2, 100, 10.1, 10.2, 1, 1],
-                [timestamp_us(published + dt.timedelta(seconds=3)), 4, 10.1, 100, 10.0, 10.1, 1, 1],
-            ],
-            dtype=np.float64,
-        )
-        calls: list[dt.date] = []
+        sql = interval_aggregate_sql(LoaderConfig(), [request])
+        self.assertIn("FROM VALUES(", sql)
+        self.assertIn("e.sip_timestamp_us>=i.anchor_start_us", sql)
+        self.assertIn("e.sip_timestamp_us<i.end_us", sql)
+        self.assertIn("GROUP BY i.row_index,i.start_us,i.end_us", sql)
+        self.assertIn("arrayFold(", sql)
+        self.assertNotIn("FORMAT JSONEachRow", sql)
 
-        def loader(_client, _config, tickers, day, **_kwargs):
-            calls.append(day)
-            rows = prior if day == friday else current
-            return {ticker: rows for ticker in tickers}
-
-        rows, queries, _event_rows = process_interval_batch(
-            config=LoaderConfig(workers=1),
-            v15={"ticker": np.asarray([b"TEST"], dtype="S8")},
-            arrays={
-                "target_start_us": np.asarray([timestamp_us(published)]),
-                "target_end_us": np.asarray([timestamp_us(end)]),
-                "anchor_price": np.asarray([10.0]),
-            },
-            sessions=[friday, monday],
-            split_dates={},
-            items=[("TEST", [0])],
-            cancellation=CancellationController(),
-            event_loader=loader,
+        cross_year = IntervalRequest(
+            row_index=8,
+            ticker="TEST",
+            anchor_start_us=timestamp_us(
+                dt.datetime(2025, 12, 31, 9, tzinfo=dt.timezone.utc)
+            ),
+            start_us=timestamp_us(
+                dt.datetime(2025, 12, 31, 15, tzinfo=dt.timezone.utc)
+            ),
+            end_us=timestamp_us(
+                dt.datetime(2026, 1, 2, 18, tzinfo=dt.timezone.utc)
+            ),
         )
-        row_index, raw, valid, anchor, _delta = rows[0]
-        self.assertEqual(row_index, 0)
+        cross_year_sql = interval_aggregate_sql(LoaderConfig(), [cross_year])
+        self.assertIn("`events_2025`", cross_year_sql)
+        self.assertIn("`events_2026`", cross_year_sql)
+
+        aggregate = IntervalAggregate(
+            row_index=7,
+            anchor_price=9.9,
+            high_price=10.2,
+            high_timestamp_us=timestamp_us(
+                published + dt.timedelta(seconds=2)
+            ),
+            low_price=10.0,
+            low_timestamp_us=timestamp_us(
+                published + dt.timedelta(seconds=1)
+            ),
+            terminal_price=10.1,
+            vwap_price=10.1,
+            peak_to_trough_return=-0.01,
+            trough_to_peak_return=0.02,
+            buy_notional=2_000,
+            sell_notional=1_000,
+            unknown_notional=0,
+            observation_count=3,
+        )
+        raw, valid, anchor = raw_metrics_from_aggregate(
+            request, aggregate
+        )
         self.assertTrue(valid)
         self.assertEqual(anchor, 9.9)
         self.assertAlmostEqual(float(raw[0]), 9.9, places=5)
-        self.assertEqual(queries, 2)
-        self.assertEqual(calls, [friday, monday])
+        self.assertAlmostEqual(float(raw[1]), 10.2 / 9.9 - 1, places=6)
+        self.assertAlmostEqual(float(raw[2]), 10.0 / 9.9 - 1, places=6)
+        self.assertAlmostEqual(float(raw[3]), 10.1 / 9.9 - 1, places=6)
+        self.assertEqual(friday, dt.date(2026, 7, 10))
+
+    def test_target_units_are_session_bounded_and_split_aware(self) -> None:
+        friday = dt.date(2026, 7, 10)
+        monday = dt.date(2026, 7, 13)
+        tuesday = dt.date(2026, 7, 14)
+        start = dt.datetime(2026, 7, 13, 13, 30, tzinfo=dt.timezone.utc)
+        arrays = {
+            "source_index": np.asarray([0, 1, 2], dtype=np.int32),
+            "target_start_us": np.asarray(
+                [timestamp_us(start), timestamp_us(start), timestamp_us(start)]
+            ),
+            "target_end_us": np.asarray(
+                [
+                    timestamp_us(start + dt.timedelta(minutes=5)),
+                    timestamp_us(start + dt.timedelta(minutes=10)),
+                    timestamp_us(start + dt.timedelta(minutes=15)),
+                ]
+            ),
+        }
+        v15 = {"ticker": np.asarray([b"AAA", b"BBB", b"CCC"], dtype="S8")}
+        units, rejected = target_work_units(
+            arrays,
+            v15,
+            [friday, monday, tuesday],
+            {"CCC": frozenset({monday})},
+            max_intervals=1,
+            max_tickers=1,
+            max_session_weight=2,
+        )
+        self.assertEqual(rejected, {2})
+        self.assertEqual(len(units), 2)
+        self.assertTrue(all(unit.anchor_day == friday for unit in units))
+        self.assertTrue(all(len(unit.requests) == 1 for unit in units))
+        self.assertTrue(
+            all(
+                request.anchor_start_us
+                < request.start_us
+                < request.end_us
+                for unit in units
+                for request in unit.requests
+            )
+        )
+
+    def test_memory_limited_unit_is_split_without_changing_durable_identity(self) -> None:
+        requests = tuple(
+            IntervalRequest(index, f"T{index}", 800, 1000, 2000)
+            for index in range(4)
+        )
+        unit = TargetWorkUnit(11, dt.date(2026, 7, 10), requests)
+
+        def aggregate(_client, _config, chunk, cancellation=None):
+            if len(chunk) > 1:
+                raise RuntimeError("MEMORY_LIMIT_EXCEEDED")
+            request = chunk[0]
+            return {
+                request.row_index: IntervalAggregate(
+                    request.row_index,
+                    10,
+                    11,
+                    1100,
+                    9,
+                    1200,
+                    10.5,
+                    10.2,
+                    -0.1,
+                    0.2,
+                    60,
+                    30,
+                    10,
+                    4,
+                )
+            }
+
+        with patch(
+            "research.news_reaction_model.v18.prepare_data.interval_aggregates",
+            side_effect=aggregate,
+        ):
+            unit_index, rows, returned, queries = process_target_unit(
+                config=LoaderConfig(workers=1),
+                unit=unit,
+                planning_anchors={index: 10.0 for index in range(4)},
+                cancellation=CancellationController(),
+                progress=TargetProgress(),
+            )
+        self.assertEqual(unit_index, 11)
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(returned, 4)
+        self.assertEqual(queries, 7)
+        self.assertTrue(all(row[2] for row in rows))
 
     def test_classification_preserves_dominant_excursion_and_actual_returns(self) -> None:
         metrics = np.asarray(

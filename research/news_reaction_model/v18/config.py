@@ -67,7 +67,11 @@ class LoaderConfig:
     context_size: int = CONTEXT_SIZE
     batch_size: int = 2048
     workers: int = 16
-    tickers_per_query: int = 64
+    tickers_per_query: int = 32
+    target_intervals_per_query: int = 64
+    target_interval_session_weight: int = 32
+    target_work_contract: str = "publication_session_interval_aggregate_v1"
+    progress_interval_seconds: float = 15.0
     prefetch_batches: int = 4
     max_threads_per_query: int = 2
     max_memory_usage: str = "4G"

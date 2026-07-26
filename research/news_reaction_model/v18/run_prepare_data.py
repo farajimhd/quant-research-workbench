@@ -5,7 +5,12 @@ import sys
 from research.news_reaction_model.v18.prepare_data import main
 
 
-DEFAULTS = ["--workers", "16", "--tickers-per-query", "64"]
+DEFAULTS = [
+    "--workers", "16",
+    "--tickers-per-query", "32",
+    "--intervals-per-query", "64",
+    "--interval-session-weight", "32",
+]
 
 
 if __name__ == "__main__":

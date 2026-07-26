@@ -9,11 +9,12 @@ import json
 import math
 import os
 import signal
+import threading
 import time
-from collections import OrderedDict, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -32,11 +33,11 @@ from research.news_reaction_model.v15.prepared import open_arrays as open_v15_ar
 from research.news_reaction_model.v15.stock_state import STOCK_STATE_NAMES
 from research.news_reaction_model.v17.prepare_targets import (
     CancellationController,
-    EMPTY_EVENT_ROWS,
-    event_rows_for_tickers,
+    IntervalAggregate,
+    IntervalRequest,
+    interval_aggregates,
     load_split_dates,
     session_days_between,
-    summarize_events,
 )
 from research.news_reaction_model.v18 import (
     DATASET_VERSION,
@@ -138,6 +139,10 @@ FORMAT TabSeparatedRaw
 
 def extended_close(day: dt.date) -> dt.datetime:
     return dt.datetime.combine(day, dt.time(20, 0), EASTERN).astimezone(UTC)
+
+
+def extended_open(day: dt.date) -> dt.datetime:
+    return dt.datetime.combine(day, dt.time(4, 0), EASTERN).astimezone(UTC)
 
 
 def expiry_after_material(
@@ -328,6 +333,45 @@ class ActiveEpisode:
     node_position: int = 0
     unembedded_nodes: int = 0
     last_selected_row: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TargetWorkUnit:
+    unit_index: int
+    anchor_day: dt.date
+    requests: tuple[IntervalRequest, ...]
+
+
+class TargetProgress:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active: dict[int, tuple[float, dt.date, int]] = {}
+
+    def start(self, unit: TargetWorkUnit) -> None:
+        with self._lock:
+            self._active[unit.unit_index] = (
+                time.perf_counter(),
+                unit.anchor_day,
+                len(unit.requests),
+            )
+
+    def finish(self, unit_index: int) -> None:
+        with self._lock:
+            self._active.pop(unit_index, None)
+
+    def snapshot(self) -> tuple[int, float, str]:
+        with self._lock:
+            if not self._active:
+                return 0, 0.0, "none"
+            now = time.perf_counter()
+            longest_index, (started, day, rows) = min(
+                self._active.items(), key=lambda item: item[1][0]
+            )
+            return (
+                len(self._active),
+                now - started,
+                f"{longest_index}:{day.isoformat()}:{rows}",
+            )
 
 
 def article_from_row(
@@ -656,8 +700,12 @@ def write_plan(
     return arrays
 
 
-def flush_arrays(arrays: Mapping[str, np.ndarray]) -> None:
-    for array in arrays.values():
+def flush_arrays(
+    arrays: Mapping[str, np.ndarray],
+    names: Sequence[str] | None = None,
+) -> None:
+    selected = arrays.values() if names is None else (arrays[name] for name in names)
+    for array in selected:
         flush = getattr(array, "flush", None)
         if flush is not None:
             flush()
@@ -708,152 +756,200 @@ def exact_anchor_price(
     return None
 
 
-def process_interval_batch(
+def target_work_units(
+    arrays: Mapping[str, np.ndarray],
+    v15: Mapping[str, np.ndarray],
+    sessions: Sequence[dt.date],
+    split_dates: Mapping[str, frozenset[dt.date]],
+    *,
+    max_intervals: int,
+    max_tickers: int,
+    max_session_weight: int,
+) -> tuple[list[TargetWorkUnit], set[int]]:
+    """Partition targets by anchor session into bounded durable work units."""
+    grouped: dict[dt.date, list[IntervalRequest]] = defaultdict(list)
+    rejected: set[int] = set()
+    session_list = list(sessions)
+    for row_index, source_index in enumerate(np.asarray(arrays["source_index"])):
+        ticker = decode(v15["ticker"][int(source_index)])
+        start = datetime_from_us(int(arrays["target_start_us"][row_index]))
+        end = datetime_from_us(int(arrays["target_end_us"][row_index]))
+        start_day = start.astimezone(EASTERN).date()
+        end_day = end.astimezone(EASTERN).date()
+        selected_days = session_days_between(session_list, start_day, end_day)
+        anchor_days = anchor_session_days(sessions, start_day)
+        if (
+            end <= start
+            or not selected_days
+            or not anchor_days
+            or any(
+                day in split_dates.get(ticker, frozenset())
+                for day in selected_days
+            )
+        ):
+            rejected.add(row_index)
+            continue
+        grouped[anchor_days[0]].append(
+            IntervalRequest(
+                row_index=row_index,
+                ticker=ticker,
+                anchor_start_us=timestamp_us(extended_open(anchor_days[0])),
+                start_us=int(arrays["target_start_us"][row_index]),
+                end_us=int(arrays["target_end_us"][row_index]),
+                session_count=len(selected_days),
+            )
+        )
+    units: list[TargetWorkUnit] = []
+    for anchor_day in sorted(grouped):
+        current: list[IntervalRequest] = []
+        tickers: set[str] = set()
+        session_weight = 0
+        for request in sorted(
+            grouped[anchor_day],
+            key=lambda value: (value.ticker, value.start_us, value.row_index),
+        ):
+            adds_ticker = request.ticker not in tickers
+            if current and (
+                len(current) >= max_intervals
+                or (adds_ticker and len(tickers) >= max_tickers)
+                or session_weight + request.session_count > max_session_weight
+            ):
+                units.append(
+                    TargetWorkUnit(len(units), anchor_day, tuple(current))
+                )
+                current, tickers, session_weight = [], set(), 0
+            current.append(request)
+            tickers.add(request.ticker)
+            session_weight += request.session_count
+        if current:
+            units.append(TargetWorkUnit(len(units), anchor_day, tuple(current)))
+    return units, rejected
+
+
+def raw_metrics_from_aggregate(
+    request: IntervalRequest,
+    aggregate: IntervalAggregate | None,
+    *,
+    minimum_observations: int = 3,
+) -> tuple[np.ndarray, bool, float]:
+    empty = np.full(len(RAW_METRIC_NAMES), np.nan, dtype=np.float32)
+    if aggregate is None:
+        return empty, False, math.nan
+    anchor = aggregate.anchor_price
+    required = (
+        anchor,
+        aggregate.high_price,
+        aggregate.low_price,
+        aggregate.terminal_price,
+        aggregate.vwap_price,
+        aggregate.peak_to_trough_return,
+        aggregate.trough_to_peak_return,
+    )
+    if (
+        not all(math.isfinite(value) for value in required)
+        or anchor <= 0
+        or aggregate.high_timestamp_us <= 0
+        or aggregate.low_timestamp_us <= 0
+        or aggregate.observation_count < minimum_observations
+        or request.end_us <= request.start_us
+    ):
+        return empty, False, anchor
+    duration_us = request.end_us - request.start_us
+    total_notional = (
+        aggregate.buy_notional
+        + aggregate.sell_notional
+        + aggregate.unknown_notional
+    )
+    raw = np.asarray(
+        [
+            anchor,
+            aggregate.high_price / anchor - 1.0,
+            aggregate.low_price / anchor - 1.0,
+            aggregate.terminal_price / anchor - 1.0,
+            min(
+                max(
+                    (aggregate.high_timestamp_us - request.start_us)
+                    / duration_us,
+                    0.0,
+                ),
+                1.0,
+            ),
+            min(
+                max(
+                    (aggregate.low_timestamp_us - request.start_us)
+                    / duration_us,
+                    0.0,
+                ),
+                1.0,
+            ),
+            aggregate.vwap_price / anchor - 1.0,
+            aggregate.peak_to_trough_return,
+            aggregate.trough_to_peak_return,
+            aggregate.buy_notional / total_notional if total_notional else 0.0,
+            aggregate.sell_notional / total_notional if total_notional else 0.0,
+            aggregate.unknown_notional / total_notional if total_notional else 1.0,
+            float(aggregate.observation_count),
+            duration_us / 1_000_000,
+        ],
+        dtype=np.float32,
+    )
+    if raw.shape != (len(RAW_METRIC_NAMES),) or not np.isfinite(raw).all():
+        raise RuntimeError(
+            f"V18 interval aggregate produced invalid metrics for row {request.row_index}."
+        )
+    return raw, True, anchor
+
+
+def process_target_unit(
     *,
     config: LoaderConfig,
-    v15: Mapping[str, np.ndarray],
-    arrays: Mapping[str, np.ndarray],
-    sessions: list[dt.date],
-    split_dates: Mapping[str, frozenset[dt.date]],
-    items: list[tuple[str, list[int]]],
+    unit: TargetWorkUnit,
+    planning_anchors: Mapping[int, float],
     cancellation: CancellationController,
-    event_loader: Callable[..., dict[str, np.ndarray]] = event_rows_for_tickers,
-) -> tuple[list[tuple[int, np.ndarray, bool, float, float]], int, int]:
-    client = ClickHouseHttpClient(
-        default_clickhouse_url(),
-        default_clickhouse_user(),
-        default_clickhouse_password(),
-    )
-    required_by_day: dict[dt.date, set[str]] = defaultdict(set)
-    work_by_end_day: dict[
-        dt.date,
-        list[
-            tuple[
-                int,
-                str,
-                tuple[dt.date, ...],
-                tuple[dt.date, ...],
-                dt.datetime,
-                dt.datetime,
-                float,
-            ]
-        ],
-    ] = defaultdict(list)
-    results = {
-        index: (
-            np.full(len(RAW_METRIC_NAMES), np.nan, np.float32),
-            False,
-            math.nan,
-            math.nan,
+    progress: TargetProgress,
+) -> tuple[int, list[tuple[int, np.ndarray, bool, float, float]], int, int]:
+    progress.start(unit)
+    try:
+        client = ClickHouseHttpClient(
+            default_clickhouse_url(),
+            default_clickhouse_user(),
+            default_clickhouse_password(),
         )
-        for _ticker, indices in items
-        for index in indices
-    }
-    for ticker, indices in items:
-        split_days = split_dates.get(ticker, ())
-        for index in indices:
-            start = datetime_from_us(int(arrays["target_start_us"][index]))
-            end = datetime_from_us(int(arrays["target_end_us"][index]))
-            if end <= start:
-                continue
-            start_day = start.astimezone(EASTERN).date()
-            end_day = end.astimezone(EASTERN).date()
-            if any(start_day <= value <= end_day for value in split_days):
-                continue
-            selected_days = session_days_between(sessions, start_day, end_day)
-            if not selected_days:
-                continue
-            anchor_days = anchor_session_days(sessions, start_day)
-            for day in (*anchor_days, *selected_days):
-                required_by_day[day].add(ticker)
-            work_by_end_day[selected_days[-1]].append(
-                (
-                    index,
-                    ticker,
-                    anchor_days,
-                    selected_days,
-                    start,
-                    end,
-                    float(arrays["anchor_price"][index]),
+        aggregates: dict[int, IntervalAggregate] = {}
+        query_count = 0
+        pending_chunks = [unit.requests]
+        while pending_chunks:
+            chunk = pending_chunks.pop()
+            query_count += 1
+            try:
+                aggregates.update(
+                    interval_aggregates(
+                        client,
+                        config,
+                        chunk,
+                        cancellation=cancellation,
+                    )
                 )
+            except RuntimeError as exc:
+                if "MEMORY_LIMIT_EXCEEDED" not in str(exc) or len(chunk) <= 1:
+                    raise
+                midpoint = len(chunk) // 2
+                pending_chunks.extend((chunk[:midpoint], chunk[midpoint:]))
+        rows: list[tuple[int, np.ndarray, bool, float, float]] = []
+        for request in unit.requests:
+            raw, valid, anchor = raw_metrics_from_aggregate(
+                request, aggregates.get(request.row_index)
             )
-    cache: OrderedDict[dt.date, dict[str, np.ndarray]] = OrderedDict()
-    queries = 0
-    event_rows = 0
-    absolute_caches: dict[str, dict[tuple[int, int], dict[str, float]]] = {
-        ticker: {} for ticker, _indices in items
-    }
-    for day in sorted(required_by_day):
-        cancellation.raise_if_requested()
-        requested = sorted(required_by_day[day])
-        loaded = event_loader(
-            client, config, requested, day, cancellation=cancellation
-        )
-        queries += 1
-        event_rows += sum(int(value.shape[0]) for value in loaded.values())
-        cache[day] = loaded
-        for (
-            index,
-            ticker,
-            anchor_days,
-            selected_days,
-            start,
-            end,
-            planning_anchor,
-        ) in work_by_end_day.get(day, ()):
-            needed_days = tuple(dict.fromkeys((*anchor_days, *selected_days)))
-            missing = [value for value in needed_days if value not in cache]
-            if missing:
-                raise RuntimeError(f"V18 event cache lost required sessions: {missing}.")
-            exact_anchor = exact_anchor_price(
-                [cache[value].get(ticker, EMPTY_EVENT_ROWS) for value in anchor_days],
-                published=start,
+            planning = planning_anchors[request.row_index]
+            delta = (
+                abs(anchor - planning) / anchor
+                if math.isfinite(anchor) and anchor > 0
+                else math.nan
             )
-            if exact_anchor is None:
-                continue
-            relative_delta = abs(exact_anchor - planning_anchor) / exact_anchor
-            raw16, valid = summarize_events(
-                [cache[value].get(ticker, EMPTY_EVENT_ROWS) for value in selected_days],
-                start=start,
-                end=end,
-                anchor_price=exact_anchor,
-                minimum_observations=3,
-                absolute_cache=absolute_caches[ticker],
-            )
-            if valid:
-                raw14 = np.delete(raw16, [12, 13]).astype(np.float32, copy=False)
-                if raw14.shape != (len(RAW_METRIC_NAMES),) or not np.isfinite(raw14).all():
-                    raise RuntimeError(f"V18 target metrics are invalid for row {index}.")
-                results[index] = (raw14, True, exact_anchor, relative_delta)
-            else:
-                results[index] = (
-                    np.full(len(RAW_METRIC_NAMES), np.nan, np.float32),
-                    False,
-                    exact_anchor,
-                    relative_delta,
-                )
-        while len(cache) > config.episode_inactivity_sessions + 2:
-            cache.popitem(last=False)
-    return (
-        [(index, *results[index]) for _ticker, indices in items for index in indices],
-        queries,
-        event_rows,
-    )
-
-
-def stable_batches(
-    v15: Mapping[str, np.ndarray],
-    arrays: Mapping[str, np.ndarray],
-    tickers_per_query: int,
-) -> list[list[tuple[str, list[int]]]]:
-    grouped: dict[str, list[int]] = defaultdict(list)
-    for row_index, source_index in enumerate(np.asarray(arrays["source_index"])):
-        grouped[decode(v15["ticker"][int(source_index)])].append(row_index)
-    items = sorted(grouped.items())
-    return [
-        items[offset : offset + tickers_per_query]
-        for offset in range(0, len(items), tickers_per_query)
-    ]
+            rows.append((request.row_index, raw, valid, anchor, delta))
+        return unit.unit_index, rows, len(aggregates), query_count
+    finally:
+        progress.finish(unit.unit_index)
 
 
 def build_targets(
@@ -864,31 +960,69 @@ def build_targets(
     split_dates: Mapping[str, frozenset[dt.date]],
     state: dict[str, Any],
 ) -> dict[str, Any]:
-    batches = stable_batches(v15, arrays, config.tickers_per_query)
-    completed = {int(value) for value in state.get("completed_target_batches", ())}
-    pending = [(index, batch) for index, batch in enumerate(batches) if index not in completed]
+    units, rejected = target_work_units(
+        arrays,
+        v15,
+        sessions,
+        split_dates,
+        max_intervals=config.target_intervals_per_query,
+        max_tickers=config.tickers_per_query,
+        max_session_weight=config.target_interval_session_weight,
+    )
+    if rejected:
+        rejected_indices = sorted(rejected)
+        arrays["target_mask"][rejected_indices] = False
+        arrays["raw_metrics"][rejected_indices] = np.nan
+        arrays["anchor_price"][rejected_indices] = np.nan
+    completed = {int(value) for value in state.get("completed_target_units", ())}
+    pending = [unit for unit in units if unit.unit_index not in completed]
     cancellation = CancellationController()
+    progress = TargetProgress()
     previous_handler = signal.getsignal(signal.SIGINT)
 
-    def handle_interrupt(_signum: int, _frame: Any) -> None:
-        if not cancellation.requested:
-            print("INTERRUPT requested; cancelling V18 queries and joining workers...", flush=True)
-            cancellation.request()
-            cancellation.cancel_active_queries(
+    def cancel_queries_safely() -> None:
+        try:
+            cancelled = cancellation.cancel_active_queries(
                 ClickHouseHttpClient(
                     default_clickhouse_url(),
                     default_clickhouse_user(),
                     default_clickhouse_password(),
                 )
             )
+            print(f"CANCEL | active_queries={cancelled}", flush=True)
+        except Exception as exc:
+            print(
+                f"CANCEL WARNING | ClickHouse cancellation failed: {exc}",
+                flush=True,
+            )
+
+    def handle_interrupt(_signum: int, _frame: Any) -> None:
+        if not cancellation.requested:
+            print("INTERRUPT requested; cancelling V18 queries and joining workers...", flush=True)
+            cancellation.request_stop()
+            cancel_queries_safely()
 
     signal.signal(signal.SIGINT, handle_interrupt)
     started = time.perf_counter()
     queries = int(state.get("target_queries") or 0)
-    events = int(state.get("target_event_rows") or 0)
+    aggregate_rows = int(state.get("target_aggregate_rows") or 0)
     anchors = int(state.get("exact_anchor_count") or 0)
     anchor_mismatches = int(state.get("anchor_audit_mismatch_count") or 0)
     maximum_anchor_delta = float(state.get("maximum_anchor_relative_delta") or 0.0)
+    planning_anchors = {
+        request.row_index: float(arrays["anchor_price"][request.row_index])
+        for unit in pending
+        for request in unit.requests
+    }
+    initial_completed = len(completed)
+    print(
+        f"TARGET PLAN | units={len(units):,} pending={len(pending):,} "
+        f"intervals={sum(len(unit.requests) for unit in units):,} "
+        f"corporate_action_rejected={len(rejected):,}",
+        flush=True,
+    )
+    last_report = started
+    last_completed_unit = -1
     try:
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=max(1, config.workers),
@@ -896,58 +1030,101 @@ def build_targets(
         ) as executor:
             futures = {
                 executor.submit(
-                    process_interval_batch,
+                    process_target_unit,
                     config=config,
-                    v15=v15,
-                    arrays=arrays,
-                    sessions=sessions,
-                    split_dates=split_dates,
-                    items=batch,
+                    unit=unit,
+                    planning_anchors=planning_anchors,
                     cancellation=cancellation,
-                ): batch_index
-                for batch_index, batch in pending
+                    progress=progress,
+                ): unit.unit_index
+                for unit in pending
             }
-            for future in concurrent.futures.as_completed(futures):
-                batch_index = futures[future]
+            remaining = set(futures)
+            while remaining:
+                done, remaining = concurrent.futures.wait(
+                    remaining,
+                    timeout=config.progress_interval_seconds,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                if not done:
+                    active, longest, focus = progress.snapshot()
+                    print(
+                        f"TARGET ACTIVE | done={len(completed)}/{len(units)} "
+                        f"active={active} queued={max(len(remaining)-active, 0)} "
+                        f"longest={longest:.0f}s unit={focus}",
+                        flush=True,
+                    )
+                    continue
+                for future in done:
+                    if cancellation.requested:
+                        break
+                    try:
+                        unit_index, rows, returned, unit_queries = future.result()
+                    except BaseException:
+                        cancellation.request_stop()
+                        for queued in remaining:
+                            queued.cancel()
+                        cancel_queries_safely()
+                        raise
+                    for row_index, raw, valid, exact_anchor, relative_delta in rows:
+                        arrays["raw_metrics"][row_index] = raw
+                        arrays["target_mask"][row_index] = valid
+                        arrays["anchor_price"][row_index] = exact_anchor
+                        if math.isfinite(exact_anchor):
+                            anchors += 1
+                        if math.isfinite(relative_delta):
+                            maximum_anchor_delta = max(
+                                maximum_anchor_delta, relative_delta
+                            )
+                            if (
+                                relative_delta
+                                > config.anchor_audit_relative_tolerance
+                            ):
+                                anchor_mismatches += 1
+                    completed.add(unit_index)
+                    last_completed_unit = unit_index
+                    queries += unit_queries
+                    aggregate_rows += returned
+                    flush_arrays(
+                        arrays,
+                        ("raw_metrics", "target_mask", "anchor_price"),
+                    )
+                    state = {
+                        **state,
+                        "status": "target_building",
+                        "target_work_contract": config.target_work_contract,
+                        "target_units": len(units),
+                        "completed_target_units": sorted(completed),
+                        "target_queries": queries,
+                        "target_aggregate_rows": aggregate_rows,
+                        "exact_anchor_count": anchors,
+                        "anchor_audit_mismatch_count": anchor_mismatches,
+                        "maximum_anchor_relative_delta": maximum_anchor_delta,
+                    }
+                    write_json_atomic(
+                        config.prepared_dataset_root / BUILD_STATE_FILE, state
+                    )
+                now = time.perf_counter()
+                if now - last_report >= 2.0 or len(completed) == len(units):
+                    elapsed = now - started
+                    run_completed = len(completed) - initial_completed
+                    rate = run_completed / max(elapsed, 1e-9)
+                    eta_text = (
+                        f"{(len(units)-len(completed))/rate/60:.1f}m"
+                        if run_completed >= max(5, config.workers)
+                        else "warming"
+                    )
+                    print(
+                        f"TARGET {len(completed)}/{len(units)} "
+                        f"intervals={aggregate_rows:,} anchors={anchors:,} "
+                        f"valid={int(np.count_nonzero(arrays['target_mask'])):,} "
+                        f"elapsed={elapsed/60:.1f}m eta={eta_text} "
+                        f"last_unit={last_completed_unit}",
+                        flush=True,
+                    )
+                    last_report = now
                 if cancellation.requested:
                     break
-                rows, batch_queries, batch_events = future.result()
-                for row_index, raw, valid, exact_anchor, relative_delta in rows:
-                    arrays["raw_metrics"][row_index] = raw
-                    arrays["target_mask"][row_index] = valid
-                    arrays["anchor_price"][row_index] = exact_anchor
-                    if math.isfinite(exact_anchor):
-                        anchors += 1
-                    if math.isfinite(relative_delta):
-                        maximum_anchor_delta = max(maximum_anchor_delta, relative_delta)
-                        if relative_delta > config.anchor_audit_relative_tolerance:
-                            anchor_mismatches += 1
-                completed.add(batch_index)
-                queries += batch_queries
-                events += batch_events
-                flush_arrays(arrays)
-                state = {
-                    **state,
-                    "status": "target_building",
-                    "completed_target_batches": sorted(completed),
-                    "target_queries": queries,
-                    "target_event_rows": events,
-                    "exact_anchor_count": anchors,
-                    "anchor_audit_mismatch_count": anchor_mismatches,
-                    "maximum_anchor_relative_delta": maximum_anchor_delta,
-                }
-                write_json_atomic(config.prepared_dataset_root / BUILD_STATE_FILE, state)
-                elapsed = time.perf_counter() - started
-                rate = len(completed) / max(elapsed, 1e-9)
-                eta = (len(batches) - len(completed)) / max(rate, 1e-9)
-                print(
-                    f"TARGET {len(completed)}/{len(batches)} "
-                    f"queries={queries:,} events={events:,} "
-                    f"anchors={anchors:,} anchor_mismatch={anchor_mismatches:,} "
-                    f"valid={int(np.count_nonzero(arrays['target_mask'])):,} "
-                    f"elapsed={elapsed / 60:.1f}m eta={eta / 60:.1f}m",
-                    flush=True,
-                )
         if cancellation.requested:
             raise KeyboardInterrupt
     finally:
@@ -979,7 +1156,7 @@ def enforce_exact_root_contract(
         arrays["target_mask"][invalid_rows] = False
         arrays["raw_metrics"][invalid_rows] = np.nan
         arrays["anchor_price"][invalid_rows] = np.nan
-    flush_arrays(arrays)
+    flush_arrays(arrays, ("raw_metrics", "target_mask", "anchor_price"))
     return {
         "exact_root_rejected_episodes": len(invalid_ids),
         "exact_root_rejected_rows": int(invalid_rows.sum()),
@@ -1011,7 +1188,10 @@ def classify_targets(
         arrays["path"][index] = int(path)
         arrays["flow"][index] = int(flow)
         arrays["regression_targets"][index] = regression
-    flush_arrays(arrays)
+    flush_arrays(
+        arrays,
+        ("direction", "path", "flow", "regression_targets"),
+    )
     write_json_atomic(
         config.prepared_dataset_root / THRESHOLDS_FILE, thresholds.as_dict()
     )
@@ -1164,6 +1344,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--v15-root", default=str(defaults.v15_prepared_root))
     parser.add_argument("--workers", type=int, default=defaults.workers)
     parser.add_argument("--tickers-per-query", type=int, default=defaults.tickers_per_query)
+    parser.add_argument(
+        "--intervals-per-query",
+        type=int,
+        default=defaults.target_intervals_per_query,
+    )
+    parser.add_argument(
+        "--interval-session-weight",
+        type=int,
+        default=defaults.target_interval_session_weight,
+    )
     parser.add_argument("--max-threads-per-query", type=int, default=defaults.max_threads_per_query)
     parser.add_argument("--max-memory-usage", default=defaults.max_memory_usage)
     parser.add_argument("--restart", action="store_true")
@@ -1179,11 +1369,16 @@ def main(argv: list[str] | None = None) -> int:
         v15_prepared_root=Path(args.v15_root),
         workers=max(1, args.workers),
         tickers_per_query=max(1, args.tickers_per_query),
+        target_intervals_per_query=max(1, args.intervals_per_query),
+        target_interval_session_weight=max(1, args.interval_session_weight),
         max_threads_per_query=max(1, args.max_threads_per_query),
         max_memory_usage=args.max_memory_usage,
     )
     print(
-        f"V18 BUILD | workers={config.workers} tickers/query={config.tickers_per_query} "
+        f"V18 BUILD | workers={config.workers} "
+        f"intervals/query={config.target_intervals_per_query} "
+        f"session_weight/query={config.target_interval_session_weight} "
+        f"tickers/query={config.tickers_per_query} "
         f"ClickHouse threads/query={config.max_threads_per_query}",
         flush=True,
     )
@@ -1223,6 +1418,11 @@ def main(argv: list[str] | None = None) -> int:
                     "V18 build-state version changed. Rerun with --restart to "
                     "discard the incompatible partial sidecar."
                 )
+            if state.get("target_work_contract") != config.target_work_contract:
+                raise RuntimeError(
+                    "V18 target work contract changed. Rerun with --restart to "
+                    "discard the incompatible partial target state."
+                )
             rows = int(state["rows"])
             arrays = {
                 name: np.load(
@@ -1236,8 +1436,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise RuntimeError("V18 resumable arrays do not match build state.")
             plan_counts = dict(state.get("plan_counts") or {})
             print(
-                f"RESUME | rows={rows:,} target_batches="
-                f"{len(state.get('completed_target_batches', ())):,}",
+                f"RESUME | rows={rows:,} target_units="
+                f"{len(state.get('completed_target_units', ())):,}",
                 flush=True,
             )
         else:
@@ -1258,11 +1458,12 @@ def main(argv: list[str] | None = None) -> int:
             state = {
                 "status": "planned",
                 "dataset_version": DATASET_VERSION,
+                "target_work_contract": config.target_work_contract,
                 "rows": len(planned),
                 "plan_counts": plan_counts,
-                "completed_target_batches": [],
+                "completed_target_units": [],
                 "target_queries": 0,
-                "target_event_rows": 0,
+                "target_aggregate_rows": 0,
             }
             write_json_atomic(state_path, state)
             write_json_atomic(

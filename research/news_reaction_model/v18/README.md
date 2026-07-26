@@ -103,12 +103,22 @@ anchor is missing, non-positive, or at least `$20` are removed as a whole.
 The manifest also records differences between the V15 planning approximation
 and exact SIP anchors.
 
-Workers own bounded ticker groups. Each worker fetches one exchange session
-once for all required tickers in its group, evaluates every interval sharing
-that evidence, durably checkpoints the completed batch, and releases old
-sessions. Defaults are 16 workers, 64 tickers per query, and two ClickHouse
-threads per query. These are separate controls because more Python workers do
-not justify an unbounded ClickHouse query.
+Workers own bounded publication-session work units, not ticker histories. One
+unit contains at most 64 article intervals, 32 tickers, and 32 interval-session
+units sharing the same anchor session. Long multi-session targets therefore
+produce smaller work units automatically. If an unusually active unit still
+reaches ClickHouse's memory ceiling, it is bisected and retried inside the same
+durable unit identity. ClickHouse applies the exact interval bounds, canonical trade
+conditions, causal per-session quote ASOF join, ordered path folds, and
+article-level aggregation. It returns one compact row per article instead of
+materializing complete sessions in Python. A successful unit is flushed and
+checkpointed immediately.
+
+The terminal reports the completed durable units, returned article intervals,
+active workers, queued units, longest active query, elapsed time, and a
+`warming` ETA until at least one worker wave has completed. This avoids the
+false multi-day ETA previously produced from the first completion while other
+workers were already active.
 
 The meaningful-move threshold is the larger of 0.1% and the 35th percentile of
 training-only interval excursion magnitude. It is frozen before 2026 classes
@@ -138,21 +148,32 @@ python -m research.news_reaction_model.v18.run_prepare_data --execute
 The launcher defaults to:
 
 ```text
---workers 16 --tickers-per-query 64
+--workers 16 --tickers-per-query 32 --intervals-per-query 64 --interval-session-weight 32
 ```
 
-The target phase is safely resumable after Ctrl+C. Because this is the V18.2
-target contract, any older partial V18 state fails closed; use `--restart` once
-to discard an incompatible V18.1 sidecar.
+The target phase is safely resumable after Ctrl+C. V18.3 replaces the defective
+full-session V18.2 work contract; use `--restart` once to discard an
+incompatible V18.1/V18.2 sidecar.
 
 To use more workstation concurrency:
 
 ```powershell
-python -m research.news_reaction_model.v18.run_prepare_data --workers 24 --tickers-per-query 64 --execute
+python -m research.news_reaction_model.v18.run_prepare_data --workers 24 --tickers-per-query 32 --intervals-per-query 64 --interval-session-weight 32 --execute
 ```
 
 Start with 16. Increase to 24 only if ClickHouse CPU, memory, and disk are not
 saturated; 24 workers issue up to 48 ClickHouse execution threads.
+
+For a focused equivalence/performance check:
+
+```powershell
+python -m research.news_reaction_model.v18.benchmark_interval_targets --interval-count 64
+```
+
+The July 10, 2026 AAPL reference check returned 64 interval aggregates in
+3.228 seconds. The former reference path needed 3.880 seconds to return
+436,179 raw event rows for only one interval. All 14 target metrics matched
+with zero numerical difference.
 
 ## Profile, train, evaluate
 

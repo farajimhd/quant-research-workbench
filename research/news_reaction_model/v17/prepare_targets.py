@@ -10,6 +10,7 @@ import time
 import uuid
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
@@ -261,6 +262,165 @@ FORMAT TabSeparatedRaw
 EMPTY_EVENT_ROWS = np.empty((0, 8), dtype=np.float64)
 
 
+@dataclass(frozen=True, slots=True)
+class IntervalRequest:
+    row_index: int
+    ticker: str
+    anchor_start_us: int
+    start_us: int
+    end_us: int
+    session_count: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class IntervalAggregate:
+    row_index: int
+    anchor_price: float
+    high_price: float
+    high_timestamp_us: int
+    low_price: float
+    low_timestamp_us: int
+    terminal_price: float
+    vwap_price: float
+    peak_to_trough_return: float
+    trough_to_peak_return: float
+    buy_notional: float
+    sell_notional: float
+    unknown_notional: float
+    observation_count: int
+
+
+def _canonical_event_ctes(
+    config: LoaderConfig,
+    *,
+    source: str,
+    requested: tuple[str, ...],
+    first_us: int,
+    last_us: int,
+) -> str:
+    """One canonical SIP trade/quote authority shared by row and aggregate consumers."""
+    condition_reference = (
+        f"{_qi(config.market_database)}.{_qi(config.condition_reference_table)}"
+    )
+    return f"""
+  (SELECT groupArray(toUInt8(token_id)) FROM {condition_reference}
+   WHERE source_family='trade_conditions' AND is_join_canonical=1 AND update_last=1)
+      AS update_last_tokens,
+  (SELECT groupArray(toUInt8(token_id)) FROM {condition_reference}
+   WHERE source_family='trade_conditions' AND is_join_canonical=1 AND update_high_low=1)
+      AS update_high_low_tokens,
+  (SELECT groupArray(toUInt8(token_id)) FROM {condition_reference}
+   WHERE source_family='trade_conditions' AND is_join_canonical=1
+     AND update_last=1 AND update_high_low=1) AS full_tokens,
+  (SELECT any(toUInt8(token_id)) FROM {condition_reference}
+   WHERE source_family='trade_conditions' AND is_join_canonical=1 AND modifier_int=12)
+      AS form_t_token,
+  raw AS
+  (
+    SELECT
+      ticker,
+      sip_timestamp_us,
+      ordinal,
+      bitOr(
+        bitShiftLeft(toUInt128(sip_timestamp_us), 64),
+        toUInt128(ordinal)
+      ) AS event_order_key,
+      bitAnd(event_meta,1)=1 AS is_trade,
+      toFloat64(price_primary_int)/if(bitAnd(event_meta,2)=2,10000.0,100.0)
+        AS primary_price,
+      toFloat64(price_secondary_int)/if(bitAnd(event_meta,4)=4,10000.0,100.0)
+        AS secondary_price,
+      toFloat64(size_primary) AS trade_size,
+      arrayFilter(x -> x != 0, [condition_token_1,condition_token_2,
+        condition_token_3,condition_token_4,condition_token_5]) AS condition_tokens,
+      toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us),'UTC'),
+        'America/New_York') AS local_timestamp,
+      toDate(local_timestamp) AS session_date,
+      toUInt8(
+        toHour(local_timestamp)<9
+        OR (toHour(local_timestamp)=9 AND toMinute(local_timestamp)<30)
+        OR toHour(local_timestamp)>=16
+      ) AS is_extended_hours
+    FROM {source}
+    WHERE ticker IN ({", ".join(_q(value) for value in requested)})
+      AND sip_timestamp_us >= {first_us}
+      AND sip_timestamp_us < {last_us}
+      AND toHour(local_timestamp) >= 4
+      AND toHour(local_timestamp) < 20
+      AND sip_timestamp_us > 0 AND ordinal > 0
+  ),
+  trades AS
+  (
+    SELECT
+      ticker,
+      session_date,
+      sip_timestamp_us,
+      ordinal,
+      event_order_key,
+      primary_price AS trade_price,
+      trade_size,
+      toUInt8(
+        empty(condition_tokens)
+        OR if(
+          is_extended_hours=1 AND has(condition_tokens,form_t_token)
+            AND arrayAll(x -> x=form_t_token OR has(full_tokens,x),condition_tokens),
+          1,
+          arrayAll(x -> has(update_last_tokens,x),condition_tokens)
+        )
+      ) AS update_last,
+      toUInt8(
+        empty(condition_tokens)
+        OR if(
+          is_extended_hours=1 AND has(condition_tokens,form_t_token)
+            AND arrayAll(x -> x=form_t_token OR has(full_tokens,x),condition_tokens),
+          1,
+          arrayAll(x -> has(update_high_low_tokens,x),condition_tokens)
+        )
+      ) AS update_high_low
+    FROM raw
+    WHERE is_trade AND primary_price>0 AND trade_size>0
+  ),
+  eligible_trades AS
+  (
+    SELECT *
+    FROM trades
+    WHERE update_last=1 OR update_high_low=1
+  ),
+  quotes AS
+  (
+    SELECT
+      ticker,
+      session_date,
+      sip_timestamp_us,
+      ordinal,
+      event_order_key,
+      secondary_price AS bid_price,
+      primary_price AS ask_price
+    FROM raw
+    WHERE NOT is_trade AND secondary_price>0 AND primary_price>=secondary_price
+  ),
+  canonical_events AS
+  (
+    SELECT
+      t.ticker,
+      t.sip_timestamp_us,
+      t.ordinal,
+      t.event_order_key,
+      t.trade_price,
+      t.trade_size,
+      ifNull(q.bid_price,0) AS bid_price,
+      ifNull(q.ask_price,0) AS ask_price,
+      t.update_last,
+      t.update_high_low
+    FROM eligible_trades AS t
+    ASOF LEFT JOIN quotes AS q
+      ON t.ticker=q.ticker
+     AND t.session_date=q.session_date
+     AND t.event_order_key>=q.event_order_key
+  )
+"""
+
+
 def event_rows_for_tickers(
     client: ClickHouseHttpClient,
     config: LoaderConfig,
@@ -294,119 +454,30 @@ def event_rows_for_tickers(
         )
         + ")"
     )
-    condition_reference = (
-        f"{_qi(config.market_database)}.{_qi(config.condition_reference_table)}"
-    )
     start_utc, _regular, _close, end_utc = _session_bounds(session_day)
+    first_us = int(start_utc.timestamp() * 1_000_000)
+    last_us = int(end_utc.timestamp() * 1_000_000)
+    canonical_ctes = _canonical_event_ctes(
+        config,
+        source=source,
+        requested=requested,
+        first_us=first_us,
+        last_us=last_us,
+    )
     sql = f"""
-WITH
-  (SELECT groupArray(toUInt8(token_id)) FROM {condition_reference}
-   WHERE source_family='trade_conditions' AND is_join_canonical=1 AND update_last=1)
-      AS update_last_tokens,
-  (SELECT groupArray(toUInt8(token_id)) FROM {condition_reference}
-   WHERE source_family='trade_conditions' AND is_join_canonical=1 AND update_high_low=1)
-      AS update_high_low_tokens,
-  (SELECT groupArray(toUInt8(token_id)) FROM {condition_reference}
-   WHERE source_family='trade_conditions' AND is_join_canonical=1
-     AND update_last=1 AND update_high_low=1) AS full_tokens,
-  (SELECT any(toUInt8(token_id)) FROM {condition_reference}
-   WHERE source_family='trade_conditions' AND is_join_canonical=1 AND modifier_int=12)
-      AS form_t_token,
-raw AS
-(
-  SELECT
-    ticker,
-    sip_timestamp_us,
-    ordinal,
-    bitOr(
-      bitShiftLeft(toUInt128(sip_timestamp_us), 64),
-      toUInt128(ordinal)
-    ) AS event_order_key,
-    bitAnd(event_meta,1)=1 AS is_trade,
-    toFloat64(price_primary_int)/if(bitAnd(event_meta,2)=2,10000.0,100.0)
-      AS primary_price,
-    toFloat64(price_secondary_int)/if(bitAnd(event_meta,4)=4,10000.0,100.0)
-      AS secondary_price,
-    toFloat64(size_primary) AS trade_size,
-    arrayFilter(x -> x != 0, [condition_token_1,condition_token_2,
-      condition_token_3,condition_token_4,condition_token_5]) AS condition_tokens,
-    toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us),'UTC'),
-      'America/New_York') AS local_timestamp,
-    toUInt8(
-      toHour(local_timestamp)<9
-      OR (toHour(local_timestamp)=9 AND toMinute(local_timestamp)<30)
-      OR toHour(local_timestamp)>=16
-    ) AS is_extended_hours
-  FROM {source}
-  WHERE ticker IN ({", ".join(_q(value) for value in requested)})
-    AND sip_timestamp_us >= toUInt64(toUnixTimestamp64Micro(
-      toDateTime64({_q(_clickhouse_utc(start_utc))},6,'UTC')))
-    AND sip_timestamp_us < toUInt64(toUnixTimestamp64Micro(
-      toDateTime64({_q(_clickhouse_utc(end_utc))},6,'UTC')))
-    AND sip_timestamp_us > 0 AND ordinal > 0
-),
-trades AS
-(
-  SELECT
-    ticker,
-    sip_timestamp_us,
-    ordinal,
-    event_order_key,
-    primary_price AS trade_price,
-    trade_size,
-    toUInt8(
-      empty(condition_tokens)
-      OR if(
-        is_extended_hours=1 AND has(condition_tokens,form_t_token)
-          AND arrayAll(x -> x=form_t_token OR has(full_tokens,x),condition_tokens),
-        1,
-        arrayAll(x -> has(update_last_tokens,x),condition_tokens)
-      )
-    ) AS update_last,
-    toUInt8(
-      empty(condition_tokens)
-      OR if(
-        is_extended_hours=1 AND has(condition_tokens,form_t_token)
-          AND arrayAll(x -> x=form_t_token OR has(full_tokens,x),condition_tokens),
-        1,
-        arrayAll(x -> has(update_high_low_tokens,x),condition_tokens)
-      )
-    ) AS update_high_low
-  FROM raw
-  WHERE is_trade AND primary_price>0 AND trade_size>0
-),
-eligible_trades AS
-(
-  SELECT *
-  FROM trades
-  WHERE update_last=1 OR update_high_low=1
-),
-quotes AS
-(
-  SELECT
-    ticker,
-    sip_timestamp_us,
-    ordinal,
-    event_order_key,
-    secondary_price AS bid_price,
-    primary_price AS ask_price
-  FROM raw
-  WHERE NOT is_trade AND secondary_price>0 AND primary_price>=secondary_price
-)
+WITH {canonical_ctes}
 SELECT
-  t.ticker,
-  t.sip_timestamp_us,
-  t.ordinal,
-  t.trade_price,
-  t.trade_size,
-  ifNull(q.bid_price,0),
-  ifNull(q.ask_price,0),
-  t.update_last,
-  t.update_high_low
-FROM eligible_trades AS t
-ASOF LEFT JOIN quotes AS q
-  ON t.ticker=q.ticker AND t.event_order_key>=q.event_order_key
-ORDER BY t.ticker,t.sip_timestamp_us,t.ordinal
+  ticker,
+  sip_timestamp_us,
+  ordinal,
+  trade_price,
+  trade_size,
+  bid_price,
+  ask_price,
+  update_last,
+  update_high_low
+FROM canonical_events
+ORDER BY ticker,sip_timestamp_us,ordinal
 SETTINGS
   max_threads={max(1, int(getattr(config, "max_threads_per_query", 2)))},
   max_memory_usage={_q(getattr(config, "max_memory_usage", "4G"))},
@@ -469,6 +540,272 @@ def event_rows(
         session_day,
         cancellation=cancellation,
     )[ticker]
+
+
+def interval_aggregate_sql(
+    config: LoaderConfig,
+    requests: list[IntervalRequest] | tuple[IntervalRequest, ...],
+) -> str:
+    """Build one set-based exact-event aggregation for bounded article intervals."""
+    if not requests:
+        raise ValueError("At least one interval request is required.")
+    first_us = min(value.anchor_start_us for value in requests)
+    last_us = max(value.end_us for value in requests)
+    if first_us <= 0 or last_us <= first_us:
+        raise ValueError("Interval requests contain invalid temporal bounds.")
+    first = dt.datetime.fromtimestamp(first_us / 1_000_000, UTC)
+    last = dt.datetime.fromtimestamp((last_us - 1) / 1_000_000, UTC)
+    first_day = first.astimezone(EASTERN).date()
+    last_day = last.astimezone(EASTERN).date()
+    table_names = tuple(
+        dict.fromkeys(
+            _event_table(config.events_table_base, dt.date(year, 1, 1))
+            for year in range(
+                first_day.year,
+                (last_day + dt.timedelta(days=1)).year + 1,
+            )
+        )
+    )
+    date_predicate = (
+        f"event_date >= toDate({_q(first_day)}) "
+        f"AND event_date <= toDate({_q(last_day)}) + 1"
+    )
+    source = (
+        "("
+        + " UNION ALL ".join(
+            f"SELECT * FROM {_qi(config.market_database)}.{_qi(table)} "
+            f"WHERE {date_predicate}"
+            for table in table_names
+        )
+        + ")"
+    )
+    interval_values = ",\n    ".join(
+        "("
+        f"{int(value.row_index)}, {_q(value.ticker)}, "
+        f"{int(value.anchor_start_us)}, {int(value.start_us)}, {int(value.end_us)}"
+        ")"
+        for value in requests
+    )
+    requested = tuple(dict.fromkeys(value.ticker for value in requests))
+    canonical_ctes = _canonical_event_ctes(
+        config,
+        source=source,
+        requested=requested,
+        first_us=first_us,
+        last_us=last_us,
+    )
+    return f"""
+WITH
+  intervals AS
+  (
+    SELECT *
+    FROM VALUES(
+      'row_index UInt32, ticker String, anchor_start_us UInt64, start_us UInt64, end_us UInt64',
+      {interval_values}
+    )
+  ),
+  {canonical_ctes},
+  grouped AS
+  (
+    SELECT
+      i.row_index,
+      i.start_us,
+      i.end_us,
+      argMaxIf(
+        e.trade_price, e.event_order_key,
+        e.update_last=1 AND e.sip_timestamp_us<i.start_us
+      ) AS anchor_price,
+      arraySort(
+        x -> (x.1, x.2),
+        groupArrayIf(
+          tuple(e.sip_timestamp_us,e.ordinal,e.trade_price),
+          e.update_last=1 AND e.sip_timestamp_us>=i.start_us
+        )
+      ) AS last_events,
+      arraySort(
+        x -> (x.1, x.2),
+        groupArrayIf(
+          tuple(e.sip_timestamp_us,e.ordinal,e.trade_price),
+          e.update_high_low=1 AND e.sip_timestamp_us>=i.start_us
+        )
+      ) AS extrema_events,
+      sumIf(
+        e.trade_price*e.trade_size,
+        e.update_last=1 AND e.sip_timestamp_us>=i.start_us
+      ) AS total_notional,
+      sumIf(
+        e.trade_size,
+        e.update_last=1 AND e.sip_timestamp_us>=i.start_us
+      ) AS total_size,
+      sumIf(
+        e.trade_price*e.trade_size,
+        e.update_last=1 AND e.sip_timestamp_us>=i.start_us
+          AND e.bid_price>0 AND e.ask_price>=e.bid_price
+          AND (
+            e.trade_price>=e.ask_price
+            OR (
+              e.trade_price>e.bid_price
+              AND e.trade_price>=(e.bid_price+e.ask_price)/2
+            )
+          )
+      ) AS buy_notional,
+      sumIf(
+        e.trade_price*e.trade_size,
+        e.update_last=1 AND e.sip_timestamp_us>=i.start_us
+          AND e.bid_price>0 AND e.ask_price>=e.bid_price
+          AND NOT (
+            e.trade_price>=e.ask_price
+            OR (
+              e.trade_price>e.bid_price
+              AND e.trade_price>=(e.bid_price+e.ask_price)/2
+            )
+          )
+      ) AS sell_notional,
+      sumIf(
+        e.trade_price*e.trade_size,
+        e.update_last=1 AND e.sip_timestamp_us>=i.start_us
+          AND NOT (e.bid_price>0 AND e.ask_price>=e.bid_price)
+      ) AS unknown_notional
+    FROM intervals AS i
+    INNER JOIN canonical_events AS e
+      ON i.ticker=e.ticker
+     AND e.sip_timestamp_us>=i.anchor_start_us
+     AND e.sip_timestamp_us<i.end_us
+    GROUP BY i.row_index,i.start_us,i.end_us
+  ),
+  derived AS
+  (
+    SELECT
+      *,
+      arrayMap(x -> x.3,last_events) AS last_prices,
+      arrayMap(x -> x.3,extrema_events) AS extrema_prices
+    FROM grouped
+  )
+SELECT
+  row_index,
+  anchor_price,
+  if(length(extrema_prices)>0,arrayMax(extrema_prices),toFloat64('nan')),
+  if(
+    length(extrema_prices)>0,
+    tupleElement(
+      arrayFirst(x -> x.3=arrayMax(extrema_prices),extrema_events),1
+    ),
+    0
+  ),
+  if(length(extrema_prices)>0,arrayMin(extrema_prices),toFloat64('nan')),
+  if(
+    length(extrema_prices)>0,
+    tupleElement(
+      arrayFirst(x -> x.3=arrayMin(extrema_prices),extrema_events),1
+    ),
+    0
+  ),
+  if(
+    length(last_prices)>0,
+    tupleElement(arrayElement(last_events,-1),3),
+    toFloat64('nan')
+  ),
+  if(total_size>0,total_notional/total_size,toFloat64('nan')),
+  if(
+    length(last_prices)>0,
+    tupleElement(
+      arrayFold(
+        (acc,x) -> tuple(
+          greatest(acc.1,x),
+          least(acc.2,x/greatest(acc.1,x)-1)
+        ),
+        last_prices,
+        tuple(toFloat64(0),toFloat64(0))
+      ),
+      2
+    ),
+    toFloat64('nan')
+  ),
+  if(
+    length(last_prices)>0,
+    tupleElement(
+      arrayFold(
+        (acc,x) -> tuple(
+          least(acc.1,x),
+          greatest(acc.2,x/least(acc.1,x)-1)
+        ),
+        last_prices,
+        tuple(toFloat64(1e300),toFloat64(0))
+      ),
+      2
+    ),
+    toFloat64('nan')
+  ),
+  buy_notional,
+  sell_notional,
+  unknown_notional,
+  length(last_prices)
+FROM derived
+ORDER BY row_index
+SETTINGS
+  max_threads={max(1, int(getattr(config, "max_threads_per_query", 2)))},
+  max_memory_usage={_q(getattr(config, "max_memory_usage", "4G"))},
+  join_algorithm='full_sorting_merge',
+  allow_experimental_join_condition=1
+FORMAT TabSeparatedRaw
+"""
+
+
+def interval_aggregates(
+    client: ClickHouseHttpClient,
+    config: LoaderConfig,
+    requests: list[IntervalRequest] | tuple[IntervalRequest, ...],
+    cancellation: CancellationController | None = None,
+) -> dict[int, IntervalAggregate]:
+    """Aggregate bounded intervals in ClickHouse; never return full event streams."""
+    if cancellation is not None:
+        cancellation.raise_if_requested()
+    if not requests:
+        return {}
+    query_id = cancellation.register_query() if cancellation is not None else None
+    try:
+        sql = interval_aggregate_sql(config, requests)
+        text = (
+            client.execute(sql, query_id=query_id)
+            if query_id is not None
+            else client.execute(sql)
+        )
+    except RuntimeError as exc:
+        if cancellation is not None and cancellation.requested:
+            raise BuildCancelled("Active interval aggregation was cancelled.") from exc
+        raise
+    finally:
+        if cancellation is not None and query_id is not None:
+            cancellation.unregister_query(query_id)
+    result: dict[int, IntervalAggregate] = {}
+    for line in text.splitlines():
+        if not line:
+            continue
+        fields = line.split("\t")
+        if len(fields) != 14:
+            raise RuntimeError(
+                f"Malformed interval aggregate with {len(fields)} fields."
+            )
+        row_index = int(fields[0])
+        if row_index in result:
+            raise RuntimeError(f"Duplicate interval aggregate for row {row_index}.")
+        result[row_index] = IntervalAggregate(
+            row_index=row_index,
+            anchor_price=float(fields[1]),
+            high_price=float(fields[2]),
+            high_timestamp_us=int(fields[3]),
+            low_price=float(fields[4]),
+            low_timestamp_us=int(fields[5]),
+            terminal_price=float(fields[6]),
+            vwap_price=float(fields[7]),
+            peak_to_trough_return=float(fields[8]),
+            trough_to_peak_return=float(fields[9]),
+            buy_notional=float(fields[10]),
+            sell_notional=float(fields[11]),
+            unknown_notional=float(fields[12]),
+            observation_count=int(fields[13]),
+        )
+    return result
 
 
 def summarize_events(
