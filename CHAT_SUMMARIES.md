@@ -33,6 +33,34 @@ low-latency IBKR order management. It preserves the evolving requirements,
 rejected approaches, validation evidence, and remaining authenticated
 paper-order and continuous live-controller work.
 
+### [2026-07-19 09:28 PDT - Diagnose ordinal gaps and add safe automatic flatfile event updates](docs/codex/chat-summaries/2026/CHAT-20260719-0928-safe-automatic-flatfile-event-updates.md)
+
+- Chat/task ID: `019f7b35-01f1-7862-8e51-58dc8a80b002`
+- Related tasks: `TASK-0072`, `TASK-0143`
+- Summary written: 2026-07-27 11:14:07 PDT
+
+This chat diagnosed how out-of-order source days could corrupt per-ticker event
+ordinals, then added a minimally invasive automatic planner around the tested
+ingest core. Bare invocation now discovers the next complete remote sessions,
+accounts for cached files, requires approval, rejects manual gaps, and stops
+later inserts after failure. The change passed unit, compile, CLI, and live
+read-only checks and was hash-verified in the workstation code copy; no
+production update or workstation-host execution occurred.
+
+### [2026-07-17 09:25 PDT - Explain one-second news-reaction bars and correct the label authority](docs/codex/chat-summaries/2026/CHAT-20260717-0925-explain-one-second-news-reaction-bars.md)
+
+- Chat/task ID: `019f70e5-87d3-7940-ba28-dd101ceef5aa`
+- Related tasks: `TASK-0059`, `TASK-0142`
+- Summary written: 2026-07-27 11:12:24 PDT
+
+This chat traced why the first reaction extractor used one-second bars, found
+that quote-forward-fill and reconstructed extrema violated the intended
+trade-only label contract, and added an operational progress terminal. It also
+records the later correction that a full-market 2019-2026 intraday-bar build
+was the wrong prerequisite. Current `TASK-0059` work supersedes that
+intermediate design with exact canonical compact events bounded to
+news-relative windows.
+
 ### [2026-07-17 08:57 PDT - Design Tape, Quotes, and Canvas market intelligence](docs/codex/chat-summaries/2026/CHAT-20260717-0857-design-tape-quote-and-canvas-market-intelligence.md)
 
 - Chat/task ID: `019f70cb-ac2e-7952-b33c-f86a3312b077`
