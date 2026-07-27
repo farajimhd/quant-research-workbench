@@ -137,6 +137,32 @@ Profile the 96 GB GPU first:
 python -m research.news_reaction_model.v20.run_profile_sizes
 ```
 
+Every configuration is appended durably as it completes under:
+
+```text
+D:\TradingML\runtimes\news-reaction-model\v20\profile\size-sweep\profile_<timestamp>\
+├── profile_manifest.json
+├── profile_results.jsonl
+└── profile_summary.json
+```
+
+`profile_summary.json` separates:
+
+- `recommended_fixed_architecture`: the best batch size while preserving V20's
+  checked 768-wide, four-current-layer, six-expert architecture;
+- `fastest_overall`: the fastest tested architecture, retained as a throughput
+  observation rather than an automatic scientific recommendation.
+
+If profiling is interrupted, resume without repeating completed configurations:
+
+```powershell
+python -m research.news_reaction_model.v20.run_profile_sizes `
+  --resume-run-dir D:\TradingML\runtimes\news-reaction-model\v20\profile\size-sweep\profile_<timestamp>
+```
+
+Resume validates the matrix, dataset roots, model contract, PyTorch/CUDA
+environment, and GPU identity before reusing prior results.
+
 The checked-in default can be trained directly:
 
 ```powershell

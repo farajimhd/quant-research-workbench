@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import numpy as np
 import torch
 
 from research.news_reaction_model.v18.data import EpisodeBatch
-from research.news_reaction_model.v20.config import ModelConfig, TrainConfig
+from research.news_reaction_model.v20.config import (
+    ExperimentConfig,
+    ModelConfig,
+    TrainConfig,
+)
 from research.news_reaction_model.v20.losses import (
     bucketize_torch,
     compute_loss,
@@ -17,6 +23,13 @@ from research.news_reaction_model.v20.metrics import DistributionAccumulator
 from research.news_reaction_model.v20.model import (
     NewsReactionModelV20,
     ReturnDistributionOutput,
+)
+from research.news_reaction_model.v20.profile_sizes import (
+    append_jsonl,
+    atomic_write_json,
+    build_summary,
+    read_durable_results,
+    select_recommendations,
 )
 from research.news_reaction_model.v20.targets import (
     FLAT_BUCKET_INDEX,
@@ -253,6 +266,77 @@ class V20Tests(unittest.TestCase):
         self.assertLess(warm, first_peak)
         self.assertAlmostEqual(first_peak, config.learning_rate)
         self.assertLess(second_peak, first_peak)
+
+    def test_profiler_persists_rows_and_summary_atomically(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            results_path = root / "profile_results.jsonl"
+            row = {
+                "status": "completed",
+                "d_model": 768,
+                "current_layers": 4,
+                "experts": 6,
+                "batch_size": 2048,
+                "samples_per_second": 123.0,
+                "peak_gpu_gib": 42.0,
+            }
+            append_jsonl(results_path, row)
+            self.assertEqual(read_durable_results(results_path), [row])
+            summary = build_summary(
+                [row],
+                ExperimentConfig(),
+                expected_configurations=1,
+                maximum_gpu_gib=90.0,
+                run_dir=root,
+            )
+            summary_path = root / "profile_summary.json"
+            atomic_write_json(summary_path, summary)
+            persisted = __import__("json").loads(
+                summary_path.read_text(encoding="utf-8")
+            )
+            self.assertTrue(persisted["complete"])
+            self.assertEqual(
+                persisted["recommended_fixed_architecture"]["batch_size"],
+                2048,
+            )
+
+    def test_profiler_keeps_fixed_architecture_recommendation_separate(self) -> None:
+        rows = [
+            {
+                "status": "completed",
+                "d_model": 512,
+                "current_layers": 4,
+                "experts": 4,
+                "batch_size": 2048,
+                "samples_per_second": 500.0,
+                "peak_gpu_gib": 30.0,
+            },
+            {
+                "status": "completed",
+                "d_model": 768,
+                "current_layers": 4,
+                "experts": 6,
+                "batch_size": 1024,
+                "samples_per_second": 250.0,
+                "peak_gpu_gib": 40.0,
+            },
+            {
+                "status": "completed",
+                "d_model": 768,
+                "current_layers": 4,
+                "experts": 6,
+                "batch_size": 2048,
+                "samples_per_second": 300.0,
+                "peak_gpu_gib": 60.0,
+            },
+        ]
+        fixed, fastest = select_recommendations(
+            rows,
+            ExperimentConfig(),
+            maximum_gpu_gib=90.0,
+        )
+        self.assertEqual(fixed["batch_size"], 2048)
+        self.assertEqual(fastest["d_model"], 512)
 
 
 if __name__ == "__main__":
