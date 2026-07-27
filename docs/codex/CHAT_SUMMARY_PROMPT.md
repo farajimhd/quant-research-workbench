@@ -18,28 +18,47 @@ so a new chat can recover the project context without loading the original
 conversation.
 
 Length and completeness:
-1. Comprehensiveness takes priority over brevity. A chat summary may be as long
-   as necessary to preserve the full durable context.
-2. Do not impose an arbitrary word, page, token, or section-length limit.
-3. Do not omit important reasoning, requirement changes, rejected alternatives,
-   evidence, implementation details, validation, or unfinished work merely to
-   make the summary shorter.
-4. Avoid verbatim transcript reproduction and repetitive status messages, but
-   preserve their substantive information through detailed narrative.
-5. The early part of a long chat may use proportionally less detail than the
-   later part, but it must still preserve every decision, constraint, discovery,
-   and event needed to understand how the final state was reached.
+1. Each chat-summary file has a hard maximum of 2,000 words, excluding only the
+   heading and metadata fields.
+2. Use these section budgets:
+   - Narrative: at most 1,200 words
+   - Durable decisions: at most 250 words
+   - Delivered outcomes: at most 200 words
+   - Unfinished or hanging work: at most 250 words
+   - Handoff to the next chat: at most 100 words
+3. Do not create appendices, continuation files, duplicated entries, or
+   transcript extracts to evade the limit.
+4. Within the limit, prioritize requirements, changes of direction, durable
+   decisions, rejected alternatives, evidence that affected the outcome, final
+   implementation state, validation, unresolved uncertainty, and exact next
+   steps.
+5. Compress repeated discussion, routine tool use, raw command output, and
+   intermediate status updates into their substantive conclusions.
+6. Give the later part of the chat more detail than the beginning, while
+   retaining the early facts necessary to explain how the final state was
+   reached.
+7. If every detail cannot fit, preserve durable decisions and unfinished work
+   first, then final evidence and implementation state. Link to relevant task
+   entries, commits, and files instead of reproducing their contents.
 
 Storage design:
 1. Keep TASK_HISTORY.csv as the concise canonical task/outcome ledger.
 2. Keep TASK_HISTORY.md generated from TASK_HISTORY.csv.
-3. Create or update CHAT_SUMMARIES.md as the canonical narrative chat history.
-4. Add a "Long Chat Summaries" section at the end of TASK_HISTORY.md that
-   contains a concise index linking each entry to CHAT_SUMMARIES.md.
-5. Update scripts/render_task_history.py so regenerating TASK_HISTORY.md
+3. Keep CHAT_SUMMARIES.md as a concise chronological index only. Each index
+   entry must be no more than 100 words and link to one detailed chat-summary
+   file.
+4. Store one detailed summary per chat under:
+   docs/codex/chat-summaries/<YYYY>/CHAT-YYYYMMDD-NNN-<short-slug>.md
+   This folder is the canonical narrative chat history.
+5. Do not accumulate all detailed narratives in one Markdown file.
+6. Organize the index by year and newest-first within each year so current
+   context is quick to find.
+7. Add a "Long Chat Summaries" section at the end of TASK_HISTORY.md that
+   contains a concise index linking to CHAT_SUMMARIES.md.
+8. Update scripts/render_task_history.py so regenerating TASK_HISTORY.md
    preserves or regenerates this index. Do not manually append content that the
    renderer will later erase.
-6. When a task-history row is materially connected to a chat summary, include
+9. When a task-history row is materially connected to a chat summary, include
    the applicable chat-summary identifier in its progress or result field
    without making the task row verbose.
 
@@ -57,10 +76,10 @@ Chat discovery and access:
 5. Do not expose secrets, credentials, raw sensitive data, or unnecessary
    private content.
 
-For every reviewed chat, create one section in CHAT_SUMMARIES.md using this
-structure:
+For every reviewed chat, create one file under the canonical chat-summary
+folder using this structure:
 
-## CHAT-YYYYMMDD-NNN — <descriptive title>
+# CHAT-YYYYMMDD-NNN - <descriptive title>
 
 - Chat started: <exact date and time with timezone, when available>
 - Chat ended or last activity: <exact date and time with timezone, when available>
@@ -159,10 +178,10 @@ Quality and consistency requirements:
 5. Do not mark work completed merely because code was written or committed.
 6. Avoid duplicating identical background in every entry; cross-reference
    earlier chat summaries where appropriate.
-7. Preserve all important reasoning and decisions. The document may be long;
-   distinguish it from a transcript by synthesizing repetition and raw dialogue,
-   not by removing substantive detail.
-8. Order summaries chronologically from oldest to newest.
+7. Enforce the 2,000-word per-chat maximum and the 100-word index-entry maximum.
+   Report both word counts during validation.
+8. Keep detailed summary files in chronological folders and order the
+   CHAT_SUMMARIES.md index newest-first within each year.
 9. Use America/Vancouver for normalized timestamps while preserving a source
    timestamp's original timezone when materially relevant.
 10. Review the resulting documents for consistency and verify that
