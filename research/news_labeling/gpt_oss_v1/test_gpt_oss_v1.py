@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from .audit import write_audit
-from .data import stratify
+from .data import fit_sample_to_context, stratify
 from .prompt import build_messages
 from .schema import validate_label
 from .taxonomy import EVENT_FAMILY_CODES, EVENT_SUBTYPES, SENTIMENT_DIMENSIONS
@@ -125,6 +125,31 @@ class GptOssV1Tests(unittest.TestCase):
             self.assertIn("Overall Sentiment", report.read_text(encoding="utf-8"))
             sample_text = next((Path(directory) / "samples").glob("*.md")).read_text(encoding="utf-8")
             self.assertIn("Certified rendered article", sample_text)
+
+    def test_context_fitting_uses_complete_prompt_budget(self) -> None:
+        class FakeTokenizer:
+            def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+                self.assertions = (tokenize, add_generation_prompt)
+                return list(range(sum(len(item["content"]) for item in messages) // 4))
+
+        from .config import LabelingConfig
+        from unittest.mock import patch
+
+        article = {
+            "canonical_news_id": "n1",
+            "published_at_utc": "2026-07-14 13:41:00.000000000",
+            "title": "Title",
+            "rendered_text": "x" * 20_000,
+            "tickers": ["XYZ"],
+            "deterministic": {"kind": "company"},
+            "text_sha256": "before",
+        }
+        config = LabelingConfig(max_model_len=6_000, max_output_tokens=1_000)
+        with patch("transformers.AutoTokenizer.from_pretrained", return_value=FakeTokenizer()):
+            fitted = fit_sample_to_context([article], config)[0]
+        self.assertLessEqual(fitted["prompt_tokens"], 5_000)
+        self.assertTrue(fitted["truncated_for_context"])
+        self.assertNotEqual(fitted["text_sha256"], "before")
 
 
 if __name__ == "__main__":

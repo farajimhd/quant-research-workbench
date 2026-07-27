@@ -18,6 +18,7 @@ def default_runtime_root() -> Path:
 class LabelingConfig:
     endpoint: str = "http://127.0.0.1:8000/v1/chat/completions"
     model: str = "openai/gpt-oss-20b"
+    tokenizer_path: Path = Path(r"D:\models_artifacts\opensource\openai-gpt-oss-20b")
     database: str = "q_live"
     event_table: str = "benzinga_news_event_v2"
     rendered_table: str = "benzinga_news_rendered_v2"
@@ -27,7 +28,8 @@ class LabelingConfig:
     candidate_size: int = 4_000
     workers: int = 8
     max_input_chars: int = 45_000
-    max_output_tokens: int = 2_000
+    max_model_len: int = 16_384
+    max_output_tokens: int = 1_536
     timeout_seconds: int = 240
     attempts: int = 3
     start_date: str = "2019-01-01"

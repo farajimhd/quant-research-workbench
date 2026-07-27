@@ -80,20 +80,28 @@ starting or downloading anything.
 
 This invokes the verified virtual-environment executable directly inside the
 default `Ubuntu` WSL distribution, binds it to port 8000, and enables prefix
-caching. The laptop exposes an RTX 5090 Laptop GPU to that environment. Model
-weights are not currently cached, so first startup downloads
-`openai/gpt-oss-20b`. If the environment moves, override `--distro` or
-`--vllm-bin`. Windows localhost forwarding must be enabled so the labeling
-client can reach `http://127.0.0.1:8000/v1`.
+caching. It serves the existing local weights from
+`/mnt/d/models_artifacts/opensource/openai-gpt-oss-20b` under the stable API
+name `openai/gpt-oss-20b`; no model download is required. The laptop exposes an
+RTX 5090 Laptop GPU to that environment. If the environment moves, override
+`--distro`, `--vllm-bin`, or `--model-path`. Windows localhost forwarding must
+be enabled so the labeling client can reach `http://127.0.0.1:8000/v1`.
 
 Alternatively, start it directly in the existing WSL shell:
 
 ```bash
-/home/g835l/venvs/vllm-gptoss/bin/vllm serve openai/gpt-oss-20b \
+/home/g835l/venvs/vllm-gptoss/bin/vllm \
+  serve /mnt/d/models_artifacts/opensource/openai-gpt-oss-20b \
   --host 0.0.0.0 --port 8000 \
+  --served-model-name openai/gpt-oss-20b \
   --gpu-memory-utilization 0.85 --max-model-len 16384 \
-  --enable-prefix-caching
+  --safetensors-load-strategy prefetch --enable-prefix-caching
 ```
+
+The labeling sampler uses the exact tokenizer from the same local model
+directory. It measures the complete Harmony-formatted request and truncates
+only the article tail when necessary, reserving 1,536 tokens for the structured
+response within the 16,384-token server limit.
 
 In a second terminal, first create and inspect the deterministic sample plan:
 

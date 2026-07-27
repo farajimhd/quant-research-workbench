@@ -11,6 +11,7 @@ from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_str
 from src.backend.news_classification import classify_news
 
 from .config import LabelingConfig
+from .prompt import build_messages
 
 
 def fetch_stratified_sample(
@@ -58,7 +59,7 @@ LIMIT {int(config.candidate_size)}
 FORMAT JSONEachRow
 """
     candidates = [json.loads(line) for line in client.execute(sql).splitlines() if line.strip()]
-    return stratify(candidates, config.sample_size)
+    return fit_sample_to_context(stratify(candidates, config.sample_size), config)
 
 
 def stratify(candidates: Iterable[dict[str, Any]], sample_size: int) -> list[dict[str, Any]]:
@@ -94,6 +95,65 @@ def stratify(candidates: Iterable[dict[str, Any]], sample_size: int) -> list[dic
             f"Only {len(selected):,} candidates were available for a requested sample of {sample_size:,}."
         )
     return selected
+
+
+def fit_sample_to_context(
+    sample: list[dict[str, Any]],
+    config: LabelingConfig,
+) -> list[dict[str, Any]]:
+    """Fit each complete Harmony request to the exact served-model tokenizer."""
+    try:
+        from transformers import AutoTokenizer
+    except ImportError as exc:
+        raise RuntimeError(
+            "transformers is required for exact gpt-oss context budgeting; "
+            "the workflow will not use character-count guessing."
+        ) from exc
+    if not config.tokenizer_path.exists():
+        raise RuntimeError(f"Local gpt-oss tokenizer path does not exist: {config.tokenizer_path}")
+    tokenizer = AutoTokenizer.from_pretrained(config.tokenizer_path, local_files_only=True)
+    prompt_limit = config.max_model_len - config.max_output_tokens
+    if prompt_limit <= 0:
+        raise RuntimeError("max_output_tokens must be smaller than max_model_len")
+    fitted: list[dict[str, Any]] = []
+    for original in sample:
+        row = dict(original)
+        body = str(row.get("rendered_text") or "")
+        token_count = _message_token_count(tokenizer, row)
+        truncated = False
+        if token_count > prompt_limit:
+            low, high = 0, len(body)
+            while low < high:
+                midpoint = (low + high + 1) // 2
+                row["rendered_text"] = body[:midpoint]
+                if _message_token_count(tokenizer, row) <= prompt_limit:
+                    low = midpoint
+                else:
+                    high = midpoint - 1
+            row["rendered_text"] = body[:low]
+            token_count = _message_token_count(tokenizer, row)
+            truncated = True
+        if token_count > prompt_limit:
+            raise RuntimeError(
+                f"Invariant prompt exceeds context budget for {row['canonical_news_id']}: "
+                f"{token_count:,}>{prompt_limit:,}"
+            )
+        row["prompt_tokens"] = token_count
+        row["truncated_for_context"] = truncated
+        row["text_sha256"] = hashlib.sha256(
+            str(row["rendered_text"]).encode("utf-8")
+        ).hexdigest()
+        fitted.append(row)
+    return fitted
+
+
+def _message_token_count(tokenizer: Any, article: dict[str, Any]) -> int:
+    tokens = tokenizer.apply_chat_template(
+        build_messages(article),
+        tokenize=True,
+        add_generation_prompt=True,
+    )
+    return len(tokens)
 
 
 def write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> None:
