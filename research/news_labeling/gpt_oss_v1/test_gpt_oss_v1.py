@@ -4,13 +4,15 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from .audit import write_audit
+from .client import LocalModelError, LocalModelHttpError, build_request_payload, label_article
 from .compare import compare_runs
 from .config import MODEL_PROFILES, LabelingConfig
 from .data import fit_sample_to_context, stratify
 from .prompt import build_messages
-from .schema import validate_label
+from .schema import TRANSPORT_SCHEMA, VLLM_TRANSPORT_SCHEMA, validate_label
 from .taxonomy import EVENT_FAMILY_CODES, EVENT_SUBTYPES, SENTIMENT_DIMENSIONS
 
 
@@ -51,6 +53,14 @@ def valid_label() -> dict:
     }
 
 
+def contains_key(value, target: str) -> bool:
+    if isinstance(value, dict):
+        return target in value or any(contains_key(item, target) for item in value.values())
+    if isinstance(value, list):
+        return any(contains_key(item, target) for item in value)
+    return False
+
+
 class GptOssV1Tests(unittest.TestCase):
     def test_taxonomy_has_unique_family_and_subtype_contracts(self) -> None:
         self.assertEqual(len(EVENT_FAMILY_CODES), len(set(EVENT_FAMILY_CODES)))
@@ -61,6 +71,75 @@ class GptOssV1Tests(unittest.TestCase):
     def test_validator_accepts_supported_verbatim_label(self) -> None:
         errors = validate_label(valid_label(), "The company cuts full-year guidance today.")
         self.assertEqual(errors, [])
+
+    def test_vllm_transport_schema_omits_unsupported_unique_items(self) -> None:
+        self.assertTrue(TRANSPORT_SCHEMA["properties"]["quality"]["uniqueItems"])
+        self.assertFalse(contains_key(VLLM_TRANSPORT_SCHEMA, "uniqueItems"))
+        payload = build_request_payload(
+            {
+                "canonical_news_id": "n1",
+                "published_at_utc": "2026-07-14 13:41:00.000000000",
+                "title": "Company cuts guidance",
+                "rendered_text": "The company cuts full-year guidance today.",
+                "tickers": ["XYZ"],
+                "deterministic": {"kind": "company"},
+            },
+            LabelingConfig(),
+        )
+        transmitted = payload["response_format"]["json_schema"]["schema"]
+        self.assertFalse(contains_key(transmitted, "uniqueItems"))
+
+    def test_python_validator_retains_quality_uniqueness_contract(self) -> None:
+        label = valid_label()
+        label["quality"] = ["ambiguous_source", "ambiguous_source"]
+        errors = validate_label(label, "The company cuts full-year guidance today.")
+        self.assertIn("quality flags must be unique", errors)
+
+    def test_permanent_http_400_is_not_retried(self) -> None:
+        article = {
+            "canonical_news_id": "n1",
+            "published_at_utc": "2026-07-14 13:41:00.000000000",
+            "title": "Company cuts guidance",
+            "rendered_text": "The company cuts full-year guidance today.",
+            "tickers": ["XYZ"],
+            "deterministic": {"kind": "company"},
+        }
+        with (
+            patch(
+                "research.news_labeling.gpt_oss_v1.client._post_json",
+                side_effect=LocalModelHttpError(400, "unsupported schema"),
+            ) as post,
+            patch("research.news_labeling.gpt_oss_v1.client.time.sleep") as sleep,
+        ):
+            with self.assertRaisesRegex(LocalModelError, "after 1 attempts"):
+                label_article(article, LabelingConfig(attempts=3))
+        self.assertEqual(post.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_transient_http_503_is_retried(self) -> None:
+        article = {
+            "canonical_news_id": "n1",
+            "published_at_utc": "2026-07-14 13:41:00.000000000",
+            "title": "Company cuts guidance",
+            "rendered_text": "The company cuts full-year guidance today.",
+            "tickers": ["XYZ"],
+            "deterministic": {"kind": "company"},
+        }
+        response = {
+            "choices": [{"message": {"content": json.dumps(valid_label())}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+        }
+        with (
+            patch(
+                "research.news_labeling.gpt_oss_v1.client._post_json",
+                side_effect=[LocalModelHttpError(503, "temporarily unavailable"), response],
+            ) as post,
+            patch("research.news_labeling.gpt_oss_v1.client.time.sleep") as sleep,
+        ):
+            _label, usage = label_article(article, LabelingConfig(attempts=3))
+        self.assertEqual(post.call_count, 2)
+        sleep.assert_called_once()
+        self.assertEqual(usage["attempt"], 2)
 
     def test_validator_rejects_invented_evidence_and_invalid_subtype(self) -> None:
         label = valid_label()

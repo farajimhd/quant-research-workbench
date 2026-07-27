@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import math
 from typing import Any
 
@@ -111,6 +112,33 @@ TRANSPORT_SCHEMA: dict[str, Any] = {
         },
     },
 }
+
+# vLLM compiles ``response_format.json_schema`` into a guided-decoding
+# grammar. Its grammar backend does not implement ``uniqueItems``. Preserve
+# that invariant in the canonical contract above and in ``validate_label``
+# below, while sending only grammar-supported constraints over the wire.
+_VLLM_UNSUPPORTED_SCHEMA_KEYS = frozenset({"uniqueItems"})
+
+
+def vllm_transport_schema() -> dict[str, Any]:
+    schema = copy.deepcopy(TRANSPORT_SCHEMA)
+    _remove_schema_keys(schema, _VLLM_UNSUPPORTED_SCHEMA_KEYS)
+    return schema
+
+
+def _remove_schema_keys(value: Any, keys: frozenset[str]) -> None:
+    if isinstance(value, dict):
+        for key in tuple(value):
+            if key in keys:
+                del value[key]
+            else:
+                _remove_schema_keys(value[key], keys)
+    elif isinstance(value, list):
+        for item in value:
+            _remove_schema_keys(item, keys)
+
+
+VLLM_TRANSPORT_SCHEMA = vllm_transport_schema()
 
 
 def validate_label(value: Any, supplied_text: str) -> list[str]:

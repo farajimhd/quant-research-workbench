@@ -7,11 +7,18 @@ from urllib import error, request
 
 from .config import LabelingConfig
 from .prompt import build_messages
-from .schema import TRANSPORT_SCHEMA, validate_label
+from .schema import VLLM_TRANSPORT_SCHEMA, validate_label
 
 
 class LocalModelError(RuntimeError):
     pass
+
+
+class LocalModelHttpError(LocalModelError):
+    def __init__(self, status_code: int, body: str) -> None:
+        self.status_code = status_code
+        self.retryable = status_code in {408, 409, 425, 429} or status_code >= 500
+        super().__init__(f"Model HTTP {status_code}: {body[:1_000]}")
 
 
 def check_server(config: LabelingConfig) -> None:
@@ -29,8 +36,8 @@ def check_server(config: LabelingConfig) -> None:
         raise LocalModelError(f"Requested model {config.model!r} is not served; available={sorted(identifiers)}")
 
 
-def label_article(article: dict[str, Any], config: LabelingConfig) -> tuple[dict[str, Any], dict[str, Any]]:
-    payload = {
+def build_request_payload(article: dict[str, Any], config: LabelingConfig) -> dict[str, Any]:
+    return {
         "model": config.model,
         "messages": build_messages(article),
         "temperature": 0,
@@ -41,13 +48,19 @@ def label_article(article: dict[str, Any], config: LabelingConfig) -> tuple[dict
             "json_schema": {
                 "name": "news_semantic_label",
                 "strict": True,
-                "schema": TRANSPORT_SCHEMA,
+                "schema": VLLM_TRANSPORT_SCHEMA,
             },
         },
     }
+
+
+def label_article(article: dict[str, Any], config: LabelingConfig) -> tuple[dict[str, Any], dict[str, Any]]:
+    payload = build_request_payload(article, config)
     last_error: Exception | None = None
+    attempts_made = 0
     request_started = time.perf_counter()
     for attempt in range(1, config.attempts + 1):
+        attempts_made = attempt
         try:
             attempt_started = time.perf_counter()
             response = _post_json(config.endpoint, payload, config.timeout_seconds)
@@ -81,9 +94,11 @@ def label_article(article: dict[str, Any], config: LabelingConfig) -> tuple[dict
             }
         except (KeyError, TypeError, ValueError, OSError, LocalModelError) as exc:
             last_error = exc
+            if isinstance(exc, LocalModelHttpError) and not exc.retryable:
+                break
             if attempt < config.attempts:
                 time.sleep(min(2 ** (attempt - 1), 8))
-    raise LocalModelError(f"Label failed after {config.attempts} attempts: {last_error}") from last_error
+    raise LocalModelError(f"Label failed after {attempts_made} attempts: {last_error}") from last_error
 
 
 def _post_json(url: str, payload: dict[str, Any], timeout: int) -> dict[str, Any]:
@@ -95,4 +110,4 @@ def _post_json(url: str, payload: dict[str, Any], timeout: int) -> dict[str, Any
             return json.loads(response.read().decode("utf-8"))
     except error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        raise LocalModelError(f"Model HTTP {exc.code}: {body[:1_000]}") from exc
+        raise LocalModelHttpError(exc.code, body) from exc

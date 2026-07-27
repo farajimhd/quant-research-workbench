@@ -63,6 +63,12 @@ earnings beat and a guidance cut without collapsing either fact.
 - Unknown enum values, impossible company-announcement combinations,
   non-finite confidence, duplicate dimensions, and non-verbatim evidence fail
   validation.
+- The canonical schema retains invariants such as unique quality flags. The
+  schema sent to vLLM omits only unsupported grammar keywords; the Python
+  validator enforces those invariants after generation.
+- Permanent HTTP 4xx request-contract failures stop after one request.
+  Transient timeout, conflict, rate-limit, and server failures remain
+  retryable.
 - Each completed item is durably appended before the next progress update.
 - Failures are retained separately and never counted as valid labels.
 - No raw secrets, source text, SQL payloads, or hidden reasoning enter logs.
