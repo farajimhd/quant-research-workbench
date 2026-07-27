@@ -39,9 +39,9 @@ flowchart LR
 
 ## Ledger Summary
 
-- Durable tasks: 139
+- Durable tasks: 140
 - In progress: 37
-- Completed: 94
+- Completed: 95
 - Superseded: 8
 
 Times use the Vancouver offset when an exact request timestamp is available.
@@ -192,6 +192,7 @@ timestamp precision would be misleading.
 | TASK-0137 | quant-research-workbench | Agent governance | Completed | Add durable chat and task continuity guidance | 2026-07-27 | 2026-07-27 | 2026-07-27 | Create reusable repository guidance that lets every agent recover relevant long-chat decisions and unfinished work while keeping the canonical task ledger, current focus, and cumulative summary index accurate and bounded. | Added docs/codex/CHAT_SUMMARY_PROMPT.md with timestamped, titled, year-sharded per-chat files, a flexible 3,000-word maximum, a 150-word index-entry limit, evidence and privacy rules, chronological narrative guidance, durable decisions, outcomes, unfinished work, and handoff structure. Added an AGENTS.md startup protocol requiring every agent to read current task focus, inspect the canonical relevant task rows, review the chat-summary index and relevant detailed summaries, reconcile them with the latest user clarification, and avoid indiscriminate history loading. | AGENTS.md now requires materially separate durable outcomes to be created or refreshed as In progress near the beginning of work, kept within one to three genuine current-focus rows, updated at material milestones and before commits, and rendered back into TASK_HISTORY.md. Missing summaries must be reported as context gaps rather than invented. No chat summaries or runtime artifacts were created by this governance task. | Establishes bounded cross-chat continuity while keeping current work visible and preventing stale history, duplicate task rows, or indiscriminate context loading. |
 | TASK-0138 | quant-research-workbench | Agent governance | Completed | Create the first durable chat summary and summary index | 2026-07-27 | 2026-07-27 | 2026-07-27 | Apply the repository chat-summary prompt to the active Investigate ChatGPT UI freezes task by creating a timestamped and titled per-chat narrative, a concise root index, and renderer support that preserves the index in generated task history. | Created CHAT-20260727-0856-investigate-chatgpt-ui-freezes from complete access to the active 12-turn task after verifying task id 019fa44b-0973-7c81-9672-939236736821 and start time 2026-07-27 08:56:48 PDT from app metadata. Added the root CHAT_SUMMARIES.md index and extended scripts/render_task_history.py to validate and embed the bounded index as a generated Long Chat Summaries section. | The detailed summary contains 2,125 body words against the 3,000-word limit; the index entry contains 94 words against the 150-word limit. The detailed link resolves, renderer syntax passes, two consecutive renders are byte-identical, and the rendered task history contains both the generated section and detailed-summary link. | Makes the new cross-chat continuity design operational with its first evidence-grounded summary and regeneration-safe index. |
 | TASK-0140 | quant-research-workbench | Agent governance | Completed | Summarize the SEC v3 and Reference Gateway lifecycle chat | 2026-07-27 | 2026-07-27 | 2026-07-27 | Create a bounded durable narrative for the active Review SEC gateway errors chat, preserving the complete-source contract, v3 rebuild, timestamp, identity, revision, renderer, taxonomy, embedding, bridge, and Reference Gateway decisions without conflating separately linked predecessor chats. | Created `CHAT-20260708-0921-review-sec-gateway-and-rebuild-v3` from the complete active Codex session and mapped its outcomes to TASK-0037, TASK-0046, TASK-0056, TASK-0087, TASK-0089, and TASK-0091. Separate discoverable ChatGPT predecessors were explicitly left unreviewed. | The summary contains 2,132 body words against the 3,000-word limit and its index entry contains 65 words against the 150-word limit. The link resolves, index ordering is newest-first, renderer syntax passes, and two consecutive renders are byte-identical. | Preserves the multi-week SEC data-authority decisions and remaining embedding/frontier work for future chats without loading the original conversation. |
+| TASK-0141 | quant-research-workbench | Agent governance | Completed | Summarize the Canvas QMD and market-intelligence chat | 2026-07-17 | 2026-07-27 | 2026-07-27 | Create one bounded durable narrative for chat 019f70cb-ac2e-7952-b33c-f86a3312b077, preserving the evolution from separate Tape and NBBO Quotes containers through QMD signals, chart structure, facts, SEC/XBRL, trading UX, scanner surfaces, Charts & Quotes, and session-causal footprints without overwriting summaries owned by concurrent chats. | Created `CHAT-20260717-0857-design-tape-quote-and-canvas-market-intelligence` from complete access to the active chat and mapped its outcomes across TASK-0052 and the completed QMD, Canvas, facts, SEC/XBRL, trading, scanner, structure, footprint, and Charts & Quotes tasks. Concurrent SEC and strategy summary ownership was preserved through serialized commits. | The summary contains 2,239 body words against the 3,000-word limit and its index entry contains 115 words against the 150-word limit. The detailed link resolves, index ordering is newest-first, renderer syntax passes, and two consecutive renders are byte-identical. | Preserves the ten-day Canvas and QMD product-design history as recoverable context without requiring future agents to load the original very long conversation. |
 
 ## Long Chat Summaries
 
@@ -215,6 +216,19 @@ authority, quarantined 16.435 GiB of generated content, externalized frontend
 and IBKR outputs, and ended by designing and activating bounded cross-chat
 summary and task-continuity governance. The desktop concurrency defect itself
 remains an app-level issue to verify after a full restart and fresh task.
+
+#### [2026-07-17 08:57 PDT - Design Tape, Quotes, and Canvas market intelligence](docs/codex/chat-summaries/2026/CHAT-20260717-0857-design-tape-quote-and-canvas-market-intelligence.md)
+
+- Chat/task ID: `019f70cb-ac2e-7952-b33c-f86a3312b077`
+- Related tasks: `TASK-0052`, `TASK-0060`-`TASK-0071`, `TASK-0073`-`TASK-0077`, `TASK-0079`, `TASK-0081`-`TASK-0085`, `TASK-0088`, `TASK-0090`, `TASK-0096`, `TASK-0097`, `TASK-0102`-`TASK-0105`, `TASK-0110`, `TASK-0111`, `TASK-0115`-`TASK-0117`, `TASK-0119`, `TASK-0122`, `TASK-0125`, `TASK-0126`, `TASK-0130`, `TASK-0134`, `TASK-0141`
+- Summary written: 2026-07-27 10:55:53 PDT
+
+This chat grew from separate Tape and NBBO Quotes containers into the Canvas
+market-intelligence system: streaming QMD signals, event-derived structure and
+level footprints, stable chart panes, Stock Facts and SEC/XBRL evidence,
+trading management, scanners, and the multi-horizon Charts & Quotes workspace.
+Its latest correction made historical footprints session-causal; the existing
+QMD History service must be restarted to load that binary.
 
 #### [2026-07-08 09:21 PDT - Review SEC gateway errors and rebuild SEC v3](docs/codex/chat-summaries/2026/CHAT-20260708-0921-review-sec-gateway-and-rebuild-v3.md)
 

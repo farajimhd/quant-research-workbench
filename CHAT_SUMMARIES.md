@@ -20,6 +20,19 @@ and IBKR outputs, and ended by designing and activating bounded cross-chat
 summary and task-continuity governance. The desktop concurrency defect itself
 remains an app-level issue to verify after a full restart and fresh task.
 
+### [2026-07-17 08:57 PDT - Design Tape, Quotes, and Canvas market intelligence](docs/codex/chat-summaries/2026/CHAT-20260717-0857-design-tape-quote-and-canvas-market-intelligence.md)
+
+- Chat/task ID: `019f70cb-ac2e-7952-b33c-f86a3312b077`
+- Related tasks: `TASK-0052`, `TASK-0060`-`TASK-0071`, `TASK-0073`-`TASK-0077`, `TASK-0079`, `TASK-0081`-`TASK-0085`, `TASK-0088`, `TASK-0090`, `TASK-0096`, `TASK-0097`, `TASK-0102`-`TASK-0105`, `TASK-0110`, `TASK-0111`, `TASK-0115`-`TASK-0117`, `TASK-0119`, `TASK-0122`, `TASK-0125`, `TASK-0126`, `TASK-0130`, `TASK-0134`, `TASK-0141`
+- Summary written: 2026-07-27 10:55:53 PDT
+
+This chat grew from separate Tape and NBBO Quotes containers into the Canvas
+market-intelligence system: streaming QMD signals, event-derived structure and
+level footprints, stable chart panes, Stock Facts and SEC/XBRL evidence,
+trading management, scanners, and the multi-horizon Charts & Quotes workspace.
+Its latest correction made historical footprints session-causal; the existing
+QMD History service must be restarted to load that binary.
+
 ### [2026-07-08 09:21 PDT - Review SEC gateway errors and rebuild SEC v3](docs/codex/chat-summaries/2026/CHAT-20260708-0921-review-sec-gateway-and-rebuild-v3.md)
 
 - Chat/task ID: `019f4288-d619-7731-965e-a3bbfb55cbd8`
