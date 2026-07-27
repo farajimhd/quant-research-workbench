@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from enum import StrEnum
@@ -8,8 +9,8 @@ from uuid import uuid4
 
 from src.market_engine.events import MarketEvent
 from src.trading_runtime.broker import BrokerAdapter
-from src.trading_runtime.ibkr_schema import OPEN_ORDER_STATUSES, OrderRequest
 from src.trading_runtime.journal import TradingJournal
+from src.trading_runtime.order_management import OrderManagementEngine
 from src.trading_runtime.risk import RiskAuthority
 from src.trading_runtime.signals import (
     MarketSignal,
@@ -18,6 +19,7 @@ from src.trading_runtime.signals import (
     normalize_strategy_evaluation,
 )
 from src.trading_runtime.strategy_engine import StrategyObservation
+from src.trading_runtime.strategy_orders import StrategyOrderPlan
 
 
 class RunMode(StrEnum):
@@ -35,7 +37,7 @@ class AutomaticStrategy(Protocol):
 
     async def on_event(
         self, event: MarketEvent, account_id: str
-    ) -> StrategyEvaluation | list[OrderRequest]: ...
+    ) -> StrategyEvaluation: ...
 
 
 class RuntimeIntentPlanner(Protocol):
@@ -45,7 +47,11 @@ class RuntimeIntentPlanner(Protocol):
         intent: StrategyIntent,
         account_id: str,
         event: MarketEvent | None,
-    ) -> list[OrderRequest]: ...
+    ) -> StrategyOrderPlan: ...
+
+    def should_cancel_strategy_protection(self, intent: StrategyIntent) -> bool: ...
+
+    def protective_order_prefix(self) -> str: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,8 +90,33 @@ class TradingRuntime:
         self.journal = journal
         self.risk = risk or RiskAuthority()
         self.intent_planner = intent_planner
+        self.order_manager = (
+            OrderManagementEngine(
+                broker=broker,
+                planner=lambda intent, account_id, event: intent_planner.plan(
+                    intent=intent,
+                    account_id=account_id,
+                    event=event,
+                ),
+                risk=self.risk,
+                journal=journal,
+                run_id=self.run_id,
+                strategy_id=config.strategy_id,
+                strategy_revision=config.strategy_revision,
+                shortability_provider=broker if hasattr(broker, "shortability") else None,
+                fill_callback=self._on_order_group_fill,
+                enforce_wall_clock_quote_freshness=(
+                    config.mode in {RunMode.LIVE, RunMode.PAPER}
+                    and bool(getattr(broker, "requires_fresh_execution_state", False))
+                ),
+            )
+            if intent_planner is not None
+            else None
+        )
         self.last_event_time: datetime | None = None
         self.processed_events = 0
+        self._broker_stream_task: asyncio.Task[None] | None = None
+        self._risk_refresh_task: asyncio.Task[None] | None = None
 
     async def initialize(self) -> None:
         await self.broker.initialize()
@@ -93,6 +124,12 @@ class TradingRuntime:
         missing = set(self.config.account_ids) - available
         if missing:
             raise ValueError(f"Broker does not expose configured accounts: {', '.join(sorted(missing))}")
+        await self.risk.prime(self.broker, self.config.account_ids)
+        if self.order_manager is not None:
+            await self.order_manager.configure_broker_session()
+            if hasattr(self.broker, "stream_broker_messages"):
+                self._broker_stream_task = asyncio.create_task(self._consume_broker_stream())
+                self._risk_refresh_task = asyncio.create_task(self._refresh_live_risk())
         self.journal.append(
             run_id=self.run_id,
             category="lifecycle",
@@ -112,27 +149,14 @@ class TradingRuntime:
                 run_id=self.run_id, category="execution", entity_type="fill", entity_id=execution.execution_id,
                 account_id=execution.account, event_time=execution.trade_time, payload=execution.to_cpapi(),
             )
+        if executions and self.order_manager is not None:
+            await self.order_manager.reconcile()
         for account_id in self.config.account_ids:
             evaluation = normalize_strategy_evaluation(
                 await self.strategy.on_event(event, account_id)
             )
             self._record_strategy_signals(evaluation, account_id)
-            requests = await self._orders_for_evaluation(evaluation, account_id, event)
-            for request in requests:
-                if request.acctId != account_id:
-                    raise ValueError("Strategy emitted an order for a different account")
-                self.journal.append(
-                    run_id=self.run_id, category="command", entity_type="order", entity_id=_order_entity_id(request),
-                    account_id=account_id, event_time=event.ts, payload=request.to_cpapi(),
-                )
-            if requests:
-                await self.risk.validate(self.broker, account_id, requests)
-                responses = await self.broker.place_orders(account_id, requests)
-                for response in responses:
-                    self.journal.append(
-                        run_id=self.run_id, category="broker", entity_type="order", entity_id=str(response.get("order_id") or ""),
-                        account_id=account_id, event_time=event.ts, payload=response,
-                    )
+            await self._execute_intents(evaluation, account_id, event)
         cursor = f"{event.ts.astimezone(timezone.utc).isoformat()}|{event.sequence}|{event.kind}"
         self.journal.save_checkpoint(self.run_id, cursor, {"processed_events": self.processed_events}, event.ts)
 
@@ -144,32 +168,7 @@ class TradingRuntime:
         for account_id in self.config.account_ids:
             evaluation = normalize_strategy_evaluation(await handler(signal, account_id))
             self._record_strategy_signals(evaluation, account_id)
-            requests = await self._orders_for_evaluation(evaluation, account_id, None)
-            for request in requests:
-                if request.acctId != account_id:
-                    raise ValueError("Strategy emitted an order for a different account")
-                self.journal.append(
-                    run_id=self.run_id,
-                    category="command",
-                    entity_type="order",
-                    entity_id=_order_entity_id(request),
-                    account_id=account_id,
-                    event_time=signal.effective_at,
-                    payload=request.to_cpapi(),
-                )
-            if requests:
-                await self.risk.validate(self.broker, account_id, requests)
-                responses = await self.broker.place_orders(account_id, requests)
-                for response in responses:
-                    self.journal.append(
-                        run_id=self.run_id,
-                        category="broker",
-                        entity_type="order",
-                        entity_id=str(response.get("order_id") or ""),
-                        account_id=account_id,
-                        event_time=signal.effective_at,
-                        payload=response,
-                    )
+            await self._execute_intents(evaluation, account_id, None)
         self._persist_strategy_assignments(signal.effective_at)
 
     async def process_strategy_observation(self, observation: StrategyObservation) -> None:
@@ -183,32 +182,7 @@ class TradingRuntime:
         for account_id in self.config.account_ids:
             evaluation = normalize_strategy_evaluation(await handler(observation, account_id))
             self._record_strategy_signals(evaluation, account_id)
-            requests = await self._orders_for_evaluation(evaluation, account_id, None)
-            for request in requests:
-                if request.acctId != account_id:
-                    raise ValueError("Strategy emitted an order for a different account")
-                self.journal.append(
-                    run_id=self.run_id,
-                    category="command",
-                    entity_type="order",
-                    entity_id=_order_entity_id(request),
-                    account_id=account_id,
-                    event_time=observation.observed_at,
-                    payload=request.to_cpapi(),
-                )
-            if requests:
-                await self.risk.validate(self.broker, account_id, requests)
-                responses = await self.broker.place_orders(account_id, requests)
-                for response in responses:
-                    self.journal.append(
-                        run_id=self.run_id,
-                        category="broker",
-                        entity_type="order",
-                        entity_id=str(response.get("order_id") or ""),
-                        account_id=account_id,
-                        event_time=observation.observed_at,
-                        payload=response,
-                    )
+            await self._execute_intents(evaluation, account_id, None)
         self._persist_strategy_assignments(observation.observed_at)
 
     def _record_strategy_signals(
@@ -229,15 +203,16 @@ class TradingRuntime:
                 },
             )
 
-    async def _orders_for_evaluation(
+    async def _execute_intents(
         self,
         evaluation: StrategyEvaluation,
         account_id: str,
         event: MarketEvent | None,
-    ) -> list[OrderRequest]:
-        requests = list(evaluation.orders)
+    ) -> None:
         if evaluation.intents and self.intent_planner is None:
             raise ValueError("Strategy emitted semantic intents but the runtime has no intent planner")
+        if evaluation.intents and self.order_manager is None:
+            raise ValueError("Strategy emitted semantic intents but the runtime has no order manager")
         for intent in evaluation.intents:
             self.journal.append(
                 run_id=self.run_id,
@@ -252,65 +227,7 @@ class TradingRuntime:
                     "strategy_revision": self.config.strategy_revision,
                 },
             )
-            should_cancel = getattr(self.intent_planner, "should_cancel_strategy_protection", None)
-            if should_cancel is not None and should_cancel(intent):
-                await self._cancel_strategy_protection(
-                    account_id=account_id,
-                    ticker=intent.ticker,
-                    event_time=intent.event_time,
-                )
-            requests.extend(self.intent_planner.plan(intent=intent, account_id=account_id, event=event))
-        return requests
-
-    async def _cancel_strategy_protection(
-        self,
-        *,
-        account_id: str,
-        ticker: str,
-        event_time: datetime,
-    ) -> None:
-        prefix_provider = getattr(self.intent_planner, "protective_order_prefix", None)
-        if prefix_provider is None:
-            raise ValueError("Intent planner cannot identify its broker-held protection")
-        prefix = str(prefix_provider())
-        live_orders = await self.broker.live_orders()
-        protective_orders = [
-            order
-            for order in live_orders
-            if order.account == account_id
-            and order.ticker.upper() == ticker.upper()
-            and order.side.upper() == "SELL"
-            and order.order_status in OPEN_ORDER_STATUSES
-            and (
-                str(order.parentId or "").startswith(prefix)
-                or str(order.cOID or "").startswith(prefix)
-            )
-        ]
-        for order in protective_orders:
-            self.journal.append(
-                run_id=self.run_id,
-                category="command",
-                entity_type="order_cancel",
-                entity_id=str(order.orderId),
-                account_id=account_id,
-                event_time=event_time,
-                payload={
-                    "strategy_id": self.config.strategy_id,
-                    "strategy_revision": self.config.strategy_revision,
-                    "ticker": ticker.upper(),
-                    "reason": "replace_protection_with_exit_oca",
-                },
-            )
-            response = await self.broker.cancel_order(account_id, str(order.orderId))
-            self.journal.append(
-                run_id=self.run_id,
-                category="broker",
-                entity_type="order_cancel",
-                entity_id=str(order.orderId),
-                account_id=account_id,
-                event_time=event_time,
-                payload=response,
-            )
+            await self.order_manager.submit_intent(intent, account_id=account_id, event=event)
 
     def _persist_strategy_assignments(self, event_time: datetime) -> None:
         assignments = getattr(self.strategy, "assignments", None)
@@ -350,12 +267,58 @@ class TradingRuntime:
                 )
 
     async def finish(self, status: str = "completed") -> None:
+        tasks = [task for task in (self._broker_stream_task, self._risk_refresh_task) if task]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if self.order_manager is not None:
+            await self.order_manager.close()
         await self.snapshot_portfolios()
         self.journal.append(
             run_id=self.run_id, category="lifecycle", entity_type="run", entity_id=self.run_id,
             event_time=self.last_event_time, payload={"status": status, "processed_events": self.processed_events},
         )
 
+    async def _consume_broker_stream(self) -> None:
+        stream_provider = getattr(self.broker, "stream_broker_messages")
+        while True:
+            try:
+                async for message in stream_provider():
+                    if self.order_manager is not None:
+                        await self.order_manager.on_broker_message(message)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if self.order_manager is not None:
+                    self.order_manager.set_connection_state(False, reason=str(exc))
+                self.journal.append(
+                    run_id=self.run_id,
+                    category="broker",
+                    entity_type="connection_state",
+                    entity_id=self.run_id,
+                    payload={"status": "disconnected", "error": str(exc), "entries_frozen": True},
+                )
+                await asyncio.sleep(1.0)
 
-def _order_entity_id(request: OrderRequest) -> str:
-    return request.cOID or f"{request.parentId or 'standalone'}:{request.orderType}"
+    async def _refresh_live_risk(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(5.0)
+                await self.risk.prime(self.broker, self.config.account_ids)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.journal.append(
+                    run_id=self.run_id,
+                    category="risk",
+                    entity_type="risk_snapshot",
+                    entity_id=self.run_id,
+                    payload={"status": "stale", "error": str(exc), "entries_frozen": True},
+                )
+
+    async def _on_order_group_fill(self, snapshot) -> None:
+        handler = getattr(self.strategy, "on_order_group_update", None)
+        if handler is not None:
+            await handler(snapshot)
+            self._persist_strategy_assignments(snapshot.updated_at)

@@ -449,7 +449,7 @@ class _NoopStrategy:
     automatic = True
 
     async def on_event(self, event, account_id):
-        return []
+        return StrategyEvaluation()
 
 
 class _SignalAwareStrategy(_NoopStrategy):

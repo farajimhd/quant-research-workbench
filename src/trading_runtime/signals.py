@@ -4,7 +4,6 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
-from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.taxonomy import (
     ClockContract,
     EvaluationMode,
@@ -16,7 +15,19 @@ from src.trading_runtime.taxonomy import (
 
 SignalDirection = Literal["bullish", "bearish", "neutral"]
 SignalState = Literal["triggered", "updated", "resolved", "expired"]
-StrategyAction = Literal["enter_long", "add_long", "reduce_long", "take_profit", "exit", "hold", "wait"]
+StrategyAction = Literal[
+    "enter_long",
+    "add_long",
+    "reduce_long",
+    "take_profit",
+    "exit",
+    "enter_short",
+    "add_short",
+    "reduce_short",
+    "cover",
+    "hold",
+    "wait",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,7 +217,15 @@ class StrategyIntent:
     invalidation_price: float | None = None
     profit_target_price: float | None = None
     trailing_amount: float | None = None
-    urgency: Literal["passive_limit", "aggressive_limit", "market"] = "aggressive_limit"
+    urgency: Literal[
+        "passive_limit",
+        "aggressive_limit",
+        "market",
+        "very_urgent",
+        "urgent",
+        "regular",
+        "patient",
+    ] = "aggressive_limit"
     time_in_force: str = "DAY"
     outside_rth: bool = False
     reason: str = ""
@@ -217,7 +236,17 @@ class StrategyIntent:
             raise ValueError("Strategy intent identity and ticker are required")
         if self.quantity < 0:
             raise ValueError("Strategy intent quantity cannot be negative")
-        if self.action in {"enter_long", "add_long", "reduce_long", "take_profit", "exit"} and self.quantity <= 0:
+        if self.action in {
+            "enter_long",
+            "add_long",
+            "reduce_long",
+            "take_profit",
+            "exit",
+            "enter_short",
+            "add_short",
+            "reduce_short",
+            "cover",
+        } and self.quantity <= 0:
             raise ValueError(f"{self.action} requires a positive quantity")
 
     def payload(self) -> dict[str, Any]:
@@ -226,23 +255,25 @@ class StrategyIntent:
 
 @dataclass(frozen=True, slots=True)
 class StrategyEvaluation:
-    """Atomic strategy result: explanations first, broker requests second."""
+    """Atomic strategy result containing decisions and semantic intents only.
+
+    Broker order requests are deliberately absent. Strategies cannot place,
+    modify, or cancel orders; the shared order-management authority exclusively
+    translates these semantic intents into broker commands.
+    """
 
     signals: tuple[StrategySignal, ...] = ()
     intents: tuple[StrategyIntent, ...] = ()
-    orders: tuple[OrderRequest, ...] = ()
 
 
 def normalize_strategy_evaluation(
-    value: StrategyEvaluation | list[OrderRequest] | tuple[OrderRequest, ...] | None,
+    value: StrategyEvaluation | None,
 ) -> StrategyEvaluation:
     if value is None:
         return StrategyEvaluation()
     if isinstance(value, StrategyEvaluation):
         return value
-    if isinstance(value, (list, tuple)) and all(isinstance(item, OrderRequest) for item in value):
-        return StrategyEvaluation(orders=tuple(value))
-    raise TypeError("Strategy must return StrategyEvaluation or a sequence of OrderRequest")
+    raise TypeError("Strategy must return StrategyEvaluation; direct broker orders are forbidden")
 
 
 def _aware_timestamp(value: Any, field_name: str) -> datetime:

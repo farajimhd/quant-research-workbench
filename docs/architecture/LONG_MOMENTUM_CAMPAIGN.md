@@ -2,7 +2,7 @@
 
 ## Boundary
 
-`long-momentum-campaign@1` is the first post-refactor automatic strategy. It is
+`long-momentum-campaign@2` is the current post-refactor automatic strategy. It is
 long only and deterministic. It consumes normalized causal observations; it
 does not calculate a second copy of QMD, Generic Structure, VWAP, MACD, news,
 or market signals.
@@ -14,9 +14,17 @@ The strategy owns:
 - per-assignment strategy state;
 - semantic actions and their causal evidence.
 
-The shared runtime owns risk validation, IBKR-shaped order placement, fills,
-positions, recovery, and journaling. QMD owns reusable market observations.
-Canvas owns presentation and commands, never trading decisions.
+The strategy never receives a broker and cannot emit broker orders. The shared
+order-management engine exclusively owns risk validation, IBKR-shaped order
+placement/modification, fills, positions, recovery, and journaling. QMD owns
+reusable market observations. Canvas owns presentation and semantic assignment
+commands, never trading decisions or broker commands.
+
+Revision 1 remains immutable historical evidence. Revision 2 introduces the
+explicit `patient`, `regular`, `urgent`, and `very_urgent` execution parameters,
+full-position protected profit-pocket modification, and the order-management
+feedback contract. New assignments use revision 2; revision 1 assignments are
+not silently reinterpreted as revision 2.
 
 ## Runtime objects
 
@@ -62,16 +70,20 @@ The parent alone carries `cOID`; each child refers to that value through
 `parentId`. Internal strategy metadata stays in the journal and is never sent
 as an IB Algo `strategy` field or an unknown CPAPI request field.
 
-Adds receive their own protected bracket. Revision 1 profit pockets close the
-full campaign episode through an exit OCA and then allow immediate re-entry;
-it deliberately does not expose an unsafe partial scale-out that could leave
-the remaining position with stale protective quantities. A full exit first
-cancels only protection owned by this strategy revision, then atomically
-submits an aggressive exit, fallback stop, and trailing fallback as one OCA
-group. Re-entry is evaluated only after the prior exit fill is reflected in
-position state. The LULD target is enabled only when an authoritative current
-upper band is available and above price; it is not a guarantee of execution
-before a pause.
+Adds receive their own protected bracket. Revision 2 profit pockets close the
+full campaign episode by modifying its existing target child to the selected
+bounded execution tactic, preserving its stop/trailing siblings without an
+unprotected cancel-replace interval. It deliberately does not expose an unsafe
+partial scale-out that could leave the remaining position with stale
+protective quantities. If no reusable target exists, order management submits
+the planner's standalone protected exit group. Re-entry is evaluated only
+after the prior exit fill is broker-confirmed. The LULD target is enabled only
+when an authoritative current upper band is available and above price; it is
+not a guarantee of execution before a pause.
+
+Execution tactics, warning policy, shortability gates, latency measurement,
+failure handling, and paper/live deployment gates are documented in
+[IBKR Order Management](IBKR_ORDER_MANAGEMENT.md).
 
 ## Persistence and Canvas
 

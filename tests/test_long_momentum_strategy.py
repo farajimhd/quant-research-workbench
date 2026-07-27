@@ -171,7 +171,8 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(result.evaluation.signals[0].action, "exit")
         self.assertEqual(result.evaluation.signals[0].reason, "profit_pocket")
         self.assertEqual(result.evaluation.intents[0].quantity, 100)
-        self.assertEqual(result.status, AssignmentStatus.REENTRY_COOLDOWN)
+        self.assertEqual(result.status, AssignmentStatus.EXIT_PENDING)
+        self.assertTrue(result.evaluation.intents[0].metadata["buy_back"])
 
     def test_reentry_cooldown_is_deterministic(self) -> None:
         parameters = default_long_momentum_parameters()
@@ -323,6 +324,7 @@ class LongMomentumServiceTests(unittest.TestCase):
                 canvas = trading_runtime_service.strategy_canvas_payload(as_of=NOW, ticker="AAPL")
                 self.assertEqual(canvas["historical_source"], "saved_strategy_journal_only")
                 self.assertEqual(len(canvas["signals"]), 1)
+                self.assertEqual(canvas["order_management"], [])
             finally:
                 journal = trading_runtime_service.trading_journal()
                 journal.close()

@@ -32,6 +32,7 @@ from src.trading_runtime.ibkr_schema import (
     OrderStatus,
     PortfolioPosition,
 )
+from src.trading_runtime.order_management import ShortabilitySnapshot
 
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -117,6 +118,8 @@ class SimulatedBrokerAdapter:
     does not emulate IBKR transport/session failure; those belong to live
     integration tests, while market and order semantics belong here.
     """
+
+    requires_fresh_execution_state = False
 
     def __init__(self, account_ids: list[str], config: SimulationConfig | None = None, *, mode: TradingMode = TradingMode.REPLAY) -> None:
         if not account_ids or any(not item.strip() for item in account_ids):
@@ -237,6 +240,19 @@ class SimulatedBrokerAdapter:
 
     async def reply(self, reply_id: str, confirmed: bool) -> list[dict[str, Any]]:
         raise ValueError(f"Simulated orders do not generate IBKR precautionary reply {reply_id}")
+
+    async def suppress_order_replies(self, message_ids: list[str]) -> dict[str, Any]:
+        return {"status": "submitted", "messageIds": list(dict.fromkeys(message_ids))}
+
+    async def shortability(self, conid: int) -> ShortabilitySnapshot:
+        self._require_initialized()
+        return ShortabilitySnapshot(
+            conid=conid,
+            available_shares=1_000_000.0,
+            classification="easy_to_borrow",
+            observed_at=datetime.now(timezone.utc),
+            raw={"7636": 1_000_000.0, "7644": "easy_to_borrow"},
+        )
 
     async def modify_order(self, account_id: str, order_id: str, order: OrderRequest) -> list[dict[str, Any]]:
         self._require_account(account_id)

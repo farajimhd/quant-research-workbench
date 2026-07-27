@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
+import queue
 import ssl
-import urllib.error
 import urllib.parse
-import urllib.request
 from datetime import datetime, timezone
 from typing import Any
+
+import websockets
 
 from src.market_engine.events import MarketEvent
 from src.trading_runtime.domain import AccountValue as CanonicalAccountValue
@@ -20,6 +22,7 @@ from src.trading_runtime.domain import SnapshotManifest
 from src.trading_runtime.domain import BrokerEventEnvelope, BrokerEventType, BrokerProvider, OrderIntent, TradingMode
 from src.trading_runtime.canonical_commands import intent_to_ibkr_request, lifecycle_event, response_events
 from src.trading_runtime.ibkr_schema import AccountLedger, AccountSummary, Execution, LiveOrder, OrderRequest, OrderStatus, PortfolioPosition
+from src.trading_runtime.order_management import ShortabilitySnapshot
 from src.trading_runtime.ibkr_normalizer import (
     normalize_account_values,
     normalize_accounts,
@@ -39,20 +42,25 @@ class IbkrClientPortalAdapter:
     warning response.
     """
 
+    requires_fresh_execution_state = True
+
     def __init__(
         self,
         base_url: str,
         *,
         timeout: float = 10.0,
         verify_tls: bool = False,
-        auto_confirm_warnings: bool = False,
         mode: TradingMode = TradingMode.PAPER,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.verify_tls = verify_tls
-        self.auto_confirm_warnings = auto_confirm_warnings
         self.mode = mode
+        self._transport = _PersistentJsonTransport(
+            self.base_url,
+            timeout=timeout,
+            verify_tls=verify_tls,
+        )
         self._order_lane = asyncio.Lock()
         self._account_ids: list[str] = []
         self._portfolio_accounts_payload: Any = []
@@ -101,8 +109,6 @@ class IbkrClientPortalAdapter:
                 f"/iserver/account/{_quote(account_id)}/orders",
                 {"orders": [order.to_cpapi() for order in orders]},
             )
-            if self.auto_confirm_warnings:
-                response = await self._confirm_warning_chain_locked(response)
             return _rows(response)
 
     async def submit_intents(self, account_id: str, intents: list[OrderIntent]) -> list[BrokerEventEnvelope]:
@@ -123,6 +129,64 @@ class IbkrClientPortalAdapter:
         async with self._order_lane:
             return _rows(await self._request("POST", f"/iserver/reply/{_quote(reply_id)}", {"confirmed": confirmed}))
 
+    async def suppress_order_replies(self, message_ids: list[str]) -> dict[str, Any]:
+        if not message_ids:
+            raise ValueError("message_ids cannot be empty")
+        response = await self._request(
+            "POST",
+            "/iserver/questions/suppress",
+            {"messageIds": list(dict.fromkeys(str(item) for item in message_ids if str(item)))},
+        )
+        return response if isinstance(response, dict) else {"response": response}
+
+    async def shortability(self, conid: int) -> ShortabilitySnapshot:
+        if conid <= 0:
+            raise ValueError("conid must be positive")
+        path = f"/iserver/marketdata/snapshot?conids={conid}&fields=7636,7644"
+        rows = _rows(await self._request("GET", path))
+        row = next((item for item in rows if int(_number(item, "conid")) == conid), rows[0] if rows else {})
+        available = _number(row, "7636")
+        classification = str(row.get("7644") or "")
+        return ShortabilitySnapshot(
+            conid=conid,
+            available_shares=available,
+            classification=classification,
+            observed_at=datetime.now(timezone.utc),
+            raw=row,
+        )
+
+    async def stream_broker_messages(self):
+        """Yield unsolicited IBKR order, trade, session, and account messages."""
+        tickle = await self._request("POST", "/tickle", {})
+        session = str(tickle.get("session") or "") if isinstance(tickle, dict) else ""
+        if not session:
+            raise RuntimeError("IBKR /tickle did not return a websocket session token")
+        parsed = urllib.parse.urlsplit(self.base_url)
+        websocket_scheme = "wss" if parsed.scheme == "https" else "ws"
+        websocket_url = urllib.parse.urlunsplit(
+            (websocket_scheme, parsed.netloc, f"{parsed.path.rstrip('/')}/ws", "", "")
+        )
+        websocket_ssl = self._transport.context if websocket_scheme == "wss" else None
+        cookie_value = json.dumps({"session": session}, separators=(",", ":"))
+        async with websockets.connect(
+            websocket_url,
+            additional_headers={"Cookie": f"api={cookie_value}"},
+            origin="https://localhost:5000",
+            ssl=websocket_ssl,
+            ping_interval=20,
+            ping_timeout=10,
+            max_queue=1_024,
+        ) as socket:
+            async for raw in socket:
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8", errors="replace")
+                try:
+                    payload = json.loads(raw)
+                except json.JSONDecodeError:
+                    payload = {"topic": "system", "result": {"message": str(raw)}}
+                if isinstance(payload, dict):
+                    yield payload
+
     async def modify_order(self, account_id: str, order_id: str, order: OrderRequest) -> list[dict[str, Any]]:
         self._require_account_orders(account_id, [order])
         async with self._order_lane:
@@ -131,16 +195,12 @@ class IbkrClientPortalAdapter:
                 f"/iserver/account/{_quote(account_id)}/order/{_quote(order_id)}",
                 order.to_cpapi(),
             )
-            if self.auto_confirm_warnings:
-                response = await self._confirm_warning_chain_locked(response)
             return _rows(response)
 
     async def cancel_order(self, account_id: str, order_id: str) -> dict[str, Any]:
         self._require_known_account(account_id)
         async with self._order_lane:
             response = await self._request("DELETE", f"/iserver/account/{_quote(account_id)}/order/{_quote(order_id)}")
-            if self.auto_confirm_warnings:
-                response = await self._confirm_warning_chain_locked(response)
             rows = _rows(response)
             return rows[-1] if rows else {}
 
@@ -218,39 +278,16 @@ class IbkrClientPortalAdapter:
     async def expire_day_orders(self, account_id: str, at: datetime) -> list[LiveOrder]:
         return []
 
-    async def _confirm_warning_chain_locked(self, response: Any) -> Any:
-        current = response
-        seen: set[str] = set()
-        while True:
-            reply_ids = [str(row["id"]) for row in _rows(current) if row.get("id") and row.get("message")]
-            if not reply_ids:
-                return current
-            if len(reply_ids) != 1 or reply_ids[0] in seen:
-                raise RuntimeError("IBKR returned an ambiguous or repeated warning-reply chain")
-            reply_id = reply_ids[0]
-            seen.add(reply_id)
-            current = await self._request("POST", f"/iserver/reply/{_quote(reply_id)}", {"confirmed": True})
-
     async def _request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
         return await asyncio.to_thread(self._request_sync, method, path, payload)
 
     def _request_sync(self, method: str, path: str, payload: dict[str, Any] | None) -> Any:
-        body = json.dumps(payload).encode("utf-8") if payload is not None else None
-        request = urllib.request.Request(
-            f"{self.base_url}{path}",
-            data=body,
-            method=method,
-            headers={"Accept": "application/json", "Content-Type": "application/json"},
-        )
-        context = None if self.verify_tls else ssl._create_unverified_context()
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout, context=context) as response:
-                text = response.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"IBKR {method} {path} failed with HTTP {exc.code}: {detail[:1000]}") from exc
-        except urllib.error.URLError as exc:
-            raise RuntimeError(f"IBKR {method} {path} failed: {exc.reason}") from exc
+            status, text = self._transport.request(method, path, payload)
+        except (OSError, http.client.HTTPException) as exc:
+            raise RuntimeError(f"IBKR {method} {path} failed: {exc}") from exc
+        if status >= 400:
+            raise RuntimeError(f"IBKR {method} {path} failed with HTTP {status}: {text[:1000]}")
         return json.loads(text) if text.strip() else {}
 
     def _require_account_orders(self, account_id: str, orders: list[OrderRequest]) -> None:
@@ -268,6 +305,84 @@ class IbkrClientPortalAdapter:
 
 def _quote(value: str) -> str:
     return urllib.parse.quote(str(value), safe="")
+
+
+class _PersistentJsonTransport:
+    """Small bounded keep-alive pool for the latency-sensitive local gateway."""
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout: float,
+        verify_tls: bool,
+        pool_size: int = 4,
+    ) -> None:
+        parsed = urllib.parse.urlsplit(base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("IBKR base_url must be an http(s) URL")
+        self.scheme = parsed.scheme
+        self.host = parsed.hostname
+        self.port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        self.base_path = parsed.path.rstrip("/")
+        self.timeout = timeout
+        self.context = (
+            ssl.create_default_context()
+            if verify_tls
+            else ssl._create_unverified_context()
+        )
+        self._pool: queue.LifoQueue[http.client.HTTPConnection] = queue.LifoQueue(
+            maxsize=max(1, pool_size)
+        )
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None,
+    ) -> tuple[int, str]:
+        connection = self._acquire()
+        reusable = False
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8") if payload is not None else None
+        try:
+            connection.request(
+                method,
+                f"{self.base_path}{path}",
+                body=body,
+                headers={
+                    "Accept": "application/json",
+                    "Connection": "keep-alive",
+                    "Content-Type": "application/json",
+                },
+            )
+            response = connection.getresponse()
+            text = response.read().decode("utf-8", errors="replace")
+            reusable = not response.will_close
+            return response.status, text
+        finally:
+            if reusable:
+                self._release(connection)
+            else:
+                connection.close()
+
+    def _acquire(self) -> http.client.HTTPConnection:
+        try:
+            return self._pool.get_nowait()
+        except queue.Empty:
+            if self.scheme == "https":
+                return http.client.HTTPSConnection(
+                    self.host,
+                    self.port,
+                    timeout=self.timeout,
+                    context=self.context,
+                )
+            return http.client.HTTPConnection(self.host, self.port, timeout=self.timeout)
+
+    def _release(self, connection: http.client.HTTPConnection) -> None:
+        try:
+            self._pool.put_nowait(connection)
+        except queue.Full:
+            connection.close()
 
 
 def _rows(payload: Any) -> list[dict[str, Any]]:

@@ -306,7 +306,31 @@ def strategy_canvas_payload(*, as_of: datetime, ticker: str) -> dict[str, Any]:
             }
         )
     assignments = trading_journal().strategy_assignments(ticker=ticker)
-    active = next((row for row in assignments if row["status"] not in {"disabled", "completed", "error"}), None)
+    order_management = [
+        {
+            **record.payload,
+            "category": record.category,
+            "entity_type": record.entity_type,
+            "entity_id": record.entity_id,
+            "event_time": record.event_time.isoformat(),
+            "recorded_at": record.recorded_at.isoformat(),
+        }
+        for record in trading_journal().order_management_records(
+            ticker=ticker,
+            strategy_id=STRATEGY_ID,
+            as_of=as_of,
+            limit=1000,
+        )
+    ]
+    active = next(
+        (
+            row
+            for row in assignments
+            if int(row["strategy_revision"]) == STRATEGY_REVISION
+            and row["status"] not in {"disabled", "completed", "error"}
+        ),
+        None,
+    )
     return {
         "fixture": False,
         "strategy_id": definition["strategy_id"],
@@ -318,6 +342,7 @@ def strategy_canvas_payload(*, as_of: datetime, ticker: str) -> dict[str, Any]:
         "assignment": active,
         "assignments": assignments,
         "signals": decisions,
+        "order_management": order_management,
         "taxonomy": definition.get("taxonomy"),
         "historical_source": "saved_strategy_journal_only",
     }

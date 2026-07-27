@@ -11,13 +11,14 @@ from src.market_engine.events import MarketEvent
 
 
 STRATEGY_ID = "long-momentum-campaign"
-STRATEGY_REVISION = 1
+STRATEGY_REVISION = 2
 
 
 class AssignmentStatus(StrEnum):
     DISABLED = "disabled"
     WATCHING = "watching"
     ENTRY_PENDING = "entry_pending"
+    EXIT_PENDING = "exit_pending"
     MANAGING = "managing"
     REENTRY_COOLDOWN = "reentry_cooldown"
     PAUSED = "paused"
@@ -149,6 +150,8 @@ def long_momentum_strategy_definition() -> dict[str, Any]:
                 "profit_pocket.trigger": ["acceleration_slowdown", "favorable_move_pct", "volatility_multiple"],
                 "profit_pocket.quantity_fraction": [1.0],
                 "reentry.cooldown_ms": [0, 500, 1000, 5000, 30000],
+                "execution.entry_urgency": ["patient", "regular", "urgent", "very_urgent"],
+                "execution.exit_urgency": ["urgent", "very_urgent"],
             },
             "taxonomy": {
                 "schema_version": 2,
@@ -233,9 +236,10 @@ def default_long_momentum_parameters() -> dict[str, Any]:
             "exit_on_failed_breakout": True,
         },
         "execution": {
-            "entry_urgency": "aggressive_limit",
-            "exit_urgency": "aggressive_limit",
+            "entry_urgency": "urgent",
+            "exit_urgency": "very_urgent",
             "limit_offset_bps": 5.0,
+            "tick_size": 0.01,
             "time_in_force": "DAY",
             "outside_rth": False,
         },
@@ -261,15 +265,26 @@ def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) ->
     if not 0 < float(sizing["add_fraction"]) <= 1:
         raise ValueError("Add fraction must be between 0 and 1")
     if float(parameters["profit_pocket"]["quantity_fraction"]) != 1:
-        raise ValueError("Revision 1 profit pockets must close the full position before re-entry")
+        raise ValueError("Revision 2 profit pockets must close the full position before re-entry")
     if parameters["profit_pocket"]["trigger"] not in {"acceleration_slowdown", "favorable_move_pct", "volatility_multiple"}:
         raise ValueError("Unsupported profit-pocket trigger")
     if int(parameters["reentry"]["cooldown_ms"]) < 0 or int(parameters["reentry"]["maximum_attempts"]) < 0:
         raise ValueError("Re-entry cooldown and maximum attempts cannot be negative")
-    if parameters["execution"]["entry_urgency"] not in {"passive_limit", "aggressive_limit", "market"}:
+    supported_urgencies = {
+        "passive_limit",
+        "aggressive_limit",
+        "market",
+        "patient",
+        "regular",
+        "urgent",
+        "very_urgent",
+    }
+    if parameters["execution"]["entry_urgency"] not in supported_urgencies:
         raise ValueError("Unsupported entry urgency")
-    if parameters["execution"]["exit_urgency"] not in {"passive_limit", "aggressive_limit", "market"}:
+    if parameters["execution"]["exit_urgency"] not in supported_urgencies:
         raise ValueError("Unsupported exit urgency")
+    if float(parameters["execution"]["tick_size"]) <= 0:
+        raise ValueError("Execution tick size must be positive")
     if parameters["execution"]["time_in_force"] not in {"DAY", "GTC", "IOC", "OPG"}:
         raise ValueError("Unsupported strategy time in force")
     return parameters
@@ -503,15 +518,19 @@ class LongMomentumStrategyEngine:
             state["last_profit_take_at"] = observation.observed_at.isoformat()
             state["last_exit_reason"] = "profit_pocket"
             state["last_exit_at"] = observation.observed_at.isoformat()
-            state["reentries"] = int(state.get("reentries") or 0) + 1
-            next_status = AssignmentStatus.COMPLETED if state.get("disable_after_exit") or not assignment.permissions.reenter else AssignmentStatus.REENTRY_COOLDOWN
             return self._result(
                 assignment, observation, "exit", "profit_pocket",
                 max(0.0, observation.qmd_score), _confirmation_confidence(observation),
-                state, next_status, quantity=pocket_qty,
+                state, AssignmentStatus.EXIT_PENDING, quantity=pocket_qty,
                 invalidation_price=stop,
                 trailing_amount=_trailing_amount(observation, parameters),
-                metadata={"gain_pct": gain_pct},
+                metadata={
+                    "gain_pct": gain_pct,
+                    "buy_back": bool(
+                        assignment.permissions.reenter
+                        and not state.get("disable_after_exit")
+                    ),
+                },
             )
 
         return self._result(
@@ -572,11 +591,21 @@ class LongMomentumStrategyEngine:
                     invalidation_price=invalidation_price,
                     profit_target_price=profit_target_price,
                     trailing_amount=trailing_amount,
-                    urgency=str(assignment.parameters.get("execution", {}).get("entry_urgency") or "aggressive_limit") if action in {"enter_long", "add_long"} else str(assignment.parameters.get("execution", {}).get("exit_urgency") or "aggressive_limit"),  # type: ignore[arg-type]
+                    urgency=str(assignment.parameters.get("execution", {}).get("entry_urgency") or "urgent") if action in {"enter_long", "add_long"} else str(assignment.parameters.get("execution", {}).get("exit_urgency") or "very_urgent"),  # type: ignore[arg-type]
                     time_in_force=str(assignment.parameters.get("execution", {}).get("time_in_force") or "DAY"),
                     outside_rth=bool(assignment.parameters.get("execution", {}).get("outside_rth", False)),
                     reason=reason,
-                    metadata={"assignment_id": assignment.assignment_id, **(metadata or {})},
+                    metadata={
+                        "assignment_id": assignment.assignment_id,
+                        "bid": observation.bid,
+                        "ask": observation.ask,
+                        "quote_observed_at": observation.observed_at.isoformat(),
+                        "tick_size": float(
+                            assignment.parameters.get("execution", {}).get("tick_size") or 0.01
+                        ),
+                        "position_quantity": observation.position_quantity,
+                        **(metadata or {}),
+                    },
                 ),
             )
         payload = {
@@ -648,6 +677,42 @@ class AssignedLongMomentumStrategy:
 
     def assignments(self) -> tuple[StrategyAssignment, ...]:
         return tuple(self._assignments.values())
+
+    async def on_order_group_update(self, snapshot: Any) -> None:
+        assignment_id = str(getattr(snapshot, "assignment_id", "") or "")
+        if not assignment_id or str(getattr(snapshot, "state", "")) != "filled":
+            return
+        for key, assignment in self._assignments.items():
+            if assignment.assignment_id != assignment_id:
+                continue
+            state = dict(assignment.state)
+            action = str(getattr(snapshot, "action", ""))
+            if action in {"enter_long", "add_long"}:
+                status = AssignmentStatus.MANAGING
+            elif action in {"exit", "take_profit"}:
+                if bool(getattr(snapshot, "reentry_after_fill", False)):
+                    state["reentries"] = int(state.get("reentries") or 0) + 1
+                    status = AssignmentStatus.REENTRY_COOLDOWN
+                else:
+                    status = AssignmentStatus.COMPLETED
+            else:
+                return
+            self._assignments[key] = StrategyAssignment(
+                assignment_id=assignment.assignment_id,
+                strategy_id=assignment.strategy_id,
+                strategy_revision=assignment.strategy_revision,
+                account_id=assignment.account_id,
+                ticker=assignment.ticker,
+                conid=assignment.conid,
+                status=status,
+                permissions=assignment.permissions,
+                parameters=assignment.parameters,
+                state=state,
+                source=assignment.source,
+                created_at=assignment.created_at,
+                updated_at=getattr(snapshot, "updated_at", datetime.now(timezone.utc)),
+            )
+            return
 
 
 def _entry_reference(observation: StrategyObservation, name: str) -> float | None:

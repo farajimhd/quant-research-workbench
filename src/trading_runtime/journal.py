@@ -295,6 +295,35 @@ class TradingJournal:
         ).fetchall()
         return [_record(row) for row in reversed(rows)]
 
+    def order_management_records(
+        self,
+        *,
+        ticker: str = "",
+        strategy_id: str = "",
+        as_of: datetime | None = None,
+        limit: int = 2000,
+    ) -> list[JournalRecord]:
+        clauses = [
+            "category IN ('order_management', 'broker_policy', 'broker', 'command', 'execution', 'risk')"
+        ]
+        values: list[Any] = []
+        if ticker:
+            clauses.append("upper(json_extract(payload_json, '$.ticker')) = ?")
+            values.append(ticker.upper())
+        if strategy_id:
+            clauses.append("json_extract(payload_json, '$.strategy_id') = ?")
+            values.append(strategy_id)
+        if as_of is not None:
+            clauses.append("event_time <= ?")
+            values.append(as_of.astimezone(timezone.utc).isoformat())
+        values.append(max(1, min(int(limit), 50_000)))
+        rows = self._connection.execute(
+            f"SELECT * FROM journal WHERE {' AND '.join(clauses)} "
+            "ORDER BY event_time DESC, recorded_at DESC LIMIT ?",
+            values,
+        ).fetchall()
+        return [_record(row) for row in reversed(rows)]
+
     def records(self, run_id: str, *, after_sequence: int = 0) -> list[JournalRecord]:
         rows = self._connection.execute(
             "SELECT * FROM journal WHERE run_id = ? AND sequence > ? ORDER BY sequence",

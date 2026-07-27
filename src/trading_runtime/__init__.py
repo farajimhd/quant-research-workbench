@@ -13,6 +13,16 @@ from src.trading_runtime.ibkr_schema import (
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, SimulationConfig
 from src.trading_runtime.canonical_broker import CanonicalBrokerAdapter
 from src.trading_runtime.canonical_session import CanonicalBrokerSession
+from src.trading_runtime.order_management import (
+    BrokerCommunicationPolicy,
+    ExecutionQuote,
+    ExecutionTactic,
+    ExecutionUrgency,
+    OrderGroupSnapshot,
+    OrderManagementEngine,
+    OrderManagementState,
+    ShortabilitySnapshot,
+)
 from src.trading_runtime.domain import (
     AccountValue,
     BrokerAccount,
@@ -37,6 +47,14 @@ __all__ = [
     "BrokerAdapter",
     "CanonicalBrokerAdapter",
     "CanonicalBrokerSession",
+    "BrokerCommunicationPolicy",
+    "ExecutionQuote",
+    "ExecutionTactic",
+    "ExecutionUrgency",
+    "OrderGroupSnapshot",
+    "OrderManagementEngine",
+    "OrderManagementState",
+    "ShortabilitySnapshot",
     "BrokerAccount",
     "BrokerEventEnvelope",
     "BrokerEventType",

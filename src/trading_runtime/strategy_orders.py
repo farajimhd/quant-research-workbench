@@ -34,24 +34,26 @@ class IbkrStrategyOrderPlanner:
         if quantity <= 0:
             raise ValueError("Order planning requires a positive quantity")
         prefix = f"{strategy_id[:14]}-v{strategy_revision}-{uuid4().hex[:12]}"
+        position_side = str(intent.metadata.get("position_side") or "long").lower()
         if intent.action == "exit":
-            price = _aggressive_limit(intent.reference_price, "SELL", limit_offset_bps)
+            side = "BUY" if position_side == "short" else "SELL"
+            price = _aggressive_limit(intent.reference_price, side, limit_offset_bps)
             if intent.invalidation_price is None or intent.invalidation_price <= 0:
                 raise ValueError("Full exit requires a broker-held fallback stop")
             orders = [
                 _order(
-                    account_id, instrument, f"{prefix}-exit", "SELL", "LMT", quantity,
+                    account_id, instrument, f"{prefix}-exit", side, "LMT", quantity,
                     intent, price=price, grouped=True,
                 ),
                 _order(
-                    account_id, instrument, f"{prefix}-fallback-stop", "SELL", "STP", quantity,
+                    account_id, instrument, f"{prefix}-fallback-stop", side, "STP", quantity,
                     intent, stop=intent.invalidation_price, grouped=True,
                 ),
             ]
             if intent.trailing_amount is not None and intent.trailing_amount > 0:
                 orders.append(
                     _order(
-                        account_id, instrument, f"{prefix}-fallback-trail", "SELL", "TRAIL", quantity,
+                        account_id, instrument, f"{prefix}-fallback-trail", side, "TRAIL", quantity,
                         intent, trailing=intent.trailing_amount, grouped=True,
                     )
                 )
@@ -70,31 +72,63 @@ class IbkrStrategyOrderPlanner:
                 ),
                 protection_reconciliation_required=True,
             )
-        if intent.action not in {"enter_long", "add_long"}:
+        if intent.action in {"reduce_short", "cover"}:
+            price = _aggressive_limit(intent.reference_price, "BUY", limit_offset_bps)
+            return StrategyOrderPlan(
+                orders=(
+                    _order(
+                        account_id, instrument, f"{prefix}-cover", "BUY", "LMT", quantity,
+                        intent, price=price,
+                    ),
+                ),
+                protection_reconciliation_required=True,
+            )
+        if intent.action not in {"enter_long", "add_long", "enter_short", "add_short"}:
             return StrategyOrderPlan(())
 
-        entry_type = "MKT" if intent.urgency == "market" else "LMT"
-        entry_price = None if entry_type == "MKT" else _aggressive_limit(intent.reference_price, "BUY", limit_offset_bps)
+        short_entry = intent.action in {"enter_short", "add_short"}
+        entry_side = "SELL" if short_entry else "BUY"
+        exit_side = "BUY" if short_entry else "SELL"
+        # Even "market" urgency is implemented as a bounded marketable limit by
+        # the order manager, preserving price protection in volatile names.
+        entry_type = "LMT"
+        entry_price = _aggressive_limit(intent.reference_price, entry_side, limit_offset_bps)
         parent = _order(
-            account_id, instrument, f"{prefix}-entry", "BUY", entry_type, quantity,
+            account_id, instrument, f"{prefix}-entry", entry_side, entry_type, quantity,
             intent, price=entry_price, grouped=True,
         )
-        if intent.action == "add_long":
+        if intent.action in {"add_long", "add_short"}:
             return StrategyOrderPlan((parent,), protection_reconciliation_required=True)
 
         children: list[OrderRequest] = []
-        if intent.profit_target_price is not None and intent.profit_target_price > intent.reference_price:
+        valid_target = (
+            intent.profit_target_price is not None
+            and (
+                intent.profit_target_price < intent.reference_price
+                if short_entry
+                else intent.profit_target_price > intent.reference_price
+            )
+        )
+        if valid_target:
             children.append(
                 _order(
-                    account_id, instrument, None, "SELL", "LMT", quantity,
+                    account_id, instrument, None, exit_side, "LMT", quantity,
                     intent, parent_id=parent.cOID, price=intent.profit_target_price,
                     grouped=True,
                 )
             )
-        if intent.invalidation_price is not None and intent.invalidation_price < intent.reference_price:
+        valid_stop = (
+            intent.invalidation_price is not None
+            and (
+                intent.invalidation_price > intent.reference_price
+                if short_entry
+                else intent.invalidation_price < intent.reference_price
+            )
+        )
+        if valid_stop:
             children.append(
                 _order(
-                    account_id, instrument, None, "SELL", "STP", quantity,
+                    account_id, instrument, None, exit_side, "STP", quantity,
                     intent, parent_id=parent.cOID, stop=intent.invalidation_price,
                     grouped=True,
                 )
@@ -102,7 +136,7 @@ class IbkrStrategyOrderPlanner:
         if intent.trailing_amount is not None and intent.trailing_amount > 0:
             children.append(
                 _order(
-                    account_id, instrument, None, "SELL", "TRAIL", quantity,
+                    account_id, instrument, None, exit_side, "TRAIL", quantity,
                     intent, parent_id=parent.cOID, trailing=intent.trailing_amount,
                     grouped=True,
                 )
@@ -135,19 +169,17 @@ class RuntimeIbkrStrategyOrderPlanner:
         intent: StrategyIntent,
         account_id: str,
         event: MarketEvent | None,
-    ) -> list[OrderRequest]:
+    ) -> StrategyOrderPlan:
         instrument = self.instruments.get(intent.ticker.upper())
         if instrument is None:
             raise ValueError(f"No point-in-time instrument contract for strategy ticker: {intent.ticker}")
-        return list(
-            self._planner.plan(
-                account_id=account_id,
-                instrument=instrument,
-                intent=intent,
-                strategy_id=self.strategy_id,
-                strategy_revision=self.strategy_revision,
-                limit_offset_bps=self.limit_offset_bps,
-            ).orders
+        return self._planner.plan(
+            account_id=account_id,
+            instrument=instrument,
+            intent=intent,
+            strategy_id=self.strategy_id,
+            strategy_revision=self.strategy_revision,
+            limit_offset_bps=self.limit_offset_bps,
         )
 
     def should_cancel_strategy_protection(self, intent: StrategyIntent) -> bool:

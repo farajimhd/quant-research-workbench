@@ -174,6 +174,7 @@ type CanvasPreview = {
     fixture?: boolean;
     revision: number;
     signals: PreviewRow[];
+    order_management?: PreviewRow[];
     state: string;
     strategy_id: string;
     name?: string;
@@ -3471,6 +3472,7 @@ function StrategyPreview({ data, showSignals }: { data: CanvasPreview["strategy"
     <section className="strategy-definition-section"><header><strong>Evidence contract</strong><span>Each input keeps its own timeframe, role, freshness, score, and confidence requirements.</span></header><PreviewTable columns={["input_kind", "key", "timeframe", "role", "maximum_age_ms", "weight", "minimum_score", "minimum_confidence"]} rows={inputs} /></section>
     <section className="strategy-definition-grid"><div><header><strong>Resolved revision</strong><span>Exact values used by replay and live</span></header><PreviewTable columns={["parameter", "value"]} rows={parameters} /></div><div><header><strong>Hyperparameter space</strong><span>Candidate values; never passed unresolved to live execution</span></header><PreviewTable columns={["parameter", "value"]} rows={searchSpace} /></div></section>
     {showSignals ? <section className="strategy-definition-section"><header><strong>Saved decisions</strong><span>Only durable records at or before the Canvas clock are drawn on charts.</span></header><PreviewTable columns={["effective_at", "ticker", "action", "reason", "score", "confidence", "reference_price", "invalidation_price"]} rows={data.signals} /></section> : null}
+    <section className="strategy-definition-section"><header><strong>Order management</strong><span>Durable broker commands, policy decisions, state transitions, and measured local submission latency.</span></header><PreviewTable columns={["event_time", "state", "event", "action", "entity_type", "decision_to_submit_ms", "message_ids", "confirmed", "rejection_reason"]} rows={data.order_management ?? []} /></section>
   </div>;
 }
 
