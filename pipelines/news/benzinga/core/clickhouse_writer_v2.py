@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from typing import Any, Iterable
@@ -270,13 +271,14 @@ def write_many_news_pipeline_results_v2(
             for table, columns, rows in products
         ]
         for table, columns, batches in planned:
-            for batch in batches:
+            for batch_index, batch in enumerate(batches, start=1):
                 insert_json_each_row(
                     client,
                     config.database,
                     table,
                     columns,
                     batch.rows,
+                    query_id=v2_batch_query_id(table, batch_index, batch.rows),
                 )
     return NewsBatchWriteSummary(
         status="written" if config.execute else "dry_run",
@@ -313,8 +315,15 @@ def insert_v2_json_each_row_bounded(
             max_row_bytes=max_row_bytes,
         )
     )
-    for batch in batches:
-        insert_json_each_row(client, database, table, columns, batch.rows)
+    for batch_index, batch in enumerate(batches, start=1):
+        insert_json_each_row(
+            client,
+            database,
+            table,
+            columns,
+            batch.rows,
+            query_id=v2_batch_query_id(table, batch_index, batch.rows),
+        )
 
 
 def json_each_row_batches(
@@ -386,3 +395,24 @@ def safe_product_identity(row: dict[str, Any]) -> str:
         for field in fields
         if row.get(field) not in (None, "")
     ) or "unavailable"
+
+
+def v2_batch_query_id(
+    table: str,
+    batch_index: int,
+    rows: list[dict[str, Any]],
+) -> str:
+    """Bind one v2 write identity to its exact untruncated JSON rows."""
+    digest = hashlib.sha256()
+    for row in rows:
+        digest.update(
+            json.dumps(
+                row,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        )
+        digest.update(b"\n")
+    safe_table = "".join(character if character.isalnum() else "_" for character in table)
+    return f"news_v2_{safe_table}_{batch_index}_{digest.hexdigest()[:24]}"

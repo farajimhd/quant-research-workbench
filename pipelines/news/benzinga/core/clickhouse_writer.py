@@ -450,12 +450,23 @@ def assert_columns(client: ClickHouseHttpClient, database: str, table: str, requ
         raise RuntimeError(f"{database}.{table} missing required columns: {missing}")
 
 
-def insert_json_each_row(client: ClickHouseHttpClient, database: str, table: str, columns: list[str], rows: list[dict[str, Any]]) -> None:
+def insert_json_each_row(
+    client: ClickHouseHttpClient,
+    database: str,
+    table: str,
+    columns: list[str],
+    rows: list[dict[str, Any]],
+    *,
+    query_id: str | None = None,
+) -> None:
     if not rows:
         return
     body = "\n".join(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) for row in rows)
     column_sql = ", ".join(quote_ident(column) for column in columns)
-    client.execute(f"INSERT INTO {table_name(database, table)} ({column_sql}) FORMAT JSONEachRow\n{body}")
+    client.execute(
+        f"INSERT INTO {table_name(database, table)} ({column_sql}) FORMAT JSONEachRow\n{body}",
+        query_id=query_id,
+    )
 
 
 def table_name(database: str, table: str) -> str:

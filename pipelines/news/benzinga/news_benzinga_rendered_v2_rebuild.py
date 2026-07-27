@@ -29,6 +29,7 @@ from pipelines.news.benzinga.core.clickhouse_writer_v2 import (
     NewsV2TargetConfig,
     create_v2_tables,
     json_each_row_batches,
+    v2_batch_query_id,
 )
 from pipelines.news.benzinga.news_benzinga_render_v2 import (
     NEWS_RENDERER_VERSION,
@@ -40,7 +41,7 @@ from pipelines.news.benzinga.news_benzinga_url_policy import (
     default_clickhouse_url,
     default_clickhouse_user,
 )
-from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident
+from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_string
 from research.mlops.env import discover_env_files, load_env_files
 
 
@@ -89,6 +90,13 @@ class RetryingClickHouseHttpClient(ClickHouseHttpClient):
             user,
             password,
             timeout_seconds=request_timeout_seconds,
+            persistent=True,
+            default_query_params={
+                # Renderer writes are authoritative data products. Require the
+                # server to complete each INSERT before acknowledging it.
+                "async_insert": 0,
+                "wait_end_of_query": 1,
+            },
         )
         self.attempts = max(1, int(attempts))
         self.retry_base_seconds = max(0.0, float(retry_base_seconds))
@@ -110,6 +118,7 @@ class RetryingClickHouseHttpClient(ClickHouseHttpClient):
                 "rows",
                 "body_bytes",
                 "max_row_bytes",
+                "query_id",
             }
         }
         try:
@@ -125,12 +134,48 @@ class RetryingClickHouseHttpClient(ClickHouseHttpClient):
             except Exception as exc:
                 if not is_transient_clickhouse_error(exc) or attempt >= self.attempts:
                     raise
+                if query_id and operation.startswith("insert:"):
+                    try:
+                        reconciled = self._reconcile_insert(query_id)
+                    except Exception as reconcile_exc:
+                        if not is_transient_clickhouse_error(reconcile_exc):
+                            raise
+                        reconciled = False
+                        append_jsonl(
+                            self.status_path,
+                            {
+                                "event": "clickhouse_reconciliation_retry",
+                                "at_utc": datetime64_utc_text(),
+                                "operation": operation,
+                                "query_id": query_id,
+                                "error_type": type(reconcile_exc).__name__,
+                                "error": bounded_error_text(reconcile_exc),
+                                **self._diagnostic_context,
+                            },
+                        )
+                    if reconciled:
+                        event = {
+                            "event": "clickhouse_insert_reconciled",
+                            "at_utc": datetime64_utc_text(),
+                            "operation": operation,
+                            "query_id": query_id,
+                            **self._diagnostic_context,
+                        }
+                        append_jsonl(self.status_path, event)
+                        print(
+                            f"CLICKHOUSE RECONCILED | operation={operation} "
+                            f"query_id={query_id} "
+                            f"{diagnostic_context_text(self._diagnostic_context)}",
+                            flush=True,
+                        )
+                        return ""
                 delay = min(
                     self.retry_base_seconds * (2 ** (attempt - 1)),
                     self.retry_max_seconds,
                 )
                 event = {
                     "event": "clickhouse_retry",
+                    "at_utc": datetime64_utc_text(),
                     "operation": operation,
                     "attempt": attempt,
                     "max_attempts": self.attempts,
@@ -150,6 +195,47 @@ class RetryingClickHouseHttpClient(ClickHouseHttpClient):
                 )
                 time.sleep(delay)
         raise AssertionError("unreachable")
+
+    def _reconcile_insert(self, query_id: str) -> bool:
+        """Resolve a lost response before the exact INSERT is sent again."""
+        deadline = time.monotonic() + min(30.0, float(self.timeout_seconds or 30.0))
+        while True:
+            running = int(
+                ClickHouseHttpClient.execute(
+                    self,
+                    "SELECT count() FROM system.processes "
+                    f"WHERE query_id={sql_string(query_id)} FORMAT TSV",
+                ).strip()
+                or 0
+            )
+            if not running:
+                ClickHouseHttpClient.execute(self, "SYSTEM FLUSH LOGS")
+                rows = ClickHouseHttpClient.execute(
+                    self,
+                    "SELECT toString(type) AS event_type, exception_code, exception "
+                    "FROM system.query_log "
+                    f"WHERE query_id={sql_string(query_id)} "
+                    "AND type IN ('QueryFinish', 'ExceptionBeforeStart', 'ExceptionWhileProcessing') "
+                    "ORDER BY event_time_microseconds DESC LIMIT 1 FORMAT JSONEachRow",
+                ).splitlines()
+                if not rows:
+                    return False
+                result = json.loads(rows[0])
+                event_type = str(result.get("event_type") or "")
+                exception_code = int(result.get("exception_code") or 0)
+                if event_type == "QueryFinish" and exception_code == 0:
+                    return True
+                raise RuntimeError(
+                    "ClickHouse recorded a failed renderer INSERT after transport loss: "
+                    f"query_id={query_id} exception_code={exception_code} "
+                    f"error={bounded_error_text(RuntimeError(str(result.get('exception') or 'unknown')))}"
+                )
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    "ClickHouse renderer INSERT remains active after its response was lost; "
+                    f"refusing an ambiguous retry query_id={query_id}"
+                )
+            time.sleep(0.5)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -443,6 +529,7 @@ def insert_built_rows(
             )
             continue
         for batch_index, batch in enumerate(batches, start=1):
+            query_id = v2_batch_query_id(table, batch_index, batch.rows)
             context = {
                 "day": day.isoformat(),
                 "table": table,
@@ -451,8 +538,16 @@ def insert_built_rows(
                 "rows": len(batch.rows),
                 "body_bytes": batch.body_bytes,
                 "max_row_bytes": batch.max_row_bytes,
+                "query_id": query_id,
             }
-            append_jsonl(status_path, {"event": "insert_batch_started", **context})
+            append_jsonl(
+                status_path,
+                {
+                    "event": "insert_batch_started",
+                    "at_utc": datetime64_utc_text(),
+                    **context,
+                },
+            )
             with client.diagnostic_context(**context):
                 insert_json_each_row(
                     client,
@@ -460,10 +555,16 @@ def insert_built_rows(
                     table,
                     columns,
                     batch.rows,
+                    query_id=query_id,
                 )
-            append_jsonl(status_path, {"event": "insert_batch_completed", **context})
-
-
+            append_jsonl(
+                status_path,
+                {
+                    "event": "insert_batch_completed",
+                    "at_utc": datetime64_utc_text(),
+                    **context,
+                },
+            )
 def validate_operational_args(args: argparse.Namespace) -> None:
     positive = {
         "--workers": args.workers,
@@ -489,6 +590,7 @@ def diagnostic_context_text(values: dict[str, Any]) -> str:
         "rows",
         "body_bytes",
         "max_row_bytes",
+        "query_id",
     )
     return " ".join(f"{key}={values[key]}" for key in ordered if key in values) + " "
 
@@ -730,6 +832,7 @@ def write_authority(
         target.authority_table,
         list(row),
         [row],
+        query_id=v2_batch_query_id(target.authority_table, 1, [row]),
     )
 
 
@@ -878,6 +981,8 @@ def is_transient_clickhouse_error(exc: BaseException) -> bool:
         if isinstance(current, url_error.HTTPError):
             if int(current.code) in TRANSIENT_HTTP_STATUS_CODES:
                 return True
+        elif int(getattr(current, "status_code", 0) or 0) in TRANSIENT_HTTP_STATUS_CODES:
+            return True
         elif isinstance(current, (url_error.URLError, TimeoutError, ConnectionError)):
             return True
         elif isinstance(current, OSError):

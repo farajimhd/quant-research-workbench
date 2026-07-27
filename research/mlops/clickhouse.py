@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import http.client
 import json
 import os
 import re
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib import error, parse, request
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -148,6 +150,16 @@ class SourcePreflight:
     stats: RowStats
     wall_seconds: float
 
+
+class ClickHouseHttpStatusError(RuntimeError):
+    """ClickHouse returned a non-success HTTP response."""
+
+    def __init__(self, status_code: int, reason: str, body: str) -> None:
+        self.status_code = int(status_code)
+        super().__init__(
+            f"ClickHouse HTTP {self.status_code} {reason}: {body}"
+        )
+
 def default_clickhouse_url() -> str:
     return (
         os.environ.get(REAL_LIVE_CLICKHOUSE_WRITE_URL_ENV)
@@ -236,6 +248,8 @@ class ClickHouseHttpClient:
         password: str,
         *,
         timeout_seconds: float | None = None,
+        persistent: bool = False,
+        default_query_params: Mapping[str, str | int | float] | None = None,
     ) -> None:
         if timeout_seconds is not None and float(timeout_seconds) <= 0:
             raise ValueError("timeout_seconds must be positive when provided")
@@ -243,14 +257,23 @@ class ClickHouseHttpClient:
         self.user = user
         self.password = password
         self.timeout_seconds = None if timeout_seconds is None else float(timeout_seconds)
+        self.persistent = bool(persistent)
+        self.default_query_params = {
+            str(key): str(value) for key, value in (default_query_params or {}).items()
+        }
+        self._connection: http.client.HTTPConnection | None = None
+        self._connection_lock = threading.Lock()
+        self._parsed_url = parse.urlsplit(self.base_url)
+        if self.persistent and self._parsed_url.scheme not in {"http", "https"}:
+            raise ValueError("persistent ClickHouse HTTP requires an http or https base URL")
 
     def execute(self, sql: str, *, query_id: str | None = None) -> str:
-        params = {}
+        params = dict(self.default_query_params)
         if query_id:
             params["query_id"] = query_id
-        url = self.base_url + "/"
-        if params:
-            url += "?" + parse.urlencode(params)
+        if self.persistent:
+            return self._execute_persistent(sql, params)
+        url = self._request_url(params)
         req = request.Request(url, data=sql.encode("utf-8"), method="POST")
         if self.user:
             req.add_header("X-ClickHouse-User", self.user)
@@ -262,6 +285,71 @@ class ClickHouseHttpClient:
         except error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"ClickHouse HTTP {exc.code} {exc.reason}: {body}") from exc
+
+    def close(self) -> None:
+        with self._connection_lock:
+            self._close_connection_unlocked()
+
+    def _request_url(self, params: Mapping[str, str]) -> str:
+        url = self.base_url + "/"
+        if params:
+            url += "?" + parse.urlencode(params)
+        return url
+
+    def _request_path(self, params: Mapping[str, str]) -> str:
+        path = (self._parsed_url.path or "/").rstrip("/") + "/"
+        if params:
+            path += "?" + parse.urlencode(params)
+        return path
+
+    def _new_connection(self) -> http.client.HTTPConnection:
+        connection_type = (
+            http.client.HTTPSConnection
+            if self._parsed_url.scheme == "https"
+            else http.client.HTTPConnection
+        )
+        return connection_type(
+            self._parsed_url.hostname,
+            self._parsed_url.port,
+            timeout=self.timeout_seconds,
+        )
+
+    def _execute_persistent(self, sql: str, params: Mapping[str, str]) -> str:
+        headers = {"Content-Type": "text/plain; charset=utf-8"}
+        if self.user:
+            headers["X-ClickHouse-User"] = self.user
+        if self.password:
+            headers["X-ClickHouse-Key"] = self.password
+        with self._connection_lock:
+            if self._connection is None:
+                self._connection = self._new_connection()
+            try:
+                self._connection.request(
+                    "POST",
+                    self._request_path(params),
+                    body=sql.encode("utf-8"),
+                    headers=headers,
+                )
+                response = self._connection.getresponse()
+                body = response.read().decode("utf-8", errors="replace")
+                if response.will_close:
+                    self._close_connection_unlocked()
+                if response.status >= 400:
+                    raise ClickHouseHttpStatusError(
+                        response.status,
+                        response.reason,
+                        body,
+                    )
+                return body
+            except (http.client.HTTPException, OSError, TimeoutError):
+                self._close_connection_unlocked()
+                raise
+
+    def _close_connection_unlocked(self) -> None:
+        connection = self._connection
+        self._connection = None
+        if connection is not None:
+            connection.close()
 
     def query_tsv(self, sql: str) -> str:
         query = sql.strip().rstrip(";").rstrip()

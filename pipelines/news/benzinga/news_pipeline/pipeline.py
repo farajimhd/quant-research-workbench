@@ -79,23 +79,26 @@ class BenzingaNewsPipeline:
         skip_table_validation: bool = False,
     ) -> NewsWriteSummary:
         target_cfg = target or ClickHouseTargetConfig.from_env()
-        client = ClickHouseHttpClient(target_cfg.url, target_cfg.user, target_cfg.password)
-        del allow_ticker_change  # v2 links are revision-bound and never mutated in place.
-        return write_news_pipeline_result_v2(
-            client,
-            processed.result,
-            config=NewsV2TargetConfig(
-                database=target_cfg.database,
-                event_table=target_cfg.event_table,
-                source_table=target_cfg.source_table,
-                block_table=target_cfg.block_table,
-                rendered_table=target_cfg.rendered_table,
-                ticker_table=target_cfg.rendered_ticker_table,
-                authority_table=target_cfg.render_authority_table,
-                execute=execute,
-                skip_table_validation=skip_table_validation,
-            ),
-        )
+        client = news_v2_write_client(target_cfg)
+        try:
+            del allow_ticker_change  # v2 links are revision-bound and never mutated in place.
+            return write_news_pipeline_result_v2(
+                client,
+                processed.result,
+                config=NewsV2TargetConfig(
+                    database=target_cfg.database,
+                    event_table=target_cfg.event_table,
+                    source_table=target_cfg.source_table,
+                    block_table=target_cfg.block_table,
+                    rendered_table=target_cfg.rendered_table,
+                    ticker_table=target_cfg.rendered_ticker_table,
+                    authority_table=target_cfg.render_authority_table,
+                    execute=execute,
+                    skip_table_validation=skip_table_validation,
+                ),
+            )
+        finally:
+            client.close()
 
     def write_many(
         self,
@@ -107,23 +110,37 @@ class BenzingaNewsPipeline:
         skip_table_validation: bool = False,
     ) -> NewsBatchWriteSummary:
         target_cfg = target or ClickHouseTargetConfig.from_env()
-        client = ClickHouseHttpClient(target_cfg.url, target_cfg.user, target_cfg.password)
-        del skip_existing  # ReplacingMergeTree makes identical revision writes idempotent.
-        return write_many_news_pipeline_results_v2(
-            client,
-            [item.result for item in processed],
-            config=NewsV2TargetConfig(
-                database=target_cfg.database,
-                event_table=target_cfg.event_table,
-                source_table=target_cfg.source_table,
-                block_table=target_cfg.block_table,
-                rendered_table=target_cfg.rendered_table,
-                ticker_table=target_cfg.rendered_ticker_table,
-                authority_table=target_cfg.render_authority_table,
-                execute=execute,
-                skip_table_validation=skip_table_validation,
-            ),
-        )
+        client = news_v2_write_client(target_cfg)
+        try:
+            del skip_existing  # ReplacingMergeTree makes identical revision writes idempotent.
+            return write_many_news_pipeline_results_v2(
+                client,
+                [item.result for item in processed],
+                config=NewsV2TargetConfig(
+                    database=target_cfg.database,
+                    event_table=target_cfg.event_table,
+                    source_table=target_cfg.source_table,
+                    block_table=target_cfg.block_table,
+                    rendered_table=target_cfg.rendered_table,
+                    ticker_table=target_cfg.rendered_ticker_table,
+                    authority_table=target_cfg.render_authority_table,
+                    execute=execute,
+                    skip_table_validation=skip_table_validation,
+                ),
+            )
+        finally:
+            client.close()
+
+
+def news_v2_write_client(target: ClickHouseTargetConfig) -> ClickHouseHttpClient:
+    """Use one acknowledged HTTP session for each atomic v2 product group."""
+    return ClickHouseHttpClient(
+        target.url,
+        target.user,
+        target.password,
+        persistent=True,
+        default_query_params={"async_insert": 0, "wait_end_of_query": 1},
+    )
 
 
 def raw_downloaded_at_now() -> str:
