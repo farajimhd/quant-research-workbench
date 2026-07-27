@@ -2,8 +2,9 @@
 
 Use this prompt when consolidating long Codex chats into durable,
 chat-independent repository context. Its purpose is to preserve decisions and
-unfinished work without turning `TASK_HISTORY.csv` into a transcript archive or
-adding generated runtime artifacts to the repository.
+unfinished work in as much detail as necessary while keeping
+`TASK_HISTORY.csv` as the concise task ledger and avoiding generated runtime
+artifacts in the repository.
 
 ## Prompt
 
@@ -15,6 +16,19 @@ Preserve the reasoning, evolving requirements, decisions, discoveries,
 implementation work, validation evidence, and unfinished work from long chats
 so a new chat can recover the project context without loading the original
 conversation.
+
+Length and completeness:
+1. Comprehensiveness takes priority over brevity. A chat summary may be as long
+   as necessary to preserve the full durable context.
+2. Do not impose an arbitrary word, page, token, or section-length limit.
+3. Do not omit important reasoning, requirement changes, rejected alternatives,
+   evidence, implementation details, validation, or unfinished work merely to
+   make the summary shorter.
+4. Avoid verbatim transcript reproduction and repetitive status messages, but
+   preserve their substantive information through detailed narrative.
+5. The early part of a long chat may use proportionally less detail than the
+   later part, but it must still preserve every decision, constraint, discovery,
+   and event needed to understand how the final state was reached.
 
 Storage design:
 1. Keep TASK_HISTORY.csv as the concise canonical task/outcome ledger.
@@ -79,7 +93,8 @@ The narrative must explain:
 
 Weight detail by recency:
 
-- Summarize the early exploratory portion compactly.
+- Summarize the early exploratory portion with proportionally less detail, but
+  do not omit information needed to understand later decisions.
 - Give progressively more detail as the narrative approaches the end.
 - Describe the final decisions, implementation state, validation, and remaining
   dependencies most precisely.
@@ -144,8 +159,9 @@ Quality and consistency requirements:
 5. Do not mark work completed merely because code was written or committed.
 6. Avoid duplicating identical background in every entry; cross-reference
    earlier chat summaries where appropriate.
-7. Preserve important reasoning and decisions, but keep the document usable as
-   retrieval context rather than a transcript archive.
+7. Preserve all important reasoning and decisions. The document may be long;
+   distinguish it from a transcript by synthesizing repetition and raw dialogue,
+   not by removing substantive detail.
 8. Order summaries chronologically from oldest to newest.
 9. Use America/Vancouver for normalized timestamps while preserving a source
    timestamp's original timezone when materially relevant.
