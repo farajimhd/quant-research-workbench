@@ -126,6 +126,7 @@ def calendar_sessions(client: ClickHouseHttpClient, config: LoaderConfig) -> lis
 SELECT calendar_date
 FROM {qi(config.news_database)}.{qi(config.reaction_calendar_table)} FINAL
 WHERE calendar_version = {q(config.reaction_calendar_version)}
+  AND is_session = 1
   AND calendar_date >= toDate({q(config.train_start)}) - 7
   AND calendar_date < toDate({q(config.validation_end_exclusive)}) + 14
 ORDER BY calendar_date

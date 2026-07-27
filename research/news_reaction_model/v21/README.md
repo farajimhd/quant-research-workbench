@@ -108,4 +108,24 @@ python -m research.news_reaction_model.v21.run_evaluate `
   --checkpoint D:\TradingML\runtimes\news-reaction-model\v21\train\single-ticker-episodes\<run>\checkpoints\best_val.pt
 ```
 
+Create a stratified episode-level error audit:
+
+```powershell
+python -m research.news_reaction_model.v21.run_error_audit `
+  --checkpoint D:\TradingML\runtimes\news-reaction-model\v21\train\single-ticker-episodes\<run>\checkpoints\best_val.pt `
+  --output-dir D:\TradingML\runtimes\news-reaction-model\v21\error-audit `
+  --samples 25
+```
+
+The audit selects unique false-positive and false-negative episodes across the
+V18 news families. It fetches complete normalized news text and canonical SIP
+events for three exchange sessions, then creates one Markdown dossier and one
+exact-event-derived chart per episode. Prepared datasets and ClickHouse remain
+read-only; generated dossiers are runtime audit artifacts, not training inputs.
+The audit also marks stored targets whose generated 20:00 ET expiry falls on a
+non-session date. The completed `single_ticker_episodes_v1` artifact contains
+such targets because its V18 calendar read omitted `is_session = 1`; the source
+query is corrected, but that existing artifact must be rebuilt before another
+certified training comparison.
+
 V21 uses the same `news-reaction-model-v3` W&B project as V19 and V20.

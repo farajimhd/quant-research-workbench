@@ -31,6 +31,7 @@ from research.news_reaction_model.v18.prepare_data import (
     anchor_session_days,
     audit_anchor_storage_contract,
     audit_target_interval_contract,
+    calendar_sessions,
     consume_article,
     enforce_exact_root_contract,
     exact_anchor_price,
@@ -225,6 +226,22 @@ class EpisodeContractTest(unittest.TestCase):
 
 
 class TargetContractTest(unittest.TestCase):
+    def test_exchange_calendar_excludes_non_session_dates(self) -> None:
+        class Client:
+            query = ""
+
+            def execute(self, query: str) -> str:
+                self.query = query
+                return "2026-07-10\n2026-07-13\n"
+
+        client = Client()
+        sessions = calendar_sessions(client, LoaderConfig())
+        self.assertEqual(
+            sessions,
+            [dt.date(2026, 7, 10), dt.date(2026, 7, 13)],
+        )
+        self.assertIn("AND is_session = 1", client.query)
+
     def test_v15_anchor_is_planning_only_and_exact_anchor_is_strictly_prior(self) -> None:
         stock_state = np.zeros((1, len(STOCK_STATE_NAMES)), dtype=np.float32)
         stock_state[0, STOCK_STATE_NAMES.index("anchor_price")] = signed_log(10.0)
