@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Callable
 
 from pipelines.news.benzinga.core.coverage_manifest import CoverageManifestConfig, ensure_coverage_manifest_table
-from pipelines.news.benzinga.core.clickhouse_writer import NewsWriteConfig, validate_target_tables
 from pipelines.news.benzinga.core.clickhouse_writer_v2 import NewsV2TargetConfig, assert_v2_ready
 from pipelines.news.benzinga.news_pipeline.provider import BenzingaProviderClient, BenzingaProviderConfig
 from research.mlops.clickhouse import ClickHouseHttpClient
@@ -112,16 +111,8 @@ def check_clickhouse(config: NewsGatewayConfig, clickhouse_password: str) -> str
         CoverageManifestConfig(
             database=config.clickhouse_database,
             coverage_table=config.coverage_table,
-            normalized_table=config.normalized_table,
+            event_table=config.event_table,
             storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
-        ),
-    )
-    validate_target_tables(
-        client,
-        NewsWriteConfig(
-            database=config.clickhouse_database,
-            normalized_table=config.normalized_table,
-            ticker_table=config.ticker_table,
         ),
     )
     assert_v2_ready(

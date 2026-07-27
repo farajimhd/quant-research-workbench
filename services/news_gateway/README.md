@@ -83,7 +83,7 @@ Preflight checks:
 | --- | --- |
 | Configuration | `MASSIVE_API_KEY`, ClickHouse URL, user, and password are present. |
 | Artifact storage | Raw and prepared roots can be created and written. |
-| ClickHouse | `SELECT 1` works and the normalized/news ticker tables exist with the expected columns. |
+| ClickHouse | `SELECT 1` works and the certified V2 event/source/block/rendered/ticker authority is ready. |
 | Benzinga provider | The Massive-served Benzinga endpoint accepts the API key and returns a valid JSON response. |
 
 `.\scripts\run_news_gateway.ps1 -CheckOnly` runs this same preflight and exits.
@@ -200,15 +200,15 @@ On startup:
 
 1. Preflight creates the coverage table if it does not already exist.
 2. If the coverage table is empty, the gateway discovers historical coverage
-   from the existing normalized news table. The default bootstrap treats
+   from `benzinga_news_event_v2 FINAL`. The default bootstrap treats
    `2010-01-01T00:00:00Z` through `2026-06-01T00:00:00Z` as trusted historical
    coverage because that range was fully downloaded in the historical Benzinga
    backfill. This creates one coverage interval for the trusted range instead
    of thousands of rows split by quiet news hours.
    This historical discovery is not repeated after the manifest has rows unless
    `NEWS_BENZINGA_REBUILD_COVERAGE_MANIFEST=true` is set.
-3. For data after the trusted historical end, the gateway splits the normalized
-   table range into `NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS` buckets,
+3. For data after the trusted historical end, the gateway splits the V2 event
+   range into `NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS` buckets,
    currently 300 seconds. Adjacent non-empty buckets become coverage candidates.
 4. Empty bucket runs after `NEWS_BENZINGA_BOOTSTRAP_VERIFY_GAPS_AFTER_UTC` are
    checked with a cheap Benzinga provider probe that requests only one row. If
@@ -460,8 +460,8 @@ NEWS_BENZINGA_RENDERED_TICKER_TABLE=benzinga_news_ticker_v2
 NEWS_BENZINGA_RENDER_AUTHORITY_TABLE=benzinga_news_render_authority_v2
 ```
 
-The two v1 settings remain coverage-bootstrap inputs during migration; they are
-not the live write destination.
+The two V1 settings remain available only to explicit legacy evidence tools.
+They are neither the live write destination nor the coverage-bootstrap source.
 
 Credential fallback order is `NEWS_*`, `QLIVE_MIGRATION_*`, `QMD_*`,
 `REAL_LIVE_*`, `CLICKHOUSE_WORKSTATION_*`, then plain `CLICKHOUSE_*`.
@@ -472,6 +472,7 @@ Storage:
 NEWS_GATEWAY_DATA_ROOT_WIN=<optional explicit root>
 NEWS_BENZINGA_RAW_ROOT_WIN=<optional explicit raw root>
 NEWS_BENZINGA_PREPARED_ROOT_WIN=<optional explicit prepared root>
+NEWS_BENZINGA_URL_ARTIFACT_ROOT_WIN=<shared live/historical external source artifacts>
 NEWS_BENZINGA_MANUAL_GAP_MANIFEST_ROOT_WIN=<optional explicit manifest root>
 NEWS_BENZINGA_MANUAL_GAP_SCRIPT_ROOT_WIN=<optional explicit script/code root>
 NEWS_GATEWAY_WORKSTATION_CODE_ROOT_WIN=D:/TradingML/codes/quant_research_workbench_pipelines
@@ -622,11 +623,12 @@ python -m pipelines.news.benzinga.news_benzinga_provider_gap_fill --start-utc 20
 For service-detected large gaps from a laptop run, prefer the generated `.ps1`
 script shown in `/metrics` and the terminal dashboard. It runs from the
 workstation code root, uses `conda run --no-capture-output -n ml4t`, writes raw
-payloads under `D:/market-data/news-benzinga/raw`, and inserts normalized rows
-into ClickHouse with `--execute`.
+payloads under `D:/market-data/news-benzinga/raw`, preserves approved external
+HTML/PDF artifacts, and inserts certified V2 products with `--execute`.
 
-This script downloads provider data, saves raw payloads, normalizes items, and
-writes the same canonical tables as live.
+This script downloads provider data, saves raw payloads, acquires and extracts
+approved external HTML/PDF sources, and writes the same V2 event, source,
+block, rendered-text, and revision-bound ticker products as live.
 
 For already downloaded raw files:
 
@@ -638,7 +640,8 @@ python -m pipelines.news.benzinga.news_benzinga_package_gap_fill --raw-root-win 
 
 - The service keeps recent news in memory only for live API snapshots. The source
   of truth is ClickHouse plus raw payload files.
-- Live external URL/PDF enrichment is not performed in the gateway hot path.
-  The item pipeline records URL tasks and quality flags; enrichment remains a
-  separate workflow.
+- Live enrichment remains outside the polling hot path, but bounded background
+  workers execute the same durable URL-artifact and V2 rendering contract used
+  by historical gap fill. Failed or missing enrichments are retained as
+  explicit V2 quality state rather than silently omitted.
 - Websocket streams currently emit periodic snapshots, not per-row delta events.

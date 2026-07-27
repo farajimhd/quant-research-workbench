@@ -7,7 +7,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
 
-from pipelines.news.benzinga.core.clickhouse_writer import DEFAULT_COVERAGE_TABLE, DEFAULT_DATABASE, DEFAULT_NORMALIZED_TABLE, table_name
+from pipelines.news.benzinga.core.clickhouse_writer import DEFAULT_COVERAGE_TABLE, DEFAULT_DATABASE, table_name
+from pipelines.news.benzinga.core.clickhouse_writer_v2 import DEFAULT_EVENT_TABLE
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_string
 
 
@@ -36,7 +37,7 @@ COVERAGE_COLUMNS = [
 class CoverageManifestConfig:
     database: str = DEFAULT_DATABASE
     coverage_table: str = DEFAULT_COVERAGE_TABLE
-    normalized_table: str = DEFAULT_NORMALIZED_TABLE
+    event_table: str = DEFAULT_EVENT_TABLE
     storage_policy: str = ""
 
     @classmethod
@@ -44,7 +45,7 @@ class CoverageManifestConfig:
         return cls(
             database=os.environ.get("NEWS_BENZINGA_CLICKHOUSE_DATABASE") or DEFAULT_DATABASE,
             coverage_table=os.environ.get("NEWS_BENZINGA_COVERAGE_TABLE") or DEFAULT_COVERAGE_TABLE,
-            normalized_table=os.environ.get("NEWS_BENZINGA_NORMALIZED_TABLE") or DEFAULT_NORMALIZED_TABLE,
+            event_table=os.environ.get("NEWS_BENZINGA_EVENT_TABLE") or DEFAULT_EVENT_TABLE,
             storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
         )
 
@@ -164,7 +165,7 @@ SETTINGS {", ".join(settings)}
     )
 
 
-def bootstrap_coverage_from_normalized_table(
+def bootstrap_coverage_from_event_table(
     client: ClickHouseHttpClient,
     config: CoverageManifestConfig,
     *,
@@ -191,11 +192,11 @@ def bootstrap_coverage_from_normalized_table(
             return CoverageBootstrapSummary(status="already_bootstrapped", executed=False, chunk_seconds=seconds)
     sql = (
         "SELECT min(published_at_utc) AS start_utc, max(published_at_utc) AS end_utc, count() AS rows "
-        f"FROM {table_name(config.database, config.normalized_table)} FORMAT JSONEachRow"
+        f"FROM {table_name(config.database, config.event_table)} FINAL FORMAT JSONEachRow"
     )
     row = first_json_row(client.execute(sql))
     if not row or not row.get("start_utc") or not row.get("end_utc") or int(row.get("rows") or 0) == 0:
-        return CoverageBootstrapSummary(status="empty_normalized_table", executed=False, chunk_seconds=seconds)
+        return CoverageBootstrapSummary(status="empty_event_table", executed=False, chunk_seconds=seconds)
     source_start = parse_clickhouse_datetime(str(row["start_utc"]))
     source_end = parse_clickhouse_datetime(str(row["end_utc"]))
     normalized_rows = int(row.get("rows") or 0)
@@ -227,7 +228,7 @@ def bootstrap_coverage_from_normalized_table(
                 rows=trusted_count,
                 metadata={
                     "bootstrap_mode": "trusted_historical_download",
-                    "source_table": f"{config.database}.{config.normalized_table}",
+                    "source_table": f"{config.database}.{config.event_table}",
                     "trusted_coverage_start_utc": clickhouse_datetime64(trusted_start),
                     "trusted_coverage_end_utc": clickhouse_datetime64(trusted_end),
                     "note": "operator asserted this historical range was fully downloaded",
@@ -316,7 +317,7 @@ def load_existing_bootstrap_intervals(client: ClickHouseHttpClient, config: Cove
         "OR source = 'bootstrap_trusted_historical_download' "
         "OR source = 'bootstrap_verified_empty_provider_gap' "
         "OR startsWith(source, 'bootstrap_') "
-        "OR coverage_id = 'bootstrap_existing_normalized_table') "
+        "OR coverage_id = 'bootstrap_existing_event_table') "
         "AND status IN ('running', 'completed') "
         "ORDER BY coverage_start_utc, coverage_id FORMAT JSONEachRow"
     )
@@ -367,7 +368,7 @@ def load_non_empty_bucket_counts(
         "SELECT "
         f"toStartOfInterval(published_at_utc, INTERVAL {int(chunk_seconds)} SECOND) AS bucket_start, "
         "count() AS rows "
-        f"FROM {table_name(config.database, config.normalized_table)} "
+        f"FROM {table_name(config.database, config.event_table)} FINAL "
         f"WHERE published_at_utc >= {sql_string(clickhouse_datetime64(start_utc))} "
         f"AND published_at_utc < {sql_string(clickhouse_datetime64(end_utc))} "
         "GROUP BY bucket_start ORDER BY bucket_start FORMAT JSONEachRow"
@@ -390,7 +391,7 @@ def count_news_rows(
 ) -> int:
     sql = (
         "SELECT count() "
-        f"FROM {table_name(config.database, config.normalized_table)} "
+        f"FROM {table_name(config.database, config.event_table)} FINAL "
         f"WHERE published_at_utc >= {sql_string(clickhouse_datetime64(start_utc))} "
         f"AND published_at_utc < {sql_string(clickhouse_datetime64(end_utc))}"
     )
@@ -414,7 +415,7 @@ def bucket_run_to_bootstrap_run(run: list[BucketCount], chunk_seconds: int, conf
         source="bootstrap_existing_news_rows",
         rows=sum(bucket.rows for bucket in run),
         metadata={
-            "source_table": f"{config.database}.{config.normalized_table}",
+            "source_table": f"{config.database}.{config.event_table}",
             "bootstrap_mode": "bucketed_existing_news_rows",
             "chunk_seconds": chunk_seconds,
             "bucket_count": len(run),
@@ -489,7 +490,7 @@ def coverage_snapshots_from_bootstrap_runs(
         snapshots.append(
             CoverageSnapshot(
                 coverage_id=f"{run.source}_{index:08d}_{filename_time(run.start_utc)}_{filename_time(run.end_utc)}",
-                run_id="bootstrap_normalized_news_coverage",
+                run_id="bootstrap_v2_event_news_coverage",
                 source=run.source,
                 status="completed",
                 coverage_start_utc=run.start_utc,
@@ -533,7 +534,7 @@ def coverage_snapshots_from_bucket_runs(runs: list[list[BucketCount]], chunk_sec
                 processed_rows=rows,
                 written_rows=0,
                 metadata={
-                    "source_table": f"{config.database}.{config.normalized_table}",
+                    "source_table": f"{config.database}.{config.event_table}",
                     "bootstrap_mode": "bucketed_existing_news_rows",
                     "chunk_seconds": chunk_seconds,
                     "bucket_count": len(run),
@@ -547,7 +548,7 @@ def supersede_bootstrap_snapshot(interval: CoverageInterval) -> CoverageSnapshot
     now = datetime.now(UTC)
     return CoverageSnapshot(
         coverage_id=interval.coverage_id,
-        run_id="bootstrap_existing_normalized_table",
+        run_id="bootstrap_existing_event_table",
         source=interval.source,
         status="superseded",
         coverage_start_utc=interval.start_utc,

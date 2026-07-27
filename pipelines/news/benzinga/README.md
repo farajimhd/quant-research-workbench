@@ -1,14 +1,13 @@
 # Benzinga News Pipeline
 
-This package contains the historical Benzinga news workflow:
+This package contains the Benzinga news workflow:
 
 - raw historical API download;
 - URL inventory and fetch planning;
 - URL artifact download and extraction;
-- normalized JSONEachRow row building;
-- ClickHouse file-based preflight and ingest.
-- ticker join-table backfill from loaded normalized news.
-- historical date-range gap-fill orchestration.
+- retained legacy normalized JSONEachRow evidence and migration tools;
+- one shared live/historical acquire-enrich-render-write V2 authority;
+- historical date-range gap-fill orchestration that writes only V2 products;
 - compact URL policy seeding and per-item pipeline smoke tests.
 - one-item canonical ClickHouse upsert into normalized news and ticker-link tables.
 - reusable item-level package used by live ingestion and concurrent gap fills.
@@ -59,6 +58,14 @@ Historical gap-fill orchestrator:
 ```powershell
 python -m pipelines.news.benzinga.news_benzinga_historical_gap_fill --help
 ```
+
+The orchestrator no longer runs the V1 normalized-row builder or V1
+ClickHouse ingest. It downloads missing raw provider payloads and then invokes
+the V2 package gap-fill. Both provider-backed and raw-file gap fills acquire
+approved external HTML/PDF sources into durable artifacts and render the same
+V2 event/source/block/rendered/ticker products as the live gateway. Omitting
+URL acquisition is rejected because it would create a weaker historical
+contract.
 
 URL policy table:
 

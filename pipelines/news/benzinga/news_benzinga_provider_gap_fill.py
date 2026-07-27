@@ -24,6 +24,7 @@ from pipelines.news.benzinga.core.coverage_manifest import (  # noqa: E402
 )
 from pipelines.news.benzinga.news_benzinga_normalize import artifact_path_for_payload, parse_provider_datetime, write_raw_payload  # noqa: E402
 from pipelines.news.benzinga.news_pipeline.config import BenzingaPipelineConfig, ClickHouseTargetConfig  # noqa: E402
+from pipelines.news.benzinga.news_pipeline.enrichment import NewsEnrichmentConfig, NewsUrlEnricher  # noqa: E402
 from pipelines.news.benzinga.news_pipeline.pipeline import BenzingaNewsPipeline, ProcessedNewsItem  # noqa: E402
 from pipelines.news.benzinga.news_pipeline.provider import BenzingaProviderClient, BenzingaProviderConfig  # noqa: E402
 from research.mlops.clickhouse import ClickHouseHttpClient  # noqa: E402
@@ -42,6 +43,12 @@ class BucketJob:
     api_key: str
     page_limit: int
     max_pages: int
+    url_artifact_root_win: str
+    url_per_domain_seconds: float
+    url_timeout_seconds: float
+    url_max_html_bytes: int
+    url_max_pdf_bytes: int
+    url_max_retries: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,11 +68,17 @@ class BucketResult:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Download, normalize, and write Benzinga news for a historical date range.")
+    parser = argparse.ArgumentParser(
+        description="Download, enrich, structurally render, and write Benzinga V2 news for a historical date range."
+    )
     parser.add_argument("--start-utc", required=True)
     parser.add_argument("--end-utc", required=True)
     parser.add_argument("--raw-root-win", default=os.environ.get("NEWS_BENZINGA_RAW_ROOT_WIN") or r"\\DESKTOP-SAAI85T\Workstation-D\market-data\news-benzinga\raw")
-    parser.add_argument("--output-root-win", default=os.environ.get("NEWS_BENZINGA_PROVIDER_GAP_OUTPUT_ROOT_WIN") or r"\\DESKTOP-SAAI85T\Workstation-D\market-data\prepared\benzinga_news_provider_gap_fill")
+    parser.add_argument(
+        "--output-root-win",
+        default=os.environ.get("NEWS_BENZINGA_PROVIDER_GAP_OUTPUT_ROOT_WIN")
+        or "D:/TradingML/runtimes/news/benzinga_provider_gap_fill",
+    )
     parser.add_argument("--bucket-minutes", type=int, default=90)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=1_000)
@@ -76,13 +89,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", default=os.environ.get("MASSIVE_API_KEY") or "")
     parser.add_argument("--page-limit", type=int, default=int(os.environ.get("NEWS_BENZINGA_PAGE_LIMIT") or "1000"))
     parser.add_argument("--max-pages", type=int, default=int(os.environ.get("NEWS_BENZINGA_MAX_PAGES") or "1000"))
+    parser.add_argument(
+        "--url-artifact-root-win",
+        default=os.environ.get("NEWS_BENZINGA_URL_ARTIFACT_ROOT_WIN") or "",
+    )
+    parser.add_argument("--url-per-domain-seconds", type=float, default=float(os.environ.get("NEWS_BENZINGA_URL_PER_DOMAIN_SECONDS") or "0.1"))
+    parser.add_argument("--url-timeout-seconds", type=float, default=float(os.environ.get("NEWS_BENZINGA_URL_TIMEOUT_SECONDS") or "5"))
+    parser.add_argument("--url-max-html-bytes", type=int, default=int(os.environ.get("NEWS_BENZINGA_URL_MAX_HTML_BYTES") or "4000000"))
+    parser.add_argument("--url-max-pdf-bytes", type=int, default=int(os.environ.get("NEWS_BENZINGA_URL_MAX_PDF_BYTES") or "12000000"))
+    parser.add_argument("--url-max-retries", type=int, default=int(os.environ.get("NEWS_BENZINGA_URL_MAX_RETRIES") or "0"))
     parser.add_argument("--clickhouse-url", default=ClickHouseTargetConfig.from_env().url)
     parser.add_argument("--user", default=ClickHouseTargetConfig.from_env().user)
     parser.add_argument("--password", default=ClickHouseTargetConfig.from_env().password)
     parser.add_argument("--database", default=ClickHouseTargetConfig.from_env().database)
-    parser.add_argument("--normalized-table", default=ClickHouseTargetConfig.from_env().normalized_table)
-    parser.add_argument("--ticker-table", default=ClickHouseTargetConfig.from_env().ticker_table)
     parser.add_argument("--coverage-table", default=ClickHouseTargetConfig.from_env().coverage_table)
+    parser.add_argument("--event-table", default=ClickHouseTargetConfig.from_env().event_table)
+    parser.add_argument("--source-table", default=ClickHouseTargetConfig.from_env().source_table)
+    parser.add_argument("--block-table", default=ClickHouseTargetConfig.from_env().block_table)
+    parser.add_argument("--rendered-table", default=ClickHouseTargetConfig.from_env().rendered_table)
+    parser.add_argument("--rendered-ticker-table", default=ClickHouseTargetConfig.from_env().rendered_ticker_table)
+    parser.add_argument("--render-authority-table", default=ClickHouseTargetConfig.from_env().render_authority_table)
     parser.add_argument("--execute", action="store_true")
     return parser.parse_args()
 
@@ -90,6 +116,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     loaded_env_files = load_env_files(discover_env_files(REPO_ROOT))
     args = parse_args()
+    if not args.url_artifact_root_win:
+        args.url_artifact_root_win = str(Path(args.raw_root_win).parent / "url-artifacts")
     if not args.api_key:
         raise RuntimeError("MASSIVE_API_KEY is required")
     start = parse_utc(args.start_utc)
@@ -106,14 +134,18 @@ def main() -> None:
         user=args.user,
         password=args.password,
         database=args.database,
-        normalized_table=args.normalized_table,
-        ticker_table=args.ticker_table,
         coverage_table=args.coverage_table,
+        event_table=args.event_table,
+        source_table=args.source_table,
+        block_table=args.block_table,
+        rendered_table=args.rendered_table,
+        rendered_ticker_table=args.rendered_ticker_table,
+        render_authority_table=args.render_authority_table,
     )
     coverage_config = CoverageManifestConfig(
         database=args.database,
         coverage_table=args.coverage_table,
-        normalized_table=args.normalized_table,
+        event_table=target.event_table,
         storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
     )
     coverage_client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
@@ -124,7 +156,12 @@ def main() -> None:
     print("Benzinga provider gap fill", flush=True)
     print(f"range={args.start_utc} -> {args.end_utc} buckets={len(jobs):,} workers={args.workers}", flush=True)
     print(f"raw_root={args.raw_root_win}", flush=True)
-    print(f"target={target.database}.{target.normalized_table} + {target.database}.{target.ticker_table}", flush=True)
+    print(
+        f"target_v2={target.database}.{target.event_table} + "
+        f"{target.database}.{target.rendered_table} + {target.database}.{target.rendered_ticker_table}",
+        flush=True,
+    )
+    print(f"enrichment_artifacts={args.url_artifact_root_win}", flush=True)
     print(f"execute={args.execute}", flush=True)
     print(f"loaded_env_files={[str(path) for path in loaded_env_files]}", flush=True)
     print("secret_status=" + json.dumps(secret_status(["MASSIVE_API_KEY", "REAL_LIVE_CLICKHOUSE_WRITE_URL", "REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD"]), sort_keys=True), flush=True)
@@ -199,6 +236,17 @@ def process_bucket(job: BucketJob) -> BucketResult:
         pipeline = BenzingaNewsPipeline(
             BenzingaPipelineConfig(policy_json=job.policy_json, text_limit_chars=job.text_limit_chars, raw_root_win=Path(job.raw_root_win))
         )
+        enricher = NewsUrlEnricher(
+            NewsEnrichmentConfig(
+                artifact_root=Path(job.url_artifact_root_win),
+                per_domain_min_interval_seconds=job.url_per_domain_seconds,
+                timeout_seconds=job.url_timeout_seconds,
+                max_html_bytes=job.url_max_html_bytes,
+                max_pdf_bytes=job.url_max_pdf_bytes,
+                max_retries=job.url_max_retries,
+                max_text_chars=job.text_limit_chars,
+            )
+        )
         start = parse_utc(job.start_utc)
         end = parse_utc(job.end_utc)
         fetched = provider.fetch_window(start, end)
@@ -207,7 +255,14 @@ def process_bucket(job: BucketJob) -> BucketResult:
         for payload in fetched.items:
             try:
                 raw_path, raw_hash = save_raw_payload(Path(job.raw_root_win), payload)
-                processed.append(pipeline.process_payload(payload, raw_artifact_path=str(raw_path), raw_payload_hash=raw_hash, downloaded_at_utc=datetime.now(UTC)))
+                enriched = pipeline.process_payload_enriched(
+                    payload,
+                    enricher=enricher,
+                    raw_artifact_path=str(raw_path),
+                    raw_payload_hash=raw_hash,
+                    downloaded_at_utc=datetime.now(UTC),
+                )
+                processed.append(enriched.processed)
             except Exception:
                 failed += 1
         return BucketResult(
@@ -260,6 +315,12 @@ def build_jobs(args: argparse.Namespace, start: datetime, end: datetime) -> list
                 api_key=args.api_key,
                 page_limit=args.page_limit,
                 max_pages=args.max_pages,
+                url_artifact_root_win=args.url_artifact_root_win,
+                url_per_domain_seconds=args.url_per_domain_seconds,
+                url_timeout_seconds=args.url_timeout_seconds,
+                url_max_html_bytes=args.url_max_html_bytes,
+                url_max_pdf_bytes=args.url_max_pdf_bytes,
+                url_max_retries=args.url_max_retries,
             )
         )
         index += 1

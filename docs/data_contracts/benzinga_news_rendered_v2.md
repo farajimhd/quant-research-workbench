@@ -26,7 +26,10 @@ full rebuild records a `ready` authority row with zero audit errors.
 Historical enrichment created before raw external artifacts were retained is
 not falsely reconstructed. Its available flattened text is preserved and
 marked with `legacy_flattened_enrichment` and an artifact-unavailable flag.
-New live HTML enrichment retains raw HTML for the shared renderer.
+All post-cutover live and historical enrichment retains raw HTML/PDF artifacts
+for the shared renderer. Provider-backed gap fill and raw-file package gap fill
+use the same acquisition and rendering implementation as the live background
+workers. Enrichment failures remain visible in V2 quality flags.
 
 ## Rebuild, audit, and cutover
 
@@ -93,6 +96,9 @@ data-contract correction.
 After certification, restart the news gateway. Its preflight refuses to start
 against missing or failed v2 authority state, and live writes use the same
 renderer and v2 tables.
+
+Coverage discovery also reads `benzinga_news_event_v2 FINAL`; the legacy V1
+normalized table is not a post-cutover coverage authority.
 
 ## Article-level embeddings
 

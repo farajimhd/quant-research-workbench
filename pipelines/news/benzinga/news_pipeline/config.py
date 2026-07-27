@@ -65,6 +65,13 @@ class BenzingaPipelineConfig:
     output_root_win: Path = Path("D:/market-data/prepared/benzinga_news_package")
     max_enriched_text_chars_per_url: int = 24_000
     max_enriched_urls_per_article: int = 5
+    enrichment_enabled: bool = True
+    url_artifact_root_win: Path = Path("D:/market-data/news-benzinga/url-artifacts")
+    url_per_domain_seconds: float = 0.1
+    url_timeout_seconds: float = 5.0
+    url_max_html_bytes: int = 4_000_000
+    url_max_pdf_bytes: int = 12_000_000
+    url_max_retries: int = 0
 
     @classmethod
     def from_env(cls) -> "BenzingaPipelineConfig":
@@ -75,6 +82,16 @@ class BenzingaPipelineConfig:
             output_root_win=Path(os.environ.get("NEWS_BENZINGA_PACKAGE_OUTPUT_ROOT_WIN") or "D:/market-data/prepared/benzinga_news_package"),
             max_enriched_text_chars_per_url=int(os.environ.get("NEWS_BENZINGA_MAX_ENRICHED_TEXT_CHARS_PER_URL") or "24000"),
             max_enriched_urls_per_article=int(os.environ.get("NEWS_BENZINGA_MAX_ENRICHED_URLS_PER_ARTICLE") or "5"),
+            enrichment_enabled=(os.environ.get("NEWS_BENZINGA_ENRICHMENT_ENABLED") or "1").strip().lower() not in {"0", "false", "no"},
+            url_artifact_root_win=Path(
+                os.environ.get("NEWS_BENZINGA_URL_ARTIFACT_ROOT_WIN")
+                or "D:/market-data/news-benzinga/url-artifacts"
+            ),
+            url_per_domain_seconds=float(os.environ.get("NEWS_BENZINGA_URL_PER_DOMAIN_SECONDS") or "0.1"),
+            url_timeout_seconds=float(os.environ.get("NEWS_BENZINGA_URL_TIMEOUT_SECONDS") or "5"),
+            url_max_html_bytes=int(os.environ.get("NEWS_BENZINGA_URL_MAX_HTML_BYTES") or "4000000"),
+            url_max_pdf_bytes=int(os.environ.get("NEWS_BENZINGA_URL_MAX_PDF_BYTES") or "12000000"),
+            url_max_retries=int(os.environ.get("NEWS_BENZINGA_URL_MAX_RETRIES") or "0"),
         )
 
 

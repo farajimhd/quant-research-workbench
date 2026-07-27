@@ -22,7 +22,7 @@ from research.mlops.env import discover_env_files, load_env_files, secret_status
 
 DEFAULT_RAW_ROOT_WIN = Path("D:/market-data/news-benzinga")
 DEFAULT_PREPARED_ROOT_WIN = Path("D:/market-data/prepared")
-DEFAULT_URL_DOWNLOAD_ARTIFACT_ROOT_WIN = Path("D:/market-data/news_benzinga_url_download_artifacts")
+DEFAULT_URL_DOWNLOAD_ARTIFACT_ROOT_WIN = Path("D:/market-data/news-benzinga/url-artifacts")
 DEFAULT_PARTS_ROOT_WIN = Path("D:/market-data")
 DEFAULT_PARTS_ROOT_CH = "/mnt/d/market-data"
 DEFAULT_RUNTIME_ROOT = REPO_ROOT
@@ -43,18 +43,25 @@ class StageResult:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run the historical Benzinga news gap-fill pipeline in the same order "
-            "as the successful manual backfill: raw download, URL inventory, fetch "
-            "plan, URL download, normalized row build, ClickHouse ingest, and "
-            "ticker-link rebuild."
+            "Run the historical Benzinga gap-fill through the shared V2 "
+            "acquire-enrich-render-write authority."
         )
     )
     parser.add_argument("--start-utc", required=True, help="Inclusive UTC start, e.g. 2026-06-01 or 2026-06-01T00:00:00Z.")
     parser.add_argument("--end-utc", required=True, help="Exclusive UTC end, e.g. 2026-06-02 or 2026-06-02T00:00:00Z.")
     parser.add_argument("--runtime-root", default=os.environ.get("QWB_PIPELINE_RUNTIME_ROOT") or str(DEFAULT_RUNTIME_ROOT))
     parser.add_argument("--raw-root-win", default=os.environ.get("NEWS_BENZINGA_RAW_ROOT_WIN") or str(DEFAULT_RAW_ROOT_WIN))
-    parser.add_argument("--prepared-root-win", default=os.environ.get("NEWS_BENZINGA_PREPARED_ROOT_WIN") or str(DEFAULT_PREPARED_ROOT_WIN))
-    parser.add_argument("--url-download-artifact-root-win", default=os.environ.get("NEWS_BENZINGA_URL_DOWNLOAD_ARTIFACT_ROOT_WIN") or str(DEFAULT_URL_DOWNLOAD_ARTIFACT_ROOT_WIN))
+    parser.add_argument(
+        "--prepared-root-win",
+        default=os.environ.get("NEWS_BENZINGA_HISTORICAL_RUNTIME_ROOT_WIN")
+        or "D:/TradingML/runtimes/news/benzinga_historical_gap_fill",
+    )
+    parser.add_argument(
+        "--url-download-artifact-root-win",
+        default=os.environ.get("NEWS_BENZINGA_URL_ARTIFACT_ROOT_WIN")
+        or os.environ.get("NEWS_BENZINGA_URL_DOWNLOAD_ARTIFACT_ROOT_WIN")
+        or str(DEFAULT_URL_DOWNLOAD_ARTIFACT_ROOT_WIN),
+    )
     parser.add_argument("--parts-root-win", default=os.environ.get("NEWS_BENZINGA_PARTS_ROOT_WIN") or str(DEFAULT_PARTS_ROOT_WIN))
     parser.add_argument("--parts-root-ch", default=os.environ.get("NEWS_BENZINGA_PARTS_ROOT_CH") or DEFAULT_PARTS_ROOT_CH)
     parser.add_argument("--download-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_GAP_FILL_DOWNLOAD_PROCESSES", "32")))
@@ -71,18 +78,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-enriched-urls-per-article", type=int, default=int(os.environ.get("NEWS_BENZINGA_GAP_FILL_MAX_ENRICHED_URLS_PER_ARTICLE", "5")))
     parser.add_argument("--rows-per-file", type=int, default=int(os.environ.get("NEWS_BENZINGA_GAP_FILL_ROWS_PER_FILE", "100000")))
     parser.add_argument("--max-output-file-bytes", type=int, default=int(os.environ.get("NEWS_BENZINGA_GAP_FILL_MAX_OUTPUT_FILE_BYTES", "268435456")))
-    parser.add_argument("--from-stage", default=os.environ.get("NEWS_BENZINGA_GAP_FILL_FROM_STAGE") or "raw_download", choices=stage_names())
-    parser.add_argument("--to-stage", default=os.environ.get("NEWS_BENZINGA_GAP_FILL_TO_STAGE") or "ticker_links", choices=stage_names())
-    parser.add_argument("--execute-db", action="store_true", help="Run ClickHouse insert and ticker-link rebuild. Without this, DB stages stop after preflight/dry-run.")
+    parser.add_argument("--from-stage", default=os.environ.get("NEWS_BENZINGA_GAP_FILL_FROM_STAGE") or "raw_download", choices=v2_stage_names())
+    parser.add_argument("--to-stage", default=os.environ.get("NEWS_BENZINGA_GAP_FILL_TO_STAGE") or "v2_package_gap_fill", choices=v2_stage_names())
+    parser.add_argument(
+        "--execute-db",
+        action="store_true",
+        help="Write the certified V2 event/source/block/rendered/ticker products.",
+    )
     parser.add_argument("--yes", action="store_true", help="Required to run commands. Without this, only prints the plan.")
     parser.add_argument("--continue-on-error", action="store_true")
-    parser.add_argument("--skip-url-download", action="store_true", help="Skip external URL download; normalization will use existing artifacts/body text only.")
+    parser.add_argument(
+        "--skip-url-download",
+        action="store_true",
+        help="Rejected compatibility flag: certified V2 history requires external source acquisition.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     loaded_env_files = load_env_files(discover_env_files(REPO_ROOT))
     args = parse_args()
+    if args.skip_url_download:
+        raise SystemExit(
+            "--skip-url-download is incompatible with the certified V2 historical contract; "
+            "external source acquisition may not be silently omitted."
+        )
     run_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     prepared_root = Path(args.prepared_root_win)
     run_root = prepared_root / "benzinga_news_historical_gap_fill" / run_id
@@ -90,11 +110,8 @@ def main() -> None:
     manifest_path = run_root / "benzinga_news_historical_gap_fill_manifest.json"
     stage_log_path = run_root / "benzinga_news_historical_gap_fill_stages.jsonl"
 
-    scoped_raw_root = run_root / "raw_scope"
-    plan = build_stage_plan(args, scoped_raw_root=scoped_raw_root)
+    plan = build_v2_stage_plan(args)
     selected_plan = select_stage_range(plan, args.from_stage, args.to_stage)
-    if args.skip_url_download:
-        selected_plan = [item for item in selected_plan if item[0] != "url_download"]
 
     print("=" * 96, flush=True)
     print("Benzinga historical gap-fill orchestrator", flush=True)
@@ -134,17 +151,7 @@ def main() -> None:
 
     results: list[StageResult] = []
     for stage, command in selected_plan:
-        if stage == "scope_raw_files":
-            result = scope_raw_files_stage(
-                stage,
-                command,
-                source_raw_root=Path(args.raw_root_win) / "raw",
-                scoped_raw_root=scoped_raw_root,
-                start_utc=args.start_utc,
-                end_utc=args.end_utc,
-            )
-        else:
-            result = run_stage(stage, command, env=env)
+        result = run_stage(stage, command, env=env)
         results.append(result)
         append_jsonl(stage_log_path, asdict(result))
         if result.status != "ok" and not args.continue_on_error:
@@ -169,6 +176,53 @@ def stage_names() -> list[str]:
         "clickhouse_preflight",
         "clickhouse_ingest",
         "ticker_links",
+    ]
+
+
+def v2_stage_names() -> list[str]:
+    return ["raw_download", "v2_package_gap_fill"]
+
+
+def build_v2_stage_plan(args: argparse.Namespace) -> list[tuple[str, list[str]]]:
+    python = sys.executable
+    raw_root = Path(args.raw_root_win) / "raw"
+    package_command = [
+        python,
+        "-m",
+        "pipelines.news.benzinga.news_benzinga_package_gap_fill",
+        "--raw-root-win",
+        str(raw_root),
+        "--start-utc",
+        args.start_utc,
+        "--end-utc",
+        args.end_utc,
+        "--output-root-win",
+        str(Path(args.prepared_root_win) / "benzinga_news_package_gap_fill"),
+        "--url-artifact-root-win",
+        args.url_download_artifact_root_win,
+        "--processes",
+        str(args.normalizer_processes),
+        "--text-limit-chars",
+        str(args.text_limit_chars),
+    ]
+    if args.execute_db:
+        package_command.append("--execute")
+    return [
+        (
+            "raw_download",
+            [
+                python,
+                "-m",
+                "pipelines.news.benzinga.news_benzinga_raw_download",
+                "--start-utc",
+                args.start_utc,
+                "--end-utc",
+                args.end_utc,
+                "--download-processes",
+                str(args.download_processes),
+            ],
+        ),
+        ("v2_package_gap_fill", package_command),
     ]
 
 

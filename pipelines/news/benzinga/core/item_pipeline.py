@@ -64,11 +64,31 @@ def process_benzinga_news_item(
     )
 
     warnings: list[str] = []
-    if opts.include_enrichment_rows and enrichment_rows:
+    if opts.include_enrichment_rows and enrichment_rows is not None:
         args = enrichment_args(opts)
         by_hash = {str(item.get("url_hash") or ""): item for item in enrichment_rows if item.get("url_hash")}
         enrichments = [by_hash[item["url_hash"]] for item in url_resolution.attachments if item.get("url_hash") in by_hash]
         row, _summary = apply_enrichments(args, row, url_resolution.attachments, enrichments)
+        failed_rows = [
+            item
+            for item in enrichment_rows
+            if str(item.get("status") or "") not in {"", "downloaded", "extracted"}
+        ]
+        missing_hashes = {
+            str(item.get("url_hash") or "")
+            for item in url_resolution.fetch_tasks
+            if str(item.get("url_hash") or "") not in by_hash
+        }
+        if failed_rows or missing_hashes:
+            flags = [str(flag) for flag in row.get("content_quality_flags") or []]
+            for flag in ("enrichment_incomplete",):
+                if flag not in flags:
+                    flags.append(flag)
+            row["content_quality_flags"] = flags
+            row["external_fetch_error"] = (
+                f"failed={len(failed_rows)} missing={len(missing_hashes)}"
+            )
+            warnings.append("enrichment_incomplete")
         row["updated_at_utc"] = now_clickhouse_dt64()
     elif url_resolution.fetch_tasks:
         warnings.append("enrichment_pending")

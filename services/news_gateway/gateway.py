@@ -8,7 +8,6 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
@@ -19,7 +18,7 @@ from pipelines.news.benzinga.core.coverage_manifest import (
     CoverageManifestConfig,
     CoverageSnapshot,
     CoverageBootstrapSummary,
-    bootstrap_coverage_from_normalized_table,
+    bootstrap_coverage_from_event_table,
     compact_coverage_manifest,
     ensure_coverage_manifest_table,
     find_coverage_gaps,
@@ -31,13 +30,12 @@ from pipelines.news.benzinga.core.coverage_manifest import (
 from pipelines.news.benzinga.core.clickhouse_writer import NewsBatchWriteSummary
 from pipelines.news.benzinga.news_benzinga_normalize import artifact_path_for_payload, parse_provider_datetime, write_raw_payload
 from pipelines.news.benzinga.news_pipeline.config import BenzingaPipelineConfig, ClickHouseTargetConfig
+from pipelines.news.benzinga.news_pipeline.enrichment import NewsEnrichmentConfig, NewsUrlEnricher
 from pipelines.news.benzinga.news_pipeline.pipeline import BenzingaNewsPipeline, ProcessedNewsItem
 from pipelines.news.benzinga.news_pipeline.provider import (
     BenzingaProviderClient,
     BenzingaProviderConfig,
 )
-from pipelines.news.benzinga.news_benzinga_url_download import DomainRateLimiter, download_row
-from pipelines.news.benzinga.news_benzinga_url_extract import extract_row, read_artifact
 from research.mlops.clickhouse import ClickHouseHttpClient
 from services.news_gateway.config import (
     NewsGatewayConfig,
@@ -220,7 +218,6 @@ class NewsGateway:
         self._publish_task_rows: dict[asyncio.Task[Any], int] = {}
         self._background_queue: asyncio.Queue[BackgroundNewsBatch | None] = asyncio.Queue(maxsize=max(1, config.background_queue_max_batches))
         self._background_tasks: list[asyncio.Task[None]] = []
-        self._url_rate_limiter = DomainRateLimiter(config.live_url_per_domain_seconds)
         self._preflight_report: PreflightReport | None = None
         self._run_id = new_run_id("news_gateway")
         self._live_coverage_id = f"{self._run_id}_live"
@@ -253,6 +250,18 @@ class NewsGateway:
                 text_limit_chars=config.text_limit_chars,
                 raw_root_win=config.raw_root_win,
                 output_root_win=config.prepared_root_win / "benzinga_news_gateway",
+            )
+        )
+        self.enricher = NewsUrlEnricher(
+            NewsEnrichmentConfig(
+                artifact_root=config.live_url_artifact_root_win,
+                enabled=config.live_enrichment_enabled,
+                per_domain_min_interval_seconds=config.live_url_per_domain_seconds,
+                timeout_seconds=config.live_url_timeout_seconds,
+                max_html_bytes=config.live_url_max_html_bytes,
+                max_pdf_bytes=config.live_url_max_pdf_bytes,
+                max_retries=config.live_url_max_retries,
+                max_text_chars=config.text_limit_chars,
             )
         )
         self.target = ClickHouseTargetConfig(
@@ -294,7 +303,7 @@ class NewsGateway:
         try:
             self._set_phase("preflight", "Checking ClickHouse, artifact storage, and Benzinga provider access.")
             await self.preflight()
-            self._set_phase("coverage_bootstrap", "Preparing hourly coverage manifest from existing normalized news rows.")
+            self._set_phase("coverage_bootstrap", "Preparing coverage manifest from certified V2 news events.")
             await self._prepare_coverage_manifest()
             self._set_phase("gap_planning", "Loading coverage intervals and planning startup gap handling.")
             await self._plan_startup_gap()
@@ -1125,49 +1134,22 @@ class NewsGateway:
         }
 
     def _enrich_live_item(self, live_item: LiveNewsPayload) -> list[dict[str, Any]]:
-        if not self.config.live_enrichment_enabled:
-            return []
-        rows: list[dict[str, Any]] = []
-        args = SimpleNamespace(
-            timeout_seconds=self.config.live_url_timeout_seconds,
-            max_html_bytes=self.config.live_url_max_html_bytes,
-            max_pdf_bytes=self.config.live_url_max_pdf_bytes,
-            max_retries=self.config.live_url_max_retries,
-            max_text_chars=self.config.text_limit_chars,
-        )
-        for task in live_item.initial_item.result.url_resolution.fetch_tasks:
-            download_result = download_row(task, args, self._url_rate_limiter, self.config.live_url_artifact_root_win)
-            if download_result.get("status") != "downloaded":
+        batch = self.enricher.enrich_tasks(live_item.initial_item.result.url_resolution.fetch_tasks)
+        for row in batch.rows:
+            if row.get("status") not in {"downloaded", "extracted"}:
                 self._log_event(
                     "live_url_download_not_downloaded",
                     poll_id="",
                     provider_article_id=live_item.initial_item.result.provider_article_id,
                     canonical_news_id=live_item.initial_item.result.canonical_news_id,
-                    url_hash=download_result.get("url_hash") or task.get("url_hash") or "",
-                    status=download_result.get("status") or "",
-                    status_reason=download_result.get("status_reason") or "",
-                    http_status=download_result.get("http_status") or 0,
-                    error_type=download_result.get("error_type") or "",
+                    url_hash=row.get("url_hash") or "",
+                    status=row.get("status") or "",
+                    status_reason=row.get("status_reason") or "",
+                    http_status=row.get("http_status") or 0,
+                    error_type=row.get("error_type") or "",
                     **self._background_enrichment_log_context([live_item]),
                 )
-                continue
-            extraction = extract_row(download_result, self.config.text_limit_chars, self.config.live_url_max_pdf_bytes)
-            if (
-                extraction.get("status") == "extracted"
-                and str(download_result.get("resolved_action") or "") == "fetch_html"
-            ):
-                artifact_path = Path(str(download_result.get("artifact_path") or ""))
-                if not artifact_path.is_file():
-                    raise RuntimeError(
-                        f"Successful HTML extraction lacks its source artifact for {download_result.get('url_hash', '')}"
-                    )
-                raw_bytes = read_artifact(
-                    artifact_path,
-                    str(download_result.get("artifact_compression") or ""),
-                )
-                extraction["raw_html"] = raw_bytes.decode("utf-8", errors="replace")
-            rows.append(extraction)
-        return rows
+        return batch.rows
 
     def _pending_memory_row(self, row: dict[str, Any]) -> dict[str, Any]:
         output = dict(row)
@@ -1180,20 +1162,23 @@ class NewsGateway:
         return output
 
     def _fallback_final_item(self, live_item: LiveNewsPayload, exc: Exception) -> ProcessedNewsItem:
+        failure_rows = [
+            {
+                **task,
+                "status": "failed",
+                "status_reason": "background_enrichment_failed",
+                "error_type": type(exc).__name__,
+                "error_message": repr(exc)[:1000],
+            }
+            for task in live_item.initial_item.result.url_resolution.fetch_tasks
+        ]
         item = self.pipeline.process_payload(
             live_item.payload,
             raw_artifact_path=live_item.raw_path,
             raw_payload_hash=live_item.raw_hash,
             downloaded_at_utc=live_item.downloaded_at_utc,
-            enrichment_rows=[],
+            enrichment_rows=failure_rows,
         )
-        flags = [str(value) for value in item.result.normalized_row.get("content_quality_flags") or []]
-        for flag in ["background_enrichment_failed", type(exc).__name__]:
-            if flag and flag not in flags:
-                flags.append(flag)
-        item.result.normalized_row["content_quality_flags"] = flags
-        item.result.normalized_row["external_fetch_status"] = "background_enrichment_failed"
-        item.result.normalized_row["external_fetch_error"] = repr(exc)[:1000]
         return item
 
     async def _publish_processed(self, processed: list[ProcessedNewsItem], *, poll_id: str, coverage_mode: str) -> Any:
@@ -1673,7 +1658,7 @@ class NewsGateway:
         self.metrics.bootstrap_probe_completed = 0
         self.metrics.bootstrap_probe_empty = 0
         self.metrics.bootstrap_probe_positive = 0
-        summary = bootstrap_coverage_from_normalized_table(
+        summary = bootstrap_coverage_from_event_table(
             client,
             config,
             chunk_seconds=self.config.coverage_discovery_chunk_seconds,
@@ -2008,7 +1993,7 @@ class NewsGateway:
         return CoverageManifestConfig(
             database=self.target.database,
             coverage_table=self.target.coverage_table,
-            normalized_table=self.target.normalized_table,
+            event_table=self.target.event_table,
             storage_policy=__import__("os").environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
         )
 
@@ -2088,7 +2073,7 @@ def write_manual_gap_fill_plan(intervals: list[GapFillInterval], config: NewsGat
     script_path = script_run_root_write / f"{run_id}_run_all.ps1"
     manifest_path = manifest_run_root / f"{run_id}_manifest.json"
     raw_root = WORKSTATION_DATA_ROOT_WIN / "news-benzinga" / "raw"
-    output_root = WORKSTATION_DATA_ROOT_WIN / "prepared" / "benzinga_news_provider_gap_fill"
+    output_root = Path("D:/TradingML/runtimes/news/benzinga_provider_gap_fill")
     jobs = []
     for index, interval in enumerate(intervals, start=1):
         start_text = interval.start_utc.isoformat().replace("+00:00", "Z")

@@ -10,6 +10,7 @@ from typing import Any, Iterable
 
 from pipelines.news.benzinga.core.contracts import NewsPipelineResult, UrlResolution
 from pipelines.news.benzinga.news_pipeline.config import BenzingaPipelineConfig, ClickHouseTargetConfig
+from pipelines.news.benzinga.news_pipeline.enrichment import NewsEnrichmentConfig, NewsUrlEnricher
 from pipelines.news.benzinga.news_pipeline.pipeline import BenzingaNewsPipeline, ProcessedNewsItem
 
 
@@ -22,6 +23,9 @@ class GapFillFileResult:
     ticker_count: int = 0
     fetch_task_count: int = 0
     warning_count: int = 0
+    enrichment_requested: int = 0
+    enrichment_extracted: int = 0
+    enrichment_failed: int = 0
     exception: str = ""
     traceback: str = ""
     result: NewsPipelineResult | None = None
@@ -36,6 +40,8 @@ class GapFillSummary:
     normalized_rows: int
     ticker_rows: int
     fetch_tasks: int
+    enrichment_extracted: int
+    enrichment_failed: int
     batches_written: int
     skipped_existing: int
     execute: bool
@@ -77,6 +83,8 @@ def run_raw_file_gap_fill(
     normalized_rows = 0
     ticker_rows = 0
     fetch_tasks = 0
+    enrichment_extracted = 0
+    enrichment_failed = 0
     batches_written = 0
     skipped_existing = 0
     pending_batch: list[ProcessedNewsItem] = []
@@ -95,6 +103,8 @@ def run_raw_file_gap_fill(
                     normalized_rows += 1
                     ticker_rows += outcome.ticker_count
                     fetch_tasks += outcome.fetch_task_count
+                    enrichment_extracted += outcome.enrichment_extracted
+                    enrichment_failed += outcome.enrichment_failed
                     pending_batch.append(ProcessedNewsItem(result=outcome.result, raw_json_path=outcome.raw_json_path))
                     result_handle.write(json.dumps(summary_row(outcome), ensure_ascii=False, default=str) + "\n")
                     if len(pending_batch) >= batch_size:
@@ -138,6 +148,8 @@ def run_raw_file_gap_fill(
         normalized_rows=normalized_rows,
         ticker_rows=ticker_rows,
         fetch_tasks=fetch_tasks,
+        enrichment_extracted=enrichment_extracted,
+        enrichment_failed=enrichment_failed,
         batches_written=batches_written,
         skipped_existing=skipped_existing,
         execute=execute,
@@ -155,9 +167,29 @@ def process_raw_file_worker(raw_json_path: str, config_values: dict[str, Any]) -
             output_root_win=Path(str(config_values.get("output_root_win") or "D:/market-data/prepared/benzinga_news_package")),
             max_enriched_text_chars_per_url=int(config_values.get("max_enriched_text_chars_per_url") or 24_000),
             max_enriched_urls_per_article=int(config_values.get("max_enriched_urls_per_article") or 5),
+            enrichment_enabled=bool(config_values.get("enrichment_enabled", True)),
+            url_artifact_root_win=Path(str(config_values.get("url_artifact_root_win") or "D:/market-data/news-benzinga/url-artifacts")),
+            url_per_domain_seconds=float(config_values.get("url_per_domain_seconds") or 0.1),
+            url_timeout_seconds=float(config_values.get("url_timeout_seconds") or 5.0),
+            url_max_html_bytes=int(config_values.get("url_max_html_bytes") or 4_000_000),
+            url_max_pdf_bytes=int(config_values.get("url_max_pdf_bytes") or 12_000_000),
+            url_max_retries=int(config_values.get("url_max_retries") or 0),
         )
         pipeline = BenzingaNewsPipeline(cfg)
-        processed = pipeline.process_raw_file(raw_json_path)
+        enricher = NewsUrlEnricher(
+            NewsEnrichmentConfig(
+                artifact_root=cfg.url_artifact_root_win,
+                enabled=cfg.enrichment_enabled,
+                per_domain_min_interval_seconds=cfg.url_per_domain_seconds,
+                timeout_seconds=cfg.url_timeout_seconds,
+                max_html_bytes=cfg.url_max_html_bytes,
+                max_pdf_bytes=cfg.url_max_pdf_bytes,
+                max_retries=cfg.url_max_retries,
+                max_text_chars=cfg.text_limit_chars,
+            )
+        )
+        enriched = pipeline.process_raw_file_enriched(raw_json_path, enricher=enricher)
+        processed = enriched.processed
         result = processed.result
         return GapFillFileResult(
             status="ok",
@@ -167,6 +199,9 @@ def process_raw_file_worker(raw_json_path: str, config_values: dict[str, Any]) -
             ticker_count=len(result.ticker_links),
             fetch_task_count=len(result.url_resolution.fetch_tasks),
             warning_count=len(result.warnings),
+            enrichment_requested=enriched.enrichment.requested,
+            enrichment_extracted=enriched.enrichment.extracted,
+            enrichment_failed=enriched.enrichment.failed,
             result=result,
         )
     except Exception as exc:  # noqa: BLE001
@@ -188,6 +223,9 @@ def summary_row(outcome: GapFillFileResult) -> dict[str, Any]:
         "ticker_count": outcome.ticker_count,
         "fetch_task_count": outcome.fetch_task_count,
         "warning_count": outcome.warning_count,
+        "enrichment_requested": outcome.enrichment_requested,
+        "enrichment_extracted": outcome.enrichment_extracted,
+        "enrichment_failed": outcome.enrichment_failed,
         "exception": outcome.exception,
     }
 

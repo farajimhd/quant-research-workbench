@@ -20,6 +20,7 @@ from pipelines.news.benzinga.core.item_pipeline import ItemPipelineOptions, proc
 from pipelines.news.benzinga.core.url_policy import load_policy
 from pipelines.news.benzinga.news_benzinga_normalize import stable_hash, to_provider_rfc3339
 from pipelines.news.benzinga.news_pipeline.config import BenzingaPipelineConfig, ClickHouseTargetConfig
+from pipelines.news.benzinga.news_pipeline.enrichment import NewsEnrichmentBatch, NewsUrlEnricher
 from research.mlops.clickhouse import ClickHouseHttpClient
 
 
@@ -27,6 +28,12 @@ from research.mlops.clickhouse import ClickHouseHttpClient
 class ProcessedNewsItem:
     result: NewsPipelineResult
     raw_json_path: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class EnrichedNewsItem:
+    processed: ProcessedNewsItem
+    enrichment: NewsEnrichmentBatch
 
 
 class BenzingaNewsPipeline:
@@ -65,6 +72,46 @@ class BenzingaNewsPipeline:
             raise ValueError(f"raw Benzinga file is not a JSON object: {raw_path}")
         return self.process_payload(
             payload,
+            raw_artifact_path=str(raw_path),
+            raw_payload_hash=stable_hash(json.dumps(payload, sort_keys=True, default=str)),
+        )
+
+    def process_payload_enriched(
+        self,
+        payload: dict[str, Any],
+        *,
+        enricher: NewsUrlEnricher,
+        raw_artifact_path: str = "",
+        raw_payload_hash: str = "",
+        downloaded_at_utc: datetime | None = None,
+    ) -> EnrichedNewsItem:
+        """Run the identical discovery, acquisition and V2 render path everywhere."""
+        initial = self.process_payload(
+            payload,
+            raw_artifact_path=raw_artifact_path,
+            raw_payload_hash=raw_payload_hash,
+            downloaded_at_utc=downloaded_at_utc,
+        )
+        enrichment = enricher.enrich_tasks(initial.result.url_resolution.fetch_tasks)
+        if not initial.result.url_resolution.fetch_tasks:
+            return EnrichedNewsItem(processed=initial, enrichment=enrichment)
+        final = self.process_payload(
+            payload,
+            raw_artifact_path=raw_artifact_path,
+            raw_payload_hash=raw_payload_hash,
+            downloaded_at_utc=downloaded_at_utc,
+            enrichment_rows=enrichment.rows,
+        )
+        return EnrichedNewsItem(processed=final, enrichment=enrichment)
+
+    def process_raw_file_enriched(self, path: str | Path, *, enricher: NewsUrlEnricher) -> EnrichedNewsItem:
+        raw_path = Path(path)
+        payload = json.loads(raw_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"raw Benzinga file is not a JSON object: {raw_path}")
+        return self.process_payload_enriched(
+            payload,
+            enricher=enricher,
             raw_artifact_path=str(raw_path),
             raw_payload_hash=stable_hash(json.dumps(payload, sort_keys=True, default=str)),
         )

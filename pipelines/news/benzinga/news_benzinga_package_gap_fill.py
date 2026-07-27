@@ -19,23 +19,42 @@ from research.mlops.env import discover_env_files, load_env_files, secret_status
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Concurrent Benzinga raw-file gap fill using the reusable item-level news package.")
+    parser = argparse.ArgumentParser(
+        description="Concurrent raw-file enrichment and certified Benzinga V2 gap fill."
+    )
     parser.add_argument("--raw-root-win", default=os.environ.get("NEWS_BENZINGA_RAW_ROOT_WIN") or "D:/market-data/news-benzinga/raw")
     parser.add_argument("--start-utc", default="", help="Optional inclusive UTC start. If omitted, scans all raw files under raw-root.")
     parser.add_argument("--end-utc", default="", help="Optional exclusive UTC end. If omitted, scans all raw files under raw-root.")
     parser.add_argument("--policy-json", default=os.environ.get("NEWS_BENZINGA_URL_DOMAIN_POLICY_JSON") or "")
-    parser.add_argument("--output-root-win", default=os.environ.get("NEWS_BENZINGA_PACKAGE_OUTPUT_ROOT_WIN") or "D:/market-data/prepared/benzinga_news_package_gap_fill")
+    parser.add_argument(
+        "--output-root-win",
+        default=os.environ.get("NEWS_BENZINGA_PACKAGE_OUTPUT_ROOT_WIN")
+        or "D:/TradingML/runtimes/news/benzinga_package_gap_fill",
+    )
     parser.add_argument("--processes", type=int, default=max(1, (os.cpu_count() or 4) // 2))
     parser.add_argument("--batch-size", type=int, default=1_000)
     parser.add_argument("--limit-files", type=int, default=0)
     parser.add_argument("--progress-interval", type=int, default=500)
     parser.add_argument("--text-limit-chars", type=int, default=int(os.environ.get("NEWS_BENZINGA_TEXT_LIMIT_CHARS") or "50000"))
+    parser.add_argument(
+        "--url-artifact-root-win",
+        default=os.environ.get("NEWS_BENZINGA_URL_ARTIFACT_ROOT_WIN") or "",
+    )
+    parser.add_argument("--url-per-domain-seconds", type=float, default=float(os.environ.get("NEWS_BENZINGA_URL_PER_DOMAIN_SECONDS") or "0.1"))
+    parser.add_argument("--url-timeout-seconds", type=float, default=float(os.environ.get("NEWS_BENZINGA_URL_TIMEOUT_SECONDS") or "5"))
+    parser.add_argument("--url-max-html-bytes", type=int, default=int(os.environ.get("NEWS_BENZINGA_URL_MAX_HTML_BYTES") or "4000000"))
+    parser.add_argument("--url-max-pdf-bytes", type=int, default=int(os.environ.get("NEWS_BENZINGA_URL_MAX_PDF_BYTES") or "12000000"))
+    parser.add_argument("--url-max-retries", type=int, default=int(os.environ.get("NEWS_BENZINGA_URL_MAX_RETRIES") or "0"))
     parser.add_argument("--clickhouse-url", default=ClickHouseTargetConfig.from_env().url)
     parser.add_argument("--user", default=ClickHouseTargetConfig.from_env().user)
     parser.add_argument("--password", default=ClickHouseTargetConfig.from_env().password)
     parser.add_argument("--database", default=ClickHouseTargetConfig.from_env().database)
-    parser.add_argument("--normalized-table", default=ClickHouseTargetConfig.from_env().normalized_table)
-    parser.add_argument("--ticker-table", default=ClickHouseTargetConfig.from_env().ticker_table)
+    parser.add_argument("--event-table", default=ClickHouseTargetConfig.from_env().event_table)
+    parser.add_argument("--source-table", default=ClickHouseTargetConfig.from_env().source_table)
+    parser.add_argument("--block-table", default=ClickHouseTargetConfig.from_env().block_table)
+    parser.add_argument("--rendered-table", default=ClickHouseTargetConfig.from_env().rendered_table)
+    parser.add_argument("--rendered-ticker-table", default=ClickHouseTargetConfig.from_env().rendered_ticker_table)
+    parser.add_argument("--render-authority-table", default=ClickHouseTargetConfig.from_env().render_authority_table)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--insert-existing", action="store_true", help="Do not skip rows already present by canonical_news_id.")
     parser.add_argument("--skip-table-validation", action="store_true", help="Reserved for compatibility; validation is skipped only by writer internals when safe.")
@@ -45,6 +64,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     loaded_env_files = load_env_files(discover_env_files(REPO_ROOT))
     args = parse_args()
+    if not args.url_artifact_root_win:
+        args.url_artifact_root_win = str(Path(args.raw_root_win).parent / "url-artifacts")
     start = parse_utc(args.start_utc) if args.start_utc else None
     end = parse_utc(args.end_utc) if args.end_utc else None
     if bool(start) != bool(end):
@@ -62,14 +83,24 @@ def main() -> None:
         text_limit_chars=args.text_limit_chars,
         raw_root_win=raw_root,
         output_root_win=run_root,
+        url_artifact_root_win=Path(args.url_artifact_root_win),
+        url_per_domain_seconds=args.url_per_domain_seconds,
+        url_timeout_seconds=args.url_timeout_seconds,
+        url_max_html_bytes=args.url_max_html_bytes,
+        url_max_pdf_bytes=args.url_max_pdf_bytes,
+        url_max_retries=args.url_max_retries,
     )
     target = ClickHouseTargetConfig(
         url=args.clickhouse_url,
         user=args.user,
         password=args.password,
         database=args.database,
-        normalized_table=args.normalized_table,
-        ticker_table=args.ticker_table,
+        event_table=args.event_table,
+        source_table=args.source_table,
+        block_table=args.block_table,
+        rendered_table=args.rendered_table,
+        rendered_ticker_table=args.rendered_ticker_table,
+        render_authority_table=args.render_authority_table,
     )
     print("=" * 96, flush=True)
     print("Benzinga package gap fill", flush=True)
@@ -77,7 +108,12 @@ def main() -> None:
     print(f"raw_root={raw_root}", flush=True)
     print(f"files={len(raw_files):,} processes={args.processes} batch_size={args.batch_size}", flush=True)
     print(f"date_range={args.start_utc or '<all>'} -> {args.end_utc or '<all>'}", flush=True)
-    print(f"target={target.database}.{target.normalized_table} + {target.database}.{target.ticker_table}", flush=True)
+    print(
+        f"target_v2={target.database}.{target.event_table} + "
+        f"{target.database}.{target.rendered_table} + {target.database}.{target.rendered_ticker_table}",
+        flush=True,
+    )
+    print(f"enrichment_artifacts={pipeline_config.url_artifact_root_win}", flush=True)
     print(f"execute={args.execute} skip_existing={not args.insert_existing}", flush=True)
     print(f"loaded_env_files={[str(path) for path in loaded_env_files]}", flush=True)
     print("secret_status=" + json.dumps(secret_status(["REAL_LIVE_CLICKHOUSE_WRITE_URL", "REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD"]), sort_keys=True), flush=True)

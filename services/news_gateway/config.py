@@ -113,8 +113,11 @@ class NewsGatewayConfig:
         )
         live_url_artifact_root = Path(
             env_string(
-                "NEWS_BENZINGA_LIVE_URL_ARTIFACT_ROOT_WIN",
-                str(data_root / "news-benzinga" / "live-url-artifacts"),
+                "NEWS_BENZINGA_URL_ARTIFACT_ROOT_WIN",
+                env_string(
+                    "NEWS_BENZINGA_LIVE_URL_ARTIFACT_ROOT_WIN",
+                    str(data_root / "news-benzinga" / "url-artifacts"),
+                ),
             )
         )
         clickhouse_password = default_clickhouse_password()
