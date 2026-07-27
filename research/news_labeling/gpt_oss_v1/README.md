@@ -65,25 +65,32 @@ contain an earnings beat and a guidance cut without collapsing either fact.
 
 ## Workstation commands
 
-The workstation already has vLLM inside WSL; do not install a second Windows
-copy. From a Windows terminal, start that existing runtime with:
+The laptop already has vLLM 0.22.1 in Ubuntu WSL at
+`/home/g835l/venvs/vllm-gptoss/bin/vllm`; do not install a second Windows copy.
+From a laptop Windows terminal, start that existing runtime with:
 
 ```powershell
 conda activate ml4t
-cd D:\TradingML\codes\quant-research-workbench
+cd D:\TradingCodes\quant-research-workbench
 python -m research.news_labeling.gpt_oss_v1.run_server_wsl
 ```
 
-This executes `vllm serve openai/gpt-oss-20b` inside the default WSL
-distribution, binds it to port 8000, and enables prefix caching. If vLLM is
-installed in a non-default distribution, add `--distro <name>`. Windows
-localhost forwarding must be enabled so the labeling client can reach
-`http://127.0.0.1:8000/v1`.
+Use `--print-only` first if you want to inspect the exact WSL command without
+starting or downloading anything.
+
+This invokes the verified virtual-environment executable directly inside the
+default `Ubuntu` WSL distribution, binds it to port 8000, and enables prefix
+caching. The laptop exposes an RTX 5090 Laptop GPU to that environment. Model
+weights are not currently cached, so first startup downloads
+`openai/gpt-oss-20b`. If the environment moves, override `--distro` or
+`--vllm-bin`. Windows localhost forwarding must be enabled so the labeling
+client can reach `http://127.0.0.1:8000/v1`.
 
 Alternatively, start it directly in the existing WSL shell:
 
 ```bash
-vllm serve openai/gpt-oss-20b --host 0.0.0.0 --port 8000 \
+/home/g835l/venvs/vllm-gptoss/bin/vllm serve openai/gpt-oss-20b \
+  --host 0.0.0.0 --port 8000 \
   --gpu-memory-utilization 0.85 --max-model-len 16384 \
   --enable-prefix-caching
 ```
@@ -92,7 +99,7 @@ In a second terminal, first create and inspect the deterministic sample plan:
 
 ```powershell
 conda activate ml4t
-cd D:\TradingML\codes\quant-research-workbench
+cd D:\TradingCodes\quant-research-workbench
 python -m research.news_labeling.gpt_oss_v1.run_sample
 ```
 

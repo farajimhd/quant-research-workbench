@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import shlex
 import subprocess
 
 
@@ -10,13 +9,15 @@ def main(argv: list[str] | None = None) -> int:
         description="Start the workstation's existing WSL vLLM gpt-oss-20b server."
     )
     parser.add_argument("--distro", default="")
+    parser.add_argument("--vllm-bin", default="/home/g835l/venvs/vllm-gptoss/bin/vllm")
     parser.add_argument("--model", default="openai/gpt-oss-20b")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.85)
     parser.add_argument("--max-model-len", type=int, default=16_384)
+    parser.add_argument("--print-only", action="store_true")
     args = parser.parse_args(argv)
     serve = [
-        "vllm", "serve", args.model,
+        args.vllm_bin, "serve", args.model,
         "--host", "0.0.0.0",
         "--port", str(args.port),
         "--gpu-memory-utilization", str(args.gpu_memory_utilization),
@@ -26,8 +27,12 @@ def main(argv: list[str] | None = None) -> int:
     command = ["wsl.exe"]
     if args.distro:
         command.extend(("-d", args.distro))
-    command.extend(("--", "bash", "-lic", shlex.join(serve)))
+    # Call the venv executable directly. A WSL login shell does not expose this
+    # virtual environment on PATH on the laptop.
+    command.extend(("--", *serve))
     print("COMMAND " + subprocess.list2cmdline(command), flush=True)
+    if args.print_only:
+        return 0
     return subprocess.call(command)
 
 
