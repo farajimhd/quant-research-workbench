@@ -41,14 +41,25 @@ The launcher:
 1. creates the versioned tables;
 2. reads the v1 source by bounded UTC day;
 3. resolves raw artifacts and renders articles concurrently;
-4. inserts idempotent daily products;
+4. inserts idempotent daily products with bounded ClickHouse transport retries;
 5. audits whole-corpus event/render cardinality, empty output, and orphans;
 6. writes stratified original-versus-rendered Markdown samples;
 7. marks the authority `ready` only after a complete, error-free run.
 
-The run root and `AUDIT.md` are printed at completion. A limited run can never
-certify the authority. Restarting skips days whose certified renderer-version
-event count already equals the source count.
+Generated status, errors, audit samples, and `AUDIT.md` are written below
+`D:\TradingML\runtimes\news\benzinga_news_rendered_v2`; the final run root is
+printed at completion. A limited run can never certify the authority.
+
+Transient connection timeouts and HTTP 408, 425, 429, 502, 503, or 504
+responses are retried up to 12 times with capped exponential backoff. Retry
+events are printed and appended to the run's `status.jsonl`. Inserts reuse the
+identical bounded payload; the deterministic `ReplacingMergeTree` identities
+make an unknown first-attempt outcome safe to retry.
+
+If the process still exits, run the same command again. Restarting verifies all
+five products and skips complete days. A partially inserted day is rebuilt
+idempotently; no table deletion or full restart is required. Query/schema errors
+are not retried because they require a code or data-contract correction.
 
 After certification, restart the news gateway. Its preflight refuses to start
 against missing or failed v2 authority state, and live writes use the same

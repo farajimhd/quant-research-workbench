@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
+from urllib import error as url_error
 
 from pipelines.news.benzinga.core.clickhouse_values import datetime64_utc_text
 from pipelines.news.benzinga.core.clickhouse_writer import NORMALIZED_COLUMNS, insert_json_each_row
@@ -39,8 +40,10 @@ from research.mlops.env import discover_env_files, load_env_files
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_OUTPUT_ROOT = Path("D:/market-data/prepared/benzinga_news_rendered_v2")
+DEFAULT_OUTPUT_ROOT = Path("D:/TradingML/runtimes/news/benzinga_news_rendered_v2")
 DEFAULT_PATH_MAP = (r"D:\market-data", r"\\DESKTOP-SAAI85T\Workstation-D\market-data")
+TRANSIENT_HTTP_STATUS_CODES = frozenset({408, 425, 429, 502, 503, 504})
+TRANSIENT_WINDOWS_SOCKET_ERRORS = frozenset({10053, 10054, 10060, 10061, 10065})
 
 
 @dataclass(slots=True)
@@ -53,6 +56,63 @@ class BuildCounts:
     ticker_rows: int = 0
     raw_artifacts_missing: int = 0
     failures: int = 0
+
+
+class RetryingClickHouseHttpClient(ClickHouseHttpClient):
+    """Bounded retry client for this idempotent, versioned rebuild.
+
+    Every v2 data table is a ReplacingMergeTree with a deterministic identity
+    key. Retrying the exact same INSERT payload is therefore safe even when a
+    transport failure leaves the request outcome unknown.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        user: str,
+        password: str,
+        *,
+        attempts: int,
+        retry_base_seconds: float,
+        retry_max_seconds: float,
+        status_path: Path,
+    ) -> None:
+        super().__init__(base_url, user, password)
+        self.attempts = max(1, int(attempts))
+        self.retry_base_seconds = max(0.0, float(retry_base_seconds))
+        self.retry_max_seconds = max(self.retry_base_seconds, float(retry_max_seconds))
+        self.status_path = status_path
+
+    def execute(self, sql: str, *, query_id: str | None = None) -> str:
+        operation = clickhouse_operation(sql)
+        for attempt in range(1, self.attempts + 1):
+            try:
+                return super().execute(sql, query_id=query_id)
+            except Exception as exc:
+                if not is_transient_clickhouse_error(exc) or attempt >= self.attempts:
+                    raise
+                delay = min(
+                    self.retry_base_seconds * (2 ** (attempt - 1)),
+                    self.retry_max_seconds,
+                )
+                event = {
+                    "event": "clickhouse_retry",
+                    "operation": operation,
+                    "attempt": attempt,
+                    "max_attempts": self.attempts,
+                    "wait_seconds": round(delay, 3),
+                    "error_type": type(exc).__name__,
+                    "error": bounded_error_text(exc),
+                }
+                append_jsonl(self.status_path, event)
+                print(
+                    f"CLICKHOUSE RETRY | operation={operation} "
+                    f"attempt={attempt}/{self.attempts} wait={delay:.1f}s "
+                    f"error={type(exc).__name__}: {bounded_error_text(exc)}",
+                    flush=True,
+                )
+                time.sleep(delay)
+        raise AssertionError("unreachable")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -70,19 +130,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--path-prefix-map", action="append", default=[])
     parser.add_argument("--limit-days", type=int, default=0, help="Audit/smoke only; a limited run can never certify v2.")
+    parser.add_argument("--clickhouse-attempts", type=int, default=12)
+    parser.add_argument("--clickhouse-retry-base-seconds", type=float, default=2.0)
+    parser.add_argument("--clickhouse-retry-max-seconds", type=float, default=30.0)
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     load_env_files(discover_env_files(REPO_ROOT))
     args = parse_args(argv)
-    client = ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password())
-    target = NewsV2TargetConfig(database=args.database, execute=args.execute, require_ready=False, skip_table_validation=True)
     run_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
     run_root = Path(args.output_root) / run_id
     run_root.mkdir(parents=True, exist_ok=True)
     status_path = run_root / "status.jsonl"
     errors_path = run_root / "errors.jsonl"
+    client = RetryingClickHouseHttpClient(
+        default_clickhouse_url(),
+        default_clickhouse_user(),
+        default_clickhouse_password(),
+        attempts=args.clickhouse_attempts,
+        retry_base_seconds=args.clickhouse_retry_base_seconds,
+        retry_max_seconds=args.clickhouse_retry_max_seconds,
+        status_path=status_path,
+    )
+    target = NewsV2TargetConfig(database=args.database, execute=args.execute, require_ready=False, skip_table_validation=True)
     started_at = datetime.now(UTC)
     path_maps = parse_path_maps(args.path_prefix_map)
 
@@ -600,8 +671,56 @@ def iter_days(start: date, end: date) -> Iterable[date]:
 
 
 def append_jsonl(path: Path, row: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+
+
+def is_transient_clickhouse_error(exc: BaseException) -> bool:
+    pending: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, url_error.HTTPError):
+            if int(current.code) in TRANSIENT_HTTP_STATUS_CODES:
+                return True
+        elif isinstance(current, (url_error.URLError, TimeoutError, ConnectionError)):
+            return True
+        elif isinstance(current, OSError):
+            if getattr(current, "winerror", None) in TRANSIENT_WINDOWS_SOCKET_ERRORS:
+                return True
+        for nested in (
+            getattr(current, "reason", None),
+            getattr(current, "__cause__", None),
+            getattr(current, "__context__", None),
+        ):
+            if isinstance(nested, BaseException):
+                pending.append(nested)
+    return False
+
+
+def clickhouse_operation(sql: str) -> str:
+    normalized = " ".join(sql.lstrip().split())
+    if not normalized:
+        return "empty"
+    words = normalized.split(" ", 4)
+    verb = words[0].upper()
+    if verb == "INSERT" and len(words) >= 3:
+        target = words[2].replace("`", "")
+        return f"insert:{target[:96]}"
+    if verb == "CREATE":
+        return "create_table"
+    if verb in {"SELECT", "WITH"}:
+        return "read"
+    return verb.lower()[:32]
+
+
+def bounded_error_text(exc: BaseException, limit: int = 320) -> str:
+    text = " ".join(str(exc).split())
+    return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
 if __name__ == "__main__":
