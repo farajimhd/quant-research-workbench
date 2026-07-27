@@ -74,6 +74,22 @@ trading management, scanners, and the multi-horizon Charts & Quotes workspace.
 Its latest correction made historical footprints session-causal; the existing
 QMD History service must be restarted to load that binary.
 
+### [2026-07-13 09:25 PDT - Establish the foundational Canvas and historical trading workspace](docs/codex/chat-summaries/2026/CHAT-20260713-0925-foundational-canvas-historical-trading-workspace.md)
+
+- Chat/task ID: `019f5c4c-5aa0-7552-abbf-78aaa21d6d4c`
+- Related tasks: `TASK-0050`, `TASK-0051`, `TASK-0052`, `TASK-0144`
+- Summary written: 2026-07-27 11:15:32 PDT
+
+This chat corrected the product from page-oriented navigation to one
+Canvas-container workspace, extracted shared Live/Replay primitives, created
+the IBKR-shaped runtime and simulated broker foundation, and replaced the
+transitional Python historical gateway with a Rust binary sharing live QMD's
+core. It then established global Canvas configuration, one-day Replay,
+single-symbol neon linking, focus canvases, compact telemetry and chart panes,
+strict overflow ownership, and latest-covered-session initialization. Runtime
+cutover, complete run/debug flows, and final Live migration remain under
+`TASK-0051` and `TASK-0052`.
+
 ### [2026-07-08 09:21 PDT - Review SEC gateway errors and rebuild SEC v3](docs/codex/chat-summaries/2026/CHAT-20260708-0921-review-sec-gateway-and-rebuild-v3.md)
 
 - Chat/task ID: `019f4288-d619-7731-965e-a3bbfb55cbd8`
