@@ -38,3 +38,8 @@ class NewsPipelineResult:
     ticker_links: list[dict[str, Any]]
     url_resolution: UrlResolution
     warnings: list[str] = field(default_factory=list)
+    v2_event_row: dict[str, Any] = field(default_factory=dict)
+    v2_source_rows: list[dict[str, Any]] = field(default_factory=list)
+    v2_block_rows: list[dict[str, Any]] = field(default_factory=list)
+    v2_rendered_row: dict[str, Any] = field(default_factory=dict)
+    v2_ticker_links: list[dict[str, Any]] = field(default_factory=list)

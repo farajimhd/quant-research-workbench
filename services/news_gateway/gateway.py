@@ -37,7 +37,7 @@ from pipelines.news.benzinga.news_pipeline.provider import (
     BenzingaProviderConfig,
 )
 from pipelines.news.benzinga.news_benzinga_url_download import DomainRateLimiter, download_row
-from pipelines.news.benzinga.news_benzinga_url_extract import extract_row
+from pipelines.news.benzinga.news_benzinga_url_extract import extract_row, read_artifact
 from research.mlops.clickhouse import ClickHouseHttpClient
 from services.news_gateway.config import (
     NewsGatewayConfig,
@@ -263,6 +263,12 @@ class NewsGateway:
             normalized_table=config.normalized_table,
             ticker_table=config.ticker_table,
             coverage_table=config.coverage_table,
+            event_table=config.event_table,
+            source_table=config.source_table,
+            block_table=config.block_table,
+            rendered_table=config.rendered_table,
+            rendered_ticker_table=config.rendered_ticker_table,
+            render_authority_table=config.render_authority_table,
         )
         self.provider = BenzingaProviderClient(
             BenzingaProviderConfig(
@@ -1146,6 +1152,20 @@ class NewsGateway:
                 )
                 continue
             extraction = extract_row(download_result, self.config.text_limit_chars, self.config.live_url_max_pdf_bytes)
+            if (
+                extraction.get("status") == "extracted"
+                and str(download_result.get("resolved_action") or "") == "fetch_html"
+            ):
+                artifact_path = Path(str(download_result.get("artifact_path") or ""))
+                if not artifact_path.is_file():
+                    raise RuntimeError(
+                        f"Successful HTML extraction lacks its source artifact for {download_result.get('url_hash', '')}"
+                    )
+                raw_bytes = read_artifact(
+                    artifact_path,
+                    str(download_result.get("artifact_compression") or ""),
+                )
+                extraction["raw_html"] = raw_bytes.decode("utf-8", errors="replace")
             rows.append(extraction)
         return rows
 

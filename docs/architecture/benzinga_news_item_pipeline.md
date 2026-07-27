@@ -44,6 +44,11 @@ It returns:
 NewsPipelineResult
   normalized_row
   ticker_links
+  v2_event_row
+  v2_source_rows
+  v2_block_rows
+  v2_rendered_row
+  v2_ticker_links
   url_resolution.url_candidates
   url_resolution.fetch_tasks
   url_resolution.attachments
@@ -61,7 +66,15 @@ q_live.news_url_policy_v1
 
 The service should load the active policy into memory at startup and refresh it on a timer or explicit command. Historical and live paths should use the same policy version.
 
-## Current Smoke Result
+## Current structured authority
+
+The live path now writes the certified v2 event/source/block/rendered/ticker
+contract. The legacy normalized row remains in memory for compatibility and as
+the historical rebuild source, but it is no longer the gateway write
+authority. Gateway startup requires the v2 authority row to be `ready` with
+zero audit errors.
+
+## Earlier v1 smoke result
 
 The item pipeline was smoke-tested against `50` raw Benzinga JSON files from the workstation share:
 

@@ -14,6 +14,23 @@ This package contains the historical Benzinga news workflow:
 - reusable item-level package used by live ingestion and concurrent gap fills.
 - deterministic phrase-presence and causal post-news reaction reference tables.
 - versioned deterministic issuer relevance, structured language, and calibrated reaction intelligence.
+- certified structured rendering v2 with original-versus-rendered audit samples.
+- one-embedding-per-article OpenAI extraction with separate multi-ticker links.
+
+Structured v2 rebuild and audit (stop the live news gateway first):
+
+```powershell
+python -m pipelines.news.benzinga.run_news_rendered_v2_rebuild
+```
+
+After the rebuild reports `status=ready`, restart the news gateway. The gateway
+preflight deliberately refuses to write until that certification exists.
+
+Embed the complete article population once per article:
+
+```powershell
+python -m research.news_reaction_model.openai_embeddings_v2.run_build --execute
+```
 
 Preferred module path:
 

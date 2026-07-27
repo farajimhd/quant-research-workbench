@@ -42,9 +42,9 @@ Each background batch:
 ```text
 download approved URL/PDF/text tasks
 -> extract clean text from HTML, PDF, or plain text artifacts
--> rebuild the canonical normalized row with enrichment rows attached
--> write q_live.benzinga_news_normalized_v1
--> write q_live.benzinga_news_ticker_v1
+-> render the shared structured v2 article with enrichment sources attached
+-> write v2 event/source/block/rendered rows
+-> write revision-bound v2 ticker links
 -> replace the in-memory pending row with the final canonical row
 -> update live coverage only after the database write succeeds
 ```
@@ -60,8 +60,8 @@ final canonical rows; partial in-memory pending rows are not inserted.
 ## App Read Contract
 
 The Canvas news containers keep one canonical query path for point-in-time and
-live use. Search, ticker filters, pagination, and article text read the persisted
-`q_live.benzinga_news_normalized_v1` and `q_live.benzinga_news_ticker_v1` tables.
+live use. Search, ticker filters, pagination, and article text read the
+certified v2 event/rendered/ticker authority.
 Live canvases additionally subscribe through the backend
 `/api/trading/news/stream` proxy. Gateway snapshots include a monotonic
 `revision`; a changed revision invalidates the current page and makes the client
@@ -312,21 +312,23 @@ asking the user to manually assemble commands.
 The live service writes canonical rows to:
 
 ```text
+q_live.benzinga_news_event_v2
+q_live.benzinga_news_source_v2
+q_live.benzinga_news_block_v2
+q_live.benzinga_news_rendered_v2
+q_live.benzinga_news_ticker_v2
+```
+
+It does not mutate or overwrite the legacy rebuild source:
+
+```text
 q_live.benzinga_news_normalized_v1
 q_live.benzinga_news_ticker_v1
 ```
 
-It does not write the legacy split tables:
-
-```text
-benzinga_news_event_v1
-benzinga_news_text_v1
-benzinga_news_url_v1
-benzinga_news_attachment_v1
-```
-
-Raw JSON remains on disk. The database stores compact normalized fields and
-ticker links. This keeps historical and live data aligned.
+Raw JSON remains on disk. Startup requires a ready, zero-error
+`benzinga_news_render_authority_v2` row, so the service cannot mix v1 history
+with v2 live semantics.
 
 ## Terminal Dashboard
 
@@ -450,7 +452,16 @@ NEWS_BENZINGA_CLICKHOUSE_DATABASE=q_live
 NEWS_BENZINGA_NORMALIZED_TABLE=benzinga_news_normalized_v1
 NEWS_BENZINGA_TICKER_TABLE=benzinga_news_ticker_v1
 NEWS_BENZINGA_COVERAGE_TABLE=benzinga_news_coverage_manifest_v1
+NEWS_BENZINGA_EVENT_TABLE=benzinga_news_event_v2
+NEWS_BENZINGA_SOURCE_TABLE=benzinga_news_source_v2
+NEWS_BENZINGA_BLOCK_TABLE=benzinga_news_block_v2
+NEWS_BENZINGA_RENDERED_TABLE=benzinga_news_rendered_v2
+NEWS_BENZINGA_RENDERED_TICKER_TABLE=benzinga_news_ticker_v2
+NEWS_BENZINGA_RENDER_AUTHORITY_TABLE=benzinga_news_render_authority_v2
 ```
+
+The two v1 settings remain coverage-bootstrap inputs during migration; they are
+not the live write destination.
 
 Credential fallback order is `NEWS_*`, `QLIVE_MIGRATION_*`, `QMD_*`,
 `REAL_LIVE_*`, `CLICKHOUSE_WORKSTATION_*`, then plain `CLICKHOUSE_*`.

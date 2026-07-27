@@ -9,6 +9,7 @@ from typing import Callable
 
 from pipelines.news.benzinga.core.coverage_manifest import CoverageManifestConfig, ensure_coverage_manifest_table
 from pipelines.news.benzinga.core.clickhouse_writer import NewsWriteConfig, validate_target_tables
+from pipelines.news.benzinga.core.clickhouse_writer_v2 import NewsV2TargetConfig, assert_v2_ready
 from pipelines.news.benzinga.news_pipeline.provider import BenzingaProviderClient, BenzingaProviderConfig
 from research.mlops.clickhouse import ClickHouseHttpClient
 from services.news_gateway.config import NewsGatewayConfig
@@ -123,9 +124,21 @@ def check_clickhouse(config: NewsGatewayConfig, clickhouse_password: str) -> str
             ticker_table=config.ticker_table,
         ),
     )
+    assert_v2_ready(
+        client,
+        NewsV2TargetConfig(
+            database=config.clickhouse_database,
+            event_table=config.event_table,
+            source_table=config.source_table,
+            block_table=config.block_table,
+            rendered_table=config.rendered_table,
+            ticker_table=config.rendered_ticker_table,
+            authority_table=config.render_authority_table,
+        ),
+    )
     return (
-        f"tables={config.clickhouse_database}.{config.normalized_table},"
-        f"{config.clickhouse_database}.{config.ticker_table},"
+        f"render_authority={config.clickhouse_database}.{config.rendered_table},"
+        f"{config.clickhouse_database}.{config.rendered_ticker_table},"
         f"{config.clickhouse_database}.{config.coverage_table}"
     )
 

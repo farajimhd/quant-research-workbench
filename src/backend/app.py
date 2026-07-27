@@ -223,8 +223,10 @@ SERVICE_DATABASE_TABLES: dict[str, list[dict[str, str]]] = {
     ],
     "qmd-history": [],
     "news": [
-        {"database": "q_live", "table": "benzinga_news_normalized_v1", "role": "normalized news"},
-        {"database": "q_live", "table": "benzinga_news_ticker_v1", "role": "ticker links"},
+        {"database": "q_live", "table": "benzinga_news_event_v2", "role": "news events"},
+        {"database": "q_live", "table": "benzinga_news_rendered_v2", "role": "rendered news"},
+        {"database": "q_live", "table": "benzinga_news_ticker_v2", "role": "ticker links"},
+        {"database": "q_live", "table": "benzinga_news_render_authority_v2", "role": "render authority"},
         {"database": "q_live", "table": "benzinga_news_coverage_manifest_v1", "role": "coverage"},
     ],
     "sec": [
@@ -1031,8 +1033,8 @@ def service_news_histogram() -> dict[str, Any]:
     safe_bin_seconds = SERVICE_NEWS_HISTOGRAM_BIN_SECONDS
 
     database = "q_live"
-    normalized_table = "benzinga_news_normalized_v1"
-    ticker_table = "benzinga_news_ticker_v1"
+    normalized_table = "benzinga_news_event_v2"
+    ticker_table = "benzinga_news_ticker_v2"
     market_now = datetime.now(UTC).astimezone(ZoneInfo(EXCHANGE_TIME_ZONE))
     window_start_et = market_now.replace(hour=0, minute=0, second=0, microsecond=0)
     window_end_et = window_start_et + timedelta(days=1)
@@ -1050,26 +1052,14 @@ def service_news_histogram() -> dict[str, Any]:
         WITH
             {window_start_sql} AS window_start,
             {window_end_sql} AS window_end,
-            ticker_counts AS
-            (
-                SELECT
-                    canonical_news_id,
-                    toUInt64(countDistinct(nullIf(ticker, ''))) AS ticker_count
-                FROM {quote_ident(database)}.{quote_ident(ticker_table)} FINAL
-                WHERE published_at_utc >= window_start
-                  AND published_at_utc < window_end
-                GROUP BY canonical_news_id
-            ),
             news_counts AS
             (
                 SELECT
                     toUInt64(intDiv(dateDiff('second', window_start, n.published_at_utc) + {safe_bin_seconds // 2}, {safe_bin_seconds})) AS bucket_index,
-                    toUInt64(countIf(ifNull(t.ticker_count, toUInt64(0)) = 1)) AS single_ticker_rows,
-                    toUInt64(countIf(ifNull(t.ticker_count, toUInt64(0)) != 1)) AS broad_or_none_rows,
+                    toUInt64(countIf(length(n.tickers) = 1)) AS single_ticker_rows,
+                    toUInt64(countIf(length(n.tickers) != 1)) AS broad_or_none_rows,
                     toUInt64(count()) AS total_rows
                 FROM {quote_ident(database)}.{quote_ident(normalized_table)} AS n FINAL
-                LEFT JOIN ticker_counts AS t
-                    ON t.canonical_news_id = n.canonical_news_id
                 WHERE n.published_at_utc >= window_start
                   AND n.published_at_utc < window_end
                 GROUP BY bucket_index
@@ -1127,8 +1117,9 @@ def service_news_today_rows(limit: int = 250, sort: str = "desc") -> dict[str, A
     safe_limit = max(1, min(limit, SERVICE_NEWS_TODAY_ROWS_LIMIT))
     sort_direction = "ASC" if sort.strip().lower() == "asc" else "DESC"
     database = "q_live"
-    normalized_table = "benzinga_news_normalized_v1"
-    ticker_table = "benzinga_news_ticker_v1"
+    normalized_table = "benzinga_news_event_v2"
+    rendered_table = "benzinga_news_rendered_v2"
+    ticker_table = "benzinga_news_ticker_v2"
     market_now = datetime.now(UTC).astimezone(ZoneInfo(EXCHANGE_TIME_ZONE))
     window_start_et = market_now.replace(hour=0, minute=0, second=0, microsecond=0)
     window_end_et = window_start_et + timedelta(days=1)
@@ -1139,29 +1130,17 @@ def service_news_today_rows(limit: int = 250, sort: str = "desc") -> dict[str, A
     summary_query = f"""
         WITH
             {window_start_sql} AS window_start,
-            {window_end_sql} AS window_end,
-            ticker_counts AS
-            (
-                SELECT
-                    canonical_news_id,
-                    toUInt64(countDistinct(nullIf(ticker, ''))) AS ticker_link_count
-                FROM {quote_ident(database)}.{quote_ident(ticker_table)} FINAL
-                WHERE published_at_utc >= window_start
-                  AND published_at_utc < window_end
-                GROUP BY canonical_news_id
-            )
+            {window_end_sql} AS window_end
         SELECT
             toUInt64(count()) AS total_rows,
-            toUInt64(countIf(ifNull(t.ticker_link_count, toUInt64(0)) = 1)) AS one_ticker_rows,
-            toUInt64(countIf(ifNull(t.ticker_link_count, toUInt64(0)) > 1)) AS multi_ticker_rows,
-            toUInt64(countIf(ifNull(t.ticker_link_count, toUInt64(0)) = 0)) AS no_ticker_rows,
-            toUInt64(countIf(ifNull(t.ticker_link_count, toUInt64(0)) > 0)) AS with_ticker_rows,
-            toUInt64(countIf(n.has_external_text)) AS external_text_rows,
-            toUInt64(countIf(n.has_pdf)) AS pdf_rows,
+            toUInt64(countIf(length(n.tickers) = 1)) AS one_ticker_rows,
+            toUInt64(countIf(length(n.tickers) > 1)) AS multi_ticker_rows,
+            toUInt64(countIf(length(n.tickers) = 0)) AS no_ticker_rows,
+            toUInt64(countIf(length(n.tickers) > 0)) AS with_ticker_rows,
+            toUInt64(countIf(has(n.content_quality_flags, 'external_text'))) AS external_text_rows,
+            toUInt64(countIf(has(n.content_quality_flags, 'pdf_text'))) AS pdf_rows,
             formatDateTime(max(n.published_at_utc), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS latest_published_at_utc
         FROM {quote_ident(database)}.{quote_ident(normalized_table)} AS n FINAL
-        LEFT JOIN ticker_counts AS t
-            ON t.canonical_news_id = n.canonical_news_id
         WHERE n.published_at_utc >= window_start
           AND n.published_at_utc < window_end
         FORMAT JSONEachRow
@@ -1171,18 +1150,7 @@ def service_news_today_rows(limit: int = 250, sort: str = "desc") -> dict[str, A
     query = f"""
         WITH
             {window_start_sql} AS window_start,
-            {window_end_sql} AS window_end,
-            ticker_counts AS
-            (
-                SELECT
-                    canonical_news_id,
-                    toUInt64(countDistinct(nullIf(ticker, ''))) AS ticker_link_count,
-                    arraySort(groupUniqArray(nullIf(ticker, ''))) AS ticker_link_sample
-                FROM {quote_ident(database)}.{quote_ident(ticker_table)} FINAL
-                WHERE published_at_utc >= window_start
-                  AND published_at_utc < window_end
-                GROUP BY canonical_news_id
-            )
+            {window_end_sql} AS window_end
         SELECT
             n.canonical_news_id,
             n.provider_article_id,
@@ -1196,23 +1164,25 @@ def service_news_today_rows(limit: int = 250, sort: str = "desc") -> dict[str, A
             n.tickers,
             n.channels,
             n.provider_tags,
-            ifNull(t.ticker_link_count, toUInt64(0)) AS ticker_link_count,
-            ifNull(t.ticker_link_sample, []) AS ticker_link_sample,
-            n.has_body,
-            n.is_title_only,
-            n.has_external_text,
-            n.has_pdf,
-            n.external_fetch_status,
-            n.pdf_extract_status,
+            length(n.tickers) AS ticker_link_count,
+            arraySort(n.tickers) AS ticker_link_sample,
+            r.source_count > 0 AS has_body,
+            r.source_count = 0 AS is_title_only,
+            has(n.content_quality_flags, 'external_text') AS has_external_text,
+            has(n.content_quality_flags, 'pdf_text') AS has_pdf,
+            '' AS external_fetch_status,
+            '' AS pdf_extract_status,
             n.content_quality_flags,
-            lengthUTF8(n.body_text) AS body_chars,
-            lengthUTF8(n.external_text) AS external_chars,
-            lengthUTF8(n.pdf_text) AS pdf_chars,
-            lengthUTF8(n.normalized_full_text) AS full_text_chars,
-            substring(n.normalized_full_text, 1, 240) AS text_preview
+            0 AS body_chars,
+            0 AS external_chars,
+            0 AS pdf_chars,
+            lengthUTF8(r.rendered_text) AS full_text_chars,
+            substring(r.rendered_text, 1, 240) AS text_preview
         FROM {quote_ident(database)}.{quote_ident(normalized_table)} AS n FINAL
-        LEFT JOIN ticker_counts AS t
-            ON t.canonical_news_id = n.canonical_news_id
+        INNER JOIN {quote_ident(database)}.{quote_ident(rendered_table)} AS r FINAL
+            ON r.published_date=n.published_date
+            AND r.provider_article_id=n.provider_article_id
+            AND r.source_revision_key=n.source_revision_key
         WHERE n.published_at_utc >= window_start
           AND n.published_at_utc < window_end
         ORDER BY n.published_at_utc {sort_direction}, n.provider_article_id {sort_direction}
@@ -1252,23 +1222,31 @@ def news_detail_source(canonical_news_id: str) -> tuple[str, str, str, str, dict
     if not news_id:
         raise HTTPException(status_code=400, detail="canonical_news_id is required")
     database = "q_live"
-    normalized_table = "benzinga_news_normalized_v1"
-    ticker_table = "benzinga_news_ticker_v1"
+    normalized_table = "benzinga_news_event_v2"
+    rendered_table = "benzinga_news_rendered_v2"
+    ticker_table = "benzinga_news_ticker_v2"
     news_id_sql = sql_string(news_id)
     row_query = f"""
-        SELECT * REPLACE
-        (
-            formatDateTime(published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
-            formatDateTime(downloaded_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS downloaded_at_utc,
+        SELECT
+            n.* EXCEPT(published_at_utc, downloaded_at_utc, last_updated_at_utc, updated_at_utc),
+            r.rendered_text AS normalized_full_text,
+            r.rendered_text_hash AS text_hash,
+            r.source_count,
+            r.block_count,
+            formatDateTime(n.published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
+            formatDateTime(n.downloaded_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS downloaded_at_utc,
             if(
-                isNull(last_updated_at_utc),
+                isNull(n.last_updated_at_utc),
                 NULL,
-                formatDateTime(assumeNotNull(last_updated_at_utc), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC')
+                formatDateTime(assumeNotNull(n.last_updated_at_utc), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC')
             ) AS last_updated_at_utc,
-            formatDateTime(updated_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS updated_at_utc
-        )
-        FROM {quote_ident(database)}.{quote_ident(normalized_table)} FINAL
-        WHERE canonical_news_id = {news_id_sql}
+            formatDateTime(n.updated_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS updated_at_utc
+        FROM {quote_ident(database)}.{quote_ident(normalized_table)} AS n FINAL
+        INNER JOIN {quote_ident(database)}.{quote_ident(rendered_table)} AS r FINAL
+            ON r.published_date=n.published_date
+            AND r.provider_article_id=n.provider_article_id
+            AND r.source_revision_key=n.source_revision_key
+        WHERE n.canonical_news_id = {news_id_sql}
         LIMIT 1
         FORMAT JSONEachRow
     """
@@ -1276,13 +1254,16 @@ def news_detail_source(canonical_news_id: str) -> tuple[str, str, str, str, dict
     if not rows:
         raise HTTPException(status_code=404, detail="News row not found")
     ticker_query = f"""
-        SELECT * REPLACE
-        (
-            formatDateTime(published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc
-        )
-        FROM {quote_ident(database)}.{quote_ident(ticker_table)} FINAL
-        WHERE canonical_news_id = {news_id_sql}
-        ORDER BY ticker ASC
+        SELECT
+            t.canonical_news_id, t.provider_article_id, t.ticker, t.ticker_index, t.ticker_count,
+            formatDateTime(t.published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc
+        FROM {quote_ident(database)}.{quote_ident(ticker_table)} AS t FINAL
+        INNER JOIN {quote_ident(database)}.{quote_ident(normalized_table)} AS n FINAL
+            ON n.published_date=t.published_date
+            AND n.provider_article_id=t.provider_article_id
+            AND n.source_revision_key=t.source_revision_key
+        WHERE t.canonical_news_id = {news_id_sql}
+        ORDER BY t.ticker ASC
         FORMAT JSONEachRow
     """
     ticker_rows = [json.loads(line) for line in clickhouse_status_query(ticker_query).splitlines() if line.strip()]
@@ -1308,22 +1289,15 @@ def trading_news_detail(canonical_news_id: str) -> dict[str, Any]:
     news_id_sql = sql_string(news_id)
     row_query = f"""
         SELECT
-            title,
-            article_url,
-            url_domain,
-            author,
-            channels,
-            provider_tags,
-            links,
-            formatDateTime(published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
-            multiIf(
-                notEmpty(normalized_full_text), normalized_full_text,
-                notEmpty(external_text), external_text,
-                notEmpty(body_text), body_text,
-                pdf_text
-            ) AS text
-        FROM q_live.benzinga_news_normalized_v1 FINAL
-        WHERE canonical_news_id = {news_id_sql}
+            n.title, n.article_url, n.url_domain, n.author, n.channels, n.provider_tags, n.links,
+            formatDateTime(n.published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
+            r.rendered_text AS text
+        FROM q_live.benzinga_news_event_v2 AS n FINAL
+        INNER JOIN q_live.benzinga_news_rendered_v2 AS r FINAL
+            ON r.published_date=n.published_date
+            AND r.provider_article_id=n.provider_article_id
+            AND r.source_revision_key=n.source_revision_key
+        WHERE n.canonical_news_id = {news_id_sql}
         LIMIT 1
         FORMAT JSONEachRow
     """
@@ -1332,9 +1306,13 @@ def trading_news_detail(canonical_news_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="News row not found")
     ticker_query = f"""
         SELECT ticker
-        FROM q_live.benzinga_news_ticker_v1 FINAL
-        WHERE canonical_news_id = {news_id_sql}
-        ORDER BY ticker ASC
+        FROM q_live.benzinga_news_ticker_v2 AS t FINAL
+        INNER JOIN q_live.benzinga_news_event_v2 AS n FINAL
+            ON n.published_date=t.published_date
+            AND n.provider_article_id=t.provider_article_id
+            AND n.source_revision_key=t.source_revision_key
+        WHERE t.canonical_news_id = {news_id_sql}
+        ORDER BY t.ticker ASC
         FORMAT JSONEachRow
     """
     ticker_rows = [json.loads(line) for line in clickhouse_status_query(ticker_query, timeout_seconds=NEWS_QUERY_TIMEOUT_SECONDS).splitlines() if line.strip()]
@@ -1395,8 +1373,9 @@ def trading_news_rows(
         raise HTTPException(status_code=400, detail="kind is invalid")
 
     database = "q_live"
-    normalized_table = "benzinga_news_normalized_v1"
-    ticker_table = "benzinga_news_ticker_v1"
+    normalized_table = "benzinga_news_event_v2"
+    rendered_table = "benzinga_news_rendered_v2"
+    ticker_table = "benzinga_news_ticker_v2"
     window_start = cutoff - timedelta(hours=safe_hours)
     start_sql = f"toDateTime64({sql_string(window_start.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
     end_sql = f"toDateTime64({sql_string(cutoff.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
@@ -1413,31 +1392,25 @@ def trading_news_rows(
         cursor_filter,
     ]
     if safe_ticker:
-        filters.append(
-            "n.canonical_news_id IN ("
-            f"SELECT canonical_news_id FROM {quote_ident(database)}.{quote_ident(ticker_table)} FINAL "
-            f"WHERE ticker = {sql_string(safe_ticker)} "
-            "AND published_at_utc >= window_start AND published_at_utc <= window_end"
-            ")"
-        )
+        filters.append(f"has(n.tickers, {sql_string(safe_ticker)})")
     search_term = search.strip()
     if search_term:
         escaped = sql_string(search_term)
         filters.append(
             "positionCaseInsensitiveUTF8(concat("
-            "ifNull(n.title, ''), ' ', ifNull(n.normalized_full_text, ''), ' ', "
+            "ifNull(n.title, ''), ' ', ifNull(r.rendered_text, ''), ' ', "
             f"ifNull(n.author, ''), ' ', ifNull(n.url_domain, '')), {escaped}) > 0"
         )
     if safe_content == "full":
-        filters.append("NOT n.is_title_only")
+        filters.append("r.source_count > 0")
     elif safe_content == "title":
-        filters.append("n.is_title_only")
+        filters.append("r.source_count = 0")
     where_sql = " AND ".join(filters)
     ticker_links_sql = (
         "arraySort(arrayDistinct(arrayFilter(value -> notEmpty(value), "
         "arrayMap(value -> upperUTF8(trimBoth(value)), n.tickers))))"
     )
-    classification_sql = news_classification_sql(ticker_links_sql)
+    classification_sql = news_classification_sql(ticker_links_sql, body_sql="r.rendered_text")
     news_kind_sql = classification_sql["kind"]
     if safe_kind != "all":
         filters.append(f"({news_kind_sql}) = {sql_string(safe_kind)}")
@@ -1461,10 +1434,16 @@ def trading_news_rows(
             {classification_sql["company"]} AS is_company_news,
             {classification_sql["confidence"]} AS classification_confidence,
             {classification_sql["evidence"]} AS classification_evidence,
-            n.has_external_text, n.has_pdf, n.is_title_only,
-            lengthUTF8(n.normalized_full_text) AS full_text_chars,
-            substring(n.normalized_full_text, 1, 320) AS text_preview
+            has(n.content_quality_flags, 'external_text') AS has_external_text,
+            has(n.content_quality_flags, 'pdf_text') AS has_pdf,
+            r.source_count = 0 AS is_title_only,
+            lengthUTF8(r.rendered_text) AS full_text_chars,
+            substring(r.rendered_text, 1, 320) AS text_preview
         FROM {quote_ident(database)}.{quote_ident(normalized_table)} AS n FINAL
+        INNER JOIN {quote_ident(database)}.{quote_ident(rendered_table)} AS r FINAL
+            ON r.published_date=n.published_date
+            AND r.provider_article_id=n.provider_article_id
+            AND r.source_revision_key=n.source_revision_key
         WHERE {where_sql}
         ORDER BY n.published_at_utc DESC, n.canonical_news_id DESC
         LIMIT {safe_limit + 1}

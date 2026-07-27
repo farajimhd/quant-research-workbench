@@ -36,6 +36,11 @@ Live and historical paths must both use:
 
 ## Canonical Tables
 
+The operational canonical contract is now structured rendering v2, documented
+in `docs/data_contracts/benzinga_news_rendered_v2.md`. The v1 design below is
+retained as historical rationale; `benzinga_news_normalized_v1` remains the
+non-destructive rebuild source until downstream migration is complete.
+
 The canonical normalized output is split into four tables.
 
 ### `benzinga_news_event_v1`
@@ -106,35 +111,37 @@ Important fields:
 ## Live Gateway Contract
 
 `services/news_gateway` is the Python live gateway. It uses the same item-level
-normalization package as historical gap fill, writes raw payloads under the
-workstation market-data root, and persists canonical rows to:
-
-- `benzinga_news_normalized_v1`
-- `benzinga_news_ticker_v1`
+structured renderer as the historical v2 rebuild, writes raw payloads under the
+workstation market-data root, and persists v2 event, source, block, rendered,
+and revision-bound ticker rows. Startup is gated by the certified v2 authority.
 
 The old Rust gateway and its split-table canonical write path have been removed.
-Historical and live news now share one normalized-row contract plus the ticker
+Historical and live news now share one structured v2 contract plus the ticker
 link table.
 
 ## Historical Pipeline
 
-Historical redownload should use fixed UTC time buckets with concurrent download workers. The normalizer should emit DB-ready JSONL parts:
+The v2 rebuild reads the legacy authority by bounded UTC day, recovers each
+provider raw JSON artifact, resolves available PDF artifacts, and renders in a
+bounded worker pool. It writes versioned rows directly to ClickHouse in batches.
+Restart certification checks every daily product—not merely the event count—so
+a crash between event, source, block, rendered, and ticker inserts causes the
+day to be safely replayed.
 
-- `event_parts/benzinga_news_event_part_*.jsonl`
-- `text_parts/benzinga_news_text_part_*.jsonl`
-- `url_parts/benzinga_news_url_part_*.jsonl`
-- `attachment_parts/benzinga_news_attachment_part_*.jsonl`
-
-The ClickHouse load script should ingest those files with the `file()` table function or equivalent batch insert. The target database must use `CLICKHOUSE_LIVE_STORAGE_POLICY`.
+Historical external/PDF text whose original source artifact was never retained
+cannot be structurally reconstructed. The renderer preserves that legacy text
+with explicit provenance flags rather than presenting it as raw or silently
+dropping it.
 
 ## Downstream Order
 
-1. Finish historical download and split-row normalization.
-2. Insert event/text/url/attachment tables.
-3. Validate row counts, duplicate keys, timestamp precision, and text coverage.
-4. Run keyword inventory over normalized text.
-5. Build deterministic keyword and cheap-model features.
-6. Add LLM classification only after the cheap path and schema are stable.
-7. Join normalized news to market snapshots for reaction-label datasets.
+1. Stop the live news gateway.
+2. Run the full structured v2 rebuild.
+3. Validate whole-corpus relationships and visually inspect stratified
+   original-versus-rendered Markdown samples.
+4. Restart the gateway only after the v2 authority is `ready`.
+5. Build one article embedding and link it to every ticker relationship.
+6. Build semantic labels and reaction targets from the certified identity and
+   text authorities.
 
 SEC filings should follow the same pattern later: raw artifact first, compact event/document text tables second, market-reaction labels last.

@@ -59,6 +59,12 @@ class NewsGatewayConfig:
     clickhouse_database: str
     normalized_table: str
     ticker_table: str
+    event_table: str
+    source_table: str
+    block_table: str
+    rendered_table: str
+    rendered_ticker_table: str
+    render_authority_table: str
     coverage_table: str
     recent_history_limit: int
     recent_metadata_retention_hours: float
@@ -157,6 +163,12 @@ class NewsGatewayConfig:
             clickhouse_database=env_string("NEWS_BENZINGA_CLICKHOUSE_DATABASE", env_string("NEWS_CLICKHOUSE_DATABASE", "q_live")),
             normalized_table=env_string("NEWS_BENZINGA_NORMALIZED_TABLE", "benzinga_news_normalized_v1"),
             ticker_table=env_string("NEWS_BENZINGA_TICKER_TABLE", "benzinga_news_ticker_v1"),
+            event_table=env_string("NEWS_BENZINGA_EVENT_TABLE", "benzinga_news_event_v2"),
+            source_table=env_string("NEWS_BENZINGA_SOURCE_TABLE", "benzinga_news_source_v2"),
+            block_table=env_string("NEWS_BENZINGA_BLOCK_TABLE", "benzinga_news_block_v2"),
+            rendered_table=env_string("NEWS_BENZINGA_RENDERED_TABLE", "benzinga_news_rendered_v2"),
+            rendered_ticker_table=env_string("NEWS_BENZINGA_RENDERED_TICKER_TABLE", "benzinga_news_ticker_v2"),
+            render_authority_table=env_string("NEWS_BENZINGA_RENDER_AUTHORITY_TABLE", "benzinga_news_render_authority_v2"),
             coverage_table=env_string("NEWS_BENZINGA_COVERAGE_TABLE", "benzinga_news_coverage_manifest_v1"),
             recent_history_limit=env_int("NEWS_RECENT_HISTORY_LIMIT", 5_000),
             recent_metadata_retention_hours=env_float("NEWS_RECENT_METADATA_RETENTION_HOURS", 24.0),

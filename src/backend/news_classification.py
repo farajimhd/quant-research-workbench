@@ -212,12 +212,17 @@ def classify_news_kind(row: dict[str, Any], ticker_count: int) -> str:
     return classify_news(row, ticker_count).kind
 
 
-def news_classification_sql(ticker_links_sql: str, alias: str = "n") -> dict[str, str]:
+def news_classification_sql(
+    ticker_links_sql: str,
+    alias: str = "n",
+    *,
+    body_sql: str | None = None,
+) -> dict[str, str]:
     channels = f"{alias}.channels"
     tags = f"{alias}.provider_tags"
     links = f"{alias}.links"
     title = f"{alias}.title"
-    body = f"{alias}.normalized_full_text"
+    body = body_sql or f"{alias}.normalized_full_text"
     author = f"{alias}.author"
     count = f"length({ticker_links_sql})"
     ai = _sql_array_intersection(tags, AI_TAGS)

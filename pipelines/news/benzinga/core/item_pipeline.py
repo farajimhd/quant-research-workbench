@@ -16,6 +16,7 @@ from pipelines.news.benzinga.news_benzinga_normalize import (
     normalize_benzinga_payload,
     stable_hash,
 )
+from pipelines.news.benzinga.news_benzinga_render_v2 import build_v2_rows, render_news_article
 from pipelines.news.benzinga.news_benzinga_url_fetch_plan import (
     ACTIONABLE_ACTIONS,
     apply_domain_policy,
@@ -72,6 +73,13 @@ def process_benzinga_news_item(
     elif url_resolution.fetch_tasks:
         warnings.append("enrichment_pending")
 
+    rendered = render_news_article(payload, normalized_row=row, enrichment_rows=enrichment_rows or [])
+    v2 = build_v2_rows(payload, row, rendered, updated_at_utc=str(row["updated_at_utc"]))
+    # Memory/API consumers still use normalized_row. Make its text semantics
+    # match the durable v2 authority without imposing an embedding-size cap.
+    row["normalized_full_text"] = rendered.packed_text
+    row["text_hash"] = rendered.packed_text_hash
+    row["normalizer_version"] = str(v2["rendered"]["renderer_version"])
     ticker_links = build_ticker_links(row)
     return NewsPipelineResult(
         provider_article_id=str(row.get("provider_article_id") or ""),
@@ -81,6 +89,11 @@ def process_benzinga_news_item(
         ticker_links=ticker_links,
         url_resolution=url_resolution,
         warnings=warnings,
+        v2_event_row=dict(v2["event"]),
+        v2_source_rows=list(v2["sources"]),
+        v2_block_rows=list(v2["blocks"]),
+        v2_rendered_row=dict(v2["rendered"]),
+        v2_ticker_links=list(v2["tickers"]),
     )
 
 

@@ -78,7 +78,7 @@ const newsLive: WorkspaceSourceLayer = {
 };
 
 const newsHistory: WorkspaceSourceLayer = {
-  authority: "q_live.benzinga_news_normalized_v1",
+  authority: "Certified structured news",
   description: "Persisted news filtered to the active symbol and the workspace clock.",
   id: "news-history",
   label: "News History",

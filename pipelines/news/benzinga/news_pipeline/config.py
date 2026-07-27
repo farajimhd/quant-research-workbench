@@ -10,6 +10,14 @@ from pipelines.news.benzinga.core.clickhouse_writer import (
     DEFAULT_NORMALIZED_TABLE,
     DEFAULT_TICKER_TABLE,
 )
+from pipelines.news.benzinga.core.clickhouse_writer_v2 import (
+    DEFAULT_AUTHORITY_TABLE as DEFAULT_RENDER_AUTHORITY_TABLE,
+    DEFAULT_BLOCK_TABLE,
+    DEFAULT_EVENT_TABLE,
+    DEFAULT_RENDERED_TABLE,
+    DEFAULT_SOURCE_TABLE,
+    DEFAULT_TICKER_TABLE as DEFAULT_TICKER_TABLE_V2,
+)
 from pipelines.news.benzinga.news_benzinga_raw_download import DEFAULT_ENDPOINT
 from pipelines.news.benzinga.news_benzinga_url_policy import default_clickhouse_password, default_clickhouse_url, default_clickhouse_user
 
@@ -23,6 +31,12 @@ class ClickHouseTargetConfig:
     normalized_table: str = DEFAULT_NORMALIZED_TABLE
     ticker_table: str = DEFAULT_TICKER_TABLE
     coverage_table: str = DEFAULT_COVERAGE_TABLE
+    event_table: str = DEFAULT_EVENT_TABLE
+    source_table: str = DEFAULT_SOURCE_TABLE
+    block_table: str = DEFAULT_BLOCK_TABLE
+    rendered_table: str = DEFAULT_RENDERED_TABLE
+    rendered_ticker_table: str = DEFAULT_TICKER_TABLE_V2
+    render_authority_table: str = DEFAULT_RENDER_AUTHORITY_TABLE
 
     @classmethod
     def from_env(cls) -> "ClickHouseTargetConfig":
@@ -34,6 +48,12 @@ class ClickHouseTargetConfig:
             normalized_table=os.environ.get("NEWS_BENZINGA_NORMALIZED_TABLE") or DEFAULT_NORMALIZED_TABLE,
             ticker_table=os.environ.get("NEWS_BENZINGA_TICKER_TABLE") or DEFAULT_TICKER_TABLE,
             coverage_table=os.environ.get("NEWS_BENZINGA_COVERAGE_TABLE") or DEFAULT_COVERAGE_TABLE,
+            event_table=os.environ.get("NEWS_BENZINGA_EVENT_TABLE") or DEFAULT_EVENT_TABLE,
+            source_table=os.environ.get("NEWS_BENZINGA_SOURCE_TABLE") or DEFAULT_SOURCE_TABLE,
+            block_table=os.environ.get("NEWS_BENZINGA_BLOCK_TABLE") or DEFAULT_BLOCK_TABLE,
+            rendered_table=os.environ.get("NEWS_BENZINGA_RENDERED_TABLE") or DEFAULT_RENDERED_TABLE,
+            rendered_ticker_table=os.environ.get("NEWS_BENZINGA_RENDERED_TICKER_TABLE") or DEFAULT_TICKER_TABLE_V2,
+            render_authority_table=os.environ.get("NEWS_BENZINGA_RENDER_AUTHORITY_TABLE") or DEFAULT_RENDER_AUTHORITY_TABLE,
         )
 
 

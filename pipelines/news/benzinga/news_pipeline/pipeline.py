@@ -7,12 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from pipelines.news.benzinga.core.clickhouse_writer import (
-    NewsBatchWriteConfig,
     NewsBatchWriteSummary,
-    NewsWriteConfig,
     NewsWriteSummary,
-    write_many_news_pipeline_results,
-    write_news_pipeline_result,
+)
+from pipelines.news.benzinga.core.clickhouse_writer_v2 import (
+    NewsV2TargetConfig,
+    write_many_news_pipeline_results_v2,
+    write_news_pipeline_result_v2,
 )
 from pipelines.news.benzinga.core.contracts import NewsPipelineResult
 from pipelines.news.benzinga.core.item_pipeline import ItemPipelineOptions, process_benzinga_news_item
@@ -79,15 +80,19 @@ class BenzingaNewsPipeline:
     ) -> NewsWriteSummary:
         target_cfg = target or ClickHouseTargetConfig.from_env()
         client = ClickHouseHttpClient(target_cfg.url, target_cfg.user, target_cfg.password)
-        return write_news_pipeline_result(
+        del allow_ticker_change  # v2 links are revision-bound and never mutated in place.
+        return write_news_pipeline_result_v2(
             client,
             processed.result,
-            config=NewsWriteConfig(
+            config=NewsV2TargetConfig(
                 database=target_cfg.database,
-                normalized_table=target_cfg.normalized_table,
-                ticker_table=target_cfg.ticker_table,
+                event_table=target_cfg.event_table,
+                source_table=target_cfg.source_table,
+                block_table=target_cfg.block_table,
+                rendered_table=target_cfg.rendered_table,
+                ticker_table=target_cfg.rendered_ticker_table,
+                authority_table=target_cfg.render_authority_table,
                 execute=execute,
-                allow_ticker_change=allow_ticker_change,
                 skip_table_validation=skip_table_validation,
             ),
         )
@@ -103,15 +108,19 @@ class BenzingaNewsPipeline:
     ) -> NewsBatchWriteSummary:
         target_cfg = target or ClickHouseTargetConfig.from_env()
         client = ClickHouseHttpClient(target_cfg.url, target_cfg.user, target_cfg.password)
-        return write_many_news_pipeline_results(
+        del skip_existing  # ReplacingMergeTree makes identical revision writes idempotent.
+        return write_many_news_pipeline_results_v2(
             client,
             [item.result for item in processed],
-            config=NewsBatchWriteConfig(
+            config=NewsV2TargetConfig(
                 database=target_cfg.database,
-                normalized_table=target_cfg.normalized_table,
-                ticker_table=target_cfg.ticker_table,
+                event_table=target_cfg.event_table,
+                source_table=target_cfg.source_table,
+                block_table=target_cfg.block_table,
+                rendered_table=target_cfg.rendered_table,
+                ticker_table=target_cfg.rendered_ticker_table,
+                authority_table=target_cfg.render_authority_table,
                 execute=execute,
-                skip_existing=skip_existing,
                 skip_table_validation=skip_table_validation,
             ),
         )

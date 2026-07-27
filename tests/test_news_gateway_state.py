@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import UTC, datetime
 
 from services.news_gateway.state import NewsMemoryState
 
@@ -9,12 +10,13 @@ class NewsGatewayStateTests(unittest.IsolatedAsyncioTestCase):
     async def test_snapshots_expose_monotonic_revision_for_live_invalidation(self) -> None:
         state = NewsMemoryState(100)
         initial = await state.recent_snapshot()
+        published_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
         await state.upsert_rows(
             [
                 {
                     "canonical_news_id": "news-1",
-                    "published_at_utc": "2026-07-17T13:45:00Z",
+                    "published_at_utc": published_at,
                     "title": "Initial normalized row",
                     "tickers": ["AAPL"],
                 }
@@ -26,7 +28,7 @@ class NewsGatewayStateTests(unittest.IsolatedAsyncioTestCase):
             [
                 {
                     "canonical_news_id": "news-1",
-                    "published_at_utc": "2026-07-17T13:45:00Z",
+                    "published_at_utc": published_at,
                     "title": "Enriched durable row",
                     "tickers": ["AAPL"],
                     "has_body": 1,

@@ -306,7 +306,7 @@ def _utc_sql(value: datetime) -> str:
 def _query_news(cutoff: datetime) -> list[dict[str, Any]]:
     start = cutoff - timedelta(days=3)
     ticker_links_sql = "arraySort(arrayDistinct(arrayFilter(value -> notEmpty(value), arrayMap(value -> upperUTF8(trimBoth(value)), n.tickers))))"
-    classification = news_classification_sql(ticker_links_sql)
+    classification = news_classification_sql(ticker_links_sql, body_sql="r.rendered_text")
     return _clickhouse_rows(
         f"""
         SELECT
@@ -315,7 +315,11 @@ def _query_news(cutoff: datetime) -> list[dict[str, Any]]:
             n.title, n.teaser, {ticker_links_sql} AS tickers, n.channels,
             {classification["company"]} AS is_company_news,
             {classification["topics"]} AS news_topics
-        FROM q_live.benzinga_news_normalized_v1 AS n FINAL
+        FROM q_live.benzinga_news_event_v2 AS n FINAL
+        INNER JOIN q_live.benzinga_news_rendered_v2 AS r FINAL
+            ON r.published_date=n.published_date
+            AND r.provider_article_id=n.provider_article_id
+            AND r.source_revision_key=n.source_revision_key
         WHERE n.published_at_utc BETWEEN toDateTime64({_utc_sql(start)}, 3, 'UTC')
             AND toDateTime64({_utc_sql(cutoff)}, 3, 'UTC')
         ORDER BY n.published_at_utc DESC
@@ -349,7 +353,7 @@ def _query_scanner_news_intelligence(cutoff: datetime) -> list[dict[str, Any]]:
     """Return one causal company-news summary per ticker for scanner enrichment."""
     start = cutoff - timedelta(days=3)
     ticker_links_sql = "arraySort(arrayDistinct(arrayFilter(value -> notEmpty(value), arrayMap(value -> upperUTF8(trimBoth(value)), n.tickers))))"
-    classification = news_classification_sql(ticker_links_sql)
+    classification = news_classification_sql(ticker_links_sql, body_sql="r.rendered_text")
     return _clickhouse_rows(
         f"""
         SELECT
@@ -365,7 +369,11 @@ def _query_scanner_news_intelligence(cutoff: datetime) -> list[dict[str, Any]]:
                 arrayJoin({ticker_links_sql}) AS ticker,
                 {classification["company"]} AS is_company_news,
                 {classification["topics"]} AS news_topics
-            FROM q_live.benzinga_news_normalized_v1 AS n FINAL
+            FROM q_live.benzinga_news_event_v2 AS n FINAL
+            INNER JOIN q_live.benzinga_news_rendered_v2 AS r FINAL
+                ON r.published_date=n.published_date
+                AND r.provider_article_id=n.provider_article_id
+                AND r.source_revision_key=n.source_revision_key
             WHERE n.published_at_utc BETWEEN toDateTime64({_utc_sql(start)}, 3, 'UTC')
                 AND toDateTime64({_utc_sql(cutoff)}, 3, 'UTC')
         )
