@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 
 from .audit import write_audit
+from .compare import compare_runs
+from .config import MODEL_PROFILES, LabelingConfig
 from .data import fit_sample_to_context, stratify
 from .prompt import build_messages
 from .schema import validate_label
@@ -132,7 +134,6 @@ class GptOssV1Tests(unittest.TestCase):
                 self.assertions = (tokenize, add_generation_prompt)
                 return list(range(sum(len(item["content"]) for item in messages) // 4))
 
-        from .config import LabelingConfig
         from unittest.mock import patch
 
         article = {
@@ -150,6 +151,80 @@ class GptOssV1Tests(unittest.TestCase):
         self.assertLessEqual(fitted["prompt_tokens"], 5_000)
         self.assertTrue(fitted["truncated_for_context"])
         self.assertNotEqual(fitted["text_sha256"], "before")
+
+    def test_model_profiles_keep_model_and_tokenizer_identity_aligned(self) -> None:
+        self.assertEqual(MODEL_PROFILES["20b"].model, "openai/gpt-oss-20b")
+        self.assertEqual(MODEL_PROFILES["120b"].tokenizer, "openai/gpt-oss-120b")
+        self.assertEqual(MODEL_PROFILES["20b"].workers, MODEL_PROFILES["120b"].workers)
+
+    def test_default_runtime_root_is_outside_source_repository(self) -> None:
+        self.assertEqual(
+            LabelingConfig().runtime_root,
+            Path(r"D:\TradingML\runtimes\news_labeling\gpt_oss_v1"),
+        )
+
+    def test_comparison_uses_frozen_hashes_and_reports_disagreement(self) -> None:
+        sample = [{
+            "canonical_news_id": "n1",
+            "published_at_utc": "2026-07-14 13:41:00.000000000",
+            "title": "Company cuts guidance",
+            "rendered_text": "The company cuts full-year guidance today.",
+            "tickers": ["XYZ"],
+            "text_sha256": "frozen",
+        }]
+        first_label = valid_label()
+        second_label = valid_label()
+        second_label["sentiment"]["overall"] = "mixed"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shared = root / "shared"
+            first = root / "models" / "20b"
+            second = root / "models" / "120b"
+            for path in (shared, first, second):
+                path.mkdir(parents=True)
+            (shared / "sample.jsonl").write_text(
+                json.dumps(sample[0]) + "\n",
+                encoding="utf-8",
+            )
+            for model_root, model, label, seconds in (
+                (first, "openai/gpt-oss-20b", first_label, 1.0),
+                (second, "openai/gpt-oss-120b", second_label, 2.0),
+            ):
+                result = {
+                    "canonical_news_id": "n1",
+                    "status": "completed",
+                    "model": model,
+                    "text_sha256": "frozen",
+                    "label": label,
+                    "usage": {
+                        "total_seconds": seconds,
+                        "completion_tokens_per_second": 10.0 / seconds,
+                    },
+                }
+                (model_root / "labels.jsonl").write_text(
+                    json.dumps(result) + "\n",
+                    encoding="utf-8",
+                )
+                (model_root / "manifest.json").write_text(
+                    json.dumps({
+                        "workers": 4,
+                        "elapsed_seconds": seconds,
+                        "articles_per_second": 1.0 / seconds,
+                    }),
+                    encoding="utf-8",
+                )
+            report = compare_runs(
+                sample_path=shared / "sample.jsonl",
+                first_root=first,
+                second_root=second,
+                output_root=root / "comparison",
+                answer_key_path=None,
+                disagreement_limit=1,
+            )
+            text = report.read_text(encoding="utf-8")
+            self.assertIn("sentiment.overall", text)
+            self.assertIn("Agreement is not accuracy", text)
+            self.assertEqual(len(list((root / "comparison" / "disagreements").glob("*.md"))), 1)
 
 
 if __name__ == "__main__":

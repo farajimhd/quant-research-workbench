@@ -109,9 +109,17 @@ def fit_sample_to_context(
             "transformers is required for exact gpt-oss context budgeting; "
             "the workflow will not use character-count guessing."
         ) from exc
-    if not config.tokenizer_path.exists():
-        raise RuntimeError(f"Local gpt-oss tokenizer path does not exist: {config.tokenizer_path}")
-    tokenizer = AutoTokenizer.from_pretrained(config.tokenizer_path, local_files_only=True)
+    tokenizer_source = str(config.tokenizer_source)
+    source_path = Path(tokenizer_source)
+    if source_path.is_absolute() and not source_path.exists():
+        raise RuntimeError(f"Local gpt-oss tokenizer path does not exist: {source_path}")
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, local_files_only=True)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Tokenizer {tokenizer_source!r} is not present in the local Hugging Face cache "
+            "or at the configured filesystem path."
+        ) from exc
     prompt_limit = config.max_model_len - config.max_output_tokens
     if prompt_limit <= 0:
         raise RuntimeError("max_output_tokens must be smaller than max_model_len")

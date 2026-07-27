@@ -21,7 +21,8 @@ def check_server(config: LabelingConfig) -> None:
             payload = json.loads(response.read().decode("utf-8"))
     except (OSError, ValueError) as exc:
         raise LocalModelError(
-            f"Local model server is unavailable at {models_url}. Start gpt-oss-20b before executing labels."
+            f"Local model server is unavailable at {models_url}. "
+            f"Start the requested model {config.model!r} before executing labels."
         ) from exc
     identifiers = {str(item.get("id")) for item in payload.get("data", []) if isinstance(item, dict)}
     if identifiers and config.model not in identifiers:
@@ -45,9 +46,12 @@ def label_article(article: dict[str, Any], config: LabelingConfig) -> tuple[dict
         },
     }
     last_error: Exception | None = None
+    request_started = time.perf_counter()
     for attempt in range(1, config.attempts + 1):
         try:
+            attempt_started = time.perf_counter()
             response = _post_json(config.endpoint, payload, config.timeout_seconds)
+            attempt_seconds = time.perf_counter() - attempt_started
             content = response["choices"][0]["message"]["content"]
             if isinstance(content, list):
                 content = "".join(
@@ -62,11 +66,18 @@ def label_article(article: dict[str, Any], config: LabelingConfig) -> tuple[dict
             if errors:
                 raise LocalModelError("; ".join(errors))
             usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+            completion_tokens = int(usage.get("completion_tokens") or 0)
             return label, {
                 "attempt": attempt,
                 "prompt_tokens": int(usage.get("prompt_tokens") or 0),
-                "completion_tokens": int(usage.get("completion_tokens") or 0),
+                "completion_tokens": completion_tokens,
                 "total_tokens": int(usage.get("total_tokens") or 0),
+                "attempt_seconds": round(attempt_seconds, 6),
+                "total_seconds": round(time.perf_counter() - request_started, 6),
+                "completion_tokens_per_second": round(
+                    completion_tokens / attempt_seconds if attempt_seconds else 0.0,
+                    6,
+                ),
             }
         except (KeyError, TypeError, ValueError, OSError, LocalModelError) as exc:
             last_error = exc
