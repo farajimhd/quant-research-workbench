@@ -222,6 +222,7 @@ class _ManagedOrderGroup:
 
 PlanProvider = Callable[[StrategyIntent, str, MarketEvent | None], StrategyOrderPlan]
 FillCallback = Callable[[OrderGroupSnapshot], Awaitable[None]]
+StateCallback = Callable[[OrderGroupSnapshot], Awaitable[None]]
 
 
 class OrderManagementEngine:
@@ -245,6 +246,7 @@ class OrderManagementEngine:
         policy: BrokerCommunicationPolicy | None = None,
         shortability_provider: ShortabilityProvider | None = None,
         fill_callback: FillCallback | None = None,
+        state_callback: StateCallback | None = None,
         enforce_wall_clock_quote_freshness: bool = False,
     ) -> None:
         self.broker = broker
@@ -257,6 +259,7 @@ class OrderManagementEngine:
         self.policy = policy or BrokerCommunicationPolicy.from_environment()
         self.shortability_provider = shortability_provider
         self.fill_callback = fill_callback
+        self.state_callback = state_callback
         self.enforce_wall_clock_quote_freshness = enforce_wall_clock_quote_freshness
         self._command_lane = asyncio.Lock()
         self._groups: dict[str, _ManagedOrderGroup] = {}
@@ -410,6 +413,8 @@ class OrderManagementEngine:
             action=_fill_action(group.intent, fill_role) if next_state == OrderManagementState.FILLED else None,
             fill_role=fill_role if next_state == OrderManagementState.FILLED else "",
         )
+        if self.state_callback is not None:
+            await self.state_callback(snapshot)
         if next_state == OrderManagementState.FILLED and self.fill_callback is not None:
             await self.fill_callback(snapshot)
         return snapshot
@@ -847,6 +852,8 @@ class OrderManagementEngine:
             action=_fill_action(group.intent, fill_role) if next_state == OrderManagementState.FILLED else None,
             fill_role=fill_role if next_state == OrderManagementState.FILLED else "",
         )
+        if self.state_callback is not None:
+            await self.state_callback(snapshot)
         if next_state == OrderManagementState.FILLED and self.fill_callback is not None:
             await self.fill_callback(snapshot)
         return snapshot

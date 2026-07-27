@@ -1,0 +1,285 @@
+from __future__ import annotations
+
+from dataclasses import asdict
+from datetime import datetime, timezone
+from typing import Any
+
+from src.backend.canonical_trading_service import portfolio_exposure, portfolio_metrics
+from src.backend.real_live_trading_service import configured_real_live_accounts
+from src.backend.trading_runtime_service import trading_journal
+from src.trading_runtime.portfolio import (
+    PortfolioControlMode,
+    narrow_policy_for_account_class,
+    portfolio_policy_from_payload,
+)
+from src.trading_runtime.portfolio_config import (
+    configured_portfolio_policy_catalog,
+    configured_portfolio_profiles,
+    portfolio_configuration_payload,
+)
+
+
+def portfolio_management_snapshot(canonical_state: dict[str, Any]) -> dict[str, Any]:
+    profiles, groups = configured_portfolio_profiles(configured_real_live_accounts())
+    policy_catalog = configured_portfolio_policy_catalog()
+    selected_ids = {str(row.get("account_id") or "") for row in canonical_state.get("accounts") or []}
+    profiles = tuple(profile for profile in profiles if profile.account_id in selected_ids)
+    persisted = trading_journal().portfolio_states()
+    account_rows: list[dict[str, Any]] = []
+    for profile in profiles:
+        account_values = [
+            row for row in canonical_state.get("account_values") or []
+            if str(row.get("account_id") or "") == profile.account_id
+        ]
+        ledger = [
+            row for row in canonical_state.get("ledger") or []
+            if str(row.get("account_id") or "") == profile.account_id
+        ]
+        positions = [
+            row for row in canonical_state.get("positions") or []
+            if str(row.get("account_id") or "") == profile.account_id
+        ]
+        orders = [
+            row for row in canonical_state.get("orders") or []
+            if str(row.get("account_id") or "") == profile.account_id
+        ]
+        state = persisted.get(profile.account_id) or {}
+        metrics = portfolio_metrics(account_values, ledger, positions)
+        exposure = portfolio_exposure(positions)
+        selected_policy = state.get("selected_policy") or {}
+        selected_identity = str(selected_policy.get("identity") or "")
+        policy = (
+            portfolio_policy_from_payload(selected_policy)
+            if selected_policy
+            else policy_catalog.get(selected_identity, profile.policy)
+        )
+        policy = narrow_policy_for_account_class(policy, profile.account_class)
+        available_policies = {
+            candidate.identity: narrow_policy_for_account_class(candidate, profile.account_class)
+            for candidate in (profile.policy, *policy_catalog.values())
+        }
+        gross = float(exposure.get("gross_value") or 0)
+        net = float(exposure.get("net_value") or 0)
+        net_liquidation = float(metrics.get("net_liquidation") or 0)
+        eligible_equity = net_liquidation * policy.eligible_equity_fraction
+        reservations = list(state.get("reservations") or [])
+        active_reservations = [
+            row for row in reservations
+            if str(row.get("status") or "") not in {"released", "filled", "cancelled", "rejected", "policy_blocked"}
+        ]
+        reserved_notional = sum(float(row.get("reserved_notional") or 0) for row in active_reservations)
+        reserved_risk = sum(float(row.get("reserved_planned_risk") or 0) for row in active_reservations)
+        observed_at = _latest_timestamp(account_values + ledger + positions + orders)
+        sync_state = (
+            "entries_blocked"
+            if canonical_state.get("stale") or not canonical_state.get("complete")
+            else "synchronized"
+        )
+        control = str(state.get("control_mode") or PortfolioControlMode.ENABLED)
+        account_rows.append(
+            {
+                "account_key": profile.account_key,
+                "account_id": profile.account_id,
+                "account_class": profile.account_class,
+                "mode": profile.mode,
+                "session_key": profile.session_key,
+                "base_currency": profile.base_currency,
+                "enabled": profile.enabled,
+                "sync_state": sync_state,
+                "control_mode": control,
+                "observed_at": observed_at,
+                "stale_reason": canonical_state.get("stale_reason") or "",
+                "policy": {**asdict(policy), "identity": policy.identity},
+                "available_policies": [
+                    {**asdict(candidate), "identity": candidate.identity}
+                    for candidate in available_policies.values()
+                ],
+                "strategy_allocations": dict(profile.strategy_allocations),
+                "disabled_strategy_allocations": sorted(
+                    str(item) for item in state.get("disabled_strategy_allocations") or ()
+                ),
+                "metrics": {
+                    **metrics,
+                    **exposure,
+                    "eligible_equity": eligible_equity,
+                    "reserved_notional": reserved_notional,
+                    "reserved_planned_risk": reserved_risk,
+                    "gross_headroom": max(0.0, policy.maximum_gross_exposure - gross - reserved_notional),
+                    "net_long_headroom": max(0.0, policy.maximum_net_long_exposure - max(0.0, net) - reserved_notional),
+                    "net_short_headroom": max(0.0, policy.maximum_net_short_exposure - max(0.0, -net) - reserved_notional),
+                    "planned_risk_headroom": max(
+                        0.0,
+                        eligible_equity * policy.maximum_open_risk_fraction - reserved_risk,
+                    ),
+                },
+                "position_count": len([row for row in positions if float(row.get("quantity") or 0) != 0]),
+                "working_order_count": len([row for row in orders if not row.get("terminal")]),
+                "reservations": active_reservations,
+                "allocations": list(state.get("allocations") or []),
+                "reconciliation": list(state.get("reconciliation") or []),
+            }
+        )
+    decisions = [
+        {
+            "event_time": row.event_time,
+            "account_id": row.account_id,
+            "entity_type": row.entity_type,
+            **row.payload,
+        }
+        for row in trading_journal().portfolio_management_records(limit=250)
+    ]
+    return {
+        "schema_version": 1,
+        "as_of": canonical_state.get("as_of"),
+        "complete": bool(canonical_state.get("complete")),
+        "stale": bool(canonical_state.get("stale")),
+        "stale_reason": str(canonical_state.get("stale_reason") or ""),
+        "accounts": account_rows,
+        "groups": _group_rows(groups, account_rows),
+        "recent_decisions": decisions,
+        "configuration": portfolio_configuration_payload(profiles, groups),
+    }
+
+
+def portfolio_management_command(
+    account_key: str,
+    command: str,
+    *,
+    reason: str = "",
+    detail: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    profiles, _ = configured_portfolio_profiles(configured_real_live_accounts())
+    profile = next((row for row in profiles if row.account_key == account_key), None)
+    if profile is None:
+        raise KeyError(account_key)
+    normalized = command.strip().lower()
+    detail = dict(detail or {})
+    controls = {
+        "pause_entries": PortfolioControlMode.ENTRIES_PAUSED,
+        "resume_entries": PortfolioControlMode.ENABLED,
+        "reduce_only": PortfolioControlMode.REDUCE_ONLY,
+        "disable": PortfolioControlMode.DISABLED,
+    }
+    if normalized == "reconcile":
+        return {
+            "account_key": account_key,
+            "account_id": profile.account_id,
+            "command": normalized,
+            "refresh_required": True,
+        }
+    journal = trading_journal()
+    state = journal.portfolio_states().get(profile.account_id) or {"account_key": account_key}
+    event_payload: dict[str, Any]
+    response: dict[str, Any]
+    if normalized == "select_policy":
+        identity = str(detail.get("policy_identity") or "").strip()
+        catalog = configured_portfolio_policy_catalog()
+        catalog[profile.policy.identity] = profile.policy
+        policy = catalog.get(identity)
+        if policy is None:
+            raise ValueError(f"Unknown configured portfolio policy: {identity}")
+        policy = narrow_policy_for_account_class(policy, profile.account_class)
+        state["selected_policy"] = {**asdict(policy), "identity": policy.identity}
+        state["control_mode"] = PortfolioControlMode.ENTRIES_PAUSED.value
+        event_payload = {
+            "event": "portfolio_policy_selected",
+            "account_key": account_key,
+            "policy": state["selected_policy"],
+            "entries_paused": True,
+            "reason": reason,
+        }
+        response = {
+            "account_key": account_key,
+            "account_id": profile.account_id,
+            "command": normalized,
+            "control_mode": PortfolioControlMode.ENTRIES_PAUSED.value,
+            "policy": state["selected_policy"],
+        }
+    elif normalized in {"disable_strategy", "enable_strategy"}:
+        strategy_id = str(detail.get("strategy_id") or "").strip()
+        if not strategy_id:
+            raise ValueError("strategy_id is required")
+        disabled = {
+            str(item) for item in state.get("disabled_strategy_allocations") or ()
+        }
+        enabled = normalized == "enable_strategy"
+        if enabled:
+            disabled.discard(strategy_id)
+        else:
+            disabled.add(strategy_id)
+        state["disabled_strategy_allocations"] = sorted(disabled)
+        event_payload = {
+            "event": "strategy_allocation_control_changed",
+            "account_key": account_key,
+            "strategy_id": strategy_id,
+            "enabled": enabled,
+            "reason": reason,
+        }
+        response = {
+            "account_key": account_key,
+            "account_id": profile.account_id,
+            "command": normalized,
+            "strategy_id": strategy_id,
+            "enabled": enabled,
+            "disabled_strategy_allocations": state["disabled_strategy_allocations"],
+        }
+    elif normalized not in controls:
+        raise ValueError(f"Unsupported portfolio command: {command}")
+    else:
+        if not profile.enabled and controls[normalized] != PortfolioControlMode.DISABLED:
+            raise ValueError("A disabled account profile cannot be enabled operationally")
+        state["control_mode"] = controls[normalized].value
+        event_payload = {
+            "event": "portfolio_control_changed",
+            "account_key": account_key,
+            "control_mode": controls[normalized].value,
+            "reason": reason,
+        }
+        response = {
+            "account_key": account_key,
+            "account_id": profile.account_id,
+            "command": normalized,
+            "control_mode": controls[normalized].value,
+        }
+    state["control_reason"] = reason
+    state["control_updated_at"] = datetime.now(timezone.utc)
+    journal.save_portfolio_state(profile.account_id, state)
+    journal.append(
+        run_id="portfolio-management",
+        category="portfolio_management",
+        entity_type="portfolio_control",
+        entity_id=account_key,
+        account_id=profile.account_id,
+        payload=event_payload,
+    )
+    return response
+
+
+def _latest_timestamp(rows: list[dict[str, Any]]) -> str:
+    candidates = [
+        str(row.get("source_event_time") or row.get("received_at") or "")
+        for row in rows
+        if row.get("source_event_time") or row.get("received_at")
+    ]
+    return max(candidates) if candidates else ""
+
+
+def _group_rows(groups: tuple[Any, ...], accounts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_key = {row["account_key"]: row for row in accounts}
+    result: list[dict[str, Any]] = []
+    for group in groups:
+        selected = [by_key[key] for key in group.account_keys if key in by_key]
+        gross = sum(float(row["metrics"].get("gross_value") or 0) for row in selected)
+        result.append(
+            {
+                **asdict(group),
+                "gross_exposure": gross,
+                "gross_headroom": max(0.0, group.maximum_gross_exposure - gross),
+                "sync_state": (
+                    "synchronized"
+                    if selected and all(row["sync_state"] == "synchronized" for row in selected)
+                    else "entries_blocked"
+                ),
+            }
+        )
+    return result

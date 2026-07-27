@@ -13,6 +13,7 @@ The authorities are deliberately separate:
 | Authority | Owns |
 |---|---|
 | Strategy | What position change is wanted, urgency, evidence, invalidation, and optional re-entry |
+| Portfolio management | Exact account binding, final quantity, capital and risk allocation, capacity reservation, and portfolio reconciliation |
 | Order management | Risk reservation, execution tactic, command ordering, warning policy, broker state, reconciliation, and durable command evidence |
 | Order planner | IBKR-compatible bracket/OCA shape for one semantic intent |
 | Broker adapter | Authenticated transport and exact Client Portal API resources |

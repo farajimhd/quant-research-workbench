@@ -23930,3 +23930,142 @@ button {
 .charts-quotes-context-right-resizer {
   left: calc(var(--charts-quotes-col-month) + var(--charts-quotes-col-reserved));
 }
+.portfolio-management-preview {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.portfolio-management-account-list {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+}
+
+.portfolio-management-account {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.portfolio-management-account[data-sync="entries_blocked"],
+.portfolio-management-account[data-sync="fully_blocked"] {
+  border-color: var(--danger);
+}
+
+.portfolio-management-account > header {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.portfolio-management-account > header > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.portfolio-management-account > header span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.portfolio-management-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  justify-content: flex-end;
+}
+
+.portfolio-management-status span {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--foreground);
+  padding: 3px 7px;
+}
+
+.portfolio-management-status span[data-state="synchronized"],
+.portfolio-management-status span[data-state="enabled"] {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.portfolio-management-status span[data-state="entries_blocked"],
+.portfolio-management-status span[data-state="disabled"],
+.portfolio-management-status span[data-state="reduce_only"] {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.portfolio-management-status span[data-state="entries_paused"],
+.portfolio-management-status span[data-state="reconciling"] {
+  border-color: var(--warning);
+  color: var(--warning);
+}
+
+.portfolio-management-metrics {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.portfolio-management-evidence {
+  color: var(--muted-foreground);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 11px;
+  gap: 5px 12px;
+}
+
+.portfolio-management-evidence span[data-tone="negative"] {
+  color: var(--danger);
+}
+
+.portfolio-management-evidence span[data-tone="positive"] {
+  color: var(--success);
+}
+
+.portfolio-management-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: end;
+}
+
+.portfolio-policy-select {
+  display: grid;
+  gap: 3px;
+  min-width: 168px;
+}
+
+.portfolio-policy-select span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.portfolio-policy-select select {
+  min-height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--foreground);
+  padding: 0 7px;
+}
+
+.portfolio-strategy-control[data-disabled="true"] {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+@media (max-width: 720px) {
+  .portfolio-management-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

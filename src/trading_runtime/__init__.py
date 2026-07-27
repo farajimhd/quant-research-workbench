@@ -10,6 +10,16 @@ from src.trading_runtime.ibkr_schema import (
     OrderStatus,
     PortfolioPosition,
 )
+from src.trading_runtime.portfolio import (
+    PortfolioAccountProfile,
+    PortfolioControlMode,
+    PortfolioDecision,
+    PortfolioDecisionStatus,
+    PortfolioGroupPolicy,
+    PortfolioManagementEngine,
+    PortfolioPolicy,
+    PortfolioSyncState,
+)
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, SimulationConfig
 from src.trading_runtime.canonical_broker import CanonicalBrokerAdapter
 from src.trading_runtime.canonical_session import CanonicalBrokerSession
@@ -67,6 +77,14 @@ __all__ = [
     "OrderState",
     "OrderStatus",
     "PortfolioPosition",
+    "PortfolioAccountProfile",
+    "PortfolioControlMode",
+    "PortfolioDecision",
+    "PortfolioDecisionStatus",
+    "PortfolioGroupPolicy",
+    "PortfolioManagementEngine",
+    "PortfolioPolicy",
+    "PortfolioSyncState",
     "PositionState",
     "RoundTripTrade",
     "SnapshotManifest",

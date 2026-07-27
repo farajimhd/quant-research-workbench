@@ -36,6 +36,7 @@ class TradingStateProjector:
         self.closed_trades: dict[str, RoundTripTrade] = {}
         self.activity: list[BrokerEventEnvelope] = []
         self.last_complete_position_snapshot: dict[str, str] = {}
+        self.incomplete_position_accounts: set[str] = set()
         self.as_of: datetime | None = None
         self.complete = False
         self.stale = False
@@ -60,13 +61,25 @@ class TradingStateProjector:
             self.account_values[(row.account_id, row.key, row.segment, row.currency)] = row
         self._advance(*(row.source_event_time for row in rows))
 
+    def replace_account_values(self, account_id: str, rows: list[AccountValue]) -> None:
+        for key in [key for key in self.account_values if key[0] == account_id]:
+            del self.account_values[key]
+        self.set_account_values(rows)
+
     def merge_ledger(self, rows: list[LedgerBalance]) -> None:
         merged = merge_ledger_delta(self.ledger.values(), rows)
         self.ledger = {(row.account_id, row.currency): row for row in merged}
         self._advance(*(row.source_event_time for row in rows))
 
+    def replace_ledger(self, account_id: str, rows: list[LedgerBalance]) -> None:
+        for key in [key for key in self.ledger if key[0] == account_id]:
+            del self.ledger[key]
+        self.ledger.update({(row.account_id, row.currency): row for row in rows})
+        self._advance(*(row.source_event_time for row in rows))
+
     def apply_position_snapshot(self, account_id: str, snapshot_id: str, complete: bool, rows: list[PositionState]) -> None:
         if not complete:
+            self.incomplete_position_accounts.add(account_id)
             self.stale = True
             self.stale_reason = f"Position snapshot {snapshot_id} is incomplete; prior positions were retained."
             return
@@ -75,9 +88,21 @@ class TradingStateProjector:
             del self.positions[key]
         self.positions.update(incoming)
         self.last_complete_position_snapshot[account_id] = snapshot_id
-        self.complete = all(account.account_id in self.last_complete_position_snapshot for account in self.accounts.values() if account.can_view)
-        self.stale = False
-        self.stale_reason = ""
+        self.incomplete_position_accounts.discard(account_id)
+        self.complete = (
+            not self.incomplete_position_accounts
+            and all(
+                account.account_id in self.last_complete_position_snapshot
+                for account in self.accounts.values()
+                if account.can_view
+            )
+        )
+        self.stale = not self.complete
+        self.stale_reason = (
+            ""
+            if self.complete
+            else "One or more account position snapshots are incomplete."
+        )
         self._advance(*(row.source_event_time for row in rows))
 
     def apply_commission(self, account_id: str, execution_id: str, commission: Decimal, currency: str) -> None:

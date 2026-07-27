@@ -9,7 +9,12 @@ typed order/fill/portfolio/position/signal row are accepted by ClickHouse.
 python -m services.trading_journal_gateway.run
 ```
 
-Use `TRADING_JOURNAL_PATH`, `TRADING_CLICKHOUSE_URL`,
+Generated journal and outbox state must remain outside the repository. The
+laptop default is `D:\TradingML\runtimes\trading\journal.sqlite3`; set
+`TRADING_RUNTIME_ROOT` on another machine or set `TRADING_JOURNAL_PATH`
+directly.
+
+Use `TRADING_JOURNAL_PATH`, `TRADING_RUNTIME_ROOT`, `TRADING_CLICKHOUSE_URL`,
 `TRADING_CLICKHOUSE_USER`, `TRADING_CLICKHOUSE_PASSWORD`,
 `TRADING_JOURNAL_FLUSH_SECONDS`, and `TRADING_JOURNAL_BATCH_SIZE` to configure
 the service. Secrets are read from the environment and are never journaled.

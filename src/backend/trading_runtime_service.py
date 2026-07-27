@@ -36,6 +36,7 @@ from src.trading_runtime.domain import InstrumentContract
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_TRADING_RUNTIME_ROOT = Path(r"D:\TradingML\runtimes\trading")
 SUPPORTED_HISTORICAL_TIMEFRAMES = {
     "100ms",
     "1s",
@@ -57,7 +58,8 @@ BUILTIN_STRATEGY_LOCK = threading.Lock()
 @lru_cache(maxsize=1)
 def trading_journal() -> TradingJournal:
     configured = os.environ.get("TRADING_JOURNAL_PATH", "").strip()
-    path = Path(configured) if configured else REPO_ROOT / "runtime" / "trading" / "journal.sqlite3"
+    runtime_root = Path(os.environ.get("TRADING_RUNTIME_ROOT", str(DEFAULT_TRADING_RUNTIME_ROOT)))
+    path = Path(configured) if configured else runtime_root / "journal.sqlite3"
     return TradingJournal(path)
 
 

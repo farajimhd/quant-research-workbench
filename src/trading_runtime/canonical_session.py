@@ -43,8 +43,8 @@ class CanonicalBrokerSession:
         self.projector.set_accounts(accounts)
         viewable = [row.account_id for row in accounts if row.can_view]
         for account_id in viewable:
-            self.projector.set_account_values(await self.adapter.canonical_account_values(account_id))
-            self.projector.merge_ledger(await self.adapter.canonical_ledger(account_id))
+            self.projector.replace_account_values(account_id, await self.adapter.canonical_account_values(account_id))
+            self.projector.replace_ledger(account_id, await self.adapter.canonical_ledger(account_id))
             manifest, positions = await self.adapter.canonical_position_snapshot(account_id)
             self.projector.apply_position_snapshot(account_id, manifest.snapshot_id, manifest.complete, positions)
         orders = []
@@ -98,9 +98,50 @@ class CanonicalBrokerSession:
 
     async def reconcile(self) -> dict[str, Any]:
         before = self.projector.snapshot()
-        differences: dict[str, Any] = {"orders": [], "positions": [], "executions": []}
+        differences: dict[str, Any] = {
+            "account_values": [],
+            "ledger": [],
+            "orders": [],
+            "positions": [],
+            "executions": [],
+        }
         for account in before.accounts:
             if account.can_view:
+                account_values = await self.adapter.canonical_account_values(account.account_id)
+                previous_values = {
+                    (row.key, row.segment, row.currency): row.value
+                    for row in before.account_values
+                    if row.account_id == account.account_id
+                }
+                current_values = {
+                    (row.key, row.segment, row.currency): row.value
+                    for row in account_values
+                }
+                if previous_values != current_values:
+                    differences["account_values"].append(
+                        {
+                            "account_id": account.account_id,
+                            "before": json_safe(previous_values),
+                            "after": json_safe(current_values),
+                        }
+                    )
+                self.projector.replace_account_values(account.account_id, account_values)
+                ledger = await self.adapter.canonical_ledger(account.account_id)
+                previous_ledger = {
+                    row.currency: row.values
+                    for row in before.ledger
+                    if row.account_id == account.account_id
+                }
+                current_ledger = {row.currency: row.values for row in ledger}
+                if previous_ledger != current_ledger:
+                    differences["ledger"].append(
+                        {
+                            "account_id": account.account_id,
+                            "before": json_safe(previous_ledger),
+                            "after": json_safe(current_ledger),
+                        }
+                    )
+                self.projector.replace_ledger(account.account_id, ledger)
                 manifest, positions = await self.adapter.canonical_position_snapshot(account.account_id)
                 previous = {(row.instrument.conid, row.model): row.quantity for row in before.positions if row.account_id == account.account_id}
                 current = {(row.instrument.conid, row.model): row.quantity for row in positions}

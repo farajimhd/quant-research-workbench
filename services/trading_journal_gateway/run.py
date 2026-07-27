@@ -8,11 +8,12 @@ from src.trading_runtime.clickhouse import ClickHouseTradingSink
 from src.trading_runtime.journal import TradingJournal
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_TRADING_RUNTIME_ROOT = Path(r"D:\TradingML\runtimes\trading")
 
 
 def main() -> None:
-    journal_path = Path(os.environ.get("TRADING_JOURNAL_PATH", REPO_ROOT / "runtime" / "trading" / "journal.sqlite3"))
+    runtime_root = Path(os.environ.get("TRADING_RUNTIME_ROOT", str(DEFAULT_TRADING_RUNTIME_ROOT)))
+    journal_path = Path(os.environ.get("TRADING_JOURNAL_PATH", runtime_root / "journal.sqlite3"))
     journal = TradingJournal(journal_path)
     sink = ClickHouseTradingSink(
         endpoint_url=os.environ.get("TRADING_CLICKHOUSE_URL", os.environ.get("CLICKHOUSE_URL", "http://localhost:8123")),

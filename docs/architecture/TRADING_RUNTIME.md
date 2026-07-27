@@ -4,6 +4,8 @@
 
 `src/trading_runtime` is the single order, execution, account, position,
 portfolio, risk, and run-journal authority. Within it,
+`PortfolioManagementEngine` owns account-specific sizing, allocation,
+reservations, portfolio controls, and reconciliation, while
 `OrderManagementEngine` is the exclusive broker-command authority: strategies
 emit semantic intents and cannot place or modify orders directly. Runtime modes
 change only three dependencies:
@@ -69,10 +71,12 @@ becomes unaudited state.
 ## Strategy decision boundary
 
 Strategies now emit broker-neutral semantic intents before broker requests.
-The shared runtime records the decision and intent, then gives it to order
-management. Order management invokes the configured planner, validates and
-reserves the resulting IBKR-shaped plan through the central risk authority,
-selects a bounded execution tactic, and only then submits or modifies it.
+The shared runtime records the decision and intent, then gives it to portfolio
+management. Portfolio management binds the explicit account, calculates or
+resizes quantity, commits a durable capacity reservation, and passes only an
+approved intent to order management. Order management invokes the configured
+planner, performs its final execution-safety validation, selects a bounded
+execution tactic, and only then submits or modifies it.
 Normalized causal strategy
 observations can arrive on indicator, signal, bar, manual, position, or order
 events without making raw market-data handlers a second strategy authority.
@@ -80,6 +84,11 @@ events without making raw market-data handlers a second strategy authority.
 The detailed price tactics, bracket roles, full profit-pocket modification,
 shortability gate, broker-warning policy, failure states, and deployment gates
 are documented in [IBKR Order Management](IBKR_ORDER_MANAGEMENT.md).
+
+The per-account policy, multi-account session model, portfolio decision,
+reservation, allocation, synchronization, recovery, mode-parity, API, and
+Canvas contracts are documented in
+[Multi-Account Portfolio Management](PORTFOLIO_MANAGEMENT.md).
 
 The built-in `long-momentum-campaign@2` contract and its Canvas presentation
 are documented in [Long Momentum Campaign](LONG_MOMENTUM_CAMPAIGN.md).

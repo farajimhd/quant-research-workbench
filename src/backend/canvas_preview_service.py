@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
@@ -20,6 +21,7 @@ from src.backend.trading_runtime_service import (
     strategy_canvas_payload,
 )
 from src.backend.canonical_trading_service import trading_state_payload
+from src.trading_runtime.portfolio import default_policy_for_account
 from src.backend.historical_scanner_service import (
     SCANNER_FUNDAMENTAL_FIELDS,
     historical_scanner_fundamental_projection,
@@ -280,6 +282,55 @@ def _canonical_trading_fixture(
     # request time, but its presentation clock must remain the requested market
     # instant rather than leaking wall-clock time into Replay/Backtest views.
     payload["as_of"] = as_of.astimezone(UTC).isoformat()
+    policy = default_policy_for_account("simulated")
+    metrics = payload["portfolio"]["metrics"]
+    exposure = payload["portfolio"]["exposure"]
+    net_liquidation = float(metrics.get("net_liquidation") or 0)
+    gross = float(exposure.get("gross_value") or 0)
+    payload["portfolio"]["management"] = {
+        "schema_version": 1,
+        "as_of": payload["as_of"],
+        "complete": True,
+        "stale": False,
+        "stale_reason": "",
+        "accounts": [
+            {
+                "account_key": "replay-preview",
+                "account_id": account_id,
+                "account_class": "simulated",
+                "mode": "replay",
+                "session_key": "simulated-replay",
+                "base_currency": "USD",
+                "enabled": True,
+                "sync_state": "synchronized",
+                "control_mode": "enabled",
+                "observed_at": payload["as_of"],
+                "stale_reason": "",
+                "policy": {**asdict(policy), "identity": policy.identity},
+                "available_policies": [{**asdict(policy), "identity": policy.identity}],
+                "strategy_allocations": {},
+                "disabled_strategy_allocations": [],
+                "metrics": {
+                    **metrics,
+                    **exposure,
+                    "eligible_equity": net_liquidation * policy.eligible_equity_fraction,
+                    "reserved_notional": 0,
+                    "reserved_planned_risk": 0,
+                    "gross_headroom": max(0.0, policy.maximum_gross_exposure - gross),
+                    "net_long_headroom": max(0.0, policy.maximum_net_long_exposure - max(0.0, float(exposure.get("net_value") or 0))),
+                    "net_short_headroom": policy.maximum_net_short_exposure,
+                    "planned_risk_headroom": net_liquidation * policy.maximum_open_risk_fraction,
+                },
+                "position_count": payload["portfolio"]["position_count"],
+                "working_order_count": payload["portfolio"]["working_order_count"],
+                "reservations": [],
+                "allocations": [],
+                "reconciliation": [],
+            }
+        ],
+        "groups": [],
+        "recent_decisions": [],
+    }
     return payload
 
 

@@ -27,6 +27,10 @@ from pydantic import BaseModel, Field
 from src.backend.json_utils import json_safe, parse_csv_list
 from src.backend.canvas_preview_service import canvas_preview_payload, scanner_snapshot_payload
 from src.backend.canonical_trading_service import canonical_trading_state
+from src.backend.portfolio_management_service import (
+    portfolio_management_command,
+    portfolio_management_snapshot,
+)
 from src.backend.market_data_service import (
     artifact_records,
     artifact_schema,
@@ -420,6 +424,14 @@ class StrategyAssignmentCommandSubmit(BaseModel):
 
 class StrategyEvaluationSubmit(BaseModel):
     observation: dict[str, Any] = Field(default_factory=dict)
+
+
+class PortfolioManagementCommandSubmit(BaseModel):
+    command: str
+    reason: str = Field(default="", max_length=1000)
+    detail: dict[str, Any] = Field(default_factory=dict)
+    account_type: str = "paper"
+    account_keys: str = ""
 
 
 class HistoricalWindowPreviewRequest(BaseModel):
@@ -3693,7 +3705,16 @@ def _canonical_trading_state(
             if not candidate.exists():
                 raise ValueError("Backtest run not found")
             run_dir = str(candidate)
-        return canonical_trading_state(mode=mode, account_type=account_type, account_keys=account_keys, run_dir=run_dir, refresh=refresh)
+        state = canonical_trading_state(
+            mode=mode,
+            account_type=account_type,
+            account_keys=account_keys,
+            run_dir=run_dir,
+            refresh=refresh,
+        )
+        if mode in {"live", "paper"}:
+            state["portfolio"]["management"] = portfolio_management_snapshot(state)
+        return state
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -3715,6 +3736,51 @@ def trading_accounts(account_type: str = "paper", account_keys: str = "", refres
 def trading_portfolio(account_type: str = "paper", account_keys: str = "", refresh: bool = False, mode: str = "paper", run_id: str = "", output_root: str = str(BACKTEST_ARTIFACT_ROOT)) -> dict[str, Any]:
     state = _canonical_trading_state(account_type, account_keys, refresh, mode=mode, run_id=run_id, output_root=output_root)
     return {key: state[key] for key in ("schema_version", "mode", "provider", "as_of", "complete", "stale", "stale_reason", "portfolio", "account_values", "ledger")}
+
+
+@app.get("/api/trading/portfolio-management")
+def trading_portfolio_management(
+    account_type: str = "paper",
+    account_keys: str = "",
+    refresh: bool = False,
+    mode: str = "paper",
+) -> dict[str, Any]:
+    if mode not in {"live", "paper"}:
+        raise HTTPException(status_code=400, detail="Portfolio management synchronization is available only in live and paper modes")
+    state = _canonical_trading_state(
+        account_type,
+        account_keys,
+        refresh,
+        mode=mode,
+    )
+    return state["portfolio"]["management"]
+
+
+@app.post("/api/trading/portfolio-management/{account_key}/commands")
+def trading_portfolio_management_command(
+    account_key: str,
+    payload: PortfolioManagementCommandSubmit,
+) -> dict[str, Any]:
+    try:
+        result = portfolio_management_command(
+            account_key,
+            payload.command,
+            reason=payload.reason,
+            detail=payload.detail,
+        )
+        if result.get("refresh_required"):
+            state = _canonical_trading_state(
+                payload.account_type,
+                payload.account_keys or account_key,
+                True,
+                mode="paper" if payload.account_type == "paper" else "live",
+            )
+            result["portfolio_management"] = state["portfolio"]["management"]
+        return result
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown portfolio account key: {account_key}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/trading/performance-snapshot")

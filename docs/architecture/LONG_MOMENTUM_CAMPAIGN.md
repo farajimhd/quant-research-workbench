@@ -14,9 +14,10 @@ The strategy owns:
 - per-assignment strategy state;
 - semantic actions and their causal evidence.
 
-The strategy never receives a broker and cannot emit broker orders. The shared
-order-management engine exclusively owns risk validation, IBKR-shaped order
-placement/modification, fills, positions, recovery, and journaling. QMD owns
+The strategy never receives a broker and cannot emit broker orders. Portfolio
+management owns account-specific sizing, allocation, capacity reservations,
+and portfolio-policy approval. The shared order-management engine exclusively
+owns IBKR-shaped order placement/modification and broker-command recovery. QMD owns
 reusable market observations. Canvas owns presentation and semantic assignment
 commands, never trading decisions or broker commands.
 

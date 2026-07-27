@@ -27,7 +27,7 @@ from src.trading_runtime.domain import (
     OrderLifecycleState,
     TradingMode,
 )
-from src.trading_runtime.ibkr_normalizer import normalize_accounts, normalize_ledger, normalize_order, normalize_position_snapshot
+from src.trading_runtime.ibkr_normalizer import normalize_account_values, normalize_accounts, normalize_ledger, normalize_order, normalize_position_snapshot
 from src.trading_runtime.projector import TradingStateProjector
 from src.trading_runtime.performance import build_performance_report, derive_trade_episodes
 from src.trading_runtime.round_trips import derive_round_trip_trades
@@ -96,6 +96,46 @@ class CanonicalNormalizationTests(unittest.TestCase):
         self.assertEqual(by_currency["CAD"].values["cashbalance"], Decimal("20"))
         self.assertEqual(by_currency["CAD"].values["settledcash"], Decimal("18"))
 
+    def test_authoritative_account_and_ledger_snapshots_remove_absent_rows(self) -> None:
+        projector = TradingStateProjector(TradingMode.PAPER, BrokerProvider.IBKR_CPAPI)
+        projector.replace_account_values(
+            "DU1",
+            normalize_account_values(
+                {
+                    "NetLiquidation": {"amount": 100000, "currency": "USD"},
+                    "AvailableFunds": {"amount": 50000, "currency": "USD"},
+                },
+                "DU1",
+            ),
+        )
+        projector.replace_ledger(
+            "DU1",
+            normalize_ledger(
+                {"BASE": {"cashbalance": 50000}, "CAD": {"cashbalance": 1000}},
+                "DU1",
+            ),
+        )
+        projector.replace_account_values(
+            "DU1",
+            normalize_account_values(
+                {"NetLiquidation": {"amount": 99000, "currency": "USD"}},
+                "DU1",
+            ),
+        )
+        projector.replace_ledger(
+            "DU1",
+            normalize_ledger({"BASE": {"cashbalance": 49000}}, "DU1"),
+        )
+
+        self.assertEqual(
+            {row.key for row in projector.account_values.values()},
+            {"netliquidation"},
+        )
+        self.assertEqual(
+            {row.currency for row in projector.ledger.values()},
+            {"BASE"},
+        )
+
 
 class CanonicalProjectionTests(unittest.TestCase):
     def test_complete_empty_position_snapshot_clears_state_but_incomplete_does_not(self) -> None:
@@ -110,6 +150,21 @@ class CanonicalProjectionTests(unittest.TestCase):
         self.assertEqual(len(projector.positions), 0)
         self.assertTrue(projector.complete)
         self.assertFalse(projector.stale)
+
+    def test_one_complete_account_cannot_clear_another_accounts_incomplete_state(self) -> None:
+        projector = TradingStateProjector(TradingMode.PAPER, BrokerProvider.IBKR_CPAPI)
+        projector.set_accounts(
+            [
+                BrokerAccount(provider=BrokerProvider.IBKR_CPAPI, account_id="DU1", base_currency="USD", can_view=True, can_trade=True, valid_at=NOW),
+                BrokerAccount(provider=BrokerProvider.IBKR_CPAPI, account_id="DU2", base_currency="USD", can_view=True, can_trade=True, valid_at=NOW),
+            ]
+        )
+        projector.apply_position_snapshot("DU1", "partial", False, [])
+        projector.apply_position_snapshot("DU2", "complete-empty", True, [])
+
+        self.assertFalse(projector.complete)
+        self.assertTrue(projector.stale)
+        self.assertEqual(projector.incomplete_position_accounts, {"DU1"})
 
     def test_historical_projection_uses_source_time_not_load_time(self) -> None:
         projector = TradingStateProjector(TradingMode.BACKTEST, BrokerProvider.SIMULATED)

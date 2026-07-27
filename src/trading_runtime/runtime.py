@@ -9,8 +9,12 @@ from uuid import uuid4
 
 from src.market_engine.events import MarketEvent
 from src.trading_runtime.broker import BrokerAdapter
+from src.trading_runtime.canonical_session import CanonicalBrokerSession
+from src.trading_runtime.domain import BrokerProvider, TradingMode
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.order_management import OrderManagementEngine
+from src.trading_runtime.portfolio import PortfolioManagementEngine
+from src.trading_runtime.portfolio_config import configured_portfolio_profiles_for_runtime
 from src.trading_runtime.risk import RiskAuthority
 from src.trading_runtime.signals import (
     MarketSignal,
@@ -78,6 +82,7 @@ class TradingRuntime:
         journal: TradingJournal,
         risk: RiskAuthority | None = None,
         intent_planner: RuntimeIntentPlanner | None = None,
+        portfolio: PortfolioManagementEngine | None = None,
     ) -> None:
         if config.strategy_id != strategy.strategy_id or config.strategy_revision != strategy.revision:
             raise ValueError("Run strategy identity does not match loaded strategy revision")
@@ -90,6 +95,20 @@ class TradingRuntime:
         self.journal = journal
         self.risk = risk or RiskAuthority()
         self.intent_planner = intent_planner
+        if portfolio is None:
+            profiles, groups = configured_portfolio_profiles_for_runtime(
+                config.account_ids,
+                mode=config.mode.value,
+            )
+            portfolio = PortfolioManagementEngine(
+                profiles,
+                journal=journal,
+                run_id=self.run_id,
+                strategy_id=config.strategy_id,
+                strategy_revision=config.strategy_revision,
+                groups=groups,
+            )
+        self.portfolio = portfolio
         self.order_manager = (
             OrderManagementEngine(
                 broker=broker,
@@ -105,6 +124,7 @@ class TradingRuntime:
                 strategy_revision=config.strategy_revision,
                 shortability_provider=broker if hasattr(broker, "shortability") else None,
                 fill_callback=self._on_order_group_fill,
+                state_callback=self._on_order_group_state,
                 enforce_wall_clock_quote_freshness=(
                     config.mode in {RunMode.LIVE, RunMode.PAPER}
                     and bool(getattr(broker, "requires_fresh_execution_state", False))
@@ -117,10 +137,31 @@ class TradingRuntime:
         self.processed_events = 0
         self._broker_stream_task: asyncio.Task[None] | None = None
         self._risk_refresh_task: asyncio.Task[None] | None = None
+        self._canonical_session: CanonicalBrokerSession | None = None
 
     async def initialize(self) -> None:
-        await self.broker.initialize()
-        available = set(await self.broker.accounts())
+        if hasattr(self.broker, "canonical_accounts"):
+            self._canonical_session = CanonicalBrokerSession(
+                self.broker,  # type: ignore[arg-type]
+                mode=TradingMode(self.config.mode.value),
+                provider=(
+                    BrokerProvider.SIMULATED
+                    if self.config.mode in {RunMode.REPLAY, RunMode.BACKTEST, RunMode.BACKTEST_DEBUG}
+                    else BrokerProvider.IBKR_CPAPI
+                ),
+            )
+            await self._canonical_session.bootstrap()
+            canonical_snapshot = self._canonical_session.projector.snapshot()
+            available = {
+                row.account_id
+                for row in canonical_snapshot.accounts
+                if row.can_view or row.can_trade
+            }
+            self.portfolio.synchronize_canonical(canonical_snapshot)
+        else:
+            await self.broker.initialize()
+            available = set(await self.broker.accounts())
+            await self.portfolio.synchronize(self.broker)
         missing = set(self.config.account_ids) - available
         if missing:
             raise ValueError(f"Broker does not expose configured accounts: {', '.join(sorted(missing))}")
@@ -151,6 +192,9 @@ class TradingRuntime:
             )
         if executions and self.order_manager is not None:
             await self.order_manager.reconcile()
+        if executions and self._canonical_session is not None:
+            await self._canonical_session.reconcile()
+            self.portfolio.synchronize_canonical(self._canonical_session.projector.snapshot())
         for account_id in self.config.account_ids:
             evaluation = normalize_strategy_evaluation(
                 await self.strategy.on_event(event, account_id)
@@ -227,7 +271,21 @@ class TradingRuntime:
                     "strategy_revision": self.config.strategy_revision,
                 },
             )
-            await self.order_manager.submit_intent(intent, account_id=account_id, event=event)
+            decision, approved_intent = await self.portfolio.approve(intent, account_id=account_id)
+            if approved_intent is None:
+                continue
+            try:
+                await self.order_manager.submit_intent(
+                    approved_intent,
+                    account_id=account_id,
+                    event=event,
+                )
+            except Exception:
+                self.portfolio.release_intent(
+                    approved_intent.intent_id,
+                    reason="order_management_submission_failed",
+                )
+                raise
 
     def _persist_strategy_assignments(self, event_time: datetime) -> None:
         assignments = getattr(self.strategy, "assignments", None)
@@ -287,6 +345,11 @@ class TradingRuntime:
                 async for message in stream_provider():
                     if self.order_manager is not None:
                         await self.order_manager.on_broker_message(message)
+                    if self._canonical_session is not None:
+                        self._canonical_session.apply_websocket_message(message)
+                        self.portfolio.synchronize_canonical(
+                            self._canonical_session.projector.snapshot()
+                        )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -306,6 +369,13 @@ class TradingRuntime:
             try:
                 await asyncio.sleep(5.0)
                 await self.risk.prime(self.broker, self.config.account_ids)
+                if self._canonical_session is not None:
+                    await self._canonical_session.reconcile()
+                    self.portfolio.synchronize_canonical(
+                        self._canonical_session.projector.snapshot()
+                    )
+                else:
+                    await self.portfolio.synchronize(self.broker)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -322,3 +392,6 @@ class TradingRuntime:
         if handler is not None:
             await handler(snapshot)
             self._persist_strategy_assignments(snapshot.updated_at)
+
+    async def _on_order_group_state(self, snapshot) -> None:
+        self.portfolio.on_order_group_update(snapshot)

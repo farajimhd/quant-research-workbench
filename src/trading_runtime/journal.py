@@ -108,6 +108,30 @@ class TradingJournal:
             return None
         return {"run_id": row["run_id"], "cursor": row["cursor"], "event_time": row["event_time"], "state": json.loads(row["state_json"]), "updated_at": row["updated_at"]}
 
+    def save_portfolio_state(self, account_id: str, state: dict[str, Any]) -> None:
+        if not account_id:
+            raise ValueError("account_id is required")
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO portfolio_states(account_id, state_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(account_id) DO UPDATE SET
+                    state_json=excluded.state_json, updated_at=excluded.updated_at
+                """,
+                (
+                    account_id,
+                    json.dumps(state, sort_keys=True, default=_json_default),
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+
+    def portfolio_states(self) -> dict[str, dict[str, Any]]:
+        rows = self._connection.execute(
+            "SELECT account_id, state_json FROM portfolio_states ORDER BY account_id"
+        ).fetchall()
+        return {str(row["account_id"]): json.loads(row["state_json"]) for row in rows}
+
     def save_trade_annotation(
         self,
         episode_id: str,
@@ -324,6 +348,25 @@ class TradingJournal:
         ).fetchall()
         return [_record(row) for row in reversed(rows)]
 
+    def portfolio_management_records(
+        self,
+        *,
+        account_id: str = "",
+        limit: int = 2000,
+    ) -> list[JournalRecord]:
+        clauses = ["category = 'portfolio_management'"]
+        values: list[Any] = []
+        if account_id:
+            clauses.append("account_id = ?")
+            values.append(account_id)
+        values.append(max(1, min(int(limit), 50_000)))
+        rows = self._connection.execute(
+            f"SELECT * FROM journal WHERE {' AND '.join(clauses)} "
+            "ORDER BY event_time DESC, recorded_at DESC LIMIT ?",
+            values,
+        ).fetchall()
+        return [_record(row) for row in reversed(rows)]
+
     def records(self, run_id: str, *, after_sequence: int = 0) -> list[JournalRecord]:
         rows = self._connection.execute(
             "SELECT * FROM journal WHERE run_id = ? AND sequence > ? ORDER BY sequence",
@@ -396,6 +439,9 @@ class TradingJournal:
                 );
                 CREATE INDEX IF NOT EXISTS idx_strategy_assignment_scope
                     ON strategy_assignments(account_id, ticker, updated_at);
+                CREATE TABLE IF NOT EXISTS portfolio_states(
+                    account_id TEXT PRIMARY KEY, state_json TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
                 """
             )
 

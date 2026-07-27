@@ -1,4 +1,4 @@
-import { Activity, ArrowDown, ArrowUp, ArrowUpDown, BadgeDollarSign, BarChart3, BookOpen, BriefcaseBusiness, Check, ChevronDown, ChevronRight, CircleDollarSign, Clock3, ExternalLink, Filter, Gauge, HelpCircle, Landmark, Link2, MapPin, PanelRightOpen, Plus, Search, Save, Settings2, ShieldCheck, Target, Trash2, Unlink, WalletCards, X } from "lucide-react";
+import { Activity, ArrowDown, ArrowUp, ArrowUpDown, BadgeDollarSign, BarChart3, BookOpen, BriefcaseBusiness, Check, ChevronDown, ChevronRight, CircleDollarSign, Clock3, ExternalLink, Filter, Gauge, HelpCircle, Landmark, Link2, MapPin, PanelRightOpen, Plus, RefreshCcw, Search, Save, Settings2, ShieldCheck, Target, Trash2, Unlink, WalletCards, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 import type { UTCTimestamp } from "lightweight-charts";
 
@@ -135,6 +135,34 @@ type CanonicalTradingPreview = {
     position_count: number;
     working_order_count: number;
     pending_commission_count: number;
+    management?: {
+      schema_version: number;
+      complete: boolean;
+      stale: boolean;
+      stale_reason: string;
+      accounts: Array<{
+        account_key: string;
+        account_id: string;
+        account_class: string;
+        mode: string;
+        sync_state: string;
+        control_mode: string;
+        observed_at: string;
+        stale_reason: string;
+        policy: Record<string, unknown> & { identity?: string };
+        available_policies: Array<Record<string, unknown> & { identity: string }>;
+        strategy_allocations: Record<string, number>;
+        disabled_strategy_allocations: string[];
+        metrics: Record<string, string | number>;
+        position_count: number;
+        working_order_count: number;
+        reservations: PreviewRow[];
+        allocations: PreviewRow[];
+        reconciliation: PreviewRow[];
+      }>;
+      groups: PreviewRow[];
+      recent_decisions: PreviewRow[];
+    };
   };
 };
 type PerformanceSnapshot = {
@@ -3090,6 +3118,115 @@ function PortfolioPreview({ data, settings }: { data: CanonicalTradingPreview; s
     {settings.showExposure ? <div className="trading-exposure-grid"><TradingMetric label="Long exposure" value={money(exposure.long_value)} tone="positive" /><TradingMetric label="Short exposure" value={money(exposure.short_value)} tone="negative" /><TradingMetric label="Net exposure" value={signedMoney(exposure.net_value)} tone={numberTone(exposure.net_value)} /><TradingMetric label="Gross exposure" value={money(exposure.gross_value)} /></div> : null}
     <div className="trading-secondary-heading"><strong>Cash ledger</strong><span>Every broker currency; BASE is not substituted for local balances</span></div>
     <PreviewTable columns={["account", "currency", "cash", "settled", "net_liquidation"]} rows={ledgerRows} />
+    {data.portfolio.management ? <PortfolioManagementPreview data={data} management={data.portfolio.management} /> : null}
+  </section>;
+}
+
+function PortfolioManagementPreview({ data, management }: { data: CanonicalTradingPreview; management: NonNullable<CanonicalTradingPreview["portfolio"]["management"]> }) {
+  const [accounts, setAccounts] = useState(management.accounts);
+  const [pending, setPending] = useState("");
+  const [message, setMessage] = useState("");
+  useEffect(() => setAccounts(management.accounts), [management]);
+  const operational = data.mode === "live" || data.mode === "paper";
+  const command = async (
+    accountKey: string,
+    value: "pause_entries" | "resume_entries" | "reduce_only" | "reconcile" | "select_policy" | "disable_strategy" | "enable_strategy",
+    detail: Record<string, string> = {},
+  ) => {
+    const commandKey = `${accountKey}:${value}`;
+    setPending(commandKey);
+    setMessage("");
+    try {
+      const result = await api<{
+        control_mode?: string;
+        disabled_strategy_allocations?: string[];
+        policy?: Record<string, unknown> & { identity?: string };
+        portfolio_management?: typeof management;
+      }>(
+        `/api/trading/portfolio-management/${encodeURIComponent(accountKey)}/commands`,
+        {
+          body: JSON.stringify({ account_keys: accountKey, account_type: data.mode, command: value, detail, reason: "Canvas operator command" }),
+          headers: { "Content-Type": "application/json" },
+          method: "POST",
+        },
+      );
+      if (result.portfolio_management) setAccounts(result.portfolio_management.accounts);
+      else setAccounts((current) => current.map((row) => row.account_key === accountKey ? {
+        ...row,
+        ...(result.control_mode ? { control_mode: result.control_mode } : {}),
+        ...(result.policy ? { policy: result.policy } : {}),
+        ...(result.disabled_strategy_allocations ? { disabled_strategy_allocations: result.disabled_strategy_allocations } : {}),
+      } : row));
+      setMessage(value === "reconcile" ? "Broker reconciliation completed." : "Portfolio control updated.");
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setPending("");
+    }
+  };
+  return <section className="portfolio-management-preview" aria-label="Portfolio management">
+    <div className="trading-secondary-heading"><strong>Portfolio management</strong><span>IBKR-authoritative state · account-specific policy · portfolio approval before OMS</span></div>
+    {management.stale ? <div className="trading-disclosure" data-tone="negative">Entries blocked: {management.stale_reason || "broker state is stale"}</div> : null}
+    {message ? <div className="trading-disclosure" role="status">{message}</div> : null}
+    <div className="portfolio-management-account-list">
+      {accounts.map((account) => {
+        const metrics = account.metrics;
+        const isPending = pending.startsWith(`${account.account_key}:`);
+        return <article className="portfolio-management-account" data-sync={account.sync_state} key={account.account_key}>
+          <header>
+            <div><strong>{account.account_key}</strong><span>{account.account_class} · {String(account.policy.identity || "unversioned policy")}</span></div>
+            <div className="portfolio-management-status"><span data-state={account.sync_state}>{labelFor(account.sync_state)}</span><span data-state={account.control_mode}>{labelFor(account.control_mode)}</span></div>
+          </header>
+          <div className="portfolio-management-metrics">
+            <TradingMetric label="Eligible equity" value={money(metrics.eligible_equity)} />
+            <TradingMetric label="Gross headroom" value={money(metrics.gross_headroom)} tone="positive" />
+            <TradingMetric label="Reserved" value={money(metrics.reserved_notional)} />
+            <TradingMetric label="Risk headroom" value={money(metrics.planned_risk_headroom)} />
+            <TradingMetric label="Positions" value={String(account.position_count)} />
+            <TradingMetric label="Working orders" value={String(account.working_order_count)} />
+          </div>
+          <div className="portfolio-management-evidence">
+            <span>{account.reservations.length} reservations</span>
+            <span>{account.allocations.length} allocations</span>
+            <span data-tone={account.reconciliation.length ? "negative" : "positive"}>{account.reconciliation.length} reconciliation differences</span>
+            <span>{account.observed_at ? <>As of <MarketTime value={account.observed_at} /></> : "No broker watermark"}</span>
+          </div>
+          {operational ? <div className="portfolio-management-controls">
+            <label className="portfolio-policy-select">
+              <span>Policy revision</span>
+              <select
+                aria-label={`Policy revision for ${account.account_key}`}
+                disabled={isPending}
+                onChange={(event) => void command(account.account_key, "select_policy", { policy_identity: event.target.value })}
+                value={String(account.policy.identity || "")}
+              >
+                {account.available_policies.map((policy) => <option key={policy.identity} value={policy.identity}>{policy.identity}</option>)}
+              </select>
+            </label>
+            {account.control_mode === "enabled"
+              ? <button className="button secondary compact" disabled={isPending} onClick={() => void command(account.account_key, "pause_entries")} type="button">Pause entries</button>
+              : <button className="button secondary compact" disabled={isPending} onClick={() => void command(account.account_key, "resume_entries")} type="button">Resume entries</button>}
+            <button className="button secondary compact" disabled={isPending || account.control_mode === "reduce_only"} onClick={() => void command(account.account_key, "reduce_only")} type="button">Reduce only</button>
+            <button className="button secondary compact" disabled={isPending} onClick={() => void command(account.account_key, "reconcile")} type="button"><RefreshCcw size={12} /> Reconcile</button>
+            {Object.entries(account.strategy_allocations).map(([strategyId, fraction]) => {
+              const disabled = account.disabled_strategy_allocations.includes(strategyId);
+              return <button
+                className="button secondary compact portfolio-strategy-control"
+                data-disabled={disabled || undefined}
+                disabled={isPending}
+                key={strategyId}
+                onClick={() => void command(account.account_key, disabled ? "enable_strategy" : "disable_strategy", { strategy_id: strategyId })}
+                title={`${disabled ? "Enable" : "Disable"} ${strategyId} entries for this account`}
+                type="button"
+              >
+                {strategyId} {Math.round(Number(fraction) * 100)}% · {disabled ? "Disabled" : "Enabled"}
+              </button>;
+            })}
+          </div> : <div className="trading-disclosure">Replay and Backtest use the same policy evidence with a simulated broker; operational controls are available only in Live and Paper.</div>}
+        </article>;
+      })}
+    </div>
+    {management.groups.length ? <><div className="trading-secondary-heading"><strong>Aggregate groups</strong><span>Cross-account caps without implicit routing or mirrored orders</span></div><PreviewTable columns={["group_id", "gross_exposure", "gross_headroom", "sync_state"]} rows={management.groups} /></> : null}
   </section>;
 }
 
