@@ -241,6 +241,35 @@ backend serves the build from there. Override the operational root with
 `QW_RUNTIME_ROOT` or only the frontend workspace with
 `QW_FRONTEND_RUNTIME_ROOT`.
 
+### Frontend runtime scripts
+
+Use `scripts/run_frontend.py` as the only frontend package/build entry point.
+Do not run `npm install`, `npm ci`, or `npm --prefix frontend ...` directly in
+the source tree because those commands recreate `frontend/node_modules` or
+other generated output inside the repository.
+
+The launcher provides:
+
+- `install`: synchronize the frontend source and run `npm ci` externally.
+- `dev`: synchronize the source and start Vite from the external workspace.
+- `build`: type-check and create the production `dist` externally.
+- `preview`: serve the external production build with Vite Preview.
+- `ui:review` and `ui:review:full`: invoke
+  `frontend/scripts/ui_review.py` while writing captures and manifests beneath
+  the external review root.
+
+Arguments after `--` are forwarded to the selected npm script. For example:
+
+```powershell
+python scripts/run_frontend.py dev -- --host 127.0.0.1 --port 5173
+python scripts/run_frontend.py ui:review -- --page service-qmd
+```
+
+Use `--runtime-root <path>` for a one-off external workspace. The launcher
+rejects any runtime root located inside the repository. `scripts/run_backend.ps1`
+uses the external production build automatically through the shared runtime
+path authority.
+
 For deterministic browser captures, start the runnable UI, then run a targeted
 review matrix (affected route, representative light/dark themes,
 minimum/default/maximum application scales, and normal/compact viewports):
