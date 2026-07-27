@@ -130,7 +130,9 @@ supply-dominant recall penalizes checkpoint selection.
 
 The best shared transformer is frozen. Direction, flow, and regression towers
 train for eight additional epochs. Each tower is selected independently using
-its own validation metric.
+its own validation metric. The corresponding tower from the selected joint
+checkpoint is the baseline candidate; specialization replaces it only when its
+validation score is strictly better.
 
 Frozen transformer and tower modules remain in evaluation mode so dropout
 cannot move the feature distribution during specialization.
@@ -139,11 +141,15 @@ cannot move the feature distribution during specialization.
 
 The selected direction, flow, and regression towers are frozen. The
 direction-and-excursion-conditioned path tower trains for 15 epochs and is
-selected by path macro-F1 with explicit minority-class recall gates.
+selected by path macro-F1 with explicit minority-class recall gates. Its
+pre-specialization state under the assembled upstream towers is retained as the
+baseline candidate.
 
 `latest.pt` is the resume authority. `best_val.pt` is the final assembled
 inference model containing the best shared representation and independently
-selected towers.
+selected towers. After assembly, the restored validation metrics are logged as
+the final W&B step so the run summary describes `best_val.pt`, not merely the
+last optimization epoch.
 
 Each epoch uses an epoch-local cosine schedule. The peak learning rate decays
 by 0.98 between epochs.

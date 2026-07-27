@@ -180,16 +180,35 @@ class ModelTest(unittest.TestCase):
             def stop(self) -> None:
                 return None
 
-        validation = {
-            "val/joint_score": 0.5,
-            "val/direction/macro_f1": 0.5,
-            "val/path/macro_f1": 0.4,
-            "val/flow/macro_f1": 0.5,
-            "val/regression_mean_mae_skill": 0.1,
-            "val/path/class/spike_fade/recall": 0.2,
-            "val/path/class/flush_recovery/recall": 0.2,
-            "val/flow/class/supply_dominant/recall": 0.3,
-        }
+        def validation(
+            *,
+            direction: float = 0.5,
+            path: float = 0.4,
+            flow: float = 0.5,
+            regression: float = 0.2,
+        ) -> dict[str, float]:
+            return {
+                "val/joint_score": float(
+                    np.mean((direction, path, flow, regression))
+                ),
+                "val/direction/macro_f1": direction,
+                "val/path/macro_f1": path,
+                "val/flow/macro_f1": flow,
+                "val/regression_mean_mae_skill": regression,
+                "val/path/class/spike_fade/recall": 0.2,
+                "val/path/class/flush_recovery/recall": 0.2,
+                "val/flow/class/supply_dominant/recall": 0.3,
+            }
+
+        validation_sequence = [
+            validation(regression=0.3),
+            validation(),
+            validation(direction=0.4, path=0.3, flow=0.4, regression=0.1),
+            validation(),
+            validation(),
+            validation(path=0.3),
+            validation(),
+        ]
 
         with TemporaryDirectory() as temp:
             output = Path(temp) / "runs"
@@ -204,7 +223,7 @@ class ModelTest(unittest.TestCase):
                 ),
                 patch(
                     "research.news_reaction_model.v19.train.validate",
-                    return_value=validation,
+                    side_effect=validation_sequence,
                 ),
                 patch(
                     "research.news_reaction_model.v19.train.evaluate_checkpoint",
@@ -251,6 +270,16 @@ class ModelTest(unittest.TestCase):
             payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
             self.assertEqual(payload["model_version"], "v19")
             self.assertEqual(payload["phase"], "path")
+            self.assertEqual(
+                payload["best_scores"],
+                {
+                    "joint": 0.425,
+                    "direction": 0.5,
+                    "flow": 0.5,
+                    "regression": 0.2,
+                    "path": 0.4,
+                },
+            )
 
 
 if __name__ == "__main__":

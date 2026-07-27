@@ -218,6 +218,31 @@ def joint_score(metrics: dict[str, float], recall_gate: float) -> float:
     return score
 
 
+def initialize_phase_baselines(
+    *,
+    model: NewsReactionModelV19,
+    phase: str,
+    metrics: dict[str, float],
+    best_scores: dict[str, float],
+    checkpoints: Path,
+    recall_gate: float,
+) -> None:
+    if phase == "specialize":
+        tasks = ("direction", "flow", "regression")
+    elif phase == "path":
+        tasks = ("path",)
+    else:
+        return
+    for task in tasks:
+        score = task_score(metrics, task, recall_gate)
+        best_scores[task] = score
+        save_task(checkpoints / f"best_{task}.pt", model, task)
+        print(
+            f"{phase.upper()} BASELINE | task={task} score={score:.6f}",
+            flush=True,
+        )
+
+
 def gradient_audit(
     components: dict[str, torch.Tensor],
     shared_parameters: Iterable[torch.nn.Parameter],
@@ -432,6 +457,16 @@ def main(argv: list[str] | None = None) -> int:
             elif phase == "path":
                 for task in ("direction", "flow", "regression"):
                     load_task(checkpoints / f"best_{task}.pt", model, task)
+            if phase in {"specialize", "path"}:
+                baseline_metrics = validate(model, config.loader, statistics, device)
+                initialize_phase_baselines(
+                    model=model,
+                    phase=phase,
+                    metrics=baseline_metrics,
+                    best_scores=best_scores,
+                    checkpoints=checkpoints,
+                    recall_gate=config.train.class_recall_gate,
+                )
         tasks = configure_phase(model, phase)
         learning_rate = (
             config.train.learning_rate
@@ -634,6 +669,15 @@ def main(argv: list[str] | None = None) -> int:
         resume_optimizer_state = None
 
     if wandb_run is not None:
+        wandb_run.log(
+            {
+                "phase": "assembled",
+                "global_epoch": float(global_epoch),
+                **final_metrics,
+            },
+            step=global_epoch + 1,
+        )
+        wandb_run.summary["selected_checkpoint"] = "best_val.pt"
         wandb_run.finish()
     if config.train.evaluate_at_end:
         evaluate_checkpoint(
