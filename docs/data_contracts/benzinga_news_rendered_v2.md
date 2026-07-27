@@ -41,7 +41,8 @@ The launcher:
 1. creates the versioned tables;
 2. reads the v1 source by bounded UTC day;
 3. resolves raw artifacts and renders articles concurrently;
-4. inserts idempotent daily products with bounded ClickHouse transport retries;
+4. inserts idempotent daily products with row- and byte-bounded ClickHouse
+   requests plus bounded transport retries;
 5. audits whole-corpus event/render cardinality, empty output, and orphans;
 6. writes stratified original-versus-rendered Markdown samples;
 7. marks the authority `ready` only after a complete, error-free run.
@@ -50,11 +51,28 @@ Generated status, errors, audit samples, and `AUDIT.md` are written below
 `D:\TradingML\runtimes\news\benzinga_news_rendered_v2`; the final run root is
 printed at completion. A limited run can never certify the authority.
 
-Transient connection timeouts and HTTP 408, 425, 429, 502, 503, or 504
-responses are retried up to 12 times with capped exponential backoff. Retry
-events are printed and appended to the run's `status.jsonl`. Inserts reuse the
-identical bounded payload; the deterministic `ReplacingMergeTree` identities
-make an unknown first-attempt outcome safe to retry.
+Each request has a finite 180-second socket deadline. Transient disconnects,
+connection timeouts, and HTTP 408, 425, 429, 502, 503, or 504 responses receive
+up to 20 total attempts with capped exponential backoff. The retry schedule
+provides eight minutes of bounded backoff, in addition to the finite duration of
+the individual attempts, without allowing one socket call to hang forever.
+
+Insert batches close at either 500 rows or a 4 MiB encoded JSONEachRow body.
+A single structural row may exceed the soft batch target but may not exceed the
+hard 8 MiB row contract. The renderer never truncates article content to satisfy
+these limits: an anomalously large product fails before insertion and reports
+only its safe article/source/block identity and byte size. Batch start,
+completion, retry, row count, body bytes, maximum row bytes, table, and UTC day
+are appended to `status.jsonl`; article text is never copied into operational
+logs.
+
+Retries reuse the identical bounded payload. The deterministic
+`ReplacingMergeTree` identities make an unknown first-attempt outcome safe to
+retry. Operators can override the defaults with
+`--insert-batch-size`, `--insert-target-bytes`,
+`--insert-max-row-bytes`, `--clickhouse-timeout-seconds`, and
+`--clickhouse-attempts`, but increasing the hard row limit is not a substitute
+for auditing an anomalously large structural product.
 
 If the process still exits, run the same command again. Restarting verifies all
 five products and skips complete days. A partially inserted day is rebuilt

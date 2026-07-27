@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import contextlib
 import hashlib
 import html
 import json
@@ -11,19 +12,23 @@ import uuid
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 from urllib import error as url_error
 
 from pipelines.news.benzinga.core.clickhouse_values import datetime64_utc_text
 from pipelines.news.benzinga.core.clickhouse_writer import NORMALIZED_COLUMNS, insert_json_each_row
 from pipelines.news.benzinga.core.clickhouse_writer_v2 import (
     BLOCK_COLUMNS,
+    DEFAULT_INSERT_MAX_ROW_BYTES,
+    DEFAULT_INSERT_TARGET_BYTES,
     EVENT_COLUMNS,
+    OversizedNewsRowError,
     RENDERED_COLUMNS,
     SOURCE_COLUMNS,
     TICKER_COLUMNS,
     NewsV2TargetConfig,
     create_v2_tables,
+    json_each_row_batches,
 )
 from pipelines.news.benzinga.news_benzinga_render_v2 import (
     NEWS_RENDERER_VERSION,
@@ -42,6 +47,7 @@ from research.mlops.env import discover_env_files, load_env_files
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_OUTPUT_ROOT = Path("D:/TradingML/runtimes/news/benzinga_news_rendered_v2")
 DEFAULT_PATH_MAP = (r"D:\market-data", r"\\DESKTOP-SAAI85T\Workstation-D\market-data")
+DEFAULT_CLICKHOUSE_TIMEOUT_SECONDS = 180.0
 TRANSIENT_HTTP_STATUS_CODES = frozenset({408, 425, 429, 502, 503, 504})
 TRANSIENT_WINDOWS_SOCKET_ERRORS = frozenset({10053, 10054, 10060, 10061, 10065})
 
@@ -75,13 +81,41 @@ class RetryingClickHouseHttpClient(ClickHouseHttpClient):
         attempts: int,
         retry_base_seconds: float,
         retry_max_seconds: float,
+        request_timeout_seconds: float,
         status_path: Path,
     ) -> None:
-        super().__init__(base_url, user, password)
+        super().__init__(
+            base_url,
+            user,
+            password,
+            timeout_seconds=request_timeout_seconds,
+        )
         self.attempts = max(1, int(attempts))
         self.retry_base_seconds = max(0.0, float(retry_base_seconds))
         self.retry_max_seconds = max(self.retry_base_seconds, float(retry_max_seconds))
         self.status_path = status_path
+        self._diagnostic_context: dict[str, Any] = {}
+
+    @contextlib.contextmanager
+    def diagnostic_context(self, **values: Any) -> Iterator[None]:
+        previous = self._diagnostic_context
+        self._diagnostic_context = {
+            key: value
+            for key, value in values.items()
+            if key in {
+                "day",
+                "table",
+                "batch",
+                "batch_count",
+                "rows",
+                "body_bytes",
+                "max_row_bytes",
+            }
+        }
+        try:
+            yield
+        finally:
+            self._diagnostic_context = previous
 
     def execute(self, sql: str, *, query_id: str | None = None) -> str:
         operation = clickhouse_operation(sql)
@@ -103,11 +137,14 @@ class RetryingClickHouseHttpClient(ClickHouseHttpClient):
                     "wait_seconds": round(delay, 3),
                     "error_type": type(exc).__name__,
                     "error": bounded_error_text(exc),
+                    **self._diagnostic_context,
                 }
                 append_jsonl(self.status_path, event)
+                context_text = diagnostic_context_text(self._diagnostic_context)
                 print(
                     f"CLICKHOUSE RETRY | operation={operation} "
                     f"attempt={attempt}/{self.attempts} wait={delay:.1f}s "
+                    f"{context_text}"
                     f"error={type(exc).__name__}: {bounded_error_text(exc)}",
                     flush=True,
                 )
@@ -126,19 +163,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--end-date-exclusive", default="")
     parser.add_argument("--workers", type=int, default=max(4, min(32, os.cpu_count() or 16)))
     parser.add_argument("--insert-batch-size", type=int, default=500)
+    parser.add_argument(
+        "--insert-target-bytes",
+        type=int,
+        default=DEFAULT_INSERT_TARGET_BYTES,
+        help="Soft encoded JSONEachRow body target; row count and bytes both close a batch.",
+    )
+    parser.add_argument(
+        "--insert-max-row-bytes",
+        type=int,
+        default=DEFAULT_INSERT_MAX_ROW_BYTES,
+        help="Hard encoded size limit for one product row; oversized rows fail with identity-only diagnostics.",
+    )
     parser.add_argument("--sample-per-category", type=int, default=5)
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--path-prefix-map", action="append", default=[])
     parser.add_argument("--limit-days", type=int, default=0, help="Audit/smoke only; a limited run can never certify v2.")
-    parser.add_argument("--clickhouse-attempts", type=int, default=12)
+    parser.add_argument("--clickhouse-attempts", type=int, default=20)
     parser.add_argument("--clickhouse-retry-base-seconds", type=float, default=2.0)
     parser.add_argument("--clickhouse-retry-max-seconds", type=float, default=30.0)
+    parser.add_argument(
+        "--clickhouse-timeout-seconds",
+        type=float,
+        default=DEFAULT_CLICKHOUSE_TIMEOUT_SECONDS,
+        help="Finite socket deadline for each ClickHouse request.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     load_env_files(discover_env_files(REPO_ROOT))
     args = parse_args(argv)
+    validate_operational_args(args)
     run_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
     run_root = Path(args.output_root) / run_id
     run_root.mkdir(parents=True, exist_ok=True)
@@ -151,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
         attempts=args.clickhouse_attempts,
         retry_base_seconds=args.clickhouse_retry_base_seconds,
         retry_max_seconds=args.clickhouse_retry_max_seconds,
+        request_timeout_seconds=args.clickhouse_timeout_seconds,
         status_path=status_path,
     )
     target = NewsV2TargetConfig(database=args.database, execute=args.execute, require_ready=False, skip_table_validation=True)
@@ -168,6 +225,15 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"NEWS RENDER V2 | renderer={NEWS_RENDERER_VERSION} source={args.database}.{args.source_table} "
         f"days={len(days):,} rows={expected_rows:,} workers={args.workers} execute={args.execute}",
+        flush=True,
+    )
+    print(
+        "CLICKHOUSE GUARDRAILS | "
+        f"timeout={args.clickhouse_timeout_seconds:g}s "
+        f"attempts={args.clickhouse_attempts} "
+        f"batch_rows<={args.insert_batch_size:,} "
+        f"target_body<={format_bytes(args.insert_target_bytes)} "
+        f"single_row<={format_bytes(args.insert_max_row_bytes)}",
         flush=True,
     )
     if args.execute:
@@ -216,8 +282,17 @@ def main(argv: list[str] | None = None) -> int:
                     )
         if len(rendered_rows) != len(rows):
             raise RuntimeError(f"{day}: rendered {len(rendered_rows):,}/{len(rows):,}; see {errors_path}")
-        if args.execute:
-            insert_built_rows(client, target, rendered_rows, max(1, args.insert_batch_size))
+        insert_built_rows(
+            client,
+            target,
+            rendered_rows,
+            max_rows=args.insert_batch_size,
+            target_bytes=args.insert_target_bytes,
+            max_row_bytes=args.insert_max_row_bytes,
+            day=day,
+            status_path=status_path,
+            execute=args.execute,
+        )
         counts.source_rows += len(rows)
         counts.event_rows += len(rendered_rows)
         counts.rendered_rows += len(rendered_rows)
@@ -257,7 +332,7 @@ def render_one(row: dict[str, Any], path_maps: list[tuple[str, str]]) -> tuple[d
     row["pdf_artifact_paths"] = [
         str(resolved)
         for value in row.get("pdf_artifact_paths") or []
-        if (resolved := resolve_path(str(value), path_maps)) is not None and resolved.exists()
+        if (resolved := resolve_path(str(value), path_maps)) is not None
     ]
     raw_html = ""
     payload: dict[str, Any] = {}
@@ -297,10 +372,16 @@ FORMAT JSONEachRow
 
 
 def insert_built_rows(
-    client: ClickHouseHttpClient,
+    client: RetryingClickHouseHttpClient,
     target: NewsV2TargetConfig,
     rows: list[dict[str, Any]],
-    batch_size: int,
+    *,
+    max_rows: int,
+    target_bytes: int,
+    max_row_bytes: int,
+    day: date,
+    status_path: Path,
+    execute: bool,
 ) -> None:
     tables = [
         (target.event_table, EVENT_COLUMNS, "event"),
@@ -309,13 +390,116 @@ def insert_built_rows(
         (target.rendered_table, RENDERED_COLUMNS, "rendered"),
         (target.ticker_table, TICKER_COLUMNS, "tickers"),
     ]
-    for table, columns, key in tables:
-        flat: list[dict[str, Any]] = []
-        for item in rows:
-            value = item[key]
-            flat.extend(value if isinstance(value, list) else [value])
-        for offset in range(0, len(flat), batch_size):
-            insert_json_each_row(client, target.database, table, columns, flat[offset : offset + batch_size])
+    planned: list[tuple[str, list[str], list[Any]]] = []
+    try:
+        for table, columns, key in tables:
+            flat: list[dict[str, Any]] = []
+            for item in rows:
+                value = item[key]
+                flat.extend(value if isinstance(value, list) else [value])
+            batches = list(
+                json_each_row_batches(
+                    flat,
+                    table=table,
+                    max_rows=max_rows,
+                    target_bytes=target_bytes,
+                    max_row_bytes=max_row_bytes,
+                )
+            )
+            planned.append((table, columns, batches))
+    except OversizedNewsRowError as exc:
+        event = {
+            "event": "insert_validation_failed",
+            "day": day.isoformat(),
+            "error_type": type(exc).__name__,
+            "error": bounded_error_text(exc),
+        }
+        append_jsonl(status_path, event)
+        print(
+            f"INSERT VALIDATION FAILED | day={day} "
+            f"error={bounded_error_text(exc)}",
+            flush=True,
+        )
+        raise
+
+    # Validate every product before inserting the first table. A deterministic
+    # data-contract failure must not create a newly partial day.
+    for table, columns, batches in planned:
+        if not execute:
+            append_jsonl(
+                status_path,
+                {
+                    "event": "insert_plan_validated",
+                    "day": day.isoformat(),
+                    "table": table,
+                    "batches": len(batches),
+                    "rows": sum(len(batch.rows) for batch in batches),
+                    "body_bytes": sum(batch.body_bytes for batch in batches),
+                    "max_row_bytes": max(
+                        (batch.max_row_bytes for batch in batches),
+                        default=0,
+                    ),
+                },
+            )
+            continue
+        for batch_index, batch in enumerate(batches, start=1):
+            context = {
+                "day": day.isoformat(),
+                "table": table,
+                "batch": batch_index,
+                "batch_count": len(batches),
+                "rows": len(batch.rows),
+                "body_bytes": batch.body_bytes,
+                "max_row_bytes": batch.max_row_bytes,
+            }
+            append_jsonl(status_path, {"event": "insert_batch_started", **context})
+            with client.diagnostic_context(**context):
+                insert_json_each_row(
+                    client,
+                    target.database,
+                    table,
+                    columns,
+                    batch.rows,
+                )
+            append_jsonl(status_path, {"event": "insert_batch_completed", **context})
+
+
+def validate_operational_args(args: argparse.Namespace) -> None:
+    positive = {
+        "--workers": args.workers,
+        "--insert-batch-size": args.insert_batch_size,
+        "--insert-target-bytes": args.insert_target_bytes,
+        "--insert-max-row-bytes": args.insert_max_row_bytes,
+        "--clickhouse-attempts": args.clickhouse_attempts,
+        "--clickhouse-timeout-seconds": args.clickhouse_timeout_seconds,
+    }
+    invalid = [name for name, value in positive.items() if float(value) <= 0]
+    if invalid:
+        raise SystemExit(f"{', '.join(invalid)} must be greater than zero")
+
+
+def diagnostic_context_text(values: dict[str, Any]) -> str:
+    if not values:
+        return ""
+    ordered = (
+        "day",
+        "table",
+        "batch",
+        "batch_count",
+        "rows",
+        "body_bytes",
+        "max_row_bytes",
+    )
+    return " ".join(f"{key}={values[key]}" for key in ordered if key in values) + " "
+
+
+def format_bytes(value: int) -> str:
+    size = float(value)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024 or unit == "GiB":
+            return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
+        size /= 1024
+    raise AssertionError("unreachable")
 
 
 def audit_build(
@@ -649,18 +833,25 @@ def parse_path_maps(values: Iterable[str]) -> list[tuple[str, str]]:
 def resolve_path(value: str, mappings: list[tuple[str, str]]) -> Path | None:
     if not value:
         return None
+    direct = Path(value)
+    if path_is_accessible(direct):
+        return direct
     lowered = value.lower().replace("/", "\\")
     for source, target in mappings:
         source_key = source.lower().replace("/", "\\").rstrip("\\")
         if lowered == source_key or lowered.startswith(source_key + "\\"):
             suffix = value[len(source) :].lstrip("\\/")
             candidate = Path(target) / Path(suffix.replace("\\", "/"))
-            if candidate.exists():
+            if path_is_accessible(candidate):
                 return candidate
-    direct = Path(value)
-    if direct.exists():
-        return direct
-    return direct
+    return None
+
+
+def path_is_accessible(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
 
 
 def iter_days(start: date, end: date) -> Iterable[date]:

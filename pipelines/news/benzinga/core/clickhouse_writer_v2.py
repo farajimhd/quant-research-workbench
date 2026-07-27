@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable
 
 from pipelines.news.benzinga.core.clickhouse_writer import (
     NewsBatchWriteSummary,
@@ -22,6 +22,9 @@ DEFAULT_BLOCK_TABLE = "benzinga_news_block_v2"
 DEFAULT_RENDERED_TABLE = "benzinga_news_rendered_v2"
 DEFAULT_TICKER_TABLE = "benzinga_news_ticker_v2"
 DEFAULT_AUTHORITY_TABLE = "benzinga_news_render_authority_v2"
+DEFAULT_INSERT_MAX_ROWS = 500
+DEFAULT_INSERT_TARGET_BYTES = 4 * 1024 * 1024
+DEFAULT_INSERT_MAX_ROW_BYTES = 8 * 1024 * 1024
 
 EVENT_COLUMNS = [
     "provider", "provider_article_id", "canonical_news_id", "published_date",
@@ -53,6 +56,17 @@ TICKER_COLUMNS = [
     "ticker", "ticker_index", "ticker_count", "rendered_text_hash",
     "source_revision_key", "renderer_version", "updated_at_utc",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class JsonEachRowBatch:
+    rows: list[dict[str, Any]]
+    body_bytes: int
+    max_row_bytes: int
+
+
+class OversizedNewsRowError(RuntimeError):
+    """A serialized v2 product row exceeds the safe ClickHouse contract."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,11 +246,38 @@ def write_many_news_pipeline_results_v2(
         rendered.append(result.v2_rendered_row)
         tickers.extend(result.v2_ticker_links)
     if config.execute and events:
-        insert_json_each_row(client, config.database, config.event_table, EVENT_COLUMNS, events)
-        insert_json_each_row(client, config.database, config.source_table, SOURCE_COLUMNS, sources)
-        insert_json_each_row(client, config.database, config.block_table, BLOCK_COLUMNS, blocks)
-        insert_json_each_row(client, config.database, config.rendered_table, RENDERED_COLUMNS, rendered)
-        insert_json_each_row(client, config.database, config.ticker_table, TICKER_COLUMNS, tickers)
+        products = [
+            (config.event_table, EVENT_COLUMNS, events),
+            (config.source_table, SOURCE_COLUMNS, sources),
+            (config.block_table, BLOCK_COLUMNS, blocks),
+            (config.rendered_table, RENDERED_COLUMNS, rendered),
+            (config.ticker_table, TICKER_COLUMNS, tickers),
+        ]
+        planned = [
+            (
+                table,
+                columns,
+                list(
+                    json_each_row_batches(
+                        rows,
+                        table=table,
+                        max_rows=DEFAULT_INSERT_MAX_ROWS,
+                        target_bytes=DEFAULT_INSERT_TARGET_BYTES,
+                        max_row_bytes=DEFAULT_INSERT_MAX_ROW_BYTES,
+                    )
+                ),
+            )
+            for table, columns, rows in products
+        ]
+        for table, columns, batches in planned:
+            for batch in batches:
+                insert_json_each_row(
+                    client,
+                    config.database,
+                    table,
+                    columns,
+                    batch.rows,
+                )
     return NewsBatchWriteSummary(
         status="written" if config.execute else "dry_run",
         execute=config.execute,
@@ -250,3 +291,98 @@ def write_many_news_pipeline_results_v2(
         stale_ticker_rows_deleted=0,
         warnings=[],
     )
+
+
+def insert_v2_json_each_row_bounded(
+    client: ClickHouseHttpClient,
+    database: str,
+    table: str,
+    columns: list[str],
+    rows: Iterable[dict[str, Any]],
+    *,
+    max_rows: int = DEFAULT_INSERT_MAX_ROWS,
+    target_bytes: int = DEFAULT_INSERT_TARGET_BYTES,
+    max_row_bytes: int = DEFAULT_INSERT_MAX_ROW_BYTES,
+) -> None:
+    batches = list(
+        json_each_row_batches(
+            rows,
+            table=table,
+            max_rows=max_rows,
+            target_bytes=target_bytes,
+            max_row_bytes=max_row_bytes,
+        )
+    )
+    for batch in batches:
+        insert_json_each_row(client, database, table, columns, batch.rows)
+
+
+def json_each_row_batches(
+    rows: Iterable[dict[str, Any]],
+    *,
+    table: str,
+    max_rows: int,
+    target_bytes: int,
+    max_row_bytes: int,
+) -> Iterable[JsonEachRowBatch]:
+    """Partition v2 rows by encoded bytes and count without truncating content."""
+    if min(max_rows, target_bytes, max_row_bytes) <= 0:
+        raise ValueError("JSONEachRow batch limits must be greater than zero")
+    current: list[dict[str, Any]] = []
+    current_bytes = 0
+    current_max_row_bytes = 0
+    for row in rows:
+        encoded_bytes = len(
+            json.dumps(
+                row,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        )
+        if encoded_bytes > max_row_bytes:
+            identity = safe_product_identity(row)
+            raise OversizedNewsRowError(
+                f"{table} row exceeds safe JSONEachRow limit: "
+                f"row_bytes={encoded_bytes:,} limit={max_row_bytes:,} identity={identity}"
+            )
+        separator_bytes = 1 if current else 0
+        if current and (
+            len(current) >= max_rows
+            or current_bytes + separator_bytes + encoded_bytes > target_bytes
+        ):
+            yield JsonEachRowBatch(
+                rows=current,
+                body_bytes=current_bytes,
+                max_row_bytes=current_max_row_bytes,
+            )
+            current = []
+            current_bytes = 0
+            current_max_row_bytes = 0
+            separator_bytes = 0
+        current.append(row)
+        current_bytes += separator_bytes + encoded_bytes
+        current_max_row_bytes = max(current_max_row_bytes, encoded_bytes)
+    if current:
+        yield JsonEachRowBatch(
+            rows=current,
+            body_bytes=current_bytes,
+            max_row_bytes=current_max_row_bytes,
+        )
+
+
+def safe_product_identity(row: dict[str, Any]) -> str:
+    fields = (
+        "published_date",
+        "provider_article_id",
+        "canonical_news_id",
+        "source_kind",
+        "source_ordinal",
+        "block_ordinal",
+        "ticker",
+    )
+    return ",".join(
+        f"{field}={str(row[field])[:96]}"
+        for field in fields
+        if row.get(field) not in (None, "")
+    ) or "unavailable"

@@ -229,10 +229,20 @@ def discover_clickhouse_env_files() -> list[Path]:
     return unique
 
 class ClickHouseHttpClient:
-    def __init__(self, base_url: str, user: str, password: str) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        user: str,
+        password: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> None:
+        if timeout_seconds is not None and float(timeout_seconds) <= 0:
+            raise ValueError("timeout_seconds must be positive when provided")
         self.base_url = base_url.rstrip("/")
         self.user = user
         self.password = password
+        self.timeout_seconds = None if timeout_seconds is None else float(timeout_seconds)
 
     def execute(self, sql: str, *, query_id: str | None = None) -> str:
         params = {}
@@ -247,7 +257,7 @@ class ClickHouseHttpClient:
         if self.password:
             req.add_header("X-ClickHouse-Key", self.password)
         try:
-            with request.urlopen(req, timeout=None) as response:
+            with request.urlopen(req, timeout=self.timeout_seconds) as response:
                 return response.read().decode("utf-8", errors="replace")
         except error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")

@@ -24,9 +24,12 @@ python -m pipelines.news.benzinga.run_news_rendered_v2_rebuild
 ```
 
 The rebuild writes generated status and audit artifacts under
-`D:\TradingML\runtimes\news\benzinga_news_rendered_v2`. It retries bounded
-transient ClickHouse transport failures and is safe to rerun: complete days are
-skipped and an interrupted partial day is idempotently repaired.
+`D:\TradingML\runtimes\news\benzinga_news_rendered_v2`. ClickHouse requests use
+a finite deadline, capped reconnect retries, and JSONEachRow batches bounded by
+both row count and encoded bytes. `status.jsonl` identifies the active table,
+UTC day, batch, rows, body bytes, and largest row without logging article text.
+The command is safe to rerun: complete days are skipped and an interrupted
+partial day is idempotently repaired.
 
 After the rebuild reports `status=ready`, restart the news gateway. The gateway
 preflight deliberately refuses to write until that certification exists.
