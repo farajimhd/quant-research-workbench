@@ -18,14 +18,12 @@ so a new chat can recover the project context without loading the original
 conversation.
 
 Length and completeness:
-1. Each chat-summary file has a hard maximum of 2,000 words, excluding only the
+1. Each chat-summary file has a hard maximum of 3,000 words, excluding only the
    heading and metadata fields.
-2. Use these section budgets:
-   - Narrative: at most 1,200 words
-   - Durable decisions: at most 250 words
-   - Delivered outcomes: at most 200 words
-   - Unfinished or hanging work: at most 250 words
-   - Handoff to the next chat: at most 100 words
+2. Use approximately 1,800 words for the narrative and the remaining 1,200
+   words for decisions, outcomes, unfinished work, and handoff. These are
+   flexible planning targets, not separate section caps; allocate space
+   according to the chat's actual complexity.
 3. Do not create appendices, continuation files, duplicated entries, or
    transcript extracts to evade the limit.
 4. Within the limit, prioritize requirements, changes of direction, durable
@@ -45,10 +43,10 @@ Storage design:
 1. Keep TASK_HISTORY.csv as the concise canonical task/outcome ledger.
 2. Keep TASK_HISTORY.md generated from TASK_HISTORY.csv.
 3. Keep CHAT_SUMMARIES.md as a concise chronological index only. Each index
-   entry must be no more than 100 words and link to one detailed chat-summary
+   entry must be no more than 150 words and link to one detailed chat-summary
    file.
 4. Store one detailed summary per chat under:
-   docs/codex/chat-summaries/<YYYY>/CHAT-YYYYMMDD-NNN-<short-slug>.md
+   docs/codex/chat-summaries/<YYYY>/CHAT-YYYYMMDD-HHMM[-NNN]-<short-slug>.md
    This folder is the canonical narrative chat history.
 5. Do not accumulate all detailed narratives in one Markdown file.
 6. Organize the index by year and newest-first within each year so current
@@ -79,7 +77,7 @@ Chat discovery and access:
 For every reviewed chat, create one file under the canonical chat-summary
 folder using this structure:
 
-# CHAT-YYYYMMDD-NNN - <descriptive title>
+# <descriptive chat title>
 
 - Chat started: <exact date and time with timezone, when available>
 - Chat ended or last activity: <exact date and time with timezone, when available>
@@ -88,6 +86,18 @@ folder using this structure:
 - Repository or scope: <repository, module, service, or research version>
 - Related task-history entries: <TASK-NNNN identifiers or "None">
 - Source completeness: Complete | Partial | Inaccessible portions
+
+Filename and title rules:
+
+- Derive `YYYYMMDD-HHMM` from the chat's start time normalized to
+  America/Vancouver.
+- Use a three-digit sequence only when multiple chats share the same normalized
+  start minute.
+- Use a short lowercase hyphenated title slug in the filename.
+- Put the full descriptive title in the file's H1 heading.
+- If the exact start time is unavailable, do not invent it. Use
+  `CHAT-YYYYMMDD-UNKNOWN[-NNN]-<short-slug>.md` and record the missing time in
+  the metadata.
 
 ### Narrative
 
@@ -178,7 +188,7 @@ Quality and consistency requirements:
 5. Do not mark work completed merely because code was written or committed.
 6. Avoid duplicating identical background in every entry; cross-reference
    earlier chat summaries where appropriate.
-7. Enforce the 2,000-word per-chat maximum and the 100-word index-entry maximum.
+7. Enforce the 3,000-word per-chat maximum and the 150-word index-entry maximum.
    Report both word counts during validation.
 8. Keep detailed summary files in chronological folders and order the
    CHAT_SUMMARIES.md index newest-first within each year.
