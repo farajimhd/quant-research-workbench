@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+from src.runtime_paths import ibkr_gateway_log_root
+
 
 DEFAULT_BASE_URL = "https://localhost:5000/v1/api"
 
@@ -95,7 +97,7 @@ class IbkrGatewayConfig:
             terminal_rich_enabled=env_bool_auto("IBKR_GATEWAY_TERMINAL_RICH_ENABLED", sys.stdout.isatty()),
             terminal_screen_enabled=env_bool("IBKR_GATEWAY_TERMINAL_SCREEN_ENABLED", True),
             terminal_refresh_seconds=env_float("IBKR_GATEWAY_TERMINAL_REFRESH_SECONDS", 1.0),
-            log_root=Path(env_string("IBKR_GATEWAY_LOG_ROOT", "tmp/ibkr_gateway_supervisor")).expanduser(),
+            log_root=ibkr_gateway_log_root(),
             event_log_jsonl_enabled=env_bool("IBKR_GATEWAY_EVENT_LOG_JSONL_ENABLED", True),
             clickhouse_log_enabled=env_bool("IBKR_GATEWAY_CLICKHOUSE_LOG_ENABLED", True),
             clickhouse_database=env_string("IBKR_GATEWAY_CLICKHOUSE_DATABASE", "q_live"),

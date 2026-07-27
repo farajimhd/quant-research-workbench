@@ -16,7 +16,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 from typing import Any, Iterable
 
 
@@ -1228,7 +1227,13 @@ def capture(args: argparse.Namespace) -> int:
 
     scenarios = build_scenarios(args)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    default_output = Path(tempfile.gettempdir()) / "quant-research-workbench-ui-review" / timestamp
+    default_review_root = Path(
+        os.environ.get(
+            "QW_FRONTEND_REVIEW_ROOT",
+            r"D:\TradingML\runtimes\quant-research-workbench\frontend-ui-review",
+        )
+    )
+    default_output = default_review_root / timestamp
     output_dir = Path(args.output_dir or default_output)
     output_dir.mkdir(parents=True, exist_ok=True)
 

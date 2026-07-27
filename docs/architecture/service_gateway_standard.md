@@ -678,7 +678,8 @@ and does not own trading orders.
 
 **Sinks and durable contracts:**
 
-- Per-run JSONL event log under `tmp/ibkr_gateway_supervisor/<run_id>/`.
+- Per-run JSONL event log under
+  `<runtime-root>/quant-research-workbench/ibkr_gateway_supervisor/<run_id>/`.
 - Optional compact ClickHouse event table
   `q_live.ibkr_gateway_supervisor_event_v1`.
 - Terminal telemetry for keepalive and active auth state.

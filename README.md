@@ -217,40 +217,47 @@ Install Python and frontend dependencies:
 
 ```powershell
 pip install -r requirements.txt
-npm.cmd --prefix frontend install
+python scripts/run_frontend.py install
 ```
 
 Run the backend API and React development server in separate terminals:
 
 ```powershell
 .\scripts\run_backend.ps1
-npm.cmd --prefix frontend run dev
+python scripts/run_frontend.py dev
 ```
 
 For a production-style local build:
 
 ```powershell
-npm.cmd --prefix frontend run build
+python scripts/run_frontend.py build
 .\scripts\run_backend.ps1 -NoReload
 ```
+
+The frontend launcher synchronizes the durable frontend source into
+`D:\TradingML\runtimes\quant-research-workbench\frontend` by default. npm
+dependencies, Vite caches, and `dist` stay in that external workspace; the
+backend serves the build from there. Override the operational root with
+`QW_RUNTIME_ROOT` or only the frontend workspace with
+`QW_FRONTEND_RUNTIME_ROOT`.
 
 For deterministic browser captures, start the runnable UI, then run a targeted
 review matrix (affected route, representative light/dark themes,
 minimum/default/maximum application scales, and normal/compact viewports):
 
 ```powershell
-npm.cmd --prefix frontend run ui:review -- --page service-qmd
+python scripts/run_frontend.py ui:review -- --page service-qmd
 ```
 
 Run bounded full-product coverage with:
 
 ```powershell
-npm.cmd --prefix frontend run ui:review:full
+python scripts/run_frontend.py ui:review:full
 ```
 
 Use `-- --matrix exhaustive` only for shared theme, scale, layout, or component
 infrastructure changes. Captures and a JSON manifest are written under the
-system temporary directory by default, not into the repository. The launcher
+external runtime root by default, not into the repository. The launcher
 uses Python Playwright when available and otherwise re-runs itself through the
 configurable `UI_REVIEW_CONDA_ENV` environment, which defaults to the existing
 `ml4t` Conda environment. It does not install or download browsers.

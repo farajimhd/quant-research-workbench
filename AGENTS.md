@@ -232,8 +232,8 @@ operations, and product UI work in this repository.
   fix`, complete the audit before changing code, then rerun the review coverage.
 - Validate frontend changes in the real browser at representative normal and
   compact viewports, representative themes, and minimum/default/maximum UI
-  scales. Use `npm.cmd --prefix frontend run ui:review` for targeted deterministic
-  captures and `npm.cmd --prefix frontend run ui:review:full` for bounded
+  scales. Use `python scripts/run_frontend.py ui:review` for targeted deterministic
+  captures and `python scripts/run_frontend.py ui:review:full` for bounded
   full-product coverage; use `-- --matrix exhaustive` when shared theme, scale,
   layout, or component infrastructure changes. Inspect the resulting screenshots
   and revise material defects before handoff. Validate terminal changes in

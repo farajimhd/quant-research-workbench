@@ -43,6 +43,7 @@ IBKR_GATEWAY_ALERT_SMTP_PASSWORD=...
 IBKR_GATEWAY_TERMINAL_RICH_ENABLED=auto
 IBKR_GATEWAY_TERMINAL_SCREEN_ENABLED=true
 IBKR_GATEWAY_TERMINAL_REFRESH_SECONDS=1
+IBKR_GATEWAY_LOG_ROOT=D:\TradingML\runtimes\quant-research-workbench\ibkr_gateway_supervisor
 IBKR_GATEWAY_EVENT_LOG_JSONL_ENABLED=true
 IBKR_GATEWAY_CLICKHOUSE_LOG_ENABLED=true
 IBKR_GATEWAY_CLICKHOUSE_DATABASE=q_live
@@ -60,7 +61,11 @@ When stdout is interactive, the daemon shows a Rich terminal dashboard with:
 - JSONL and ClickHouse persistence status
 
 Every supervisor event is appended to a per-run JSONL file under
-`tmp/ibkr_gateway_supervisor/<run_id>/ibkr_gateway_supervisor_events.jsonl`.
+`D:\TradingML\runtimes\quant-research-workbench\ibkr_gateway_supervisor\<run_id>\ibkr_gateway_supervisor_events.jsonl`
+on the laptop by default. On the workstation the default runtime authority is
+`\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes`; `QW_RUNTIME_ROOT`
+overrides the shared project runtime root and `IBKR_GATEWAY_LOG_ROOT` overrides
+only this service.
 ClickHouse persistence uses one compact table by default:
 `q_live.ibkr_gateway_supervisor_event_v1`. If ClickHouse is unavailable, the
 service disables ClickHouse writes for that run and continues writing JSONL.

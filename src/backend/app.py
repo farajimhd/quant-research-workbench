@@ -131,11 +131,12 @@ from src.data_provider.jobs import cancel_build_job, delete_build_job, get_build
 from src.data_provider.manifest import read_manifest
 from research.mlops.clickhouse import default_clickhouse_password, default_clickhouse_url, default_clickhouse_user, quote_ident, sql_string
 from research.mlops.env import discover_env_files, load_env_files
+from src.runtime_paths import frontend_dist_root, ibkr_gateway_log_root
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 load_env_files(discover_env_files(PROJECT_ROOT), verbose=False)
-FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
+FRONTEND_DIST = frontend_dist_root()
 CHART_DISPLAY_ITEMS_NONE = "__none__"
 EXCHANGE_TIME_ZONE = "America/New_York"
 BACKTEST_ARTIFACT_ROOT = PROJECT_ROOT / "data" / "backtests"
@@ -628,7 +629,7 @@ def service_log_roots(service_id: str) -> list[Path]:
         "sec": env_paths("SEC_GATEWAY_LOG_ROOT_WIN") + [root / "prepared" / "sec_gateway" / "logs" for root in data_roots],
         "text-embed": env_paths("TEXT_EMBED_GATEWAY_LOG_ROOT_WIN") + [root / "prepared" / "text_embed_gateway" / "logs" for root in data_roots],
         "reference": reference_log_roots(data_roots),
-        "ibkr": env_paths("IBKR_GATEWAY_LOG_ROOT") + [PROJECT_ROOT / "tmp" / "ibkr_gateway_supervisor"],
+        "ibkr": [ibkr_gateway_log_root()],
     }
     seen: set[str] = set()
     roots: list[Path] = []
@@ -4383,5 +4384,5 @@ def frontend(path: str) -> FileResponse:
         raise HTTPException(status_code=404, detail="API route not found. Restart the backend if this route was just added.")
     index = FRONTEND_DIST / "index.html"
     if not index.exists():
-        raise HTTPException(status_code=404, detail="React build not found. Run `npm --prefix frontend run build`.")
+        raise HTTPException(status_code=404, detail="React build not found. Run `python scripts/run_frontend.py build`.")
     return FileResponse(index)
