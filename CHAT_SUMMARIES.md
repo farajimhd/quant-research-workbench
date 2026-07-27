@@ -20,6 +20,19 @@ and IBKR outputs, and ended by designing and activating bounded cross-chat
 summary and task-continuity governance. The desktop concurrency defect itself
 remains an app-level issue to verify after a full restart and fresh task.
 
+### [2026-07-26 06:24 PDT - Rebuild Canvas strategy, signals, and low-latency order management](docs/codex/chat-summaries/2026/CHAT-20260726-0624-canvas-strategy-order-management.md)
+
+- Chat/task ID: `019f9e98-eec0-73b3-a9ee-5742a1f5fc7a`
+- Related tasks: `TASK-0122`, `TASK-0125`, `TASK-0126`, `TASK-0130`, `TASK-0134`, `TASK-0139`
+- Summary written: 2026-07-27 10:52:37 PDT
+
+This chat replaced the pre-refactor strategy catalog with typed indicator,
+signal, clock, and strategy boundaries; repaired historical Scanner production;
+implemented the configurable long-only campaign; and established exclusive
+low-latency IBKR order management. It preserves the evolving requirements,
+rejected approaches, validation evidence, and remaining authenticated
+paper-order and continuous live-controller work.
+
 ### [2026-07-17 08:57 PDT - Design Tape, Quotes, and Canvas market intelligence](docs/codex/chat-summaries/2026/CHAT-20260717-0857-design-tape-quote-and-canvas-market-intelligence.md)
 
 - Chat/task ID: `019f70cb-ac2e-7952-b33c-f86a3312b077`
