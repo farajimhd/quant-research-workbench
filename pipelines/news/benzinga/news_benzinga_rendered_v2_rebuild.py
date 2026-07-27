@@ -13,6 +13,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
+from pipelines.news.benzinga.core.clickhouse_values import datetime64_utc_text
 from pipelines.news.benzinga.core.clickhouse_writer import NORMALIZED_COLUMNS, insert_json_each_row
 from pipelines.news.benzinga.core.clickhouse_writer_v2 import (
     BLOCK_COLUMNS,
@@ -82,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
     run_root.mkdir(parents=True, exist_ok=True)
     status_path = run_root / "status.jsonl"
     errors_path = run_root / "errors.jsonl"
-    started_at = datetime.now(UTC).isoformat()
+    started_at = datetime.now(UTC)
     path_maps = parse_path_maps(args.path_prefix_map)
 
     source_min, source_max, expected_rows = source_scope(client, args.database, args.source_table)
@@ -452,10 +453,10 @@ def write_authority(
     status: str,
     counts: BuildCounts,
     report_path: str,
-    started_at: str,
+    started_at: datetime,
     audit_errors: int = 0,
 ) -> None:
-    now = datetime.now(UTC).isoformat()
+    now = datetime64_utc_text()
     row = {
         "authority_version": NEWS_RENDERER_VERSION,
         "run_id": run_id,
@@ -463,7 +464,7 @@ def write_authority(
         **asdict(counts),
         "audit_errors": audit_errors,
         "audit_report_path": report_path,
-        "started_at_utc": started_at,
+        "started_at_utc": datetime64_utc_text(started_at),
         "updated_at_utc": now,
     }
     row.pop("raw_artifacts_missing")

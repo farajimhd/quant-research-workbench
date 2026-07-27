@@ -10,6 +10,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable
 
+from pipelines.news.benzinga.core.clickhouse_values import datetime64_utc_text
 from pipelines.sec.edgar.sec_pipeline.text_renderer import (
     SEC_PACKED_TEXT_RENDERER_VERSION,
     PackedTextResult,
@@ -356,9 +357,9 @@ def build_v2_rows(
     normalized_row: dict[str, Any],
     rendered: RenderedNewsArticle,
     *,
-    updated_at_utc: str | None = None,
+    updated_at_utc: str | datetime | None = None,
 ) -> dict[str, list[dict[str, Any]] | dict[str, Any]]:
-    updated = updated_at_utc or datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+    updated = datetime64_utc_text(updated_at_utc)
     canonical = str(normalized_row["canonical_news_id"])
     published_date = str(normalized_row["published_date"])
     event = {

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import unittest
-from datetime import date
+from datetime import UTC, date, datetime
 
+from pipelines.news.benzinga.core.clickhouse_values import datetime64_utc_text
 from pipelines.news.benzinga.core.clickhouse_writer_v2 import NewsV2TargetConfig
 from pipelines.news.benzinga.news_benzinga_render_v2 import build_v2_rows, render_news_article
 from pipelines.news.benzinga.news_benzinga_rendered_v2_rebuild import day_is_complete
@@ -69,6 +70,30 @@ class StructuredNewsRendererTest(unittest.TestCase):
         self.assertEqual(rows["rendered"]["canonical_news_id"], "benzinga:42")
         self.assertEqual([row["ticker"] for row in rows["tickers"]], ["AAA", "BBB"])
         self.assertEqual(len({row["rendered_text_hash"] for row in rows["tickers"]}), 1)
+
+    def test_v2_generated_datetimes_use_clickhouse_native_text(self) -> None:
+        moment = datetime(2026, 7, 27, 14, 47, 9, 586093, tzinfo=UTC)
+        self.assertEqual(datetime64_utc_text(moment), "2026-07-27 14:47:09.586093")
+        self.assertEqual(
+            datetime64_utc_text("2026-07-27T14:47:09.586093+00:00"),
+            "2026-07-27 14:47:09.586093",
+        )
+        payload = {"id": "42", "title": self.row["title"], "body": "<p>Body</p>"}
+        rendered = render_news_article(payload, normalized_row=self.row)
+        rows = build_v2_rows(payload, self.row, rendered, updated_at_utc=moment)
+        generated = [
+            rows["event"]["updated_at_utc"],
+            rows["rendered"]["updated_at_utc"],
+            *(row["updated_at_utc"] for row in rows["sources"]),
+            *(row["updated_at_utc"] for row in rows["blocks"]),
+            *(row["updated_at_utc"] for row in rows["tickers"]),
+        ]
+        self.assertTrue(generated)
+        self.assertEqual(set(generated), {"2026-07-27 14:47:09.586093"})
+
+    def test_clickhouse_datetime_rejects_naive_values(self) -> None:
+        with self.assertRaisesRegex(ValueError, "timezone-aware"):
+            datetime64_utc_text(datetime(2026, 7, 27, 14, 47, 9))
 
     def test_common_utf8_windows_1252_mojibake_is_repaired(self) -> None:
         payload = {"id": "42", "title": "Issuerâ€™s update", "body": "<p>Managementâ€™s outlookâ€”raised.</p>"}
