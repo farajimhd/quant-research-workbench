@@ -44,6 +44,55 @@ current working directory or from where a launcher happens to be copied.
   runtime root, stop and request the necessary access. Do not work around the
   restriction by creating artifacts inside the repository.
 
+## Chat And Task Continuity At Startup
+
+Every agent that begins work in this repository, including an independently
+delegated agent, must establish the current project context before substantive
+analysis, implementation, or execution:
+
+1. Read the `Current Focus` section of `TASK_HISTORY.md`.
+2. Treat `TASK_HISTORY.csv` as the canonical task ledger and inspect the rows
+   relevant to the current repository area, module, service, model version, or
+   user request.
+3. If `CHAT_SUMMARIES.md` exists, read its index at the start of the task.
+4. Open the detailed files under `docs/codex/chat-summaries/<YYYY>/` that the
+   index identifies as relevant to the current scope. Read linked predecessor
+   or continuation summaries when they contain decisions or unfinished work
+   that affect the current request.
+5. Do not load every detailed chat summary indiscriminately. Use the index,
+   task identifiers, dates, titles, modules, and cross-references to select the
+   relevant history and avoid recreating context overload.
+6. If the index or a referenced summary is absent, incomplete, or inaccessible,
+   continue from the available task ledger and current evidence. State any
+   material context gap and never invent missing chat history.
+7. Reconcile the recovered context with the user's latest message. The latest
+   user clarification is authoritative; record material supersessions or
+   contradictions in the active task rather than silently following stale
+   history.
+
+For every materially separate durable outcome, create or refresh its
+`TASK_HISTORY.csv` row near the beginning of the work, before substantive
+implementation or long-running execution:
+
+- Set `status=In progress`, refresh `last_updated`, describe the current
+  objective and next dependency, and set `current_focus=true` when it is
+  genuinely one of the repository's one to three active outcomes.
+- Update an existing row instead of creating a duplicate when the current chat
+  continues, corrects, or completes an earlier outcome.
+- Keep current focus accurate: remove `current_focus` from work that is no
+  longer active, completed, cancelled, superseded, or merely historical.
+- Refresh the row when a material design decision, implementation milestone,
+  validation result, blocker, or scope change occurs, and always before a
+  related commit.
+- Run `python scripts/render_task_history.py` after changing the CSV so
+  `TASK_HISTORY.md` remains synchronized.
+- Read-only questions, transient status checks, and minor corrections that do
+  not constitute a durable outcome do not require a new task row.
+
+Use `docs/codex/CHAT_SUMMARY_PROMPT.md` when creating or refreshing narrative
+chat summaries. Chat summaries provide bounded historical context; they do not
+replace the canonical task status in `TASK_HISTORY.csv`.
+
 ## How To Work With Me
 
 These instructions apply across coding, research, data engineering, services,
