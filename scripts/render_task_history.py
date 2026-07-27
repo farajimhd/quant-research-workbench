@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CSV_PATH = ROOT / "TASK_HISTORY.csv"
 MARKDOWN_PATH = ROOT / "TASK_HISTORY.md"
+CHAT_SUMMARIES_PATH = ROOT / "CHAT_SUMMARIES.md"
 
 EXPECTED_COLUMNS = [
     "id",
@@ -61,6 +62,30 @@ def read_rows() -> list[dict[str, str]]:
     if len(ids) != len(set(ids)):
         raise ValueError("TASK_HISTORY.csv contains duplicate task IDs")
     return rows
+
+
+def read_chat_summary_index() -> list[str]:
+    if not CHAT_SUMMARIES_PATH.exists():
+        return [
+            "No chat-summary index exists yet. See",
+            "`docs/codex/CHAT_SUMMARY_PROMPT.md` for the canonical format.",
+        ]
+
+    lines = CHAT_SUMMARIES_PATH.read_text(encoding="utf-8-sig").splitlines()
+    if not lines or lines[0].strip() != "# Chat Summaries":
+        raise ValueError("CHAT_SUMMARIES.md must begin with '# Chat Summaries'")
+
+    rendered: list[str] = []
+    for line in lines[1:]:
+        if line.startswith("### "):
+            rendered.append("#" + line)
+        elif line.startswith("## "):
+            rendered.append("#" + line)
+        else:
+            rendered.append(line)
+    while rendered and not rendered[0].strip():
+        rendered.pop(0)
+    return rendered
 
 
 def render(rows: list[dict[str, str]]) -> str:
@@ -144,6 +169,16 @@ def render(rows: list[dict[str, str]]) -> str:
         lines.append(
             "| " + " | ".join(markdown_cell(row[column]) for column in DISPLAY_COLUMNS) + " |"
         )
+
+    lines.extend(
+        [
+            "",
+            "## Long Chat Summaries",
+            "",
+            "<!-- GENERATED FROM CHAT_SUMMARIES.md; DO NOT EDIT THIS SECTION DIRECTLY. -->",
+            *read_chat_summary_index(),
+        ]
+    )
 
     return "\n".join(lines) + "\n"
 

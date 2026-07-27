@@ -39,9 +39,9 @@ flowchart LR
 
 ## Ledger Summary
 
-- Durable tasks: 137
+- Durable tasks: 138
 - In progress: 37
-- Completed: 92
+- Completed: 93
 - Superseded: 8
 
 Times use the Vancouver offset when an exact request timestamp is available.
@@ -190,3 +190,27 @@ timestamp precision would be misleading.
 | TASK-0135 | quant-research-workbench | Agent governance | Completed | Define authoritative laptop and workstation artifact roots | 2026-07-27 | 2026-07-27 | 2026-07-27 | Make storage responsibilities explicit so durable source remains in the laptop repository while every locally or remotely generated operational artifact goes to the runtime root of the machine that executes the work. | Added a top-level storage-authority contract to AGENTS.md with the exact laptop repository and runtime roots and the workstation TradingML codes, runtimes, and secrets roots. Distinguished durable source-controlled deliverables from generated test, audit, profiling, training, cache, log, checkpoint, W&B, screenshot, and intermediate artifacts; prohibited repository fallback when runtime-root access is blocked; and replaced ambiguous workstation code/runtime wording in the research workflow. | Instruction review and Markdown formatting checks confirm both execution-location rules and all exact roots are stated consistently. No runtime data was moved as part of this policy-only change. | Prevents generated artifacts from inflating the source repository or mixing with code and establishes machine-local runtime output authority for future agent work. |
 | TASK-0136 | quant-research-workbench | Repository hygiene | Completed | Relocate repository runtime artifacts to the laptop runtime root | 2026-07-27 | 2026-07-27 | 2026-07-27 | Inventory every tracked, untracked, and ignored repository file; identify generated runtime, test, audit, build, dependency, cache, model, and temporary artifacts; and move safe candidates outside the source tree into the authoritative laptop runtime root. | Reviewed 1,196 tracked files and 26,608 ignored files and found no tracked runtime or unrelated files. Relocated repository-generated build, dependency, cache, audit, model, data, log, test, and temporary artifacts. Replaced the repository-relative IBKR log default and added a guarded external frontend launcher for npm dependencies, Vite caches, builds, and review evidence. Terminated two confirmed stale npm/Vite/esbuild process trees before moving their locked dependency tree. | Relocated 26,648 files totaling 17,647,310,582 bytes or 16.435 GiB. No generated frontend or IBKR files remain in the repository; the external frontend production build passed and remains runnable from D:\TradingML\runtimes. Git reports no ordinary untracked files. The ignored .env and .vscode settings remain intentionally because they are local configuration rather than runtime artifacts. | Prevents frontend builds and IBKR logging from recreating repository artifacts, preserves generated material outside source control, and restores a clean source-only repository boundary. |
 | TASK-0137 | quant-research-workbench | Agent governance | Completed | Add durable chat and task continuity guidance | 2026-07-27 | 2026-07-27 | 2026-07-27 | Create reusable repository guidance that lets every agent recover relevant long-chat decisions and unfinished work while keeping the canonical task ledger, current focus, and cumulative summary index accurate and bounded. | Added docs/codex/CHAT_SUMMARY_PROMPT.md with timestamped, titled, year-sharded per-chat files, a flexible 3,000-word maximum, a 150-word index-entry limit, evidence and privacy rules, chronological narrative guidance, durable decisions, outcomes, unfinished work, and handoff structure. Added an AGENTS.md startup protocol requiring every agent to read current task focus, inspect the canonical relevant task rows, review the chat-summary index and relevant detailed summaries, reconcile them with the latest user clarification, and avoid indiscriminate history loading. | AGENTS.md now requires materially separate durable outcomes to be created or refreshed as In progress near the beginning of work, kept within one to three genuine current-focus rows, updated at material milestones and before commits, and rendered back into TASK_HISTORY.md. Missing summaries must be reported as context gaps rather than invented. No chat summaries or runtime artifacts were created by this governance task. | Establishes bounded cross-chat continuity while keeping current work visible and preventing stale history, duplicate task rows, or indiscriminate context loading. |
+| TASK-0138 | quant-research-workbench | Agent governance | Completed | Create the first durable chat summary and summary index | 2026-07-27 | 2026-07-27 | 2026-07-27 | Apply the repository chat-summary prompt to the active Investigate ChatGPT UI freezes task by creating a timestamped and titled per-chat narrative, a concise root index, and renderer support that preserves the index in generated task history. | Created CHAT-20260727-0856-investigate-chatgpt-ui-freezes from complete access to the active 12-turn task after verifying task id 019fa44b-0973-7c81-9672-939236736821 and start time 2026-07-27 08:56:48 PDT from app metadata. Added the root CHAT_SUMMARIES.md index and extended scripts/render_task_history.py to validate and embed the bounded index as a generated Long Chat Summaries section. | The detailed summary contains 2,125 body words against the 3,000-word limit; the index entry contains 94 words against the 150-word limit. The detailed link resolves, renderer syntax passes, two consecutive renders are byte-identical, and the rendered task history contains both the generated section and detailed-summary link. | Makes the new cross-chat continuity design operational with its first evidence-grounded summary and regeneration-safe index. |
+
+## Long Chat Summaries
+
+<!-- GENERATED FROM CHAT_SUMMARIES.md; DO NOT EDIT THIS SECTION DIRECTLY. -->
+This is the concise index of durable narrative summaries for long chats related
+to this repository. Detailed summaries are stored separately under
+`docs/codex/chat-summaries/<YYYY>/`. Entries are ordered newest-first within
+each year.
+
+### 2026
+
+#### [2026-07-27 08:56 PDT - Investigate ChatGPT UI freezes](docs/codex/chat-summaries/2026/CHAT-20260727-0856-investigate-chatgpt-ui-freezes.md)
+
+- Chat/task ID: `019fa44b-0973-7c81-9672-939236736821`
+- Related tasks: `TASK-0135`, `TASK-0136`, `TASK-0137`, `TASK-0138`
+- Summary written: 2026-07-27 10:43:20 PDT
+
+The chat began as a diagnosis of desktop UI freezing during concurrent tasks,
+then traced repository artifact pressure, established laptop/workstation runtime
+authority, quarantined 16.435 GiB of generated content, externalized frontend
+and IBKR outputs, and ended by designing and activating bounded cross-chat
+summary and task-continuity governance. The desktop concurrency defect itself
+remains an app-level issue to verify after a full restart and fresh task.
