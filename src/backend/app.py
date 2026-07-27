@@ -96,6 +96,9 @@ from src.backend.real_live_market_data import (
 from src.backend.real_live_market_data.config import market_gateway_config
 from src.backend.trading_runtime_service import (
     SUPPORTED_HISTORICAL_TIMEFRAMES,
+    command_strategy_assignment,
+    create_strategy_assignment,
+    evaluate_strategy_assignment,
     get_trade_annotation,
     get_strategy_definition,
     historical_compact_events,
@@ -109,6 +112,7 @@ from src.backend.trading_runtime_service import (
     historical_preflight,
     historical_window_preview,
     market_event_references,
+    list_strategy_assignments,
     list_strategy_definitions,
     save_strategy_definition,
     save_trade_annotation,
@@ -411,6 +415,29 @@ class StrategyDefinitionSubmit(BaseModel):
     enabled: bool = True
     config: dict[str, Any] = Field(default_factory=dict)
     taxonomy: dict[str, Any] = Field(default_factory=dict)
+
+
+class StrategyAssignmentSubmit(BaseModel):
+    assignment_id: str = ""
+    strategy_id: str = "long-momentum-campaign"
+    strategy_revision: int = 1
+    account_id: str
+    ticker: str
+    conid: int = Field(gt=0)
+    status: str = "watching"
+    permissions: dict[str, bool] = Field(default_factory=dict)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    state: dict[str, Any] = Field(default_factory=dict)
+    source: str = "order_entry"
+
+
+class StrategyAssignmentCommandSubmit(BaseModel):
+    command: str
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class StrategyEvaluationSubmit(BaseModel):
+    observation: dict[str, Any] = Field(default_factory=dict)
 
 
 class HistoricalWindowPreviewRequest(BaseModel):
@@ -3809,6 +3836,50 @@ def update_trading_episode_annotation(episode_id: str, payload: TradeAnnotationS
 def trading_strategies(latest_only: bool = True) -> dict[str, Any]:
     rows = list_strategy_definitions(latest_only=latest_only)
     return {"rows": rows, "row_count": len(rows)}
+
+
+@app.get("/api/trading/strategy-assignments")
+def trading_strategy_assignments(
+    account_id: str = "",
+    ticker: str = "",
+    active_only: bool = False,
+) -> dict[str, Any]:
+    rows = list_strategy_assignments(account_id=account_id, ticker=ticker, active_only=active_only)
+    return {"rows": rows, "row_count": len(rows)}
+
+
+@app.post("/api/trading/strategy-assignments")
+def trading_strategy_assignment_create(payload: StrategyAssignmentSubmit) -> dict[str, Any]:
+    try:
+        return create_strategy_assignment(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/trading/strategy-assignments/{assignment_id}/commands")
+def trading_strategy_assignment_command(
+    assignment_id: str,
+    payload: StrategyAssignmentCommandSubmit,
+) -> dict[str, Any]:
+    try:
+        return command_strategy_assignment(assignment_id, payload.command, payload.detail)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown strategy assignment: {assignment_id}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/trading/strategy-assignments/{assignment_id}/evaluate")
+def trading_strategy_assignment_evaluate(
+    assignment_id: str,
+    payload: StrategyEvaluationSubmit,
+) -> dict[str, Any]:
+    try:
+        return evaluate_strategy_assignment(assignment_id, payload.observation)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown strategy assignment: {assignment_id}") from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/trading/taxonomy")

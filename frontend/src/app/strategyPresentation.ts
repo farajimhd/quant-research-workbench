@@ -2,7 +2,7 @@ import type { UTCTimestamp } from "lightweight-charts";
 
 import type { ChartPayload } from "./components/ChartPanel";
 
-export type StrategyAction = "enter_long" | "enter_short" | "exit" | "hold" | "wait";
+export type StrategyAction = "enter_long" | "add_long" | "reduce_long" | "take_profit" | "exit" | "hold" | "wait";
 
 export type StrategyDecisionEvent = {
   action: StrategyAction;
@@ -21,10 +21,12 @@ export type StrategyDecisionEvent = {
 export type StrategyChartPresentation = {
   label?: string;
   show_confidence: boolean;
+  show_adds: boolean;
   show_entries: boolean;
   show_exits: boolean;
   show_holds: boolean;
   show_invalidation: boolean;
+  show_reductions: boolean;
   show_waits: boolean;
 };
 
@@ -35,10 +37,12 @@ export type StrategyPresentationBar = {
 
 export const DEFAULT_STRATEGY_CHART_PRESENTATION: StrategyChartPresentation = {
   show_confidence: true,
+  show_adds: true,
   show_entries: true,
   show_exits: true,
   show_holds: false,
   show_invalidation: true,
+  show_reductions: true,
   show_waits: false,
 };
 
@@ -84,6 +88,7 @@ export function strategyInvalidationZones(
   const chartStart = Date.parse(bars[0].bar_start) / 1000;
   const chartEnd = Date.parse(bars[bars.length - 1].bar_end || bars[bars.length - 1].bar_start) / 1000;
   return events.flatMap((event) => {
+    if (event.action !== "enter_long" && event.action !== "add_long") return [];
     const price = Number(event.invalidation_price);
     const eventTime = Date.parse(event.effective_at) / 1000;
     if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(eventTime) || eventTime >= chartEnd) return [];
@@ -112,7 +117,9 @@ export function strategyInvalidationZones(
 }
 
 function actionVisible(action: StrategyAction, presentation: StrategyChartPresentation) {
-  if (action === "enter_long" || action === "enter_short") return presentation.show_entries;
+  if (action === "enter_long") return presentation.show_entries;
+  if (action === "add_long") return presentation.show_adds;
+  if (action === "reduce_long" || action === "take_profit") return presentation.show_reductions;
   if (action === "exit") return presentation.show_exits;
   if (action === "hold") return presentation.show_holds;
   return presentation.show_waits;
@@ -120,7 +127,8 @@ function actionVisible(action: StrategyAction, presentation: StrategyChartPresen
 
 function actionStyle(action: StrategyAction, direction: StrategyDecisionEvent["direction"]) {
   if (action === "enter_long") return { color: "var(--success)", position: "belowBar" as const, shape: "arrowUp" as const, size: 2 };
-  if (action === "enter_short") return { color: "var(--danger)", position: "aboveBar" as const, shape: "arrowDown" as const, size: 2 };
+  if (action === "add_long") return { color: "var(--success)", position: "belowBar" as const, shape: "arrowUp" as const, size: 1 };
+  if (action === "reduce_long" || action === "take_profit") return { color: "var(--warning)", position: "aboveBar" as const, shape: "arrowDown" as const, size: 1 };
   if (action === "exit") return {
     color: "var(--warning)",
     position: direction === "bearish" ? "belowBar" as const : "aboveBar" as const,

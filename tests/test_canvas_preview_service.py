@@ -10,33 +10,37 @@ from src.backend.canvas_preview_service import _attach_sec_tickers, canvas_previ
 class CanvasPreviewServiceTests(unittest.TestCase):
     @patch("src.backend.canvas_preview_service.historical_day_coverage", return_value={"event_count": 1000, "ticker_count": 100})
     @patch("src.backend.canvas_preview_service._clickhouse_rows", return_value=[{"title": "context"}])
-    @patch("src.backend.canvas_preview_service.historical_bar_chunk")
-    def test_preview_is_anchored_at_selected_clock(self, bars_mock, _clickhouse_mock, _coverage_mock) -> None:
-        bars_mock.return_value = {
-            "bars": [
-                {"bar_start": "2026-07-10T13:44:00Z", "open": 100.0, "close": 101.0, "volume": 50, "trade_count": 4, "quote_count": 8}
-            ]
-        }
+    @patch(
+        "src.backend.canvas_preview_service.historical_scanner_snapshot",
+        return_value=(
+            [{"symbol": "AAPL", "last": 101.0, "change_5m_pct": 1.0}],
+            {"complete_universe": True, "row_count": 1, "status": "ready"},
+        ),
+    )
+    def test_preview_is_anchored_at_selected_clock(self, scanner_mock, _clickhouse_mock, _coverage_mock) -> None:
 
-        payload = canvas_preview_payload(
-            session_date=date(2026, 7, 10),
-            preview_time="09:45",
-            chart_symbol="aapl",
-            chart_timeframe="1m",
-        )
+        with patch(
+            "src.backend.canvas_preview_service.strategy_canvas_payload",
+            return_value={"signals": []},
+        ):
+            payload = canvas_preview_payload(
+                session_date=date(2026, 7, 10),
+                preview_time="09:45",
+                chart_symbol="aapl",
+                chart_timeframe="1m",
+            )
 
         self.assertEqual(payload["as_of"], "2026-07-10T09:45:00-04:00")
         self.assertEqual(payload["chart"]["symbol"], "AAPL")
         self.assertEqual(payload["chart"]["bars"], [])
         self.assertEqual(payload["coverage"]["event_count"], 1000)
-        self.assertEqual(len(payload["scanner"]), 6)
+        self.assertEqual(len(payload["scanner"]), 1)
         self.assertAlmostEqual(payload["scanner"][0]["change_5m_pct"], 1.0)
         self.assertEqual(payload["scanner"][0]["live_news_recency"], "none")
         self.assertTrue(payload["portfolio"]["fixture"])
         self.assertEqual(payload["orders"][0]["acctId"], "DU0000000")
-        scanner_call = next(call for call in bars_mock.call_args_list if call.kwargs["ticker"] == "AAPL")
-        self.assertEqual(scanner_call.kwargs["window_minutes"], 15)
-        self.assertEqual(scanner_call.kwargs["offset_minutes"], 330)
+        scanner_mock.assert_called_once()
+        self.assertEqual(scanner_mock.call_args.kwargs["lookback_minutes"], 15)
 
     def test_preview_rejects_invalid_clock(self) -> None:
         with self.assertRaisesRegex(ValueError, "preview_time"):

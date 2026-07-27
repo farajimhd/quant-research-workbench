@@ -3,13 +3,16 @@ from __future__ import annotations
 import os
 import json
 import re
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from pipelines.reference_data.clickhouse_load_market_references import build_condition_token_rows
@@ -17,6 +20,19 @@ from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.orchestrator import historical_run_window
 from src.trading_runtime.runtime import RunMode
 from src.trading_runtime.taxonomy import StrategyTaxonomy, taxonomy_catalog_payload
+from src.trading_runtime.strategy_engine import (
+    AssignmentStatus,
+    LongMomentumStrategyEngine,
+    STRATEGY_ID,
+    STRATEGY_REVISION,
+    StrategyAssignment,
+    StrategyObservation,
+    StrategyPermissions,
+    long_momentum_strategy_definition,
+    resolve_long_momentum_parameters,
+)
+from src.trading_runtime.strategy_orders import IbkrStrategyOrderPlanner
+from src.trading_runtime.domain import InstrumentContract
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -35,6 +51,7 @@ SUPPORTED_HISTORICAL_TIMEFRAMES = {
 MACRO_CHART_TIMEFRAMES = {"1d", "1mo"}
 HISTORICAL_CHUNK_MINUTES = 15
 MARKET_REFERENCE_DIR = REPO_ROOT / "research" / "market_references" / "massive"
+BUILTIN_STRATEGY_LOCK = threading.Lock()
 
 
 @lru_cache(maxsize=1)
@@ -73,10 +90,16 @@ def save_strategy_definition(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_strategy_definitions(latest_only: bool = True) -> list[dict[str, Any]]:
-    return [_strategy_definition_payload(row) for row in trading_journal().strategies(latest_only=latest_only)]
+    ensure_builtin_strategy_definition()
+    return [
+        _strategy_definition_payload(row)
+        for row in trading_journal().strategies(latest_only=latest_only)
+        if row.get("strategy_id") == STRATEGY_ID
+    ]
 
 
 def get_strategy_definition(strategy_id: str, revision: int | None = None) -> dict[str, Any]:
+    ensure_builtin_strategy_definition()
     result = trading_journal().strategy(strategy_id, revision)
     if result is None:
         raise KeyError(strategy_id)
@@ -85,6 +108,246 @@ def get_strategy_definition(strategy_id: str, revision: int | None = None) -> di
 
 def trading_taxonomy_catalog() -> dict[str, Any]:
     return taxonomy_catalog_payload()
+
+
+def ensure_builtin_strategy_definition() -> None:
+    definition = long_momentum_strategy_definition()
+    with BUILTIN_STRATEGY_LOCK:
+        if trading_journal().strategy(STRATEGY_ID, STRATEGY_REVISION) is not None:
+            return
+        save_strategy_definition(definition)
+
+
+def create_strategy_assignment(payload: dict[str, Any]) -> dict[str, Any]:
+    ensure_builtin_strategy_definition()
+    permissions_payload = dict(payload.get("permissions") or {})
+    permissions = StrategyPermissions(
+        observe=bool(permissions_payload.get("observe", True)),
+        enter=bool(permissions_payload.get("enter", False)),
+        add=bool(permissions_payload.get("add", False)),
+        reduce=bool(permissions_payload.get("reduce", True)),
+        exit=bool(permissions_payload.get("exit", True)),
+        reenter=bool(permissions_payload.get("reenter", False)),
+    )
+    now = datetime.now(ZoneInfo("UTC"))
+    assignment = StrategyAssignment(
+        assignment_id=str(payload.get("assignment_id") or uuid4()),
+        strategy_id=str(payload.get("strategy_id") or STRATEGY_ID),
+        strategy_revision=int(payload.get("strategy_revision") or STRATEGY_REVISION),
+        account_id=str(payload.get("account_id") or "").strip(),
+        ticker=str(payload.get("ticker") or "").strip().upper(),
+        conid=int(payload.get("conid") or 0),
+        status=AssignmentStatus(str(payload.get("status") or AssignmentStatus.WATCHING)),
+        permissions=permissions,
+        parameters=resolve_long_momentum_parameters(dict(payload.get("parameters") or {})),
+        state=dict(payload.get("state") or {}),
+        source=str(payload.get("source") or "order_entry"),
+        created_at=now,
+        updated_at=now,
+    )
+    saved = trading_journal().save_strategy_assignment(assignment.payload())
+    trading_journal().append(
+        run_id=assignment.assignment_id,
+        category="strategy",
+        entity_type="strategy_assignment",
+        entity_id=assignment.assignment_id,
+        account_id=assignment.account_id,
+        event_time=now,
+        payload={
+            "event": "assignment_created",
+            "assignment_id": assignment.assignment_id,
+            "strategy_id": assignment.strategy_id,
+            "strategy_revision": assignment.strategy_revision,
+            "ticker": assignment.ticker,
+            "status": assignment.status.value,
+            "permissions": assignment.permissions.payload(),
+        },
+    )
+    return saved
+
+
+def list_strategy_assignments(*, account_id: str = "", ticker: str = "", active_only: bool = False) -> list[dict[str, Any]]:
+    return trading_journal().strategy_assignments(account_id=account_id, ticker=ticker, active_only=active_only)
+
+
+def command_strategy_assignment(assignment_id: str, command: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    row = trading_journal().strategy_assignment(assignment_id)
+    if row is None:
+        raise KeyError(assignment_id)
+    command = command.strip().lower()
+    status_map = {
+        "arm": AssignmentStatus.WATCHING,
+        "resume": AssignmentStatus.WATCHING,
+        "pause": AssignmentStatus.PAUSED,
+        "disable": AssignmentStatus.DISABLED,
+        "complete": AssignmentStatus.COMPLETED,
+    }
+    if command not in {*status_map, "disable_after_exit", "request_entry", "force_entry"}:
+        raise ValueError(f"Unsupported strategy assignment command: {command}")
+    state = dict(row.get("state") or {})
+    status = status_map.get(command, AssignmentStatus(str(row["status"])))
+    if command == "disable_after_exit":
+        state["disable_after_exit"] = True
+    elif command == "request_entry":
+        state["manual_entry_requested"] = True
+    elif command == "force_entry":
+        state["force_entry_requested"] = True
+    row = {
+        **row,
+        "status": status.value,
+        "state": state,
+        "updated_at": datetime.now(ZoneInfo("UTC")).isoformat(),
+    }
+    saved = trading_journal().save_strategy_assignment(row)
+    trading_journal().append(
+        run_id=assignment_id,
+        category="strategy",
+        entity_type="strategy_assignment_command",
+        entity_id=assignment_id,
+        account_id=str(row["account_id"]),
+        payload={
+            "event": "assignment_command",
+            "command": command,
+            "assignment_id": assignment_id,
+            "strategy_id": row["strategy_id"],
+            "strategy_revision": row["strategy_revision"],
+            "ticker": row["ticker"],
+            "status": row["status"],
+            "detail": dict(payload or {}),
+        },
+    )
+    return saved
+
+
+def evaluate_strategy_assignment(assignment_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    row = trading_journal().strategy_assignment(assignment_id)
+    if row is None:
+        raise KeyError(assignment_id)
+    assignment = _assignment_from_row(row)
+    state = dict(assignment.state)
+    observation_payload = dict(payload)
+    observation_payload["ticker"] = assignment.ticker
+    observation_payload["manual_entry_request"] = bool(
+        observation_payload.get("manual_entry_request") or state.pop("manual_entry_requested", False)
+    )
+    observation_payload["force_entry"] = bool(
+        observation_payload.get("force_entry") or state.pop("force_entry_requested", False)
+    )
+    observation_payload["observed_at"] = _aware_datetime(observation_payload.get("observed_at"))
+    assignment = replace(assignment, state=state)
+    observation = StrategyObservation(**observation_payload)
+    result = LongMomentumStrategyEngine().evaluate(assignment, observation)
+    now = datetime.now(ZoneInfo("UTC"))
+    updated = replace(assignment, state=result.state, status=result.status, updated_at=now)
+    trading_journal().save_strategy_assignment(updated.payload())
+    trading_journal().append(
+        run_id=assignment.assignment_id,
+        category="strategy",
+        entity_type="strategy_evaluation",
+        entity_id=result.evaluation_payload["event_id"],
+        account_id=assignment.account_id,
+        event_time=observation.observed_at,
+        payload={
+            **result.evaluation_payload,
+            "event": "strategy_evaluated",
+            "observation": observation.payload(),
+        },
+    )
+    order_plan: list[dict[str, Any]] = []
+    if result.evaluation.intents:
+        instrument = InstrumentContract(
+            instrument_id=f"ibkr:{assignment.conid}",
+            conid=assignment.conid,
+            symbol=assignment.ticker,
+            security_type="STK",
+            currency=str(payload.get("currency") or "USD"),
+            exchange=str(payload.get("exchange") or "SMART"),
+        )
+        planner = IbkrStrategyOrderPlanner()
+        for intent in result.evaluation.intents:
+            plan = planner.plan(
+                account_id=assignment.account_id,
+                instrument=instrument,
+                intent=intent,
+                strategy_id=assignment.strategy_id,
+                strategy_revision=assignment.strategy_revision,
+                limit_offset_bps=float(assignment.parameters["execution"]["limit_offset_bps"]),
+            )
+            order_plan.extend(order.to_cpapi() for order in plan.orders)
+    return {
+        "assignment": updated.payload(),
+        "evaluation": result.evaluation_payload,
+        "intents": [intent.payload() for intent in result.evaluation.intents],
+        "order_plan": order_plan,
+        "orders_submitted": False,
+        "submission_note": "The shared runtime submits this plan only after risk validation; this evaluation endpoint never places live orders.",
+    }
+
+
+def strategy_canvas_payload(*, as_of: datetime, ticker: str) -> dict[str, Any]:
+    ensure_builtin_strategy_definition()
+    definition = get_strategy_definition(STRATEGY_ID, STRATEGY_REVISION)
+    records = trading_journal().strategy_records(
+        ticker=ticker, strategy_id=STRATEGY_ID, as_of=as_of, limit=5000
+    )
+    decisions = []
+    for record in records:
+        if record.entity_type not in {"strategy_evaluation", "signal"}:
+            continue
+        if record.payload.get("action") not in {"enter_long", "add_long", "reduce_long", "take_profit", "exit", "hold", "wait"}:
+            continue
+        metadata = dict(record.payload.get("metadata") or {})
+        decisions.append(
+            {
+                **record.payload,
+                "effective_at": record.payload.get("effective_at") or record.payload.get("event_time") or record.event_time.isoformat(),
+                "event_id": record.payload.get("event_id") or record.payload.get("signal_id") or record.record_id,
+                "reference_price": record.payload.get("reference_price") or metadata.get("reference_price"),
+            }
+        )
+    assignments = trading_journal().strategy_assignments(ticker=ticker)
+    active = next((row for row in assignments if row["status"] not in {"disabled", "completed", "error"}), None)
+    return {
+        "fixture": False,
+        "strategy_id": definition["strategy_id"],
+        "name": definition["name"],
+        "revision": definition["revision"],
+        "automatic": definition["automatic"],
+        "state": str(active["status"]) if active else "not_assigned",
+        "definition": definition,
+        "assignment": active,
+        "assignments": assignments,
+        "signals": decisions,
+        "taxonomy": definition.get("taxonomy"),
+        "historical_source": "saved_strategy_journal_only",
+    }
+
+
+def _assignment_from_row(row: dict[str, Any]) -> StrategyAssignment:
+    return StrategyAssignment(
+        assignment_id=str(row["assignment_id"]),
+        strategy_id=str(row["strategy_id"]),
+        strategy_revision=int(row["strategy_revision"]),
+        account_id=str(row["account_id"]),
+        ticker=str(row["ticker"]),
+        conid=int(row["conid"]),
+        status=AssignmentStatus(str(row["status"])),
+        permissions=StrategyPermissions(**dict(row.get("permissions") or {})),
+        parameters=dict(row.get("parameters") or {}),
+        state=dict(row.get("state") or {}),
+        source=str(row.get("source") or "order_entry"),
+        created_at=_aware_datetime(row.get("created_at")),
+        updated_at=_aware_datetime(row.get("updated_at")),
+    )
+
+
+def _aware_datetime(value: Any) -> datetime:
+    if value in (None, ""):
+        return datetime.now(ZoneInfo("UTC"))
+    parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("Strategy timestamps must include a timezone")
+    return parsed
 
 
 def _strategy_definition_payload(value: dict[str, Any]) -> dict[str, Any]:

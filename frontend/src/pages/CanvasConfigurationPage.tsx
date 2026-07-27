@@ -169,7 +169,19 @@ type CanvasPreview = {
   scanner: PreviewRow[];
   scanner_meta?: ScannerSnapshotMeta;
   sec: PreviewRow[];
-  strategy: { automatic: boolean; fixture?: boolean; revision: number; signals: PreviewRow[]; state: string; strategy_id: string; taxonomy?: { presentation?: Partial<StrategyChartPresentation> } };
+  strategy: {
+    automatic: boolean;
+    fixture?: boolean;
+    revision: number;
+    signals: PreviewRow[];
+    state: string;
+    strategy_id: string;
+    name?: string;
+    assignment?: PreviewRow | null;
+    assignments?: PreviewRow[];
+    definition?: { config?: { direction?: string; parameters?: Record<string, unknown>; parameter_space?: Record<string, unknown> }; name?: string };
+    taxonomy?: { indicators?: PreviewRow[]; signals?: PreviewRow[]; presentation?: Partial<StrategyChartPresentation> };
+  };
   trading: CanonicalTradingPreview;
   xbrl: PreviewRow[];
 };
@@ -271,7 +283,7 @@ type CanvasLiveChartState = {
 
 type CanvasChartSettings = { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
 type ContainerSettings = {
-  version: 21;
+  version: 22;
   chart: CanvasChartSettings;
   charts_quotes: {
     daily: CanvasChartSettings;
@@ -306,10 +318,10 @@ type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; tit
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const MANAGER_DEFAULT_CONTAINER_IDS: WorkspaceContainerId[] = ["scanner", "chart", "portfolio", "positions", "orders"];
 const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 21,
-  chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.flow_structure_composite"] },
+  version: 22,
+  chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.flow_structure_composite", "strategy.presentation"] },
   charts_quotes: {
-    main: { showVolume: true, symbol: "AAPL", timeframe: "10s", visibleIndicators: ["indicator.macd"] },
+    main: { showVolume: true, symbol: "AAPL", timeframe: "10s", visibleIndicators: ["indicator.macd", "strategy.presentation"] },
     month: { showVolume: true, symbol: "AAPL", timeframe: "1mo", visibleIndicators: [] },
     daily: { showVolume: true, symbol: "AAPL", timeframe: "1d", visibleIndicators: [] },
     layout: { lowerRowPercent: 33, monthColumnPercent: 40, reservedColumnPercent: 20, tapeColumnPercent: 20 },
@@ -339,6 +351,7 @@ const HISTORICAL_TIMEFRAMES: CanvasChartTimeframe[] = ["100ms", "1s", "5s", "10s
 const ENRICHED_QMD_TIMEFRAMES = new Set<CanvasChartTimeframe>(["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"]);
 const MACRO_TIMEFRAMES = new Set<CanvasChartTimeframe>(["1d", "1mo"]);
 const INDICATOR_GUIDES: Record<string, ChartCatalogKnowledge> = {
+  "strategy.presentation": indicatorGuide("Read saved strategy decisions and their active invalidation levels on the price chart.", "The strategy runtime persists each causal evaluation with its exact effective time, action, score, confidence, reference price, and invalidation. Canvas renders only records at or before the shared clock.", "Enter and add markers show confirmed long exposure decisions.", "Reduce, take-profit, and exit markers show exposure leaving the strategy campaign.", "The presentation follows the strategy event timestamp and is independent of the chart timeframe.", ["No historical marker is reconstructed from price alone.", "An armed strategy displays future decisions only after the runtime saves them."]),
   "indicator.vwap": indicatorGuide("Compare price with the extended session's volume-weighted typical price. VWAP is the purple price overlay, starts at 04:00 ET, and continues through 09:30 without resetting.", "From the 04:00 ET anchor, cumulatively divide Σ(HLC3 × eligible volume) by Σ(eligible volume), where HLC3 = (high + low + close) / 3 for each chart bar. This matches TradingView's default HLC3 source with a Session anchor when extended hours are shown.", "Price holding above a rising VWAP suggests buyers are accepting progressively higher prices; a reclaim that persists is stronger than a brief cross.", "Price holding below a falling VWAP suggests sellers control the session auction; repeated rejection at VWAP reinforces that evidence.", "VWAP is recomputed from the selected timeframe's HLC3 bars. Its anchor remains 04:00 ET on every intraday timeframe, but values can differ slightly between timeframes because each bar has different high, low, and close inputs.", ["VWAP is a benchmark, not automatic support or resistance.", "Opening and closing auctions or a few very large prints can materially shift it.", "A TradingView comparison must use the same extended-hours visibility, Session anchor, HLC3 source, and eligible market-data feed."]),
   "indicator.ema_9": movingAverageGuide("EMA 9", 9, "fast"),
   "indicator.ema_20": movingAverageGuide("EMA 20", 20, "short-term"),
@@ -356,6 +369,7 @@ const INDICATOR_GUIDES: Record<string, ChartCatalogKnowledge> = {
   "indicator.trend_score": indicatorGuide("Read the combined direction and agreement of the configured trend inputs on a normalized negative-to-positive scale.", "Composite normalization of price location and moving-trend evidence; positive components add bullish weight and negative components add bearish weight.", "A positive score that strengthens and remains supported by price above its trend references indicates aligned upside structure.", "A negative score that weakens further and remains supported by price below trend references indicates aligned downside structure.", "Every component is calculated from the selected timeframe, so higher timeframes produce slower and usually more persistent scores.", ["A composite can hide disagreement between its inputs.", "Inspect the underlying averages and price response before acting on the score alone."]),
 };
 const CHART_INDICATORS: ChartDisplayItem[] = [
+  displayIndicator("strategy.presentation", "Long Campaign · Strategy Decisions", "price_action", [], "price", INDICATOR_GUIDES["strategy.presentation"]),
   displayIndicator("indicator.vwap", "VWAP", "volume_liquidity", ["vwap"]),
   displayIndicator("indicator.ema_9", "EMA 9", "momentum", ["ema_9"]),
   displayIndicator("indicator.ema_20", "EMA 20", "momentum", ["ema_20"]),
@@ -1303,7 +1317,7 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
   }, []);
 
   useEffect(() => {
-    if (!contextReady || contextError) return;
+    if (!contextReady) return;
     if (!previewContainerKey) {
       setPreview(null);
       setLoading(false);
@@ -1605,11 +1619,12 @@ function CanvasWorkspaceSurface({ canvasId, manager, requestedInstanceId, reques
           </div>
         </div>
         <MarketStatusBadge value={marketStatus} />
+        {contextError ? <span className="canvas-context-warning" title={contextError}>Saved clock</span> : null}
         <div className="canvas-mode-context-slot"><CanvasPerformanceStrip state={livePerformance} /></div>
         {manager ? <div className="canvas-toolbar-actions"><button className="button secondary compact canvas-set-default" disabled={!workspaceState} onClick={saveDefaultLayout} type="button"><Save size={13} /> {defaultSaved ? "Default saved" : "Set default"}</button><button aria-expanded={managementOpen} aria-label="Canvas management" className="button secondary compact canvas-management-toggle" onClick={() => setManagementOpen((open) => !open)} type="button"><PanelRightOpen size={13} /> Manage</button></div> : null}
       </header>
 
-      {contextError || error || chartOpenError ? <div className="canvas-inline-error">{contextError || error || chartOpenError}</div> : null}
+      {error || chartOpenError ? <div className="canvas-inline-error">{error || chartOpenError}</div> : null}
 
       <TradingWorkspace
         allowMultipleInstances
@@ -1780,7 +1795,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
     <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{definition.id === "chart"
         ? <ChartContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} linkGroup={linkGroup} onLinkContextChange={onLinkContextChange} previewContext={previewContext} settings={settings} strategy={preview?.strategy} symbolEditable={symbolEditable} trading={preview?.trading} updateSettings={updateSettings} />
       : definition.id === "charts_quotes"
-        ? <ChartsQuotesContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} onLinkContextChange={onLinkContextChange} previewContext={previewContext} settings={settings} symbolEditable={symbolEditable} trading={preview?.trading} updateSettings={updateSettings} />
+        ? <ChartsQuotesContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} onLinkContextChange={onLinkContextChange} previewContext={previewContext} settings={settings} strategy={preview?.strategy} symbolEditable={symbolEditable} trading={preview?.trading} updateSettings={updateSettings} />
       : definition.id === "microstructure"
         ? <QuotesTapeContainer end={new Date(chartCutoffMs).toISOString()} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} settings={settings.microstructure} start={dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()} symbol={linkContext.symbol} />
       : definition.id === "facts"
@@ -1881,17 +1896,19 @@ const ChartContainerPreview = memo(function ChartContainerPreview({ cutoffMs, in
   return <ChartPreview changeAsOf={new Date(cutoffMs).toISOString()} chartSettings={settings.chart} instanceId={instanceId} linkContext={linkContext} liveChart={liveChart} logoUrl={presentations[linkContext.symbol]?.logo_url} onChartSettingsChange={(next) => updateSettings((current) => ({ ...current, chart: next }))} onLinkContextChange={onLinkContextChange} strategyDecisions={strategyDecisions} strategyPresentation={strategyPresentation} symbolEditable={symbolEditable} trading={trading} />;
 }, chartContainerPreviewPropsEqual);
 
-function ChartsQuotesContainerPreview({ cutoffMs, instanceId, linkContext, onLinkContextChange, previewContext, settings, symbolEditable, trading, updateSettings }: Omit<ChartContainerPreviewProps, "linkGroup">) {
+function ChartsQuotesContainerPreview({ cutoffMs, instanceId, linkContext, onLinkContextChange, previewContext, settings, strategy, symbolEditable, trading, updateSettings }: Omit<ChartContainerPreviewProps, "linkGroup">) {
   const main = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.main.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.main.visibleIndicators);
   const month = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.month.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.month.visibleIndicators);
   const daily = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.daily.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.daily.visibleIndicators);
   const presentations = useTickerPresentations([linkContext.symbol]);
   const logoUrl = presentations[linkContext.symbol]?.logo_url;
   const changeAsOf = new Date(cutoffMs).toISOString();
+  const strategyDecisions = useMemo(() => strategyDecisionEvents(strategy), [strategy]);
+  const strategyPresentation = useMemo(() => resolvedStrategyPresentation(strategy), [strategy]);
   const updateSlot = (slot: "daily" | "main" | "month", next: CanvasChartSettings) => {
     updateSettings((current) => ({ ...current, charts_quotes: { ...current.charts_quotes, [slot]: next } }));
   };
-  const chartProps = { changeAsOf, linkContext, logoUrl, onLinkContextChange, symbolEditable: false, toolbarVariant: "compact" as const, trading };
+  const chartProps = { changeAsOf, linkContext, logoUrl, onLinkContextChange, strategyDecisions, strategyPresentation, symbolEditable: false, toolbarVariant: "compact" as const, trading };
   return <ChartsQuotesMarketLayout
     dailyChart={<ChartPreview {...chartProps} baseHeight={255} chartSettings={settings.charts_quotes.daily} fillHeight instanceId={`${instanceId}.daily`} liveChart={daily} onChartSettingsChange={(next) => updateSlot("daily", { ...next, timeframe: "1d" })} timeframes={["1d"]} />}
     end={changeAsOf}
@@ -1902,6 +1919,7 @@ function ChartsQuotesContainerPreview({ cutoffMs, instanceId, linkContext, onLin
     onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined}
     start={dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()}
     symbol={linkContext.symbol}
+    reservedPanel={<StrategyOrderEntry strategy={strategy} symbol={linkContext.symbol} trading={trading} />}
   />;
 }
 
@@ -1974,7 +1992,7 @@ function strategyPresentationSignature(strategy: CanvasPreview["strategy"] | und
 }
 
 function isStrategyAction(value: string): value is StrategyAction {
-  return ["enter_long", "enter_short", "exit", "hold", "wait"].includes(value);
+  return ["enter_long", "add_long", "reduce_long", "take_profit", "exit", "hold", "wait"].includes(value);
 }
 
 function nullableNumber(value: unknown) {
@@ -3350,8 +3368,118 @@ function nestedValue(row: PreviewRow, container: string, ...keys: string[]) {
 function signedMoney(value: unknown) { const number = Number(value || 0); return `${number > 0 ? "+" : ""}${money(number)}`; }
 function numberTone(value: unknown): "negative" | "positive" | "neutral" { const number = Number(value || 0); return number > 0 ? "positive" : number < 0 ? "negative" : "neutral"; }
 
+function StrategyOrderEntry({ strategy, symbol, trading }: { strategy?: CanvasPreview["strategy"]; symbol: string; trading?: CanonicalTradingPreview }) {
+  const initialAssignment = strategy?.assignment ?? null;
+  const [assignment, setAssignment] = useState<PreviewRow | null>(initialAssignment);
+  const [accountId, setAccountId] = useState(String(initialAssignment?.account_id || trading?.accounts[0]?.account_id || ""));
+  const linkedPosition = trading?.positions.find((row) => String(nestedValue(row, "instrument", "symbol") || row.ticker || "").toUpperCase() === symbol);
+  const [conid, setConid] = useState(String(initialAssignment?.conid || nestedValue(linkedPosition ?? {}, "instrument", "conid") || linkedPosition?.conid || ""));
+  const [mode, setMode] = useState<"manage" | "request" | "automatic">("request");
+  const [reenter, setReenter] = useState(Boolean((initialAssignment?.permissions as PreviewRow | undefined)?.reenter));
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    setAssignment(strategy?.assignment ?? null);
+  }, [strategy?.assignment]);
+
+  async function createAssignment() {
+    if (!accountId.trim() || !Number(conid)) {
+      setMessage("Account and IBKR conid are required.");
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    try {
+      const created = await api<PreviewRow>("/api/trading/strategy-assignments", {
+        body: JSON.stringify({
+          account_id: accountId.trim(),
+          conid: Number(conid),
+          permissions: {
+            add: true,
+            enter: mode !== "manage",
+            exit: true,
+            observe: true,
+            reduce: true,
+            reenter: mode !== "manage" && reenter,
+          },
+          source: "canvas_order_entry",
+          strategy_id: strategy?.strategy_id || "long-momentum-campaign",
+          strategy_revision: strategy?.revision || 1,
+          ticker: symbol,
+        }),
+        method: "POST",
+      });
+      setAssignment(created);
+      setMessage(mode === "manage" ? "Management will attach after a confirmed fill." : "Strategy assignment armed.");
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function command(commandName: string) {
+    const assignmentId = String(assignment?.assignment_id || "");
+    if (!assignmentId) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      const updated = await api<PreviewRow>(`/api/trading/strategy-assignments/${encodeURIComponent(assignmentId)}/commands`, {
+        body: JSON.stringify({ command: commandName }),
+        method: "POST",
+      });
+      setAssignment(updated);
+      setMessage(commandName.replaceAll("_", " "));
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const status = String(assignment?.status || "not assigned");
+  return <section className="strategy-order-entry">
+    <header><span><strong>Order entry</strong><small>{strategy?.name || "Long Momentum Campaign"}</small></span><em data-state={status}>{status.replaceAll("_", " ")}</em></header>
+    {!assignment ? <>
+      <label><span>Account</span><input onChange={(event) => setAccountId(event.target.value)} placeholder="IBKR account" value={accountId} /></label>
+      <label><span>Conid</span><input inputMode="numeric" onChange={(event) => setConid(event.target.value.replace(/\D/g, ""))} placeholder="Contract ID" value={conid} /></label>
+      <label><span>Authority</span><select onChange={(event) => setMode(event.target.value as typeof mode)} value={mode}><option value="request">Strategy entry</option><option value="manage">Manage after fill</option><option value="automatic">Fully automatic</option></select></label>
+      <label className="strategy-order-check"><input checked={reenter} disabled={mode === "manage"} onChange={(event) => setReenter(event.target.checked)} type="checkbox" /><span>Allow re-entry</span></label>
+      <button disabled={busy} onClick={createAssignment} type="button">{busy ? "Saving…" : mode === "manage" ? "Attach plan" : "Arm strategy"}</button>
+    </> : <>
+      <div className="strategy-order-summary"><span><small>Symbol</small><strong>{symbol}</strong></span><span><small>Account</small><strong>{String(assignment.account_id)}</strong></span></div>
+      <div className="strategy-order-actions">
+        <button disabled={busy || status === "paused"} onClick={() => command("request_entry")} type="button">Request entry</button>
+        <button disabled={busy || status === "paused"} onClick={() => command("force_entry")} type="button">Force + attach</button>
+        <button disabled={busy} onClick={() => command(status === "paused" ? "resume" : "pause")} type="button">{status === "paused" ? "Resume" : "Pause"}</button>
+        <button className="danger" disabled={busy} onClick={() => command("disable_after_exit")} type="button">Disable after exit</button>
+      </div>
+      <small className="strategy-order-disclosure">Commands are persisted here. Orders are placed only by the shared runtime after causal evaluation and risk validation.</small>
+    </>}
+    {message ? <p role="status">{message}</p> : null}
+  </section>;
+}
+
 function StrategyPreview({ data, showSignals }: { data: CanvasPreview["strategy"]; showSignals: boolean }) {
-  return <div className="canvas-strategy-preview"><div><span>Strategy</span><strong>{data.strategy_id}</strong></div><div><span>Revision</span><strong>v{data.revision}</strong></div><div><span>State</span><strong>{data.state}</strong></div>{showSignals ? <PreviewTable columns={["time", "symbol", "signal", "value"]} rows={data.signals} /> : null}</div>;
+  const config = data.definition?.config;
+  const parameters = flattenStrategyParameters(config?.parameters ?? {});
+  const searchSpace = flattenStrategyParameters(config?.parameter_space ?? {});
+  const inputs = [...(data.taxonomy?.indicators ?? []).map((row) => ({ ...row, input_kind: "Indicator" })), ...(data.taxonomy?.signals ?? []).map((row) => ({ ...row, input_kind: "Signal" }))];
+  return <div className="canvas-strategy-preview">
+    <header className="strategy-definition-header"><div><span>Strategy definition</span><strong>{data.name || data.definition?.name || data.strategy_id}</strong><small>{config?.direction === "long_only" ? "Long only" : String(config?.direction || "")} · immutable v{data.revision}</small></div><em data-state={data.state}>{data.state.replaceAll("_", " ")}</em></header>
+    <section className="strategy-definition-section"><header><strong>Evidence contract</strong><span>Each input keeps its own timeframe, role, freshness, score, and confidence requirements.</span></header><PreviewTable columns={["input_kind", "key", "timeframe", "role", "maximum_age_ms", "weight", "minimum_score", "minimum_confidence"]} rows={inputs} /></section>
+    <section className="strategy-definition-grid"><div><header><strong>Resolved revision</strong><span>Exact values used by replay and live</span></header><PreviewTable columns={["parameter", "value"]} rows={parameters} /></div><div><header><strong>Hyperparameter space</strong><span>Candidate values; never passed unresolved to live execution</span></header><PreviewTable columns={["parameter", "value"]} rows={searchSpace} /></div></section>
+    {showSignals ? <section className="strategy-definition-section"><header><strong>Saved decisions</strong><span>Only durable records at or before the Canvas clock are drawn on charts.</span></header><PreviewTable columns={["effective_at", "ticker", "action", "reason", "score", "confidence", "reference_price", "invalidation_price"]} rows={data.signals} /></section> : null}
+  </div>;
+}
+
+function flattenStrategyParameters(value: Record<string, unknown>, prefix = ""): PreviewRow[] {
+  return Object.entries(value).flatMap(([key, item]) => {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (item && typeof item === "object" && !Array.isArray(item)) return flattenStrategyParameters(item as Record<string, unknown>, path);
+    return [{ parameter: path, value: Array.isArray(item) ? item.join(", ") : String(item ?? "—") }];
+  });
 }
 
 function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, linkContext: CanvasLinkContext, updateSettings: SettingsUpdater, onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void) {
@@ -3415,7 +3543,7 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
   const migratedIndicators = stored.version === DEFAULT_SETTINGS.version || canonicalIndicators.includes("indicator.macd") ? canonicalIndicators : [...canonicalIndicators, "indicator.macd"];
   const visibleIndicators = stored.version === DEFAULT_SETTINGS.version
     ? migratedIndicators
-    : Array.from(new Set([...migratedIndicators, "indicator.flow_structure_composite"]));
+    : Array.from(new Set([...migratedIndicators, "indicator.flow_structure_composite", "strategy.presentation"]));
   const timeframe = HISTORICAL_TIMEFRAMES.includes(stored.chart?.timeframe as CanvasChartTimeframe) ? stored.chart!.timeframe! : DEFAULT_SETTINGS.chart.timeframe;
   const storedPerformance = stored.performance_journal as (Partial<ContainerSettings["performance_journal"]> & { showFees?: boolean }) | undefined;
   return {
@@ -3477,7 +3605,8 @@ function normalizeSignalStreamPreset(value: unknown) {
 function normalizeChartSlot(stored: Partial<CanvasChartSettings> | undefined, defaults: CanvasChartSettings): CanvasChartSettings {
   const timeframe = HISTORICAL_TIMEFRAMES.includes(stored?.timeframe as CanvasChartTimeframe) ? stored!.timeframe! : defaults.timeframe;
   const visibleIndicators = Array.isArray(stored?.visibleIndicators) ? stored.visibleIndicators.filter((value): value is string => typeof value === "string") : defaults.visibleIndicators;
-  return { ...defaults, ...(stored ?? {}), timeframe, visibleIndicators: [...visibleIndicators] };
+  const required = defaults.visibleIndicators.includes("strategy.presentation") ? ["strategy.presentation"] : [];
+  return { ...defaults, ...(stored ?? {}), timeframe, visibleIndicators: Array.from(new Set([...visibleIndicators, ...required])) };
 }
 
 function normalizeChartsQuotesLayout(stored: Partial<ChartsQuotesLayoutSettings> | undefined): ChartsQuotesLayoutSettings {

@@ -5,7 +5,8 @@ from enum import StrEnum
 from typing import Any, Iterable
 
 
-TAXONOMY_SCHEMA_VERSION = 1
+TAXONOMY_SCHEMA_VERSION = 2
+SUPPORTED_TAXONOMY_SCHEMA_VERSIONS = {1, TAXONOMY_SCHEMA_VERSION}
 
 
 class IndicatorType(StrEnum):
@@ -129,9 +130,29 @@ class SignalDefinition:
 class StrategyInputRef:
     key: str
     required: bool = True
+    timeframe: str = ""
+    role: str = "context"
+    evaluation_mode: str = "closed_only"
+    maximum_age_ms: int | None = None
+    weight: float = 1.0
+    minimum_score: float | None = None
+    minimum_confidence: float | None = None
+    parameters: dict[str, Any] = field(default_factory=dict, compare=False)
 
     def __post_init__(self) -> None:
         _require_identifier(self.key, "strategy input key")
+        if self.role not in {"trigger", "confirmation", "veto", "sizing", "exit", "context"}:
+            raise ValueError(f"Unsupported strategy input role: {self.role}")
+        if self.evaluation_mode not in {item.value for item in EvaluationMode}:
+            raise ValueError(f"Unsupported strategy input evaluation mode: {self.evaluation_mode}")
+        if self.maximum_age_ms is not None and self.maximum_age_ms <= 0:
+            raise ValueError("Strategy input maximum_age_ms must be positive")
+        if self.weight < 0:
+            raise ValueError("Strategy input weight cannot be negative")
+        if self.minimum_score is not None and not -1 <= self.minimum_score <= 1:
+            raise ValueError("Strategy input minimum_score must be between -1 and 1")
+        if self.minimum_confidence is not None and not 0 <= self.minimum_confidence <= 1:
+            raise ValueError("Strategy input minimum_confidence must be between 0 and 1")
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +160,8 @@ class StrategyPresentation:
     """Strategy-agnostic chart policy; strategy logic emits decisions, not pixels."""
 
     show_entries: bool = True
+    show_adds: bool = True
+    show_reductions: bool = True
     show_exits: bool = True
     show_holds: bool = False
     show_waits: bool = False
@@ -156,39 +179,49 @@ class StrategyTaxonomy:
     signals: tuple[StrategyInputRef, ...] = ()
     allow_developing_inputs: bool = False
     evaluation_trigger: str = "signal_event"
+    evaluation_triggers: tuple[str, ...] = ()
     presentation: StrategyPresentation = field(default_factory=StrategyPresentation)
     schema_version: int = TAXONOMY_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        if self.schema_version != TAXONOMY_SCHEMA_VERSION:
+        if self.schema_version not in SUPPORTED_TAXONOMY_SCHEMA_VERSIONS:
             raise ValueError(f"Unsupported strategy taxonomy schema version: {self.schema_version}")
-        if self.evaluation_trigger not in {"market_event", "bar_close", "signal_event", "manual"}:
-            raise ValueError(f"Unsupported strategy evaluation trigger: {self.evaluation_trigger}")
+        triggers = self.resolved_evaluation_triggers()
+        unsupported = set(triggers) - {"market_event", "bar_close", "indicator_update", "signal_event", "manual", "position_event", "order_event"}
+        if unsupported:
+            raise ValueError(f"Unsupported strategy evaluation trigger: {', '.join(sorted(unsupported))}")
         _reject_duplicate_inputs(self.indicators, "indicator")
         _reject_duplicate_inputs(self.signals, "signal")
 
     def payload(self) -> dict[str, Any]:
         return {
-            "schema_version": self.schema_version,
-            "indicators": [asdict(item) for item in self.indicators],
-            "signals": [asdict(item) for item in self.signals],
+            "schema_version": TAXONOMY_SCHEMA_VERSION,
+            "indicators": [_enum_payload(asdict(item)) for item in self.indicators],
+            "signals": [_enum_payload(asdict(item)) for item in self.signals],
             "allow_developing_inputs": self.allow_developing_inputs,
             "evaluation_trigger": self.evaluation_trigger,
+            "evaluation_triggers": list(self.resolved_evaluation_triggers()),
             "presentation": self.presentation.payload(),
         }
+
+    def resolved_evaluation_triggers(self) -> tuple[str, ...]:
+        return self.evaluation_triggers or (self.evaluation_trigger,)
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any] | None) -> "StrategyTaxonomy":
         value = dict(payload or {})
         presentation = dict(value.get("presentation") or {})
         return cls(
-            schema_version=int(value.get("schema_version") or TAXONOMY_SCHEMA_VERSION),
+            schema_version=TAXONOMY_SCHEMA_VERSION,
             indicators=_input_refs(value.get("indicators")),
             signals=_input_refs(value.get("signals")),
             allow_developing_inputs=bool(value.get("allow_developing_inputs", False)),
             evaluation_trigger=str(value.get("evaluation_trigger") or "signal_event"),
+            evaluation_triggers=tuple(str(item) for item in value.get("evaluation_triggers") or ()),
             presentation=StrategyPresentation(
                 show_entries=bool(presentation.get("show_entries", True)),
+                show_adds=bool(presentation.get("show_adds", True)),
+                show_reductions=bool(presentation.get("show_reductions", True)),
                 show_exits=bool(presentation.get("show_exits", True)),
                 show_holds=bool(presentation.get("show_holds", False)),
                 show_waits=bool(presentation.get("show_waits", False)),
@@ -208,7 +241,8 @@ def taxonomy_catalog_payload() -> dict[str, Any]:
         "evaluation_modes": [item.value for item in EvaluationMode],
         "update_triggers": [item.value for item in UpdateTrigger],
         "publication_cadences": [item.value for item in PublicationCadence],
-        "strategy_actions": ["enter_long", "enter_short", "exit", "hold", "wait"],
+        "strategy_actions": ["enter_long", "add_long", "reduce_long", "take_profit", "exit", "hold", "wait"],
+        "strategy_input_roles": ["trigger", "confirmation", "veto", "sizing", "exit", "context"],
     }
 
 
@@ -221,6 +255,14 @@ def _input_refs(value: Any) -> tuple[StrategyInputRef, ...]:
         StrategyInputRef(
             key=str(item.get("key") or "") if isinstance(item, dict) else str(item),
             required=bool(item.get("required", True)) if isinstance(item, dict) else True,
+            timeframe=str(item.get("timeframe") or "") if isinstance(item, dict) else "",
+            role=str(item.get("role") or "context") if isinstance(item, dict) else "context",
+            evaluation_mode=str(item.get("evaluation_mode") or "closed_only") if isinstance(item, dict) else "closed_only",
+            maximum_age_ms=int(item["maximum_age_ms"]) if isinstance(item, dict) and item.get("maximum_age_ms") is not None else None,
+            weight=float(item.get("weight", 1.0)) if isinstance(item, dict) else 1.0,
+            minimum_score=float(item["minimum_score"]) if isinstance(item, dict) and item.get("minimum_score") is not None else None,
+            minimum_confidence=float(item["minimum_confidence"]) if isinstance(item, dict) and item.get("minimum_confidence") is not None else None,
+            parameters=dict(item.get("parameters") or {}) if isinstance(item, dict) else {},
         )
         for item in value
     )

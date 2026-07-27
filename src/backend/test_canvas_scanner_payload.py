@@ -43,6 +43,10 @@ class CanvasScannerPayloadTest(unittest.TestCase):
             patch("src.backend.canvas_preview_service.historical_scanner_fundamental_projection", return_value=fundamentals),
             patch("src.backend.canvas_preview_service._query_scanner_news_intelligence", return_value=[]),
             patch("src.backend.canvas_preview_service._query_scanner_sec_intelligence", return_value=[]),
+            patch(
+                "src.backend.canvas_preview_service.historical_scanner_qmd_projection_or_schedule",
+                return_value=({}, [], {"qmd_derived_status": "ready"}),
+            ),
         ):
             payload = scanner_snapshot_payload(as_of=as_of)
 

@@ -204,6 +204,7 @@ export function ChartsQuotesMarketLayout({
   monthChart,
   onLayoutChange,
   onSymbolChange,
+  reservedPanel,
   start,
   symbol,
 }: {
@@ -214,6 +215,7 @@ export function ChartsQuotesMarketLayout({
   monthChart: ReactNode;
   onLayoutChange: (layout: ChartsQuotesLayoutSettings) => void;
   onSymbolChange?: (symbol: string) => void;
+  reservedPanel?: ReactNode;
   start?: string;
   symbol: string;
 }) {
@@ -341,7 +343,9 @@ export function ChartsQuotesMarketLayout({
       </aside>
       <div className="charts-quotes-context-row">
         <div className="charts-quotes-month-chart">{monthChart}</div>
-        <aside aria-label="Reserved workspace" className="charts-quotes-reserved"><span>Reserved</span><small>Available for the next market context module.</small></aside>
+        <aside aria-label="Strategy order entry" className="charts-quotes-reserved">
+          {reservedPanel ?? <><span>Order entry</span><small>No strategy assignment is available.</small></>}
+        </aside>
         <div className="charts-quotes-daily-chart">{dailyChart}</div>
         <ChartsQuotesResizeHandle ariaLabel="Resize monthly chart and reserved workspace" className="charts-quotes-context-left-resizer" kind="context-left" maximum={workingLayout.monthColumnPercent + workingLayout.reservedColumnPercent - 12} minimum={20} onDoubleClick={() => {
           const next = { ...workingLayout, monthColumnPercent: 40, reservedColumnPercent: 20 };

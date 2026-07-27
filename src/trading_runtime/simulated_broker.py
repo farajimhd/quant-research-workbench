@@ -71,6 +71,7 @@ class _OrderState:
     order_id: str
     status: OrderStatus
     submitted_at: datetime
+    oca_group: str = ""
     filled: float = 0.0
     avg_price: float = 0.0
     stop_triggered: bool = False
@@ -192,6 +193,12 @@ class SimulatedBrokerAdapter:
             raise ValueError("orders cannot be empty")
         if len(orders) > 1 and not self._is_supported_group(orders):
             raise ValueError("CPAPI bulk placement is limited to bracket or OCA groups")
+        standalone_oca_group = (
+            f"sim-oca-{self._next_order_id}"
+            if len(orders) > 1
+            and all(order.isSingleGroup and not order.parentId for order in orders)
+            else ""
+        )
         async with self._lock:
             results: list[dict[str, Any]] = []
             for order in orders:
@@ -203,7 +210,13 @@ class SimulatedBrokerAdapter:
                 order_id = str(self._next_order_id)
                 self._next_order_id += 1
                 status = OrderStatus.INACTIVE if resolved.parentId else OrderStatus.SUBMITTED
-                state = _OrderState(resolved, order_id, status, self._event_time(resolved.conid))
+                state = _OrderState(
+                    resolved,
+                    order_id,
+                    status,
+                    self._event_time(resolved.conid),
+                    oca_group=standalone_oca_group,
+                )
                 self._orders[order_id] = state
                 if resolved.cOID:
                     self._order_ids_by_coid[resolved.cOID] = order_id
@@ -565,9 +578,18 @@ class SimulatedBrokerAdapter:
                 state.status_description = reason
 
     def _cancel_oca_siblings(self, filled: _OrderState) -> None:
-        if not filled.request.parentId:
+        if filled.oca_group:
+            siblings = [
+                state for state in self._orders.values()
+                if state.oca_group == filled.oca_group
+            ]
+        elif filled.request.parentId:
+            siblings = [
+                state for state in self._orders.values()
+                if state.request.parentId == filled.request.parentId
+            ]
+        else:
             return
-        siblings = [state for state in self._orders.values() if state.request.parentId == filled.request.parentId]
         if not any(state.request.isSingleGroup for state in siblings):
             return
         for state in siblings:

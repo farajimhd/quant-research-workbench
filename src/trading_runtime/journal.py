@@ -203,6 +203,98 @@ class TradingJournal:
             results.append(result)
         return results
 
+    def save_strategy_assignment(self, payload: dict[str, Any]) -> dict[str, Any]:
+        assignment_id = str(payload.get("assignment_id") or "").strip()
+        if not assignment_id:
+            raise ValueError("assignment_id is required")
+        now = datetime.now(timezone.utc).isoformat()
+        created_at = str(payload.get("created_at") or now)
+        updated_at = str(payload.get("updated_at") or now)
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO strategy_assignments(
+                    assignment_id, strategy_id, strategy_revision, account_id, ticker, conid,
+                    status, permissions_json, parameters_json, state_json, source, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(assignment_id) DO UPDATE SET
+                    status=excluded.status, permissions_json=excluded.permissions_json,
+                    parameters_json=excluded.parameters_json, state_json=excluded.state_json,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    assignment_id,
+                    str(payload.get("strategy_id") or ""),
+                    int(payload.get("strategy_revision") or 0),
+                    str(payload.get("account_id") or ""),
+                    str(payload.get("ticker") or "").upper(),
+                    int(payload.get("conid") or 0),
+                    str(payload.get("status") or ""),
+                    json.dumps(payload.get("permissions") or {}, sort_keys=True, default=_json_default),
+                    json.dumps(payload.get("parameters") or {}, sort_keys=True, default=_json_default),
+                    json.dumps(payload.get("state") or {}, sort_keys=True, default=_json_default),
+                    str(payload.get("source") or "order_entry"),
+                    created_at,
+                    updated_at,
+                ),
+            )
+        return self.strategy_assignment(assignment_id) or {}
+
+    def strategy_assignment(self, assignment_id: str) -> dict[str, Any] | None:
+        row = self._connection.execute(
+            "SELECT * FROM strategy_assignments WHERE assignment_id = ?", (assignment_id,)
+        ).fetchone()
+        return _assignment(row) if row is not None else None
+
+    def strategy_assignments(
+        self,
+        *,
+        account_id: str = "",
+        ticker: str = "",
+        active_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        values: list[Any] = []
+        if account_id:
+            clauses.append("account_id = ?")
+            values.append(account_id)
+        if ticker:
+            clauses.append("ticker = ?")
+            values.append(ticker.upper())
+        if active_only:
+            clauses.append("status NOT IN ('disabled', 'completed', 'error')")
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._connection.execute(
+            f"SELECT * FROM strategy_assignments{where} ORDER BY updated_at DESC", values
+        ).fetchall()
+        return [_assignment(row) for row in rows]
+
+    def strategy_records(
+        self,
+        *,
+        ticker: str = "",
+        strategy_id: str = "",
+        as_of: datetime | None = None,
+        limit: int = 5000,
+    ) -> list[JournalRecord]:
+        clauses = ["category IN ('strategy', 'strategy_decision')"]
+        values: list[Any] = []
+        if ticker:
+            clauses.append("upper(json_extract(payload_json, '$.ticker')) = ?")
+            values.append(ticker.upper())
+        if strategy_id:
+            clauses.append("json_extract(payload_json, '$.strategy_id') = ?")
+            values.append(strategy_id)
+        if as_of is not None:
+            clauses.append("event_time <= ?")
+            values.append(as_of.astimezone(timezone.utc).isoformat())
+        values.append(max(1, min(int(limit), 50_000)))
+        rows = self._connection.execute(
+            f"SELECT * FROM journal WHERE {' AND '.join(clauses)} ORDER BY event_time DESC, recorded_at DESC LIMIT ?",
+            values,
+        ).fetchall()
+        return [_record(row) for row in reversed(rows)]
+
     def records(self, run_id: str, *, after_sequence: int = 0) -> list[JournalRecord]:
         rows = self._connection.execute(
             "SELECT * FROM journal WHERE run_id = ? AND sequence > ? ORDER BY sequence",
@@ -265,6 +357,16 @@ class TradingJournal:
                     episode_id TEXT PRIMARY KEY, note TEXT NOT NULL, tags_json TEXT NOT NULL,
                     review_status TEXT NOT NULL, setup_override TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS strategy_assignments(
+                    assignment_id TEXT PRIMARY KEY, strategy_id TEXT NOT NULL,
+                    strategy_revision INTEGER NOT NULL, account_id TEXT NOT NULL,
+                    ticker TEXT NOT NULL, conid INTEGER NOT NULL, status TEXT NOT NULL,
+                    permissions_json TEXT NOT NULL, parameters_json TEXT NOT NULL,
+                    state_json TEXT NOT NULL, source TEXT NOT NULL,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_strategy_assignment_scope
+                    ON strategy_assignments(account_id, ticker, updated_at);
                 """
             )
 
@@ -276,6 +378,14 @@ def _record(row: sqlite3.Row) -> JournalRecord:
         category=row["category"], entity_type=row["entity_type"], entity_id=row["entity_id"],
         account_id=row["account_id"], payload=json.loads(row["payload_json"]),
     )
+
+
+def _assignment(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    result["permissions"] = json.loads(result.pop("permissions_json"))
+    result["parameters"] = json.loads(result.pop("parameters_json"))
+    result["state"] = json.loads(result.pop("state_json"))
+    return result
 
 
 def _json_default(value: Any) -> Any:

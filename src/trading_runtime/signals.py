@@ -16,7 +16,7 @@ from src.trading_runtime.taxonomy import (
 
 SignalDirection = Literal["bullish", "bearish", "neutral"]
 SignalState = Literal["triggered", "updated", "resolved", "expired"]
-StrategyAction = Literal["enter_long", "enter_short", "exit", "hold", "wait"]
+StrategyAction = Literal["enter_long", "add_long", "reduce_long", "take_profit", "exit", "hold", "wait"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,10 +194,42 @@ class StrategySignal:
 
 
 @dataclass(frozen=True, slots=True)
+class StrategyIntent:
+    """Broker-neutral desired position change emitted by strategy logic."""
+
+    intent_id: str
+    ticker: str
+    event_time: datetime
+    action: StrategyAction
+    quantity: float
+    reference_price: float
+    invalidation_price: float | None = None
+    profit_target_price: float | None = None
+    trailing_amount: float | None = None
+    urgency: Literal["passive_limit", "aggressive_limit", "market"] = "aggressive_limit"
+    time_in_force: str = "DAY"
+    outside_rth: bool = False
+    reason: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.intent_id or not self.ticker:
+            raise ValueError("Strategy intent identity and ticker are required")
+        if self.quantity < 0:
+            raise ValueError("Strategy intent quantity cannot be negative")
+        if self.action in {"enter_long", "add_long", "reduce_long", "take_profit", "exit"} and self.quantity <= 0:
+            raise ValueError(f"{self.action} requires a positive quantity")
+
+    def payload(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
 class StrategyEvaluation:
     """Atomic strategy result: explanations first, broker requests second."""
 
     signals: tuple[StrategySignal, ...] = ()
+    intents: tuple[StrategyIntent, ...] = ()
     orders: tuple[OrderRequest, ...] = ()
 
 

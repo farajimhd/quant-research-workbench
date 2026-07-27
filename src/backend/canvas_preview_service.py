@@ -17,6 +17,7 @@ from research.mlops.clickhouse import (
 from src.backend.trading_runtime_service import (
     SUPPORTED_HISTORICAL_TIMEFRAMES,
     historical_day_coverage,
+    strategy_canvas_payload,
 )
 from src.backend.canonical_trading_service import trading_state_payload
 from src.backend.historical_scanner_service import (
@@ -87,7 +88,8 @@ def canvas_preview_payload(
 
     portfolio_fixture = _portfolio_fixture(reference_price)
     order_fixture = _order_fixture(reference_price)
-    fill_fixture = _fill_fixture(as_of, reference_price)
+    fill_fixture: list[dict[str, Any]] = []
+    strategy = strategy_canvas_payload(as_of=as_of, ticker=symbol)
     return {
         "as_of": as_of.isoformat(),
         "coverage": results.get("coverage", {}),
@@ -99,7 +101,15 @@ def canvas_preview_payload(
         },
         "errors": errors,
         "fills": fill_fixture,
-        "journal": _journal_fixture(as_of),
+        "journal": [
+            {
+                "time": row.get("effective_at"),
+                "category": "strategy",
+                "event": row.get("action"),
+                "detail": row.get("reason"),
+            }
+            for row in strategy.get("signals", [])
+        ],
         "news": results.get("news", []),
         "orders": order_fixture,
         "portfolio": portfolio_fixture,
@@ -107,7 +117,7 @@ def canvas_preview_payload(
         "scanner": scanner,
         "scanner_meta": scanner_meta,
         "sec": results.get("sec", []),
-        "strategy": _strategy_fixture(as_of, symbol, reference_price),
+        "strategy": strategy,
         "trading": _canonical_trading_fixture(as_of, portfolio_fixture, order_fixture, fill_fixture),
         "xbrl": [],
     }
@@ -508,42 +518,7 @@ def _portfolio_fixture(price: float) -> dict[str, Any]:
 
 def _order_fixture(price: float) -> list[dict[str, Any]]:
     return [
-        {"acctId": "DU0000000", "orderId": 73101, "cOID": "orb-entry-01", "conid": 265598, "ticker": "AAPL", "side": "BUY", "orderType": "LMT", "price": round(price - 0.08, 2), "auxPrice": None, "quantity": 120, "filledQuantity": 0, "status": "Submitted", "tif": "DAY", "outsideRTH": False},
-        {"acctId": "DU0000000", "orderId": 73102, "cOID": "orb-stop-01", "conid": 265598, "ticker": "AAPL", "side": "SELL", "orderType": "STP", "price": None, "auxPrice": round(price - 1.25, 2), "quantity": 120, "filledQuantity": 0, "status": "PreSubmitted", "tif": "DAY", "outsideRTH": False},
+        {"acctId": "DU0000000", "orderId": 73101, "cOID": "preview-entry-01", "conid": 265598, "ticker": "AAPL", "side": "BUY", "orderType": "LMT", "price": round(price - 0.08, 2), "auxPrice": None, "quantity": 120, "filledQuantity": 0, "status": "Submitted", "tif": "DAY", "outsideRTH": False},
+        {"acctId": "DU0000000", "orderId": 73102, "cOID": "preview-protection-01", "conid": 265598, "ticker": "AAPL", "side": "SELL", "orderType": "STP", "price": None, "auxPrice": round(price - 1.25, 2), "quantity": 120, "filledQuantity": 0, "status": "PreSubmitted", "tif": "DAY", "outsideRTH": False},
         {"acctId": "DU0000000", "orderId": 73096, "cOID": "msft-entry-02", "conid": 4815747, "ticker": "MSFT", "side": "BUY", "orderType": "MKT", "price": None, "auxPrice": None, "quantity": 35, "filledQuantity": 35, "status": "Filled", "tif": "DAY", "outsideRTH": False},
-    ]
-
-
-def _fill_fixture(as_of: datetime, price: float) -> list[dict[str, Any]]:
-    return [
-        {"acctId": "DU0000000", "executionId": "0000.0001.01", "orderId": 73081, "conid": 76792991, "ticker": "NVDA", "side": "BOT", "shares": 80, "price": 172.10, "commission": 0.40, "time": (as_of - timedelta(minutes=42)).isoformat(), "strategy_id": "opening-range-breakout", "strategy_revision": 4, "run_id": "preview-run", "setup": "Opening drive", "planned_risk": 72.0, "signal_price": 172.04, "arrival_midpoint": 172.08},
-        {"acctId": "DU0000000", "executionId": "0000.0002.01", "orderId": 73082, "conid": 76792991, "ticker": "NVDA", "side": "SLD", "shares": 80, "price": 173.22, "commission": 0.40, "time": (as_of - timedelta(minutes=35)).isoformat(), "exit_reason": "target"},
-        {"acctId": "DU0000000", "executionId": "0000.0003.01", "orderId": 73083, "conid": 265598, "ticker": "AAPL", "side": "BOT", "shares": 120, "price": round(price - 0.82, 2), "commission": 0.60, "time": (as_of - timedelta(minutes=31)).isoformat(), "strategy_id": "opening-range-breakout", "strategy_revision": 4, "run_id": "preview-run", "setup": "Range break", "planned_risk": 96.0, "signal_price": round(price - 0.85, 2), "arrival_midpoint": round(price - 0.83, 2)},
-        {"acctId": "DU0000000", "executionId": "0000.0004.01", "orderId": 73084, "conid": 265598, "ticker": "AAPL", "side": "SLD", "shares": 120, "price": round(price - 1.31, 2), "commission": 0.60, "time": (as_of - timedelta(minutes=25)).isoformat(), "exit_reason": "stop"},
-        {"acctId": "DU0000000", "executionId": "0000.0005.01", "orderId": 73085, "conid": 272093, "ticker": "TSLA", "side": "SLD", "shares": 50, "price": 321.84, "commission": 0.30, "time": (as_of - timedelta(minutes=20)).isoformat(), "strategy_id": "liquidity-reversal", "strategy_revision": 2, "run_id": "preview-run", "setup": "Failed breakout", "planned_risk": 62.5, "signal_price": 321.88, "arrival_midpoint": 321.86},
-        {"acctId": "DU0000000", "executionId": "0000.0006.01", "orderId": 73086, "conid": 272093, "ticker": "TSLA", "side": "BOT", "shares": 50, "price": 320.72, "commission": 0.30, "time": (as_of - timedelta(minutes=13)).isoformat(), "exit_reason": "liquidity_target"},
-        {"acctId": "DU0000000", "executionId": "0000.0007.01", "orderId": 73096, "conid": 4815747, "ticker": "MSFT", "side": "BOT", "shares": 35, "price": 497.18, "commission": 0.35, "time": (as_of - timedelta(minutes=9)).isoformat(), "strategy_id": "opening-range-breakout", "strategy_revision": 4, "run_id": "preview-run", "setup": "Continuation"},
-    ]
-
-
-def _strategy_fixture(as_of: datetime, symbol: str, price: float) -> dict[str, Any]:
-    return {
-        "fixture": True,
-        "strategy_id": "opening-range-breakout",
-        "revision": 4,
-        "automatic": True,
-        "state": "monitoring",
-        "signals": [
-            {"time": (as_of - timedelta(minutes=7)).isoformat(), "symbol": symbol, "signal": "range_set", "value": round(price - 0.52, 2)},
-            {"time": (as_of - timedelta(minutes=2)).isoformat(), "symbol": symbol, "signal": "breakout_watch", "value": round(price, 2)},
-        ],
-    }
-
-
-def _journal_fixture(as_of: datetime) -> list[dict[str, Any]]:
-    return [
-        {"time": (as_of - timedelta(minutes=15)).isoformat(), "category": "runtime", "event": "SESSION_STARTED", "detail": "Historical stream positioned at 09:30 ET"},
-        {"time": (as_of - timedelta(minutes=7)).isoformat(), "category": "strategy", "event": "SIGNAL_EMITTED", "detail": "Opening range established"},
-        {"time": (as_of - timedelta(minutes=4)).isoformat(), "category": "broker", "event": "EXECUTION", "detail": "Partial fill applied to account and portfolio"},
-        {"time": as_of.isoformat(), "category": "checkpoint", "event": "STATE_SNAPSHOT", "detail": "Point-in-time state persisted"},
     ]

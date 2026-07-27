@@ -49,14 +49,18 @@ A strategy definition declares:
 
 - indicator input references;
 - signal input references;
+- each input's timeframe, role, freshness, weight, and optional score or
+  confidence threshold;
 - whether developing inputs are permitted;
-- its evaluation trigger; and
+- its evaluation triggers; and
 - a presentation policy.
 
 Automatic strategies must declare at least one indicator or signal input.
 Strategy decisions remain separate durable events with actions such as
-`enter_long`, `enter_short`, `exit`, `hold`, and `wait`. An order instruction is
-a downstream runtime decision and is not implied by a signal.
+`enter_long`, `add_long`, `reduce_long`, `take_profit`, `exit`, `hold`, and
+`wait`. An order instruction is a downstream runtime decision and is not
+implied by a signal. The first executable post-refactor revision is long only;
+a future short strategy requires its own reviewed semantic-action extension.
 
 ## General chart presentation
 

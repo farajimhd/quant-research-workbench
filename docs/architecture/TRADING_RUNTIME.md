@@ -58,6 +58,24 @@ gateway mirrors records to `q_live` tables with the fixed `tr_` prefix:
 - `tr_portfolio_v1`, `tr_position_v1`
 - `tr_checkpoint_v1`, `tr_reconcile_v1`
 
+Ticker-scoped strategy campaigns additionally persist their current recovery
+state in the local `strategy_assignments` WAL table. Every assignment command,
+evaluation, semantic intent, state transition, and resulting order event also
+enters the generic journal/outbox, so the typed local recovery row never
+becomes unaudited state.
+
+## Strategy decision boundary
+
+Strategies now emit broker-neutral semantic intents before broker requests.
+The shared runtime records the decision and intent, invokes its configured
+intent planner, validates the resulting IBKR-shaped order plan through the
+central risk authority, and only then submits it. Normalized causal strategy
+observations can arrive on indicator, signal, bar, manual, position, or order
+events without making raw market-data handlers a second strategy authority.
+
+The built-in `long-momentum-campaign@1` contract and its Canvas presentation
+are documented in [Long Momentum Campaign](LONG_MOMENTUM_CAMPAIGN.md).
+
 ClickHouse is the durable audit/analytics store, not the synchronous command
 queue. Outbox rows are acknowledged only after the generic journal row and the
 corresponding typed row are accepted.
