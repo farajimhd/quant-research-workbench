@@ -40,6 +40,26 @@ python -m research.text_intelligence.candidate_inventory_v1.run_build
 The dry run checks source tables, certified News V2 authority, source row
 counts, resolved units, and runtime location. It performs no corpus mining.
 
+## Ten-case method audit
+
+```powershell
+python -m research.text_intelligence.candidate_inventory_v1.run_audit_samples
+```
+
+This read-only pass creates exactly five News V2 and five SEC V3 Markdown
+reports under `runtime_root/audits/text_candidate_method_audit_v1`. Each report
+contains source identity and hashes, current classification boundaries,
+renderer-provenance cleaning, typed values, keyword and phrase candidates,
+curated seed matches, original and normalized text, method observations, and a
+review checklist. News reports show the current `news_rules_v1` output
+separately from candidate evidence. SEC reports explicitly emit no semantic
+classification because a reviewed SEC label authority does not yet exist.
+
+SEC sampling is a two-stage bounded read: it first selects a lightweight
+primary-key identity from one hash partition per text kind, then retrieves only
+the exact selected document and parent metadata. This avoids decompressing or
+sorting the full rendered-text authority merely to select five audits.
+
 ## Bounded validation
 
 ```powershell

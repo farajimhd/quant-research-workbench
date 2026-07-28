@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from .audit_samples import AuditCase, document_from_case, render_case
 from .config import CandidateInventoryConfig
 from .mining import CandidateAccumulator, SourceDocument, mining_text
 from .normalize import candidate_ngrams, normalize_financial_text
@@ -25,6 +26,23 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(by_type["money"].normalized_number, "25000000")
         self.assertEqual(by_type["percentage"].normalized_number, "4.99")
         self.assertIn("sold", by_type["share_count"].context)
+
+    def test_compact_magnitude_suffixes_are_scaled(self) -> None:
+        result = normalize_financial_text(
+            "The issuer raised $4.5M and sold 250K shares in a $1.2B program."
+        )
+        money = [
+            row.normalized_number
+            for row in result.values
+            if row.value_type == "money"
+        ]
+        shares = [
+            row.normalized_number
+            for row in result.values
+            if row.value_type == "share_count"
+        ]
+        self.assertEqual(money, ["4500000", "1200000000"])
+        self.assertEqual(shares, ["250000"])
 
     def test_specialized_and_fallback_numbers_do_not_fragment_phrases(self) -> None:
         result = normalize_financial_text(
@@ -209,6 +227,63 @@ class ConfigTests(unittest.TestCase):
         budget = DocumentBudget(20, initial_used={"news": 17})
         self.assertEqual(budget.take("news", 10), 3)
         self.assertTrue(budget.exhausted("news"))
+
+
+class AuditReportTests(unittest.TestCase):
+    def test_news_report_separates_current_classification_from_candidates(self) -> None:
+        case = AuditCase(
+            corpus="news",
+            stratum="financing_offering",
+            rationale="Financing language",
+            row={
+                "source_id": "news-1",
+                "source_timestamp": "2025-01-02T13:15:00+00:00",
+                "title": "Issuer Announces Registered Direct Offering",
+                "text": (
+                    "Title: Issuer Announces Registered Direct Offering\n"
+                    "Source [provider_body:0] https://example.test/story\n"
+                    "Issuer announced today a registered direct offering of "
+                    "7.4 million shares at $3.60 per share."
+                ),
+                "entity_terms": ["ISSR", "Issuer"],
+                "tickers": ["ISSR"],
+                "channels": ["Offerings"],
+                "provider_tags": [],
+                "links": ["https://www.globenewswire.com/release"],
+                "author": "Benzinga Newsdesk",
+            },
+        )
+        report = render_case(case, document_from_case(case))
+        self.assertIn('"authority": "news_rules_v1"', report)
+        self.assertIn('"status": "current_production_rule_output"', report)
+        self.assertIn("## Stage 2 — typed values", report)
+        self.assertIn("## Method audit observations", report)
+        self.assertIn("`share_count`", report)
+        self.assertIn("registered direct offering", report)
+        self.assertIn("## Original rendered input", report)
+        self.assertIn("## Semantic text used for mining", report)
+
+    def test_sec_report_does_not_fabricate_semantic_classification(self) -> None:
+        case = AuditCase(
+            corpus="sec",
+            stratum="prospectus",
+            rationale="Prospectus",
+            row={
+                "source_id": "sec-1",
+                "source_timestamp": "2025-01-02T13:15:00+00:00",
+                "title": "424B5 Prospectus",
+                "text": "PROSPECTUS\nThe registrant may offer $25 million of common stock.",
+                "entity_terms": ["0000000001", "Issuer"],
+                "text_kind": "prospectus",
+                "form_type": "424B5",
+            },
+        )
+        report = render_case(case, document_from_case(case))
+        self.assertIn('"status": "not_implemented"', report)
+        self.assertIn('"semantic_label_emitted": false', report)
+        self.assertIn("does not invent one", report)
+        self.assertIn("No SEC semantic class is emitted", report)
+        self.assertIn("`money`", report)
 
 
 if __name__ == "__main__":

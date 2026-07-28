@@ -198,14 +198,15 @@ def normalize_number(raw: str) -> str:
     except InvalidOperation:
         return ""
     lowered = raw.lower()
+    suffix = lowered[match.end() :]
     multiplier = Decimal(1)
-    if re.search(r"\b(?:thousand|k)\b", lowered):
+    if re.search(r"^\s*(?:thousand|k)\b", suffix):
         multiplier = Decimal(1_000)
-    elif re.search(r"\b(?:million|m)\b", lowered):
+    elif re.search(r"^\s*(?:million|m)\b", suffix):
         multiplier = Decimal(1_000_000)
-    elif re.search(r"\b(?:billion|bn|b)\b", lowered):
+    elif re.search(r"^\s*(?:billion|bn|b)\b", suffix):
         multiplier = Decimal(1_000_000_000)
-    elif "trillion" in lowered:
+    elif re.search(r"^\s*trillion\b", suffix):
         multiplier = Decimal(1_000_000_000_000)
     value = number * multiplier
     if not value.is_finite():
