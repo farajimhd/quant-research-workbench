@@ -22,7 +22,8 @@ RELEVANT_RE = re.compile(
     r"guidance|revenue|earnings|clinical|fda|agreement|contract|"
     r"bankruptcy|going concern|material weakness|restat|dividend|"
     r"repurchase|reverse stock split|workforce reduction|investigation|"
-    r"lawsuit|settlement|purchase order)\b",
+    r"lawsuit|settlement|purchase order|employee (?:stock|share) purchase "
+    r"plan|preferred stock)\b",
     re.IGNORECASE,
 )
 def extract_sec_units(
@@ -80,10 +81,16 @@ def extract_sec_units(
                 ordinal=ordinal,
                 role="relevant_filing_section",
                 text=compact,
+                semantic_text=compact,
                 start=section_blocks[0].start,
                 end=section_blocks[-1].end,
                 tickers=(ticker,) if ticker else (),
                 shared_context=False,
+                event_id=f"{source_id}:event:{digest}",
+                event_tickers=(ticker,) if ticker else (),
+                issuer_role="primary_filer" if ticker else "unmapped_filer",
+                evidence_scope="ticker_specific",
+                trigger_candidate=True,
                 heading=section_heading,
                 document_id=source_id,
                 document_role=document_role,

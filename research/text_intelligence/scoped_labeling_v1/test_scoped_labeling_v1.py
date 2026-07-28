@@ -13,7 +13,11 @@ from .news_extractor import analyze_news_scope, extract_news_units
 from .news_identity import IssuerIdentity, NewsIssuerResolver
 from .pipeline import classify_news_document, classify_sec_document
 from .sec_extractor import extract_sec_units
-from .persistence import assert_certification, bounded_period_ranges
+from .persistence import (
+    assert_certification,
+    bounded_period_ranges,
+    relationship_rows,
+)
 from .schema import SCOPED_LABELING_VERSION
 
 
@@ -74,6 +78,7 @@ class ScopedLabelingTests(unittest.TestCase):
                         "sec_audits": 5,
                         "review_attention": 0,
                         "missing_news_scope_cases": [],
+                        "expected_outcome_failures": [],
                     }
                 ),
                 encoding="utf-8",
@@ -188,11 +193,11 @@ Body:
             issuer_resolver=self.issuer_resolver(),
         )
         self.assertEqual({label.ticker for label in labels}, {"EXMP", "OTHR"})
-        self.assertTrue(all(not label.forecast_trigger_eligible for label in labels))
-        self.assertTrue(all(
-            label.unit_role == "ticker_scoped_editorial_context"
-            for label in labels
-        ))
+        self.assertTrue(all(label.forecast_trigger_eligible for label in labels))
+        self.assertEqual(
+            {label.unit_role for label in labels},
+            {"issuer_event_document"},
+        )
 
     def test_analyst_firm_is_not_treated_as_action_target(self) -> None:
         analysis = analyze_news_scope(
@@ -229,9 +234,10 @@ Body:
         )
         self.assertEqual(len(analysis.units), 1)
         self.assertEqual(analysis.units[0].tickers, ("EXMP",))
-        self.assertFalse(any(
-            "Mystery Holdings" in unit.text for unit in analysis.units
-        ))
+        self.assertIn("Mystery Holdings", analysis.units[0].text)
+        self.assertNotIn(
+            "Mystery Holdings", analysis.units[0].semantic_text
+        )
         unresolved = [
             passage
             for passage in analysis.passages
@@ -267,7 +273,7 @@ Body:
         self.assertEqual(analysis.resolved_subjects, ("SLRX",))
         self.assertEqual(analysis.document_decision, "single_resolved_issuer")
 
-    def test_unresolved_second_company_blocks_mixed_sentence_assignment(self) -> None:
+    def test_unresolved_counterparty_does_not_erase_known_issuer_event(self) -> None:
         analysis = analyze_news_scope(
             source_id="spac-termination",
             title="Pine Technology Acquisition Corp. terminates merger",
@@ -284,9 +290,12 @@ Body:
             analysis.document_decision,
             "unresolved_issuer_passage_abstention",
         )
-        self.assertFalse(analysis.units)
+        self.assertEqual(len(analysis.units), 1)
+        self.assertEqual(analysis.units[0].tickers, ("PTOC",))
+        self.assertEqual(analysis.units[0].evidence_scope, "shared_ambiguous")
         self.assertTrue(any(
-            passage.decision == "abstained_unresolved_company_mention"
+            passage.decision
+            == "assigned_known_issuer_with_unresolved_counterparty"
             for passage in analysis.passages
         ))
 
@@ -298,7 +307,7 @@ Body:
                 "Title: Example Therapeutics raises guidance\n"
                 "Source [provider_body:0] https://provider.test/article\n"
                 "Example Therapeutics, Inc. (NASDAQ:EXMP) raised guidance.\n"
-                "Source [external:1] https://issuer.test\n"
+                "Source [external:1]\n"
                 "Example Therapeutics collaborates with Other Corp and Apple Inc."
             ),
             tickers=("EXMP",),
@@ -314,7 +323,56 @@ Body:
             for passage in analysis.passages
         ))
 
-    def test_unresolved_document_scope_cannot_be_reenabled_by_unit_classifier(
+    def test_multi_issuer_acquisition_keeps_full_text_and_scopes_labels(self) -> None:
+        resolver = NewsIssuerResolver((
+            IssuerIdentity("ALC", "alcon", ("Alcon AG", "Alcon")),
+            IssuerIdentity(
+                "AERI",
+                "aerie",
+                ("Aerie Pharmaceuticals Inc", "Aerie Pharmaceuticals", "Aerie"),
+            ),
+        ))
+        document = SemanticDocument(
+            corpus="news",
+            source_id="acquisition-analyst",
+            timestamp="2022-08-23T19:26:34Z",
+            title=(
+                "Alcon May Struggle To Meet Margin Targets With This "
+                "Latest Acquisition, Says This Analyst"
+            ),
+            text=(
+                "Source [provider_body:0]\n"
+                "Alcon AG (NYSE:ALC) agreed to acquire Aerie Pharmaceuticals "
+                "Inc (NASDAQ:AERI) for $770 million.\n"
+                "The deal could make it more difficult for ALC to reach its "
+                "operating margin targets and be dilutive to operating margin.\n"
+                "Needham downgraded AERI to Hold from Buy."
+            ),
+            tickers=("AERI", "ALC"),
+            metadata={"author": "Benzinga Analyst Ratings"},
+        )
+        labels = classify_news_document(document, issuer_resolver=resolver)
+        self.assertEqual({item.ticker for item in labels}, {"AERI", "ALC"})
+        self.assertTrue(all(item.forecast_trigger_eligible for item in labels))
+        self.assertEqual(
+            {item.ticker: item.issuer_role for item in labels},
+            {"ALC": "acquirer", "AERI": "target"},
+        )
+        self.assertEqual(
+            len({item.publication_text_hash for item in labels}),
+            1,
+        )
+        concepts = {
+            item.ticker: set(item.classification["event_concepts"])
+            for item in labels
+        }
+        self.assertIn("ma_transaction.acquisition", concepts["ALC"])
+        self.assertIn("ma_transaction.acquisition", concepts["AERI"])
+        self.assertIn("profitability.margin_pressure", concepts["ALC"])
+        self.assertNotIn("profitability.margin_pressure", concepts["AERI"])
+        self.assertIn("analyst_action.downgrade", concepts["AERI"])
+
+    def test_unresolved_background_does_not_disable_resolved_event(
         self,
     ) -> None:
         document = SemanticDocument(
@@ -335,12 +393,12 @@ Body:
         )
         self.assertTrue(labels)
         self.assertTrue(all(
-            not label.forecast_trigger_eligible
-            and not label.reaction_evaluation_eligible
+            label.forecast_trigger_eligible
+            and label.reaction_evaluation_eligible
             for label in labels
         ))
         self.assertTrue(all(
-            "document_issuer_scope_not_trigger_safe"
+            "event_scoped_eligibility_v3"
             in label.classification["quality_flags"]
             for label in labels
         ))
@@ -378,7 +436,7 @@ Body:
             labels[0].classification["quality_flags"],
         )
 
-    def test_multi_ticker_scoped_passage_is_context_only(self) -> None:
+    def test_multi_ticker_independent_events_are_each_trigger_eligible(self) -> None:
         document = SemanticDocument(
             corpus="news",
             source_id="multi-scoped",
@@ -393,7 +451,7 @@ Body:
         )
         labels = classify_news_document(document)
         self.assertEqual(len(labels), 2)
-        self.assertTrue(all(not item.forecast_trigger_eligible for item in labels))
+        self.assertTrue(all(item.forecast_trigger_eligible for item in labels))
         self.assertTrue(all(item.issuer_history_context_eligible for item in labels))
 
     def test_sec_extractor_ignores_signature_and_keeps_event(self) -> None:
@@ -440,6 +498,81 @@ Pursuant to the requirements of the Securities Exchange Act, the registrant sign
             "financing.registered_direct",
             labels[0].classification["event_concepts"],
         )
+
+    def test_sec_event_concepts_cover_certified_missing_cases(self) -> None:
+        cases = (
+            (
+                "The company reached settlement with Mylan.",
+                "legal.settlement",
+            ),
+            (
+                "The Company maintains an Employee Share Purchase Plan "
+                "and desires to amend the Plan.",
+                "management_governance.employee_share_purchase_plan_amendment",
+            ),
+            (
+                "The company entered a securities purchase agreement "
+                "for shares of preferred stock and purchase warrants.",
+                "financing.preferred_stock_private_placement",
+            ),
+        )
+        for index, (text, concept) in enumerate(cases):
+            document = SemanticDocument(
+                corpus="sec",
+                source_id=f"sec-concept-{index}",
+                timestamp="2026-07-28T12:00:00Z",
+                title="Example 8-K exhibit",
+                text=text,
+                tickers=("EXMP",),
+                metadata={
+                    "form_type": "8-K",
+                    "document_type": "EX-99.1",
+                    "document_role": "press_release_exhibit",
+                    "text_kind": "press_release_exhibit",
+                },
+            )
+            labels = classify_sec_document(document)
+            self.assertIn(
+                concept,
+                {
+                    value
+                    for label in labels
+                    for value in label.classification["event_concepts"]
+                },
+            )
+
+    def test_relationship_rows_normalize_graph_without_publication_text(self) -> None:
+        resolver = NewsIssuerResolver((
+            IssuerIdentity("ALC", "alcon", ("Alcon AG", "Alcon")),
+            IssuerIdentity("AERI", "aerie", ("Aerie Pharmaceuticals",)),
+        ))
+        document = SemanticDocument(
+            corpus="news",
+            source_id="graph-acquisition",
+            timestamp="2022-08-23T19:26:34Z",
+            title="Alcon acquisition",
+            text=(
+                "Alcon AG (NYSE:ALC) agreed to acquire "
+                "Aerie Pharmaceuticals (NASDAQ:AERI)."
+            ),
+            tickers=("ALC", "AERI"),
+        )
+        labels = classify_news_document(document, issuer_resolver=resolver)
+        relations = [
+            row for label in labels
+            for row in relationship_rows(document, label, "test-run")
+        ]
+        self.assertTrue(any(
+            row["relation_type"] == "affects_issuer"
+            and row["relation_role"] == "acquirer"
+            for row in relations
+        ))
+        self.assertTrue(any(
+            row["relation_type"] == "affects_issuer"
+            and row["relation_role"] == "target"
+            for row in relations
+        ))
+        self.assertTrue(all("text" not in row for row in relations))
 
     def test_generic_purchase_order_disclosure_is_not_contract_award(self) -> None:
         document = SemanticDocument(

@@ -18,10 +18,24 @@ from research.mlops.clickhouse import (
     default_clickhouse_url,
     default_clickhouse_user,
     insert_json_each_row,
+    sql_string,
 )
 from research.news_labeling.gpt_oss_v1.prompt import build_messages
 from research.news_labeling.gpt_oss_v1.schema import TRANSPORT_SCHEMA, validate_label
-from src.backend.news_classification import CLASSIFICATION_VERSION, classify_news
+from research.text_intelligence.scoped_labeling_v1.news_identity import (
+    NewsIssuerResolver,
+    load_news_issuer_resolver,
+)
+from research.text_intelligence.scoped_labeling_v1.pipeline import (
+    classify_news_document,
+)
+from research.text_intelligence.scoped_labeling_v1.schema import (
+    SCOPED_LABELING_VERSION,
+    ScopedLabel,
+)
+from research.text_intelligence.semantic_label_authority_v1.schema import (
+    SemanticDocument,
+)
 from services.market_hours import get_market_hours_client
 
 
@@ -96,11 +110,15 @@ class LiveNewsRuntime:
             default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password(), timeout_seconds=15
         )
         self.database = os.environ.get("NEWS_INTELLIGENCE_DATABASE", "q_live")
-        self.table = os.environ.get("NEWS_INTELLIGENCE_LABEL_TABLE", "news_semantic_label_v1")
+        self.table = os.environ.get("NEWS_INTELLIGENCE_LABEL_TABLE", "news_semantic_label_v2")
+        self.issuer_resolver: NewsIssuerResolver | None = None
         self.market_hours = get_market_hours_client("NEWS_INTELLIGENCE")
 
     async def start(self) -> None:
         await asyncio.to_thread(self._ensure_table)
+        self.issuer_resolver = await asyncio.to_thread(
+            load_news_issuer_resolver, self.client, self.database
+        )
         count = max(1, int(os.environ.get("NEWS_INTELLIGENCE_WORKERS", "4")))
         self.workers = [asyncio.create_task(self._worker(i)) for i in range(count)]
         self.reconcile_task = asyncio.create_task(self._reconcile_loop())
@@ -184,33 +202,89 @@ class LiveNewsRuntime:
         if not self.session.active or not market_clock.active_collection_window:
             self.metrics["filtered"] += 1
             return
-        row = candidate.model_dump()
-        row["text"] = candidate.rendered_text
-        classification = classify_news(row, len(candidate.tickers))
-        if (
-            len(candidate.tickers) != 1
-            or classification.kind not in self.allowed_kinds
-            or not candidate.rendered_text.strip()
-        ):
+        if not candidate.rendered_text.strip():
             self.metrics["filtered"] += 1
             return
-        ticker = candidate.tickers[0].upper()
+        document = SemanticDocument(
+            corpus="news",
+            source_id=candidate.canonical_news_id,
+            timestamp=candidate.published_at_utc,
+            title=candidate.title,
+            text=candidate.rendered_text,
+            entity_terms=tuple(candidate.tickers),
+            tickers=tuple(value.upper() for value in candidate.tickers),
+            metadata={
+                "author": candidate.author,
+                "url_domain": candidate.url_domain,
+                "channels": candidate.channels,
+                "provider_tags": candidate.provider_tags,
+                "links": candidate.links,
+                "quality_flags": candidate.quality_flags,
+                "rendered_text_hash": candidate.rendered_text_hash,
+            },
+        )
+        scoped_labels = classify_news_document(
+            document,
+            issuer_resolver=self.issuer_resolver,
+        )
+        eligible = [
+            item for item in scoped_labels if item.forecast_trigger_eligible
+        ]
+        if not eligible:
+            self.metrics["filtered"] += 1
+            return
+        for scoped in eligible:
+            try:
+                await self._process_scoped(
+                    candidate, scoped, market_clock
+                )
+            except Exception:
+                # One issuer in a shared event must not suppress another
+                # issuer's independent semantic result.
+                self.metrics["failed"] += 1
+
+    async def _process_scoped(
+        self,
+        candidate: LiveCandidate,
+        scoped: ScopedLabel,
+        market_clock: Any,
+    ) -> None:
+        ticker = scoped.ticker.upper()
+        if await asyncio.to_thread(
+            self._already_labeled,
+            candidate.canonical_news_id,
+            ticker,
+            scoped.unit_id,
+            candidate.rendered_text_hash,
+        ):
+            return
         snapshot = await asyncio.to_thread(_get_json, f"{self.qmd_url}/snapshot/ticker/{ticker}", 1.5)
         price = float((snapshot or {}).get("last_price") or 0)
         if price <= 0 or price >= self.max_price:
             self.metrics["filtered"] += 1
             return
+        deterministic = {
+            **scoped.classification,
+            "scoped_labeling_version": SCOPED_LABELING_VERSION,
+            "target_ticker": ticker,
+            "event_id": scoped.event_id,
+            "event_tickers": list(scoped.event_tickers),
+            "issuer_role": scoped.issuer_role,
+            "evidence_scope": scoped.evidence_scope,
+            "semantic_evidence_text": scoped.semantic_evidence_text,
+        }
+        row = candidate.model_dump()
+        row["text"] = candidate.rendered_text
         article = {
             **row,
-            "deterministic": {
-                **classification.as_dict(),
-                "classification_version": CLASSIFICATION_VERSION,
-                "point_in_time_price": price,
-            },
+            "target_ticker": ticker,
+            "issuer_scoped_semantic_evidence": scoped.semantic_evidence_text,
+            "deterministic": {**deterministic, "point_in_time_price": price},
         }
         messages = build_messages(article)
         key_source = (
-            f"{candidate.canonical_news_id}|{candidate.rendered_text_hash}|"
+            f"{candidate.canonical_news_id}|{scoped.unit_id}|{ticker}|"
+            f"{candidate.rendered_text_hash}|{SCOPED_LABELING_VERSION}|"
             "news-label-prompt-v1|news.semantic_fast.v1"
         )
         response = await asyncio.to_thread(
@@ -236,9 +310,10 @@ class LiveNewsRuntime:
         await asyncio.to_thread(
             self._persist,
             candidate,
+            scoped,
             ticker,
             price,
-            classification.as_dict(),
+            deterministic,
             label,
             response,
             snapshot,
@@ -256,6 +331,24 @@ class LiveNewsRuntime:
                 market_status=_json_safe(asdict(market_clock)),
             )
         )
+
+    def _already_labeled(
+        self,
+        canonical_news_id: str,
+        ticker: str,
+        unit_id: str,
+        rendered_text_hash: str,
+    ) -> bool:
+        sql = f"""
+SELECT count()
+FROM `{self.database}`.`{self.table}` FINAL
+WHERE canonical_news_id={sql_string(canonical_news_id)}
+  AND ticker={sql_string(ticker)}
+  AND unit_id={sql_string(unit_id)}
+  AND rendered_text_hash={sql_string(rendered_text_hash)}
+  AND scoped_labeling_version={sql_string(SCOPED_LABELING_VERSION)}
+"""
+        return int(self.client.execute(sql).strip() or "0") > 0
 
     async def _dispatch_market_ai(
         self,
@@ -339,6 +432,10 @@ class LiveNewsRuntime:
             f"""CREATE TABLE IF NOT EXISTS `{self.database}`.`{self.table}` (
             canonical_news_id String, ticker LowCardinality(String),
             published_at_utc DateTime64(9,'UTC'), rendered_text_hash String,
+            unit_id String, event_id String, event_tickers Array(LowCardinality(String)),
+            issuer_role LowCardinality(String), evidence_scope LowCardinality(String),
+            semantic_evidence_text String,
+            scoped_labeling_version LowCardinality(String),
             deterministic_version LowCardinality(String), deterministic_json String,
             semantic_contract LowCardinality(String), semantic_json String,
             point_in_time_price Float64, provider LowCardinality(String), model String,
@@ -346,7 +443,7 @@ class LiveNewsRuntime:
             latency_ms UInt32, session_id String, created_at_utc DateTime64(6,'UTC')
             ) ENGINE=ReplacingMergeTree(created_at_utc)
             PARTITION BY toYYYYMM(published_at_utc)
-            ORDER BY (canonical_news_id,ticker,semantic_contract)"""
+            ORDER BY (canonical_news_id,ticker,unit_id,semantic_contract)"""
         )
         self.client.execute(
             f"ALTER TABLE `{self.database}`.`{self.table}` "
@@ -360,6 +457,7 @@ class LiveNewsRuntime:
     def _persist(
         self,
         candidate: LiveCandidate,
+        scoped: ScopedLabel,
         ticker: str,
         price: float,
         deterministic: dict[str, Any],
@@ -373,7 +471,14 @@ class LiveNewsRuntime:
             "ticker": ticker,
             "published_at_utc": candidate.published_at_utc,
             "rendered_text_hash": candidate.rendered_text_hash,
-            "deterministic_version": CLASSIFICATION_VERSION,
+            "unit_id": scoped.unit_id,
+            "event_id": scoped.event_id,
+            "event_tickers": list(scoped.event_tickers),
+            "issuer_role": scoped.issuer_role,
+            "evidence_scope": scoped.evidence_scope,
+            "semantic_evidence_text": scoped.semantic_evidence_text,
+            "scoped_labeling_version": SCOPED_LABELING_VERSION,
+            "deterministic_version": SCOPED_LABELING_VERSION,
             "deterministic_json": json.dumps(deterministic, separators=(",", ":")),
             "semantic_contract": "gpt_oss_news_semantics_v1",
             "semantic_json": json.dumps(label, separators=(",", ":")),
@@ -417,6 +522,8 @@ def _parse_datetime(value: str) -> datetime | None:
 
 def _clickhouse_ts(value: datetime) -> str:
     return value.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
 
 
 def _json_safe(value: Any) -> Any:

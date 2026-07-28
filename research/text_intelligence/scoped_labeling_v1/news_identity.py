@@ -22,6 +22,20 @@ ARTICLE_ISSUER_RE = re.compile(
     r"(?P<ticker>[A-Z][A-Z0-9.-]{0,9})"
     r"(?:[ \t]*,[ \t]*[A-Z][A-Z0-9.-]{0,9})*\)+",
 )
+ARTICLE_QUOTED_ALIAS_RE = re.compile(
+    r"(?P<name>[A-Z][A-Za-z0-9&'.,-]*(?:[ \t]+[A-Z][A-Za-z0-9&'.,-]*){0,8})"
+    r"[ \t]*\([^)]*?\"(?P<alias>[A-Z][A-Za-z0-9&'. -]{2,60})\"[^)]*\)"
+    r"[ \t]*\((?i:NASDAQ|NYSE|NYSEAMERICAN|NYSE[ \t]+AMERICAN|AMEX|"
+    r"OTC(?:QX|QB)?|TSX|TSXV|CSE)[ \t]*[:\-][ \t]*"
+    r"(?P<ticker>[A-Z][A-Z0-9.-]{0,9})",
+)
+ARTICLE_ALIAS_GROUP_RE = re.compile(
+    r"(?P<name>[A-Z][A-Za-z0-9&'.,-]*(?:[ \t]+[A-Z][A-Za-z0-9&'.,-]*){0,8})"
+    r"[ \t]*(?P<aliases>\([^)]*\"[^)]*\))"
+    r"[ \t]*\((?i:NASDAQ|NYSE|NYSEAMERICAN|NYSE[ \t]+AMERICAN|AMEX|"
+    r"OTC(?:QX|QB)?|TSX|TSXV|CSE)[ \t]*[:\-][ \t]*"
+    r"(?P<ticker>[A-Z][A-Z0-9.-]{0,9})",
+)
 WORD_RE = re.compile(r"[A-Za-z0-9]+")
 CORPORATE_SUFFIXES = {
     "co",
@@ -191,6 +205,42 @@ class NewsIssuerResolver:
                     aliases=(name,),
                 )
             )
+        for match in ARTICLE_QUOTED_ALIAS_RE.finditer(searchable):
+            name = match.group("name").strip(" ,")
+            alias = match.group("alias").strip(" ,")
+            ticker = match.group("ticker").upper()
+            aliases = tuple(
+                value
+                for value in (name, alias)
+                if is_safe_alias(normalize_issuer_alias(value), ticker)
+            )
+            if aliases:
+                local.append(
+                    IssuerIdentity(
+                        ticker=ticker,
+                        issuer_id=f"article:{ticker}",
+                        aliases=aliases,
+                    )
+                )
+        for match in ARTICLE_ALIAS_GROUP_RE.finditer(searchable):
+            ticker = match.group("ticker").upper()
+            values = (
+                match.group("name").strip(" ,"),
+                *re.findall(r'"([^"]+)"', match.group("aliases")),
+            )
+            aliases = tuple(
+                value
+                for value in values
+                if is_safe_alias(normalize_issuer_alias(value), ticker)
+            )
+            if aliases:
+                local.append(
+                    IssuerIdentity(
+                        ticker=ticker,
+                        issuer_id=f"article:{ticker}",
+                        aliases=aliases,
+                    )
+                )
         if not local:
             return self
         return NewsIssuerResolver((*self._identities, *local))

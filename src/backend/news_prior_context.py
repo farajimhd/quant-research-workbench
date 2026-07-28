@@ -35,8 +35,15 @@ def prior_news_context(
         return []
     if include_semantic is None:
         include_semantic = table_exists(
-            client, database=database, table="news_semantic_label_v1"
+            client, database=database, table="news_semantic_label_v2"
         )
+    semantic_table = (
+        "news_semantic_label_v2"
+        if table_exists(
+            client, database=database, table="news_semantic_label_v2"
+        )
+        else "news_semantic_label_v1"
+    )
     cutoff_sql = clickhouse_timestamp(cutoff)
     semantic_column = (
         "ifNull(s.semantic_json, '') AS semantic_json"
@@ -49,7 +56,7 @@ def prior_news_context(
             (
                 SELECT canonical_news_id, ticker,
                        argMax(semantic_json, created_at_utc) AS semantic_json
-                FROM `{database}`.`news_semantic_label_v1`
+                FROM `{database}`.`{semantic_table}`
                 GROUP BY canonical_news_id, ticker
             ) AS s
               ON s.canonical_news_id = t.canonical_news_id

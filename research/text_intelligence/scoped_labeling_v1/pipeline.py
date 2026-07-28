@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections import Counter
 
 from research.text_intelligence.classification_authority_v2.authority import (
@@ -40,7 +41,6 @@ def classify_news_document(
         issuer_resolver=issuer_resolver,
         metadata=document.metadata,
     )
-    trigger_safe = analysis.document_decision == "single_resolved_issuer"
     labels: list[ScopedLabel] = []
     for unit in analysis.units:
         for ticker in unit.tickers:
@@ -49,7 +49,6 @@ def classify_news_document(
                     document,
                     unit,
                     ticker=ticker,
-                    news_trigger_safe=trigger_safe,
                 )
             )
     return tuple(labels)
@@ -91,7 +90,6 @@ def _label_unit(
     unit: RelevantTextUnit,
     *,
     ticker: str,
-    news_trigger_safe: bool = True,
 ) -> ScopedLabel:
     metadata = dict(parent.metadata)
     metadata.update(
@@ -108,7 +106,7 @@ def _label_unit(
         source_id=unit.unit_id,
         timestamp=parent.timestamp,
         title=unit.heading or parent.title,
-        text=unit.text,
+        text=unit.semantic_text,
         entity_terms=parent.entity_terms,
         tickers=(ticker,) if ticker else (),
         metadata=metadata,
@@ -174,16 +172,31 @@ def _label_unit(
                 "episode_followup_eligible": True,
             }
         )
-    if parent.corpus == "news" and not news_trigger_safe:
+    if parent.corpus == "news":
+        event_concepts = tuple(classification_dict["event_concepts"])
+        event_eligible = (
+            unit.trigger_candidate
+            and bool(event_concepts)
+            and unit.role not in CONTEXT_ONLY_NEWS_ROLES
+            and classification_dict["content_role"] not in {
+                "market_roundup",
+                "mover_recap",
+                "why_moving_followup",
+                "automated_market_statistics",
+            }
+        )
         classification_dict.update(
             {
-                "forecast_trigger_eligible": False,
-                "reaction_evaluation_eligible": False,
-                "prior_primary_context_eligible": False,
-                "episode_followup_eligible": True,
+                "forecast_trigger_eligible": event_eligible,
+                "reaction_evaluation_eligible": event_eligible,
+                "prior_primary_context_eligible": event_eligible,
+                "episode_followup_eligible": (
+                    bool(classification_dict["episode_followup_eligible"])
+                    or not event_eligible
+                ),
                 "quality_flags": tuple(dict.fromkeys((
                     *classification_dict["quality_flags"],
-                    "document_issuer_scope_not_trigger_safe",
+                    "event_scoped_eligibility_v3",
                 ))),
             }
         )
@@ -193,6 +206,14 @@ def _label_unit(
         unit_id=unit.unit_id,
         ticker=ticker,
         unit_role=unit.role,
+        event_id=unit.event_id,
+        event_tickers=unit.event_tickers,
+        issuer_role=unit.issuer_role,
+        evidence_scope=unit.evidence_scope,
+        publication_text_hash=hashlib.sha256(
+            unit.text.encode("utf-8")
+        ).hexdigest(),
+        semantic_evidence_text=unit.semantic_text,
         classification=classification_dict,
         semantic=semantic.as_dict(),
         observed_reaction=unit.observed_reaction,

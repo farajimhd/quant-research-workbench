@@ -8,7 +8,8 @@ from .schema import StructuralBlock
 
 
 NEWS_PROVENANCE_RE = re.compile(
-    r"^(?:Source\s+\[[^\]]+\]\s+\S+|Image:\s+src=\S+)\s*$",
+    # URL-less source markers still define a hard provenance boundary.
+    r"^(?:Source\s+\[[^\]]+\](?:\s+\S+)?|Image:\s+src=\S+)\s*$",
     re.IGNORECASE,
 )
 CONTACT_RE = re.compile(

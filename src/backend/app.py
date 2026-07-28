@@ -264,7 +264,9 @@ SERVICE_DATABASE_TABLES: dict[str, list[dict[str, str]]] = {
         {"database": "q_live", "table": "ibkr_gateway_supervisor_event_v1", "role": "supervisor events"},
     ],
     "news-intelligence": [
-        {"database": "q_live", "table": "news_semantic_label_v1", "role": "semantic labels"},
+        {"database": "q_live", "table": "news_semantic_label_v2", "role": "issuer-scoped semantic labels"},
+        {"database": "q_live", "table": "scoped_text_labels_v3", "role": "deterministic scoped labels"},
+        {"database": "q_live", "table": "scoped_content_relations_v1", "role": "News and SEC content relationships"},
     ],
     "market-ai": [
         {"database": "q_live", "table": "news_market_hypothesis_v1", "role": "contextual hypotheses"},

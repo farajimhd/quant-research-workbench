@@ -4,9 +4,9 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 
-SCOPED_LABELING_VERSION = "scoped_text_labeling_v2"
-NEWS_EXTRACTOR_VERSION = "news_relevant_text_v2"
-SEC_EXTRACTOR_VERSION = "sec_relevant_section_v1"
+SCOPED_LABELING_VERSION = "scoped_text_labeling_v3"
+NEWS_EXTRACTOR_VERSION = "news_event_scope_v3"
+SEC_EXTRACTOR_VERSION = "sec_relevant_section_v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,11 +26,22 @@ class RelevantTextUnit:
     unit_id: str
     ordinal: int
     role: str
+    # `text` is the complete provider publication available to every directly
+    # affected issuer. `semantic_text` is the issuer-scoped evidence used by
+    # the deterministic semantic authority. Keeping both prevents destructive
+    # text slicing while preventing another issuer's clauses from leaking into
+    # ticker-specific labels.
     text: str
+    semantic_text: str
     start: int
     end: int
     tickers: tuple[str, ...]
     shared_context: bool
+    event_id: str = ""
+    event_tickers: tuple[str, ...] = ()
+    issuer_role: str = ""
+    evidence_scope: str = "ticker_specific"
+    trigger_candidate: bool = False
     heading: str = ""
     document_id: str = ""
     document_role: str = ""
@@ -50,6 +61,12 @@ class ScopedLabel:
     unit_id: str
     ticker: str
     unit_role: str
+    event_id: str
+    event_tickers: tuple[str, ...]
+    issuer_role: str
+    evidence_scope: str
+    publication_text_hash: str
+    semantic_evidence_text: str
     classification: dict[str, Any]
     semantic: dict[str, Any]
     observed_reaction: ObservedReaction

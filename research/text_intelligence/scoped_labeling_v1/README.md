@@ -1,62 +1,70 @@
-# Scoped News and SEC Labeling V2
+# Issuer-Scoped News and SEC Intelligence V3
 
-This package implements six bounded stages and intentionally stops before
-related-content linking or downstream cutover.
+This package implements the eight-stage authority used to organize News and
+SEC evidence without replacing or duplicating canonical rendered text.
 
-## Plain-language stages
+## Eight stages
 
-1. **News Relevant Text Extractor** — resolves passage ownership independently
-   of provider ticker count. It uses explicit symbols, exchange-qualified
-   symbols, point-in-time issuer names and aliases, headings, and analyst-action
-   subjects. Only a document whose material text resolves to one
-   provider-linked issuer remains one semantic unit. Mixed articles are split;
-   conflicting or unresolved issuer passages abstain.
-2. **News Text Labeler and Content Classifier** — labels only the selected
-   passage. Market observations, mixed-issuer passages, and
-   why-moving/roundup context cannot become forecast or reaction-evaluation
-   targets.
-3. **SEC Relevant Document/Section Extractor** — selects meaningful sections
-   from the already-rendered filing document and excludes known administrative,
-   signature, contact, and boilerplate blocks from semantic labeling.
-4. **SEC Text Labeler and Content Classifier** — labels the selected sections
-   with exact evidence and retains filing/document provenance.
-5. **Certification review** — produces five News and five SEC Markdown audit
-   files plus a machine-readable self-review under the machine runtime root.
-6. **Versioned persistence** — provides a dry-run-by-default, resumable bounded
-   backfill into new V2 tables. It does not change canonical News or SEC tables
-   and it does not change any current consumer.
+1. **News structure extraction** parses provider-body structure once and
+   excludes later external enrichment from semantic ownership.
+2. **News issuer/event scoping** resolves article-local exchange symbols,
+   point-in-time aliases, headings, subjects, and relational event
+   participants. Provider ticker arrays remain retrieval hints.
+3. **Issuer-specific News classification** gives every directly affected
+   issuer access to the complete provider publication while labeling only its
+   issuer-scoped evidence. Acquisition, partnership, litigation, and analyst
+   comparisons may therefore affect multiple issuers without copying another
+   issuer's direction or concepts.
+4. **SEC document/section extraction** selects meaningful rendered filing
+   sections and excludes administrative, signature, contact, and boilerplate
+   blocks.
+5. **SEC event classification** labels exact section evidence with filing,
+   document, point-in-time issuer, and event provenance.
+6. **Certification and persistence** writes five exact News and five exact SEC
+   runtime audits, checks human-readable expected outcomes, and provides a
+   dry-run-by-default resumable full-corpus launcher.
+7. **Related-content relationships** persists normalized source, unit, event,
+   issuer, and concept edges. It does not copy publication or filing text.
+8. **Live and downstream consumption** makes News Intelligence use this same
+   issuer-scoping authority for live notifications and historical
+   reconciliation. Market AI and prior-news context read the resulting V2
+   semantic stream.
 
-## Issuer-scope safety contract
+## Multi-issuer contract
 
-- A provider ticker link is a retrieval hint, not proof that every paragraph
-  belongs to that issuer.
-- Document structure is evaluated before ticker count.
-- A forecast or reaction-evaluation trigger requires one text-resolved issuer
-  that is also the exclusive provider-linked issuer.
-- Roundups, mixed-issuer editorials, and mixed-issuer analyst coverage are
-  ticker-scoped context only.
-- A passage that names conflicting issuers is not copied to all of them.
-- A passage with an unresolved company-like mention abstains instead of
-  inheriting the sole linked ticker.
-- Provider-body text is the publication-time semantic authority. Later
-  `Source [external:*]` enrichment remains visible for audit but cannot
-  introduce issuer subjects, semantic labels, or trigger eligibility.
-- Certification Markdown exposes each passage decision and its exact symbol or
-  issuer-alias evidence.
+- The canonical rendered article is the publication-text authority.
+- Each directly affected issuer receives the same publication hash and can use
+  the intact publication as model input.
+- `semantic_evidence_text`, `issuer_role`, `event_id`, `event_tickers`, and
+  `evidence_scope` are issuer-specific.
+- A shared relationship clause is evidence for each explicit participant.
+- Independent clauses in a roundup remain separate ticker observations and
+  cannot become forecast triggers.
+- Incidental or unresolved background entities do not invalidate a resolved
+  event. An unresolved direct counterparty is retained as
+  `shared_ambiguous`; it is never silently assigned a false ticker.
+- Later `Source [external:*]` enrichment stays auditable but cannot introduce
+  subjects, labels, or trigger eligibility.
 
-## Stage 5: create certification audits
+## Certification
 
 ```powershell
 python -m research.text_intelligence.scoped_labeling_v1.run_certification
 ```
 
-Generated files are written under:
+Generated evidence is written only to:
 
 ```text
-<machine runtime root>/text_intelligence/scoped_labeling_v2/certification
+<machine runtime root>/text_intelligence/scoped_labeling_v3/certification
 ```
 
-## Stage 6: persistence script
+The exact regression set includes a multi-issuer acquisition/analyst case,
+clinical events, an alias-conflict case, a market roundup, SEC guidance and
+settlement evidence, preferred-stock/warrant financing, an employee-plan
+amendment, historical prospectus context, and an administrative SEC
+abstention.
+
+## Full-corpus build
 
 Read-only planning is the default:
 
@@ -64,36 +72,34 @@ Read-only planning is the default:
 python -m research.text_intelligence.scoped_labeling_v1.run_persist
 ```
 
-After the V2 certification set has been reviewed, execution requires explicit
-authorization:
+Execution requires the matching clean certification manifest:
 
 ```powershell
 python -m research.text_intelligence.scoped_labeling_v1.run_persist --execute
 ```
 
-Execution verifies that the runtime certification manifest contains the same
-labeling version, five News audits, five SEC audits, no unresolved self-review
-items, and all required News scope boundaries: a true single-issuer trigger, a
-single-link mixed-issuer article, an unresolved-issuer abstention, an
-aggregation observation, and scoped analyst/editorial context. It also
-requires the canonical reference identity tables; there is no ticker-count
-fallback when identity resolution is unavailable.
+The bounded, resumable worker path creates only new versioned products:
 
-The executable path creates only:
+- `q_live.scoped_text_labels_v3`
+- `q_live.scoped_content_relations_v1`
+- `q_live.scoped_text_labels_v3_build_status`
 
-- `q_live.scoped_text_labels_v2`
-- `q_live.scoped_text_labels_v2_build_status`
+The label table stores only issuer evidence and the canonical publication hash;
+the relationship table stores only graph edges. Canonical rendered News and SEC
+tables are never mutated. Work is partitioned by corpus and date window, with
+bounded label and relationship insert batches.
 
-Work is partitioned by corpus and seven-day window by default. Each worker owns
-one bounded window, labels it, inserts in batches, and records completion.
-Completed partitions resume safely. Use `--rebuild-completed` only for an
-intentional rebuild of the same labeling version. `--period-days` may be set
-from 1 to 31; the default keeps rendered-text memory bounded while avoiding one
-job per article.
+## Live integration
 
-## Explicit non-goals
+News Gateway continues to own acquisition and canonical rendering. It sends one
+complete candidate to News Intelligence. News Intelligence:
 
-- No Related Content Linker.
-- No News Gateway, SEC Gateway, backend, UI, embeddings, prompt, or reaction
-  model cutover.
-- No mutation or replacement of canonical rendered text.
+1. runs V3 scoping once;
+2. selects eligible issuer units;
+3. independently applies the point-in-time QMD price gate;
+4. sends the intact article plus issuer-scoped evidence to the model route;
+5. persists one `news_semantic_label_v2` row per issuer unit; and
+6. dispatches Market AI independently per issuer.
+
+The idempotency identity includes article, unit, ticker, rendered-text hash, and
+V3 labeling version.

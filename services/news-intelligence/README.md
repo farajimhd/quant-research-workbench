@@ -3,12 +3,13 @@
 Domain service for live news eligibility and semantic labels.
 
 The Python News Gateway owns provider acquisition and canonical V2 persistence.
-After that durable publish, this service accepts a bounded candidate
-notification, requires an explicitly active live-trading session, applies the
-deterministic kind/scope contract and a point-in-time QMD price gate, and calls
-the provider-neutral Model Gateway. It validates the current
-`gpt_oss_news_semantics_v1` schema and writes the derived label to
-`q_live.news_semantic_label_v1`.
+After that durable publish, this service accepts one complete rendered
+candidate, requires an explicitly active live-trading session, applies the
+shared `scoped_text_labeling_v3` issuer/event authority, then applies the
+point-in-time QMD price gate independently for every eligible issuer. It calls
+the provider-neutral Model Gateway with the intact article plus
+issuer-specific evidence, validates `gpt_oss_news_semantics_v1`, and writes one
+derived row per issuer unit to `q_live.news_semantic_label_v2`.
 
 Transient notification failures are healed from canonical V2 rows during the
 active session. The deeper Market AI request is asynchronous and cannot block
@@ -16,7 +17,9 @@ the fast semantic label.
 
 ## Responsibilities
 
-- Route only eligible live news; never poll a news provider.
+- Route only eligible issuer event units; never poll a news provider.
+- Preserve one canonical publication while separating issuer roles, evidence,
+  concepts, and semantic model results for multi-issuer events.
 - Freeze the point-in-time QMD snapshot used for price eligibility.
 - Persist validated versioned semantic labels with model/cost/latency lineage.
 - Reconcile missed live notifications from canonical V2 tables.
@@ -61,6 +64,7 @@ the fast semantic label.
 - `NEWS_INTELLIGENCE_WORKERS`, default `4`
 - `NEWS_INTELLIGENCE_QUEUE_MAX`, default `4096`
 - `NEWS_INTELLIGENCE_RECONCILE_SECONDS`, default `10`
+- `NEWS_INTELLIGENCE_LABEL_TABLE`, default `news_semantic_label_v2`
 
 ## Run
 

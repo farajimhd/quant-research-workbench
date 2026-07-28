@@ -7,6 +7,15 @@ each year.
 
 ## 2026
 
+### [2026-07-28 - Issuer-scoped News and SEC intelligence](docs/codex/chat-summaries/2026/CHAT-20260728-issuer-scoped-news-sec-intelligence.md)
+
+- Related task: `TASK-0153`
+
+Replaced the invalid document-wide News gate with one issuer-scoped V3
+authority shared by certified historical labeling, normalized News/SEC
+relationships, and live News Intelligence. Multi-issuer events preserve the
+full publication while separating per-issuer evidence and semantics.
+
 ### [2026-07-27 time unavailable - Design and implement adaptive OMS, portfolio protection, and continuous risk](docs/codex/chat-summaries/2026/CHAT-20260727-UNKNOWN-adaptive-oms-portfolio-risk.md)
 
 - Chat/task ID: `019fa4ce-2ab7-7490-a297-e38b4e496102`

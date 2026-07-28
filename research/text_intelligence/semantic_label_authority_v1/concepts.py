@@ -34,6 +34,23 @@ CONCEPT_RULES: tuple[ConceptRule, ...] = (
             r"\bexercise price\b[^.\n]{0,120}\bwarrants?\b",
         ),
     ),
+    ConceptRule(
+        "financing",
+        "preferred_stock_private_placement",
+        (
+            "preferred stock private placement",
+            "private placement of preferred stock",
+            "securities purchase agreement for preferred stock",
+        ),
+        "mixed",
+        -0.3,
+        patterns=(
+            r"\bsecurities purchase agreement\b[^.\n]{0,180}"
+            r"\bpreferred stock\b",
+            r"\b(?:issue|sell|issuance|sale)\b[^.\n]{0,140}"
+            r"\bpreferred stock\b",
+        ),
+    ),
     ConceptRule("financing", "debt_conversion", ("strategic financing agreement", "outstanding debt into", "debt into preferred"), "negative", -0.7, modality="planned", time_orientation="forward"),
     ConceptRule("capital_structure", "reverse_split", ("reverse stock split", "reverse share split"), "negative", -0.7),
     ConceptRule("capital_structure", "forward_split", ("forward stock split",), "neutral", 0.0),
@@ -86,9 +103,63 @@ CONCEPT_RULES: tuple[ConceptRule, ...] = (
         0.8,
         time_orientation="historical",
     ),
+    ConceptRule(
+        "profitability",
+        "margin_pressure",
+        (
+            "dilutive to operating margin",
+            "more difficult to reach its operating margin targets",
+            "struggle to meet margin targets",
+        ),
+        "negative",
+        -0.8,
+        modality="opinion",
+        time_orientation="forward",
+        patterns=(
+            r"\bmore difficult\b[^.\n]{0,100}\boperating margin targets\b",
+        ),
+    ),
     ConceptRule("regulatory", "fda_approval", ("fda approval", "fda approved", "food and drug administration approval"), "positive", 1.7),
     ConceptRule("regulatory", "fda_rejection", ("complete response letter", "fda rejected", "fda denial"), "negative", -1.8),
-    ConceptRule("clinical", "success", ("met primary endpoint", "statistically significant", "positive topline results"), "positive", 1.4),
+    ConceptRule(
+        "clinical",
+        "success",
+        (
+            "met primary endpoint",
+            "statistically significant",
+            "positive topline results",
+            "positive phase 3 trial results",
+        ),
+        "positive",
+        1.4,
+        exclude_patterns=(
+            r"\bwhen a statistically significant improvement can be shown\b",
+            r"\bensure\b[^.\n]{0,100}\bstatistically significant comparability\b",
+        ),
+    ),
+    ConceptRule(
+        "clinical",
+        "interim_positive",
+        (
+            "positive interim clinical data",
+            "positive interim data",
+            "meaningful improvement",
+        ),
+        "positive",
+        1.0,
+    ),
+    ConceptRule(
+        "clinical",
+        "outcome_improvement",
+        (
+            "significant reduction of tooth decay",
+            "significant reduction in tooth decay",
+            "significantly decrease pediatric cavities",
+            "demonstrating the efficacy",
+        ),
+        "positive",
+        0.9,
+    ),
     ConceptRule(
         "clinical",
         "hold_lifted",
@@ -116,6 +187,21 @@ CONCEPT_RULES: tuple[ConceptRule, ...] = (
         ),
     ),
     ConceptRule("clinical", "data_publication", ("publication of data", "published results", "new clinical data"), "neutral", 0.1, time_orientation="historical"),
+    ConceptRule(
+        "clinical",
+        "progress_update",
+        (
+            "clinical trial update",
+            "clinical study update",
+            "reached 74% enrollment",
+            "enrollment is rapidly accelerating",
+            "reached the criteria required by the study protocol",
+            "interim analysis expected",
+            "topline data from interim analysis expected",
+        ),
+        "neutral",
+        0.2,
+    ),
     ConceptRule(
         "ma_transaction",
         "merger_agreement",
@@ -164,7 +250,18 @@ CONCEPT_RULES: tuple[ConceptRule, ...] = (
     ConceptRule("listing_market_structure", "trading_halt", ("trading halt", "halted pending news"), "neutral", 0.0),
     ConceptRule("legal", "investigation", ("formal investigation", "regulatory investigation", "subpoena"), "negative", -0.8),
     ConceptRule("legal", "lawsuit", ("class action lawsuit", "patent infringement lawsuit", "filed a lawsuit"), "negative", -0.7),
-    ConceptRule("legal", "settlement", ("settlement agreement", "agreed to settle"), "mixed", 0.1),
+    ConceptRule(
+        "legal",
+        "settlement",
+        (
+            "settlement agreement",
+            "agreed to settle",
+            "reached settlement",
+            "settlement reached",
+        ),
+        "mixed",
+        0.1,
+    ),
     ConceptRule("ownership", "insider_buy", ("insider purchase", "insider bought"), "positive", 0.5),
     ConceptRule("ownership", "insider_sell", ("insider sale", "insider sold"), "negative", -0.4),
     ConceptRule("analyst_action", "upgrade", ("analyst upgrade", "upgrades to buy", "raises price target"), "positive", 0.5, modality="opinion"),
@@ -181,6 +278,24 @@ CONCEPT_RULES: tuple[ConceptRule, ...] = (
         patterns=(r"\b(?:elected|appointed)\s+to\s+[^.\n]{0,80}\bboard(?:\s+of\s+directors)?\b",),
     ),
     ConceptRule("management_governance", "compensation_plan_amendment", ("stock deferral plan", "the plan is hereby amended"), "neutral", 0.0),
+    ConceptRule(
+        "management_governance",
+        "employee_share_purchase_plan_amendment",
+        (
+            "amended employee share purchase plan",
+            "employee share purchase plan amendment",
+            "amendment to the employee share purchase plan",
+        ),
+        "neutral",
+        0.0,
+        patterns=(
+            r"\bamend(?:ed|ment)?\b[^.\n]{0,160}"
+            r"\bemployee (?:stock|share) purchase plan\b",
+            r"\bemployee (?:stock|share) purchase plan\b[^.\n]{0,240}"
+            r"\bamend(?:ed|ment)?\b",
+            r"\bcompany desires to amend the plan\b",
+        ),
+    ),
     ConceptRule("management_governance", "power_of_attorney", ("power of attorney", "attorney-in-fact"), "neutral", 0.0),
 )
 

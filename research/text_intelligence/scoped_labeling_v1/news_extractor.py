@@ -11,9 +11,11 @@ from research.text_intelligence.semantic_label_authority_v1.structure import (
 )
 
 from .news_identity import (
+    ARTICLE_ISSUER_RE,
     ISSUER_RESOLUTION_VERSION,
     IssuerMatch,
     NewsIssuerResolver,
+    normalize_issuer_alias,
 )
 from .schema import NEWS_EXTRACTOR_VERSION, ObservedReaction, RelevantTextUnit
 
@@ -64,6 +66,27 @@ EVENT_SUBJECT_VERB_RE = re.compile(
     r"acquire[sd]?|merge[sd]?|offer(?:s|ed)?|price[sd]?|"
     r"upgrade[sd]?|downgrade[sd]?|maintain(?:s|ed)?|"
     r"initiate[sd]?|resume[sd]?|expect(?:s|ed)?|plan(?:s|ned)?)\b",
+    re.IGNORECASE,
+)
+RELATIONSHIP_RE = re.compile(
+    r"\b(?:agree[sd]?\s+to\s+acquire|acquisition|merger|"
+    r"partner(?:s|ed|ship)?|collaborat(?:e[sd]?|ion)|joint\s+venture|"
+    r"license(?:s|d)?|sue[sd]?|lawsuit|litigation|settle[sd]?|"
+    r"settlement)\b",
+    re.IGNORECASE,
+)
+EVENT_EVIDENCE_RE = re.compile(
+    r"\b(?:clinical\s+(?:trial|study|update|data)|"
+    r"interim\s+(?:analysis|data)|enrollment|primary\s+endpoint|"
+    r"topline\s+data|fda|guidance|earnings|revenue|margin|offering|"
+    r"financing|acqui(?:re|sition)|merger|partner(?:ship|ed)?|"
+    r"collaborat(?:ion|ed)?|contract|order|upgrade[sd]?|downgrade[sd]?|"
+    r"price\s+target|lawsuit|litigation|settlement|bankruptcy|"
+    r"restructuring|dividend|buyback|stock\s+split|share\s+split)\b",
+    re.IGNORECASE,
+)
+ACQUISITION_RE = re.compile(
+    r"\b(?:agree[sd]?\s+to\s+acquire|acquire[sd]?)\b",
     re.IGNORECASE,
 )
 COMPANY_LIKE_RE = re.compile(
@@ -234,10 +257,16 @@ def analyze_news_scope(
             ordinal=1,
             role=role,
             text=semantic,
+            semantic_text=semantic,
             start=min((fragment.start for fragment in primary_fragments), default=0),
             end=max((fragment.end for fragment in primary_fragments), default=len(clean)),
             tickers=(subject,),
             shared_context=False,
+            event_id=_event_id(source_id, semantic),
+            event_tickers=(subject,),
+            issuer_role="primary_subject",
+            evidence_scope="ticker_specific",
+            trigger_candidate=not aggregation and _has_event_evidence(semantic),
             observed_reaction=reaction,
             reported_catalyst=(
                 extract_reported_catalyst(semantic)
@@ -305,6 +334,9 @@ def analyze_news_scope(
     units = _units_from_assignments(
         source_id=source_id,
         assignments=assignments,
+        publication_text="\n".join(
+            fragment.text for fragment in primary_fragments
+        ).strip(),
         aggregation=aggregation,
         mixed=len(resolved_subjects) > 1 or len(linked) > 1,
     )
@@ -464,34 +496,45 @@ def _resolve_passages(
             continue
         direct = {match.ticker for match in fragment.matches}
         heading = {match.ticker for match in fragment.heading_matches}
-        assigned = ""
+        assigned_tickers: tuple[str, ...] = ()
         decision = ""
         flags: list[str] = []
-        if fragment.unresolved_company_mention:
-            decision = "abstained_unresolved_company_mention"
-        elif len(direct) == 1:
-            assigned = next(iter(direct))
+        if len(direct) == 1:
+            assigned_tickers = tuple(direct)
             decision = "assigned_explicit_passage_issuer"
             flags.append("passage_explicit_issuer")
+            if fragment.unresolved_company_mention:
+                decision = "assigned_known_issuer_with_unresolved_counterparty"
+                flags.append("unresolved_counterparty_or_background")
         elif len(direct) > 1:
-            decision = "abstained_conflicting_issuer_mentions"
+            assigned_tickers = tuple(sorted(direct))
+            decision = (
+                "assigned_shared_relational_event"
+                if RELATIONSHIP_RE.search(fragment.text)
+                else "assigned_shared_multi_issuer_evidence"
+            )
+            flags.extend(("passage_explicit_issuer", "shared_issuer_evidence"))
+        elif fragment.unresolved_company_mention:
+            decision = "abstained_unresolved_company_mention"
         elif len(heading) == 1:
-            assigned = next(iter(heading))
+            assigned_tickers = tuple(heading)
             decision = "assigned_heading_issuer"
             flags.append("passage_inherited_heading_issuer")
         elif fragment.block_index in previous_by_block:
-            assigned = previous_by_block[fragment.block_index]
+            assigned_tickers = (previous_by_block[fragment.block_index],)
             decision = "assigned_local_preceding_issuer"
             flags.append("passage_inherited_local_issuer")
         elif not aggregation and len(title_subjects) == 1:
-            assigned = next(iter(title_subjects))
+            assigned_tickers = tuple(title_subjects)
             decision = "assigned_title_issuer"
             flags.append("passage_inherited_title_issuer")
         else:
             decision = "abstained_unresolved_passage"
-        if assigned:
-            previous_by_block[fragment.block_index] = assigned
-            assignments.append((assigned, fragment, tuple(flags)))
+        if assigned_tickers:
+            if len(assigned_tickers) == 1:
+                previous_by_block[fragment.block_index] = assigned_tickers[0]
+            for assigned in assigned_tickers:
+                assignments.append((assigned, fragment, tuple(flags)))
         passages.append(
             PassageResolution(
                 ordinal=fragment.ordinal,
@@ -501,7 +544,7 @@ def _resolve_passages(
                 resolved_tickers=tuple(sorted(direct)),
                 evidence=_match_evidence(fragment.matches),
                 decision=decision,
-                assigned_ticker=assigned,
+                assigned_ticker=",".join(assigned_tickers),
             )
         )
     return tuple(assignments), tuple(passages)
@@ -511,47 +554,89 @@ def _units_from_assignments(
     *,
     source_id: str,
     assignments: tuple[tuple[str, _Fragment, tuple[str, ...]], ...],
+    publication_text: str,
     aggregation: bool,
     mixed: bool,
 ) -> tuple[RelevantTextUnit, ...]:
-    grouped: list[tuple[str, list[_Fragment], set[str]]] = []
+    # Parse once, then gather issuer evidence. The complete provider
+    # publication remains available on every issuer unit; only semantic_text is
+    # scoped, so an acquisition or partnership is not destructively split.
+    grouped: dict[str, tuple[list[_Fragment], set[str]]] = {}
     for ticker, fragment, flags in assignments:
-        if grouped and grouped[-1][0] == ticker \
-                and grouped[-1][1][-1].block_index == fragment.block_index:
-            grouped[-1][1].append(fragment)
-            grouped[-1][2].update(flags)
-        else:
-            grouped.append((ticker, [fragment], set(flags)))
+        parts, collected_flags = grouped.setdefault(ticker, ([], set()))
+        if not parts or parts[-1].ordinal != fragment.ordinal:
+            parts.append(fragment)
+        collected_flags.update(flags)
     output: list[RelevantTextUnit] = []
-    seen: set[tuple[str, str]] = set()
-    for ticker, parts, flags in grouped:
-        text = " ".join(part.text for part in parts).strip()
-        key = (ticker, text.casefold())
-        if len(text) < 20 or key in seen:
+    for ticker, (parts, flags) in grouped.items():
+        semantic_parts = [
+            part for part in parts
+            if aggregation
+            or _has_event_evidence(part.text)
+            or not extract_observed_reaction(part.text).direction
+        ]
+        semantic_text = " ".join(
+            part.text for part in (semantic_parts or parts)
+        ).strip()
+        if len(semantic_text) < 20:
             continue
-        seen.add(key)
-        reaction = extract_observed_reaction(text)
+        reaction_text = " ".join(part.text for part in parts)
+        reaction = extract_observed_reaction(reaction_text)
+        event_tickers = tuple(sorted({
+            assigned
+            for assigned, fragment, _ in assignments
+            if fragment in parts
+        }))
+        shared_event = len(event_tickers) > 1
+        trigger_candidate = (
+            not aggregation
+            and any(_has_event_evidence(part.text) for part in parts)
+        )
         role = _passage_role(
             aggregation=aggregation,
             mixed=mixed,
             reaction=reaction,
-            text=text,
+            text=semantic_text,
+            trigger_candidate=trigger_candidate,
         )
         ordinal = len(output) + 1
+        event_id = _event_id(
+            source_id,
+            " ".join(
+                part.text for part in parts
+                if _has_event_evidence(part.text)
+            ) or semantic_text,
+        )
         output.append(
             RelevantTextUnit(
                 corpus="news",
                 source_id=source_id,
-                unit_id=_unit_id(source_id, ordinal, ticker, text),
+                unit_id=_unit_id(source_id, ordinal, ticker, semantic_text),
                 ordinal=ordinal,
                 role=role,
-                text=text,
+                text=publication_text,
+                semantic_text=semantic_text,
                 start=parts[0].start,
                 end=parts[-1].end,
                 tickers=(ticker,),
-                shared_context=False,
+                shared_context=shared_event,
+                event_id=event_id,
+                event_tickers=event_tickers or (ticker,),
+                issuer_role=_issuer_role(ticker, parts, event_tickers),
+                evidence_scope=(
+                    "shared_relational"
+                    if shared_event and any(
+                        RELATIONSHIP_RE.search(part.text) for part in parts
+                    )
+                    else "shared_ambiguous"
+                    if "unresolved_counterparty_or_background" in flags
+                    else "shared_ambiguous"
+                    if shared_event
+                    else "ticker_specific"
+                ),
+                trigger_candidate=trigger_candidate,
                 observed_reaction=reaction,
-                reported_catalyst=extract_reported_catalyst(text),
+                reported_catalyst=extract_reported_catalyst(reaction_text),
                 extractor_version=NEWS_EXTRACTOR_VERSION,
                 quality_flags=tuple(dict.fromkeys((
                     *sorted(flags),
@@ -572,6 +657,27 @@ def _subject_matches(
     *,
     linked_tickers: tuple[str, ...],
 ) -> tuple[IssuerMatch, ...]:
+    article_pairs = tuple(
+        (
+            normalize_issuer_alias(match.group("name")),
+            match.group("ticker").upper(),
+        )
+        for match in ARTICLE_ISSUER_RE.finditer(text)
+    )
+    if article_pairs:
+        matches = tuple(
+            match
+            for match in matches
+            if not any(
+                pair_ticker != match.ticker
+                and any(
+                    value.startswith("issuer_alias:")
+                    and pair_name.startswith(value.partition(":")[2])
+                    for value in match.evidence
+                )
+                for pair_name, pair_ticker in article_pairs
+            )
+        )
     action = ANALYST_ACTION_RE.search(text)
     selected = matches
     if action and len(matches) >= 2:
@@ -630,11 +736,14 @@ def _passage_role(
     mixed: bool,
     reaction: ObservedReaction,
     text: str,
+    trigger_candidate: bool,
 ) -> str:
     if aggregation:
         return "ticker_market_observation"
+    if trigger_candidate:
+        return "analyst_opinion" if _is_analyst_text(text) else "issuer_event_document"
     if _is_analyst_text(text):
-        return "ticker_scoped_analyst_context" if mixed else "analyst_opinion"
+        return "ticker_scoped_analyst_context"
     if mixed:
         return "ticker_scoped_editorial_context"
     if reaction.direction:
@@ -644,6 +753,50 @@ def _passage_role(
 
 def _is_analyst_text(text: str) -> bool:
     return bool(ANALYST_ROLE_RE.search(text))
+
+
+def _has_event_evidence(text: str) -> bool:
+    if extract_observed_reaction(text).direction and not (
+        EVENT_EVIDENCE_RE.search(text) or RELATIONSHIP_RE.search(text)
+    ):
+        return False
+    return bool(
+        EVENT_SUBJECT_VERB_RE.search(text)
+        or EVENT_EVIDENCE_RE.search(text)
+        or RELATIONSHIP_RE.search(text)
+    )
+
+
+def _issuer_role(
+    ticker: str,
+    parts: Sequence[_Fragment],
+    event_tickers: tuple[str, ...],
+) -> str:
+    relational = next(
+        (part for part in parts if ACQUISITION_RE.search(part.text)),
+        None,
+    ) or next(
+        (part for part in parts if RELATIONSHIP_RE.search(part.text)),
+        None,
+    )
+    if relational is None or len(event_tickers) <= 1:
+        return "primary_subject"
+    acquisition = ACQUISITION_RE.search(relational.text)
+    if acquisition:
+        positions = {
+            match.ticker: _match_position(relational.text, match)
+            for match in relational.matches
+            if match.ticker in event_tickers
+        }
+        position = positions.get(ticker, -1)
+        if position >= 0:
+            return "acquirer" if position < acquisition.start() else "target"
+    return "affected_participant"
+
+
+def _event_id(source_id: str, text: str) -> str:
+    digest = hashlib.sha256(text.casefold().encode("utf-8")).hexdigest()[:16]
+    return f"{source_id}:event:{digest}"
 
 
 def _has_unresolved_company_mention(

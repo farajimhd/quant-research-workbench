@@ -34,15 +34,16 @@ from .news_identity import NewsIssuerResolver, load_news_issuer_resolver
 from .schema import SCOPED_LABELING_VERSION, ScopedLabel
 
 
-TARGET_TABLE = "scoped_text_labels_v2"
-STATUS_TABLE = "scoped_text_labels_v2_build_status"
+TARGET_TABLE = "scoped_text_labels_v3"
+STATUS_TABLE = "scoped_text_labels_v3_build_status"
+RELATION_TABLE = "scoped_content_relations_v1"
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     certification_manifest = (
         MLOpsPathConfig.from_env().runtimes_root
         / "text_intelligence"
-        / "scoped_labeling_v2"
+        / "scoped_labeling_v3"
         / "certification"
         / "manifest.json"
     )
@@ -154,7 +155,9 @@ def run(args: argparse.Namespace) -> dict:
             results.append(result)
             print(
                 f"[{index:,}/{len(active):,}] {corpus} {start} "
-                f"source={result['source_rows']:,} labels={result['label_rows']:,}",
+                f"source={result['source_rows']:,} "
+                f"labels={result['label_rows']:,} "
+                f"relations={result['relation_rows']:,}",
                 flush=True,
             )
     return {
@@ -162,6 +165,7 @@ def run(args: argparse.Namespace) -> dict:
         "run_id": run_id,
         "completed_units": len(results),
         "label_rows": sum(row["label_rows"] for row in results),
+        "relation_rows": sum(row["relation_rows"] for row in results),
     }
 
 
@@ -181,7 +185,9 @@ def process_unit(
             else fetch_sec_period(client, database, start, end)
         )
         label_rows: list[dict] = []
+        relation_rows: list[dict] = []
         label_count = 0
+        relation_count = 0
         for row in rows:
             document = row_to_document(row, corpus)
             labels = (
@@ -195,27 +201,37 @@ def process_unit(
             label_rows.extend(
                 persistence_row(document, label, run_id) for label in labels
             )
+            for label in labels:
+                relations = relationship_rows(document, label, run_id)
+                relation_rows.extend(relations)
+                relation_count += len(relations)
             label_count += len(labels)
             if len(label_rows) >= 1000:
                 insert_rows(client, database, TARGET_TABLE, label_rows)
                 label_rows.clear()
+            if len(relation_rows) >= 4000:
+                insert_rows(client, database, RELATION_TABLE, relation_rows)
+                relation_rows.clear()
         if label_rows:
             insert_rows(client, database, TARGET_TABLE, label_rows)
+        if relation_rows:
+            insert_rows(client, database, RELATION_TABLE, relation_rows)
         insert_status(
             client, database, corpus, start, end, run_id,
-            len(rows), label_count, "completed", "",
+            len(rows), label_count, relation_count, "completed", "",
         )
         return {
             "corpus": corpus,
             "start": start,
             "source_rows": len(rows),
             "label_rows": label_count,
+            "relation_rows": relation_count,
         }
     except Exception as exc:
         try:
             insert_status(
                 client, database, corpus, start, end, run_id,
-                0, 0, "failed", f"{type(exc).__name__}: {exc}"[:1000],
+                0, 0, 0, "failed", f"{type(exc).__name__}: {exc}"[:1000],
             )
         finally:
             raise
@@ -352,6 +368,15 @@ def persistence_row(
         "unit_id": label.unit_id,
         "ticker": label.ticker,
         "unit_role": label.unit_role,
+        # The canonical rendered-news table remains the one non-redundant
+        # publication-text authority. Labels retain its hash plus only the
+        # ticker-specific evidence used for deterministic semantics.
+        "publication_text_hash": label.publication_text_hash,
+        "event_id": label.event_id,
+        "event_tickers": label.event_tickers,
+        "issuer_role": label.issuer_role,
+        "evidence_scope": label.evidence_scope,
+        "semantic_evidence_text": label.semantic_evidence_text,
         "relevant_text": semantic["normalized_semantic_text"],
         "observed_direction": label.observed_reaction.direction,
         "observed_move_pct": label.observed_reaction.move_pct,
@@ -383,6 +408,61 @@ def persistence_row(
     }
 
 
+def relationship_rows(
+    document: SemanticDocument,
+    label: ScopedLabel,
+    run_id: str,
+) -> list[dict]:
+    """Create normalized graph edges without copying publication text."""
+    source_node = f"{document.corpus}:source:{document.source_id}"
+    unit_node = f"{document.corpus}:unit:{label.unit_id}"
+    event_node = f"event:{label.event_id}" if label.event_id else ""
+    ticker_node = f"issuer:ticker:{label.ticker}" if label.ticker else ""
+    edges = [(source_node, unit_node, "contains_unit", "")]
+    if ticker_node:
+        edges.append(
+            (unit_node, ticker_node, "about_issuer", label.issuer_role)
+        )
+    if event_node:
+        edges.append(
+            (
+                unit_node,
+                event_node,
+                "evidence_for_event",
+                label.evidence_scope,
+            )
+        )
+        if ticker_node:
+            edges.append(
+                (
+                    event_node,
+                    ticker_node,
+                    "affects_issuer",
+                    label.issuer_role,
+                )
+            )
+    for concept in label.classification["event_concepts"]:
+        edges.append(
+            (unit_node, f"concept:{concept}", "expresses_concept", "")
+        )
+    updated = _clickhouse_time(dt.datetime.now(dt.timezone.utc).isoformat())
+    return [
+        {
+            "corpus": document.corpus,
+            "source_id": document.source_id,
+            "source_timestamp": _clickhouse_time(document.timestamp),
+            "from_node": left,
+            "to_node": right,
+            "relation_type": relation,
+            "relation_role": role,
+            "labeling_version": label.version,
+            "run_id": run_id,
+            "updated_at_utc": updated,
+        }
+        for left, right, relation, role in edges
+    ]
+
+
 def create_tables(client: ClickHouseHttpClient, database: str) -> None:
     db = quote_ident(database)
     client.execute(f"""
@@ -394,6 +474,12 @@ CREATE TABLE IF NOT EXISTS {db}.{quote_ident(TARGET_TABLE)}
  unit_id String,
  ticker LowCardinality(String),
  unit_role LowCardinality(String),
+ publication_text_hash FixedString(64),
+ event_id String,
+ event_tickers Array(LowCardinality(String)),
+ issuer_role LowCardinality(String),
+ evidence_scope LowCardinality(String),
+ semantic_evidence_text String,
  relevant_text String,
  observed_direction LowCardinality(String),
  observed_move_pct Nullable(Float64),
@@ -429,6 +515,7 @@ CREATE TABLE IF NOT EXISTS {db}.{quote_ident(STATUS_TABLE)}
  run_id String,
  source_rows UInt64,
  label_rows UInt64,
+ relation_rows UInt64,
  status LowCardinality(String),
  error String,
  updated_at_utc DateTime64(6, 'UTC')
@@ -438,6 +525,30 @@ ORDER BY (
  corpus, period_start, period_end_exclusive, labeling_version
 )
 """)
+    client.execute(f"""
+CREATE TABLE IF NOT EXISTS {db}.{quote_ident(RELATION_TABLE)}
+(
+ corpus LowCardinality(String),
+ source_id String,
+ source_timestamp DateTime64(9, 'UTC'),
+ from_node String,
+ to_node String,
+ relation_type LowCardinality(String),
+ relation_role LowCardinality(String),
+ labeling_version LowCardinality(String),
+ run_id String,
+ updated_at_utc DateTime64(6, 'UTC')
+)
+ENGINE = ReplacingMergeTree(updated_at_utc)
+PARTITION BY (corpus, toYYYYMM(source_timestamp))
+ORDER BY (
+ corpus, source_id, from_node, to_node, relation_type, labeling_version
+)
+""")
+    client.execute(
+        f"ALTER TABLE {db}.{quote_ident(STATUS_TABLE)} "
+        "ADD COLUMN IF NOT EXISTS relation_rows UInt64 AFTER label_rows"
+    )
 
 
 def insert_rows(
@@ -467,6 +578,7 @@ def insert_status(
     run_id: str,
     source_rows: int,
     label_rows: int,
+    relation_rows: int,
     status: str,
     error: str,
 ) -> None:
@@ -482,6 +594,7 @@ def insert_status(
             "run_id": run_id,
             "source_rows": source_rows,
             "label_rows": label_rows,
+            "relation_rows": relation_rows,
             "status": status,
             "error": error,
             "updated_at_utc": _clickhouse_time(
@@ -502,6 +615,7 @@ SELECT corpus, toString(period_start) AS period_start,
 FROM {quote_ident(database)}.{quote_ident(STATUS_TABLE)} FINAL
 WHERE status='completed'
   AND labeling_version={sql_string(SCOPED_LABELING_VERSION)}
+  AND (label_rows=0 OR relation_rows>0)
 FORMAT JSONEachRow
 """
     return {
@@ -616,4 +730,8 @@ def assert_certification(path: Path) -> None:
     if payload.get("missing_news_scope_cases") != []:
         raise RuntimeError(
             "certification is missing one or more required News issuer-scope cases"
+        )
+    if payload.get("expected_outcome_failures") != []:
+        raise RuntimeError(
+            "certification failed mandatory issuer-level semantic outcomes"
         )

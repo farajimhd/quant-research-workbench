@@ -11,12 +11,16 @@ from research.mlops.clickhouse import (
     default_clickhouse_password,
     default_clickhouse_url,
     default_clickhouse_user,
+    quote_ident,
+    sql_string,
 )
 from research.mlops.env import discover_env_files, load_env_files
 from research.mlops.paths import MLOpsPathConfig
 from research.text_intelligence.classification_authority_v2.evaluation import (
+    attach_sec_tickers,
     fetch_news_sample,
     fetch_sec_sample,
+    json_rows,
 )
 from research.text_intelligence.candidate_inventory_v1.config import (
     CandidateInventoryConfig,
@@ -36,11 +40,79 @@ from .schema import ScopedLabel
 from .schema import SCOPED_LABELING_VERSION
 
 
+EXPECTED_NEWS_OUTCOMES = {
+    "1d0bb440729b3e79bc5dc8d28fb83d92": {
+        "AERI": {
+            "trigger": True,
+            "issuer_role": "target",
+            "required_concepts": {
+                "ma_transaction.acquisition",
+                "analyst_action.downgrade",
+            },
+        },
+        "ALC": {
+            "trigger": True,
+            "issuer_role": "acquirer",
+            "required_concepts": {
+                "ma_transaction.acquisition",
+                "profitability.margin_pressure",
+            },
+        },
+    },
+    "2a40f3fcd60c38c389bc48f79c0379a5": {
+        "CNSP": {
+            "trigger": True,
+            "required_concepts": {"clinical.progress_update"},
+        },
+    },
+    "038c30ed7bb7e369fc28c1bf66e58469": {
+        "FDMT": {"trigger": True, "require_any_concept": True},
+    },
+    "2f97b47b5d642d1d414a994256f31199": {
+        "VVOS": {"trigger": True, "require_any_concept": True},
+        "__forbidden_tickers__": {"RDGL"},
+    },
+    "0c9794153b7d09e1e3bc565294987d27": {
+        "__all_non_triggering__": True,
+    },
+}
+
+EXPECTED_SEC_OUTCOMES = {
+    "1fa16cfb1fe5ccaaa9ca6787b02cfa1b89ca1c01": {
+        "required_concepts": {
+            "guidance.raise",
+            "earnings.revenue_growth",
+            "legal.settlement",
+        },
+        "require_trigger": True,
+    },
+    "1ba1336b22aaa6146ca4b59b56412a5f537eca5f": {
+        "required_concepts": {
+            "management_governance.employee_share_purchase_plan_amendment",
+        },
+        "require_trigger": True,
+    },
+    "8baaca44adb4962ed806c2677d274492bb511088": {
+        "required_concepts": {
+            "financing.preferred_stock_private_placement",
+            "financing.warrant",
+        },
+        "require_trigger": True,
+    },
+    "b6228180d95518ce5f08238e5914d617796af75c": {
+        "require_all_non_triggering": True,
+    },
+    "056dddcf986b5ef9f51e215e5197cb26a8561972": {
+        "require_no_units": True,
+    },
+}
+
+
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     output = (
         MLOpsPathConfig.from_env().runtimes_root
         / "text_intelligence"
-        / "scoped_labeling_v2"
+        / "scoped_labeling_v3"
         / "certification"
     )
     parser = argparse.ArgumentParser(
@@ -73,9 +145,33 @@ def run(args: argparse.Namespace) -> dict:
         news_rows = fetch_news_sample(
             client, config, args.candidate_sample_size
         )
+        required_news = fetch_required_news(
+            client,
+            config,
+            tuple(EXPECTED_NEWS_OUTCOMES),
+        )
+        news_rows = [
+            *required_news,
+            *(
+                row for row in news_rows
+                if row["source_id"] not in EXPECTED_NEWS_OUTCOMES
+            ),
+        ]
         sec_rows = fetch_sec_sample(
             client, config, args.candidate_sample_size
         )
+        required_sec = fetch_required_sec(
+            client,
+            config,
+            tuple(EXPECTED_SEC_OUTCOMES),
+        )
+        sec_rows = [
+            *required_sec,
+            *(
+                row for row in sec_rows
+                if row["source_id"] not in EXPECTED_SEC_OUTCOMES
+            ),
+        ]
         issuer_resolver = load_news_issuer_resolver(client, config.database)
     finally:
         client.close()
@@ -123,6 +219,12 @@ def run(args: argparse.Namespace) -> dict:
         ) + len(missing_news_scope_cases),
         "news_scope_coverage": news_scope_coverage,
         "missing_news_scope_cases": missing_news_scope_cases,
+        "expected_outcome_failures": [
+            issue
+            for row in review_rows
+            for issue in row["issues"]
+            if issue.startswith("expected:")
+        ],
         "news": summarize_scoped_labels(tuple(
             label for case in selected_news for label in case["labels"]
         )),
@@ -145,6 +247,153 @@ def run(args: argparse.Namespace) -> dict:
     )
     print(json.dumps(summary, indent=2), flush=True)
     return summary
+
+
+def fetch_required_news(
+    client: ClickHouseHttpClient,
+    config: CandidateInventoryConfig,
+    source_ids: tuple[str, ...],
+) -> list[dict]:
+    """Fetch mandatory semantic regression cases by exact source identity."""
+    if not source_ids:
+        return []
+    db = quote_ident(config.database)
+    event = quote_ident(config.news_event_table)
+    rendered = quote_ident(config.news_rendered_table)
+    identifiers = ",".join(sql_string(value) for value in source_ids)
+    rows = json_rows(client.execute(f"""
+SELECT
+ e.canonical_news_id AS source_id,
+ toString(e.published_at_utc) AS source_timestamp,
+ e.published_at_utc,
+ e.provider_article_id,
+ e.title,
+ r.rendered_text AS text,
+ e.tickers AS entity_terms,
+ e.tickers,
+ e.channels,
+ e.provider_tags,
+ e.links,
+ e.author,
+ e.url_domain,
+ e.article_url,
+ e.content_quality_flags,
+ r.renderer_version,
+ r.text_contract,
+ r.quality_flags,
+ r.rendered_text_hash
+FROM {db}.{event} AS e FINAL
+INNER JOIN {db}.{rendered} AS r FINAL
+ ON r.published_date=e.published_date
+ AND r.provider_article_id=e.provider_article_id
+ AND r.source_revision_key=e.source_revision_key
+WHERE e.canonical_news_id IN ({identifiers})
+  AND notEmpty(r.rendered_text)
+ORDER BY indexOf([{identifiers}], e.canonical_news_id)
+FORMAT JSONEachRow
+"""))
+    found = {str(row["source_id"]) for row in rows}
+    missing = sorted(set(source_ids) - found)
+    if missing:
+        raise RuntimeError(
+            "mandatory News semantic regression cases are missing: "
+            + ", ".join(missing)
+        )
+    for row in rows:
+        row["sample_stratum"] = "mandatory_semantic_regression"
+        row["sample_rationale"] = (
+            "certifies expected issuer-level semantics and eligibility"
+        )
+    return rows
+
+
+def fetch_required_sec(
+    client: ClickHouseHttpClient,
+    config: CandidateInventoryConfig,
+    source_ids: tuple[str, ...],
+) -> list[dict]:
+    """Fetch mandatory SEC semantic regression cases by document identity."""
+    if not source_ids:
+        return []
+    db = quote_ident(config.database)
+    rendered = quote_ident(config.sec_rendered_table)
+    document = quote_ident(config.sec_document_table)
+    filing = quote_ident(config.sec_filing_table)
+    identifiers = ",".join(sql_string(value) for value in source_ids)
+    rows = json_rows(client.execute(f"""
+SELECT
+ r.document_id AS source_id,
+ toString(f.accepted_at_utc) AS source_timestamp,
+ f.accepted_at_utc,
+ concat(ifNull(f.company_name, ''), ' ', ifNull(f.form_type, ''), ' ',
+        ifNull(d.document_type, ''), ' ', ifNull(d.description, '')) AS title,
+ r.text,
+ [r.cik, ifNull(f.company_name, '')] AS entity_terms,
+ r.cik AS cik,
+ r.accession_number AS accession_number,
+ r.filing_id AS filing_id,
+ r.text_kind AS text_kind,
+ r.text_char_count AS text_char_count,
+ r.text_sha256 AS text_sha256,
+ r.normalizer_version AS source_normalizer_version,
+ r.extraction_method, r.quality_flags,
+ ifNull(d.document_type, '') AS document_type,
+ ifNull(d.document_role, '') AS document_role,
+ ifNull(d.description, '') AS description,
+ ifNull(d.document_name, '') AS document_name,
+ ifNull(f.company_name, '') AS company_name,
+ ifNull(f.form_type, '') AS form_type,
+ ifNull(f.items, '') AS filing_items,
+ ifNull(toString(f.filing_date), '') AS filing_date,
+ ifNull(toString(f.report_date), '') AS report_date,
+ f.accepted_at_source
+FROM
+(
+ SELECT *
+ FROM {db}.{rendered} FINAL
+ PREWHERE document_id IN ({identifiers})
+) AS r
+LEFT JOIN
+(
+ SELECT *
+ FROM {db}.{document} FINAL
+ PREWHERE document_id IN ({identifiers})
+) AS d
+ ON d.document_id=r.document_id
+ AND d.cik=r.cik
+ AND d.accession_number=r.accession_number
+LEFT JOIN
+(
+ SELECT *
+ FROM {db}.{filing} FINAL
+ WHERE filing_id IN (
+   SELECT filing_id
+   FROM {db}.{rendered}
+   PREWHERE document_id IN ({identifiers})
+ )
+) AS f
+ ON f.filing_id=r.filing_id
+ AND f.cik=r.cik
+ AND f.accession_number=r.accession_number
+WHERE r.document_id IN ({identifiers})
+  AND isNotNull(f.accepted_at_utc)
+ORDER BY indexOf([{identifiers}], r.document_id)
+FORMAT JSONEachRow
+"""))
+    found = {str(row["source_id"]) for row in rows}
+    missing = sorted(set(source_ids) - found)
+    if missing:
+        raise RuntimeError(
+            "mandatory SEC semantic regression cases are missing: "
+            + ", ".join(missing)
+        )
+    attach_sec_tickers(client, rows)
+    for row in rows:
+        row["sample_stratum"] = "mandatory_semantic_regression"
+        row["sample_rationale"] = (
+            "certifies expected SEC event semantics and eligibility"
+        )
+    return rows
 
 
 def _build_cases(
@@ -213,6 +462,31 @@ def _document(row: dict, corpus: str) -> SemanticDocument:
 
 
 def _select_cases(cases: list[dict], count: int, corpus: str) -> list[dict]:
+    if corpus == "news":
+        by_id = {case["source_id"]: case for case in cases}
+        required = [
+            by_id[source_id]
+            for source_id in EXPECTED_NEWS_OUTCOMES
+            if source_id in by_id
+        ]
+        if count <= len(required):
+            return required[:count]
+    elif corpus == "sec":
+        by_id = {case["source_id"]: case for case in cases}
+        required = [
+            by_id[source_id]
+            for source_id in EXPECTED_SEC_OUTCOMES
+            if source_id in by_id
+        ]
+        missing = sorted(set(EXPECTED_SEC_OUTCOMES) - set(by_id))
+        if missing:
+            raise RuntimeError(
+                "mandatory SEC semantic regression cases are missing: "
+                + ", ".join(missing)
+            )
+        if count <= len(required):
+            return required[:count]
+
     def score(case: dict) -> tuple:
         labels: tuple[ScopedLabel, ...] = case["labels"]
         roles = {label.unit_role for label in labels}
@@ -246,7 +520,7 @@ def _select_cases(cases: list[dict], count: int, corpus: str) -> list[dict]:
         return (-priority, case["stratum"], case["source_id"])
 
     ordered = sorted(cases, key=score)
-    selected: list[dict] = []
+    selected: list[dict] = required if corpus in {"news", "sec"} else []
     if corpus == "news":
         predicates = (
             lambda case: (
@@ -313,35 +587,10 @@ def _select_cases(cases: list[dict], count: int, corpus: str) -> list[dict]:
 
 
 def _news_scope_coverage(cases: list[dict]) -> dict[str, bool]:
+    present = {case["source_id"] for case in cases}
     return {
-        "single_link_mixed_issuer": any(
-            len(case["tickers"]) == 1
-            and case["scope_analysis"] is not None
-            and case["scope_analysis"].document_decision
-            == "mixed_issuer_passage_scoping"
-            for case in cases
-        ),
-        "unresolved_issuer_abstention": any(
-            case["scope_analysis"] is not None
-            and case["scope_analysis"].document_decision
-            == "unresolved_issuer_passage_abstention"
-            for case in cases
-        ),
-        "aggregation_observation": any(
-            _has_role(case, "ticker_market_observation") for case in cases
-        ),
-        "scoped_context": any(
-            _has_role(case, "ticker_scoped_analyst_context")
-            or _has_role(case, "ticker_scoped_editorial_context")
-            for case in cases
-        ),
-        "single_resolved_issuer_trigger": any(
-            case["scope_analysis"] is not None
-            and case["scope_analysis"].document_decision
-            == "single_resolved_issuer"
-            and any(label.forecast_trigger_eligible for label in case["labels"])
-            for case in cases
-        ),
+        f"mandatory:{source_id}": source_id in present
+        for source_id in EXPECTED_NEWS_OUTCOMES
     }
 
 
@@ -370,17 +619,6 @@ def review_case(case: dict) -> dict:
             )
         ):
             issues.append(f"{label.unit_id}:context_marked_as_trigger")
-        if (
-            case["corpus"] == "news"
-            and label.forecast_trigger_eligible
-            and (
-                scope_analysis is None
-                or scope_analysis.document_decision != "single_resolved_issuer"
-            )
-        ):
-            issues.append(
-                f"{label.unit_id}:trigger_without_single_resolved_issuer"
-            )
         if case["corpus"] == "sec" and label.unit_role != "relevant_filing_section":
             issues.append(f"{label.unit_id}:unexpected_sec_role")
         for evidence in (
@@ -388,9 +626,17 @@ def review_case(case: dict) -> dict:
             for canonical in label.semantic["labels"]
             for item in canonical["evidence"]
         ):
-            if evidence["text"] not in label.semantic["normalized_semantic_text"] \
-                    and evidence["text"].casefold() not in case["text"].casefold():
+            evidence_text = _collapsed(evidence["text"])
+            if evidence_text not in _collapsed(
+                label.semantic["normalized_semantic_text"]
+            ) and evidence_text.casefold() not in _collapsed(
+                case["text"]
+            ).casefold():
                 issues.append(f"{label.unit_id}:evidence_not_traceable")
+    if case["corpus"] == "news":
+        issues.extend(_expected_news_issues(case))
+    else:
+        issues.extend(_expected_sec_issues(case))
     return {
         "corpus": case["corpus"],
         "source_id": case["source_id"],
@@ -400,6 +646,74 @@ def review_case(case: dict) -> dict:
         "issues": sorted(set(issues)),
         "notes": sorted(set(notes)),
     }
+
+
+def _expected_news_issues(case: dict) -> list[str]:
+    expected = EXPECTED_NEWS_OUTCOMES.get(case["source_id"])
+    if expected is None:
+        return []
+    labels: tuple[ScopedLabel, ...] = case["labels"]
+    issues: list[str] = []
+    if expected.get("__all_non_triggering__") and any(
+        label.forecast_trigger_eligible for label in labels
+    ):
+        issues.append("expected:aggregation_must_be_non_triggering")
+    forbidden = set(expected.get("__forbidden_tickers__", ()))
+    actual_tickers = {label.ticker for label in labels}
+    for ticker in sorted(forbidden & actual_tickers):
+        issues.append(f"expected:forbidden_ticker:{ticker}")
+    for ticker, contract in expected.items():
+        if ticker.startswith("__"):
+            continue
+        ticker_labels = [label for label in labels if label.ticker == ticker]
+        if not ticker_labels:
+            issues.append(f"expected:missing_ticker:{ticker}")
+            continue
+        if bool(contract.get("trigger")) != any(
+            label.forecast_trigger_eligible for label in ticker_labels
+        ):
+            issues.append(f"expected:trigger_mismatch:{ticker}")
+        role = contract.get("issuer_role")
+        if role and role not in {label.issuer_role for label in ticker_labels}:
+            issues.append(f"expected:issuer_role:{ticker}:{role}")
+        concepts = {
+            concept
+            for label in ticker_labels
+            for concept in label.classification["event_concepts"]
+        }
+        for concept in sorted(
+            set(contract.get("required_concepts", ())) - concepts
+        ):
+            issues.append(f"expected:missing_concept:{ticker}:{concept}")
+        if contract.get("require_any_concept") and not concepts:
+            issues.append(f"expected:no_event_concept:{ticker}")
+    return issues
+
+
+def _expected_sec_issues(case: dict) -> list[str]:
+    expected = EXPECTED_SEC_OUTCOMES.get(case["source_id"])
+    if expected is None:
+        return []
+    labels: tuple[ScopedLabel, ...] = case["labels"]
+    issues: list[str] = []
+    if expected.get("require_no_units") and labels:
+        issues.append("expected:sec_administrative_document_must_abstain")
+    if expected.get("require_all_non_triggering") and any(
+        label.forecast_trigger_eligible for label in labels
+    ):
+        issues.append("expected:sec_historical_context_must_be_non_triggering")
+    if expected.get("require_trigger") and not any(
+        label.forecast_trigger_eligible for label in labels
+    ):
+        issues.append("expected:sec_event_must_trigger")
+    concepts = {
+        concept
+        for label in labels
+        for concept in label.classification["event_concepts"]
+    }
+    for concept in sorted(set(expected.get("required_concepts", ())) - concepts):
+        issues.append(f"expected:missing_sec_concept:{concept}")
+    return issues
 
 
 def render_case(case: dict, review: dict) -> str:
@@ -422,6 +736,35 @@ def render_case(case: dict, review: dict) -> str:
         "```",
         "",
     ]
+    expected = (
+        EXPECTED_NEWS_OUTCOMES.get(case["source_id"])
+        if case["corpus"] == "news"
+        else EXPECTED_SEC_OUTCOMES.get(case["source_id"])
+    )
+    if expected is not None:
+        lines.extend([
+            "## Expected semantic outcome",
+            "",
+            "```json",
+            json.dumps(
+                {
+                    key: (
+                        {
+                            field: sorted(value)
+                            if isinstance(value, set) else value
+                            for field, value in contract.items()
+                        }
+                        if isinstance(contract, dict) else sorted(contract)
+                        if isinstance(contract, set) else contract
+                    )
+                    for key, contract in expected.items()
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            "```",
+            "",
+        ])
     scope_analysis = case.get("scope_analysis")
     if scope_analysis is not None:
         lines.extend(
@@ -467,6 +810,11 @@ def render_case(case: dict, review: dict) -> str:
                 "",
                 f"- Unit ID: `{label.unit_id}`",
                 f"- Unit role: `{label.unit_role}`",
+                f"- Event ID: `{label.event_id or 'none'}`",
+                f"- Event tickers: {', '.join(label.event_tickers) or 'none'}",
+                f"- Issuer role: `{label.issuer_role or 'none'}`",
+                f"- Evidence scope: `{label.evidence_scope}`",
+                f"- Publication text hash: `{label.publication_text_hash}`",
                 f"- Content role: `{classification['content_role']}`",
                 f"- Source origin: `{classification['source_origin']}`",
                 f"- Event concepts: {', '.join(classification['event_concepts']) or 'none'}",
@@ -479,10 +827,10 @@ def render_case(case: dict, review: dict) -> str:
                 f"- Reported catalyst: {label.reported_catalyst or 'none'}",
                 f"- Quality flags: {', '.join(classification['quality_flags']) or 'none'}",
                 "",
-                "#### Scoped text",
+                "#### Issuer-scoped semantic evidence",
                 "",
                 "```text",
-                semantic["normalized_semantic_text"],
+                label.semantic_evidence_text,
                 "```",
                 "",
                 "#### Exact label evidence",
@@ -520,17 +868,17 @@ def render_case(case: dict, review: dict) -> str:
 
 def render_review_summary(summary: dict, rows: list[dict]) -> str:
     lines = [
-        "# Scoped labeling V2 self-review",
+        "# Scoped labeling V3 certification review",
         "",
-        "This review certifies extraction invariants, evidence traceability, "
-        "and eligibility safety. It does not authorize persistence or "
-        "downstream cutover.",
+        "This review checks extraction invariants, evidence traceability, and "
+        "mandatory issuer-level semantic outcomes. It does not authorize "
+        "persistence or downstream cutover until a human reviews every file.",
         "",
         f"- Passed: {summary['review_passed']}",
         f"- Needs attention: {summary['review_attention']}",
         f"- Audit directory: `{summary['audit_directory']}`",
         "",
-        "## Required News scope cases",
+        "## Mandatory News semantic regression cases",
         "",
     ]
     for name, covered in summary["news_scope_coverage"].items():
@@ -553,6 +901,10 @@ def render_review_summary(summary: dict, rows: list[dict]) -> str:
 
 def _safe_name(value: str) -> str:
     return "".join(character if character.isalnum() else "_" for character in value)[:80]
+
+
+def _collapsed(value: str) -> str:
+    return " ".join(str(value).split())
 
 
 def _has_role(case: dict, role: str) -> bool:
