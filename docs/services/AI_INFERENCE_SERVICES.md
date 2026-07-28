@@ -14,7 +14,8 @@ The live AI path uses three independent service authorities:
    `gpt_oss_news_semantics_v1` output, and persists it.
 3. **Market AI (`:8803`)** owns deeper contextual hypotheses. It freezes the
    semantic label and point-in-time QMD, market, SEC, and fundamental context;
-   invokes `news.trade_hypothesis.v1`; validates probability coherence; and
+   invokes `news.trade_hypothesis.v2`; validates fixed-horizon probability
+   coherence; and
    persists an expiring hypothesis.
 
 News Gateway remains the canonical acquisition/rendering authority. QMD remains
@@ -31,7 +32,7 @@ News Gateway canonical V2 publish
      -> q_live.news_semantic_label_v1
      -> Market AI bounded queue
         -> frozen point-in-time context
-        -> Model Gateway: news.trade_hypothesis.v1
+        -> Model Gateway: news.trade_hypothesis.v2
         -> q_live.news_market_hypothesis_v1
         -> strategy may consume only before expires_at_utc
 ```

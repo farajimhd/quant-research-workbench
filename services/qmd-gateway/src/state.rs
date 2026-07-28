@@ -1,5 +1,6 @@
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
+use chrono_tz::America::New_York;
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -28,6 +29,7 @@ struct SymbolState {
     last_quote: Option<QuoteEvent>,
     last_trade: Option<TradeEvent>,
     recent_trades: VecDeque<TradeEvent>,
+    session_date: Option<NaiveDate>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -147,10 +149,14 @@ impl SymbolState {
             last_quote: None,
             last_trade: None,
             recent_trades: VecDeque::with_capacity(1_000),
+            session_date: None,
         }
     }
 
     fn apply_trade(&mut self, trade: TradeEvent) {
+        if !self.accept_session(trade.ts) {
+            return;
+        }
         self.last_event_ts = Some(trade.ts);
         self.last_price = trade.price;
         self.day_volume += trade.size.max(0.0);
@@ -164,8 +170,30 @@ impl SymbolState {
     }
 
     fn apply_quote(&mut self, quote: QuoteEvent) {
+        if !self.accept_session(quote.ts) {
+            return;
+        }
         self.last_event_ts = Some(quote.ts);
         self.last_quote = Some(quote);
+    }
+
+    fn accept_session(&mut self, ts: DateTime<Utc>) -> bool {
+        let local = ts.with_timezone(&New_York);
+        let mut session_date = local.date_naive();
+        if local.time() < chrono::NaiveTime::from_hms_opt(4, 0, 0).unwrap() {
+            session_date = session_date.pred_opt().unwrap_or(session_date);
+        }
+        match self.session_date {
+            Some(current) if session_date < current => return false,
+            Some(current) if session_date == current => return true,
+            _ => {}
+        }
+        self.session_date = Some(session_date);
+        self.day_dollar_volume = 0.0;
+        self.day_trade_count = 0;
+        self.day_volume = 0.0;
+        self.recent_trades.clear();
+        true
     }
 
     fn snapshot(&self, ticker: &str) -> SymbolSnapshot {
@@ -213,5 +241,51 @@ impl SymbolState {
             .filter(|trade| trade.ts >= cutoff)
             .count();
         count as f64 / seconds.max(1) as f64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SymbolState;
+    use crate::event::TradeEvent;
+    use chrono::{DateTime, Utc};
+    use serde_json::Value;
+
+    fn trade(ts: &str, price: f64, size: f64) -> TradeEvent {
+        let timestamp = ts.parse::<DateTime<Utc>>().unwrap();
+        TradeEvent {
+            conditions: Vec::new(),
+            exchange: 0,
+            ingest_ts: timestamp,
+            participant_ts: None,
+            price,
+            raw: Value::Null,
+            sequence: 0,
+            size,
+            tape: 0,
+            ticker: "TEST".to_string(),
+            trade_id: String::new(),
+            trf_id: 0,
+            trf_ts: None,
+            ts: timestamp,
+        }
+    }
+
+    #[test]
+    fn resets_counters_at_four_am_new_york_and_rejects_late_old_session_events() {
+        let mut state = SymbolState::new();
+        state.apply_trade(trade("2026-07-14T07:59:59Z", 10.0, 5.0));
+        assert_eq!(state.day_trade_count, 1);
+        assert_eq!(state.day_volume, 5.0);
+
+        state.apply_trade(trade("2026-07-14T08:00:00Z", 11.0, 7.0));
+        assert_eq!(state.day_trade_count, 1);
+        assert_eq!(state.day_volume, 7.0);
+        assert_eq!(state.last_price, 11.0);
+
+        state.apply_trade(trade("2026-07-14T07:59:58Z", 9.0, 100.0));
+        assert_eq!(state.day_trade_count, 1);
+        assert_eq!(state.day_volume, 7.0);
+        assert_eq!(state.last_price, 11.0);
     }
 }

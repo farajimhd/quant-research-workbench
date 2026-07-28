@@ -12,6 +12,7 @@ Routes:
 
 - `news.semantic_fast.v1`
 - `news.trade_hypothesis.v1`
+- `news.trade_hypothesis.v2`
 - `sec.semantic_label.v1`
 
 Runtime state is stored outside the repository under

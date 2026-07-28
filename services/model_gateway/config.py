@@ -91,6 +91,14 @@ class GatewayConfig:
                 _float("MODEL_GATEWAY_NEWS_DEEP_DAILY_BUDGET_USD", 30.0),
                 os.environ.get("MODEL_GATEWAY_NEWS_DEEP_REASONING_EFFORT", "medium"),
             ),
+            "news.trade_hypothesis.v2": RouteProfile(
+                "news.trade_hypothesis.v2",
+                _csv("MODEL_GATEWAY_NEWS_DEEP_PROVIDERS", "openai-deep"),
+                _float("MODEL_GATEWAY_NEWS_DEEP_TIMEOUT_SECONDS", 25.0),
+                _int("MODEL_GATEWAY_NEWS_DEEP_MAX_OUTPUT_TOKENS", 3000),
+                _float("MODEL_GATEWAY_NEWS_DEEP_DAILY_BUDGET_USD", 30.0),
+                os.environ.get("MODEL_GATEWAY_NEWS_DEEP_REASONING_EFFORT", "medium"),
+            ),
             "sec.semantic_label.v1": RouteProfile(
                 "sec.semantic_label.v1",
                 _csv("MODEL_GATEWAY_SEC_PROVIDERS", "local-vllm,openai-fast"),

@@ -20,40 +20,13 @@ from research.mlops.clickhouse import (
     default_clickhouse_user,
     insert_json_each_row,
 )
+from research.news_labeling.trade_hypothesis_v2.contract import (
+    CONTRACT_VERSION,
+    HYPOTHESIS_SCHEMA,
+    build_messages,
+    validate_hypothesis,
+)
 
-
-HYPOTHESIS_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": [
-        "upside_probability", "downside_probability", "no_action_probability",
-        "expected_return_pct", "favorable_excursion_pct", "adverse_excursion_pct",
-        "horizon", "regime_compatibility", "evidence", "conflicts",
-        "invalidation_conditions", "uncertainty", "abstain",
-    ],
-    "properties": {
-        "upside_probability": {"type": "number", "minimum": 0, "maximum": 1},
-        "downside_probability": {"type": "number", "minimum": 0, "maximum": 1},
-        "no_action_probability": {"type": "number", "minimum": 0, "maximum": 1},
-        "expected_return_pct": {"type": "number"},
-        "favorable_excursion_pct": {"type": "number", "minimum": 0},
-        "adverse_excursion_pct": {"type": "number", "minimum": 0},
-        "horizon": {"type": "string", "enum": ["1m", "5m", "30m", "session", "next_session"]},
-        "regime_compatibility": {"type": "string", "enum": ["supportive", "neutral", "hostile", "unknown"]},
-        "evidence": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
-        "conflicts": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
-        "invalidation_conditions": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
-        "uncertainty": {"type": "string"},
-        "abstain": {"type": "boolean"},
-    },
-}
-
-SYSTEM_PROMPT = """You are a point-in-time market hypothesis service.
-Analyze only the supplied frozen context. Do not claim facts outside it.
-Return probabilities for upside, downside, and no-action that sum to 1 within
-0.01. Expected return and excursions are descriptive estimates, not orders.
-Abstain when evidence is stale, contradictory, insufficient, or ineligible.
-Never issue an order, position size, or imperative trading instruction."""
 
 load_env_files(
     discover_env_files(Path(__file__).resolve().parents[4]),
@@ -72,6 +45,7 @@ class HypothesisRequest(BaseModel):
     market_status: dict[str, Any] = Field(default_factory=dict)
     sec_context: list[dict[str, Any]] = Field(default_factory=list)
     fundamental_context: dict[str, Any] = Field(default_factory=dict)
+    prior_news: list[dict[str, Any]] = Field(default_factory=list)
     session_id: str = ""
 
 
@@ -144,14 +118,11 @@ class ContextualMarketAi:
             json.dumps(context, sort_keys=True, separators=(",", ":"), default=str).encode()
         ).hexdigest()
         payload = {
-            "route": "news.trade_hypothesis.v1",
+            "route": "news.trade_hypothesis.v2",
             "idempotency_key": hashlib.sha256(
-                f"{item.canonical_news_id}|{item.ticker}|{context_hash}|hypothesis-v1".encode()
+                f"{item.canonical_news_id}|{item.ticker}|{context_hash}|hypothesis-v2".encode()
             ).hexdigest(),
-            "messages": [
-                {"role": "developer", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": json.dumps(context, separators=(",", ":"), default=str)},
-            ],
+            "messages": build_messages(context),
             "response_schema": HYPOTHESIS_SCHEMA,
             "metadata": {
                 "canonical_news_id": item.canonical_news_id,
@@ -162,12 +133,7 @@ class ContextualMarketAi:
         }
         response = await asyncio.to_thread(_post_json, f"{self.model_gateway_url}/infer", payload, 35.0)
         result = response["result"]
-        probability_sum = sum(
-            float(result[key])
-            for key in ("upside_probability", "downside_probability", "no_action_probability")
-        )
-        if abs(probability_sum - 1.0) > 0.01:
-            raise ValueError(f"hypothesis probabilities sum to {probability_sum}")
+        validate_hypothesis(result)
         now = datetime.now(UTC)
         row = {
             "canonical_news_id": item.canonical_news_id,
@@ -177,7 +143,7 @@ class ContextualMarketAi:
                 datetime.fromisoformat(context["context_as_of_utc"].replace("Z", "+00:00"))
             ),
             "context_hash": context_hash,
-            "contract_version": "news_trade_hypothesis_v1",
+            "contract_version": CONTRACT_VERSION,
             "hypothesis_json": json.dumps(result, separators=(",", ":")),
             "provider": response.get("provider", ""),
             "model": response.get("model", ""),
@@ -262,7 +228,7 @@ class ContextualMarketAi:
             raw_status = asdict(status) if is_dataclass(status) else dict(status)
             market_status = _json_safe(raw_status)
         return {
-            "contract": "frozen_market_context_v1",
+            "contract": "frozen_market_context_v2",
             "context_as_of_utc": str(
                 snapshot.get("last_event_ts") or item.published_at_utc
             ),
@@ -275,6 +241,14 @@ class ContextualMarketAi:
             "market_status": market_status,
             "sec_context": sec_context,
             "fundamental_context": fundamentals,
+            "prior_news": list(item.prior_news[:3])
+            if item.prior_news
+            else await asyncio.to_thread(
+                self._prior_news_context,
+                item.canonical_news_id,
+                ticker,
+                item.published_at_utc,
+            ),
         }
 
     async def _market_snapshot(
@@ -333,6 +307,20 @@ class ContextualMarketAi:
             ) ENGINE=ReplacingMergeTree(created_at_utc)
             PARTITION BY toYYYYMM(published_at_utc)
             ORDER BY (canonical_news_id,ticker,contract_version)"""
+        )
+
+    def _prior_news_context(
+        self, canonical_news_id: str, ticker: str, published_at_utc: str
+    ) -> list[dict[str, Any]]:
+        from src.backend.news_prior_context import prior_news_context
+
+        return prior_news_context(
+            self.client,
+            canonical_news_id=canonical_news_id,
+            ticker=ticker,
+            as_of_utc=published_at_utc,
+            limit=3,
+            database=self.database,
         )
 
 
