@@ -24,6 +24,7 @@ class ClassificationResult:
     modality: str
     time_orientation: str
     forecast_trigger_eligible: bool
+    reaction_evaluation_eligible: bool
     prior_primary_context_eligible: bool
     episode_followup_eligible: bool
     confidence: float

@@ -59,8 +59,12 @@ def _classify_news(document: SemanticDocument, semantic) -> ClassificationResult
         scope=legacy.scope,
         has_events=bool(semantic.labels),
     )
+    ticker_scoped_semantics_required = content_role in AGGREGATION_ROLES
+    promoted_labels = (
+        () if ticker_scoped_semantics_required else semantic.labels
+    )
     event_concepts = tuple(
-        f"{label.family}.{label.subtype}" for label in semantic.labels
+        f"{label.family}.{label.subtype}" for label in promoted_labels
     )
     conflicts: list[str] = []
     if legacy.is_company_news and source_origin not in {
@@ -72,6 +76,8 @@ def _classify_news(document: SemanticDocument, semantic) -> ClassificationResult
         conflicts.append("aggregation_role_conflicts_with_company_label")
     if source_origin == "issuer_direct" and issuer_relationship != "direct_announcement":
         conflicts.append("issuer_origin_relationship_conflict")
+    if ticker_scoped_semantics_required:
+        conflicts.append("ticker_scoped_semantics_required")
 
     forecast = (
         content_role in PRIMARY_ROLES
@@ -100,7 +106,7 @@ def _classify_news(document: SemanticDocument, semantic) -> ClassificationResult
     }
     confidence = _combined_confidence(
         legacy.confidence,
-        semantic.labels,
+        promoted_labels,
         conflicts,
     )
     evidence = tuple(
@@ -109,9 +115,23 @@ def _classify_news(document: SemanticDocument, semantic) -> ClassificationResult
                 *legacy.evidence,
                 f"semantic role: {semantic.content_role}",
                 f"semantic origin: {semantic.origin}",
-                *(f"event: {value}" for value in event_concepts),
+                *(
+                    ("document-wide events withheld pending ticker-scoped extraction",)
+                    if ticker_scoped_semantics_required
+                    else tuple(f"event: {value}" for value in event_concepts)
+                ),
             )
         )
+    )
+    semantic_direction = (
+        "neutral"
+        if ticker_scoped_semantics_required
+        else semantic.sentiment
+    )
+    semantic_score = (
+        0.0
+        if ticker_scoped_semantics_required
+        else semantic.sentiment_score
     )
     return ClassificationResult(
         authority_version=CLASSIFICATION_AUTHORITY_VERSION,
@@ -124,11 +144,12 @@ def _classify_news(document: SemanticDocument, semantic) -> ClassificationResult
         issuer_relationship=issuer_relationship,
         scope=legacy.scope,
         event_concepts=event_concepts,
-        semantic_direction=semantic.sentiment,
-        semantic_score=semantic.sentiment_score,
+        semantic_direction=semantic_direction,
+        semantic_score=semantic_score,
         modality=semantic.modality,
         time_orientation=semantic.time_orientation,
         forecast_trigger_eligible=forecast,
+        reaction_evaluation_eligible=forecast,
         prior_primary_context_eligible=prior_primary,
         episode_followup_eligible=followup,
         confidence=confidence,
@@ -191,6 +212,7 @@ def _classify_sec(document: SemanticDocument, semantic) -> ClassificationResult:
         modality=semantic.modality,
         time_orientation=semantic.time_orientation,
         forecast_trigger_eligible=forecast,
+        reaction_evaluation_eligible=forecast,
         prior_primary_context_eligible=forecast,
         episode_followup_eligible=False,
         confidence=confidence,

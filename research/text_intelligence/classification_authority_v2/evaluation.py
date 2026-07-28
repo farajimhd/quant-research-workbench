@@ -124,8 +124,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 f"sample contract failed: news={len(news)} sec={len(sec)}"
             )
         rows = classify_rows(news, sec)
-        news_reactions = news_reaction_rows(client, news)
-        sec_reactions = sec_reaction_rows(client, sec)
+        news_reactions = news_reaction_rows(client, rows)
+        sec_reactions = sec_reaction_rows(client, rows)
         reactions = [*news_reactions, *sec_reactions]
         payload = summarize(rows, reactions)
         write_outputs(args.output_root, rows, reactions, payload)
@@ -435,6 +435,8 @@ def classify_rows(
                         "evidence": [asdict(value) for value in label.evidence],
                     }
                     for label in semantic.labels
+                    if f"{label.family}.{label.subtype}"
+                    in classification.event_concepts
                 ],
                 "normalized_semantic_text": semantic.normalized_semantic_text,
                 "metadata": metadata,
@@ -450,14 +452,16 @@ def classify_rows(
 
 def news_reaction_rows(
     client: ClickHouseHttpClient,
-    news: Sequence[dict[str, Any]],
+    rows: Sequence[dict[str, Any]],
 ) -> list[Reaction]:
     sample = {
         str(row["source_id"]): {
             "published_at_utc": row["source_timestamp"],
             "tickers": row.get("tickers") or [],
         }
-        for row in news
+        for row in rows
+        if row["corpus"] == "news"
+        and row["classification"]["reaction_evaluation_eligible"]
     }
     raw = fetch_reactions(
         client,
@@ -487,11 +491,16 @@ def news_reaction_rows(
 
 def sec_reaction_rows(
     client: ClickHouseHttpClient,
-    sec: Sequence[dict[str, Any]],
+    rows: Sequence[dict[str, Any]],
 ) -> list[Reaction]:
     config = LoaderConfig()
     grouped: dict[dt.date, list[tuple[int, dict[str, Any]]]] = defaultdict(list)
-    for index, row in enumerate(sec):
+    for index, row in enumerate(rows):
+        if (
+            row["corpus"] != "sec"
+            or not row["classification"]["reaction_evaluation_eligible"]
+        ):
+            continue
         tickers = row.get("tickers") or []
         if not tickers:
             continue
@@ -600,11 +609,26 @@ def summarize(
                 ).items()
             )
         )
+        payload["classification_distributions"][corpus][
+            "reaction_evaluation_eligible"
+        ] = dict(
+            sorted(
+                Counter(
+                    str(row["reaction_evaluation_eligible"]).lower()
+                    for row in subset
+                ).items()
+            )
+        )
     for corpus in ("news", "sec"):
         corpus_rows = [row for row in rows if row["corpus"] == corpus]
+        eligible_rows = [
+            row
+            for row in corpus_rows
+            if row["classification"]["reaction_evaluation_eligible"]
+        ]
         paired: list[tuple[str, str]] = []
         mixed = 0
-        for row in corpus_rows:
+        for row in eligible_rows:
             predicted = row["classification"]["semantic_direction"]
             values = by_key.get((corpus, row["source_id"]), ())
             for reaction in values:
@@ -618,9 +642,13 @@ def summarize(
         confusion = Counter(f"{left}->{right}" for left, right in paired)
         payload["reaction"][corpus] = {
             "documents": len(corpus_rows),
+            "eligible_documents": len(eligible_rows),
+            "context_only_documents_excluded": (
+                len(corpus_rows) - len(eligible_rows)
+            ),
             "reaction_links": sum(
                 len(by_key.get((corpus, row["source_id"]), ()))
-                for row in corpus_rows
+                for row in eligible_rows
             ),
             "scored_links": len(paired),
             "mixed_direction_links_excluded": mixed,
@@ -630,7 +658,8 @@ def summarize(
             "confusion": dict(sorted(confusion.items())),
             "interpretation": (
                 "Descriptive language-direction versus realized 30-minute "
-                "excursion-dominance agreement; not taxonomy ground-truth accuracy."
+                "excursion-dominance agreement for reaction-eligible primary "
+                "evidence only; not taxonomy ground-truth accuracy."
             ),
         }
     payload["quality"] = {
@@ -680,6 +709,8 @@ def create_dossiers(
         candidates: list[tuple[dict[str, Any], Reaction]] = []
         for row in rows:
             if row["corpus"] != corpus:
+                continue
+            if not row["classification"]["reaction_evaluation_eligible"]:
                 continue
             for ticker in row["tickers"]:
                 reaction = reaction_by_key.get(
@@ -814,6 +845,8 @@ def render_report(payload: dict[str, Any]) -> str:
                 f"## {corpus.upper()} language/reaction comparison",
                 "",
                 f"- Reaction links: **{reaction['reaction_links']:,}**.",
+                f"- Reaction-eligible documents: **{reaction['eligible_documents']:,}**.",
+                f"- Context-only documents excluded: **{reaction['context_only_documents_excluded']:,}**.",
                 f"- Scored three-class links: **{reaction['scored_links']:,}**.",
                 f"- Mixed-language links excluded: **{reaction['mixed_direction_links_excluded']:,}**.",
                 "- Exact direction agreement: "
@@ -861,6 +894,7 @@ def render_dossier(
         f"| Market reaction direction | **{reaction.direction}** |",
         f"| Exact direction agreement | **{'yes' if classification['semantic_direction'] == reaction.direction else 'no'}** |",
         f"| Forecast trigger eligible | `{classification['forecast_trigger_eligible']}` |",
+        f"| Reaction evaluation eligible | `{classification['reaction_evaluation_eligible']}` |",
         f"| Prior primary context eligible | `{classification['prior_primary_context_eligible']}` |",
         f"| Episode follow-up eligible | `{classification['episode_followup_eligible']}` |",
         "",

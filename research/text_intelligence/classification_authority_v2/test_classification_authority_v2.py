@@ -10,7 +10,7 @@ from research.text_intelligence.semantic_label_authority_v1.labeler import (
 )
 
 from .authority import classify_document
-from .evaluation import reaction_direction
+from .evaluation import Reaction, reaction_direction, summarize
 
 
 def news(
@@ -46,6 +46,7 @@ class ClassificationAuthorityTests(unittest.TestCase):
         self.assertEqual(result.issuer_relationship, "direct_announcement")
         self.assertEqual(result.content_role, "primary_event")
         self.assertTrue(result.forecast_trigger_eligible)
+        self.assertTrue(result.reaction_evaluation_eligible)
         self.assertIn("guidance.raise", result.event_concepts)
 
     def test_single_ticker_editorial_is_not_company_news(self) -> None:
@@ -78,6 +79,14 @@ class ClassificationAuthorityTests(unittest.TestCase):
         self.assertEqual(result.source_origin, "editorial_aggregation")
         self.assertTrue(result.episode_followup_eligible)
         self.assertFalse(result.forecast_trigger_eligible)
+        self.assertFalse(result.reaction_evaluation_eligible)
+        self.assertEqual(result.semantic_direction, "neutral")
+        self.assertEqual(result.semantic_score, 0.0)
+        self.assertFalse(result.event_concepts)
+        self.assertIn(
+            "ticker_scoped_semantics_required",
+            result.quality_flags,
+        )
 
     def test_sec_source_type_is_not_overwritten_by_semantics(self) -> None:
         result = classify_document(
@@ -100,6 +109,7 @@ class ClassificationAuthorityTests(unittest.TestCase):
         self.assertIn("EX-99.1", result.source_subtype)
         self.assertEqual(result.source_origin, "regulatory_primary")
         self.assertIn("financing.registered_direct", result.event_concepts)
+        self.assertTrue(result.reaction_evaluation_eligible)
 
     def test_reaction_direction_uses_excursion_dominance_and_noise(self) -> None:
         self.assertEqual(reaction_direction(0.001, -0.001, 0.5), "neutral")
@@ -120,6 +130,67 @@ class ClassificationAuthorityTests(unittest.TestCase):
         self.assertFalse(semantic.keywords)
         self.assertFalse(semantic.candidates)
         self.assertIn("guidance.raise", result.event_concepts)
+
+    def test_summary_excludes_context_only_reaction_links(self) -> None:
+        eligible = classify_document(
+            news(
+                "The company announced today that it raised guidance.",
+                links=["https://www.businesswire.com/news/example"],
+                channels=["Guidance"],
+            )
+        ).as_dict()
+        context = classify_document(
+            news(
+                "EXMP raised guidance while other companies announced offerings.",
+                title="50 Biggest Movers From Friday",
+                channels=["Movers"],
+                tickers=("EXMP", "ABCD"),
+            )
+        ).as_dict()
+        rows = [
+            {
+                "corpus": "news",
+                "source_id": "eligible",
+                "classification": eligible,
+            },
+            {
+                "corpus": "news",
+                "source_id": "context",
+                "classification": context,
+            },
+        ]
+        reactions = [
+            Reaction(
+                corpus="news",
+                source_id="eligible",
+                ticker="EXMP",
+                published_at_utc="2026-07-28T12:00:00Z",
+                anchor_price=10.0,
+                terminal_return=0.01,
+                high_return=0.02,
+                low_return=-0.005,
+                observation_count=10,
+                source="test",
+            ),
+            Reaction(
+                corpus="news",
+                source_id="context",
+                ticker="EXMP",
+                published_at_utc="2026-07-28T12:00:00Z",
+                anchor_price=10.0,
+                terminal_return=-0.01,
+                high_return=0.005,
+                low_return=-0.02,
+                observation_count=10,
+                source="test",
+            ),
+        ]
+        payload = summarize(rows, reactions)
+        result = payload["reaction"]["news"]
+        self.assertEqual(result["eligible_documents"], 1)
+        self.assertEqual(result["context_only_documents_excluded"], 1)
+        self.assertEqual(result["reaction_links"], 1)
+        self.assertEqual(result["exact_direction_agreement"], 1.0)
 
 
 if __name__ == "__main__":
