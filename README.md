@@ -227,6 +227,29 @@ Run the backend API and React development server in separate terminals:
 python scripts/run_frontend.py dev
 ```
 
+To start QMD History, the backend, and the frontend together as three
+independent PowerShell tabs in one named Windows Terminal window:
+
+```powershell
+.\scripts\start_workspace_services.ps1
+```
+
+The starter delegates to `run_qmd_history_gateway.ps1`, `run_backend.ps1`, and
+`run_frontend.py`; it does not become a shared supervisor. Stop all matching
+instances, including alternate instances identified by those launcher/service
+command lines or owners of ports 8801, 8000, and 5173, with:
+
+```powershell
+.\scripts\stop_workspace_services.ps1
+```
+
+Shutdown sends Ctrl+C first, waits up to eight seconds, force-stops only
+survivors, rescans for reload-created children, and verifies the configured
+ports are free. Use `-QmdHistoryPort`, `-BackendPort`, and `-FrontendPort` on
+the stop script when the corresponding service was launched on a non-default
+port. Use `-PythonExe` on either script when the intended Python interpreter
+is not active or on `PATH`.
+
 For a production-style local build:
 
 ```powershell
