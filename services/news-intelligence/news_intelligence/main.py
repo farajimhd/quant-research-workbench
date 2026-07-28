@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import uvicorn
-from fastapi import FastAPI
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException
 
 from services.gateway_core.dashboard import build_dashboard_snapshot
 from services.gateway_core.health import build_health_payload
@@ -10,10 +12,23 @@ from services.gateway_core.uvicorn_logging import quiet_uvicorn_log_config, supp
 from .config import IntelligenceConfig
 from .schemas import IntelligenceResponse, NewsArticleForClassification
 from .tiers import IntelligenceEngine
+from .live import LiveCandidate, LiveCandidateBatch, LiveNewsRuntime, LiveSessionUpdate
 
 config = IntelligenceConfig.from_env()
 engine = IntelligenceEngine(config)
-app = FastAPI(title="News Intelligence Service")
+live_runtime = LiveNewsRuntime()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    await live_runtime.start()
+    try:
+        yield
+    finally:
+        await live_runtime.stop()
+
+
+app = FastAPI(title="News Intelligence Service", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -45,6 +60,35 @@ def classify(article: NewsArticleForClassification) -> IntelligenceResponse:
     return engine.classify(article)
 
 
+@app.get("/live-session")
+def live_session() -> dict[str, object]:
+    return vars(live_runtime.session)
+
+
+@app.post("/live-session")
+def update_live_session(update: LiveSessionUpdate) -> dict[str, object]:
+    return vars(live_runtime.update_session(update))
+
+
+@app.post("/candidate", status_code=202)
+def enqueue_candidate(candidate: LiveCandidate) -> dict[str, object]:
+    try:
+        live_runtime.enqueue(candidate)
+    except asyncio.QueueFull as exc:
+        raise HTTPException(status_code=503, detail="news intelligence queue is full") from exc
+    return {"status": "queued", "canonical_news_id": candidate.canonical_news_id}
+
+
+@app.post("/candidates", status_code=202)
+def enqueue_candidates(batch: LiveCandidateBatch) -> dict[str, object]:
+    try:
+        for candidate in batch.candidates:
+            live_runtime.enqueue(candidate)
+    except asyncio.QueueFull as exc:
+        raise HTTPException(status_code=503, detail="news intelligence queue is full") from exc
+    return {"status": "queued", "count": len(batch.candidates)}
+
+
 def _snapshot_metrics() -> dict[str, object]:
     registry = engine.registry.snapshot()
     model_rows = registry.get("models") if isinstance(registry.get("models"), list) else []
@@ -57,6 +101,7 @@ def _snapshot_metrics() -> dict[str, object]:
             loaded += 1
         if payload.get("error") or payload.get("load_error"):
             failed += 1
+    live_metrics = {**live_runtime.metrics, "queue_size": live_runtime.queue.qsize()}
     return {
         "status": "running" if failed == 0 else "degraded",
         "bind": config.bind,
@@ -85,6 +130,9 @@ def _snapshot_metrics() -> dict[str, object]:
                 "message": "OpenAI-compatible model serving helper is ready.",
             }
         ],
+        "live_session": vars(live_runtime.session),
+        "live_metrics": live_metrics,
+        **live_metrics,
     }
 
 

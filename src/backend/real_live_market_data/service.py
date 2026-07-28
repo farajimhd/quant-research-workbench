@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import os
+import urllib.request
 from typing import Any
 
 from src.backend.real_live_market_data.gateway import MarketGateway
@@ -16,11 +20,53 @@ def get_market_gateway() -> MarketGateway:
 
 
 async def market_gateway_start() -> dict[str, Any]:
-    return await get_market_gateway().start()
+    status = await get_market_gateway().start()
+    await _notify_news_intelligence(
+        active=True,
+        session_id=str(status.get("trading_session_id") or ""),
+        started_at_utc=str(status.get("started_at_utc") or ""),
+    )
+    return status
 
 
 async def market_gateway_stop() -> dict[str, Any]:
-    return await get_market_gateway().stop()
+    gateway = get_market_gateway()
+    session_id = gateway.trading_session_id
+    status = await gateway.stop()
+    await _notify_news_intelligence(active=False, session_id=session_id, started_at_utc="")
+    return status
+
+
+async def _notify_news_intelligence(
+    *, active: bool, session_id: str, started_at_utc: str
+) -> None:
+    """Synchronize the explicit live-trading gate without coupling startup.
+
+    News intelligence being unavailable must not prevent the market gateway
+    from starting or stopping; the service exposes its session state for an
+    operator to verify and can be updated idempotently.
+    """
+    url = os.environ.get("NEWS_INTELLIGENCE_URL", "http://127.0.0.1:8804").rstrip("/")
+    payload = {
+        "active": active,
+        "session_id": session_id,
+        "started_at_utc": started_at_utc,
+    }
+    try:
+        await asyncio.to_thread(_post_json, f"{url}/live-session", payload, 1.5)
+    except Exception:
+        return
+
+
+def _post_json(url: str, payload: dict[str, Any], timeout: float) -> None:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout):
+        return
 
 
 def market_gateway_status() -> dict[str, Any]:

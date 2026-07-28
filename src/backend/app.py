@@ -263,6 +263,12 @@ SERVICE_DATABASE_TABLES: dict[str, list[dict[str, str]]] = {
     "ibkr": [
         {"database": "q_live", "table": "ibkr_gateway_supervisor_event_v1", "role": "supervisor events"},
     ],
+    "news-intelligence": [
+        {"database": "q_live", "table": "news_semantic_label_v1", "role": "semantic labels"},
+    ],
+    "market-ai": [
+        {"database": "q_live", "table": "news_market_hypothesis_v1", "role": "contextual hypotheses"},
+    ],
 }
 
 SERVICE_REGISTRY: dict[str, dict[str, str]] = {
@@ -328,6 +334,33 @@ SERVICE_REGISTRY: dict[str, dict[str, str]] = {
         "default_bind": "127.0.0.1:8800",
         "description": "Client Portal Gateway process supervision, authentication state, account checks, and keepalive monitoring.",
         "recent_path": "/snapshot/ibkr/recent?limit=25",
+    },
+    "model-gateway": {
+        "id": "model-gateway",
+        "label": "Model Gateway",
+        "kind": "inference routing",
+        "bind_env": "MODEL_GATEWAY_BIND",
+        "default_bind": "127.0.0.1:8802",
+        "description": "Provider-neutral structured inference, failover, idempotency, cost budgets, and audit telemetry.",
+        "recent_path": "/routes",
+    },
+    "market-ai": {
+        "id": "market-ai",
+        "label": "Market AI",
+        "kind": "market hypotheses",
+        "bind_env": "MARKET_AI_BIND",
+        "default_bind": "127.0.0.1:8803",
+        "description": "Point-in-time news, market, SEC, and fundamental context synthesis into expiring hypotheses.",
+        "recent_path": "/health",
+    },
+    "news-intelligence": {
+        "id": "news-intelligence",
+        "label": "News Intelligence",
+        "kind": "news semantics",
+        "bind_env": "NEWS_INTELLIGENCE_BIND",
+        "default_bind": "127.0.0.1:8804",
+        "description": "Live eligibility routing, current semantic taxonomy, QMD price gating, and label persistence.",
+        "recent_path": "/live-session",
     },
 }
 

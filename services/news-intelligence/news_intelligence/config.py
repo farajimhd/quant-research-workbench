@@ -38,7 +38,7 @@ class IntelligenceConfig:
         llm_model = env_string("NEWS_INTELLIGENCE_LLM_MODEL", "Qwen/Qwen3-1.7B")
         gpt_oss_default = "gpt-oss" in llm_model.lower()
         return cls(
-            bind=env_string("NEWS_INTELLIGENCE_BIND", "127.0.0.1:8797"),
+            bind=env_string("NEWS_INTELLIGENCE_BIND", "127.0.0.1:8804"),
             enable_llm=env_bool("NEWS_INTELLIGENCE_ENABLE_LLM", False),
             enable_models=env_bool("NEWS_INTELLIGENCE_ENABLE_MODELS", True),
             llm_base_url=env_string("NEWS_INTELLIGENCE_LLM_BASE_URL", "http://127.0.0.1:8000/v1").rstrip("/"),

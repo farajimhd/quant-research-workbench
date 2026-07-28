@@ -5,6 +5,7 @@ import json
 import re
 import time
 import uuid
+import urllib.request
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -53,6 +54,17 @@ from services.gateway_core.market_calendar import MarketHoursSnapshot, MassiveMa
 
 
 EASTERN = ZoneInfo("America/New_York")
+
+
+def _post_json(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode())
 
 
 @dataclass(slots=True)
@@ -1031,6 +1043,7 @@ class NewsGateway:
                         **self._background_enrichment_log_context([live_item]),
                     )
             write_summary = await self._publish_processed(final_items, poll_id=batch.poll_id, coverage_mode="live_background")
+            await self._dispatch_news_intelligence(final_items, poll_id=batch.poll_id)
             await self.state.upsert_rows([item.result.normalized_row for item in final_items])
             await self._refresh_memory_metrics()
             self.metrics.written_rows += write_summary.normalized_rows_inserted
@@ -1080,6 +1093,57 @@ class NewsGateway:
             self.metrics.background_pending_articles = max(0, self.metrics.background_pending_articles - len(batch.items))
             if not self._stop_event.is_set() and self.metrics.background_active_batches == 0 and self._background_queue.qsize() == 0:
                 self._set_phase("polling", "Background processing is idle; waiting for the next scheduled poll.")
+
+    async def _dispatch_news_intelligence(
+        self, items: list[ProcessedNewsItem], *, poll_id: str
+    ) -> None:
+        """Notify the derived-intelligence service only after canonical publish.
+
+        This path is intentionally non-authoritative: a downstream outage is
+        logged but cannot roll back or block durable news ingestion.
+        """
+        if not self.config.intelligence_enabled or not items:
+            return
+        candidates: list[dict[str, Any]] = []
+        for item in items:
+            normalized = item.result.normalized_row
+            rendered = item.result.v2_rendered_row
+            links = normalized.get("article_links") or normalized.get("links") or []
+            candidates.append(
+                {
+                    "canonical_news_id": item.result.canonical_news_id,
+                    "published_at_utc": str(normalized.get("published_at_utc") or ""),
+                    "title": str(normalized.get("title") or ""),
+                    "rendered_text": str(rendered.get("rendered_text") or ""),
+                    "rendered_text_hash": str(rendered.get("rendered_text_hash") or ""),
+                    "author": str(normalized.get("author") or ""),
+                    "url_domain": str(normalized.get("url_domain") or ""),
+                    "tickers": list(normalized.get("tickers") or []),
+                    "channels": list(normalized.get("channels") or []),
+                    "provider_tags": list(normalized.get("provider_tags") or []),
+                    "links": list(links) if isinstance(links, list) else [],
+                    "quality_flags": list(rendered.get("quality_flags") or []),
+                }
+            )
+        try:
+            await asyncio.to_thread(
+                _post_json,
+                f"{self.config.intelligence_url}/candidates",
+                {"candidates": candidates},
+                self.config.intelligence_timeout_seconds,
+            )
+            self._log_event(
+                "news_intelligence_dispatched",
+                poll_id=poll_id,
+                candidate_count=len(candidates),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._log_event(
+                "news_intelligence_dispatch_deferred",
+                poll_id=poll_id,
+                candidate_count=len(candidates),
+                error=f"{type(exc).__name__}: {exc}",
+            )
 
     def _background_enrichment_log_context(self, items: list[LiveNewsPayload]) -> dict[str, Any]:
         titles: list[str] = []

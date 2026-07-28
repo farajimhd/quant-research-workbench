@@ -10,7 +10,7 @@ import { displayName, formatCell, formatCompactNumber, formatDuration } from "..
 import "./ServicesOverview.css";
 
 export type ServicePageMode = "dashboard" | ServiceId;
-export type ServiceId = "ibkr" | "news" | "qmd" | "qmd-history" | "reference" | "sec" | "text-embed";
+export type ServiceId = "ibkr" | "market-ai" | "model-gateway" | "news" | "news-intelligence" | "qmd" | "qmd-history" | "reference" | "sec" | "text-embed";
 
 type ServiceRegistry = {
   base_url: string;
@@ -90,7 +90,7 @@ type ServiceRuntimeLogRow = {
   ts_utc?: string;
 };
 
-const SERVICE_IDS: ServiceId[] = ["qmd", "qmd-history", "news", "sec", "text-embed", "reference", "ibkr"];
+const SERVICE_IDS: ServiceId[] = ["qmd", "qmd-history", "news", "news-intelligence", "model-gateway", "market-ai", "sec", "text-embed", "reference", "ibkr"];
 const EXCHANGE_TIME_ZONE = "America/New_York";
 const VANCOUVER_TIME_ZONE = "America/Vancouver";
 
@@ -4567,6 +4567,43 @@ function secLiveFeedRow(row: Record<string, unknown>): SecLiveFeedRow | null {
 function serviceActivitySpec(service: ServiceStatusPayload): ServiceActivitySpec {
   const metrics = serviceMetricsRecord(service);
   const status = stringMetric(metrics, ["activity_status", "run_status", "status"]) || service.status || "unknown";
+  if (service.registry.id === "news-intelligence") {
+    return {
+      description: "Live semantic eligibility, validation, canonical reconciliation, and label persistence.",
+      status,
+      summary: [
+        metricSummary(metrics, "Processed", ["processed"]),
+        metricSummary(metrics, "Queued", ["queued", "queue_size"]),
+        metricSummary(metrics, "Filtered", ["filtered"]),
+        metricSummary(metrics, "Failed", ["failed"], "bad"),
+      ],
+      title: "Semantic Label Activity",
+    };
+  }
+  if (service.registry.id === "model-gateway") {
+    return {
+      description: "Named model routes, bounded provider execution, schema validation, and cost controls.",
+      status,
+      summary: [
+        metricSummary(metrics, "Routes", ["route_count"]),
+        metricSummary(metrics, "Providers", ["provider_count"]),
+        metricSummary(metrics, "Concurrency", ["max_concurrency"]),
+      ],
+      title: "Inference Routing Activity",
+    };
+  }
+  if (service.registry.id === "market-ai") {
+    return {
+      description: "Frozen point-in-time context, deep model work, expiring hypotheses, and recovery.",
+      status,
+      summary: [
+        metricSummary(metrics, "Completed", ["completed"]),
+        metricSummary(metrics, "Queued", ["queued", "queue_size"]),
+        metricSummary(metrics, "Failed", ["failed"], "bad"),
+      ],
+      title: "Contextual Hypothesis Activity",
+    };
+  }
   if (service.registry.id === "qmd") {
     return {
       description: "Recent reusable market signals, market-state events, live throughput, and persistence activity.",
@@ -4920,6 +4957,9 @@ const SERVICE_PRIMARY_DATABASE_ROLES: Record<ServiceId, string[]> = {
   news: ["normalized news"],
   qmd: ["live events"],
   "qmd-history": [],
+  "market-ai": ["contextual hypotheses"],
+  "model-gateway": [],
+  "news-intelligence": ["semantic labels"],
   reference: ["tradable universe"],
   sec: ["filings"],
   "text-embed": ["news embeddings", "sec embeddings"],
@@ -4936,6 +4976,33 @@ function serviceFleetMetrics(service: ServiceStatusPayload): ServiceFleetMetric[
     return { value: `${current} / ${total}`, valueParts: { current, total } };
   };
   const detail = (text: string, fallback: string) => text.trim() || fallback;
+
+  if (service.registry.id === "news-intelligence") {
+    return [
+      { label: "Processed", value: compact(number(["processed"])), detail: "validated semantic labels" },
+      { label: "Queued", value: compact(number(["queued", "queue_size"])), detail: "bounded live work" },
+      { label: "Filtered", value: compact(number(["filtered"])), detail: "scope, session, hours, or price gate" },
+      { label: "Failed", value: compact(number(["failed"])), detail: "retryable semantic work", tone: (number(["failed"]) ?? 0) > 0 ? "warn" : "neutral" },
+    ];
+  }
+
+  if (service.registry.id === "model-gateway") {
+    return [
+      { label: "Routes", value: compact(number(["route_count"])), detail: "named inference contracts" },
+      { label: "Concurrency", value: compact(number(["max_concurrency"])), detail: "bounded provider calls" },
+      { label: "Providers", value: compact(number(["provider_count"])), detail: "local and remote profiles" },
+      { label: "Status", value: service.online ? "Ready" : "Unavailable", detail: "schema, budget, and idempotency authority", tone: service.online ? "good" : "warn" },
+    ];
+  }
+
+  if (service.registry.id === "market-ai") {
+    return [
+      { label: "Completed", value: compact(number(["completed"])), detail: "persisted hypotheses" },
+      { label: "Queued", value: compact(number(["queued", "queue_size"])), detail: "deep contextual work" },
+      { label: "Failed", value: compact(number(["failed"])), detail: "reconciled while unexpired", tone: (number(["failed"]) ?? 0) > 0 ? "warn" : "neutral" },
+      { label: "Authority", value: "Advisory", detail: "no order or sizing control" },
+    ];
+  }
 
   if (service.registry.id === "news") {
     const polled = number(["provider_rows", "processed_rows", "raw_saved"]);
@@ -6465,6 +6532,69 @@ function serviceResponsibilitySpecs(serviceId: ServiceId): ServiceResponsibility
   } satisfies Record<string, ServiceResponsibilitySpec>;
 
   const specs: Record<ServiceId, ServiceResponsibilitySpec[]> = {
+    "news-intelligence": [
+      {
+        description: "Live-session gating, ticker and price eligibility, canonical-news deduplication, and bounded semantic work queues.",
+        id: "routing",
+        match: [/session|market|eligible|filter|ticker|price|route|queue|dedup/],
+        title: "Live Eligibility And Routing",
+      },
+      {
+        description: "Fast structured semantic labeling with the audited taxonomy, strict output validation, and evidence preservation.",
+        id: "semantics",
+        match: [/semantic|label|taxonomy|model|prompt|validat|evidence|sentiment|classif/],
+        title: "Semantic Labeling",
+      },
+      {
+        description: "Durable label persistence, canonical-news reconciliation, retry recovery, and downstream Market AI dispatch.",
+        id: "persistence",
+        match: [/persist|database|clickhouse|reconcile|retry|failed|canonical|dispatch|recover/],
+        title: "Persistence And Recovery",
+      },
+      common.other,
+    ],
+    "model-gateway": [
+      {
+        description: "Named inference routes, provider selection, local-to-remote failover, retries, and circuit-breaker state.",
+        id: "routing",
+        match: [/route|provider|failover|retry|circuit|endpoint|model/],
+        title: "Routing And Provider Health",
+      },
+      {
+        description: "Schema enforcement, idempotency, concurrency limits, timeouts, and per-route cost budgets.",
+        id: "guardrails",
+        match: [/schema|budget|cost|idempoten|cache|concurr|timeout|guard|limit/],
+        title: "Inference Guardrails",
+      },
+      {
+        description: "Request audit metadata, provider usage, token counts, cost, and latency without retaining source prompts.",
+        id: "audit",
+        match: [/audit|usage|token|latency|request|response|status|error/],
+        title: "Usage And Audit",
+      },
+      common.other,
+    ],
+    "market-ai": [
+      {
+        description: "Frozen point-in-time QMD, SEC, fundamental, and market context assembled for each labeled news event.",
+        id: "context",
+        match: [/qmd|sec|fundamental|market|context|frozen|as.?of|snapshot/],
+        title: "Point-In-Time Context",
+      },
+      {
+        description: "Deep structured trade hypotheses with directional probabilities, expected return, excursions, uncertainty, and abstention.",
+        id: "hypothesis",
+        match: [/hypothesis|probabil|return|excursion|uncertainty|abstain|forecast|evidence|conflict/],
+        title: "Contextual Hypotheses",
+      },
+      {
+        description: "Bounded processing, durable hypothesis persistence, expiry, reconciliation, and failed-work recovery.",
+        id: "persistence",
+        match: [/queue|reconcile|persist|database|clickhouse|expire|failed|retry|recover/],
+        title: "Persistence And Recovery",
+      },
+      common.other,
+    ],
     news: [
       {
         description: "Benzinga polling cadence, raw item intake, duplicate handling, and live news memory updates.",

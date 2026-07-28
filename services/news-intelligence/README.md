@@ -1,25 +1,36 @@
 # News Intelligence Service
 
-Standalone model-serving service for live news labels.
+Domain service for live news eligibility and semantic labels.
 
-This service does not poll providers and does not write ClickHouse. The Rust
-`news-gateway` owns ingestion, persistence, and websocket streaming. This
-service receives one normalized article, runs the configured model tiers, and
-returns labels that the gateway can persist and broadcast with the article.
+The Python News Gateway owns provider acquisition and canonical V2 persistence.
+After that durable publish, this service accepts a bounded candidate
+notification, requires an explicitly active live-trading session, applies the
+deterministic kind/scope contract and a point-in-time QMD price gate, and calls
+the provider-neutral Model Gateway. It validates the current
+`gpt_oss_news_semantics_v1` schema and writes the derived label to
+`q_live.news_semantic_label_v1`.
+
+Transient notification failures are healed from canonical V2 rows during the
+active session. The deeper Market AI request is asynchronous and cannot block
+the fast semantic label.
 
 ## Responsibilities
 
+- Route only eligible live news; never poll a news provider.
+- Freeze the point-in-time QMD snapshot used for price eligibility.
+- Persist validated versioned semantic labels with model/cost/latency lineage.
+- Reconcile missed live notifications from canonical V2 tables.
 - Serve fast financial sentiment and relevance models from local artifacts.
 - Optionally run entity/event extraction models from local artifacts.
 - Optionally call an OpenAI-compatible local LLM endpoint, usually vLLM, for
   deeper classification on selected articles.
 - Return stable JSON with model, prompt, and taxonomy versions.
-- Degrade to deterministic fallback labels if model packages or artifacts are
-  missing, so the news gateway never blocks ingestion.
+- Keep deterministic classification as routing evidence, not as a silent
+  replacement for the agreed semantic model stage.
 
 ## Environment Variables
 
-- `NEWS_INTELLIGENCE_BIND`, default `127.0.0.1:8797`
+- `NEWS_INTELLIGENCE_BIND`, default `127.0.0.1:8804`
 - `NEWS_INTELLIGENCE_MODEL_ROOT`, default `D:\models_artifacts\opensource`
 - `NEWS_INTELLIGENCE_MODEL_MANIFEST`, default `models\opensource_models.json`
 - `NEWS_INTELLIGENCE_MODEL_DEVICE`, default `auto`; use `cuda` or `cpu` to force model device.
@@ -40,6 +51,16 @@ returns labels that the gateway can persist and broadcast with the article.
 - `NEWS_INTELLIGENCE_LLM_MIN_MATERIALITY`, default `0.65`
 - `NEWS_INTELLIGENCE_LLM_MIN_TEXT_CHARS`, default `80`
 - `NEWS_INTELLIGENCE_LLM_TIMEOUT_MS`, default `3500`
+- `NEWS_INTELLIGENCE_MODEL_GATEWAY_URL`, default `http://127.0.0.1:8802`
+- `NEWS_INTELLIGENCE_MARKET_AI_URL`, default `http://127.0.0.1:8803`
+- `NEWS_INTELLIGENCE_BACKEND_URL`, default `http://127.0.0.1:8000`; this is
+  polled to restore the explicit Live-session gate after either service restarts
+- `NEWS_INTELLIGENCE_QMD_URL`, default `http://127.0.0.1:8795`
+- `NEWS_INTELLIGENCE_ALLOWED_KINDS`, default `company,regulatory,analyst,editorial`
+- `NEWS_INTELLIGENCE_MAX_PRICE`, default `50`
+- `NEWS_INTELLIGENCE_WORKERS`, default `4`
+- `NEWS_INTELLIGENCE_QUEUE_MAX`, default `4096`
+- `NEWS_INTELLIGENCE_RECONCILE_SECONDS`, default `10`
 
 ## Run
 

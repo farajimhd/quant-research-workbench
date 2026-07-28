@@ -88,6 +88,9 @@ class NewsGatewayConfig:
     run_log_enabled: bool
     run_log_queue_size: int
     run_log_skip_sample_size: int
+    intelligence_enabled: bool
+    intelligence_url: str
+    intelligence_timeout_seconds: float
 
     @classmethod
     def from_env(cls) -> "NewsGatewayConfig":
@@ -195,6 +198,13 @@ class NewsGatewayConfig:
             run_log_enabled=env_bool("NEWS_GATEWAY_RUN_LOG_ENABLED", True),
             run_log_queue_size=env_int("NEWS_GATEWAY_RUN_LOG_QUEUE_SIZE", 10_000),
             run_log_skip_sample_size=env_int("NEWS_GATEWAY_RUN_LOG_SKIP_SAMPLE_SIZE", 100),
+            intelligence_enabled=env_bool("NEWS_INTELLIGENCE_DISPATCH_ENABLED", True),
+            intelligence_url=env_string(
+                "NEWS_INTELLIGENCE_URL", "http://127.0.0.1:8804"
+            ).rstrip("/"),
+            intelligence_timeout_seconds=env_float(
+                "NEWS_INTELLIGENCE_DISPATCH_TIMEOUT_SECONDS", 2.0
+            ),
         )
 
     def public_dict(self) -> dict[str, object]:

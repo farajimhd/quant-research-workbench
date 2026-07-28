@@ -645,3 +645,19 @@ python -m pipelines.news.benzinga.news_benzinga_package_gap_fill --raw-root-win 
   by historical gap fill. Failed or missing enrichments are retained as
   explicit V2 quality state rather than silently omitted.
 - Websocket streams currently emit periodic snapshots, not per-row delta events.
+
+## Live intelligence handoff
+
+After canonical V2 event/rendered/ticker rows are durably published, the gateway
+sends one bounded batch notification to News Intelligence. The notification is
+downstream-only: an unavailable inference service is logged as deferred and
+never rolls back canonical news. News Intelligence reconciles missing
+live-session labels from the canonical V2 tables, so a transient notification
+failure does not lose eligible work.
+
+- `NEWS_INTELLIGENCE_DISPATCH_ENABLED`, default `true`
+- `NEWS_INTELLIGENCE_URL`, default `http://127.0.0.1:8804`
+- `NEWS_INTELLIGENCE_DISPATCH_TIMEOUT_SECONDS`, default `2`
+
+News Gateway does not own prompts, providers, semantic labels, hypotheses, or
+trading decisions.
