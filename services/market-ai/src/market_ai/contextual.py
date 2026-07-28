@@ -321,6 +321,7 @@ class ContextualMarketAi:
             as_of_utc=published_at_utc,
             limit=3,
             database=self.database,
+            include_semantic=True,
         )
 
 

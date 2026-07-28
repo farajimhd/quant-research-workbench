@@ -9,7 +9,7 @@ from research.mlops.clickhouse import ClickHouseHttpClient, sql_string
 
 
 DATABASE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-TICKER_PATTERN = re.compile(r"^[A-Z][A-Z0-9.\-]{0,15}$")
+TICKER_PATTERN = re.compile(r"^[A-Z][A-Z0-9.:\-]{0,23}$")
 
 
 def prior_news_context(
@@ -20,6 +20,7 @@ def prior_news_context(
     as_of_utc: str,
     limit: int = 3,
     database: str = "q_live",
+    include_semantic: bool | None = None,
 ) -> list[dict[str, Any]]:
     """Return causal same-ticker news plus only already-observable reactions."""
 
@@ -32,23 +33,18 @@ def prior_news_context(
     safe_limit = max(0, min(int(limit), 3))
     if safe_limit == 0:
         return []
+    if include_semantic is None:
+        include_semantic = table_exists(
+            client, database=database, table="news_semantic_label_v1"
+        )
     cutoff_sql = clickhouse_timestamp(cutoff)
-    rows = json_each_row(
-        client.execute(
-            f"""
-            SELECT t.canonical_news_id,
-                   toString(t.published_at_utc) AS published_at_utc,
-                   e.title,
-                   substring(r.rendered_text, 1, 6000) AS rendered_excerpt,
-                   e.channels,
-                   e.provider_tags,
-                   ifNull(s.semantic_json, '') AS semantic_json
-            FROM (SELECT * FROM `{database}`.`benzinga_news_ticker_v2` FINAL) AS t
-            INNER JOIN (SELECT * FROM `{database}`.`benzinga_news_event_v2` FINAL) AS e
-              ON e.canonical_news_id = t.canonical_news_id
-            INNER JOIN (SELECT * FROM `{database}`.`benzinga_news_rendered_v2` FINAL) AS r
-              ON r.canonical_news_id = t.canonical_news_id
-             AND r.rendered_text_hash = t.rendered_text_hash
+    semantic_column = (
+        "ifNull(s.semantic_json, '') AS semantic_json"
+        if include_semantic
+        else "'' AS semantic_json"
+    )
+    semantic_join = (
+        f"""
             LEFT JOIN
             (
                 SELECT canonical_news_id, ticker,
@@ -58,6 +54,27 @@ def prior_news_context(
             ) AS s
               ON s.canonical_news_id = t.canonical_news_id
              AND s.ticker = t.ticker
+        """
+        if include_semantic
+        else ""
+    )
+    rows = json_each_row(
+        client.execute(
+            f"""
+            SELECT t.canonical_news_id,
+                   toString(t.published_at_utc) AS published_at_utc,
+                   e.title,
+                   substring(r.rendered_text, 1, 6000) AS rendered_excerpt,
+                   e.channels,
+                   e.provider_tags,
+                   {semantic_column}
+            FROM (SELECT * FROM `{database}`.`benzinga_news_ticker_v2` FINAL) AS t
+            INNER JOIN (SELECT * FROM `{database}`.`benzinga_news_event_v2` FINAL) AS e
+              ON e.canonical_news_id = t.canonical_news_id
+            INNER JOIN (SELECT * FROM `{database}`.`benzinga_news_rendered_v2` FINAL) AS r
+              ON r.canonical_news_id = t.canonical_news_id
+             AND r.rendered_text_hash = t.rendered_text_hash
+            {semantic_join}
             WHERE t.ticker = {sql_string(symbol)}
               AND t.published_at_utc < {cutoff_sql}
               AND t.canonical_news_id != {sql_string(canonical_news_id)}
@@ -122,6 +139,23 @@ def prior_news_context(
         )
         result.append(row)
     return result
+
+
+def table_exists(
+    client: ClickHouseHttpClient, *, database: str, table: str
+) -> bool:
+    rows = json_each_row(
+        client.execute(
+            f"""
+            SELECT count() AS rows
+            FROM system.tables
+            WHERE database = {sql_string(database)}
+              AND name = {sql_string(table)}
+            FORMAT JSONEachRow
+            """
+        )
+    )
+    return bool(rows and int(rows[0].get("rows") or 0) > 0)
 
 
 def parse_timestamp(value: str) -> datetime:

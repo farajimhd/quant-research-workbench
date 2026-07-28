@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import socket
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -19,7 +20,7 @@ from research.mlops.clickhouse import (
     sql_string,
 )
 from research.news_labeling.gpt_oss_v1.data import read_jsonl
-from src.backend.news_prior_context import prior_news_context
+from src.backend.news_prior_context import prior_news_context, table_exists
 from src.backend.sec_canvas_service import sec_filings_payload
 from src.backend.ticker_facts_service import ticker_facts_payload
 
@@ -27,6 +28,7 @@ from .contract import CONTRACT_VERSION, PROMPT_VERSION
 
 
 NEW_YORK = ZoneInfo("America/New_York")
+US_TICKER_PATTERN = re.compile(r"^[A-Z][A-Z0-9.\-]{0,15}$")
 SAMPLE_CANDIDATES = (
     Path(r"D:\TradingML\runtimes\news_labeling\gpt_oss_v1\shared\sample.jsonl"),
     Path(r"D:\TradingML\runtimes\news_labeling\gpt_oss_v1\sample.jsonl"),
@@ -129,11 +131,23 @@ def build_manifest(
         for row in read_jsonl(sol_labels_path)
         if row.get("status") == "completed" and isinstance(row.get("label"), dict)
     }
+    client = clickhouse_client()
+    try:
+        semantic_table_available = table_exists(
+            client, database="q_live", table="news_semantic_label_v1"
+        )
+    finally:
+        client.close()
     rows: list[dict[str, Any]] = []
     started = time.monotonic()
     with ThreadPoolExecutor(max_workers=max(1, min(int(workers), 16))) as pool:
         futures = {
-            pool.submit(build_context_row, article, sol.get(str(article["canonical_news_id"]))): article
+            pool.submit(
+                build_context_row,
+                article,
+                sol.get(str(article["canonical_news_id"])),
+                semantic_table_available,
+            ): article
             for article in single
         }
         for index, future in enumerate(as_completed(futures), 1):
@@ -173,7 +187,9 @@ def build_manifest(
 
 
 def build_context_row(
-    article: dict[str, Any], sol_semantic_label: dict[str, Any] | None
+    article: dict[str, Any],
+    sol_semantic_label: dict[str, Any] | None,
+    semantic_table_available: bool,
 ) -> dict[str, Any]:
     identifier = str(article["canonical_news_id"])
     ticker = str(article["tickers"][0]).upper()
@@ -187,6 +203,7 @@ def build_context_row(
             ticker=ticker,
             as_of_utc=published.isoformat(),
             limit=3,
+            include_semantic=semantic_table_available,
         )
         targets, publication_session = current_targets(
             client, identifier, ticker, published
@@ -198,13 +215,22 @@ def build_context_row(
         "local_time_et": published.astimezone(NEW_YORK).isoformat(timespec="seconds"),
         "source": "certified_reaction_authority",
     }
-    facts = ticker_facts_payload(ticker, as_of=published.isoformat())
-    sec = sec_filings_payload(
-        as_of=published.isoformat(),
-        ticker=ticker,
-        limit=5,
-        lookback_hours=24 * 366,
-    )
+    if US_TICKER_PATTERN.fullmatch(ticker):
+        facts = ticker_facts_payload(ticker, as_of=published.isoformat())
+        sec = sec_filings_payload(
+            as_of=published.isoformat(),
+            ticker=ticker,
+            limit=5,
+            lookback_hours=24 * 366,
+        )
+        sec_rows = list(sec.get("rows") or [])[:5]
+    else:
+        facts = {
+            "status": "not_applicable",
+            "reason": "provider_qualified_non_us_symbol",
+            "as_of": published.isoformat(),
+        }
+        sec_rows = []
     semantic = sol_semantic_label or {
         "status": "semantic_label_unavailable",
         "deterministic_evidence": article.get("deterministic") or {},
@@ -219,7 +245,7 @@ def build_context_row(
         "semantic_label": semantic,
         "qmd_snapshot": snapshot,
         "market_status": json_safe(market_status),
-        "sec_context": list(sec.get("rows") or [])[:5],
+        "sec_context": sec_rows,
         "fundamental_context": facts,
         "prior_news": prior,
     }
