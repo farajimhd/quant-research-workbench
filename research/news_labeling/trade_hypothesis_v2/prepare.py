@@ -7,7 +7,7 @@ import re
 import socket
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import UTC, datetime, time as wall_time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -29,6 +29,7 @@ from .contract import CONTRACT_VERSION, PROMPT_VERSION
 
 NEW_YORK = ZoneInfo("America/New_York")
 US_TICKER_PATTERN = re.compile(r"^[A-Z][A-Z0-9.\-]{0,15}$")
+CONTEXT_BUILD_VERSION = "news_trade_hypothesis_context_v2_2"
 SAMPLE_CANDIDATES = (
     Path(r"D:\TradingML\runtimes\news_labeling\gpt_oss_v1\shared\sample.jsonl"),
     Path(r"D:\TradingML\runtimes\news_labeling\gpt_oss_v1\sample.jsonl"),
@@ -167,6 +168,7 @@ def build_manifest(
     atomic_jsonl(manifest_path, rows)
     authority = {
         "contract_version": CONTRACT_VERSION,
+        "context_build_version": CONTEXT_BUILD_VERSION,
         "prompt_version": PROMPT_VERSION,
         "sample_path": str(sample_path),
         "sample_sha256": sha256_file(sample_path),
@@ -266,34 +268,42 @@ def historical_market_snapshot(
     if published.year < 2019:
         return {"available": False, "reason": "compact_events_begin_2019"}
     local = published.astimezone(NEW_YORK)
-    session_date = local.date()
-    if local.time() < wall_time(4):
-        session_date = session_date.fromordinal(session_date.toordinal() - 1)
-    session_start = datetime.combine(session_date, wall_time(4), NEW_YORK).astimezone(UTC)
     pub_us = int(published.timestamp() * 1_000_000)
-    start_us = int(session_start.timestamp() * 1_000_000)
-    event_dates = sorted({session_date.isoformat(), local.date().isoformat()})
-    tables = sorted({f"events_{day[:4]}" for day in event_dates})
+    # A publication can arrive before 04:00 ET, on a weekend, or on a holiday.
+    # Reconstruct the same last-trustworthy-state semantics used by live QMD by
+    # searching a bounded calendar lookback and selecting the newest event date
+    # that actually contains this ticker. Do not manufacture a calendar-day
+    # session or silently return an empty market context.
+    event_dates = sorted(
+        (local.date() - timedelta(days=offset)).isoformat() for offset in range(8)
+    )
+    tables = sorted(
+        {
+            f"events_{day[:4]}"
+            for day in event_dates
+            if int(day[:4]) >= 2019
+        }
+    )
     sources = "\nUNION ALL\n".join(
         f"""
-        SELECT sip_timestamp_us, ordinal, event_meta, size_primary, size_secondary,
+        SELECT event_date, sip_timestamp_us, ordinal, event_meta,
+               size_primary, size_secondary,
                bitAnd(event_meta, 1) AS event_type,
                toFloat64(price_primary_int) /
                  if(bitAnd(event_meta, 2) > 0, 10000.0, 100.0) AS primary_price,
                toFloat64(price_secondary_int) /
                  if(bitAnd(event_meta, 4) > 0, 10000.0, 100.0) AS secondary_price
-        FROM `market_sip_compact`.`{table}` FINAL
+        FROM `market_sip_compact`.`{table}`
         PREWHERE event_date IN ({", ".join(f"toDate({sql_string(day)})" for day in event_dates)})
           AND ticker = {sql_string(ticker)}
-        WHERE sip_timestamp_us >= session_start_us AND sip_timestamp_us <= pub_us
+        WHERE sip_timestamp_us <= pub_us
         """
         for table in tables
     )
     sql = f"""
-    WITH
-      toUInt64({pub_us}) AS pub_us,
-      toUInt64({start_us}) AS session_start_us
+    WITH toUInt64({pub_us}) AS pub_us
     SELECT
+      toString(event_date) AS source_event_date,
       argMaxIf(primary_price, tuple(sip_timestamp_us, ordinal),
                event_type = 1 AND primary_price > 0) AS last_price,
       argMaxIf(primary_price, tuple(sip_timestamp_us, ordinal),
@@ -318,12 +328,18 @@ def historical_market_snapshot(
     (
       {sources}
     )
+    GROUP BY event_date
+    ORDER BY last_event_us DESC
+    LIMIT 1
     FORMAT JSONEachRow
     """
     try:
         rows = json_rows(client.execute(sql))
     except Exception as error:
-        return {"available": False, "reason": type(error).__name__}
+        raise RuntimeError(
+            f"Historical market snapshot query failed for {ticker} at "
+            f"{published.isoformat()}"
+        ) from error
     if not rows or int(rows[0].get("last_event_us") or 0) <= 0:
         return {"available": False, "reason": "no_prior_market_event"}
     row = rows[0]
@@ -352,8 +368,11 @@ def current_targets(
     rows = json_rows(
         client.execute(
             f"""
-            SELECT l.horizon_code, l.publication_session,
-                   l.target_return, l.high_return, l.low_return
+            SELECT l.horizon_code AS horizon_code,
+                   l.publication_session AS publication_session,
+                   l.target_return AS target_return,
+                   l.high_return AS high_return,
+                   l.low_return AS low_return
             FROM (SELECT * FROM q_live.news_reaction_labels_v2 FINAL) AS l
             INNER JOIN
               (SELECT * FROM q_live.news_reaction_quality_overlay_v1 FINAL) AS q
@@ -389,6 +408,8 @@ def validate_manifest(path: Path, authority_path: Path) -> None:
     authority = json.loads(authority_path.read_text(encoding="utf-8"))
     if authority.get("contract_version") != CONTRACT_VERSION:
         raise RuntimeError("Prepared hypothesis context contract drift")
+    if authority.get("context_build_version") != CONTEXT_BUILD_VERSION:
+        raise RuntimeError("Prepared hypothesis context build-version drift")
     if int(authority.get("rows") or 0) != 90:
         raise RuntimeError("Prepared hypothesis context must contain exactly 90 rows")
     if authority.get("context_sha256") != sha256_file(path):

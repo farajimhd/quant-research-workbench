@@ -61,12 +61,12 @@ def prior_news_context(
     rows = json_each_row(
         client.execute(
             f"""
-            SELECT t.canonical_news_id,
+            SELECT t.canonical_news_id AS canonical_news_id,
                    toString(t.published_at_utc) AS published_at_utc,
-                   e.title,
+                   e.title AS title,
                    substring(r.rendered_text, 1, 6000) AS rendered_excerpt,
-                   e.channels,
-                   e.provider_tags,
+                   e.channels AS channels,
+                   e.provider_tags AS provider_tags,
                    {semantic_column}
             FROM (SELECT * FROM `{database}`.`benzinga_news_ticker_v2` FINAL) AS t
             INNER JOIN (SELECT * FROM `{database}`.`benzinga_news_event_v2` FINAL) AS e
@@ -86,12 +86,28 @@ def prior_news_context(
     )
     if not rows:
         return []
+    require_columns(
+        rows,
+        {
+            "canonical_news_id",
+            "published_at_utc",
+            "title",
+            "rendered_excerpt",
+            "channels",
+            "provider_tags",
+            "semantic_json",
+        },
+        stage="prior_news",
+    )
     ids = ",".join(sql_string(str(row["canonical_news_id"])) for row in rows)
     reactions = json_each_row(
         client.execute(
             f"""
-            SELECT l.canonical_news_id, l.horizon_code,
-                   l.target_return, l.high_return, l.low_return,
+            SELECT l.canonical_news_id AS canonical_news_id,
+                   l.horizon_code AS horizon_code,
+                   l.target_return AS target_return,
+                   l.high_return AS high_return,
+                   l.low_return AS low_return,
                    toString(l.target_at_utc) AS target_at_utc
             FROM (SELECT * FROM `{database}`.`news_reaction_labels_v2` FINAL) AS l
             INNER JOIN
@@ -119,6 +135,18 @@ def prior_news_context(
             FORMAT JSONEachRow
             """
         )
+    )
+    require_columns(
+        reactions,
+        {
+            "canonical_news_id",
+            "horizon_code",
+            "target_return",
+            "high_return",
+            "low_return",
+            "target_at_utc",
+        },
+        stage="prior_news_reactions",
     )
     reaction_by_id: dict[str, dict[str, dict[str, Any]]] = {}
     for row in reactions:
@@ -175,3 +203,16 @@ def clickhouse_timestamp(value: datetime) -> str:
 
 def json_each_row(text: str) -> list[dict[str, Any]]:
     return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def require_columns(
+    rows: list[dict[str, Any]], required: set[str], *, stage: str
+) -> None:
+    if not rows:
+        return
+    missing = sorted(required - set(rows[0]))
+    if missing:
+        raise RuntimeError(
+            f"{stage} result schema mismatch: missing={missing}, "
+            f"returned={sorted(rows[0])}"
+        )
