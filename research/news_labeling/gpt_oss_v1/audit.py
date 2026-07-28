@@ -6,7 +6,13 @@ from pathlib import Path
 from typing import Any
 
 
-def write_audit(root: Path, sample: list[dict[str, Any]], results: list[dict[str, Any]]) -> Path:
+def write_audit(
+    root: Path,
+    sample: list[dict[str, Any]],
+    results: list[dict[str, Any]],
+    *,
+    report_title: str = "gpt-oss news semantic labeling v1 audit",
+) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     sample_by_id = {row["canonical_news_id"]: row for row in sample}
     valid = [row for row in results if row.get("status") == "completed"]
@@ -23,7 +29,7 @@ def write_audit(root: Path, sample: list[dict[str, Any]], results: list[dict[str
             distributions["event_family"][event["family"]] += 1
 
     report = [
-        "# gpt-oss news semantic labeling v1 audit",
+        f"# {report_title}",
         "",
         f"- Sample: **{len(sample):,}**",
         f"- Completed: **{len(valid):,}**",
