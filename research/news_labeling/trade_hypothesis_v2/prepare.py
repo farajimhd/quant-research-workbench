@@ -28,7 +28,12 @@ from .contract import CONTRACT_VERSION, PROMPT_VERSION
 
 NEW_YORK = ZoneInfo("America/New_York")
 SAMPLE_CANDIDATES = (
+    Path(r"D:\TradingML\runtimes\news_labeling\gpt_oss_v1\shared\sample.jsonl"),
     Path(r"D:\TradingML\runtimes\news_labeling\gpt_oss_v1\sample.jsonl"),
+    Path(
+        r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes"
+        r"\news_labeling\gpt_oss_v1\shared\sample.jsonl"
+    ),
     Path(
         r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes"
         r"\news_labeling\gpt_oss_v1\sample.jsonl"
