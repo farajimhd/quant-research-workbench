@@ -1,4 +1,4 @@
-# Issuer-Scoped News and SEC Intelligence V3
+# Issuer-Scoped News and SEC Intelligence V4
 
 This package implements the eight-stage authority used to organize News and
 SEC evidence without replacing or duplicating canonical rendered text.
@@ -20,14 +20,15 @@ SEC evidence without replacing or duplicating canonical rendered text.
    blocks.
 5. **SEC event classification** labels exact section evidence with filing,
    document, point-in-time issuer, and event provenance.
-6. **Certification and persistence** writes five exact News and five exact SEC
-   runtime audits, checks human-readable expected outcomes, and provides a
+6. **Certification and persistence** writes five mandatory and five fresh News
+   audits plus five SEC runtime audits, checks human-readable expected
+   outcomes, and provides a
    dry-run-by-default resumable full-corpus launcher.
 7. **Related-content relationships** persists normalized source, unit, event,
    issuer, and concept edges. It does not copy publication or filing text.
 8. **Live and downstream consumption** makes News Intelligence use this same
    issuer-scoping authority for live notifications and historical
-   reconciliation. Market AI and prior-news context read the resulting V2
+   reconciliation. Market AI and prior-news context read the resulting V4
    semantic stream.
 
 ## Multi-issuer contract
@@ -45,6 +46,15 @@ SEC evidence without replacing or duplicating canonical rendered text.
   `shared_ambiguous`; it is never silently assigned a false ticker.
 - Later `Source [external:*]` enrichment stays auditable but cannot introduce
   subjects, labels, or trigger eligibility.
+- Semantic direction is synthesized only after issuer role is known. A signed
+  acquisition is positive evidence, with an additional target-side premium;
+  explicit financing, margin, integration, regulatory, or analyst evidence can
+  offset it and produce a mixed or negative issuer result.
+- Analyst opinion is a source/relationship classification, not an assumption
+  of large market impact. It can be correctly labeled while retaining a modest
+  direction weight.
+- Automated summaries, mover roundups, and why-moving follow-ups remain
+  issuer-specific context but cannot become reaction-evaluation triggers.
 
 ## Certification
 
@@ -55,7 +65,7 @@ python -m research.text_intelligence.scoped_labeling_v1.run_certification
 Generated evidence is written only to:
 
 ```text
-<machine runtime root>/text_intelligence/scoped_labeling_v3/certification
+<machine runtime root>/text_intelligence/scoped_labeling_v4/certification
 ```
 
 The exact regression set includes a multi-issuer acquisition/analyst case,
@@ -80,9 +90,9 @@ python -m research.text_intelligence.scoped_labeling_v1.run_persist --execute
 
 The bounded, resumable worker path creates only new versioned products:
 
-- `q_live.scoped_text_labels_v3`
-- `q_live.scoped_content_relations_v1`
-- `q_live.scoped_text_labels_v3_build_status`
+- `q_live.scoped_text_labels_v4`
+- `q_live.scoped_content_relations_v2`
+- `q_live.scoped_text_labels_v4_build_status`
 
 The label table stores only issuer evidence and the canonical publication hash;
 the relationship table stores only graph edges. Canonical rendered News and SEC
@@ -94,7 +104,7 @@ bounded label and relationship insert batches.
 News Gateway continues to own acquisition and canonical rendering. It sends one
 complete candidate to News Intelligence. News Intelligence:
 
-1. runs V3 scoping once;
+1. runs V4 scoping once;
 2. selects eligible issuer units;
 3. independently applies the point-in-time QMD price gate;
 4. sends the intact article plus issuer-scoped evidence to the model route;
@@ -102,4 +112,4 @@ complete candidate to News Intelligence. News Intelligence:
 6. dispatches Market AI independently per issuer.
 
 The idempotency identity includes article, unit, ticker, rendered-text hash, and
-V3 labeling version.
+V4 labeling version.

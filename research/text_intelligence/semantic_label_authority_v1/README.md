@@ -20,6 +20,11 @@ Candidate phrases cannot become labels by frequency alone. Every canonical label
 contains exact source offsets and evidence text. Unsupported concepts remain
 unlabeled and receive `no_supported_canonical_event`.
 
+The current V4 concept authority also excludes negated legal events from their
+adverse concepts and represents explicit regulatory clearance separately. M&A
+direction remains generic at this layer; the scoped V4 authority applies the
+issuer role before producing the final per-issuer direction.
+
 Generate a real five-News/five-SEC audit set outside the repository:
 
 ```powershell
@@ -30,6 +35,6 @@ The default output is:
 
 `D:\TradingML\runtimes\text_intelligence\semantic_label_authority_v1\audits\text_semantic_label_audit_v1`
 
-This version is not wired into the live News Gateway. Production cutover must
-wait until the historical audit collection is reviewed and the shared taxonomy
-is certified.
+The semantic authority is consumed by the issuer-scoped V4 classifier. Full
+historical persistence still requires the clean scoped certification manifest
+and an explicit `--execute` invocation.

@@ -9,7 +9,11 @@ from research.text_intelligence.semantic_label_authority_v1.schema import (
     SemanticDocument,
 )
 
-from .news_extractor import analyze_news_scope, extract_news_units
+from .news_extractor import (
+    analyze_news_scope,
+    extract_news_units,
+    extract_observed_reaction,
+)
 from .news_identity import IssuerIdentity, NewsIssuerResolver
 from .pipeline import classify_news_document, classify_sec_document
 from .sec_extractor import extract_sec_units
@@ -136,6 +140,122 @@ Body:
             },
         )
 
+    def test_reported_reactions_are_ticker_specific_and_accept_is_up(self) -> None:
+        text = (
+            "Price Action: AERI stock is up 35.6% at $15.13, "
+            "and ALC shares are up 0.09% at $68.00."
+        )
+        aeri = extract_observed_reaction(text, ticker="AERI")
+        alc = extract_observed_reaction(text, ticker="ALC")
+        missing = extract_observed_reaction(text, ticker="OTHER")
+        self.assertEqual(
+            (aeri.direction, aeri.move_pct, aeri.resulting_price),
+            ("up", 35.6, 15.13),
+        )
+        self.assertEqual(
+            (alc.direction, alc.move_pct, alc.resulting_price),
+            ("up", 0.09, 68.0),
+        )
+        self.assertEqual(missing.direction, "")
+
+    def test_reported_reactions_accept_increased_decreased_and_trading_lower(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "Example stock increased by 15.61% to $3.85.",
+                "up",
+                15.61,
+            ),
+            (
+                "Example shares decreased by 3.91% to $5.82.",
+                "down",
+                3.91,
+            ),
+            (
+                "Example shares are trading lower by 1.11% at $617.35.",
+                "down",
+                1.11,
+            ),
+        )
+        for text, direction, move in cases:
+            reaction = extract_observed_reaction(text)
+            self.assertEqual(reaction.direction, direction)
+            self.assertEqual(reaction.move_pct, move)
+
+    def test_provider_link_disambiguates_single_word_alias_collision(self) -> None:
+        resolver = NewsIssuerResolver((
+            IssuerIdentity("VERX", "issuer-verx", ("Vertex",)),
+            IssuerIdentity(
+                "VRTX",
+                "issuer-vrtx",
+                ("Vertex", "Vertex Pharmaceuticals Incorporated"),
+            ),
+        ))
+        analysis = analyze_news_scope(
+            source_id="vertex-hold",
+            title="Vertex Announces Clinical Hold",
+            text=(
+                "Title: Vertex Announces Clinical Hold\n"
+                "Vertex Pharmaceuticals Incorporated (NASDAQ:VRTX) "
+                "announced its study was placed on clinical hold."
+            ),
+            tickers=("VRTX",),
+            timestamp="2022-05-02T12:35:25Z",
+            issuer_resolver=resolver,
+        )
+        self.assertEqual(analysis.resolved_subjects, ("VRTX",))
+        self.assertEqual({unit.tickers for unit in analysis.units}, {("VRTX",)})
+
+    def test_unlinked_common_single_word_alias_cannot_create_issuer(self) -> None:
+        resolver = NewsIssuerResolver((
+            IssuerIdentity("MAJI", "issuer-maji", ("Marijuana",)),
+        ))
+        analysis = analyze_news_scope(
+            source_id="policy",
+            title="States revisit marijuana policy",
+            text="Body: Several states changed marijuana regulations.",
+            tickers=(),
+            timestamp="2022-11-23T14:28:52Z",
+            issuer_resolver=resolver,
+        )
+        self.assertFalse(analysis.resolved_subjects)
+        self.assertFalse(analysis.units)
+
+    def test_related_article_links_cannot_introduce_issuer_or_event(self) -> None:
+        resolver = NewsIssuerResolver((
+            IssuerIdentity(
+                "PH",
+                "issuer-ph",
+                ("Parker-Hannifin", "Parker-Hannifin Corp"),
+            ),
+            IssuerIdentity("ETN", "issuer-etn", ("Eaton",)),
+            IssuerIdentity("BLK", "issuer-blk", ("BlackRock",)),
+        ))
+        document = SemanticDocument(
+            corpus="news",
+            source_id="earnings-related-links",
+            timestamp="2024-10-31T15:22:10Z",
+            title="Parker-Hannifin reports earnings",
+            text=(
+                "Parker-Hannifin Corp (NYSE:PH) beat the consensus and "
+                "raised its adjusted EPS guidance.\n"
+                "See Also: Eaton Q3 Earnings: Raised Guidance\n"
+                "Now Read:\n"
+                "- BlackRock Bitcoin ETF update"
+            ),
+            tickers=("PH",),
+        )
+        labels = classify_news_document(
+            document,
+            issuer_resolver=resolver,
+        )
+        self.assertEqual({label.ticker for label in labels}, {"PH"})
+        self.assertIn(
+            "guidance.raise",
+            labels[0].classification["event_concepts"],
+        )
+
     def test_multi_ticker_unscoped_prose_is_not_assigned(self) -> None:
         units = extract_news_units(
             source_id="multi",
@@ -215,6 +335,104 @@ Body:
         self.assertEqual(analysis.document_decision, "single_resolved_issuer")
         self.assertEqual(analysis.units[0].tickers, ("AAPL",))
         self.assertEqual(analysis.units[0].role, "analyst_opinion")
+
+    def test_exchange_prefixed_provider_ticker_is_normalized(self) -> None:
+        resolver = NewsIssuerResolver((
+            IssuerIdentity("CRES", "cres", ("Crest Resources Inc.",)),
+        ))
+        analysis = analyze_news_scope(
+            source_id="exchange-prefixed-provider-ticker",
+            title="Crest Resources reports an acquisition",
+            text=(
+                "Crest Resources Inc. (CSE:CRES) announced that it acquired "
+                "common shares of another issuer."
+            ),
+            tickers=("CSE:CRES",),
+            timestamp="2026-07-28T12:00:00Z",
+            issuer_resolver=resolver,
+        )
+        self.assertEqual(analysis.linked_tickers, ("CRES",))
+        self.assertEqual({unit.tickers for unit in analysis.units}, {("CRES",)})
+
+    def test_automated_earnings_summary_is_context_not_trigger(self) -> None:
+        document = SemanticDocument(
+            corpus="news",
+            source_id="automated-earnings-summary",
+            timestamp="2026-07-28T12:00:00Z",
+            title="Earnings Outlook For Example Therapeutics",
+            text=(
+                "Example Therapeutics (NASDAQ:EXMP) is set to give its latest "
+                "quarterly earnings report. Analysts estimate EPS of $1.20. "
+                "This article was generated by Benzinga's automated content "
+                "engine and reviewed by an editor."
+            ),
+            tickers=("EXMP",),
+        )
+        labels = classify_news_document(
+            document,
+            issuer_resolver=self.issuer_resolver(),
+        )
+        self.assertTrue(labels)
+        self.assertTrue(all(
+            label.classification["content_role"] == "automated_summary"
+            for label in labels
+        ))
+        self.assertTrue(all(
+            label.unit_role == "ticker_scoped_editorial_context"
+            for label in labels
+        ))
+        self.assertTrue(all(
+            not label.forecast_trigger_eligible
+            and not label.reaction_evaluation_eligible
+            for label in labels
+        ))
+
+    def test_regulatory_clearance_is_not_a_negative_investigation(self) -> None:
+        document = SemanticDocument(
+            corpus="news",
+            source_id="investigation-clearance",
+            timestamp="2026-07-28T12:00:00Z",
+            title="Example avoids investigation into acquisition",
+            text=(
+                "Example Therapeutics (NASDAQ:EXMP) will not face a formal "
+                "investigation. The regulator found no risk of such an outcome."
+            ),
+            tickers=("EXMP",),
+        )
+        labels = classify_news_document(
+            document,
+            issuer_resolver=self.issuer_resolver(),
+        )
+        self.assertTrue(labels)
+        concepts = set(labels[0].classification["event_concepts"])
+        self.assertIn("legal.investigation_clearance", concepts)
+        self.assertNotIn("legal.investigation", concepts)
+        self.assertEqual(
+            labels[0].classification["semantic_direction"],
+            "positive",
+        )
+
+    def test_moved_upwards_reaction_and_after_market_session_are_parsed(self) -> None:
+        reaction = extract_observed_reaction(
+            "Example shares moved upwards by 5.13% to $6.96 during "
+            "Tuesday's after-market session.",
+            ticker="EXMP",
+        )
+        self.assertEqual(reaction.direction, "up")
+        self.assertEqual(reaction.move_pct, 5.13)
+        self.assertEqual(reaction.resulting_price, 6.96)
+        self.assertEqual(reaction.market_session, "after_market")
+
+    def test_exchange_scoped_reaction_without_shares_word_is_parsed(self) -> None:
+        reaction = extract_observed_reaction(
+            "United States Antimony Corporation (NYSE:UAMY) rose 74.4% "
+            "to $1.70 in pre-market trading.",
+            ticker="UAMY",
+        )
+        self.assertEqual(reaction.direction, "up")
+        self.assertEqual(reaction.move_pct, 74.4)
+        self.assertEqual(reaction.resulting_price, 1.70)
+        self.assertEqual(reaction.market_session, "pre_market")
 
     def test_unresolved_company_like_passage_does_not_inherit_single_link(self) -> None:
         analysis = analyze_news_scope(
@@ -371,6 +589,29 @@ Body:
         self.assertIn("profitability.margin_pressure", concepts["ALC"])
         self.assertNotIn("profitability.margin_pressure", concepts["AERI"])
         self.assertIn("analyst_action.downgrade", concepts["AERI"])
+        by_ticker = {item.ticker: item for item in labels}
+        self.assertEqual(
+            by_ticker["AERI"].classification["semantic_direction"],
+            "positive",
+        )
+        self.assertEqual(
+            by_ticker["ALC"].classification["semantic_direction"],
+            "mixed",
+        )
+        self.assertEqual(
+            by_ticker["AERI"].classification["content_role"],
+            "analyst_event",
+        )
+        self.assertEqual(
+            by_ticker["AERI"].classification["issuer_relationship"],
+            "analyst_opinion",
+        )
+        self.assertEqual(
+            by_ticker["AERI"].classification[
+                "semantic_score_adjustment"
+            ],
+            0.8,
+        )
 
     def test_unresolved_background_does_not_disable_resolved_event(
         self,
@@ -398,7 +639,7 @@ Body:
             for label in labels
         ))
         self.assertTrue(all(
-            "event_scoped_eligibility_v3"
+            "event_scoped_eligibility_v4"
             in label.classification["quality_flags"]
             for label in labels
         ))

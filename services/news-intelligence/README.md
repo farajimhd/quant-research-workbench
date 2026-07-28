@@ -5,7 +5,7 @@ Domain service for live news eligibility and semantic labels.
 The Python News Gateway owns provider acquisition and canonical V2 persistence.
 After that durable publish, this service accepts one complete rendered
 candidate, requires an explicitly active live-trading session, applies the
-shared `scoped_text_labeling_v3` issuer/event authority, then applies the
+shared `scoped_text_labeling_v4` issuer/event authority, then applies the
 point-in-time QMD price gate independently for every eligible issuer. It calls
 the provider-neutral Model Gateway with the intact article plus
 issuer-specific evidence, validates `gpt_oss_news_semantics_v1`, and writes one

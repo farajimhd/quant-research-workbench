@@ -26,6 +26,11 @@ CONTEXT_ONLY_NEWS_ROLES = {
     "ticker_scoped_analyst_context",
 }
 
+M_AND_A_CONCEPTS = {
+    "ma_transaction.acquisition",
+    "ma_transaction.merger_agreement",
+}
+
 
 def classify_news_document(
     document: SemanticDocument,
@@ -113,14 +118,33 @@ def _label_unit(
     )
     semantic = label_document(scoped, include_discovery_evidence=True)
     classification = classify_document(scoped, semantic_result=semantic)
-    context_only = (
-        parent.corpus == "news" and unit.role in CONTEXT_ONLY_NEWS_ROLES
-    )
     classification_dict = classification.as_dict()
+    if parent.corpus == "news":
+        _apply_news_direction_context(
+            classification_dict,
+            semantic=semantic,
+            unit=unit,
+        )
     classification_dict["quality_flags"] = tuple(dict.fromkeys((
         *classification_dict["quality_flags"],
         *unit.quality_flags,
     )))
+    automated_context = (
+        parent.corpus == "news"
+        and classification_dict["content_role"] == "automated_summary"
+    )
+    context_only = (
+        parent.corpus == "news"
+        and (
+            unit.role in CONTEXT_ONLY_NEWS_ROLES
+            or automated_context
+        )
+    )
+    effective_unit_role = (
+        "ticker_scoped_editorial_context"
+        if automated_context
+        else unit.role
+    )
     if parent.corpus == "sec":
         exact_ticker = bool(ticker)
         role = str(parent.metadata.get("document_role") or "")
@@ -183,6 +207,7 @@ def _label_unit(
                 "mover_recap",
                 "why_moving_followup",
                 "automated_market_statistics",
+                "automated_summary",
             }
         )
         classification_dict.update(
@@ -196,7 +221,7 @@ def _label_unit(
                 ),
                 "quality_flags": tuple(dict.fromkeys((
                     *classification_dict["quality_flags"],
-                    "event_scoped_eligibility_v3",
+                    "event_scoped_eligibility_v4",
                 ))),
             }
         )
@@ -205,7 +230,7 @@ def _label_unit(
         source_id=parent.source_id,
         unit_id=unit.unit_id,
         ticker=ticker,
-        unit_role=unit.role,
+        unit_role=effective_unit_role,
         event_id=unit.event_id,
         event_tickers=unit.event_tickers,
         issuer_role=unit.issuer_role,
@@ -230,3 +255,79 @@ def _label_unit(
             or bool(classification_dict["episode_followup_eligible"])
         ),
     )
+
+
+def _apply_news_direction_context(
+    classification: dict,
+    *,
+    semantic,
+    unit: RelevantTextUnit,
+) -> None:
+    """Synthesize issuer direction after issuer role is known.
+
+    The lower semantic authority intentionally labels exact language without
+    assuming which participant it affects. This scoped layer is the first
+    authority that knows whether the issuer is an acquisition target,
+    acquirer, or another participant. A signed acquisition is generally
+    favorable language, with a stronger target-side prior, but explicit
+    issuer-specific negatives remain visible and can produce a mixed or
+    negative final result.
+    """
+    concepts = set(classification["event_concepts"])
+    base_score = float(classification["semantic_score"])
+    adjustment = 0.0
+    basis = [
+        f"{label.family}.{label.subtype}:{label.direction}"
+        for label in semantic.labels
+    ]
+    directions = {
+        label.direction
+        for label in semantic.labels
+        if label.direction in {"positive", "negative"}
+    }
+    if concepts & M_AND_A_CONCEPTS:
+        basis.append(f"issuer_role:{unit.issuer_role or 'participant'}")
+        if unit.issuer_role == "target":
+            # A signed transaction normally embeds a target premium or
+            # liquidity outcome. This contextual prior is deliberately not
+            # applied to generic documents where the issuer role is unknown.
+            adjustment += 0.8
+            directions.add("positive")
+            basis.append("target_transaction_prior:+0.8")
+        elif unit.issuer_role == "acquirer":
+            # The generic positive M&A concept is retained, but acquirers get
+            # no extra premium: financing, dilution, integration, or margin
+            # evidence must be allowed to offset the transaction.
+            basis.append("acquirer_transaction_prior:+0.0")
+        else:
+            adjustment += 0.2
+            directions.add("positive")
+            basis.append("participant_transaction_prior:+0.2")
+    score = round(base_score + adjustment, 4)
+    direction = _direction_from_components(score, directions)
+    classification.update(
+        {
+            "semantic_direction": direction,
+            "semantic_score": score,
+            "semantic_score_base": round(base_score, 4),
+            "semantic_score_adjustment": round(adjustment, 4),
+            "semantic_direction_basis": tuple(basis),
+            "quality_flags": tuple(dict.fromkeys((
+                *classification["quality_flags"],
+                "issuer_context_direction_v4",
+            ))),
+        }
+    )
+
+
+def _direction_from_components(
+    score: float,
+    directions: set[str],
+) -> str:
+    if {"positive", "negative"} <= directions and abs(score) < 0.75:
+        return "mixed"
+    if score >= 0.5:
+        return "positive"
+    if score <= -0.5:
+        return "negative"
+    return "neutral"

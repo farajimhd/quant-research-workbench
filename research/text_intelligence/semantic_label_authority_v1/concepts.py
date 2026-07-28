@@ -63,7 +63,10 @@ CONCEPT_RULES: tuple[ConceptRule, ...] = (
         "positive",
         1.2,
         time_orientation="forward",
-        patterns=(r"\bguidance\s+(?:was\s+|has\s+been\s+)?raised\b",),
+        patterns=(
+            r"\bguidance\s+(?:was\s+|has\s+been\s+)?raised\b",
+            r"\braised\b[^.\n]{0,80}\b(?:guidance|outlook)\b",
+        ),
     ),
     ConceptRule(
         "guidance",
@@ -75,12 +78,27 @@ CONCEPT_RULES: tuple[ConceptRule, ...] = (
         patterns=(r"\bguidance\s+(?:was\s+|has\s+been\s+)?(?:cut|lowered|reduced)\b",),
     ),
     ConceptRule("guidance", "reaffirm", ("reaffirms guidance", "reiterates guidance"), "neutral", 0.2, time_orientation="forward"),
-    ConceptRule("earnings", "beat", ("beats estimates", "above consensus", "earnings beat"), "positive", 1.0, time_orientation="historical"),
+    ConceptRule(
+        "earnings",
+        "beat",
+        ("beats estimates", "above consensus", "earnings beat"),
+        "positive",
+        1.0,
+        time_orientation="historical",
+        patterns=(
+            r"\bbeat(?:s|ing)?\s+(?:the\s+)?consensus\b",
+        ),
+    ),
     ConceptRule("earnings", "miss", ("misses estimates", "below consensus", "earnings miss"), "negative", -1.0, time_orientation="historical"),
     ConceptRule(
         "earnings",
         "revenue_growth",
-        ("net revenue growth", "revenue increased", "sales increased"),
+        (
+            "net revenue growth",
+            "revenue increased",
+            "sales increased",
+            "sales growth",
+        ),
         "positive",
         0.6,
         time_orientation="historical",
@@ -118,6 +136,19 @@ CONCEPT_RULES: tuple[ConceptRule, ...] = (
         patterns=(
             r"\bmore difficult\b[^.\n]{0,100}\boperating margin targets\b",
         ),
+    ),
+    ConceptRule(
+        "operations",
+        "demand_pressure",
+        (
+            "near-term pressure in select industrial markets",
+            "industrial pressure",
+            "demand pressure",
+            "softening demand",
+        ),
+        "negative",
+        -0.5,
+        time_orientation="forward",
     ),
     ConceptRule("regulatory", "fda_approval", ("fda approval", "fda approved", "food and drug administration approval"), "positive", 1.7),
     ConceptRule("regulatory", "fda_rejection", ("complete response letter", "fda rejected", "fda denial"), "negative", -1.8),
@@ -214,7 +245,18 @@ CONCEPT_RULES: tuple[ConceptRule, ...] = (
             r"\bwill not complete\b[^.\n]{0,120}\bbusiness combination\b",
         ),
     ),
-    ConceptRule("ma_transaction", "acquisition", ("agreed to acquire", "latest acquisition", "acquisition agreement"), "mixed", 0.2),
+    # A signed acquisition is normally favorable event language, especially
+    # for the target. Issuer-role adjustments remain in the scoped authority,
+    # where target/acquirer identity and conflicting issuer evidence are
+    # available. A generic document-level "mixed" label incorrectly cancelled
+    # target-side acquisition value before that context could be applied.
+    ConceptRule(
+        "ma_transaction",
+        "acquisition",
+        ("agreed to acquire", "latest acquisition", "acquisition agreement"),
+        "positive",
+        0.7,
+    ),
     ConceptRule(
         "ma_transaction",
         "merger_termination",
@@ -248,7 +290,30 @@ CONCEPT_RULES: tuple[ConceptRule, ...] = (
     ConceptRule("accounting_audit", "restatement", ("financial restatement", "will restate", "should no longer be relied upon"), "negative", -1.4),
     ConceptRule("listing_market_structure", "noncompliance", ("listing compliance", "minimum bid price", "delisting notice"), "negative", -0.9),
     ConceptRule("listing_market_structure", "trading_halt", ("trading halt", "halted pending news"), "neutral", 0.0),
-    ConceptRule("legal", "investigation", ("formal investigation", "regulatory investigation", "subpoena"), "negative", -0.8),
+    ConceptRule(
+        "legal",
+        "investigation_clearance",
+        (
+            "avoids investigation",
+            "avoiding a full investigation",
+            "will not face a formal investigation",
+            "cleared by the competition regulator",
+            "found no risk of such an outcome",
+        ),
+        "positive",
+        0.7,
+    ),
+    ConceptRule(
+        "legal",
+        "investigation",
+        ("formal investigation", "regulatory investigation", "subpoena"),
+        "negative",
+        -0.8,
+        exclude_patterns=(
+            r"\b(?:avoid(?:s|ed|ing)?|will\s+not\s+face|does\s+not\s+face|"
+            r"no\s+risk\s+of)\b.{0,80}\b(?:formal\s+)?investigation\b",
+        ),
+    ),
     ConceptRule("legal", "lawsuit", ("class action lawsuit", "patent infringement lawsuit", "filed a lawsuit"), "negative", -0.7),
     ConceptRule(
         "legal",

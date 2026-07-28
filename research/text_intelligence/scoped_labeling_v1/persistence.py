@@ -34,16 +34,16 @@ from .news_identity import NewsIssuerResolver, load_news_issuer_resolver
 from .schema import SCOPED_LABELING_VERSION, ScopedLabel
 
 
-TARGET_TABLE = "scoped_text_labels_v3"
-STATUS_TABLE = "scoped_text_labels_v3_build_status"
-RELATION_TABLE = "scoped_content_relations_v1"
+TARGET_TABLE = "scoped_text_labels_v4"
+STATUS_TABLE = "scoped_text_labels_v4_build_status"
+RELATION_TABLE = "scoped_content_relations_v2"
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     certification_manifest = (
         MLOpsPathConfig.from_env().runtimes_root
         / "text_intelligence"
-        / "scoped_labeling_v3"
+        / "scoped_labeling_v4"
         / "certification"
         / "manifest.json"
     )

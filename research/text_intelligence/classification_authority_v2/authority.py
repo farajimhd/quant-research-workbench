@@ -53,6 +53,8 @@ def _classify_news(document: SemanticDocument, semantic) -> ClassificationResult
 
     source_origin = _news_origin(legacy.origin, semantic.origin)
     content_role = _news_role(legacy.format, semantic.content_role)
+    if source_origin == "automated_summary":
+        content_role = "automated_summary"
     issuer_relationship = _news_relationship(
         source_origin=source_origin,
         content_role=content_role,
@@ -228,7 +230,11 @@ def _news_origin(legacy_origin: str, semantic_origin: str) -> str:
         return "regulatory_primary"
     if legacy_origin == "analyst":
         return "analyst_research"
-    if legacy_origin == "automated":
+    if semantic_origin == "analyst_research":
+        # Exact analyst language in the issuer-scoped text is stronger
+        # evidence than an incomplete provider author/channel classification.
+        return "analyst_research"
+    if legacy_origin == "automated" or semantic_origin == "automated_summary":
         return "automated_summary"
     if semantic_origin == "editorial_aggregation":
         return "editorial_aggregation"

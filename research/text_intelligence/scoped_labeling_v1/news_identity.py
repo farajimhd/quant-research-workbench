@@ -8,7 +8,7 @@ from typing import Iterable, Mapping, Sequence
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident
 
 
-ISSUER_RESOLUTION_VERSION = "news_issuer_passage_resolution_v2"
+ISSUER_RESOLUTION_VERSION = "news_issuer_passage_resolution_v3"
 EXCHANGE_TICKER_RE = re.compile(
     r"\b(?:NASDAQ|NYSE|NYSEAMERICAN|NYSE\s+AMERICAN|AMEX|OTC(?:QX|QB)?|"
     r"TSX|TSXV|CSE)\s*[:\-]\s*([A-Z][A-Z0-9.-]{0,9})\b",
@@ -94,7 +94,12 @@ class NewsIssuerResolver:
     requires a symbol or an unambiguous issuer alias in the actual passage.
     """
 
-    def __init__(self, identities: Iterable[IssuerIdentity]) -> None:
+    def __init__(
+        self,
+        identities: Iterable[IssuerIdentity],
+        *,
+        article_tickers: Iterable[str] = (),
+    ) -> None:
         identity_rows = tuple(identities)
         ticker_entries: dict[str, list[IssuerIdentity]] = {}
         alias_entries: dict[str, list[IssuerIdentity]] = {}
@@ -118,6 +123,9 @@ class NewsIssuerResolver:
         }
         self._max_alias_tokens = min(max_alias_tokens, 10)
         self._identities = identity_rows
+        self._article_tickers = frozenset(
+            value.upper().strip() for value in article_tickers if value
+        )
 
     @classmethod
     def from_metadata(cls, metadata: Mapping[str, object]) -> "NewsIssuerResolver":
@@ -148,6 +156,9 @@ class NewsIssuerResolver:
         linked_tickers: Sequence[str] = (),
     ) -> tuple[IssuerMatch, ...]:
         day = _timestamp_date(timestamp)
+        linked = {
+            value.upper().strip() for value in linked_tickers if value
+        }
         evidence: dict[str, set[str]] = {}
         explicit = {
             match.group(1).upper()
@@ -176,10 +187,30 @@ class NewsIssuerResolver:
                     if entry.valid_on(day)
                 )
                 tickers = {entry.ticker for entry in entries}
-                if len(tickers) != 1:
+                preferred = tickers & (
+                    linked | self._article_tickers | explicit
+                )
+                if len(preferred) == 1:
+                    ticker = next(iter(preferred))
+                elif len(tickers) == 1:
+                    ticker = next(iter(tickers))
+                else:
                     continue
-                ticker = next(iter(tickers))
-                evidence.setdefault(ticker, set()).add(f"issuer_alias:{alias}")
+                # A free-standing single word is too weak to introduce an
+                # issuer absent from provider links and exact
+                # article-declared exchange pairs. This blocks collisions
+                # such as Vertex/VERX and ordinary domain words such as
+                # marijuana/MAJI without weakening explicit identities.
+                if (
+                    len(alias.split()) == 1
+                    and ticker not in linked
+                    and ticker not in self._article_tickers
+                    and ticker not in explicit
+                ):
+                    continue
+                evidence.setdefault(ticker, set()).add(
+                    f"issuer_alias:{alias}"
+                )
         return tuple(
             IssuerMatch(ticker=ticker, evidence=tuple(sorted(values)))
             for ticker, values in sorted(evidence.items())
@@ -243,7 +274,13 @@ class NewsIssuerResolver:
                 )
         if not local:
             return self
-        return NewsIssuerResolver((*self._identities, *local))
+        return NewsIssuerResolver(
+            (*self._identities, *local),
+            article_tickers=(
+                *self._article_tickers,
+                *(identity.ticker for identity in local),
+            ),
+        )
 
     def issuer_group_count(
         self,

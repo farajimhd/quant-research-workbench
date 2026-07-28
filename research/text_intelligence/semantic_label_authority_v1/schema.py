@@ -4,10 +4,10 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
-LABEL_AUTHORITY_VERSION = "text_semantic_label_authority_v3"
-STRUCTURE_VERSION = "rendered_text_structure_v2"
+LABEL_AUTHORITY_VERSION = "text_semantic_label_authority_v4"
+STRUCTURE_VERSION = "rendered_text_structure_v3"
 SPAN_VERSION = "typed_semantic_spans_v1"
-CONCEPT_VERSION = "deterministic_event_concepts_v3"
+CONCEPT_VERSION = "deterministic_event_concepts_v4"
 
 
 @dataclass(frozen=True, slots=True)

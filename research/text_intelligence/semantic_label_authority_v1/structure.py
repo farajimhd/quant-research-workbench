@@ -40,6 +40,10 @@ TABLE_SCALE_RE = re.compile(
     r"\b(?:dollars?|amounts?)\s+in\s+(thousands|millions|billions)\b)",
     re.IGNORECASE,
 )
+NEWS_RELATED_LINK_RE = re.compile(
+    r"^(?:see also|now read|read next|related(?: article| coverage)?)\s*:",
+    re.IGNORECASE,
+)
 
 
 def normalize_source_text(text: str) -> str:
@@ -59,6 +63,7 @@ def segment_rendered_text(corpus: str, text: str) -> tuple[StructuralBlock, ...]
     table_currency = ""
     table_multiplier = 1
     seen_semantic_paragraphs: set[str] = set()
+    suppress_next_news_link = False
 
     for raw_line in clean.splitlines(keepends=True):
         line = raw_line.rstrip("\n")
@@ -79,7 +84,28 @@ def segment_rendered_text(corpus: str, text: str) -> tuple[StructuralBlock, ...]
 
         column_match = TABLE_COLUMNS_RE.match(stripped)
         caption_match = TABLE_CAPTION_RE.match(stripped)
-        if corpus == "news" and NEWS_PROVENANCE_RE.match(stripped):
+        if corpus == "news" and suppress_next_news_link:
+            kind, semantic, reason = (
+                "related_link",
+                False,
+                "publisher related-content navigation",
+            )
+            suppress_next_news_link = False
+        elif corpus == "news" and NEWS_RELATED_LINK_RE.match(stripped):
+            kind, semantic, reason = (
+                "related_link",
+                False,
+                "publisher related-content navigation",
+            )
+            suppress_next_news_link = bool(
+                re.match(
+                    r"^(?:now read|read next|related(?: article| coverage)?)"
+                    r"\s*:\s*$",
+                    stripped,
+                    re.IGNORECASE,
+                )
+            )
+        elif corpus == "news" and NEWS_PROVENANCE_RE.match(stripped):
             kind, semantic, reason = "renderer_provenance", False, "renderer provenance"
         elif column_match:
             table_columns = tuple(

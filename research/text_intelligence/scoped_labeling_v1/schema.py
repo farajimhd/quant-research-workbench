@@ -4,8 +4,8 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 
-SCOPED_LABELING_VERSION = "scoped_text_labeling_v3"
-NEWS_EXTRACTOR_VERSION = "news_event_scope_v3"
+SCOPED_LABELING_VERSION = "scoped_text_labeling_v4"
+NEWS_EXTRACTOR_VERSION = "news_event_scope_v4"
 SEC_EXTRACTOR_VERSION = "sec_relevant_section_v2"
 
 

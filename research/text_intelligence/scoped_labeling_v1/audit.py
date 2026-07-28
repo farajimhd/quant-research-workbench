@@ -45,6 +45,9 @@ EXPECTED_NEWS_OUTCOMES = {
         "AERI": {
             "trigger": True,
             "issuer_role": "target",
+            "required_direction": "positive",
+            "observed_direction": "up",
+            "observed_move_pct": 35.6,
             "required_concepts": {
                 "ma_transaction.acquisition",
                 "analyst_action.downgrade",
@@ -53,6 +56,9 @@ EXPECTED_NEWS_OUTCOMES = {
         "ALC": {
             "trigger": True,
             "issuer_role": "acquirer",
+            "required_direction": "mixed",
+            "observed_direction": "up",
+            "observed_move_pct": 0.09,
             "required_concepts": {
                 "ma_transaction.acquisition",
                 "profitability.margin_pressure",
@@ -112,14 +118,22 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     output = (
         MLOpsPathConfig.from_env().runtimes_root
         / "text_intelligence"
-        / "scoped_labeling_v3"
+        / "scoped_labeling_v4"
         / "certification"
     )
     parser = argparse.ArgumentParser(
         description="Create and self-review scoped News and SEC audit files."
     )
     parser.add_argument("--candidate-sample-size", type=int, default=120)
-    parser.add_argument("--news-audits", type=int, default=5)
+    parser.add_argument(
+        "--news-audits",
+        type=int,
+        default=10,
+        help=(
+            "Total News audits. The five mandatory regressions are always "
+            "included; the remaining cases are a fresh stratified set."
+        ),
+    )
     parser.add_argument("--sec-audits", type=int, default=5)
     parser.add_argument("--start-date", default="2019-01-01")
     parser.add_argument("--end-date-exclusive", default="2027-01-01")
@@ -621,6 +635,42 @@ def review_case(case: dict) -> dict:
             issues.append(f"{label.unit_id}:context_marked_as_trigger")
         if case["corpus"] == "sec" and label.unit_role != "relevant_filing_section":
             issues.append(f"{label.unit_id}:unexpected_sec_role")
+        direction = label.classification["semantic_direction"]
+        score = float(label.classification["semantic_score"])
+        if direction not in {"positive", "negative", "neutral", "mixed"}:
+            issues.append(f"{label.unit_id}:invalid_semantic_direction")
+        if direction == "positive" and score < 0.5:
+            issues.append(f"{label.unit_id}:positive_direction_score_mismatch")
+        if direction == "negative" and score > -0.5:
+            issues.append(f"{label.unit_id}:negative_direction_score_mismatch")
+        if direction == "neutral" and abs(score) >= 0.5:
+            issues.append(f"{label.unit_id}:neutral_direction_score_mismatch")
+        if case["corpus"] == "news":
+            concepts = set(label.classification["event_concepts"])
+            if (
+                label.issuer_role == "target"
+                and concepts & {
+                    "ma_transaction.acquisition",
+                    "ma_transaction.merger_agreement",
+                }
+                and direction not in {"positive", "mixed"}
+            ):
+                issues.append(
+                    f"{label.unit_id}:target_transaction_direction_mismatch"
+                )
+            if (
+                label.unit_role == "analyst_opinion"
+                and label.classification["content_role"]
+                != "automated_summary"
+                and (
+                    label.classification["content_role"] != "analyst_event"
+                    or label.classification["issuer_relationship"]
+                    != "analyst_opinion"
+                )
+            ):
+                issues.append(
+                    f"{label.unit_id}:analyst_opinion_classification_mismatch"
+                )
         for evidence in (
             item
             for canonical in label.semantic["labels"]
@@ -676,6 +726,36 @@ def _expected_news_issues(case: dict) -> list[str]:
         role = contract.get("issuer_role")
         if role and role not in {label.issuer_role for label in ticker_labels}:
             issues.append(f"expected:issuer_role:{ticker}:{role}")
+        required_direction = contract.get("required_direction")
+        actual_directions = {
+            label.classification["semantic_direction"]
+            for label in ticker_labels
+        }
+        if required_direction and required_direction not in actual_directions:
+            issues.append(
+                f"expected:semantic_direction:{ticker}:"
+                f"{required_direction}:actual={','.join(sorted(actual_directions))}"
+            )
+        observed_direction = contract.get("observed_direction")
+        actual_observed = {
+            label.observed_reaction.direction
+            for label in ticker_labels
+            if label.observed_reaction.direction
+        }
+        if observed_direction and observed_direction not in actual_observed:
+            issues.append(
+                f"expected:observed_direction:{ticker}:"
+                f"{observed_direction}:actual={','.join(sorted(actual_observed))}"
+            )
+        observed_move = contract.get("observed_move_pct")
+        if observed_move is not None and not any(
+            label.observed_reaction.move_pct is not None
+            and abs(label.observed_reaction.move_pct - observed_move) < 1e-9
+            for label in ticker_labels
+        ):
+            issues.append(
+                f"expected:observed_move_pct:{ticker}:{observed_move}"
+            )
         concepts = {
             concept
             for label in ticker_labels
@@ -820,6 +900,16 @@ def render_case(case: dict, review: dict) -> str:
                 f"- Event concepts: {', '.join(classification['event_concepts']) or 'none'}",
                 f"- Semantic direction: `{classification['semantic_direction']}` "
                 f"({classification['semantic_score']})",
+                "- Direction base / adjustment: "
+                f"`{classification.get('semantic_score_base', classification['semantic_score'])}` / "
+                f"`{classification.get('semantic_score_adjustment', 0.0)}`",
+                "- Direction basis: "
+                + (
+                    ", ".join(
+                        classification.get("semantic_direction_basis", ())
+                    )
+                    or "none"
+                ),
                 f"- Forecast trigger eligible: `{label.forecast_trigger_eligible}`",
                 f"- Reaction evaluation eligible: `{label.reaction_evaluation_eligible}`",
                 f"- Issuer history context eligible: `{label.issuer_history_context_eligible}`",
@@ -868,7 +958,7 @@ def render_case(case: dict, review: dict) -> str:
 
 def render_review_summary(summary: dict, rows: list[dict]) -> str:
     lines = [
-        "# Scoped labeling V3 certification review",
+        "# Scoped labeling V4 certification review",
         "",
         "This review checks extraction invariants, evidence traceability, and "
         "mandatory issuer-level semantic outcomes. It does not authorize "

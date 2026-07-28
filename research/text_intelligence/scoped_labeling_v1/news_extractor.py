@@ -12,6 +12,7 @@ from research.text_intelligence.semantic_label_authority_v1.structure import (
 
 from .news_identity import (
     ARTICLE_ISSUER_RE,
+    EXCHANGE_TICKER_RE,
     ISSUER_RESOLUTION_VERSION,
     IssuerMatch,
     NewsIssuerResolver,
@@ -21,14 +22,22 @@ from .schema import NEWS_EXTRACTOR_VERSION, ObservedReaction, RelevantTextUnit
 
 
 MOVE_RE = re.compile(
-    r"\b(?:shares?|stock)\s+"
-    r"(?P<verb>rose|gained|climbed|jumped|surged|rallied|advanced|"
-    r"fell|dropped|declined|slid|plunged|tumbled|lost)\s+"
-    r"(?P<pct>\d+(?:\.\d+)?)%\s*(?:to|at)\s*\$(?P<price>\d+(?:\.\d+)?)",
-    re.IGNORECASE,
+    r"(?<!\w)(?:(?P<ticker>[A-Z][A-Z0-9.-]{0,9})\s+|"
+    r"\((?i:(?:NASDAQ|NYSE|NYSEAMERICAN|NYSE\s+AMERICAN|AMEX|"
+    r"OTC(?:QX|QB)?|TSX|TSXV|CSE))\s*:\s*"
+    r"(?P<exchange_ticker>[A-Z][A-Z0-9.-]{0,9})\)\s+)?"
+    r"(?i:(?:(?:shares?|stock)\s+)?"
+    r"(?:(?:is|are|was|were)\s+)?"
+    r"(?:(?:trading|moved)\s+)?"
+    r"(?P<verb>up|higher|rose|gained|climbed|jumped|surged|rallied|"
+    r"advanced|increased|upwards|down|lower|fell|dropped|declined|decreased|"
+    r"downwards|"
+    r"slid|plunged|tumbled|lost)(?:\s+by)?\s+"
+    r"(?P<pct>\d+(?:\.\d+)?)%\s*(?:to|at)\s*"
+    r"\$(?P<price>\d[\d,]*(?:\.\d+)?))",
 )
 SESSION_RE = re.compile(
-    r"\b(pre[- ]market|premarket|after[- ]hours|post[- ]market|"
+    r"\b(pre[- ]market|premarket|after[- ]hours|after[- ]market|post[- ]market|"
     r"regular(?:[- ]hours)? trading|midday|mid-day)\b",
     re.IGNORECASE,
 )
@@ -53,7 +62,8 @@ ANALYST_ACTION_RE = re.compile(
     re.IGNORECASE,
 )
 ANALYST_ROLE_RE = re.compile(
-    r"\b(?:analyst|brokerage|price\s+target|rating|coverage)\b|"
+    r"\b(?:analyst|brokerage|price\s+target|analyst\s+rating|"
+    r"research\s+coverage)\b|"
     r"\b(?:upgrade[sd]?|downgrade[sd]?|maintain(?:s|ed)?|reiterate[sd]?|"
     r"initiate[sd]?|resume[sd]?)\b.{0,100}\b(?:buy|sell|hold|"
     r"overweight|underweight|outperform|underperform|neutral)\b",
@@ -182,7 +192,11 @@ def analyze_news_scope(
     metadata: Mapping[str, object] | None = None,
 ) -> NewsScopeAnalysis:
     clean = normalize_source_text(text)
-    linked = tuple(dict.fromkeys(value.upper() for value in tickers if value))
+    linked = tuple(dict.fromkeys(
+        _normalize_provider_ticker(value)
+        for value in tickers
+        if _normalize_provider_ticker(value)
+    ))
     resolver = issuer_resolver or NewsIssuerResolver.from_metadata(metadata or {})
     resolver = resolver.with_article_identities(clean)
     blocks = segment_rendered_text("news", clean)
@@ -363,13 +377,48 @@ def analyze_news_scope(
     )
 
 
-def extract_observed_reaction(text: str) -> ObservedReaction:
-    match = MOVE_RE.search(text)
-    if not match:
+def extract_observed_reaction(
+    text: str,
+    *,
+    ticker: str = "",
+) -> ObservedReaction:
+    matches = tuple(MOVE_RE.finditer(text))
+    if not matches:
+        return ObservedReaction()
+    ticker = ticker.upper()
+    exact = tuple(
+        match
+        for match in matches
+        if str(
+            match.group("ticker")
+            or match.group("exchange_ticker")
+            or ""
+        ).upper() == ticker
+    )
+    unscoped = tuple(
+        match
+        for match in matches
+        if not (match.group("ticker") or match.group("exchange_ticker"))
+    )
+    # An explicit ticker always wins. A tickerless reaction may be inherited
+    # only when no other explicit ticker appears in the same evidence. This
+    # prevents one issuer's reported move from leaking to another issuer in a
+    # multi-company article.
+    match = (
+        exact[0]
+        if ticker and exact
+        else unscoped[0]
+        if ticker and len(matches) == 1 and unscoped
+        else matches[0]
+        if not ticker
+        else None
+    )
+    if match is None:
         return ObservedReaction()
     verb = match.group("verb").casefold()
     direction = "up" if verb in {
-        "rose", "gained", "climbed", "jumped", "surged", "rallied", "advanced"
+        "up", "higher", "rose", "gained", "climbed", "jumped", "surged",
+        "rallied", "advanced", "increased", "upwards",
     } else "down"
     session_match = SESSION_RE.search(text)
     session = (
@@ -379,7 +428,7 @@ def extract_observed_reaction(text: str) -> ObservedReaction:
     return ObservedReaction(
         direction=direction,
         move_pct=float(match.group("pct")),
-        resulting_price=float(match.group("price")),
+        resulting_price=float(match.group("price").replace(",", "")),
         market_session=session,
         evidence=match.group(0),
     )
@@ -581,7 +630,10 @@ def _units_from_assignments(
         if len(semantic_text) < 20:
             continue
         reaction_text = " ".join(part.text for part in parts)
-        reaction = extract_observed_reaction(reaction_text)
+        reaction = extract_observed_reaction(
+            reaction_text,
+            ticker=ticker,
+        )
         event_tickers = tuple(sorted({
             assigned
             for assigned, fragment, _ in assignments
@@ -753,6 +805,14 @@ def _passage_role(
 
 def _is_analyst_text(text: str) -> bool:
     return bool(ANALYST_ROLE_RE.search(text))
+
+
+def _normalize_provider_ticker(value: str) -> str:
+    ticker = str(value or "").upper().strip()
+    if not ticker:
+        return ""
+    exchange_pair = EXCHANGE_TICKER_RE.fullmatch(ticker)
+    return exchange_pair.group(1).upper() if exchange_pair else ticker
 
 
 def _has_event_evidence(text: str) -> bool:

@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 
-CLASSIFICATION_AUTHORITY_VERSION = "text_classification_authority_v2"
+CLASSIFICATION_AUTHORITY_VERSION = "text_classification_authority_v3"
 
 
 @dataclass(frozen=True, slots=True)

@@ -11,10 +11,11 @@ each year.
 
 - Related task: `TASK-0153`
 
-Replaced the invalid document-wide News gate with one issuer-scoped V3
+Replaced the invalid document-wide News gate with one issuer-scoped V4
 authority shared by certified historical labeling, normalized News/SEC
 relationships, and live News Intelligence. Multi-issuer events preserve the
-full publication while separating per-issuer evidence and semantics.
+full publication while separating per-issuer evidence and semantics; direction
+is now issuer-role aware and certified independently from reported reaction.
 
 ### [2026-07-27 time unavailable - Design and implement adaptive OMS, portfolio protection, and continuous risk](docs/codex/chat-summaries/2026/CHAT-20260727-UNKNOWN-adaptive-oms-portfolio-risk.md)
 
