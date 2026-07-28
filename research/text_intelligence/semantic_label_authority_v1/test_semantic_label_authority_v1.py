@@ -134,6 +134,40 @@ class StructureAndLabelTests(unittest.TestCase):
             for evidence in label.evidence:
                 self.assertEqual(source[evidence.start:evidence.end], evidence.text)
 
+    def test_removed_clinical_hold_is_positive_transition_not_failure(self) -> None:
+        source = (
+            "The FDA removed its partial clinical hold on the Phase 1/2 "
+            "clinical trial."
+        )
+        result = label_document(document(source, title="FDA removes clinical hold"))
+        concepts = {
+            (label.family, label.subtype, label.direction)
+            for label in result.labels
+        }
+        self.assertIn(("clinical", "hold_lifted", "positive"), concepts)
+        self.assertNotIn(("clinical", "failure", "negative"), concepts)
+        self.assertEqual(result.sentiment, "positive")
+
+    def test_terminated_merger_is_not_positive_merger_agreement(self) -> None:
+        source = (
+            "The companies agreed to terminate the previously announced "
+            "agreement and plan of merger and will not complete their "
+            "business combination."
+        )
+        result = label_document(document(source, title="Companies terminate merger"))
+        concepts = {
+            (label.family, label.subtype, label.direction)
+            for label in result.labels
+        }
+        self.assertIn(
+            ("ma_transaction", "merger_termination", "negative"),
+            concepts,
+        )
+        self.assertNotIn(
+            ("ma_transaction", "merger_agreement", "positive"),
+            concepts,
+        )
+
     def test_roundup_role_is_not_primary_event(self) -> None:
         result = label_document(document(
             "50 Biggest Movers From Friday includes EXMP and several other stocks.",

@@ -30,6 +30,8 @@ from .pipeline import (
     classify_sec_document,
     summarize_scoped_labels,
 )
+from .news_extractor import analyze_news_scope
+from .news_identity import NewsIssuerResolver, load_news_issuer_resolver
 from .schema import ScopedLabel
 from .schema import SCOPED_LABELING_VERSION
 
@@ -38,7 +40,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     output = (
         MLOpsPathConfig.from_env().runtimes_root
         / "text_intelligence"
-        / "scoped_labeling_v1"
+        / "scoped_labeling_v2"
         / "certification"
     )
     parser = argparse.ArgumentParser(
@@ -74,14 +76,23 @@ def run(args: argparse.Namespace) -> dict:
         sec_rows = fetch_sec_sample(
             client, config, args.candidate_sample_size
         )
+        issuer_resolver = load_news_issuer_resolver(client, config.database)
     finally:
         client.close()
 
-    news_cases = _build_cases(news_rows, "news")
+    news_cases = _build_cases(
+        news_rows,
+        "news",
+        issuer_resolver=issuer_resolver,
+    )
     sec_cases = _build_cases(sec_rows, "sec")
     selected_news = _select_cases(news_cases, args.news_audits, "news")
     selected_sec = _select_cases(sec_cases, args.sec_audits, "sec")
     selected = [*selected_news, *selected_sec]
+    news_scope_coverage = _news_scope_coverage(selected_news)
+    missing_news_scope_cases = sorted(
+        name for name, covered in news_scope_coverage.items() if not covered
+    )
 
     audit_dir = args.output_root / "audits"
     audit_dir.mkdir(parents=True, exist_ok=True)
@@ -109,7 +120,9 @@ def run(args: argparse.Namespace) -> dict:
         "review_passed": sum(row["status"] == "pass" for row in review_rows),
         "review_attention": sum(
             row["status"] == "attention" for row in review_rows
-        ),
+        ) + len(missing_news_scope_cases),
+        "news_scope_coverage": news_scope_coverage,
+        "missing_news_scope_cases": missing_news_scope_cases,
         "news": summarize_scoped_labels(tuple(
             label for case in selected_news for label in case["labels"]
         )),
@@ -134,14 +147,35 @@ def run(args: argparse.Namespace) -> dict:
     return summary
 
 
-def _build_cases(rows: list[dict], corpus: str) -> list[dict]:
+def _build_cases(
+    rows: list[dict],
+    corpus: str,
+    *,
+    issuer_resolver: NewsIssuerResolver | None = None,
+) -> list[dict]:
     output = []
     for row in rows:
         document = _document(row, corpus)
         labels = (
-            classify_news_document(document)
+            classify_news_document(
+                document,
+                issuer_resolver=issuer_resolver,
+            )
             if corpus == "news"
             else classify_sec_document(document)
+        )
+        scope_analysis = (
+            analyze_news_scope(
+                source_id=document.source_id,
+                title=document.title,
+                text=document.text,
+                tickers=document.tickers,
+                timestamp=document.timestamp,
+                issuer_resolver=issuer_resolver,
+                metadata=document.metadata,
+            )
+            if corpus == "news"
+            else None
         )
         output.append(
             {
@@ -153,6 +187,7 @@ def _build_cases(rows: list[dict], corpus: str) -> list[dict]:
                 "metadata": document.metadata,
                 "text": document.text,
                 "labels": labels,
+                "scope_analysis": scope_analysis,
                 "stratum": row.get("sample_stratum", ""),
             }
         )
@@ -187,7 +222,14 @@ def _select_cases(cases: list[dict], count: int, corpus: str) -> list[dict]:
             for concept in label.classification["event_concepts"]
         }
         if corpus == "news":
+            decision = (
+                case["scope_analysis"].document_decision
+                if case["scope_analysis"] is not None else ""
+            )
             priority = (
+                7 if decision == "mixed_issuer_passage_scoping"
+                    and len(case["tickers"]) == 1 else
+                6 if decision == "unresolved_issuer_passage_abstention" else
                 5 if "ticker_market_observation" in roles else
                 4 if len(case["tickers"]) > 1 else
                 3 if concepts else
@@ -207,18 +249,26 @@ def _select_cases(cases: list[dict], count: int, corpus: str) -> list[dict]:
     selected: list[dict] = []
     if corpus == "news":
         predicates = (
+            lambda case: (
+                len(case["tickers"]) == 1
+                and case["scope_analysis"].document_decision
+                == "mixed_issuer_passage_scoping"
+            ),
+            lambda case: (
+                case["scope_analysis"].document_decision
+                == "unresolved_issuer_passage_abstention"
+            ),
             lambda case: _has_role(case, "ticker_market_observation"),
             lambda case: (
-                len(case["tickers"]) > 1
-                and _has_role(case, "ticker_scoped_editorial_context")
+                _has_role(case, "ticker_scoped_analyst_context")
+                or (
+                    len(case["tickers"]) > 1
+                    and _has_role(case, "ticker_scoped_editorial_context")
+                )
             ),
             lambda case: (
                 len(case["tickers"]) == 1
                 and any(label.forecast_trigger_eligible for label in case["labels"])
-            ),
-            lambda case: (
-                len(case["tickers"]) == 1
-                and any(label.unit_role == "primary_or_editorial_document" for label in case["labels"])
             ),
             lambda case: not case["labels"],
         )
@@ -262,10 +312,44 @@ def _select_cases(cases: list[dict], count: int, corpus: str) -> list[dict]:
     return selected
 
 
+def _news_scope_coverage(cases: list[dict]) -> dict[str, bool]:
+    return {
+        "single_link_mixed_issuer": any(
+            len(case["tickers"]) == 1
+            and case["scope_analysis"] is not None
+            and case["scope_analysis"].document_decision
+            == "mixed_issuer_passage_scoping"
+            for case in cases
+        ),
+        "unresolved_issuer_abstention": any(
+            case["scope_analysis"] is not None
+            and case["scope_analysis"].document_decision
+            == "unresolved_issuer_passage_abstention"
+            for case in cases
+        ),
+        "aggregation_observation": any(
+            _has_role(case, "ticker_market_observation") for case in cases
+        ),
+        "scoped_context": any(
+            _has_role(case, "ticker_scoped_analyst_context")
+            or _has_role(case, "ticker_scoped_editorial_context")
+            for case in cases
+        ),
+        "single_resolved_issuer_trigger": any(
+            case["scope_analysis"] is not None
+            and case["scope_analysis"].document_decision
+            == "single_resolved_issuer"
+            and any(label.forecast_trigger_eligible for label in case["labels"])
+            for case in cases
+        ),
+    }
+
+
 def review_case(case: dict) -> dict:
     issues: list[str] = []
     notes: list[str] = []
     labels: tuple[ScopedLabel, ...] = case["labels"]
+    scope_analysis = case.get("scope_analysis")
     if not labels:
         notes.append("explicit_abstention_no_relevant_unit")
     for label in labels:
@@ -277,6 +361,8 @@ def review_case(case: dict) -> dict:
             label.unit_role in {
                 "ticker_market_observation",
                 "editorial_reaction_explanation",
+                "ticker_scoped_editorial_context",
+                "ticker_scoped_analyst_context",
             }
             and (
                 label.forecast_trigger_eligible
@@ -284,6 +370,17 @@ def review_case(case: dict) -> dict:
             )
         ):
             issues.append(f"{label.unit_id}:context_marked_as_trigger")
+        if (
+            case["corpus"] == "news"
+            and label.forecast_trigger_eligible
+            and (
+                scope_analysis is None
+                or scope_analysis.document_decision != "single_resolved_issuer"
+            )
+        ):
+            issues.append(
+                f"{label.unit_id}:trigger_without_single_resolved_issuer"
+            )
         if case["corpus"] == "sec" and label.unit_role != "relevant_filing_section":
             issues.append(f"{label.unit_id}:unexpected_sec_role")
         for evidence in (
@@ -324,9 +421,41 @@ def render_case(case: dict, review: dict) -> str:
         case["text"],
         "```",
         "",
-        "## Extracted and labeled units",
-        "",
     ]
+    scope_analysis = case.get("scope_analysis")
+    if scope_analysis is not None:
+        lines.extend(
+            [
+                "## Issuer scope resolution",
+                "",
+                f"- Resolver: `{scope_analysis.resolver_version}`",
+                f"- Provider-linked tickers: "
+                f"{', '.join(scope_analysis.linked_tickers) or 'none'}",
+                f"- Text-resolved subjects: "
+                f"{', '.join(scope_analysis.resolved_subjects) or 'none'}",
+                f"- Document decision: `{scope_analysis.document_decision}`",
+                f"- Aggregation structure: `{scope_analysis.aggregation}`",
+                "",
+                "| # | Assigned | Directly resolved | Decision | Evidence | Passage |",
+                "|---:|---|---|---|---|---|",
+            ]
+        )
+        for passage in scope_analysis.passages:
+            passage_text = passage.text.replace("|", "\\|").replace("\n", " ")
+            lines.append(
+                f"| {passage.ordinal} | {passage.assigned_ticker or 'none'} | "
+                f"{', '.join(passage.resolved_tickers) or 'none'} | "
+                f"`{passage.decision}` | "
+                f"{'; '.join(passage.evidence) or 'none'} | {passage_text} |"
+            )
+        lines.extend(["", "## Extracted and labeled units", ""])
+    else:
+        lines.extend(
+            [
+                "## Extracted and labeled units",
+                "",
+            ]
+        )
     if not case["labels"]:
         lines.append("_No relevant unit was extracted; this is an explicit abstention._")
     for index, label in enumerate(case["labels"], start=1):
@@ -391,7 +520,7 @@ def render_case(case: dict, review: dict) -> str:
 
 def render_review_summary(summary: dict, rows: list[dict]) -> str:
     lines = [
-        "# Scoped labeling V1 self-review",
+        "# Scoped labeling V2 self-review",
         "",
         "This review certifies extraction invariants, evidence traceability, "
         "and eligibility safety. It does not authorize persistence or "
@@ -401,11 +530,18 @@ def render_review_summary(summary: dict, rows: list[dict]) -> str:
         f"- Needs attention: {summary['review_attention']}",
         f"- Audit directory: `{summary['audit_directory']}`",
         "",
+        "## Required News scope cases",
+        "",
+    ]
+    for name, covered in summary["news_scope_coverage"].items():
+        lines.append(f"- {name}: **{'covered' if covered else 'missing'}**")
+    lines.extend([
+        "",
         "## Cases",
         "",
         "| Corpus | Source | Units | Status | Issues / notes |",
         "|---|---|---:|---|---|",
-    ]
+    ])
     for row in rows:
         lines.append(
             f"| {row['corpus']} | `{row['source_id']}` | {row['unit_count']} | "

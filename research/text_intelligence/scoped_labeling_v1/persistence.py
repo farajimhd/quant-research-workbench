@@ -30,18 +30,19 @@ from research.text_intelligence.semantic_label_authority_v1.schema import (
 )
 
 from .pipeline import classify_news_document, classify_sec_document
+from .news_identity import NewsIssuerResolver, load_news_issuer_resolver
 from .schema import SCOPED_LABELING_VERSION, ScopedLabel
 
 
-TARGET_TABLE = "scoped_text_labels_v1"
-STATUS_TABLE = "scoped_text_labels_v1_build_status"
+TARGET_TABLE = "scoped_text_labels_v2"
+STATUS_TABLE = "scoped_text_labels_v2_build_status"
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     certification_manifest = (
         MLOpsPathConfig.from_env().runtimes_root
         / "text_intelligence"
-        / "scoped_labeling_v1"
+        / "scoped_labeling_v2"
         / "certification"
         / "manifest.json"
     )
@@ -109,6 +110,11 @@ def run(args: argparse.Namespace) -> dict:
             return {"execute": False, "source_counts": counts}
         assert_certification(args.certification_manifest)
         create_tables(client, args.database)
+        issuer_resolver = (
+            load_news_issuer_resolver(client, args.database)
+            if "news" in corpora
+            else None
+        )
         completed = (
             set()
             if args.rebuild_completed
@@ -136,6 +142,7 @@ def run(args: argparse.Namespace) -> dict:
                 start,
                 end,
                 run_id,
+                issuer_resolver,
             ): (corpus, start, end)
             for corpus, start, end in active
         }
@@ -164,6 +171,7 @@ def process_unit(
     start: str,
     end: str,
     run_id: str,
+    issuer_resolver: NewsIssuerResolver | None,
 ) -> dict:
     client = make_client()
     try:
@@ -177,7 +185,10 @@ def process_unit(
         for row in rows:
             document = row_to_document(row, corpus)
             labels = (
-                classify_news_document(document)
+                classify_news_document(
+                    document,
+                    issuer_resolver=issuer_resolver,
+                )
                 if corpus == "news"
                 else classify_sec_document(document)
             )
@@ -602,3 +613,7 @@ def assert_certification(path: Path) -> None:
         raise RuntimeError("certification does not contain five News and five SEC audits")
     if int(payload.get("review_attention") or 0) != 0:
         raise RuntimeError("certification self-review still has attention items")
+    if payload.get("missing_news_scope_cases") != []:
+        raise RuntimeError(
+            "certification is missing one or more required News issuer-scope cases"
+        )

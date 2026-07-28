@@ -122,10 +122,14 @@ def concept_labels(text: str, blocks: tuple) -> tuple[CanonicalLabel, ...]:
             for match in re.finditer(rf"(?<!\w){re.escape(phrase.casefold())}(?!\w)", lowered):
                 if not any(start <= match.start() and match.end() <= end for start, end in semantic_ranges):
                     continue
+                if _excluded_concept_match(rule, text, match.start(), match.end()):
+                    continue
                 evidence.append(LabelEvidence("text", text[match.start():match.end()], match.start(), match.end()))
         for pattern in rule.patterns:
             for match in re.finditer(pattern, text, re.IGNORECASE):
                 if not any(start <= match.start() and match.end() <= end for start, end in semantic_ranges):
+                    continue
+                if _excluded_concept_match(rule, text, match.start(), match.end()):
                     continue
                 evidence.append(LabelEvidence("text", match.group(0), match.start(), match.end()))
         evidence = list({
@@ -147,6 +151,21 @@ def concept_labels(text: str, blocks: tuple) -> tuple[CanonicalLabel, ...]:
             )
         )
     return tuple(sorted(output, key=lambda item: (item.family, item.subtype)))
+
+
+def _excluded_concept_match(
+    rule,
+    text: str,
+    start: int,
+    end: int,
+) -> bool:
+    if not rule.exclude_patterns:
+        return False
+    context = text[max(0, start - 120) : min(len(text), end + 120)]
+    return any(
+        re.search(pattern, context, re.IGNORECASE)
+        for pattern in rule.exclude_patterns
+    )
 
 
 def classify_content_role(

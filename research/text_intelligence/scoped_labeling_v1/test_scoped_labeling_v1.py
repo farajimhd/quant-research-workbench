@@ -9,7 +9,8 @@ from research.text_intelligence.semantic_label_authority_v1.schema import (
     SemanticDocument,
 )
 
-from .news_extractor import extract_news_units
+from .news_extractor import analyze_news_scope, extract_news_units
+from .news_identity import IssuerIdentity, NewsIssuerResolver
 from .pipeline import classify_news_document, classify_sec_document
 from .sec_extractor import extract_sec_units
 from .persistence import assert_certification, bounded_period_ranges
@@ -17,6 +18,42 @@ from .schema import SCOPED_LABELING_VERSION
 
 
 class ScopedLabelingTests(unittest.TestCase):
+    @staticmethod
+    def issuer_resolver() -> NewsIssuerResolver:
+        return NewsIssuerResolver(
+            (
+                IssuerIdentity(
+                    ticker="EXMP",
+                    issuer_id="issuer-example",
+                    aliases=(
+                        "Example Therapeutics, Inc.",
+                        "Example Therapeutics",
+                        "Example",
+                    ),
+                ),
+                IssuerIdentity(
+                    ticker="EXM.A",
+                    issuer_id="issuer-example",
+                    aliases=("Example Therapeutics Class A",),
+                ),
+                IssuerIdentity(
+                    ticker="OTHR",
+                    issuer_id="issuer-other",
+                    aliases=("Other Corp",),
+                ),
+                IssuerIdentity(
+                    ticker="AAPL",
+                    issuer_id="issuer-apple",
+                    aliases=("Apple Inc.", "Apple"),
+                ),
+                IssuerIdentity(
+                    ticker="GS",
+                    issuer_id="issuer-goldman",
+                    aliases=("Goldman Sachs Group, Inc.", "Goldman Sachs"),
+                ),
+            )
+        )
+
     def test_persistence_windows_are_bounded_and_exact(self) -> None:
         self.assertEqual(
             bounded_period_ranges("2026-07-01", "2026-07-12", 7),
@@ -36,6 +73,7 @@ class ScopedLabelingTests(unittest.TestCase):
                         "news_audits": 5,
                         "sec_audits": 5,
                         "review_attention": 0,
+                        "missing_news_scope_cases": [],
                     }
                 ),
                 encoding="utf-8",
@@ -111,10 +149,234 @@ Body:
                 "Revenue also increased year over year."
             ),
             tickers=("EXMP",),
+            issuer_resolver=self.issuer_resolver(),
         )
         self.assertEqual(len(units), 1)
         self.assertIn("Revenue also increased", units[0].text)
         self.assertEqual(units[0].role, "primary_or_editorial_document")
+
+    def test_corporate_guidance_upgrade_is_not_an_analyst_action(self) -> None:
+        units = extract_news_units(
+            source_id="guidance-upgrade",
+            title="Example Therapeutics upgrades guidance",
+            text=(
+                "Body: Example Therapeutics upgraded its revenue guidance "
+                "after stronger demand."
+            ),
+            tickers=("EXMP",),
+            timestamp="2026-07-28T12:00:00Z",
+            issuer_resolver=self.issuer_resolver(),
+        )
+        self.assertEqual(len(units), 1)
+        self.assertEqual(units[0].role, "primary_or_editorial_document")
+
+    def test_single_provider_link_does_not_hide_mixed_issuer_article(self) -> None:
+        document = SemanticDocument(
+            corpus="news",
+            source_id="single-link-mixed",
+            timestamp="2026-07-28T12:00:00Z",
+            title="Example Therapeutics and Other Corp report updates",
+            text=(
+                "Body: Example Therapeutics announced that it raised guidance. "
+                "Other Corp (NYSE:OTHR) announced a registered direct offering."
+            ),
+            tickers=("EXMP",),
+            metadata={"author": "Editorial Desk"},
+        )
+        labels = classify_news_document(
+            document,
+            issuer_resolver=self.issuer_resolver(),
+        )
+        self.assertEqual({label.ticker for label in labels}, {"EXMP", "OTHR"})
+        self.assertTrue(all(not label.forecast_trigger_eligible for label in labels))
+        self.assertTrue(all(
+            label.unit_role == "ticker_scoped_editorial_context"
+            for label in labels
+        ))
+
+    def test_analyst_firm_is_not_treated_as_action_target(self) -> None:
+        analysis = analyze_news_scope(
+            source_id="analyst-target",
+            title="Goldman Sachs upgrades Apple",
+            text=(
+                "Body: Goldman Sachs upgraded Apple Inc. to Buy and raised "
+                "its price target to $250."
+            ),
+            tickers=("AAPL",),
+            timestamp="2026-07-28T12:00:00Z",
+            issuer_resolver=self.issuer_resolver(),
+        )
+        self.assertEqual(analysis.resolved_subjects, ("AAPL",))
+        self.assertEqual(analysis.document_decision, "single_resolved_issuer")
+        self.assertEqual(analysis.units[0].tickers, ("AAPL",))
+        self.assertEqual(analysis.units[0].role, "analyst_opinion")
+
+    def test_unresolved_company_like_passage_does_not_inherit_single_link(self) -> None:
+        analysis = analyze_news_scope(
+            source_id="unresolved-peer",
+            title="Example Therapeutics reports an update",
+            text=(
+                "Body: Example Therapeutics raised guidance. "
+                "Mystery Holdings Corp. announced a separate offering."
+            ),
+            tickers=("EXMP",),
+            timestamp="2026-07-28T12:00:00Z",
+            issuer_resolver=self.issuer_resolver(),
+        )
+        self.assertEqual(
+            analysis.document_decision,
+            "unresolved_issuer_passage_abstention",
+        )
+        self.assertEqual(len(analysis.units), 1)
+        self.assertEqual(analysis.units[0].tickers, ("EXMP",))
+        self.assertFalse(any(
+            "Mystery Holdings" in unit.text for unit in analysis.units
+        ))
+        unresolved = [
+            passage
+            for passage in analysis.passages
+            if passage.decision == "abstained_unresolved_company_mention"
+        ]
+        self.assertEqual(len(unresolved), 1)
+
+    def test_single_link_without_text_resolved_subject_abstains(self) -> None:
+        analysis = analyze_news_scope(
+            source_id="metadata-only",
+            title="Quarterly update",
+            text="Body: The company discussed general market conditions.",
+            tickers=("EXMP",),
+            timestamp="2026-07-28T12:00:00Z",
+            issuer_resolver=self.issuer_resolver(),
+        )
+        self.assertEqual(analysis.document_decision, "abstained_no_resolved_issuer")
+        self.assertFalse(analysis.units)
+
+    def test_article_local_exchange_pair_resolves_historical_issuer_name(self) -> None:
+        resolver = NewsIssuerResolver(())
+        analysis = analyze_news_scope(
+            source_id="historical-name",
+            title="Salarius Pharmaceuticals reports FDA update",
+            text=(
+                "Body: Salarius Pharmaceuticals, Inc. (NASDAQ:SLRX) "
+                "announced that the FDA removed its partial clinical hold."
+            ),
+            tickers=("SLRX",),
+            timestamp="2023-05-09T12:02:54Z",
+            issuer_resolver=resolver,
+        )
+        self.assertEqual(analysis.resolved_subjects, ("SLRX",))
+        self.assertEqual(analysis.document_decision, "single_resolved_issuer")
+
+    def test_unresolved_second_company_blocks_mixed_sentence_assignment(self) -> None:
+        analysis = analyze_news_scope(
+            source_id="spac-termination",
+            title="Pine Technology Acquisition Corp. terminates merger",
+            text=(
+                "Body: Pine Technology Acquisition Corp. "
+                "(NASDAQ:PTOC, PTOCW, PTOCU) and The Tomorrow Companies Inc. "
+                "agreed to terminate their merger agreement."
+            ),
+            tickers=("PTOC",),
+            timestamp="2022-03-07T12:11:37Z",
+            issuer_resolver=NewsIssuerResolver(()),
+        )
+        self.assertEqual(
+            analysis.document_decision,
+            "unresolved_issuer_passage_abstention",
+        )
+        self.assertFalse(analysis.units)
+        self.assertTrue(any(
+            passage.decision == "abstained_unresolved_company_mention"
+            for passage in analysis.passages
+        ))
+
+    def test_external_enrichment_cannot_change_publication_time_subject(self) -> None:
+        analysis = analyze_news_scope(
+            source_id="external-enrichment",
+            title="Example Therapeutics raises guidance",
+            text=(
+                "Title: Example Therapeutics raises guidance\n"
+                "Source [provider_body:0] https://provider.test/article\n"
+                "Example Therapeutics, Inc. (NASDAQ:EXMP) raised guidance.\n"
+                "Source [external:1] https://issuer.test\n"
+                "Example Therapeutics collaborates with Other Corp and Apple Inc."
+            ),
+            tickers=("EXMP",),
+            timestamp="2026-07-28T12:00:00Z",
+            issuer_resolver=self.issuer_resolver(),
+        )
+        self.assertEqual(analysis.resolved_subjects, ("EXMP",))
+        self.assertEqual(analysis.document_decision, "single_resolved_issuer")
+        self.assertNotIn("Other Corp", analysis.units[0].text)
+        self.assertNotIn("Apple Inc", analysis.units[0].text)
+        self.assertTrue(any(
+            passage.decision == "abstained_external_enrichment"
+            for passage in analysis.passages
+        ))
+
+    def test_unresolved_document_scope_cannot_be_reenabled_by_unit_classifier(
+        self,
+    ) -> None:
+        document = SemanticDocument(
+            corpus="news",
+            source_id="scope-gate",
+            timestamp="2026-07-14T12:00:00Z",
+            title="Example Therapeutics Announces Positive Trial Results",
+            text=(
+                "Example Therapeutics, Inc. (NASDAQ:EXMP) announced positive "
+                "Phase 3 trial results.\n"
+                "Unresolved Biopharma Inc. will participate in the program."
+            ),
+            tickers=("EXMP",),
+        )
+        labels = classify_news_document(
+            document,
+            issuer_resolver=self.issuer_resolver(),
+        )
+        self.assertTrue(labels)
+        self.assertTrue(all(
+            not label.forecast_trigger_eligible
+            and not label.reaction_evaluation_eligible
+            for label in labels
+        ))
+        self.assertTrue(all(
+            "document_issuer_scope_not_trigger_safe"
+            in label.classification["quality_flags"]
+            for label in labels
+        ))
+
+    def test_multiple_provider_symbols_for_one_issuer_remain_trigger_safe(
+        self,
+    ) -> None:
+        document = SemanticDocument(
+            corpus="news",
+            source_id="same-issuer-symbols",
+            timestamp="2026-07-14T12:00:00Z",
+            title="Example Therapeutics Announces Positive Trial Results",
+            text=(
+                "Example Therapeutics, Inc. (NASDAQ:EXMP) announced that its "
+                "Phase 3 trial met the primary endpoint."
+            ),
+            tickers=("EXMP", "EXM.A"),
+        )
+        labels = classify_news_document(
+            document,
+            issuer_resolver=self.issuer_resolver(),
+        )
+        analysis = analyze_news_scope(
+            source_id=document.source_id,
+            title=document.title,
+            text=document.text,
+            tickers=document.tickers,
+            timestamp=document.timestamp,
+            issuer_resolver=self.issuer_resolver(),
+        )
+        self.assertEqual(analysis.document_decision, "single_resolved_issuer")
+        self.assertEqual(len(labels), 1)
+        self.assertNotIn(
+            "document_issuer_scope_not_trigger_safe",
+            labels[0].classification["quality_flags"],
+        )
 
     def test_multi_ticker_scoped_passage_is_context_only(self) -> None:
         document = SemanticDocument(

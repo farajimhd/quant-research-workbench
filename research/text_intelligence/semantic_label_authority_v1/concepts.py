@@ -14,6 +14,7 @@ class ConceptRule:
     modality: str = "confirmed"
     time_orientation: str = "current"
     patterns: tuple[str, ...] = ()
+    exclude_patterns: tuple[str, ...] = ()
 
 
 CONCEPT_RULES: tuple[ConceptRule, ...] = (
@@ -88,11 +89,59 @@ CONCEPT_RULES: tuple[ConceptRule, ...] = (
     ConceptRule("regulatory", "fda_approval", ("fda approval", "fda approved", "food and drug administration approval"), "positive", 1.7),
     ConceptRule("regulatory", "fda_rejection", ("complete response letter", "fda rejected", "fda denial"), "negative", -1.8),
     ConceptRule("clinical", "success", ("met primary endpoint", "statistically significant", "positive topline results"), "positive", 1.4),
-    ConceptRule("clinical", "failure", ("failed primary endpoint", "did not meet primary endpoint", "clinical hold"), "negative", -1.6),
+    ConceptRule(
+        "clinical",
+        "hold_lifted",
+        (
+            "removed its partial clinical hold",
+            "removed the clinical hold",
+            "lifted the clinical hold",
+            "clinical hold was lifted",
+            "partial clinical hold was removed",
+        ),
+        "positive",
+        1.4,
+    ),
+    ConceptRule(
+        "clinical",
+        "failure",
+        ("failed primary endpoint", "did not meet primary endpoint", "clinical hold"),
+        "negative",
+        -1.6,
+        exclude_patterns=(
+            r"\b(?:remove[sd]?|lift(?:s|ed)?|clear(?:s|ed)?)\b"
+            r"[^.\n]{0,80}\bclinical hold\b",
+            r"\bclinical hold\b[^.\n]{0,80}"
+            r"\b(?:remove[sd]?|lift(?:s|ed)?|clear(?:s|ed)?)\b",
+        ),
+    ),
     ConceptRule("clinical", "data_publication", ("publication of data", "published results", "new clinical data"), "neutral", 0.1, time_orientation="historical"),
-    ConceptRule("ma_transaction", "merger_agreement", ("definitive merger agreement", "business combination agreement"), "positive", 0.7),
+    ConceptRule(
+        "ma_transaction",
+        "merger_agreement",
+        ("definitive merger agreement", "business combination agreement"),
+        "positive",
+        0.7,
+        exclude_patterns=(
+            r"\b(?:terminate[sd]?|termination)\b[^.\n]{0,160}"
+            r"\b(?:merger|business combination|agreement)\b",
+            r"\bwill not complete\b[^.\n]{0,120}\bbusiness combination\b",
+        ),
+    ),
     ConceptRule("ma_transaction", "acquisition", ("agreed to acquire", "latest acquisition", "acquisition agreement"), "mixed", 0.2),
-    ConceptRule("ma_transaction", "merger_termination", ("terminated merger agreement", "merger termination"), "negative", -0.9),
+    ConceptRule(
+        "ma_transaction",
+        "merger_termination",
+        ("terminated merger agreement", "merger termination"),
+        "negative",
+        -0.9,
+        patterns=(
+            r"\b(?:agree[sd]?\s+to\s+)?terminate[sd]?\b[^.\n]{0,160}"
+            r"\b(?:agreement(?:\s+and\s+plan)?\s+of\s+merger|"
+            r"business combination agreement)\b",
+            r"\bwill not complete\b[^.\n]{0,120}\bbusiness combination\b",
+        ),
+    ),
     ConceptRule(
         "contract_order",
         "award",

@@ -12,7 +12,8 @@ from research.text_intelligence.semantic_label_authority_v1.schema import (
     SemanticDocument,
 )
 
-from .news_extractor import extract_news_units
+from .news_extractor import analyze_news_scope
+from .news_identity import NewsIssuerResolver
 from .schema import RelevantTextUnit, ScopedLabel
 from .sec_extractor import extract_sec_units
 
@@ -21,20 +22,36 @@ CONTEXT_ONLY_NEWS_ROLES = {
     "ticker_market_observation",
     "editorial_reaction_explanation",
     "ticker_scoped_editorial_context",
+    "ticker_scoped_analyst_context",
 }
 
 
-def classify_news_document(document: SemanticDocument) -> tuple[ScopedLabel, ...]:
-    units = extract_news_units(
+def classify_news_document(
+    document: SemanticDocument,
+    *,
+    issuer_resolver: NewsIssuerResolver | None = None,
+) -> tuple[ScopedLabel, ...]:
+    analysis = analyze_news_scope(
         source_id=document.source_id,
         title=document.title,
         text=document.text,
         tickers=document.tickers,
+        timestamp=document.timestamp,
+        issuer_resolver=issuer_resolver,
+        metadata=document.metadata,
     )
+    trigger_safe = analysis.document_decision == "single_resolved_issuer"
     labels: list[ScopedLabel] = []
-    for unit in units:
+    for unit in analysis.units:
         for ticker in unit.tickers:
-            labels.append(_label_unit(document, unit, ticker=ticker))
+            labels.append(
+                _label_unit(
+                    document,
+                    unit,
+                    ticker=ticker,
+                    news_trigger_safe=trigger_safe,
+                )
+            )
     return tuple(labels)
 
 
@@ -74,6 +91,7 @@ def _label_unit(
     unit: RelevantTextUnit,
     *,
     ticker: str,
+    news_trigger_safe: bool = True,
 ) -> ScopedLabel:
     metadata = dict(parent.metadata)
     metadata.update(
@@ -101,6 +119,10 @@ def _label_unit(
         parent.corpus == "news" and unit.role in CONTEXT_ONLY_NEWS_ROLES
     )
     classification_dict = classification.as_dict()
+    classification_dict["quality_flags"] = tuple(dict.fromkeys((
+        *classification_dict["quality_flags"],
+        *unit.quality_flags,
+    )))
     if parent.corpus == "sec":
         exact_ticker = bool(ticker)
         role = str(parent.metadata.get("document_role") or "")
@@ -150,6 +172,19 @@ def _label_unit(
                 "reaction_evaluation_eligible": False,
                 "prior_primary_context_eligible": False,
                 "episode_followup_eligible": True,
+            }
+        )
+    if parent.corpus == "news" and not news_trigger_safe:
+        classification_dict.update(
+            {
+                "forecast_trigger_eligible": False,
+                "reaction_evaluation_eligible": False,
+                "prior_primary_context_eligible": False,
+                "episode_followup_eligible": True,
+                "quality_flags": tuple(dict.fromkeys((
+                    *classification_dict["quality_flags"],
+                    "document_issuer_scope_not_trigger_safe",
+                ))),
             }
         )
     return ScopedLabel(
