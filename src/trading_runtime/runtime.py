@@ -7,15 +7,20 @@ from enum import StrEnum
 from typing import Protocol
 from uuid import uuid4
 
-from src.market_engine.events import MarketEvent
+from src.market_engine.events import MarketEvent, QuoteEvent
 from src.trading_runtime.broker import BrokerAdapter
 from src.trading_runtime.canonical_session import CanonicalBrokerSession
 from src.trading_runtime.domain import BrokerProvider, TradingMode
 from src.trading_runtime.journal import TradingJournal
-from src.trading_runtime.order_management import OrderManagementEngine
+from src.trading_runtime.execution_policies import (
+    ExecutionMarketDataProvider,
+    ExecutionMarketSnapshot,
+)
+from src.trading_runtime.order_management import OrderManagementEngine, OrderManagementState
 from src.trading_runtime.portfolio import PortfolioManagementEngine
 from src.trading_runtime.portfolio_config import configured_portfolio_profiles_for_runtime
 from src.trading_runtime.risk import RiskAuthority
+from src.trading_runtime.risk_supervisor import ContinuousRiskSupervisor, RiskEvaluation
 from src.trading_runtime.signals import (
     MarketSignal,
     StrategyEvaluation,
@@ -109,6 +114,7 @@ class TradingRuntime:
                 groups=groups,
             )
         self.portfolio = portfolio
+        self.execution_market_data = ExecutionMarketDataProvider()
         self.order_manager = (
             OrderManagementEngine(
                 broker=broker,
@@ -125,6 +131,7 @@ class TradingRuntime:
                 shortability_provider=broker if hasattr(broker, "shortability") else None,
                 fill_callback=self._on_order_group_fill,
                 state_callback=self._on_order_group_state,
+                execution_market_data=self.execution_market_data,
                 enforce_wall_clock_quote_freshness=(
                     config.mode in {RunMode.LIVE, RunMode.PAPER}
                     and bool(getattr(broker, "requires_fresh_execution_state", False))
@@ -132,6 +139,12 @@ class TradingRuntime:
             )
             if intent_planner is not None
             else None
+        )
+        self.risk_supervisor = ContinuousRiskSupervisor(
+            self.portfolio,
+            journal=journal,
+            run_id=self.run_id,
+            emergency_callback=self._on_emergency_risk,
         )
         self.last_event_time: datetime | None = None
         self.processed_events = 0
@@ -166,8 +179,11 @@ class TradingRuntime:
         if missing:
             raise ValueError(f"Broker does not expose configured accounts: {', '.join(sorted(missing))}")
         await self.risk.prime(self.broker, self.config.account_ids)
+        for account_id in self.config.account_ids:
+            await self.risk_supervisor.evaluate(account_id, reason="runtime_initialize")
         if self.order_manager is not None:
             await self.order_manager.configure_broker_session()
+            await self.order_manager.recover()
             if hasattr(self.broker, "stream_broker_messages"):
                 self._broker_stream_task = asyncio.create_task(self._consume_broker_stream())
                 self._risk_refresh_task = asyncio.create_task(self._refresh_live_risk())
@@ -184,6 +200,30 @@ class TradingRuntime:
             raise ValueError("Market events must be processed in non-decreasing timestamp order")
         self.last_event_time = event.ts
         self.processed_events += 1
+        if isinstance(event, QuoteEvent) and event.bid_price > 0 and event.ask_price >= event.bid_price:
+            tick_size = float(event.raw.get("tick_size") or 0.01)
+            snapshot = ExecutionMarketSnapshot(
+                ticker=event.ticker,
+                bid=event.bid_price,
+                ask=event.ask_price,
+                tick_size=tick_size,
+                observed_at=event.ts,
+                source=event.source,
+                volatility=float(event.raw.get("volatility") or 0),
+                upper_price_band=(
+                    float(event.raw["upper_price_band"])
+                    if event.raw.get("upper_price_band") is not None
+                    else None
+                ),
+                lower_price_band=(
+                    float(event.raw["lower_price_band"])
+                    if event.raw.get("lower_price_band") is not None
+                    else None
+                ),
+            )
+            self.execution_market_data.update(snapshot)
+            if self.order_manager is not None:
+                self.order_manager.on_market_snapshot(snapshot)
         executions = await self.broker.on_market_event(event)
         for execution in executions:
             self.journal.append(
@@ -281,10 +321,12 @@ class TradingRuntime:
                     event=event,
                 )
             except Exception:
-                self.portfolio.release_intent(
-                    approved_intent.intent_id,
-                    reason="order_management_submission_failed",
-                )
+                snapshot = self.order_manager.snapshot_for_intent(approved_intent.intent_id)
+                if snapshot is None or snapshot.state != OrderManagementState.OUTCOME_UNKNOWN:
+                    self.portfolio.release_intent(
+                        approved_intent.intent_id,
+                        reason="order_management_submission_failed",
+                    )
                 raise
 
     def _persist_strategy_assignments(self, event_time: datetime) -> None:
@@ -343,6 +385,7 @@ class TradingRuntime:
         while True:
             try:
                 async for message in stream_provider():
+                    self.risk_supervisor.set_broker_connected(True)
                     if self.order_manager is not None:
                         await self.order_manager.on_broker_message(message)
                     if self._canonical_session is not None:
@@ -353,6 +396,7 @@ class TradingRuntime:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                self.risk_supervisor.set_broker_connected(False)
                 if self.order_manager is not None:
                     self.order_manager.set_connection_state(False, reason=str(exc))
                 self.journal.append(
@@ -362,6 +406,11 @@ class TradingRuntime:
                     entity_id=self.run_id,
                     payload={"status": "disconnected", "error": str(exc), "entries_frozen": True},
                 )
+                for account_id in self.config.account_ids:
+                    await self.risk_supervisor.evaluate(
+                        account_id,
+                        reason="broker_stream_disconnected",
+                    )
                 await asyncio.sleep(1.0)
 
     async def _refresh_live_risk(self) -> None:
@@ -369,6 +418,8 @@ class TradingRuntime:
             try:
                 await asyncio.sleep(5.0)
                 await self.risk.prime(self.broker, self.config.account_ids)
+                for account_id in self.config.account_ids:
+                    await self._consume_operational_commands(account_id)
                 if self._canonical_session is not None:
                     await self._canonical_session.reconcile()
                     self.portfolio.synchronize_canonical(
@@ -376,6 +427,11 @@ class TradingRuntime:
                     )
                 else:
                     await self.portfolio.synchronize(self.broker)
+                for account_id in self.config.account_ids:
+                    await self.risk_supervisor.evaluate(
+                        account_id,
+                        reason="periodic_authoritative_refresh",
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -387,6 +443,55 @@ class TradingRuntime:
                     payload={"status": "stale", "error": str(exc), "entries_frozen": True},
                 )
 
+    async def _consume_operational_commands(self, account_id: str) -> None:
+        if self.order_manager is None:
+            return
+        persisted = self.journal.portfolio_states().get(account_id)
+        if not persisted:
+            return
+        self.portfolio.apply_persisted_operational_state(account_id, persisted)
+        commands = list(persisted.get("pending_operational_commands") or ())
+        changed = False
+        for command in commands:
+            if str(command.get("status") or "") != "pending":
+                continue
+            normalized = str(command.get("command") or "")
+            try:
+                if normalized == "kill_entries":
+                    await self.order_manager.kill_entries(
+                        account_id,
+                        reason=str(command.get("reason") or "operator"),
+                    )
+                elif normalized == "emergency_flatten":
+                    await self.order_manager.emergency_flatten(
+                        account_id,
+                        reason=str(command.get("reason") or "operator"),
+                    )
+                elif normalized == "resume_entries":
+                    await self.risk_supervisor.resume(
+                        account_id,
+                        reason=str(command.get("reason") or "operator"),
+                    )
+                else:
+                    continue
+            except Exception as exc:
+                command["status"] = "failed"
+                command["error"] = str(exc)
+            else:
+                command["status"] = "completed"
+                command["completed_at"] = datetime.now(timezone.utc).isoformat()
+            changed = True
+        if changed:
+            # A risk-resume command persists the newly enabled control through
+            # PortfolioManagementEngine. Reload before writing command status
+            # so the stale pre-command snapshot cannot overwrite that result.
+            persisted = self.journal.portfolio_states().get(account_id) or persisted
+            persisted["pending_operational_commands"] = commands
+            self.portfolio.states[account_id].pending_operational_commands = [
+                dict(command) for command in commands
+            ][-100:]
+            self.journal.save_portfolio_state(account_id, persisted)
+
     async def _on_order_group_fill(self, snapshot) -> None:
         handler = getattr(self.strategy, "on_order_group_update", None)
         if handler is not None:
@@ -395,3 +500,25 @@ class TradingRuntime:
 
     async def _on_order_group_state(self, snapshot) -> None:
         self.portfolio.on_order_group_update(snapshot)
+        await self.risk_supervisor.evaluate(
+            snapshot.account_id,
+            reason=f"order_group:{snapshot.state.value}",
+            protection_required=float(snapshot.protection_required_quantity),
+            protection_coverage=float(snapshot.protection_coverage_quantity),
+            internal_reaction_ms=snapshot.internal_reaction_ms,
+        )
+
+    async def _on_emergency_risk(self, evaluation: RiskEvaluation) -> None:
+        if self.order_manager is None:
+            return
+        state = self.portfolio.states[evaluation.account_id]
+        policy = state.policy_override or state.profile.policy
+        await self.order_manager.kill_entries(
+            evaluation.account_id,
+            reason="continuous_risk_emergency",
+        )
+        if policy.allow_emergency_auto_liquidation:
+            await self.order_manager.emergency_flatten(
+                evaluation.account_id,
+                reason="continuous_risk_emergency",
+            )

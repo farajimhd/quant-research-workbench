@@ -5,14 +5,12 @@ from datetime import datetime, timezone
 
 from src.trading_runtime.broker import BrokerAdapter
 from src.trading_runtime.ibkr_schema import OPEN_ORDER_STATUSES, OrderRequest
+from src.trading_runtime.signals import StrategyIntent
 
 
 @dataclass(frozen=True, slots=True)
 class RiskConfig:
     max_open_orders_per_account: int = 100
-    max_order_quantity: float = 100_000
-    max_order_notional: float = 1_000_000
-    max_gross_position_value: float = 5_000_000
     maximum_snapshot_age_ms: int = 6_000
 
 
@@ -27,8 +25,13 @@ class RiskSnapshot:
     reserved_notional: float = 0.0
 
 
-class RiskAuthority:
-    """Mode-independent pre-trade checks over IBKR-shaped broker state."""
+class OrderSafetyGuard:
+    """Execution-only safety over a portfolio-approved semantic intent.
+
+    Portfolio management is the sole authority for cash, margin, exposure,
+    concentration, loss budgets, and final sizing. This guard prevents the OMS
+    from expanding that approval or sending a price outside its envelope.
+    """
 
     def __init__(self, config: RiskConfig | None = None) -> None:
         self.config = config or RiskConfig()
@@ -78,6 +81,7 @@ class RiskAuthority:
         account_id: str,
         orders: list[OrderRequest],
         *,
+        intent: StrategyIntent | None = None,
         require_fresh: bool = True,
     ) -> None:
         snapshot = self._snapshots.get(account_id)
@@ -90,26 +94,19 @@ class RiskAuthority:
         if require_fresh and age_ms > self.config.maximum_snapshot_age_ms:
             raise ValueError(f"Risk snapshot is stale ({age_ms:.0f} ms); execution is frozen")
         if snapshot.open_orders + snapshot.reserved_orders + len(orders) > self.config.max_open_orders_per_account:
-            raise ValueError("Risk limit exceeded: too many open orders")
-        if snapshot.gross_position_value > self.config.max_gross_position_value:
-            raise ValueError("Risk limit exceeded: gross position value")
-        requested_notional = 0.0
-        for order in orders:
-            quantity = float(order.quantity or 0)
-            if quantity > self.config.max_order_quantity:
-                raise ValueError("Risk limit exceeded: order quantity")
-            reference_price = float(order.price or order.auxPrice or 0)
-            if reference_price > 0 and quantity * reference_price > self.config.max_order_notional:
-                raise ValueError("Risk limit exceeded: order notional")
-            requested_notional += quantity * reference_price
-        if requested_notional + snapshot.reserved_notional > max(0.0, snapshot.available_funds):
-            buy_notional = sum(
-                float(order.quantity or 0) * float(order.price or order.auxPrice or 0)
-                for order in orders
-                if order.side.upper() == "BUY"
-            )
-            if buy_notional + snapshot.reserved_notional > max(0.0, snapshot.available_funds):
-                raise ValueError("Risk limit exceeded: available funds")
+            raise ValueError("Order safety limit exceeded: too many open orders")
+        if intent is None:
+            return
+        root_orders = [order for order in orders if not order.parentId]
+        root_quantity = sum(float(order.quantity or 0) for order in root_orders)
+        if root_quantity > float(intent.quantity) + 1e-9:
+            raise ValueError("Order safety violation: broker plan exceeds portfolio-approved quantity")
+        envelope = intent.resolved_execution_policy().envelope
+        for order in root_orders:
+            if order.orderType.upper() not in {"LMT", "STOP_LIMIT", "TRAILLMT"} or order.price is None:
+                continue
+            if not envelope.permits(order.side, float(order.price)):
+                raise ValueError("Order safety violation: price exceeds the portfolio-approved execution envelope")
 
     def reserve(self, account_id: str, orders: list[OrderRequest]) -> None:
         snapshot = self._snapshots.get(account_id)
@@ -136,3 +133,7 @@ class RiskAuthority:
                 if order.side.upper() == "BUY"
             ),
         )
+
+
+# Backward-compatible import while callers migrate to the narrower name.
+RiskAuthority = OrderSafetyGuard

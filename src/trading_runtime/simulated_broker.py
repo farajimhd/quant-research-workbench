@@ -259,8 +259,8 @@ class SimulatedBrokerAdapter:
         self._require_matching_account(account_id, order)
         async with self._lock:
             state = self._require_order(account_id, order_id)
-            if state.status not in OPEN_ORDER_STATUSES or state.filled > 0:
-                raise ValueError("Only open, unfilled orders may be modified")
+            if state.status not in OPEN_ORDER_STATUSES:
+                raise ValueError("Only open orders may be modified")
             if order.conid != state.request.conid or order.side.upper() != state.request.side.upper():
                 raise ValueError("Modification must preserve conid and side")
             if order.cOID != state.request.cOID:

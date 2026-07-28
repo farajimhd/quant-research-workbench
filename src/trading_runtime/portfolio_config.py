@@ -153,7 +153,13 @@ def _policies(raw: Any) -> dict[str, PortfolioPolicy]:
             raise ValueError(f"Unknown fields in portfolio policy {key}: {', '.join(sorted(unknown))}")
         normalized = dict(payload)
         normalized.setdefault("policy_id", str(key))
-        for tuple_field in ("allowed_security_types", "allowed_currencies", "restricted_symbols"):
+        for tuple_field in (
+            "allowed_security_types",
+            "allowed_currencies",
+            "restricted_symbols",
+            "allowed_execution_policies",
+            "allowed_protection_profiles",
+        ):
             if tuple_field in normalized:
                 normalized[tuple_field] = tuple(str(item) for item in normalized[tuple_field])
         policy = PortfolioPolicy(**normalized)

@@ -119,6 +119,34 @@ class PortfolioManagementServiceTests(unittest.TestCase):
         self.assertEqual(margin["control_mode"], "reduce_only")
         self.assertTrue(any(row["entity_type"] == "portfolio_control" for row in payload["recent_decisions"]))
 
+    def test_resume_and_emergency_commands_are_runtime_queued_and_fail_closed(self) -> None:
+        portfolio_management_command("margin", "pause_entries", reason="risk review")
+        resumed = portfolio_management_command(
+            "margin",
+            "resume_entries",
+            reason="operator reviewed",
+        )
+        flattened = portfolio_management_command(
+            "cash",
+            "emergency_flatten",
+            reason="operator emergency",
+        )
+        states = trading_journal().portfolio_states()
+
+        self.assertTrue(resumed["execution_required"])
+        self.assertEqual(resumed["control_mode"], "entries_paused")
+        self.assertEqual(states["MARGIN1"]["control_mode"], "entries_paused")
+        self.assertEqual(
+            states["MARGIN1"]["pending_operational_commands"][-1]["command"],
+            "resume_entries",
+        )
+        self.assertEqual(flattened["control_mode"], "reduce_only")
+        self.assertEqual(states["CASH1"]["control_mode"], "reduce_only")
+        self.assertEqual(
+            states["CASH1"]["pending_operational_commands"][-1]["command"],
+            "emergency_flatten",
+        )
+
     def test_policy_and_strategy_controls_are_durable_and_capability_narrowed(self) -> None:
         selected = portfolio_management_command(
             "cash",

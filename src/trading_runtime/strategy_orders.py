@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from math import floor
 from uuid import uuid4
 
 from src.trading_runtime.domain import InstrumentContract
+from src.trading_runtime.execution_policies import (
+    AddProtectionPolicy,
+    StopOrderType,
+    TrailingRuleType,
+)
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.signals import StrategyIntent
 from src.market_engine.events import MarketEvent
@@ -15,6 +22,20 @@ class StrategyOrderPlan:
     cancel_oca_groups: tuple[str, ...] = ()
     cancel_strategy_protection: bool = False
     protection_reconciliation_required: bool = False
+    batches: tuple[tuple[OrderRequest, ...], ...] = ()
+    order_slice_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.order_slice_ids and len(self.order_slice_ids) != len(self.orders):
+            raise ValueError("order_slice_ids must align with flattened orders")
+        if self.batches:
+            flattened = tuple(order for batch in self.batches for order in batch)
+            if flattened != self.orders:
+                raise ValueError("StrategyOrderPlan batches must flatten to orders")
+
+    @property
+    def broker_batches(self) -> tuple[tuple[OrderRequest, ...], ...]:
+        return self.batches or ((self.orders,) if self.orders else ())
 
 
 class IbkrStrategyOrderPlanner:
@@ -97,53 +118,113 @@ class IbkrStrategyOrderPlanner:
             account_id, instrument, f"{prefix}-entry", entry_side, entry_type, quantity,
             intent, price=entry_price, grouped=True,
         )
-        if intent.action in {"add_long", "add_short"}:
-            return StrategyOrderPlan((parent,), protection_reconciliation_required=True)
-
-        children: list[OrderRequest] = []
-        valid_target = (
-            intent.profit_target_price is not None
-            and (
-                intent.profit_target_price < intent.reference_price
-                if short_entry
-                else intent.profit_target_price > intent.reference_price
+        profile = intent.resolved_protection_profile()
+        if profile is None:
+            raise ValueError("Entry and add intents require a broker-held protection profile")
+        volatility = float(intent.metadata.get("volatility") or 0)
+        slice_quantities = _slice_quantities(quantity, tuple(item.quantity_fraction for item in profile.slices))
+        batches: list[tuple[OrderRequest, ...]] = []
+        flattened: list[OrderRequest] = []
+        slice_ids: list[str] = []
+        for index, (protection_slice, slice_quantity) in enumerate(zip(profile.slices, slice_quantities, strict=True)):
+            slice_parent = _order(
+                account_id,
+                instrument,
+                f"{prefix}-s{index + 1}-entry",
+                entry_side,
+                entry_type,
+                slice_quantity,
+                intent,
+                price=entry_price,
+                grouped=True,
             )
+            if (
+                intent.action in {"add_long", "add_short"}
+                and profile.add_policy == AddProtectionPolicy.INHERIT_POSITION_STOP
+            ):
+                stop_price = float(intent.metadata.get("position_stop_price") or 0)
+                if stop_price <= 0:
+                    raise ValueError(
+                        "inherit_position_stop add policy requires position_stop_price"
+                    )
+                if (not short_entry and stop_price >= intent.reference_price) or (
+                    short_entry and stop_price <= intent.reference_price
+                ):
+                    raise ValueError("inherited position stop is on the wrong side of the add")
+            else:
+                stop_price = protection_slice.stop.resolve(
+                    reference_price=intent.reference_price,
+                    side="short" if short_entry else "long",
+                    quantity=slice_quantity,
+                    volatility=volatility,
+                )
+            stop_type = protection_slice.stop.order_type.value
+            stop_limit_price = None
+            if protection_slice.stop.order_type == StopOrderType.STOP_LIMIT:
+                offset = float(protection_slice.stop.stop_limit_offset_bps or 0) / 10_000
+                stop_limit_price = stop_price * (1 + offset if short_entry else 1 - offset)
+            children: list[OrderRequest] = []
+            target = protection_slice.profit_target_price or intent.profit_target_price
+            valid_target = target is not None and (
+                target < intent.reference_price if short_entry else target > intent.reference_price
+            )
+            if valid_target:
+                children.append(
+                    _order(
+                        account_id,
+                        instrument,
+                        None,
+                        exit_side,
+                        "LMT",
+                        slice_quantity,
+                        intent,
+                        parent_id=slice_parent.cOID,
+                        price=target,
+                        grouped=True,
+                    )
+                )
+            children.append(
+                _order(
+                    account_id,
+                    instrument,
+                    None,
+                    exit_side,
+                    stop_type,
+                    slice_quantity,
+                    intent,
+                    parent_id=slice_parent.cOID,
+                    price=stop_limit_price,
+                    stop=stop_price,
+                    grouped=True,
+                )
+            )
+            trailing = protection_slice.trailing
+            if trailing.rule_type in {TrailingRuleType.BROKER_AMOUNT, TrailingRuleType.BROKER_PERCENT}:
+                children.append(
+                    _order(
+                        account_id,
+                        instrument,
+                        None,
+                        exit_side,
+                        "TRAIL",
+                        slice_quantity,
+                        intent,
+                        parent_id=slice_parent.cOID,
+                        trailing=trailing.amount if trailing.rule_type == TrailingRuleType.BROKER_AMOUNT else trailing.percent,
+                        trailing_type="amt" if trailing.rule_type == TrailingRuleType.BROKER_AMOUNT else "%",
+                        grouped=True,
+                    )
+                )
+            batch = (slice_parent, *children)
+            batches.append(batch)
+            flattened.extend(batch)
+            slice_ids.extend([protection_slice.slice_id] * len(batch))
+        return StrategyOrderPlan(
+            orders=tuple(flattened),
+            protection_reconciliation_required=intent.action in {"add_long", "add_short"},
+            batches=tuple(batches),
+            order_slice_ids=tuple(slice_ids),
         )
-        if valid_target:
-            children.append(
-                _order(
-                    account_id, instrument, None, exit_side, "LMT", quantity,
-                    intent, parent_id=parent.cOID, price=intent.profit_target_price,
-                    grouped=True,
-                )
-            )
-        valid_stop = (
-            intent.invalidation_price is not None
-            and (
-                intent.invalidation_price > intent.reference_price
-                if short_entry
-                else intent.invalidation_price < intent.reference_price
-            )
-        )
-        if valid_stop:
-            children.append(
-                _order(
-                    account_id, instrument, None, exit_side, "STP", quantity,
-                    intent, parent_id=parent.cOID, stop=intent.invalidation_price,
-                    grouped=True,
-                )
-            )
-        if intent.trailing_amount is not None and intent.trailing_amount > 0:
-            children.append(
-                _order(
-                    account_id, instrument, None, exit_side, "TRAIL", quantity,
-                    intent, parent_id=parent.cOID, trailing=intent.trailing_amount,
-                    grouped=True,
-                )
-            )
-        if not children:
-            raise ValueError("Long entry requires at least one broker-held protective exit")
-        return StrategyOrderPlan((parent, *children))
 
 
 class RuntimeIbkrStrategyOrderPlanner:
@@ -202,6 +283,7 @@ def _order(
     price: float | None = None,
     stop: float | None = None,
     trailing: float | None = None,
+    trailing_type: str | None = None,
     grouped: bool = False,
 ) -> OrderRequest:
     return OrderRequest(
@@ -219,10 +301,29 @@ def _order(
         price=price,
         auxPrice=stop,
         trailingAmt=trailing,
-        trailingType="amt" if trailing is not None else None,
+        trailingType=trailing_type or ("amt" if trailing is not None else None),
         listingExchange=instrument.exchange,
         isSingleGroup=grouped,
     )
+
+
+def _slice_quantities(quantity: float, fractions: tuple[float, ...]) -> tuple[float, ...]:
+    if quantity <= 0 or not fractions:
+        raise ValueError("positive quantity and protection fractions are required")
+    integral = math.isclose(quantity, round(quantity), abs_tol=1e-9)
+    if integral:
+        total = int(round(quantity))
+        allocated = [floor(total * fraction) for fraction in fractions]
+        for index in range(total - sum(allocated)):
+            allocated[index % len(allocated)] += 1
+        if any(value <= 0 for value in allocated):
+            raise ValueError("approved quantity is too small for the requested protection slices")
+        return tuple(float(value) for value in allocated)
+    result = [quantity * fraction for fraction in fractions]
+    result[-1] = quantity - sum(result[:-1])
+    if any(value <= 0 for value in result):
+        raise ValueError("protection slice quantity must be positive")
+    return tuple(result)
 
 
 def _aggressive_limit(reference_price: float, side: str, offset_bps: float) -> float:

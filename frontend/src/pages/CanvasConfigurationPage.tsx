@@ -159,6 +159,22 @@ type CanonicalTradingPreview = {
         reservations: PreviewRow[];
         allocations: PreviewRow[];
         reconciliation: PreviewRow[];
+        continuous_risk: PreviewRow;
+        managed_order_groups: Array<{
+          group_id: string;
+          state: PreviewRow & {
+            state?: string;
+            current_limit_price?: number | null;
+            protection_required_quantity?: number;
+            protection_coverage_quantity?: number;
+            intent?: PreviewRow & {
+              ticker?: string;
+              execution_policy?: PreviewRow;
+              protection_profile?: PreviewRow;
+            };
+          };
+        }>;
+        pending_operational_commands: PreviewRow[];
       }>;
       groups: PreviewRow[];
       recent_decisions: PreviewRow[];
@@ -3130,7 +3146,7 @@ function PortfolioManagementPreview({ data, management }: { data: CanonicalTradi
   const operational = data.mode === "live" || data.mode === "paper";
   const command = async (
     accountKey: string,
-    value: "pause_entries" | "resume_entries" | "reduce_only" | "reconcile" | "select_policy" | "disable_strategy" | "enable_strategy",
+    value: "pause_entries" | "resume_entries" | "reduce_only" | "reconcile" | "select_policy" | "disable_strategy" | "enable_strategy" | "kill_entries" | "emergency_flatten",
     detail: Record<string, string> = {},
   ) => {
     const commandKey = `${accountKey}:${value}`;
@@ -3140,6 +3156,7 @@ function PortfolioManagementPreview({ data, management }: { data: CanonicalTradi
       const result = await api<{
         control_mode?: string;
         disabled_strategy_allocations?: string[];
+        execution_required?: boolean;
         policy?: Record<string, unknown> & { identity?: string };
         portfolio_management?: typeof management;
       }>(
@@ -3157,7 +3174,13 @@ function PortfolioManagementPreview({ data, management }: { data: CanonicalTradi
         ...(result.policy ? { policy: result.policy } : {}),
         ...(result.disabled_strategy_allocations ? { disabled_strategy_allocations: result.disabled_strategy_allocations } : {}),
       } : row));
-      setMessage(value === "reconcile" ? "Broker reconciliation completed." : "Portfolio control updated.");
+      setMessage(
+        result.execution_required
+          ? "Command queued for fresh validation by the authenticated trading runtime."
+          : value === "reconcile"
+          ? "Broker reconciliation completed."
+          : "Portfolio control updated.",
+      );
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -3172,10 +3195,14 @@ function PortfolioManagementPreview({ data, management }: { data: CanonicalTradi
       {accounts.map((account) => {
         const metrics = account.metrics;
         const isPending = pending.startsWith(`${account.account_key}:`);
+        const riskState = String(account.continuous_risk?.state || "");
+        const activeGroups = account.managed_order_groups.filter((row) => !["filled", "cancelled", "rejected", "policy_blocked"].includes(String(row.state.state || "")));
+        const protectionDeficits = activeGroups.filter((row) =>
+          Number(row.state.protection_required_quantity || 0) > Number(row.state.protection_coverage_quantity || 0));
         return <article className="portfolio-management-account" data-sync={account.sync_state} key={account.account_key}>
           <header>
             <div><strong>{account.account_key}</strong><span>{account.account_class} · {String(account.policy.identity || "unversioned policy")}</span></div>
-            <div className="portfolio-management-status"><span data-state={account.sync_state}>{labelFor(account.sync_state)}</span><span data-state={account.control_mode}>{labelFor(account.control_mode)}</span></div>
+            <div className="portfolio-management-status"><span data-state={account.sync_state}>{labelFor(account.sync_state)}</span><span data-state={account.control_mode}>{labelFor(account.control_mode)}</span>{riskState ? <span data-state={riskState}>{labelFor(riskState)}</span> : null}</div>
           </header>
           <div className="portfolio-management-metrics">
             <TradingMetric label="Eligible equity" value={money(metrics.eligible_equity)} />
@@ -3184,11 +3211,16 @@ function PortfolioManagementPreview({ data, management }: { data: CanonicalTradi
             <TradingMetric label="Risk headroom" value={money(metrics.planned_risk_headroom)} />
             <TradingMetric label="Positions" value={String(account.position_count)} />
             <TradingMetric label="Working orders" value={String(account.working_order_count)} />
+            <TradingMetric label="Daily loss" value={money(metrics.daily_loss || 0)} tone={Number(metrics.daily_loss || 0) > 0 ? "negative" : undefined} />
+            <TradingMetric label="Drawdown" value={money(metrics.drawdown || 0)} tone={Number(metrics.drawdown || 0) > 0 ? "negative" : undefined} />
           </div>
           <div className="portfolio-management-evidence">
             <span>{account.reservations.length} reservations</span>
             <span>{account.allocations.length} allocations</span>
             <span data-tone={account.reconciliation.length ? "negative" : "positive"}>{account.reconciliation.length} reconciliation differences</span>
+            <span data-tone={protectionDeficits.length ? "negative" : "positive"}>{protectionDeficits.length ? `${protectionDeficits.length} protection deficits` : "Protection reconciled"}</span>
+            <span>{activeGroups.length} managed order groups</span>
+            <span>{account.pending_operational_commands.filter((row) => row.status === "pending").length} pending operator commands</span>
             <span>{account.observed_at ? <>As of <MarketTime value={account.observed_at} /></> : "No broker watermark"}</span>
           </div>
           {operational ? <div className="portfolio-management-controls">
@@ -3208,6 +3240,20 @@ function PortfolioManagementPreview({ data, management }: { data: CanonicalTradi
               : <button className="button secondary compact" disabled={isPending} onClick={() => void command(account.account_key, "resume_entries")} type="button">Resume entries</button>}
             <button className="button secondary compact" disabled={isPending || account.control_mode === "reduce_only"} onClick={() => void command(account.account_key, "reduce_only")} type="button">Reduce only</button>
             <button className="button secondary compact" disabled={isPending} onClick={() => void command(account.account_key, "reconcile")} type="button"><RefreshCcw size={12} /> Reconcile</button>
+            <button className="button secondary compact" data-tone="negative" disabled={isPending} onClick={() => void command(account.account_key, "kill_entries")} type="button">Kill entries</button>
+            <button
+              className="button secondary compact"
+              data-tone="negative"
+              disabled={isPending}
+              onClick={() => {
+                if (window.confirm(`Emergency flatten ${account.account_key}? This queues bounded liquidation for every confirmed position in the account.`)) {
+                  void command(account.account_key, "emergency_flatten");
+                }
+              }}
+              type="button"
+            >
+              Emergency flatten
+            </button>
             {Object.entries(account.strategy_allocations).map(([strategyId, fraction]) => {
               const disabled = account.disabled_strategy_allocations.includes(strategyId);
               return <button
@@ -3223,6 +3269,20 @@ function PortfolioManagementPreview({ data, management }: { data: CanonicalTradi
               </button>;
             })}
           </div> : <div className="trading-disclosure">Replay and Backtest use the same policy evidence with a simulated broker; operational controls are available only in Live and Paper.</div>}
+          {activeGroups.length ? <details className="trading-disclosure">
+            <summary>Adaptive execution and protection evidence</summary>
+            <PreviewTable
+              columns={["ticker", "state", "execution_policy", "protection_profile", "current_limit", "protection"]}
+              rows={activeGroups.map((row) => ({
+                ticker: String(row.state.intent?.ticker || ""),
+                state: String(row.state.state || ""),
+                execution_policy: String((row.state.intent?.execution_policy as PreviewRow | undefined)?.policy_id || "legacy"),
+                protection_profile: String((row.state.intent?.protection_profile as PreviewRow | undefined)?.profile_id || "legacy"),
+                current_limit: row.state.current_limit_price ?? "",
+                protection: `${Number(row.state.protection_coverage_quantity || 0)} / ${Number(row.state.protection_required_quantity || 0)}`,
+              }))}
+            />
+          </details> : null}
         </article>;
       })}
     </div>

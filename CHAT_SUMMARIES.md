@@ -7,6 +7,21 @@ each year.
 
 ## 2026
 
+### [2026-07-27 time unavailable - Design and implement adaptive OMS, portfolio protection, and continuous risk](docs/codex/chat-summaries/2026/CHAT-20260727-UNKNOWN-adaptive-oms-portfolio-risk.md)
+
+- Chat/task ID: `019fa4ce-2ab7-7490-a297-e38b4e496102`
+- Related tasks: `TASK-0145`, `TASK-0149`
+- Summary written: 2026-07-28 07:42 PDT
+
+This chat established IBKR-authoritative multi-account portfolio management,
+then evolved the OMS from static quote tactics into strategy-selectable
+adaptive execution with broker-authoritative partial fills. It implemented
+multi-slice protection, add and profit-pocket transitions, continuous
+account-bound risk, durable recovery and operator controls, Replay/Backtest
+parity, Canvas evidence, and a guarded Paper acceptance workflow. All
+deterministic implementation phases are complete; authenticated IBKR Paper
+acceptance remains the explicit gate before Live automation.
+
 ### [2026-07-27 08:56 PDT - Investigate ChatGPT UI freezes](docs/codex/chat-summaries/2026/CHAT-20260727-0856-investigate-chatgpt-ui-freezes.md)
 
 - Chat/task ID: `019fa44b-0973-7c81-9672-939236736821`

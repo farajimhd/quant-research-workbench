@@ -132,6 +132,54 @@ class TradingJournal:
         ).fetchall()
         return {str(row["account_id"]): json.loads(row["state_json"]) for row in rows}
 
+    def save_order_management_state(
+        self,
+        group_id: str,
+        *,
+        run_id: str,
+        account_id: str,
+        state: dict[str, Any],
+    ) -> None:
+        if not group_id or not account_id:
+            raise ValueError("order group and account identity are required")
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO order_management_states(group_id, run_id, account_id, state_json, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(group_id) DO UPDATE SET
+                    state_json=excluded.state_json, updated_at=excluded.updated_at
+                """,
+                (
+                    group_id,
+                    run_id,
+                    account_id,
+                    json.dumps(state, sort_keys=True, default=_json_default),
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+
+    def order_management_states(self, *, run_id: str | None = None) -> list[dict[str, Any]]:
+        if run_id:
+            rows = self._connection.execute(
+                "SELECT * FROM order_management_states WHERE run_id = ? ORDER BY updated_at",
+                (run_id,),
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                "SELECT * FROM order_management_states ORDER BY updated_at"
+            ).fetchall()
+        return [
+            {
+                "group_id": str(row["group_id"]),
+                "run_id": str(row["run_id"]),
+                "account_id": str(row["account_id"]),
+                "state": json.loads(row["state_json"]),
+                "updated_at": str(row["updated_at"]),
+            }
+            for row in rows
+        ]
+
     def save_trade_annotation(
         self,
         episode_id: str,
@@ -442,6 +490,12 @@ class TradingJournal:
                 CREATE TABLE IF NOT EXISTS portfolio_states(
                     account_id TEXT PRIMARY KEY, state_json TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS order_management_states(
+                    group_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, account_id TEXT NOT NULL,
+                    state_json TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_order_management_state_run
+                    ON order_management_states(run_id, account_id, updated_at);
                 """
             )
 

@@ -14,7 +14,7 @@ The authorities are deliberately separate:
 |---|---|
 | Strategy | What position change is wanted, urgency, evidence, invalidation, and optional re-entry |
 | Portfolio management | Exact account binding, final quantity, capital and risk allocation, capacity reservation, and portfolio reconciliation |
-| Order management | Risk reservation, execution tactic, command ordering, warning policy, broker state, reconciliation, and durable command evidence |
+| Order management | Execution policy, broker commands, warning policy, broker lifecycle, protection reconciliation, and durable command evidence |
 | Order planner | IBKR-compatible bracket/OCA shape for one semantic intent |
 | Broker adapter | Authenticated transport and exact Client Portal API resources |
 | Canvas | Assignment commands and read-only presentation, never broker commands |
@@ -26,17 +26,18 @@ manual and automatic actions cannot bypass order management.
 ## Latency contract
 
 The hot path does not request account summaries, live-order lists, or previews.
-Risk and account state are primed before trading is enabled and refreshed in
-the background. IBKR HTTP connections are pooled and reused. One asynchronous
-command lane serializes place/modify/cancel with any mandatory warning reply,
-because IBKR permits only one unresolved order reply chain at a time.
+Portfolio and account state are primed before trading is enabled and refreshed
+in the background. IBKR HTTP connections are pooled and reused. Per-account
+command lanes isolate normal place/modify/cancel traffic. A separate global
+warning-reply lane preserves IBKR's single unresolved reply-chain constraint.
 
 `decision_to_submit_ms` measures application time from entering submission to
 the broker response. It includes broker/network response time and is persisted
-with the acknowledgement. It is not an exchange-fill SLA. For the most urgent
-tactic, all configured price steps are scheduled within 600 ms by default;
-actual modification and fill time remain controlled by IBKR, network latency,
-marketability, market state, and exchange conditions.
+with the acknowledgement. `internal_reaction_ms` measures an OMS quote/fill
+wake-up through replacement command preparation and dispatch; the default
+portfolio policy requires at most 100 ms internally. Neither measure is an
+exchange-fill SLA. Gateway, network, marketability, market state, and exchange
+latency remain external.
 
 No blanket confirmation flag exists. Suppression and automatic confirmation
 are both explicit message-ID allowlists, configured before enabling a paper or
@@ -46,6 +47,9 @@ live session.
 
 All aggressive actions use price-protected limit orders rather than unbounded
 market orders. Prices are rounded toward execution using the contract tick.
+The strategy selects a versioned `ExecutionPolicy`; OMS owns the current
+QMD/IBKR/simulated quote, order lifecycle, and repricing. The approved price
+envelope, deadline, reprice count, and minimum interval are hard bounds.
 
 | Urgency | Buy behavior | Sell behavior | Default schedule |
 |---|---|---|---|
@@ -56,22 +60,45 @@ market orders. Prices are rounded toward execution using the contract tick.
 
 The tactic requires a positive, non-crossed NBBO and a positive tick size.
 Live/paper quotes older than the configured maximum are rejected before a
-command is sent. Repricing stops on a terminal order state or a full fill.
+command is sent. A quote update, partial fill, or bounded timer can wake the
+adaptive policy. OMS first applies the broker's cumulative fill, then modifies
+the same live root order; it never submits the original quantity again.
+
+| Partial-fill policy | Remainder behavior |
+|---|---|
+| `complete_remainder` | Reprice from the newest permitted quote |
+| `accept_partial` | Request cancellation and keep the confirmed fill |
+| `cancel_remainder` | Request cancellation immediately after the first fill |
+
+Cancellation remains `cancel_pending` until the broker confirms a terminal
+state. Fills arriving during cancel/modify are reconciled cumulatively before
+another command, preventing over-ordering.
 
 ## Entry and protection
 
-A fresh entry is submitted as one IBKR bracket:
+A fresh entry or add is split into one to four independently protected slices.
+Each slice is submitted as one IBKR bracket:
 
 1. a bounded limit parent;
 2. an optional profit-target limit child;
 3. a hard stop child;
 4. an optional trailing-stop child.
 
-Only the parent carries `cOID`; children use its value as `parentId`. The
-children remain broker-held protection if the application disconnects.
-Order-role tracking distinguishes entry, profit target, hard stop, trailing
-stop, and managed exit. A protective child fill is sent back to the strategy
-as an `exit`, never as another entry fill.
+Only each slice parent carries `cOID`; its children use that value as
+`parentId`. Fractions must total one and integer allocation preserves the exact
+approved quantity. Stop rules support fixed price/percent/bps/cash risk,
+causal swing anchors, volatility, hybrid, breakeven, and catastrophic
+backstops. Trailing choices include broker amount/percent and OMS-managed
+volatility, swing, chandelier, breakeven-then-trail, profit-lock-R, and
+time-tightening.
+
+Children remain broker-held if the application disconnects. Per-order
+cumulative fills, role, and slice ID produce exact incremental callbacks. A
+protective fill is an `exit`, never another entry. A cancelled protective
+sibling does not terminate the semantic position; it triggers coverage
+reconciliation. Coverage is the absolute IBKR position versus broker-held
+stop/trail groups, counting OCA alternatives once. Excess is resized or
+cancelled and missing coverage receives a catastrophic backstop.
 
 ## Profit pocket and re-entry
 
@@ -82,10 +109,11 @@ with no protection. If `buy_back` is true, re-entry becomes eligible only
 after the exit fill is broker-confirmed and the strategy assignment moves to
 re-entry cooldown.
 
-Partial profit pockets are blocked in revision 2. The current Client Portal
-`isSingleGroup` contract does not document an atomic proportional reduction of
-all remaining protective siblings. Sending a partial sell without first
-reconciling every child quantity can over-sell or leave stale protection.
+Partial profit pockets are permitted only by explicit account policy. After
+the reduction fill, OMS resizes protection to the authoritative IBKR
+position. The selected profile chooses the transition: keep, breakeven,
+lock-profit, broker/volatility/swing trail, tighten, replan remaining slices,
+or full exit with optional re-entry. Live stop changes are tighten-only.
 
 If no managed target child exists, order management submits the planner's
 standalone protected exit group. The strategy still does not place it.
@@ -144,22 +172,27 @@ Additional states are `cancel_pending`, `outcome_unknown`, and
   is cancelled. Protection remains `cancel_pending` until broker state proves
   the terminal result.
 - A transport exception after submission is `outcome_unknown`; the same intent
-  is never blindly resubmitted.
+  is never blindly resubmitted and its portfolio reservation remains held.
 - Disconnect freezes new intents. Broker websocket order/trade messages and
   periodic live-order reconciliation recover authoritative state.
 - Commands, acknowledgements, warning transcripts, price changes, shortability
   denials, state transitions, fills, and measured latency are committed to the
   trading journal and exposed in Canvas Strategy.
+- `order_management_states` persists every group, mapping, per-order fill,
+  selected policy/profile, current limit, and protection coverage. Restart
+  restores identity first and reconciles with IBKR before commands resume.
 
 ## Deployment gates
 
-Automated live execution remains disabled until all of the following are
-completed:
+The deterministic implementation covers adaptive execution, slices,
+continuous risk, persistence, recovery, and Replay/Backtest parity. Automated
+Live execution remains disabled until this environment-dependent Paper matrix
+is completed:
 
 1. authenticated IBKR paper tests cover entry bracket, each protective fill,
    modify, cancel, warning chains, disconnect/reconcile, and short denial;
-2. application decision-to-submit latency is measured under representative
-   load, including 100 ms strategy observations;
+2. internal reaction and decision-to-submit latency are measured under
+   representative load, including 100 ms strategy observations;
 3. each suppressed/auto-confirmed message ID has a documented paper transcript
    and explicit approval;
 4. positions and every open protective quantity reconcile after partial fills,
@@ -167,9 +200,12 @@ completed:
 5. the operator can pause entries while exits and broker-held protection remain
    active.
 
-The deterministic simulator validates state and grouping semantics, but it
-does not prove IBKR gateway latency, exchange fills, borrow availability, or
-warning behavior.
+Use `scripts/run_ibkr_paper_oms_acceptance.py` and
+`docs/runbooks/IBKR_PAPER_OMS_ACCEPTANCE.md`. Its default path performs only
+authentication/account/what-if checks. Actual Paper submission requires
+`--execute`, a `DU...` account, and a literal confirmation. The simulator
+cannot prove gateway latency, exchange fills, borrow availability, or warning
+behavior.
 
 ## IBKR references
 

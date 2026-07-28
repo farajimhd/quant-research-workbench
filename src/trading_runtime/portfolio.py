@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from src.trading_runtime.broker import BrokerAdapter
 from src.trading_runtime.domain import OrderState, TradingStateSnapshot
+from src.trading_runtime.execution_policies import AddProtectionPolicy, StopOrderType
 from src.trading_runtime.ibkr_schema import AccountLedger, AccountSummary, LiveOrder, PortfolioPosition
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.order_management import OrderGroupSnapshot, OrderManagementState
@@ -69,7 +70,11 @@ class PortfolioPolicy:
     maximum_order_notional: float = 1_000_000.0
     maximum_daily_loss: float = 100_000.0
     maximum_drawdown: float = 250_000.0
+    daily_loss_warning: float = 0.0
+    emergency_loss: float = 0.0
     maximum_snapshot_age_ms: int = 6_000
+    maximum_protection_slices: int = 4
+    maximum_internal_reaction_ms: int = 100
     allow_long: bool = True
     allow_short: bool = False
     allow_margin: bool = False
@@ -80,6 +85,11 @@ class PortfolioPolicy:
     allowed_currencies: tuple[str, ...] = ("USD", "CAD")
     restricted_symbols: tuple[str, ...] = ()
     block_on_unattributed_position: bool = True
+    allow_stop_limit_protection: bool = False
+    allow_partial_profit_pocket: bool = True
+    allow_emergency_auto_liquidation: bool = False
+    allowed_execution_policies: tuple[str, ...] = ("*",)
+    allowed_protection_profiles: tuple[str, ...] = ("*",)
 
     def __post_init__(self) -> None:
         if not self.policy_id or self.revision < 1:
@@ -107,11 +117,22 @@ class PortfolioPolicy:
             self.maximum_order_notional,
             self.maximum_daily_loss,
             self.maximum_drawdown,
+            self.daily_loss_warning,
+            self.emergency_loss,
         )
         if any(value < 0 for value in nonnegative):
             raise ValueError("Portfolio policy limits cannot be negative")
-        if self.maximum_open_positions < 0 or self.maximum_snapshot_age_ms < 1:
+        if (
+            self.maximum_open_positions < 0
+            or self.maximum_snapshot_age_ms < 1
+            or self.maximum_protection_slices < 1
+            or self.maximum_internal_reaction_ms < 1
+        ):
             raise ValueError("Portfolio position count and freshness limits are invalid")
+        if self.daily_loss_warning and self.daily_loss_warning > self.maximum_daily_loss:
+            raise ValueError("daily loss warning cannot exceed the hard daily loss limit")
+        if self.emergency_loss and self.emergency_loss < self.maximum_daily_loss:
+            raise ValueError("emergency loss cannot be below the hard daily loss limit")
 
     @property
     def identity(self) -> str:
@@ -247,6 +268,7 @@ class PortfolioAccountState:
     component_watermarks: dict[str, datetime] = field(default_factory=dict)
     policy_override: PortfolioPolicy | None = None
     disabled_strategy_allocations: set[str] = field(default_factory=set)
+    pending_operational_commands: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def synchronized(self) -> bool:
@@ -564,19 +586,26 @@ class PortfolioManagementEngine:
         )
         if reservation is None:
             return
+        entry_update = not snapshot.fill_role or snapshot.fill_role == "entry"
         prior_filled = self._last_filled_by_reservation.get(reservation.reservation_id, 0.0)
-        filled = max(prior_filled, float(snapshot.filled_quantity))
-        incremental = max(0.0, filled - prior_filled)
+        filled = max(prior_filled, float(snapshot.filled_quantity)) if entry_update else prior_filled
+        incremental = (
+            float(snapshot.fill_incremental_quantity)
+            if snapshot.fill_incremental_quantity > 0
+            else max(0.0, filled - prior_filled)
+        )
         if incremental:
-            self._apply_fill(reservation, incremental)
-            self._last_filled_by_reservation[reservation.reservation_id] = filled
+            fill_action = snapshot.action if snapshot.fill_role and snapshot.fill_role != "entry" else reservation.action
+            self._apply_fill(reservation, incremental, action=fill_action)
+            if entry_update:
+                self._last_filled_by_reservation[reservation.reservation_id] = filled
         terminal = snapshot.state in {
             OrderManagementState.FILLED,
             OrderManagementState.CANCELLED,
             OrderManagementState.REJECTED,
             OrderManagementState.POLICY_BLOCKED,
         }
-        status = snapshot.state.value
+        status = snapshot.state.value if entry_update else reservation.status
         remaining = 0.0 if terminal else max(0.0, reservation.quantity - filled)
         self.reservations[reservation.reservation_id] = replace(
             reservation,
@@ -620,6 +649,35 @@ class PortfolioManagementEngine:
         )
         self._persist_state(state)
         return self.account_payload(state.profile.account_id)
+
+    def apply_persisted_operational_state(
+        self,
+        account_id: str,
+        payload: Mapping[str, Any],
+    ) -> None:
+        """Merge operator-authored durable controls into the live authority.
+
+        The backend and trading runtime use separate journal connections.
+        Applying this before authoritative broker refresh prevents the in-memory
+        runtime from overwriting a newly queued operator command.
+        """
+        state = self._state(account_id)
+        if payload.get("control_mode") is not None:
+            state.control_mode = PortfolioControlMode(str(payload["control_mode"]))
+        selected_policy = payload.get("selected_policy")
+        if isinstance(selected_policy, Mapping):
+            state.policy_override = narrow_policy_for_account_class(
+                portfolio_policy_from_payload(selected_policy),
+                state.profile.account_class,
+            )
+        state.disabled_strategy_allocations = {
+            str(item) for item in payload.get("disabled_strategy_allocations") or ()
+        }
+        state.pending_operational_commands = [
+            dict(item)
+            for item in payload.get("pending_operational_commands") or ()
+            if isinstance(item, Mapping)
+        ][-100:]
 
     def set_strategy_allocation_enabled(
         self,
@@ -766,8 +824,37 @@ class PortfolioManagementEngine:
             reasons.append("short_not_allowed")
         if intent.action in {"enter_long", "add_long"} and not policy.allow_long:
             reasons.append("long_not_allowed")
+        execution_policy = intent.resolved_execution_policy()
+        protection_profile = intent.resolved_protection_profile()
+        if entry and not _policy_allows(policy.allowed_execution_policies, execution_policy.identity, execution_policy.name.value):
+            reasons.append("execution_policy_not_allowed")
+        if entry and protection_profile is None:
+            reasons.append("protection_profile_required")
+        if protection_profile is not None:
+            if not _policy_allows(
+                policy.allowed_protection_profiles,
+                protection_profile.identity,
+                protection_profile.profile_id,
+            ):
+                reasons.append("protection_profile_not_allowed")
+            if len(protection_profile.slices) > policy.maximum_protection_slices:
+                reasons.append("too_many_protection_slices")
+            if not policy.allow_stop_limit_protection and any(
+                item.stop.order_type == StopOrderType.STOP_LIMIT
+                for item in protection_profile.slices
+            ):
+                reasons.append("stop_limit_protection_not_allowed")
         if policy.block_on_unattributed_position and (state.profile.account_key, ticker) in self.differences and entry:
             reasons.append("unattributed_position")
+        position = state.positions.get(ticker)
+        current_quantity = float(position.position) if position else 0.0
+        if (
+            reduction
+            and intent.action != "exit"
+            and requested + 1e-9 < abs(current_quantity)
+            and not policy.allow_partial_profit_pocket
+        ):
+            reasons.append("partial_profit_pocket_not_allowed")
         summary = state.summary
         if summary is None:
             reasons.append("account_summary_unavailable")
@@ -792,9 +879,7 @@ class PortfolioManagementEngine:
             )
             return decision, None
 
-        position = state.positions.get(ticker)
-        current_quantity = float(position.position) if position else 0.0
-        price = float(intent.reference_price)
+        price = _worst_entry_price(intent) if entry else float(intent.reference_price)
         base_price = price * fx_to_base
         if requested <= 0 or price <= 0:
             decision = self._decision(
@@ -973,7 +1058,7 @@ class PortfolioManagementEngine:
             capacities["net_exposure"] = max(0.0, policy.maximum_net_long_exposure - max(0.0, net) - reserved_notional) / base_price
         else:
             capacities["net_exposure"] = max(0.0, policy.maximum_net_short_exposure - max(0.0, -net) - reserved_notional) / base_price
-        risk_per_share = _risk_per_share(intent) * float(intent.metadata.get("fx_to_base") or 1.0)
+        risk_per_share = _risk_per_share(intent, requested) * float(intent.metadata.get("fx_to_base") or 1.0)
         if risk_per_share > 0:
             capacities["planned_risk"] = max(
                 0.0,
@@ -1160,9 +1245,16 @@ class PortfolioManagementEngine:
                 observed_at=state.observed_at or datetime.now(timezone.utc),
             )
 
-    def _apply_fill(self, reservation: PortfolioReservation, quantity: float) -> None:
+    def _apply_fill(
+        self,
+        reservation: PortfolioReservation,
+        quantity: float,
+        *,
+        action: str | None = None,
+    ) -> None:
+        effective_action = action or reservation.action
         signed = quantity
-        if reservation.action in {"enter_short", "add_short", "reduce_long", "take_profit", "exit"}:
+        if effective_action in {"enter_short", "add_short", "reduce_long", "take_profit", "exit"}:
             signed = -quantity
         allocation_id = (
             f"{reservation.account_id}:{reservation.strategy_id}:"
@@ -1176,7 +1268,7 @@ class PortfolioManagementEngine:
             if reservation.quantity > 0
             else 0.0
         )
-        if reservation.action in REDUCTION_ACTIONS:
+        if effective_action in REDUCTION_ACTIONS:
             if previous_quantity > 0:
                 signed = -min(abs(signed), previous_quantity)
             elif previous_quantity < 0:
@@ -1225,6 +1317,7 @@ class PortfolioManagementEngine:
                 "incremental_quantity": signed,
                 "quantity": next_quantity,
                 "ticker": reservation.ticker,
+                "action": effective_action,
                 "strategy_id": reservation.strategy_id,
                 "assignment_id": reservation.assignment_id,
             },
@@ -1260,6 +1353,9 @@ class PortfolioManagementEngine:
                 "realized_pnl_baseline": state.realized_pnl_baseline,
                 "selected_policy": _policy_payload(state.policy_override) if state.policy_override else None,
                 "disabled_strategy_allocations": sorted(state.disabled_strategy_allocations),
+                "pending_operational_commands": list(
+                    state.pending_operational_commands
+                ),
                 "reservations": [
                     asdict(row)
                     for row in self.reservations.values()
@@ -1295,6 +1391,11 @@ class PortfolioManagementEngine:
                 state.disabled_strategy_allocations = {
                     str(item) for item in payload.get("disabled_strategy_allocations") or ()
                 }
+                state.pending_operational_commands = [
+                    dict(item)
+                    for item in payload.get("pending_operational_commands") or ()
+                    if isinstance(item, Mapping)
+                ][-100:]
                 for raw in payload.get("reservations") or []:
                     reservation = PortfolioReservation(
                         **{
@@ -1370,7 +1471,13 @@ def _policy_payload(policy: PortfolioPolicy) -> dict[str, Any]:
 def portfolio_policy_from_payload(payload: Mapping[str, Any]) -> PortfolioPolicy:
     valid = set(PortfolioPolicy.__dataclass_fields__)
     normalized = {key: value for key, value in payload.items() if key in valid}
-    for tuple_field in ("allowed_security_types", "allowed_currencies", "restricted_symbols"):
+    for tuple_field in (
+        "allowed_security_types",
+        "allowed_currencies",
+        "restricted_symbols",
+        "allowed_execution_policies",
+        "allowed_protection_profiles",
+    ):
         if tuple_field in normalized:
             normalized[tuple_field] = tuple(str(item) for item in normalized[tuple_field])
     return PortfolioPolicy(**normalized)
@@ -1391,13 +1498,55 @@ def narrow_policy_for_account_class(
 
 
 def _planned_loss(intent: StrategyIntent, quantity: float) -> float:
-    return _risk_per_share(intent) * quantity
-
-
-def _risk_per_share(intent: StrategyIntent) -> float:
-    if intent.invalidation_price is None:
+    profile = intent.resolved_protection_profile()
+    if profile is None:
         return 0.0
-    return abs(float(intent.reference_price) - float(intent.invalidation_price))
+    entry_price = _worst_entry_price(intent)
+    position_side = "short" if intent.action in {"enter_short", "add_short"} else "long"
+    volatility = float(intent.metadata.get("volatility") or 0)
+    planned = 0.0
+    for item in profile.slices:
+        slice_quantity = quantity * item.quantity_fraction
+        if (
+            intent.action in {"add_long", "add_short"}
+            and profile.add_policy == AddProtectionPolicy.INHERIT_POSITION_STOP
+        ):
+            stop_price = float(intent.metadata.get("position_stop_price") or 0)
+            if stop_price <= 0:
+                raise ValueError(
+                    "inherit_position_stop add policy requires position_stop_price"
+                )
+            if (position_side == "long" and stop_price >= entry_price) or (
+                position_side == "short" and stop_price <= entry_price
+            ):
+                raise ValueError("inherited position stop is on the wrong side of the add")
+        else:
+            stop_price = item.stop.resolve(
+                reference_price=entry_price,
+                side=position_side,
+                quantity=slice_quantity,
+                volatility=volatility,
+            )
+        planned += abs(entry_price - stop_price) * slice_quantity
+    return planned
+
+
+def _risk_per_share(intent: StrategyIntent, quantity: float = 1.0) -> float:
+    return _planned_loss(intent, max(quantity, 1e-12)) / max(quantity, 1e-12)
+
+
+def _worst_entry_price(intent: StrategyIntent) -> float:
+    reference = float(intent.reference_price)
+    envelope = intent.resolved_execution_policy().envelope
+    if intent.action in {"enter_long", "add_long"}:
+        return float(envelope.maximum_buy_price or reference)
+    if intent.action in {"enter_short", "add_short"}:
+        return float(envelope.minimum_sell_price or reference)
+    return reference
+
+
+def _policy_allows(allowed: tuple[str, ...], identity: str, name: str) -> bool:
+    return "*" in allowed or identity in allowed or name in allowed
 
 
 def _ticker(position: PortfolioPosition) -> str:

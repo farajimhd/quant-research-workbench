@@ -4,6 +4,16 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
+from src.trading_runtime.execution_policies import (
+    ExecutionPolicy,
+    ProtectionProfile,
+    ProtectionSlice,
+    StopRule,
+    StopRuleType,
+    TrailingRule,
+    TrailingRuleType,
+    legacy_execution_policy,
+)
 from src.trading_runtime.taxonomy import (
     ClockContract,
     EvaluationMode,
@@ -217,6 +227,8 @@ class StrategyIntent:
     invalidation_price: float | None = None
     profit_target_price: float | None = None
     trailing_amount: float | None = None
+    execution_policy: ExecutionPolicy | None = None
+    protection_profile: ProtectionProfile | None = None
     urgency: Literal[
         "passive_limit",
         "aggressive_limit",
@@ -230,6 +242,35 @@ class StrategyIntent:
     outside_rth: bool = False
     reason: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def resolved_execution_policy(self) -> ExecutionPolicy:
+        return self.execution_policy or legacy_execution_policy(
+            urgency=self.urgency,
+            reference_price=self.reference_price,
+            metadata=self.metadata,
+        )
+
+    def resolved_protection_profile(self) -> ProtectionProfile | None:
+        if self.protection_profile is not None:
+            return self.protection_profile
+        if self.invalidation_price is None or self.invalidation_price <= 0:
+            return None
+        return ProtectionProfile(
+            profile_id="legacy-single-stop",
+            revision=1,
+            slices=(
+                ProtectionSlice(
+                    slice_id="position",
+                    quantity_fraction=1.0,
+                    stop=StopRule(StopRuleType.FIXED_PRICE, price=self.invalidation_price),
+                    trailing=(
+                        TrailingRule(TrailingRuleType.BROKER_AMOUNT, amount=self.trailing_amount)
+                        if self.trailing_amount is not None and self.trailing_amount > 0
+                        else TrailingRule()
+                    ),
+                ),
+            ),
+        )
 
     def __post_init__(self) -> None:
         if not self.intent_id or not self.ticker:

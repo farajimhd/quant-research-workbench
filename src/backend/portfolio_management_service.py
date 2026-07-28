@@ -25,6 +25,12 @@ def portfolio_management_snapshot(canonical_state: dict[str, Any]) -> dict[str, 
     selected_ids = {str(row.get("account_id") or "") for row in canonical_state.get("accounts") or []}
     profiles = tuple(profile for profile in profiles if profile.account_id in selected_ids)
     persisted = trading_journal().portfolio_states()
+    managed_states = trading_journal().order_management_states()
+    risk_records = [
+        row
+        for row in trading_journal().order_management_records(limit=1_000)
+        if row.entity_type == "continuous_risk_state"
+    ]
     account_rows: list[dict[str, Any]] = []
     for profile in profiles:
         account_values = [
@@ -44,7 +50,22 @@ def portfolio_management_snapshot(canonical_state: dict[str, Any]) -> dict[str, 
             if str(row.get("account_id") or "") == profile.account_id
         ]
         state = persisted.get(profile.account_id) or {}
+        account_managed_states = [
+            row for row in managed_states if row["account_id"] == profile.account_id
+        ]
+        latest_risk = next(
+            (
+                row.payload
+                for row in reversed(risk_records)
+                if row.account_id == profile.account_id
+            ),
+            {},
+        )
         metrics = portfolio_metrics(account_values, ledger, positions)
+        risk_metrics = latest_risk.get("metrics") if isinstance(latest_risk, dict) else {}
+        if isinstance(risk_metrics, dict):
+            metrics["daily_loss"] = float(risk_metrics.get("daily_loss") or 0)
+            metrics["drawdown"] = float(risk_metrics.get("drawdown") or 0)
         exposure = portfolio_exposure(positions)
         selected_policy = state.get("selected_policy") or {}
         selected_identity = str(selected_policy.get("identity") or "")
@@ -117,6 +138,11 @@ def portfolio_management_snapshot(canonical_state: dict[str, Any]) -> dict[str, 
                 "reservations": active_reservations,
                 "allocations": list(state.get("allocations") or []),
                 "reconciliation": list(state.get("reconciliation") or []),
+                "continuous_risk": latest_risk,
+                "managed_order_groups": account_managed_states[-100:],
+                "pending_operational_commands": list(
+                    state.get("pending_operational_commands") or ()
+                ),
             }
         )
     decisions = [
@@ -156,9 +182,10 @@ def portfolio_management_command(
     detail = dict(detail or {})
     controls = {
         "pause_entries": PortfolioControlMode.ENTRIES_PAUSED,
-        "resume_entries": PortfolioControlMode.ENABLED,
         "reduce_only": PortfolioControlMode.REDUCE_ONLY,
         "disable": PortfolioControlMode.DISABLED,
+        "kill_entries": PortfolioControlMode.REDUCE_ONLY,
+        "emergency_flatten": PortfolioControlMode.REDUCE_ONLY,
     }
     if normalized == "reconcile":
         return {
@@ -222,6 +249,38 @@ def portfolio_management_command(
             "strategy_id": strategy_id,
             "enabled": enabled,
             "disabled_strategy_allocations": state["disabled_strategy_allocations"],
+        }
+    elif normalized in {"resume_entries", "kill_entries", "emergency_flatten"}:
+        if normalized != "resume_entries":
+            state["control_mode"] = PortfolioControlMode.REDUCE_ONLY.value
+        pending = list(state.get("pending_operational_commands") or ())
+        command_id = f"{normalized}:{datetime.now(timezone.utc).isoformat()}"
+        pending.append(
+            {
+                "command_id": command_id,
+                "command": normalized,
+                "reason": reason,
+                "detail": detail,
+                "status": "pending",
+            }
+        )
+        state["pending_operational_commands"] = pending[-100:]
+        event_payload = {
+            "event": "portfolio_operational_command_requested",
+            "account_key": account_key,
+            "command_id": command_id,
+            "command": normalized,
+            "reason": reason,
+        }
+        response = {
+            "account_key": account_key,
+            "account_id": profile.account_id,
+            "command": normalized,
+            "command_id": command_id,
+            "control_mode": str(
+                state.get("control_mode") or PortfolioControlMode.ENTRIES_PAUSED.value
+            ),
+            "execution_required": True,
         }
     elif normalized not in controls:
         raise ValueError(f"Unsupported portfolio command: {command}")

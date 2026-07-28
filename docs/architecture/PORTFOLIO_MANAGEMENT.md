@@ -278,16 +278,28 @@ APIs:
   Live/Paper
 
 Supported operator commands are pause entries, resume entries, reduce-only,
-reconcile, select a configured policy revision, and enable or disable one
-configured strategy allocation. Policy selection always pauses new entries
-until the operator explicitly resumes them. Capability narrowing is reapplied
-when a policy is selected, so a cash or registered account cannot acquire
-margin or short authority through a broader policy. These controls cannot send
-broker orders. The Portfolio Canvas container shows account policy,
+reconcile, kill open entry remainders, confirmation-gated emergency flatten,
+select a configured policy revision, and enable or disable one configured
+strategy allocation. Policy selection always pauses new entries until the
+operator explicitly resumes them. Capability narrowing is reapplied when a
+policy is selected, so a cash or registered account cannot acquire margin or
+short authority through a broader policy. Portfolio commands are durably
+queued; the trading runtime is the only consumer allowed to ask OMS for a
+broker action. The Portfolio Canvas container shows account policy,
 synchronization and control state, capital and risk headroom, reservations,
 allocations, reconciliation differences, optional aggregate groups, and the
-broker watermark. Replay and Backtest render the same evidence read-only with
+broker watermark. It also shows continuous-risk state/reasons, daily
+loss/drawdown, protection required/covered/deficit, managed OMS groups and
+their policy/profile identities, working limits, reaction latency, and pending
+operator commands. Replay and Backtest render the same evidence read-only with
 a simulated authority.
+
+Continuous risk maps account observations to `normal`, `entries_paused`,
+`reconciling`, `reduce_only`, `emergency_exit`, or `fully_blocked`. Thresholds
+and emergency-auto-liquidation permission are per account. Escalation is
+automatic; recovery is latched and requires an explicit operator resume after
+a fresh normal evaluation. A disconnect or stale account state never
+auto-enables entries.
 
 ## Deployment invariants
 
@@ -300,3 +312,8 @@ a simulated authority.
   broker position.
 - Cash/registered capability cannot be broadened through configuration.
 - Replay and Backtest run the same portfolio policy code.
+- Risk sizing uses the worst permitted execution-envelope price and the
+  weighted loss of every protection slice.
+- Account policy allowlists exact execution policies and protection profiles,
+  maximum slice count, stop-limit use, partial pockets, reaction latency, and
+  emergency-auto-liquidation.
