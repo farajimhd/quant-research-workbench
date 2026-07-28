@@ -32,7 +32,11 @@ from .structure import normalize_source_text, segment_rendered_text, semantic_te
 WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9'-]*")
 
 
-def label_document(document: SemanticDocument) -> SemanticResult:
+def label_document(
+    document: SemanticDocument,
+    *,
+    include_discovery_evidence: bool = True,
+) -> SemanticResult:
     if document.corpus not in {"news", "sec"}:
         raise ValueError(f"unsupported corpus {document.corpus!r}")
     clean = normalize_source_text(document.text)
@@ -57,8 +61,8 @@ def label_document(document: SemanticDocument) -> SemanticResult:
     sentiment = sentiment_label(sentiment_score, labels)
     modality = dominant_label_value([label.modality for label in labels]) or detect_modality(retained)
     orientation = dominant_label_value([label.time_orientation for label in labels]) or detect_time_orientation(retained)
-    keywords = clean_keywords(normalized)
-    candidates = document_candidates(normalized)
+    keywords = clean_keywords(normalized) if include_discovery_evidence else ()
+    candidates = document_candidates(normalized) if include_discovery_evidence else ()
     flags = quality_flags(document, blocks, spans, labels)
     if content_role in {"market_roundup", "mover_recap", "why_moving_followup"}:
         flags = tuple(value for value in flags if value != "no_supported_canonical_event")
