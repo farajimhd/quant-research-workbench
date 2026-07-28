@@ -29,9 +29,8 @@ BOILERPLATE_RE = re.compile(
     re.IGNORECASE,
 )
 HEADING_RE = re.compile(
-    r"^(?:item\s+\d+(?:\.\d+)?|part\s+[ivx]+|exhibit\s+\d+|"
+    r"^(?:(?i:item\s+\d+(?:\.\d+)?|part\s+[ivx]+|exhibit\s+\d+)|"
     r"[A-Z][A-Z0-9 &,/()'.-]{4,})$",
-    re.IGNORECASE,
 )
 TABLE_COLUMNS_RE = re.compile(r"^Columns:\s*(.*)$", re.IGNORECASE)
 TABLE_CAPTION_RE = re.compile(r"^Table:\s*(.*)$", re.IGNORECASE)
