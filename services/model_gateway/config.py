@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from research.mlops.env import discover_env_files, load_env_files
+
 
 @dataclass(frozen=True)
 class ProviderProfile:
@@ -36,6 +38,8 @@ class GatewayConfig:
 
     @classmethod
     def from_env(cls) -> "GatewayConfig":
+        repo_root = Path(__file__).resolve().parents[2]
+        load_env_files(discover_env_files(repo_root), verbose=False)
         runtime_root = Path(
             os.environ.get("MODEL_GATEWAY_RUNTIME_ROOT", r"D:\TradingML\runtimes\model_gateway")
         )

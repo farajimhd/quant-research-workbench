@@ -7,10 +7,12 @@ import os
 import urllib.request
 from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 
+from research.mlops.env import discover_env_files, load_env_files
 from research.mlops.clickhouse import (
     ClickHouseHttpClient,
     default_clickhouse_password,
@@ -52,6 +54,11 @@ Return probabilities for upside, downside, and no-action that sum to 1 within
 0.01. Expected return and excursions are descriptive estimates, not orders.
 Abstain when evidence is stale, contradictory, insufficient, or ineligible.
 Never issue an order, position size, or imperative trading instruction."""
+
+load_env_files(
+    discover_env_files(Path(__file__).resolve().parents[4]),
+    verbose=False,
+)
 
 
 class HypothesisRequest(BaseModel):

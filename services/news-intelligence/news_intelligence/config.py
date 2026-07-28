@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from research.mlops.env import discover_env_files, load_env_files
+
 
 @dataclass(frozen=True)
 class IntelligenceConfig:
@@ -76,19 +78,8 @@ def load_manifest(path: Path) -> dict[str, Any]:
 
 
 def load_repo_dotenv() -> None:
-    for path in dotenv_candidates():
-        if not path.exists():
-            continue
-        for line in path.read_text(encoding="utf-8").splitlines():
-            text = line.strip()
-            if not text or text.startswith("#") or "=" not in text:
-                continue
-            key, value = text.split("=", 1)
-            key = key.strip()
-            if not key or key in os.environ:
-                continue
-            os.environ[key] = strip_env_value(value)
-        return
+    repo_root = Path(__file__).resolve().parents[3]
+    load_env_files(discover_env_files(repo_root), verbose=False)
 
 
 def dotenv_candidates() -> list[Path]:
