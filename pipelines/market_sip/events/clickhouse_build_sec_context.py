@@ -567,8 +567,12 @@ FROM
         f.mapping_confidence AS mapping_confidence,
         f.bridge_id AS bridge_id,
         now64(3, 'UTC') AS updated_at
-    FROM {source_db}.{quote_ident(args.source_xbrl_company_fact_table)} AS x
-    INNER JOIN {filing_context} AS f
+    FROM {source_db}.{quote_ident(args.source_xbrl_company_fact_table)} AS x FINAL
+    INNER JOIN
+    (
+        SELECT *
+        FROM {filing_context} FINAL
+    ) AS f
         ON f.cik = x.cik
        AND f.accession_number = x.accession_number
     WHERE x.accession_number IS NOT NULL
@@ -599,8 +603,12 @@ FROM
         f.mapping_confidence AS mapping_confidence,
         f.bridge_id AS bridge_id,
         now64(3, 'UTC') AS updated_at
-    FROM {source_db}.{quote_ident(args.source_xbrl_frame_observation_table)} AS o
-    INNER JOIN {filing_context} AS f
+    FROM {source_db}.{quote_ident(args.source_xbrl_frame_observation_table)} AS o FINAL
+    INNER JOIN
+    (
+        SELECT *
+        FROM {filing_context} FINAL
+    ) AS f
         ON f.cik = o.cik
        AND f.accession_number = o.accession_number
     WHERE f.accepted_at_utc >= {date_time64_sql(start_date)}

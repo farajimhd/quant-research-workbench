@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
 from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import SecWriteResult
@@ -17,7 +17,7 @@ from pipelines.sec.edgar.sec_pipeline.xbrl_context import (
     source_company_fact_rows_sql,
     source_frame_observation_rows_sql,
 )
-from pipelines.market_sip.events.clickhouse_build_sec_context import bridge_cte_sql
+from pipelines.market_sip.events import clickhouse_build_sec_context as historical_context
 from research.mlops.packed_market.context import DEFAULTS, PackedContextConfig
 from services.gateway_core.dashboard import configured_tables
 from services.gateway_core.rich_renderer import metric_label
@@ -50,7 +50,7 @@ class SecXbrlContextSyncTests(unittest.TestCase):
         self.assertNotIn("max(confidence_score)", sql)
 
     def test_historical_context_uses_exact_bridge_rows(self) -> None:
-        sql = bridge_cte_sql(
+        sql = historical_context.bridge_cte_sql(
             SimpleNamespace(
                 source_database="q_live",
                 source_bridge_table="id_sec_market_bridge_v3",
@@ -61,6 +61,28 @@ class SecXbrlContextSyncTests(unittest.TestCase):
         self.assertIn("bridge_id", sql)
         self.assertNotIn("any(bridge_id)", sql)
         self.assertNotIn("any(ifNull(security_id", sql)
+
+    def test_historical_xbrl_build_reads_final_canonical_sources_and_filing_identity(self) -> None:
+        args = SimpleNamespace(
+            source_database="q_live",
+            target_database="market_sip_compact",
+            filing_table="sec_filing_context_v3",
+            xbrl_table="sec_xbrl_context_v3",
+            source_xbrl_company_fact_table="sec_xbrl_company_fact_v3",
+            source_xbrl_frame_observation_table="sec_xbrl_frame_observation_v3",
+            max_threads=8,
+            max_memory_usage=1_000_000_000,
+        )
+
+        sql = historical_context.insert_xbrl_context_sql(
+            args,
+            start_date=date(2026, 7, 1),
+            end_date_exclusive=date(2026, 8, 1),
+        )
+
+        self.assertIn("sec_xbrl_company_fact_v3` AS x FINAL", sql)
+        self.assertIn("sec_xbrl_frame_observation_v3` AS o FINAL", sql)
+        self.assertEqual(sql.count("FROM `market_sip_compact`.`sec_filing_context_v3` FINAL"), 2)
 
     def test_recovery_reads_accession_rows_without_historical_join(self) -> None:
         config = XbrlContextSyncConfig()
