@@ -5,7 +5,11 @@ param(
     [string]$WindowsTerminalExe = "",
     [string]$TerminalWindowName = "quant-research-workbench-services",
     [ValidateNotNullOrEmpty()]
-    [string]$IbkrAccount = "paper"
+    [string]$IbkrAccount = "paper",
+    [ValidateRange(0, 3600)]
+    [int]$ReferenceDelaySeconds = 60,
+    [ValidateNotNullOrEmpty()]
+    [string]$IbkrSupervisorHealthUrl = "http://127.0.0.1:8800/health"
 )
 
 $ErrorActionPreference = "Stop"
@@ -140,6 +144,43 @@ $resolvedPython = Resolve-PythonExecutable -Requested $PythonExe -EnvironmentNam
 $resolvedWindowsTerminal = Resolve-WindowsTerminalExecutable -Requested $WindowsTerminalExe
 $powerShellExe = (Get-Command powershell.exe -ErrorAction Stop).Source
 $pythonLiteral = ConvertTo-PowerShellLiteral -Value $resolvedPython
+$ibkrHealthUrlLiteral = ConvertTo-PowerShellLiteral -Value $IbkrSupervisorHealthUrl
+
+$referenceCommandLines = @(
+    "Write-Host 'Reference Gateway is waiting for the IBKR Gateway Supervisor to start.'",
+    '$ibkrHealth = $null',
+    'while ($null -eq $ibkrHealth) {',
+    '    try {',
+    "        `$ibkrHealth = Invoke-RestMethod -Uri $ibkrHealthUrlLiteral -TimeoutSec 5",
+    '    }',
+    '    catch {',
+    '        Write-Host ("IBKR supervisor health is not reachable yet: {0}. Retrying in 5 seconds." -f $_.Exception.Message)',
+    '        Start-Sleep -Seconds 5',
+    '    }',
+    '}',
+    "Write-Host 'IBKR supervisor is reachable. Waiting $ReferenceDelaySeconds seconds before Reference preflight.'",
+    "Start-Sleep -Seconds $ReferenceDelaySeconds",
+    '$ibkrReady = $false',
+    'while (-not $ibkrReady) {',
+    '    try {',
+    "        `$ibkrHealth = Invoke-RestMethod -Uri $ibkrHealthUrlLiteral -TimeoutSec 5",
+    '        $gatewayStatus = [string]$ibkrHealth.metrics.gateway_status',
+    '        $authStatus = [string]$ibkrHealth.metrics.auth_status',
+    '        $ibkrReady = $gatewayStatus.Trim().ToLowerInvariant() -eq "ready" -and $authStatus.Trim().ToLowerInvariant() -eq "authenticated"',
+    '        if (-not $ibkrReady) {',
+    '            Write-Host ("IBKR is not ready for Reference: gateway={0}, auth={1}. Retrying in 10 seconds." -f $gatewayStatus, $authStatus)',
+    '            Start-Sleep -Seconds 10',
+    '        }',
+    '    }',
+    '    catch {',
+    '        Write-Host ("IBKR supervisor health check failed: {0}. Retrying in 10 seconds." -f $_.Exception.Message)',
+    '        Start-Sleep -Seconds 10',
+    '    }',
+    '}',
+    "Write-Host 'IBKR is ready and authenticated. Starting Reference Gateway.'",
+    ("& " + (ConvertTo-PowerShellLiteral -Value $referenceLauncher) + " -PythonExe $pythonLiteral")
+)
+$referenceCommand = $referenceCommandLines -join [Environment]::NewLine
 
 $serviceTabs = @(
     [pscustomobject]@{
@@ -156,8 +197,7 @@ $serviceTabs = @(
     },
     [pscustomobject]@{
         Title = "Reference Gateway"
-        Command = "& " + (ConvertTo-PowerShellLiteral -Value $referenceLauncher) +
-            " -PythonExe $pythonLiteral"
+        Command = $referenceCommand
     },
     [pscustomobject]@{
         Title = "IBKR Gateway Supervisor"
@@ -166,6 +206,21 @@ $serviceTabs = @(
             " -Account " + (ConvertTo-PowerShellLiteral -Value $IbkrAccount)
     }
 )
+
+foreach ($serviceTab in $serviceTabs) {
+    Write-Verbose ("Generated {0} command:`n{1}" -f $serviceTab.Title, $serviceTab.Command)
+    $commandTokens = $null
+    $commandErrors = $null
+    [void][Management.Automation.Language.Parser]::ParseInput(
+        $serviceTab.Command,
+        [ref]$commandTokens,
+        [ref]$commandErrors
+    )
+    if ($commandErrors.Count -gt 0) {
+        $messages = @($commandErrors | ForEach-Object { $_.Message }) -join "; "
+        throw "The generated '$($serviceTab.Title)' PowerShell command is invalid: $messages"
+    }
+}
 
 function Open-ServiceTab {
     param(
@@ -212,4 +267,5 @@ for ($index = 0; $index -lt $serviceTabs.Count; $index++) {
     Write-Host ("  {0}. {1}" -f ($index + 1), $serviceTabs[$index].Title)
 }
 Write-Host "This starter now exits instead of supervising the four launcher processes."
+Write-Host "Reference waits for IBKR Supervisor health, then at least $ReferenceDelaySeconds seconds, then ready/authenticated state."
 Write-Host "Stop all matching instances with scripts\stop_live_gateway_services.ps1."

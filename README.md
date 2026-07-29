@@ -266,6 +266,13 @@ It opens independent PowerShell tabs in this exact order:
 Each tab delegates to the corresponding existing `run_*_gateway.ps1`
 launcher. The IBKR tab defaults to the `paper` account key; pass
 `-IbkrAccount <configured-key>` when another configured session is intended.
+The Reference tab is created third to preserve the visible order, but it does
+not invoke its launcher immediately. It first waits for the IBKR Supervisor
+health endpoint to become reachable, waits another 60 seconds, and then waits
+until IBKR reports both `gateway_status=ready` and
+`auth_status=authenticated`. Override only the minimum delay with
+`-ReferenceDelaySeconds`; override the supervisor endpoint with
+`-IbkrSupervisorHealthUrl` when its bind is non-default.
 Stop this group with:
 
 ```powershell
