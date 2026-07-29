@@ -128,6 +128,9 @@ $terminalWindowTarget = Resolve-WindowsTerminalTarget `
     -Mode $TerminalTarget `
     -FallbackWindowName $TerminalWindowName `
     -CallerWindowHandle $callerTerminalWindow
+if ($terminalWindowTarget.Reason) {
+    Write-Host $terminalWindowTarget.Reason
+}
 $pythonDirectory = Split-Path -Parent $resolvedPython
 $cargoCommand = Get-Command cargo -ErrorAction SilentlyContinue
 $toolDirectories = @($pythonDirectory)

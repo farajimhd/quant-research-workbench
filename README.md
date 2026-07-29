@@ -244,6 +244,12 @@ last active. Pass `-TerminalTarget Named -TerminalWindowName <name>` to force a
 named window, or `-TerminalTarget Caller` to require verified exact caller
 routing rather than allowing the named fallback.
 
+A classic Windows PowerShell/conhost window cannot contain tabs. Its prompt may
+look the same as PowerShell running inside Windows Terminal, but it is a
+different host. From that window, Auto mode necessarily opens the dedicated
+Windows Terminal window and `-TerminalTarget Caller` fails with an explicit
+host explanation.
+
 The starter delegates to `run_qmd_history_gateway.ps1`, `run_backend.ps1`, and
 `run_frontend.py`; it does not become a shared supervisor. Stop all matching
 instances, including alternate instances identified by those launcher/service
@@ -291,6 +297,14 @@ until IBKR reports both `gateway_status=ready` and
 `auth_status=authenticated`. Override only the minimum delay with
 `-ReferenceDelaySeconds`; override the supervisor endpoint with
 `-IbkrSupervisorHealthUrl` when its bind is non-default.
+Because this launcher always creates interactive Windows Terminal tabs, it
+explicitly enables each gateway's Rich and alternate-screen settings. This
+prevents an inherited `auto` or disabled terminal setting from silently
+reducing the operational dashboard to plain output; direct launcher invocations
+retain their existing environment-controlled behavior. The shared tab host
+keeps each launcher attached to the tab's console and enables virtual-terminal
+output, so the Rich dashboard is rendered in that tab rather than discarded by
+a detached child process.
 Stop this group with:
 
 ```powershell

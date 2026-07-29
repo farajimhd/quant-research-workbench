@@ -142,6 +142,20 @@ function ConvertTo-PowerShellEncodedCommand {
     return [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Command))
 }
 
+function New-InteractiveGatewayCommand {
+    param(
+        [string]$RichEnabledVariable,
+        [string]$ScreenEnabledVariable,
+        [string]$Command
+    )
+
+    return @(
+        ('$env:' + $RichEnabledVariable + " = 'true'"),
+        ('$env:' + $ScreenEnabledVariable + " = 'true'"),
+        $Command
+    ) -join [Environment]::NewLine
+}
+
 function Assert-Launcher {
     param([string]$Path)
 
@@ -165,6 +179,9 @@ $terminalWindowTarget = Resolve-WindowsTerminalTarget `
     -Mode $TerminalTarget `
     -FallbackWindowName $TerminalWindowName `
     -CallerWindowHandle $callerTerminalWindow
+if ($terminalWindowTarget.Reason) {
+    Write-Host $terminalWindowTarget.Reason
+}
 $pythonLiteral = ConvertTo-PowerShellLiteral -Value $resolvedPython
 $ibkrHealthUrlLiteral = ConvertTo-PowerShellLiteral -Value $IbkrSupervisorHealthUrl
 
@@ -202,20 +219,33 @@ $referenceCommandLines = @(
     "Write-Host 'IBKR is ready and authenticated. Starting Reference Gateway.'",
     ("& " + (ConvertTo-PowerShellLiteral -Value $referenceLauncher) + " -PythonExe $pythonLiteral")
 )
-$referenceCommand = $referenceCommandLines -join [Environment]::NewLine
+$referenceCommand = New-InteractiveGatewayCommand `
+    -RichEnabledVariable "REFERENCE_GATEWAY_TERMINAL_RICH_ENABLED" `
+    -ScreenEnabledVariable "REFERENCE_GATEWAY_TERMINAL_SCREEN_ENABLED" `
+    -Command ($referenceCommandLines -join [Environment]::NewLine)
 
 $serviceTabs = @(
     [pscustomobject]@{
         Title = "News Gateway"
-        Command = "& " + (ConvertTo-PowerShellLiteral -Value $newsLauncher) +
-            " -CondaEnv " + (ConvertTo-PowerShellLiteral -Value $CondaEnv) +
-            " -PythonExe $pythonLiteral"
+        Command = New-InteractiveGatewayCommand `
+            -RichEnabledVariable "NEWS_TERMINAL_RICH_ENABLED" `
+            -ScreenEnabledVariable "NEWS_TERMINAL_SCREEN_ENABLED" `
+            -Command (
+                "& " + (ConvertTo-PowerShellLiteral -Value $newsLauncher) +
+                " -CondaEnv " + (ConvertTo-PowerShellLiteral -Value $CondaEnv) +
+                " -PythonExe $pythonLiteral"
+            )
     },
     [pscustomobject]@{
         Title = "SEC Gateway"
-        Command = "& " + (ConvertTo-PowerShellLiteral -Value $secLauncher) +
-            " -CondaEnv " + (ConvertTo-PowerShellLiteral -Value $CondaEnv) +
-            " -PythonExe $pythonLiteral"
+        Command = New-InteractiveGatewayCommand `
+            -RichEnabledVariable "SEC_GATEWAY_TERMINAL_RICH_ENABLED" `
+            -ScreenEnabledVariable "SEC_GATEWAY_TERMINAL_SCREEN_ENABLED" `
+            -Command (
+                "& " + (ConvertTo-PowerShellLiteral -Value $secLauncher) +
+                " -CondaEnv " + (ConvertTo-PowerShellLiteral -Value $CondaEnv) +
+                " -PythonExe $pythonLiteral"
+            )
     },
     [pscustomobject]@{
         Title = "Reference Gateway"
@@ -223,9 +253,14 @@ $serviceTabs = @(
     },
     [pscustomobject]@{
         Title = "IBKR Gateway Supervisor"
-        Command = "& " + (ConvertTo-PowerShellLiteral -Value $ibkrLauncher) +
-            " -PythonExe $pythonLiteral" +
-            " -Account " + (ConvertTo-PowerShellLiteral -Value $IbkrAccount)
+        Command = New-InteractiveGatewayCommand `
+            -RichEnabledVariable "IBKR_GATEWAY_TERMINAL_RICH_ENABLED" `
+            -ScreenEnabledVariable "IBKR_GATEWAY_TERMINAL_SCREEN_ENABLED" `
+            -Command (
+                "& " + (ConvertTo-PowerShellLiteral -Value $ibkrLauncher) +
+                " -PythonExe $pythonLiteral" +
+                " -Account " + (ConvertTo-PowerShellLiteral -Value $IbkrAccount)
+            )
     }
 )
 

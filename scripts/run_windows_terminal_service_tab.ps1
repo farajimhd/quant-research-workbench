@@ -29,6 +29,10 @@ using System.Runtime.InteropServices;
 
 public static class ServiceTabConsoleControl
 {
+    private const int StdOutputHandle = -11;
+    private const int StdErrorHandle = -12;
+    private const uint EnableVirtualTerminalProcessing = 0x0004;
+
     private enum CtrlType : uint
     {
         CtrlC = 0,
@@ -47,6 +51,21 @@ public static class ServiceTabConsoleControl
         HandlerRoutine handlerRoutine,
         bool add
     );
+
+    [DllImport("Kernel32", SetLastError = true)]
+    private static extern IntPtr GetStdHandle(int standardHandle);
+
+    [DllImport("Kernel32", SetLastError = true)]
+    private static extern bool GetConsoleMode(IntPtr consoleHandle, out uint mode);
+
+    [DllImport("Kernel32", SetLastError = true)]
+    private static extern bool SetConsoleMode(IntPtr consoleHandle, uint mode);
+
+    public static void EnableVirtualTerminalOutput()
+    {
+        EnableVirtualTerminalOutput(StdOutputHandle);
+        EnableVirtualTerminalOutput(StdErrorHandle);
+    }
 
     public static void Register()
     {
@@ -75,10 +94,26 @@ public static class ServiceTabConsoleControl
         }
         return false;
     }
+
+    private static void EnableVirtualTerminalOutput(int standardHandle)
+    {
+        IntPtr consoleHandle = GetStdHandle(standardHandle);
+        if (consoleHandle == IntPtr.Zero || consoleHandle == new IntPtr(-1))
+        {
+            return;
+        }
+        uint mode;
+        if (!GetConsoleMode(consoleHandle, out mode))
+        {
+            return;
+        }
+        SetConsoleMode(consoleHandle, mode | EnableVirtualTerminalProcessing);
+    }
 }
 '@
 
 Add-Type -TypeDefinition $consoleControlSource -Language CSharp
+[ServiceTabConsoleControl]::EnableVirtualTerminalOutput()
 [ServiceTabConsoleControl]::Register()
 
 $child = $null
@@ -90,7 +125,11 @@ try {
         $EncodedCommand
     )
     $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
+    # This host already owns the Windows Terminal tab's console. The launcher
+    # must inherit that console so normal output, ANSI sequences, and Rich Live
+    # rendering reach the tab. CREATE_NO_WINDOW detaches a console child and
+    # silently discards the operational display.
+    $startInfo.CreateNoWindow = $false
     $child = [Diagnostics.Process]::Start($startInfo)
     if ($null -eq $child) {
         throw "PowerShell did not return a child process for the service command."

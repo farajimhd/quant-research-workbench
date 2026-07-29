@@ -43,7 +43,10 @@ print(f'{window_handle}|{process_id.value}')
 }
 
 function New-NamedWindowsTerminalTarget {
-    param([string]$WindowName)
+    param(
+        [string]$WindowName,
+        [string]$Reason = ""
+    )
 
     if (-not $WindowName.Trim()) {
         throw "-TerminalWindowName cannot be empty when a named Windows Terminal window is used."
@@ -54,6 +57,7 @@ function New-NamedWindowsTerminalTarget {
         Window = $resolvedName
         CallerWindowHandle = [long]0
         Description = "named Windows Terminal window '$resolvedName'"
+        Reason = $Reason
     }
 }
 
@@ -74,12 +78,28 @@ function Resolve-WindowsTerminalTarget {
             Window = "0"
             CallerWindowHandle = $CallerWindowHandle
             Description = "the invoking Windows Terminal window"
+            Reason = ""
         }
     }
     if ($Mode -eq "Caller") {
-        throw "-TerminalTarget Caller requires the foreground calling window to be Windows Terminal."
+        $sessionState = if ([string]::IsNullOrWhiteSpace($env:WT_SESSION)) {
+            "WT_SESSION is not present"
+        }
+        else {
+            "WT_SESSION is present, but the foreground window is not owned by Windows Terminal"
+        }
+        throw (
+            "-TerminalTarget Caller requires the foreground calling window to be Windows Terminal; " +
+            "$sessionState. A classic PowerShell/conhost window cannot contain tabs. " +
+            "Run this command from a Windows Terminal tab or omit Caller to use the dedicated named window."
+        )
     }
-    return New-NamedWindowsTerminalTarget -WindowName $FallbackWindowName
+    return New-NamedWindowsTerminalTarget `
+        -WindowName $FallbackWindowName `
+        -Reason (
+            "The current PowerShell prompt is not hosted by a verified foreground Windows Terminal window, " +
+            "so it cannot accept tabs. Using the dedicated named Windows Terminal window instead."
+        )
 }
 
 function Confirm-WindowsTerminalTarget {
@@ -125,7 +145,9 @@ raise SystemExit(0 if user32.GetForegroundWindow() == window_handle else 3)
         throw "The invoking Windows Terminal window could not be reactivated, so exact caller-window routing is unavailable."
     }
 
-    $fallback = New-NamedWindowsTerminalTarget -WindowName $FallbackWindowName
+    $fallback = New-NamedWindowsTerminalTarget `
+        -WindowName $FallbackWindowName `
+        -Reason "The captured Windows Terminal caller could not be reactivated."
     Write-Warning (
         "The invoking Windows Terminal window could not be reactivated. " +
         "Using $($fallback.Description) instead."
